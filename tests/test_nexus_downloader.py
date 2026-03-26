@@ -566,14 +566,16 @@ class TestDownload:
 
 
 class TestCleanup:
-    def test_deletes_existing_file(self, tmp_path: pathlib.Path) -> None:
+    @pytest.mark.asyncio
+    async def test_deletes_existing_file(self, tmp_path: pathlib.Path) -> None:
         f = tmp_path / "del.zip"
         f.write_bytes(b"x")
-        _cleanup(f)
+        await _cleanup(f)
         assert not f.exists()
 
-    def test_noop_on_missing_file(self, tmp_path: pathlib.Path) -> None:
-        _cleanup(tmp_path / "nonexistent.zip")  # must not raise
+    @pytest.mark.asyncio
+    async def test_noop_on_missing_file(self, tmp_path: pathlib.Path) -> None:
+        await _cleanup(tmp_path / "nonexistent.zip")  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +862,7 @@ class TestDownloadModApproved:
 
         enqueued: list[Any] = []
 
-        def _fake_enqueue(coro: Any) -> asyncio.Task:
+        def _fake_enqueue(coro: Any, context: str = "") -> asyncio.Task:
             task = asyncio.create_task(coro)
             enqueued.append(task)
             return task

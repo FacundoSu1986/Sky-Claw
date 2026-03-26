@@ -41,7 +41,7 @@ class SearchModParams(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    mod_name: str = pydantic.Field(min_length=1, max_length=256)
+    mod_name: str = pydantic.Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_. \-'%()\[\]]+$")
 
 
 class ProfileParams(pydantic.BaseModel):
@@ -49,7 +49,7 @@ class ProfileParams(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    profile: str = pydantic.Field(min_length=1, max_length=256)
+    profile: str = pydantic.Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_. \-'%()\[\]]+$")
 
 
 class InstallModParams(pydantic.BaseModel):
@@ -58,7 +58,7 @@ class InstallModParams(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(strict=True)
 
     nexus_id: int = pydantic.Field(gt=0)
-    version: str = pydantic.Field(min_length=1, max_length=128)
+    version: str = pydantic.Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.\-]+$")
 
 
 class XEditAnalysisParams(pydantic.BaseModel):
@@ -66,7 +66,7 @@ class XEditAnalysisParams(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    script_name: str = pydantic.Field(min_length=1, max_length=128)
+    script_name: str = pydantic.Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-]+\.pas$")
     plugins: list[str] = pydantic.Field(min_length=1)
 
 
@@ -84,7 +84,7 @@ class PreviewInstallerParams(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    archive_path: str = pydantic.Field(min_length=1, max_length=512)
+    archive_path: str = pydantic.Field(min_length=1, max_length=512, pattern=r"^[a-zA-Z0-9_\\/\-.:]+$")
 
 
 class InstallFromArchiveParams(pydantic.BaseModel):
@@ -92,7 +92,7 @@ class InstallFromArchiveParams(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    archive_path: str = pydantic.Field(min_length=1, max_length=512)
+    archive_path: str = pydantic.Field(min_length=1, max_length=512, pattern=r"^[a-zA-Z0-9_\\/\-.:]+$")
     selections: dict[str, list[str]] = pydantic.Field(default_factory=dict)
 
 
@@ -101,7 +101,7 @@ class ResolveFomodParams(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    archive_path: str = pydantic.Field(min_length=1, max_length=512)
+    archive_path: str = pydantic.Field(min_length=1, max_length=512, pattern=r"^[a-zA-Z0-9_\\/\-.:]+$")
     selections: dict[str, list[str]] = pydantic.Field(default_factory=dict)
 
 
@@ -121,7 +121,7 @@ class AnalyzeConflictsParams(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    profile: str = pydantic.Field(min_length=1, max_length=256)
+    profile: str = pydantic.Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_. \-'%()\[\]]+$")
     plugins: list[str] | None = pydantic.Field(
         default=None,
         description="Specific plugins to analyze. If omitted, uses all enabled plugins from the profile.",
@@ -131,16 +131,16 @@ class AnalyzeConflictsParams(pydantic.BaseModel):
 class ModNameParams(pydantic.BaseModel):
     """Parameters for tools specifying a mod name."""
     model_config = pydantic.ConfigDict(strict=True)
-    mod_name: str = pydantic.Field(min_length=1, max_length=256)
-    profile: str = pydantic.Field(default="Default")
+    mod_name: str = pydantic.Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_. \-'%()\[\]]+$")
+    profile: str = pydantic.Field(default="Default", pattern=r"^[a-zA-Z0-9_. \-'%()\[\]]+$")
 
 
 class ToggleModParams(pydantic.BaseModel):
     """Parameters for toggling a mod."""
     model_config = pydantic.ConfigDict(strict=True)
-    mod_name: str = pydantic.Field(min_length=1, max_length=256)
+    mod_name: str = pydantic.Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_. \-'%()\[\]]+$")
     enable: bool
-    profile: str = pydantic.Field(default="Default")
+    profile: str = pydantic.Field(default="Default", pattern=r"^[a-zA-Z0-9_. \-]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -847,7 +847,10 @@ class AsyncToolRegistry:
                     )
                     await downloader.download(fresh_info, dl_session)
 
-            self._sync_engine.enqueue_download(_do_download())
+            self._sync_engine.enqueue_download(
+                _do_download(),
+                context=f"nexus_id={params.nexus_id} file_id={params.file_id}"
+            )
             logger.info(
                 "Download enqueued: mod=%d file=%d name=%s",
                 params.nexus_id,

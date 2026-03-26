@@ -72,6 +72,7 @@ def _is_safe_path(member_path: str) -> bool:
 
 
 def _extract_zip(archive: pathlib.Path, dest: pathlib.Path) -> None:
+    dest_resolved = dest.resolve()
     with zipfile.ZipFile(archive, "r") as zf:
         for info in zf.infolist():
             if info.is_dir():
@@ -80,7 +81,12 @@ def _extract_zip(archive: pathlib.Path, dest: pathlib.Path) -> None:
                 raise PathViolation(
                     f"Zip-slip detected: {info.filename!r}"
                 )
-        zf.extractall(dest)
+            target_path = (dest_resolved / info.filename).resolve()
+            if not target_path.is_relative_to(dest_resolved):
+                raise PathViolation(f"Path traversal detected: {info.filename!r} escapes sandbox")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, open(target_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
 
 
 def _extract_7z(archive: pathlib.Path, dest: pathlib.Path) -> None:
@@ -91,14 +97,20 @@ def _extract_7z(archive: pathlib.Path, dest: pathlib.Path) -> None:
             "py7zr is required for .7z extraction — pip install py7zr"
         ) from exc
 
+    dest_resolved = dest.resolve()
     with py7zr.SevenZipFile(archive, "r") as szf:
-        names = szf.getnames()
-        for name in names:
+        for name in szf.getnames():
             if not _is_safe_path(name):
                 raise PathViolation(
                     f"Zip-slip detected in 7z: {name!r}"
                 )
-        szf.extractall(dest)
+            target_path = (dest_resolved / name).resolve()
+            if not target_path.is_relative_to(dest_resolved):
+                raise PathViolation(f"Path traversal detected in 7z: {name!r} escapes sandbox")
+        
+        # Validated strictly. We extract one by one avoiding extractall.
+        for name in szf.getnames():
+            szf.extract(path=dest_resolved, targets=[name])
 
 
 def _extract_rar(archive: pathlib.Path, dest: pathlib.Path) -> None:
@@ -109,6 +121,7 @@ def _extract_rar(archive: pathlib.Path, dest: pathlib.Path) -> None:
             "rarfile is required for .rar extraction — pip install rarfile"
         ) from exc
 
+    dest_resolved = dest.resolve()
     with rarfile.RarFile(archive, "r") as rf:
         for info in rf.infolist():
             if info.is_dir():
@@ -117,7 +130,12 @@ def _extract_rar(archive: pathlib.Path, dest: pathlib.Path) -> None:
                 raise PathViolation(
                     f"Zip-slip detected in rar: {info.filename!r}"
                 )
-        rf.extractall(dest)
+            target_path = (dest_resolved / info.filename).resolve()
+            if not target_path.is_relative_to(dest_resolved):
+                raise PathViolation(f"Path traversal detected in rar: {info.filename!r} escapes sandbox")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            with rf.open(info) as src, open(target_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
 
 
 _EXTRACTORS: dict[str, Any] = {

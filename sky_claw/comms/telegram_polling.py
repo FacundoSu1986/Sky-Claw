@@ -40,11 +40,13 @@ class TelegramPolling:
         webhook_handler: UpdateHandler,
         session: aiohttp.ClientSession,
         interval: float = 1.0,
+        authorized_chat_id: str | int | None = None,
     ) -> None:
         self._token = token
         self._handler = webhook_handler
         self._session = session
         self._interval = interval
+        self._authorized_chat_id = authorized_chat_id
         self._last_update_id = 0
         self._running = False
         self._url = TELEGRAM_API_GET_UPDATES.format(token=token)
@@ -103,6 +105,16 @@ class TelegramPolling:
 
     async def _process_raw_update(self, update: dict[str, Any]) -> None:
         """Process a single raw update dict."""
+        
+        # CWE-284: Drop-Early Middleware
+        if self._authorized_chat_id is not None:
+            message = update.get("message") or update.get("edited_message") or update.get("callback_query", {}).get("message")
+            if message:
+                chat_id = message.get("chat", {}).get("id")
+                if chat_id is not None and str(chat_id) != str(self._authorized_chat_id):
+                    logger.warning("CWE-284: Unauthorized access attempt from chat_id=%s. Dropping update.", chat_id)
+                    return
+        
         if not hasattr(self._handler, "process_update"):
             raise TypeError("Handler must implement process_update(data: dict)")
         await self._handler.process_update(update)

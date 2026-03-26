@@ -145,7 +145,7 @@ class SyncEngine:
         )
         return result
 
-    def enqueue_download(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+    def enqueue_download(self, coro: Coroutine[Any, Any, Any], context: str = "unknown") -> asyncio.Task[Any]:
         """Schedule an arbitrary download coroutine as an :class:`asyncio.Task`.
 
         The task is stored internally to prevent it from being garbage-collected
@@ -167,9 +167,15 @@ class SyncEngine:
                 exc = t.exception()
                 if exc:
                     logger.error("Download task %s failed with exception: %s", t.get_name(), exc, exc_info=exc)
+                    detail = f"{context} failed: {exc}"
+                    comp_task = asyncio.create_task(
+                        self._registry.log_tasks_batch([(None, "download_mod", "failed", detail)])
+                    )
+                    self._download_tasks.add(comp_task)
+                    comp_task.add_done_callback(self._download_tasks.discard)
 
         task.add_done_callback(_on_done)
-        logger.info("Enqueued download task %s", task.get_name())
+        logger.info("Enqueued download task %s with context %r", task.get_name(), context)
         return task
 
     # ------------------------------------------------------------------

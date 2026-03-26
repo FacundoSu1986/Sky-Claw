@@ -34,3 +34,6 @@ coverage.xml
 
 # Temp
 /tmp/
+
+# Logs
+logs/

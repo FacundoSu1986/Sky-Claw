@@ -635,7 +635,7 @@ class TestEndToEndHITLFlow:
         # Capture what gets enqueued.
         enqueued: list[Any] = []
 
-        def _fake_enqueue(coro: Any) -> asyncio.Task:
+        def _fake_enqueue(coro: Any, **kwargs) -> asyncio.Task:
             task = asyncio.create_task(coro)
             enqueued.append(task)
             return task

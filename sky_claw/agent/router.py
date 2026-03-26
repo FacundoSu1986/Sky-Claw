@@ -181,6 +181,9 @@ class LLMRouter:
                     }
                     result_str = json.dumps(feedback)
 
+                if len(result_str) > 4000:
+                    result_str = result_str[:4000] + "\n\n[... truncated ...]"
+
                 tool_results.append(
                     {
                         "type": "tool_result",

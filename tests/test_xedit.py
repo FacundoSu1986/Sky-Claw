@@ -211,7 +211,7 @@ class TestXEditTool:
                 registry=registry, mo2=mo2, sync_engine=sync,
             )
             result = json.loads(await tool_reg.execute(
-                "run_xedit_script", {"script_name": "x", "plugins": ["x"]}
+                "run_xedit_script", {"script_name": "test.pas", "plugins": ["test.esp"]}
             ))
             assert "error" in result
             assert "xEdit runner is not configured" in result["error"]

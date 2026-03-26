@@ -7,12 +7,14 @@ lock contention and I/O overhead.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 import time
 from typing import Sequence
 
 import aiosqlite
+from tenacity import retry, retry_if_exception_type, wait_exponential, stop_after_attempt
 
 from sky_claw.config import DB_PATH
 
@@ -131,10 +133,22 @@ class AsyncModRegistry:
             self._conn = None
             
             db_file = pathlib.Path(self._db_path)
-            if db_file.exists():
+            
+            db_exists = await asyncio.to_thread(db_file.exists)
+            if db_exists:
                 backup_path = db_file.with_name(f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}")
+                
+                @retry(
+                    retry=retry_if_exception_type(OSError),
+                    stop=stop_after_attempt(5),
+                    wait=wait_exponential(multiplier=1, min=1, max=10),
+                    reraise=True,
+                )
+                async def _do_backup():
+                    await asyncio.to_thread(db_file.rename, backup_path)
+
                 try:
-                    db_file.rename(backup_path)
+                    await _do_backup()
                     logger.warning("Corrupt database moved to %s. Rebuilding...", backup_path)
                 except OSError as e:
                     logger.error("Failed to backup corrupt database: %s", e)

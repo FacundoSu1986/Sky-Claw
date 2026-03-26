@@ -481,6 +481,7 @@ class AppContext:
                 token=bot_token,
                 webhook_handler=webhook_handler,
                 session=self.session,
+                authorized_chat_id=operator_chat_id,
             )
             await self.polling.start()
             logger.info("Auto-started Telegram long polling for HITL responses (router ready)")
