@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import time
 from typing import Sequence
 
 import aiosqlite
@@ -110,9 +111,12 @@ class AsyncModRegistry:
         """Open (or create) the database and ensure the schema exists.
 
         Runs a quick integrity check on open.  If the database is corrupt,
-        the connection is closed and :class:`RuntimeError` is raised so the
-        caller can decide whether to delete the file and start fresh.
+        it automatically renames the corrupt file as a backup and creates a
+        fresh database to prevent agent fatal loops.
         """
+        if self._conn is not None:
+            return
+
         self._conn = await aiosqlite.connect(self._db_path)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA journal_mode=WAL")
@@ -121,13 +125,27 @@ class AsyncModRegistry:
             async with self._conn.execute("PRAGMA quick_check") as cur:
                 row = await cur.fetchone()
                 if row is None or str(row[0]).lower() != "ok":
-                    await self._conn.close()
-                    self._conn = None
-                    raise RuntimeError(
-                        f"SQLite integrity check failed for {self._db_path}"
-                    )
+                    raise RuntimeError(f"SQLite integrity check failed for {self._db_path}")
         except RuntimeError:
-            raise
+            await self._conn.close()
+            self._conn = None
+            
+            db_file = pathlib.Path(self._db_path)
+            if db_file.exists():
+                backup_path = db_file.with_name(f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}")
+                try:
+                    db_file.rename(backup_path)
+                    logger.warning("Corrupt database moved to %s. Rebuilding...", backup_path)
+                except OSError as e:
+                    logger.error("Failed to backup corrupt database: %s", e)
+                    raise
+            
+            # Reopen fresh
+            self._conn = await aiosqlite.connect(self._db_path)
+            self._conn.row_factory = aiosqlite.Row
+            await self._conn.execute("PRAGMA journal_mode=WAL")
+            await self._conn.execute("PRAGMA foreign_keys=ON")
+
         except Exception as exc:
             if self._conn is not None:
                 await self._conn.close()

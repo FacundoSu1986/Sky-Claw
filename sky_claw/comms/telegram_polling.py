@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Protocol
 
 import aiohttp
+
+class UpdateHandler(Protocol):
+    async def process_update(self, data: dict[str, Any]) -> None:
+        ...
 
 from sky_claw.comms.telegram import TelegramWebhook
 
@@ -33,7 +37,7 @@ class TelegramPolling:
     def __init__(
         self,
         token: str,
-        webhook_handler: TelegramWebhook,
+        webhook_handler: UpdateHandler,
         session: aiohttp.ClientSession,
         interval: float = 1.0,
     ) -> None:
@@ -44,6 +48,7 @@ class TelegramPolling:
         self._last_update_id = 0
         self._running = False
         self._url = TELEGRAM_API_GET_UPDATES.format(token=token)
+        self._dlq: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     async def start(self) -> None:
         """Start the polling loop."""
@@ -86,27 +91,18 @@ class TelegramPolling:
             results = data.get("result", [])
             for update in results:
                 update_id = update.get("update_id")
+                
+                try:
+                    await self._process_raw_update(update)
+                except Exception as exc:
+                    logger.error("Malformed update or processing error for %s: %s. Routing to DLQ.", update_id, exc)
+                    await self._dlq.put(update)
+                
                 if update_id:
                     self._last_update_id = update_id
-                
-                # We mock a web.Request-like object or just call a method
-                # tailored for this. Since handle_update expects a web.Request,
-                # we'll add a more direct processing method to TelegramWebhook
-                # or just simulate the request if needed.
-                # BETTER: Add a process_update method to TelegramWebhook.
-                await self._process_raw_update(update)
 
     async def _process_raw_update(self, update: dict[str, Any]) -> None:
         """Process a single raw update dict."""
-        # For now, we reuse the deduplication and logic by calling a helper
-        # on the handler if we add one, or we just extract and call.
-        
-        # NOTE: TelegramWebhook uses _seen_updates for deduplication.
-        # We can just manually call the same logic.
-        
-        # Let's assume we add process_update(data) to TelegramWebhook.
-        if hasattr(self._handler, "process_update"):
-            await self._handler.process_update(update)
-        else:
-            # Fallback if I haven't modified TelegramWebhook yet
-            logger.warning("TelegramWebhook missing process_update method")
+        if not hasattr(self._handler, "process_update"):
+            raise TypeError("Handler must implement process_update(data: dict)")
+        await self._handler.process_update(update)

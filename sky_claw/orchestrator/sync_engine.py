@@ -129,10 +129,12 @@ class SyncEngine:
             for i in range(self._cfg.worker_count)
         ]
 
-        await producer
-        # Send poison pills so every worker terminates.
-        for _ in workers:
-            await queue.put(_POISON)
+        try:
+            await producer
+        finally:
+            # Send poison pills so every worker terminates.
+            for _ in workers:
+                await queue.put(_POISON)
         await asyncio.gather(*workers)
 
         logger.info(
@@ -158,7 +160,15 @@ class SyncEngine:
         """
         task: asyncio.Task[Any] = asyncio.create_task(coro)
         self._download_tasks.add(task)
-        task.add_done_callback(self._download_tasks.discard)
+        
+        def _on_done(t: asyncio.Task[Any]) -> None:
+            self._download_tasks.discard(t)
+            if not t.cancelled():
+                exc = t.exception()
+                if exc:
+                    logger.error("Download task %s failed with exception: %s", t.get_name(), exc, exc_info=exc)
+
+        task.add_done_callback(_on_done)
         logger.info("Enqueued download task %s", task.get_name())
         return task
 

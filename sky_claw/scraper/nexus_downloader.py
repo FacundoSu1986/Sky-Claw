@@ -23,6 +23,7 @@ import pathlib
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
+import aiofiles
 import aiohttp
 
 from sky_claw.config import (
@@ -317,9 +318,9 @@ class NexusDownloader:
                     if content_length:
                         progress.total_bytes = int(content_length)
 
-                with dest.open("wb") as fh:
+                async with aiofiles.open(dest, "wb") as fh:
                     async for chunk in resp.content.iter_chunked(self._chunk_size):
-                        fh.write(chunk)
+                        await fh.write(chunk)
                         md5_hash.update(chunk)
                         progress.downloaded_bytes += len(chunk)
                         if progress_cb is not None:
@@ -404,22 +405,45 @@ class NexusDownloader:
         elapsed = 0.0
 
         while elapsed < timeout_seconds:
-            if target_in_downloads.exists():
-                size = target_in_downloads.stat().st_size
-                # If size matches roughly or file stopped growing, let's copy it.
-                # A robust watcher would check if it stopped growing, but simplified here
-                # by waiting an extra 5 seconds and checking if size is stable.
-                await asyncio.sleep(5)
-                new_size = target_in_downloads.stat().st_size
-                if size == new_size and size > 0:
-                    shutil.copy2(target_in_downloads, dest)
-                    logger.info("Manual download detected and copied: %s", dest)
-                    return dest
-            
             # Allow user to just put it directly in staging dir
             if dest.exists() and dest.stat().st_size > 0:
-                logger.info("Manual download detected directly in staging dir: %s", dest)
-                return dest
+                if file_info.size_bytes > 0 and dest.stat().st_size != file_info.size_bytes:
+                    pass  # Still downloading
+                else:
+                    try:
+                        # On Windows, browsers lock the file for writing while downloading.
+                        # If we can open it in append mode, the browser has released the lock.
+                        async with aiofiles.open(dest, "a"):
+                            pass
+                        logger.info("Manual download detected directly in staging dir: %s", dest)
+                        return dest
+                    except (PermissionError, OSError):
+                        pass  # Locked/Downloading
+
+            # Poll the MO2 downloads directory
+            if target_in_downloads.exists() and target_in_downloads.stat().st_size > 0:
+                size = target_in_downloads.stat().st_size
+                
+                # Heuristic 1: If size known, it must match.
+                is_size_met = (file_info.size_bytes == 0) or (size == file_info.size_bytes)
+                
+                if is_size_met:
+                    try:
+                        # Heuristic 2: Verify the OS-level file lock is released.
+                        async with aiofiles.open(target_in_downloads, "a"):
+                            pass
+                        
+                        # Extra validation for unknown size: wait 1s to ensure size stability
+                        if file_info.size_bytes == 0:
+                            await asyncio.sleep(1)
+                            if target_in_downloads.stat().st_size != size:
+                                raise PermissionError("File size changed, still downloading")
+
+                        shutil.copy2(target_in_downloads, dest)
+                        logger.info("Manual download detected and copied: %s", dest)
+                        return dest
+                    except (PermissionError, OSError):
+                        pass
 
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval

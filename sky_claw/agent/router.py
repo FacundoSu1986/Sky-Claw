@@ -7,10 +7,10 @@ Maintains chat history in SQLite, calls the configured LLM provider
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
-import uuid
 from typing import Any
 
 import aiohttp
@@ -117,13 +117,18 @@ class LLMRouter:
         Returns:
             The assistant's final text response.
         """
-        chat_id = chat_id or uuid.uuid4().hex
+        if not chat_id:
+            raise ValueError(
+                "Strict session handling enforced. chat_id cannot be null. "
+                "The integration layer must explicitly initialize the session context."
+            )
 
         user_message = sanitize_for_prompt(user_message)
         await self._save_message(chat_id, "user", user_message)
         messages = await self._load_context(chat_id)
 
         tool_schemas = self._tools.tool_schemas() if self._tools else []
+        consecutive_errors = 0
 
         for _round in range(MAX_TOOL_ROUNDS):
             response_data = await self._provider.chat(
@@ -161,8 +166,20 @@ class LLMRouter:
 
                 try:
                     result_str = await self._tools.execute(tool_name, tool_input)
+                    consecutive_errors = 0
                 except (KeyError, ValueError, TypeError) as exc:
-                    result_str = json.dumps({"error": str(exc)})
+                    consecutive_errors += 1
+                    backoff = min(2 ** consecutive_errors, 16)
+                    logger.warning("Tool execution error (attempt %d). Backing off %ds...", consecutive_errors, backoff)
+                    await asyncio.sleep(backoff)
+                    
+                    feedback = {
+                        "error": "Tool execution failed due to invalid arguments or formatting.",
+                        "exception_type": type(exc).__name__,
+                        "details": str(exc),
+                        "instruction": "Please carefully review the required tool schema and provide strictly matching parameters."
+                    }
+                    result_str = json.dumps(feedback)
 
                 tool_results.append(
                     {
