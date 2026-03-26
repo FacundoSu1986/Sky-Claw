@@ -46,7 +46,7 @@ from sky_claw.tools_installer import (
     XEDIT_COMMON_PATHS,
 )
 from sky_claw.agent.animation_hub import AnimationHub, EngineConfig
-
+from sky_claw.local_config import load_local_config
 
 logger = logging.getLogger("sky_claw")
 
