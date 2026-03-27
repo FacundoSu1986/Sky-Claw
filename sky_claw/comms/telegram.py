@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
+import re
+import uuid
 from typing import Any
 
 import aiohttp
@@ -19,7 +21,7 @@ from sky_claw.agent.router import LLMRouter
 from sky_claw.comms.telegram_sender import TelegramSender
 from sky_claw.security.hitl import HITLGuard
 from sky_claw.logging_config import correlation_id_var
-import uuid
+from sky_claw.orchestrator.sync_engine import UpdatePayload
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,40 @@ def _parse_hitl_command(text: str) -> tuple[bool, str] | None:
         req_id = stripped[len(_DENY_PREFIX):].strip()
         return (False, req_id) if req_id else None
     return None
+
+
+def escape_mdv2(text: str) -> str:
+    if not text:
+        return ""
+    return re.sub(r"([_*\[\]\(\)\~`\>\#\+\-\=\|\{\}\.\!])", r"\\\1", str(text))
+
+
+def _format_update_payload(payload: UpdatePayload) -> str:
+    lines = [
+        "📊 *Reporte de Actualización de Mods*",
+        f"🔍 *Total verificados:* {payload.total_checked}",
+        ""
+    ]
+
+    if payload.updated_mods:
+        lines.append(f"✅ *Actualizados exitosamente:* \\({len(payload.updated_mods)}\\)")
+        for mod in payload.updated_mods:
+            name = escape_mdv2(mod["name"])
+            old_v = escape_mdv2(mod.get("old_version", "?"))
+            new_v = escape_mdv2(mod.get("new_version", "?"))
+            lines.append(f"\\- {name}: {old_v} ➡️ {new_v}")
+        lines.append("")
+
+    if payload.failed_mods:
+        lines.append(f"❌ *Fallidos:* \\({len(payload.failed_mods)}\\)")
+        for mod in payload.failed_mods:
+            name = escape_mdv2(mod["name"])
+            err = escape_mdv2(mod.get("error", "Error desconocido")[:60])
+            lines.append(f"\\- {name}: {err}...")
+        lines.append("")
+
+    lines.append(f"✨ *Al día:* {len(payload.up_to_date_mods)}")
+    return "\n".join(lines)
 
 
 class TelegramWebhook:
@@ -141,6 +177,13 @@ class TelegramWebhook:
                 task.add_done_callback(self._tasks.discard)
                 return
 
+        # Intercept update command
+        if text.strip() == "/update_mods":
+            task = asyncio.create_task(self._handle_update_mods_command(chat_id))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+            return
+
         # Fire-and-forget background processing via LLM.
         task = asyncio.create_task(
             self._process_bg(chat_id, text, update_id)
@@ -175,6 +218,18 @@ class TelegramWebhook:
                 )
             except Exception as exc:
                 logger.exception("Failed to send error message to chat_id=%d: %s", chat_id, exc)
+
+    async def _handle_update_mods_command(self, chat_id: int) -> None:
+        await self._sender.send(chat_id, "⏳ Iniciando ciclo de actualización de mods. Esto puede demorar varios minutos...")
+        try:
+            sync_engine = self._router._tools._sync_engine
+            payload = await sync_engine.check_for_updates(self._session)
+            report = _format_update_payload(payload)
+            await self._sender.send(chat_id, report, parse_mode="MarkdownV2")
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("Falla en /update_mods: %s", exc)
+            await self._sender.send(chat_id, "❌ Ocurrió un error crítico durante la actualización.")
 
     async def _handle_callback_query(self, query: dict[str, Any]) -> None:
         """Handle an operator clicking an inline button (Approve/Deny)."""

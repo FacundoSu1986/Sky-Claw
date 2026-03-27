@@ -51,7 +51,13 @@ class TelegramSender:
         self._send_times: dict[int, collections.deque[float]] = {}
         self._url = TELEGRAM_API_BASE.format(token=bot_token)
 
-    async def send(self, chat_id: int, text: str, reply_markup: dict[str, Any] | None = None) -> None:
+    async def send(
+        self, 
+        chat_id: int, 
+        text: str, 
+        reply_markup: dict[str, Any] | None = None,
+        parse_mode: str | None = None
+    ) -> None:
         """Send a message to a Telegram chat.
 
         Automatically splits messages exceeding 4096 characters
@@ -61,6 +67,7 @@ class TelegramSender:
             chat_id: Telegram chat identifier.
             text: Message text to send.
             reply_markup: Optional inline keyboard or other markup.
+            parse_mode: Optional Telegram parse mode (e.g. "MarkdownV2").
 
         Raises:
             TelegramSendError: On API failure after sending.
@@ -70,15 +77,24 @@ class TelegramSender:
             await self._wait_for_rate_limit(chat_id)
             # Only add reply_markup to the last chunk if it's split
             markup = reply_markup if i == len(chunks) - 1 else None
-            await self._send_chunk(chat_id, chunk, markup)
+            await self._send_chunk(chat_id, chunk, markup, parse_mode)
 
-    async def _send_chunk(self, chat_id: int, text: str, reply_markup: dict[str, Any] | None = None) -> None:
+    async def _send_chunk(
+        self, 
+        chat_id: int, 
+        text: str, 
+        reply_markup: dict[str, Any] | None = None,
+        parse_mode: str | None = None
+    ) -> None:
         """Send a single message chunk via the Telegram API."""
         payload = {
             "chat_id": chat_id,
             "text": text,
             "reply_markup": reply_markup,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+            
         url = self._url + "sendMessage"
         resp = await self._gateway.request(
             "POST", url, self._session, json=payload,

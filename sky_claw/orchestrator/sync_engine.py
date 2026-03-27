@@ -5,12 +5,9 @@ mod-metadata fetches to a pool of async workers (consumers) through an
 :class:`asyncio.Queue`, and persists results in micro-batches via
 :class:`AsyncModRegistry`.
 
-Fault-tolerance
-~~~~~~~~~~~~~~~
-* **Partial network failures** are handled with exponential-backoff
-  retries (``tenacity``).
-* **Corrupt / unparseable mods** are logged and skipped – they never
-  block the rest of the batch.
+Includes a fully automated Update Cycle with controlled concurrency and
+robust exception handling to prevent single-mod failures from crashing
+entire batches.
 """
 
 from __future__ import annotations
@@ -18,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Coroutine, Sequence
+from typing import Any, Coroutine
 
 import aiohttp
 from tenacity import (
@@ -36,17 +33,16 @@ from sky_claw.scraper.masterlist import (
     MasterlistFetchError,
 )
 from sky_claw.mo2.vfs import MO2Controller
+from sky_claw.scraper.nexus_downloader import NexusDownloader
 
 logger = logging.getLogger(__name__)
 
-# Sentinel used to signal workers to shut down.
 _POISON = None
 
 
 @dataclass(frozen=True, slots=True)
 class SyncConfig:
     """Tunables for the sync engine."""
-
     worker_count: int = 4
     batch_size: int = 20
     max_retries: int = 5
@@ -57,26 +53,36 @@ class SyncConfig:
 @dataclass
 class SyncResult:
     """Aggregated outcome of a sync run."""
-
     processed: int = 0
     failed: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass
+class UpdatePayload:
+    """Payload generated after a full update cycle for Telegram reporting."""
+    total_checked: int = 0
+    updated_mods: list[dict[str, Any]] = field(default_factory=list)
+    failed_mods: list[dict[str, Any]] = field(default_factory=list)
+    up_to_date_mods: list[str] = field(default_factory=list)
+
+
 class SyncEngine:
-    """Producer-Consumer orchestrator for mod synchronisation.
+    """Orchestrator for mod synchronisation and automatic updates.
 
     Parameters
     ----------
     mo2:
-        Controller for the MO2 portable instance (reads ``modlist.txt``).
+        Controller for the MO2 portable instance.
     masterlist:
         Async client for Nexus Mods API metadata.
     registry:
         Async database layer for micro-batched persistence.
     config:
-        Engine tunables (worker count, batch size, retry policy …).
+        Engine tunables (worker count, batch size, retry policy).
+    downloader:
+        Robust Nexus downloader (Required for automatic updates).
     """
 
     def __init__(
@@ -85,79 +91,161 @@ class SyncEngine:
         masterlist: MasterlistClient,
         registry: AsyncModRegistry,
         config: SyncConfig | None = None,
+        downloader: NexusDownloader | None = None,
     ) -> None:
         self._mo2 = mo2
         self._masterlist = masterlist
         self._registry = registry
         self._cfg = config or SyncConfig()
-        # Tracks fire-and-forget download tasks so they are not GC'd early.
+        self._downloader = downloader
         self._download_tasks: set[asyncio.Task[Any]] = set()
 
     # ------------------------------------------------------------------
-    # Public entry-point
+    # Automated Update Cycle
     # ------------------------------------------------------------------
 
-    async def run(
-        self,
-        session: aiohttp.ClientSession,
-        profile: str = "Default",
-    ) -> SyncResult:
-        """Execute a full sync cycle.
-
-        1. The **producer** reads ``modlist.txt`` and pushes mod names
-           into the queue in batches.
-        2. **Workers** (consumers) dequeue mod names, fetch metadata
-           from Nexus (with retry + semaphore throttling), and collect
-           DB rows.
-        3. Collected rows are flushed to the database in micro-batches.
+    async def check_for_updates(self, session: aiohttp.ClientSession) -> UpdatePayload:
+        """Automated update cycle for all tracked mods.
+        
+        Uses controlled concurrency via Semaphore to query Nexus API.
+        Downloads updates using the robust NexusDownloader.
+        Returns a structured payload safe for Telegram notifications.
         """
-        queue: asyncio.Queue[list[tuple[str, bool]] | None] = asyncio.Queue(
-            maxsize=self._cfg.queue_maxsize,
+        all_mods = await self._registry.search_mods("")
+        tracked_mods = [m for m in all_mods if m.get("installed")]
+
+        payload = UpdatePayload(total_checked=len(tracked_mods))
+        if not tracked_mods:
+            logger.info("No tracked mods found for updates.")
+            return payload
+
+        semaphore = asyncio.Semaphore(self._cfg.api_semaphore_limit)
+        
+        # Generar las tareas asincrónicas
+        tasks = [
+            self._check_and_update_mod(mod, session, semaphore)
+            for mod in tracked_mods
+        ]
+
+        logger.info("Iniciando verificación de actualizaciones para %d mods...", payload.total_checked)
+        
+        # Ejecución paralela con contención de fallas
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for mod, result in zip(tracked_mods, results):
+            if isinstance(result, Exception):
+                logger.error("Error aislando tarea de actualización para %r: %s", mod["name"], result)
+                payload.failed_mods.append({
+                    "name": mod["name"],
+                    "nexus_id": mod["nexus_id"],
+                    "error": str(result)
+                })
+            else:
+                status = result.get("status")
+                if status == "updated":
+                    payload.updated_mods.append(result)
+                elif status == "up_to_date":
+                    payload.up_to_date_mods.append(result["name"])
+                elif status == "error":
+                    payload.failed_mods.append(result)
+
+        logger.info(
+            "Ciclo de actualización completado: %d actualizados, %d al día, %d fallidos.",
+            len(payload.updated_mods), len(payload.up_to_date_mods), len(payload.failed_mods)
         )
+        return payload
+
+    async def _check_and_update_mod(
+        self, 
+        mod: dict[str, Any], 
+        session: aiohttp.ClientSession, 
+        semaphore: asyncio.Semaphore
+    ) -> dict[str, Any]:
+        """Worker aislado para consultar y actualizar un mod individual."""
+        nexus_id = mod["nexus_id"]
+        local_version = mod["version"]
+        mod_name = mod["name"]
+
+        # 1. Fetch metadata con Semáforo y Backoff
+        info = await self._safe_fetch_info(nexus_id, session, semaphore)
+        if not info:
+            return {"status": "error", "name": mod_name, "nexus_id": nexus_id, "error": "No metadata returned"}
+            
+        nexus_version = str(info.get("version", ""))
+
+        # 2. Comparación de versiones
+        if not nexus_version or nexus_version == local_version:
+            return {"status": "up_to_date", "name": mod_name}
+
+        if self._downloader is None:
+            return {"status": "error", "name": mod_name, "nexus_id": nexus_id, "error": "Downloader not configured"}
+
+        logger.info("Actualización disponible para %s: %s -> %s", mod_name, local_version, nexus_version)
+
+        # 3. Descarga Robusta (Aplica backoff interno y validación MD5 en NexusDownloader)
+        file_info = await self._downloader.get_file_info(nexus_id, None, session)
+        download_path = await self._downloader.download(file_info, session)
+
+        # 4. Actualización Atómica en Base de Datos
+        await self._registry.upsert_mod(
+            nexus_id=nexus_id,
+            name=info.get("name", mod_name),
+            version=nexus_version,
+            author=str(info.get("author", "")),
+            category=str(info.get("category_id", "")),
+            download_url=file_info.download_url
+        )
+        
+        await self._registry.log_tasks_batch([(
+            None, "update_mod", "success", f"{mod_name}: {local_version} -> {nexus_version}"
+        )])
+
+        return {
+            "status": "updated",
+            "name": mod_name,
+            "nexus_id": nexus_id,
+            "old_version": local_version,
+            "new_version": nexus_version,
+            "file_path": str(download_path)
+        }
+
+    @retry(
+        retry=retry_if_exception_type((aiohttp.ClientError, MasterlistFetchError)),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        reraise=True,
+    )
+    async def _safe_fetch_info(self, nexus_id: int, session: aiohttp.ClientSession, semaphore: asyncio.Semaphore) -> dict[str, Any] | None:
+        """Envuelve la consulta a Nexus API con un semáforo de concurrencia y backoff."""
+        async with semaphore:
+            return await self._masterlist.fetch_mod_info(nexus_id, session)
+
+    # ------------------------------------------------------------------
+    # Sync Local Load Order (Legacy Logic)
+    # ------------------------------------------------------------------
+
+    async def run(self, session: aiohttp.ClientSession, profile: str = "Default") -> SyncResult:
+        queue: asyncio.Queue[list[tuple[str, bool]] | None] = asyncio.Queue(maxsize=self._cfg.queue_maxsize)
         semaphore = asyncio.Semaphore(self._cfg.api_semaphore_limit)
         result = SyncResult()
 
-        producer = asyncio.create_task(
-            self._produce(queue, profile),
-            name="sync-producer",
-        )
+        producer = asyncio.create_task(self._produce(queue, profile), name="sync-producer")
         workers = [
-            asyncio.create_task(
-                self._consume(queue, session, semaphore, result),
-                name=f"sync-worker-{i}",
-            )
+            asyncio.create_task(self._consume(queue, session, semaphore, result), name=f"sync-worker-{i}")
             for i in range(self._cfg.worker_count)
         ]
 
         try:
             await producer
         finally:
-            # Send poison pills so every worker terminates.
             for _ in workers:
                 await queue.put(_POISON)
         await asyncio.gather(*workers)
 
-        logger.info(
-            "Sync complete: processed=%d  failed=%d  skipped=%d",
-            result.processed,
-            result.failed,
-            result.skipped,
-        )
+        logger.info("Sync complete: processed=%d failed=%d skipped=%d", result.processed, result.failed, result.skipped)
         return result
 
     def enqueue_download(self, coro: Coroutine[Any, Any, Any], context: str = "unknown") -> asyncio.Task[Any]:
-        """Schedule an arbitrary download coroutine as an :class:`asyncio.Task`.
-
-        The task is stored internally to prevent it from being garbage-collected
-        before completion.  Callers should check the returned task for
-        exceptions when convenient.
-
-        Args:
-            coro: A coroutine that performs a single file download.
-
-        Returns:
-            The created :class:`asyncio.Task`.
-        """
         async def _download_wrapper() -> None:
             try:
                 await coro
@@ -174,19 +262,9 @@ class SyncEngine:
         task: asyncio.Task[Any] = asyncio.create_task(_download_wrapper())
         self._download_tasks.add(task)
         task.add_done_callback(self._download_tasks.discard)
-        logger.info("Enqueued download task %s with context %r", task.get_name(), context)
         return task
 
-    # ------------------------------------------------------------------
-    # Producer
-    # ------------------------------------------------------------------
-
-    async def _produce(
-        self,
-        queue: asyncio.Queue[list[tuple[str, bool]] | None],
-        profile: str,
-    ) -> None:
-        """Read ``modlist.txt`` and push batches into *queue*."""
+    async def _produce(self, queue: asyncio.Queue[list[tuple[str, bool]] | None], profile: str) -> None:
         batch: list[tuple[str, bool]] = []
         async for mod_name, enabled in self._mo2.read_modlist(profile):
             batch.append((mod_name, enabled))
@@ -196,18 +274,7 @@ class SyncEngine:
         if batch:
             await queue.put(batch)
 
-    # ------------------------------------------------------------------
-    # Consumer (worker)
-    # ------------------------------------------------------------------
-
-    async def _consume(
-        self,
-        queue: asyncio.Queue[list[tuple[str, bool]] | None],
-        session: aiohttp.ClientSession,
-        semaphore: asyncio.Semaphore,
-        result: SyncResult,
-    ) -> None:
-        """Dequeue batches, fetch metadata, and persist to DB."""
+    async def _consume(self, queue: asyncio.Queue[list[tuple[str, bool]] | None], session: aiohttp.ClientSession, semaphore: asyncio.Semaphore, result: SyncResult) -> None:
         while True:
             batch = await queue.get()
             if batch is _POISON:
@@ -223,20 +290,18 @@ class SyncEngine:
             finally:
                 queue.task_done()
 
-    async def _process_batch(
-        self,
-        batch: list[tuple[str, bool]],
-        session: aiohttp.ClientSession,
-        semaphore: asyncio.Semaphore,
-        result: SyncResult,
-    ) -> None:
-        """Fetch metadata for each mod in *batch* and flush to DB."""
+    async def _process_batch(self, batch: list[tuple[str, bool]], session: aiohttp.ClientSession, semaphore: asyncio.Semaphore, result: SyncResult) -> None:
         mod_rows: list[tuple[int, str, str, str, str, str]] = []
         log_rows: list[tuple[int | None, str, str, str]] = []
 
         for mod_name, enabled in batch:
+            nexus_id = _extract_nexus_id(mod_name)
+            if nexus_id is None:
+                result.skipped += 1
+                continue
+
             try:
-                info = await self._fetch_with_retry(mod_name, session, semaphore)
+                info = await self._safe_fetch_info(nexus_id, session, semaphore)
             except (MasterlistFetchError, CircuitOpenError, RetryError, aiohttp.ClientError) as exc:
                 logger.warning("Skipping mod %r: %s", mod_name, exc)
                 result.failed += 1
@@ -244,19 +309,12 @@ class SyncEngine:
                 log_rows.append((None, "sync", "error", f"{mod_name}: {exc}"))
                 continue
 
-            if info is None:
+            if not info or "mod_id" not in info:
                 result.skipped += 1
                 continue
-
-            if "mod_id" not in info:
-                logger.warning("Skipping mod %r: missing mod_id in response", mod_name)
-                result.skipped += 1
-                continue
-
-            nexus_id = int(info["mod_id"])
 
             mod_rows.append((
-                nexus_id,
+                int(info["mod_id"]),
                 str(info.get("name", mod_name)),
                 str(info.get("version", "")),
                 str(info.get("author", "")),
@@ -266,51 +324,11 @@ class SyncEngine:
             log_rows.append((None, "sync", "ok", mod_name))
             result.processed += 1
 
-        # Micro-batch flush
         await self._registry.upsert_mods_batch(mod_rows)
         await self._registry.log_tasks_batch(log_rows)
 
-    # ------------------------------------------------------------------
-    # Retry-wrapped fetch
-    # ------------------------------------------------------------------
-
-    async def _fetch_with_retry(
-        self,
-        mod_name: str,
-        session: aiohttp.ClientSession,
-        semaphore: asyncio.Semaphore,
-    ) -> dict[str, Any] | None:
-        """Fetch mod info with exponential-backoff retries.
-
-        The semaphore limits concurrent Nexus API calls to avoid
-        rate-limiting.
-        """
-
-        @retry(
-            retry=retry_if_exception_type(
-                (aiohttp.ClientError, MasterlistFetchError),
-            ),
-            stop=stop_after_attempt(self._cfg.max_retries),
-            wait=wait_exponential(multiplier=1, min=1, max=30),
-            reraise=True,
-        )
-        async def _inner() -> dict[str, Any] | None:
-            async with semaphore:
-                nexus_id = _extract_nexus_id(mod_name)
-                if nexus_id is None:
-                    return None
-                return await self._masterlist.fetch_mod_info(nexus_id, session)
-
-        return await _inner()
-
 
 def _extract_nexus_id(mod_name: str) -> int | None:
-    """Best-effort extraction of a Nexus Mods numeric ID from *mod_name*.
-
-    MO2 mod folder names often follow patterns like
-    ``ModName-1234-v1-0`` where 1234 is the Nexus ID.  Returns ``None``
-    when no plausible ID can be extracted.
-    """
     parts = mod_name.split("-")
     for part in parts:
         stripped = part.strip()

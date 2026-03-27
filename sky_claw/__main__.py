@@ -301,8 +301,8 @@ class AppContext:
             from sky_claw.agent.providers import OllamaProvider
             provider = OllamaProvider()
 
-        nexus_key = os.environ.get("NEXUS_API_KEY", "")
-        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        nexus_key = os.environ.get("NEXUS_API_KEY") or local_cfg.nexus_api_key or ""
+        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN") or local_cfg.telegram_bot_token or ""
         operator_chat_id: int | None = self._args.operator_chat_id
         
         if local_cfg.telegram_chat_id:
@@ -595,7 +595,7 @@ async def _run_oneshot(ctx: AppContext, command: str) -> None:
 
 
 async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
-    """Start the Telegram webhook server."""
+    """Start the Telegram polling client."""
     assert ctx.router is not None
     assert ctx.session is not None
     assert ctx.gateway is not None
@@ -607,26 +607,24 @@ async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
         )
         sys.exit(1)
 
-    webhook_secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
-
-    webhook = TelegramWebhook(
+    webhook_handler = TelegramWebhook(
         router=ctx.router,
         sender=ctx.sender,
         session=ctx.session,
         hitl=ctx.hitl,
-        secret_token=webhook_secret,
     )
 
-    app = web.Application()
-    app.router.add_post("/webhook", webhook.handle_update)
+    polling = TelegramPolling(
+        token=ctx.sender._token,
+        webhook_handler=webhook_handler,
+        session=ctx.session,
+        authorized_chat_id=ctx._args.operator_chat_id,
+    )
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host, port)
-    await site.start()
+    await polling.start()
 
-    logger.info("Telegram webhook server listening on %s:%d", host, port)
-    print(f"Telegram webhook server listening on {host}:{port}")
+    logger.info("Telegram long polling client started")
+    print("Telegram long polling client started")
     print("Press Ctrl+C to stop.")
 
     try:
@@ -634,7 +632,7 @@ async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
     except asyncio.CancelledError:
         pass
     finally:
-        await runner.cleanup()
+        await polling.stop()
 
 
 async def _run_web(ctx: AppContext, port: int) -> None:

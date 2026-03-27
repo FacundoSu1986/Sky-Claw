@@ -73,8 +73,32 @@ class Config:
     def _load_from_file(self):
         if self._config_path.exists():
             try:
+                import tomllib
                 with open(self._config_path, "rb") as f:
                     file_data = tomllib.load(f)
+                    
+                    # Support for nested structure [telegram] token, [nexus] api_key, [paths] mo2_path
+                    if "telegram" in file_data:
+                        t = file_data["telegram"]
+                        if "token" in t:
+                            self._data["telegram_bot_token"] = t["token"]
+                        if "chat_id" in t:
+                            self._data["telegram_chat_id"] = t["chat_id"]
+                    
+                    if "nexus" in file_data:
+                        n = file_data["nexus"]
+                        if "api_key" in n:
+                            self._data["nexus_api_key"] = n["api_key"]
+                    
+                    if "paths" in file_data:
+                        p = file_data["paths"]
+                        if "mo2_path" in p:
+                            self._data["mo2_root"] = p["mo2_path"]
+                        if "skyrim_path" in p:
+                            self._data["skyrim_path"] = p["skyrim_path"]
+                    
+                    # Also update flatly for any remaining top-level keys
+                    # This might overwrite what we just set if both formats exist, but that's okay.
                     self._data.update(file_data)
             except Exception as exc:
                 print(f"Warning: Failed to load config.toml: {exc}")
