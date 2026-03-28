@@ -333,7 +333,6 @@ class AppContext:
         # Scraper + sync engine
         self.gateway = NetworkGateway()
         masterlist = MasterlistClient(gateway=self.gateway, api_key=nexus_key)
-        sync_engine = SyncEngine(mo2, masterlist, self.registry)
 
         # TelegramSender
         if bot_token:
@@ -372,6 +371,18 @@ class AppContext:
                 )
 
         self.hitl = HITLGuard(notify_fn=_hitl_notify)
+
+        sync_engine = SyncEngine(mo2, masterlist, self.registry, hitl=self.hitl)
+
+        # Initial synchronization if database is empty
+        if await self.registry.is_empty():
+            logger.info("Database is empty. Starting initial SyncEngine registration from MO2 Default profile...")
+            # Note: SyncEngine.run reads C:\Modding\MO2\profiles\Default\modlist.txt via mo2 controller
+            try:
+                await sync_engine.run(self.session, profile="Default")
+                logger.info("Initial synchronization completed successfully.")
+            except Exception as exc:
+                logger.exception("Initial synchronization failed: %s", exc)
 
         # ToolsInstaller
         self.tools_installer = ToolsInstaller(
@@ -772,7 +783,8 @@ async def _run_gui(ctx: AppContext) -> None:
     async def update_mods_periodic():
         while True:
             try:
-                mods = [m.name for m in await ctx.registry.get_all()]
+                mods_dicts = await ctx.registry.search_mods("")
+                mods = [m["name"] for m in mods_dicts]
                 ctx.gui_queue.put(("modlist", mods))
             except Exception as exc:
                 logger.error("Error updating modlist in GUI: %s", exc)

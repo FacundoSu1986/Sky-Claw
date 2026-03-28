@@ -90,8 +90,9 @@ class TelegramSender:
         payload = {
             "chat_id": chat_id,
             "text": text,
-            "reply_markup": reply_markup,
         }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         if parse_mode:
             payload["parse_mode"] = parse_mode
             
@@ -165,8 +166,9 @@ class TelegramSender:
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text,
-            "reply_markup": reply_markup,
         }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         url = self._url + "editMessageText"
         resp = await self._gateway.request(
             "POST", url, self._session, json=payload,

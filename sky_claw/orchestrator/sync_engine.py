@@ -13,7 +13,9 @@ entire batches.
 from __future__ import annotations
 
 import asyncio
+import configparser
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Coroutine
 
@@ -34,6 +36,7 @@ from sky_claw.scraper.masterlist import (
 )
 from sky_claw.mo2.vfs import MO2Controller
 from sky_claw.scraper.nexus_downloader import NexusDownloader
+from sky_claw.security.hitl import HITLGuard, Decision
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +95,14 @@ class SyncEngine:
         registry: AsyncModRegistry,
         config: SyncConfig | None = None,
         downloader: NexusDownloader | None = None,
+        hitl: HITLGuard | None = None,
     ) -> None:
         self._mo2 = mo2
         self._masterlist = masterlist
         self._registry = registry
         self._cfg = config or SyncConfig()
         self._downloader = downloader
+        self._hitl = hitl
         self._download_tasks: set[asyncio.Task[Any]] = set()
 
     # ------------------------------------------------------------------
@@ -184,6 +189,24 @@ class SyncEngine:
 
         # 3. Descarga Robusta (Aplica backoff interno y validación MD5 en NexusDownloader)
         file_info = await self._downloader.get_file_info(nexus_id, None, session)
+
+        if self._hitl:
+            desc = f"Update for {mod_name} ({local_version} -> {nexus_version})"
+            decision = await self._hitl.request_approval(
+                request_id=f"update_{nexus_id}",
+                reason="Automatic Mod Update",
+                url=file_info.download_url,
+                detail=desc,
+            )
+            if decision != Decision.APPROVED:
+                logger.warning("Descarga abortada por HITL para %s", mod_name)
+                return {
+                    "status": "error",
+                    "name": mod_name,
+                    "nexus_id": nexus_id,
+                    "error": "Descarga abortada por HITL"
+                }
+
         download_path = await self._downloader.download(file_info, session)
 
         # 4. Actualización Atómica en Base de Datos
@@ -320,6 +343,8 @@ class SyncEngine:
                 str(info.get("author", "")),
                 str(info.get("category_id", "")),
                 str(info.get("download_url", "")),
+                1,
+                int(enabled),
             ))
             log_rows.append((None, "sync", "ok", mod_name))
             result.processed += 1
@@ -334,4 +359,17 @@ def _extract_nexus_id(mod_name: str) -> int | None:
         stripped = part.strip()
         if stripped.isdigit() and len(stripped) >= 2:
             return int(stripped)
+            
+    meta_path = os.path.join(r"C:\Modding\MO2\mods", mod_name, "meta.ini")
+    if os.path.exists(meta_path):
+        try:
+            config = configparser.ConfigParser()
+            config.read(meta_path, encoding='utf-8')
+            if 'General' in config and 'modid' in config['General']:
+                modid = config['General']['modid']
+                if modid.isdigit() and modid != "0":
+                    return int(modid)
+        except Exception as exc:
+            logger.debug("Failed to read meta.ini for %s: %s", mod_name, exc)
+            
     return None

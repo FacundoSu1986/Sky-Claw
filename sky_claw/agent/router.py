@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any
 
@@ -65,9 +66,9 @@ class LLMRouter:
         api_key: str = "",
     ) -> None:
         if provider is None:
-            # Legacy path: build an AnthropicProvider from the raw key.
-            from sky_claw.agent.providers import AnthropicProvider
-            provider = AnthropicProvider(api_key)
+            # Legacy path: build a DeepSeekProvider from the raw key.
+            from sky_claw.agent.providers import DeepSeekProvider
+            provider = DeepSeekProvider(api_key or os.environ.get("DEEPSEEK_API_KEY", ""))
 
         self._provider = provider
         self._tools = tool_registry

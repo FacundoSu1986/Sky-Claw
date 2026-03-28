@@ -299,8 +299,8 @@ class DeepSeekProvider(LLMProvider):
     API_URL = "https://api.deepseek.com/v1/chat/completions"
     DEFAULT_MODEL = "deepseek-chat"
 
-    def __init__(self, api_key: str) -> None:
-        self._api_key = api_key
+    def __init__(self, api_key: str | None = None) -> None:
+        self._api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
 
     @retry(
         wait=wait_exponential(multiplier=1.5, min=2, max=60),
@@ -404,10 +404,10 @@ def create_provider(
 ) -> LLMProvider:
     """Create an LLM provider based on environment and arguments.
 
-    Fallback chain: Anthropic → OpenAI → DeepSeek → Ollama → error.
+    Forced to DeepSeekProvider.
 
     Args:
-        provider_name: Force a specific provider (anthropic/openai/deepseek/ollama).
+        provider_name: Ignored.
         api_key: Override API key.
 
     Returns:
@@ -416,46 +416,8 @@ def create_provider(
     Raises:
         ProviderConfigError: If no provider can be configured.
     """
-    anthropic_key = api_key if provider_name == "anthropic" else os.environ.get("ANTHROPIC_API_KEY", "")
-    openai_key = api_key if provider_name == "openai" else os.environ.get("OPENAI_API_KEY", "")
-    deepseek_key = api_key if provider_name == "deepseek" else os.environ.get("DEEPSEEK_API_KEY", "")
-    ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-
-    if provider_name:
-        name = provider_name.lower()
-        if name == "anthropic":
-            key = anthropic_key or os.environ.get("ANTHROPIC_API_KEY", "")
-            if not key:
-                raise ProviderConfigError("ANTHROPIC_API_KEY is required for Anthropic provider")
-            logger.info("Using Anthropic Claude provider")
-            return AnthropicProvider(key)
-        if name == "openai":
-            key = openai_key or os.environ.get("OPENAI_API_KEY", "")
-            if not key:
-                raise ProviderConfigError("OPENAI_API_KEY is required for OpenAI provider")
-            logger.info("Using OpenAI provider")
-            return OpenAIProvider(key)
-        if name == "deepseek":
-            key = deepseek_key or os.environ.get("DEEPSEEK_API_KEY", "")
-            if not key:
-                raise ProviderConfigError("DEEPSEEK_API_KEY is required for DeepSeek provider")
-            logger.info("Using DeepSeek provider")
-            return DeepSeekProvider(key)
-        if name == "ollama":
-            logger.info("Using Ollama local provider at %s", ollama_url)
-            return OllamaProvider(ollama_url)
-        raise ProviderConfigError(f"Unknown provider: {name!r}")
-
-    # Auto-detect fallback chain
-    if anthropic_key:
-        logger.info("Auto-detected ANTHROPIC_API_KEY — using Claude")
-        return AnthropicProvider(anthropic_key)
-    if openai_key:
-        logger.info("Auto-detected OPENAI_API_KEY — using OpenAI")
-        return OpenAIProvider(openai_key)
-    if deepseek_key:
-        logger.info("Auto-detected DEEPSEEK_API_KEY — using DeepSeek")
-        return DeepSeekProvider(deepseek_key)
-
-    logger.info("No API keys found — falling back to Ollama at %s", ollama_url)
-    return OllamaProvider(ollama_url)
+    key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+    if not key:
+        raise ProviderConfigError("DEEPSEEK_API_KEY is required for DeepSeek provider")
+    logger.info("Using DeepSeek provider")
+    return DeepSeekProvider(key)

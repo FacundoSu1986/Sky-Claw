@@ -70,14 +70,16 @@ RETURNING mod_id
 """
 
 _UPSERT_MOD_SQL_BATCH = """\
-INSERT INTO mods (nexus_id, name, version, author, category, download_url)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO mods (nexus_id, name, version, author, category, download_url, installed, enabled_in_vfs)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(nexus_id) DO UPDATE SET
     name         = excluded.name,
     version      = excluded.version,
     author       = excluded.author,
     category     = excluded.category,
     download_url = excluded.download_url,
+    installed    = excluded.installed,
+    enabled_in_vfs = excluded.enabled_in_vfs,
     updated_at   = datetime('now')
 """
 
@@ -199,6 +201,16 @@ class AsyncModRegistry:
             await self._conn.commit()
             return int(row[0])
 
+    async def set_vfs_status(self, nexus_id: int, *, installed: bool, enabled: bool) -> None:
+        """Update the VFS installation and activation status for a mod."""
+        if self._conn is None:
+            raise RuntimeError("Database is not open")
+        async with self._conn.execute(
+            "UPDATE mods SET installed = ?, enabled_in_vfs = ?, updated_at = datetime('now') WHERE nexus_id = ?",
+            (int(installed), int(enabled), nexus_id)
+        ):
+            await self._conn.commit()
+
     async def get_mod(self, nexus_id: int) -> aiosqlite.Row | None:
         """Return the mod row for *nexus_id*, or ``None``."""
         if self._conn is None:
@@ -207,6 +219,14 @@ class AsyncModRegistry:
             "SELECT * FROM mods WHERE nexus_id = ?", (nexus_id,)
         ) as cur:
             return await cur.fetchone()
+
+    async def is_empty(self) -> bool:
+        """Return True if the mods table is empty."""
+        if self._conn is None:
+            raise RuntimeError("Database is not open")
+        async with self._conn.execute("SELECT COUNT(*) FROM mods") as cur:
+            row = await cur.fetchone()
+            return int(row[0]) == 0 if row else True
 
     # ------------------------------------------------------------------
     # Public query helpers

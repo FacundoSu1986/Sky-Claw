@@ -21,6 +21,7 @@ env/
 
 # Database
 *.db
+config.toml
 
 # OS
 .DS_Store

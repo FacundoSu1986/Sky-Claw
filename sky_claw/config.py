@@ -58,7 +58,7 @@ class Config:
             "pandora_exe": "",
             "bodyslide_exe": "",
             "skyrim_path": "",
-            "llm_provider": "anthropic",
+            "llm_provider": "deepseek",
             "llm_model": "",
             "llm_api_key": "",
             "openai_api_key": "",

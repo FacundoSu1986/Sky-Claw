@@ -56,6 +56,14 @@ class _CircuitBreaker:
         self._failure_count: int = 0
         self._last_failure_time: float = 0.0
         self._state: str = "closed"  # closed | open | half-open
+        logger.debug("Circuit breaker initialized in CLOSED state")
+
+    def reset(self) -> None:
+        """Force reset the breaker to CLOSED and clear failure counter."""
+        self._failure_count = 0
+        self._last_failure_time = 0.0
+        self._state = "closed"
+        logger.info("Circuit breaker has been manually reset to CLOSED")
 
     @property
     def state(self) -> str:
@@ -117,6 +125,8 @@ class MasterlistClient:
         self._gw = gateway
         self._api_key = api_key
         self._cb = _CircuitBreaker(failure_threshold, recovery_timeout)
+        self._cb.reset()  # Ensure clean state at start.
+        logger.info("MasterlistClient initialized with fresh circuit breaker state")
 
     @property
     def circuit_state(self) -> str:
