@@ -7,8 +7,10 @@ from sky_claw.scraper.scraper_agent import ScraperAgent
 from sky_claw.core.windows_interop import ModdingToolsAgent
 from sky_claw.comms.interface import InterfaceAgent
 from sky_claw.core.models import LootExecutionParams, ModMetadataQuery, HitlApprovalRequest
+import psutil
 
-logger = logging.getLogger("SkyClaw.Supervisor")
+logger = logging.getLogger("SkyClaw.Watcher")
+security_logger = logging.getLogger("SkyClaw.Security")
 
 class SupervisorAgent:
     def __init__(self, profile_name: str = "Default"):
@@ -22,11 +24,18 @@ class SupervisorAgent:
 
     async def start(self):
         await self.db.init_db()
-        # Iniciar conexión WebSocket como tarea independiente
-        asyncio.create_task(self.interface.connect())
-        # Iniciar watcher proactivo
-        asyncio.create_task(self._proactive_watcher())
-        logger.info("SupervisorAgent inicializado: IPC y Watcher activos.")
+        # Vincular con la señal de ejecución de la interfaz
+        self.interface.register_command_callback(self.handle_execution_signal)
+        
+        logger.info("SupervisorAgent inicializado: IPC y Watcher listos. Lanzando TaskGroup de fondo...")
+        
+        try:
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(self.interface.connect())
+                tg.create_task(self._proactive_watcher())
+                tg.create_task(self._telemetry_worker())
+        except Exception as e:
+            logger.error(f"TaskGroup del Supervisor cancelado por error fatal: {e}")
 
     async def _proactive_watcher(self):
         """
@@ -54,12 +63,14 @@ class SupervisorAgent:
 
     async def _trigger_proactive_analysis(self):
         """Lógica inyectada al flujo ReAct sin prompt del usuario."""
-        # 1. Leer el nuevo modlist.txt
-        # 2. Verificar dependencias cruzadas (missing masters).
-        # 3. Si hay un conflicto grave, despachar notificación al Gateway (Telegram).
-        logger.info("Analizando topología del Load Order (Simulado)...")
+        logger.info("Analizando topología del Load Order por cambio detectado...")
         # Aquí se inyectaría la llamada real a la herramienta de parsing local.
         pass
+
+    async def handle_execution_signal(self, payload: dict):
+        """Reacciona a la señal de ignición forzada desde la GUI."""
+        logger.info("Ignición forzada desde GUI detectada. Despertando demonio proactivo.")
+        await self._trigger_proactive_analysis()
 
     async def dispatch_tool(self, tool_name: str, payload_dict: dict) -> dict:
         """
@@ -89,6 +100,25 @@ class SupervisorAgent:
             case _:
                 logger.error(f"RCA: LLM alucinó la herramienta '{tool_name}'.")
                 return {"status": "error", "reason": "ToolNotFound"}
+
+    async def _telemetry_worker(self):
+        """Monitorea el uso de recursos del propio proceso y lo envía al Gateway."""
+        proc = psutil.Process()
+        while True:
+            try:
+                cpu_usage = proc.cpu_percent(interval=None) # Porcentaje de un solo núcleo o total
+                ram_mb = proc.memory_info().rss / (1024 * 1024) # MB
+                
+                telemetry = {
+                    "cpu": round(cpu_usage, 1),
+                    "ram": round(ram_mb, 1)
+                }
+                
+                await self.interface.send_telemetry(telemetry)
+            except Exception as e:
+                logger.error(f"Error en worker de telemetría: {e}")
+            
+            await asyncio.sleep(3.0)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")

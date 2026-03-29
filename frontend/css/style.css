@@ -1,0 +1,244 @@
+/* frontend/css/style.css */
+
+:root {
+    --bg-main: #0a0c10;
+    --bg-overlay: rgba(10, 12, 16, 0.9);
+    --gold: #d4af37;
+    --gold-dim: rgba(212, 175, 55, 0.4);
+    --gold-glow: 0 0 20px rgba(212, 175, 55, 0.3);
+    --amber: #ff9d00;
+    --amber-glow: 0 0 25px rgba(255, 157, 0, 0.5);
+    --text: #e0e0e0;
+    --text-dim: #999;
+    --glass: rgba(255, 255, 255, 0.04);
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    -webkit-font-smoothing: antialiased;
+}
+
+body {
+    background: var(--bg-main);
+    background-image: radial-gradient(circle at center, #1b1e24 0%, #0a0c10 100%);
+    color: var(--text);
+    font-family: 'Outfit', sans-serif;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* Arcane Overlay for Buffering */
+#arcane-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--bg-overlay);
+    z-index: 1000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    backdrop-filter: blur(8px);
+    transition: opacity 0.5s ease;
+}
+
+#arcane-overlay.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.overlay-content {
+    text-align: center;
+    animation: pulse 2s infinite ease-in-out;
+}
+
+.overlay-content p {
+    margin-top: 15px;
+    color: var(--amber);
+    letter-spacing: 2px;
+    font-weight: 300;
+    text-transform: uppercase;
+}
+
+.spinner {
+    width: 60px;
+    height: 60px;
+    border: 3px solid transparent;
+    border-top: 3px solid var(--amber);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 0 auto;
+}
+
+/* App Layout */
+.app-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+}
+
+.app-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--glass);
+    padding-bottom: 15px;
+}
+
+.logo-section {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.logo-section h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: 4px;
+    color: var(--gold);
+    text-shadow: var(--gold-glow);
+}
+
+.status-badge {
+    background: var(--glass);
+    padding: 6px 16px;
+    border-radius: 30px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--gold-dim);
+}
+
+.status-badge.ready .dot { background: var(--gold); box-shadow: var(--gold-glow); }
+.status-badge.buffering { border-color: var(--amber); color: var(--amber); }
+.status-badge.buffering .dot { background: var(--amber); box-shadow: var(--amber-glow); }
+
+/* Chat Log Area */
+.chat-log {
+    flex-grow: 1;
+    background: var(--glass);
+    border-radius: 12px;
+    padding: 25px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    border: 1px solid var(--glass);
+    box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
+    scrollbar-width: thin;
+    scrollbar-color: var(--gold-dim) transparent;
+}
+
+.message {
+    padding: 12px 18px;
+    border-radius: 8px;
+    line-height: 1.6;
+    max-width: 90%;
+}
+
+.message.system { color: var(--gold-dim); font-style: italic; border-left: 2px solid var(--gold-dim); padding-left: 15px; }
+.message.user { align-self: flex-end; background: var(--glass); color: var(--gold); border: 1px solid var(--gold-dim); }
+.message.agent { align-self: flex-start; background: rgba(255, 255, 255, 0.02); color: var(--text); border: 1px solid var(--glass); width: 100%; }
+
+/* Markdown Styles inside Messages */
+.message h1, .message h2, .message h3 { color: var(--gold); margin-bottom: 10px; }
+.message code { background: rgba(212, 175, 55, 0.1); padding: 2px 5px; border-radius: 4px; color: var(--gold); }
+.message pre { background: #000; padding: 15px; border-radius: 8px; overflow-x: auto; margin: 10px 0; border: 1px solid var(--glass); }
+
+/* Command Altar (Input Area) */
+.input-area {
+    margin-top: 20px;
+}
+
+.input-container {
+    display: flex;
+    gap: 15px;
+}
+
+#command-input {
+    flex-grow: 1;
+    background: #000;
+    border: 1px solid var(--gold-dim);
+    border-radius: 8px;
+    padding: 15px 20px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 1rem;
+    outline: none;
+    transition: all 0.3s ease;
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
+}
+
+#command-input:focus {
+    border-color: var(--gold);
+    box-shadow: 0 0 15px rgba(212, 175, 55, 0.2);
+}
+
+#command-input:disabled {
+    border-color: var(--amber);
+    color: var(--amber);
+    opacity: 0.6;
+}
+
+#send-btn {
+    background: var(--gold);
+    border: none;
+    border-radius: 8px;
+    padding: 0 30px;
+    color: #000;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+#send-btn:hover { background: #fff; transform: translateY(-2px); }
+#send-btn:disabled { background: #333; color: #666; cursor: not-allowed; }
+
+/* Animations */
+@keyframes spin { 100% { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-thumb { background: var(--gold-dim); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: var(--gold); }
+
+/* Telemetry HUD (Fase 4.1) */
+.telemetry-hud {
+    position: absolute;
+    top: 25px;
+    right: 250px;
+    background: var(--glass);
+    padding: 5px 15px;
+    border-radius: 8px;
+    border: 1px solid var(--glass);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    display: flex;
+    gap: 10px;
+    backdrop-filter: blur(4px);
+    transition: opacity 0.3s ease;
+    z-index: 50;
+}
+
+.telemetry-hud b { 
+    color: var(--gold); 
+    min-width: 35px; 
+    display: inline-block; 
+    text-align: right;
+    font-weight: 600;
+}
+.telemetry-hud .sep { color: rgba(255, 255, 255, 0.1); }
+.telemetry-hud.disconnected { opacity: 0.3; }
+.telemetry-hud.disconnected b { color: var(--amber); }

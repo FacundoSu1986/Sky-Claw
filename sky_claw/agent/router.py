@@ -132,13 +132,19 @@ class LLMRouter:
         consecutive_errors = 0
 
         for _round in range(MAX_TOOL_ROUNDS):
-            response_data = await self._provider.chat(
-                messages=messages,
-                tools=tool_schemas,
-                session=session,
-                system_prompt=self._system_prompt,
-                model=self._model,
-            )
+            chat_kwargs = {
+                "messages": messages,
+                "tools": tool_schemas,
+                "session": session,
+                "system_prompt": self._system_prompt,
+            }
+            if self._model:
+                chat_kwargs["model"] = self._model
+                
+            response_data = await self._provider.chat(**chat_kwargs)
+
+            if response_data is None or not isinstance(response_data, dict):
+                return "Error: El proveedor de IA no devolvió datos."
 
             stop_reason = response_data.get("stop_reason", "end_turn")
             content_blocks: list[dict[str, Any]] = response_data.get("content", [])

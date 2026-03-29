@@ -43,4 +43,5 @@ logs/
 *.log
 *.db-shm
 *.db-wal
-sky_claw/logs/
+# Agent State (PID Locks)
+.run/

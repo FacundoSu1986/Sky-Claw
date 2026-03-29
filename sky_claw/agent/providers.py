@@ -15,6 +15,7 @@ Provider selection follows a fallback chain::
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -22,6 +23,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 import aiohttp
+from sky_claw.config import Config
 from tenacity import (
     retry,
     retry_if_exception,
@@ -129,6 +131,10 @@ class AnthropicProvider(LLMProvider):
 # ------------------------------------------------------------------
 
 
+# ------------------------------------------------------------------
+# OpenAI-compatible base (DeepSeek / Ollama) - ESTÁNDAR CLAUDE ENGINE
+# ------------------------------------------------------------------
+
 def _convert_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert Anthropic tool schemas to OpenAI function-calling format."""
     result = []
@@ -143,25 +149,18 @@ def _convert_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]
         })
     return result
 
-
-def _convert_messages_to_openai(
-    messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert Anthropic message format to OpenAI chat format."""
     result = []
     for msg in messages:
         role = msg["role"]
         content = msg["content"]
-
         if isinstance(content, str):
             result.append({"role": role, "content": content})
             continue
-
         if isinstance(content, list):
-            # Anthropic tool_result blocks → OpenAI tool messages
             if content and isinstance(content[0], dict):
                 first_type = content[0].get("type", "")
-
                 if first_type == "tool_result":
                     for block in content:
                         result.append({
@@ -170,24 +169,20 @@ def _convert_messages_to_openai(
                             "content": block.get("content", ""),
                         })
                     continue
-
-                # Anthropic assistant response with tool_use blocks
                 text_parts = []
                 tool_calls = []
                 for block in content:
                     if block.get("type") == "text":
                         text_parts.append(block.get("text", ""))
                     elif block.get("type") == "tool_use":
-                        import json
                         tool_calls.append({
-                            "id": block.get("id", ""),
+                            "id": block.get("id", uuid.uuid4().hex),
                             "type": "function",
                             "function": {
                                 "name": block["name"],
                                 "arguments": json.dumps(block.get("input", {})),
                             },
                         })
-
                 msg_dict: dict[str, Any] = {
                     "role": role,
                     "content": "\n".join(text_parts) if text_parts else None,
@@ -196,31 +191,21 @@ def _convert_messages_to_openai(
                     msg_dict["tool_calls"] = tool_calls
                 result.append(msg_dict)
                 continue
-
-        # Fallback
         result.append({"role": role, "content": str(content)})
-
     return result
 
-
 def _parse_openai_response(data: dict[str, Any]) -> dict[str, Any]:
-    """Convert an OpenAI chat completion response to internal format."""
-    import json
-
+    """Convert OpenAI response to internal format."""
     choices = data.get("choices", [])
     if not choices:
         return {"stop_reason": "end_turn", "content": []}
-
     choice = choices[0]
     message = choice.get("message", {})
     finish_reason = choice.get("finish_reason", "stop")
-
     content_blocks: list[dict[str, Any]] = []
-
     text = message.get("content")
     if text:
         content_blocks.append({"type": "text", "text": text})
-
     tool_calls = message.get("tool_calls", [])
     if tool_calls:
         for tc in tool_calls:
@@ -235,19 +220,19 @@ def _parse_openai_response(data: dict[str, Any]) -> dict[str, Any]:
                 "name": fn.get("name", ""),
                 "input": args,
             })
+    stop_reason = "tool_use" if tool_calls or finish_reason == "tool_calls" else "end_turn"
+    usage = data.get("usage", {})
+    return {
+        "stop_reason": stop_reason,
+        "content": content_blocks,
+        "usage_input_tokens": usage.get("prompt_tokens", 0),
+        "usage_output_tokens": usage.get("completion_tokens", 0),
+    }
 
-    stop_reason = "tool_use" if tool_calls else "end_turn"
-    if finish_reason == "tool_calls":
-        stop_reason = "tool_use"
-
-    return {"stop_reason": stop_reason, "content": content_blocks}
-
-
-class OpenAIProvider(LLMProvider):
-    """OpenAI Chat Completions API provider."""
-
-    API_URL = "https://api.openai.com/v1/chat/completions"
-    DEFAULT_MODEL = "gpt-4o"
+class DeepSeekProvider(LLMProvider):
+    """DeepSeek API provider (OpenAI-compatible)."""
+    API_URL = "https://api.deepseek.com/v1/chat/completions"
+    DEFAULT_MODEL = "deepseek-chat"
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
@@ -257,174 +242,49 @@ class OpenAIProvider(LLMProvider):
         stop=stop_after_attempt(5),
         retry=retry_if_exception(_should_retry),
     )
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        session: aiohttp.ClientSession,
-        *,
-        system_prompt: str = "",
-        model: str = "",
-    ) -> dict[str, Any]:
+    async def chat(self, messages, tools, session, *, system_prompt="", model=""):
         model = model or self.DEFAULT_MODEL
         oai_messages = _convert_messages_to_openai(messages)
         if system_prompt:
             oai_messages.insert(0, {"role": "system", "content": system_prompt})
-
-        body: dict[str, Any] = {
-            "model": model,
-            "messages": oai_messages,
-        }
-
+        body = {"model": model, "messages": oai_messages, "max_tokens": 4096}
         oai_tools = _convert_tools_to_openai(tools)
         if oai_tools:
             body["tools"] = oai_tools
-
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
-        async with session.post(
-            self.API_URL, json=body, headers=headers
-        ) as resp:
+        headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
+        async with session.post(self.API_URL, json=body, headers=headers) as resp:
+            if resp.status != 200:
+                err = await resp.text()
+                logger.error(f"DeepSeek Error {resp.status}: {err}")
             resp.raise_for_status()
             data = await resp.json()
-
         return _parse_openai_response(data)
 
-
-class DeepSeekProvider(LLMProvider):
-    """DeepSeek API Provider."""
-
-    DEFAULT_MODEL = "deepseek-chat"
-    API_URL = "https://api.deepseek.com/v1/chat/completions"
-
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
-
-    @retry(
-        wait=wait_exponential(multiplier=1.5, min=2, max=60),
-        stop=stop_after_attempt(5),
-        retry=retry_if_exception(_should_retry),
-    )
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        session: aiohttp.ClientSession,
-        *,
-        system_prompt: str = "",
-        model: str = "",
-    ) -> dict[str, Any]:
-        # Forzamos el modelo si viene vacío o con espacios
-        model = model.strip() if (model and model.strip()) else self.DEFAULT_MODEL
-        
-        oai_messages = _convert_messages_to_openai(messages)
-        if system_prompt:
-            oai_messages.insert(0, {"role": "system", "content": system_prompt})
-
-        body: dict[str, Any] = {
-            "model": model,
-            "messages": oai_messages,
-            "max_tokens": 4096,
-        }
-
-        oai_tools = _convert_tools_to_openai(tools)
-        if oai_tools:
-            body["tools"] = oai_tools
-
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
-        async with session.post(
-            self.API_URL, json=body, headers=headers
-        ) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-
-        return _parse_openai_response(data)
-
-
+# MANTENEMOS OLLAMA ABAJO POR SI ACASO
 class OllamaProvider(LLMProvider):
-    """Ollama local provider (OpenAI-compatible endpoint)."""
-
     DEFAULT_MODEL = "llama3.1"
-
-    def __init__(self, base_url: str = "http://localhost:11434") -> None:
+    def __init__(self, base_url="http://localhost:11434"):
         self._base_url = base_url.rstrip("/")
-
-    @retry(
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        stop=stop_after_attempt(3),
-        retry=retry_if_exception(_should_retry),
-    )
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        session: aiohttp.ClientSession,
-        *,
-        system_prompt: str = "",
-        model: str = "",
-    ) -> dict[str, Any]:
+    async def chat(self, messages, tools, session, *, system_prompt="", model=""):
         model = model or self.DEFAULT_MODEL
         oai_messages = _convert_messages_to_openai(messages)
         if system_prompt:
             oai_messages.insert(0, {"role": "system", "content": system_prompt})
-
-        body: dict[str, Any] = {
-            "model": model,
-            "messages": oai_messages,
-        }
-
+        body = {"model": model, "messages": oai_messages}
         oai_tools = _convert_tools_to_openai(tools)
         if oai_tools:
             body["tools"] = oai_tools
-
         url = f"{self._base_url}/v1/chat/completions"
         async with session.post(url, json=body) as resp:
             resp.raise_for_status()
-            data = await resp.json()
-
-        return _parse_openai_response(data)
-
-
-# ------------------------------------------------------------------
-# Factory
-# ------------------------------------------------------------------
-
+            return _parse_openai_response(await resp.json())
 
 class ProviderConfigError(RuntimeError):
-    """Raised when no LLM provider can be configured."""
+    pass
 
-
-def create_provider(
-    *,
-    provider_name: str | None = None,
-    api_key: str | None = None,
-    model: str | None = None,
-) -> LLMProvider:
-    """Create an LLM provider based on environment and arguments.
-
-    Forced to DeepSeekProvider.
-
-    Args:
-        provider_name: Ignored.
-        api_key: Override API key.
-        model: Override model name.
-
-    Returns:
-        An initialised :class:`LLMProvider`.
-
-    Raises:
-        ProviderConfigError: If no provider can be configured.
-    """
+def create_provider(*, provider_name=None, api_key=None, model=None):
     key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
-        raise ProviderConfigError("DEEPSEEK_API_KEY is required for DeepSeek provider")
-    
-    logger.info("Using DeepSeek provider")
-    # Pasamos el modelo al constructor o lo dejamos para la llamada chat()
-    # DeepSeekProvider ahora maneja el modelo en chat() para cumplir con LLMProvider interface
+        raise ProviderConfigError("DEEPSEEK_API_KEY is required.")
+    logger.info("Using DeepSeek provider (Stable Engine)")
     return DeepSeekProvider(key)

@@ -259,7 +259,8 @@ class AppContext:
         provider_name = self._args.provider if self._args.provider else local_cfg.llm_provider
         try:
             provider = create_provider(provider_name=provider_name, model=local_cfg.llm_model)
-            logger.info("Provider created: %s (model: %s)", type(provider).__name__, local_cfg.llm_model)
+            actual_model = getattr(provider, "model", local_cfg.llm_model) or "default"
+            logger.info("Provider created: %s (model: %s)", type(provider).__name__, actual_model)
         except ProviderConfigError as exc:
             logger.warning("LLM provider config error: %s — falling back to Ollama", exc)
             from sky_claw.agent.providers import OllamaProvider
@@ -533,7 +534,7 @@ async def _run_web(ctx: AppContext, port: int) -> None:
     )
     runner = web.AppRunner(web_app.create_app())
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", port)
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
     url = f"http://localhost:{port}"
@@ -642,6 +643,8 @@ def run_gui_mode(args):
         logger.info("GUI y Contexto iniciados correctamente.")
 
         supervisor = SupervisorAgent()
+        gui.on_ejecutar = supervisor.handle_execution_signal
+        
         asyncio.create_task(supervisor.start())
         logger.info("Sky-Claw Daemon Core inicializado en background.")
 
@@ -651,7 +654,8 @@ def run_gui_mode(args):
         dark=True,
         show=True,
         reload=False,
-        port=8080
+        port=8080,
+        host="0.0.0.0"
     )
 
 def main(argv: list[str] | None = None) -> None:

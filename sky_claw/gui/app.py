@@ -173,9 +173,9 @@ class GUIBuilder:
             with ui.row().classes('w-full items-stretch gap-3 h-14 shrink-0'):
                 self.gui.input = ui.input(placeholder='Ingresá tu comando aquí...').classes(
                     'flex-grow text-[#d1d5db] console-text text-base'
-                ).props('dark standard color="amber"').on('keydown.enter', self.gui.send_message)
+                ).props('dark standard color="amber"').on('keydown.enter', self.gui.fire_ejecutar)
                 
-                ui.button('EJECUTAR', on_click=self.gui.send_message).classes('es-btn h-full px-8 text-lg')
+                ui.button('EJECUTAR', on_click=self.gui.fire_ejecutar).classes('es-btn h-full px-8 text-lg')
 
 
 # =============================================================================
@@ -236,6 +236,19 @@ class SkyClawGUI:
         self.input.value = ""
         # Delegamos al hilo de procesamiento lógico
         self.ctx.logic_queue.put(("chat", text))
+
+    def fire_ejecutar(self) -> None:
+        text = self.input.value.strip()
+        if text:
+            self.send_message()
+        else:
+            if hasattr(self, 'on_ejecutar'):
+                if getattr(self, '_bg_tasks', None) is None:
+                    self._bg_tasks = set()
+                task = asyncio.create_task(self.on_ejecutar({"type": "EJECUTAR", "payload": {}}))
+                self._bg_tasks.add(task)
+                task.add_done_callback(self._bg_tasks.discard)
+            self.custom_log_push("> [Señal de Ejecución Forzada enviada al Demonio]", "text-[#c5a059] font-bold")
 
     def _poll_queue(self) -> None:
         """Sondea la cola del backend sin bloquear el hilo principal de Uvicorn."""

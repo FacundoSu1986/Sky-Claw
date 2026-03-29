@@ -28,7 +28,7 @@ from sky_claw.config import (
     TELEGRAM_PATH_PREFIX,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("SkyClaw.Security")
 
 
 class EgressViolation(Exception):

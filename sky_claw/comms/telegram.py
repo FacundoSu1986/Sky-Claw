@@ -206,10 +206,14 @@ class TelegramWebhook:
                 await self._sender.send(chat_id, "Sky-Claw is still starting up. Please wait a moment.")
                 return
 
-            response = await self._router.chat(
-                text, self._session, chat_id=str(chat_id)
-            )
-            await self._sender.send(chat_id, response)
+            try:
+                response = await self._router.chat(
+                    text, self._session, chat_id=str(chat_id)
+                )
+                await self._sender.send(chat_id, response)
+            except Exception as e:
+                logger.exception("Critical Router Failure: %s", e)
+                await self._sender.send(chat_id, "⚠️ El agente ha sufrido un error interno en la orquestación. Reiniciando subsistema...")
         except Exception as exc:
             logger.exception(
                 "Error processing update_id=%d, chat_id=%d: %s", update_id, chat_id, exc

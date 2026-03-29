@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Garra del Cielo | Sky-Claw UI</title>
+    <!-- Fonts: Outfit for modern, clean feel -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <!-- Markdown Parser: Marked.js (Lightweight) -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="arcane-overlay" class="hidden">
+        <div class="overlay-content">
+            <div class="spinner"></div>
+            <p>Reestableciendo enlace arcano...</p>
+        </div>
+    </div>
+
+    <main class="app-container">
+        <header class="app-header">
+            <div id="telemetry-hud" class="telemetry-hud">
+                <span>CPU: <b id="cpu-val">--</b>%</span>
+                <span class="sep">|</span>
+                <span>RAM: <b id="ram-val">--</b> MB</span>
+            </div>
+            <div class="logo-section">
+                <span class="icon-claws">⚡</span>
+                <h1>GARRA DEL CIELO</h1>
+            </div>
+            <div id="status-badge" class="status-badge ready">
+                <span class="dot"></span>
+                <span id="status-text">SISTEMA LISTO</span>
+            </div>
+        </header>
+
+        <section id="chat-log" class="chat-log">
+            <!-- Los mensajes se renderizarán aquí -->
+            <div class="message system">
+                <p>Bienvenido, Operador. El Ecosistema Sky-Claw está a la escucha.</p>
+            </div>
+        </section>
+
+        <footer class="input-area">
+            <div class="input-container">
+                <input type="text" id="command-input" placeholder="Ingresa un comando arcano (ej: /status)..." autocomplete="off">
+                <button id="send-btn">ENVIAR</button>
+            </div>
+        </footer>
+    </main>
+
+    <!-- App Logic -->
+    <script src="js/app.js"></script>
+</body>
+</html>
