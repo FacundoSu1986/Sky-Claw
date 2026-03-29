@@ -9,6 +9,9 @@
 const { Bot } = require("grammy");
 const { WebSocketServer } = require("ws");
 const { v4: uuidv4 } = require("uuid"); // Optional, will use crypto.randomUUID for less dependencies
+const { chromium, firefox, webkit } = require("playwright");
+const fs = require("fs");
+const crypto = require("crypto");
 require("dotenv").config();
 
 // Configuration
@@ -21,6 +24,36 @@ if (!TELEGRAM_BOT_TOKEN || isNaN(ALLOWED_USER_ID)) {
     process.exit(1);
 }
 
+// 0. Persistence & Factory state
+let activeConfig = {
+    browser_engine: "chromium" // Default: Chromium (Reliability 0.95)
+};
+
+/**
+ * BROWSER FACTORY (SRE Standard)
+ * Devuelve una instancia del motor solicitado con Fallback a Chromium.
+ */
+async function launchEngine(preference) {
+    const engineType = preference || activeConfig.browser_engine;
+    const engineMap = { chromium, firefox, webkit };
+    const selected = engineMap[engineType] || chromium;
+
+    try {
+        // Paso 5: Auto-Check de binarios en el Host Windows
+        const binPath = selected.executablePath();
+        if (!fs.existsSync(binPath)) {
+            console.warn(`[GW] Binario ${engineType} ausente en ${binPath}. Aplicando Fallback a Chromium.`);
+            return await chromium.launch({ headless: true });
+        }
+        
+        // Paso 2: Launch con fingerprinting base (Confianza: WebKit/FF ~0.8)
+        return await selected.launch({ headless: true });
+    } catch (launchError) {
+        console.error(`[GW] Falló lanzamiento de motor ${engineType}: ${launchError.message}`);
+        return await chromium.launch({ headless: true });
+    }
+}
+
 // 1. WebSocket Server (Zero Trust - Localhost binding for daemon)
 const wss = new WebSocketServer({ port: WS_PORT });
 let daemonSocket = null;
@@ -29,15 +62,75 @@ wss.on("connection", (ws, req) => {
     // Audit log (minimal)
     const remote = req.socket.remoteAddress;
     console.log(`[GW] Daemon connected from ${remote}`);
-    
+
     daemonSocket = ws;
 
     ws.on("message", async (data) => {
         try {
             const message = JSON.parse(data);
+            
+            // SRE Phase 3: Configuración Dinámica
+            if (message.type === "command" && message.action === "set_config") {
+                if (message.payload?.browser_engine) {
+                    activeConfig.browser_engine = message.payload.browser_engine;
+                    console.log(`[GW] Motor de renderizado actualizado a: ${activeConfig.browser_engine}`);
+                }
+                return;
+            }
+
+            // SRE Phase 2: Passthrough Web Scraper Integration (Multi-Engine)
+            if (message.type === "command" && message.action === "scrape_nexus") {
+                console.log(`[GW] Iniciando Playwright RPC (${activeConfig.browser_engine}) para request: ${message.request_id}`);
+                let browser;
+                try {
+                    // Paso 2: Implementación de Factory
+                    browser = await launchEngine(message.payload?.browser_engine);
+                    // Fingerprint Randomization: Se utiliza el UA nativo del motor para evitar inconsistencias
+                    const contextOptions = {};
+                    if (message.payload?.userAgent) {
+                        contextOptions.userAgent = message.payload.userAgent;
+                    }
+                    const context = await browser.newContext(contextOptions);
+                    const page = await context.newPage();
+                    // Timeout robusto a 25s dejando 5s de margen al demonio Python
+                    await page.goto(message.url, { waitUntil: "domcontentloaded", timeout: 25000 });
+                    
+                    const title = await page.title();
+                    // Aquí escalarías la lógica para raspar elementos DOM concretos.
+                    const contentJson = { page_title: title, url: message.url };
+                    
+                    const scrapeResult = {
+                        type: "scrape_response",
+                        request_id: message.request_id,
+                        data: contentJson,
+                        error: null
+                    };
+                    ws.send(JSON.stringify(scrapeResult));
+                    console.log(`[GW] Playwright RPC exitoso para request: ${message.request_id}`);
+                } catch (scrapeErr) {
+                    console.error(`[GW] Error de Scraping IPC: ${scrapeErr.message}`);
+                    ws.send(JSON.stringify({
+                        type: "scrape_response", 
+                        request_id: message.request_id, 
+                        data: null, 
+                        error: scrapeErr.message
+                    }));
+                } finally {
+                    // Paso 3: Cierre agnóstico y seguro (Evita fugas de memoria)
+                    if (browser) {
+                        try {
+                            await browser.close();
+                        } catch (closeErr) {
+                            console.error(`[GW] Zombie process prevention - Error cerrando motor: ${closeErr.message}`);
+                        }
+                    }
+                }
+                return;
+            }
+
             if (message.type === "response" || message.type === "hitl_request") {
                 const text = message.payload?.text || message.data?.reason || "Mensaje del sistema recibido.";
-                await bot.api.sendMessage(ALLOWED_USER_ID, text, { parse_mode: "Markdown" });
+                await bot.api.sendMessage(ALLOWED_USER_ID, text);
                 console.log(`[GW] Relayed ${message.type} to user ${ALLOWED_USER_ID}`);
             }
         } catch (err) {

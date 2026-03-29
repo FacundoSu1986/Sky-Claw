@@ -45,3 +45,9 @@ logs/
 *.db-wal
 # Agent State (PID Locks)
 .run/
+
+# Node.js
+node_modules/
+gateway/node_modules/
+package-lock.json
+gateway/package-lock.json

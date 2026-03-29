@@ -118,9 +118,20 @@ body {
     border: 1px solid var(--gold-dim);
 }
 
-.status-badge.ready .dot { background: var(--gold); box-shadow: var(--gold-glow); }
-.status-badge.buffering { border-color: var(--amber); color: var(--amber); }
-.status-badge.buffering .dot { background: var(--amber); box-shadow: var(--amber-glow); }
+.status-badge.ready .dot {
+    background: var(--gold);
+    box-shadow: var(--gold-glow);
+}
+
+.status-badge.buffering {
+    border-color: var(--amber);
+    color: var(--amber);
+}
+
+.status-badge.buffering .dot {
+    background: var(--amber);
+    box-shadow: var(--amber-glow);
+}
 
 /* Chat Log Area */
 .chat-log {
@@ -133,7 +144,7 @@ body {
     flex-direction: column;
     gap: 15px;
     border: 1px solid var(--glass);
-    box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
+    box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.5);
     scrollbar-width: thin;
     scrollbar-color: var(--gold-dim) transparent;
 }
@@ -145,14 +156,51 @@ body {
     max-width: 90%;
 }
 
-.message.system { color: var(--gold-dim); font-style: italic; border-left: 2px solid var(--gold-dim); padding-left: 15px; }
-.message.user { align-self: flex-end; background: var(--glass); color: var(--gold); border: 1px solid var(--gold-dim); }
-.message.agent { align-self: flex-start; background: rgba(255, 255, 255, 0.02); color: var(--text); border: 1px solid var(--glass); width: 100%; }
+.message.system {
+    color: var(--gold-dim);
+    font-style: italic;
+    border-left: 2px solid var(--gold-dim);
+    padding-left: 15px;
+}
+
+.message.user {
+    align-self: flex-end;
+    background: var(--glass);
+    color: var(--gold);
+    border: 1px solid var(--gold-dim);
+}
+
+.message.agent {
+    align-self: flex-start;
+    background: rgba(255, 255, 255, 0.02);
+    color: var(--text);
+    border: 1px solid var(--glass);
+    width: 100%;
+}
 
 /* Markdown Styles inside Messages */
-.message h1, .message h2, .message h3 { color: var(--gold); margin-bottom: 10px; }
-.message code { background: rgba(212, 175, 55, 0.1); padding: 2px 5px; border-radius: 4px; color: var(--gold); }
-.message pre { background: #000; padding: 15px; border-radius: 8px; overflow-x: auto; margin: 10px 0; border: 1px solid var(--glass); }
+.message h1,
+.message h2,
+.message h3 {
+    color: var(--gold);
+    margin-bottom: 10px;
+}
+
+.message code {
+    background: rgba(212, 175, 55, 0.1);
+    padding: 2px 5px;
+    border-radius: 4px;
+    color: var(--gold);
+}
+
+.message pre {
+    background: #000;
+    padding: 15px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 10px 0;
+    border: 1px solid var(--glass);
+}
 
 /* Command Altar (Input Area) */
 .input-area {
@@ -175,7 +223,7 @@ body {
     font-size: 1rem;
     outline: none;
     transition: all 0.3s ease;
-    box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.8);
 }
 
 #command-input:focus {
@@ -202,17 +250,49 @@ body {
     letter-spacing: 1px;
 }
 
-#send-btn:hover { background: #fff; transform: translateY(-2px); }
-#send-btn:disabled { background: #333; color: #666; cursor: not-allowed; }
+#send-btn:hover {
+    background: #fff;
+    transform: translateY(-2px);
+}
+
+#send-btn:disabled {
+    background: #333;
+    color: #666;
+    cursor: not-allowed;
+}
 
 /* Animations */
-@keyframes spin { 100% { transform: rotate(360deg); } }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+@keyframes spin {
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.6;
+    }
+}
 
 /* Scrollbar styling */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-thumb { background: var(--gold-dim); border-radius: 10px; }
-::-webkit-scrollbar-thumb:hover { background: var(--gold); }
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--gold-dim);
+    border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--gold);
+}
 
 /* Telemetry HUD (Fase 4.1) */
 .telemetry-hud {
@@ -232,13 +312,22 @@ body {
     z-index: 50;
 }
 
-.telemetry-hud b { 
-    color: var(--gold); 
-    min-width: 35px; 
-    display: inline-block; 
+.telemetry-hud b {
+    color: var(--gold);
+    min-width: 35px;
+    display: inline-block;
     text-align: right;
     font-weight: 600;
 }
-.telemetry-hud .sep { color: rgba(255, 255, 255, 0.1); }
-.telemetry-hud.disconnected { opacity: 0.3; }
-.telemetry-hud.disconnected b { color: var(--amber); }
+
+.telemetry-hud .sep {
+    color: rgba(255, 255, 255, 0.1);
+}
+
+.telemetry-hud.disconnected {
+    opacity: 0.3;
+}
+
+.telemetry-hud.disconnected b {
+    color: var(--amber);
+}

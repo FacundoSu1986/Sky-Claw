@@ -5,6 +5,15 @@ import websockets
 import uuid
 import time
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
+import sys
+from pathlib import Path
+
+# Zero Trust AST Import (Cross-Platform/WSL2 Resolution)
+WORK_DIR = Path(__file__).resolve().parent.parent.parent.parent
+AST_SKILLS_PATH = WORK_DIR / ".agents" / "skills" / "skyclaw-purple-auditor" / "scripts"
+if str(AST_SKILLS_PATH) not in sys.path:
+    sys.path.append(str(AST_SKILLS_PATH))
+import ast_guardian
 
 # Set-up standard 2026 logging
 logger = logging.getLogger("SkyClaw.TelegramDaemon")
@@ -22,6 +31,9 @@ class TelegramDaemon:
         self.gateway_url = gateway_url
         self.ws = None
         self._is_running = False
+        
+        # Instanciando el guardián de seguridad (AST Purple Auditor)
+        self.guardian = ast_guardian.ASTGuardian()
 
     async def start(self):
         """Infinite reconnection loop with exponential backoff."""
@@ -95,10 +107,40 @@ class TelegramDaemon:
         chat_id = f"tg-{data.get('metadata', {}).get('user_id', 'standard')}"
         
         try:
-            logger.info(f"📥 Procesando comando [Telegram]: '{text[:60]}...'")
+            logger.debug(f"📥 Procesando comando [Telegram]: '{text[:60]}...'")
             
-            # 100% async non-blocking injection
-            response = await self.router.chat(text, self.session, chat_id=chat_id)
+            # Misión 2: Auditoría Zero-Trust Async
+            is_safe = await self.guardian.execute_audit("telegram_payload", text)
+            if not is_safe:
+                logger.warning(f"🚫 Auditoría AST falló. Comando descartado por políticas Zero-Trust.")
+                if self.ws and getattr(self.ws, 'open', False):
+                    err_msg = json.dumps({
+                        "id": str(uuid.uuid4()),
+                        "type": "error", 
+                        "payload": {"text": "🛡️ Sistema: Payload inyectado fue bloqueado preventivamente."}
+                    })
+                    await self.ws.send(err_msg)
+                return
+            
+            # 100% async non-blocking injection with telemetry
+            async def _progress_callback(status: str, progress: int):
+                if self.ws and self.ws.open:
+                    telemetry = {
+                        "id": str(uuid.uuid4()),
+                        "type": "telemetry",
+                        "status": status,
+                        "progress": progress,
+                        "metadata": {"reply_to": msg_id}
+                    }
+                    await self.ws.send(json.dumps(telemetry))
+
+            response = await self.router.chat(
+                text, 
+                self.session, 
+                chat_id=chat_id,
+                metadata=data.get("metadata", {}),
+                progress_callback=_progress_callback
+            )
             
             # Construct standard 2026 response payload
             if self.ws and self.ws.open:

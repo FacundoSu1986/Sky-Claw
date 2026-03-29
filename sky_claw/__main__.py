@@ -393,11 +393,16 @@ class AppContext:
         )
 
         history_db = str(self._args.db_path).replace(".db", "_history.db")
+        mo2_root = local_cfg.mo2_root or "."
+        mo2_profile = os.path.join(mo2_root, "profiles", "Default") 
+        
         self.router = LLMRouter(
             provider=provider,
             tool_registry=tool_registry,
             db_path=history_db,
             system_prompt=SYSTEM_PROMPT,
+            registry_db=str(self._args.db_path),
+            mo2_profile=mo2_profile
         )
         await self.router.open()
 

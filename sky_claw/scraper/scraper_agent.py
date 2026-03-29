@@ -1,7 +1,7 @@
 import asyncio
 import time
 import logging
-from playwright.async_api import async_playwright
+# Playwright and requests-html strictly banned locally in WSL2 per SRE (Cloudflare constraints).
 from sky_claw.core.models import ModMetadataQuery, CircuitBreakerTripped
 from sky_claw.core.database import DatabaseAgent
 
@@ -44,24 +44,56 @@ class ScraperAgent:
         return {"status": "success", "source": "API", "data": {"nexus_id": params.nexus_id}}
 
     async def _stealth_scrape(self, params: ModMetadataQuery) -> dict:
-        """Scraping con Playwright inyectando jitter."""
-        logger.info(f"Iniciando Stealth Scraping para Mod ID {params.nexus_id}")
-        async with async_playwright() as p:
-            # En producción se usaría stealth plugin + proxy rotativo si es necesario
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36..."
-            )
-            page = await context.new_page()
-            
-            # Simular Jitter (2 a 7 segundos) para evadir heurísticas
-            import random
-            await asyncio.sleep(random.uniform(2.0, 7.0))
-            
-            await page.goto(f"https://www.nexusmods.com/skyrimspecialedition/mods/{params.nexus_id}")
-            
-            # Extraer DOM (Ejemplo simplificado)
-            title = await page.locator("h1.mod-title").inner_text()
-            await browser.close()
-            
-            return {"status": "success", "source": "Playwright", "data": {"title": title}}
+        """Modo de emergencia: RPC hacia Windows Host vía Gateway para evadir anti-bots."""
+        import websockets
+        import uuid
+        import json
+        
+        request_id = str(uuid.uuid4())
+        payload = {
+            "type": "command",
+            "action": "scrape_nexus",
+            "url": f"https://www.nexusmods.com/skyrimspecialedition/mods/{params.nexus_id}",
+            "request_id": request_id
+        }
+        
+        logger.info(f"Stealth Scrape RPC [{request_id}] emitiendo IPC al Gateway en host Windows...")
+        
+        try:
+            # Conexión RPC efímera pero robusta (Zero-Trust boundaries passthrough)
+            async with websockets.connect("ws://localhost:8080", open_timeout=5) as ws:
+                await ws.send(json.dumps(payload))
+                
+                # Polling asíncrono con timeout de seguridad SRE de 30 segundos
+                start_time = time.time()
+                while time.time() - start_time < 30:
+                    try:
+                        resp_str = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                        resp_data = json.loads(resp_str)
+                        if resp_data.get("type") == "scrape_response" and resp_data.get("request_id") == request_id:
+                            if resp_data.get("error"):
+                                logger.error(f"Fallo en Node.js Playwright: {resp_data['error']}")
+                                return {"status": "error", "source": "Playwright_Windows", "data": None, "reason": resp_data['error']}
+                                
+                            logger.info(f"Stealth Scrape RPC [{request_id}] completado exitosamente.")
+                            return {
+                                "status": "success",
+                                "source": "Playwright_Windows",
+                                "data": resp_data.get("data"),
+                                "reason": None
+                            }
+                    except asyncio.TimeoutError:
+                        continue
+                        
+                # Expiración del circuito
+                logger.error(f"Stealth Scrape RPC [{request_id}] Time-Out (30s) abortado graciosamente.")
+                return {"status": "error", "source": "Playwright_Windows", "data": None, "reason": "Timeout en WS IPC"}
+                
+        except Exception as e:
+            logger.error(f"Fallo crítico en conexión IPC para Scraper: {type(e).__name__} - {e}")
+            return {
+                "status": "error", 
+                "source": "None", 
+                "data": None,
+                "reason": f"No se pudo contactar al Gateway de Windows: {e}"
+            }
