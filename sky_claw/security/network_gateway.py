@@ -90,15 +90,53 @@ class NetworkGateway:
         method: str,
         url: str,
         session: aiohttp.ClientSession,
+        max_redirects: int = 5,
         **kwargs: Any,
     ) -> aiohttp.ClientResponse:
-        """Authorize and execute an HTTP request through *session*.
+        """Authorize and execute an HTTP request with manual redirect validation.
 
-        Raises :class:`EgressViolation` if the request violates policy.
+        Enforces 'allow_redirects=False' and manually follows redirects to 
+        validate each hop against the egress policy and security constraints.
         """
-        self.authorize(method, url)
-        response = await session.request(method, url, **kwargs)
-        return response
+        # Ensure we don't let aiohttp handle redirects automatically
+        kwargs["allow_redirects"] = False
+        
+        current_url = url
+        for hop in range(max_redirects + 1):
+            self.authorize(method, current_url)
+            
+            # Additional scheme and IP validation for every hop
+            parsed = urlparse(current_url)
+            if parsed.scheme != "https":
+                raise EgressViolation(f"Insecure scheme '{parsed.scheme}' blocked in redirection chain: {current_url}")
+            
+            response = await session.request(method, current_url, **kwargs)
+            
+            if response.status in (301, 302, 303, 307, 308):
+                redirect_url = response.headers.get("Location")
+                if not redirect_url:
+                    return response
+                
+                # Resolve relative URLs
+                if not urlparse(redirect_url).netloc:
+                    base = urlparse(current_url)
+                    redirect_url = f"{base.scheme}://{base.netloc}{redirect_url}"
+                
+                current_url = redirect_url
+                logger.debug("Following redirect hop %d: %s", hop + 1, current_url)
+                continue
+            
+            return response
+            
+        raise EgressViolation(f"Maximum redirect limit ({max_redirects}) exceeded for URL: {url}")
+
+    def validate_redirection_chain(self, url: str, history: list[str]) -> None:
+        """Explicit validation for a chain of URLs (SSRF Protection)."""
+        for hop_url in history:
+            self.authorize("GET", hop_url)
+            parsed = urlparse(hop_url)
+            if parsed.scheme != "https":
+                 raise EgressViolation(f"Non-HTTPS hop detected: {hop_url}")
 
     # ------------------------------------------------------------------
     # Internals

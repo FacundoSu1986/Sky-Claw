@@ -32,7 +32,7 @@ from sky_claw.comms.telegram import TelegramWebhook
 from sky_claw.comms.telegram_sender import TelegramSender
 from sky_claw.comms.telegram_polling import TelegramPolling
 from sky_claw.db.async_registry import AsyncModRegistry
-from sky_claw.config import Config, ALLOWED_HOSTS, ALLOWED_METHODS, XEDIT_COMMON_PATHS, LOOT_COMMON_PATHS
+from sky_claw.config import Config, ALLOWED_HOSTS, ALLOWED_METHODS, XEDIT_COMMON_PATHS, LOOT_COMMON_PATHS, SystemPaths
 from sky_claw.mo2.vfs import MO2Controller
 from sky_claw.orchestrator.sync_engine import SyncEngine
 from sky_claw.scraper.masterlist import MasterlistClient
@@ -44,8 +44,6 @@ from sky_claw.auto_detect import AutoDetector
 from sky_claw.tools_installer import (
     ToolsInstaller,
     scan_common_paths,
-    LOOT_COMMON_PATHS,
-    XEDIT_COMMON_PATHS,
 )
 from sky_claw.agent.animation_hub import AnimationHub, EngineConfig
 from sky_claw.local_config import load as load_local_config
@@ -103,7 +101,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--mo2-root",
         type=pathlib.Path,
-        default=pathlib.Path(os.environ.get("SKY_CLAW_MO2_ROOT", "C:/MO2Portable")),
+        default=pathlib.Path(os.environ.get("SKY_CLAW_MO2_ROOT", str(SystemPaths.get_base_drive() / "MO2Portable"))),
         help="Path to the MO2 portable instance",
     )
     parser.add_argument(
@@ -139,7 +137,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--staging-dir",
         type=pathlib.Path,
         default=pathlib.Path(
-            os.environ.get("SKY_CLAW_STAGING_DIR", "C:/MO2Portable/downloads")
+            os.environ.get("SKY_CLAW_STAGING_DIR", str(SystemPaths.get_base_drive() / "MO2Portable/downloads"))
         ),
         help="MO2 staging directory for mod downloads (env: SKY_CLAW_STAGING_DIR)",
     )
@@ -155,7 +153,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--install-dir",
         type=pathlib.Path,
         default=pathlib.Path(
-            os.environ.get("SKY_CLAW_INSTALL_DIR", "C:/Modding")
+            os.environ.get("SKY_CLAW_INSTALL_DIR", str(SystemPaths.modding_root()))
         ),
         help="Directory for auto-installing tools like LOOT/SSEEdit (env: SKY_CLAW_INSTALL_DIR)",
     )
@@ -185,6 +183,7 @@ class AppContext:
         self.polling: TelegramPolling | None = None
         self.downloader: NexusDownloader | None = None
         self.tools_installer: ToolsInstaller | None = None
+        self.telegram_daemon: Any | None = None # From sky_claw.comms.ws_daemon
         
         # GUI communication queues
         self.gui_queue: queue.Queue = queue.Queue()
@@ -230,7 +229,7 @@ class AppContext:
         mo2_root = self._args.mo2_root
         config_changed = False
 
-        _MO2_DEFAULT = str(pathlib.Path("C:/MO2Portable"))
+        _MO2_DEFAULT = str(SystemPaths.get_base_drive() / "MO2Portable")
         if local_cfg.mo2_root and str(mo2_root) == _MO2_DEFAULT:
             cfg_mo2 = pathlib.Path(local_cfg.mo2_root)
             mo2_root = cfg_mo2
@@ -402,6 +401,17 @@ class AppContext:
         )
         await self.router.open()
 
+        # Initialize Telegram WS Daemon (Standard 2026 Bridge)
+        from sky_claw.comms.ws_daemon import TelegramDaemon
+        self.telegram_daemon = TelegramDaemon(
+            router=self.router, 
+            session=self.session,
+            gateway_url=os.environ.get("SKY_CLAW_TG_GATEWAY", "ws://localhost:8080")
+        )
+        # Run as a background task in the main event loop
+        asyncio.create_task(self.telegram_daemon.start())
+        logger.info("Telegram Daemon (WS Bridge) iniciado en segundo plano.")
+
         if bot_token and getattr(self._args, "mode", "cli") != "telegram":
             webhook_handler = TelegramWebhook(
                 router=self.router,
@@ -429,6 +439,9 @@ class AppContext:
         if self.polling is not None:
             await self.polling.stop()
             self.polling = None
+        if self.telegram_daemon is not None:
+            await self.telegram_daemon.stop()
+            self.telegram_daemon = None
         if self.router is not None:
             await self.router.close()
             self.router = None

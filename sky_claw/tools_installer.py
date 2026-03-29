@@ -16,6 +16,9 @@ from typing import Any
 
 import aiohttp
 
+from sky_claw.config import (
+    SystemPaths,
+)
 from sky_claw.security.hitl import Decision, HITLGuard
 from sky_claw.security.network_gateway import NetworkGateway
 from sky_claw.security.path_validator import PathValidator, PathViolation
@@ -30,17 +33,17 @@ _PANDORA_RELEASES_URL = "https://api.github.com/repos/Monitor221hz/Pandora-Behav
 
 # Common Windows paths where LOOT / SSEEdit may already be installed.
 LOOT_COMMON_PATHS: tuple[pathlib.Path, ...] = (
-    pathlib.Path("C:/Modding/LOOT"),
-    pathlib.Path("C:/LOOT"),
-    pathlib.Path("C:/Program Files/LOOT"),
-    pathlib.Path("C:/Program Files (x86)/LOOT"),
+    SystemPaths.modding_root() / "LOOT",
+    SystemPaths.get_base_drive() / "LOOT",
+    SystemPaths.get_base_drive() / "Program Files/LOOT",
+    SystemPaths.get_base_drive() / "Program Files (x86)/LOOT",
 )
 
 XEDIT_COMMON_PATHS: tuple[pathlib.Path, ...] = (
-    pathlib.Path("C:/Modding/SSEEdit"),
-    pathlib.Path("C:/SSEEdit"),
-    pathlib.Path("C:/Program Files/SSEEdit"),
-    pathlib.Path("C:/Program Files (x86)/SSEEdit"),
+    SystemPaths.modding_root() / "SSEEdit",
+    SystemPaths.get_base_drive() / "SSEEdit",
+    SystemPaths.get_base_drive() / "Program Files/SSEEdit",
+    SystemPaths.get_base_drive() / "Program Files (x86)/SSEEdit",
 )
 
 # Chunk size for streaming downloads (1 MB).

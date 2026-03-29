@@ -29,6 +29,7 @@ from tenacity import (
 )
 
 from sky_claw.db.async_registry import AsyncModRegistry
+from sky_claw.config import SystemPaths
 from sky_claw.scraper.masterlist import (
     CircuitOpenError,
     MasterlistClient,
@@ -104,6 +105,26 @@ class SyncEngine:
         self._downloader = downloader
         self._hitl = hitl
         self._download_tasks: set[asyncio.Task[Any]] = set()
+        self._shutdown_event = asyncio.Event()
+
+    # ------------------------------------------------------------------
+    # Lifecycle & Shutdown
+    # ------------------------------------------------------------------
+
+    async def shutdown(self) -> None:
+        """Gracefully shuts down the engine, cancelling pending tasks."""
+        logger.info("SyncEngine shutting down...")
+        self._shutdown_event.set()
+        
+        if self._download_tasks:
+            logger.info("Cancelling %d background download tasks...", len(self._download_tasks))
+            for task in self._download_tasks:
+                task.cancel()
+            
+            await asyncio.gather(*self._download_tasks, return_exceptions=True)
+            self._download_tasks.clear()
+        
+        logger.info("SyncEngine shutdown complete.")
 
     # ------------------------------------------------------------------
     # Automated Update Cycle
@@ -360,11 +381,13 @@ def _extract_nexus_id(mod_name: str) -> int | None:
         if stripped.isdigit() and len(stripped) >= 2:
             return int(stripped)
             
-    meta_path = os.path.join(r"C:\Modding\MO2\mods", mod_name, "meta.ini")
-    if os.path.exists(meta_path):
+    # Use SystemPaths to resolve the mods directory dynamically
+    meta_path = SystemPaths.modding_root() / "MO2/mods" / mod_name / "meta.ini"
+    
+    if meta_path.exists():
         try:
             config = configparser.ConfigParser()
-            config.read(meta_path, encoding='utf-8')
+            config.read(str(meta_path), encoding='utf-8')
             if 'General' in config and 'modid' in config['General']:
                 modid = config['General']['modid']
                 if modid.isdigit() and modid != "0":

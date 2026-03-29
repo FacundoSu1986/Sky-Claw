@@ -77,6 +77,8 @@ class LLMRouter:
         self._system_prompt = system_prompt
         self._max_context = max_context
         self._conn: aiosqlite.Connection | None = None
+        self._message_queue: asyncio.Queue[tuple[str, str, str, float]] = asyncio.Queue()
+        self._batch_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -87,12 +89,63 @@ class LLMRouter:
         self._conn = await aiosqlite.connect(self._db_path)
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.executescript(_HISTORY_SCHEMA)
+        self._batch_task = asyncio.create_task(self._process_batch_commits())
 
     async def close(self) -> None:
-        """Close the history database."""
+        """Close the history database and flush pending commits atomically."""
+        if self._batch_task:
+            self._batch_task.cancel()
+            try:
+                await self._batch_task
+            except asyncio.CancelledError:
+                pass
+            
         if self._conn is not None:
+             # Atomic final flush of message queue
+            pending = []
+            while not self._message_queue.empty():
+                 pending.append(self._message_queue.get_nowait())
+            
+            if pending:
+                try:
+                    await self._conn.executemany(
+                        "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)", 
+                        pending
+                    )
+                    await self._conn.commit()
+                except Exception as exc:
+                    logger.error("Failed to perform final atomic flush: %s", exc)
+
             await self._conn.close()
             self._conn = None
+
+    async def _process_batch_commits(self, batch_size: int = 5, timeout: float = 30.0) -> None:
+        """Background worker to commit messages in batches or on timeout."""
+        batch = []
+        while True:
+            try:
+                try:
+                    # Wait for a message with timeout
+                    msg = await asyncio.wait_for(self._message_queue.get(), timeout=timeout)
+                    batch.append(msg)
+                except asyncio.TimeoutError:
+                    # Timeout reached, commit whatever we have
+                    pass
+
+                if batch and (len(batch) >= batch_size or self._message_queue.empty()):
+                    if self._conn:
+                        await self._conn.executemany(
+                            "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                            batch
+                        )
+                        await self._conn.commit()
+                        logger.debug("Committed batch of %d messages to SQLite", len(batch))
+                    batch = []
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("Error in message batch worker: %s", exc)
+                await asyncio.sleep(1)
 
     # ------------------------------------------------------------------
     # Public entry-point
@@ -132,78 +185,86 @@ class LLMRouter:
         consecutive_errors = 0
 
         for _round in range(MAX_TOOL_ROUNDS):
-            chat_kwargs = {
-                "messages": messages,
-                "tools": tool_schemas,
-                "session": session,
-                "system_prompt": self._system_prompt,
-            }
-            if self._model:
-                chat_kwargs["model"] = self._model
-                
-            response_data = await self._provider.chat(**chat_kwargs)
-
-            if response_data is None or not isinstance(response_data, dict):
-                return "Error: El proveedor de IA no devolvió datos."
-
-            stop_reason = response_data.get("stop_reason", "end_turn")
-            content_blocks: list[dict[str, Any]] = response_data.get("content", [])
-
-            await self._save_message(
-                chat_id, "assistant", json.dumps(content_blocks)
-            )
-            messages.append({"role": "assistant", "content": content_blocks})
-
-            if stop_reason != "tool_use":
-                text_parts = [
-                    block.get("text", "")
-                    for block in content_blocks
-                    if block.get("type") == "text"
-                ]
-                return "\n".join(text_parts)
-
-            # Execute requested tools.
-            tool_results: list[dict[str, Any]] = []
-            for block in content_blocks:
-                if block.get("type") != "tool_use":
-                    continue
-                tool_id: str = block["id"]
-                tool_name: str = block["name"]
-                tool_input: dict[str, Any] = block.get("input", {})
-
-                try:
-                    result_str = await self._tools.execute(tool_name, tool_input)
-                    consecutive_errors = 0
-                except (KeyError, ValueError, TypeError) as exc:
-                    consecutive_errors += 1
-                    backoff = min(2 ** consecutive_errors, 16)
-                    logger.warning("Tool execution error (attempt %d). Backing off %ds...", consecutive_errors, backoff)
-                    await asyncio.sleep(backoff)
+            try:
+                chat_kwargs = {
+                    "messages": messages,
+                    "tools": tool_schemas,
+                    "session": session,
+                    "system_prompt": self._system_prompt,
+                }
+                if self._model:
+                    chat_kwargs["model"] = self._model
                     
-                    feedback = {
-                        "error": "Tool execution failed due to invalid arguments or formatting.",
-                        "exception_type": type(exc).__name__,
-                        "details": str(exc),
-                        "instruction": "Please carefully review the required tool schema and provide strictly matching parameters."
-                    }
-                    result_str = json.dumps(feedback)
+                response_data = await self._provider.chat(**chat_kwargs)
 
-                if len(result_str) > 4000:
-                    result_str = result_str[:4000] + "\n\n[... truncated ...]"
+                if response_data is None or not isinstance(response_data, dict):
+                    return "Error: El proveedor de IA no devolvió datos."
 
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_id,
-                        "content": result_str,
-                    }
+                stop_reason = response_data.get("stop_reason", "end_turn")
+                content_blocks: list[dict[str, Any]] = response_data.get("content", [])
+
+                await self._save_message(
+                    chat_id, "assistant", json.dumps(content_blocks)
                 )
+                messages.append({"role": "assistant", "content": content_blocks})
 
-            await self._save_message(
-                chat_id, "user", json.dumps(tool_results)
-            )
-            messages.append({"role": "user", "content": tool_results})
-            messages = messages[-self._max_context:]
+                if stop_reason != "tool_use":
+                    text_parts = [
+                        block.get("text", "")
+                        for block in content_blocks
+                        if block.get("type") == "text"
+                    ]
+                    return "\n".join(text_parts)
+
+                # Execute requested tools.
+                tool_results: list[dict[str, Any]] = []
+                for block in content_blocks:
+                    if block.get("type") != "tool_use":
+                        continue
+                    tool_id: str = block["id"]
+                    tool_name: str = block["name"]
+                    tool_input: dict[str, Any] = block.get("input", {})
+
+                    try:
+                        result_str = await self._tools.execute(tool_name, tool_input)
+                        consecutive_errors = 0
+                    except (KeyError, ValueError, TypeError, RuntimeError, OSError) as exc:
+                        # Broadened exception handling for system/runtime errors (xEdit/LOOT zombies)
+                        consecutive_errors += 1
+                        backoff = min(2 ** consecutive_errors, 16)
+                        logger.warning("Tool execution error (%s): %s (attempt %d). Backing off %ds...", 
+                                     type(exc).__name__, exc, consecutive_errors, backoff)
+                        await asyncio.sleep(backoff)
+                        
+                        feedback = {
+                            "error": "Critical tool execution failure.",
+                            "exception_type": type(exc).__name__,
+                            "details": str(exc),
+                            "instruction": "Verify that requirements are met and that external processes (LOOT/xEdit) are not blocked."
+                        }
+                        result_str = json.dumps(feedback)
+
+                    if len(result_str) > 4000:
+                        result_str = result_str[:4000] + "\n\n[... truncated ...]"
+
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": result_str,
+                        }
+                    )
+
+                await self._save_message(
+                    chat_id, "user", json.dumps(tool_results)
+                )
+                messages.append({"role": "user", "content": tool_results})
+                messages = messages[-self._max_context:]
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except Exception as outer_exc:
+                logger.error("System-level router failure: %s", outer_exc)
+                return f"Error Crítico: El ciclo de herramientas falló por una excepción de sistema: {outer_exc}"
         else:
             raise RuntimeError(
                 f"Agent exceeded {MAX_TOOL_ROUNDS} tool rounds"
@@ -216,14 +277,10 @@ class LLMRouter:
     async def _save_message(
         self, chat_id: str, role: str, content: str
     ) -> None:
+        """Enqueues a message for batch persistence."""
         if self._conn is None:
             raise RuntimeError("Router database is not open")
-        await self._conn.execute(
-            "INSERT INTO chat_history (chat_id, role, content, timestamp) "
-            "VALUES (?, ?, ?, ?)",
-            (chat_id, role, content, time.time()),
-        )
-        await self._conn.commit()
+        await self._message_queue.put((chat_id, role, content, time.time()))
 
     async def _load_context(self, chat_id: str) -> list[dict[str, Any]]:
         if self._conn is None:

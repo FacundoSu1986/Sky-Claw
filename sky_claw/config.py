@@ -3,6 +3,42 @@ import pathlib
 import tomllib
 import keyring
 from typing import Any, Optional
+import sys
+
+class SystemPaths:
+    """Dynamic path resolution for Windows and WSL2 environments."""
+    
+    @staticmethod
+    def get_base_drive() -> pathlib.Path:
+        """Returns the base drive (C:/ or /mnt/c/) based on environment."""
+        if sys.platform != "win32":
+            # Check for WSL
+            if os.path.exists("/mnt/c"):
+                return pathlib.Path("/mnt/c")
+        return pathlib.Path("C:/")
+
+    @classmethod
+    def resolve(cls, path_str: str) -> pathlib.Path:
+        """Converts a Windows-style path string to a dynamic pathlib.Path."""
+        if not path_str:
+            return pathlib.Path()
+        
+        # Standardize separators
+        std_path = path_str.replace("\\", "/")
+        
+        # If it looks like a Windows absolute path, re-map it
+        if len(std_path) > 1 and std_path[1] == ":":
+            drive_letter = std_path[0].lower()
+            relative = std_path[3:]  # Skip 'C:/'
+            if sys.platform != "win32":
+                return cls.get_base_drive().parent / drive_letter / relative
+            return pathlib.Path(f"{drive_letter.upper()}:/") / relative
+            
+        return pathlib.Path(std_path)
+
+    @classmethod
+    def modding_root(cls) -> pathlib.Path:
+        return cls.get_base_drive() / "Modding"
 
 class Config:
     """Central configuration management for Sky-Claw.
@@ -52,7 +88,7 @@ class Config:
     def _load_defaults(self) -> dict[str, Any]:
         return {
             "mo2_root": "",
-            "install_dir": "C:/Modding",
+            "install_dir": str(SystemPaths.modding_root()),
             "loot_exe": "",
             "xedit_exe": "",
             "pandora_exe": "",
@@ -73,7 +109,6 @@ class Config:
     def _load_from_file(self):
         if self._config_path.exists():
             try:
-                import tomllib
                 with open(self._config_path, "rb") as f:
                     file_data = tomllib.load(f)
                     
@@ -177,14 +212,17 @@ OUT_OF_SCOPE_HOSTS = frozenset([
     "patreon.com",
 ])
 HITL_TIMEOUT_SECONDS = 300
+
+# Refactored common paths using SystemPaths abstraction
 LOOT_COMMON_PATHS = [
-    r"C:\Program Files\LOOT\loot.exe",
-    r"C:\Program Files (x86)\LOOT\loot.exe",
+    SystemPaths.get_base_drive() / "Program Files/LOOT/loot.exe",
+    SystemPaths.get_base_drive() / "Program Files (x86)/LOOT/loot.exe",
 ]
 XEDIT_COMMON_PATHS = [
-    r"C:\Program Files\SSEEdit\SSEEdit.exe",
-    r"C:\Modding\SSEEdit\SSEEdit.exe",
+    SystemPaths.get_base_drive() / "Program Files/SSEEdit/SSEEdit.exe",
+    SystemPaths.modding_root() / "SSEEdit/SSEEdit.exe",
 ]
+
 # Mapping of host patterns to allowed HTTP methods.
 ALLOWED_METHODS = {
     "api.nexusmods.com": frozenset(["GET", "POST", "HEAD"]),
