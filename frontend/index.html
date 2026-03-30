@@ -10,6 +10,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
     <!-- Markdown Parser: Marked.js (Lightweight) -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- DOMPurify para Sanitización -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
     <!-- Styles -->
     <link rel="stylesheet" href="css/style.css">
 </head>
@@ -38,7 +40,7 @@
             </div>
         </header>
 
-        <section id="chat-log" class="chat-log">
+        <section id="chat-log" class="chat-log" role="log" aria-live="polite">
             <!-- Los mensajes se renderizarán aquí -->
             <div class="message system">
                 <p>Bienvenido, Operador. El Ecosistema Sky-Claw está a la escucha.</p>
@@ -46,10 +48,11 @@
         </section>
 
         <footer class="input-area">
-            <div class="input-container">
+            <form id="command-form" class="input-container">
+                <label for="command-input" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(1px, 1px, 1px, 1px);">Comando Arcano</label>
                 <input type="text" id="command-input" placeholder="Ingresa un comando arcano (ej: /status)..." autocomplete="off">
-                <button id="send-btn">ENVIAR</button>
-            </div>
+                <button type="submit" id="send-btn">ENVIAR</button>
+            </form>
         </footer>
     </main>
 

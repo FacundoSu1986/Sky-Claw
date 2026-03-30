@@ -19,6 +19,7 @@ import pathlib
 import sys
 import uuid
 import queue
+from typing import Any
 
 import aiohttp
 from aiohttp import web
@@ -184,7 +185,10 @@ class AppContext:
         self.downloader: NexusDownloader | None = None
         self.tools_installer: ToolsInstaller | None = None
         self.telegram_daemon: Any | None = None # From sky_claw.comms.ws_daemon
-        
+
+        # Background task tracking for proper cleanup
+        self._background_tasks: set[asyncio.Task] = set()
+
         # GUI communication queues
         self.gui_queue: queue.Queue = queue.Queue()
         self.logic_queue: queue.Queue = queue.Queue()
@@ -194,10 +198,19 @@ class AppContext:
         """True when the full stack (provider + router) is ready."""
         return self.router is not None
 
+    def _track_task(self, coro, *, name: str = "") -> asyncio.Task:
+        """Create a background task and track it for cleanup on shutdown."""
+        task = asyncio.create_task(coro, name=name)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
     async def start_minimal(self) -> None:
         """Phase 1: resolve config path + create HTTP session."""
         self._resolve_config_path()
-        self.session = aiohttp.ClientSession()
+        self.session = aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=20),
+        )
         logger.info(
             "start_minimal complete — config_path=%s, session ready",
             self.config_path,
@@ -218,7 +231,9 @@ class AppContext:
             self.registry = None
 
         if self.session is None:
-            self.session = aiohttp.ClientSession()
+            self.session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(limit=20),
+            )
 
         config_path = self.config_path
         logger.info("start_full — Config path: %s (exists=%s)", config_path, config_path.exists())
@@ -413,8 +428,8 @@ class AppContext:
             session=self.session,
             gateway_url=os.environ.get("SKY_CLAW_TG_GATEWAY", "ws://localhost:8080")
         )
-        # Run as a background task in the main event loop
-        asyncio.create_task(self.telegram_daemon.start())
+        # Run as a tracked background task in the main event loop
+        self._track_task(self.telegram_daemon.start(), name="telegram-daemon")
         logger.info("Telegram Daemon (WS Bridge) iniciado en segundo plano.")
 
         if bot_token and getattr(self._args, "mode", "cli") != "telegram":
@@ -441,6 +456,13 @@ class AppContext:
 
     async def stop(self) -> None:
         """Gracefully shutdown all resources."""
+        # Cancel all tracked background tasks first
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            self._background_tasks.clear()
+
         if self.polling is not None:
             await self.polling.stop()
             self.polling = None
@@ -578,23 +600,33 @@ def _make_setup_callback(ctx: AppContext):
 
 async def _gui_logic_loop(ctx: AppContext) -> None:
     """Processes chat messages from GUI in a background task."""
+    consecutive_errors = 0
     while True:
         try:
             item = await asyncio.to_thread(ctx.logic_queue.get)
+            if not isinstance(item, (tuple, list)) or len(item) < 2:
+                logger.warning("Malformed item in logic_queue: %r", item)
+                continue
             if item[0] == "chat":
                 text = item[1]
+                if not ctx.router:
+                    ctx.gui_queue.put(("error", "Router no inicializado. Completá el setup primero."))
+                    continue
                 correlation_id_var.set(str(uuid.uuid4()))
                 try:
                     response = await ctx.router.chat(text, ctx.session, chat_id="gui-session")
                     ctx.gui_queue.put(("response", response))
+                    consecutive_errors = 0
                 except Exception as e:
                     logger.exception("Logic error in chat: %s", e)
-                    ctx.gui_queue.put(("response", f"Error arcano: {e}"))
+                    ctx.gui_queue.put(("error", f"Error procesando comando: {type(e).__name__}: {e}"))
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.exception("GUI logic loop error: %s", e)
-            await asyncio.sleep(1)
+            consecutive_errors += 1
+            backoff = min(2 ** consecutive_errors, 30)
+            logger.exception("GUI logic loop error (backoff=%ds): %s", backoff, e)
+            await asyncio.sleep(backoff)
 
 async def _gui_mod_update_loop(ctx: AppContext) -> None:
     """Periodically fetches modlist for the GUI."""
@@ -613,8 +645,18 @@ async def _gui_mod_update_loop(ctx: AppContext) -> None:
 
 # --- ENTRY POINTS ---
 
-async def _main_async(args: argparse.Namespace) -> None:
-    """Asynchronous runner for CLI, Web, and Telegram modes."""
+async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> None:
+    """Asynchronous runner for CLI, Web, and Telegram modes.
+
+    Accepts either raw argv strings (for testing) or a pre-parsed Namespace.
+    """
+    if isinstance(argv_or_args, argparse.Namespace):
+        args = argv_or_args
+    else:
+        args = _parse_args(argv_or_args)
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    setup_logging(level=log_level)
+
     logger.info("Sky-Claw starting in %s mode", args.mode)
     if args.mode == "oneshot" and not args.command:
         print("Error: oneshot mode requires a command argument.", file=sys.stderr)
@@ -649,46 +691,64 @@ def run_gui_mode(args):
     from sky_claw.gui.app import SkyClawGUI
     from nicegui import ui, app
 
-    # Creamos la página principal
+    # Shared state — initialized once, survives page reloads
+    _ctx_holder: dict[str, Any] = {}
+
+    async def _ensure_context() -> AppContext:
+        """Initialize AppContext once, reuse on page reloads."""
+        if "ctx" not in _ctx_holder:
+            ctx = await start_full(args)
+            _ctx_holder["ctx"] = ctx
+
+            supervisor = SupervisorAgent()
+            _ctx_holder["supervisor"] = supervisor
+            ctx._track_task(supervisor.start(), name="supervisor-daemon")
+            ctx._track_task(_gui_logic_loop(ctx), name="gui-logic-loop")
+            ctx._track_task(_gui_mod_update_loop(ctx), name="gui-mod-update")
+            logger.info("Sky-Claw Daemon Core inicializado en background.")
+        return _ctx_holder["ctx"]
+
     @ui.page('/')
     async def main_page():
-        # Iniciamos el contexto y la UI
-        ctx = await start_full(args)
+        ctx = await _ensure_context()
         gui = SkyClawGUI(ctx)
         gui.build_ui()
-        
-        # Log de éxito en la consola de la UI
-        logger.info("GUI y Contexto iniciados correctamente.")
 
-        supervisor = SupervisorAgent()
-        gui.on_ejecutar = supervisor.handle_execution_signal
-        
-        asyncio.create_task(supervisor.start())
-        logger.info("Sky-Claw Daemon Core inicializado en background.")
+        supervisor = _ctx_holder.get("supervisor")
+        if supervisor:
+            gui.on_ejecutar = supervisor.handle_execution_signal
 
-    # Arrancamos el servidor
+        logger.info("GUI page rendered (context reused).")
+
+    async def _shutdown():
+        ctx = _ctx_holder.get("ctx")
+        if ctx:
+            await ctx.stop()
+
+    app.on_shutdown(_shutdown)
+
     ui.run(
         title="Sky-Claw | Elder Scrolls Agent",
         dark=True,
         show=True,
         reload=False,
         port=8080,
-        host="0.0.0.0"
+        host="127.0.0.1",
     )
 
 def main(argv: list[str] | None = None) -> None:
     """Unified entry point controller."""
     args = _parse_args(argv)
-    log_level = logging.DEBUG if args.verbose else logging.INFO
-    setup_logging(level=log_level)
 
     if args.mode == "gui":
+        log_level = logging.DEBUG if args.verbose else logging.INFO
+        setup_logging(level=log_level)
         run_gui_mode(args)
     else:
         try:
-            asyncio.run(_main_async(args))
+            asyncio.run(_main(args))
         except KeyboardInterrupt:
             pass
 
 if __name__ == "__main__":
-    main(sys.argv)
+    main()

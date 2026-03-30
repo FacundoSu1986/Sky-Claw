@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
+from sky_claw.agent.providers import AnthropicProvider
 from sky_claw.agent.router import LLMRouter, MAX_CONTEXT_MESSAGES, MAX_TOOL_ROUNDS, _HISTORY_SCHEMA
 from sky_claw.agent.tools import AsyncToolRegistry
 from sky_claw.db.async_registry import AsyncModRegistry
@@ -57,7 +58,7 @@ async def router(
     tool_registry: AsyncToolRegistry, tmp_path: pathlib.Path
 ) -> LLMRouter:
     r = LLMRouter(
-        api_key="test-key",
+        provider=AnthropicProvider("test-key"),
         tool_registry=tool_registry,
         db_path=str(tmp_path / "chat_history.db"),
         model="claude-sonnet-4-6",

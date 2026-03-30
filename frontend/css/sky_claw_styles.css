@@ -1,0 +1,570 @@
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   SKY-CLAW — DARK PREMIUM DESIGN SYSTEM v2.1 (2026)
+   ═══════════════════════════════════════════════════════════════════════════════════
+
+   ARQUITECTURA: Estilos encapsulados — zero runtime JS
+   OPTIMIZACIONES:
+   - GPU-accelerated animations via will-change
+   - CSS custom properties para theming dinámico
+   - Clases utilitarias para estados reactivos
+   - prefers-reduced-motion para accesibilidad WCAG 2.1 AA
+   - System font stack — sin dependencia de CDN externos
+
+   MERGE: v2.0 adjunto + mejoras del existente (hover toggles, scrollbar violet)
+
+═══════════════════════════════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   1. VARIABLES CSS — SISTEMA DE DISEÑO COMPLETO
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+:root {
+    /* Superficies */
+    --sky-bg-primary: #000000;
+    --sky-bg-secondary: #0a0a0a;
+    --sky-bg-card: #0f0f0f;
+    --sky-bg-elevated: #141414;
+
+    /* Bordes */
+    --sky-border: #1f2937;
+    --sky-border-hover: #374151;
+
+    /* Acentos */
+    --sky-violet: #8b5cf6;
+    --sky-violet-light: #a78bfa;
+    --sky-violet-glow: rgba(139, 92, 246, 0.4);
+    --sky-cyan: #06b6d4;
+    --sky-cyan-glow: rgba(6, 182, 212, 0.3);
+    --sky-pink: #ec4899;
+    --sky-blue: #3b82f6;
+
+    /* Estados semánticos */
+    --sky-success: #22c55e;
+    --sky-warning: #eab308;
+    --sky-error: #ef4444;
+    --sky-info: #3b82f6;
+
+    /* Texto */
+    --sky-text-primary: #ffffff;
+    --sky-text-secondary: #9ca3af;
+    --sky-text-muted: #6b7280;
+
+    /* Tipografía — system font stack, sin CDN */
+    --sky-font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+    /* Transiciones estandarizadas */
+    --sky-transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+    --sky-transition-base: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    --sky-transition-slow: 500ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   2. BASE RESET
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+body {
+    font-family: var(--sky-font-family);
+    background: var(--sky-bg-primary);
+    color: var(--sky-text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   3. ANIMACIONES GPU-ACCELERATED
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+@keyframes sky-glow-pulse {
+    0%, 100% {
+        box-shadow:
+            0 0 20px var(--sky-violet-glow),
+            0 0 40px rgba(139, 92, 246, 0.2),
+            0 0 60px rgba(139, 92, 246, 0.1);
+    }
+    50% {
+        box-shadow:
+            0 0 30px var(--sky-violet-glow),
+            0 0 60px rgba(139, 92, 246, 0.3),
+            0 0 80px rgba(139, 92, 246, 0.2);
+    }
+}
+
+@keyframes sky-fade-in-up {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes sky-shimmer {
+    0% { left: -100%; }
+    100% { left: 100%; }
+}
+
+@keyframes sky-typing-dots {
+    0%, 20% { opacity: 0.3; }
+    40% { opacity: 0.6; }
+    60%, 100% { opacity: 1; }
+}
+
+@keyframes sky-float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+}
+
+@keyframes sky-gradient-shift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+@keyframes sky-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+@keyframes sky-msg-in {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes sky-skeleton-loading {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   4. UTILIDADES DE DISEÑO
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/* Glow estático con animación */
+.sky-glow-static {
+    animation: sky-glow-pulse 3s ease-in-out infinite;
+    will-change: box-shadow;
+}
+
+/* Card hover — GPU-accelerated, sutil (-2px) */
+.sky-card-hover {
+    transition:
+        transform var(--sky-transition-base),
+        border-color var(--sky-transition-fast),
+        box-shadow var(--sky-transition-base);
+    will-change: transform, box-shadow;
+}
+
+.sky-card-hover:hover {
+    transform: translateY(-2px);
+    border-color: var(--sky-border-hover);
+    box-shadow:
+        0 8px 32px rgba(0, 0, 0, 0.5),
+        0 0 30px rgba(139, 92, 246, 0.1);
+}
+
+/* Botón CTA Premium con shimmer */
+.sky-btn-cta {
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(135deg, var(--sky-violet), #7c3aed);
+    border: none;
+    box-shadow: 0 4px 20px rgba(139, 92, 246, 0.3);
+    transition:
+        transform var(--sky-transition-fast),
+        box-shadow var(--sky-transition-fast),
+        filter var(--sky-transition-fast);
+    will-change: transform;
+}
+
+.sky-btn-cta::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.2),
+        transparent
+    );
+    animation: sky-shimmer 2s infinite;
+}
+
+.sky-btn-cta:hover {
+    transform: translateY(-1px) scale(1.02);
+    box-shadow:
+        0 6px 30px rgba(139, 92, 246, 0.45);
+    filter: brightness(1.1);
+}
+
+.sky-btn-cta:active {
+    transform: translateY(0) scale(0.98);
+}
+
+/* Botón secundario */
+.sky-btn-secondary {
+    background: rgba(139, 92, 246, 0.1);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    transition:
+        border-color var(--sky-transition-fast),
+        transform var(--sky-transition-fast),
+        background-color var(--sky-transition-fast);
+}
+
+.sky-btn-secondary:hover {
+    border-color: var(--sky-violet);
+    background-color: rgba(139, 92, 246, 0.2);
+    transform: translateY(-2px);
+}
+
+/* Input premium */
+.sky-input-premium {
+    background: rgba(15, 15, 15, 0.8);
+    border: 1px solid var(--sky-border);
+    transition:
+        border-color var(--sky-transition-fast),
+        box-shadow var(--sky-transition-fast);
+}
+
+.sky-input-premium:focus,
+.sky-input-premium:focus-within {
+    border-color: var(--sky-violet) !important;
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+    outline: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   5. SISTEMA DE BADGES DE ESTADO
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+.sky-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.sky-badge--success {
+    background: rgba(34, 197, 94, 0.2);
+    color: var(--sky-success);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.sky-badge--warning {
+    background: rgba(234, 179, 8, 0.2);
+    color: var(--sky-warning);
+    border: 1px solid rgba(234, 179, 8, 0.3);
+}
+
+.sky-badge--error,
+.sky-badge--danger {
+    background: rgba(239, 68, 68, 0.2);
+    color: var(--sky-error);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.sky-badge--info {
+    background: rgba(59, 130, 246, 0.2);
+    color: var(--sky-info);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.sky-badge--violet {
+    background: rgba(139, 92, 246, 0.15);
+    color: var(--sky-violet-light);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   6. ESTADOS REACTIVOS (bind_visibility compatible)
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/* Spinner — opacity transition para smooth UX */
+.sky-spinner {
+    opacity: 0;
+    transition: opacity var(--sky-transition-fast);
+    pointer-events: none;
+}
+
+.sky-spinner--visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* Visibility utilities */
+.sky-hidden {
+    display: none !important;
+}
+
+.sky-invisible {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.sky-visible {
+    visibility: visible;
+    pointer-events: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   7. COMPONENTES ESPECÍFICOS
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/* Chat messages */
+.sky-chat-message {
+    max-width: 85%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    margin-bottom: 8px;
+    animation: sky-msg-in 0.25s ease-out;
+}
+
+.sky-chat-message--user {
+    background: rgba(139, 92, 246, 0.12);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    margin-left: auto;
+    border-bottom-right-radius: 4px;
+}
+
+.sky-chat-message--assistant {
+    background: rgba(31, 41, 55, 0.5);
+    border: 1px solid var(--sky-border);
+    margin-right: auto;
+    border-bottom-left-radius: 4px;
+}
+
+/* Loading dots animation */
+.sky-loading-dots::after {
+    content: '';
+    animation: sky-typing-dots 1.5s infinite;
+}
+
+/* Animación de entrada escalonada */
+.sky-animate-in {
+    animation: sky-fade-in-up 0.6s ease forwards;
+}
+
+.sky-animate-in--delay-1 { animation-delay: 0.1s; opacity: 0; }
+.sky-animate-in--delay-2 { animation-delay: 0.2s; opacity: 0; }
+.sky-animate-in--delay-3 { animation-delay: 0.3s; opacity: 0; }
+.sky-animate-in--delay-4 { animation-delay: 0.4s; opacity: 0; }
+
+/* Scrollbar — violet-tinted, subtle */
+.sky-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.sky-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.sky-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(139, 92, 246, 0.25);
+    border-radius: 999px;
+}
+
+.sky-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(139, 92, 246, 0.45);
+}
+
+/* Connection status indicator */
+.sky-connection-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    transition: background-color var(--sky-transition-fast);
+}
+
+.sky-connection-dot--connected {
+    background: var(--sky-success);
+    box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+    animation: sky-pulse 2s ease-in-out infinite;
+}
+
+.sky-connection-dot--disconnected {
+    background: var(--sky-error);
+    box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+}
+
+.sky-connection-dot--pending {
+    background: var(--sky-warning);
+    animation: sky-pulse 2s infinite;
+}
+
+/* Status dot (legacy alias) */
+.sky-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    transition: background-color var(--sky-transition-fast);
+}
+
+.sky-status-dot--connected {
+    background: var(--sky-success);
+    box-shadow: 0 0 8px var(--sky-success);
+}
+
+.sky-status-dot--disconnected {
+    background: var(--sky-error);
+}
+
+.sky-status-dot--pending {
+    background: var(--sky-warning);
+    animation: sky-pulse 2s infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   8. GRADIENT RADIAL — GLOWS DECORATIVOS
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/* Glow overlay — decorativo estático */
+.sky-glow-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(
+        ellipse at 30% 30%,
+        var(--sky-violet-glow),
+        transparent 60%
+    );
+    opacity: 0;
+    transition: opacity var(--sky-transition-base);
+}
+
+/* Activar glow on hover (toggle interactivo) */
+.sky-card-hover:hover .sky-glow-overlay {
+    opacity: 1;
+}
+
+.sky-glow-overlay--cyan {
+    background: radial-gradient(
+        ellipse at 70% 70%,
+        var(--sky-cyan-glow),
+        transparent 60%
+    );
+}
+
+/* Glow estático para decoración (no interactivo) */
+.sky-glow-overlay--static {
+    opacity: 0.15;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   9. QUASAR RIPPLE INTEGRATION
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+.q-hoverable .q-ripple {
+    --q-color: var(--sky-violet);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   10. MICRO-INTERACCIONES AVANZADAS
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/* Botón con efecto de onda expansiva */
+.sky-btn-wave {
+    position: relative;
+    overflow: hidden;
+}
+
+.sky-btn-wave::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+    transform: translate(-50%, -50%);
+    transition: width 0.6s ease, height 0.6s ease;
+}
+
+.sky-btn-wave:active::after {
+    width: 300px;
+    height: 300px;
+}
+
+/* Skeleton loading */
+.sky-skeleton {
+    background: linear-gradient(
+        90deg,
+        var(--sky-bg-card) 25%,
+        var(--sky-bg-elevated) 50%,
+        var(--sky-bg-card) 75%
+    );
+    background-size: 200% 100%;
+    animation: sky-skeleton-loading 1.5s infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   11. SIDEBAR & LAYOUT
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+.sky-sidebar {
+    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sky-main-content {
+    transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   12. RESPONSIVE DESIGN
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 1280px) {
+    .sky-sidebar {
+        width: 200px !important;
+    }
+}
+
+@media (max-width: 768px) {
+    .sky-sidebar {
+        width: 100%;
+        height: auto;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        z-index: 100;
+    }
+
+    .sky-main-content {
+        padding-bottom: 80px;
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   13. ACCESIBILIDAD — WCAG 2.1 AA
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* Focus visible para navegación por teclado */
+.sky-focus-visible:focus-visible {
+    outline: 2px solid var(--sky-violet);
+    outline-offset: 2px;
+}

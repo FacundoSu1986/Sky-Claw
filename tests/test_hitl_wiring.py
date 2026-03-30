@@ -450,12 +450,18 @@ class TestAppContextWiring:
             install_dir=tmp_path / "tools",
         )
 
+        clean_config = tmp_path / "config.toml"
+        clean_config.write_text("")
+
         with patch.dict(
             "os.environ",
             {"ANTHROPIC_API_KEY": "test-key", "NEXUS_API_KEY": "", "TELEGRAM_BOT_TOKEN": ""},
-        ):
+        ), patch("keyring.get_password", return_value=None), \
+           patch("keyring.set_password"):
             ctx = AppContext(args)
-            await ctx.start()
+            await ctx.start_minimal()
+            ctx.config_path = clean_config
+            await ctx.start_full()
 
         try:
             assert ctx.downloader is None
@@ -515,12 +521,18 @@ class TestAppContextWiring:
             install_dir=tmp_path / "tools",
         )
 
+        clean_config = tmp_path / "config.toml"
+        clean_config.write_text("")
+
         with patch.dict(
             "os.environ",
             {"ANTHROPIC_API_KEY": "test-key", "NEXUS_API_KEY": "", "TELEGRAM_BOT_TOKEN": ""},
-        ):
+        ), patch("keyring.get_password", return_value=None), \
+           patch("keyring.set_password"):
             ctx = AppContext(args)
-            await ctx.start()
+            await ctx.start_minimal()
+            ctx.config_path = clean_config
+            await ctx.start_full()
 
         try:
             assert ctx.sender is None

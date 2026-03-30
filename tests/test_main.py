@@ -72,12 +72,21 @@ class TestAppContext:
         a.mo2_root = tmp_path / "MO2"
         a.mo2_root.mkdir()
         a.loot_exe = pathlib.Path("loot.exe")
+        a.provider = None
+        a.operator_chat_id = None
         return a
 
     @pytest.mark.asyncio
-    async def test_start_and_stop(self, args: MagicMock) -> None:
-        ctx = AppContext(args)
-        await ctx.start()
+    async def test_start_and_stop(self, args: MagicMock, tmp_path: pathlib.Path) -> None:
+        # Use a clean temp config to avoid reading real ~/.sky_claw/config.toml
+        clean_config = tmp_path / "config.toml"
+        clean_config.write_text("")
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key", "NEXUS_API_KEY": "", "TELEGRAM_BOT_TOKEN": ""}, clear=False):
+            ctx = AppContext(args)
+            await ctx.start_minimal()
+            ctx.config_path = clean_config
+            await ctx.start_full()
 
         assert ctx.registry is not None
         assert ctx.router is not None
@@ -85,7 +94,7 @@ class TestAppContext:
 
         await ctx.stop()
 
-        assert ctx.session.closed
+        assert ctx.session is None
 
     @pytest.mark.asyncio
     async def test_stop_idempotent(self, args: MagicMock) -> None:
@@ -136,13 +145,24 @@ class TestTelegram:
     async def test_telegram_exits_without_token(self, tmp_path: pathlib.Path, monkeypatch) -> None:
         """Without TELEGRAM_BOT_TOKEN, telegram mode exits with code 1."""
         monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-        with pytest.raises(SystemExit) as exc_info:
-            await _main([
-                "--mode", "telegram",
-                "--db-path", str(tmp_path / "test.db"),
-                "--mo2-root", str(tmp_path),
-            ])
-        assert exc_info.value.code == 1
+
+        with patch("sky_claw.__main__.AppContext") as mock_app_context:
+            mock_instance = mock_app_context.return_value
+            mock_instance.start = AsyncMock()
+            mock_instance.stop = AsyncMock()
+            mock_instance.router = MagicMock()
+            mock_instance.session = MagicMock()
+            mock_instance.gateway = MagicMock()
+            mock_instance.sender = None  # No bot token → no sender
+
+            with pytest.raises(SystemExit) as exc_info:
+                await _main([
+                    "--mode", "telegram",
+                    "--db-path", str(tmp_path / "test.db"),
+                    "--mo2-root", str(tmp_path),
+                ])
+            assert exc_info.value.code == 1
+            mock_instance.stop.assert_awaited_once()
 
 
 class TestCli:

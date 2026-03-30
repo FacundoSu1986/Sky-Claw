@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -7,6 +9,7 @@ import time
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 import sys
 from pathlib import Path
+from typing import Set, Optional
 
 # Zero Trust AST Import (Local Repo Resolution)
 WORK_DIR = Path(__file__).resolve().parent.parent.parent
@@ -15,8 +18,11 @@ if str(AST_SKILLS_PATH) not in sys.path:
     sys.path.append(str(AST_SKILLS_PATH))
 import ast_guardian
 
+from sky_claw.security.auth_token_manager import AuthTokenManager
+
 # Set-up standard 2026 logging
 logger = logging.getLogger("SkyClaw.TelegramDaemon")
+
 
 class TelegramDaemon:
     """
@@ -25,19 +31,23 @@ class TelegramDaemon:
     Asynchronous client for the Telegram Gateway.
     Orchestrates command injection into the LLM Router.
     """
-    def __init__(self, router, session, gateway_url="ws://localhost:8080"):
+    def __init__(self, router, session, gateway_url="ws://localhost:8080",
+                 ui_broadcast: Optional["UIBroadcastServer"] = None):
         self.router = router
         self.session = session
         self.gateway_url = gateway_url
         self.ws = None
         self._is_running = False
-        
+        self._running_lock = asyncio.Lock()
+        self.ui_broadcast = ui_broadcast
+
         # Instanciando el guardián de seguridad (AST Purple Auditor)
         self.guardian = ast_guardian.ASTGuardian()
 
     async def start(self):
         """Infinite reconnection loop with exponential backoff."""
-        self._is_running = True
+        async with self._running_lock:
+            self._is_running = True
         backoff = 2.0
         logger.info(f"🚀 Iniciando TelegramDaemon (Cliente WS) -> {self.gateway_url}")
         
@@ -62,7 +72,8 @@ class TelegramDaemon:
 
     async def stop(self):
         """Graceful shutdown of the daemon."""
-        self._is_running = False
+        async with self._running_lock:
+            self._is_running = False
         if self.ws:
             await self.ws.close()
             logger.info("🛑 TelegramDaemon detenido de forma segura.")
@@ -103,7 +114,6 @@ class TelegramDaemon:
             return
 
         # Standardized chat session for Telegram bridge
-        # We use a static key to maintain conversation history in SQLite for this channel
         chat_id = f"tg-{data.get('metadata', {}).get('user_id', 'standard')}"
         
         try:
@@ -159,6 +169,15 @@ class TelegramDaemon:
                 }
                 await self.ws.send(json.dumps(res_payload))
                 logger.info(f"📤 Respuesta enviada al Gateway (ID Relacionado: {msg_id})")
+
+            # ── NEW: Broadcast to NiceGUI UI clients ──
+            if self.ui_broadcast:
+                await self.ui_broadcast.broadcast({
+                    "type": "agent_result",
+                    "action": "chat_response",
+                    "payload": {"text": response},
+                    "metadata": {"channel": "telegram", "reply_to": msg_id},
+                })
                 
         except Exception as e:
             logger.exception(f"❌ Error en Bridge Agent (Injection Layer): {e}")
@@ -170,3 +189,112 @@ class TelegramDaemon:
                     }
                 }
                 await self.ws.send(json.dumps(err_payload))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UI BROADCAST SERVER — WebSocket endpoint for NiceGUI clients
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class UIBroadcastServer:
+    """
+    Lightweight WS server that NiceGUI's AgentCommunicationClient connects to.
+    
+    Validates X-Auth-Token on upgrade, then pushes AGENT_RESULT / BROADCAST
+    events to all connected UI clients.
+    """
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 8765):
+        self.host = host
+        self.port = port
+        self._clients: Set = set()
+        self._server = None
+        self._auth = AuthTokenManager()
+        self._logger = logging.getLogger("SkyClaw.UIBroadcast")
+
+    async def start(self) -> None:
+        """Generate auth token and start the WS server."""
+        self._auth.generate()
+        self._server = await websockets.serve(
+            self._handler,
+            self.host,
+            self.port,
+        )
+        self._logger.info(
+            f"🌐 UIBroadcastServer listening on ws://{self.host}:{self.port}/ws/ui"
+        )
+
+    async def stop(self) -> None:
+        """Shutdown the server and revoke the token."""
+        if self._server:
+            self._server.close()
+            await self._server.wait_closed()
+        self._auth.revoke()
+        self._logger.info("🛑 UIBroadcastServer stopped.")
+
+    async def broadcast(self, message: dict) -> None:
+        """Send a JSON message to all connected UI clients."""
+        if not self._clients:
+            return
+
+        payload = json.dumps(message)
+        disconnected = set()
+
+        for ws in self._clients:
+            try:
+                await ws.send(payload)
+            except (ConnectionClosed, ConnectionClosedError):
+                disconnected.add(ws)
+            except Exception as e:
+                self._logger.error(f"Broadcast error: {e}")
+                disconnected.add(ws)
+
+        self._clients -= disconnected
+
+    async def _handler(self, websocket, path: str = "") -> None:
+        """Handle incoming UI client connections with token validation."""
+        # ── Auth gate ──
+        token = websocket.request_headers.get("X-Auth-Token", "")
+        if not self._auth.validate(token):
+            self._logger.warning(
+                f"🚫 Rejected UI client — invalid token from "
+                f"{websocket.remote_address}"
+            )
+            await websocket.close(4001, "Unauthorized")
+            return
+
+        self._clients.add(websocket)
+        self._logger.info(
+            f"✅ UI client connected ({len(self._clients)} total)"
+        )
+
+        try:
+            # Listen for commands from the UI (chat messages, etc.)
+            async for raw in websocket:
+                try:
+                    data = json.loads(raw)
+                    msg_type = data.get("type", "")
+
+                    if msg_type == "command":
+                        # Forward to router via an event or direct call
+                        self._logger.debug(
+                            f"📥 UI command received: {data.get('command')}"
+                        )
+                        # Emit ack
+                        await websocket.send(json.dumps({
+                            "id": data.get("id", str(uuid.uuid4())),
+                            "type": "ack",
+                            "status": "received",
+                            "timestamp": time.time(),
+                        }))
+
+                except json.JSONDecodeError:
+                    self._logger.error("Malformed JSON from UI client.")
+
+        except (ConnectionClosed, ConnectionClosedError):
+            pass
+        finally:
+            self._clients.discard(websocket)
+            self._logger.info(
+                f"UI client disconnected ({len(self._clients)} remaining)"
+            )
+

@@ -1,7 +1,9 @@
+from __future__ import annotations
+
+import abc
+import asyncio
 import logging
 import queue
-import asyncio
-import abc
 from typing import Dict, Any, List, Optional
 
 from nicegui import ui, app
@@ -63,10 +65,13 @@ class GUIBuilder:
                 self._build_console_panel()
 
     def _build_base_styles(self) -> None:
-        """Inyección segura de variables y fuentes al <head> del DOM."""
+        """Inyección segura de variables y fuentes al <head> del DOM.
+
+        Uses system font stacks as fallback to guarantee offline and
+        PyInstaller compatibility — no external CDN dependency.
+        """
         ui.add_head_html('''
         <style>
-            @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Inter:wght@400;500&family=JetBrains+Mono&display=swap');
             
             @keyframes fadeIn {
                 0% { opacity: 0; transform: translateY(10px); }
@@ -82,7 +87,7 @@ class GUIBuilder:
                 color: #d1d5db; 
                 margin: 0; padding: 0;
                 overflow: hidden;
-                font-family: 'Inter', sans-serif;
+                font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
             }
             /* SVG Dragon / Scroll motif subtle background overlay */
             body::before {
@@ -96,7 +101,7 @@ class GUIBuilder:
                 z-index: -1;
                 pointer-events: none;
             }
-            .es-title { font-family: 'Cinzel', serif; text-shadow: 0 2px 4px rgba(0,0,0,0.8); }
+            .es-title { font-family: 'Cinzel', 'Palatino Linotype', 'Book Antiqua', Palatino, serif; text-shadow: 0 2px 4px rgba(0,0,0,0.8); }
             .es-panel { 
                 background: rgba(20, 20, 20, 0.7) !important;
                 border: 1px solid rgba(184, 134, 11, 0.3);
@@ -115,7 +120,7 @@ class GUIBuilder:
                 background: rgba(15, 15, 15, 0.6) !important;
                 border: 1px solid rgba(184, 134, 11, 0.4);
                 color: #c5a059 !important;
-                font-family: 'Cinzel', serif;
+                font-family: 'Cinzel', 'Palatino Linotype', 'Book Antiqua', Palatino, serif;
                 text-transform: uppercase;
                 letter-spacing: 1px;
                 border-radius: 4px;
@@ -134,7 +139,7 @@ class GUIBuilder:
                 border-color: rgba(74, 60, 34, 0.5); 
                 color: #6a5c42 !important; 
             }
-            .console-text { font-family: 'JetBrains Mono', monospace; line-height: 1.6; }
+            .console-text { font-family: 'JetBrains Mono', 'Cascadia Code', 'Consolas', 'Courier New', monospace; line-height: 1.6; }
             
             /* Custom Scrollbar (WebKit) */
             ::-webkit-scrollbar { width: 6px; }
@@ -147,7 +152,7 @@ class GUIBuilder:
     def _build_header(self) -> None:
         with ui.row().classes('w-full justify-center items-center py-4 bg-transparent es-header-border shadow-2xl h-[80px]'):
             ui.label('SKY-CLAW').classes('es-title text-4xl font-bold text-[#c5a059] tracking-[0.2em]')
-            ui.label('AUTONOMOUS AGENT').classes('es-title text-xl text-[#8b6b33] mt-2 ml-4 tracking-widest opacity-80')
+            ui.label('AGENTE AUTÓNOMO').classes('es-title text-xl text-[#8b6b33] mt-2 ml-4 tracking-widest opacity-80')
 
     def _build_mod_panel(self) -> None:
         with ui.column().classes('w-1/3 h-full es-panel p-5 relative flex-nowrap'):
@@ -182,30 +187,35 @@ class GUIBuilder:
 # CONTROLADOR PRINCIPAL
 # =============================================================================
 
+MAX_CONSOLE_MESSAGES = 500
+
+
 class SkyClawGUI:
     """
     Gestor de la GUI. Enruta eventos entre NiceGUI y el Backend.
     Resuelve los problemas de colisión del Event Loop de Uvicorn.
     """
-    
+
     def __init__(self, ctx: Any) -> None:
         self.ctx = ctx
         self._running: bool = True
+        self._message_labels: list = []  # explicit tracking for O(1) eviction
+        self._is_thinking: bool = False
+        self._thinking_label: Optional[ui.label] = None
+        self._bg_tasks: set = set()
         self.btn_update: Optional[ui.button] = None
         self.btn_scan: Optional[ui.button] = None
         self.mod_list: Optional[ui.column] = None
         self.chat_display: Optional[ui.scroll_area] = None
         self.chat_content: Optional[ui.column] = None
         self.input: Optional[ui.input] = None
-        
+
         self.handlers: Dict[str, MessageHandlerStrategy] = {
             "response": ResponseHandler(),
             "modlist": ModlistHandler(),
             "success": SuccessHandler(),
             "error": ErrorHandler(),
         }
-        
-        app.on_shutdown(self._shutdown)
     
     async def _load_initial_mods(self) -> None:
         try:
@@ -222,19 +232,49 @@ class SkyClawGUI:
         self._running = False
 
     def custom_log_push(self, text: str, style_class: str = "text-[#d1d5db]") -> None:
-        """Inyecta texto tipado en el scroll_area de la consola y fuerza el scroll al final."""
+        """Inyecta texto tipado en la consola con buffer circular."""
+        self._hide_thinking()
+        # Evict oldest message labels when buffer is full
+        while len(self._message_labels) >= MAX_CONSOLE_MESSAGES:
+            oldest = self._message_labels.pop(0)
+            try:
+                self.chat_content.remove(oldest)
+            except (ValueError, KeyError):
+                pass
         with self.chat_content:
-            ui.label(text).classes(f'console-text text-sm break-words w-full mb-1 {style_class}')
+            lbl = ui.label(text).classes(f'console-text text-sm break-words w-full mb-1 {style_class}')
+        self._message_labels.append(lbl)
         self.chat_display.scroll_to(percent=1.0)
+
+    def _show_thinking(self) -> None:
+        """Show a visual indicator while the LLM is processing."""
+        if self._is_thinking:
+            return
+        self._is_thinking = True
+        with self.chat_content:
+            self._thinking_label = ui.label(
+                '⏳ Procesando...'
+            ).classes('console-text text-sm text-[#c5a059] animate-pulse mb-1')
+        self.chat_display.scroll_to(percent=1.0)
+
+    def _hide_thinking(self) -> None:
+        """Remove the thinking indicator."""
+        if self._thinking_label is not None:
+            try:
+                self.chat_content.remove(self._thinking_label)
+            except (ValueError, KeyError):
+                pass
+            self._thinking_label = None
+        self._is_thinking = False
 
     def send_message(self) -> None:
         text = self.input.value.strip()
         if not text:
             return
-        
+
         self.custom_log_push(f"> {text}", "text-white font-bold")
         self.input.value = ""
-        # Delegamos al hilo de procesamiento lógico
+        self._show_thinking()
         self.ctx.logic_queue.put(("chat", text))
 
     def fire_ejecutar(self) -> None:
@@ -243,8 +283,6 @@ class SkyClawGUI:
             self.send_message()
         else:
             if hasattr(self, 'on_ejecutar'):
-                if getattr(self, '_bg_tasks', None) is None:
-                    self._bg_tasks = set()
                 task = asyncio.create_task(self.on_ejecutar({"type": "EJECUTAR", "payload": {}}))
                 self._bg_tasks.add(task)
                 task.add_done_callback(self._bg_tasks.discard)

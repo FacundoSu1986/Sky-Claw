@@ -56,9 +56,9 @@ class TestMicroBatching:
     @pytest.mark.asyncio
     async def test_upsert_mods_batch(self, adb: AsyncModRegistry) -> None:
         rows = [
-            (1001, "ModA", "1.0", "auth1", "cat1", ""),
-            (1002, "ModB", "2.0", "auth2", "cat2", ""),
-            (1003, "ModC", "3.0", "auth3", "cat3", ""),
+            (1001, "ModA", "1.0", "auth1", "cat1", "", False, False),
+            (1002, "ModB", "2.0", "auth2", "cat2", "", False, False),
+            (1003, "ModC", "3.0", "auth3", "cat3", "", False, False),
         ]
         await adb.upsert_mods_batch(rows)
         for nexus_id, name, *_ in rows:

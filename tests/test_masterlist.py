@@ -69,7 +69,7 @@ class TestNetworkGatewayRequest:
         resp = await gw.request("GET", "https://www.nexusmods.com/test", mock_session)
         assert resp is mock_resp
         mock_session.request.assert_awaited_once_with(
-            "GET", "https://www.nexusmods.com/test"
+            "GET", "https://www.nexusmods.com/test", allow_redirects=False
         )
 
     @pytest.mark.asyncio

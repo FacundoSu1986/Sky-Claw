@@ -68,7 +68,7 @@ class LLMRouter:
         # Legacy parameter — ignored when ``provider`` is given.
         api_key: str = "",
         registry_db: str = "mod_registry.db",
-        mo2_profile: str = "/mnt/c/Modding/MO2/profiles/Default",
+        mo2_profile: str = "",
         vault: CredentialVault | None = None,
     ) -> None:
         if provider is None and not vault:
@@ -86,8 +86,6 @@ class LLMRouter:
         self._system_prompt = system_prompt
         self._max_context = max_context
         self._conn: aiosqlite.Connection | None = None
-        self._message_queue: asyncio.Queue[tuple[str, str, str, float]] = asyncio.Queue()
-        self._batch_task: asyncio.Task[None] | None = None
         
         # Standard 2026 Orchestration Layers
         self._semantic_router = SemanticRouter()
@@ -102,63 +100,12 @@ class LLMRouter:
         self._conn = await aiosqlite.connect(self._db_path)
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.executescript(_HISTORY_SCHEMA)
-        self._batch_task = asyncio.create_task(self._process_batch_commits())
 
     async def close(self) -> None:
-        """Close the history database and flush pending commits atomically."""
-        if self._batch_task:
-            self._batch_task.cancel()
-            try:
-                await self._batch_task
-            except asyncio.CancelledError:
-                pass
-            
+        """Close the history database."""
         if self._conn is not None:
-             # Atomic final flush of message queue
-            pending = []
-            while not self._message_queue.empty():
-                 pending.append(self._message_queue.get_nowait())
-            
-            if pending:
-                try:
-                    await self._conn.executemany(
-                        "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)", 
-                        pending
-                    )
-                    await self._conn.commit()
-                except Exception as exc:
-                    logger.error("Failed to perform final atomic flush: %s", exc)
-
             await self._conn.close()
             self._conn = None
-
-    async def _process_batch_commits(self, batch_size: int = 5, timeout: float = 30.0) -> None:
-        """Background worker to commit messages in batches or on timeout."""
-        batch = []
-        while True:
-            try:
-                try:
-                    # Wait for a message with timeout
-                    msg = await asyncio.wait_for(self._message_queue.get(), timeout=timeout)
-                    batch.append(msg)
-                except asyncio.TimeoutError:
-                    # Timeout reached, commit whatever we have
-                    pass
-
-                if batch and (len(batch) >= batch_size or self._message_queue.empty()):
-                    if self._conn:
-                        await self._conn.executemany(
-                            "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-                            batch
-                        )
-                        await self._conn.commit()
-                        logger.debug("Committed batch of %d messages to SQLite", len(batch))
-                    batch = []
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.error("Error in message batch worker: %s", exc)
-                await asyncio.sleep(1)
 
     # ------------------------------------------------------------------
     # LLM Hot-Swapping Factory Pattern (SRE Phase 1)
@@ -350,10 +297,14 @@ class LLMRouter:
     async def _save_message(
         self, chat_id: str, role: str, content: str
     ) -> None:
-        """Enqueues a message for batch persistence."""
+        """Persist a message to the history database immediately."""
         if self._conn is None:
             raise RuntimeError("Router database is not open")
-        await self._message_queue.put((chat_id, role, content, time.time()))
+        await self._conn.execute(
+            "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            (chat_id, role, content, time.time()),
+        )
+        await self._conn.commit()
 
     async def _load_context(self, chat_id: str) -> list[dict[str, Any]]:
         if self._conn is None:

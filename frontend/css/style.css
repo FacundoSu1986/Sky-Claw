@@ -255,6 +255,11 @@ body {
     transform: translateY(-2px);
 }
 
+#send-btn:focus-visible {
+    outline: 2px solid var(--text);
+    outline-offset: 2px;
+}
+
 #send-btn:disabled {
     background: #333;
     color: #666;
@@ -330,4 +335,28 @@ body {
 
 .telemetry-hud.disconnected b {
     color: var(--amber);
+}
+
+/* Indicador de "Agente Escribiendo..." */
+.message.typing-indicator {
+    color: var(--amber);
+    font-style: italic;
+    background: transparent;
+    border: none;
+    animation: typingPulse 1.5s infinite;
+}
+
+@keyframes typingPulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+}
+
+/* Reducción de Movimiento */
+@media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
 }

@@ -421,8 +421,9 @@ class TestDownload:
     @pytest.mark.asyncio
     async def test_md5_mismatch_raises_and_cleans_up(self, tmp_path: pathlib.Path) -> None:
         content = b"real data"
-        resp = _make_aiohttp_response(content=content)
-        session = _make_session(resp)
+        # Provide 5 responses for 5 retry attempts (MD5ValidationError triggers retries)
+        responses = [_make_aiohttp_response(content=content) for _ in range(5)]
+        session = _make_session(*responses)
         d = _make_downloader(tmp_path)
         fi = _make_file_info(
             file_name="bad.zip",

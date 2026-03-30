@@ -166,7 +166,7 @@ class TestTelegramWebhook:
 
         # Should attempt to send error message to user.
         mock_sender.send.assert_awaited_once_with(
-            123, "An internal error occurred. Please try again."
+            123, "\u26a0\ufe0f El agente ha sufrido un error interno en la orquestaci\u00f3n. Reiniciando subsistema..."
         )
 
 

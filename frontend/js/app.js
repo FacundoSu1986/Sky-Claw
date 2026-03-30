@@ -13,8 +13,12 @@ const statusText = document.getElementById('status-text');
 const cpuVal = document.getElementById('cpu-val');
 const ramVal = document.getElementById('ram-val');
 const telemetryHud = document.getElementById('telemetry-hud');
+const commandForm = document.getElementById('command-form');
 
 let socket = null;
+let reconnectDelay = 1000;
+const MAX_RECONNECT_DELAY = 10000;
+let typingIndicatorObj = null;
 
 /**
  * Inicializa la conexión con el Gateway
@@ -26,6 +30,7 @@ function initConnection() {
 
     socket.onopen = () => {
         console.log('[UI] Conexión establecida con el Gateway.');
+        reconnectDelay = 1000; // Reset backoff tras conectar
     };
 
     socket.onmessage = (event) => {
@@ -40,9 +45,10 @@ function initConnection() {
     };
 
     socket.onclose = () => {
-        console.warn('[UI] Conexión cerrada. Reintentando en 3 segundos...');
+        console.warn(`[UI] Conexión cerrada. Reintentando en ${reconnectDelay}ms...`);
         setBufferingState(true);
-        setTimeout(initConnection, 3000);
+        setTimeout(initConnection, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 1.5, MAX_RECONNECT_DELAY);
     };
 
     socket.onerror = (err) => {
@@ -76,6 +82,7 @@ function handleMessage(data) {
 
     // Si el mensaje es una respuesta del Agente (Daemon Python)
     if (data.type === 'RESPONSE' || data.type === 'QUERY' || data.content) {
+        removeTypingIndicator();
         renderMessage('agent', data.content || data.message || JSON.stringify(data));
     }
 }
@@ -116,9 +123,10 @@ function renderMessage(sender, content) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${sender}`;
     
-    // Si es del agente, usar Marked.js para el Markdown
+    // Si es del agente, usar Marked.js para el Markdown y purificar
     if (sender === 'agent' && window.marked) {
-        messageDiv.innerHTML = marked.parse(content);
+        const rawContent = marked.parse(content);
+        messageDiv.innerHTML = window.DOMPurify ? DOMPurify.sanitize(rawContent) : rawContent;
     } else {
         messageDiv.innerText = content;
     }
@@ -135,9 +143,10 @@ function renderMessage(sender, content) {
 /**
  * Envía un comando al Gateway
  */
-function sendCommand() {
+function sendCommand(e) {
+    if (e) e.preventDefault();
     const text = commandInput.value.trim();
-    if (!text || commandInput.disabled) return;
+    if (!text || commandInput.disabled || !socket || socket.readyState !== WebSocket.OPEN) return;
 
     const payload = {
         type: 'QUERY',
@@ -149,18 +158,40 @@ function sendCommand() {
     // Renderizar mi propia pregunta localmente
     renderMessage('user', text);
     
-    // Enviar a través del socket
     socket.send(JSON.stringify(payload));
     
+    // Mostrar indicador de carga/espera
+    showTypingIndicator();
+
     // Limpiar input
     commandInput.value = '';
 }
 
+function showTypingIndicator() {
+    removeTypingIndicator();
+    typingIndicatorObj = document.createElement('div');
+    typingIndicatorObj.className = 'message typing-indicator';
+    typingIndicatorObj.innerText = 'El Agente está pensando...';
+    chatLog.appendChild(typingIndicatorObj);
+    chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: 'smooth' });
+}
+
+function removeTypingIndicator() {
+    if (typingIndicatorObj && typingIndicatorObj.parentNode) {
+        typingIndicatorObj.parentNode.removeChild(typingIndicatorObj);
+        typingIndicatorObj = null;
+    }
+}
+
 // Event Listeners
-sendBtn.addEventListener('click', sendCommand);
-commandInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') sendCommand();
-});
+if (commandForm) {
+    commandForm.addEventListener('submit', sendCommand);
+} else {
+    sendBtn.addEventListener('click', sendCommand);
+    commandInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') sendCommand(e);
+    });
+}
 
 // Inicio del ciclo de vida
 document.addEventListener('DOMContentLoaded', () => {
