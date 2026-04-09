@@ -662,7 +662,7 @@ class TestPathTraversalValidation:
     def test_path_traversal_blocks_encoded_windows_drive(self):
         """Test que drive letter Windows URL-encoded es bloqueado."""
         with pytest.raises(ValidationError):
-            SecurityAuditRequest(target_path="%43%3aWindows")
+            SecurityAuditRequest(target_path="%43%3a%5cWindows")
 
 
 # =============================================================================

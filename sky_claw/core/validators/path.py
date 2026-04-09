@@ -156,7 +156,7 @@ class PathTraversalValidator:
         try:
             decoded_once = urllib.parse.unquote(path)
             decoded_twice = urllib.parse.unquote(decoded_once)
-            for decoded_path in dict.fromkeys([decoded_once, decoded_twice]):
+            for decoded_path in [decoded_once, decoded_twice]:
                 if decoded_path == path:
                     continue
                 for pattern in PATH_TRAVERSAL_PATTERNS:
@@ -191,7 +191,7 @@ class PathTraversalValidator:
                             error_message="Patrón de path Windows detectado en path codificado",
                             is_absolute=True,
                         )
-        except Exception:
+        except (ValueError, UnicodeDecodeError):
             pass  # Si el decode falla, continuar con la validación original
 
         # Paso 3: Verificar si es ruta absoluta
