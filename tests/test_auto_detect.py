@@ -316,17 +316,17 @@ class TestInstallToolsEndpoint:
 
 class TestSystemPromptZeroConfig:
     def test_system_prompt_spanish(self) -> None:
-        from sky_claw.__main__ import SYSTEM_PROMPT
+        from sky_claw.app_context import SYSTEM_PROMPT
 
         assert "español" in SYSTEM_PROMPT.lower()
 
     def test_system_prompt_default_profile(self) -> None:
-        from sky_claw.__main__ import SYSTEM_PROMPT
+        from sky_claw.app_context import SYSTEM_PROMPT
 
         assert "Default" in SYSTEM_PROMPT
 
     def test_system_prompt_offers_install(self) -> None:
-        from sky_claw.__main__ import SYSTEM_PROMPT
+        from sky_claw.app_context import SYSTEM_PROMPT
 
         assert "instalarla" in SYSTEM_PROMPT
 

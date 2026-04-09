@@ -54,8 +54,8 @@ class TestSyncEngineResilience:
     def sync_engine(self, mock_registry, mock_controller, mock_client, mock_downloader, mock_hitl):
         """Fixture que proporciona SyncEngine con todos los mocks."""
         engine = SyncEngine(
-            mo2_controller=mock_controller,
-            masterlist_client=mock_client,
+            mo2=mock_controller,
+            masterlist=mock_client,
             registry=mock_registry,
             downloader=mock_downloader,
             hitl=mock_hitl,
@@ -84,7 +84,7 @@ class TestSyncEngineResilience:
         assert call_count == 10
         
         # Verify metrics updated
-        assert sync_engine.metrics.error_count == 10
+        assert await sync_engine.metrics.get_error_count() == 10
 
     @pytest.mark.asyncio
     async def test_network_timeouts(self, sync_engine, mock_registry):
@@ -101,7 +101,7 @@ class TestSyncEngineResilience:
         await asyncio.sleep(0.3)
         
         # Verify errors captured
-        assert sync_engine.metrics.error_count >= 5
+        assert await sync_engine.metrics.get_error_count() >= 5
 
     @pytest.mark.asyncio
     async def test_memory_exceptions(self, sync_engine, mock_registry):
@@ -117,7 +117,7 @@ class TestSyncEngineResilience:
         await asyncio.sleep(0.3)
         
         # Verify errors captured
-        assert sync_engine.metrics.error_count >= 3
+        assert await sync_engine.metrics.get_error_count() >= 3
 
     @pytest.mark.asyncio
     async def test_orchestrator_remains_operational_after_all_failures(self, sync_engine, mock_registry):
@@ -140,12 +140,13 @@ class TestSyncEngineResilience:
         await asyncio.sleep(0.3)
         
         # Verify orchestrator still works
-        assert sync_engine.metrics.error_count >= 3
+        assert await sync_engine.metrics.get_error_count() >= 3
         
         # Verify error types tracked
-        assert "ValueError" in sync_engine.metrics.error_types
-        assert "RuntimeError" in sync_engine.metrics.error_types
-        assert "KeyError" in sync_engine.metrics.error_types
+        error_types = await sync_engine.metrics.get_error_types()
+        assert "ValueError" in error_types
+        assert "RuntimeError" in error_types
+        assert "KeyError" in error_types
 
 
 if __name__ == "__main__":

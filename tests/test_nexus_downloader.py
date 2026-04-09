@@ -861,7 +861,7 @@ class TestDownloadModMetadataFailure:
         self, tool_registry: AsyncToolRegistry
     ) -> None:
         with patch(
-            "sky_claw.agent.tools.aiohttp.ClientSession"
+            "sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession"
         ) as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -911,7 +911,7 @@ class TestDownloadModHITLDenied:
         fi = _make_file_info(nexus_id=10, file_id=20, file_name="denied.zip")
 
         with patch(
-            "sky_claw.agent.tools.aiohttp.ClientSession"
+            "sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession"
         ) as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -953,7 +953,7 @@ class TestDownloadModHITLDenied:
         )
         fi = _make_file_info(nexus_id=11, file_id=21, file_name="timeout.zip")
 
-        with patch("sky_claw.agent.tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -1011,7 +1011,7 @@ class TestDownloadModApproved:
             enqueued.append(task)
             return task
 
-        with patch("sky_claw.agent.tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -1051,7 +1051,11 @@ class TestDownloadModApproved:
         )
         fi = _make_file_info(nexus_id=1, file_id=1, file_name="f.zip")
 
-        with patch("sky_claw.agent.tools.aiohttp.ClientSession") as mock_session_cls:
+        def _discard_enqueue(coro: Any, context: str = "") -> MagicMock:
+            coro.close()
+            return MagicMock()
+
+        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -1059,7 +1063,7 @@ class TestDownloadModApproved:
 
             with patch.object(downloader, "get_file_info", return_value=fi):
                 with patch.object(guard, "request_approval", return_value=Decision.APPROVED):
-                    with patch.object(sync_engine, "enqueue_download", return_value=MagicMock()):
+                    with patch.object(sync_engine, "enqueue_download", side_effect=_discard_enqueue):
                         result = json.loads(
                             await registry.execute(
                                 "download_mod", {"nexus_id": 1, "file_id": 1}

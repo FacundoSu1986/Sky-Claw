@@ -386,7 +386,7 @@ class TestApiKeyInjection:
 
 class TestSystemPrompt:
     def test_system_prompt_includes_default_profile(self) -> None:
-        from sky_claw.__main__ import SYSTEM_PROMPT
+        from sky_claw.app_context import SYSTEM_PROMPT
 
         assert "Default" in SYSTEM_PROMPT
         assert "perfil" in SYSTEM_PROMPT.lower()

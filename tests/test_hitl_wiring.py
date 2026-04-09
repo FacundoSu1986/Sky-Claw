@@ -31,7 +31,7 @@ from sky_claw.security.path_validator import PathValidator
 def _make_update(update_id: int, chat_id: int = 999, text: str = "hello") -> dict:
     return {
         "update_id": update_id,
-        "message": {"text": text, "chat": {"id": chat_id}},
+        "message": {"text": text, "chat": {"id": chat_id}, "from": {"id": chat_id}},
     }
 
 
@@ -50,6 +50,7 @@ def _make_router(response: str = "ok") -> MagicMock:
 def _make_webhook(
     hitl: HITLGuard | None = None,
     router_response: str = "llm response",
+    authorized_user_id: int | None = 999,
 ) -> tuple[TelegramWebhook, MagicMock, AsyncMock]:
     router = _make_router(router_response)
     sender = _make_sender()
@@ -59,6 +60,7 @@ def _make_webhook(
         sender=sender,
         session=session,
         hitl=hitl,
+        authorized_user_id=authorized_user_id,
     )
     return webhook, router, sender
 
@@ -426,8 +428,8 @@ class TestAppContextWiring:
 
         try:
             assert ctx.hitl is not None, "HITLGuard should always be created"
-            assert ctx.downloader is not None, "NexusDownloader should be created when NEXUS_API_KEY is set"
-            assert ctx.downloader.staging_dir == tmp_path / "staging"
+            assert ctx.network.downloader is not None, "NexusDownloader should be created when NEXUS_API_KEY is set"
+            assert ctx.network.downloader.staging_dir == tmp_path / "staging"
         finally:
             await ctx.stop()
 
@@ -464,7 +466,7 @@ class TestAppContextWiring:
             await ctx.start_full()
 
         try:
-            assert ctx.downloader is None
+            assert ctx.network.downloader is None
             assert ctx.hitl is not None
         finally:
             await ctx.stop()
@@ -637,6 +639,7 @@ class TestEndToEndHITLFlow:
             sender=sender,
             session=session,
             hitl=guard,
+            authorized_user_id=operator_chat_id,
         )
         app = aiohttp.web.Application()
         app.router.add_post("/webhook", webhook.handle_update)
@@ -656,7 +659,7 @@ class TestEndToEndHITLFlow:
         tool_result: dict[str, Any] = {}
 
         async def _run_tool() -> None:
-            with patch("sky_claw.agent.tools.aiohttp.ClientSession") as mock_cls:
+            with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
                 mock_sess = AsyncMock()
                 mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
                 mock_sess.__aexit__ = AsyncMock(return_value=False)
@@ -733,6 +736,7 @@ class TestEndToEndHITLFlow:
         webhook = TelegramWebhook(
             router=_make_router(), sender=sender,
             session=MagicMock(spec=aiohttp.ClientSession), hitl=guard,
+            authorized_user_id=999,
         )
         app = aiohttp.web.Application()
         app.router.add_post("/webhook", webhook.handle_update)
@@ -742,7 +746,7 @@ class TestEndToEndHITLFlow:
         tool_result: dict[str, Any] = {}
 
         async def _run_tool() -> None:
-            with patch("sky_claw.agent.tools.aiohttp.ClientSession") as mock_cls:
+            with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
                 mock_sess = AsyncMock()
                 mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
                 mock_sess.__aexit__ = AsyncMock(return_value=False)
