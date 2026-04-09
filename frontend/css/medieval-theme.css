@@ -1,5 +1,8 @@
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   SKY-CLAW — ELDER SCROLLS V MEDIEVAL FANTASY THEME
+   SKY-CLAW — ELDER SCROLLS V MEDIEVAL FANTASY THEME  [PRIMARY STYLESHEET]
+   Loaded exclusively by frontend/index.html. This is the single source of truth
+   for all Sky-Claw UI styles. frontend/css/style.css has been removed as it was
+   entirely superseded by this file.
    ═══════════════════════════════════════════════════════════════════════════════════
    Design System: Medieval Fantasy / The Elder Scrolls V
    Palette: Parchment, Wood, Gold, Leather

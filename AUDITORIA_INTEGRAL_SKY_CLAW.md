@@ -1,3 +1,5 @@
+> Documento consolidado. Última revisión: Abril 2026.
+
 # 📋 INFORME DE AUDITORÍA INTEGRAL - SKY CLAW v1.4.26.16.32
 
 **Fecha:** 2026-04-03  
