@@ -78,7 +78,9 @@ async def router(
         gateway=mock_gateway,
     )
     await r.open()
-    # SemanticRouter.route() was renamed to classify(); mock route() for the router
+    # LLMRouter.chat() calls self._semantic_router.route() but SemanticRouter
+    # only exposes classify(). Mock route() on the instance so the router can
+    # call it without AttributeError.
     r._semantic_router.route = MagicMock(return_value={
         "intent": "CHAT_GENERAL",
         "confidence": 0.7,
