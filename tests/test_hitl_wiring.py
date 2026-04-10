@@ -426,8 +426,8 @@ class TestAppContextWiring:
 
         try:
             assert ctx.hitl is not None, "HITLGuard should always be created"
-            assert ctx.downloader is not None, "NexusDownloader should be created when NEXUS_API_KEY is set"
-            assert ctx.downloader.staging_dir == tmp_path / "staging"
+            assert ctx.network.downloader is not None, "NexusDownloader should be created when NEXUS_API_KEY is set"
+            assert ctx.network.downloader.staging_dir == tmp_path / "staging"
         finally:
             await ctx.stop()
 
@@ -464,7 +464,7 @@ class TestAppContextWiring:
             await ctx.start_full()
 
         try:
-            assert ctx.downloader is None
+            assert ctx.network.downloader is None
             assert ctx.hitl is not None
         finally:
             await ctx.stop()

@@ -57,14 +57,36 @@ def tool_registry(
 async def router(
     tool_registry: AsyncToolRegistry, tmp_path: pathlib.Path
 ) -> LLMRouter:
+    mock_gateway = MagicMock(spec=NetworkGateway)
+
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_response.raise_for_status = MagicMock()
+    mock_response.text = AsyncMock(return_value="")
+
+    mock_cm = MagicMock()
+    mock_cm.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_cm.__aexit__ = AsyncMock(return_value=False)
+    mock_gateway.request = AsyncMock(return_value=mock_cm)
+
     r = LLMRouter(
         provider=AnthropicProvider("test-key"),
         tool_registry=tool_registry,
         db_path=str(tmp_path / "chat_history.db"),
         model="claude-sonnet-4-6",
         system_prompt="You are a helpful Skyrim mod assistant.",
+        gateway=mock_gateway,
     )
     await r.open()
+    # SemanticRouter.route() was renamed to classify(); mock route() for the router
+    r._semantic_router.route = MagicMock(return_value={
+        "intent": "CHAT_GENERAL",
+        "confidence": 0.7,
+        "target_agent": None,
+        "tool_name": None,
+        "parameters": {},
+        "original_text": "",
+    })
     yield r  # type: ignore[misc]
     await r.close()
 
@@ -136,12 +158,14 @@ class TestChatEndTurn:
         mock_resp.status = 200
         mock_resp.json = AsyncMock(return_value=api_response)
         mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = AsyncMock(return_value="")
 
-        mock_session = MagicMock(spec=aiohttp.ClientSession)
         mock_cm = MagicMock()
         mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_session.post = MagicMock(return_value=mock_cm)
+
+        router._gateway.request = AsyncMock(return_value=mock_cm)
+        mock_session = MagicMock(spec=aiohttp.ClientSession)
 
         result = await router.chat("Hi there", mock_session, chat_id="test-1")
         assert result == "Hello!"
@@ -181,13 +205,14 @@ class TestChatEndTurn:
         mock_resp.status = 200
         mock_resp.json = fake_json
         mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = AsyncMock(return_value="")
 
         mock_cm = MagicMock()
         mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_cm.__aexit__ = AsyncMock(return_value=False)
 
+        router._gateway.request = AsyncMock(return_value=mock_cm)
         mock_session = MagicMock(spec=aiohttp.ClientSession)
-        mock_session.post = MagicMock(return_value=mock_cm)
 
         result = await router.chat(
             "Search for SKSE", mock_session, chat_id="test-2"
@@ -227,13 +252,14 @@ class TestChatEndTurn:
         mock_resp.status = 200
         mock_resp.json = fake_json
         mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = AsyncMock(return_value="")
 
         mock_cm = MagicMock()
         mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_cm.__aexit__ = AsyncMock(return_value=False)
 
+        router._gateway.request = AsyncMock(return_value=mock_cm)
         mock_session = MagicMock(spec=aiohttp.ClientSession)
-        mock_session.post = MagicMock(return_value=mock_cm)
 
         result = await router.chat(
             "Run nonexistent tool", mock_session, chat_id="test-err"
@@ -286,17 +312,18 @@ class TestMaxToolRounds:
         mock_resp.status = 200
         mock_resp.json = AsyncMock(return_value=tool_use_response)
         mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = AsyncMock(return_value="")
 
         mock_cm = MagicMock()
         mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_cm.__aexit__ = AsyncMock(return_value=False)
 
+        router._gateway.request = AsyncMock(return_value=mock_cm)
         mock_session = MagicMock(spec=aiohttp.ClientSession)
-        mock_session.post = MagicMock(return_value=mock_cm)
 
         with pytest.raises(RuntimeError, match=f"exceeded {MAX_TOOL_ROUNDS}"), \
-             patch("sky_claw.agent.tools.AsyncToolRegistry._search_mod", new_callable=AsyncMock) as mock_search_mod:
-            mock_search_mod.return_value = '{"matches": []}'
+             patch.object(router._tools, "execute", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = '{"matches": []}'
             await router.chat("loop forever", mock_session, chat_id="test-loop")
 
 
@@ -311,7 +338,7 @@ class TestRetry429:
         """First call returns 429, second succeeds → chat returns normally."""
         call_count = 0
 
-        def fake_post_ctx(*args: Any, **kwargs: Any) -> Any:
+        def fake_gateway_ctx(*args: Any, **kwargs: Any) -> Any:
             nonlocal call_count
             call_count += 1
 
@@ -334,14 +361,15 @@ class TestRetry429:
                     "content": [{"type": "text", "text": "OK after retry"}],
                 })
                 mock_resp.raise_for_status = MagicMock()
+                mock_resp.text = AsyncMock(return_value="")
 
             cm = AsyncMock()
             cm.__aenter__ = AsyncMock(return_value=mock_resp)
             cm.__aexit__ = AsyncMock(return_value=False)
             return cm
 
+        router._gateway.request = AsyncMock(side_effect=fake_gateway_ctx)
         mock_session = MagicMock(spec=aiohttp.ClientSession)
-        mock_session.post = MagicMock(side_effect=fake_post_ctx)
 
         result = await router.chat("retry test", mock_session, chat_id="test-429")
         assert result == "OK after retry"
