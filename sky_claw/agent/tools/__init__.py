@@ -13,6 +13,8 @@ import logging
 import pathlib
 from typing import Any
 
+from sky_claw.loot.cli import LOOTRunner, LOOTConfig
+
 from .schemas import (
     SearchModParams,
     ProfileParams,
@@ -110,6 +112,36 @@ class AsyncToolRegistry:
             {"name": td.name, "description": td.description, "input_schema": td.input_schema}
             for td in self._tools.values()
         ]
+
+    async def _download_mod(self, nexus_id: int, file_id: int | None = None) -> str:
+        """Download a mod with HITL approval (P0-2: re-fetches fresh URL on execute)."""
+        return await download_mod(
+            self._downloader, self._hitl, self._sync_engine, nexus_id, file_id
+        )
+
+    async def _run_loot_sort(self, profile: str) -> str:
+        """Run LOOT sort, auto-initializing LOOTRunner from loot_exe if needed."""
+        runner = self._loot_runner
+        if runner is None and self._loot_exe is not None:
+            try:
+                config = LOOTConfig(loot_exe=self._loot_exe, game_path=self._mo2.root)
+                runner = LOOTRunner(config)
+            except Exception as exc:
+                return json.dumps({"error": str(exc)})
+        if runner is None:
+            return json.dumps({"error": "LOOT runner is not configured"})
+        try:
+            result = await runner.sort()
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+        return json.dumps({
+            "profile": profile,
+            "success": result.success,
+            "return_code": result.return_code,
+            "sorted_plugins": result.sorted_plugins,
+            "warnings": result.warnings,
+            "errors": result.errors,
+        })
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> str:
         td = self._tools.get(name)
@@ -274,6 +306,8 @@ class AsyncToolRegistry:
 __all__ = [
     "AsyncToolRegistry",
     "ToolDescriptor",
+    "LOOTRunner",
+    "LOOTConfig",
     # re-exports
     "SearchModParams",
     "ProfileParams",

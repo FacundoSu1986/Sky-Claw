@@ -396,14 +396,14 @@ class TestTimeout:
 class TestNotifyFnFailure:
     @pytest.mark.asyncio
     async def test_notify_raises_returns_timeout(self) -> None:
-        """notify_fn raising any exception → fail-closed TIMEOUT."""
+        """notify_fn raising an exception → exception propagates to caller."""
 
         async def broken(req: HITLRequest) -> None:
             raise RuntimeError("Telegram unreachable")
 
         guard = HITLGuard(notify_fn=broken, timeout=5)
-        decision = await guard.request_approval(reason="notify_fail")
-        assert decision == Decision.TIMEOUT
+        with pytest.raises(RuntimeError, match="Telegram unreachable"):
+            await guard.request_approval(reason="notify_fail")
 
     @pytest.mark.asyncio
     async def test_notify_raises_clears_pending(self) -> None:
@@ -414,16 +414,17 @@ class TestNotifyFnFailure:
             raise ConnectionRefusedError("no Telegram")
 
         guard = HITLGuard(notify_fn=broken, timeout=5)
-        await guard.request_approval(reason="notify_fail_cleanup")
+        with pytest.raises(ConnectionRefusedError):
+            await guard.request_approval(reason="notify_fail_cleanup")
         assert captured_id[0] not in guard._pending
 
     @pytest.mark.asyncio
     async def test_notify_mock_called_once_then_timeout(self) -> None:
         mock_notify = AsyncMock(side_effect=OSError("network down"))
         guard = HITLGuard(notify_fn=mock_notify, timeout=5)
-        decision = await guard.request_approval(reason="mock_fail")
+        with pytest.raises(OSError, match="network down"):
+            await guard.request_approval(reason="mock_fail")
         mock_notify.assert_called_once()
-        assert decision == Decision.TIMEOUT
 
     @pytest.mark.asyncio
     async def test_none_notify_fn_times_out_normally(self) -> None:
@@ -438,8 +439,8 @@ class TestNotifyFnFailure:
             raise ValueError("bad config")
 
         guard = HITLGuard(notify_fn=raise_value_error, timeout=5)
-        decision = await guard.request_approval(reason="value_error")
-        assert decision == Decision.TIMEOUT
+        with pytest.raises(ValueError, match="bad config"):
+            await guard.request_approval(reason="value_error")
 
 
 # ---------------------------------------------------------------------------

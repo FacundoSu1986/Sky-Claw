@@ -72,7 +72,7 @@ class XEditWriteError(XEditError):
     pass
 
 
-class XEditTimeoutError(XEditError):
+class XEditTimeoutError(XEditError, RuntimeError):
     """Raised when xEdit execution times out."""
     pass
 

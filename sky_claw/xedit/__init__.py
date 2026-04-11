@@ -34,7 +34,7 @@ from sky_claw.xedit.runner import (
     ScriptExecutionResult,
 )
 from sky_claw.xedit.output_parser import XEditOutputParser, XEditResult
-from sky_claw.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport, RecordConflict
+from sky_claw.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport, RecordConflict, PluginConflictPair
 from sky_claw.xedit.patch_orchestrator import (
     PatchingError,
     StrategySelectionError,
@@ -68,6 +68,7 @@ __all__ = [
     "ConflictAnalyzer",
     "ConflictReport",
     "RecordConflict",
+    "PluginConflictPair",
     # Patch orchestrator
     "PatchingError",
     "StrategySelectionError",
