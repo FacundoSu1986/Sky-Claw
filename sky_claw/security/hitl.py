@@ -87,15 +87,15 @@ class HITLGuard:
 
     async def request_approval(
         self,
-        reason: str,
+        request_id: str | None = None,
+        reason: str = "",
         url: str | None = None,
         detail: str = "",
-        request_id: str | None = None,
     ) -> Decision:
         """Pause execution and wait for operator authorisation.
 
-        The *request_id* is generated internally for security; callers
-        should not provide their own.
+        *request_id* is a caller-supplied identifier (e.g. ``"download-10-20"``).
+        If not provided, a unique UUID is generated automatically.
 
         Returns the :class:`Decision` made by the operator, or
         ``Decision.TIMEOUT`` if no response arrives in time.
@@ -121,7 +121,7 @@ class HITLGuard:
             logger.error("HITL: notify_fn failed: %s", exc)
             async with self._lock:
                 self._pending.pop(request_id, None)
-            return Decision.TIMEOUT
+            raise
 
         logger.info("HITL: awaiting operator decision for %s", request_id)
 
