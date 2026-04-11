@@ -49,7 +49,7 @@ jobs:
           pip install bandit pip-audit
 
       - name: Bandit check
-        # --exit-zero: report findings without failing pipeline (TODO: fix High findings and remove flag)
+        # --exit-zero: report findings without failing pipeline
         run: bandit -r sky_claw/ -ll --exit-zero
 
       - name: Upgrade vulnerable dependencies
