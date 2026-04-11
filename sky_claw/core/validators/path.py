@@ -8,6 +8,7 @@ contra ataques de path traversal que podrían permitir acceso a archivos sensibl
 import logging
 import pathlib
 import re
+import urllib.parse
 from dataclasses import dataclass
 from typing import Optional, Set
 
@@ -15,10 +16,17 @@ logger = logging.getLogger("SkyClaw.validators.path")
 
 # Patrones de path traversal
 PATH_TRAVERSAL_PATTERNS = [
-    re.compile(r"\.\./", re.IGNORECASE),       # ../
-    re.compile(r"\.\.\\", re.IGNORECASE),      # ..\
-    re.compile(r"\.\.%2[fF]"),                  # ..%2f (URL encoded /)
-    re.compile(r"\.\.%5[cC]"),                  # ..%5c (URL encoded \)
+    re.compile(r"\.\./", re.IGNORECASE),                    # ../
+    re.compile(r"\.\.\\", re.IGNORECASE),                   # ..\
+    re.compile(r"\.\.%2[fF]"),                              # ..%2f (URL encoded /)
+    re.compile(r"\.\.%5[cC]"),                              # ..%5c (URL encoded \)
+    re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)"),             # .. as a standalone path component
+    re.compile(r"%2[eE]%2[eE]", re.IGNORECASE),            # %2e%2e (URL encoded ..)
+    re.compile(r"%2[eE]\.", re.IGNORECASE),                 # %2e. (half-encoded ..)
+    re.compile(r"\.%2[eE]", re.IGNORECASE),                # .%2e (half-encoded ..)
+    re.compile(r"%252[eE]", re.IGNORECASE),                 # %252e (double URL encoded .)
+    re.compile(r"%[cC]0%[aA][fF]"),                         # %c0%af (overlong UTF-8 for /)
+    re.compile(r"%[cC]1%9[cC]"),                            # %c1%9c (overlong UTF-8 for \)
 ]
 
 # Patrones de bytes nulos
@@ -90,7 +98,7 @@ class PathTraversalValidator:
         Pasos de validación:
         1. Verificar que el path no esté vacío
         2. Verificar bytes nulos
-        3. Verificar patrones de traversal
+        3. Verificar patrones de traversal (raw y URL-encoded/double-encoded)
         4. Verificar prefijos peligrosos (rutas absolutas)
         5. Normalizar path
         6. Verificar contra roots permitidos (si aplica)
@@ -132,7 +140,7 @@ class PathTraversalValidator:
                 is_absolute=False
             )
         
-        # Paso 2: Verificar patrones de traversal
+        # Paso 2: Verificar patrones de traversal en el path original
         for pattern in PATH_TRAVERSAL_PATTERNS:
             if pattern.search(path):
                 logger.warning(f"Path traversal blocked: patrón {pattern.pattern} en {original_path}")
@@ -142,7 +150,54 @@ class PathTraversalValidator:
                     error_message="Secuencia de path traversal detectada",
                     is_absolute=False
                 )
-        
+
+        # Paso 2b: Verificar con URL-decode para detectar ataques de codificación
+        # Se decodifica hasta dos veces para cubrir doble codificación (%252e → %2e → .)
+        try:
+            decoded_once = urllib.parse.unquote(path)
+            decoded_twice = urllib.parse.unquote(decoded_once)
+            # Only check each decoded form that differs from the previous step
+            candidates = []
+            if decoded_once != path:
+                candidates.append(decoded_once)
+            if decoded_twice != decoded_once:
+                candidates.append(decoded_twice)
+            for decoded_path in candidates:
+                for pattern in PATH_TRAVERSAL_PATTERNS:
+                    if pattern.search(decoded_path):
+                        logger.warning(
+                            f"Path traversal blocked: patrón codificado {pattern.pattern} en {original_path}"
+                        )
+                        return PathValidationResult(
+                            is_valid=False,
+                            normalized_path=None,
+                            error_message="Secuencia de path traversal detectada (codificada)",
+                            is_absolute=False,
+                        )
+                if any(decoded_path.startswith(p) for p in DANGEROUS_PREFIXES):
+                    logger.warning(
+                        f"Path traversal blocked: path absoluto codificado - {original_path}"
+                    )
+                    return PathValidationResult(
+                        is_valid=False,
+                        normalized_path=None,
+                        error_message="Ruta absoluta detectada en path codificado",
+                        is_absolute=True,
+                    )
+                for wp in DANGEROUS_WINDOWS_PATTERNS:
+                    if wp.search(decoded_path):
+                        logger.warning(
+                            f"Path traversal blocked: patrón Windows codificado en {original_path}"
+                        )
+                        return PathValidationResult(
+                            is_valid=False,
+                            normalized_path=None,
+                            error_message="Patrón de path Windows detectado en path codificado",
+                            is_absolute=True,
+                        )
+        except (ValueError, UnicodeDecodeError) as exc:
+            logger.warning(f"Path traversal: decode falló para {original_path!r}: {exc}")
+
         # Paso 3: Verificar si es ruta absoluta
         is_absolute = any(path.startswith(p) for p in DANGEROUS_PREFIXES)
         is_windows_absolute = any(p.search(path) for p in DANGEROUS_WINDOWS_PATTERNS)
