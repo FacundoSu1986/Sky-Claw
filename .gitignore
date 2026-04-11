@@ -66,3 +66,7 @@ dummy_*.py
 # Generated and accidental Windows output
 nul
 .kilo/
+
+# Environments and Secrets
+**/.env
+
