@@ -138,9 +138,9 @@ class AsyncToolRegistry:
             "profile": profile,
             "success": result.success,
             "return_code": result.return_code,
-            "sorted_plugins": result.sorted_plugins if hasattr(result, "sorted_plugins") else [],
-            "warnings": result.warnings if hasattr(result, "warnings") else [],
-            "errors": result.errors if hasattr(result, "errors") else [],
+            "sorted_plugins": result.sorted_plugins,
+            "warnings": result.warnings,
+            "errors": result.errors,
         })
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> str:

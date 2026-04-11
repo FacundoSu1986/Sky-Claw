@@ -90,10 +90,13 @@ def sanitize_for_prompt(
     # Remove all known injection delimiters, repeating until stable.
     # This prevents reconstructed bypasses (e.g. "[IN[INST]ST]" → "[INST]")
     # by re-applying the regex until no further matches are found.
-    previous = None
-    while previous != text:
-        previous = text
-        text = _INJECTION_PATTERNS.sub("", text)
+    # Cap at 10 iterations to avoid performance degradation.
+    _MAX_PASSES = 10
+    for _ in range(_MAX_PASSES):
+        cleaned = _INJECTION_PATTERNS.sub("", text)
+        if cleaned == text:
+            break
+        text = cleaned
 
     if len(text) > max_length:
         text = text[:max_length] + "... [truncated]"
