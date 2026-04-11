@@ -36,22 +36,25 @@ class TestAsyncRegistryIntegrity:
 
 
 class TestSyncRegistryIntegrity:
-    def test_open_creates_index(self, tmp_path: pathlib.Path) -> None:
+    @pytest.mark.asyncio
+    async def test_open_creates_index(self, tmp_path: pathlib.Path) -> None:
         db = ModRegistry(tmp_path / "test.db")
-        db.open()
+        await db.open()
         try:
             assert db._conn is not None
-            row = db._conn.execute(
+            async with db._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_mods_name'"
-            ).fetchone()
+            ) as cur:
+                row = await cur.fetchone()
             assert row is not None
         finally:
-            db.close()
+            await db.close()
 
-    def test_corrupt_db_raises(self, tmp_path: pathlib.Path) -> None:
+    @pytest.mark.asyncio
+    async def test_corrupt_db_raises(self, tmp_path: pathlib.Path) -> None:
         db_path = tmp_path / "corrupt.db"
         db_path.write_bytes(b"this is not a valid sqlite database")
 
         db = ModRegistry(db_path)
         with pytest.raises((RuntimeError, Exception)):
-            db.open()
+            await db.open()
