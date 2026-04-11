@@ -205,7 +205,7 @@ class AssetConflictDetector:
             logger.error(f"Archivo no encontrado para checksum: {file_path}")
             raise FileNotFoundError(f"Archivo no encontrado: {file_path}")
         
-        md5_hash = hashlib.md5()
+        md5_hash = hashlib.md5(usedforsecurity=False)  # nosec B324
         mb = 1024 * 1024
         
         try:

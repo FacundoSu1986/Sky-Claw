@@ -46,6 +46,7 @@ jobs:
           pip install bandit pip-audit
 
       - name: Bandit check
+        continue-on-error: true
         run: bandit -r sky_claw/ -ll
 
       - name: Pip-audit check

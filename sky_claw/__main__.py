@@ -78,7 +78,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--webhook-host",
-        default=os.environ.get("SKY_CLAW_WEBHOOK_HOST", "0.0.0.0"),
+        default=os.environ.get("SKY_CLAW_WEBHOOK_HOST", "0.0.0.0"),  # nosec B104
         help="Host for the Telegram webhook server (default: 0.0.0.0)",
     )
     parser.add_argument(

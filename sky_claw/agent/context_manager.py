@@ -52,7 +52,7 @@ class ContextManager:
             params = ()
         else:
             placeholders = ",".join("?" for _ in names)
-            query = f"SELECT * FROM mods WHERE name IN ({placeholders})"
+            query = f"SELECT * FROM mods WHERE name IN ({placeholders})"  # nosec B608
             params = tuple(names)
         
         results: List[Dict[str, Any]] = []

@@ -302,7 +302,7 @@ class AsyncModRegistry:
             "FROM dependencies d "
             "JOIN mods src ON d.mod_id = src.mod_id "
             "LEFT JOIN mods m ON d.depends_on_nexus_id = m.nexus_id "
-            f"WHERE m.nexus_id IS NULL AND src.name IN ({placeholders})",
+            f"WHERE m.nexus_id IS NULL AND src.name IN ({placeholders})",  # nosec B608
             tuple(mod_names),
         ) as cur:
             rows = await cur.fetchall()
