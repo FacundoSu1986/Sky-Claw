@@ -62,3 +62,7 @@ gateway/.env
 debug_llm.py
 dummy_malicious.py
 dummy_*.py
+
+# Generated and accidental Windows output
+nul
+.kilo/
