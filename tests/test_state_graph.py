@@ -48,7 +48,7 @@ class TestSupervisorState:
     def test_state_count(self):
         """Verify we have all expected states."""
         states = list(SupervisorState)
-        assert len(states) == 8
+        assert len(states) == 12
 
 
 class TestWorkflowEventType:

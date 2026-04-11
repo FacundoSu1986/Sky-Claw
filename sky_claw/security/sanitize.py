@@ -87,10 +87,13 @@ def sanitize_for_prompt(
     if strip_control:
         text = _CONTROL_CHAR_RE.sub("", text)
 
-    # Remove all known injection delimiters in a single regex pass.
-    # The regex approach is immune to the nesting bypass that affected
-    # the prior sequential .replace() chain.
-    text = _INJECTION_PATTERNS.sub("", text)
+    # Remove all known injection delimiters, repeating until stable.
+    # This prevents reconstructed bypasses (e.g. "[IN[INST]ST]" → "[INST]")
+    # by re-applying the regex until no further matches are found.
+    previous = None
+    while previous != text:
+        previous = text
+        text = _INJECTION_PATTERNS.sub("", text)
 
     if len(text) > max_length:
         text = text[:max_length] + "... [truncated]"
@@ -105,6 +108,8 @@ def safe_json_loads(raw: str) -> dict | list | None:
     This is a convenience wrapper that never raises, making it safe to
     use on untrusted scraped payloads.
     """
+    if not isinstance(raw, str):
+        return None
     if len(raw) > _MAX_JSON_SIZE:
         return None
     try:

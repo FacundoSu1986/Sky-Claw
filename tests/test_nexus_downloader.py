@@ -806,7 +806,7 @@ class TestDownloadModSchema:
         # install_mod, run_xedit_analysis, download_mod,
         # preview_mod_installer, install_mod_from_archive, setup_tools,
         # analyze_esp_conflicts = 11 + newly added tools
-        assert len(tool_registry.tools) == 18
+        assert len(tool_registry.tools) == 21
 
 
 # ---------------------------------------------------------------------------

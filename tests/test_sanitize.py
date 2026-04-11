@@ -30,11 +30,9 @@ from sky_claw.security.sanitize import (
 
 def _make_oversized(n: int = _MAX_JSON_SIZE + 1) -> str:
     """Return a JSON string whose raw length exceeds *n* bytes."""
-    # Build a list of short strings so json.loads would otherwise succeed.
-    items = ["x"] * 100
-    payload = json.dumps(items)
-    # Pad the rest with a long string key to push past the limit.
-    big_dict = {"data": "A" * (n - len(payload) + 10)}
+    # Use enough 'A' characters so that json.dumps({"data": "..."}) > n.
+    # json.dumps overhead for {"data": "..."} is 12 chars ({"data": " and "}).
+    big_dict = {"data": "A" * n}
     return json.dumps(big_dict)
 
 
