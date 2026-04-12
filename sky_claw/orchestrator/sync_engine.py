@@ -63,12 +63,14 @@ class SyncConfig:
     batch_size: int = 20
     max_retries: int = 5
     api_semaphore_limit: int = 4
-    queue_maxsize: int = 200
+    # PRF-01: Tightened from 200 to 50 — max 50*20=1000 items buffered.
+    # Provides backpressure without excessive RAM usage for large modlists.
+    queue_maxsize: int = 50
+    # PRF-01: Timeout (seconds) for producer put — detects dead workers.
+    queue_put_timeout: float = 120.0
     # FASE 1.5: Configuración de rollback
     enable_rollback: bool = True
     rollback_max_size_mb: int = 1024  # Default 1GB
-
-
     max_pruning_age_days: int = 30  # Días para pruning
 
 
@@ -664,14 +666,26 @@ class SyncEngine:
         return task
 
     async def _produce(self, queue: asyncio.Queue[list[tuple[str, bool]] | None], profile: str) -> None:
+        """PRF-01: Producer with backpressure via bounded queue.
+
+        ``await queue.put(batch)`` suspends the producer coroutine when the
+        queue is full (maxsize reached), allowing workers to drain items before
+        more are enqueued.  A timeout detects deadlock if all workers have died.
+        """
         batch: list[tuple[str, bool]] = []
         async for mod_name, enabled in self._mo2.read_modlist(profile):
             batch.append((mod_name, enabled))
             if len(batch) >= self._cfg.batch_size:
-                await queue.put(batch)
+                await asyncio.wait_for(
+                    queue.put(batch),
+                    timeout=self._cfg.queue_put_timeout,
+                )
                 batch = []
         if batch:
-            await queue.put(batch)
+            await asyncio.wait_for(
+                queue.put(batch),
+                timeout=self._cfg.queue_put_timeout,
+            )
 
     async def _consume(self, queue: asyncio.Queue[list[tuple[str, bool]] | None], session: aiohttp.ClientSession, semaphore: asyncio.Semaphore, result: SyncResult) -> None:
         while True:

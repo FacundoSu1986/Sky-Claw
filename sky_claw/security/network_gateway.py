@@ -62,31 +62,48 @@ class GatewayTCPConnector(aiohttp.TCPConnector):
         super().__init__(resolver=resolver, **kwargs)
 
 class SafeResolver(aiohttp.abc.AbstractResolver):
-    def __init__(self, policy: EgressPolicy):
-        self._policy = policy
+    """DNS resolver with IP validation and pinning against TOCTOU/rebinding.
 
-    async def resolve(self, host: str, port: int, family: int) -> list[dict[str, Any]]:
+    Once a hostname is resolved and validated, the result is *pinned* for the
+    lifetime of this resolver instance.  Subsequent ``resolve()`` calls for the
+    same ``(host, port)`` return the cached answer, preventing an attacker from
+    swapping DNS records between the check and the use (DNS rebinding).
+    """
+
+    def __init__(self, policy: EgressPolicy) -> None:
+        self._policy = policy
+        self._pinned: dict[tuple[str, int], list[dict[str, Any]]] = {}
+
+    async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET) -> list[dict[str, Any]]:
+        pin_key = (host, port)
+
+        # DNS Pinning: return the previously validated result if available.
+        pinned = self._pinned.get(pin_key)
+        if pinned is not None:
+            return pinned
+
         loop = asyncio.get_running_loop()
         try:
             infos = await loop.getaddrinfo(
-                host, port, family=family, type=socket.SOCK_STREAM
+                host, port, family=family, type=socket.SOCK_STREAM,
             )
         except (socket.gaierror, OSError) as e:
             raise OSError(f"DNS resolution failed for '{host}': {e}")
-            
+
         if not infos:
             raise OSError(f"DNS resolution failed for '{host}'")
 
-        result = []
+        result: list[dict[str, Any]] = []
         for info in infos:
             ip_str = info[4][0]
-            try:
-                addr = ipaddress.ip_address(ip_str)
-                if self._policy.block_private_ips and (addr.is_private or addr.is_loopback or addr.is_link_local):
-                    raise EgressViolation(f"Resolved address {addr} for '{host}' is private/loopback (SSRF block)")
-            except ValueError:
-                pass
-            
+            addr = ipaddress.ip_address(ip_str)  # ValueError → reject unparseable IPs
+            if self._policy.block_private_ips and (
+                addr.is_private or addr.is_loopback or addr.is_link_local
+            ):
+                raise EgressViolation(
+                    f"Resolved address {addr} for '{host}' is private/loopback (SSRF block)"
+                )
+
             result.append({
                 "hostname": host,
                 "host": ip_str,
@@ -95,11 +112,16 @@ class SafeResolver(aiohttp.abc.AbstractResolver):
                 "proto": info[2],
                 "flags": socket.AI_NUMERICHOST,
             })
-            
+
+        if not result:
+            raise OSError(f"No valid addresses resolved for '{host}'")
+
+        # Pin the validated addresses — all future calls bypass DNS entirely.
+        self._pinned[pin_key] = result
         return result
-        
+
     async def close(self) -> None:
-        pass
+        self._pinned.clear()
 
 
 class NetworkGateway:

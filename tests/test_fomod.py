@@ -12,6 +12,7 @@ from sky_claw.fomod.models import (
     GroupType,
     FileInstall,
 )
+from sky_claw.core.errors import FomodParserSecurityError
 from sky_claw.fomod.parser import parse_fomod, parse_fomod_string, FomodParseError
 from sky_claw.fomod.resolver import FomodResolver
 
@@ -178,7 +179,7 @@ class TestParserErrors:
                 <moduleName>&a;</moduleName>
             </config>
         """)
-        with pytest.raises(FomodParseError):
+        with pytest.raises(FomodParserSecurityError):
             parse_fomod_string(bomb)
 
     def test_entity_expansion_blocked_file(self, tmp_path: pathlib.Path) -> None:
@@ -192,7 +193,7 @@ class TestParserErrors:
             "<config><moduleName>&a;</moduleName></config>",
             encoding="utf-8",
         )
-        with pytest.raises(FomodParseError):
+        with pytest.raises(FomodParserSecurityError):
             parse_fomod(bomb_file)
 
 

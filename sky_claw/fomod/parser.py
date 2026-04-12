@@ -12,8 +12,9 @@ import pathlib
 import xml.etree.ElementTree as _stdlib_ET
 
 import defusedxml.ElementTree as ET
-from defusedxml import DefusedXmlException
+from defusedxml import DefusedXmlException, DTDForbidden, EntitiesForbidden, ExternalReferenceForbidden
 
+from sky_claw.core.errors import FomodParserSecurityError
 from sky_claw.fomod.models import (
     CompositeDependency,
     ConditionalPattern,
@@ -49,7 +50,19 @@ def parse_fomod(xml_path: pathlib.Path) -> FomodConfig:
         FomodParseError: If the XML is fundamentally unparseable.
     """
     try:
-        tree = ET.parse(xml_path)
+        tree = ET.parse(
+            xml_path,
+            forbid_dtd=True,
+            forbid_entities=True,
+            forbid_external=True,
+        )
+    except (DTDForbidden, EntitiesForbidden, ExternalReferenceForbidden) as exc:
+        logger.critical(
+            "XML injection attempt detected in FOMOD: %s — %s", xml_path, exc
+        )
+        raise FomodParserSecurityError(
+            f"XML security violation in {xml_path}: {exc}"
+        ) from exc
     except (ET.ParseError, DefusedXmlException) as exc:
         raise FomodParseError(f"Failed to parse XML: {exc}") from exc
 
@@ -84,7 +97,19 @@ def parse_fomod_string(xml_string: str) -> FomodConfig:
         Parsed FOMOD configuration.
     """
     try:
-        root = ET.fromstring(xml_string)
+        root = ET.fromstring(
+            xml_string,
+            forbid_dtd=True,
+            forbid_entities=True,
+            forbid_external=True,
+        )
+    except (DTDForbidden, EntitiesForbidden, ExternalReferenceForbidden) as exc:
+        logger.critical(
+            "XML injection attempt detected in FOMOD string input — %s", exc
+        )
+        raise FomodParserSecurityError(
+            f"XML security violation in FOMOD string: {exc}"
+        ) from exc
     except (ET.ParseError, DefusedXmlException) as exc:
         raise FomodParseError(f"Failed to parse XML: {exc}") from exc
 
