@@ -22,6 +22,8 @@ from sky_claw.security.sanitize import sanitize_for_prompt
 from sky_claw.agent.semantic_router import SemanticRouter
 from sky_claw.agent.context_manager import ContextManager
 from sky_claw.security.credential_vault import CredentialVault
+from sky_claw.security.agent_guardrail import AgentGuardrail
+from sky_claw.core.errors import AgentOrchestrationError, SecurityViolationError
 from sky_claw.agent.lcel_chains import (
     PromptComposer,
     ChainBuilder,
@@ -99,6 +101,7 @@ class LLMRouter:
         mo2_profile: str = "",
         vault: CredentialVault | None = None,
         gateway: Any | None = None,
+        guardrail: AgentGuardrail | None = None,
     ) -> None:
         if provider is None and not vault:
             # BUG-002 FIX: Validar API key antes de instanciar provider
@@ -128,6 +131,7 @@ class LLMRouter:
         self._semantic_router = SemanticRouter()
         self._context_manager = ContextManager(registry_db, mo2_profile)
         self._gateway = gateway
+        self._guardrail = guardrail
 
         # LangChain LCEL Integration
         self._lcel_prompt_composer = PromptComposer(
@@ -274,7 +278,19 @@ class LLMRouter:
                     f"📝 LCEL RAG prompt compuesto: {len(rag_prompt)} mensajes"
                 )
 
-        user_message = sanitize_for_prompt(user_message)
+        # Input gate — guardrail (Titan v7.0) or legacy sanitize_for_prompt
+        if self._guardrail:
+            try:
+                user_message = await self._guardrail.before_model_callback(user_message)
+            except SecurityViolationError as exc:
+                logger.warning("Guardrail blocked input: %s", exc)
+                return "\u26a0\ufe0f Tu mensaje fue bloqueado por una pol\u00edtica de seguridad. Por favor reformulalo."
+            except AgentOrchestrationError as exc:
+                logger.error("Orchestration error on input: %s", exc)
+                return "\u26a0\ufe0f Error de orquestaci\u00f3n en la entrada."
+        else:
+            user_message = sanitize_for_prompt(user_message)
+
         await self._save_message(chat_id, "user", user_message)
         messages = await self._load_context(chat_id)
 
@@ -318,7 +334,20 @@ class LLMRouter:
                         for block in content_blocks
                         if block.get("type") == "text"
                     ]
-                    return "\n".join(text_parts)
+                    final_text = "\n".join(text_parts)
+
+                    # Output gate — guardrail (Titan v7.0)
+                    if self._guardrail:
+                        try:
+                            await self._guardrail.after_model_callback(final_text)
+                        except SecurityViolationError as exc:
+                            logger.warning("Guardrail blocked output: %s", exc)
+                            return "\u26a0\ufe0f La respuesta fue bloqueada por una pol\u00edtica de seguridad."
+                        except AgentOrchestrationError as exc:
+                            logger.error("Schema violation in output: %s", exc)
+                            return "\u26a0\ufe0f La respuesta del modelo no cumple el esquema esperado."
+
+                    return final_text
 
                 # Execute requested tools con integración LCEL.
                 tool_results: list[dict[str, Any]] = []
