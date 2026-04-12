@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
+import sqlite3
 import time
 from typing import Sequence
 
@@ -364,7 +365,7 @@ class AsyncModRegistry:
         try:
             await self._conn.executemany(_UPSERT_MOD_SQL_BATCH, rows)
             await self._conn.commit()
-        except Exception as exc:
+        except sqlite3.Error as exc:
             await self._conn.rollback()
             logger.error("Batch upsert failed, rolled back: %s", exc)
             raise DatabaseError(f"upsert_mods_batch failed: {exc}") from exc
@@ -385,7 +386,7 @@ class AsyncModRegistry:
         try:
             await self._conn.executemany(_INSERT_DEP_SQL, rows)
             await self._conn.commit()
-        except Exception as exc:
+        except sqlite3.Error as exc:
             await self._conn.rollback()
             logger.error("Batch insert deps failed, rolled back: %s", exc)
             raise DatabaseError(f"insert_deps_batch failed: {exc}") from exc
@@ -406,7 +407,7 @@ class AsyncModRegistry:
         try:
             await self._conn.executemany(_LOG_TASK_SQL, rows)
             await self._conn.commit()
-        except Exception as exc:
+        except sqlite3.Error as exc:
             await self._conn.rollback()
             logger.error("Batch log tasks failed, rolled back: %s", exc)
             raise DatabaseError(f"log_tasks_batch failed: {exc}") from exc

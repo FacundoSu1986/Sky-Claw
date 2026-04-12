@@ -97,7 +97,7 @@ class EventBus:
                     # Loop was closed — clear our reference and stop dispatching
                     self._loop = None
                     self._logger.warning(
-                        "Event loop cerrado al despachar evento %s, re-encolando pendientes",
+                        "Event loop cerrado al despachar evento %s, descartando callbacks pendientes",
                         event.type.value,
                     )
                     break
