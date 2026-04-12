@@ -73,15 +73,16 @@ class SupervisorAgent:
         self.tools = ModdingToolsAgent()
         self.interface = InterfaceAgent()
         self.profile_name = profile_name
-        # Ruta estándar de MO2 montada en WSL2
-        self.modlist_path = f"/mnt/c/Modding/MO2/profiles/{self.profile_name}/modlist.txt"
         self.state_graph = create_supervisor_state_graph(profile_name=self.profile_name)
         self.event_streamer = LangGraphEventStreamer(self.state_graph, self.interface)
         
-        # FASE 1.5: Inicializar componentes de rollback
+        # FASE 1.5: Inicializar componentes de rollback (también inicializa _path_validator)
         self._init_rollback_components()
         # FASE 2: Inicializar orquestador de parches
         self._init_patch_orchestrator()
+
+        # Resolver ruta de modlist: MO2_PATH env var > auto-detección > fallback WSL2
+        self.modlist_path = str(self._resolve_modlist_path(self.profile_name))
     
     def _init_rollback_components(self) -> None:
         """FASE 1.5: Inicializa los componentes de resiliencia para rollback.
@@ -656,9 +657,7 @@ class SupervisorAgent:
         logger.info("[M-04] Ejecutando validación de límite de plugins para perfil '%s'...", profile)
         try:
             active_plugins: list[str] = []
-            modlist_path = pathlib.Path(
-                f"/mnt/c/Modding/MO2/profiles/{profile}/modlist.txt"
-            )
+            modlist_path = self._resolve_modlist_path(profile)
             # Leer modlist (si existe) para extraer plugins habilitados
             if modlist_path.exists():
                 with open(modlist_path, encoding="utf-8") as fh:
@@ -823,8 +822,12 @@ class SupervisorAgent:
         return self._asset_detector
 
     def _sync_detect_mo2_path(self):
-        """Versión síncrona de auto-detección de MO2."""
-        import pathlib, os
+        """Versión síncrona de auto-detección de MO2.
+
+        Best-effort detection for common Windows installations.  Returns the
+        first directory that contains ``ModOrganizer.exe``, or ``None`` if no
+        installation could be found.
+        """
         for raw in [r"C:\Modding\MO2", r"D:\Modding\MO2", r"E:\Modding\MO2", r"C:\MO2Portable", r"D:\MO2Portable", r"C:\Games\MO2", r"D:\Games\MO2"]:
             p = pathlib.Path(raw)
             if (p / "ModOrganizer.exe").exists(): return p
@@ -838,6 +841,48 @@ class SupervisorAgent:
             c = pathlib.Path(pf) / "Mod Organizer 2"
             if (c / "ModOrganizer.exe").exists(): return c
         return None
+
+    def _resolve_modlist_path(self, profile: str) -> pathlib.Path:
+        """Resolves the modlist.txt path for a given MO2 profile.
+
+        Priority order:
+        1. ``MO2_PATH`` environment variable (validated with PathValidator for
+           CRIT-003 compliance).
+        2. Auto-detection via :meth:`_sync_detect_mo2_path` (best-effort for
+           common Windows installations).
+        3. WSL2 path ``/mnt/c/Modding/MO2`` as last-resort fallback.
+
+        Args:
+            profile: MO2 profile name.
+
+        Returns:
+            Path to the ``modlist.txt`` file for the given profile.
+        """
+        # 1. MO2_PATH environment variable takes precedence
+        mo2_base_str = os.environ.get("MO2_PATH", "")
+        if mo2_base_str:
+            validated_base = self._validate_env_path(mo2_base_str, "MO2_PATH")
+            if validated_base:
+                return validated_base / "profiles" / profile / "modlist.txt"
+            logger.warning(
+                "MO2_PATH='%s' rechazado por validación de seguridad (CRIT-003). "
+                "Intentando auto-detección.",
+                mo2_base_str,
+            )
+
+        # 2. Best-effort auto-detection for common Windows installations
+        mo2_base = self._sync_detect_mo2_path()
+        if mo2_base:
+            return pathlib.Path(mo2_base) / "profiles" / profile / "modlist.txt"
+
+        # 3. Fallback: WSL2 default path as last resort
+        logger.warning(
+            "MO2_PATH no configurado y auto-detección falló para perfil '%s'. "
+            "Usando fallback WSL2. Configure la variable de entorno MO2_PATH "
+            "para evitar este aviso.",
+            profile,
+        )
+        return pathlib.Path("/mnt/c/Modding/MO2") / "profiles" / profile / "modlist.txt"
 
     
     def _get_mo2_mods_path(self) -> pathlib.Path:
