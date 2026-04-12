@@ -615,6 +615,55 @@ class TestPathTraversalValidation:
         request = SecurityAuditRequest(target_path="mod.esp")
         assert request.target_path == "mod.esp"
 
+    def test_path_traversal_blocks_url_encoded_dots(self):
+        """Test que %2e%2e (URL encoded ..) es bloqueado."""
+        with pytest.raises(ValidationError):
+            SecurityAuditRequest(target_path="%2e%2e/etc/passwd")
+
+        with pytest.raises(ValidationError):
+            SecurityAuditRequest(target_path="%2e%2e%2fetc%2fpasswd")
+
+    def test_path_traversal_blocks_half_encoded_dots(self):
+        """Test que variantes semi-codificadas de .. son bloqueadas."""
+        with pytest.raises(ValidationError):
+            SecurityAuditRequest(target_path="%2e./etc/passwd")
+
+        with pytest.raises(ValidationError):
+            SecurityAuditRequest(target_path=".%2e/etc/passwd")
+
+    def test_path_traversal_blocks_double_url_encoded(self):
+        """Test que doble URL encoding (%252e) es bloqueado."""
+        with pytest.raises(ValidationError):
+            SecurityAuditRequest(target_path="%252e%252e%252fetc%252fpasswd")
+
+    def test_path_traversal_blocks_overlong_utf8_separator(self):
+        """Test que separadores overlong UTF-8 son bloqueados."""
+        with pytest.raises(ValidationError):
+            SecurityAuditRequest(target_path="..%c0%af")
+
+        with pytest.raises(ValidationError):
+            SecurityAuditRequest(target_path="..%c1%9c")
+
+    def test_path_traversal_blocks_bare_double_dot(self):
+        """Test que .. solo (sin separador) es bloqueado."""
+        with pytest.raises(ValidationError):
+            SecurityAuditRequest(target_path="..")
+
+    def test_path_traversal_blocks_dot_dot_at_end(self):
+        """Test que foo/.. (.. al final del path) es bloqueado."""
+        with pytest.raises(ValidationError):
+            SecurityAuditRequest(target_path="foo/..")
+
+    def test_path_traversal_blocks_encoded_absolute_unix(self):
+        """Test que /etc/passwd URL-encoded es bloqueado."""
+        with pytest.raises(ValidationError):
+            SecurityAuditRequest(target_path="%2fetc%2fpasswd")
+
+    def test_path_traversal_blocks_encoded_windows_drive(self):
+        """Test que drive letter Windows URL-encoded es bloqueado."""
+        with pytest.raises(ValidationError):
+            SecurityAuditRequest(target_path="%43%3a%5cWindows")
+
 
 # =============================================================================
 # Tests para AgentToolRequest y AgentToolResponse
