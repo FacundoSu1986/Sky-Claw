@@ -13,6 +13,7 @@ import logging
 import pathlib
 from typing import Any
 
+from sky_claw.config import SystemPaths
 from sky_claw.loot.cli import LOOTRunner, LOOTConfig
 
 from .schemas import (
@@ -93,7 +94,7 @@ class AsyncToolRegistry:
         self._downloader = downloader
         self._fomod_installer = fomod_installer
         self._tools_installer = tools_installer
-        self._install_dir = install_dir or pathlib.Path("C:/Modding")
+        self._install_dir = install_dir or SystemPaths.modding_root()
         self._animation_hub = animation_hub
         self._local_cfg = local_cfg
         self._config_path = config_path

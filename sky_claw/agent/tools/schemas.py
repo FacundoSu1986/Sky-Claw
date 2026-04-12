@@ -11,10 +11,12 @@ import pathlib
 import pydantic
 from pydantic import field_validator
 
+from sky_claw.config import SystemPaths
+
 
 # HOTFIX: Sandbox directories for path validation
 ALLOWED_SANDBOX_DIRS = [
-    pathlib.Path("C:/Modding").resolve(),
+    SystemPaths.modding_root().resolve(),
     pathlib.Path.home() / "Modding",
 ]
 

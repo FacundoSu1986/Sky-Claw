@@ -122,6 +122,9 @@ class AppContext:
         # ARC-02: AsyncExitStack para compensación atómica ante fallos
         self._exit_stack = AsyncExitStack()
 
+        # R-06: Lock to prevent re-entrant calls to start_full()
+        self._start_full_lock = asyncio.Lock()
+
         # Background task tracking for proper cleanup
         self._background_tasks: set[asyncio.Task] = set()
 
@@ -168,7 +171,15 @@ class AppContext:
         Uses AsyncExitStack for atomic rollback: if any service fails to
         initialize, all previously started services are shut down in LIFO
         order, preventing zombie processes and leaked resources (ARC-02).
+
+        R-06: Protected by asyncio.Lock to prevent re-entrant calls
+        (e.g. concurrent hot-reload from FrontendBridge).
         """
+        async with self._start_full_lock:
+            await self._start_full_inner()
+
+    async def _start_full_inner(self) -> None:
+        """Internal implementation of start_full (lock-free)."""
         assert self.config_path is not None, "start_minimal() must run first"
 
         if self.polling is not None:
