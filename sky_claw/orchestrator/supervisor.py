@@ -1,5 +1,4 @@
 import os
-import time
 import asyncio
 import logging
 import pathlib
@@ -28,6 +27,9 @@ from sky_claw.xedit.patch_orchestrator import (
 from sky_claw.xedit.conflict_analyzer import ConflictReport
 from sky_claw.xedit.runner import XEditRunner, ScriptExecutionResult
 from sky_claw.security.path_validator import PathValidator
+from sky_claw.orchestrator.maintenance_daemon import MaintenanceDaemon, get_max_backup_size_mb
+from sky_claw.orchestrator.telemetry_daemon import TelemetryDaemon
+from sky_claw.orchestrator.watcher_daemon import WatcherDaemon
 # FASE 3: Imports de componentes de Synthesis
 from sky_claw.tools.synthesis_runner import (
     SynthesisRunner,
@@ -57,9 +59,8 @@ from sky_claw.tools.dyndolod_runner import (
 )
 # FASE 5: Imports de componentes de detección de conflictos de assets
 from sky_claw.assets import AssetConflictDetector, AssetConflictReport
-import psutil
 
-logger = logging.getLogger("SkyClaw.Watcher")
+logger = logging.getLogger("SkyClaw.Supervisor")
 security_logger = logging.getLogger("SkyClaw.Security")
 
 # FASE 1.5: Constante para directorio de staging de backups
@@ -78,6 +79,19 @@ class SupervisorAgent:
         
         # FASE 1.5: Inicializar componentes de rollback (también inicializa _path_validator)
         self._init_rollback_components()
+        # ARC-01: Demonios extraídos del Supervisor
+        self._maintenance_daemon = MaintenanceDaemon(
+            snapshot_manager=self.snapshot_manager,
+        )
+        self._telemetry_daemon = TelemetryDaemon(
+            emit_event=self.interface.send_event,
+        )
+        self._watcher_daemon = WatcherDaemon(
+            modlist_path=self.modlist_path,
+            profile_name=self.profile_name,
+            db=self.db,
+            on_change=self._trigger_proactive_analysis,
+        )
         # FASE 2: Inicializar orquestador de parches
         self._init_patch_orchestrator()
 
@@ -100,7 +114,7 @@ class SupervisorAgent:
         self.journal = OperationJournal(db_path=backup_dir / "journal.db")
         self.snapshot_manager = FileSnapshotManager(
             snapshot_dir=backup_dir / "snapshots",
-            max_size_mb=self._get_max_backup_size_mb()
+            max_size_mb=get_max_backup_size_mb()
         )
         self.rollback_manager = RollbackManager(
             journal=self.journal,
@@ -113,15 +127,8 @@ class SupervisorAgent:
         logger.info(
             "Componentes de rollback inicializados: backup_dir=%s, max_size_mb=%d",
             backup_dir,
-            self._get_max_backup_size_mb()
+            get_max_backup_size_mb()
         )
-    
-    def _get_max_backup_size_mb(self) -> int:
-        """Obtiene el tamaño máximo de backups desde variable de entorno o default."""
-        try:
-            return int(os.environ.get("ROLLBACK_MAX_SIZE", "1024"))  # Default 1GB
-        except ValueError:
-            return 1024
     
     def _init_patch_orchestrator(self) -> None:
         """FASE 2: Inicializa el orquestador de parches transaccionales.
@@ -244,42 +251,24 @@ class SupervisorAgent:
         
         logger.info("SupervisorAgent inicializado: IPC y Watcher listos. Lanzando TaskGroup de fondo...")
         
+        # ARC-01: Iniciar demonios extraídos
+        await self._maintenance_daemon.start()
+        await self._telemetry_daemon.start()
+        await self._watcher_daemon.start()
+
         try:
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(self.interface.connect())
-                tg.create_task(self._proactive_watcher())
-                tg.create_task(self._telemetry_worker())
-                tg.create_task(self._passive_pruning_worker())  # FASE 1.5: Pruning pasivo
         except Exception as e:
             logger.error(f"TaskGroup del Supervisor cancelado por error fatal: {e}")
         finally:
+            # ARC-01: Detener demonios extraídos (LIFO)
+            await self._watcher_daemon.stop()
+            await self._telemetry_daemon.stop()
+            await self._maintenance_daemon.stop()
             # FASE 1.5: Cerrar journal al terminar
             await self.journal.close()
             await self.db.close()
-
-    async def _proactive_watcher(self):
-        """
-        Polling asincrónico del modlist.txt. 
-        Evita inotify porque falla a través del protocolo 9P (WSL2 -> Windows).
-        """
-        mem_key = f"modlist_mtime_{self.profile_name}"
-        
-        while True:
-            try:
-                if os.path.exists(self.modlist_path):
-                    current_mtime = os.stat(self.modlist_path).st_mtime
-                    last_mtime_str = await self.db.get_memory(mem_key)
-                    last_mtime = float(last_mtime_str) if last_mtime_str else 0.0
-
-                    if current_mtime > last_mtime:
-                        logger.info("Modificación detectada en MO2 desde fuera del agente. Iniciando análisis proactivo.")
-                        await self.db.set_memory(mem_key, str(current_mtime), time.time())
-                        await self._trigger_proactive_analysis()
-            except Exception as e:
-                logger.error(f"RCA: Fallo en el watcher asincrónico: {str(e)}")
-            
-            # Polling ligero cada 10 segundos
-            await asyncio.sleep(10.0)
 
     async def _trigger_proactive_analysis(self):
         """Lógica inyectada al flujo ReAct sin prompt del usuario."""
@@ -293,43 +282,6 @@ class SupervisorAgent:
         await self._trigger_proactive_analysis()
     
     # FASE 1.5: Worker de pruning pasivo
-    async def _passive_pruning_worker(self):
-        """FASE 1.5: Worker de limpieza pasiva de snapshots antiguos.
-        
-        Verifica el tamaño del directorio de backups y elimina los registros
-        de journal y snapshots más antiguos si excede el límite.
-        """
-        while True:
-            try:
-                # Ejecutar cada hora
-                await asyncio.sleep(3600)
-                
-                stats = await self.snapshot_manager.get_stats()
-                max_size_bytes = self._get_max_backup_size_mb() * 1024 * 1024
-                
-                if stats.total_size_bytes > max_size_bytes:
-                    logger.warning(
-                        "Límite de tamaño de backups excedido: %d MB > %d MB. Iniciando pruning...",
-                        stats.total_size_bytes // (1024 * 1024),
-                        max_size_bytes // (1024 * 1024)
-                    )
-                    
-                    # Limpiar snapshots antiguos (más de 30 días)
-                    result = await self.snapshot_manager.cleanup_old_snapshots(days_old=30)
-                    
-                    logger.info(
-                        "Pruning completado: %d snapshots eliminados, %d MB liberados",
-                        result.deleted_count,
-                        result.freed_bytes // (1024 * 1024)
-                    )
-                    
-                    if result.errors:
-                        for error in result.errors:
-                            logger.error("Error durante pruning: %s", error)
-                            
-            except Exception as e:
-                logger.error("Error en worker de pruning pasivo: %s", e)
-
     async def dispatch_tool(self, tool_name: str, payload_dict: dict) -> dict:
         """
         Enrutador estricto. El LLM devuelve 'tool_name' y 'payload_dict'.
@@ -1604,27 +1556,6 @@ class SupervisorAgent:
         except Exception as e:
             # No fallar la operación si el logging falla
             logger.warning("No se pudo registrar operación en journal: %s", e)
-
-    async def _telemetry_worker(self):
-        """Loop estricto de 1 Hz — emite métricas psutil al Gateway."""
-        proc = psutil.Process()
-        # Primer call de cpu_percent devuelve 0.0 (requiere baseline)
-        proc.cpu_percent(interval=None)
-        while True:
-            try:
-                cpu_usage = proc.cpu_percent(interval=None)
-                mem = proc.memory_info()
-                vmem = psutil.virtual_memory()
-                payload = {
-                    "cpu": round(cpu_usage, 1),
-                    "ram_mb": round(mem.rss / (1024 * 1024), 1),
-                    "ram_percent": round(vmem.percent, 1),
-                }
-                await self.interface.send_event("telemetry", payload)
-            except Exception as e:
-                logger.error(f"Error en worker de telemetría: {e}")
-            await asyncio.sleep(1.0)  # 1 Hz estricto
-
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")

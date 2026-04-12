@@ -7,6 +7,7 @@ import pathlib
 import queue
 import tempfile
 import uuid
+from contextlib import AsyncExitStack
 from typing import Any
 
 import aiohttp
@@ -33,7 +34,7 @@ from sky_claw.security.path_validator import PathValidator
 from sky_claw.auto_detect import AutoDetector
 from sky_claw.tools_installer import ToolsInstaller, scan_common_paths
 from sky_claw.agent.animation_hub import AnimationHub, EngineConfig
-from sky_claw.local_config import load as load_local_config
+from sky_claw.local_config import load as _load_legacy_json
 from sky_claw.orchestrator.supervisor import SupervisorAgent
 
 logger = logging.getLogger("sky_claw")
@@ -106,17 +107,20 @@ class AppContext:
     def __init__(self, args) -> None:
         self._args = args
         self.config_path: pathlib.Path | None = None
-        
+
         # Sub-contextos inyectados dinamicamente
         self.network = NetworkContext()
         self.database = DatabaseContext(self._args.db_path)
-        
+
         self.hitl: HITLGuard | None = None
         self.router: LLMRouter | None = None
         self.sender: TelegramSender | None = None
         self.polling: TelegramPolling | None = None
         self.tools_installer: ToolsInstaller | None = None
         self.frontend_bridge: Any | None = None  # From sky_claw.comms.frontend_bridge
+
+        # ARC-02: AsyncExitStack para compensación atómica ante fallos
+        self._exit_stack = AsyncExitStack()
 
         # Background task tracking for proper cleanup
         self._background_tasks: set[asyncio.Task] = set()
@@ -148,16 +152,23 @@ class AppContext:
         return task
 
     async def start_minimal(self) -> None:
-        """Phase 1: resolve config path + create HTTP session."""
+        """Phase 1: resolve config path, migrate legacy JSON, create HTTP session."""
         self._resolve_config_path()
+        self._migrate_legacy_json()
         await self.network.initialize("", None)  # Init base session
+        self._exit_stack.push_async_callback(self.network.close)
         logger.info(
             "start_minimal complete — config_path=%s, session ready",
             self.config_path,
         )
 
     async def start_full(self) -> None:
-        """Phase 2: load config, inject env vars, create provider + router."""
+        """Phase 2: load config, inject env vars, create provider + router.
+
+        Uses AsyncExitStack for atomic rollback: if any service fails to
+        initialize, all previously started services are shut down in LIFO
+        order, preventing zombie processes and leaked resources (ARC-02).
+        """
         assert self.config_path is not None, "start_minimal() must run first"
 
         if self.polling is not None:
@@ -166,234 +177,271 @@ class AppContext:
         if self.router is not None:
             await self.router.close()
             self.router = None
-        
+
         await self.database.close()
 
-        config_path = self.config_path
-        logger.info("start_full — Config path: %s (exists=%s)", config_path, config_path.exists())
+        # Reset the exit stack for a fresh initialization cycle, keeping
+        # only the network.close callback registered by start_minimal.
+        self._exit_stack = AsyncExitStack()
+        # Re-register the base network session from start_minimal
+        self._exit_stack.push_async_callback(self.network.close)
 
-        local_cfg = Config(config_path)
-        # H-04: Eliminada mutación de os.environ. Los secretos se pasan explícitamente.
-
-        mo2_root = self._args.mo2_root
-        config_changed = False
-
-        _MO2_DEFAULT = str(SystemPaths.get_base_drive() / "MO2Portable")
-        if local_cfg.mo2_root and str(mo2_root) == _MO2_DEFAULT:
-            cfg_mo2 = pathlib.Path(local_cfg.mo2_root)
-            mo2_root = cfg_mo2
-            logger.info("Using mo2_root from config: %s", mo2_root)
-        elif local_cfg.mo2_root:
-            cfg_mo2 = pathlib.Path(local_cfg.mo2_root)
-            if cfg_mo2.exists():
-                mo2_root = cfg_mo2
-                logger.info("Using mo2_root from config (exists): %s", mo2_root)
-
-        if not mo2_root.exists():
-            detected_mo2 = await AutoDetector.find_mo2()
-            if detected_mo2 is not None:
-                mo2_root = detected_mo2
-                local_cfg.mo2_root = str(detected_mo2)
-                config_changed = True
-                logger.info("Zero-config: MO2 detected at %s", detected_mo2)
-
-        if not local_cfg.skyrim_path:
-            detected_skyrim = await AutoDetector.find_skyrim()
-            if detected_skyrim is not None:
-                local_cfg.skyrim_path = str(detected_skyrim)
-                config_changed = True
-                logger.info("Zero-config: Skyrim detected at %s", detected_skyrim)
-
-        provider_name = self._args.provider if self._args.provider else local_cfg.llm_provider
         try:
-            # Extraer llave dinámicamente sin tocar os.environ
-            api_key = getattr(local_cfg, f"{provider_name}_api_key", None) or local_cfg.llm_api_key
+            config_path = self.config_path
+            logger.info("start_full — Config path: %s (exists=%s)", config_path, config_path.exists())
 
-            provider = create_provider(
-                provider_name=provider_name,
-                model=local_cfg.llm_model,
-                api_key=api_key
-            )
-            actual_model = getattr(provider, "model", local_cfg.llm_model) or "default"
-            logger.info("Provider created: %s (model: %s)", type(provider).__name__, actual_model)
-        except ProviderConfigError as exc:
-            logger.warning("LLM provider config error: %s — falling back to Ollama", exc)
-            from sky_claw.agent.providers import OllamaProvider
-            provider = OllamaProvider()
+            local_cfg = Config(config_path)
+            # H-04: Eliminada mutación de os.environ. Los secretos se pasan explícitamente.
 
-        nexus_key = os.environ.get("NEXUS_API_KEY") or local_cfg.nexus_api_key or ""
-        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN") or local_cfg.telegram_bot_token or ""
-        operator_chat_id: int | None = self._args.operator_chat_id
+            mo2_root = self._args.mo2_root
+            config_changed = False
 
-        if local_cfg.telegram_chat_id:
+            _MO2_DEFAULT = str(SystemPaths.get_base_drive() / "MO2Portable")
+            if local_cfg.mo2_root and str(mo2_root) == _MO2_DEFAULT:
+                cfg_mo2 = pathlib.Path(local_cfg.mo2_root)
+                mo2_root = cfg_mo2
+                logger.info("Using mo2_root from config: %s", mo2_root)
+            elif local_cfg.mo2_root:
+                cfg_mo2 = pathlib.Path(local_cfg.mo2_root)
+                if cfg_mo2.exists():
+                    mo2_root = cfg_mo2
+                    logger.info("Using mo2_root from config (exists): %s", mo2_root)
+
+            if not mo2_root.exists():
+                detected_mo2 = await AutoDetector.find_mo2()
+                if detected_mo2 is not None:
+                    mo2_root = detected_mo2
+                    local_cfg.mo2_root = str(detected_mo2)
+                    config_changed = True
+                    logger.info("Zero-config: MO2 detected at %s", detected_mo2)
+
+            if not local_cfg.skyrim_path:
+                detected_skyrim = await AutoDetector.find_skyrim()
+                if detected_skyrim is not None:
+                    local_cfg.skyrim_path = str(detected_skyrim)
+                    config_changed = True
+                    logger.info("Zero-config: Skyrim detected at %s", detected_skyrim)
+
+            provider_name = self._args.provider if self._args.provider else local_cfg.llm_provider
             try:
-                operator_chat_id = int(local_cfg.telegram_chat_id)
-                logger.info("Using operator_chat_id from config")
-            except ValueError:
-                logger.warning("Invalid telegram_chat_id in config (must be int)")
+                # Extraer llave dinámicamente sin tocar os.environ
+                api_key = getattr(local_cfg, f"{provider_name}_api_key", None) or local_cfg.llm_api_key
 
-        await self.database.initialize()
-
-        install_dir = getattr(self._args, "install_dir", None)
-        if local_cfg.install_dir:
-            install_dir = pathlib.Path(local_cfg.install_dir)
-
-        sandbox_roots: list[pathlib.Path] = [mo2_root, pathlib.Path(tempfile.gettempdir()) / "sky_claw"]
-        if install_dir and install_dir not in sandbox_roots:
-            sandbox_roots.append(install_dir)
-        # --- DESPUÉS (Seguro - Zero Trust) ---
-        # Solo definir las carpetas estrictamente necesarias
-        # Se elimina explícitamente mo2_parent para evitar Path Traversal encubierto
-        validator = PathValidator(roots=sandbox_roots)
-        mo2 = MO2Controller(mo2_root, validator)
-
-        await self.network.initialize(nexus_key, self._args.staging_dir)
-
-        masterlist = MasterlistClient(gateway=self.network.gateway, api_key=nexus_key)
-
-        if bot_token:
-            self.sender = TelegramSender(
-                bot_token=bot_token,
-                gateway=self.network.gateway,
-                session=self.network.session,
-            )
-
-        async def _hitl_notify(req: HITLRequest) -> None:
-            if self.sender is None or operator_chat_id is None:
-                logger.info("HITL auto-approving: %s", req.request_id)
-                await self.hitl.respond(req.request_id, True)
-                return
-            msg = f"🛡️ *HITL Approval Required*\n\nID: `{req.request_id}`\nReason: {req.reason}\n\n{req.detail}"
-            # Send using sender directly
-            try:
-                await self.sender.send(
-                    operator_chat_id,
-                    msg,
-                    reply_markup={
-                        "inline_keyboard": [[
-                            {"text": "✅ Approve", "callback_data": f"hitl:approve:{req.request_id}"},
-                            {"text": "❌ Deny", "callback_data": f"hitl:deny:{req.request_id}"}
-                        ]]
-                    }
+                provider = create_provider(
+                    provider_name=provider_name,
+                    model=local_cfg.llm_model,
+                    api_key=api_key
                 )
-            except Exception:
-                logger.exception("Failed to send HITL notification")
+                actual_model = getattr(provider, "model", local_cfg.llm_model) or "default"
+                logger.info("Provider created: %s (model: %s)", type(provider).__name__, actual_model)
+            except ProviderConfigError as exc:
+                logger.warning("LLM provider config error: %s — falling back to Ollama", exc)
+                from sky_claw.agent.providers import OllamaProvider
+                provider = OllamaProvider()
 
-        self.hitl = HITLGuard(notify_fn=_hitl_notify)
-        sync_engine = SyncEngine(mo2, masterlist, self.database.registry, hitl=self.hitl)
+            nexus_key = os.environ.get("NEXUS_API_KEY") or local_cfg.nexus_api_key or ""
+            bot_token = os.environ.get("TELEGRAM_BOT_TOKEN") or local_cfg.telegram_bot_token or ""
+            operator_chat_id: int | None = self._args.operator_chat_id
 
-        if await self.database.registry.is_empty():
-            logger.info("Database empty, initial Sync from MO2...")
-            try:
-                await sync_engine.run(self.network.session, profile="Default")
-            except Exception as exc:
-                logger.exception("Initial synchronization failed: %s", exc)
+            if local_cfg.telegram_chat_id:
+                try:
+                    operator_chat_id = int(local_cfg.telegram_chat_id)
+                    logger.info("Using operator_chat_id from config")
+                except ValueError:
+                    logger.warning("Invalid telegram_chat_id in config (must be int)")
 
-        self.tools_installer = ToolsInstaller(
-            hitl=self.hitl,
-            gateway=self.network.gateway,
-            path_validator=validator,
-        )
+            await self.database.initialize()
+            self._exit_stack.push_async_callback(self.database.close)
 
-        loot_exe = self._args.loot_exe
-        if local_cfg.loot_exe:
-            cfg_loot = pathlib.Path(local_cfg.loot_exe)
-            if cfg_loot.exists(): loot_exe = cfg_loot
-        if loot_exe is None or not loot_exe.exists():
-            found = scan_common_paths(LOOT_COMMON_PATHS, "loot.exe")
-            if found:
-                loot_exe = found
-                local_cfg.loot_exe = str(found)
-                config_changed = True
+            install_dir = getattr(self._args, "install_dir", None)
+            if local_cfg.install_dir:
+                install_dir = pathlib.Path(local_cfg.install_dir)
 
-        xedit_exe = getattr(self._args, "xedit_exe", None)
-        if local_cfg.xedit_exe:
-            cfg_xedit = pathlib.Path(local_cfg.xedit_exe)
-            if cfg_xedit.exists(): xedit_exe = cfg_xedit
-        if xedit_exe is None or not xedit_exe.exists():
-            found = scan_common_paths(XEDIT_COMMON_PATHS, "SSEEdit.exe")
-            if found:
-                xedit_exe = found
-                local_cfg.xedit_exe = str(found)
-                config_changed = True
+            sandbox_roots: list[pathlib.Path] = [mo2_root, pathlib.Path(tempfile.gettempdir()) / "sky_claw"]
+            if install_dir and install_dir not in sandbox_roots:
+                sandbox_roots.append(install_dir)
+            # --- DESPUÉS (Seguro - Zero Trust) ---
+            # Solo definir las carpetas estrictamente necesarias
+            # Se elimina explícitamente mo2_parent para evitar Path Traversal encubierto
+            validator = PathValidator(roots=sandbox_roots)
+            mo2 = MO2Controller(mo2_root, validator)
 
-        if config_changed:
-            local_cfg.save()
+            await self.network.initialize(nexus_key, self._args.staging_dir)
 
-        tool_registry = AsyncToolRegistry(
-            registry=self.database.registry,
-            mo2=mo2,
-            sync_engine=sync_engine,
-            loot_exe=loot_exe,
-            hitl=self.hitl,
-            downloader=self.network.downloader,
-            tools_installer=self.tools_installer,
-            install_dir=install_dir,
-            animation_hub=AnimationHub(
-                mo2=mo2,
-                config=EngineConfig(
-                    pandora_exe=pathlib.Path(local_cfg.pandora_exe) if local_cfg.pandora_exe else None,
-                    bodyslide_exe=pathlib.Path(local_cfg.bodyslide_exe) if local_cfg.bodyslide_exe else None,
-                ),
-                path_validator=validator,
-            ),
-            local_cfg=local_cfg,
-            config_path=config_path,
-        )
+            masterlist = MasterlistClient(gateway=self.network.gateway, api_key=nexus_key)
 
-        history_db = str(self._args.db_path).replace(".db", "_history.db")
-        mo2_root = local_cfg.mo2_root or "."
-        mo2_profile = os.path.join(mo2_root, "profiles", "Default")
+            if bot_token:
+                self.sender = TelegramSender(
+                    bot_token=bot_token,
+                    gateway=self.network.gateway,
+                    session=self.network.session,
+                )
 
-        self.router = LLMRouter(
-            provider=provider,
-            tool_registry=tool_registry,
-            db_path=history_db,
-            system_prompt=SYSTEM_PROMPT,
-            registry_db=str(self._args.db_path),
-            mo2_profile=mo2_profile,
-            gateway=self.network.gateway
-        )
-        await self.router.open()
+            async def _hitl_notify(req: HITLRequest) -> None:
+                if self.sender is None or operator_chat_id is None:
+                    logger.info("HITL auto-approving: %s", req.request_id)
+                    await self.hitl.respond(req.request_id, True)
+                    return
+                msg = f"🛡️ *HITL Approval Required*\n\nID: `{req.request_id}`\nReason: {req.reason}\n\n{req.detail}"
+                # Send using sender directly
+                try:
+                    await self.sender.send(
+                        operator_chat_id,
+                        msg,
+                        reply_markup={
+                            "inline_keyboard": [[
+                                {"text": "✅ Approve", "callback_data": f"hitl:approve:{req.request_id}"},
+                                {"text": "❌ Deny", "callback_data": f"hitl:deny:{req.request_id}"}
+                            ]]
+                        }
+                    )
+                except Exception:
+                    logger.exception("Failed to send HITL notification")
 
-        # Initialize Frontend Bridge (Gateway port 18789 ↔ Daemon)
-        from sky_claw.comms.frontend_bridge import FrontendBridge
-        self.frontend_bridge = FrontendBridge(
-            router=self.router,
-            session=self.network.session,
-            config=local_cfg,
-            app_context=self,
-        )
-        self._track_task(self.frontend_bridge.start(), name="frontend-bridge")
-        logger.info("Frontend Bridge iniciado en segundo plano.")
+            self.hitl = HITLGuard(notify_fn=_hitl_notify)
+            sync_engine = SyncEngine(mo2, masterlist, self.database.registry, hitl=self.hitl)
 
-        if bot_token and getattr(self._args, "mode", "cli") != "telegram":
-            webhook_handler = TelegramWebhook(
-                router=self.router,
-                sender=self.sender,
-                session=self.network.session,
+            if await self.database.registry.is_empty():
+                logger.info("Database empty, initial Sync from MO2...")
+                try:
+                    await sync_engine.run(self.network.session, profile="Default")
+                except Exception as exc:
+                    logger.exception("Initial synchronization failed: %s", exc)
+
+            self.tools_installer = ToolsInstaller(
                 hitl=self.hitl,
-                authorized_user_id=operator_chat_id,
-            )
-            self.polling = TelegramPolling(
-                token=bot_token,
-                webhook_handler=webhook_handler,
                 gateway=self.network.gateway,
-                session=self.network.session,
-                authorized_chat_id=operator_chat_id,
+                path_validator=validator,
             )
-            await self.polling.start()
-            logger.info("Telegram polling started")
 
-        logger.info("start_full complete")
+            loot_exe = self._args.loot_exe
+            if local_cfg.loot_exe:
+                cfg_loot = pathlib.Path(local_cfg.loot_exe)
+                if cfg_loot.exists(): loot_exe = cfg_loot
+            if loot_exe is None or not loot_exe.exists():
+                found = scan_common_paths(LOOT_COMMON_PATHS, "loot.exe")
+                if found:
+                    loot_exe = found
+                    local_cfg.loot_exe = str(found)
+                    config_changed = True
+
+            xedit_exe = getattr(self._args, "xedit_exe", None)
+            if local_cfg.xedit_exe:
+                cfg_xedit = pathlib.Path(local_cfg.xedit_exe)
+                if cfg_xedit.exists(): xedit_exe = cfg_xedit
+            if xedit_exe is None or not xedit_exe.exists():
+                found = scan_common_paths(XEDIT_COMMON_PATHS, "SSEEdit.exe")
+                if found:
+                    xedit_exe = found
+                    local_cfg.xedit_exe = str(found)
+                    config_changed = True
+
+            if config_changed:
+                local_cfg.save()
+
+            tool_registry = AsyncToolRegistry(
+                registry=self.database.registry,
+                mo2=mo2,
+                sync_engine=sync_engine,
+                loot_exe=loot_exe,
+                hitl=self.hitl,
+                downloader=self.network.downloader,
+                tools_installer=self.tools_installer,
+                install_dir=install_dir,
+                animation_hub=AnimationHub(
+                    mo2=mo2,
+                    config=EngineConfig(
+                        pandora_exe=pathlib.Path(local_cfg.pandora_exe) if local_cfg.pandora_exe else None,
+                        bodyslide_exe=pathlib.Path(local_cfg.bodyslide_exe) if local_cfg.bodyslide_exe else None,
+                    ),
+                    path_validator=validator,
+                ),
+                local_cfg=local_cfg,
+                config_path=config_path,
+            )
+
+            history_db = str(self._args.db_path).replace(".db", "_history.db")
+            mo2_root = local_cfg.mo2_root or "."
+            mo2_profile = os.path.join(mo2_root, "profiles", "Default")
+
+            self.router = LLMRouter(
+                provider=provider,
+                tool_registry=tool_registry,
+                db_path=history_db,
+                system_prompt=SYSTEM_PROMPT,
+                registry_db=str(self._args.db_path),
+                mo2_profile=mo2_profile,
+                gateway=self.network.gateway
+            )
+            await self.router.open()
+            self._exit_stack.push_async_callback(self._close_router)
+
+            # Initialize Frontend Bridge (Gateway port 18789 ↔ Daemon)
+            from sky_claw.comms.frontend_bridge import FrontendBridge
+            self.frontend_bridge = FrontendBridge(
+                router=self.router,
+                session=self.network.session,
+                config=local_cfg,
+                app_context=self,
+            )
+            self._track_task(self.frontend_bridge.start(), name="frontend-bridge")
+            self._exit_stack.push_async_callback(self._stop_frontend_bridge)
+            logger.info("Frontend Bridge iniciado en segundo plano.")
+
+            if bot_token and getattr(self._args, "mode", "cli") != "telegram":
+                webhook_handler = TelegramWebhook(
+                    router=self.router,
+                    sender=self.sender,
+                    session=self.network.session,
+                    hitl=self.hitl,
+                    authorized_user_id=operator_chat_id,
+                )
+                self.polling = TelegramPolling(
+                    token=bot_token,
+                    webhook_handler=webhook_handler,
+                    gateway=self.network.gateway,
+                    session=self.network.session,
+                    authorized_chat_id=operator_chat_id,
+                )
+                await self.polling.start()
+                self._exit_stack.push_async_callback(self._stop_polling)
+                logger.info("Telegram polling started")
+
+            logger.info("start_full complete")
+
+        except Exception:
+            logger.critical(
+                "start_full FAILED — rolling back all initialized services",
+                exc_info=True,
+            )
+            await self._exit_stack.aclose()
+            raise
 
     async def start(self) -> None:
         """Initialize all components."""
         await self.start_minimal()
         await self.start_full()
 
+    async def _stop_polling(self) -> None:
+        """Callback for AsyncExitStack: stop Telegram polling."""
+        if self.polling is not None:
+            await self.polling.stop()
+            self.polling = None
+
+    async def _close_router(self) -> None:
+        """Callback for AsyncExitStack: close LLM router."""
+        if self.router is not None:
+            await self.router.close()
+            self.router = None
+
+    async def _stop_frontend_bridge(self) -> None:
+        """Callback for AsyncExitStack: stop frontend bridge."""
+        if self.frontend_bridge is not None:
+            await self.frontend_bridge.stop()
+            self.frontend_bridge = None
+
     async def stop(self) -> None:
-        """Gracefully shutdown all resources."""
+        """Gracefully shutdown all resources via AsyncExitStack (LIFO order)."""
         # Cancel all tracked background tasks first
         for task in list(self._background_tasks):
             task.cancel()
@@ -401,26 +449,80 @@ class AppContext:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
             self._background_tasks.clear()
 
-        if self.frontend_bridge is not None:
-            await self.frontend_bridge.stop()
-            self.frontend_bridge = None
-        if self.polling is not None:
-            await self.polling.stop()
-            self.polling = None
-        if self.router is not None:
-            await self.router.close()
-            self.router = None
-            
-        await self.database.close()
-        await self.network.close()
+        # AsyncExitStack tears down all registered services in reverse order
+        await self._exit_stack.aclose()
 
     def _resolve_config_path(self) -> None:
-        legacy_path = pathlib.Path.cwd() / "sky_claw_config.json"
-        if legacy_path.exists():
-            self.config_path = legacy_path
-            return
-        from sky_claw.config import Config
+        """Always resolves to the canonical TOML config path."""
         self.config_path = Config.DEFAULT_CONFIG_FILE
+
+    def _migrate_legacy_json(self) -> None:
+        """CFG-01: Atomic migration from legacy JSON to TOML (Single Source of Truth).
+
+        If sky_claw_config.json exists, reads all values, merges them into
+        the TOML Config, saves the TOML, and ONLY THEN deletes the JSON.
+        This ensures no data loss — the JSON is purged only after a
+        successful TOML write.
+        """
+        legacy_path = pathlib.Path.cwd() / "sky_claw_config.json"
+        if not legacy_path.exists():
+            return
+
+        logger.info("CFG-01: Legacy JSON detected at %s — migrating to TOML", legacy_path)
+        legacy = _load_legacy_json(legacy_path)
+
+        # Instantiate the TOML config (creates defaults if file doesn't exist)
+        toml_cfg = Config(self.config_path)
+
+        # Map non-secret fields (only overwrite if the legacy value is non-empty
+        # and the TOML hasn't already been configured with a different value)
+        field_map = {
+            "loot_exe": "loot_exe",
+            "xedit_exe": "xedit_exe",
+            "mo2_root": "mo2_root",
+            "install_dir": "install_dir",
+            "skyrim_path": "skyrim_path",
+            "pandora_exe": "pandora_exe",
+            "bodyslide_exe": "bodyslide_exe",
+            "telegram_chat_id": "telegram_chat_id",
+        }
+
+        for legacy_field, toml_field in field_map.items():
+            legacy_val = getattr(legacy, legacy_field, None)
+            if legacy_val:
+                current_toml_val = toml_cfg._data.get(toml_field, "")
+                if not current_toml_val:
+                    toml_cfg._data[toml_field] = str(legacy_val)
+
+        # Migrate first_run flag
+        if not legacy.first_run:
+            toml_cfg._data["first_run"] = False
+
+        # Migrate secrets: decode from base64 and store in keyring via Config.save()
+        secret_map = {
+            "get_api_key": "llm_api_key",
+            "get_nexus_api_key": "nexus_api_key",
+            "get_telegram_bot_token": "telegram_bot_token",
+        }
+        for getter_name, toml_key in secret_map.items():
+            getter = getattr(legacy, getter_name, None)
+            if getter is None:
+                continue
+            try:
+                secret_val = getter()
+                if secret_val:
+                    current = toml_cfg._data.get(toml_key, "")
+                    if not current:
+                        toml_cfg._data[toml_key] = secret_val
+            except Exception as exc:
+                logger.warning("CFG-01: Failed to migrate secret '%s': %s", toml_key, exc)
+
+        # Atomic: save TOML first, then delete JSON
+        toml_cfg.save()
+        logger.info("CFG-01: TOML config saved to %s", self.config_path)
+
+        legacy_path.unlink(missing_ok=True)
+        logger.info("CFG-01: Legacy JSON purged — single source of truth established")
 
 
 async def start_full(args) -> AppContext:
@@ -447,7 +549,4 @@ def _is_configured(config_path: pathlib.Path) -> bool:
 
 def _resolve_config_path_static(args) -> pathlib.Path:
     """Resuelve config path sin instanciar AppContext."""
-    legacy_path = pathlib.Path.cwd() / "sky_claw_config.json"
-    if legacy_path.exists():
-        return legacy_path
     return Config.DEFAULT_CONFIG_FILE

@@ -35,11 +35,26 @@ DEFAULT_TIMEOUT = 120
 # Only allow safe script names: alphanumeric, underscores, hyphens, dots.
 _SAFE_SCRIPT_NAME = re.compile(r"^[a-zA-Z0-9_\-]+\.pas$")
 
-# Only allow safe plugin names.
-_SAFE_PLUGIN_NAME = re.compile(r"^[a-zA-Z0-9_\- .]+\.es[pmlt]$")
+# Only allow safe plugin names: alphanumeric, hyphens, underscores, spaces,
+# dots, with valid Skyrim extensions only (.esp, .esm, .esl).  Max 260 chars
+# (Windows MAX_PATH).
+_SAFE_PLUGIN_NAME = re.compile(r"^[a-zA-Z0-9_\- .]{1,255}\.(esp|esm|esl)$")
 
-# Safe FormID pattern (hexadecimal, 8 characters)
+# Safe FormID pattern (hexadecimal, 8 characters, optional colon separator)
 _SAFE_FORM_ID = re.compile(r"^[0-9A-Fa-f]{6}:?[0-9A-Fa-f]{2}$")
+
+# Valid Skyrim record type signatures (exactly 4 uppercase ASCII chars/underscores)
+_SAFE_RECORD_TYPE = re.compile(r"^[A-Z_]{4}$")
+
+# Allowlist of xEdit CLI flags that Sky-Claw may pass.
+_ALLOWED_XEDIT_FLAGS: frozenset[str] = frozenset({
+    "-IKnowWhatImDoing",
+    "-autoload",
+    "-SSE",
+    "-quickclean",
+    "-noaliases",
+    "-nocrc",
+})
 
 
 # =============================================================================
@@ -513,14 +528,24 @@ end.
         
         if record_types:
             for rt in record_types:
+                if not _SAFE_RECORD_TYPE.match(rt):
+                    raise XEditScriptError(
+                        f"Invalid record type: {rt!r}. Must be 4 uppercase ASCII chars."
+                    )
+                escaped_rt = ScriptGenerator._escape_pascal_string(rt)
                 record_filter_lines.append(
-                    f'  if recordSig = \'{rt}\' then shouldProcess := True;'
+                    f'  if recordSig = \'{escaped_rt}\' then shouldProcess := True;'
                 )
-        
+
         if form_ids:
             for fid in form_ids:
+                if not _SAFE_FORM_ID.match(fid):
+                    raise XEditScriptError(
+                        f"Invalid FormID format: {fid!r}. Must match {_SAFE_FORM_ID.pattern}"
+                    )
+                escaped_fid = ScriptGenerator._escape_pascal_string(fid)
                 record_filter_lines.append(
-                    f'  if formId = \'{fid}\' then shouldProcess := True;'
+                    f'  if formId = \'{escaped_fid}\' then shouldProcess := True;'
                 )
         
         # Si no hay filtros específicos, procesar todo
@@ -662,8 +687,8 @@ class XEditRunner:
             str(self._xedit_path),
             "-SSE",
             "-autoload",
-            f'-script:"{script_name}"',
-            "-D:" + str(self._game_path),
+            f"-script:{script_name}",
+            f"-D:{self._game_path}",
         ]
 
         # Append plugins to load.
@@ -880,17 +905,22 @@ class XEditRunner:
             str(self._xedit_path),
             "-SSE",
             "-IKnowWhatImDoing",  # Requerido para operaciones de escritura
-            f'-script:"{script_path}"',
-            "-D:" + str(self._game_path),
+            f"-script:{script_path}",
+            f"-D:{self._game_path}",
         ]
 
-        # Agregar flags adicionales
+        # Agregar flags adicionales (solo las permitidas)
         if flags:
             for flag in flags:
+                if flag not in _ALLOWED_XEDIT_FLAGS:
+                    raise XEditValidationError(
+                        f"Disallowed xEdit flag: {flag!r}. "
+                        f"Allowed: {sorted(_ALLOWED_XEDIT_FLAGS)}"
+                    )
                 if flag not in cmd:  # Evitar duplicados
                     cmd.append(flag)
 
-        # Agregar plugins
+        # Agregar plugins (ya validados por el caller)
         for plugin in plugins:
             cmd.append(plugin)
 
