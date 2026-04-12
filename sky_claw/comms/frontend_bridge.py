@@ -41,7 +41,7 @@ from sky_claw.agent.providers import create_provider, ProviderConfigError
 from sky_claw.config import Config
 
 if TYPE_CHECKING:
-    from sky_claw.__main__ import AppContext
+    from sky_claw.app_context import AppContext
 
 logger = logging.getLogger("SkyClaw.FrontendBridge")
 
