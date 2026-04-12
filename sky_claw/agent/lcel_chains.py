@@ -204,7 +204,6 @@ class PromptComposer:
 
         return template.format_messages(query=query, context=context, sources=sources)
 
-
 class ChainBuilder:
     """Constructor de cadenas LCEL para Sky-Claw."""
 
@@ -264,7 +263,7 @@ class ChainBuilder:
                 for step in steps:
                     tool = self._tool_executor(
                         step.get("tool", "Herramienta"),
-                        step.get("description", "Descripción de paso"),
+                        step.get("description", "Descripci��n de paso"),
                     )
                     results.append(tool(x))
                 return results
