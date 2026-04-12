@@ -254,6 +254,7 @@ class SupervisorAgent:
         finally:
             # FASE 1.5: Cerrar journal al terminar
             await self.journal.close()
+            await self.db.close()
 
     async def _proactive_watcher(self):
         """
