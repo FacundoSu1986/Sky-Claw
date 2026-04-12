@@ -7,6 +7,7 @@ utilizando el patrón LCEL (LangChain Expression Language).
 
 import asyncio
 import logging
+import asyncio
 from typing import Optional, Any, Dict, List
 
 try:
