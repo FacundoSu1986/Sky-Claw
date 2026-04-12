@@ -29,6 +29,9 @@ from sky_claw.orchestrator.state_graph import (  # noqa: E402
     LANGGRAPH_AVAILABLE,
 )
 
+# Standard LangGraph end-node sentinel
+_LANGGRAPH_END = "__end__"
+
 
 class TestSupervisorState:
     """Tests for SupervisorState enum."""
@@ -153,7 +156,7 @@ class TestStateGraphEdges:
         """Test routing from IDLE on shutdown."""
         state = {"pending_event": WorkflowEventType.SHUTDOWN.value}
         result = StateGraphEdges.route_from_idle(state)
-        assert result == "__END__"
+        assert result == _LANGGRAPH_END
 
     def test_route_from_idle_no_event(self):
         """Test routing from IDLE with no event."""
@@ -183,7 +186,7 @@ class TestStateGraphEdges:
         """Test routing from ERROR when max retries exceeded."""
         state = {"error_count": 3}
         result = StateGraphEdges.route_from_error(state)
-        assert result == "__END__"
+        assert result == _LANGGRAPH_END
 
     def test_route_from_error_retry(self):
         """Test routing from ERROR when retries available."""
