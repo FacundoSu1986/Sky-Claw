@@ -23,6 +23,9 @@ dependencies = [
     "keyring>=24.0",
     "psutil>=5.8",
     "websockets>=14.0",
+    "langchain-core>=0.1,<1",
+    "langgraph>=0.0.1,<1",
+    "nicegui>=1.4,<3",
 ]
 
 [project.optional-dependencies]

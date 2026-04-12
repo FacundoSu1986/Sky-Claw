@@ -5,6 +5,7 @@ Implementa composición declarativa de prompts y manejo de herramientas
 utilizando el patrón LCEL (LangChain Expression Language).
 """
 import logging
+import asyncio
 from typing import Optional, Any, Dict, List
 
 try:
