@@ -15,33 +15,53 @@ logger = logging.getLogger(__name__)
 
 # Sinks peligrosos (Donde los datos sucios NO deben llegar)
 DANGEROUS_SINKS = {
-    'exec', 'eval', 'system', 'popen', 'subprocess.run',
-    'subprocess.call', 'subprocess.Popen', 'compile',
-    'os.system', 'os.popen', 'posix.system', 'builtins.exec'
+    "exec",
+    "eval",
+    "system",
+    "popen",
+    "subprocess.run",
+    "subprocess.call",
+    "subprocess.Popen",
+    "compile",
+    "os.system",
+    "os.popen",
+    "posix.system",
+    "builtins.exec",
 }
 
 # Funciones que pueden indicar ofuscación
-OBFUSCATION_INDICATORS = {'getattr', 'setattr', 'chr', 'ord', 'base64.b64decode'}
+OBFUSCATION_INDICATORS = {"getattr", "setattr", "chr", "ord", "base64.b64decode"}
 
 # Extensiones de archivo soportadas para escaneo de texto
-TEXT_SCAN_EXTENSIONS = {'.bat', '.ps1', '.ini'}
+TEXT_SCAN_EXTENSIONS = {".bat", ".ps1", ".ini"}
 
 # Patrones regex compilados para detección de payloads maliciosos
 MALICIOUS_PAYLOAD_PATTERNS = [
     # Ofuscación PowerShell
-    (re.compile(r'powershell\s+-enc', re.IGNORECASE),
-     'Ofuscación PowerShell detectada: comando -enc'),
-    (re.compile(r'-WindowStyle\s+Hidden', re.IGNORECASE),
-     'Ejecución oculta PowerShell detectada: -WindowStyle Hidden'),
+    (
+        re.compile(r"powershell\s+-enc", re.IGNORECASE),
+        "Ofuscación PowerShell detectada: comando -enc",
+    ),
+    (
+        re.compile(r"-WindowStyle\s+Hidden", re.IGNORECASE),
+        "Ejecución oculta PowerShell detectada: -WindowStyle Hidden",
+    ),
     # Ransomware
-    (re.compile(r'vssadmin\s+delete\s+shadows', re.IGNORECASE),
-     'Comando ransomware detectado: eliminación de shadow copies'),
+    (
+        re.compile(r"vssadmin\s+delete\s+shadows", re.IGNORECASE),
+        "Comando ransomware detectado: eliminación de shadow copies",
+    ),
     # Secuestro de DLL
-    (re.compile(r'LoadLibrary', re.IGNORECASE),
-     'Posible secuestro de DLL: LoadLibrary detectado'),
-    (re.compile(r'rundll32\s+', re.IGNORECASE),
-     'Invocación rundll32 detectada: posible secuestro de DLL'),
+    (
+        re.compile(r"LoadLibrary", re.IGNORECASE),
+        "Posible secuestro de DLL: LoadLibrary detectado",
+    ),
+    (
+        re.compile(r"rundll32\s+", re.IGNORECASE),
+        "Invocación rundll32 detectada: posible secuestro de DLL",
+    ),
 ]
+
 
 class PurpleScanner(ast.NodeVisitor):
     def __init__(self, filename: str = "<unknown>"):
@@ -51,15 +71,23 @@ class PurpleScanner(ast.NodeVisitor):
         self.const_map: Dict[str, str] = {}  # Seguimiento simple de constantes string
         self._current_scope: str = "global"
 
-    def report(self, message: str, node: ast.AST, severity: str = "HIGH", confidence: float = 0.9):
-        self.findings.append({
-            "message": message,
-            "line": node.lineno,
-            "col": node.col_offset,
-            "severity": severity,
-            "confidence": confidence,
-            "file": self.filename
-        })
+    def report(
+        self,
+        message: str,
+        node: ast.AST,
+        severity: str = "HIGH",
+        confidence: float = 0.9,
+    ):
+        self.findings.append(
+            {
+                "message": message,
+                "line": node.lineno,
+                "col": node.col_offset,
+                "severity": severity,
+                "confidence": confidence,
+                "file": self.filename,
+            }
+        )
 
     def _resolve_const(self, node: ast.AST) -> Optional[str]:
         """Intenta resolver el valor de un nodo a un string constante."""
@@ -77,13 +105,13 @@ class PurpleScanner(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign):
         """Rastrea asignaciones de constantes y variables 'sucias' (tainted)."""
         value_const = self._resolve_const(node.value)
-        
+
         # Si el valor es una constante, registrarla
         for target in node.targets:
             if isinstance(target, ast.Name):
                 if value_const is not None:
                     self.const_map[target.id] = value_const
-                
+
                 # Taint tracking simplificado: Si la fuente es sospechosa, la variable es 'sucia'
                 if self._is_tainted_source(node.value):
                     self.tainted_vars.add(target.id)
@@ -97,33 +125,51 @@ class PurpleScanner(ast.NodeVisitor):
         """Determina si un nodo es una fuente de datos no confiables."""
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
-                return node.func.id in ('input', 'open', 'f.read', '__import__')
+                return node.func.id in ("input", "open", "f.read", "__import__")
         return False
 
     def visit_Call(self, node: ast.Call):
         """Inspecciona llamadas a funciones buscando sinks peligrosos y ofuscación."""
         func_name = self._get_func_name(node.func)
-        
+
         # 1. Detección de Sinks Directos e Indirectos
         if func_name in DANGEROUS_SINKS:
-            self.report(f"Llamada a sink peligroso detectada: {func_name}", node, severity="CRITICAL")
+            self.report(
+                f"Llamada a sink peligroso detectada: {func_name}",
+                node,
+                severity="CRITICAL",
+            )
 
         # 2. Detección de ofuscación vía getattr(__builtins__, 'exec')
-        if func_name == 'getattr':
+        if func_name == "getattr":
             if len(node.args) >= 2:
                 attr_value = self._resolve_const(node.args[1])
                 if attr_value in DANGEROUS_SINKS:
-                    self.report(f"Ofuscación por getattr detectada ('{attr_value}')", node, severity="CRITICAL", confidence=0.95)
+                    self.report(
+                        f"Ofuscación por getattr detectada ('{attr_value}')",
+                        node,
+                        severity="CRITICAL",
+                        confidence=0.95,
+                    )
 
         # 3. Taint Tracking: ¿Se está pasando variable sucia a un sink?
         for arg in node.args:
             if isinstance(arg, ast.Name) and arg.id in self.tainted_vars:
                 if func_name in DANGEROUS_SINKS or func_name in OBFUSCATION_INDICATORS:
-                    self.report(f"Variable sucia '{arg.id}' fluyendo hacia sink '{func_name}'", node, severity="HIGH")
+                    self.report(
+                        f"Variable sucia '{arg.id}' fluyendo hacia sink '{func_name}'",
+                        node,
+                        severity="HIGH",
+                    )
 
         # 4. Ofuscación por chr() o base64 en llamadas
         if func_name in OBFUSCATION_INDICATORS:
-            self.report(f"Indicador de ofuscación detectado: {func_name}", node, severity="MEDIUM", confidence=0.7)
+            self.report(
+                f"Indicador de ofuscación detectado: {func_name}",
+                node,
+                severity="MEDIUM",
+                confidence=0.7,
+            )
 
         self.generic_visit(node)
 
@@ -138,79 +184,95 @@ class PurpleScanner(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import):
         for name in node.names:
-            if name.name in ('os', 'subprocess', 'builtin', 'importlib'):
-                self.report(f"Importación de módulo sensible: {name.name}", node, severity="LOW", confidence=0.5)
+            if name.name in ("os", "subprocess", "builtin", "importlib"):
+                self.report(
+                    f"Importación de módulo sensible: {name.name}",
+                    node,
+                    severity="LOW",
+                    confidence=0.5,
+                )
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom):
-        if node.module in ('os', 'subprocess', 'importlib'):
-            self.report(f"Importación parcial de módulo sensible: {node.module}", node, severity="LOW")
+        if node.module in ("os", "subprocess", "importlib"):
+            self.report(
+                f"Importación parcial de módulo sensible: {node.module}",
+                node,
+                severity="LOW",
+            )
         self.generic_visit(node)
+
 
 def _scan_text_payloads(filepath: Path) -> List[Dict[str, Any]]:
     """
     Escanea archivos de texto (.bat, .ps1, .ini) buscando payloads maliciosos.
-    
+
     Args:
         filepath: Ruta al archivo a escanear
-        
+
     Returns:
         Lista de hallazgos detectados
     """
     findings: List[Dict[str, Any]] = []
-    
+
     # Lectura robusta con múltiples encodings
     content: Optional[str] = None
-    for encoding in ['utf-8', 'latin-1']:
+    for encoding in ["utf-8", "latin-1"]:
         try:
-            content = filepath.read_text(encoding=encoding, errors='ignore')
+            content = filepath.read_text(encoding=encoding, errors="ignore")
             break
         except (UnicodeDecodeError, OSError) as e:
             logger.debug(f"Error leyendo {filepath} con {encoding}: {e}")
             continue
-    
+
     if content is None:
         logger.error(f"No se pudo leer el archivo: {filepath}")
-        return [{
-            "message": "Error de lectura: archivo inaccesible",
-            "line": 0,
-            "severity": "HIGH",
-            "confidence": 0.8,
-            "file": str(filepath)
-        }]
-    
+        return [
+            {
+                "message": "Error de lectura: archivo inaccesible",
+                "line": 0,
+                "severity": "HIGH",
+                "confidence": 0.8,
+                "file": str(filepath),
+            }
+        ]
+
     # Escanear contra patrones maliciosos
     for line_num, line in enumerate(content.splitlines(), start=1):
         for pattern, description in MALICIOUS_PAYLOAD_PATTERNS:
             if pattern.search(line):
-                logger.critical(f"AMENAZA DETECTADA en {filepath}:{line_num} - {description}")
-                findings.append({
-                    "message": description,
-                    "line": line_num,
-                    "severity": "CRITICAL",
-                    "confidence": 0.95,
-                    "file": str(filepath),
-                    "matched_line": line.strip()[:200]  # Truncar líneas largas
-                })
-    
+                logger.critical(
+                    f"AMENAZA DETECTADA en {filepath}:{line_num} - {description}"
+                )
+                findings.append(
+                    {
+                        "message": description,
+                        "line": line_num,
+                        "severity": "CRITICAL",
+                        "confidence": 0.95,
+                        "file": str(filepath),
+                        "matched_line": line.strip()[:200],  # Truncar líneas largas
+                    }
+                )
+
     return findings
 
 
 def run_scan(code: str, filename: str = "main.py") -> List[Dict[str, Any]]:
     """
     Punto de entrada principal para el escaneo de seguridad.
-    
+
     Soporta:
     - Archivos .py: escaneo AST completo
     - Archivos .bat, .ps1, .ini: escaneo de payloads maliciosos
     """
     filepath = Path(filename)
     extension = filepath.suffix.lower()
-    
+
     # Routing según extensión
     if extension in TEXT_SCAN_EXTENSIONS:
         return _scan_text_payloads(filepath)
-    
+
     # Escaneo AST para archivos Python
     try:
         tree = ast.parse(code)
@@ -219,13 +281,15 @@ def run_scan(code: str, filename: str = "main.py") -> List[Dict[str, Any]]:
         return scanner.findings
     except SyntaxError as e:
         logger.error(f"Error de sintaxis en {filename}: {e}")
-        return [{
-            "message": "Error de sintaxis (Posible código cifrado o malformado)",
-            "line": e.lineno or 0,
-            "severity": "CRITICAL",
-            "confidence": 1.0,
-            "file": filename
-        }]
+        return [
+            {
+                "message": "Error de sintaxis (Posible código cifrado o malformado)",
+                "line": e.lineno or 0,
+                "severity": "CRITICAL",
+                "confidence": 1.0,
+                "file": filename,
+            }
+        ]
     except Exception as e:
         logger.error(f"Error inesperado en PurpleScanner: {e}")
         return []
@@ -234,32 +298,34 @@ def run_scan(code: str, filename: str = "main.py") -> List[Dict[str, Any]]:
 def scan_file(filepath: Path) -> List[Dict[str, Any]]:
     """
     Escanea un archivo del sistema de archivos.
-    
+
     Args:
         filepath: Ruta al archivo a escanear
-        
+
     Returns:
         Lista de hallazgos detectados
     """
     extension = filepath.suffix.lower()
-    
+
     if extension in TEXT_SCAN_EXTENSIONS:
         return _scan_text_payloads(filepath)
-    
-    if extension == '.py':
+
+    if extension == ".py":
         try:
-            code = filepath.read_text(encoding='utf-8', errors='ignore')
+            code = filepath.read_text(encoding="utf-8", errors="ignore")
             return run_scan(code, str(filepath))
         except OSError as e:
             logger.error(f"Error leyendo archivo {filepath}: {e}")
-            return [{
-                "message": f"Error de lectura: {e}",
-                "line": 0,
-                "severity": "HIGH",
-                "confidence": 0.8,
-                "file": str(filepath)
-            }]
-    
+            return [
+                {
+                    "message": f"Error de lectura: {e}",
+                    "line": 0,
+                    "severity": "HIGH",
+                    "confidence": 0.8,
+                    "file": str(filepath),
+                }
+            ]
+
     # Extensión no soportada
     logger.debug(f"Extensión no soportada para escaneo: {extension}")
     return []

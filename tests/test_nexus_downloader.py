@@ -29,7 +29,11 @@ from sky_claw.scraper.nexus_downloader import (
     _cleanup,
 )
 from sky_claw.security.hitl import Decision, HITLGuard
-from sky_claw.security.network_gateway import EgressPolicy, EgressViolation, NetworkGateway
+from sky_claw.security.network_gateway import (
+    EgressPolicy,
+    EgressViolation,
+    NetworkGateway,
+)
 from sky_claw.security.path_validator import PathValidator
 
 
@@ -145,10 +149,14 @@ def mo2(tmp_path: pathlib.Path) -> MO2Controller:
 
 
 @pytest.fixture()
-async def sync_engine(mo2: MO2Controller, adb: AsyncModRegistry) -> AsyncGenerator[SyncEngine, None]:
+async def sync_engine(
+    mo2: MO2Controller, adb: AsyncModRegistry
+) -> AsyncGenerator[SyncEngine, None]:
     gw = _make_gateway()
     masterlist = MasterlistClient(gateway=gw, api_key="fake")
-    engine = SyncEngine(mo2=mo2, masterlist=masterlist, registry=adb, fetch_retry_wait=wait_none())
+    engine = SyncEngine(
+        mo2=mo2, masterlist=masterlist, registry=adb, fetch_retry_wait=wait_none()
+    )
     yield engine
     tasks = list(engine._download_tasks)
     for task in tasks:
@@ -190,7 +198,9 @@ def tool_registry(
 
 class TestFileInfo:
     def test_fields_are_stored(self) -> None:
-        fi = _make_file_info(nexus_id=1, file_id=2, file_name="a.zip", size_bytes=512, md5="abc")
+        fi = _make_file_info(
+            nexus_id=1, file_id=2, file_name="a.zip", size_bytes=512, md5="abc"
+        )
         assert fi.nexus_id == 1
         assert fi.file_id == 2
         assert fi.file_name == "a.zip"
@@ -387,9 +397,7 @@ class TestGetFileInfo:
             json_data=[{"URI": "https://premium-files.nexusmods.com/f/f.zip"}]
         )
         session = _make_session(meta_resp, link_resp)
-        d = NexusDownloader(
-            api_key="k", gateway=gw, staging_dir=tmp_path / "s"
-        )
+        d = NexusDownloader(api_key="k", gateway=gw, staging_dir=tmp_path / "s")
         with patch.object(gw, "authorize", wraps=gw.authorize) as mock_auth:
             await d.get_file_info(1, 2, session)
         # Two GETs: metadata + download_link
@@ -488,7 +496,9 @@ class TestDownload:
         assert dest.read_bytes() == content
 
     @pytest.mark.asyncio
-    async def test_md5_mismatch_raises_and_cleans_up(self, tmp_path: pathlib.Path) -> None:
+    async def test_md5_mismatch_raises_and_cleans_up(
+        self, tmp_path: pathlib.Path
+    ) -> None:
         content = b"real data"
         # Provide 5 responses for 5 retry attempts (MD5ValidationError triggers retries)
         responses = [_make_aiohttp_response(content=content) for _ in range(5)]
@@ -554,7 +564,9 @@ class TestDownload:
         assert calls[-1] == pytest.approx(100.0)
 
     @pytest.mark.asyncio
-    async def test_content_length_used_when_size_zero(self, tmp_path: pathlib.Path) -> None:
+    async def test_content_length_used_when_size_zero(
+        self, tmp_path: pathlib.Path
+    ) -> None:
         content = b"data"
         resp = _make_aiohttp_response(
             content=content,
@@ -570,13 +582,17 @@ class TestDownload:
         progress_calls: list[DownloadProgress] = []
 
         async def cb(p: DownloadProgress) -> None:
-            progress_calls.append(DownloadProgress(p.file_name, p.total_bytes, p.downloaded_bytes))
+            progress_calls.append(
+                DownloadProgress(p.file_name, p.total_bytes, p.downloaded_bytes)
+            )
 
         await d.download(fi, session, progress_cb=cb)
         assert progress_calls[0].total_bytes == len(content)
 
     @pytest.mark.asyncio
-    async def test_successful_download_sha256_valid(self, tmp_path: pathlib.Path) -> None:
+    async def test_successful_download_sha256_valid(
+        self, tmp_path: pathlib.Path
+    ) -> None:
         """Verifica que la validación SHA256 funciona correctamente."""
         content = b"skyrim mod data with sha256"
         sha256 = _sha256_of(content)
@@ -595,7 +611,9 @@ class TestDownload:
         assert dest.read_bytes() == content
 
     @pytest.mark.asyncio
-    async def test_sha256_mismatch_raises_and_cleans_up(self, tmp_path: pathlib.Path) -> None:
+    async def test_sha256_mismatch_raises_and_cleans_up(
+        self, tmp_path: pathlib.Path
+    ) -> None:
         """Verifica que SHA256 mismatch limpia el archivo y lanza HashValidationError."""
         content = b"real data for sha256"
         # Provide 5 responses for 5 retry attempts
@@ -615,7 +633,9 @@ class TestDownload:
         assert not (d.staging_dir / "bad_sha256.zip").exists()
 
     @pytest.mark.asyncio
-    async def test_hash_validation_error_is_alias_for_md5(self, tmp_path: pathlib.Path) -> None:
+    async def test_hash_validation_error_is_alias_for_md5(
+        self, tmp_path: pathlib.Path
+    ) -> None:
         """Verifica que HashValidationError es compatible con MD5ValidationError (alias hacia atrás)."""
         content = b"test alias"
         responses = [_make_aiohttp_response(content=content) for _ in range(5)]
@@ -633,7 +653,9 @@ class TestDownload:
         assert not (d.staging_dir / "alias_test.zip").exists()
 
     @pytest.mark.asyncio
-    async def test_dual_hash_validation_md5_and_sha256(self, tmp_path: pathlib.Path) -> None:
+    async def test_dual_hash_validation_md5_and_sha256(
+        self, tmp_path: pathlib.Path
+    ) -> None:
         """Verifica cálculo dual de hashes MD5 y SHA256."""
         content = b"dual hash test content"
         md5 = _md5_of(content)
@@ -829,7 +851,9 @@ class TestDownloadModMissingConfig:
             hitl=HITLGuard(),
             downloader=None,
         )
-        result = json.loads(await registry.execute("download_mod", {"nexus_id": 1, "file_id": 2}))
+        result = json.loads(
+            await registry.execute("download_mod", {"nexus_id": 1, "file_id": 2})
+        )
         assert "error" in result
         assert "downloader" in result["error"].lower()
 
@@ -848,7 +872,9 @@ class TestDownloadModMissingConfig:
             hitl=None,
             downloader=downloader,
         )
-        result = json.loads(await registry.execute("download_mod", {"nexus_id": 1, "file_id": 2}))
+        result = json.loads(
+            await registry.execute("download_mod", {"nexus_id": 1, "file_id": 2})
+        )
         assert "error" in result
         assert "hitl" in result["error"].lower()
 
@@ -956,7 +982,9 @@ class TestDownloadModHITLDenied:
         )
         fi = _make_file_info(nexus_id=11, file_id=21, file_name="timeout.zip")
 
-        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch(
+            "sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession"
+        ) as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -1014,15 +1042,21 @@ class TestDownloadModApproved:
             enqueued.append(task)
             return task
 
-        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch(
+            "sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession"
+        ) as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
             mock_session_cls.return_value = mock_session
 
             with patch.object(downloader, "get_file_info", return_value=fi):
-                with patch.object(guard, "request_approval", return_value=Decision.APPROVED):
-                    with patch.object(sync_engine, "enqueue_download", side_effect=_fake_enqueue):
+                with patch.object(
+                    guard, "request_approval", return_value=Decision.APPROVED
+                ):
+                    with patch.object(
+                        sync_engine, "enqueue_download", side_effect=_fake_enqueue
+                    ):
                         result = json.loads(
                             await registry.execute(
                                 "download_mod", {"nexus_id": 55, "file_id": 77}
@@ -1058,15 +1092,21 @@ class TestDownloadModApproved:
             coro.close()
             return MagicMock()
 
-        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch(
+            "sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession"
+        ) as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
             mock_session_cls.return_value = mock_session
 
             with patch.object(downloader, "get_file_info", return_value=fi):
-                with patch.object(guard, "request_approval", return_value=Decision.APPROVED):
-                    with patch.object(sync_engine, "enqueue_download", side_effect=_discard_enqueue):
+                with patch.object(
+                    guard, "request_approval", return_value=Decision.APPROVED
+                ):
+                    with patch.object(
+                        sync_engine, "enqueue_download", side_effect=_discard_enqueue
+                    ):
                         result = json.loads(
                             await registry.execute(
                                 "download_mod", {"nexus_id": 1, "file_id": 1}

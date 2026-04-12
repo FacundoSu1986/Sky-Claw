@@ -150,7 +150,12 @@ class AgentCommunicationClient:
 
                     await self._listen(ws)
 
-            except (ConnectionClosed, ConnectionClosedError, ConnectionRefusedError, OSError) as e:
+            except (
+                ConnectionClosed,
+                ConnectionClosedError,
+                ConnectionRefusedError,
+                OSError,
+            ) as e:
                 if not self._running:
                     break
                 logger.warning(

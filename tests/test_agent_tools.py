@@ -61,7 +61,10 @@ def tool_registry(
     masterlist = MasterlistClient(gateway=gw, api_key="fake")
     engine = SyncEngine(mo2=mo2, masterlist=masterlist, registry=adb)
     return AsyncToolRegistry(
-        registry=adb, mo2=mo2, sync_engine=engine, loot_exe=None,
+        registry=adb,
+        mo2=mo2,
+        sync_engine=engine,
+        loot_exe=None,
     )
 
 
@@ -197,13 +200,9 @@ class TestSearchMod:
 
 class TestCheckLoadOrder:
     @pytest.mark.asyncio
-    async def test_check_load_order(
-        self, tool_registry: AsyncToolRegistry
-    ) -> None:
+    async def test_check_load_order(self, tool_registry: AsyncToolRegistry) -> None:
         result = json.loads(
-            await tool_registry.execute(
-                "check_load_order", {"profile": "Default"}
-            )
+            await tool_registry.execute("check_load_order", {"profile": "Default"})
         )
         assert result["profile"] == "Default"
         entries = result["load_order"]
@@ -218,9 +217,7 @@ class TestCheckLoadOrder:
         self, tool_registry: AsyncToolRegistry
     ) -> None:
         with pytest.raises(pydantic.ValidationError):
-            await tool_registry.execute(
-                "check_load_order", {"profile": ""}
-            )
+            await tool_registry.execute("check_load_order", {"profile": ""})
 
 
 # ------------------------------------------------------------------
@@ -230,13 +227,9 @@ class TestCheckLoadOrder:
 
 class TestDetectConflicts:
     @pytest.mark.asyncio
-    async def test_detect_no_conflicts(
-        self, tool_registry: AsyncToolRegistry
-    ) -> None:
+    async def test_detect_no_conflicts(self, tool_registry: AsyncToolRegistry) -> None:
         result = json.loads(
-            await tool_registry.execute(
-                "detect_conflicts", {"profile": "Default"}
-            )
+            await tool_registry.execute("detect_conflicts", {"profile": "Default"})
         )
         assert result["conflicts"] == []
 
@@ -249,9 +242,7 @@ class TestDetectConflicts:
         )
         await adb.insert_deps_batch([(mod_id, 99999, "MissingMod")])
         result = json.loads(
-            await tool_registry.execute(
-                "detect_conflicts", {"profile": "Default"}
-            )
+            await tool_registry.execute("detect_conflicts", {"profile": "Default"})
         )
         assert len(result["conflicts"]) == 1
         assert result["conflicts"][0]["missing_master_nexus_id"] == 99999
@@ -268,9 +259,7 @@ class TestRunLootSort:
         self, tool_registry: AsyncToolRegistry
     ) -> None:
         result = json.loads(
-            await tool_registry.execute(
-                "run_loot_sort", {"profile": "Default"}
-            )
+            await tool_registry.execute("run_loot_sort", {"profile": "Default"})
         )
         assert "error" in result
         assert "not configured" in result["error"] or "not found" in result["error"]
@@ -368,7 +357,10 @@ class TestDetectConflictsLargeDataset:
         masterlist = MasterlistClient(gateway=gw, api_key="fake")
         engine = SyncEngine(mo2=mo2, masterlist=masterlist, registry=adb)
         registry = AsyncToolRegistry(
-            registry=adb, mo2=mo2, sync_engine=engine, loot_exe=None,
+            registry=adb,
+            mo2=mo2,
+            sync_engine=engine,
+            loot_exe=None,
         )
 
         # Insert 500 mods with one missing-master dep each.

@@ -77,7 +77,9 @@ def _parse_steam_library_folders(vdf_path: pathlib.Path) -> list[pathlib.Path]:
     return folders
 
 
-def _find_skyrim_in_steam_libraries(libraries: list[pathlib.Path]) -> pathlib.Path | None:
+def _find_skyrim_in_steam_libraries(
+    libraries: list[pathlib.Path],
+) -> pathlib.Path | None:
     """Check each Steam library for the Skyrim SE install."""
     for lib in libraries:
         candidate = lib / "steamapps" / "common" / "Skyrim Special Edition"

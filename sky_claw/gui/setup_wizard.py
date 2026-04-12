@@ -1,4 +1,5 @@
 """Setup wizard modal and legacy setup page."""
+
 from __future__ import annotations
 
 import json
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # SETUP WIZARD MODAL — Overlay sobre el Dashboard (Nordic / Parchment)
 # =============================================================================
+
 
 class SetupWizardModal:
     """Wizard de credenciales renderizado como modal overlay sobre el dashboard.
@@ -63,19 +65,27 @@ class SetupWizardModal:
                 # Header
                 with ui.row().classes("items-center justify-between w-full mb-4"):
                     with ui.row().classes("items-center gap-3"):
-                        ui.html(f'''
+                        ui.html(f"""
                             <div style="width:36px;height:36px;border-radius:8px;display:flex;
                                         align-items:center;justify-content:center;
                                         background:linear-gradient(135deg, #C8A84E, #8B7332);">
                                 {_ICON_SETTINGS}
                             </div>
-                        ''')
-                        ui.label("ASISTENTE DE CONFIGURACIÓN").classes("sky-wizard-title")
-                    self._step_label = ui.label("Paso 1 de 2").classes("sky-wizard-step")
+                        """)
+                        ui.label("ASISTENTE DE CONFIGURACIÓN").classes(
+                            "sky-wizard-title"
+                        )
+                    self._step_label = ui.label("Paso 1 de 2").classes(
+                        "sky-wizard-step"
+                    )
 
                 # Progress bar
-                with ui.element("div").classes("w-full mb-4").style(
-                    "height:4px; background:rgba(255,255,255,0.08); border-radius:2px; overflow:hidden;"
+                with (
+                    ui.element("div")
+                    .classes("w-full mb-4")
+                    .style(
+                        "height:4px; background:rgba(255,255,255,0.08); border-radius:2px; overflow:hidden;"
+                    )
                 ):
                     self._progress_bar = ui.element("div").style(
                         "width:50%; height:100%; background:var(--sky-gold); "
@@ -94,37 +104,55 @@ class SetupWizardModal:
                     # API Key
                     with ui.column().classes("w-full gap-1"):
                         ui.label("CLAVE API DE OPERACIONES").classes("sky-wizard-label")
-                        self._api_key_input = ui.input(
-                            placeholder="sk-... o clave del proveedor",
-                        ).classes("w-full").props(
-                            'type=password dark standout="bg-transparent" '
-                            'input-class="sky-wizard-input" color=amber maxlength=512'
+                        self._api_key_input = (
+                            ui.input(
+                                placeholder="sk-... o clave del proveedor",
+                            )
+                            .classes("w-full")
+                            .props(
+                                'type=password dark standout="bg-transparent" '
+                                'input-class="sky-wizard-input" color=amber maxlength=512'
+                            )
                         )
-                        ui.label("Usa tu API Key de producción").classes("sky-wizard-hint")
+                        ui.label("Usa tu API Key de producción").classes(
+                            "sky-wizard-hint"
+                        )
 
                     # Telegram ID
                     with ui.column().classes("w-full gap-1"):
                         ui.label("ID DE TELEGRAM").classes("sky-wizard-label")
-                        self._telegram_id_input = ui.input(
-                            placeholder="@usuario_id",
-                        ).classes("w-full").props(
-                            'dark standout="bg-transparent" '
-                            'input-class="sky-wizard-input" color=amber maxlength=32'
+                        self._telegram_id_input = (
+                            ui.input(
+                                placeholder="@usuario_id",
+                            )
+                            .classes("w-full")
+                            .props(
+                                'dark standout="bg-transparent" '
+                                'input-class="sky-wizard-input" color=amber maxlength=32'
+                            )
                         )
-                        ui.label("ID único de tu cuenta de Telegram").classes("sky-wizard-hint")
+                        ui.label("ID único de tu cuenta de Telegram").classes(
+                            "sky-wizard-hint"
+                        )
                         self._draft_fields["telegram_chatid"] = self._telegram_id_input
 
                     # Frecuencia
                     with ui.column().classes("w-full gap-1"):
                         ui.label("FRECUENCIA (MS)").classes("sky-wizard-label")
-                        self._frequency_input = ui.input(
-                            placeholder="5000",
-                            value="5000",
-                        ).classes("w-full").props(
-                            'dark standout="bg-transparent" '
-                            'input-class="sky-wizard-input" color=amber maxlength=10'
+                        self._frequency_input = (
+                            ui.input(
+                                placeholder="5000",
+                                value="5000",
+                            )
+                            .classes("w-full")
+                            .props(
+                                'dark standout="bg-transparent" '
+                                'input-class="sky-wizard-input" color=amber maxlength=10'
+                            )
                         )
-                        ui.label("Frecuencia de monitoreos en milisegundos").classes("sky-wizard-hint")
+                        ui.label("Frecuencia de monitoreos en milisegundos").classes(
+                            "sky-wizard-hint"
+                        )
                         self._draft_fields["frequency_ms"] = self._frequency_input
 
                 # ── Step 2 (hidden initially) ──
@@ -134,56 +162,76 @@ class SetupWizardModal:
                     # Provider
                     with ui.column().classes("w-full gap-1"):
                         ui.label("PROVEEDOR IA").classes("sky-wizard-label")
-                        self._provider_toggle = ui.toggle(
-                            ["anthropic", "deepseek", "ollama"],
-                            value="deepseek",
-                        ).classes("w-full").props('color=amber')
+                        self._provider_toggle = (
+                            ui.toggle(
+                                ["anthropic", "deepseek", "ollama"],
+                                value="deepseek",
+                            )
+                            .classes("w-full")
+                            .props("color=amber")
+                        )
 
                     # Nexus Key
                     with ui.column().classes("w-full gap-1"):
                         ui.label("NEXUS MODS API KEY").classes("sky-wizard-label")
-                        self._nexus_input = ui.input(
-                            placeholder="Opcional — para descargas automáticas",
-                        ).classes("w-full").props(
-                            'type=password dark standout="bg-transparent" '
-                            'input-class="sky-wizard-input" color=amber maxlength=512'
+                        self._nexus_input = (
+                            ui.input(
+                                placeholder="Opcional — para descargas automáticas",
+                            )
+                            .classes("w-full")
+                            .props(
+                                'type=password dark standout="bg-transparent" '
+                                'input-class="sky-wizard-input" color=amber maxlength=512'
+                            )
                         )
 
                     # Telegram Token
                     with ui.column().classes("w-full gap-1"):
                         ui.label("TELEGRAM BOT TOKEN").classes("sky-wizard-label")
-                        self._telegram_token_input = ui.input(
-                            placeholder="Opcional — para notificaciones HITL",
-                        ).classes("w-full").props(
-                            'type=password dark standout="bg-transparent" '
-                            'input-class="sky-wizard-input" color=amber maxlength=512'
+                        self._telegram_token_input = (
+                            ui.input(
+                                placeholder="Opcional — para notificaciones HITL",
+                            )
+                            .classes("w-full")
+                            .props(
+                                'type=password dark standout="bg-transparent" '
+                                'input-class="sky-wizard-input" color=amber maxlength=512'
+                            )
                         )
 
                 # ── CTA Button ──
                 with ui.row().classes("w-full justify-end gap-3 mt-4"):
-                    self._back_btn = ui.button(
-                        "Atrás",
-                        on_click=self._go_step1,
-                    ).classes(
-                        "px-5 py-3 rounded-xl font-semibold"
-                    ).props("ripple flat no-caps").style(
-                        "color: var(--sky-parchment-text); display: none;"
+                    self._back_btn = (
+                        ui.button(
+                            "Atrás",
+                            on_click=self._go_step1,
+                        )
+                        .classes("px-5 py-3 rounded-xl font-semibold")
+                        .props("ripple flat no-caps")
+                        .style("color: var(--sky-parchment-text); display: none;")
                     )
 
-                    self._next_btn = ui.button(
-                        "Siguiente",
-                        on_click=self._go_step2,
-                    ).classes(
-                        "sky-wizard-cta px-6 py-3 rounded-xl text-lg"
-                    ).props("ripple no-caps")
+                    self._next_btn = (
+                        ui.button(
+                            "Siguiente",
+                            on_click=self._go_step2,
+                        )
+                        .classes("sky-wizard-cta px-6 py-3 rounded-xl text-lg")
+                        .props("ripple no-caps")
+                    )
 
-                    self._submit_btn = ui.button(
-                        on_click=self._on_submit,
-                    ).classes(
-                        "sky-wizard-cta px-6 py-3 rounded-xl text-lg"
-                    ).props("ripple no-caps").style("display: none;")
+                    self._submit_btn = (
+                        ui.button(
+                            on_click=self._on_submit,
+                        )
+                        .classes("sky-wizard-cta px-6 py-3 rounded-xl text-lg")
+                        .props("ripple no-caps")
+                        .style("display: none;")
+                    )
                     with self._submit_btn:
-                        ui.html(f'<span style="margin-right:8px;">{_ICON_ROCKET}</span>')
+                        ui.html(
+                            f'<span style="margin-right:8px;">{_ICON_ROCKET}</span>'
+                        )
                         ui.label("Inicializar Sistema")
 
         # Attach localStorage autosave handlers
@@ -197,16 +245,18 @@ class SetupWizardModal:
         ui.timer(0.3, self._restore_drafts, once=True)
 
         # Prevent backdrop from propagating clicks
-        ui.run_javascript('''
+        ui.run_javascript("""
             document.querySelector('.sky-wizard-overlay')?.addEventListener('click', function(e) {
                 e.stopPropagation();
             });
-        ''')
+        """)
 
     def _go_step2(self) -> None:
         self._step = 2
         self._step_label.set_text("Paso 2 de 2")
-        self._progress_bar.style("width:100%; height:100%; background:var(--sky-gold); border-radius:2px; transition:width 0.3s ease;")
+        self._progress_bar.style(
+            "width:100%; height:100%; background:var(--sky-gold); border-radius:2px; transition:width 0.3s ease;"
+        )
         self._step1_container.style("display: none;")
         self._step2_container.style("display: flex;")
         self._next_btn.style("display: none;")
@@ -216,7 +266,9 @@ class SetupWizardModal:
     def _go_step1(self) -> None:
         self._step = 1
         self._step_label.set_text("Paso 1 de 2")
-        self._progress_bar.style("width:50%; height:100%; background:var(--sky-gold); border-radius:2px; transition:width 0.3s ease;")
+        self._progress_bar.style(
+            "width:50%; height:100%; background:var(--sky-gold); border-radius:2px; transition:width 0.3s ease;"
+        )
         self._step1_container.style("display: flex;")
         self._step2_container.style("display: none;")
         self._next_btn.style("display: block;")
@@ -227,8 +279,14 @@ class SetupWizardModal:
         provider = self._provider_toggle.value if self._provider_toggle else "deepseek"
         api_key = self._api_key_input.value.strip() if self._api_key_input else ""
         nexus_key = self._nexus_input.value.strip() if self._nexus_input else ""
-        telegram_token = self._telegram_token_input.value.strip() if self._telegram_token_input else ""
-        telegram_chatid = self._telegram_id_input.value.strip() if self._telegram_id_input else ""
+        telegram_token = (
+            self._telegram_token_input.value.strip()
+            if self._telegram_token_input
+            else ""
+        )
+        telegram_chatid = (
+            self._telegram_id_input.value.strip() if self._telegram_id_input else ""
+        )
 
         await self._validate_and_save(
             provider=provider,
@@ -262,7 +320,10 @@ class SetupWizardModal:
             ui.notify("Token Telegram inválido — debe contener ':'", type="negative")
             return
 
-        if telegram_chatid and not telegram_chatid.replace("@", "").replace("-", "").isdigit():
+        if (
+            telegram_chatid
+            and not telegram_chatid.replace("@", "").replace("-", "").isdigit()
+        ):
             ui.notify("Chat ID debe ser numérico", type="negative")
             return
 
@@ -284,6 +345,7 @@ class SetupWizardModal:
                 keyring.set_password("sky_claw", "ws_auth_token", secrets.token_hex(32))
 
             from sky_claw.config import Config
+
             cfg = Config(self._config_path)
             cfg._data["llm_provider"] = provider
             cfg._data["first_run"] = False
@@ -326,16 +388,17 @@ class SetupWizardModal:
                 pass
 
     async def _clear_drafts(self) -> None:
-        await ui.run_javascript('''
+        await ui.run_javascript("""
             Object.keys(localStorage)
                 .filter(k => k.startsWith("skyclaw_draft_"))
                 .forEach(k => localStorage.removeItem(k))
-        ''')
+        """)
 
 
 # =============================================================================
 # SETUP PAGE — Legacy wrapper (mantiene compatibilidad con __main__.py)
 # =============================================================================
+
 
 class SetupPage:
     """Legacy: redirige internamente al wizard modal. Mantenido para compat."""
@@ -348,9 +411,13 @@ class SetupPage:
 
     def build(self) -> None:
         _load_css()
-        with ui.element("div").classes(
-            "w-full min-h-screen flex items-center justify-center relative"
-        ).style("background: var(--sky-bg-primary); font-family: var(--sky-font-family);"):
+        with (
+            ui.element("div")
+            .classes("w-full min-h-screen flex items-center justify-center relative")
+            .style(
+                "background: var(--sky-bg-primary); font-family: var(--sky-font-family);"
+            )
+        ):
             ui.html('<div class="sky-glow-overlay" style="opacity: 0.1;"></div>')
             wizard = SetupWizardModal(self._config_path, self._on_complete)
             wizard.build()

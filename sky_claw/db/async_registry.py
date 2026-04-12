@@ -14,7 +14,12 @@ import time
 from typing import Sequence
 
 import aiosqlite
-from tenacity import retry, retry_if_exception_type, wait_exponential, stop_after_attempt
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    wait_exponential,
+    stop_after_attempt,
+)
 
 from sky_claw.config import DB_PATH
 
@@ -106,11 +111,14 @@ class AsyncModRegistry:
     def __init__(self, db_path: pathlib.Path | str | None = None) -> None:
         raw_path = str(db_path or DB_PATH)
         from sky_claw.core.validators.path import PathTraversalValidator
+
         validator = PathTraversalValidator(allow_absolute=True)
         result = validator.validate(raw_path)
         if not result.is_valid:
-            raise ValueError(f"Path traversal detected in database path '{raw_path}': {result.error_message}")
-            
+            raise ValueError(
+                f"Path traversal detected in database path '{raw_path}': {result.error_message}"
+            )
+
         self._db_path = raw_path
         self._conn: aiosqlite.Connection | None = None
 
@@ -136,17 +144,21 @@ class AsyncModRegistry:
             async with self._conn.execute("PRAGMA quick_check") as cur:
                 row = await cur.fetchone()
                 if row is None or str(row[0]).lower() != "ok":
-                    raise RuntimeError(f"SQLite integrity check failed for {self._db_path}")
+                    raise RuntimeError(
+                        f"SQLite integrity check failed for {self._db_path}"
+                    )
         except RuntimeError:
             await self._conn.close()
             self._conn = None
-            
+
             db_file = pathlib.Path(self._db_path)
-            
+
             db_exists = db_file.exists()
             if db_exists:
-                backup_path = db_file.with_name(f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}")
-                
+                backup_path = db_file.with_name(
+                    f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}"
+                )
+
                 @retry(
                     retry=retry_if_exception_type(OSError),
                     stop=stop_after_attempt(5),
@@ -158,11 +170,13 @@ class AsyncModRegistry:
 
                 try:
                     await _do_backup()
-                    logger.warning("Corrupt database moved to %s. Rebuilding...", backup_path)
+                    logger.warning(
+                        "Corrupt database moved to %s. Rebuilding...", backup_path
+                    )
                 except OSError as e:
                     logger.error("Failed to backup corrupt database: %s", e)
                     raise
-            
+
             # Reopen fresh
             self._conn = await aiosqlite.connect(self._db_path)
             self._conn.row_factory = aiosqlite.Row
@@ -208,13 +222,15 @@ class AsyncModRegistry:
             await self._conn.commit()
             return int(row[0])
 
-    async def set_vfs_status(self, nexus_id: int, *, installed: bool, enabled: bool) -> None:
+    async def set_vfs_status(
+        self, nexus_id: int, *, installed: bool, enabled: bool
+    ) -> None:
         """Update the VFS installation and activation status for a mod."""
         if self._conn is None:
             raise RuntimeError("Database is not open")
         async with self._conn.execute(
             "UPDATE mods SET installed = ?, enabled_in_vfs = ?, updated_at = datetime('now') WHERE nexus_id = ?",
-            (int(installed), int(enabled), nexus_id)
+            (int(installed), int(enabled), nexus_id),
         ):
             await self._conn.commit()
 
@@ -287,7 +303,8 @@ class AsyncModRegistry:
             return [(int(row[0]), str(row[1])) for row in await cur.fetchall()]
 
     async def find_missing_masters_for_mods(
-        self, mod_names: list[str],
+        self,
+        mod_names: list[str],
     ) -> list[dict]:
         """Find dependencies whose nexus_id is not in the mods table.
 

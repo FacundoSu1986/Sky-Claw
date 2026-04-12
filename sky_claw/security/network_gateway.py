@@ -55,11 +55,13 @@ class EgressPolicy:
 
 class GatewayTCPConnector(aiohttp.TCPConnector):
     """Custom TCPConnector that enforces strict SSL and uses a safe resolver to prevent SSRF."""
+
     def __init__(self, gateway: NetworkGateway, **kwargs):
         resolver = SafeResolver(gateway._policy)
         if "ssl" not in kwargs:
             kwargs["ssl"] = ssl.create_default_context()
         super().__init__(resolver=resolver, **kwargs)
+
 
 class SafeResolver(aiohttp.abc.AbstractResolver):
     """DNS resolver with IP validation and pinning against TOCTOU/rebinding.
@@ -74,7 +76,9 @@ class SafeResolver(aiohttp.abc.AbstractResolver):
         self._policy = policy
         self._pinned: dict[tuple[str, int], list[dict[str, Any]]] = {}
 
-    async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET) -> list[dict[str, Any]]:
+    async def resolve(
+        self, host: str, port: int = 0, family: int = socket.AF_INET
+    ) -> list[dict[str, Any]]:
         pin_key = (host, port)
 
         # DNS Pinning: return the previously validated result if available.
@@ -85,7 +89,10 @@ class SafeResolver(aiohttp.abc.AbstractResolver):
         loop = asyncio.get_running_loop()
         try:
             infos = await loop.getaddrinfo(
-                host, port, family=family, type=socket.SOCK_STREAM,
+                host,
+                port,
+                family=family,
+                type=socket.SOCK_STREAM,
             )
         except (socket.gaierror, OSError) as e:
             raise OSError(f"DNS resolution failed for '{host}': {e}")
@@ -104,14 +111,16 @@ class SafeResolver(aiohttp.abc.AbstractResolver):
                     f"Resolved address {addr} for '{host}' is private/loopback (SSRF block)"
                 )
 
-            result.append({
-                "hostname": host,
-                "host": ip_str,
-                "port": info[4][1],
-                "family": info[0],
-                "proto": info[2],
-                "flags": socket.AI_NUMERICHOST,
-            })
+            result.append(
+                {
+                    "hostname": host,
+                    "host": ip_str,
+                    "port": info[4][1],
+                    "family": info[0],
+                    "proto": info[2],
+                    "flags": socket.AI_NUMERICHOST,
+                }
+            )
 
         if not result:
             raise OSError(f"No valid addresses resolved for '{host}'")
@@ -155,8 +164,12 @@ class NetworkGateway:
         # Check raw literal IPs just in case
         try:
             addr = ipaddress.ip_address(hostname)
-            if self._policy.block_private_ips and (addr.is_private or addr.is_loopback or addr.is_link_local):
-                 raise EgressViolation(f"Literal address {addr} is a private/loopback IP")
+            if self._policy.block_private_ips and (
+                addr.is_private or addr.is_loopback or addr.is_link_local
+            ):
+                raise EgressViolation(
+                    f"Literal address {addr} is a private/loopback IP"
+                )
         except ValueError:
             pass
 
@@ -173,7 +186,7 @@ class NetworkGateway:
         **kwargs: Any,
     ) -> aiohttp.ClientResponse:
         """Authorize and execute an HTTP request with redirect validation.
-        
+
         DNS Pinning is handled automatically by GatewayTCPConnector.
         Redirect validation (H4): ``allow_redirects=False`` is enforced. Each redirect
         Location is re-authorized through the full egress policy before being followed.
@@ -192,14 +205,16 @@ class NetworkGateway:
 
             hop_kwargs = dict(kwargs)
             safe_timeout = aiohttp.ClientTimeout(total=45, connect=10)
-            if 'timeout' not in hop_kwargs:
-                hop_kwargs['timeout'] = safe_timeout
+            if "timeout" not in hop_kwargs:
+                hop_kwargs["timeout"] = safe_timeout
 
             try:
                 response = await session.request(method, current_url, **hop_kwargs)
             except asyncio.TimeoutError as _exc:
                 logger.error(f"Timeout al contactar {current_url}")
-                raise NetworkGatewayTimeout(f"La petición a {current_url} excedió el tiempo límite.") from _exc
+                raise NetworkGatewayTimeout(
+                    f"La petición a {current_url} excedió el tiempo límite."
+                ) from _exc
 
             if response.status in (301, 302, 303, 307, 308):
                 redirect_url = response.headers.get("Location")
@@ -225,7 +240,7 @@ class NetworkGateway:
             await self.authorize("GET", hop_url)
             parsed = urlparse(hop_url)
             if parsed.scheme != "https":
-                 raise EgressViolation(f"Non-HTTPS hop detected: {hop_url}")
+                raise EgressViolation(f"Non-HTTPS hop detected: {hop_url}")
 
     # ------------------------------------------------------------------
     # Internals
@@ -240,9 +255,7 @@ class NetworkGateway:
 
     def _check_host_allowed(self, hostname: str) -> None:
         if self._matching_pattern(hostname) is None:
-            raise EgressViolation(
-                f"Host '{hostname}' is not in the allow-list"
-            )
+            raise EgressViolation(f"Host '{hostname}' is not in the allow-list")
 
     def _check_method_allowed(self, method: str, hostname: str) -> None:
         pattern = self._matching_pattern(hostname)
@@ -262,5 +275,3 @@ class NetworkGateway:
                     f"Telegram path '{path}' does not start with "
                     f"'{self._policy.telegram_path_prefix}'"
                 )
-
-

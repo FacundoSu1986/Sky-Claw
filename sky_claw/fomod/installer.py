@@ -78,12 +78,12 @@ def _extract_zip(archive: pathlib.Path, dest: pathlib.Path) -> None:
             if info.is_dir():
                 continue
             if not _is_safe_path(info.filename):
-                raise PathViolation(
-                    f"Zip-slip detected: {info.filename!r}"
-                )
+                raise PathViolation(f"Zip-slip detected: {info.filename!r}")
             target_path = (dest_resolved / info.filename).resolve()
             if not target_path.is_relative_to(dest_resolved):
-                raise PathViolation(f"Path traversal detected: {info.filename!r} escapes sandbox")
+                raise PathViolation(
+                    f"Path traversal detected: {info.filename!r} escapes sandbox"
+                )
             target_path.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(info) as src, open(target_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
@@ -101,13 +101,13 @@ def _extract_7z(archive: pathlib.Path, dest: pathlib.Path) -> None:
     with py7zr.SevenZipFile(archive, "r") as szf:
         for name in szf.getnames():
             if not _is_safe_path(name):
-                raise PathViolation(
-                    f"Zip-slip detected in 7z: {name!r}"
-                )
+                raise PathViolation(f"Zip-slip detected in 7z: {name!r}")
             target_path = (dest_resolved / name).resolve()
             if not target_path.is_relative_to(dest_resolved):
-                raise PathViolation(f"Path traversal detected in 7z: {name!r} escapes sandbox")
-        
+                raise PathViolation(
+                    f"Path traversal detected in 7z: {name!r} escapes sandbox"
+                )
+
         # Validated strictly. We extract one by one avoiding extractall.
         for name in szf.getnames():
             szf.extract(path=dest_resolved, targets=[name])
@@ -127,12 +127,12 @@ def _extract_rar(archive: pathlib.Path, dest: pathlib.Path) -> None:
             if info.is_dir():
                 continue
             if not _is_safe_path(info.filename):
-                raise PathViolation(
-                    f"Zip-slip detected in rar: {info.filename!r}"
-                )
+                raise PathViolation(f"Zip-slip detected in rar: {info.filename!r}")
             target_path = (dest_resolved / info.filename).resolve()
             if not target_path.is_relative_to(dest_resolved):
-                raise PathViolation(f"Path traversal detected in rar: {info.filename!r} escapes sandbox")
+                raise PathViolation(
+                    f"Path traversal detected in rar: {info.filename!r} escapes sandbox"
+                )
             target_path.parent.mkdir(parents=True, exist_ok=True)
             with rf.open(info) as src, open(target_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
@@ -233,9 +233,7 @@ class FomodInstaller:
                 ],
             )
 
-        tmp_dir = pathlib.Path(
-            tempfile.mkdtemp(prefix="skyclaw_install_")
-        )
+        tmp_dir = pathlib.Path(tempfile.mkdtemp(prefix="skyclaw_install_"))
         try:
             # Extract
             try:
@@ -253,12 +251,17 @@ class FomodInstaller:
 
             if fomod_xml_path is not None:
                 return await self._install_fomod(
-                    tmp_dir, fomod_xml_path, mo2_mods_dir, mod_name,
+                    tmp_dir,
+                    fomod_xml_path,
+                    mo2_mods_dir,
+                    mod_name,
                     selections or {},
                 )
             else:
                 return await self._install_simple(
-                    tmp_dir, mo2_mods_dir, mod_name,
+                    tmp_dir,
+                    mo2_mods_dir,
+                    mod_name,
                 )
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -331,7 +334,9 @@ class FomodInstaller:
 
         mod_dest = mo2_mods_dir / mod_name
         copied = await self._copy_resolved_files(
-            content_root, mod_dest, result.files,
+            content_root,
+            mod_dest,
+            result.files,
         )
 
         return InstallResult(
@@ -396,9 +401,7 @@ class FomodInstaller:
                         continue
                     child_rel = child.relative_to(src)
                     child_dest = dest / child_rel
-                    await aiofiles.os.makedirs(
-                        child_dest.parent, exist_ok=True
-                    )
+                    await aiofiles.os.makedirs(child_dest.parent, exist_ok=True)
                     await async_copy2(child, child_dest)
                     copied.append(str(pathlib.PurePosixPath(dest_rel) / child_rel))
             elif src.is_file():
@@ -408,7 +411,8 @@ class FomodInstaller:
             else:
                 logger.warning(
                     "FOMOD source not found: %s (in %s)",
-                    file_install.source, content_root,
+                    file_install.source,
+                    content_root,
                 )
 
         return copied

@@ -75,7 +75,9 @@ class PatchStrategyType(Enum):
     """Available patching strategies."""
 
     CREATE_MERGED_PATCH = "create_merged_patch"  # Para combinación general de records
-    EXECUTE_XEDIT_SCRIPT = "execute_xedit_script"  # Para correcciones específicas de FormID
+    EXECUTE_XEDIT_SCRIPT = (
+        "execute_xedit_script"  # Para correcciones específicas de FormID
+    )
     FORWARD_DECLARATION = "forward_declaration"  # Para forward de records
 
 
@@ -274,9 +276,7 @@ class CreateMergedPatch(PatchStrategy):
             ScriptGenerationError: Si no hay conflictos válidos.
         """
         if not conflicts:
-            raise ScriptGenerationError(
-                "Cannot create plan: no conflicts provided"
-            )
+            raise ScriptGenerationError("Cannot create plan: no conflicts provided")
 
         # Filtrar solo conflictos de leveled lists
         valid_conflicts = [
@@ -341,10 +341,19 @@ class ExecuteXEditScript(PatchStrategy):
     """
 
     #: Record types considerados críticos
-    CRITICAL_TYPES: frozenset[str] = frozenset({
-        "NPC_", "QUST", "SCPT", "PERK", "SPEL", "MGEF",
-        "FACT", "DIAL", "PACK",
-    })
+    CRITICAL_TYPES: frozenset[str] = frozenset(
+        {
+            "NPC_",
+            "QUST",
+            "SCPT",
+            "PERK",
+            "SPEL",
+            "MGEF",
+            "FACT",
+            "DIAL",
+            "PACK",
+        }
+    )
 
     def __init__(
         self,
@@ -391,19 +400,13 @@ class ExecuteXEditScript(PatchStrategy):
             ScriptGenerationError: Si no hay conflictos críticos.
         """
         if not conflicts:
-            raise ScriptGenerationError(
-                "Cannot create plan: no conflicts provided"
-            )
+            raise ScriptGenerationError("Cannot create plan: no conflicts provided")
 
         # Filtrar solo conflictos críticos
-        critical_conflicts = [
-            c for c in conflicts if c.severity == "critical"
-        ]
+        critical_conflicts = [c for c in conflicts if c.severity == "critical"]
 
         if not critical_conflicts:
-            raise ScriptGenerationError(
-                "No critical conflicts found in provided list"
-            )
+            raise ScriptGenerationError("No critical conflicts found in provided list")
 
         # Recopilar plugins y FormIDs únicos
         target_plugins: set[str] = set()
@@ -451,9 +454,7 @@ class ExecuteXEditScript(PatchStrategy):
         """
         return 20
 
-    def _select_script_for_conflicts(
-        self, conflicts: list["RecordConflict"]
-    ) -> str:
+    def _select_script_for_conflicts(self, conflicts: list["RecordConflict"]) -> str:
         """Selecciona el script Pascal apropiado para los conflictos.
 
         Args:
@@ -602,9 +603,7 @@ class PatchOrchestrator:
                 conflicts_resolved=len(all_conflicts),
                 xedit_exit_code=0,
                 warnings=(
-                    ["Requires Human-in-the-Loop review"]
-                    if plan.requires_hitl
-                    else []
+                    ["Requires Human-in-the-Loop review"] if plan.requires_hitl else []
                 ),
             )
 
@@ -663,16 +662,14 @@ class PatchOrchestrator:
                 if loop.is_running():
                     # Si ya estamos en un loop async, crear tarea
                     import concurrent.futures
+
                     with concurrent.futures.ThreadPoolExecutor() as executor:
                         future = executor.submit(
-                            asyncio.run,
-                            strategy.can_handle(conflict)
+                            asyncio.run, strategy.can_handle(conflict)
                         )
                         can_handle = future.result()
                 else:
-                    can_handle = loop.run_until_complete(
-                        strategy.can_handle(conflict)
-                    )
+                    can_handle = loop.run_until_complete(strategy.can_handle(conflict))
 
                 if can_handle:
                     logger.debug(

@@ -209,7 +209,9 @@ class TestValidatePathTraversal:
         with pytest.raises(PathViolation, match="traversal"):
             v.validate(traversal)
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="'...' is not a valid directory name on Windows")
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="'...' is not a valid directory name on Windows"
+    )
     def test_triple_dot_not_traversal(self, tmp_path: pathlib.Path) -> None:
         # "..." is a valid filename component on POSIX, not a traversal marker.
         d = tmp_path / "..."
@@ -235,6 +237,7 @@ class TestValidatePathTraversal:
 def _is_symlink_creatable() -> bool:
     """Return True if the current process can create symlinks."""
     import tempfile
+
     try:
         with tempfile.TemporaryDirectory() as td:
             src = pathlib.Path(td) / "src.txt"
@@ -439,9 +442,7 @@ class TestSandboxedIODecorator:
         valid.touch()
         assert write_file(target=valid) == "written"
 
-    def test_custom_arg_name_invalid_path_raises(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_custom_arg_name_invalid_path_raises(self, tmp_path: pathlib.Path) -> None:
         @sandboxed_io(roots=[tmp_path], arg_name="target")
         def write_file(target: pathlib.Path) -> str:
             return "written"
@@ -462,18 +463,14 @@ class TestSandboxedIODecorator:
         f.touch()
         assert identity(f) == f
 
-    def test_function_name_preserved_via_wraps(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_function_name_preserved_via_wraps(self, tmp_path: pathlib.Path) -> None:
         @sandboxed_io(roots=[tmp_path])
         def my_special_function(path: pathlib.Path) -> None:
             pass
 
         assert my_special_function.__name__ == "my_special_function"
 
-    def test_traversal_in_decorated_call_raises(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_traversal_in_decorated_call_raises(self, tmp_path: pathlib.Path) -> None:
         @sandboxed_io(roots=[tmp_path])
         def process(path: pathlib.Path) -> None:
             pass
@@ -482,9 +479,7 @@ class TestSandboxedIODecorator:
         with pytest.raises(PathViolation, match="traversal"):
             process(traversal)
 
-    def test_multiple_calls_only_checks_path_arg(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_multiple_calls_only_checks_path_arg(self, tmp_path: pathlib.Path) -> None:
         """The decorator must not inspect non-path arguments."""
         call_log: list[tuple] = []
 

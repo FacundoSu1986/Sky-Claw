@@ -24,7 +24,6 @@ FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "fomod"
 
 
 class TestParserSimple:
-
     @pytest.fixture()
     def config(self) -> FomodConfig:
         return parse_fomod(FIXTURES / "simple.xml")
@@ -72,7 +71,6 @@ class TestParserSimple:
 
 
 class TestParserConditional:
-
     @pytest.fixture()
     def config(self) -> FomodConfig:
         return parse_fomod(FIXTURES / "conditional.xml")
@@ -110,7 +108,6 @@ class TestParserConditional:
 
 
 class TestParserComplex:
-
     @pytest.fixture()
     def config(self) -> FomodConfig:
         return parse_fomod(FIXTURES / "complex.xml")
@@ -145,7 +142,6 @@ class TestParserComplex:
 
 
 class TestParserErrors:
-
     def test_malformed_xml_raises(self, tmp_path: pathlib.Path) -> None:
         bad_xml = tmp_path / "bad.xml"
         bad_xml.write_text("<config><unclosed>", encoding="utf-8")
@@ -202,7 +198,6 @@ class TestParserErrors:
 
 
 class TestResolverSimple:
-
     @pytest.fixture()
     def config(self) -> FomodConfig:
         return parse_fomod(FIXTURES / "simple.xml")
@@ -213,7 +208,7 @@ class TestResolverSimple:
 
         sources = [f.source for f in result.files]
         assert "core/main.esp" in sources  # required
-        assert "textures/2k" in sources    # selected
+        assert "textures/2k" in sources  # selected
         assert "textures/1k" not in sources
         assert "textures/4k" not in sources
 
@@ -237,17 +232,18 @@ class TestResolverSimple:
 
 
 class TestResolverConditional:
-
     @pytest.fixture()
     def config(self) -> FomodConfig:
         return parse_fomod(FIXTURES / "conditional.xml")
 
     def test_standard_version_shows_patches(self, config: FomodConfig) -> None:
         resolver = FomodResolver(config)
-        result = resolver.resolve({
-            "Choose Version": ["Standard"],
-            "Patches": ["USSEP Patch"],
-        })
+        result = resolver.resolve(
+            {
+                "Choose Version": ["Standard"],
+                "Patches": ["USSEP Patch"],
+            }
+        )
 
         sources = [f.source for f in result.files]
         assert "standard/plugin.esp" in sources
@@ -258,9 +254,11 @@ class TestResolverConditional:
 
     def test_lite_version_hides_patches(self, config: FomodConfig) -> None:
         resolver = FomodResolver(config)
-        result = resolver.resolve({
-            "Choose Version": ["Lite"],
-        })
+        result = resolver.resolve(
+            {
+                "Choose Version": ["Lite"],
+            }
+        )
 
         sources = [f.source for f in result.files]
         assert "lite/plugin.esp" in sources
@@ -281,18 +279,19 @@ class TestResolverConditional:
 
 
 class TestResolverComplex:
-
     @pytest.fixture()
     def config(self) -> FomodConfig:
         return parse_fomod(FIXTURES / "complex.xml")
 
     def test_sse_full_selection(self, config: FomodConfig) -> None:
         resolver = FomodResolver(config)
-        result = resolver.resolve({
-            "Game Version": ["SSE"],
-            "Texture Resolution": ["2K"],
-            "SSE Patches": ["ENB Compatibility"],
-        })
+        result = resolver.resolve(
+            {
+                "Game Version": ["SSE"],
+                "Texture Resolution": ["2K"],
+                "SSE Patches": ["ENB Compatibility"],
+            }
+        )
 
         sources = [f.source for f in result.files]
         # Required
@@ -311,10 +310,12 @@ class TestResolverComplex:
 
     def test_ae_skips_sse_patches(self, config: FomodConfig) -> None:
         resolver = FomodResolver(config)
-        result = resolver.resolve({
-            "Game Version": ["AE"],
-            "Texture Resolution": ["1K"],
-        })
+        result = resolver.resolve(
+            {
+                "Game Version": ["AE"],
+                "Texture Resolution": ["1K"],
+            }
+        )
 
         sources = [f.source for f in result.files]
         assert "ae/plugin.esp" in sources
@@ -326,10 +327,12 @@ class TestResolverComplex:
 
     def test_files_sorted_by_priority(self, config: FomodConfig) -> None:
         resolver = FomodResolver(config)
-        result = resolver.resolve({
-            "Game Version": ["SSE"],
-            "Texture Resolution": ["2K"],
-        })
+        result = resolver.resolve(
+            {
+                "Game Version": ["SSE"],
+                "Texture Resolution": ["2K"],
+            }
+        )
 
         priorities = [f.priority for f in result.files]
         assert priorities == sorted(priorities)

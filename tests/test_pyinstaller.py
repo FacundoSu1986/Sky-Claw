@@ -10,13 +10,17 @@ import pytest
 
 from sky_claw.local_config import LocalConfig, load, save
 
+
 @pytest.fixture(autouse=True)
 def mock_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     import keyring
+
     def raiser(*args, **kwargs):
         raise Exception("Keyring not available in test")
+
     monkeypatch.setattr(keyring, "get_password", lambda s, n: None)
     monkeypatch.setattr(keyring, "set_password", raiser)
+
 
 # ---------------------------------------------------------------------------
 # sky_claw.spec is parseable
@@ -198,11 +202,14 @@ class TestSetupEndpoint:
         app = web_app.create_app()
         client = await aiohttp_client(app)
 
-        resp = await client.post("/api/setup", json={
-            "mo2_root": "D:/MO2",
-            "api_key": "sk-test-key",
-            "install_dir": "D:/Modding",
-        })
+        resp = await client.post(
+            "/api/setup",
+            json={
+                "mo2_root": "D:/MO2",
+                "api_key": "sk-test-key",
+                "install_dir": "D:/Modding",
+            },
+        )
         assert resp.status == 200
 
         # Verify saved.
@@ -321,7 +328,9 @@ class TestApiKeyInjection:
         assert key.startswith("sk-")
         assert not key.startswith("sk-ant")
 
-    def test_env_var_priority_anthropic(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_env_var_priority_anthropic(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Env var takes priority over local_config for ANTHROPIC_API_KEY."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "env-anthropic-key")
         cfg = LocalConfig()
@@ -337,7 +346,9 @@ class TestApiKeyInjection:
         # Env var should remain unchanged.
         assert os.environ["ANTHROPIC_API_KEY"] == "env-anthropic-key"
 
-    def test_env_var_priority_deepseek(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_env_var_priority_deepseek(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Env var takes priority over local_config for DEEPSEEK_API_KEY."""
         monkeypatch.setenv("DEEPSEEK_API_KEY", "env-deepseek-key")
         cfg = LocalConfig()
@@ -411,11 +422,14 @@ class TestSetupWithNexusKey:
         app = web_app.create_app()
         client = await aiohttp_client(app)
 
-        resp = await client.post("/api/setup", json={
-            "mo2_root": "D:/MO2",
-            "api_key": "sk-ant-test",
-            "nexus_api_key": "nexus-premium-key",
-        })
+        resp = await client.post(
+            "/api/setup",
+            json={
+                "mo2_root": "D:/MO2",
+                "api_key": "sk-ant-test",
+                "nexus_api_key": "nexus-premium-key",
+            },
+        )
         assert resp.status == 200
 
         loaded = load(config_path)
@@ -438,10 +452,13 @@ class TestSetupWithNexusKey:
         app = web_app.create_app()
         client = await aiohttp_client(app)
 
-        resp = await client.post("/api/setup", json={
-            "mo2_root": "D:/MO2",
-            "api_key": "sk-test",
-        })
+        resp = await client.post(
+            "/api/setup",
+            json={
+                "mo2_root": "D:/MO2",
+                "api_key": "sk-test",
+            },
+        )
         assert resp.status == 200
 
         loaded = load(config_path)

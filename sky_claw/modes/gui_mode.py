@@ -22,23 +22,30 @@ async def _gui_logic_loop(ctx: AppContext) -> None:
             if item[0] == "chat":
                 text = item[1]
                 if not ctx.router:
-                    ctx.gui_queue.put(("error", "Router no inicializado. Completá el setup primero."))
+                    ctx.gui_queue.put(
+                        ("error", "Router no inicializado. Completá el setup primero.")
+                    )
                     continue
                 correlation_id_var.set(str(uuid.uuid4()))
                 try:
-                    response = await ctx.router.chat(text, ctx.session, chat_id="gui-session")
+                    response = await ctx.router.chat(
+                        text, ctx.session, chat_id="gui-session"
+                    )
                     ctx.gui_queue.put(("response", response))
                     consecutive_errors = 0
                 except Exception as e:
                     logger.exception("Logic error in chat: %s", e)
-                    ctx.gui_queue.put(("error", f"Error procesando comando: {type(e).__name__}: {e}"))
+                    ctx.gui_queue.put(
+                        ("error", f"Error procesando comando: {type(e).__name__}: {e}")
+                    )
         except asyncio.CancelledError:
             break
         except Exception as e:
             consecutive_errors += 1
-            backoff = min(2 ** consecutive_errors, 30)
+            backoff = min(2**consecutive_errors, 30)
             logger.exception("GUI logic loop error (backoff=%ds): %s", backoff, e)
             await asyncio.sleep(backoff)
+
 
 async def _gui_mod_update_loop(ctx: AppContext) -> None:
     """Periodically fetches modlist for the GUI."""
@@ -54,6 +61,7 @@ async def _gui_mod_update_loop(ctx: AppContext) -> None:
         except Exception as exc:
             logger.error("Error updating modlist in GUI: %s", exc)
             await asyncio.sleep(5)
+
 
 def run_gui_mode(args):
     from sky_claw.gui.app import DashboardGUI
@@ -78,12 +86,12 @@ def run_gui_mode(args):
             logger.info("Sky-Claw Daemon Core inicializado en background.")
         return _ctx_holder["ctx"]
 
-    @ui.page('/setup')
+    @ui.page("/setup")
     async def setup_page():
         """Legacy: redirige al dashboard (el wizard ahora es un modal overlay)."""
-        ui.navigate.to('/')
+        ui.navigate.to("/")
 
-    @ui.page('/')
+    @ui.page("/")
     async def main_page():
         # Siempre renderiza el dashboard; si no está configurado,
         # el SetupWizardModal se abre automáticamente como overlay.

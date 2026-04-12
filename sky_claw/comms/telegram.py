@@ -39,15 +39,16 @@ def _parse_hitl_command(text: str) -> tuple[bool, str] | None:
     """
     stripped = text.strip()
     if stripped.startswith(_APPROVE_PREFIX):
-        req_id = stripped[len(_APPROVE_PREFIX):].strip()
+        req_id = stripped[len(_APPROVE_PREFIX) :].strip()
         return (True, req_id) if req_id else None
     if stripped.startswith(_DENY_PREFIX):
-        req_id = stripped[len(_DENY_PREFIX):].strip()
+        req_id = stripped[len(_DENY_PREFIX) :].strip()
         return (False, req_id) if req_id else None
     return None
 
 
 import html  # noqa: E402
+
 
 def escape_html(text: str) -> str:
     if not text:
@@ -59,11 +60,13 @@ def _format_update_payload(payload: UpdatePayload) -> str:
     lines = [
         "📊 <b>Reporte de Actualización de Mods</b>",
         f"🔍 <b>Total verificados:</b> {payload.total_checked}",
-        ""
+        "",
     ]
 
     if payload.updated_mods:
-        lines.append(f"✅ <b>Actualizados exitosamente:</b> ({len(payload.updated_mods)})")
+        lines.append(
+            f"✅ <b>Actualizados exitosamente:</b> ({len(payload.updated_mods)})"
+        )
         for mod in payload.updated_mods:
             name = escape_html(mod["name"])
             old_v = escape_html(mod.get("old_version", "?"))
@@ -109,40 +112,44 @@ class TelegramWebhook:
         self._session = session
         self._hitl = hitl
         self._secret_token = secret_token
-        self._seen_updates: collections.OrderedDict[int, None] = collections.OrderedDict()
+        self._seen_updates: collections.OrderedDict[int, None] = (
+            collections.OrderedDict()
+        )
         self._tasks: set[asyncio.Task[None]] = set()
         # Asignamos directamente desde la inyección de dependencias
         self._allowed_user_id = authorized_user_id
 
     def _validate_sender(self, message_or_callback: dict[str, Any]) -> bool:
         """Valida que el mensaje no sea reenviado y el usuario esté autorizado.
-        
+
         Args:
             message_or_callback: Diccionario con datos del mensaje o callback_query.
                 Para mensajes: debe contener 'from' y opcionalmente 'forward_date'/'forward_from'.
                 Para callbacks: debe contener 'from' y 'message'.
-        
+
         Returns:
             True si el remitente está autorizado y el mensaje no es reenviado.
         """
         if self._allowed_user_id is None:
-            logger.warning("TELEGRAM_ALLOWED_USER_ID no configurado - rechazando comando HITL")
+            logger.warning(
+                "TELEGRAM_ALLOWED_USER_ID no configurado - rechazando comando HITL"
+            )
             return False
-        
+
         # Obtener usuario del mensaje/callback
         from_user = message_or_callback.get("from", {})
         user_id = from_user.get("id")
-        
+
         # Verificar que el usuario esté autorizado
         if user_id != self._allowed_user_id:
             return False
-        
+
         # Verificar que no sea un mensaje reenviado (para callbacks, verificar el mensaje original)
         if message_or_callback.get("forward_date") is not None:
             return False
         if message_or_callback.get("forward_from") is not None:
             return False
-        
+
         # Para callbacks, verificar también el mensaje asociado
         message = message_or_callback.get("message", {})
         if message:
@@ -152,10 +159,17 @@ class TelegramWebhook:
                 return False
 
         # Verificar reply_to_message — un reply a un mensaje reenviado también es sospechoso
-        reply_msg = message_or_callback.get("reply_to_message") or message.get("reply_to_message")
+        reply_msg = message_or_callback.get("reply_to_message") or message.get(
+            "reply_to_message"
+        )
         if reply_msg:
-            if reply_msg.get("forward_date") is not None or reply_msg.get("forward_from") is not None:
-                logger.warning("Blocked: reply to forwarded message from potentially unauthorized source")
+            if (
+                reply_msg.get("forward_date") is not None
+                or reply_msg.get("forward_from") is not None
+            ):
+                logger.warning(
+                    "Blocked: reply to forwarded message from potentially unauthorized source"
+                )
                 return False
 
         return True
@@ -221,7 +235,9 @@ class TelegramWebhook:
             if parsed is not None:
                 approved, request_id = parsed
                 task = asyncio.create_task(
-                    self._handle_hitl_command(chat_id, approved, request_id, update_id, message)
+                    self._handle_hitl_command(
+                        chat_id, approved, request_id, update_id, message
+                    )
                 )
                 self._tasks.add(task)
                 task.add_done_callback(self._tasks.discard)
@@ -235,23 +251,23 @@ class TelegramWebhook:
             return
 
         # Fire-and-forget background processing via LLM.
-        task = asyncio.create_task(
-            self._process_bg(chat_id, text, update_id)
-        )
+        task = asyncio.create_task(self._process_bg(chat_id, text, update_id))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _process_bg(
-        self, chat_id: int, text: str, update_id: int
-    ) -> None:
+    async def _process_bg(self, chat_id: int, text: str, update_id: int) -> None:
         """Process a message in the background.
 
         Calls the LLMRouter and sends the response back via Telegram.
         """
         try:
             if self._router is None:
-                logger.warning("Telegram update received but router is not initialized yet")
-                await self._sender.send(chat_id, "Sky-Claw is still starting up. Please wait a moment.")
+                logger.warning(
+                    "Telegram update received but router is not initialized yet"
+                )
+                await self._sender.send(
+                    chat_id, "Sky-Claw is still starting up. Please wait a moment."
+                )
                 return
 
             try:
@@ -261,7 +277,10 @@ class TelegramWebhook:
                 await self._sender.send(chat_id, response)
             except Exception as e:
                 logger.exception("Critical Router Failure: %s", e)
-                await self._sender.send(chat_id, "⚠️ El agente ha sufrido un error interno en la orquestación. Reiniciando subsistema...")
+                await self._sender.send(
+                    chat_id,
+                    "⚠️ El agente ha sufrido un error interno en la orquestación. Reiniciando subsistema...",
+                )
         except Exception as exc:
             logger.exception(
                 "Error processing update_id=%d, chat_id=%d: %s", update_id, chat_id, exc
@@ -271,10 +290,15 @@ class TelegramWebhook:
                     chat_id, "An internal error occurred. Please try again."
                 )
             except Exception as exc:
-                logger.exception("Failed to send error message to chat_id=%d: %s", chat_id, exc)
+                logger.exception(
+                    "Failed to send error message to chat_id=%d: %s", chat_id, exc
+                )
 
     async def _handle_update_mods_command(self, chat_id: int) -> None:
-        await self._sender.send(chat_id, "⏳ Iniciando ciclo de actualización de mods. Esto puede demorar varios minutos...")
+        await self._sender.send(
+            chat_id,
+            "⏳ Iniciando ciclo de actualización de mods. Esto puede demorar varios minutos...",
+        )
         try:
             sync_engine = self._router._tools._sync_engine
             payload = await sync_engine.check_for_updates(self._session)
@@ -282,26 +306,38 @@ class TelegramWebhook:
             await self._sender.send(chat_id, report, parse_mode="HTML")
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).exception("Falla en /update_mods: %s", exc)
-            await self._sender.send(chat_id, "❌ Ocurrió un error crítico durante la actualización.")
+            await self._sender.send(
+                chat_id, "❌ Ocurrió un error crítico durante la actualización."
+            )
 
     async def _handle_callback_query(self, query: dict[str, Any]) -> None:
         """Handle an operator clicking an inline button (Approve/Deny)."""
         # H-03: Validación anti-spoofing
         if not self._validate_sender(query):
-            logger.warning("Intento de spoofing HITL detectado y bloqueado en callback_query.")
+            logger.warning(
+                "Intento de spoofing HITL detectado y bloqueado en callback_query."
+            )
             callback_id = query.get("id")
             if callback_id:
                 # CORRECCIÓN: Garantizar correcta concatenación de la URL
                 url = self._sender._url.rstrip("/") + "/answerCallbackQuery"
-                await self._session.post(url, json={"callback_query_id": callback_id, "text": "Unauthorized", "show_alert": False})
+                await self._session.post(
+                    url,
+                    json={
+                        "callback_query_id": callback_id,
+                        "text": "Unauthorized",
+                        "show_alert": False,
+                    },
+                )
             return
-        
+
         data = query.get("data", "")
         chat = query.get("message", {}).get("chat", {})
         chat_id = chat.get("id")
         message_id = query.get("message", {}).get("message_id")
-        
+
         if not data or not chat_id or not message_id:
             return
 
@@ -314,12 +350,12 @@ class TelegramWebhook:
             return
 
         action, request_id = parts[1], parts[2]
-        approved = (action == "approve")
+        approved = action == "approve"
 
         if self._hitl is not None:
             found = await self._hitl.respond(request_id, approved)
             verb = "Approved" if approved else "Denied"
-            
+
             # Answer callback to remove loading state in Telegram
             callback_id = query.get("id")
             if callback_id:
@@ -329,9 +365,14 @@ class TelegramWebhook:
 
             if found:
                 text = f"Request '{request_id}' {verb.lower()} by operator."
-                await self._sender.edit_message(chat_id, message_id, text, reply_markup=None)
+                await self._sender.edit_message(
+                    chat_id, message_id, text, reply_markup=None
+                )
             else:
-                await self._sender.send(chat_id, f"Error: Request '{request_id}' not found or already processed.")
+                await self._sender.send(
+                    chat_id,
+                    f"Error: Request '{request_id}' not found or already processed.",
+                )
 
     async def _handle_hitl_command(
         self,
@@ -352,15 +393,13 @@ class TelegramWebhook:
             if not self._validate_sender(message):
                 logger.warning("Intento de spoofing HITL detectado y bloqueado.")
                 return
-        
+
         assert self._hitl is not None
         found = await self._hitl.respond(request_id, approved)
         verb = "approved" if approved else "denied"
         try:
             if found:
-                await self._sender.send(
-                    chat_id, f"Request '{request_id}' {verb}."
-                )
+                await self._sender.send(chat_id, f"Request '{request_id}' {verb}.")
             else:
                 await self._sender.send(
                     chat_id,

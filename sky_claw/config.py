@@ -8,9 +8,10 @@ import sys
 
 logger = logging.getLogger(__name__)
 
+
 class SystemPaths:
     """Dynamic path resolution for Windows and WSL2 environments."""
-    
+
     @staticmethod
     def get_base_drive() -> pathlib.Path:
         """Returns the base drive (C:/ or /mnt/c/) based on environment."""
@@ -25,10 +26,10 @@ class SystemPaths:
         """Converts a Windows-style path string to a dynamic pathlib.Path."""
         if not path_str:
             return pathlib.Path()
-        
+
         # Standardize separators
         std_path = path_str.replace("\\", "/")
-        
+
         # If it looks like a Windows absolute path, re-map it
         if len(std_path) > 1 and std_path[1] == ":":
             drive_letter = std_path[0].lower()
@@ -36,20 +37,21 @@ class SystemPaths:
             if sys.platform != "win32":
                 return cls.get_base_drive().parent / drive_letter / relative
             return pathlib.Path(f"{drive_letter.upper()}:/") / relative
-            
+
         return pathlib.Path(std_path)
 
     @classmethod
     def modding_root(cls) -> pathlib.Path:
         return cls.get_base_drive() / "Modding"
 
+
 class Config:
     """Central configuration management for Sky-Claw.
-    
-    Loads from ~/.sky_claw/config.toml, allowing overrides via environment 
+
+    Loads from ~/.sky_claw/config.toml, allowing overrides via environment
     variables prefixed with SKY_CLAW_.
     """
-    
+
     DEFAULT_CONFIG_DIR = pathlib.Path.home() / ".sky_claw"
     DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.toml"
 
@@ -62,8 +64,12 @@ class Config:
 
     def _load_from_keyring(self):
         sensitive_keys = [
-            "llm_api_key", "openai_api_key", "anthropic_api_key",
-            "deepseek_api_key", "nexus_api_key", "telegram_bot_token",
+            "llm_api_key",
+            "openai_api_key",
+            "anthropic_api_key",
+            "deepseek_api_key",
+            "nexus_api_key",
+            "telegram_bot_token",
             "ws_auth_token",
         ]
         migrated = False
@@ -84,7 +90,7 @@ class Config:
                     migrated = True
                 except Exception:
                     pass
-        
+
         # If we found plain text keys and migrated them, scrub them from the TOML
         if migrated:
             self.save()
@@ -115,7 +121,7 @@ class Config:
             try:
                 with open(self._config_path, "rb") as f:
                     file_data = tomllib.load(f)
-                    
+
                     # Support for nested structure [telegram] token, [nexus] api_key, [paths] mo2_path
                     if "telegram" in file_data:
                         t = file_data["telegram"]
@@ -123,19 +129,19 @@ class Config:
                             self._data["telegram_bot_token"] = t["token"]
                         if "chat_id" in t:
                             self._data["telegram_chat_id"] = t["chat_id"]
-                    
+
                     if "nexus" in file_data:
                         n = file_data["nexus"]
                         if "api_key" in n:
                             self._data["nexus_api_key"] = n["api_key"]
-                    
+
                     if "paths" in file_data:
                         p = file_data["paths"]
                         if "mo2_path" in p:
                             self._data["mo2_root"] = p["mo2_path"]
                         if "skyrim_path" in p:
                             self._data["skyrim_path"] = p["skyrim_path"]
-                    
+
                     # Also update flatly for any remaining top-level keys
                     # This might overwrite what we just set if both formats exist, but that's okay.
                     self._data.update(file_data)
@@ -163,12 +169,16 @@ class Config:
         """Persist current configuration to TOML."""
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         import tomli_w
-        
+
         sensitive_keys = [
-            "llm_api_key", "openai_api_key", "anthropic_api_key", 
-            "deepseek_api_key", "nexus_api_key", "telegram_bot_token"
+            "llm_api_key",
+            "openai_api_key",
+            "anthropic_api_key",
+            "deepseek_api_key",
+            "nexus_api_key",
+            "telegram_bot_token",
         ]
-        
+
         save_data = dict(self._data)
         for key in sensitive_keys:
             val = save_data.pop(key, None)
@@ -179,7 +189,8 @@ class Config:
                     logger.warning(
                         "Could not store '%s' in keyring: %s. "
                         "Secret will NOT be persisted — configure a keyring backend.",
-                        key, type(exc).__name__,
+                        key,
+                        type(exc).__name__,
                     )
                     # Fail-closed: do NOT fall back to plaintext in config file
 
@@ -207,31 +218,39 @@ def _get_config() -> Config:
 
 def _get_db_path() -> pathlib.Path:
     cfg = _get_config()
-    return pathlib.Path(cfg.mo2_root) / "mod_registry.db" if cfg.mo2_root else pathlib.Path("mod_registry.db")
+    return (
+        pathlib.Path(cfg.mo2_root) / "mod_registry.db"
+        if cfg.mo2_root
+        else pathlib.Path("mod_registry.db")
+    )
 
 
 DB_PATH = _get_db_path()
-ALLOWED_HOSTS = frozenset([
-    "api.deepseek.com",
-    "api.openai.com",
-    "api.telegram.org",
-    "www.nexusmods.com",
-    "api.nexusmods.com",
-    "premium-files.nexusmods.com",
-    "cf-files.nexusmods.com",
-    "staticdelivery.nexusmods.com",
-    "api.github.com",
-    "github.com",
-    "raw.githubusercontent.com",
-    "api.anthropic.com",
-])
-OUT_OF_SCOPE_HOSTS = frozenset([
-    "github.com",
-    "discord.com",
-    "dropbox.com",
-    "mega.nz",
-    "patreon.com",
-])
+ALLOWED_HOSTS = frozenset(
+    [
+        "api.deepseek.com",
+        "api.openai.com",
+        "api.telegram.org",
+        "www.nexusmods.com",
+        "api.nexusmods.com",
+        "premium-files.nexusmods.com",
+        "cf-files.nexusmods.com",
+        "staticdelivery.nexusmods.com",
+        "api.github.com",
+        "github.com",
+        "raw.githubusercontent.com",
+        "api.anthropic.com",
+    ]
+)
+OUT_OF_SCOPE_HOSTS = frozenset(
+    [
+        "github.com",
+        "discord.com",
+        "dropbox.com",
+        "mega.nz",
+        "patreon.com",
+    ]
+)
 HITL_TIMEOUT_SECONDS = 300
 
 # Refactored common paths using SystemPaths abstraction

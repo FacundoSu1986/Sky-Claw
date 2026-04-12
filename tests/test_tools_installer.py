@@ -301,7 +301,9 @@ class TestEnsureXedit:
         install_dir.mkdir()
 
         # Use a .zip asset name to match.
-        release_json = _xedit_release_json(asset_name="SSEEdit_4.1.5.zip", size=len(zip_bytes))
+        release_json = _xedit_release_json(
+            asset_name="SSEEdit_4.1.5.zip", size=len(zip_bytes)
+        )
 
         mock_api_resp = AsyncMock()
         mock_api_resp.status = 200
@@ -417,9 +419,7 @@ class TestLocalConfig:
 
 class TestSetupToolsTool:
     @pytest.mark.asyncio
-    async def test_setup_tools_installs_both(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    async def test_setup_tools_installs_both(self, tmp_path: pathlib.Path) -> None:
         from sky_claw.agent.tools import AsyncToolRegistry
         from sky_claw.db.async_registry import AsyncModRegistry
         from sky_claw.mo2.vfs import MO2Controller
@@ -513,9 +513,7 @@ class TestSetupToolsTool:
         await db.close()
 
     @pytest.mark.asyncio
-    async def test_setup_tools_unknown_tool(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    async def test_setup_tools_unknown_tool(self, tmp_path: pathlib.Path) -> None:
         from sky_claw.agent.tools import AsyncToolRegistry
         from sky_claw.db.async_registry import AsyncModRegistry
         from sky_claw.mo2.vfs import MO2Controller
@@ -563,9 +561,7 @@ class TestSetupToolsTool:
 
 class TestAppContextToolsInstaller:
     @pytest.mark.asyncio
-    async def test_tools_installer_wired(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    async def test_tools_installer_wired(self, tmp_path: pathlib.Path) -> None:
         import argparse
         from sky_claw.__main__ import AppContext
 

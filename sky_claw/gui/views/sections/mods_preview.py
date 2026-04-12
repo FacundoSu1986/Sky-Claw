@@ -21,10 +21,10 @@ def create_mods_preview(
     empty_message: str = "No mods found",
 ) -> None:
     """Preview de mods recientes.
-    
+
     Muestra una lista de mods en un contenedor con bordes redondeados.
     Cada mod muestra nombre, estado y tamaño.
-    
+
     Args:
         mods: Lista de diccionarios con claves:
             - name: str - Nombre del mod
@@ -34,7 +34,7 @@ def create_mods_preview(
         on_mod_click: Callback cuando se hace clic en un mod, recibe el nombre (opcional)
         title: Título de la sección (default: "Recent Mods")
         empty_message: Mensaje cuando no hay mods (default: "No mods found")
-    
+
     Example:
         >>> mods_data = [
         ...     {'name': 'Skyrim 202X', 'status': 'active', 'size_mb': 2400},
@@ -47,37 +47,39 @@ def create_mods_preview(
         ...     on_mod_click=lambda name: print(f"Clicked: {name}"),
         ... )
     """
-    with ui.element('div').classes(
-        'bg-[#0f0f0f] border border-[#1f2937] rounded-2xl p-6'
+    with ui.element("div").classes(
+        "bg-[#0f0f0f] border border-[#1f2937] rounded-2xl p-6"
     ):
         # Header con título y botón "View All"
-        with ui.row().classes('items-center justify-between mb-6'):
-            ui.label(title).classes('text-white font-bold text-lg')
-            
+        with ui.row().classes("items-center justify-between mb-6"):
+            ui.label(title).classes("text-white font-bold text-lg")
+
             if on_view_all:
                 create_cta_button(
-                    text='View All',
+                    text="View All",
                     on_click=on_view_all,
-                    variant='secondary',
-                ).classes('px-4 py-2 rounded-lg text-sm')
+                    variant="secondary",
+                ).classes("px-4 py-2 rounded-lg text-sm")
 
         # Lista de mods o mensaje vacío
         if mods:
             for mod in mods:
                 # Convertir tamaño a GB si es necesario
-                size_mb = mod.get('size_mb', 0)
+                size_mb = mod.get("size_mb", 0)
                 if size_mb > 1024:
                     size = f"{size_mb / 1024:.1f} GB"
                 else:
                     size = f"{size_mb} MB"
-                
+
                 # Crear item del mod
-                mod_name = mod.get('name', 'Unknown')
+                mod_name = mod.get("name", "Unknown")
                 create_mod_list_item(
                     name=mod_name,
-                    status=mod.get('status', 'inactive'),
+                    status=mod.get("status", "inactive"),
                     size=size,
-                    on_click=lambda m=mod_name: on_mod_click(m) if on_mod_click else None,
+                    on_click=lambda m=mod_name: (
+                        on_mod_click(m) if on_mod_click else None
+                    ),
                 )
         else:
-            ui.label(empty_message).classes('text-[#6b7280] text-center py-4')
+            ui.label(empty_message).classes("text-[#6b7280] text-center py-4")

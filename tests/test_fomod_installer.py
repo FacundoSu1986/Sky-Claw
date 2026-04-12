@@ -109,7 +109,10 @@ class TestPathSafety:
 class TestSimpleInstall:
     @pytest.mark.asyncio
     async def test_simple_mod_copies_all_files(
-        self, installer: FomodInstaller, sandbox: pathlib.Path, mo2_mods_dir: pathlib.Path
+        self,
+        installer: FomodInstaller,
+        sandbox: pathlib.Path,
+        mo2_mods_dir: pathlib.Path,
     ) -> None:
         archive = _make_simple_zip(
             sandbox / "SimpleMod.zip",
@@ -129,7 +132,10 @@ class TestSimpleInstall:
 
     @pytest.mark.asyncio
     async def test_flat_archive_uses_stem_as_name(
-        self, installer: FomodInstaller, sandbox: pathlib.Path, mo2_mods_dir: pathlib.Path
+        self,
+        installer: FomodInstaller,
+        sandbox: pathlib.Path,
+        mo2_mods_dir: pathlib.Path,
     ) -> None:
         """Archive without a top-level directory uses the archive stem."""
         archive = _make_simple_zip(
@@ -152,7 +158,10 @@ class TestSimpleInstall:
 class TestFomodInstall:
     @pytest.mark.asyncio
     async def test_fomod_with_selections(
-        self, installer: FomodInstaller, sandbox: pathlib.Path, mo2_mods_dir: pathlib.Path
+        self,
+        installer: FomodInstaller,
+        sandbox: pathlib.Path,
+        mo2_mods_dir: pathlib.Path,
     ) -> None:
         archive = _make_simple_zip(
             sandbox / "FomodMod.zip",
@@ -165,7 +174,8 @@ class TestFomodInstall:
         )
 
         result = await installer.install(
-            archive, mo2_mods_dir,
+            archive,
+            mo2_mods_dir,
             selections={"Options": ["HD Textures"]},
         )
 
@@ -177,7 +187,10 @@ class TestFomodInstall:
 
     @pytest.mark.asyncio
     async def test_fomod_pending_decisions(
-        self, installer: FomodInstaller, sandbox: pathlib.Path, mo2_mods_dir: pathlib.Path
+        self,
+        installer: FomodInstaller,
+        sandbox: pathlib.Path,
+        mo2_mods_dir: pathlib.Path,
     ) -> None:
         """Empty selections with SelectExactlyOne should report pending."""
         archive = _make_simple_zip(
@@ -246,7 +259,10 @@ class TestPreview:
 class TestZipSlipProtection:
     @pytest.mark.asyncio
     async def test_zip_slip_rejected(
-        self, installer: FomodInstaller, sandbox: pathlib.Path, mo2_mods_dir: pathlib.Path
+        self,
+        installer: FomodInstaller,
+        sandbox: pathlib.Path,
+        mo2_mods_dir: pathlib.Path,
     ) -> None:
         """Archives with path traversal must be rejected."""
         archive_path = sandbox / "malicious.zip"
@@ -267,7 +283,10 @@ class TestZipSlipProtection:
 class TestCleanup:
     @pytest.mark.asyncio
     async def test_temp_dir_cleaned_after_install(
-        self, installer: FomodInstaller, sandbox: pathlib.Path, mo2_mods_dir: pathlib.Path
+        self,
+        installer: FomodInstaller,
+        sandbox: pathlib.Path,
+        mo2_mods_dir: pathlib.Path,
     ) -> None:
         """Temporary extraction directory should be removed after install."""
         import os
@@ -280,16 +299,14 @@ class TestCleanup:
         # Count temp dirs before
         temp_base = pathlib.Path(os.environ.get("TEMP", "/tmp"))
         before = set(
-            p for p in temp_base.iterdir()
-            if p.name.startswith("skyclaw_install_")
+            p for p in temp_base.iterdir() if p.name.startswith("skyclaw_install_")
         )
 
         await installer.install(archive, mo2_mods_dir)
 
         # Count after — should not increase
         after = set(
-            p for p in temp_base.iterdir()
-            if p.name.startswith("skyclaw_install_")
+            p for p in temp_base.iterdir() if p.name.startswith("skyclaw_install_")
         )
         assert after - before == set()
 
@@ -302,7 +319,10 @@ class TestCleanup:
 class TestUnsupportedFormat:
     @pytest.mark.asyncio
     async def test_unsupported_format_returns_error(
-        self, installer: FomodInstaller, sandbox: pathlib.Path, mo2_mods_dir: pathlib.Path
+        self,
+        installer: FomodInstaller,
+        sandbox: pathlib.Path,
+        mo2_mods_dir: pathlib.Path,
     ) -> None:
         fake_archive = sandbox / "mod.exe"
         fake_archive.write_bytes(b"not a real archive")

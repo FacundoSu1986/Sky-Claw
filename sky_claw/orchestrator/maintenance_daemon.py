@@ -46,9 +46,13 @@ class MaintenanceDaemon:
     async def start(self) -> None:
         """Inicia el loop de mantenimiento pasivo como tarea de fondo."""
         if self._task is not None:
-            logger.warning("MaintenanceDaemon ya está corriendo, ignorando start() duplicado")
+            logger.warning(
+                "MaintenanceDaemon ya está corriendo, ignorando start() duplicado"
+            )
             return
-        self._task = asyncio.create_task(self._pruning_loop(), name="maintenance-pruning")
+        self._task = asyncio.create_task(
+            self._pruning_loop(), name="maintenance-pruning"
+        )
         logger.info("MaintenanceDaemon iniciado")
 
     async def stop(self) -> None:
@@ -85,7 +89,9 @@ class MaintenanceDaemon:
                     )
 
                     # Limpiar snapshots antiguos (más de 30 días)
-                    result = await self._snapshot_manager.cleanup_old_snapshots(days_old=30)
+                    result = await self._snapshot_manager.cleanup_old_snapshots(
+                        days_old=30
+                    )
 
                     logger.info(
                         "Pruning completado: %d snapshots eliminados, %d MB liberados",

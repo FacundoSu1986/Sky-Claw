@@ -21,19 +21,52 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 #: Record signatures considered **critical** (can cause CTD / broken quests).
-DEFAULT_CRITICAL_TYPES: frozenset[str] = frozenset({
-    "NPC_", "QUST", "SCPT", "PERK", "SPEL", "MGEF",
-    "FACT", "DIAL", "PACK",
-})
+DEFAULT_CRITICAL_TYPES: frozenset[str] = frozenset(
+    {
+        "NPC_",
+        "QUST",
+        "SCPT",
+        "PERK",
+        "SPEL",
+        "MGEF",
+        "FACT",
+        "DIAL",
+        "PACK",
+    }
+)
 
 #: Record signatures considered **warning** (visual glitches / gameplay).
-DEFAULT_WARNING_TYPES: frozenset[str] = frozenset({
-    "CELL", "WRLD", "REFR", "ACHR", "NAVM", "LAND",
-    "WEAP", "ARMO", "AMMO", "BOOK", "INGR", "ALCH",
-    "MISC", "CONT", "DOOR", "LIGH", "STAT", "FLOR",
-    "FURN", "LVLI", "LVLN", "LVSP", "ENCH", "OTFT",
-    "RACE", "COBJ", "KYWD",
-})
+DEFAULT_WARNING_TYPES: frozenset[str] = frozenset(
+    {
+        "CELL",
+        "WRLD",
+        "REFR",
+        "ACHR",
+        "NAVM",
+        "LAND",
+        "WEAP",
+        "ARMO",
+        "AMMO",
+        "BOOK",
+        "INGR",
+        "ALCH",
+        "MISC",
+        "CONT",
+        "DOOR",
+        "LIGH",
+        "STAT",
+        "FLOR",
+        "FURN",
+        "LVLI",
+        "LVLN",
+        "LVSP",
+        "ENCH",
+        "OTFT",
+        "RACE",
+        "COBJ",
+        "KYWD",
+    }
+)
 
 #: Anything not in critical or warning is **info** (textures, strings, etc.).
 
@@ -142,25 +175,31 @@ class ConflictAnalyzer:
 
     def validate_load_order_limit(self, plugins: list[str]) -> None:
         """Validates the strict engine plugin limit of 254 plugins.
-        
+
         Args:
             plugins: List of plugin filenames.
-            
+
         Raises:
             RuntimeError: If the count exceeds 254.
         """
         active_plugins = [p for p in plugins if p.lower().endswith((".esp", ".esm"))]
         if len(active_plugins) > 254:
-            logger.critical(f"CRITICAL ALERT: Plugin limit exceeded! ({len(active_plugins)} > 254)")
-            raise RuntimeError(f"Load order limit of 254 plugins exceeded: found {len(active_plugins)} active plugins.")
+            logger.critical(
+                f"CRITICAL ALERT: Plugin limit exceeded! ({len(active_plugins)} > 254)"
+            )
+            raise RuntimeError(
+                f"Load order limit of 254 plugins exceeded: found {len(active_plugins)} active plugins."
+            )
 
-    async def verify_masters(self, plugins: list[str], xedit_runner: XEditRunner) -> list[str]:
+    async def verify_masters(
+        self, plugins: list[str], xedit_runner: XEditRunner
+    ) -> list[str]:
         """Verify master dependencies for all active plugins.
-        
+
         Args:
             plugins: List of active plugin filenames.
             xedit_runner: Configured xEdit runner.
-            
+
         Returns:
             List of error strings regarding missing masters.
         """
@@ -171,7 +210,7 @@ class ConflictAnalyzer:
             result = await xedit_runner.run_script("check_masters.pas", plugins)
             if not result.success:
                 return [f"Error verifying masters: {err}" for err in result.errors]
-            return [] # No missing masters detected
+            return []  # No missing masters detected
         except Exception as exc:
             logger.error(f"Failed to verify masters: {exc}")
             return [str(exc)]
@@ -324,11 +363,13 @@ class ConflictAnalyzer:
         for (a, b), pair_conflicts in sorted(
             pair_map.items(), key=lambda x: -len(x[1])
         ):
-            pairs.append(PluginConflictPair(
-                plugin_a=a,
-                plugin_b=b,
-                conflicts=pair_conflicts,
-            ))
+            pairs.append(
+                PluginConflictPair(
+                    plugin_a=a,
+                    plugin_b=b,
+                    conflicts=pair_conflicts,
+                )
+            )
         return pairs
 
     def _build_summary(self, report: ConflictReport) -> str:
@@ -382,14 +423,16 @@ def parse_conflict_lines(stdout: str) -> list[RecordConflict]:
             continue
         try:
             losers = [entry.strip() for entry in parts[5].split(",") if entry.strip()]
-            conflicts.append(RecordConflict(
-                form_id=parts[1].strip(),
-                editor_id=parts[2].strip(),
-                record_type=parts[3].strip(),
-                winner=parts[4].strip(),
-                losers=losers,
-                severity="info",  # classified later by the analyzer
-            ))
+            conflicts.append(
+                RecordConflict(
+                    form_id=parts[1].strip(),
+                    editor_id=parts[2].strip(),
+                    record_type=parts[3].strip(),
+                    winner=parts[4].strip(),
+                    losers=losers,
+                    severity="info",  # classified later by the analyzer
+                )
+            )
         except Exception:
             logger.warning("Failed to parse CONFLICT line: %s", line, exc_info=True)
     return conflicts

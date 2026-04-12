@@ -13,6 +13,7 @@ Arquitectura MVVM:
 Este archivo es un Dependency Injector: instancia estado, controladores y vistas.
 NO contiene lógica de negocio propia.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -62,6 +63,7 @@ def get_db_agent() -> DatabaseAgent:
 # ═══════════════════════════════════════════════════════════════════════════════
 # VIEWMODEL — REACTIVE STATE (NiceGUI variables)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class _ReactiveVar:
     """Thin wrapper that mimics the .get()/.set() API expected by ReactiveState.
@@ -113,9 +115,15 @@ class ReactiveState:
         # Suscribirse al EventBus para sincronizar la UI
         if event_bus_instance:
             event_bus_instance.subscribe(EventType.MOD_ADDED, self.handle_mod_added)
-            event_bus_instance.subscribe(EventType.CONFLICT_DETECTED, self.handle_conflict_detected)
-            event_bus_instance.subscribe(EventType.LLM_RESPONSE, self._handle_llm_notification)
-            event_bus_instance.subscribe(EventType.AGENT_STATUS_CHANGE, self._handle_agent_status)
+            event_bus_instance.subscribe(
+                EventType.CONFLICT_DETECTED, self.handle_conflict_detected
+            )
+            event_bus_instance.subscribe(
+                EventType.LLM_RESPONSE, self._handle_llm_notification
+            )
+            event_bus_instance.subscribe(
+                EventType.AGENT_STATUS_CHANGE, self._handle_agent_status
+            )
 
     # ── Properties ─────────────────────────────────────────────────────────────
 
@@ -228,6 +236,7 @@ def get_state() -> ReactiveState:
 # AGENT COMMUNICATION — WebSocket bridge al daemon
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def _handle_daemon_message(data: Dict[str, Any]) -> None:
     """Traduce mensajes WS del daemon a eventos EventBus."""
     msg_type = data.get("type", "")
@@ -235,29 +244,37 @@ def _handle_daemon_message(data: Dict[str, Any]) -> None:
     if msg_type == "agent_result":
         action = data.get("action", "")
         if action == "install_complete":
-            event_bus.publish(SkyClawEvent(
-                type=EventType.MOD_ADDED,
-                data=data.get("payload", {}),
-                source="daemon",
-            ))
+            event_bus.publish(
+                SkyClawEvent(
+                    type=EventType.MOD_ADDED,
+                    data=data.get("payload", {}),
+                    source="daemon",
+                )
+            )
         elif action == "conflict_found":
-            event_bus.publish(SkyClawEvent(
-                type=EventType.CONFLICT_DETECTED,
+            event_bus.publish(
+                SkyClawEvent(
+                    type=EventType.CONFLICT_DETECTED,
+                    data=data.get("payload", {}),
+                    source="daemon",
+                )
+            )
+    elif msg_type == "response":
+        event_bus.publish(
+            SkyClawEvent(
+                type=EventType.LLM_RESPONSE,
                 data=data.get("payload", {}),
                 source="daemon",
-            ))
-    elif msg_type == "response":
-        event_bus.publish(SkyClawEvent(
-            type=EventType.LLM_RESPONSE,
-            data=data.get("payload", {}),
-            source="daemon",
-        ))
+            )
+        )
     elif msg_type == "broadcast":
-        event_bus.publish(SkyClawEvent(
-            type=EventType.EVENT_BROADCAST,
-            data=data,
-            source="daemon",
-        ))
+        event_bus.publish(
+            SkyClawEvent(
+                type=EventType.EVENT_BROADCAST,
+                data=data,
+                source="daemon",
+            )
+        )
 
 
 DAEMON_WS_URL = os.environ.get("SKY_CLAW_DAEMON_WS_URL", "ws://localhost:8765/ws/ui")
@@ -281,6 +298,7 @@ def get_agent_client() -> AgentCommunicationClient:
 # MAIN PAGE — Orquestador Delgado (Dependency Injector)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @ui.page("/")
 def main_page():
     """
@@ -289,7 +307,7 @@ def main_page():
     """
     ui.dark_mode().enable()
 
-    ui.add_head_html('''
+    ui.add_head_html("""
         <link rel="stylesheet" href="/static/styles.css">
         <script>
             const sounds = {
@@ -303,7 +321,7 @@ def main_page():
                 audio.play();
             }
         </script>
-    ''')
+    """)
 
     state = get_state()
 
@@ -351,6 +369,7 @@ def main_page():
 # ═══════════════════════════════════════════════════════════════════════════════
 # APP SETUP & ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def setup_app() -> None:
     """Configura la aplicación e instancia controladores con DI."""

@@ -18,7 +18,7 @@ certifi==2026.2.25
     # via sky-claw (pyproject.toml)
 cffi==2.0.0
     # via cryptography
-cryptography==46.0.6
+cryptography==46.0.7
     # via sky-claw (pyproject.toml)
 defusedxml==0.7.1
     # via sky-claw (pyproject.toml)

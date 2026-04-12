@@ -13,9 +13,9 @@ from typing import Any, Protocol
 
 import aiohttp
 
+
 class UpdateHandler(Protocol):
-    async def process_update(self, data: dict[str, Any]) -> None:
-        ...
+    async def process_update(self, data: dict[str, Any]) -> None: ...
 
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ class TelegramPolling:
                     break
                 except Exception as exc:
                     logger.exception("Error in Telegram polling loop: %s", exc)
-                
+
                 await asyncio.sleep(self._interval)
         finally:
             self._running = False
@@ -101,41 +101,58 @@ class TelegramPolling:
             "offset": self._last_update_id + 1,
             "timeout": 30,
         }
-        async with await self._gateway.request("GET", self._url, self._session, params=params) as resp:
+        async with await self._gateway.request(
+            "GET", self._url, self._session, params=params
+        ) as resp:
             if resp.status != 200:
                 logger.warning("Telegram getUpdates returned %d", resp.status)
                 return
-            
+
             data = await resp.json()
             if not data.get("ok"):
-                logger.warning("Telegram getUpdates failed: %s", data.get("description"))
+                logger.warning(
+                    "Telegram getUpdates failed: %s", data.get("description")
+                )
                 return
 
             results = data.get("result", [])
             for update in results:
                 update_id = update.get("update_id")
-                
+
                 try:
                     await self._process_raw_update(update)
                 except Exception as exc:
-                    logger.error("Malformed update or processing error for %s: %s. Routing to DLQ.", update_id, exc)
+                    logger.error(
+                        "Malformed update or processing error for %s: %s. Routing to DLQ.",
+                        update_id,
+                        exc,
+                    )
                     await self._dlq.put(update)
-                
+
                 if update_id:
                     self._last_update_id = update_id
 
     async def _process_raw_update(self, update: dict[str, Any]) -> None:
         """Process a single raw update dict."""
-        
+
         # CWE-284: Drop-Early Middleware
         if self._authorized_chat_id is not None:
-            message = update.get("message") or update.get("edited_message") or update.get("callback_query", {}).get("message")
+            message = (
+                update.get("message")
+                or update.get("edited_message")
+                or update.get("callback_query", {}).get("message")
+            )
             if message:
                 chat_id = message.get("chat", {}).get("id")
-                if chat_id is not None and str(chat_id) != str(self._authorized_chat_id):
-                    logger.warning("CWE-284: Unauthorized access attempt from chat_id=%s. Dropping update.", chat_id)
+                if chat_id is not None and str(chat_id) != str(
+                    self._authorized_chat_id
+                ):
+                    logger.warning(
+                        "CWE-284: Unauthorized access attempt from chat_id=%s. Dropping update.",
+                        chat_id,
+                    )
                     return
-        
+
         if not hasattr(self._handler, "process_update"):
             raise TypeError("Handler must implement process_update(data: dict)")
         await self._handler.process_update(update)

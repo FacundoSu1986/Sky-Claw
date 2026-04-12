@@ -1,13 +1,18 @@
 """Test script for contracts.py refactoring (Ticket 1.1 — C-03)."""
+
 import asyncio
 import sys
+
 
 def main():
     # Test 1: SchemaRegistry population
     from sky_claw.core.contracts import list_registered_schemas, get_schema_class
+
     schemas = list_registered_schemas()
     assert len(schemas) == 7, f"Expected 7 schemas, got {len(schemas)}"
-    print(f"[TEST 1 PASS] SchemaRegistry: {len(schemas)} models -> {list(schemas.keys())}")
+    print(
+        f"[TEST 1 PASS] SchemaRegistry: {len(schemas)} models -> {list(schemas.keys())}"
+    )
 
     # Test 2: O(1) lookup
     atr = get_schema_class("AgentToolRequest")
@@ -15,7 +20,9 @@ def main():
     assert atr.__name__ == "AgentToolRequest"
     none_result = get_schema_class("NonExistent")
     assert none_result is None
-    print(f"[TEST 2 PASS] O(1) lookup: AgentToolRequest={atr.__name__}, NonExistent={none_result}")
+    print(
+        f"[TEST 2 PASS] O(1) lookup: AgentToolRequest={atr.__name__}, NonExistent={none_result}"
+    )
 
     # Test 3: validate_input with valid data
     from sky_claw.core.contracts import validate_input
@@ -91,7 +98,9 @@ def main():
         result = await agent.dispatch_tool(tool_name="install", priority="critical")
         assert call_count == 1, f"Function executed {call_count} times (expected 1)"
         assert result["tool_name"] == "install"
-        print(f"[TEST 6 PASS] Full contract: single execution, tool_name={result['tool_name']}")
+        print(
+            f"[TEST 6 PASS] Full contract: single execution, tool_name={result['tool_name']}"
+        )
 
     asyncio.run(test_full_contract())
 

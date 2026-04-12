@@ -19,7 +19,6 @@ from sky_claw.loot.parser import LOOTOutputParser, LOOTResult
 
 
 class TestLOOTOutputParser:
-
     def test_parse_sorted_plugins(self) -> None:
         stdout = (
             "Sorting plugins...\n"
@@ -30,7 +29,10 @@ class TestLOOTOutputParser:
         )
         result = LOOTOutputParser.parse(stdout=stdout, stderr="", return_code=0)
         assert result.sorted_plugins == [
-            "Skyrim.esm", "Update.esm", "Dawnguard.esm", "Requiem.esp"
+            "Skyrim.esm",
+            "Update.esm",
+            "Dawnguard.esm",
+            "Requiem.esp",
         ]
         assert result.success is True
 
@@ -79,7 +81,6 @@ class TestLOOTOutputParser:
 
 
 class TestLOOTRunner:
-
     def _make_config(self, tmp_path: pathlib.Path) -> LOOTConfig:
         loot_exe = tmp_path / "loot.exe"
         loot_exe.touch()
@@ -112,7 +113,9 @@ class TestLOOTRunner:
         mock_proc.returncode = 0
         mock_proc.kill = MagicMock()
 
-        with patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc):
+        with patch(
+            "sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc
+        ):
             result = await runner.sort()
 
         assert result.success is True
@@ -130,8 +133,13 @@ class TestLOOTRunner:
         mock_proc.kill = MagicMock()
 
         import asyncio
-        with patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc):
-            with patch("sky_claw.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+
+        with patch(
+            "sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc
+        ):
+            with patch(
+                "sky_claw.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError
+            ):
                 with pytest.raises(RuntimeError, match="timed out"):
                     await runner.sort()
 
@@ -147,7 +155,9 @@ class TestLOOTRunner:
         mock_proc.returncode = 1
         mock_proc.kill = MagicMock()
 
-        with patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc):
+        with patch(
+            "sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc
+        ):
             result = await runner.sort()
 
         assert result.success is False
@@ -160,7 +170,6 @@ class TestLOOTRunner:
 
 
 class TestMasterlistDownloader:
-
     @pytest.mark.asyncio
     async def test_uses_cache_when_valid(self, tmp_path: pathlib.Path) -> None:
         cache_dir = tmp_path / "cache"
@@ -186,6 +195,7 @@ class TestMasterlistDownloader:
         cached.write_text("old content")
         # Set mtime to 2 hours ago
         import os
+
         old_time = time.time() - 7200
         os.utime(cached, (old_time, old_time))
 
@@ -241,9 +251,7 @@ class TestMasterlistDownloader:
         mock_gw = MagicMock()
         mock_gw.request = AsyncMock(return_value=mock_resp)
 
-        downloader = MasterlistDownloader(
-            gateway=mock_gw, cache_dir=tmp_path, ttl=3600
-        )
+        downloader = MasterlistDownloader(gateway=mock_gw, cache_dir=tmp_path, ttl=3600)
         session = MagicMock()
         with pytest.raises(RuntimeError, match="404"):
             await downloader.get(session)
@@ -255,7 +263,6 @@ class TestMasterlistDownloader:
 
 
 class TestLootSortTool:
-
     @pytest.mark.asyncio
     async def test_loot_sort_no_runner_configured(self, tmp_path: pathlib.Path) -> None:
         """When no LOOTRunner is provided, tool returns error JSON."""
@@ -276,11 +283,16 @@ class TestLootSortTool:
         try:
             sync = SyncEngine(mo2, MagicMock(), registry)
             tool_reg = AsyncToolRegistry(
-                registry=registry, mo2=mo2, sync_engine=sync,
+                registry=registry,
+                mo2=mo2,
+                sync_engine=sync,
                 loot_runner=None,
             )
             import json
-            result = json.loads(await tool_reg.execute("run_loot_sort", {"profile": "Default"}))
+
+            result = json.loads(
+                await tool_reg.execute("run_loot_sort", {"profile": "Default"})
+            )
             assert "error" in result
             assert "not configured" in result["error"] or "not found" in result["error"]
         finally:
@@ -307,19 +319,26 @@ class TestLootSortTool:
             sync = SyncEngine(mo2, MagicMock(), registry)
 
             mock_runner = MagicMock()
-            mock_runner.sort = AsyncMock(return_value=LOOTResult(
-                return_code=0,
-                sorted_plugins=["Skyrim.esm", "Requiem.esp"],
-                warnings=["Some warning"],
-                errors=[],
-            ))
+            mock_runner.sort = AsyncMock(
+                return_value=LOOTResult(
+                    return_code=0,
+                    sorted_plugins=["Skyrim.esm", "Requiem.esp"],
+                    warnings=["Some warning"],
+                    errors=[],
+                )
+            )
 
             tool_reg = AsyncToolRegistry(
-                registry=registry, mo2=mo2, sync_engine=sync,
+                registry=registry,
+                mo2=mo2,
+                sync_engine=sync,
                 loot_runner=mock_runner,
             )
             import json
-            result = json.loads(await tool_reg.execute("run_loot_sort", {"profile": "Default"}))
+
+            result = json.loads(
+                await tool_reg.execute("run_loot_sort", {"profile": "Default"})
+            )
             assert result["success"] is True
             assert result["sorted_plugins"] == ["Skyrim.esm", "Requiem.esp"]
             assert result["warnings"] == ["Some warning"]

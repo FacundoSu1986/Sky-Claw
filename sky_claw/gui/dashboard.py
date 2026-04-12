@@ -1,4 +1,5 @@
 """DashboardGUI — Nordic theme premium dashboard."""
+
 from __future__ import annotations
 
 import logging
@@ -8,7 +9,10 @@ from typing import Any, Dict, List, Optional
 from nicegui import ui
 
 from .icons import (
-    _ICON_LAYERS, _ICON_CHAT, _ICON_ANVIL, _ICON_CART,
+    _ICON_LAYERS,
+    _ICON_CHAT,
+    _ICON_ANVIL,
+    _ICON_CART,
 )
 from .message_handlers import (
     MessageHandlerStrategy,
@@ -28,6 +32,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # DASHBOARD GUI — Nordic Theme
 # =============================================================================
+
 
 class DashboardGUI:
     """Dashboard premium con sidebar, stats, widgets, chat — tema Nórdico/Rúnico."""
@@ -60,12 +65,16 @@ class DashboardGUI:
     def build(self) -> None:
         _load_css()
 
-        with ui.element("div").classes("w-full min-h-screen flex").style(
-            "background: transparent; font-family: var(--sky-font-family);"
+        with (
+            ui.element("div")
+            .classes("w-full min-h-screen flex")
+            .style("background: transparent; font-family: var(--sky-font-family);")
         ):
             self._build_sidebar()
 
-            with ui.column().classes("flex-1 min-h-screen overflow-auto sky-main-content"):
+            with ui.column().classes(
+                "flex-1 min-h-screen overflow-auto sky-main-content"
+            ):
                 self._build_header()
 
                 with ui.column().classes("p-6 gap-6 flex-1"):
@@ -77,7 +86,9 @@ class DashboardGUI:
                     # Row 2: Stats cards (PROCESADOR + CARGA TAREAS)
                     with ui.row().classes("w-full gap-6"):
                         self._build_stat_summary("PROCESADOR", "116", _ICON_ANVIL)
-                        self._build_stat_summary("CARGA TAREAS", "3,130 ops/s", _ICON_CART)
+                        self._build_stat_summary(
+                            "CARGA TAREAS", "3,130 ops/s", _ICON_CART
+                        )
 
                     # Row 3: Bar chart with metrics
                     self._build_bar_chart_widget()
@@ -114,6 +125,7 @@ class DashboardGUI:
             if not config_path:
                 return False
             from sky_claw.config import Config
+
             cfg = Config(config_path)
             if cfg._data.get("first_run", True):
                 return True
@@ -121,6 +133,7 @@ class DashboardGUI:
             if provider == "ollama":
                 return False
             import keyring
+
             key = keyring.get_password("sky_claw", f"{provider}_api_key")
             return not bool(key)
         except Exception:
@@ -131,22 +144,28 @@ class DashboardGUI:
 
     # ── Sidebar ───────────────────────────────────────────────────────
     def _build_sidebar(self) -> None:
-        with ui.element("div").classes(
-            "w-64 min-h-screen flex flex-col shrink-0 sky-sidebar"
-        ).style(
-            "background: var(--sky-bg-secondary); border-right: 1px solid var(--sky-border);"
+        with (
+            ui.element("div")
+            .classes("w-64 min-h-screen flex flex-col shrink-0 sky-sidebar")
+            .style(
+                "background: var(--sky-bg-secondary); border-right: 1px solid var(--sky-border);"
+            )
         ):
             # Logo
-            with ui.element("div").classes("p-6").style("border-bottom: 1px solid var(--sky-border);"):
+            with (
+                ui.element("div")
+                .classes("p-6")
+                .style("border-bottom: 1px solid var(--sky-border);")
+            ):
                 with ui.row().classes("items-center gap-3"):
-                    ui.html(f'''
+                    ui.html(f"""
                         <div style="width:40px;height:40px;border-radius:12px;display:flex;
                                     align-items:center;justify-content:center;
                                     background:linear-gradient(135deg, #C8A84E, #8B7332);"
                              class="sky-glow-static">
                             {_ICON_LAYERS}
                         </div>
-                    ''')
+                    """)
                     with ui.column().classes("gap-0"):
                         ui.label("SKY-CLAW").style(
                             "color: var(--sky-gold); font-weight:800; font-size:1.1rem; "
@@ -184,9 +203,15 @@ class DashboardGUI:
                     ).props("ripple flat no-caps").style(active_style)
 
             # Status LLM
-            with ui.element("div").classes("p-4").style("border-top: 1px solid var(--sky-border);"):
+            with (
+                ui.element("div")
+                .classes("p-4")
+                .style("border-top: 1px solid var(--sky-border);")
+            ):
                 with ui.row().classes("items-center gap-2"):
-                    self._status_dot = ui.element("div").classes("sky-status-dot sky-status-dot--connected")
+                    self._status_dot = ui.element("div").classes(
+                        "sky-status-dot sky-status-dot--connected"
+                    )
                     self._status_label = ui.label("Conectado").style(
                         "color: var(--sky-text-muted); font-size:0.75rem;"
                     )
@@ -197,10 +222,12 @@ class DashboardGUI:
 
     # ── Header ────────────────────────────────────────────────────────
     def _build_header(self) -> None:
-        with ui.element("div").classes(
-            "h-16 flex items-center justify-between px-6 shrink-0"
-        ).style(
-            "background: var(--sky-bg-secondary); border-bottom: 1px solid var(--sky-border);"
+        with (
+            ui.element("div")
+            .classes("h-16 flex items-center justify-between px-6 shrink-0")
+            .style(
+                "background: var(--sky-bg-secondary); border-bottom: 1px solid var(--sky-border);"
+            )
         ):
             with ui.column().classes("gap-0"):
                 ui.label("OPERACIONES TÉCNICAS").style(
@@ -211,9 +238,9 @@ class DashboardGUI:
             # Header actions
             with ui.row().classes("items-center gap-3"):
                 for label_text in ["Protocolos", "Alerta", "Ayuda"]:
-                    ui.button(label_text).classes(
-                        "px-3 py-1 rounded-lg text-xs"
-                    ).props("ripple flat no-caps").style(
+                    ui.button(label_text).classes("px-3 py-1 rounded-lg text-xs").props(
+                        "ripple flat no-caps"
+                    ).style(
                         "color: var(--sky-text-secondary); "
                         "border: 1px solid var(--sky-surface-border);"
                     )
@@ -232,15 +259,19 @@ class DashboardGUI:
         with ui.element("div").classes("sky-widget-panel flex-1"):
             with ui.element("div").classes("sky-widget-header"):
                 ui.label("RENDIMIENTO").classes("sky-widget-title")
-                ui.button("Real time").classes(
-                    "px-2 py-1 rounded text-xs"
-                ).props("ripple flat no-caps").style(
+                ui.button("Real time").classes("px-2 py-1 rounded text-xs").props(
+                    "ripple flat no-caps"
+                ).style(
                     "color: var(--sky-text-muted); border: 1px solid var(--sky-surface-border);"
                 )
 
-            with ui.element("div").classes("p-4").style("height:200px; position:relative;"):
+            with (
+                ui.element("div")
+                .classes("p-4")
+                .style("height:200px; position:relative;")
+            ):
                 # Simulated line chart via SVG
-                ui.html('''
+                ui.html("""
                     <svg width="100%" height="100%" viewBox="0 0 400 160" preserveAspectRatio="none"
                          style="overflow:visible;">
                         <!-- Grid lines -->
@@ -272,11 +303,15 @@ class DashboardGUI:
                         <text x="-5" y="128" fill="#94A3B8" font-size="10" text-anchor="end">25</text>
                         <text x="-5" y="165" fill="#94A3B8" font-size="10" text-anchor="end">0</text>
                     </svg>
-                ''')
+                """)
 
     # ── Server Status Widget ──────────────────────────────────────────
     def _build_server_status_widget(self) -> None:
-        with ui.element("div").classes("sky-widget-panel").style("width: 280px; flex-shrink:0;"):
+        with (
+            ui.element("div")
+            .classes("sky-widget-panel")
+            .style("width: 280px; flex-shrink:0;")
+        ):
             with ui.element("div").classes("sky-widget-header"):
                 ui.label("ESTADO SERVIDORES").classes("sky-widget-title")
 
@@ -288,15 +323,19 @@ class DashboardGUI:
                     ("SERVER 4", "Online", "#22c55e"),
                 ]
                 for name, status, color in servers:
-                    with ui.row().classes("items-center justify-between w-full px-3 py-2 rounded-lg").style(
-                        "background: var(--sky-bg-elevated);"
+                    with (
+                        ui.row()
+                        .classes(
+                            "items-center justify-between w-full px-3 py-2 rounded-lg"
+                        )
+                        .style("background: var(--sky-bg-elevated);")
                     ):
                         with ui.row().classes("items-center gap-2"):
-                            ui.html(f'''
+                            ui.html(f"""
                                 <div style="width:10px;height:10px;border-radius:50%;
                                             background:{color};
                                             box-shadow: 0 0 6px {color};"></div>
-                            ''')
+                            """)
                             ui.label(name).style(
                                 "color: var(--sky-text-primary); font-size:0.8rem; font-weight:600;"
                             )
@@ -314,14 +353,14 @@ class DashboardGUI:
                         "font-weight:600; letter-spacing:0.1em; text-transform:uppercase;"
                     )
                     ui.label(value).classes("sky-metric-value")
-                ui.html(f'''
+                ui.html(f"""
                     <div style="width:48px;height:48px;border-radius:12px;display:flex;
                                 align-items:center;justify-content:center;
                                 background:linear-gradient(135deg, rgba(200,168,78,0.12), rgba(6,182,212,0.12));
                                 border: 1px solid rgba(200,168,78,0.2);">
                         {icon_svg}
                     </div>
-                ''')
+                """)
 
     # ── Bar Chart Widget ──────────────────────────────────────────────
     def _build_bar_chart_widget(self) -> None:
@@ -329,7 +368,11 @@ class DashboardGUI:
             with ui.element("div").classes("p-4"):
                 # Bar chart
                 bar_data = [72, 45, 88, 55, 92, 38, 78, 60, 85, 50, 95, 42]
-                with ui.row().classes("items-end justify-center gap-3").style("height:180px;"):
+                with (
+                    ui.row()
+                    .classes("items-end justify-center gap-3")
+                    .style("height:180px;")
+                ):
                     for height_pct in bar_data:
                         h = int(height_pct * 1.6)
                         ui.element("div").classes("sky-bar").style(
@@ -337,8 +380,10 @@ class DashboardGUI:
                         )
 
             # Metrics footer
-            with ui.row().classes("w-full justify-around p-4").style(
-                "border-top: 1px solid var(--sky-surface-border);"
+            with (
+                ui.row()
+                .classes("w-full justify-around p-4")
+                .style("border-top: 1px solid var(--sky-surface-border);")
             ):
                 metrics = [
                     ("MEDIA", "64.2%"),
@@ -355,14 +400,14 @@ class DashboardGUI:
 
             # Bottom buttons
             with ui.row().classes("w-full justify-end gap-2 px-4 pb-3"):
-                ui.button("Menú").classes(
-                    "px-3 py-1 rounded-lg text-xs"
-                ).props("ripple flat no-caps").style(
+                ui.button("Menú").classes("px-3 py-1 rounded-lg text-xs").props(
+                    "ripple flat no-caps"
+                ).style(
                     "color: var(--sky-text-secondary); border: 1px solid var(--sky-surface-border);"
                 )
-                ui.button("Salir").classes(
-                    "px-3 py-1 rounded-lg text-xs"
-                ).props("ripple flat no-caps").style(
+                ui.button("Salir").classes("px-3 py-1 rounded-lg text-xs").props(
+                    "ripple flat no-caps"
+                ).style(
                     "color: var(--sky-text-secondary); border: 1px solid var(--sky-surface-border);"
                 )
 
@@ -397,6 +442,7 @@ class DashboardGUI:
         """Run the environment scanner and update the UI."""
         try:
             from sky_claw.discovery.scanner import EnvironmentScanner
+
             scanner = EnvironmentScanner()
             self._env_snapshot = await scanner.scan()
         except Exception as exc:
@@ -433,16 +479,22 @@ class DashboardGUI:
     async def _on_tool_action(self, tool_key: str) -> None:
         """Handle click on a semantic action button."""
         names = {
-            "loot": "Ordenar mods", "xedit": "Limpiar archivos",
-            "wrye_bash": "Crear parche", "pandora": "Generar animaciones",
+            "loot": "Ordenar mods",
+            "xedit": "Limpiar archivos",
+            "wrye_bash": "Crear parche",
+            "pandora": "Generar animaciones",
             "dyndolod": "Optimizar gráficos",
         }
         name = names.get(tool_key, tool_key)
         ui.notify(f"▶ Ejecutando: {name}...", type="info", position="top")
-        if hasattr(self, 'ctx') and hasattr(self.ctx, 'logic_queue'):
-            self.ctx.logic_queue.put_nowait({
-                "type": "tool_action", "tool": tool_key, "message": f"/run {tool_key}",
-            })
+        if hasattr(self, "ctx") and hasattr(self.ctx, "logic_queue"):
+            self.ctx.logic_queue.put_nowait(
+                {
+                    "type": "tool_action",
+                    "tool": tool_key,
+                    "message": f"/run {tool_key}",
+                }
+            )
         self.append_chat_message(f"🔧 {name}...", is_user=False, style="info")
 
     async def _on_prepare_game(self) -> None:
@@ -453,7 +505,8 @@ class DashboardGUI:
             "1. Backup automático\n2. Ordenar mods (LOOT)\n"
             "3. Limpiar archivos (xEdit)\n4. Crear parche (Wrye Bash)\n"
             "5. Generar animaciones (Pandora)\n6. Optimizar gráficos (DynDOLOD)",
-            is_user=False, style="info"
+            is_user=False,
+            style="info",
         )
 
     async def _on_install_tool(self, tool_key: str) -> None:
@@ -471,8 +524,10 @@ class DashboardGUI:
         with ui.column().classes(
             "w-1/2 sky-widget-panel overflow-hidden sky-animate-in--delay-1 sky-animate-in"
         ):
-            with ui.row().classes("items-center justify-between p-4").style(
-                "border-bottom: 1px solid var(--sky-surface-border);"
+            with (
+                ui.row()
+                .classes("items-center justify-between p-4")
+                .style("border-bottom: 1px solid var(--sky-surface-border);")
             ):
                 ui.label("Mods Instalados").style(
                     "color: var(--sky-text-primary); font-weight:700;"
@@ -481,21 +536,23 @@ class DashboardGUI:
                     ui.button(
                         "Actualizar",
                         on_click=self._update_all,
-                    ).classes(
-                        "px-3 py-1 rounded-lg text-xs"
-                    ).props("ripple flat no-caps").style(
+                    ).classes("px-3 py-1 rounded-lg text-xs").props(
+                        "ripple flat no-caps"
+                    ).style(
                         "color: var(--sky-text-secondary); border: 1px solid var(--sky-surface-border);"
                     )
                     ui.button(
                         "Escanear",
                         on_click=self._scan_all,
-                    ).classes(
-                        "px-3 py-1 rounded-lg text-xs"
-                    ).props("ripple flat no-caps").style(
+                    ).classes("px-3 py-1 rounded-lg text-xs").props(
+                        "ripple flat no-caps"
+                    ).style(
                         "color: var(--sky-text-secondary); border: 1px solid var(--sky-surface-border);"
                     )
 
-            with ui.scroll_area().classes("flex-1 sky-scrollbar").style("height: 300px;"):
+            with (
+                ui.scroll_area().classes("flex-1 sky-scrollbar").style("height: 300px;")
+            ):
                 self._mod_container = ui.column().classes("w-full")
 
     def update_mod_list(self, mods: List[str]) -> None:
@@ -508,10 +565,12 @@ class DashboardGUI:
 
         with self._mod_container:
             for i, mod in enumerate(mods, 1):
-                with ui.row().classes(
-                    "w-full items-center py-3 px-4 transition-colors"
-                ).style("border-bottom: 1px solid var(--sky-surface-border);"):
-                    ui.html('''
+                with (
+                    ui.row()
+                    .classes("w-full items-center py-3 px-4 transition-colors")
+                    .style("border-bottom: 1px solid var(--sky-surface-border);")
+                ):
+                    ui.html("""
                         <div style="width:32px;height:32px;border-radius:8px;display:flex;
                                     align-items:center;justify-content:center;flex-shrink:0;
                                     background:var(--sky-bg-elevated);">
@@ -520,7 +579,7 @@ class DashboardGUI:
                                 <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
                             </svg>
                         </div>
-                    ''')
+                    """)
                     with ui.column().classes("flex-1 min-w-0 ml-3"):
                         ui.label(mod).style(
                             "color: var(--sky-text-primary); font-size:0.875rem; font-weight:500;"
@@ -531,11 +590,15 @@ class DashboardGUI:
                     ui.label("Activo").classes("sky-badge sky-badge--success shrink-0")
 
     def _update_all(self) -> None:
-        self.append_chat_message("Iniciando actualización de mods...", is_user=False, style="success")
+        self.append_chat_message(
+            "Iniciando actualización de mods...", is_user=False, style="success"
+        )
         self.ctx.logic_queue.put(("chat", "/update_mods"))
 
     def _scan_all(self) -> None:
-        self.append_chat_message("Iniciando escaneo de VFS...", is_user=False, style="success")
+        self.append_chat_message(
+            "Iniciando escaneo de VFS...", is_user=False, style="success"
+        )
         self.ctx.logic_queue.put(("chat", "/scan"))
 
     # ── Chat Panel ────────────────────────────────────────────────────
@@ -545,19 +608,23 @@ class DashboardGUI:
             "sky-animate-in--delay-2 sky-animate-in flex"
         ):
             # Header
-            with ui.element("div").classes("p-4").style(
-                "border-bottom: 1px solid var(--sky-surface-border); "
-                "background: linear-gradient(135deg, rgba(200,168,78,0.08), rgba(6,182,212,0.08));"
+            with (
+                ui.element("div")
+                .classes("p-4")
+                .style(
+                    "border-bottom: 1px solid var(--sky-surface-border); "
+                    "background: linear-gradient(135deg, rgba(200,168,78,0.08), rgba(6,182,212,0.08));"
+                )
             ):
                 with ui.row().classes("items-center gap-3"):
-                    ui.html(f'''
+                    ui.html(f"""
                         <div style="width:40px;height:40px;border-radius:12px;display:flex;
                                     align-items:center;justify-content:center;
                                     background:linear-gradient(135deg, #C8A84E, #06b6d4);"
                              class="sky-glow-static">
                             {_ICON_CHAT}
                         </div>
-                    ''')
+                    """)
                     with ui.column().classes("gap-0"):
                         ui.label("Asistente IA").style(
                             "color: var(--sky-text-primary); font-weight:700;"
@@ -567,35 +634,49 @@ class DashboardGUI:
                         )
 
             # Messages
-            self._chat_scroll = ui.scroll_area().classes(
-                "flex-1 sky-scrollbar"
-            ).style("height: 260px;")
+            self._chat_scroll = (
+                ui.scroll_area().classes("flex-1 sky-scrollbar").style("height: 260px;")
+            )
             with self._chat_scroll:
                 self._chat_container = ui.column().classes("w-full p-4 gap-2")
 
             # Thinking label
-            with ui.row().classes("px-4 py-2 items-center gap-2").style("min-height: 24px;"):
-                self._thinking_label = ui.label("Procesando...").style(
-                    "color: var(--sky-text-muted); font-size:0.75rem; display:none;"
-                ).classes("animate-pulse")
+            with (
+                ui.row()
+                .classes("px-4 py-2 items-center gap-2")
+                .style("min-height: 24px;")
+            ):
+                self._thinking_label = (
+                    ui.label("Procesando...")
+                    .style(
+                        "color: var(--sky-text-muted); font-size:0.75rem; display:none;"
+                    )
+                    .classes("animate-pulse")
+                )
 
             # Input bar
-            with ui.row().classes("p-4 items-center gap-2").style(
-                "border-top: 1px solid var(--sky-surface-border);"
+            with (
+                ui.row()
+                .classes("p-4 items-center gap-2")
+                .style("border-top: 1px solid var(--sky-surface-border);")
             ):
-                self._chat_input = ui.input(
-                    placeholder="Escribí tu mensaje...",
-                ).classes("flex-1").props(
-                    'dark standout="bg-transparent" input-class="sky-input-spatial" color=amber'
+                self._chat_input = (
+                    ui.input(
+                        placeholder="Escribí tu mensaje...",
+                    )
+                    .classes("flex-1")
+                    .props(
+                        'dark standout="bg-transparent" input-class="sky-input-spatial" color=amber'
+                    )
                 )
                 self._chat_input.on("keydown.enter", self._send_message)
 
                 ui.button(
                     "Enviar",
                     on_click=self._send_message,
-                ).classes(
-                    "sky-wizard-cta px-5 py-2 rounded-xl font-semibold"
-                ).props("ripple")
+                ).classes("sky-wizard-cta px-5 py-2 rounded-xl font-semibold").props(
+                    "ripple"
+                )
 
     def append_chat_message(
         self, text: str, is_user: bool = False, style: str = "normal"
@@ -610,7 +691,9 @@ class DashboardGUI:
                 pass
 
         style_map = {
-            "normal": "sky-chat-message--assistant" if not is_user else "sky-chat-message--user",
+            "normal": "sky-chat-message--assistant"
+            if not is_user
+            else "sky-chat-message--user",
             "success": "sky-chat-message--success",
             "error": "sky-chat-message--error",
         }
@@ -664,15 +747,21 @@ class DashboardGUI:
 
     # ── Footer ────────────────────────────────────────────────────────
     def _build_footer(self) -> None:
-        with ui.element("div").classes("px-6 py-3 flex items-center justify-between").style(
-            "border-top: 1px solid var(--sky-surface-border);"
+        with (
+            ui.element("div")
+            .classes("px-6 py-3 flex items-center justify-between")
+            .style("border-top: 1px solid var(--sky-surface-border);")
         ):
             ui.label(
                 "\u00a9 2026 Sky-Claw Technical Operations Hub. Todos los derechos reservados."
             ).style("color: var(--sky-text-muted); font-size:0.7rem;")
 
             with ui.row().classes("gap-4"):
-                for link_text in ["Protocolos de Seguridad", "API Docs", "Soporte Operativo"]:
+                for link_text in [
+                    "Protocolos de Seguridad",
+                    "API Docs",
+                    "Soporte Operativo",
+                ]:
                     ui.label(link_text).style(
                         "color: var(--sky-text-muted); font-size:0.7rem; cursor:pointer;"
                     )
@@ -715,11 +804,14 @@ class DashboardGUI:
 
     # ── Settings Dialog ───────────────────────────────────────────────
     def _open_settings_dialog(self) -> None:
-        with ui.dialog() as dialog, ui.card().style(
-            "background: var(--sky-bg-card); border: 1px solid var(--sky-border); "
-            "border-radius: 1rem; padding: 1.5rem; width: 480px;"
+        with (
+            ui.dialog() as dialog,
+            ui.card().style(
+                "background: var(--sky-bg-card); border: 1px solid var(--sky-border); "
+                "border-radius: 1rem; padding: 1.5rem; width: 480px;"
+            ),
         ):
-            ui.add_head_html('''
+            ui.add_head_html("""
 <style>
 body {
     background-color: var(--sky-bg-primary) !important;
@@ -736,7 +828,7 @@ body {
     background: transparent !important;
 }
 </style>
-''')
+""")
             ui.label("CONFIGURACIÓN").style(
                 "color: var(--sky-gold); font-weight:700; font-size:1.1rem; "
                 "letter-spacing:0.1em; margin-bottom:1rem;"
@@ -744,44 +836,66 @@ body {
 
             # Provider
             ui.label("PROVEEDOR LLM").classes("sky-wizard-label")
-            provider_input = ui.toggle(
-                ["anthropic", "deepseek", "ollama"],
-                value=getattr(self.ctx, "_args", None) and getattr(self.ctx._args, "provider", "deepseek") or "deepseek",
-            ).classes("w-full mb-3").props("color=amber")
+            provider_input = (
+                ui.toggle(
+                    ["anthropic", "deepseek", "ollama"],
+                    value=getattr(self.ctx, "_args", None)
+                    and getattr(self.ctx._args, "provider", "deepseek")
+                    or "deepseek",
+                )
+                .classes("w-full mb-3")
+                .props("color=amber")
+            )
 
             # API Key
             ui.label("API KEY").classes("sky-wizard-label")
-            api_key_input = ui.input(
-                placeholder="Nueva API key (dejar vacío para no cambiar)",
-            ).classes("w-full mb-3").props(
-                'type=password dark standout="bg-transparent" '
-                'input-class="sky-wizard-input" color=amber maxlength=512'
+            api_key_input = (
+                ui.input(
+                    placeholder="Nueva API key (dejar vacío para no cambiar)",
+                )
+                .classes("w-full mb-3")
+                .props(
+                    'type=password dark standout="bg-transparent" '
+                    'input-class="sky-wizard-input" color=amber maxlength=512'
+                )
             )
 
             # Nexus
             ui.label("NEXUS API KEY").classes("sky-wizard-label")
-            nexus_input = ui.input(
-                placeholder="Nueva Nexus key (dejar vacío para no cambiar)",
-            ).classes("w-full mb-3").props(
-                'type=password dark standout="bg-transparent" '
-                'input-class="sky-wizard-input" color=amber maxlength=512'
+            nexus_input = (
+                ui.input(
+                    placeholder="Nueva Nexus key (dejar vacío para no cambiar)",
+                )
+                .classes("w-full mb-3")
+                .props(
+                    'type=password dark standout="bg-transparent" '
+                    'input-class="sky-wizard-input" color=amber maxlength=512'
+                )
             )
 
             # Telegram
             ui.label("TELEGRAM BOT TOKEN").classes("sky-wizard-label")
-            tg_token_input = ui.input(
-                placeholder="Nuevo token (dejar vacío para no cambiar)",
-            ).classes("w-full mb-3").props(
-                'type=password dark standout="bg-transparent" '
-                'input-class="sky-wizard-input" color=amber maxlength=512'
+            tg_token_input = (
+                ui.input(
+                    placeholder="Nuevo token (dejar vacío para no cambiar)",
+                )
+                .classes("w-full mb-3")
+                .props(
+                    'type=password dark standout="bg-transparent" '
+                    'input-class="sky-wizard-input" color=amber maxlength=512'
+                )
             )
 
             ui.label("TELEGRAM CHAT ID").classes("sky-wizard-label")
-            tg_chatid_input = ui.input(
-                placeholder="Nuevo chat ID",
-            ).classes("w-full mb-4").props(
-                'dark standout="bg-transparent" '
-                'input-class="sky-wizard-input" color=amber maxlength=512'
+            tg_chatid_input = (
+                ui.input(
+                    placeholder="Nuevo chat ID",
+                )
+                .classes("w-full mb-4")
+                .props(
+                    'dark standout="bg-transparent" '
+                    'input-class="sky-wizard-input" color=amber maxlength=512'
+                )
             )
 
             status_label = ui.label("").classes("text-sm mb-2")
@@ -811,15 +925,21 @@ body {
                             return
 
                         import keyring
+
                         if new_api_key:
-                            keyring.set_password("sky_claw", f"{new_provider}_api_key", new_api_key)
+                            keyring.set_password(
+                                "sky_claw", f"{new_provider}_api_key", new_api_key
+                            )
                             keyring.set_password("sky_claw", "llm_api_key", new_api_key)
                         if new_nexus:
                             keyring.set_password("sky_claw", "nexus_api_key", new_nexus)
                         if new_tg_token:
-                            keyring.set_password("sky_claw", "telegram_bot_token", new_tg_token)
+                            keyring.set_password(
+                                "sky_claw", "telegram_bot_token", new_tg_token
+                            )
 
                         from sky_claw.config import Config
+
                         cfg = Config(self.ctx.config_path)
                         cfg._data["llm_provider"] = new_provider
                         if new_tg_chatid:
@@ -853,6 +973,7 @@ body {
     async def _hot_reload_provider(self, provider: str, api_key: str) -> None:
         try:
             from sky_claw.agent.providers import create_provider
+
             if hasattr(self.ctx.router, "_provider_lock"):
                 async with self.ctx.router._provider_lock:
                     new_prov = create_provider(provider_name=provider)
@@ -873,13 +994,12 @@ body {
             from sky_claw.comms.telegram_polling import TelegramPolling
 
             self.ctx.sender = TelegramSender(
-                bot_token=token,
-                gateway=self.ctx.gateway,
-                session=self.ctx.session
+                bot_token=token, gateway=self.ctx.gateway, session=self.ctx.session
             )
             cid = int(chat_id) if chat_id else None
             if cid:
                 from sky_claw.comms.telegram import TelegramWebhook
+
                 webhook_handler = TelegramWebhook(
                     router=self.ctx.router,
                     sender=self.ctx.sender,

@@ -43,9 +43,7 @@ async def adb(tmp_path: pathlib.Path) -> AsyncModRegistry:
 
 
 @pytest.fixture()
-def tool_registry(
-    adb: AsyncModRegistry, tmp_path: pathlib.Path
-) -> AsyncToolRegistry:
+def tool_registry(adb: AsyncModRegistry, tmp_path: pathlib.Path) -> AsyncToolRegistry:
     mo2 = _make_mo2(tmp_path)
     gw = NetworkGateway(EgressPolicy(block_private_ips=False))
     masterlist = MasterlistClient(gateway=gw, api_key="fake")
@@ -54,9 +52,7 @@ def tool_registry(
 
 
 @pytest.fixture()
-async def router(
-    tool_registry: AsyncToolRegistry, tmp_path: pathlib.Path
-) -> LLMRouter:
+async def router(tool_registry: AsyncToolRegistry, tmp_path: pathlib.Path) -> LLMRouter:
     mock_gateway = MagicMock(spec=NetworkGateway)
 
     mock_response = MagicMock()
@@ -81,14 +77,16 @@ async def router(
     # LLMRouter.chat() calls self._semantic_router.route() but SemanticRouter
     # only exposes classify(). Mock route() on the instance so the router can
     # call it without AttributeError.
-    r._semantic_router.route = MagicMock(return_value={
-        "intent": "CHAT_GENERAL",
-        "confidence": 0.7,
-        "target_agent": None,
-        "tool_name": None,
-        "parameters": {},
-        "original_text": "",
-    })
+    r._semantic_router.route = MagicMock(
+        return_value={
+            "intent": "CHAT_GENERAL",
+            "confidence": 0.7,
+            "target_agent": None,
+            "tool_name": None,
+            "parameters": {},
+            "original_text": "",
+        }
+    )
     yield r  # type: ignore[misc]
     await r.close()
 
@@ -216,9 +214,7 @@ class TestChatEndTurn:
         router._gateway.request = AsyncMock(return_value=mock_cm)
         mock_session = MagicMock(spec=aiohttp.ClientSession)
 
-        result = await router.chat(
-            "Search for SKSE", mock_session, chat_id="test-2"
-        )
+        result = await router.chat("Search for SKSE", mock_session, chat_id="test-2")
         assert result == "No mods found matching SKSE."
         assert call_count == 2
 
@@ -279,9 +275,7 @@ class TestChatEndTurn:
 class TestStructuredContent:
     @pytest.mark.asyncio
     async def test_tool_result_roundtrip(self, router: LLMRouter) -> None:
-        blocks = [
-            {"type": "tool_result", "tool_use_id": "abc", "content": "{}"}
-        ]
+        blocks = [{"type": "tool_result", "tool_use_id": "abc", "content": "{}"}]
         await router._save_message("chat-s", "user", json.dumps(blocks))
         messages = await router._load_context("chat-s")
         assert len(messages) == 1
@@ -323,8 +317,10 @@ class TestMaxToolRounds:
         router._gateway.request = AsyncMock(return_value=mock_cm)
         mock_session = MagicMock(spec=aiohttp.ClientSession)
 
-        with pytest.raises(RuntimeError, match=f"exceeded {MAX_TOOL_ROUNDS}"), \
-             patch.object(router._tools, "execute", new_callable=AsyncMock) as mock_exec:
+        with (
+            pytest.raises(RuntimeError, match=f"exceeded {MAX_TOOL_ROUNDS}"),
+            patch.object(router._tools, "execute", new_callable=AsyncMock) as mock_exec,
+        ):
             mock_exec.return_value = '{"matches": []}'
             await router.chat("loop forever", mock_session, chat_id="test-loop")
 
@@ -358,10 +354,12 @@ class TestRetry429:
                 )
             else:
                 mock_resp.status = 200
-                mock_resp.json = AsyncMock(return_value={
-                    "stop_reason": "end_turn",
-                    "content": [{"type": "text", "text": "OK after retry"}],
-                })
+                mock_resp.json = AsyncMock(
+                    return_value={
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": "OK after retry"}],
+                    }
+                )
                 mock_resp.raise_for_status = MagicMock()
                 mock_resp.text = AsyncMock(return_value="")
 

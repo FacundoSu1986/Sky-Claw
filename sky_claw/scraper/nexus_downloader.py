@@ -26,20 +26,24 @@ _NEXUS_API_BASE = "https://api.nexusmods.com/v1"
 
 ProgressCallback = Callable[["DownloadProgress"], Awaitable[None]] | None
 
+
 class DownloadError(Exception):
     pass
 
 
 class HashValidationError(DownloadError):
     """Error de validación de hash (MD5 o SHA256)."""
+
     pass
 
 
 # Alias para compatibilidad hacia atrás
 MD5ValidationError = HashValidationError
 
+
 class PremiumRequiredError(DownloadError):
     pass
+
 
 @dataclass(frozen=True, slots=True)
 class FileInfo:
@@ -66,10 +70,10 @@ class FileInfo:
 
 def validate_sha256_format(hash_str: str) -> bool:
     """Valida formato de hash SHA256 (64 chars hex).
-    
+
     Args:
         hash_str: String a validar como hash SHA256.
-        
+
     Returns:
         True si el string es un hash SHA256 válido (64 caracteres hexadecimales).
     """
@@ -99,9 +103,18 @@ class DownloadProgress:
             return 0.0
         return min((self.downloaded_bytes / self.total_bytes) * 100, 100.0)
 
+
 def _should_retry_nexus(exc: BaseException) -> bool:
     """Determina si la excepción justifica un reintento (Network drop, 429, Hash mismatch)."""
-    if isinstance(exc, (aiohttp.ClientConnectionError, asyncio.TimeoutError, OSError, MD5ValidationError)):
+    if isinstance(
+        exc,
+        (
+            aiohttp.ClientConnectionError,
+            asyncio.TimeoutError,
+            OSError,
+            MD5ValidationError,
+        ),
+    ):
         return True
     if isinstance(exc, aiohttp.ClientResponseError):
         # Reintentar explícitamente en Rate Limits (429) y errores del servidor Nexus (5xx)
@@ -111,13 +124,15 @@ def _should_retry_nexus(exc: BaseException) -> bool:
         return "429" in msg or "502" in msg or "503" in msg or "timeout" in msg
     return False
 
+
 def _log_retry(retry_state) -> None:
     logger.warning(
         "Falla en Nexus (Intento %d/5). Reintentando en %.1fs... Motivo: %s",
         retry_state.attempt_number,
         retry_state.next_action.sleep,
-        repr(retry_state.outcome.exception())
+        repr(retry_state.outcome.exception()),
     )
+
 
 class NexusDownloader:
     def __init__(
@@ -132,6 +147,7 @@ class NexusDownloader:
         download_retry_wait=None,
     ) -> None:
         import random
+
         self._api_key = api_key
         self._gateway = gateway
         self._staging_dir = staging_dir
@@ -182,50 +198,66 @@ class NexusDownloader:
 
                     headers = {"apikey": self._api_key, "Accept": "application/json"}
                     meta_timeout = aiohttp.ClientTimeout(total=30)
-                    
+
                     if file_id is None:
                         files_url = f"{_NEXUS_API_BASE}/games/{self._game_domain}/mods/{nexus_id}/files.json"
                         await self._gateway.authorize("GET", files_url)
-                        async with session.get(files_url, headers=headers, timeout=meta_timeout) as resp:
+                        async with session.get(
+                            files_url, headers=headers, timeout=meta_timeout
+                        ) as resp:
                             if resp.status in (401, 403):
                                 raise DownloadError("Invalid or missing Nexus API key")
                             if resp.status == 404:
                                 raise DownloadError(f"Mod {nexus_id} not found")
-                            resp.raise_for_status() # Dispara ClientResponseError en 429 para activar el reintento
+                            resp.raise_for_status()  # Dispara ClientResponseError en 429 para activar el reintento
                             files_data = await resp.json()
-                        
+
                         files_list = files_data.get("files", [])
                         if not files_list:
                             raise DownloadError(f"No files found for mod {nexus_id}")
-                        
+
                         primary_files = [f for f in files_list if f.get("is_primary")]
-                        target_file = primary_files[0] if primary_files else files_list[-1]
+                        target_file = (
+                            primary_files[0] if primary_files else files_list[-1]
+                        )
                         file_id = target_file["file_id"]
                         if isinstance(target_file.get("file_id"), list):
                             file_id = target_file["file_id"][1]
-                    
+
                 meta_url = (
                     f"{_NEXUS_API_BASE}/games/{self._game_domain}"
                     f"/mods/{nexus_id}/files/{file_id}.json"
                 )
                 await self._gateway.authorize("GET", meta_url)
 
-                async with session.get(meta_url, headers=headers, timeout=meta_timeout) as resp:
+                async with session.get(
+                    meta_url, headers=headers, timeout=meta_timeout
+                ) as resp:
                     if resp.status == 401:
                         raise DownloadError("Invalid or missing Nexus API key")
                     if resp.status == 403:
-                        raise DownloadError("Nexus API key does not have premium access")
+                        raise DownloadError(
+                            "Nexus API key does not have premium access"
+                        )
                     if resp.status == 404:
-                        raise DownloadError(f"File {file_id} not found for mod {nexus_id}")
+                        raise DownloadError(
+                            f"File {file_id} not found for mod {nexus_id}"
+                        )
                     resp.raise_for_status()
                     data = await resp.json()
 
-                size_bytes: int = int(data.get("size_in_bytes") or data.get("size", 0) * 1024)
+                size_bytes: int = int(
+                    data.get("size_in_bytes") or data.get("size", 0) * 1024
+                )
                 md5: str = str(data.get("md5") or "")
-                file_name: str = str(data.get("file_name", f"mod_{nexus_id}_file_{file_id}"))
+                file_name: str = str(
+                    data.get("file_name", f"mod_{nexus_id}_file_{file_id}")
+                )
 
                 try:
-                    download_url = await self._get_download_url(nexus_id, file_id, session)
+                    download_url = await self._get_download_url(
+                        nexus_id, file_id, session
+                    )
                 except PremiumRequiredError:
                     download_url = "FREE_FALLBACK"
 
@@ -265,7 +297,7 @@ class NexusDownloader:
                 async with self._semaphore:
                     # Añadir jitter para evitar Thundering Herd
                     await asyncio.sleep(self._random.uniform(0.1, 0.5))
-                    
+
                     self._staging_dir.mkdir(parents=True, exist_ok=True)
                     dest = self._staging_dir / file_info.file_name
 
@@ -282,7 +314,9 @@ class NexusDownloader:
                 sha256_hash = hashlib.sha256()
 
                 try:
-                    async with session.get(file_info.download_url, headers=headers, timeout=timeout) as resp:
+                    async with session.get(
+                        file_info.download_url, headers=headers, timeout=timeout
+                    ) as resp:
                         resp.raise_for_status()
 
                         if progress.total_bytes == 0:
@@ -291,7 +325,9 @@ class NexusDownloader:
                                 progress.total_bytes = int(content_length)
 
                         async with aiofiles.open(dest, "wb") as fh:
-                            async for chunk in resp.content.iter_chunked(self._chunk_size):
+                            async for chunk in resp.content.iter_chunked(
+                                self._chunk_size
+                            ):
                                 await fh.write(chunk)
                                 # Actualizar ambos hashes por chunk
                                 md5_hash.update(chunk)
@@ -304,10 +340,14 @@ class NexusDownloader:
 
                 except aiohttp.ClientError as exc:
                     await _cleanup(dest)
-                    raise DownloadError(f"Download failed for {file_info.file_name!r}: {exc}") from exc
+                    raise DownloadError(
+                        f"Download failed for {file_info.file_name!r}: {exc}"
+                    ) from exc
                 except (OSError, asyncio.TimeoutError) as exc:
                     await _cleanup(dest)
-                    raise DownloadError(f"I/O or timeout error for {file_info.file_name!r}: {exc}") from exc
+                    raise DownloadError(
+                        f"I/O or timeout error for {file_info.file_name!r}: {exc}"
+                    ) from exc
 
                 # POST-DOWNLOAD: Validación de Hash estricta (MD5 contra Nexus API).
                 # Si esto falla, lanza HashValidationError, lo atrapa Tenacity, limpia el archivo corrupto y reintenta.
@@ -319,20 +359,27 @@ class NexusDownloader:
                             f"MD5 mismatch for {file_info.file_name!r}: "
                             f"expected={file_info.md5!r} got={actual_md5!r}"
                         )
-                    logger.info("MD5 validado OK para %s (%s)", file_info.file_name, actual_md5)
+                    logger.info(
+                        "MD5 validado OK para %s (%s)", file_info.file_name, actual_md5
+                    )
                 else:
-                    logger.warning("Sin hash MD5 provisto por Nexus para %s. Omitiendo validación MD5.", file_info.file_name)
+                    logger.warning(
+                        "Sin hash MD5 provisto por Nexus para %s. Omitiendo validación MD5.",
+                        file_info.file_name,
+                    )
 
                 # Calcular y registrar SHA256 para integridad local
                 actual_sha256 = sha256_hash.hexdigest()
-                logger.info("SHA256 calculado para %s: %s", file_info.file_name, actual_sha256)
-                
+                logger.info(
+                    "SHA256 calculado para %s: %s", file_info.file_name, actual_sha256
+                )
+
                 # Validar SHA256 si fue proporcionado
                 if file_info.sha256:
                     if not validate_sha256_format(file_info.sha256):
                         logger.warning(
                             "Formato SHA256 inválido proporcionado para %s (se esperaban 64 chars hex)",
-                            file_info.file_name
+                            file_info.file_name,
                         )
                     elif actual_sha256.lower() != file_info.sha256.lower():
                         await _cleanup(dest)
@@ -361,12 +408,14 @@ class NexusDownloader:
             f"https://www.nexusmods.com/{self._game_domain}"
             f"/mods/{file_info.nexus_id}?tab=files&file_id={file_info.file_id}"
         )
-        
+
         logger.info("Premium required. Opening browser for manual download: %s", url)
         try:
             webbrowser.open(url)
         except Exception as exc:
-            logger.warning("Could not open browser: %s. Please visit %s manually.", exc, url)
+            logger.warning(
+                "Could not open browser: %s. Please visit %s manually.", exc, url
+            )
 
         # Assuming the user drops it directly into MO2 downloads folder if they use MO2,
         # but here we'll watch the mo2 `downloads` folder as well.
@@ -374,11 +423,13 @@ class NexusDownloader:
         mo2_downloads_dir = self._staging_dir.parent / "downloads"
         mo2_downloads_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info("Waiting for %r to appear in %s ...", file_info.file_name, mo2_downloads_dir)
-        
+        logger.info(
+            "Waiting for %r to appear in %s ...", file_info.file_name, mo2_downloads_dir
+        )
+
         # Poll the downloads folder
         target_in_downloads = mo2_downloads_dir / file_info.file_name
-        
+
         timeout_seconds = 3600  # Wait up to 1 hour
         poll_interval = 2.0
         elapsed = 0.0
@@ -396,7 +447,10 @@ class NexusDownloader:
                             # If we can open it in append mode, the browser has released the lock.
                             with open(dest, "a"):
                                 pass
-                            logger.info("Manual download detected directly in staging dir: %s", dest)
+                            logger.info(
+                                "Manual download detected directly in staging dir: %s",
+                                dest,
+                            )
                             return dest
                         except (PermissionError, OSError):
                             pass  # Locked/Downloading
@@ -406,22 +460,28 @@ class NexusDownloader:
                 target_size = target_in_downloads.stat().st_size
                 if target_size > 0:
                     # Heuristic 1: If size known, it must match.
-                    is_size_met = (file_info.size_bytes == 0) or (target_size == file_info.size_bytes)
-                    
+                    is_size_met = (file_info.size_bytes == 0) or (
+                        target_size == file_info.size_bytes
+                    )
+
                     if is_size_met:
                         try:
                             # Heuristic 2: Verify the OS-level file lock is released.
                             with open(target_in_downloads, "a"):
                                 pass
-                            
+
                             # Extra validation for unknown size: wait 1s to ensure size stability
                             if file_info.size_bytes == 0:
                                 await asyncio.sleep(1)
                                 target_size_new = target_in_downloads.stat().st_size
                                 if target_size_new != target_size:
-                                    raise PermissionError("File size changed, still downloading")
+                                    raise PermissionError(
+                                        "File size changed, still downloading"
+                                    )
 
-                            await asyncio.to_thread(shutil.copy2, target_in_downloads, dest)
+                            await asyncio.to_thread(
+                                shutil.copy2, target_in_downloads, dest
+                            )
                             logger.info("Manual download detected and copied: %s", dest)
                             return dest
                         except (PermissionError, OSError):
@@ -430,7 +490,9 @@ class NexusDownloader:
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
 
-        raise DownloadError(f"Manual download for {file_info.file_name} timed out after 1 hour.")
+        raise DownloadError(
+            f"Manual download for {file_info.file_name} timed out after 1 hour."
+        )
 
     async def _get_download_url(
         self,
@@ -473,13 +535,12 @@ class NexusDownloader:
             links = await resp.json()
 
         if not links:
-            raise DownloadError(
-                f"No CDN download links available for file {file_id}"
-            )
+            raise DownloadError(f"No CDN download links available for file {file_id}")
 
         # Prefer the first link (Nexus orders by preference).
         uri: str = links[0]["URI"]
         return uri
+
 
 async def _cleanup(path: pathlib.Path) -> None:
     """Silently remove *path* if it exists (partial-download cleanup)."""

@@ -1,4 +1,5 @@
 """Shared GUI utilities and constants."""
+
 from __future__ import annotations
 from pathlib import Path
 from nicegui import ui

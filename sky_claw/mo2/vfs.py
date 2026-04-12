@@ -111,12 +111,12 @@ class MO2Controller:
                 pass
 
             if mod_name in existing_names:
-                logger.info("Mod %r already in modlist for profile %r", mod_name, profile)
+                logger.info(
+                    "Mod %r already in modlist for profile %r", mod_name, profile
+                )
                 return
 
-            async with aiofiles.open(
-                validated, mode="a", encoding="utf-8"
-            ) as fh:
+            async with aiofiles.open(validated, mode="a", encoding="utf-8") as fh:
                 await fh.write(f"+{mod_name}\n")
 
             logger.info("Added +%s to modlist for profile %r", mod_name, profile)
@@ -139,10 +139,16 @@ class MO2Controller:
             lines: list[str] = []
             found = False
             try:
-                async with aiofiles.open(validated, mode="r", encoding="utf-8-sig") as fh:
+                async with aiofiles.open(
+                    validated, mode="r", encoding="utf-8-sig"
+                ) as fh:
                     async for raw_line in fh:
                         line = raw_line.strip()
-                        if line and line[1:].strip() == mod_name and line[0] in ("+", "-"):
+                        if (
+                            line
+                            and line[1:].strip() == mod_name
+                            and line[0] in ("+", "-")
+                        ):
                             found = True
                             continue  # Skip this line
                         lines.append(raw_line)
@@ -178,10 +184,16 @@ class MO2Controller:
             target_prefix = "+" if enable else "-"
 
             try:
-                async with aiofiles.open(validated, mode="r", encoding="utf-8-sig") as fh:
+                async with aiofiles.open(
+                    validated, mode="r", encoding="utf-8-sig"
+                ) as fh:
                     async for raw_line in fh:
                         line = raw_line.strip()
-                        if line and line[1:].strip() == mod_name and line[0] in ("+", "-"):
+                        if (
+                            line
+                            and line[1:].strip() == mod_name
+                            and line[0] in ("+", "-")
+                        ):
                             if line[0] != target_prefix:
                                 lines.append(f"{target_prefix}{mod_name}\n")
                                 changed = True
@@ -209,6 +221,7 @@ class MO2Controller:
 
         if validated.exists() and validated.is_dir():
             import shutil
+
             await asyncio.to_thread(shutil.rmtree, validated, ignore_errors=True)
             logger.info("Deleted mod directory: %s", validated)
 
@@ -228,14 +241,14 @@ class MO2Controller:
             raise FileNotFoundError(f"MO2 executable not found: {validated_exe}")
 
         cmd = [str(validated_exe), "-p", profile, "moshortcut://SKSE"]
-        
+
         logger.info("Launching game with command: %s", " ".join(cmd))
-        
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
-            cwd=str(self._root)
+            cwd=str(self._root),
         )
         return {"pid": proc.pid, "status": "launched", "profile": profile}
 
@@ -246,14 +259,18 @@ class MO2Controller:
             Dict showing which processes were killed.
         """
         killed = []
-        for proc in psutil.process_iter(['pid', 'name']):
+        for proc in psutil.process_iter(["pid", "name"]):
             try:
-                name = proc.info['name']
-                if name and name.lower() in ("skyrimse.exe", "skse64_loader.exe", "modorganizer.exe"):
+                name = proc.info["name"]
+                if name and name.lower() in (
+                    "skyrimse.exe",
+                    "skse64_loader.exe",
+                    "modorganizer.exe",
+                ):
                     proc.kill()
                     killed.append(name)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
-        
+
         logger.info("Closed game processes: %s", killed)
         return {"status": "closed", "killed_processes": killed}

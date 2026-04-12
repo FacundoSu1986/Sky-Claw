@@ -58,39 +58,39 @@ async def setup_tools(
             tool_name_lower = tool_name.lower()
             try:
                 if tool_name_lower == "loot":
-                    result = await tools_installer.ensure_loot(
-                        install_dir, session
-                    )
+                    result = await tools_installer.ensure_loot(install_dir, session)
                     if not result.already_existed and loot_exe_ref is not None:
                         loot_exe_ref[0] = result.exe_path
                     if local_cfg:
                         local_cfg.loot_exe = str(result.exe_path)
                     results["loot"] = {
-                        "status": "already_installed" if result.already_existed else "installed",
+                        "status": "already_installed"
+                        if result.already_existed
+                        else "installed",
                         "exe_path": str(result.exe_path),
                         "version": result.version,
                     }
                 elif tool_name_lower == "xedit":
-                    result = await tools_installer.ensure_xedit(
-                        install_dir, session
-                    )
+                    result = await tools_installer.ensure_xedit(install_dir, session)
                     if not result.already_existed and local_cfg:
                         local_cfg.xedit_exe = str(result.exe_path)
                     results["xedit"] = {
-                        "status": "already_installed" if result.already_existed else "installed",
+                        "status": "already_installed"
+                        if result.already_existed
+                        else "installed",
                         "exe_path": str(result.exe_path),
                         "version": result.version,
                     }
                 elif tool_name_lower == "pandora":
-                    result = await tools_installer.ensure_pandora(
-                        install_dir, session
-                    )
+                    result = await tools_installer.ensure_pandora(install_dir, session)
                     if animation_hub:
                         animation_hub.pandora_exe = result.exe_path
                     if local_cfg:
                         local_cfg.pandora_exe = str(result.exe_path)
                     results["pandora"] = {
-                        "status": "already_installed" if result.already_existed else "installed",
+                        "status": "already_installed"
+                        if result.already_existed
+                        else "installed",
                         "exe_path": str(result.exe_path),
                         "version": result.version,
                     }
@@ -103,7 +103,9 @@ async def setup_tools(
                     if local_cfg:
                         local_cfg.bodyslide_exe = str(result.exe_path)
                     results["bodyslide"] = {
-                        "status": "already_installed" if result.already_existed else "installed",
+                        "status": "already_installed"
+                        if result.already_existed
+                        else "installed",
                         "exe_path": str(result.exe_path),
                         "version": result.version,
                     }

@@ -29,27 +29,27 @@ _MAX_JSON_SIZE = 1_000_000  # 1 MB
 # Anthropic (\n\nHuman:, \n\nAssistant:), generic XML-style tags,
 # and tool/function injection markers.
 _INJECTION_PATTERNS = re.compile(
-    r"<\|"            # OpenAI-style opening <|
-    r"|\|>"           # OpenAI-style closing |>
-    r"|<<SYS>>"       # Llama system open
-    r"|<</SYS>>"      # Llama system close
-    r"|\[INST\]"      # Llama/Mistral instruction open
-    r"|\[/INST\]"     # Llama/Mistral instruction close
-    r"|\[SYSTEM\]"    # Generic system marker
-    r"|\{system\}"    # Template-style system marker
-    r"|\n\nHuman:"    # Anthropic Human turn
-    r"|\n\nAssistant:" # Anthropic Assistant turn
-    r"|<human>"       # Anthropic XML-style
+    r"<\|"  # OpenAI-style opening <|
+    r"|\|>"  # OpenAI-style closing |>
+    r"|<<SYS>>"  # Llama system open
+    r"|<</SYS>>"  # Llama system close
+    r"|\[INST\]"  # Llama/Mistral instruction open
+    r"|\[/INST\]"  # Llama/Mistral instruction close
+    r"|\[SYSTEM\]"  # Generic system marker
+    r"|\{system\}"  # Template-style system marker
+    r"|\n\nHuman:"  # Anthropic Human turn
+    r"|\n\nAssistant:"  # Anthropic Assistant turn
+    r"|<human>"  # Anthropic XML-style
     r"|</human>"
     r"|<assistant>"
     r"|</assistant>"
-    r"|<tool_use>"    # Tool injection markers
+    r"|<tool_use>"  # Tool injection markers
     r"|</tool_use>"
     r"|<function_call>"
     r"|</function_call>"
     r"|<tool_result>"
     r"|</tool_result>"
-    r"|<\|endoftext\|>"   # Special tokens
+    r"|<\|endoftext\|>"  # Special tokens
     r"|<\|im_start\|>"
     r"|<\|im_end\|>"
     r"|<\|pad\|>"

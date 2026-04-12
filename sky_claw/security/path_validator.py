@@ -29,9 +29,7 @@ class PathValidator:
         resolved to absolute form at construction time.
     """
 
-    def __init__(
-        self, roots: Iterable[pathlib.Path]
-    ) -> None:
+    def __init__(self, roots: Iterable[pathlib.Path]) -> None:
         resolved = [r.resolve() for r in roots]
         if not resolved:
             raise ValueError("At least one sandbox root is required")
@@ -41,7 +39,9 @@ class PathValidator:
     def roots(self) -> tuple[pathlib.Path, ...]:
         return self._roots
 
-    def validate(self, path: str | pathlib.Path, *, strict_symlink: bool = True) -> pathlib.Path:
+    def validate(
+        self, path: str | pathlib.Path, *, strict_symlink: bool = True
+    ) -> pathlib.Path:
         """Return the resolved *path* if it is inside the sandbox.
 
         Raises :class:`PathViolation` otherwise.
@@ -50,9 +50,7 @@ class PathValidator:
 
         # Reject obvious traversal attempts before resolving.
         if ".." in target.parts:
-            raise PathViolation(
-                f"Path traversal component ('..') detected in: {path}"
-            )
+            raise PathViolation(f"Path traversal component ('..') detected in: {path}")
 
         # Require symlinks to explicitly resolve inside the sandbox
         if strict_symlink and target.is_symlink():
@@ -60,7 +58,7 @@ class PathValidator:
                 symlink_target = target.resolve(strict=True)
             except FileNotFoundError as e:
                 raise PathViolation(f"Symlink target not found: {path} -> {e}") from e
-            
+
             # Ensure the symlink target itself is within the sandbox
             is_symlink_valid = False
             for root in self._roots:
@@ -70,9 +68,11 @@ class PathValidator:
                     break
                 except ValueError:
                     continue
-            
+
             if not is_symlink_valid:
-                raise PathViolation(f"Symlink strictly escapes sandbox: {path} -> {symlink_target}")
+                raise PathViolation(
+                    f"Symlink strictly escapes sandbox: {path} -> {symlink_target}"
+                )
 
         resolved = target.resolve()
 

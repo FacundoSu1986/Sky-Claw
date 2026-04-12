@@ -52,7 +52,9 @@ class TestExeConfigPath:
 
 
 class TestApiKeyFromConfig:
-    def test_anthropic_key_detection(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_anthropic_key_detection(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Key starting with sk-ant sets ANTHROPIC_API_KEY."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
@@ -74,7 +76,9 @@ class TestApiKeyFromConfig:
 
         assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-my-anthropic-key"
 
-    def test_deepseek_key_detection(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_deepseek_key_detection(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Key starting with sk- (non-ant) sets DEEPSEEK_API_KEY."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
@@ -96,7 +100,9 @@ class TestApiKeyFromConfig:
 
         assert os.environ["DEEPSEEK_API_KEY"] == "sk-deepseek-my-key"
 
-    def test_generic_key_defaults_to_deepseek(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_generic_key_defaults_to_deepseek(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Generic key (not sk-) maps to DEEPSEEK_API_KEY."""
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
@@ -196,7 +202,11 @@ class TestInstallDirSandbox:
         install_dir = pathlib.Path("D:/Modding")
         mo2_root = pathlib.Path("C:/MO2Portable")
 
-        sandbox_roots = [mo2_root, pathlib.Path(tempfile.gettempdir()) / "sky_claw", install_dir]
+        sandbox_roots = [
+            mo2_root,
+            pathlib.Path(tempfile.gettempdir()) / "sky_claw",
+            install_dir,
+        ]
         validator = PathValidator(roots=sandbox_roots)
 
         # Simulates ToolsInstaller extracting LOOT into install_dir.
@@ -311,16 +321,17 @@ class TestSetupWizardConfigPath:
         session = MagicMock()
         config_path = tmp_path / "sky_claw_config.json"
 
-        web_app = WebApp(
-            router=router, session=session, config_path=config_path
-        )
+        web_app = WebApp(router=router, session=session, config_path=config_path)
         app = web_app.create_app()
         client = await aiohttp_client(app)
 
-        resp = await client.post("/api/setup", json={
-            "mo2_root": "D:/MO2",
-            "api_key": "sk-ant-test-frozen",
-        })
+        resp = await client.post(
+            "/api/setup",
+            json={
+                "mo2_root": "D:/MO2",
+                "api_key": "sk-ant-test-frozen",
+            },
+        )
         assert resp.status == 200
 
         # Verify it saved to the exact path we specified.
@@ -343,9 +354,7 @@ class TestSetupWizardConfigPath:
         cfg = LocalConfig(mo2_root="E:/MO2", first_run=False)
         save(cfg, config_path)
 
-        web_app = WebApp(
-            router=router, session=session, config_path=config_path
-        )
+        web_app = WebApp(router=router, session=session, config_path=config_path)
         app = web_app.create_app()
         client = await aiohttp_client(app)
 

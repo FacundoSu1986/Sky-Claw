@@ -9,8 +9,8 @@ from sky_claw.app_context import AppContext
 async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
     assert ctx.router and ctx.session and ctx.gateway
     if ctx.sender is None:
-        print("Error: TELEGRAM_BOT_TOKEN required.", file=__import__('sys').stderr)
-        __import__('sys').exit(1)
+        print("Error: TELEGRAM_BOT_TOKEN required.", file=__import__("sys").stderr)
+        __import__("sys").exit(1)
     webhook_handler = TelegramWebhook(
         router=ctx.router, sender=ctx.sender, session=ctx.session, hitl=ctx.hitl
     )

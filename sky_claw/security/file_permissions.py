@@ -46,12 +46,26 @@ def _restrict_windows(path: Path) -> None:
             return
         # Reset inheritance, grant only current user full control
         subprocess.run(
-            ["icacls", str(path), "/inheritance:r",
-             "/grant:r", f"{username}:(F)",
-             "/remove", "Everyone", "/remove", "Users"],
-            capture_output=True, check=True, timeout=10,
+            [
+                "icacls",
+                str(path),
+                "/inheritance:r",
+                "/grant:r",
+                f"{username}:(F)",
+                "/remove",
+                "Everyone",
+                "/remove",
+                "Users",
+            ],
+            capture_output=True,
+            check=True,
+            timeout=10,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+    except (
+        subprocess.CalledProcessError,
+        FileNotFoundError,
+        subprocess.TimeoutExpired,
+    ) as exc:
         logger.warning("icacls ACL enforcement failed for %s: %s", path, exc)
 
 

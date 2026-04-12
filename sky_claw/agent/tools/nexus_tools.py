@@ -137,7 +137,7 @@ async def download_mod(
 
         sync_engine.enqueue_download(
             _do_download(),
-            context=f"nexus_id={params.nexus_id} file_id={params.file_id}"
+            context=f"nexus_id={params.nexus_id} file_id={params.file_id}",
         )
         logger.info(
             "Download enqueued: mod=%d file=%d name=%s",

@@ -41,6 +41,7 @@ from sky_claw.scraper.masterlist import (
 from sky_claw.mo2.vfs import MO2Controller
 from sky_claw.scraper.nexus_downloader import NexusDownloader
 from sky_claw.security.hitl import HITLGuard, Decision
+
 # FASE 1.5: Imports de componentes de rollback
 from sky_claw.db.journal import OperationType
 from sky_claw.db.rollback_manager import RollbackManager
@@ -56,6 +57,7 @@ BACKUP_STAGING_DIR = pathlib.Path(".skyclaw_backups/")
 @dataclass(frozen=True, slots=True)
 class SyncConfig:
     """Tunables for the sync engine."""
+
     worker_count: int = 4
     batch_size: int = 20
     max_retries: int = 5
@@ -74,6 +76,7 @@ class SyncConfig:
 @dataclass
 class SyncResult:
     """Aggregated outcome of a sync run."""
+
     processed: int = 0
     failed: int = 0
     skipped: int = 0
@@ -87,6 +90,7 @@ class SyncResult:
 @dataclass
 class UpdatePayload:
     """Payload generated after a full update cycle for Telegram reporting."""
+
     total_checked: int = 0
     updated_mods: list[dict[str, Any]] = field(default_factory=list)
     failed_mods: list[dict[str, Any]] = field(default_factory=list)
@@ -100,26 +104,29 @@ class UpdatePayload:
 @dataclass
 class SyncMetrics:
     """Métricas asíncronas del SyncEngine."""
+
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _error_count: int = field(default=0, init=False)
-    _error_types: Dict[str, int] = field(default_factory=lambda: defaultdict(int), init=False)
-    
+    _error_types: Dict[str, int] = field(
+        default_factory=lambda: defaultdict(int), init=False
+    )
+
     async def get_error_count(self) -> int:
         """Retorna el contador de errores."""
         async with self._lock:
             return self._error_count
-    
+
     async def get_error_types(self) -> Dict[str, int]:
         """Retorna una copia del diccionario de tipos de errores."""
         async with self._lock:
             return dict(self._error_types)
-    
+
     async def record_error(self, error: Exception) -> None:
         """Registra un error de forma asíncrona."""
         async with self._lock:
             self._error_count += 1
             self._error_types[type(error).__name__] += 1
-    
+
     async def increment_error_type(self, error_type_name: str) -> None:
         """Incrementa un tipo de error específico de forma asíncrona."""
         async with self._lock:
@@ -129,7 +136,7 @@ class SyncMetrics:
 
 class SyncEngine:
     """Orchestrator for mod synchronisation and automatic updates.
-    
+
     FASE 1.5: Integración con RollbackManager para operaciones at archivos at resiliencia.
 
     Parameters
@@ -187,21 +194,23 @@ class SyncEngine:
         """Gracefully shuts down the engine, cancelling pending tasks."""
         logger.info("SyncEngine shutting down...")
         self._shutdown_event.set()
-        
+
         if self._download_tasks:
-            logger.info("Cancelling %d background download tasks...", len(self._download_tasks))
+            logger.info(
+                "Cancelling %d background download tasks...", len(self._download_tasks)
+            )
             for task in self._download_tasks:
                 task.cancel()
-            
+
             await asyncio.gather(*self._download_tasks, return_exceptions=True)
             self._download_tasks.clear()
-        
+
         logger.info("SyncEngine shutdown complete.")
-    
+
     # ------------------------------------------------------------------
     # FASE 1.5: Unit of Work Pattern para File Operations
     # ------------------------------------------------------------------
-    
+
     async def execute_file_operation(
         self,
         operation_type: OperationType,
@@ -211,116 +220,119 @@ class SyncEngine:
     ) -> Any:
         """
         Ejecuta una operación de archivo con patrón Unit of Work.
-        
+
         Flujo:
         1. Capturar snapshot del archivo original (si existe)
         2. Registrar operación en journal con estado STARTED
         3. Ejecutar la operación
         4. Si éxito: marcar como COMPLETED
         5. Si fallo: marcar como FAILED y ejecutar rollback automático
-        
+
         Args:
             operation_type: Tipo de operación
             target_path: Path al archivo afectado
             operation: Corutina que ejecuta la operación
             description: Descripción de la operación
-            
+
         Returns:
             Resultado de la operación
         """
         if self._rollback_manager is None:
             # Sin rollback manager, ejecutar sin transaccional
             return await operation
-        
+
         transaction_id: int | None = None
         entry_id: int | None = None
-        
+
         try:
             # 1. Iniciar transacción
             transaction_id = await self._rollback_manager._journal.begin_transaction(
                 description=description or f"file_operation: {operation_type.value}",
-                agent_id=self._agent_id
+                agent_id=self._agent_id,
             )
-            
+
             # 2. Capturar snapshot si el archivo existe
             snapshot_info = None
             if target_path.exists() and target_path.is_file():
                 snapshot_info = await self._rollback_manager._snapshots.create_snapshot(
                     target_path,
                 )
-            
+
             # 3. Registrar inicio de operación
             entry_id = await self._rollback_manager._journal.begin_operation(
                 agent_id=self._agent_id,
                 operation_type=operation_type,
                 target_path=str(target_path),
                 transaction_id=transaction_id,
-                snapshot_path=str(snapshot_info.snapshot_path) if snapshot_info else None
+                snapshot_path=str(snapshot_info.snapshot_path)
+                if snapshot_info
+                else None,
             )
-            
+
             # 4. Ejecutar la operación
             try:
                 result = await operation
-                
+
                 # 5. Marcar como completada
                 await self._rollback_manager._journal.complete_operation(entry_id)
                 await self._rollback_manager._journal.commit_transaction(transaction_id)
-                
+
                 return result
-                
+
             except Exception as exc:
                 # 6. Error: marcar como fallida y ejecutar rollback
                 logger.error(
                     "Operación falló, ejecutando rollback automático: %s",
                     str(exc),
-                    exc_info=True
+                    exc_info=True,
                 )
                 await self._rollback_manager._journal.fail_operation(
-                    entry_id, 
-                    error=str(exc)
+                    entry_id, error=str(exc)
                 )
-                
+
                 # Ejecutar rollback
-                rollback_result = await self._rollback_manager.undo_last_operation(self._agent_id)
+                rollback_result = await self._rollback_manager.undo_last_operation(
+                    self._agent_id
+                )
                 rollback_result.success = False
-                
+
                 raise
-        
+
         finally:
             # FASE 1.5: Pruning pasivo post-ejecución
             await self._passive_pruning()
-    
+
     async def _passive_pruning(self) -> None:
         """FASE 1.5: Ejecuta pruning pasivo del directorio de backups.
-        
+
         Verifica el tamaño del directorio y elimina registros antiguos si excede el límite.
         """
         if self._rollback_manager is None:
             return
-        
+
         try:
             stats = await self._rollback_manager._snapshots.get_stats()
             max_size = self._get_max_backup_size_bytes()
-            
+
             if stats.total_size_bytes > max_size:
                 logger.warning(
                     "Límite de backups excedido: %d MB > %d MB. Iniciando pruning...",
                     stats.total_size_bytes // (1024 * 1024),
-                    max_size // (1024 * 1024)
+                    max_size // (1024 * 1024),
                 )
                 # Limpiar snapshots antiguos
                 result = await self._rollback_manager._snapshots.cleanup_old_snapshots(
                     days_old=self._cfg.max_pruning_age_days
                 )
-                
+
                 logger.info(
                     "Pruning completado: %d snapshots eliminados, %d MB liberados",
                     result.deleted_count,
-                    result.freed_bytes // (1024 * 1024)
+                    result.freed_bytes // (1024 * 1024),
                 )
         except Exception as e:
             logger.error("Error durante passive pruning: %s", e)
-    
+
     def _get_max_backup_size_bytes(self) -> int:
         """Obtiene el tamaño máximo de backups desde configuración."""
         if self._cfg is None:
@@ -333,7 +345,7 @@ class SyncEngine:
 
     async def check_for_updates(self, session: aiohttp.ClientSession) -> UpdatePayload:
         """Automated update cycle for all tracked mods.
-        
+
         Uses controlled concurrency via Semaphore to query Nexus API.
         Downloads updates using the robust NexusDownloader.
         Returns a structured payload safe for Telegram notifications.
@@ -346,25 +358,33 @@ class SyncEngine:
             return payload
 
         semaphore = asyncio.Semaphore(self._cfg.api_semaphore_limit)
-        
+
         # Generar las tareas asincrónicas
         tasks = [
-            self._check_and_update_mod(mod, session, semaphore)
-            for mod in tracked_mods
+            self._check_and_update_mod(mod, session, semaphore) for mod in tracked_mods
         ]
 
-        logger.info("Iniciando verificación de actualizaciones para %d mods...", payload.total_checked)
-        
+        logger.info(
+            "Iniciando verificación de actualizaciones para %d mods...",
+            payload.total_checked,
+        )
+
         # Ejecución paralela con contención de fallas
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for mod, result in zip(tracked_mods, results):
             if isinstance(result, Exception):
-                logger.error("Error aislando tarea de actualización para %r: %s", mod["name"], result)
-                payload.failed_mods.append({
-                    "name": mod["name"],
-                    "nexus_id": mod["nexus_id"],
-                    "error": str(result)
-                })
+                logger.error(
+                    "Error aislando tarea de actualización para %r: %s",
+                    mod["name"],
+                    result,
+                )
+                payload.failed_mods.append(
+                    {
+                        "name": mod["name"],
+                        "nexus_id": mod["nexus_id"],
+                        "error": str(result),
+                    }
+                )
             else:
                 status = result.get("status")
                 if status == "updated":
@@ -373,18 +393,20 @@ class SyncEngine:
                     payload.up_to_date_mods.append(result["name"])
                 elif status == "error":
                     payload.failed_mods.append(result)
-        
+
         logger.info(
             "Ciclo de actualización completado: %d actualizados, %d al día, %d fallidos.",
-            len(payload.updated_mods), len(payload.up_to_date_mods), len(payload.failed_mods)
+            len(payload.updated_mods),
+            len(payload.up_to_date_mods),
+            len(payload.failed_mods),
         )
         return payload
 
     async def _check_and_update_mod(
-        self, 
-        mod: dict[str, Any], 
-        session: aiohttp.ClientSession, 
-        semaphore: asyncio.Semaphore
+        self,
+        mod: dict[str, Any],
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
     ) -> dict[str, Any]:
         """Worker aislado para consultar y actualizar un mod individual."""
         nexus_id = mod["nexus_id"]
@@ -394,17 +416,32 @@ class SyncEngine:
         # 1. Fetch metadata con Semáforo y Backoff
         info = await self._safe_fetch_info(nexus_id, session, semaphore)
         if not info:
-            return {"status": "error", "name": mod_name, "nexus_id": nexus_id, "error": "No metadata returned"}
-            
+            return {
+                "status": "error",
+                "name": mod_name,
+                "nexus_id": nexus_id,
+                "error": "No metadata returned",
+            }
+
         nexus_version = str(info.get("version", ""))
         # 2. Comparación de versiones
         if not nexus_version or nexus_version == local_version:
             return {"status": "up_to_date", "name": mod_name}
 
         if self._downloader is None:
-            return {"status": "error", "name": mod_name, "nexus_id": nexus_id, "error": "Downloader not configured"}
+            return {
+                "status": "error",
+                "name": mod_name,
+                "nexus_id": nexus_id,
+                "error": "Downloader not configured",
+            }
 
-        logger.info("Actualización disponible para %s: %s -> %s", mod_name, local_version, nexus_version)
+        logger.info(
+            "Actualización disponible para %s: %s -> %s",
+            mod_name,
+            local_version,
+            nexus_version,
+        )
 
         # 3. Descarga Robusta (Aplica backoff interno y validación MD5 en NexusDownloader)
         file_info = await self._downloader.get_file_info(nexus_id, None, session)
@@ -423,7 +460,7 @@ class SyncEngine:
                     "status": "error",
                     "name": mod_name,
                     "nexus_id": nexus_id,
-                    "error": "Descarga abortada por HITL"
+                    "error": "Descarga abortada por HITL",
                 }
 
         download_path = await self._downloader.download(file_info, session)
@@ -435,12 +472,19 @@ class SyncEngine:
             version=nexus_version,
             author=str(info.get("author", "")),
             category=str(info.get("category_id", "")),
-            download_url=file_info.download_url
+            download_url=file_info.download_url,
         )
-        
-        await self._registry.log_tasks_batch([(
-            None, "update_mod", "success", f"{mod_name}: {local_version} -> {nexus_version}"
-        )])
+
+        await self._registry.log_tasks_batch(
+            [
+                (
+                    None,
+                    "update_mod",
+                    "success",
+                    f"{mod_name}: {local_version} -> {nexus_version}",
+                )
+            ]
+        )
 
         return {
             "status": "updated",
@@ -448,40 +492,41 @@ class SyncEngine:
             "nexus_id": nexus_id,
             "old_version": local_version,
             "new_version": nexus_version,
-            "file_path": str(download_path)
+            "file_path": str(download_path),
         }
 
-    
     async def _check_and_update_mod_with_rollback(
         self,
-        mod: dict[str, Any], 
-        session: aiohttp.ClientSession, 
-        semaphore: asyncio.Semaphore
+        mod: dict[str, Any],
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
     ) -> dict[str, Any]:
         """FASE 1.5: Worker con soporte de rollback transaccional."""
         nexus_id = mod["nexus_id"]
         local_version = mod["version"]
         mod_name = mod["name"]
         transaction_id: int | None = None
-        
+
         # Usar Unit of Work pattern para operaciones de archivos
         try:
             async with self._rollback_manager:
                 # Iniciar transacción
-                transaction_id = await self._rollback_manager._journal.begin_transaction(
-                    description=f"update_{mod_name}",
-                    mod_id=mod.get("nexus_id"),
-                    agent_id=self._agent_id
+                transaction_id = (
+                    await self._rollback_manager._journal.begin_transaction(
+                        description=f"update_{mod_name}",
+                        mod_id=mod.get("nexus_id"),
+                        agent_id=self._agent_id,
+                    )
                 )
-                
+
                 # Ejecutar actualización con soporte de rollback
                 result = await self._check_and_update_mod_internal(
                     mod, session, semaphore, transaction_id
                 )
-                
+
                 # Marcar transacción como committed
                 await self._rollback_manager._journal.commit_transaction(transaction_id)
-                
+
                 new_version = result.get("new_version", "unknown")
                 return {
                     "status": "updated",
@@ -491,23 +536,25 @@ class SyncEngine:
                     "new_version": new_version,
                     "file_path": str(result.get("file_path")),
                     "rollback_performed": True,
-                    "rollback_transaction_id": transaction_id
+                    "rollback_transaction_id": transaction_id,
                 }
-                
+
         except Exception as exc:
             # Rollback en caso de error
             logger.error("Error during mod update, executing rollback: %s", exc)
             try:
                 await self._rollback_manager.undo_last_operation(self._agent_id)
             except Exception as rollback_exc:
-                logger.critical("Rollback also failed for mod %s: %s", mod_name, str(rollback_exc))
+                logger.critical(
+                    "Rollback also failed for mod %s: %s", mod_name, str(rollback_exc)
+                )
                 return {
                     "status": "error",
                     "name": mod_name,
                     "nexus_id": nexus_id,
                     "error": f"Update failed, rollback error: {str(rollback_exc)}",
                     "rollback_performed": True,
-                    "rollback_success": False
+                    "rollback_success": False,
                 }
             return {
                 "status": "error",
@@ -515,35 +562,50 @@ class SyncEngine:
                 "nexus_id": nexus_id,
                 "error": str(exc),
                 "rollback_performed": True,
-                "rollback_success": True
+                "rollback_success": True,
             }
-    
+
     async def _check_and_update_mod_internal(
         self,
-        mod: dict[str, Any], 
-        session: aiohttp.ClientSession, 
+        mod: dict[str, Any],
+        session: aiohttp.ClientSession,
         semaphore: asyncio.Semaphore,
-        transaction_id: int
+        transaction_id: int,
     ) -> dict[str, Any]:
         """Implementación interna con soporte de rollback."""
         nexus_id = mod["nexus_id"]
         local_version = mod["version"]
         mod_name = mod["name"]
-        
+
         # 1. Fetch metadata con Semáforo y Backoff
         info = await self._safe_fetch_info(nexus_id, session, semaphore)
         if not info:
-            return {"status": "error", "name": mod_name, "nexus_id": nexus_id, "error": "No metadata returned"}
-            
+            return {
+                "status": "error",
+                "name": mod_name,
+                "nexus_id": nexus_id,
+                "error": "No metadata returned",
+            }
+
         nexus_version = str(info.get("version", ""))
         # 2. Comparación de versiones
         if not nexus_version or nexus_version == local_version:
             return {"status": "up_to_date", "name": mod_name}
 
         if self._downloader is None:
-            return {"status": "error", "name": mod_name, "nexus_id": nexus_id, "error": "Downloader not configured"}
+            return {
+                "status": "error",
+                "name": mod_name,
+                "nexus_id": nexus_id,
+                "error": "Downloader not configured",
+            }
 
-        logger.info("Actualización disponible para %s: %s -> %s", mod_name, local_version, nexus_version)
+        logger.info(
+            "Actualización disponible para %s: %s -> %s",
+            mod_name,
+            local_version,
+            nexus_version,
+        )
         # 3. Descarga Robusta (Aplica backoff interno y validación MD5 en NexusDownloader)
         file_info = await self._downloader.get_file_info(nexus_id, None, session)
         if self._hitl:
@@ -560,7 +622,7 @@ class SyncEngine:
                     "status": "error",
                     "name": mod_name,
                     "nexus_id": nexus_id,
-                    "error": "Descarga abortada por HITL"
+                    "error": "Descarga abortada por HITL",
                 }
 
         download_path = await self._downloader.download(file_info, session)
@@ -572,12 +634,19 @@ class SyncEngine:
             version=nexus_version,
             author=str(info.get("author", "")),
             category=str(info.get("category_id", "")),
-            download_url=file_info.download_url
+            download_url=file_info.download_url,
         )
-        
-        await self._registry.log_tasks_batch([(
-            None, "update_mod", "success", f"{mod_name}: {local_version} -> {nexus_version}"
-        )])
+
+        await self._registry.log_tasks_batch(
+            [
+                (
+                    None,
+                    "update_mod",
+                    "success",
+                    f"{mod_name}: {local_version} -> {nexus_version}",
+                )
+            ]
+        )
 
         return {
             "status": "updated",
@@ -585,15 +654,19 @@ class SyncEngine:
             "nexus_id": nexus_id,
             "old_version": local_version,
             "new_version": nexus_version,
-            "file_path": str(download_path)
+            "file_path": str(download_path),
         }
 
-    
     # ------------------------------------------------------------------
     # Legacy Update Cycle (without rollback)
     # ------------------------------------------------------------------
 
-    async def _safe_fetch_info(self, nexus_id: int, session: aiohttp.ClientSession, semaphore: asyncio.Semaphore) -> dict[str, Any] | None:
+    async def _safe_fetch_info(
+        self,
+        nexus_id: int,
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
+    ) -> dict[str, Any] | None:
         """Envuelve la consulta a Nexus API con un semáforo de concurrencia y backoff."""
         result: dict[str, Any]
         async for attempt in AsyncRetrying(
@@ -611,14 +684,23 @@ class SyncEngine:
     # Sync Local Load Order (Legacy Logic)
     # ------------------------------------------------------------------
 
-    async def run(self, session: aiohttp.ClientSession, profile: str = "Default") -> SyncResult:
-        queue: asyncio.Queue[list[tuple[str, bool]] | None] = asyncio.Queue(maxsize=self._cfg.queue_maxsize)
+    async def run(
+        self, session: aiohttp.ClientSession, profile: str = "Default"
+    ) -> SyncResult:
+        queue: asyncio.Queue[list[tuple[str, bool]] | None] = asyncio.Queue(
+            maxsize=self._cfg.queue_maxsize
+        )
         semaphore = asyncio.Semaphore(self._cfg.api_semaphore_limit)
         result = SyncResult()
 
-        producer = asyncio.create_task(self._produce(queue, profile), name="sync-producer")
+        producer = asyncio.create_task(
+            self._produce(queue, profile), name="sync-producer"
+        )
         workers = [
-            asyncio.create_task(self._consume(queue, session, semaphore, result), name=f"sync-worker-{i}")
+            asyncio.create_task(
+                self._consume(queue, session, semaphore, result),
+                name=f"sync-worker-{i}",
+            )
             for i in range(self._cfg.worker_count)
         ]
 
@@ -630,10 +712,17 @@ class SyncEngine:
         # H-01: return_exceptions=True para prevenir crashes del orquestador
         await asyncio.gather(*workers, return_exceptions=True)
 
-        logger.info("Sync complete: processed=%d failed=%d skipped=%d", result.processed, result.failed, result.skipped)
+        logger.info(
+            "Sync complete: processed=%d failed=%d skipped=%d",
+            result.processed,
+            result.failed,
+            result.skipped,
+        )
         return result
 
-    def enqueue_download(self, coro: Coroutine[Any, Any, Any], context: str = "unknown") -> asyncio.Task[Any]:
+    def enqueue_download(
+        self, coro: Coroutine[Any, Any, Any], context: str = "unknown"
+    ) -> asyncio.Task[Any]:
         async def _download_wrapper() -> None:
             try:
                 await coro
@@ -641,16 +730,21 @@ class SyncEngine:
                 raise
             except Exception as exc:
                 # H-02: Logging estructurado para debugging
-                logger.error("worker_download_failed", extra={
-                    "context": context,
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc),
-                    "timestamp": datetime.utcnow().isoformat()
-                })
+                logger.error(
+                    "worker_download_failed",
+                    extra={
+                        "context": context,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                        "timestamp": datetime.utcnow().isoformat(),
+                    },
+                )
                 detail = f"{context} failed: {exc}"
                 try:
                     # H-06: Actualizar estado de tarea a "failed" en SQLite
-                    await self._registry.log_tasks_batch([(None, "download_mod", "failed", detail)])
+                    await self._registry.log_tasks_batch(
+                        [(None, "download_mod", "failed", detail)]
+                    )
                 except Exception as comp_exc:
                     logger.error("Failed to log compensation task: %s", comp_exc)
                 finally:
@@ -662,7 +756,9 @@ class SyncEngine:
         task.add_done_callback(self._download_tasks.discard)
         return task
 
-    async def _produce(self, queue: asyncio.Queue[list[tuple[str, bool]] | None], profile: str) -> None:
+    async def _produce(
+        self, queue: asyncio.Queue[list[tuple[str, bool]] | None], profile: str
+    ) -> None:
         """PRF-01: Producer with backpressure via bounded queue.
 
         ``await queue.put(batch)`` suspends the producer coroutine when the
@@ -684,7 +780,13 @@ class SyncEngine:
                 timeout=self._cfg.queue_put_timeout,
             )
 
-    async def _consume(self, queue: asyncio.Queue[list[tuple[str, bool]] | None], session: aiohttp.ClientSession, semaphore: asyncio.Semaphore, result: SyncResult) -> None:
+    async def _consume(
+        self,
+        queue: asyncio.Queue[list[tuple[str, bool]] | None],
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
+        result: SyncResult,
+    ) -> None:
         while True:
             batch = await queue.get()
             if batch is _POISON:
@@ -696,19 +798,28 @@ class SyncEngine:
                 raise
             except Exception as exc:
                 # H-02: Logging estructurado para debugging
-                logger.error("batch_processing_failed", extra={
-                    "batch_size": len(batch),
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc),
-                    "timestamp": datetime.utcnow().isoformat()
-                })
+                logger.error(
+                    "batch_processing_failed",
+                    extra={
+                        "batch_size": len(batch),
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                        "timestamp": datetime.utcnow().isoformat(),
+                    },
+                )
                 result.failed += len(batch)
                 # BUG-001 FIX: Usar método loop-safe para registrar errores
                 await self.metrics.increment_error_type(type(exc).__name__)
             finally:
                 queue.task_done()
 
-    async def _process_batch(self, batch: list[tuple[str, bool]], session: aiohttp.ClientSession, semaphore: asyncio.Semaphore, result: SyncResult) -> None:
+    async def _process_batch(
+        self,
+        batch: list[tuple[str, bool]],
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
+        result: SyncResult,
+    ) -> None:
         mod_rows: list[tuple[int, str, str, str, str, str]] = []
         log_rows: list[tuple[int | None, str, str, str]] = []
 
@@ -720,7 +831,12 @@ class SyncEngine:
 
             try:
                 info = await self._safe_fetch_info(nexus_id, session, semaphore)
-            except (MasterlistFetchError, CircuitOpenError, RetryError, aiohttp.ClientError) as exc:
+            except (
+                MasterlistFetchError,
+                CircuitOpenError,
+                RetryError,
+                aiohttp.ClientError,
+            ) as exc:
                 logger.warning("Skipping mod %r: %s", mod_name, exc)
                 result.failed += 1
                 result.errors.append(f"{mod_name}: {exc}")
@@ -731,16 +847,18 @@ class SyncEngine:
                 result.skipped += 1
                 continue
 
-            mod_rows.append((
-                int(info["mod_id"]),
-                str(info.get("name", mod_name)),
-                str(info.get("version", "")),
-                str(info.get("author", "")),
-                str(info.get("category_id", "")),
-                str(info.get("download_url", "")),
-                1,
-                int(enabled),
-            ))
+            mod_rows.append(
+                (
+                    int(info["mod_id"]),
+                    str(info.get("name", mod_name)),
+                    str(info.get("version", "")),
+                    str(info.get("author", "")),
+                    str(info.get("category_id", "")),
+                    str(info.get("download_url", "")),
+                    1,
+                    int(enabled),
+                )
+            )
             log_rows.append((None, "sync", "ok", mod_name))
             result.processed += 1
 
@@ -754,19 +872,19 @@ def _extract_nexus_id(mod_name: str) -> int | None:
         stripped = part.strip()
         if stripped.isdigit() and len(stripped) >= 2:
             return int(stripped)
-            
+
     # Use SystemPaths to resolve the mods directory dynamically
     meta_path = SystemPaths.modding_root() / "MO2/mods" / mod_name / "meta.ini"
-    
+
     if meta_path.exists():
         try:
             config = configparser.ConfigParser()
-            config.read(str(meta_path), encoding='utf-8')
-            if 'General' in config and 'modid' in config['General']:
-                modid = config['General']['modid']
+            config.read(str(meta_path), encoding="utf-8")
+            if "General" in config and "modid" in config["General"]:
+                modid = config["General"]["modid"]
                 if modid.isdigit() and modid != "0":
                     return int(modid)
         except Exception as exc:
             logger.debug("Failed to read meta.ini for %s: %s", mod_name, exc)
-            
+
     return None

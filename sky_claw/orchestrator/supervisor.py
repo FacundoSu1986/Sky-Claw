@@ -11,10 +11,12 @@ from sky_claw.core.models import LootExecutionParams, HitlApprovalRequest
 from sky_claw.core.schemas import ScrapingQuery
 from sky_claw.orchestrator.state_graph import create_supervisor_state_graph
 from sky_claw.orchestrator.ws_event_streamer import LangGraphEventStreamer
+
 # FASE 1.5: Imports de componentes de rollback
 from sky_claw.db.journal import OperationJournal
 from sky_claw.db.rollback_manager import RollbackManager
 from sky_claw.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
+
 # FASE 2: Imports de componentes de parcheo transaccional
 from sky_claw.xedit.patch_orchestrator import (
     PatchOrchestrator,
@@ -26,9 +28,13 @@ from sky_claw.xedit.patch_orchestrator import (
 from sky_claw.xedit.conflict_analyzer import ConflictReport
 from sky_claw.xedit.runner import XEditRunner, ScriptExecutionResult
 from sky_claw.security.path_validator import PathValidator
-from sky_claw.orchestrator.maintenance_daemon import MaintenanceDaemon, get_max_backup_size_mb
+from sky_claw.orchestrator.maintenance_daemon import (
+    MaintenanceDaemon,
+    get_max_backup_size_mb,
+)
 from sky_claw.orchestrator.telemetry_daemon import TelemetryDaemon
 from sky_claw.orchestrator.watcher_daemon import WatcherDaemon
+
 # FASE 3: Imports de componentes de Synthesis
 from sky_claw.tools.synthesis_runner import (
     SynthesisRunner,
@@ -39,6 +45,7 @@ from sky_claw.tools.synthesis_runner import (
 from sky_claw.tools.patcher_pipeline import (
     PatcherPipeline,
 )
+
 # FASE 6: Imports de componentes de Wrye Bash
 from sky_claw.tools.wrye_bash_runner import (
     WryeBashRunner,
@@ -46,6 +53,7 @@ from sky_claw.tools.wrye_bash_runner import (
     WryeBashExecutionError,
 )
 from sky_claw.xedit.conflict_analyzer import ConflictAnalyzer
+
 # FASE 4: Imports de componentes de DynDOLOD/TexGen
 from sky_claw.tools.dyndolod_runner import (
     DynDOLODRunner,
@@ -54,6 +62,7 @@ from sky_claw.tools.dyndolod_runner import (
     DynDOLODExecutionError,
     DynDOLODTimeoutError,
 )
+
 # FASE 5: Imports de componentes de detección de conflictos de assets
 from sky_claw.assets import AssetConflictDetector, AssetConflictReport
 
@@ -73,7 +82,7 @@ class SupervisorAgent:
         self.profile_name = profile_name
         self.state_graph = create_supervisor_state_graph(profile_name=self.profile_name)
         self.event_streamer = LangGraphEventStreamer(self.state_graph, self.interface)
-        
+
         # FASE 1.5: Inicializar componentes de rollback (también inicializa _path_validator)
         self._init_rollback_components()
         # ARC-01: Demonios extraídos del Supervisor
@@ -94,10 +103,10 @@ class SupervisorAgent:
 
         # Resolver ruta de modlist: MO2_PATH env var > auto-detección > fallback WSL2
         self.modlist_path = str(self._resolve_modlist_path(self.profile_name))
-    
+
     def _init_rollback_components(self) -> None:
         """FASE 1.5: Inicializa los componentes de resiliencia para rollback.
-        
+
         Crea las instancias de:
         - OperationJournal: Para registrar operaciones de archivos
         - FileSnapshotManager: Para capturar snapshots antes de modificaciones
@@ -106,30 +115,28 @@ class SupervisorAgent:
         # Directorio de backups relativo al VFS
         backup_dir = pathlib.Path(BACKUP_STAGING_DIR)
         backup_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Inicializar componentes
         self.journal = OperationJournal(db_path=backup_dir / "journal.db")
         self.snapshot_manager = FileSnapshotManager(
-            snapshot_dir=backup_dir / "snapshots",
-            max_size_mb=get_max_backup_size_mb()
+            snapshot_dir=backup_dir / "snapshots", max_size_mb=get_max_backup_size_mb()
         )
         self.rollback_manager = RollbackManager(
-            journal=self.journal,
-            snapshot_manager=self.snapshot_manager
+            journal=self.journal, snapshot_manager=self.snapshot_manager
         )
-        
+
         # CRIT-003: PathValidator para validación de variables de entorno
         self._path_validator = PathValidator(roots=[backup_dir])
-        
+
         logger.info(
             "Componentes de rollback inicializados: backup_dir=%s, max_size_mb=%d",
             backup_dir,
-            get_max_backup_size_mb()
+            get_max_backup_size_mb(),
         )
-    
+
     def _init_patch_orchestrator(self) -> None:
         """FASE 2: Inicializa el orquestador de parches transaccionales.
-        
+
         Crea la instancia de PatchOrchestrator con dependencias inyectadas:
         - XEditRunner: Para ejecución de scripts xEdit
         - FileSnapshotManager: Para snapshots antes de modificaciones
@@ -138,37 +145,37 @@ class SupervisorAgent:
         # XEditRunner requiere paths configurados - usar lazy initialization
         self._xedit_runner: XEditRunner | None = None
         self._patch_orchestrator: PatchOrchestrator | None = None
-        
+
         # FASE 3: Synthesis integration (lazy init)
         self._synthesis_runner: SynthesisRunner | None = None
         self._patcher_pipeline: PatcherPipeline | None = None
-        
+
         # FASE 4: DynDOLOD/TexGen integration (lazy init)
         self._dyndolod_runner: DynDOLODRunner | None = None
-        
+
         # FASE 5: Asset conflict detector (lazy init)
         self._asset_detector: AssetConflictDetector | None = None
-        
+
         # FASE 6: Wrye Bash integration (lazy init)
         self._wrye_bash_runner: WryeBashRunner | None = None
-        
+
         logger.info("PatchOrchestrator será inicializado lazy bajo demanda")
-    
+
     def _validate_env_path(self, path_str: str, var_name: str) -> pathlib.Path | None:
         """Valida un path de variable de entorno con PathValidator.
-        
+
         CRIT-003: Mitigación para variables de entorno sin validación.
-        
+
         Args:
             path_str: String del path a validar.
             var_name: Nombre de la variable de entorno (para logging).
-        
+
         Returns:
             Path validado o None si la validación falla.
         """
         if not path_str:
             return None
-        
+
         try:
             # Intentar validar con PathValidator
             validated_path = self._path_validator.validate(path_str)
@@ -176,65 +183,67 @@ class SupervisorAgent:
         except Exception as e:
             security_logger.warning(
                 "%s inválido (posible intento de path traversal): %s - Error: %s",
-                var_name, path_str, e
+                var_name,
+                path_str,
+                e,
             )
             return None
 
     def _ensure_patch_orchestrator(self) -> PatchOrchestrator:
         """Asegura que el PatchOrchestrator esté inicializado.
-        
+
         Usa inicialización lazy porque XEditRunner requiere paths que
         pueden no estar disponibles al instanciar SupervisorAgent.
-        
+
         CRIT-003: Valida XEDIT_PATH y SKYRIM_PATH antes de usar.
-        
+
         Returns:
             PatchOrchestrator inicializado.
-            
+
         Raises:
             PatchingError: Si no se puede inicializar (falta configuración).
         """
         if self._patch_orchestrator is not None:
             return self._patch_orchestrator
-        
+
         # Obtener paths de xEdit y juego desde entorno o config
         xedit_path_str = os.environ.get("XEDIT_PATH", "")
         game_path_str = os.environ.get("SKYRIM_PATH", "")
-        
+
         # CRIT-003: Validar paths antes de usar
         xedit_path = self._validate_env_path(xedit_path_str, "XEDIT_PATH")
         game_path = self._validate_env_path(game_path_str, "SKYRIM_PATH")
-        
+
         # Si la validación falla, no continuar
         if not xedit_path or not game_path:
             raise PatchingError(
                 "Cannot initialize PatchOrchestrator: "
                 "XEDIT_PATH and SKYRIM_PATH environment variables must be valid paths"
             )
-        
+
         if not xedit_path.exists():
             raise PatchingError(f"xEdit executable not found: {xedit_path}")
-        
+
         # Crear XEditRunner
         self._xedit_runner = XEditRunner(
             xedit_path=xedit_path,
             game_path=game_path,
             output_dir=pathlib.Path(BACKUP_STAGING_DIR) / "patches",
         )
-        
+
         # Crear PatchOrchestrator con dependencias
         self._patch_orchestrator = PatchOrchestrator(
             xedit_runner=self._xedit_runner,
             snapshot_manager=self.snapshot_manager,
             rollback_manager=self.rollback_manager,
         )
-        
+
         logger.info(
             "PatchOrchestrator inicializado: xedit=%s, game=%s",
             xedit_path,
             game_path,
         )
-        
+
         return self._patch_orchestrator
 
     async def start(self):
@@ -242,12 +251,14 @@ class SupervisorAgent:
         # FASE 1.5: Abrir journal de operaciones
         await self.journal.open()
         await self.snapshot_manager.initialize()
-        
+
         # Vincular con la señal de ejecución de la interfaz
         self.interface.register_command_callback(self.handle_execution_signal)
-        
-        logger.info("SupervisorAgent inicializado: IPC y Watcher listos. Lanzando TaskGroup de fondo...")
-        
+
+        logger.info(
+            "SupervisorAgent inicializado: IPC y Watcher listos. Lanzando TaskGroup de fondo..."
+        )
+
         # ARC-01: Iniciar demonios extraídos
         await self._maintenance_daemon.start()
         await self._telemetry_daemon.start()
@@ -275,9 +286,11 @@ class SupervisorAgent:
 
     async def handle_execution_signal(self, payload: dict):
         """Reacciona a la señal de ignición forzada desde la GUI."""
-        logger.info("Ignición forzada desde GUI detectada. Despertando demonio proactivo.")
+        logger.info(
+            "Ignición forzada desde GUI detectada. Despertando demonio proactivo."
+        )
         await self._trigger_proactive_analysis()
-    
+
     # FASE 1.5: Worker de pruning pasivo
     async def dispatch_tool(self, tool_name: str, payload_dict: dict) -> dict:
         """
@@ -291,37 +304,40 @@ class SupervisorAgent:
                 result = await self.scraper.query_nexus(query)
                 # Convertir ModMetadata a dict para compatibilidad con la interfaz
                 return result.model_dump()
-                
+
             case "execute_loot_sorting":
                 params = LootExecutionParams(**payload_dict)
                 # Requiere HITL si implica cambios destructivos o sobreescritura de metadatos sensibles
                 hitl_req = HitlApprovalRequest(
-                    action_type="destructive_xedit", # Reusado conceptualmente
+                    action_type="destructive_xedit",  # Reusado conceptualmente
                     reason="Se va a reordenar el Load Order, lo que podría afectar partidas guardadas.",
-                    context_data={"profile": params.profile_name}
+                    context_data={"profile": params.profile_name},
                 )
                 decision = await self.interface.request_hitl(hitl_req)
-                
+
                 if decision == "approved":
                     return await self.tools.run_loot(params)
                 else:
-                    return {"status": "aborted", "reason": "Usuario denegó la operación."}
-                    
+                    return {
+                        "status": "aborted",
+                        "reason": "Usuario denegó la operación.",
+                    }
+
             # FASE 3: Synthesis Pipeline Integration
             case "execute_synthesis_pipeline":
                 return await self.execute_synthesis_pipeline(**payload_dict)
-            
+
             # FASE 4: DynDOLOD/TexGen Pipeline Integration
             case "generate_lods":
                 return await self.execute_dyndolod_pipeline(**payload_dict)
-            
+
             # FASE 5: Asset Conflict Detection Integration
             case "scan_asset_conflicts":
                 return self.scan_asset_conflicts()
-            
+
             case "scan_asset_conflicts_json":
                 return self.scan_asset_conflicts_json()
-            
+
             # FASE 6: Wrye Bash Bashed Patch Integration
             case "generate_bashed_patch":
                 return await self.execute_wrye_bash_pipeline(**payload_dict)
@@ -334,97 +350,94 @@ class SupervisorAgent:
             case _:
                 logger.error(f"RCA: LLM alucinó la herramienta '{tool_name}'.")
                 return {"status": "error", "reason": "ToolNotFound"}
-    
+
     # FASE 1.5: Método para ejecutar rollback
     async def execute_rollback(self, agent_id: str) -> dict:
         """FASE 1.5: Ejecuta rollback de la última operación de un agente.
-        
+
         Args:
             agent_id: ID del agente cuya operación debe revertirse
-            
+
         Returns:
             Resultado del rollback con estado y detalles
         """
         logger.info("Iniciando rollback para agente: %s", agent_id)
-        
+
         try:
             result = await self.rollback_manager.undo_last_operation(agent_id)
-            
+
             if result.success:
                 logger.info(
                     "Rollback exitoso: %d archivos restaurados, %d eliminados",
                     result.entries_restored,
-                    result.files_deleted
+                    result.files_deleted,
                 )
             else:
                 logger.error("Rollback falló para agente %s", agent_id)
-            
+
             return {
                 "success": result.success,
                 "transaction_id": result.transaction_id,
                 "entries_restored": result.entries_restored,
                 "files_deleted": result.files_deleted,
-                "errors": result.errors
+                "errors": result.errors,
             }
-            
+
         except Exception as e:
             logger.exception("Error crítico durante rollback: %s", e)
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
+            return {"success": False, "error": str(e)}
+
     # FASE 1.5: Obtener RollbackManager para inyección en SyncEngine
     def get_rollback_manager(self) -> RollbackManager:
         """Retorna el RollbackManager para inyección de dependencias."""
         return self.rollback_manager
-    
+
     # =========================================================================
     # FASE 3: Synthesis Pipeline Integration
     # =========================================================================
-    
+
     def _ensure_synthesis_runner(self) -> SynthesisRunner:
         """FASE 3: Asegura que el SynthesisRunner esté inicializado.
-        
+
         Usa inicialización lazy porque SynthesisRunner requiere paths que
         pueden no estar disponibles al instanciar SupervisorAgent.
-        
+
         Returns:
             SynthesisRunner inicializado.
-            
+
         Raises:
             SynthesisExecutionError: Si no se puede inicializar.
         """
         if self._synthesis_runner is not None:
             return self._synthesis_runner
-        
+
         # Obtener paths desde entorno o config
         game_path_str = os.environ.get("SKYRIM_PATH", "")
         mo2_path_str = os.environ.get("MO2_PATH", "")
         synthesis_exe_str = os.environ.get("SYNTHESIS_EXE", "")
-        
+
         # CRIT-003: Validar paths antes de usar
         game_path = self._validate_env_path(game_path_str, "SKYRIM_PATH")
         mo2_path = self._validate_env_path(mo2_path_str, "MO2_PATH")
         synthesis_exe = self._validate_env_path(synthesis_exe_str, "SYNTHESIS_EXE")
-        
+
         # Si la validación falla, no continuar
         if not game_path or not mo2_path or not synthesis_exe:
             raise SynthesisExecutionError(
                 "Cannot initialize SynthesisRunner: "
                 "SKYRIM_PATH, MO2_PATH, and SYNTHESIS_EXE environment variables must be valid paths"
             )
-        
+
         if not synthesis_exe.exists():
             raise SynthesisExecutionError(
                 f"Synthesis executable not found: {synthesis_exe}"
             )
-        
+
         # Directorio de salida (overwrite de MO2 o directorio de mods)
         output_path = mo2_path / "overwrite"
         if not output_path.exists():
             output_path = mo2_path / "mods" / "Synthesis Output"
-        
+
         config = SynthesisConfig(
             game_path=game_path,
             mo2_path=mo2_path,
@@ -432,29 +445,29 @@ class SupervisorAgent:
             synthesis_exe=synthesis_exe,
             timeout_seconds=300,
         )
-        
+
         self._synthesis_runner = SynthesisRunner(config)
-        
+
         logger.info(
             "SynthesisRunner inicializado: game=%s, output=%s",
             game_path,
             output_path,
         )
-        
+
         return self._synthesis_runner
-    
+
     def _ensure_patcher_pipeline(self) -> PatcherPipeline:
         """FASE 3: Asegura que el PatcherPipeline esté inicializado.
-        
+
         Returns:
             PatcherPipeline inicializado.
         """
         if self._patcher_pipeline is not None:
             return self._patcher_pipeline
-        
+
         # Cargar desde archivo de configuración si existe
         pipeline_path = pathlib.Path(BACKUP_STAGING_DIR) / "synthesis_pipeline.json"
-        
+
         if pipeline_path.exists():
             self._patcher_pipeline = PatcherPipeline.from_json(pipeline_path)
             logger.info(
@@ -465,45 +478,49 @@ class SupervisorAgent:
         else:
             self._patcher_pipeline = PatcherPipeline(pipeline_config_path=pipeline_path)
             logger.info("PatcherPipeline inicializado vacío")
-        
+
         return self._patcher_pipeline
-    
+
     def _ensure_dyndolod_runner(self) -> DynDOLODRunner:
         """FASE 4: Asegura que el DynDOLODRunner esté inicializado.
-        
+
         Usa inicialización lazy porque DynDOLODRunner requiere paths que
         pueden no estar disponibles al instanciar SupervisorAgent.
-        
+
         Variables de entorno requeridas:
         - DYNDLOD_EXE: Ruta a DynDOLODx64.exe
         - TEXGEN_EXE: Ruta a TexGenx64.exe (opcional)
         - SKYRIM_PATH: Ruta al directorio de Skyrim SE/AE
         - MO2_PATH: Ruta al directorio de MO2
         - MO2_MODS_PATH: Ruta a la carpeta mods de MO2
-        
+
         Returns:
             DynDOLODRunner inicializado.
-            
+
         Raises:
             DynDOLODExecutionError: Si no se puede inicializar.
         """
         if self._dyndolod_runner is not None:
             return self._dyndolod_runner
-        
+
         # Obtener paths desde entorno o config
         game_path_str = os.environ.get("SKYRIM_PATH", "")
         mo2_path_str = os.environ.get("MO2_PATH", "")
         mo2_mods_path_str = os.environ.get("MO2_MODS_PATH", "")
         dyndolod_exe_str = os.environ.get("DYNDLOD_EXE", "")
         texgen_exe_str = os.environ.get("TEXGEN_EXE", "")
-        
+
         # CRIT-003: Validar paths antes de usar
         game_path = self._validate_env_path(game_path_str, "SKYRIM_PATH")
         mo2_path = self._validate_env_path(mo2_path_str, "MO2_PATH")
         mo2_mods_path = self._validate_env_path(mo2_mods_path_str, "MO2_MODS_PATH")
         dyndolod_exe = self._validate_env_path(dyndolod_exe_str, "DYNDLOD_EXE")
-        texgen_exe = self._validate_env_path(texgen_exe_str, "TEXGEN_EXE") if texgen_exe_str else None
-        
+        texgen_exe = (
+            self._validate_env_path(texgen_exe_str, "TEXGEN_EXE")
+            if texgen_exe_str
+            else None
+        )
+
         # Si la validación falla, no continuar
         if not game_path or not mo2_path or not mo2_mods_path or not dyndolod_exe:
             raise DynDOLODExecutionError(
@@ -511,12 +528,12 @@ class SupervisorAgent:
                 "SKYRIM_PATH, MO2_PATH, MO2_MODS_PATH, and DYNDLOD_EXE "
                 "environment variables must be valid paths"
             )
-        
+
         if not dyndolod_exe.exists():
             raise DynDOLODExecutionError(
                 f"DynDOLOD executable not found: {dyndolod_exe}"
             )
-        
+
         config = DynDOLODConfig(
             game_path=game_path,
             mo2_path=mo2_path,
@@ -524,15 +541,15 @@ class SupervisorAgent:
             dyndolod_exe=dyndolod_exe,
             texgen_exe=texgen_exe,
         )
-        
+
         self._dyndolod_runner = DynDOLODRunner(config)
-        
+
         logger.info(
             "DynDOLODRunner inicializado: game=%s, dyndolod=%s",
             game_path,
             dyndolod_exe,
         )
-        
+
         return self._dyndolod_runner
 
     # =========================================================================
@@ -603,7 +620,10 @@ class SupervisorAgent:
             dict con ``valid=True`` si el límite no se excede,
             o ``valid=False, error=<mensaje detallado>`` si lo supera.
         """
-        logger.info("[M-04] Ejecutando validación de límite de plugins para perfil '%s'...", profile)
+        logger.info(
+            "[M-04] Ejecutando validación de límite de plugins para perfil '%s'...",
+            profile,
+        )
         try:
             active_plugins: list[str] = []
             modlist_path = self._resolve_modlist_path(profile)
@@ -612,7 +632,9 @@ class SupervisorAgent:
                 with open(modlist_path, encoding="utf-8") as fh:
                     for line in fh:
                         line = line.strip()
-                        if line.startswith("+") and line.lower().endswith((".esp", ".esm")):
+                        if line.startswith("+") and line.lower().endswith(
+                            (".esp", ".esm")
+                        ):
                             active_plugins.append(line[1:])
 
             analyzer = ConflictAnalyzer()
@@ -631,7 +653,9 @@ class SupervisorAgent:
                 "error": str(exc),
             }
         except Exception as exc:
-            logger.error("[M-04] Error inesperado durante validación de plugins: %s", exc)
+            logger.error(
+                "[M-04] Error inesperado durante validación de plugins: %s", exc
+            )
             return {"valid": False, "error": str(exc)}
 
         logger.info(
@@ -748,14 +772,14 @@ class SupervisorAgent:
     # =========================================================================
     # FASE 5: Asset Conflict Detection Integration
     # =========================================================================
-    
+
     @property
     def asset_detector(self) -> AssetConflictDetector:
         """FASE 5: Inicialización lazy del AssetConflictDetector.
-        
+
         Returns:
             AssetConflictDetector inicializado.
-            
+
         Raises:
             RuntimeError: Si no se puede detectar la ruta de MO2.
         """
@@ -777,7 +801,15 @@ class SupervisorAgent:
         first directory that contains ``ModOrganizer.exe``, or ``None`` if no
         installation could be found.
         """
-        for raw in [r"C:\Modding\MO2", r"D:\Modding\MO2", r"E:\Modding\MO2", r"C:\MO2Portable", r"D:\MO2Portable", r"C:\Games\MO2", r"D:\Games\MO2"]:
+        for raw in [
+            r"C:\Modding\MO2",
+            r"D:\Modding\MO2",
+            r"E:\Modding\MO2",
+            r"C:\MO2Portable",
+            r"D:\MO2Portable",
+            r"C:\Games\MO2",
+            r"D:\Games\MO2",
+        ]:
             p = pathlib.Path(raw)
             if (p / "ModOrganizer.exe").exists():
                 return p
@@ -836,15 +868,14 @@ class SupervisorAgent:
         )
         return pathlib.Path("/mnt/c/Modding/MO2") / "profiles" / profile / "modlist.txt"
 
-    
     def _get_mo2_mods_path(self) -> pathlib.Path:
         """FASE 5: Obtiene la ruta al directorio de mods de MO2.
-        
+
         Intenta obtener la ruta desde variables de entorno o usar auto-detección.
-        
+
         Returns:
             Path al directorio de mods de MO2.
-            
+
         Raises:
             RuntimeError: Si no se puede detectar la ruta de MO2.
         """
@@ -855,7 +886,7 @@ class SupervisorAgent:
             validated_path = self._validate_env_path(mo2_mods_path_str, "MO2_MODS_PATH")
             if validated_path and validated_path.exists():
                 return validated_path
-        
+
         # Intentar construir desde MO2_PATH
         mo2_base_str = os.environ.get("MO2_PATH", "")
         if mo2_base_str:
@@ -864,11 +895,13 @@ class SupervisorAgent:
                 mods_path = validated_base / "mods"
                 if mods_path.exists():
                     return mods_path
-        
+
         # Fallback: usar auto-detección
         from sky_claw.auto_detect import AutoDetector
+
         try:
             import asyncio
+
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 # Si ya hay un loop corriendo, usar versión síncrona
@@ -886,15 +919,15 @@ class SupervisorAgent:
                 mods_path = mo2_base / "mods"
                 if mods_path.exists():
                     return mods_path
-        
+
         raise RuntimeError(
             "No se pudo detectar la ruta de MO2. "
             "Configure MO2_PATH o MO2_MODS_PATH en las variables de entorno."
         )
-    
+
     def _get_active_profile(self) -> str:
         """FASE 5: Obtiene el nombre del perfil activo de MO2.
-        
+
         Returns:
             Nombre del perfil activo o 'Default' si no se puede determinar.
         """
@@ -902,21 +935,21 @@ class SupervisorAgent:
         profile = os.environ.get("MO2_PROFILE", "")
         if profile:
             return profile
-        
+
         # Usar el perfil almacenado en la instancia
-        if hasattr(self, 'profile_name') and self.profile_name:
+        if hasattr(self, "profile_name") and self.profile_name:
             return self.profile_name
-        
+
         return "Default"
-    
+
     def scan_asset_conflicts(self) -> list[AssetConflictReport]:
         """FASE 5: Herramienta READ-ONLY para escanear conflictos de assets.
-        
+
         Escanea el VFS de MO2 y detecta archivos "loose" sobrescritos.
-        
+
         Returns:
             Lista de AssetConflictReport con todos los conflictos detectados.
-            
+
         SECURITY: Esta herramienta es estrictamente READ-ONLY.
         No modifica, mueve ni oculta archivos.
         """
@@ -928,13 +961,13 @@ class SupervisorAgent:
         except Exception as e:
             logger.error(f"Error durante escaneo de conflictos: {e}")
             raise
-    
+
     def scan_asset_conflicts_json(self) -> str:
         """FASE 5: Herramienta READ-ONLY que devuelve el reporte en formato JSON.
-        
+
         Returns:
             JSON string estructurado con el reporte completo de conflictos.
-            
+
         SECURITY: Esta herramienta es estrictamente READ-ONLY.
         """
         logger.info("Generando reporte JSON de conflictos de assets...")
@@ -945,7 +978,7 @@ class SupervisorAgent:
         except Exception as e:
             logger.error(f"Error generando reporte JSON de conflictos: {e}")
             raise
-    
+
     async def execute_synthesis_pipeline(
         self,
         patcher_ids: list[str] | None = None,
@@ -953,19 +986,19 @@ class SupervisorAgent:
     ) -> SynthesisResult:
         """
         FASE 3: Ejecuta el pipeline de Synthesis con protección transaccional.
-        
+
         Lógica crítica (Fail-safe):
         1. Si create_snapshot=True, usar FileSnapshotManager para crear
            snapshot del Synthesis.esp existente
         2. Ejecutar SynthesisRunner.run_pipeline()
         3. Si falla o el ESP está corrupto, restaurar snapshot automáticamente
         4. Registrar operación en OperationJournal
-        
+
         Args:
             patcher_ids: Lista de IDs de patchers a ejecutar. Si es None,
                          usa los patchers habilitados del pipeline.
             create_snapshot: Si True, crea snapshot antes de ejecutar.
-            
+
         Returns:
             SynthesisResult con el resultado de la ejecución.
         """
@@ -974,7 +1007,7 @@ class SupervisorAgent:
             len(patcher_ids) if patcher_ids else "pipeline",
             create_snapshot,
         )
-        
+
         # Asegurar que los componentes estén inicializados
         try:
             runner = self._ensure_synthesis_runner()
@@ -990,12 +1023,12 @@ class SupervisorAgent:
                 patchers_executed=[],
                 errors=[str(e)],
             )
-        
+
         # Determinar patchers a ejecutar
         if patcher_ids is None:
             enabled_patchers = pipeline.get_enabled_patchers()
             patcher_ids = [p.patcher_id for p in enabled_patchers]
-        
+
         if not patcher_ids:
             logger.warning("No hay patchers para ejecutar")
             return SynthesisResult(
@@ -1007,11 +1040,11 @@ class SupervisorAgent:
                 patchers_executed=[],
                 errors=["No patchers configured or enabled"],
             )
-        
+
         # PASO 1: Crear snapshot del ESP existente si existe
         snapshot_path: pathlib.Path | None = None
         target_esp = runner._config.output_path / "Synthesis.esp"
-        
+
         if create_snapshot and target_esp.exists():
             try:
                 snapshot_path = await self.snapshot_manager.create_snapshot(
@@ -1022,7 +1055,7 @@ class SupervisorAgent:
             except Exception as e:
                 logger.warning("No se pudo crear snapshot: %s", e)
                 # Continuar sin snapshot - no es fatal
-        
+
         # PASO 2: Ejecutar pipeline
         try:
             result = await runner.run_pipeline(patcher_ids)
@@ -1037,12 +1070,12 @@ class SupervisorAgent:
                 patchers_executed=[],
                 errors=[str(e)],
             )
-        
+
         # PASO 3: Verificar resultado y rollback si es necesario
         if not result.success and snapshot_path and target_esp.exists():
             logger.warning("Pipeline falló, ejecutando rollback...")
             await self._rollback_synthesis_on_failure(snapshot_path, target_esp)
-        
+
         # Validar ESP generado si el resultado fue exitoso
         if result.success and result.output_esp:
             is_valid = await runner.validate_synthesis_esp(result.output_esp)
@@ -1057,12 +1090,13 @@ class SupervisorAgent:
                     stdout=result.stdout,
                     stderr=result.stderr + "\nESP validation failed",
                     patchers_executed=result.patchers_executed,
-                    errors=result.errors + ["ESP validation failed: corrupted or invalid"],
+                    errors=result.errors
+                    + ["ESP validation failed: corrupted or invalid"],
                 )
-        
+
         # PASO 4: Registrar en journal
         await self._log_synthesis_result(result, patcher_ids)
-        
+
         if result.success:
             logger.info(
                 "Pipeline Synthesis exitoso: %s (%d patchers)",
@@ -1074,22 +1108,22 @@ class SupervisorAgent:
                 "Pipeline Synthesis falló: %s",
                 "; ".join(result.errors) if result.errors else "Unknown error",
             )
-        
+
         return result
-    
+
     async def _rollback_synthesis_on_failure(
         self,
         snapshot_path: pathlib.Path,
         target: pathlib.Path,
     ) -> None:
         """Ejecuta rollback automático en caso de fallo de Synthesis.
-        
+
         Args:
             snapshot_path: Path al snapshot creado antes del fallo.
             target: Path al archivo ESP que necesita restauración.
         """
         logger.warning("Iniciando rollback de Synthesis para %s", target.name)
-        
+
         try:
             await self.snapshot_manager.restore_snapshot(snapshot_path, target)
             logger.info("Rollback de Synthesis completado exitosamente")
@@ -1100,14 +1134,14 @@ class SupervisorAgent:
                 target.name,
                 rollback_error,
             )
-    
+
     async def _log_synthesis_result(
         self,
         result: SynthesisResult,
         patcher_ids: list[str],
     ) -> None:
         """Registra el resultado de Synthesis en el journal.
-        
+
         Args:
             result: Resultado de la ejecución.
             patcher_ids: IDs de patchers ejecutados.
@@ -1128,12 +1162,14 @@ class SupervisorAgent:
             logger.debug("Operación de Synthesis registrada en journal")
         except Exception as e:
             # No fallar la operación si el logging falla
-            logger.warning("No se pudo registrar operación de Synthesis en journal: %s", e)
-    
+            logger.warning(
+                "No se pudo registrar operación de Synthesis en journal: %s", e
+            )
+
     # =========================================================================
     # FASE 4: DynDOLOD/TexGen Pipeline Integration
     # =========================================================================
-    
+
     async def execute_dyndolod_pipeline(
         self,
         preset: str = "Medium",
@@ -1144,31 +1180,31 @@ class SupervisorAgent:
     ) -> DynDOLODPipelineResult:
         """
         FASE 4: Ejecuta el pipeline completo de generación de LODs.
-        
+
         Flujo transaccional:
         1. Crear snapshot (si create_snapshot=True)
         2. Ejecutar TexGen → Empaquetar → Registrar en DB
         3. Ejecutar DynDOLOD → Empaquetar → Registrar en DB
         4. Si falla, ejecutar rollback
-        
+
         Args:
             preset: Nivel de calidad (Low, Medium, High)
             run_texgen: Si True, ejecuta TexGen antes de DynDOLOD
             create_snapshot: Si True, crea snapshot para rollback
             texgen_args: Argumentos adicionales para TexGen
             dyndolod_args: Argumentos adicionales para DynDOLOD
-        
+
         Returns:
             DynDOLODPipelineResult con resultados completos
         """
-        
+
         logger.info(
             "Iniciando pipeline DynDOLOD: preset=%s, texgen=%s, snapshot=%s",
             preset,
             run_texgen,
             create_snapshot,
         )
-        
+
         try:
             # 1. Asegurar que el runner está inicializado
             try:
@@ -1183,12 +1219,12 @@ class SupervisorAgent:
                     dyndolod_mod_path=None,
                     errors=[str(e)],
                 )
-            
+
             # 2. Crear snapshot de los archivos de salida existentes si existen
             snapshot_info = None
             dyndolod_output_path = runner._config.mo2_mods_path / "DynDOLOD Output"
             runner._config.mo2_mods_path / "TexGen Output"
-            
+
             if create_snapshot:
                 # Snapshot del DynDOLOD.esp si existe
                 dyndolod_esp = dyndolod_output_path / "DynDOLOD.esp"
@@ -1198,27 +1234,37 @@ class SupervisorAgent:
                             dyndolod_esp,
                             metadata={"source": "dyndolod_pipeline", "preset": preset},
                         )
-                        logger.debug("Snapshot creado para DynDOLOD.esp: %s", snapshot_info)
+                        logger.debug(
+                            "Snapshot creado para DynDOLOD.esp: %s", snapshot_info
+                        )
                     except Exception as e:
                         logger.warning("No se pudo crear snapshot: %s", e)
                         # Continuar sin snapshot - no es fatal
-            
+
             # 3. Registrar inicio de operación en journal
             await self._log_dyndolod_start(preset, run_texgen)
-            
+
             # 4. Ejecutar pipeline completo
-            logger.info("Starting DynDOLOD pipeline (preset: %s, texgen: %s)", preset, run_texgen)
+            logger.info(
+                "Starting DynDOLOD pipeline (preset: %s, texgen: %s)",
+                preset,
+                run_texgen,
+            )
             result = await runner.run_full_pipeline(
                 run_texgen=run_texgen,
                 preset=preset,
                 texgen_args=texgen_args,
                 dyndolod_args=dyndolod_args,
             )
-            
+
             # 4. Registrar mods en la base de datos si fueron exitosos
             if result.success:
                 # Registrar TexGen Output
-                if result.texgen_mod_path and result.texgen_result and result.texgen_result.success:
+                if (
+                    result.texgen_mod_path
+                    and result.texgen_result
+                    and result.texgen_result.success
+                ):
                     try:
                         await self.db.add_mod(
                             name="TexGen Output",
@@ -1227,10 +1273,16 @@ class SupervisorAgent:
                         )
                         logger.info("TexGen Output registered in database")
                     except Exception as e:
-                        logger.warning("Could not register TexGen Output in database: %s", e)
-                
+                        logger.warning(
+                            "Could not register TexGen Output in database: %s", e
+                        )
+
                 # Registrar DynDOLOD Output
-                if result.dyndolod_mod_path and result.dyndolod_result and result.dyndolod_result.success:
+                if (
+                    result.dyndolod_mod_path
+                    and result.dyndolod_result
+                    and result.dyndolod_result.success
+                ):
                     try:
                         await self.db.add_mod(
                             name="DynDOLOD Output",
@@ -1239,11 +1291,13 @@ class SupervisorAgent:
                         )
                         logger.info("DynDOLOD Output registered in database")
                     except Exception as e:
-                        logger.warning("Could not register DynDOLOD Output in database: %s", e)
-                
+                        logger.warning(
+                            "Could not register DynDOLOD Output in database: %s", e
+                        )
+
                 # Registrar éxito en journal
                 await self._log_dyndolod_result(result, preset, success=True)
-                
+
                 logger.info(
                     "Pipeline DynDOLOD exitoso: texgen=%s, dyndolod=%s",
                     result.texgen_mod_path,
@@ -1253,28 +1307,34 @@ class SupervisorAgent:
                 # Pipeline falló - registrar errores
                 logger.error("DynDOLOD pipeline failed: %s", "; ".join(result.errors))
                 await self._log_dyndolod_result(result, preset, success=False)
-            
+
             return result
-            
+
         except DynDOLODTimeoutError as e:
             logger.error("DynDOLOD pipeline timeout: %s", e)
             if snapshot_info:
-                await self._rollback_dyndolod_on_failure(snapshot_info, "dyndolod_timeout")
+                await self._rollback_dyndolod_on_failure(
+                    snapshot_info, "dyndolod_timeout"
+                )
             raise
         except DynDOLODExecutionError as e:
             logger.error("DynDOLOD execution error: %s", e)
             if snapshot_info:
-                await self._rollback_dyndolod_on_failure(snapshot_info, "dyndolod_execution_error")
+                await self._rollback_dyndolod_on_failure(
+                    snapshot_info, "dyndolod_execution_error"
+                )
             raise
         except Exception as e:
             logger.exception("Unexpected error in DynDOLOD pipeline: %s", e)
             if snapshot_info:
-                await self._rollback_dyndolod_on_failure(snapshot_info, "dyndolod_unexpected_error")
+                await self._rollback_dyndolod_on_failure(
+                    snapshot_info, "dyndolod_unexpected_error"
+                )
             raise
-    
+
     async def _log_dyndolod_start(self, preset: str, run_texgen: bool) -> None:
         """Registra el inicio del pipeline DynDOLOD en el journal.
-        
+
         Args:
             preset: Nivel de calidad del preset.
             run_texgen: Si se ejecuta TexGen.
@@ -1292,7 +1352,7 @@ class SupervisorAgent:
             logger.debug("Inicio de DynDOLOD pipeline registrado en journal")
         except Exception as e:
             logger.warning("No se pudo registrar inicio de DynDOLOD en journal: %s", e)
-    
+
     async def _log_dyndolod_result(
         self,
         result: DynDOLODPipelineResult,
@@ -1300,7 +1360,7 @@ class SupervisorAgent:
         success: bool,
     ) -> None:
         """Registra el resultado del pipeline DynDOLOD en el journal.
-        
+
         Args:
             result: Resultado de la ejecución.
             preset: Nivel de calidad del preset.
@@ -1309,35 +1369,49 @@ class SupervisorAgent:
         try:
             await self.journal.log_operation(
                 agent_id="dyndolod_runner",
-                operation_type="dyndolod_pipeline_complete" if success else "dyndolod_pipeline_failed",
-                file_path=str(result.dyndolod_mod_path) if result.dyndolod_mod_path else "",
+                operation_type="dyndolod_pipeline_complete"
+                if success
+                else "dyndolod_pipeline_failed",
+                file_path=str(result.dyndolod_mod_path)
+                if result.dyndolod_mod_path
+                else "",
                 details={
                     "success": success,
                     "preset": preset,
-                    "texgen_success": result.texgen_result.success if result.texgen_result else False,
-                    "dyndolod_success": result.dyndolod_result.success if result.dyndolod_result else False,
-                    "texgen_mod_path": str(result.texgen_mod_path) if result.texgen_mod_path else None,
-                    "dyndolod_mod_path": str(result.dyndolod_mod_path) if result.dyndolod_mod_path else None,
+                    "texgen_success": result.texgen_result.success
+                    if result.texgen_result
+                    else False,
+                    "dyndolod_success": result.dyndolod_result.success
+                    if result.dyndolod_result
+                    else False,
+                    "texgen_mod_path": str(result.texgen_mod_path)
+                    if result.texgen_mod_path
+                    else None,
+                    "dyndolod_mod_path": str(result.dyndolod_mod_path)
+                    if result.dyndolod_mod_path
+                    else None,
                     "errors": result.errors,
                 },
             )
             logger.debug("Resultado de DynDOLOD registrado en journal")
         except Exception as e:
-            logger.warning("No se pudo registrar resultado de DynDOLOD en journal: %s", e)
-    
+            logger.warning(
+                "No se pudo registrar resultado de DynDOLOD en journal: %s", e
+            )
+
     async def _rollback_dyndolod_on_failure(
         self,
         snapshot_info: "SnapshotInfo",
         reason: str,
     ) -> None:
         """Ejecuta rollback automático en caso de fallo del pipeline DynDOLOD.
-        
+
         Args:
             snapshot_info: Información del snapshot creado antes del fallo.
             reason: Razón del rollback para logging.
         """
         logger.warning("Iniciando rollback de DynDOLOD pipeline (razón: %s)", reason)
-        
+
         try:
             # Restaurar estado desde snapshot
             dyndolod_esp = pathlib.Path(snapshot_info.original_path)
@@ -1354,28 +1428,28 @@ class SupervisorAgent:
                 snapshot_info.snapshot_path,
                 rollback_error,
             )
-    
+
     # =========================================================================
     # FASE 2: Parcheo Transaccional
     # =========================================================================
-    
+
     async def resolve_conflict_with_patch(
         self,
         report: ConflictReport,
         target_plugin: pathlib.Path,
     ) -> PatchResult:
         """FASE 2: Resuelve conflictos aplicando un parche con protocolo transaccional.
-        
+
         Protocolo (CRÍTICO - orden estricto):
-        
+
         Paso A: Crear punto de restauración
             - Invocar FileSnapshotManager.create_snapshot(target_plugin)
             - Guardar snapshot_path para rollback
-            
+
         Paso B: Ejecutar parcheo
             - Invocar PatchOrchestrator.resolve(report)
             - Si retorna plan con script, ejecutar via XEditRunner.execute_patch()
-            
+
         Paso C: Verificar resultado
             - Si xedit_exit_code != 0:
                 - Disparar RollbackManager.restore(snapshot_path)
@@ -1383,14 +1457,14 @@ class SupervisorAgent:
             - Si xedit_exit_code == 0:
                 - Confirmar éxito
                 - Loggear operación en journal
-        
+
         Args:
             report: ConflictReport con los conflictos detectados.
             target_plugin: Path al plugin objetivo del parcheo.
-            
+
         Returns:
             PatchResult con el resultado de la operación.
-            
+
         Raises:
             PatchingError: Si falla la creación del snapshot.
             PatchingError: Si falla la ejecución del parche (después de rollback).
@@ -1400,7 +1474,7 @@ class SupervisorAgent:
             target_plugin.name,
             report.total_conflicts,
         )
-        
+
         # PASO A: Crear snapshot antes de modificación
         try:
             snapshot_path = await self.snapshot_manager.create_snapshot(target_plugin)
@@ -1408,15 +1482,15 @@ class SupervisorAgent:
         except Exception as e:
             logger.error("Fallo al crear snapshot: %s", e)
             raise PatchingError(f"Snapshot falló: {e}") from e
-        
+
         # PASO B: Ejecutar parcheo
         try:
             # Asegurar que el orquestador esté inicializado
             orchestrator = self._ensure_patch_orchestrator()
-            
+
             # Resolver conflictos (genera plan)
             result = await orchestrator.resolve(report)
-            
+
             # Si el resultado es exitoso y hay output_path, ejecutar script
             if result.success and result.output_path and self._xedit_runner is not None:
                 # Determinar el tipo de estrategia desde el orquestador
@@ -1428,22 +1502,24 @@ class SupervisorAgent:
                         strategy_type = PatchStrategyType.EXECUTE_XEDIT_SCRIPT
                     elif strategy_name == "ForwardDeclaration":
                         strategy_type = PatchStrategyType.FORWARD_DECLARATION
-                
+
                 # Crear PatchPlan desde el resultado para ejecutar
                 plan = PatchPlan(
                     strategy_type=strategy_type,
-                    target_plugins=[p.plugin_a for p in report.plugin_pairs[:1]] if report.plugin_pairs else [],
+                    target_plugins=[p.plugin_a for p in report.plugin_pairs[:1]]
+                    if report.plugin_pairs
+                    else [],
                     output_plugin=str(result.output_path),
                     form_ids=[],
                     estimated_records=result.records_patched,
                     requires_hitl=False,
                 )
-                
+
                 try:
-                    script_result: ScriptExecutionResult = await self._xedit_runner.execute_patch(
-                        plan
+                    script_result: ScriptExecutionResult = (
+                        await self._xedit_runner.execute_patch(plan)
                     )
-                    
+
                     # Actualizar resultado con datos de ejecución
                     result = PatchResult(
                         success=script_result.exit_code == 0,
@@ -1452,7 +1528,9 @@ class SupervisorAgent:
                         conflicts_resolved=len(report.plugin_pairs),
                         xedit_exit_code=script_result.exit_code,
                         warnings=script_result.warnings,
-                        error=None if script_result.exit_code == 0 else script_result.stderr,
+                        error=None
+                        if script_result.exit_code == 0
+                        else script_result.stderr,
                     )
                 except Exception as script_error:
                     logger.error("Error ejecutando script xEdit: %s", script_error)
@@ -1461,7 +1539,7 @@ class SupervisorAgent:
                     raise PatchingError(
                         f"Ejecución de parche falló, rollback ejecutado: {script_error}"
                     ) from script_error
-                    
+
         except PatchingError:
             # Re-lanzar errores de parcheo conocidos
             raise
@@ -1470,7 +1548,7 @@ class SupervisorAgent:
             # PASO C (fallo): Rollback automático
             await self._rollback_on_failure(snapshot_path, target_plugin)
             raise PatchingError(f"Parcheo falló, rollback ejecutado: {e}") from e
-        
+
         # PASO C (verificación): Verificar código de salida
         if result.xedit_exit_code != 0:
             logger.error(
@@ -1481,34 +1559,34 @@ class SupervisorAgent:
             raise PatchingError(
                 f"xEdit falló con código {result.xedit_exit_code}: {result.error}"
             )
-        
+
         # Éxito: Loggear en journal
         await self._log_patch_success(report, target_plugin, result)
-        
+
         logger.info(
             "Parcheo exitoso: %d records procesados, %d conflictos resueltos",
             result.records_patched,
             result.conflicts_resolved,
         )
-        
+
         return result
-    
+
     async def _rollback_on_failure(
         self,
         snapshot_path: pathlib.Path,
         target: pathlib.Path,
     ) -> None:
         """Ejecuta rollback automático en caso de fallo de parcheo.
-        
+
         Este método es crítico para la integridad del sistema. Si el rollback
         falla, se loggea como CRITICAL porque el archivo puede estar corrupto.
-        
+
         Args:
             snapshot_path: Path al snapshot creado antes del fallo.
             target: Path al archivo objetivo que necesita restauración.
         """
         logger.warning("Iniciando rollback para %s", target.name)
-        
+
         try:
             await self.snapshot_manager.restore_snapshot(snapshot_path, target)
             logger.info("Rollback completado exitosamente")
@@ -1523,7 +1601,7 @@ class SupervisorAgent:
             raise PatchingError(
                 f"Rollback falló críticamente: {rollback_error}"
             ) from rollback_error
-    
+
     async def _log_patch_success(
         self,
         report: ConflictReport,
@@ -1531,7 +1609,7 @@ class SupervisorAgent:
         result: PatchResult,
     ) -> None:
         """Registra una operación de parcheo exitosa en el journal.
-        
+
         Args:
             report: Reporte de conflictos resueltos.
             target_plugin: Plugin modificado.
@@ -1547,7 +1625,9 @@ class SupervisorAgent:
                     "critical_conflicts": report.critical_conflicts,
                     "records_patched": result.records_patched,
                     "conflicts_resolved": result.conflicts_resolved,
-                    "output_path": str(result.output_path) if result.output_path else None,
+                    "output_path": str(result.output_path)
+                    if result.output_path
+                    else None,
                     "warnings": result.warnings,
                 },
             )
@@ -1556,8 +1636,11 @@ class SupervisorAgent:
             # No fallar la operación si el logging falla
             logger.warning("No se pudo registrar operación en journal: %s", e)
 
+
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    )
+
     supervisor = SupervisorAgent()
     # asyncio.run(supervisor.start()) # En producción

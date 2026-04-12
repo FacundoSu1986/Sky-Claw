@@ -8,12 +8,12 @@ Phase 2 Extensions:
 
 Usage:
     from sky_claw.xedit import XEditRunner, ScriptGenerator, ScriptExecutionResult
-    
+
     runner = XEditRunner(
         xedit_path=Path("SSEEdit.exe"),
         game_path=Path("Skyrim Special Edition"),
     )
-    
+
     # Generate and execute a dynamic script
     script = ScriptGenerator.generate_merge_script(
         output_plugin="Merged.esp",
@@ -34,7 +34,12 @@ from sky_claw.xedit.runner import (
     ScriptExecutionResult,
 )
 from sky_claw.xedit.output_parser import XEditOutputParser, XEditResult
-from sky_claw.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport, RecordConflict, PluginConflictPair
+from sky_claw.xedit.conflict_analyzer import (
+    ConflictAnalyzer,
+    ConflictReport,
+    RecordConflict,
+    PluginConflictPair,
+)
 from sky_claw.xedit.patch_orchestrator import (
     PatchingError,
     StrategySelectionError,

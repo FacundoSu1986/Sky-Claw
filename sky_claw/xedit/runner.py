@@ -47,14 +47,16 @@ _SAFE_FORM_ID = re.compile(r"^[0-9A-Fa-f]{6}:?[0-9A-Fa-f]{2}$")
 _SAFE_RECORD_TYPE = re.compile(r"^[A-Z_]{4}$")
 
 # Allowlist of xEdit CLI flags that Sky-Claw may pass.
-_ALLOWED_XEDIT_FLAGS: frozenset[str] = frozenset({
-    "-IKnowWhatImDoing",
-    "-autoload",
-    "-SSE",
-    "-quickclean",
-    "-noaliases",
-    "-nocrc",
-})
+_ALLOWED_XEDIT_FLAGS: frozenset[str] = frozenset(
+    {
+        "-IKnowWhatImDoing",
+        "-autoload",
+        "-SSE",
+        "-quickclean",
+        "-noaliases",
+        "-nocrc",
+    }
+)
 
 
 # =============================================================================
@@ -64,31 +66,37 @@ _ALLOWED_XEDIT_FLAGS: frozenset[str] = frozenset({
 
 class XEditError(Exception):
     """Base exception for xEdit operations."""
+
     pass
 
 
 class XEditNotFoundError(XEditError, FileNotFoundError):
     """Raised when the xEdit executable is not found."""
+
     pass
 
 
 class XEditValidationError(XEditError, ValueError):
     """Raised when input fails validation."""
+
     pass
 
 
 class XEditScriptError(XEditError):
     """Error en generación o ejecución de script dinámico."""
+
     pass
 
 
 class XEditWriteError(XEditError):
     """Error durante operación de escritura en plugin."""
+
     pass
 
 
 class XEditTimeoutError(XEditError, RuntimeError):
     """Raised when xEdit execution times out."""
+
     pass
 
 
@@ -100,7 +108,7 @@ class XEditTimeoutError(XEditError, RuntimeError):
 @dataclass
 class ScriptExecutionResult:
     """Resultado de ejecución de script xEdit.
-    
+
     Attributes:
         success: Si la ejecución fue exitosa (exit_code == 0).
         exit_code: Código de salida del proceso xEdit.
@@ -112,6 +120,7 @@ class ScriptExecutionResult:
         script_path: Path al script ejecutado (para debugging).
         execution_time: Tiempo de ejecución en segundos.
     """
+
     success: bool
     exit_code: int
     stdout: str
@@ -130,36 +139,36 @@ class ScriptExecutionResult:
 
 class ScriptGenerator:
     """Generador de scripts Pascal para xEdit.
-    
+
     Esta clase proporciona métodos para generar scripts Pascal dinámicamente
     basados en parámetros de parcheo. Los scripts generados son compatibles
     con xEdit (SSEEdit) y utilizan las funciones de mteFunctions.
-    
+
     Templates disponibles:
         - forward_record: Forward declaration de records entre plugins
         - merge_leveled_list: Merge de leveled lists (LVLI, LVLN, LVSP)
         - apply_patch: Aplicación de parches genéricos
-    
+
     Security:
         Todos los strings externos son escapados via _escape_pascal_string()
         para prevenir inyección de código Pascal.
     """
-    
+
     @staticmethod
     def _escape_pascal_string(val: str) -> str:
         """Escapa caracteres especiales para strings Pascal.
-        
+
         Previene inyección de código Pascal escapando caracteres que podrían:
         - Romper strings (comillas simples)
         - Inyectar código (comentarios // y bloques {})
         - Causar problemas de escape (backslashes)
-        
+
         Args:
             val: String a escapar.
-        
+
         Returns:
             String escapado seguro para incrustar en código Pascal.
-        
+
         Examples:
             >>> ScriptGenerator._escape_pascal_string("O'Reilly")
             "O''Reilly"
@@ -173,8 +182,8 @@ class ScriptGenerator:
         # Escape comillas simples (Pascal usa '' para representar ')
         escaped = escaped.replace("'", "''")
         return escaped
-    
-    TEMPLATE_FORWARD_RECORD = '''unit ForwardRecord;
+
+    TEMPLATE_FORWARD_RECORD = """unit ForwardRecord;
 uses mteFunctions, SysUtils;
 
 var
@@ -232,9 +241,9 @@ begin
 end;
 
 end.
-'''
+"""
 
-    TEMPLATE_MERGE_LEVELED_LIST = '''unit MergeLeveledList;
+    TEMPLATE_MERGE_LEVELED_LIST = """unit MergeLeveledList;
 uses mteFunctions, SysUtils;
 
 var
@@ -311,9 +320,9 @@ begin
 end;
 
 end.
-'''
+"""
 
-    TEMPLATE_APPLY_PATCH = '''unit ApplyPatch;
+    TEMPLATE_APPLY_PATCH = """unit ApplyPatch;
 uses mteFunctions, SysUtils;
 
 var
@@ -408,7 +417,7 @@ begin
 end;
 
 end.
-'''
+"""
 
     @staticmethod
     def generate_forward_script(
@@ -417,15 +426,15 @@ end.
         target: str,
     ) -> str:
         """Genera script para forward declaration de un record.
-        
+
         Args:
             form_id: FormID del record a forward (ej: "00012345").
             source: Nombre del plugin fuente.
             target: Nombre del plugin destino.
-        
+
         Returns:
             Script Pascal completo para forward declaration.
-        
+
         Raises:
             XEditScriptError: Si los parámetros son inválidos.
         """
@@ -436,23 +445,22 @@ end.
             raise XEditScriptError("source plugin is required")
         if not target:
             raise XEditScriptError("target plugin is required")
-        
+
         # Validar FormID (puede ser simple o con dos puntos)
         clean_form_id = form_id.replace(":", "")
         if not all(c in "0123456789ABCDEFabcdef" for c in clean_form_id):
             raise XEditScriptError(f"Invalid FormID format: {form_id}")
-        
+
         script = ScriptGenerator.TEMPLATE_FORWARD_RECORD.format(
             form_id=ScriptGenerator._escape_pascal_string(form_id),
             source_plugin=ScriptGenerator._escape_pascal_string(source),
             target_plugin=ScriptGenerator._escape_pascal_string(target),
         )
-        
+
         logger.debug(
-            "Generated forward script for FormID %s: %s -> %s",
-            form_id, source, target
+            "Generated forward script for FormID %s: %s -> %s", form_id, source, target
         )
-        
+
         return script
 
     @staticmethod
@@ -461,14 +469,14 @@ end.
         record_types: list[str],
     ) -> str:
         """Genera script para merge de leveled lists.
-        
+
         Args:
             output_plugin: Nombre del plugin de salida (ej: "SkyClaw_Patch.esp").
             record_types: Lista de tipos de record a mergear (ej: ["LVLI", "LVLN"]).
-        
+
         Returns:
             Script Pascal completo para merge de leveled lists.
-        
+
         Raises:
             XEditScriptError: Si los parámetros son inválidos.
         """
@@ -477,11 +485,11 @@ end.
             raise XEditScriptError("output_plugin is required")
         if not record_types:
             raise XEditScriptError("record_types is required")
-        
+
         # Validar nombre de plugin
         if not _SAFE_PLUGIN_NAME.match(output_plugin):
             raise XEditScriptError(f"Invalid output plugin name: {output_plugin}")
-        
+
         # Validar tipos de record
         valid_types = {"LVLI", "LVLN", "LVSP"}
         for rt in record_types:
@@ -489,19 +497,18 @@ end.
                 raise XEditScriptError(
                     f"Invalid record type: {rt}. Must be one of {valid_types}"
                 )
-        
+
         record_types_str = ",".join(record_types)
-        
+
         script = ScriptGenerator.TEMPLATE_MERGE_LEVELED_LIST.format(
             output_plugin=ScriptGenerator._escape_pascal_string(output_plugin),
             record_types=ScriptGenerator._escape_pascal_string(record_types_str),
         )
-        
+
         logger.debug(
-            "Generated merge script for %s -> %s",
-            record_types_str, output_plugin
+            "Generated merge script for %s -> %s", record_types_str, output_plugin
         )
-        
+
         return script
 
     @staticmethod
@@ -511,21 +518,21 @@ end.
         form_ids: list[str] | None = None,
     ) -> str:
         """Genera script genérico de aplicación de parches.
-        
+
         Args:
             output_plugin: Nombre del plugin de salida.
             record_types: Tipos de record a procesar (opcional).
             form_ids: FormIDs específicos a procesar (opcional).
-        
+
         Returns:
             Script Pascal completo para aplicar parches.
         """
         if not output_plugin:
             raise XEditScriptError("output_plugin is required")
-        
+
         # Construir filtro de records
         record_filter_lines = []
-        
+
         if record_types:
             for rt in record_types:
                 if not _SAFE_RECORD_TYPE.match(rt):
@@ -534,7 +541,7 @@ end.
                     )
                 escaped_rt = ScriptGenerator._escape_pascal_string(rt)
                 record_filter_lines.append(
-                    f'  if recordSig = \'{escaped_rt}\' then shouldProcess := True;'
+                    f"  if recordSig = '{escaped_rt}' then shouldProcess := True;"
                 )
 
         if form_ids:
@@ -545,67 +552,71 @@ end.
                     )
                 escaped_fid = ScriptGenerator._escape_pascal_string(fid)
                 record_filter_lines.append(
-                    f'  if formId = \'{escaped_fid}\' then shouldProcess := True;'
+                    f"  if formId = '{escaped_fid}' then shouldProcess := True;"
                 )
-        
+
         # Si no hay filtros específicos, procesar todo
         if not record_filter_lines:
-            record_filter_lines.append('  shouldProcess := True; // Process all records')
-        
+            record_filter_lines.append(
+                "  shouldProcess := True; // Process all records"
+            )
+
         record_filter = "\n".join(record_filter_lines)
-        
+
         script = ScriptGenerator.TEMPLATE_APPLY_PATCH.format(
             output_plugin=ScriptGenerator._escape_pascal_string(output_plugin),
             record_filter=record_filter,  # record_filter es generado internamente, no necesita escape
         )
-        
+
         logger.debug("Generated patch script for %s", output_plugin)
-        
+
         return script
 
     @staticmethod
     def generate_script_from_plan(patch_plan: "PatchPlan") -> str:
         """Genera un script Pascal basado en un PatchPlan.
-        
+
         Args:
             patch_plan: Plan de parcheo con toda la información necesaria.
-        
+
         Returns:
             Script Pascal generado según el tipo de estrategia.
-        
+
         Raises:
             XEditScriptError: Si el tipo de estrategia no es soportado.
         """
         from sky_claw.xedit.patch_orchestrator import PatchStrategyType
-        
+
         strategy = patch_plan.strategy_type
-        
+
         if strategy == PatchStrategyType.FORWARD_DECLARATION:
             # Generar script de forward declaration
             if not patch_plan.form_ids:
                 raise XEditScriptError("Forward declaration requires form_ids")
-            
+
             # Usar el primer FormID y los plugins del plan
             return ScriptGenerator.generate_forward_script(
                 form_id=patch_plan.form_ids[0],
-                source=patch_plan.target_plugins[0] if patch_plan.target_plugins else "",
+                source=patch_plan.target_plugins[0]
+                if patch_plan.target_plugins
+                else "",
                 target=patch_plan.output_plugin,
             )
-        
+
         elif strategy == PatchStrategyType.CREATE_MERGED_PATCH:
             # Generar script de merge para leveled lists
             return ScriptGenerator.generate_merge_script(
                 output_plugin=patch_plan.output_plugin,
                 record_types=["LVLI", "LVLN", "LVSP"],
             )
-        
+
         elif strategy == PatchStrategyType.EXECUTE_XEDIT_SCRIPT:
             # Generar script de parcheo genérico
             return ScriptGenerator.generate_patch_script(
                 output_plugin=patch_plan.output_plugin,
                 form_ids=patch_plan.form_ids if patch_plan.form_ids else None,
             )
-        
+
         else:
             raise XEditScriptError(f"Unsupported strategy type: {strategy}")
 
@@ -643,7 +654,7 @@ class XEditRunner:
         self._timeout = timeout
         self._validator = path_validator
         self._script_generator = ScriptGenerator()
-        
+
         # Ensure output directory exists
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -700,9 +711,7 @@ class XEditRunner:
         stdout_text, stderr_text, return_code = await self._execute_process(args)
 
         if return_code != 0:
-            logger.warning(
-                "xEdit exited with code %d: %s", return_code, stderr_text
-            )
+            logger.warning("xEdit exited with code %d: %s", return_code, stderr_text)
 
         return XEditOutputParser.parse(
             stdout=stdout_text,
@@ -738,7 +747,7 @@ class XEditRunner:
             XEditTimeoutError: Si la ejecución excede el timeout.
         """
         import time
-        
+
         start_time = time.monotonic()
 
         # Validar plugins
@@ -772,7 +781,11 @@ class XEditRunner:
                 script_path = pathlib.Path(script_file.name)
 
             logger.info("Created dynamic script: %s", script_path)
-            logger.debug("Script content (%d bytes):\n%s", len(script_content), script_content[:500])
+            logger.debug(
+                "Script content (%d bytes):\n%s",
+                len(script_content),
+                script_content[:500],
+            )
 
             # Construir comando
             cmd = self._build_write_command(script_path, plugins, flags)
@@ -804,7 +817,8 @@ class XEditRunner:
             if not result.success:
                 logger.warning(
                     "Dynamic script execution failed: exit_code=%d, errors=%d",
-                    return_code, len(errors)
+                    return_code,
+                    len(errors),
                 )
 
             return result
@@ -997,7 +1011,9 @@ class XEditRunner:
 
         logger.debug(
             "Parsed output: %d records, %d errors, %d warnings",
-            records_processed, len(errors), len(warnings)
+            records_processed,
+            len(errors),
+            len(warnings),
         )
 
         return records_processed, errors, warnings
@@ -1041,18 +1057,14 @@ class XEditRunner:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.communicate()
-            raise XEditTimeoutError(
-                f"xEdit timed out after {self._timeout}s"
-            )
+            raise XEditTimeoutError(f"xEdit timed out after {self._timeout}s")
 
         stdout_text = stdout.decode(errors="replace")
         stderr_text = stderr.decode(errors="replace")
 
         return stdout_text, stderr_text, proc.returncode or 0
 
-    def _validate_inputs(
-        self, script_name: str, plugins: list[str]
-    ) -> None:
+    def _validate_inputs(self, script_name: str, plugins: list[str]) -> None:
         """Validate script name and plugin names against injection."""
         if not _SAFE_SCRIPT_NAME.match(script_name):
             raise XEditValidationError(

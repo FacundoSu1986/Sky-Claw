@@ -27,12 +27,18 @@ logger = logging.getLogger("SkyClaw.TelegramDaemon")
 class TelegramDaemon:
     """
     TELEGRAM WS DAEMON (STANDARD 2026)
-    
+
     Asynchronous client for the Telegram Gateway.
     Orchestrates command injection into the LLM Router.
     """
-    def __init__(self, router, session, gateway_url="ws://localhost:8080",
-                 ui_broadcast: Optional["UIBroadcastServer"] = None):
+
+    def __init__(
+        self,
+        router,
+        session,
+        gateway_url="ws://localhost:8080",
+        ui_broadcast: Optional["UIBroadcastServer"] = None,
+    ):
         self.router = router
         self.session = session
         self.gateway_url = gateway_url
@@ -50,19 +56,28 @@ class TelegramDaemon:
             self._is_running = True
         backoff = 2.0
         logger.info(f"🚀 Iniciando TelegramDaemon (Cliente WS) -> {self.gateway_url}")
-        
+
         while self._is_running:
             try:
                 # Use a custom connection timeout to prevent hanging
                 async with websockets.connect(self.gateway_url, open_timeout=10) as ws:
                     self.ws = ws
-                    logger.info("✅ Enlace establecido con Telegram Gateway (Stateless Perimeter Layer).")
+                    logger.info(
+                        "✅ Enlace establecido con Telegram Gateway (Stateless Perimeter Layer)."
+                    )
                     backoff = 2.0  # Reset backoff upon successful connection
                     await self._listen_loop()
-            except (ConnectionClosed, ConnectionClosedError, ConnectionRefusedError, OSError) as e:
+            except (
+                ConnectionClosed,
+                ConnectionClosedError,
+                ConnectionRefusedError,
+                OSError,
+            ) as e:
                 if not self._is_running:
                     break
-                logger.warning(f"⚠️ Enlace perdido con Gateway ({type(e).__name__}). Reconectando en {backoff:.1f}s...")
+                logger.warning(
+                    f"⚠️ Enlace perdido con Gateway ({type(e).__name__}). Reconectando en {backoff:.1f}s..."
+                )
                 self.ws = None
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 1.5, 60.0)
@@ -84,26 +99,30 @@ class TelegramDaemon:
             try:
                 data = json.loads(message)
                 msg_id = data.get("id")
-                
+
                 # Zero Trust ACK (Mandatory by standard 2026)
                 ack = {
                     "id": msg_id,
                     "type": "ack",
                     "status": "received",
-                    "timestamp": time.time()
+                    "timestamp": time.time(),
                 }
                 await self.ws.send(json.dumps(ack))
-                
+
                 # Command injection for asynchronous processing
                 if data.get("type") == "command":
                     task = asyncio.create_task(self._inject_to_router(data))
                     task.add_done_callback(
-                        lambda t: logger.error(
-                            "Error no manejado en _inject_to_router: %s",
-                            t.exception(),
-                        ) if not t.cancelled() and t.exception() is not None else None
+                        lambda t: (
+                            logger.error(
+                                "Error no manejado en _inject_to_router: %s",
+                                t.exception(),
+                            )
+                            if not t.cancelled() and t.exception() is not None
+                            else None
+                        )
                     )
-                
+
             except json.JSONDecodeError:
                 logger.error("🚫 Recibido JSON malformado desde el Gateway.")
             except Exception as e:
@@ -114,30 +133,36 @@ class TelegramDaemon:
         payload = data.get("payload", {})
         text = payload.get("text")
         msg_id = data.get("id")
-        
+
         if not text:
             logger.debug(f"Payload vacío en mensaje {msg_id}. Ignorando.")
             return
 
         # Standardized chat session for Telegram bridge
         chat_id = f"tg-{data.get('metadata', {}).get('user_id', 'standard')}"
-        
+
         try:
             logger.debug(f"📥 Procesando comando [Telegram]: '{text[:60]}...'")
-            
+
             # Misión 2: Auditoría Zero-Trust Async
             is_safe = await self.guardian.execute_audit("telegram_payload", text)
             if not is_safe:
-                logger.warning("🚫 Auditoría AST falló. Comando descartado por políticas Zero-Trust.")
-                if self.ws and getattr(self.ws, 'open', False):
-                    err_msg = json.dumps({
-                        "id": str(uuid.uuid4()),
-                        "type": "error", 
-                        "payload": {"text": "🛡️ Sistema: Payload inyectado fue bloqueado preventivamente."}
-                    })
+                logger.warning(
+                    "🚫 Auditoría AST falló. Comando descartado por políticas Zero-Trust."
+                )
+                if self.ws and getattr(self.ws, "open", False):
+                    err_msg = json.dumps(
+                        {
+                            "id": str(uuid.uuid4()),
+                            "type": "error",
+                            "payload": {
+                                "text": "🛡️ Sistema: Payload inyectado fue bloqueado preventivamente."
+                            },
+                        }
+                    )
                     await self.ws.send(err_msg)
                 return
-            
+
             # 100% async non-blocking injection with telemetry
             async def _progress_callback(status: str, progress: int):
                 if self.ws and self.ws.open:
@@ -146,45 +171,47 @@ class TelegramDaemon:
                         "type": "telemetry",
                         "status": status,
                         "progress": progress,
-                        "metadata": {"reply_to": msg_id}
+                        "metadata": {"reply_to": msg_id},
                     }
                     await self.ws.send(json.dumps(telemetry))
 
             response = await self.router.chat(
-                text, 
-                self.session, 
+                text,
+                self.session,
                 chat_id=chat_id,
                 metadata=data.get("metadata", {}),
-                progress_callback=_progress_callback
+                progress_callback=_progress_callback,
             )
-            
+
             # Construct standard 2026 response payload
             if self.ws and self.ws.open:
                 res_payload = {
                     "id": str(uuid.uuid4()),
                     "type": "response",
                     "action": "reply",
-                    "payload": {
-                        "text": response
-                    },
+                    "payload": {"text": response},
                     "metadata": {
                         "reply_to": msg_id,
                         "channel": "telegram",
-                        "processed_at": time.time()
-                    }
+                        "processed_at": time.time(),
+                    },
                 }
                 await self.ws.send(json.dumps(res_payload))
-                logger.info(f"📤 Respuesta enviada al Gateway (ID Relacionado: {msg_id})")
+                logger.info(
+                    f"📤 Respuesta enviada al Gateway (ID Relacionado: {msg_id})"
+                )
 
             # ── NEW: Broadcast to NiceGUI UI clients ──
             if self.ui_broadcast:
-                await self.ui_broadcast.broadcast({
-                    "type": "agent_result",
-                    "action": "chat_response",
-                    "payload": {"text": response},
-                    "metadata": {"channel": "telegram", "reply_to": msg_id},
-                })
-                
+                await self.ui_broadcast.broadcast(
+                    {
+                        "type": "agent_result",
+                        "action": "chat_response",
+                        "payload": {"text": response},
+                        "metadata": {"channel": "telegram", "reply_to": msg_id},
+                    }
+                )
+
         except Exception as e:
             logger.exception(f"❌ Error en Bridge Agent (Injection Layer): {e}")
             if self.ws and self.ws.open:
@@ -192,7 +219,7 @@ class TelegramDaemon:
                     "type": "error",
                     "payload": {
                         "text": f"SISTEMA: Error en procesamiento del comando: {str(e)}"
-                    }
+                    },
                 }
                 await self.ws.send(json.dumps(err_payload))
 
@@ -201,10 +228,11 @@ class TelegramDaemon:
 # UI BROADCAST SERVER — WebSocket endpoint for NiceGUI clients
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class UIBroadcastServer:
     """
     Lightweight WS server that NiceGUI's AgentCommunicationClient connects to.
-    
+
     Validates X-Auth-Token on upgrade, then pushes AGENT_RESULT / BROADCAST
     events to all connected UI clients.
     """
@@ -262,16 +290,13 @@ class UIBroadcastServer:
         token = websocket.request_headers.get("X-Auth-Token", "")
         if not self._auth.validate(token):
             self._logger.warning(
-                f"🚫 Rejected UI client — invalid token from "
-                f"{websocket.remote_address}"
+                f"🚫 Rejected UI client — invalid token from {websocket.remote_address}"
             )
             await websocket.close(4001, "Unauthorized")
             return
 
         self._clients.add(websocket)
-        self._logger.info(
-            f"✅ UI client connected ({len(self._clients)} total)"
-        )
+        self._logger.info(f"✅ UI client connected ({len(self._clients)} total)")
 
         try:
             # Listen for commands from the UI (chat messages, etc.)
@@ -286,12 +311,16 @@ class UIBroadcastServer:
                             f"📥 UI command received: {data.get('command')}"
                         )
                         # Emit ack
-                        await websocket.send(json.dumps({
-                            "id": data.get("id", str(uuid.uuid4())),
-                            "type": "ack",
-                            "status": "received",
-                            "timestamp": time.time(),
-                        }))
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "id": data.get("id", str(uuid.uuid4())),
+                                    "type": "ack",
+                                    "status": "received",
+                                    "timestamp": time.time(),
+                                }
+                            )
+                        )
 
                 except json.JSONDecodeError:
                     self._logger.error("Malformed JSON from UI client.")
@@ -303,4 +332,3 @@ class UIBroadcastServer:
             self._logger.info(
                 f"UI client disconnected ({len(self._clients)} remaining)"
             )
-

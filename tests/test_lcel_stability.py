@@ -4,6 +4,7 @@ test_lcel_stability.py - Pruebas de estabilidad para la integración LCEL.
 Verifica que la lógica de importación condicional sea robusta y que no existan
 errores de dependencias residuales.
 """
+
 import sys
 import os
 import traceback
@@ -21,11 +22,22 @@ def test_core_imports():
     print("=" * 60)
     try:
         from sky_claw.core import (  # noqa: F401
-            CircuitBreakerTripped, WSLInteropError, DatabaseAgent,
-            ModMetadata, ScrapingQuery, SecurityAuditRequest, SecurityAuditResponse,
-            AgentToolRequest, AgentToolResponse, RouteClassification,
-            validate_input, validate_output, validate_contract, get_contract_schema
+            CircuitBreakerTripped,
+            WSLInteropError,
+            DatabaseAgent,
+            ModMetadata,
+            ScrapingQuery,
+            SecurityAuditRequest,
+            SecurityAuditResponse,
+            AgentToolRequest,
+            AgentToolResponse,
+            RouteClassification,
+            validate_input,
+            validate_output,
+            validate_contract,
+            get_contract_schema,
         )
+
         print("[PASS] All core module imports successful")
         return True
     except ImportError as e:
@@ -42,9 +54,14 @@ def test_agent_imports():
     print("=" * 60)
     try:
         from sky_claw.agent import (  # noqa: F401
-            AsyncToolRegistry, LLMRouter, ToolExecutor, PromptComposer, 
-            ChainBuilder, RouteClassification
+            AsyncToolRegistry,
+            LLMRouter,
+            ToolExecutor,
+            PromptComposer,
+            ChainBuilder,
+            RouteClassification,
         )
+
         print("[PASS] All agent module imports successful")
         return True
     except ImportError as e:
@@ -61,6 +78,7 @@ def test_lcel_conditional_import():
     print("=" * 60)
     try:
         from sky_claw.agent.lcel_chains import LANGCHAIN_AVAILABLE
+
         print(f"[INFO] LANGCHAIN_AVAILABLE = {LANGCHAIN_AVAILABLE}")
         if not LANGCHAIN_AVAILABLE:
             print("[PASS] Graceful degradation: LangChain not installed, using stubs")
@@ -80,42 +98,44 @@ def test_route_classification():
     print("Test 4: RouteClassification Validation")
     print("=" * 60)
     from sky_claw.core.schemas import RouteClassification
-    
+
     # Test 4a: Valid classification
     try:
         route = RouteClassification(
-            intent='CONSULTA_MODDING',
+            intent="CONSULTA_MODDING",
             confidence=0.85,
-            target_agent='SupervisorAgent',
-            requires_context=True
+            target_agent="SupervisorAgent",
+            requires_context=True,
         )
-        print(f"[PASS] Valid route created: intent={route.intent}, confidence={route.confidence}")
+        print(
+            f"[PASS] Valid route created: intent={route.intent}, confidence={route.confidence}"
+        )
     except Exception as e:
         print(f"[FAIL] Valid route error: {e}")
         return False
-    
+
     # Test 4b: Invalid confidence (out of range)
     try:
         route = RouteClassification(
-            intent='CHAT_GENERAL',
-            confidence=1.5  # Invalid: > 1.0
+            intent="CHAT_GENERAL",
+            confidence=1.5,  # Invalid: > 1.0
         )
         print("[FAIL] Should have failed for invalid confidence")
         return False
     except Exception as e:
         print(f"[PASS] Correctly rejected invalid confidence: {type(e).__name__}")
-    
+
     # Test 4c: Invalid intent
     try:
         route = RouteClassification(
-            intent='INVALID_INTENT',  # Invalid intent
-            confidence=0.5
+            intent="INVALID_INTENT",  # Invalid intent
+            confidence=0.5,
         )
         print("[FAIL] Should have failed for invalid intent")
         return False
     except Exception as e:
         print(f"[PASS] Correctly rejected invalid intent: {type(e).__name__}")
-    
+
     return True
 
 
@@ -127,8 +147,11 @@ def test_tool_executor():
     print("=" * 60)
     try:
         from sky_claw.agent.lcel_chains import ToolExecutor
-        executor = ToolExecutor(tool_name='test_tool', tool_description='Test description')
-        result = executor({'param': 'value'})
+
+        executor = ToolExecutor(
+            tool_name="test_tool", tool_description="Test description"
+        )
+        result = executor({"param": "value"})
         print(f"[PASS] ToolExecutor executed successfully: {result[:50]}...")
         return True
     except Exception as e:
@@ -145,24 +168,23 @@ def test_prompt_composer():
     print("=" * 60)
     try:
         from sky_claw.agent.lcel_chains import PromptComposer
-        composer = PromptComposer(system_prompt='Test system prompt')
-        
+
+        composer = PromptComposer(system_prompt="Test system prompt")
+
         # Test tool prompt
         prompt = composer.compose_tool_prompt(
-            tool_name='test_tool',
-            tool_input={'query': 'test'},
-            tool_description='Test description'
+            tool_name="test_tool",
+            tool_input={"query": "test"},
+            tool_description="Test description",
         )
         print(f"[PASS] Tool prompt composed with {len(prompt)} messages")
-        
+
         # Test RAG prompt
         rag_prompt = composer.compose_rag_prompt(
-            query='test query',
-            context='test context',
-            sources=['source1', 'source2']
+            query="test query", context="test context", sources=["source1", "source2"]
         )
         print(f"[PASS] RAG prompt composed with {len(rag_prompt)} messages")
-        
+
         return True
     except Exception as e:
         print(f"[FAIL] PromptComposer error: {e}")
@@ -178,21 +200,22 @@ def test_chain_builder():
     print("=" * 60)
     try:
         from sky_claw.agent.lcel_chains import ChainBuilder, ToolExecutor
-        executor = ToolExecutor(tool_name='test', tool_description='Test')
+
+        executor = ToolExecutor(tool_name="test", tool_description="Test")
         builder = ChainBuilder(tool_executor=executor)
-        
+
         # Test tool chain creation
-        chain = builder.create_tool_chain('test_tool', 'Test description')
+        chain = builder.create_tool_chain("test_tool", "Test description")
         print(f"[PASS] Tool chain created, type: {type(chain).__name__}")
-        
+
         # Test sequential chain
         steps = [
-            {'tool': 'step1', 'description': 'First step'},
-            {'tool': 'step2', 'description': 'Second step'}
+            {"tool": "step1", "description": "First step"},
+            {"tool": "step2", "description": "Second step"},
         ]
-        seq_chain = builder.create_sequential_chain(steps, 'Test task')
+        seq_chain = builder.create_sequential_chain(steps, "Test task")
         print(f"[PASS] Sequential chain created, type: {type(seq_chain).__name__}")
-        
+
         return True
     except Exception as e:
         print(f"[FAIL] ChainBuilder error: {e}")
@@ -208,7 +231,7 @@ def main():
     print("*" * 60)
     print(f"Python version: {sys.version}")
     print()
-    
+
     results = []
     results.append(("Core Imports", test_core_imports()))
     results.append(("Agent Imports", test_agent_imports()))
@@ -217,7 +240,7 @@ def main():
     results.append(("ToolExecutor", test_tool_executor()))
     results.append(("PromptComposer", test_prompt_composer()))
     results.append(("ChainBuilder", test_chain_builder()))
-    
+
     print()
     print("*" * 60)
     print("TEST RESULTS SUMMARY")
@@ -231,10 +254,10 @@ def main():
             passed += 1
         else:
             failed += 1
-    
+
     print()
     print(f"Total: {passed} passed, {failed} failed")
-    
+
     if failed == 0:
         print()
         print("=" * 60)

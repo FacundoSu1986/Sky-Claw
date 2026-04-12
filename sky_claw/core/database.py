@@ -106,18 +106,25 @@ class DatabaseAgent:
 
     async def get_circuit_breaker_state(self, domain: str) -> dict:
         conn = await self._get_conn()
-        async with conn.execute("SELECT * FROM scraper_state WHERE domain = ?", (domain,)) as cursor:
+        async with conn.execute(
+            "SELECT * FROM scraper_state WHERE domain = ?", (domain,)
+        ) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else {"failures": 0, "locked_until": 0}
 
-    async def update_circuit_breaker(self, domain: str, failures: int, locked_until: float):
+    async def update_circuit_breaker(
+        self, domain: str, failures: int, locked_until: float
+    ):
         conn = await self._get_conn()
-        await conn.execute("""
+        await conn.execute(
+            """
             INSERT INTO scraper_state (domain, failures, locked_until) 
             VALUES (?, ?, ?)
             ON CONFLICT(domain) DO UPDATE SET 
             failures=excluded.failures, locked_until=excluded.locked_until
-        """, (domain, failures, locked_until))
+        """,
+            (domain, failures, locked_until),
+        )
         await conn.commit()
 
     # ─────────────────────────────────────────────────────────────────────
@@ -126,18 +133,23 @@ class DatabaseAgent:
 
     async def get_memory(self, key: str) -> Optional[str]:
         conn = await self._get_conn()
-        async with conn.execute("SELECT value FROM agent_memory WHERE key = ?", (key,)) as cursor:
+        async with conn.execute(
+            "SELECT value FROM agent_memory WHERE key = ?", (key,)
+        ) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else None
 
     async def set_memory(self, key: str, value: str, updated_at: float):
         conn = await self._get_conn()
-        await conn.execute("""
+        await conn.execute(
+            """
             INSERT INTO agent_memory (key, value, updated_at) 
             VALUES (?, ?, ?)
             ON CONFLICT(key) DO UPDATE SET 
             value=excluded.value, updated_at=excluded.updated_at
-        """, (key, value, updated_at))
+        """,
+            (key, value, updated_at),
+        )
         await conn.commit()
 
     # ─────────────────────────────────────────────────────────────────────

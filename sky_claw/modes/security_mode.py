@@ -6,7 +6,9 @@ from sky_claw.app_context import AppContext
 async def _run_security(ctx: AppContext, command_str: str | None) -> None:
     """Ejecuta operaciones de auditoría Purple Team desde la CLI."""
     if not command_str:
-        print("Uso: python -m sky_claw --mode security 'scan <path>' o 'approve <path>'")
+        print(
+            "Uso: python -m sky_claw --mode security 'scan <path>' o 'approve <path>'"
+        )
         return
 
     parts = command_str.split(maxsplit=1)
@@ -27,12 +29,16 @@ async def _run_security(ctx: AppContext, command_str: str | None) -> None:
 
         for find in result.get("findings", []):
             severity = find.get("severity", "LOW")
-            print(f"[{severity}] {find.get('message')} ({find.get('file')}:{find.get('line')})")
+            print(
+                f"[{severity}] {find.get('message')} ({find.get('file')}:{find.get('line')})"
+            )
 
         if result.get("summary", {}).get("is_safe"):
             print("\n✅ El recurso es seguro según las políticas de Abril 2026.")
         else:
-            print("\n🔴 SE HAN DETECTADO RIESGOS CRÍTICOS. Se recomienda revisión manual.")
+            print(
+                "\n🔴 SE HAN DETECTADO RIESGOS CRÍTICOS. Se recomienda revisión manual."
+            )
 
     elif action == "approve":
         GovernanceManager.get_instance().approve_file(path_str)

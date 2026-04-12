@@ -53,11 +53,11 @@ class TelegramSender:
         self._url = TELEGRAM_API_BASE.format(token=bot_token)
 
     async def send(
-        self, 
-        chat_id: int, 
-        text: str, 
+        self,
+        chat_id: int,
+        text: str,
         reply_markup: dict[str, Any] | None = None,
-        parse_mode: str | None = None
+        parse_mode: str | None = None,
     ) -> None:
         """Send a message to a Telegram chat.
 
@@ -81,31 +81,28 @@ class TelegramSender:
             await self._send_chunk(chat_id, chunk, markup, parse_mode)
 
     async def _send_chunk(
-        self, 
-        chat_id: int, 
-        text: str, 
+        self,
+        chat_id: int,
+        text: str,
         reply_markup: dict[str, Any] | None = None,
-        parse_mode: str | None = None
+        parse_mode: str | None = None,
     ) -> None:
         """Send a single message chunk via the Telegram API."""
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": parse_mode or "HTML"
-        }
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode or "HTML"}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
-            
+
         url = self._url + "sendMessage"
         resp = await self._gateway.request(
-            "POST", url, self._session, json=payload,
+            "POST",
+            url,
+            self._session,
+            json=payload,
         )
         async with resp:
             if resp.status != 200:
                 body = await resp.text()
-                raise TelegramSendError(
-                    f"Telegram API returned {resp.status}: {body}"
-                )
+                raise TelegramSendError(f"Telegram API returned {resp.status}: {body}")
             self._record_send(chat_id)
 
     async def _wait_for_rate_limit(self, chat_id: int) -> None:
@@ -160,7 +157,13 @@ class TelegramSender:
 
         return chunks
 
-    async def edit_message(self, chat_id: int, message_id: int, text: str, reply_markup: dict[str, Any] | None = None) -> None:
+    async def edit_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
         """Edit an existing Telegram message."""
         payload = {
             "chat_id": chat_id,
@@ -171,7 +174,10 @@ class TelegramSender:
             payload["reply_markup"] = reply_markup
         url = self._url + "editMessageText"
         resp = await self._gateway.request(
-            "POST", url, self._session, json=payload,
+            "POST",
+            url,
+            self._session,
+            json=payload,
         )
         async with resp:
             if resp.status != 200:

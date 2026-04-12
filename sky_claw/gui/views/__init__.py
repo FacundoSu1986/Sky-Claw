@@ -39,21 +39,21 @@ from .pages.dashboard_page import render_dashboard, render_dashboard_page_conten
 
 __all__ = [
     # Componentes atómicos
-    'create_stat_card',
-    'create_feature_card',
-    'create_cta_button',
-    'create_mod_list_item',
-    'create_chat_message',
+    "create_stat_card",
+    "create_feature_card",
+    "create_cta_button",
+    "create_mod_list_item",
+    "create_chat_message",
     # Layout
-    'create_sidebar',
-    'create_header',
+    "create_sidebar",
+    "create_header",
     # Secciones
-    'create_stats_section',
-    'create_features_section',
-    'create_cta_section',
-    'create_mods_preview',
-    'create_chat_preview',
+    "create_stats_section",
+    "create_features_section",
+    "create_cta_section",
+    "create_mods_preview",
+    "create_chat_preview",
     # Páginas
-    'render_dashboard',
-    'render_dashboard_page_content',
+    "render_dashboard",
+    "render_dashboard_page_content",
 ]

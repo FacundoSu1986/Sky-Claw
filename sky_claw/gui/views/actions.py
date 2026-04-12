@@ -25,12 +25,12 @@ logger = logging.getLogger(__name__)
 
 
 # ── Rune symbols for Nordic aesthetic ─────────────────────────────────
-_RUNE_SORT = "ᚠ"      # Fehu — order, wealth
-_RUNE_CLEAN = "ᚱ"     # Raido — journey, cleansing
-_RUNE_PATCH = "ᛞ"     # Dagaz — breakthrough, synthesis
-_RUNE_ANIM = "ᛏ"      # Tiwaz — warrior, animation
-_RUNE_LOD = "ᛗ"       # Mannaz — human, landscape
-_RUNE_PREPARE = "ᚦ"   # Thurisaz — Thor's hammer, power
+_RUNE_SORT = "ᚠ"  # Fehu — order, wealth
+_RUNE_CLEAN = "ᚱ"  # Raido — journey, cleansing
+_RUNE_PATCH = "ᛞ"  # Dagaz — breakthrough, synthesis
+_RUNE_ANIM = "ᛏ"  # Tiwaz — warrior, animation
+_RUNE_LOD = "ᛗ"  # Mannaz — human, landscape
+_RUNE_PREPARE = "ᚦ"  # Thurisaz — Thor's hammer, power
 
 
 # ── Action Definitions ────────────────────────────────────────────────
@@ -95,15 +95,19 @@ def build_actions_panel(
     """
     # ── Master Button: "Preparar Juego" ───────────────────────────────
     with ui.element("div").classes("sky-action-master"):
-        btn = ui.button(
-            f"{_RUNE_PREPARE}  PREPARAR JUEGO",
-        ).classes("sky-action-master-btn").props("unelevated no-caps")
+        btn = (
+            ui.button(
+                f"{_RUNE_PREPARE}  PREPARAR JUEGO",
+            )
+            .classes("sky-action-master-btn")
+            .props("unelevated no-caps")
+        )
         if on_prepare_game:
             btn.on("click", lambda: asyncio.create_task(on_prepare_game()))
 
-        ui.label(
-            "Ejecuta toda la secuencia de optimización en orden"
-        ).classes("sky-action-master-desc")
+        ui.label("Ejecuta toda la secuencia de optimización en orden").classes(
+            "sky-action-master-desc"
+        )
 
     ui.separator().classes("sky-separator")
 
@@ -147,18 +151,24 @@ def _build_single_action(
         with ui.row().classes("sky-action-footer items-center justify-between"):
             if is_available:
                 ui.badge("Disponible", color="positive").props("outline")
-                btn = ui.button("Ejecutar").classes(
-                    "sky-action-btn"
-                ).props("unelevated dense no-caps")
+                btn = (
+                    ui.button("Ejecutar")
+                    .classes("sky-action-btn")
+                    .props("unelevated dense no-caps")
+                )
                 if on_action:
                     btn.on("click", lambda k=key: asyncio.create_task(on_action(k)))
             else:
                 ui.badge("No instalado", color="warning").props("outline")
-                btn = ui.button("Instalar").classes(
-                    "sky-action-btn sky-action-btn--install"
-                ).props("unelevated dense no-caps")
+                btn = (
+                    ui.button("Instalar")
+                    .classes("sky-action-btn sky-action-btn--install")
+                    .props("unelevated dense no-caps")
+                )
                 if on_install_tool:
-                    btn.on("click", lambda k=key: asyncio.create_task(on_install_tool(k)))
+                    btn.on(
+                        "click", lambda k=key: asyncio.create_task(on_install_tool(k))
+                    )
 
         # Technical name (subtle)
         ui.label(action_def["technical_name"]).classes("sky-action-tech-name")

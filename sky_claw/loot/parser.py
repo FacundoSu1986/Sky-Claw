@@ -27,7 +27,9 @@ class LOOTResult:
 _PLUGIN_LINE = re.compile(r"^\s*\d+\.\s+(.+\.es[pmlt])$", re.IGNORECASE)
 _WARNING_LINE = re.compile(r"(?:warn(?:ing)?)\s*:\s*(.+)", re.IGNORECASE)
 _ERROR_LINE = re.compile(r"(?:error)\s*:\s*(.+)", re.IGNORECASE)
-_PATCH_REQ_LINE = re.compile(r"requires (?:a )?patch for\s+(.+?)(?:\.|$)", re.IGNORECASE)
+_PATCH_REQ_LINE = re.compile(
+    r"requires (?:a )?patch for\s+(.+?)(?:\.|$)", re.IGNORECASE
+)
 
 
 class LOOTOutputParser:
@@ -70,15 +72,17 @@ class LOOTOutputParser:
             if warn_match:
                 warn_text = warn_match.group(1).strip()
                 warnings.append(warn_text)
-                
+
                 patch_match = _PATCH_REQ_LINE.search(warn_text)
                 if patch_match:
                     target_mod = patch_match.group(1).strip()
-                    missing_patches.append({
-                        "source_plugin": current_plugin,
-                        "target_mod": target_mod,
-                        "raw_message": warn_text
-                    })
+                    missing_patches.append(
+                        {
+                            "source_plugin": current_plugin,
+                            "target_mod": target_mod,
+                            "raw_message": warn_text,
+                        }
+                    )
                 continue
 
             err_match = _ERROR_LINE.match(line)

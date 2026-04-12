@@ -79,9 +79,7 @@ class TestWebChatEndpoint:
 
     @pytest.mark.asyncio
     async def test_chat_router_error_returns_500(self, client, mock_router) -> None:
-        mock_router.chat = AsyncMock(
-            side_effect=RuntimeError("LLM failed")
-        )
+        mock_router.chat = AsyncMock(side_effect=RuntimeError("LLM failed"))
         resp = await client.post(
             "/api/chat",
             json={"message": "test"},

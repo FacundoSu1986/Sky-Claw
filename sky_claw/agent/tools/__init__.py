@@ -110,7 +110,11 @@ class AsyncToolRegistry:
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         return [
-            {"name": td.name, "description": td.description, "input_schema": td.input_schema}
+            {
+                "name": td.name,
+                "description": td.description,
+                "input_schema": td.input_schema,
+            }
             for td in self._tools.values()
         ]
 
@@ -135,14 +139,16 @@ class AsyncToolRegistry:
             result = await runner.sort()
         except Exception as exc:
             return json.dumps({"error": str(exc)})
-        return json.dumps({
-            "profile": profile,
-            "success": result.success,
-            "return_code": result.return_code,
-            "sorted_plugins": result.sorted_plugins,
-            "warnings": result.warnings,
-            "errors": result.errors,
-        })
+        return json.dumps(
+            {
+                "profile": profile,
+                "success": result.success,
+                "return_code": result.return_code,
+                "sorted_plugins": result.sorted_plugins,
+                "warnings": result.warnings,
+                "errors": result.errors,
+            }
+        )
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> str:
         td = self._tools.get(name)
@@ -155,70 +161,146 @@ class AsyncToolRegistry:
         self._tools["search_mod"] = ToolDescriptor(
             name="search_mod",
             description="Search the local mod registry by name.",
-            input_schema={"type": "object", "properties": {"mod_name": {"type": "string"}}, "required": ["mod_name"]},
+            input_schema={
+                "type": "object",
+                "properties": {"mod_name": {"type": "string"}},
+                "required": ["mod_name"],
+            },
             fn=lambda mod_name: search_mod(self._registry, mod_name),
         )
         self._tools["install_mod"] = ToolDescriptor(
             name="install_mod",
             description="Register a mod in the database via the SyncEngine.",
-            input_schema={"type": "object", "properties": {"nexus_id": {"type": "integer"}, "version": {"type": "string"}}, "required": ["nexus_id", "version"]},
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "nexus_id": {"type": "integer"},
+                    "version": {"type": "string"},
+                },
+                "required": ["nexus_id", "version"],
+            },
             fn=lambda nexus_id, version: install_mod(self._registry, nexus_id, version),
         )
         # Nexus
         self._tools["download_mod"] = ToolDescriptor(
             name="download_mod",
             description="Download a file from Nexus Mods with HITL approval.",
-            input_schema={"type": "object", "properties": {"nexus_id": {"type": "integer"}, "file_id": {"type": "integer"}}, "required": ["nexus_id"]},
-            fn=lambda nexus_id, file_id=None: download_mod(self._downloader, self._hitl, self._sync_engine, nexus_id, file_id),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "nexus_id": {"type": "integer"},
+                    "file_id": {"type": "integer"},
+                },
+                "required": ["nexus_id"],
+            },
+            fn=lambda nexus_id, file_id=None: download_mod(
+                self._downloader, self._hitl, self._sync_engine, nexus_id, file_id
+            ),
         )
         # System
         self._tools["check_load_order"] = ToolDescriptor(
             name="check_load_order",
             description="Read the MO2 modlist for a profile.",
-            input_schema={"type": "object", "properties": {"profile": {"type": "string"}}, "required": ["profile"]},
+            input_schema={
+                "type": "object",
+                "properties": {"profile": {"type": "string"}},
+                "required": ["profile"],
+            },
             fn=lambda profile: check_load_order(self._mo2, profile),
         )
         self._tools["detect_conflicts"] = ToolDescriptor(
             name="detect_conflicts",
             description="Compare masters of active ESP plugins.",
-            input_schema={"type": "object", "properties": {"profile": {"type": "string"}}, "required": ["profile"]},
+            input_schema={
+                "type": "object",
+                "properties": {"profile": {"type": "string"}},
+                "required": ["profile"],
+            },
             fn=lambda profile: detect_conflicts(self._registry, self._mo2, profile),
         )
         self._tools["run_loot_sort"] = ToolDescriptor(
             name="run_loot_sort",
             description="Invoke LOOT to sort load order.",
-            input_schema={"type": "object", "properties": {"profile": {"type": "string"}}, "required": ["profile"]},
-            fn=lambda profile: run_loot_sort(self._mo2, self._loot_runner, self._loot_exe, profile),
+            input_schema={
+                "type": "object",
+                "properties": {"profile": {"type": "string"}},
+                "required": ["profile"],
+            },
+            fn=lambda profile: run_loot_sort(
+                self._mo2, self._loot_runner, self._loot_exe, profile
+            ),
         )
         self._tools["run_xedit_script"] = ToolDescriptor(
             name="run_xedit_script",
             description="Run an xEdit script in headless mode.",
-            input_schema={"type": "object", "properties": {"script_name": {"type": "string"}, "plugins": {"type": "array", "items": {"type": "string"}}}, "required": ["script_name", "plugins"]},
-            fn=lambda script_name, plugins: run_xedit_script(self._xedit_runner, script_name, plugins),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "script_name": {"type": "string"},
+                    "plugins": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["script_name", "plugins"],
+            },
+            fn=lambda script_name, plugins: run_xedit_script(
+                self._xedit_runner, script_name, plugins
+            ),
         )
         self._tools["preview_mod_installer"] = ToolDescriptor(
             name="preview_mod_installer",
             description="Preview FOMOD options for a mod archive.",
-            input_schema={"type": "object", "properties": {"archive_path": {"type": "string"}}, "required": ["archive_path"]},
-            fn=lambda archive_path: preview_mod_installer(self._fomod_installer, archive_path),
+            input_schema={
+                "type": "object",
+                "properties": {"archive_path": {"type": "string"}},
+                "required": ["archive_path"],
+            },
+            fn=lambda archive_path: preview_mod_installer(
+                self._fomod_installer, archive_path
+            ),
         )
         self._tools["install_mod_from_archive"] = ToolDescriptor(
             name="install_mod_from_archive",
             description="Install a mod from archive into MO2.",
-            input_schema={"type": "object", "properties": {"archive_path": {"type": "string"}, "selections": {"type": "object"}}, "required": ["archive_path"]},
-            fn=lambda archive_path, selections=None: install_mod_from_archive(self._mo2, self._fomod_installer, self._hitl, archive_path, selections),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "archive_path": {"type": "string"},
+                    "selections": {"type": "object"},
+                },
+                "required": ["archive_path"],
+            },
+            fn=lambda archive_path, selections=None: install_mod_from_archive(
+                self._mo2, self._fomod_installer, self._hitl, archive_path, selections
+            ),
         )
         self._tools["resolve_fomod"] = ToolDescriptor(
             name="resolve_fomod",
             description="Resolve FOMOD installation options.",
-            input_schema={"type": "object", "properties": {"archive_path": {"type": "string"}, "selections": {"type": "object"}}, "required": ["archive_path"]},
-            fn=lambda archive_path, selections=None: resolve_fomod(self._fomod_installer, archive_path, selections),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "archive_path": {"type": "string"},
+                    "selections": {"type": "object"},
+                },
+                "required": ["archive_path"],
+            },
+            fn=lambda archive_path, selections=None: resolve_fomod(
+                self._fomod_installer, archive_path, selections
+            ),
         )
         self._tools["analyze_esp_conflicts"] = ToolDescriptor(
             name="analyze_esp_conflicts",
             description="Analyze record-level ESP conflicts.",
-            input_schema={"type": "object", "properties": {"profile": {"type": "string"}, "plugins": {"type": "array", "items": {"type": "string"}}}, "required": ["profile"]},
-            fn=lambda profile, plugins=None: analyze_esp_conflicts(self._mo2, self._xedit_runner, profile, plugins),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "profile": {"type": "string"},
+                    "plugins": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["profile"],
+            },
+            fn=lambda profile, plugins=None: analyze_esp_conflicts(
+                self._mo2, self._xedit_runner, profile, plugins
+            ),
         )
         self._tools["run_pandora"] = ToolDescriptor(
             name="run_pandora",
@@ -254,8 +336,14 @@ class AsyncToolRegistry:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "group": {"type": "string", "description": "BodySlide preset group name."},
-                    "output_path": {"type": "string", "description": "Output directory for generated meshes."},
+                    "group": {
+                        "type": "string",
+                        "description": "BodySlide preset group name.",
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Output directory for generated meshes.",
+                    },
                 },
             },
             fn=lambda group="CBBE", output_path="meshes": run_bodyslide_batch_direct(
@@ -265,19 +353,41 @@ class AsyncToolRegistry:
         self._tools["uninstall_mod"] = ToolDescriptor(
             name="uninstall_mod",
             description="Uninstall a mod completely.",
-            input_schema={"type": "object", "properties": {"mod_name": {"type": "string"}, "profile": {"type": "string"}}, "required": ["mod_name"]},
-            fn=lambda mod_name, profile="Default": uninstall_mod(self._mo2, mod_name, profile),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "mod_name": {"type": "string"},
+                    "profile": {"type": "string"},
+                },
+                "required": ["mod_name"],
+            },
+            fn=lambda mod_name, profile="Default": uninstall_mod(
+                self._mo2, mod_name, profile
+            ),
         )
         self._tools["toggle_mod"] = ToolDescriptor(
             name="toggle_mod",
             description="Enable or disable an installed mod.",
-            input_schema={"type": "object", "properties": {"mod_name": {"type": "string"}, "enable": {"type": "boolean"}, "profile": {"type": "string"}}, "required": ["mod_name", "enable"]},
-            fn=lambda mod_name, enable, profile="Default": toggle_mod(self._mo2, mod_name, enable, profile),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "mod_name": {"type": "string"},
+                    "enable": {"type": "boolean"},
+                    "profile": {"type": "string"},
+                },
+                "required": ["mod_name", "enable"],
+            },
+            fn=lambda mod_name, enable, profile="Default": toggle_mod(
+                self._mo2, mod_name, enable, profile
+            ),
         )
         self._tools["launch_game"] = ToolDescriptor(
             name="launch_game",
             description="Launch Skyrim via MO2.",
-            input_schema={"type": "object", "properties": {"profile": {"type": "string"}}},
+            input_schema={
+                "type": "object",
+                "properties": {"profile": {"type": "string"}},
+            },
             fn=lambda profile="Default": launch_game(self._mo2, profile),
         )
         self._tools["close_game"] = ToolDescriptor(
@@ -290,7 +400,10 @@ class AsyncToolRegistry:
         self._tools["setup_tools"] = ToolDescriptor(
             name="setup_tools",
             description="Download and install external modding tools.",
-            input_schema={"type": "object", "properties": {"tools": {"type": "array", "items": {"type": "string"}}}},
+            input_schema={
+                "type": "object",
+                "properties": {"tools": {"type": "array", "items": {"type": "string"}}},
+            },
             fn=lambda tools=None: setup_tools(
                 self._tools_installer,
                 self._install_dir,
@@ -299,7 +412,7 @@ class AsyncToolRegistry:
                 self._animation_hub,
                 self._downloader,
                 [self._loot_exe],
-                tools
+                tools,
             ),
         )
 

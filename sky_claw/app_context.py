@@ -60,7 +60,9 @@ class NetworkContext:
         self.gateway: NetworkGateway | None = None
         self.downloader: NexusDownloader | None = None
 
-    async def initialize(self, nexus_key: str, staging_dir: pathlib.Path | None) -> None:
+    async def initialize(
+        self, nexus_key: str, staging_dir: pathlib.Path | None
+    ) -> None:
         self.gateway = NetworkGateway()
         if self.session is None:
             self.session = aiohttp.ClientSession(
@@ -194,7 +196,11 @@ class AppContext:
 
         try:
             config_path = self.config_path
-            logger.info("start_full — Config path: %s (exists=%s)", config_path, config_path.exists())
+            logger.info(
+                "start_full — Config path: %s (exists=%s)",
+                config_path,
+                config_path.exists(),
+            )
 
             local_cfg = Config(config_path)
             # H-04: Eliminada mutación de os.environ. Los secretos se pasan explícitamente.
@@ -228,25 +234,43 @@ class AppContext:
                     config_changed = True
                     logger.info("Zero-config: Skyrim detected at %s", detected_skyrim)
 
-            provider_name = self._args.provider if self._args.provider else local_cfg.llm_provider
+            provider_name = (
+                self._args.provider if self._args.provider else local_cfg.llm_provider
+            )
             try:
                 # Extraer llave dinámicamente sin tocar os.environ
-                api_key = getattr(local_cfg, f"{provider_name}_api_key", None) or local_cfg.llm_api_key
+                api_key = (
+                    getattr(local_cfg, f"{provider_name}_api_key", None)
+                    or local_cfg.llm_api_key
+                )
 
                 provider = create_provider(
                     provider_name=provider_name,
                     model=local_cfg.llm_model,
-                    api_key=api_key
+                    api_key=api_key,
                 )
-                actual_model = getattr(provider, "model", local_cfg.llm_model) or "default"
-                logger.info("Provider created: %s (model: %s)", type(provider).__name__, actual_model)
+                actual_model = (
+                    getattr(provider, "model", local_cfg.llm_model) or "default"
+                )
+                logger.info(
+                    "Provider created: %s (model: %s)",
+                    type(provider).__name__,
+                    actual_model,
+                )
             except ProviderConfigError as exc:
-                logger.warning("LLM provider config error: %s — falling back to Ollama", exc)
+                logger.warning(
+                    "LLM provider config error: %s — falling back to Ollama", exc
+                )
                 from sky_claw.agent.providers import OllamaProvider
+
                 provider = OllamaProvider()
 
             nexus_key = os.environ.get("NEXUS_API_KEY") or local_cfg.nexus_api_key or ""
-            bot_token = os.environ.get("TELEGRAM_BOT_TOKEN") or local_cfg.telegram_bot_token or ""
+            bot_token = (
+                os.environ.get("TELEGRAM_BOT_TOKEN")
+                or local_cfg.telegram_bot_token
+                or ""
+            )
             operator_chat_id: int | None = self._args.operator_chat_id
 
             if local_cfg.telegram_chat_id:
@@ -263,7 +287,10 @@ class AppContext:
             if local_cfg.install_dir:
                 install_dir = pathlib.Path(local_cfg.install_dir)
 
-            sandbox_roots: list[pathlib.Path] = [mo2_root, pathlib.Path(tempfile.gettempdir()) / "sky_claw"]
+            sandbox_roots: list[pathlib.Path] = [
+                mo2_root,
+                pathlib.Path(tempfile.gettempdir()) / "sky_claw",
+            ]
             if install_dir and install_dir not in sandbox_roots:
                 sandbox_roots.append(install_dir)
             # --- DESPUÉS (Seguro - Zero Trust) ---
@@ -274,7 +301,9 @@ class AppContext:
 
             await self.network.initialize(nexus_key, self._args.staging_dir)
 
-            masterlist = MasterlistClient(gateway=self.network.gateway, api_key=nexus_key)
+            masterlist = MasterlistClient(
+                gateway=self.network.gateway, api_key=nexus_key
+            )
 
             if bot_token:
                 self.sender = TelegramSender(
@@ -295,17 +324,27 @@ class AppContext:
                         operator_chat_id,
                         msg,
                         reply_markup={
-                            "inline_keyboard": [[
-                                {"text": "✅ Approve", "callback_data": f"hitl:approve:{req.request_id}"},
-                                {"text": "❌ Deny", "callback_data": f"hitl:deny:{req.request_id}"}
-                            ]]
-                        }
+                            "inline_keyboard": [
+                                [
+                                    {
+                                        "text": "✅ Approve",
+                                        "callback_data": f"hitl:approve:{req.request_id}",
+                                    },
+                                    {
+                                        "text": "❌ Deny",
+                                        "callback_data": f"hitl:deny:{req.request_id}",
+                                    },
+                                ]
+                            ]
+                        },
                     )
                 except Exception:
                     logger.exception("Failed to send HITL notification")
 
             self.hitl = HITLGuard(notify_fn=_hitl_notify)
-            sync_engine = SyncEngine(mo2, masterlist, self.database.registry, hitl=self.hitl)
+            sync_engine = SyncEngine(
+                mo2, masterlist, self.database.registry, hitl=self.hitl
+            )
 
             if await self.database.registry.is_empty():
                 logger.info("Database empty, initial Sync from MO2...")
@@ -359,8 +398,12 @@ class AppContext:
                 animation_hub=AnimationHub(
                     mo2=mo2,
                     config=EngineConfig(
-                        pandora_exe=pathlib.Path(local_cfg.pandora_exe) if local_cfg.pandora_exe else None,
-                        bodyslide_exe=pathlib.Path(local_cfg.bodyslide_exe) if local_cfg.bodyslide_exe else None,
+                        pandora_exe=pathlib.Path(local_cfg.pandora_exe)
+                        if local_cfg.pandora_exe
+                        else None,
+                        bodyslide_exe=pathlib.Path(local_cfg.bodyslide_exe)
+                        if local_cfg.bodyslide_exe
+                        else None,
                     ),
                     path_validator=validator,
                 ),
@@ -379,13 +422,14 @@ class AppContext:
                 system_prompt=SYSTEM_PROMPT,
                 registry_db=str(self._args.db_path),
                 mo2_profile=mo2_profile,
-                gateway=self.network.gateway
+                gateway=self.network.gateway,
             )
             await self.router.open()
             self._exit_stack.push_async_callback(self._close_router)
 
             # Initialize Frontend Bridge (Gateway port 18789 ↔ Daemon)
             from sky_claw.comms.frontend_bridge import FrontendBridge
+
             self.frontend_bridge = FrontendBridge(
                 router=self.router,
                 session=self.network.session,
@@ -476,7 +520,9 @@ class AppContext:
         if not legacy_path.exists():
             return
 
-        logger.info("CFG-01: Legacy JSON detected at %s — migrating to TOML", legacy_path)
+        logger.info(
+            "CFG-01: Legacy JSON detected at %s — migrating to TOML", legacy_path
+        )
         legacy = _load_legacy_json(legacy_path)
 
         # Instantiate the TOML config (creates defaults if file doesn't exist)
@@ -523,7 +569,9 @@ class AppContext:
                     if not current:
                         toml_cfg._data[toml_key] = secret_val
             except Exception as exc:
-                logger.warning("CFG-01: Failed to migrate secret '%s': %s", toml_key, exc)
+                logger.warning(
+                    "CFG-01: Failed to migrate secret '%s': %s", toml_key, exc
+                )
 
         # Atomic: save TOML first, then delete JSON
         toml_cfg.save()

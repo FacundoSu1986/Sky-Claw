@@ -2,6 +2,7 @@
 
 RESTRICCIÓN: CERO NiceGUI. Solo manipula AppState y EventBus.
 """
+
 from __future__ import annotations
 
 import logging

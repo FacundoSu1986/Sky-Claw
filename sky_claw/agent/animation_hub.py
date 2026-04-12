@@ -28,7 +28,7 @@ class EngineConfig:
 
 class AnimationHub:
     """Orchestrates Bodyslide and Pandora Engine executions.
-    
+
     Both engines must run via MO2's VFS (using MO2's proxy) to access
     mod files properly, similar to how SKSE or LOOT runs.
     """
@@ -51,7 +51,10 @@ class AnimationHub:
         """
         exe = self._config.pandora_exe
         if not exe or not exe.exists():
-            return {"status": "error", "message": "Error: Pandora Behavior Engine executable not found or not configured."}
+            return {
+                "status": "error",
+                "message": "Error: Pandora Behavior Engine executable not found or not configured.",
+            }
 
         if self._validator:
             try:
@@ -64,7 +67,7 @@ class AnimationHub:
         args = [
             str(exe),
             "--launch",  # Assuming headless/CLI flags for Pandora
-            "--headless"
+            "--headless",
         ]
 
         kwargs: dict = {}
@@ -87,22 +90,34 @@ class AnimationHub:
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
             except asyncio.TimeoutError:
                 pass
-            return {"status": "error", "message": "Error: Pandora timed out after 5 minutes."}
+            return {
+                "status": "error",
+                "message": "Error: Pandora timed out after 5 minutes.",
+            }
         except Exception as exc:
             return {"status": "error", "message": f"Error executing Pandora: {exc}"}
 
         if proc.returncode != 0:
             err_text = stderr.decode(errors="replace").strip() if stderr else ""
             logger.error("Pandora exited with code %d: %s", proc.returncode, err_text)
-            return {"status": "error", "message": f"Pandora exited with code {proc.returncode}."}
+            return {
+                "status": "error",
+                "message": f"Pandora exited with code {proc.returncode}.",
+            }
 
-        return {"status": "success", "message": "Pandora Behavior Engine completed successfully. Behaviors generated."}
+        return {
+            "status": "success",
+            "message": "Pandora Behavior Engine completed successfully. Behaviors generated.",
+        }
 
     async def run_bodyslide_batch(self) -> dict:
         """Execute BodySlide in batch mode to generate meshes based on presets."""
         exe = self._config.bodyslide_exe
         if not exe or not exe.exists():
-            return {"status": "error", "message": "Error: BodySlide executable not found or not configured."}
+            return {
+                "status": "error",
+                "message": "Error: BodySlide executable not found or not configured.",
+            }
 
         if self._validator:
             try:
@@ -115,9 +130,12 @@ class AnimationHub:
         # BodySlide CLI flags typical for headless batch building.
         args = [
             str(exe),
-            "-g", "Build",
-            "-p", "CBBE Body Physics",  # Default preset
-            "-t", "CBBE",
+            "-g",
+            "Build",
+            "-p",
+            "CBBE Body Physics",  # Default preset
+            "-t",
+            "CBBE",
             # Outpath normally defaults to the overwrite or data folder
         ]
 
@@ -139,13 +157,22 @@ class AnimationHub:
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
             except asyncio.TimeoutError:
                 pass
-            return {"status": "error", "message": "Error: BodySlide timed out after 10 minutes."}
+            return {
+                "status": "error",
+                "message": "Error: BodySlide timed out after 10 minutes.",
+            }
         except Exception as exc:
             return {"status": "error", "message": f"Error executing BodySlide: {exc}"}
 
         if proc.returncode != 0:
             err_text = stderr.decode(errors="replace").strip() if stderr else ""
             logger.error("BodySlide exited with code %d: %s", proc.returncode, err_text)
-            return {"status": "error", "message": f"BodySlide exited with code {proc.returncode}."}
+            return {
+                "status": "error",
+                "message": f"BodySlide exited with code {proc.returncode}.",
+            }
 
-        return {"status": "success", "message": "BodySlide batch build completed successfully."}
+        return {
+            "status": "success",
+            "message": "BodySlide batch build completed successfully.",
+        }

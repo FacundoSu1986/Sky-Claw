@@ -40,17 +40,19 @@ class TestPatchOrchestratorIntegration:
     def mock_runner(self):
         """Crea un mock de XEditRunner."""
         runner = MagicMock(spec=XEditRunner)
-        runner.execute_patch = AsyncMock(return_value=ScriptExecutionResult(
-            success=True,
-            exit_code=0,
-            stdout="Processed 5 records",
-            stderr="",
-            records_processed=5,
-            errors=[],
-            warnings=[],
-            script_path=Path("/tmp/script.pas"),
-            execution_time=1.5,
-        ))
+        runner.execute_patch = AsyncMock(
+            return_value=ScriptExecutionResult(
+                success=True,
+                exit_code=0,
+                stdout="Processed 5 records",
+                stderr="",
+                records_processed=5,
+                errors=[],
+                warnings=[],
+                script_path=Path("/tmp/script.pas"),
+                execution_time=1.5,
+            )
+        )
         return runner
 
     @pytest.fixture
@@ -79,8 +81,10 @@ class TestPatchOrchestratorIntegration:
     def test_orchestrator_initialization(self, orchestrator):
         """Verifica que el orquestador se inicializa correctamente con 2 estrategias."""
         assert orchestrator is not None
-        assert len(orchestrator._strategies) == 2  # CreateMergedPatch + ExecuteXEditScript
-        
+        assert (
+            len(orchestrator._strategies) == 2
+        )  # CreateMergedPatch + ExecuteXEditScript
+
         # Verificar que las estrategias están ordenadas por prioridad
         priorities = [s.get_priority() for s in orchestrator._strategies]
         assert priorities == sorted(priorities, reverse=True)
@@ -101,7 +105,7 @@ class TestPatchOrchestratorIntegration:
             summary="No conflicts found",
         )
         result = await orchestrator.resolve(empty_report)
-        
+
         assert result.success is True
         assert result.conflicts_resolved == 0
         assert result.records_patched == 0
@@ -119,22 +123,22 @@ class TestPatchOrchestratorIntegration:
             losers=["PluginB.esp", "PluginC.esp"],
             severity="warning",
         )
-        
+
         pair = PluginConflictPair(
             plugin_a="PluginA.esp",
             plugin_b="PluginB.esp",
             conflicts=[conflict],
         )
-        
+
         report = ConflictReport(
             total_conflicts=1,
             critical_conflicts=0,
             plugin_pairs=[pair],
             summary="1 leveled list conflict",
         )
-        
+
         result = await orchestrator.resolve(report)
-        
+
         # Verificar que se seleccionó CreateMergedPatch (para LVLI)
         assert result.success is True
         assert result.conflicts_resolved == 1
@@ -152,22 +156,22 @@ class TestPatchOrchestratorIntegration:
             losers=["PluginB.esp"],
             severity="critical",
         )
-        
+
         pair = PluginConflictPair(
             plugin_a="PluginA.esp",
             plugin_b="PluginB.esp",
             conflicts=[conflict],
         )
-        
+
         report = ConflictReport(
             total_conflicts=1,
             critical_conflicts=1,
             plugin_pairs=[pair],
             summary="1 critical conflict",
         )
-        
+
         result = await orchestrator.resolve(report)
-        
+
         # Verificar que se seleccionó ExecuteXEditScript (para críticos)
         assert result.success is True
         assert result.conflicts_resolved == 1
@@ -200,9 +204,9 @@ class TestPatchStrategies:
             losers=["B.esp"],
             severity="warning",
         )
-        
+
         assert await merged_patch_strategy.can_handle(lvli_conflict) is True
-        
+
         # Verificar que NO maneja otros tipos
         npc_conflict = RecordConflict(
             form_id="00022222",
@@ -212,7 +216,7 @@ class TestPatchStrategies:
             losers=["B.esp"],
             severity="critical",
         )
-        
+
         assert await merged_patch_strategy.can_handle(npc_conflict) is False
 
     @pytest.mark.asyncio
@@ -226,9 +230,9 @@ class TestPatchStrategies:
             losers=["B.esp"],
             severity="critical",
         )
-        
+
         assert await xedit_script_strategy.can_handle(critical_conflict) is True
-        
+
         # Verificar que NO maneja severidad no crítica
         warning_conflict = RecordConflict(
             form_id="00044444",
@@ -238,13 +242,15 @@ class TestPatchStrategies:
             losers=["B.esp"],
             severity="warning",
         )
-        
+
         assert await xedit_script_strategy.can_handle(warning_conflict) is False
 
     def test_strategy_priorities(self, merged_patch_strategy, xedit_script_strategy):
         """Verifica que las prioridades están configuradas correctamente."""
         # ExecuteXEditScript debe tener mayor prioridad (20) que CreateMergedPatch (10)
-        assert xedit_script_strategy.get_priority() > merged_patch_strategy.get_priority()
+        assert (
+            xedit_script_strategy.get_priority() > merged_patch_strategy.get_priority()
+        )
         assert xedit_script_strategy.get_priority() == 20
         assert merged_patch_strategy.get_priority() == 10
 
@@ -263,7 +269,7 @@ class TestPatchPlanDataclass:
             requires_hitl=False,
             script_path=None,
         )
-        
+
         assert plan.strategy_type == PatchStrategyType.CREATE_MERGED_PATCH
         assert len(plan.target_plugins) == 2
         assert plan.output_plugin == "SkyClaw_Patch.esp"
@@ -280,7 +286,7 @@ class TestPatchPlanDataclass:
             requires_hitl=True,
             script_path=Path("/tmp/fix_npc.pas"),
         )
-        
+
         assert plan.strategy_type == PatchStrategyType.EXECUTE_XEDIT_SCRIPT
         assert plan.script_path is not None
         assert plan.requires_hitl is True
@@ -299,7 +305,7 @@ class TestPatchResultDataclass:
             xedit_exit_code=0,
             warnings=["Minor warning"],
         )
-        
+
         assert result.success is True
         assert result.error is None
         assert result.records_patched == 15
@@ -314,7 +320,7 @@ class TestPatchResultDataclass:
             xedit_exit_code=1,
             error="xEdit execution failed",
         )
-        
+
         assert result.success is False
         assert result.error == "xEdit execution failed"
         assert result.xedit_exit_code == 1
@@ -347,31 +353,31 @@ class TestImportsAndExports:
     def test_xedit_module_exports(self):
         """Verifica que el módulo xedit exporta todas las clases necesarias."""
         from sky_claw import xedit
-        
+
         # Verificar exports del runner
-        assert hasattr(xedit, 'XEditRunner')
-        assert hasattr(xedit, 'ScriptGenerator')
-        assert hasattr(xedit, 'ScriptExecutionResult')
-        
+        assert hasattr(xedit, "XEditRunner")
+        assert hasattr(xedit, "ScriptGenerator")
+        assert hasattr(xedit, "ScriptExecutionResult")
+
         # Verificar exports del patch_orchestrator
-        assert hasattr(xedit, 'PatchOrchestrator')
-        assert hasattr(xedit, 'PatchPlan')
-        assert hasattr(xedit, 'PatchResult')
-        assert hasattr(xedit, 'PatchStrategyType')
-        assert hasattr(xedit, 'PatchStrategy')
-        assert hasattr(xedit, 'CreateMergedPatch')
-        assert hasattr(xedit, 'ExecuteXEditScript')
-        
+        assert hasattr(xedit, "PatchOrchestrator")
+        assert hasattr(xedit, "PatchPlan")
+        assert hasattr(xedit, "PatchResult")
+        assert hasattr(xedit, "PatchStrategyType")
+        assert hasattr(xedit, "PatchStrategy")
+        assert hasattr(xedit, "CreateMergedPatch")
+        assert hasattr(xedit, "ExecuteXEditScript")
+
         # Verificar exports de excepciones
-        assert hasattr(xedit, 'PatchingError')
-        assert hasattr(xedit, 'StrategySelectionError')
-        assert hasattr(xedit, 'PatchExecutionError')
-        assert hasattr(xedit, 'ScriptGenerationError')
-        
+        assert hasattr(xedit, "PatchingError")
+        assert hasattr(xedit, "StrategySelectionError")
+        assert hasattr(xedit, "PatchExecutionError")
+        assert hasattr(xedit, "ScriptGenerationError")
+
         # Verificar exports del conflict_analyzer
-        assert hasattr(xedit, 'ConflictReport')
-        assert hasattr(xedit, 'RecordConflict')
-        assert hasattr(xedit, 'PluginConflictPair')
+        assert hasattr(xedit, "ConflictReport")
+        assert hasattr(xedit, "RecordConflict")
+        assert hasattr(xedit, "PluginConflictPair")
 
 
 if __name__ == "__main__":

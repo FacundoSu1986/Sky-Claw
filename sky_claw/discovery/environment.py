@@ -14,6 +14,7 @@ from typing import Any
 
 class SkyrimEdition(str, Enum):
     """Supported Skyrim editions."""
+
     SE = "Special Edition"
     AE = "Anniversary Edition"
     LE = "Legendary Edition"
@@ -22,24 +23,27 @@ class SkyrimEdition(str, Enum):
 
 class HealthStatus(str, Enum):
     """Overall health of the modding environment."""
-    READY = "ready"              # All critical tools found
+
+    READY = "ready"  # All critical tools found
     NEEDS_SETUP = "needs_setup"  # Some tools missing but game found
-    CRITICAL = "critical"        # Game not found or fatal misconfiguration
+    CRITICAL = "critical"  # Game not found or fatal misconfiguration
 
 
 @dataclass(frozen=True, slots=True)
 class SkyrimInfo:
     """Detected Skyrim installation."""
+
     path: Path
-    exe_name: str                          # SkyrimSE.exe or Skyrim.exe
+    exe_name: str  # SkyrimSE.exe or Skyrim.exe
     edition: SkyrimEdition = SkyrimEdition.UNKNOWN
-    version: str = ""                      # e.g. "1.6.1170"
-    store: str = "steam"                   # steam | gog | epic | unknown
+    version: str = ""  # e.g. "1.6.1170"
+    store: str = "steam"  # steam | gog | epic | unknown
 
 
 @dataclass(frozen=True, slots=True)
 class MO2Info:
     """Detected Mod Organizer 2 installation."""
+
     path: Path
     profiles: list[str] = field(default_factory=list)
     active_profile: str = "Default"
@@ -48,20 +52,22 @@ class MO2Info:
 @dataclass(frozen=True, slots=True)
 class ToolInfo:
     """A single detected external tool."""
-    name: str              # Human-readable name (e.g. "LOOT")
-    exe_path: Path         # Full path to the executable
-    version: str = ""      # Version if detectable
+
+    name: str  # Human-readable name (e.g. "LOOT")
+    exe_path: Path  # Full path to the executable
+    version: str = ""  # Version if detectable
     friendly_action: str = ""  # What pressing the button does (Spanish)
 
 
 @dataclass(frozen=True, slots=True)
 class MissingTool:
     """A tool that should exist but wasn't found."""
+
     name: str
-    technical_name: str            # e.g. "LOOT", "SSEEdit"
-    friendly_description: str      # Spanish, user-facing
-    download_url: str              # Official download page
-    is_critical: bool = False      # True = blocks "Preparar Juego"
+    technical_name: str  # e.g. "LOOT", "SSEEdit"
+    friendly_description: str  # Spanish, user-facing
+    download_url: str  # Official download page
+    is_critical: bool = False  # True = blocks "Preparar Juego"
 
 
 @dataclass(slots=True)
@@ -72,6 +78,7 @@ class EnvironmentSnapshot:
     Consumed by the GUI to decide which buttons to show and which
     warnings to display.
     """
+
     skyrim: SkyrimInfo | None = None
     mo2: MO2Info | None = None
     tools: dict[str, ToolInfo] = field(default_factory=dict)

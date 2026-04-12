@@ -13,6 +13,7 @@ Refactorizado: 2026-04-03 (Ticket 1.1 — C-03)
   - Reemplazado importlib dinámico por SchemaRegistry O(1) a nivel de módulo.
   - Manejo estricto de ValidationError de Pydantic v2.
 """
+
 from __future__ import annotations
 
 import functools
@@ -50,6 +51,7 @@ def _ensure_registry() -> None:
 
     try:
         import importlib
+
         _schemas_module = importlib.import_module("sky_claw.core.schemas")
     except ImportError:
         logger.warning(
@@ -126,6 +128,7 @@ def _resolve_schema(name: Optional[str]) -> Optional[Type[BaseModel]]:
 # Decoradores de validación
 # ============================================================================
 
+
 def validate_input(method_name: str) -> Callable:
     """
     Decorador que valida los kwargs de entrada contra el schema Pydantic
@@ -142,6 +145,7 @@ def validate_input(method_name: str) -> Callable:
         ValueError: Si la validación Pydantic falla (envuelve ValidationError
                     con contexto legible).
     """
+
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
@@ -192,6 +196,7 @@ def validate_input(method_name: str) -> Callable:
                 ) from exc
 
         return wrapper
+
     return decorator
 
 
@@ -206,6 +211,7 @@ def validate_output(method_name: str) -> Callable:
     Raises:
         ValueError: Si la salida no cumple con el schema Pydantic.
     """
+
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
@@ -227,9 +233,7 @@ def validate_output(method_name: str) -> Callable:
                 if isinstance(result, dict):
                     validated = schema_cls.model_validate(result)
                 elif isinstance(result, BaseModel):
-                    validated = schema_cls.model_validate(
-                        result.model_dump()
-                    )
+                    validated = schema_cls.model_validate(result.model_dump())
                 else:
                     # No es dict ni BaseModel — no se puede validar con Pydantic.
                     logger.debug(
@@ -240,9 +244,7 @@ def validate_output(method_name: str) -> Callable:
                     )
                     return result
 
-                logger.debug(
-                    "[CONTRACT·OUT] %s validado correctamente.", schema_key
-                )
+                logger.debug("[CONTRACT·OUT] %s validado correctamente.", schema_key)
                 return validated.model_dump()
 
             except ValidationError as exc:
@@ -258,6 +260,7 @@ def validate_output(method_name: str) -> Callable:
                 ) from exc
 
         return wrapper
+
     return decorator
 
 
@@ -271,6 +274,7 @@ def validate_contract(method_name: str) -> Callable:
     Args:
         method_name: Nombre del método (sin prefijo de clase).
     """
+
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
@@ -292,14 +296,13 @@ def validate_contract(method_name: str) -> Callable:
 
                         validated_in = input_cls.model_validate(data)
                         clean_kwargs = validated_in.model_dump()
-                        logger.debug(
-                            "[CONTRACT·IN] %s validado.", schema_key
-                        )
+                        logger.debug("[CONTRACT·IN] %s validado.", schema_key)
 
                     except ValidationError as exc:
                         logger.error(
                             "[CONTRACT·IN] %s fallido:\n%s",
-                            schema_key, exc.errors(),
+                            schema_key,
+                            exc.errors(),
                         )
                         raise ValueError(
                             f"Entrada inválida para {schema_key}: {exc}"
@@ -322,15 +325,14 @@ def validate_contract(method_name: str) -> Callable:
                         else:
                             return result
 
-                        logger.debug(
-                            "[CONTRACT·OUT] %s validado.", schema_key
-                        )
+                        logger.debug("[CONTRACT·OUT] %s validado.", schema_key)
                         return validated_out.model_dump()
 
                     except ValidationError as exc:
                         logger.error(
                             "[CONTRACT·OUT] %s fallido:\n%s",
-                            schema_key, exc.errors(),
+                            schema_key,
+                            exc.errors(),
                         )
                         raise ValueError(
                             f"Salida inválida para {schema_key}: {exc}"
@@ -339,12 +341,14 @@ def validate_contract(method_name: str) -> Callable:
             return result
 
         return wrapper
+
     return decorator
 
 
 # ============================================================================
 # Utilidades públicas
 # ============================================================================
+
 
 def get_contract_schema(agent_method: str) -> Dict[str, Optional[str]]:
     """

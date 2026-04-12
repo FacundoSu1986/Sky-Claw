@@ -7,6 +7,7 @@ from sky_claw.core.models import HitlApprovalRequest
 
 logger = logging.getLogger("SkyClaw.Interface")
 
+
 class InterfaceAgent:
     def __init__(self, gateway_url: str = "ws://127.0.0.1:18789"):
         self.gateway_url = gateway_url
@@ -23,11 +24,18 @@ class InterfaceAgent:
                 logger.info(f"Conectado al Gateway Node.js en {self.gateway_url}")
                 backoff = 2.0  # Reset backoff tras conexión exitosa
                 await self._listen_to_gateway()
-            except (ConnectionClosed, ConnectionClosedError, ConnectionRefusedError, OSError) as e:
-                logger.warning(f"RCA: Enlace con Gateway perdido ({type(e).__name__}: {str(e)}). Reconectando silenciosamente en {backoff}s...")
+            except (
+                ConnectionClosed,
+                ConnectionClosedError,
+                ConnectionRefusedError,
+                OSError,
+            ) as e:
+                logger.warning(
+                    f"RCA: Enlace con Gateway perdido ({type(e).__name__}: {str(e)}). Reconectando silenciosamente en {backoff}s..."
+                )
                 self.ws_connection = None
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 1.5, 30.0) # Backoff exponencial truncado a 30s
+                backoff = min(backoff * 1.5, 30.0)  # Backoff exponencial truncado a 30s
 
     async def _listen_to_gateway(self):
         async for message in self.ws_connection:
@@ -45,22 +53,25 @@ class InterfaceAgent:
     async def request_hitl(self, req: HitlApprovalRequest) -> str:
         # Si no hay conexión, aborta por seguridad en lugar de colgar el agente
         if not self.ws_connection:
-            logger.error("RCA: Intento de HITL sin conexión a Gateway. Abortando acción destructiva.")
+            logger.error(
+                "RCA: Intento de HITL sin conexión a Gateway. Abortando acción destructiva."
+            )
             return "denied"
-            
+
         import uuid
+
         req_id = str(uuid.uuid4())
         event = asyncio.Event()
         self._pending_hitl[req_id] = {"event": event, "decision": None}
-        
+
         payload = {
             "type": "hitl_request",
             "request_id": req_id,
-            "data": req.model_dump()
+            "data": req.model_dump(),
         }
         await self.ws_connection.send(json.dumps(payload))
         logger.info(f"HITL emitido. Bloqueando rutina (ReqID: {req_id})")
-        
+
         try:
             await asyncio.wait_for(event.wait(), timeout=300.0)
             return self._pending_hitl[req_id]["decision"]
@@ -83,6 +94,7 @@ class InterfaceAgent:
             return
         try:
             import time as _t
+
             msg = {
                 "type": event_type,
                 "payload": payload,

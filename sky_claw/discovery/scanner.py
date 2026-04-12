@@ -36,6 +36,7 @@ _SEARCH_TIMEOUT = 5.0
 
 try:
     import winreg
+
     _HAS_WINREG = True
 except ImportError:
     _HAS_WINREG = False
@@ -107,9 +108,10 @@ _XEDIT_NAMES = ("SSEEdit.exe", "TES5Edit.exe", "xEdit.exe")
 
 # ── Skyrim Version Detection ─────────────────────────────────────────
 
+
 def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
     """Try to read the PE version resource from SkyrimSE.exe / Skyrim.exe.
-    
+
     Returns (version_string, edition).
     Falls back to heuristics if PE parsing fails.
     """
@@ -126,6 +128,7 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
     # Try reading version from PE header
     try:
         import pefile  # type: ignore[import-untyped]
+
         pe = pefile.PE(str(exe_path), fast_load=True)
         pe.parse_data_directories(
             directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"]]
@@ -156,7 +159,11 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
     if edition == SkyrimEdition.SE and version:
         try:
             major_minor = version.split(".")
-            if len(major_minor) >= 2 and int(major_minor[0]) >= 1 and int(major_minor[1]) >= 6:
+            if (
+                len(major_minor) >= 2
+                and int(major_minor[0]) >= 1
+                and int(major_minor[1]) >= 6
+            ):
                 edition = SkyrimEdition.AE
         except (ValueError, IndexError):
             pass
@@ -165,6 +172,7 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
 
 
 # ── Scanner ───────────────────────────────────────────────────────────
+
 
 class EnvironmentScanner:
     """Scans the local system for Skyrim, MO2, and modding tools.
@@ -179,12 +187,16 @@ class EnvironmentScanner:
     async def scan(self) -> EnvironmentSnapshot:
         """Run all detectors concurrently and build an EnvironmentSnapshot."""
         try:
-            return await asyncio.wait_for(self._scan_inner(), timeout=_SEARCH_TIMEOUT * 3)
+            return await asyncio.wait_for(
+                self._scan_inner(), timeout=_SEARCH_TIMEOUT * 3
+            )
         except asyncio.TimeoutError:
             logger.warning("Environment scan timed out")
             snap = EnvironmentSnapshot()
             snap.health_status = HealthStatus.CRITICAL
-            snap.health_messages = ["⚠️ El escaneo del entorno tardó demasiado. Revisa los discos."]
+            snap.health_messages = [
+                "⚠️ El escaneo del entorno tardó demasiado. Revisa los discos."
+            ]
             return snap
 
     async def _scan_inner(self) -> EnvironmentSnapshot:
@@ -193,7 +205,11 @@ class EnvironmentScanner:
         # ── 1. Detect Skyrim ──────────────────────────────────────────
         skyrim_path = await self._find_skyrim()
         if skyrim_path:
-            exe_name = "SkyrimSE.exe" if (skyrim_path / "SkyrimSE.exe").exists() else "Skyrim.exe"
+            exe_name = (
+                "SkyrimSE.exe"
+                if (skyrim_path / "SkyrimSE.exe").exists()
+                else "Skyrim.exe"
+            )
             version, edition = _detect_skyrim_version(skyrim_path / exe_name)
             snap.skyrim = SkyrimInfo(
                 path=skyrim_path,
@@ -228,16 +244,41 @@ class EnvironmentScanner:
 
         # ── 3. Detect Tools ───────────────────────────────────────────
         tool_defs = [
-            ("loot", _LOOT_NAMES, "Ordenar mods automáticamente",
-             "https://github.com/loot/loot/releases", True),
-            ("xedit", _XEDIT_NAMES, "Limpiar archivos problemáticos",
-             "https://github.com/TES5Edit/TES5Edit/releases", False),
-            ("pandora", _PANDORA_NAMES, "Generar animaciones",
-             "https://github.com/Monitor221hz/Pandora-Behaviour-Engine-Plus/releases", False),
-            ("wrye_bash", _WRYE_BASH_NAMES, "Crear parche de compatibilidad",
-             "https://www.nexusmods.com/skyrimspecialedition/mods/6837", False),
-            ("dyndolod", _DYNDOLOD_NAMES, "Optimizar gráficos (LOD)",
-             "https://www.nexusmods.com/skyrimspecialedition/mods/32382", False),
+            (
+                "loot",
+                _LOOT_NAMES,
+                "Ordenar mods automáticamente",
+                "https://github.com/loot/loot/releases",
+                True,
+            ),
+            (
+                "xedit",
+                _XEDIT_NAMES,
+                "Limpiar archivos problemáticos",
+                "https://github.com/TES5Edit/TES5Edit/releases",
+                False,
+            ),
+            (
+                "pandora",
+                _PANDORA_NAMES,
+                "Generar animaciones",
+                "https://github.com/Monitor221hz/Pandora-Behaviour-Engine-Plus/releases",
+                False,
+            ),
+            (
+                "wrye_bash",
+                _WRYE_BASH_NAMES,
+                "Crear parche de compatibilidad",
+                "https://www.nexusmods.com/skyrimspecialedition/mods/6837",
+                False,
+            ),
+            (
+                "dyndolod",
+                _DYNDOLOD_NAMES,
+                "Optimizar gráficos (LOD)",
+                "https://www.nexusmods.com/skyrimspecialedition/mods/32382",
+                False,
+            ),
         ]
 
         mo2_root = mo2_path if mo2_path else None
@@ -255,17 +296,17 @@ class EnvironmentScanner:
                 snap.health_messages.append(f"✅ {human_name} encontrado")
             else:
                 human_name = key.upper().replace("_", " ")
-                snap.missing.append(MissingTool(
-                    name=human_name,
-                    technical_name=exe_names[0].replace(".exe", ""),
-                    friendly_description=friendly,
-                    download_url=url,
-                    is_critical=is_critical,
-                ))
-                emoji = "⚠️" if not is_critical else "❌"
-                snap.health_messages.append(
-                    f"{emoji} {human_name} no encontrado"
+                snap.missing.append(
+                    MissingTool(
+                        name=human_name,
+                        technical_name=exe_names[0].replace(".exe", ""),
+                        friendly_description=friendly,
+                        download_url=url,
+                        is_critical=is_critical,
+                    )
                 )
+                emoji = "⚠️" if not is_critical else "❌"
+                snap.health_messages.append(f"{emoji} {human_name} no encontrado")
 
         # ── 4. Compute Health ─────────────────────────────────────────
         critical_missing = [m for m in snap.missing if m.is_critical]
@@ -279,7 +320,9 @@ class EnvironmentScanner:
         if snap.health_status == HealthStatus.READY:
             snap.health_messages.insert(0, "🟢 Todo listo para jugar")
         elif snap.health_status == HealthStatus.NEEDS_SETUP:
-            snap.health_messages.insert(0, "🟡 Algunas herramientas faltan — puedes instalarlas abajo")
+            snap.health_messages.insert(
+                0, "🟡 Algunas herramientas faltan — puedes instalarlas abajo"
+            )
 
         return snap
 
@@ -296,7 +339,8 @@ class EnvironmentScanner:
         ):
             path_str = _reg_read(
                 winreg.HKEY_LOCAL_MACHINE if _HAS_WINREG else 0,
-                reg_key, "Installed Path"
+                reg_key,
+                "Installed Path",
             )
             if path_str:
                 p = pathlib.Path(path_str)
@@ -307,7 +351,7 @@ class EnvironmentScanner:
         gog_path = _reg_read(
             winreg.HKEY_LOCAL_MACHINE if _HAS_WINREG else 0,
             r"SOFTWARE\WOW6432Node\GOG.com\Games\1711230643",
-            "path"
+            "path",
         )
         if gog_path:
             p = pathlib.Path(gog_path)
@@ -346,9 +390,13 @@ class EnvironmentScanner:
     async def _find_mo2(self) -> pathlib.Path | None:
         """Locate Mod Organizer 2."""
         common = (
-            r"C:\Modding\MO2", r"D:\Modding\MO2", r"E:\Modding\MO2",
-            r"C:\MO2Portable", r"D:\MO2Portable",
-            r"C:\Games\MO2", r"D:\Games\MO2",
+            r"C:\Modding\MO2",
+            r"D:\Modding\MO2",
+            r"E:\Modding\MO2",
+            r"C:\MO2Portable",
+            r"D:\MO2Portable",
+            r"C:\Games\MO2",
+            r"D:\Games\MO2",
         )
         for raw in common:
             p = pathlib.Path(raw)
@@ -380,15 +428,23 @@ class EnvironmentScanner:
         search_roots: list[pathlib.Path],
     ) -> pathlib.Path | None:
         """Search for a tool executable in the given roots.
-        
+
         Performance: Only checks direct children and specific known
         subfolder names. Does NOT iterate all subdirectories.
         """
         # Known subfolder names where tools are typically installed
         _KNOWN_SUBDIRS = (
-            "LOOT", "SSEEdit", "xEdit", "Wrye Bash", "WryeBash",
-            "Pandora", "DynDOLOD", "BodySlide", "tools",
-            "Pandora Engine", "Pandora Behaviour Engine",
+            "LOOT",
+            "SSEEdit",
+            "xEdit",
+            "Wrye Bash",
+            "WryeBash",
+            "Pandora",
+            "DynDOLOD",
+            "BodySlide",
+            "tools",
+            "Pandora Engine",
+            "Pandora Behaviour Engine",
         )
 
         for root in search_roots:
@@ -424,7 +480,7 @@ class EnvironmentScanner:
         skyrim_path: pathlib.Path | None,
     ) -> list[pathlib.Path]:
         """Build a list of directories to scan for tools.
-        
+
         NOTE: Avoids scanning generic 'Program Files' (thousands of folders).
         Instead, adds specific known tool locations within PF.
         """
@@ -479,9 +535,12 @@ class EnvironmentScanner:
         if not profiles_dir.is_dir():
             return ["Default"]
         try:
-            return sorted([
-                p.name for p in profiles_dir.iterdir()
-                if p.is_dir() and (p / "modlist.txt").exists()
-            ]) or ["Default"]
+            return sorted(
+                [
+                    p.name
+                    for p in profiles_dir.iterdir()
+                    if p.is_dir() and (p / "modlist.txt").exists()
+                ]
+            ) or ["Default"]
         except OSError:
             return ["Default"]

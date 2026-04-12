@@ -8,6 +8,7 @@ Usage::
     python -m sky_claw --mode web --port 8888  # local web UI
     python -m sky_claw --mode gui         # local desktop UI (NiceGUI)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -61,7 +62,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--mo2-root",
         type=pathlib.Path,
-        default=pathlib.Path(os.environ.get("SKY_CLAW_MO2_ROOT", str(SystemPaths.get_base_drive() / "MO2Portable"))),
+        default=pathlib.Path(
+            os.environ.get(
+                "SKY_CLAW_MO2_ROOT", str(SystemPaths.get_base_drive() / "MO2Portable")
+            )
+        ),
         help="Path to the MO2 portable instance",
     )
     parser.add_argument(
@@ -90,14 +95,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--operator-chat-id",
         type=int,
-        default=int(_env) if (_env := os.environ.get("SKY_CLAW_OPERATOR_CHAT_ID", "")) else None,
+        default=int(_env)
+        if (_env := os.environ.get("SKY_CLAW_OPERATOR_CHAT_ID", ""))
+        else None,
         help="Telegram chat ID for HITL operator notifications (env: SKY_CLAW_OPERATOR_CHAT_ID)",
     )
     parser.add_argument(
         "--staging-dir",
         type=pathlib.Path,
         default=pathlib.Path(
-            os.environ.get("SKY_CLAW_STAGING_DIR", str(SystemPaths.get_base_drive() / "MO2Portable/downloads"))
+            os.environ.get(
+                "SKY_CLAW_STAGING_DIR",
+                str(SystemPaths.get_base_drive() / "MO2Portable/downloads"),
+            )
         ),
         help="MO2 staging directory for mod downloads (env: SKY_CLAW_STAGING_DIR)",
     )
@@ -118,7 +128,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory for auto-installing tools like LOOT/SSEEdit (env: SKY_CLAW_INSTALL_DIR)",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Enable debug logging",
     )
@@ -180,6 +191,7 @@ def main(argv: list[str] | None = None) -> None:
             asyncio.run(_main(args))
         except KeyboardInterrupt:
             pass
+
 
 if __name__ == "__main__":
     main()

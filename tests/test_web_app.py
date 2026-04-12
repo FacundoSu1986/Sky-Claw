@@ -24,6 +24,7 @@ from sky_claw.security.auth_token_manager import AuthTokenManager
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_web_app(
     router=None,
     session=None,
@@ -50,6 +51,7 @@ def _make_mock_router(response: str = "ok") -> MagicMock:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def mock_router() -> MagicMock:
@@ -84,6 +86,7 @@ def mock_local_config(tmp_path):
 # Helper: build an aiohttp TestClient pointing at a WebApp
 # ---------------------------------------------------------------------------
 
+
 async def _client(web_app: WebApp, aiohttp_client) -> TestClient:
     app = web_app.create_app()
     return await aiohttp_client(app)
@@ -92,6 +95,7 @@ async def _client(web_app: WebApp, aiohttp_client) -> TestClient:
 # ===========================================================================
 # 1.  /api/auto-detect — 500 must NOT expose exception message
 # ===========================================================================
+
 
 class TestAutoDetect500:
     """Confirm that a raised exception inside AutoDetector is NOT forwarded
@@ -167,6 +171,7 @@ class TestAutoDetect500:
 # 2.  /api/chat — 500 must NOT expose exception message
 # ===========================================================================
 
+
 class TestChat500:
     """Confirm that a router exception is NOT forwarded verbatim to the client."""
 
@@ -226,6 +231,7 @@ class TestChat500:
 # ===========================================================================
 # 3.  /api/setup — loopback-only middleware
 # ===========================================================================
+
 
 class TestSetupLoopbackMiddleware:
     """The setup endpoints must only be reachable from loopback addresses."""
@@ -291,9 +297,7 @@ class TestSetupLoopbackMiddleware:
             )
 
     @pytest.mark.asyncio
-    async def test_setup_allowed_from_127_0_0_1(
-        self, mock_session, mock_local_config
-    ):
+    async def test_setup_allowed_from_127_0_0_1(self, mock_session, mock_local_config):
         """127.0.0.1 must pass the loopback check."""
         web_app = _make_web_app(session=mock_session)
 
@@ -364,6 +368,7 @@ class TestSetupLoopbackMiddleware:
 # ===========================================================================
 # 4.  /api/chat — Bearer token authentication
 # ===========================================================================
+
 
 class TestChatBearerAuth:
     """When auth_manager is configured, /api/chat is token-gated."""

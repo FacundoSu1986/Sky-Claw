@@ -14,14 +14,17 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+
 class BodySlideExecutionError(Exception):
     pass
+
 
 @dataclass(frozen=True, slots=True)
 class BodySlideConfig:
     bodyslide_exe: pathlib.Path
     game_path: pathlib.Path
     timeout_seconds: float = 600.0
+
 
 @dataclass
 class BodySlideResult:
@@ -31,6 +34,7 @@ class BodySlideResult:
     stderr: str
     duration_seconds: float
 
+
 class BodySlideRunner:
     """Asynchronous runner for BodySlide batch generation."""
 
@@ -39,14 +43,14 @@ class BodySlideRunner:
 
     async def run_batch(self, group: str, output_path: str) -> BodySlideResult:
         """Execute BodySlide in batch mode for a specific group and output path.
-        
+
         Format: BodySlide.exe -b <Group> -o <Output>
         """
         logger.info(f"[M-03] Executing BodySlide batch for group {group}...")
         start_time = time.monotonic()
-        
+
         args = ["-b", group, "-o", output_path]
-        
+
         kwargs = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = 0x08000000
@@ -58,25 +62,24 @@ class BodySlideRunner:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self.config.game_path),
-                **kwargs
+                **kwargs,
             )
-            
+
             stdout, stderr = await asyncio.wait_for(
-                process.communicate(), 
-                timeout=self.config.timeout_seconds
+                process.communicate(), timeout=self.config.timeout_seconds
             )
-            
+
             duration = time.monotonic() - start_time
             success = process.returncode == 0
-            
+
             return BodySlideResult(
                 success=success,
                 return_code=process.returncode or 0,
                 stdout=stdout.decode(errors="replace"),
                 stderr=stderr.decode(errors="replace"),
-                duration_seconds=duration
+                duration_seconds=duration,
             )
-            
+
         except asyncio.TimeoutError:
             logger.error("BodySlide execution timed out.")
             return BodySlideResult(
@@ -84,7 +87,7 @@ class BodySlideRunner:
                 return_code=-1,
                 stdout="",
                 stderr="Timeout during BodySlide execution",
-                duration_seconds=time.monotonic() - start_time
+                duration_seconds=time.monotonic() - start_time,
             )
         except Exception as e:
             logger.error(f"BodySlide execution failed: {e}")

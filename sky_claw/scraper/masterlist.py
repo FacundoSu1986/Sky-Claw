@@ -20,7 +20,9 @@ from sky_claw.security.network_gateway import NetworkGateway
 
 logger = logging.getLogger(__name__)
 
-NEXUS_MOD_API_URL = "https://api.nexusmods.com/v1/games/skyrimspecialedition/mods/{mod_id}.json"
+NEXUS_MOD_API_URL = (
+    "https://api.nexusmods.com/v1/games/skyrimspecialedition/mods/{mod_id}.json"
+)
 
 # Circuit breaker defaults.
 _CB_FAILURE_THRESHOLD = 5
@@ -155,7 +157,10 @@ class MasterlistClient:
 
         try:
             resp = await self._gw.request(
-                "GET", url, session, headers=headers,
+                "GET",
+                url,
+                session,
+                headers=headers,
             )
             try:
                 if resp.status != 200:

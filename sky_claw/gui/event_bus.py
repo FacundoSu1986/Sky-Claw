@@ -1,4 +1,5 @@
 """EventBus — sistema de eventos Observer para Sky-Claw GUI."""
+
 from __future__ import annotations
 
 import asyncio
@@ -106,9 +107,7 @@ class EventBus:
                 self._loop = asyncio.get_running_loop()
             except RuntimeError:
                 self._loop = None
-            self._processor = threading.Thread(
-                target=self._process_events, daemon=True
-            )
+            self._processor = threading.Thread(target=self._process_events, daemon=True)
             self._processor.start()
 
     def stop(self) -> None:

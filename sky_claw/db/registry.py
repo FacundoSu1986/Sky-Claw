@@ -140,9 +140,7 @@ class ModRegistry:
                 """,
                 (nexus_id, name, version, author, category, download_url),
             )
-            await cur.execute(
-                "SELECT mod_id FROM mods WHERE nexus_id = ?", (nexus_id,)
-            )
+            await cur.execute("SELECT mod_id FROM mods WHERE nexus_id = ?", (nexus_id,))
             row = await cur.fetchone()
             assert row is not None
             return int(row["mod_id"])

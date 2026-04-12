@@ -51,7 +51,9 @@ def _fast_guard(notify_fn=None) -> HITLGuard:
     return HITLGuard(notify_fn=notify_fn, timeout=0)
 
 
-async def _inject_pending(guard: HITLGuard, req_id: str, reason: str = "test") -> HITLRequest:
+async def _inject_pending(
+    guard: HITLGuard, req_id: str, reason: str = "test"
+) -> HITLRequest:
     """Directly insert a fake HITLRequest into the guard's pending dict."""
     fake = HITLRequest(request_id=req_id, reason=reason)
     async with guard._lock:
@@ -85,10 +87,15 @@ class TestRequiresApproval:
     # --- in-scope hosts ---
 
     def test_nexusmods_in_scope(self) -> None:
-        assert _guard().requires_approval("https://www.nexusmods.com/skyrimspecialedition") is False
+        assert (
+            _guard().requires_approval("https://www.nexusmods.com/skyrimspecialedition")
+            is False
+        )
 
     def test_nexus_api_in_scope(self) -> None:
-        assert _guard().requires_approval("https://api.nexusmods.com/v1/mods/123") is False
+        assert (
+            _guard().requires_approval("https://api.nexusmods.com/v1/mods/123") is False
+        )
 
     def test_unknown_host_not_flagged(self) -> None:
         assert _guard().requires_approval("https://example.com/page") is False
@@ -99,7 +106,9 @@ class TestRequiresApproval:
         assert _guard().requires_approval("https://github.com:443/repo") is True
 
     def test_url_with_path_and_query(self) -> None:
-        assert _guard().requires_approval("https://discord.com/invite/abc?ref=1") is True
+        assert (
+            _guard().requires_approval("https://discord.com/invite/abc?ref=1") is True
+        )
 
     def test_case_insensitive_hostname_matching(self) -> None:
         # urlparse lowercases hostname; requires_approval also lowercases.
@@ -116,7 +125,9 @@ class TestRequiresApproval:
         custom = frozenset(["evil.example.com"])
         guard = HITLGuard(out_of_scope_hosts=custom, timeout=1)
         assert guard.requires_approval("https://evil.example.com/payload") is True
-        assert guard.requires_approval("https://github.com/repo") is False  # not in custom
+        assert (
+            guard.requires_approval("https://github.com/repo") is False
+        )  # not in custom
 
 
 # ---------------------------------------------------------------------------

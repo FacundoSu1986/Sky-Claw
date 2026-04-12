@@ -12,7 +12,10 @@ from sky_claw.orchestrator.state_graph import (
     create_supervisor_state_graph,
     LANGGRAPH_AVAILABLE,
 )
-from sky_claw.orchestrator.maintenance_daemon import MaintenanceDaemon, get_max_backup_size_mb
+from sky_claw.orchestrator.maintenance_daemon import (
+    MaintenanceDaemon,
+    get_max_backup_size_mb,
+)
 from sky_claw.orchestrator.telemetry_daemon import TelemetryDaemon
 from sky_claw.orchestrator.watcher_daemon import WatcherDaemon
 

@@ -1,10 +1,12 @@
 """LangGraph event streamer — emite mensajes 'agent_state' por nodo significativo."""
+
 from __future__ import annotations
 import logging
 from typing import Optional
 from sky_claw.comms.interface import InterfaceAgent
 from sky_claw.orchestrator.state_graph import (
-    SupervisorStateGraph, StateGraphState,
+    SupervisorStateGraph,
+    StateGraphState,
 )
 
 logger = logging.getLogger("SkyClaw.WSEventStreamer")
@@ -14,11 +16,11 @@ SIGNIFICANT_NODES = {"analyzing", "dispatching", "hitl_wait", "completed", "erro
 
 # Mensajes amigables por nodo
 NODE_MESSAGES = {
-    "analyzing":   "Analizando conflictos de carga…",
+    "analyzing": "Analizando conflictos de carga…",
     "dispatching": "Ejecutando herramienta…",
-    "hitl_wait":   "Esperando aprobación humana…",
-    "completed":   "Operación completada.",
-    "error":       "Error en el workflow.",
+    "hitl_wait": "Esperando aprobación humana…",
+    "completed": "Operación completada.",
+    "error": "Error en el workflow.",
 }
 
 
@@ -42,21 +44,27 @@ class LangGraphEventStreamer:
                 # astream yields {node_name: state_delta}
                 for node_name, delta in update.items():
                     if node_name.lower() in SIGNIFICANT_NODES:
-                        await self.interface.send_event("agent_state", {
-                            "node": node_name,
-                            "event": "update",
-                            "message": NODE_MESSAGES.get(
-                                node_name.lower(), f"Nodo: {node_name}"
-                            ),
-                        })
+                        await self.interface.send_event(
+                            "agent_state",
+                            {
+                                "node": node_name,
+                                "event": "update",
+                                "message": NODE_MESSAGES.get(
+                                    node_name.lower(), f"Nodo: {node_name}"
+                                ),
+                            },
+                        )
                     if delta:
                         last_state = {**last_state, **delta}
         except Exception as e:
             logger.exception("Error en stream_execute: %s", e)
-            await self.interface.send_event("agent_state", {
-                "node": "error",
-                "event": "error",
-                "message": f"Fallo en workflow: {e}",
-            })
+            await self.interface.send_event(
+                "agent_state",
+                {
+                    "node": "error",
+                    "event": "error",
+                    "message": f"Fallo en workflow: {e}",
+                },
+            )
             last_state["last_error"] = str(e)
         return last_state

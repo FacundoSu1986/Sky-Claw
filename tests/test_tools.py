@@ -38,7 +38,9 @@ class TestLootAutoInit:
         """Mock SyncEngine."""
         return MagicMock()
 
-    def test_p0_3_auto_initializes_loot_runner(self, mock_registry, mock_mo2, mock_sync_engine):
+    def test_p0_3_auto_initializes_loot_runner(
+        self, mock_registry, mock_mo2, mock_sync_engine
+    ):
         """P0-3 FIX: Should auto-create LOOTRunner from loot_exe when None.
 
         Previously, _run_loot_sort would fail with "LOOT runner is not configured"
@@ -60,7 +62,9 @@ class TestLootAutoInit:
         assert registry._loot_runner is None
 
     @pytest.mark.asyncio
-    async def test_p0_3_creates_loot_runner_on_first_sort(self, mock_registry, mock_mo2, mock_sync_engine, tmp_path):
+    async def test_p0_3_creates_loot_runner_on_first_sort(
+        self, mock_registry, mock_mo2, mock_sync_engine, tmp_path
+    ):
         """P0-3 FIX: Should create LOOTRunner on first sort attempt."""
         # Create mock loot.exe
         loot_exe = tmp_path / "loot.exe"
@@ -81,15 +85,17 @@ class TestLootAutoInit:
         )
 
         # Mock LOOTRunner to avoid actual execution
-        with patch('sky_claw.agent.tools.LOOTRunner') as MockLOOTRunner:
+        with patch("sky_claw.agent.tools.LOOTRunner") as MockLOOTRunner:
             mock_runner = MagicMock()
-            mock_runner.sort = AsyncMock(return_value=MagicMock(
-                success=True,
-                return_code=0,
-                sorted_plugins=[],
-                warnings=[],
-                errors=[],
-            ))
+            mock_runner.sort = AsyncMock(
+                return_value=MagicMock(
+                    success=True,
+                    return_code=0,
+                    sorted_plugins=[],
+                    warnings=[],
+                    errors=[],
+                )
+            )
             MockLOOTRunner.return_value = mock_runner
 
             # Call _run_loot_sort - should auto-initialize
@@ -125,14 +131,16 @@ class TestDownloadModFreshUrl:
     def mock_downloader(self):
         """Mock NexusDownloader."""
         downloader = MagicMock(spec=NexusDownloader)
-        downloader.get_file_info = AsyncMock(return_value=FileInfo(
-            nexus_id=1234,
-            file_id=5678,
-            file_name="test_mod.7z",
-            size_bytes=1024,
-            md5="",
-            download_url="https://cdn.nexus.com/file.7z",
-        ))
+        downloader.get_file_info = AsyncMock(
+            return_value=FileInfo(
+                nexus_id=1234,
+                file_id=5678,
+                file_name="test_mod.7z",
+                size_bytes=1024,
+                md5="",
+                download_url="https://cdn.nexus.com/file.7z",
+            )
+        )
         downloader.download = AsyncMock()
         downloader.staging_dir = pathlib.Path("/tmp/downloads")
         return downloader
@@ -144,7 +152,9 @@ class TestDownloadModFreshUrl:
         hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)
         return hitl
 
-    def test_p0_2_captures_mod_ids_not_url(self, mock_registry, mock_mo2, mock_sync_engine, mock_downloader, mock_hitl):
+    def test_p0_2_captures_mod_ids_not_url(
+        self, mock_registry, mock_mo2, mock_sync_engine, mock_downloader, mock_hitl
+    ):
         """P0-2 FIX: Should capture nexus_id/file_id, not the URL itself.
 
         Previously, the download closure captured file_info.download_url directly,
@@ -178,7 +188,9 @@ class TestDownloadModFreshUrl:
         mock_downloader.download.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_p0_2_rejects_denied_download(self, mock_registry, mock_mo2, mock_sync_engine, mock_downloader, mock_hitl):
+    async def test_p0_2_rejects_denied_download(
+        self, mock_registry, mock_mo2, mock_sync_engine, mock_downloader, mock_hitl
+    ):
         """P0-2: Should not enqueue download if HITL denies."""
         # Set up HITL to deny
         mock_hitl.request_approval = AsyncMock(return_value=Decision.DENIED)

@@ -20,8 +20,11 @@ import keyring
 from dataclasses import dataclass, asdict
 from typing import Any, cast, Protocol
 
+
 class DataclassInstance(Protocol):
     __dataclass_fields__: dict[str, Any]
+
+
 import sys  # noqa: E402
 
 logger = logging.getLogger(__name__)

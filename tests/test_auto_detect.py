@@ -84,14 +84,14 @@ class TestFindSkyrim:
         skyrim_dir.mkdir(parents=True)
         (skyrim_dir / "SkyrimSE.exe").touch()
 
-        vdf_content = f'"libraryfolders"\n{{\n  "0"\n  {{\n    "path"\t\t"{steam_dir}"\n  }}\n}}'
+        vdf_content = (
+            f'"libraryfolders"\n{{\n  "0"\n  {{\n    "path"\t\t"{steam_dir}"\n  }}\n}}'
+        )
         vdf_path = apps_dir / "libraryfolders.vdf"
         vdf_path.write_text(vdf_content, encoding="utf-8")
 
         with patch("sky_claw.auto_detect._read_registry_value", return_value=None):
-            with patch(
-                "sky_claw.auto_detect._STEAM_DEFAULT_PATHS", (str(steam_dir),)
-            ):
+            with patch("sky_claw.auto_detect._STEAM_DEFAULT_PATHS", (str(steam_dir),)):
                 result = await AutoDetector.find_skyrim()
 
         assert result == skyrim_dir
@@ -104,9 +104,7 @@ class TestFindSkyrim:
 
         with patch("sky_claw.auto_detect._read_registry_value", return_value=None):
             with patch("sky_claw.auto_detect._STEAM_DEFAULT_PATHS", ()):
-                with patch(
-                    "sky_claw.auto_detect._SKYRIM_COMMON", (str(skyrim_dir),)
-                ):
+                with patch("sky_claw.auto_detect._SKYRIM_COMMON", (str(skyrim_dir),)):
                     result = await AutoDetector.find_skyrim()
 
         assert result == skyrim_dir
@@ -203,7 +201,9 @@ class TestDetectAll:
 
         with patch.object(AutoDetector, "_find_mo2_inner", side_effect=_slow):
             with patch("sky_claw.auto_detect._SEARCH_TIMEOUT", 0.01):
-                with patch("sky_claw.auto_detect._read_registry_value", return_value=None):
+                with patch(
+                    "sky_claw.auto_detect._read_registry_value", return_value=None
+                ):
                     with patch("sky_claw.auto_detect._STEAM_DEFAULT_PATHS", ()):
                         with patch("sky_claw.auto_detect._SKYRIM_COMMON", ()):
                             with patch("sky_claw.auto_detect._LOOT_COMMON", ()):
@@ -255,7 +255,9 @@ class TestRegistryHelper:
 
 class TestAutoDetectEndpoint:
     @pytest.mark.asyncio
-    async def test_auto_detect_endpoint(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
+    async def test_auto_detect_endpoint(
+        self, tmp_path: pathlib.Path, aiohttp_client
+    ) -> None:
         from sky_claw.web.app import WebApp
 
         router = MagicMock()
@@ -289,7 +291,9 @@ class TestAutoDetectEndpoint:
 
 class TestInstallToolsEndpoint:
     @pytest.mark.asyncio
-    async def test_install_tools_no_installer(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
+    async def test_install_tools_no_installer(
+        self, tmp_path: pathlib.Path, aiohttp_client
+    ) -> None:
         from sky_claw.web.app import WebApp
 
         router = MagicMock()
@@ -297,8 +301,10 @@ class TestInstallToolsEndpoint:
         config_path = tmp_path / "config.json"
 
         web_app = WebApp(
-            router=router, session=session,
-            config_path=config_path, tools_installer=None,
+            router=router,
+            session=session,
+            config_path=config_path,
+            tools_installer=None,
         )
         app = web_app.create_app()
         client = await aiohttp_client(app)

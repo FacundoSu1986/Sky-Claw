@@ -12,7 +12,12 @@ import pathlib
 import xml.etree.ElementTree as _stdlib_ET
 
 import defusedxml.ElementTree as ET
-from defusedxml import DefusedXmlException, DTDForbidden, EntitiesForbidden, ExternalReferenceForbidden
+from defusedxml import (
+    DefusedXmlException,
+    DTDForbidden,
+    EntitiesForbidden,
+    ExternalReferenceForbidden,
+)
 
 from sky_claw.core.errors import FomodParserSecurityError
 from sky_claw.fomod.models import (
@@ -154,9 +159,9 @@ def _parse_file_list(element: _stdlib_ET.Element | None) -> list[FileInstall]:
                 dest = _norm_path(el.get("destination", ""))
                 priority = int(el.get("priority", "0"))
                 if source:
-                    files.append(FileInstall(
-                        source=source, destination=dest, priority=priority
-                    ))
+                    files.append(
+                        FileInstall(source=source, destination=dest, priority=priority)
+                    )
             except (ValueError, TypeError):
                 logger.warning("Skipping malformed file element: %s", ET.tostring(el))
     return files
@@ -170,13 +175,9 @@ def _parse_install_steps(element: _stdlib_ET.Element | None) -> list[InstallStep
     for step_el in element.findall("installStep"):
         try:
             name = step_el.get("name", "Unnamed Step")
-            visibility = _parse_composite_dependency(
-                step_el.find("visible")
-            )
+            visibility = _parse_composite_dependency(step_el.find("visible"))
             groups = _parse_groups(step_el.find("optionalFileGroups"))
-            steps.append(InstallStep(
-                name=name, visibility=visibility, groups=groups
-            ))
+            steps.append(InstallStep(name=name, visibility=visibility, groups=groups))
         except Exception:
             logger.warning("Skipping malformed install step", exc_info=True)
     return steps
@@ -193,9 +194,7 @@ def _parse_groups(element: _stdlib_ET.Element | None) -> list[Group]:
             type_str = group_el.get("type", "SelectAny")
             group_type = _parse_group_type(type_str)
             plugins = _parse_plugins(group_el.find("plugins"))
-            groups.append(Group(
-                name=name, group_type=group_type, plugins=plugins
-            ))
+            groups.append(Group(name=name, group_type=group_type, plugins=plugins))
         except Exception:
             logger.warning("Skipping malformed group", exc_info=True)
     return groups
@@ -223,9 +222,7 @@ def _parse_plugins(element: _stdlib_ET.Element | None) -> list[Plugin]:
             image_el = plugin_el.find("image")
             image = _norm_path(image_el.get("path", "")) if image_el is not None else ""
 
-            condition_flags = _parse_condition_flags(
-                plugin_el.find("conditionFlags")
-            )
+            condition_flags = _parse_condition_flags(plugin_el.find("conditionFlags"))
             files = _parse_file_list(plugin_el.find("files"))
 
             type_desc = "Optional"
@@ -235,14 +232,16 @@ def _parse_plugins(element: _stdlib_ET.Element | None) -> list[Plugin]:
                 if type_el is not None:
                     type_desc = type_el.get("name", "Optional")
 
-            plugins.append(Plugin(
-                name=name,
-                description=description,
-                image=image,
-                condition_flags=condition_flags,
-                files=files,
-                type_descriptor=type_desc,
-            ))
+            plugins.append(
+                Plugin(
+                    name=name,
+                    description=description,
+                    image=image,
+                    condition_flags=condition_flags,
+                    files=files,
+                    type_descriptor=type_desc,
+                )
+            )
         except Exception:
             logger.warning("Skipping malformed plugin", exc_info=True)
     return plugins
@@ -363,11 +362,13 @@ def _parse_conditional_installs(
     for pattern_el in patterns_el.findall("pattern"):
         try:
             deps_el = pattern_el.find("dependencies")
-            conditions = _parse_composite_dependency_direct(deps_el) if deps_el is not None else CompositeDependency()
+            conditions = (
+                _parse_composite_dependency_direct(deps_el)
+                if deps_el is not None
+                else CompositeDependency()
+            )
             files = _parse_file_list(pattern_el.find("files"))
-            patterns.append(ConditionalPattern(
-                conditions=conditions, files=files
-            ))
+            patterns.append(ConditionalPattern(conditions=conditions, files=files))
         except Exception:
             logger.warning("Skipping malformed conditional pattern", exc_info=True)
     return patterns

@@ -24,5 +24,5 @@ __all__ = [
     "scan_text",
     "GovernanceManager",
     "SecurityMetacognition",
-    "audit_resource"
+    "audit_resource",
 ]

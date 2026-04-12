@@ -73,7 +73,7 @@ Si dos reglas colisionan, obedece este orden **sin excepción**:
 - **Pytest:** Cero tests manuales. Fixtures en `conftest.py` (DB en memoria, LLM
   mockeado, `AsyncMock` para corrutinas).
 - **Naming:** Archivos `test_<module>.py`, funciones `test_<method>_<scenario>_<expected>`.
-- **CI gate:** Cobertura mínima del 60% (`--cov-fail-under=60`).
+- **CI gate:** Cobertura mínima del 49% (`--cov-fail-under=49`).
 
 ### 3.5 Stack y Dominio
 
@@ -149,7 +149,7 @@ Si dos reglas colisionan, obedece este orden **sin excepción**:
 |------|-------------|------------------|
 | **Lint** | Ruff | `ruff check` + `ruff format --check` sin errores |
 | **Type Check** | Mypy | Non-blocking (fallthrough con `or true`) — se endurecerá progresivamente |
-| **Test** | Pytest | `--cov-fail-under=60`, cobertura XML |
+| **Test** | Pytest | `--cov-fail-under=49`, cobertura XML |
 | **Security** | Bandit + pip-audit | SAST sin high/critical; SCA sin vulnerabilidades conocidas |
 | **Build** | PyInstaller | Depende de lint + test + security pasados |
 

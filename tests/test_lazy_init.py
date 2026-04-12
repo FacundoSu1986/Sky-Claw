@@ -125,25 +125,26 @@ class TestApplyConfigToEnv:
 
         cfg = Config(pathlib.Path("/tmp/fake_config.toml"))
         cfg._data["anthropic_api_key"] = "sk-ant-test-key-1234"
-        
+
         AppContext._apply_config_to_env(cfg)
 
         import os
+
         assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-test-key-1234"
 
     def test_env_var_not_overwritten(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Existing env var is NOT overwritten by config."""
         from sky_claw.__main__ import AppContext
 
-
         monkeypatch.setenv("ANTHROPIC_API_KEY", "env-original")
 
         cfg = Config(pathlib.Path("/tmp/fake_config.toml"))
         cfg._data["anthropic_api_key"] = "sk-ant-should-not-replace"
-        
+
         AppContext._apply_config_to_env(cfg)
 
         import os
+
         assert os.environ.get("ANTHROPIC_API_KEY") == "env-original"
 
 
@@ -224,10 +225,13 @@ class TestSetupCallback:
         app = web_app.create_app()
         client = await aiohttp_client(app)
 
-        resp = await client.post("/api/setup", json={
-            "mo2_root": "D:/MO2",
-            "api_key": "sk-ant-test-key",
-        })
+        resp = await client.post(
+            "/api/setup",
+            json={
+                "mo2_root": "D:/MO2",
+                "api_key": "sk-ant-test-key",
+            },
+        )
         assert resp.status == 200
         assert callback_called is True
         # Router should now be set by the callback.
@@ -253,9 +257,12 @@ class TestSetupCallback:
         app = web_app.create_app()
         client = await aiohttp_client(app)
 
-        resp = await client.post("/api/setup", json={
-            "api_key": "sk-ant-test",
-        })
+        resp = await client.post(
+            "/api/setup",
+            json={
+                "api_key": "sk-ant-test",
+            },
+        )
         assert resp.status == 500
         data = await resp.json()
         assert "initialization failed" in data["error"]
@@ -277,10 +284,13 @@ class TestSetupCallback:
         app = web_app.create_app()
         client = await aiohttp_client(app)
 
-        resp = await client.post("/api/setup", json={
-            "mo2_root": "E:/MO2",
-            "api_key": "sk-ant-no-callback",
-        })
+        resp = await client.post(
+            "/api/setup",
+            json={
+                "mo2_root": "E:/MO2",
+                "api_key": "sk-ant-no-callback",
+            },
+        )
         assert resp.status == 200
 
         cfg = load(config_path)

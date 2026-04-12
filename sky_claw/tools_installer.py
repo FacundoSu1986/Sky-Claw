@@ -92,11 +92,14 @@ def _is_safe_path(member_path: str) -> bool:
     """Reject paths with traversal components."""
     try:
         from sky_claw.core.validators import validate_path_strict
-        
+
         # Rechazar explícitamente rutas absolutas o con letra de unidad
-        if pathlib.PureWindowsPath(member_path).is_absolute() or pathlib.PurePosixPath(member_path).is_absolute():
+        if (
+            pathlib.PureWindowsPath(member_path).is_absolute()
+            or pathlib.PurePosixPath(member_path).is_absolute()
+        ):
             return False
-            
+
         validate_path_strict(member_path)
         return True
     except Exception:
@@ -112,7 +115,6 @@ def _extract_zip_safe(archive: pathlib.Path, dest: pathlib.Path) -> None:
             if not _is_safe_path(info.filename):
                 raise PathViolation(f"Zip-slip detected: {info.filename!r}")
             zf.extract(info, dest)
-
 
 
 def _extract_7z_safe(archive: pathlib.Path, dest: pathlib.Path) -> None:
@@ -222,7 +224,9 @@ class ToolsInstaller:
             )
 
         asset, version = await self._find_github_asset(
-            session, _LOOT_RELEASES_URL, keyword="win64",
+            session,
+            _LOOT_RELEASES_URL,
+            keyword="win64",
         )
 
         decision = await self._hitl.request_approval(
@@ -284,7 +288,9 @@ class ToolsInstaller:
             )
 
         asset, version = await self._find_github_asset(
-            session, _XEDIT_RELEASES_URL, keyword="SSEEdit",
+            session,
+            _XEDIT_RELEASES_URL,
+            keyword="SSEEdit",
         )
 
         decision = await self._hitl.request_approval(
@@ -347,7 +353,9 @@ class ToolsInstaller:
             )
 
         asset, version = await self._find_github_asset(
-            session, _PANDORA_RELEASES_URL, keyword="Pandora_Behaviour_Engine",
+            session,
+            _PANDORA_RELEASES_URL,
+            keyword="Pandora_Behaviour_Engine",
         )
 
         decision = await self._hitl.request_approval(
@@ -422,7 +430,9 @@ class ToolsInstaller:
         try:
             file_info = await downloader.get_file_info(nexus_id, None, session)
         except Exception as exc:
-            raise ToolInstallError(f"Failed to fetch BodySlide info from Nexus: {exc}") from exc
+            raise ToolInstallError(
+                f"Failed to fetch BodySlide info from Nexus: {exc}"
+            ) from exc
 
         decision = await self._hitl.request_approval(
             request_id=f"install-bodyslide-{file_info.file_id}",
@@ -441,10 +451,10 @@ class ToolsInstaller:
 
         # Download to staging dir first (as per NexusDownloader logic)
         archive_path = await downloader.download(file_info, session)
-        
+
         # Extract into the specialized tools directory
         self._extract(archive_path, install_dir)
-        
+
         # Cleanup archive in staging
         archive_path.unlink(missing_ok=True)
 
@@ -487,9 +497,7 @@ class ToolsInstaller:
         timeout = aiohttp.ClientTimeout(total=30)
         headers = {"Accept": "application/vnd.github+json"}
 
-        async with session.get(
-            releases_url, headers=headers, timeout=timeout
-        ) as resp:
+        async with session.get(releases_url, headers=headers, timeout=timeout) as resp:
             if resp.status != 200:
                 raise ToolInstallError(
                     f"GitHub API returned {resp.status} for {releases_url}"
@@ -547,14 +555,10 @@ class ToolsInstaller:
         )
 
         try:
-            async with session.get(
-                asset.download_url, timeout=timeout
-            ) as resp:
+            async with session.get(asset.download_url, timeout=timeout) as resp:
                 resp.raise_for_status()
                 with dest.open("wb") as fh:
-                    async for chunk in resp.content.iter_chunked(
-                        _DOWNLOAD_CHUNK_SIZE
-                    ):
+                    async for chunk in resp.content.iter_chunked(_DOWNLOAD_CHUNK_SIZE):
                         fh.write(chunk)
                         hasher.update(chunk)
                         downloaded += len(chunk)
@@ -563,9 +567,7 @@ class ToolsInstaller:
                                 "  ... %d / %d bytes (%.0f%%)",
                                 downloaded,
                                 asset.size,
-                                (downloaded / asset.size * 100)
-                                if asset.size
-                                else 0,
+                                (downloaded / asset.size * 100) if asset.size else 0,
                             )
         except Exception as exc:
             logger.error("Download failed for %s: %s", asset.name, exc)

@@ -26,6 +26,7 @@ from sky_claw.security.auth_token_manager import AuthTokenManager, _TOKEN_TTL
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_manager(tmp_path: Path) -> AuthTokenManager:
     """Create an AuthTokenManager backed by a temporary directory."""
     token_dir = tmp_path / "tokens"
@@ -38,8 +39,8 @@ def _make_manager(tmp_path: Path) -> AuthTokenManager:
 # 1.  generate() — token format and length
 # ===========================================================================
 
-class TestGenerate:
 
+class TestGenerate:
     def test_generate_returns_string(self, tmp_path):
         mgr = _make_manager(tmp_path)
         with patch("sky_claw.security.auth_token_manager.restrict_to_owner"):
@@ -93,8 +94,8 @@ class TestGenerate:
 # 2.  validate() — correct token within TTL
 # ===========================================================================
 
-class TestValidateCorrectToken:
 
+class TestValidateCorrectToken:
     def test_valid_token_returns_true(self, tmp_path):
         mgr = _make_manager(tmp_path)
         with patch("sky_claw.security.auth_token_manager.restrict_to_owner"):
@@ -119,8 +120,8 @@ class TestValidateCorrectToken:
 # 3.  validate() — wrong token
 # ===========================================================================
 
-class TestValidateWrongToken:
 
+class TestValidateWrongToken:
     def test_wrong_token_returns_false(self, tmp_path):
         mgr = _make_manager(tmp_path)
         with patch("sky_claw.security.auth_token_manager.restrict_to_owner"):
@@ -151,8 +152,8 @@ class TestValidateWrongToken:
 # 4.  validate() — TTL expiry (mocked time)
 # ===========================================================================
 
-class TestValidateTTLExpiry:
 
+class TestValidateTTLExpiry:
     def test_token_valid_just_before_ttl(self, tmp_path):
         """At TTL - 1 second the token must still be valid."""
         mgr = _make_manager(tmp_path)
@@ -206,8 +207,8 @@ class TestValidateTTLExpiry:
 # 5.  validate() — after revoke()
 # ===========================================================================
 
-class TestValidateAfterRevoke:
 
+class TestValidateAfterRevoke:
     def test_validate_false_after_revoke(self, tmp_path):
         mgr = _make_manager(tmp_path)
         with patch("sky_claw.security.auth_token_manager.restrict_to_owner"):
@@ -251,8 +252,8 @@ class TestValidateAfterRevoke:
 # 6.  Token file lifecycle
 # ===========================================================================
 
-class TestTokenFile:
 
+class TestTokenFile:
     def test_generate_creates_token_file(self, tmp_path):
         mgr = _make_manager(tmp_path)
         token_path = mgr._token_path
@@ -280,9 +281,7 @@ class TestTokenFile:
 
         assert mgr._token_path.exists()
         mgr.revoke()
-        assert not mgr._token_path.exists(), (
-            "Token file must be removed by revoke()"
-        )
+        assert not mgr._token_path.exists(), "Token file must be removed by revoke()"
 
     def test_revoke_without_file_does_not_raise(self, tmp_path):
         """If the file was externally deleted, revoke() must still succeed."""
@@ -334,6 +333,7 @@ class TestTokenFile:
 # ===========================================================================
 # 7.  Timing-safe comparison (secrets.compare_digest used, not ==)
 # ===========================================================================
+
 
 class TestTimingSafeComparison:
     """Verify that validate() uses secrets.compare_digest rather than a plain

@@ -75,14 +75,14 @@ class LOOTRunner:
             self._validator.validate(loot_path)
 
         if not loot_path.exists():
-            raise LOOTNotFoundError(
-                f"LOOT executable not found at {loot_path}"
-            )
+            raise LOOTNotFoundError(f"LOOT executable not found at {loot_path}")
 
         args = [
             str(loot_path),
-            "--game", self._config.game,
-            "--game-path", str(game_path),
+            "--game",
+            self._config.game,
+            "--game-path",
+            str(game_path),
             "--sort",
         ]
 
@@ -99,9 +99,7 @@ class LOOTRunner:
                 timeout=self._config.timeout,
             )
         except FileNotFoundError:
-            raise LOOTNotFoundError(
-                f"LOOT executable not found at {loot_path}"
-            )
+            raise LOOTNotFoundError(f"LOOT executable not found at {loot_path}")
         except asyncio.TimeoutError:
             proc.kill()
             try:
@@ -114,9 +112,7 @@ class LOOTRunner:
         stderr_text = stderr.decode(errors="replace")
 
         if proc.returncode != 0:
-            logger.warning(
-                "LOOT exited with code %d: %s", proc.returncode, stderr_text
-            )
+            logger.warning("LOOT exited with code %d: %s", proc.returncode, stderr_text)
 
         return LOOTOutputParser.parse(
             stdout=stdout_text,

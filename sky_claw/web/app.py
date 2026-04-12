@@ -126,25 +126,31 @@ class WebApp:
             peer = request.remote or ""
             if peer not in ("127.0.0.1", "::1", "localhost"):
                 logger.warning("Setup endpoint blocked for non-local peer: %s", peer)
-                return web.Response(status=403, text="Forbidden: setup only accessible from localhost")
+                return web.Response(
+                    status=403, text="Forbidden: setup only accessible from localhost"
+                )
 
         if path == "/api/chat" and self._auth_manager is not None:
             auth_header = request.headers.get("Authorization", "")
             if not auth_header.startswith("Bearer "):
                 return web.Response(status=401, text="Unauthorized")
-            token = auth_header[len("Bearer "):]
+            token = auth_header[len("Bearer ") :]
             if not self._auth_manager.validate(token):
-                logger.warning("Invalid auth token on /api/chat from %s", request.remote)
+                logger.warning(
+                    "Invalid auth token on /api/chat from %s", request.remote
+                )
                 return web.Response(status=401, text="Unauthorized")
 
         return await handler(request)
 
     def create_app(self) -> web.Application:
         """Build and return the aiohttp Application."""
-        app = web.Application(middlewares=[
-            self._correlation_middleware,
-            self._setup_auth_middleware,
-        ])
+        app = web.Application(
+            middlewares=[
+                self._correlation_middleware,
+                self._setup_auth_middleware,
+            ]
+        )
         app.router.add_get("/", self._handle_index)
         app.router.add_get("/setup.html", self._handle_setup_page)
         app.router.add_get("/api/setup", self._handle_get_setup)
@@ -175,16 +181,18 @@ class WebApp:
     async def _handle_get_setup(self, request: web.Request) -> web.Response:
         """Return current config (without sensitive keys)."""
         cfg = load_local_config(self._config_path)
-        return web.json_response({
-            "mo2_root": cfg.mo2_root or "",
-            "install_dir": cfg.install_dir or "",
-            "loot_exe": cfg.loot_exe or "",
-            "xedit_exe": cfg.xedit_exe or "",
-            "pandora_exe": cfg.pandora_exe or "",
-            "bodyslide_exe": cfg.bodyslide_exe or "",
-            "first_run": cfg.first_run,
-            # API keys are never returned for security.
-        })
+        return web.json_response(
+            {
+                "mo2_root": cfg.mo2_root or "",
+                "install_dir": cfg.install_dir or "",
+                "loot_exe": cfg.loot_exe or "",
+                "xedit_exe": cfg.xedit_exe or "",
+                "pandora_exe": cfg.pandora_exe or "",
+                "bodyslide_exe": cfg.bodyslide_exe or "",
+                "first_run": cfg.first_run,
+                # API keys are never returned for security.
+            }
+        )
 
     async def _handle_post_setup(self, request: web.Request) -> web.Response:
         """Save setup config from the wizard, then trigger full init."""
@@ -216,7 +224,7 @@ class WebApp:
             cfg.set_telegram_bot_token(data["telegram_bot_token"])
         if "telegram_chat_id" in data and data["telegram_chat_id"]:
             cfg.telegram_chat_id = str(data["telegram_chat_id"])
-        
+
         if "skyrim_path" in data and data["skyrim_path"]:
             cfg.skyrim_path = str(data["skyrim_path"])
 
@@ -231,8 +239,10 @@ class WebApp:
             except Exception as exc:
                 logger.exception("on_setup_complete callback failed: %s", exc)
                 return web.json_response(
-                    {"error": "Configuration saved but initialization failed. "
-                     "Please restart the application."},
+                    {
+                        "error": "Configuration saved but initialization failed. "
+                        "Please restart the application."
+                    },
                     status=500,
                 )
 
@@ -245,7 +255,9 @@ class WebApp:
             return web.json_response(result)
         except Exception as exc:
             logger.error("Auto-detect error: %s", exc)
-            return web.json_response({"error": "Auto-detection failed. Check server logs."}, status=500)
+            return web.json_response(
+                {"error": "Auto-detection failed. Check server logs."}, status=500
+            )
 
     async def _handle_install_tools(self, request: web.Request) -> web.Response:
         """Install missing LOOT / SSEEdit via ToolsInstaller."""
@@ -260,8 +272,7 @@ class WebApp:
             data = {}
 
         install_dir = pathlib.Path(
-            data.get("install_dir", "")
-            or str(self._config_path.parent / "tools")
+            data.get("install_dir", "") or str(self._config_path.parent / "tools")
         )
         results: dict[str, str] = {}
 
@@ -302,23 +313,21 @@ class WebApp:
         """
         if self._router is None:
             return web.json_response(
-                {"error": "Sky-Claw no está configurado todavía. "
-                 "Completá el setup wizard primero."},
+                {
+                    "error": "Sky-Claw no está configurado todavía. "
+                    "Completá el setup wizard primero."
+                },
                 status=503,
             )
 
         try:
             data: dict[str, Any] = await request.json()
         except json.JSONDecodeError:
-            return web.json_response(
-                {"error": "Invalid JSON"}, status=400
-            )
+            return web.json_response({"error": "Invalid JSON"}, status=400)
 
         message = data.get("message", "").strip()
         if not message:
-            return web.json_response(
-                {"error": "Empty message"}, status=400
-            )
+            return web.json_response({"error": "Empty message"}, status=400)
 
         try:
             response = await self._router.chat(
@@ -328,5 +337,8 @@ class WebApp:
         except Exception as exc:
             logger.exception("Chat error: %s", exc)
             return web.json_response(
-                {"error": "Error del Agente. Revisa tu API Key en la config inicial y consulta los logs del servidor."}, status=500
+                {
+                    "error": "Error del Agente. Revisa tu API Key en la config inicial y consulta los logs del servidor."
+                },
+                status=500,
             )

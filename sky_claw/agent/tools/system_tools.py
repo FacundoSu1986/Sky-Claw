@@ -33,9 +33,7 @@ async def check_load_order(mo2: Any, profile: str) -> str:
     entries: list[dict[str, Any]] = []
     idx = 0
     async for mod_name, enabled in mo2.read_modlist(params.profile):
-        entries.append(
-            {"index": idx, "name": mod_name, "enabled": enabled}
-        )
+        entries.append({"index": idx, "name": mod_name, "enabled": enabled})
         idx += 1
     return json.dumps({"profile": params.profile, "load_order": entries})
 
@@ -51,12 +49,15 @@ async def detect_conflicts(registry: Any, mo2: Any, profile: str) -> str:
     return json.dumps({"profile": params.profile, "conflicts": conflicts})
 
 
-async def run_loot_sort(mo2: Any, loot_runner: Any, loot_exe: pathlib.Path | None, profile: str) -> str:
+async def run_loot_sort(
+    mo2: Any, loot_runner: Any, loot_exe: pathlib.Path | None, profile: str
+) -> str:
     """Invoke the LOOT CLI to sort the load order."""
     params = ProfileParams(profile=profile)
     if loot_runner is None and loot_exe is not None:
         try:
             from sky_claw.loot.cli import LOOTConfig, LOOTRunner
+
             config = LOOTConfig(loot_exe=loot_exe, game_path=mo2.root)
             loot_runner = LOOTRunner(config)
         except Exception as exc:
@@ -79,9 +80,11 @@ async def run_loot_sort(mo2: Any, loot_runner: Any, loot_exe: pathlib.Path | Non
     )
 
 
-async def run_xedit_script(xedit_runner: Any, script_name: str, plugins: list[str]) -> str:
+async def run_xedit_script(
+    xedit_runner: Any, script_name: str, plugins: list[str]
+) -> str:
     """Run an xEdit script in headless mode.
-    
+
     SECURITY: XEditRunner uses asyncio.create_subprocess_exec() with
     argument list (shell=False equivalent). Input validation is delegated to
     XEditRunner._validate_inputs() which enforces strict regex patterns.
@@ -140,7 +143,9 @@ async def install_mod_from_archive(
         selections=selections or {},
     )
     if hitl is None:
-        return json.dumps({"error": "HITL guard is not configured. Installation blocked."})
+        return json.dumps(
+            {"error": "HITL guard is not configured. Installation blocked."}
+        )
     request_id = f"install-{pathlib.Path(params.archive_path).name}"
     # Decision already imported at module level (HOTFIX: removed dynamic import)
     decision = await hitl.request_approval(
@@ -149,7 +154,9 @@ async def install_mod_from_archive(
         detail=f"Selecciones FOMOD detectadas: {json.dumps(params.selections)}",
     )
     if decision is not Decision.APPROVED:
-        return json.dumps({"status": "denied", "reason": "User rejected the installation."})
+        return json.dumps(
+            {"status": "denied", "reason": "User rejected the installation."}
+        )
     if fomod_installer is None:
         return json.dumps({"error": "FOMOD installer is not configured"})
     mo2_mods_dir = mo2.root / "mods"
@@ -191,9 +198,12 @@ async def resolve_fomod(
         return json.dumps({"error": "FOMOD installer is not configured"})
     from sky_claw.fomod.parser import parse_fomod_string, FomodParseError
     from sky_claw.fomod.resolver import FomodResolver
+
     archive = pathlib.Path(params.archive_path)
     if not hasattr(fomod_installer, "_extract_fomod_xml"):
-        return json.dumps({"error": "FomodInstaller is missing _extract_fomod_xml capability."})
+        return json.dumps(
+            {"error": "FomodInstaller is missing _extract_fomod_xml capability."}
+        )
     fomod_xml = fomod_installer._extract_fomod_xml(archive)
     if fomod_xml is None:
         return json.dumps({"error": "No FOMOD configuration found in archive."})
@@ -224,7 +234,7 @@ async def analyze_esp_conflicts(
         return json.dumps(
             {
                 "error": "xEdit runner is not configured. "
-                         "Use the setup_tools tool to install SSEEdit first.",
+                "Use the setup_tools tool to install SSEEdit first.",
             }
         )
     target_plugins = params.plugins
@@ -234,9 +244,12 @@ async def analyze_esp_conflicts(
             if enabled and mod_name.endswith((".esp", ".esm", ".esl")):
                 target_plugins.append(mod_name)
     if not target_plugins:
-        return json.dumps({"error": f"No plugins found for profile {params.profile!r}."})
+        return json.dumps(
+            {"error": f"No plugins found for profile {params.profile!r}."}
+        )
     from sky_claw.xedit.conflict_analyzer import ConflictAnalyzer
     from sky_claw.xedit.runner import XEditNotFoundError, XEditValidationError
+
     analyzer = ConflictAnalyzer()
     try:
         report = await analyzer.analyze(target_plugins, xedit_runner)
@@ -290,7 +303,9 @@ async def uninstall_mod(mo2: Any, mod_name: str, profile: str = "Default") -> st
         return json.dumps({"error": str(exc)})
 
 
-async def toggle_mod(mo2: Any, mod_name: str, enable: bool, profile: str = "Default") -> str:
+async def toggle_mod(
+    mo2: Any, mod_name: str, enable: bool, profile: str = "Default"
+) -> str:
     """Enable or disable an installed mod in a specific MO2 profile load order."""
     params = ToggleModParams(mod_name=mod_name, enable=enable, profile=profile)
     try:
@@ -330,6 +345,7 @@ async def close_game(mo2: Any) -> str:
 # FASE 6: Direct runner handlers
 # ---------------------------------------------------------------------------
 
+
 async def generate_bashed_patch(wrye_bash_runner: Any) -> str:
     """Generate 'Bashed Patch, 0.esp' using WryeBashRunner.
 
@@ -338,7 +354,9 @@ async def generate_bashed_patch(wrye_bash_runner: Any) -> str:
     This handler is used when AsyncToolRegistry invokes the tool directly.
     """
     if wrye_bash_runner is None:
-        return json.dumps({"error": "WryeBashRunner is not configured. Set WRYE_BASH_PATH."})
+        return json.dumps(
+            {"error": "WryeBashRunner is not configured. Set WRYE_BASH_PATH."}
+        )
     try:
         result = await wrye_bash_runner.generate_bashed_patch()
     except Exception as exc:
@@ -357,7 +375,9 @@ async def generate_bashed_patch(wrye_bash_runner: Any) -> str:
 async def run_pandora_behavior(pandora_runner: Any) -> str:
     """Execute Pandora Behavior Engine in auto mode (Skyrim SE) via PandoraRunner."""
     if pandora_runner is None:
-        return json.dumps({"error": "PandoraRunner is not configured. Set PANDORA_EXE."})
+        return json.dumps(
+            {"error": "PandoraRunner is not configured. Set PANDORA_EXE."}
+        )
     try:
         result = await pandora_runner.run_pandora()
     except Exception as exc:
@@ -386,7 +406,9 @@ async def run_bodyslide_batch_direct(
         output_path: Relative output directory for generated meshes.
     """
     if bodyslide_runner is None:
-        return json.dumps({"error": "BodySlideRunner is not configured. Set BODYSLIDE_EXE."})
+        return json.dumps(
+            {"error": "BodySlideRunner is not configured. Set BODYSLIDE_EXE."}
+        )
     try:
         result = await bodyslide_runner.run_batch(group, output_path)
     except Exception as exc:

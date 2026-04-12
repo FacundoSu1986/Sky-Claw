@@ -24,7 +24,6 @@ from sky_claw.xedit.runner import (
 
 
 class TestXEditOutputParser:
-
     def test_parse_processing_lines(self) -> None:
         stdout = (
             "[00:01] Processing: Skyrim.esm\n"
@@ -87,7 +86,6 @@ class TestXEditOutputParser:
 
 
 class TestXEditRunnerValidation:
-
     def _make_runner(self, tmp_path: pathlib.Path) -> XEditRunner:
         xedit = tmp_path / "SSEEdit.exe"
         xedit.touch()
@@ -121,10 +119,13 @@ class TestXEditRunnerValidation:
         mock_proc.returncode = 0
         mock_proc.kill = MagicMock()
 
-        with patch("sky_claw.xedit.runner.asyncio.create_subprocess_exec", return_value=mock_proc):
+        with patch(
+            "sky_claw.xedit.runner.asyncio.create_subprocess_exec",
+            return_value=mock_proc,
+        ):
             result = await runner.run_script(
                 "list_conflicts.pas",
-                ["Skyrim.esm", "Unofficial Skyrim Special Edition Patch.esp"]
+                ["Skyrim.esm", "Unofficial Skyrim Special Edition Patch.esp"],
             )
         assert result.success is True
 
@@ -144,7 +145,6 @@ class TestXEditRunnerValidation:
 
 
 class TestXEditRunnerExecution:
-
     def _make_runner(self, tmp_path: pathlib.Path) -> XEditRunner:
         xedit = tmp_path / "SSEEdit.exe"
         xedit.touch()
@@ -156,14 +156,19 @@ class TestXEditRunnerExecution:
     async def test_successful_run(self, tmp_path: pathlib.Path) -> None:
         runner = self._make_runner(tmp_path)
         mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(
-            b"[00:01] Processing: Skyrim.esm\nConflict found: NPC override\n",
-            b"",
-        ))
+        mock_proc.communicate = AsyncMock(
+            return_value=(
+                b"[00:01] Processing: Skyrim.esm\nConflict found: NPC override\n",
+                b"",
+            )
+        )
         mock_proc.returncode = 0
         mock_proc.kill = MagicMock()
 
-        with patch("sky_claw.xedit.runner.asyncio.create_subprocess_exec", return_value=mock_proc):
+        with patch(
+            "sky_claw.xedit.runner.asyncio.create_subprocess_exec",
+            return_value=mock_proc,
+        ):
             result = await runner.run_script("list_conflicts.pas", ["Skyrim.esm"])
 
         assert result.success is True
@@ -177,8 +182,14 @@ class TestXEditRunnerExecution:
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
         mock_proc.kill = MagicMock()
 
-        with patch("sky_claw.xedit.runner.asyncio.create_subprocess_exec", return_value=mock_proc):
-            with patch("sky_claw.xedit.runner.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+        with patch(
+            "sky_claw.xedit.runner.asyncio.create_subprocess_exec",
+            return_value=mock_proc,
+        ):
+            with patch(
+                "sky_claw.xedit.runner.asyncio.wait_for",
+                side_effect=asyncio.TimeoutError,
+            ):
                 with pytest.raises(RuntimeError, match="timed out"):
                     await runner.run_script("list_conflicts.pas", ["Skyrim.esm"])
 
@@ -189,7 +200,6 @@ class TestXEditRunnerExecution:
 
 
 class TestXEditTool:
-
     @pytest.mark.asyncio
     async def test_tool_no_runner_configured(self, tmp_path: pathlib.Path) -> None:
         from sky_claw.agent.tools import AsyncToolRegistry
@@ -209,11 +219,16 @@ class TestXEditTool:
         try:
             sync = SyncEngine(mo2, MagicMock(), registry)
             tool_reg = AsyncToolRegistry(
-                registry=registry, mo2=mo2, sync_engine=sync,
+                registry=registry,
+                mo2=mo2,
+                sync_engine=sync,
             )
-            result = json.loads(await tool_reg.execute(
-                "run_xedit_script", {"script_name": "test.pas", "plugins": ["test.esp"]}
-            ))
+            result = json.loads(
+                await tool_reg.execute(
+                    "run_xedit_script",
+                    {"script_name": "test.pas", "plugins": ["test.esp"]},
+                )
+            )
             assert "error" in result
             assert "xEdit runner is not configured" in result["error"]
         finally:
@@ -239,21 +254,31 @@ class TestXEditTool:
             sync = SyncEngine(mo2, MagicMock(), registry)
 
             mock_runner = MagicMock()
-            mock_runner.run_script = AsyncMock(return_value=XEditResult(
-                return_code=0,
-                processed_plugins=["Skyrim.esm"],
-                conflicts=[XEditConflict(plugin="Requiem.esp", record="WEAP", detail="Damage")],
-                errors=[],
-            ))
+            mock_runner.run_script = AsyncMock(
+                return_value=XEditResult(
+                    return_code=0,
+                    processed_plugins=["Skyrim.esm"],
+                    conflicts=[
+                        XEditConflict(
+                            plugin="Requiem.esp", record="WEAP", detail="Damage"
+                        )
+                    ],
+                    errors=[],
+                )
+            )
 
             tool_reg = AsyncToolRegistry(
-                registry=registry, mo2=mo2, sync_engine=sync,
+                registry=registry,
+                mo2=mo2,
+                sync_engine=sync,
                 xedit_runner=mock_runner,
             )
-            result = json.loads(await tool_reg.execute(
-                "run_xedit_script",
-                {"script_name": "list_conflicts.pas", "plugins": ["Skyrim.esm"]},
-            ))
+            result = json.loads(
+                await tool_reg.execute(
+                    "run_xedit_script",
+                    {"script_name": "list_conflicts.pas", "plugins": ["Skyrim.esm"]},
+                )
+            )
             assert result["success"] is True
             assert result["processed_plugins"] == ["Skyrim.esm"]
             assert len(result["conflicts"]) == 1
@@ -363,7 +388,7 @@ class TestScriptGeneratorWithEscaping:
     def test_generate_merge_script_validates_plugin_name(self) -> None:
         """Nombres de plugin inválidos son rechazados."""
         from sky_claw.xedit.runner import XEditScriptError
-        
+
         with pytest.raises(XEditScriptError, match="Invalid output plugin name"):
             ScriptGenerator.generate_merge_script(
                 output_plugin="../evil.esp",  # Path traversal
@@ -373,7 +398,7 @@ class TestScriptGeneratorWithEscaping:
     def test_generate_forward_script_validates_form_id(self) -> None:
         """FormIDs inválidos son rechazados."""
         from sky_claw.xedit.runner import XEditScriptError
-        
+
         with pytest.raises(XEditScriptError, match="Invalid FormID format"):
             ScriptGenerator.generate_forward_script(
                 form_id="NOTHEX",  # No es hexadecimal

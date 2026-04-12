@@ -91,20 +91,24 @@ class XEditOutputParser:
 
             detail_match = _DETAILED_CONFLICT.match(line)
             if detail_match:
-                conflicts.append(XEditConflict(
-                    plugin=detail_match.group(1).strip(),
-                    record=detail_match.group(2).strip(),
-                    detail=detail_match.group(3).strip(),
-                ))
+                conflicts.append(
+                    XEditConflict(
+                        plugin=detail_match.group(1).strip(),
+                        record=detail_match.group(2).strip(),
+                        detail=detail_match.group(3).strip(),
+                    )
+                )
                 continue
 
             conflict_match = _CONFLICT_LINE.match(line)
             if conflict_match:
-                conflicts.append(XEditConflict(
-                    plugin="",
-                    record="",
-                    detail=conflict_match.group(1).strip(),
-                ))
+                conflicts.append(
+                    XEditConflict(
+                        plugin="",
+                        record="",
+                        detail=conflict_match.group(1).strip(),
+                    )
+                )
                 continue
 
             err_match = _ERROR_LINE.match(line)

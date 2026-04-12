@@ -15,6 +15,7 @@ from .governance import GovernanceManager
 
 logger = logging.getLogger(__name__)
 
+
 class SecurityMetacognition:
     def __init__(self, target_path: str):
         self.target_path = Path(target_path)
@@ -22,7 +23,7 @@ class SecurityMetacognition:
             "start_time": datetime.now().isoformat(),
             "findings": [],
             "confidence": 1.0,
-            "status": "INIT"
+            "status": "INIT",
         }
 
     async def execute_cycle(self) -> Dict[str, Any]:
@@ -57,13 +58,15 @@ class SecurityMetacognition:
         if not self.target_path.exists():
             logger.error(f"Ruta no encontrada: {self.target_path}")
             return False
-            
+
         files = []
         if self.target_path.is_file():
             files = [self.target_path]
         else:
             # Escanear recursivamente buscando .py, .md, .txt
-            files = list(self.target_path.rglob("*.[pm][yd]*")) + list(self.target_path.rglob("*.txt"))
+            files = list(self.target_path.rglob("*.[pm][yd]*")) + list(
+                self.target_path.rglob("*.txt")
+            )
 
         self.session_data["files_to_scan"] = sorted([str(f) for f in files])
         return True
@@ -73,10 +76,10 @@ class SecurityMetacognition:
         self.session_data["status"] = "RESOLVING"
         all_findings = []
         gov = GovernanceManager.get_instance()
-        
+
         for file_path in self.session_data["files_to_scan"]:
             Path(file_path)
-            
+
             # Protección: No volver a escanear si está limpio en el caché incremental
             if await gov.is_scanned_and_clean(file_path):
                 logger.info(f"Saltando {file_path} (Caché incremental limpio)")
@@ -96,7 +99,7 @@ class SecurityMetacognition:
                 # Persistir hallazgos si es necesario
                 status = "CLEAN" if not findings else "SUSPICIOUS"
                 await gov.update_scan_result(file_path, findings, status)
-                
+
                 all_findings.extend(findings)
 
             except Exception as e:
@@ -108,12 +111,20 @@ class SecurityMetacognition:
         """Fase 3: Cruce de hallazgos con base de datos de amenazas y lógica de negocio."""
         self.session_data["status"] = "VERIFYING"
         # Aquí se ajusta la confianza basada en la severidad de los hallazgos
-        num_critical = len([f for f in self.session_data["findings"] if f.get("severity") == "CRITICAL"])
-        num_high = len([f for f in self.session_data["findings"] if f.get("severity") == "HIGH"])
-        
+        num_critical = len(
+            [
+                f
+                for f in self.session_data["findings"]
+                if f.get("severity") == "CRITICAL"
+            ]
+        )
+        num_high = len(
+            [f for f in self.session_data["findings"] if f.get("severity") == "HIGH"]
+        )
+
         # Penalización bayesiana simple
-        self.session_data["confidence"] -= (num_critical * 0.4)
-        self.session_data["confidence"] -= (num_high * 0.15)
+        self.session_data["confidence"] -= num_critical * 0.4
+        self.session_data["confidence"] -= num_high * 0.15
         self.session_data["confidence"] = max(0.0, self.session_data["confidence"])
 
     async def _phase_synthesize(self):
@@ -122,20 +133,23 @@ class SecurityMetacognition:
         self.session_data["summary"] = {
             "total_files": len(self.session_data["files_to_scan"]),
             "findings_count": len(self.session_data["findings"]),
-            "is_safe": self.session_data["confidence"] >= 0.8
+            "is_safe": self.session_data["confidence"] >= 0.8,
         }
 
     async def _phase_reflect(self):
         """Fase 5: Decisión final y autorreflexión si la confianza es baja."""
         self.session_data["status"] = "REFLECTING"
         if self.session_data["confidence"] < 0.8:
-            logger.warning(f"Confianza baja ({self.session_data['confidence']}). Requiere revisión manual (HITL).")
+            logger.warning(
+                f"Confianza baja ({self.session_data['confidence']}). Requiere revisión manual (HITL)."
+            )
             self.session_data["final_decision"] = "REJECT/QUARANTINE"
         else:
             self.session_data["final_decision"] = "ACCEPT/EXECUTE"
-            
+
         self.session_data["end_time"] = datetime.now().isoformat()
         self.session_data["status"] = "COMPLETED"
+
 
 async def audit_resource(path: str) -> Dict[str, Any]:
     """Punto de entrada asíncrono para auditoría Purple Team."""

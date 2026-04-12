@@ -13,6 +13,7 @@ Contenido:
 - DefaultThoughtGenerator: Implementación por defecto
 - DefaultThoughtEvaluator: Implementación por defecto
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -44,34 +45,35 @@ logger = logging.getLogger(__name__)
 # Detector de Ciclos
 # ============================================================================
 
+
 class CycleDetector:
     """Detector de estados repetidos para evitar ciclos en la búsqueda."""
-    
+
     def __init__(self, state_hash_func: Optional[Callable[[Any], str]] = None):
         """
         Inicializa el detector de ciclos.
-        
+
         Args:
             state_hash_func: Función para generar hash único del estado.
                            Si es None, usa str() por defecto.
         """
         self._state_hash_func = state_hash_func
         self._visited_states: Set[str] = set()
-    
+
     def is_visited(self, node: ThoughtNode[T]) -> bool:
         """Verifica si el estado del nodo ya fue visitado."""
         state_hash = node.get_state_hash(self._state_hash_func)
         return state_hash in self._visited_states
-    
+
     def mark_visited(self, node: ThoughtNode[T]) -> None:
         """Marca el estado del nodo como visitado."""
         state_hash = node.get_state_hash(self._state_hash_func)
         self._visited_states.add(state_hash)
-    
+
     def reset(self) -> None:
         """Limpia el registro de estados visitados."""
         self._visited_states.clear()
-    
+
     @property
     def visited_count(self) -> int:
         """Retorna el número de estados visitados."""
@@ -82,28 +84,29 @@ class CycleDetector:
 # Política de Poda Dinámica
 # ============================================================================
 
+
 class PruningPolicy:
     """Política de poda dinámica para filtrar nodos."""
-    
+
     def __init__(self, config: ToTConfig):
         self._config = config
-    
+
     def apply(self, nodes: List[ThoughtNode[T]]) -> List[ThoughtNode[T]]:
         """
         Aplica la política de poda a una lista de nodos.
-        
+
         Args:
             nodes: Lista de nodos a filtrar
-        
+
         Returns:
             Lista de nodos que pasan el filtro
         """
         if not nodes:
             return nodes
-        
+
         # Filtrar nodos marcados como DEAD_END
         alive_nodes = [n for n in nodes if n.evaluation != EvaluationResult.DEAD_END]
-        
+
         if self._config.pruning_method == PruningMethod.FIXED_THRESHOLD:
             return self._apply_fixed_threshold(alive_nodes)
         elif self._config.pruning_method == PruningMethod.RELATIVE_TOP_K:
@@ -112,51 +115,59 @@ class PruningPolicy:
             return self._apply_percentile(alive_nodes)
         else:
             return alive_nodes
-    
-    def _apply_fixed_threshold(self, nodes: List[ThoughtNode[T]]) -> List[ThoughtNode[T]]:
+
+    def _apply_fixed_threshold(
+        self, nodes: List[ThoughtNode[T]]
+    ) -> List[ThoughtNode[T]]:
         """Aplica umbral fijo de poda."""
         result = []
         for node in nodes:
             if node.score < self._config.pruning_threshold:
                 node.evaluation = EvaluationResult.DEAD_END
-                logger.debug(f"Pruned node {node.id} with score {node.score:.2f} < {self._config.pruning_threshold}")
+                logger.debug(
+                    f"Pruned node {node.id} with score {node.score:.2f} < {self._config.pruning_threshold}"
+                )
             else:
                 result.append(node)
         return result
-    
+
     def _apply_top_k(self, nodes: List[ThoughtNode[T]]) -> List[ThoughtNode[T]]:
         """Mantiene solo los K mejores nodos."""
         if len(nodes) <= self._config.pruning_top_k:
             return nodes
-        
+
         sorted_nodes = sorted(nodes, key=lambda n: n.score, reverse=True)
-        kept_nodes = sorted_nodes[:self._config.pruning_top_k]
-        pruned_nodes = sorted_nodes[self._config.pruning_top_k:]
-        
+        kept_nodes = sorted_nodes[: self._config.pruning_top_k]
+        pruned_nodes = sorted_nodes[self._config.pruning_top_k :]
+
         for node in pruned_nodes:
             node.evaluation = EvaluationResult.DEAD_END
-            logger.debug(f"Pruned node {node.id} with score {node.score:.2f} (not in top {self._config.pruning_top_k})")
-        
+            logger.debug(
+                f"Pruned node {node.id} with score {node.score:.2f} (not in top {self._config.pruning_top_k})"
+            )
+
         return kept_nodes
-    
+
     def _apply_percentile(self, nodes: List[ThoughtNode[T]]) -> List[ThoughtNode[T]]:
         """Mantiene nodos en el percentil X superior."""
         if len(nodes) <= 1:
             return nodes
-        
+
         scores = [n.score for n in nodes]
         scores_sorted = sorted(scores)
         threshold_index = int(len(scores_sorted) * self._config.pruning_percentile)
         threshold = scores_sorted[threshold_index]
-        
+
         result = []
         for node in nodes:
             if node.score < threshold:
                 node.evaluation = EvaluationResult.DEAD_END
-                logger.debug(f"Pruned node {node.id} with score {node.score:.2f} < percentile threshold {threshold:.2f}")
+                logger.debug(
+                    f"Pruned node {node.id} with score {node.score:.2f} < percentile threshold {threshold:.2f}"
+                )
             else:
                 result.append(node)
-        
+
         return result
 
 
@@ -164,25 +175,26 @@ class PruningPolicy:
 # Motor Tree-of-Thought (Facade)
 # ============================================================================
 
+
 class TreeOfThoughtEngine(Generic[T, S]):
     """
     Motor Tree-of-Thought para razonamiento complejo.
-    
+
     Este motor implementa el algoritmo ToT que permite explorar
     múltiples caminos de razonamiento de forma sistemática,
     con capacidad de retroceso cuando un camino resulta improductivo.
-    
+
     Example:
         ```python
         # Definir generador y evaluador
         async def generate_thoughts(state, n, context):
             # Usar LLM para generar pensamientos candidatos
             ...
-        
+
         async def evaluate_thought(thought, desc, context):
             # Usar LLM para evaluar viabilidad
             ...
-        
+
         # Crear motor
         engine = TreeOfThoughtEngine(
             thought_generator=generate_thoughts,
@@ -190,12 +202,12 @@ class TreeOfThoughtEngine(Generic[T, S]):
             solution_checker=lambda s: s if is_valid(s) else None,
             config=ToTConfig(max_depth=5)
         )
-        
+
         # Ejecutar búsqueda
         result = await engine.solve(initial_state)
         ```
     """
-    
+
     def __init__(
         self,
         thought_generator: ThoughtGenerator[T],
@@ -203,11 +215,11 @@ class TreeOfThoughtEngine(Generic[T, S]):
         solution_checker: SolutionChecker[T, S],
         config: Optional[ToTConfig] = None,
         llm_client: Optional[Any] = None,
-        state_hash_func: Optional[Callable[[T], str]] = None
+        state_hash_func: Optional[Callable[[T], str]] = None,
     ):
         """
         Inicializa el motor ToT.
-        
+
         Args:
             thought_generator: Generador de pensamientos candidatos
             thought_evaluator: Evaluador de viabilidad de pensamientos
@@ -221,106 +233,102 @@ class TreeOfThoughtEngine(Generic[T, S]):
         self._checker = solution_checker
         self._config = config or ToTConfig()
         self._llm_client = llm_client
-        
+
         # Crear estrategia de búsqueda
         self._search_strategy = create_search_strategy(
-            self._config.search_strategy,
-            self._config
+            self._config.search_strategy, self._config
         )
-        
+
         # Componentes auxiliares
         self._cycle_detector = CycleDetector(state_hash_func)
         self._pruning_policy = PruningPolicy(self._config)
-        
+
         # Estado interno
         self._root: Optional[ThoughtNode[T]] = None
         self._current_best: Optional[ThoughtNode[T]] = None
         self._solutions: List[S] = []
         self._start_time: Optional[datetime] = None
-        
+
         logger.info(
             f"TreeOfThoughtEngine initialized with strategy={self._config.search_strategy.value}"
         )
-    
+
     @property
     def generator(self) -> ThoughtGenerator[T]:
         """Retorna el generador de pensamientos."""
         return self._generator
-    
+
     @property
     def evaluator(self) -> ThoughtEvaluator[T]:
         """Retorna el evaluador de pensamientos."""
         return self._evaluator
-    
+
     @property
     def checker(self) -> SolutionChecker[T, S]:
         """Retorna el verificador de soluciones."""
         return self._checker
-    
+
     @property
     def cycle_detector(self) -> CycleDetector:
         """Retorna el detector de ciclos."""
         return self._cycle_detector
-    
+
     @property
     def pruning_policy(self) -> PruningPolicy:
         """Retorna la política de poda."""
         return self._pruning_policy
-    
+
     @property
     def config(self) -> ToTConfig:
         """Retorna la configuración del motor."""
         return self._config
-    
+
     def add_solution(self, solution: S) -> None:
         """Agrega una solución a la lista de soluciones encontradas."""
         self._solutions.append(solution)
-    
+
     async def solve(
-        self,
-        initial_state: T,
-        initial_thought: str = "Estado inicial del problema"
+        self, initial_state: T, initial_thought: str = "Estado inicial del problema"
     ) -> Optional[S]:
         """
         Ejecuta el algoritmo ToT para encontrar una solución.
-        
+
         Args:
             initial_state: Estado inicial del problema
             initial_thought: Descripción del estado inicial
-        
+
         Returns:
             La solución encontrada o None si no se encuentra
         """
-        logger.info(f"Starting ToT search with strategy={self._config.search_strategy.value}")
+        logger.info(
+            f"Starting ToT search with strategy={self._config.search_strategy.value}"
+        )
         self._start_time = datetime.now(timezone.utc)
-        
+
         # Resetear estado
         self._solutions = []
         self._cycle_detector.reset()
-        
+
         # Crear nodo raíz
         self._root = ThoughtNode[T](
-            state=initial_state,
-            thought=initial_thought,
-            depth=0,
-            score=1.0
+            state=initial_state, thought=initial_thought, depth=0, score=1.0
         )
-        
+
         try:
             # Envolver búsqueda con timeout usando asyncio.wait_for
             solution = await asyncio.wait_for(
                 self._search_strategy.search(self._root, self),
-                timeout=self._config.timeout_seconds
+                timeout=self._config.timeout_seconds,
             )
-            
+
             elapsed = (datetime.now(timezone.utc) - self._start_time).total_seconds()
             logger.info(
                 f"ToT search completed in {elapsed:.2f}s, "
                 f"solution_found={solution is not None}"
             )
-            
+
             return solution
-            
+
         except asyncio.TimeoutError:
             logger.warning(
                 f"ToT search timed out after {self._config.timeout_seconds}s, "
@@ -330,14 +338,14 @@ class TreeOfThoughtEngine(Generic[T, S]):
         except Exception as e:
             logger.error(f"ToT search failed: {e}")
             raise
-    
+
     async def expand_node(self, node: ThoughtNode[T]) -> List[ThoughtNode[T]]:
         """
         Expande un nodo generando y evaluando pensamientos candidatos.
-        
+
         Args:
             node: Nodo a expandir
-        
+
         Returns:
             Lista de nodos hijos creados
         """
@@ -345,157 +353,164 @@ class TreeOfThoughtEngine(Generic[T, S]):
             "depth": node.depth,
             "path": [n.thought for n in node.get_path_to_root()],
         }
-        
+
         # Generar pensamientos candidatos
         try:
             candidates = await asyncio.wait_for(
                 self._generator.generate(
                     current_state=node.state,
                     n=self._config.max_thoughts_per_step,
-                    context=context
+                    context=context,
                 ),
-                timeout=self._config.thought_timeout_seconds
+                timeout=self._config.thought_timeout_seconds,
             )
         except asyncio.TimeoutError:
             logger.warning(f"Thought generation timed out for node {node.id}")
             return []
-        
+
         if self._config.enable_parallel_expansion and len(candidates) > 1:
             # Expansión paralela
             children = await self._expand_candidates_parallel(node, candidates, context)
         else:
             # Expansión secuencial
-            children = await self._expand_candidates_sequential(node, candidates, context)
-        
+            children = await self._expand_candidates_sequential(
+                node, candidates, context
+            )
+
         logger.debug(f"Expanded node {node.id}: {len(children)} children")
         return children
-    
+
     async def _expand_candidates_sequential(
         self,
         node: ThoughtNode[T],
         candidates: List[Tuple[T, str]],
-        context: Dict[str, Any]
+        context: Dict[str, Any],
     ) -> List[ThoughtNode[T]]:
         """Expande candidatos de forma secuencial."""
         children = []
-        
+
         for state, thought in candidates:
             child = await self._create_child_node(node, state, thought, context)
             if child:
                 children.append(child)
-        
+
         return children
-    
+
     async def _expand_candidates_parallel(
         self,
         node: ThoughtNode[T],
         candidates: List[Tuple[T, str]],
-        context: Dict[str, Any]
+        context: Dict[str, Any],
     ) -> List[ThoughtNode[T]]:
         """Expande candidatos en paralelo usando asyncio.gather."""
         # Limitar paralelismo
         batch_size = min(len(candidates), self._config.max_parallel_expansions)
         batches = [
-            candidates[i:i + batch_size]
+            candidates[i : i + batch_size]
             for i in range(0, len(candidates), batch_size)
         ]
-        
+
         all_children = []
-        
+
         for batch in batches:
             tasks = [
                 self._create_child_node(node, state, thought, context)
                 for state, thought in batch
             ]
-            
+
             children = await asyncio.gather(*tasks, return_exceptions=True)
-            
+
             for child in children:
                 if isinstance(child, Exception):
-                    logger.error(f"Critical error creating child node in parallel batch: {child}", exc_info=True)
+                    logger.error(
+                        f"Critical error creating child node in parallel batch: {child}",
+                        exc_info=True,
+                    )
                 elif child is not None:
                     all_children.append(child)
-        
+
         return all_children
-    
+
     async def _create_child_node(
-        self,
-        parent: ThoughtNode[T],
-        state: T,
-        thought: str,
-        context: Dict[str, Any]
+        self, parent: ThoughtNode[T], state: T, thought: str, context: Dict[str, Any]
     ) -> Optional[ThoughtNode[T]]:
         """Crea un nodo hijo evaluando el candidato."""
         try:
             # Evaluar pensamiento
             score, evaluation = await self._evaluator.evaluate(
-                thought=state,
-                thought_description=thought,
-                context=context
+                thought=state, thought_description=thought, context=context
             )
-            
+
             # Crear nodo hijo
             child = ThoughtNode[T](
                 state=state,
                 thought=thought,
                 depth=parent.depth + 1,
                 score=score,
-                evaluation=evaluation
+                evaluation=evaluation,
             )
-            
+
             parent.add_child(child)
-            
+
             # Verificar si es solución
             if score >= self._config.solution_threshold:
                 solution = self._checker.check(state)
                 if solution:
                     self._solutions.append(solution)
                     child.evaluation = EvaluationResult.SOLUTION
-            
+
             return child
-            
+
         except Exception as e:
             logger.error(f"Error creating child node: {e}")
             return None
-    
+
     def _get_best_solution(self) -> Optional[S]:
         """Retorna la mejor solución encontrada o None."""
         if self._solutions:
             return self._solutions[0]
         return None
-    
+
     def get_tree_stats(self) -> Dict[str, Any]:
         """Retorna estadísticas del árbol de búsqueda."""
         if self._root is None:
             return {"error": "No tree built yet"}
-        
+
         all_nodes = [self._root] + self._root.get_all_descendants()
-        
+
         return {
             "total_nodes": len(all_nodes),
             "max_depth_reached": max(n.depth for n in all_nodes),
             "solutions_found": len(self._solutions),
-            "pruned_nodes": sum(1 for n in all_nodes if n.evaluation == EvaluationResult.DEAD_END),
-            "promising_nodes": sum(1 for n in all_nodes if n.evaluation == EvaluationResult.PROMISING),
-            "avg_score": sum(n.score for n in all_nodes) / len(all_nodes) if all_nodes else 0,
+            "pruned_nodes": sum(
+                1 for n in all_nodes if n.evaluation == EvaluationResult.DEAD_END
+            ),
+            "promising_nodes": sum(
+                1 for n in all_nodes if n.evaluation == EvaluationResult.PROMISING
+            ),
+            "avg_score": sum(n.score for n in all_nodes) / len(all_nodes)
+            if all_nodes
+            else 0,
             "states_visited": self._cycle_detector.visited_count,
         }
-    
+
     def export_tree(self) -> Dict[str, Any]:
         """Exporta el árbol completo para visualización."""
         if self._root is None:
             return {}
-        
+
         def node_to_dict(node: ThoughtNode[T]) -> Dict[str, Any]:
             return {
                 "id": node.id,
-                "thought": node.thought[:100] + "..." if len(node.thought) > 100 else node.thought,
+                "thought": node.thought[:100] + "..."
+                if len(node.thought) > 100
+                else node.thought,
                 "depth": node.depth,
                 "score": round(node.score, 3),
                 "evaluation": node.evaluation.value,
-                "children": [node_to_dict(c) for c in node.children]
+                "children": [node_to_dict(c) for c in node.children],
             }
-        
+
         return node_to_dict(self._root)
 
 
@@ -503,45 +518,46 @@ class TreeOfThoughtEngine(Generic[T, S]):
 # Factory Function
 # ============================================================================
 
+
 def create_tot_engine(
     llm_generate_func: Callable,
     llm_evaluate_func: Callable,
     solution_check_func: Callable,
     config: Optional[ToTConfig] = None,
-    state_hash_func: Optional[Callable[[Any], str]] = None
+    state_hash_func: Optional[Callable[[Any], str]] = None,
 ) -> TreeOfThoughtEngine:
     """
     Factory function para crear un motor ToT con funciones simples.
-    
+
     Args:
         llm_generate_func: Función async (state, n, context) -> List[Tuple[state, thought]]
         llm_evaluate_func: Función async (thought, desc, context) -> Tuple[float, EvaluationResult]
         solution_check_func: Función (state) -> Optional[solution]
         config: Configuración del motor
         state_hash_func: Función para generar hash único del estado
-    
+
     Returns:
         Motor ToT configurado
     """
-    
+
     class SimpleThoughtGenerator:
         async def generate(self, current_state, n, context):
             return await llm_generate_func(current_state, n, context)
-    
+
     class SimpleThoughtEvaluator:
         async def evaluate(self, thought, thought_description, context):
             return await llm_evaluate_func(thought, thought_description, context)
-    
+
     class SimpleSolutionChecker:
         def check(self, state):
             return solution_check_func(state)
-    
+
     return TreeOfThoughtEngine(
         thought_generator=SimpleThoughtGenerator(),
         thought_evaluator=SimpleThoughtEvaluator(),
         solution_checker=SimpleSolutionChecker(),
         config=config,
-        state_hash_func=state_hash_func
+        state_hash_func=state_hash_func,
     )
 
 
@@ -549,26 +565,24 @@ def create_tot_engine(
 # Implementaciones por Defecto (Requieren LLM real)
 # ============================================================================
 
+
 class DefaultThoughtGenerator:
     """
     Generador de pensamientos por defecto.
-    
+
     IMPORTANTE: Esta clase lanza NotImplementedError si no se proporciona
     un cliente LLM real, evitando comportamientos aleatorios que ocultan errores.
     """
-    
+
     def __init__(self, llm_client: Optional[Any] = None):
         self._llm = llm_client
-    
+
     async def generate(
-        self,
-        current_state: Any,
-        n: int = 3,
-        context: Optional[Dict[str, Any]] = None
+        self, current_state: Any, n: int = 3, context: Optional[Dict[str, Any]] = None
     ) -> List[Tuple[Any, str]]:
         """
         Genera pensamientos candidatos usando el LLM.
-        
+
         Raises:
             NotImplementedError: Si no se proporcionó un cliente LLM real
         """
@@ -578,7 +592,7 @@ class DefaultThoughtGenerator:
                 "Inyecte un llm_client en el constructor o proporcione "
                 "una implementación personalizada de ThoughtGenerator."
             )
-        
+
         # Modo LLM: usar el cliente para generar
         # La implementación específica depende del tipo de LLM
         # Este es un placeholder que debe ser sobrescrito
@@ -591,23 +605,23 @@ class DefaultThoughtGenerator:
 class DefaultThoughtEvaluator:
     """
     Evaluador de pensamientos por defecto.
-    
+
     IMPORTANTE: Esta clase lanza NotImplementedError si no se proporciona
     un cliente LLM real, evitando comportamientos aleatorios que ocultan errores.
     """
-    
+
     def __init__(self, llm_client: Optional[Any] = None):
         self._llm = llm_client
-    
+
     async def evaluate(
         self,
         thought: Any,
         thought_description: str,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[float, EvaluationResult]:
         """
         Evalúa un pensamiento usando el LLM.
-        
+
         Raises:
             NotImplementedError: Si no se proporcionó un cliente LLM real
         """
@@ -617,7 +631,7 @@ class DefaultThoughtEvaluator:
                 "Inyecte un llm_client en el constructor o proporcione "
                 "una implementación personalizada de ThoughtEvaluator."
             )
-        
+
         # Modo LLM: usar el cliente para evaluar
         raise NotImplementedError(
             "LLM-based evaluation requires implementation. "

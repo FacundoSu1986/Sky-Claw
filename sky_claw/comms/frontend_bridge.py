@@ -69,12 +69,14 @@ SENSITIVE_KEYS = {
 
 # ── Type Definitions ───────────────────────────────────────────────────
 
+
 class WebSocketClient(Protocol):
     """Type protocol for WebSocket client interface.
 
     Ensures type safety when working with asyncio websockets,
     preventing Any-type abuse and catching interface mismatches early.
     """
+
     open: bool
 
     async def send(self, data: str) -> None:
@@ -99,6 +101,7 @@ class WebSocketClient(Protocol):
 
 
 # ── FrontendBridge Implementation ──────────────────────────────────────
+
 
 class FrontendBridge:
     """WebSocket client that bridges the static frontend UI to the Python Daemon
@@ -182,15 +185,11 @@ class FrontendBridge:
             self._is_running = True
 
         backoff = 2.0
-        logger.info(
-            "🚀 FrontendBridge iniciando: Cliente WS → %s", self.gateway_url
-        )
+        logger.info("🚀 FrontendBridge iniciando: Cliente WS → %s", self.gateway_url)
 
         while self._is_running:
             try:
-                async with websockets.connect(
-                    self.gateway_url, open_timeout=10
-                ) as ws:
+                async with websockets.connect(self.gateway_url, open_timeout=10) as ws:
                     self.ws = ws
                     await self._authenticate(ws)
                     logger.info("✅ Enlace establecido con Gateway (Frontend Bridge).")
@@ -201,9 +200,7 @@ class FrontendBridge:
                 # Expected connection errors - retry with backoff
                 if not self._is_running:
                     break
-                self._handle_reconnect_error(
-                    exc, "Enlace perdido con Gateway", backoff
-                )
+                self._handle_reconnect_error(exc, "Enlace perdido con Gateway", backoff)
                 self.ws = None
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 1.5, 60.0)
@@ -213,9 +210,7 @@ class FrontendBridge:
                 # Gateway not running
                 if not self._is_running:
                     break
-                self._handle_reconnect_error(
-                    exc, "Gateway no está disponible", backoff
-                )
+                self._handle_reconnect_error(exc, "Gateway no está disponible", backoff)
                 self.ws = None
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 1.5, 60.0)
@@ -225,9 +220,7 @@ class FrontendBridge:
                 # Network-level errors (ECONNREFUSED, etc.)
                 if not self._is_running:
                     break
-                self._handle_reconnect_error(
-                    exc, f"Error de red: {exc}", backoff
-                )
+                self._handle_reconnect_error(exc, f"Error de red: {exc}", backoff)
                 self.ws = None
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 1.5, 60.0)
@@ -235,7 +228,9 @@ class FrontendBridge:
                 self._check_reconnect_limit()
             except Exception as exc:
                 # Unexpected errors - log and retry
-                logger.error("❌ Fallo inesperado en FrontendBridge: %s", exc, exc_info=True)
+                logger.error(
+                    "❌ Fallo inesperado en FrontendBridge: %s", exc, exc_info=True
+                )
                 await asyncio.sleep(5)
 
     def _handle_reconnect_error(self, exc: Exception, msg: str, backoff: float) -> None:
@@ -292,7 +287,7 @@ class FrontendBridge:
         if self._active_queries:
             await asyncio.gather(
                 *self._active_queries,
-                return_exceptions=True  # Ignore cancellation exceptions
+                return_exceptions=True,  # Ignore cancellation exceptions
             )
 
         logger.info("🛑 FrontendBridge detenido de forma segura.")
@@ -356,13 +351,15 @@ class FrontendBridge:
                     if not isinstance(data, dict):
                         logger.warning(
                             "Mensaje JSON no es un objeto: tipo %s recibido",
-                            type(data).__name__
+                            type(data).__name__,
                         )
                         continue
 
                     msg_type = data.get("type", "")
                     if not isinstance(msg_type, str):
-                        logger.warning("Campo 'type' no es string: %s", type(msg_type).__name__)
+                        logger.warning(
+                            "Campo 'type' no es string: %s", type(msg_type).__name__
+                        )
                         continue
 
                     # ── Route by message type ──
@@ -435,9 +432,7 @@ class FrontendBridge:
             "id": msg_id,
             "content": {
                 "llm_provider": provider,
-                "telegram_chat_id": str(
-                    getattr(fresh_cfg, "telegram_chat_id", "")
-                ),
+                "telegram_chat_id": str(getattr(fresh_cfg, "telegram_chat_id", "")),
                 "has_llm_key": has_llm_key,
                 "has_nexus_key": has_nexus_key,
                 "has_telegram_token": has_telegram_token,
@@ -500,7 +495,9 @@ class FrontendBridge:
                 val = content.get(field, "")
                 if val and len(val) > self._max_key_len:
                     await self._send_config_result(
-                        msg_id, False, f"El campo '{field}' excede el largo maximo permitido."
+                        msg_id,
+                        False,
+                        f"El campo '{field}' excede el largo maximo permitido.",
                     )
                     return
 
@@ -592,8 +589,7 @@ class FrontendBridge:
             if telegram_token:
                 tg_ok = await self._reload_telegram(
                     telegram_token,
-                    telegram_chat_id
-                    or getattr(self.config, "telegram_chat_id", ""),
+                    telegram_chat_id or getattr(self.config, "telegram_chat_id", ""),
                 )
                 if tg_ok:
                     reload_messages.append("Telegram reconectado")
@@ -685,9 +681,7 @@ class FrontendBridge:
 
     # ── Hot-Reload Helpers ──────────────────────────────────────────────
 
-    async def _do_llm_reload(
-        self, provider_name: str, api_key: str = ""
-    ) -> bool:
+    async def _do_llm_reload(self, provider_name: str, api_key: str = "") -> bool:
         """Hot-swap the LLM provider at runtime.
 
         Creates a new provider instance and assigns it under the router's
@@ -713,14 +707,10 @@ class FrontendBridge:
                 # Try the generic llm_api_key as fallback
                 key = self._get_keyring("llm_api_key")
                 if not key:
-                    logger.error(
-                        "No API key found for provider '%s'.", provider_name
-                    )
+                    logger.error("No API key found for provider '%s'.", provider_name)
                     return False
 
-            new_provider = create_provider(
-                provider_name=provider_name, api_key=key
-            )
+            new_provider = create_provider(provider_name=provider_name, api_key=key)
 
             # ── Atomic swap under lock (C3 fix: proper lock usage) ──
             async with self.ctx.router._provider_lock:
@@ -739,9 +729,7 @@ class FrontendBridge:
             logger.exception("Hot-swap failed: %s", exc)
             return False
 
-    async def _reload_telegram(
-        self, token: str, chat_id: str = ""
-    ) -> bool:
+    async def _reload_telegram(self, token: str, chat_id: str = "") -> bool:
         """Stop existing Telegram polling and restart with new token.
 
         Completely recreates the Telegram sender and polling handler

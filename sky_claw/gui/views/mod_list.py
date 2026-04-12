@@ -37,9 +37,11 @@ def build_mod_list(
             ui.badge(str(len(mods))).classes("sky-badge-count")
 
     # ── Search Bar ────────────────────────────────────────────────────
-    search_input = ui.input(
-        placeholder="🔍 Buscar mod..."
-    ).classes("sky-modlist-search w-full").props("dense outlined dark")
+    search_input = (
+        ui.input(placeholder="🔍 Buscar mod...")
+        .classes("sky-modlist-search w-full")
+        .props("dense outlined dark")
+    )
 
     # ── Mod List Container ────────────────────────────────────────────
     mod_container = ui.element("div").classes("sky-modlist-container")
@@ -88,7 +90,7 @@ def _build_mod_row(
         if on_toggle:
             switch.on(
                 "update:model-value",
-                lambda e, name=mod_name: asyncio.create_task(on_toggle(name, e.value))
+                lambda e, name=mod_name: asyncio.create_task(on_toggle(name, e.value)),
             )
 
         # Name + version
@@ -101,4 +103,6 @@ def _build_mod_row(
         if is_enabled:
             ui.icon("check_circle", size="1.2rem").classes("sky-mod-status-ok")
         else:
-            ui.icon("remove_circle_outline", size="1.2rem").classes("sky-mod-status-off")
+            ui.icon("remove_circle_outline", size="1.2rem").classes(
+                "sky-mod-status-off"
+            )

@@ -13,11 +13,11 @@ from .schemas import SearchModParams, InstallModParams
 
 async def search_mod(registry: AsyncModRegistry, mod_name: str) -> str:
     """Implementación de _search_mod.
-    
+
     Args:
         registry: Instancia de AsyncModRegistry.
         mod_name: Mod name (or partial name) to search for.
-    
+
     Returns:
         JSON string with matching mod records.
     """
@@ -26,16 +26,14 @@ async def search_mod(registry: AsyncModRegistry, mod_name: str) -> str:
     return json.dumps({"matches": results})
 
 
-async def install_mod(
-    registry: AsyncModRegistry, nexus_id: int, version: str
-) -> str:
+async def install_mod(registry: AsyncModRegistry, nexus_id: int, version: str) -> str:
     """Implementación de _install_mod.
-    
+
     Args:
         registry: Instancia de AsyncModRegistry.
         nexus_id: Nexus Mods numeric ID.
         version: Mod version string.
-    
+
     Returns:
         JSON string confirming registration.
     """

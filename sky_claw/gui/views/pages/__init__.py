@@ -8,6 +8,6 @@ Las páginas son "tontas" - solo componen componentes visuales.
 from .dashboard_page import render_dashboard, render_dashboard_page_content
 
 __all__ = [
-    'render_dashboard',
-    'render_dashboard_page_content',
+    "render_dashboard",
+    "render_dashboard_page_content",
 ]

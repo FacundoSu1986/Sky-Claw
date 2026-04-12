@@ -35,6 +35,7 @@ async def _run_web(ctx: AppContext, port: int) -> None:
     url = f"http://localhost:{port}"
     print(f"\n  Sky-Claw Web UI: {url}\n")
     import webbrowser
+
     webbrowser.open(url)
     try:
         await asyncio.Event().wait()
@@ -49,4 +50,5 @@ def _make_setup_callback(ctx: AppContext):
         await ctx.start_full()
         web_app._router = ctx.router
         web_app._tools_installer = ctx.tools_installer
+
     return _on_setup_complete

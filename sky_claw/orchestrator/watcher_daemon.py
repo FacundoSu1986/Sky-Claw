@@ -60,10 +60,16 @@ class WatcherDaemon:
     async def start(self) -> None:
         """Inicia el loop de monitoreo como tarea de fondo."""
         if self._task is not None:
-            logger.warning("WatcherDaemon ya está corriendo, ignorando start() duplicado")
+            logger.warning(
+                "WatcherDaemon ya está corriendo, ignorando start() duplicado"
+            )
             return
         self._task = asyncio.create_task(self._watch_loop(), name="watcher-modlist")
-        logger.info("WatcherDaemon iniciado (path=%s, interval=%.1fs)", self._modlist_path, self._interval)
+        logger.info(
+            "WatcherDaemon iniciado (path=%s, interval=%.1fs)",
+            self._modlist_path,
+            self._interval,
+        )
 
     async def stop(self) -> None:
         """Detiene el loop de monitoreo de forma grácil."""
@@ -92,8 +98,12 @@ class WatcherDaemon:
                     last_mtime = float(last_mtime_str) if last_mtime_str else 0.0
 
                     if current_mtime > last_mtime:
-                        logger.info("Modificación detectada en MO2 desde fuera del agente. Iniciando análisis proactivo.")
-                        await self._db.set_memory(mem_key, str(current_mtime), time.time())
+                        logger.info(
+                            "Modificación detectada en MO2 desde fuera del agente. Iniciando análisis proactivo."
+                        )
+                        await self._db.set_memory(
+                            mem_key, str(current_mtime), time.time()
+                        )
                         await self._on_change()
             except asyncio.CancelledError:
                 raise
