@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable, Awaitable
 from nicegui import ui
 
 if TYPE_CHECKING:
-    pass
+    from sky_claw.mo2.vfs import MO2Controller  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
