@@ -48,7 +48,9 @@ class ToolExecutor(RunnableLambda if LANGCHAIN_AVAILABLE else object):
         Returns:
             Resultado de la ejecución como string
         """
-        logger.info("Ejecutando herramienta: %s con input: %s", self.tool_name, tool_input)
+        logger.info(
+            "Ejecutando herramienta: %s con input: %s", self.tool_name, tool_input
+        )
 
         # Simular ejecución - en producción esto llamaría a la herramienta real
         result = f"[{self.tool_name}] Result: {tool_input}"
@@ -63,7 +65,8 @@ class PromptComposer:
     en formato de diccionario compatible con la API de LLM.
     """
 
-    def __init__(self,
+    def __init__(
+        self,
         system_prompt: str = "Eres un asistente de modding de Skyrim SE/AE.",
         tool_registry: Optional[Any] = None,
     ):
@@ -198,11 +201,15 @@ class PromptComposer:
                 ("user", "Fuentes:"),
                 ("user", sources),
                 ("role", "user"),
-                ("content", "Usa el contexto y las fuentes para responder la consulta."),
+                (
+                    "content",
+                    "Usa el contexto y las fuentes para responder la consulta.",
+                ),
             ]
         )
 
         return template.format_messages(query=query, context=context, sources=sources)
+
 
 class ChainBuilder:
     """Constructor de cadenas LCEL para Sky-Claw."""
@@ -338,7 +345,9 @@ class ChainBuilder:
                     return result
                 except Exception as exc:
                     last_error = exc
-                    logger.warning("Intento %d/%d falló: %s", attempt + 1, max_retries, exc)
+                    logger.warning(
+                        "Intento %d/%d falló: %s", attempt + 1, max_retries, exc
+                    )
                     if attempt < max_retries - 1:
                         await asyncio.sleep(retry_delay)
             raise last_error  # type: ignore[misc]
