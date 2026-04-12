@@ -13,12 +13,7 @@ aiosqlite==0.22.1
 annotated-types==0.7.0
     # via pydantic
 attrs==26.1.0
-    # via
-    #   aiohttp
-    #   jsonschema
-    #   referencing
-beautifulsoup4==4.14.3
-    # via sky-claw (pyproject.toml)
+    # via aiohttp
 certifi==2026.2.25
     # via sky-claw (pyproject.toml)
 cffi==2.0.0
@@ -27,8 +22,6 @@ cryptography==46.0.6
     # via sky-claw (pyproject.toml)
 defusedxml==0.7.1
     # via sky-claw (pyproject.toml)
-fastjsonschema==2.21.2
-    # via nbformat
 frozenlist==1.8.0
     # via
     #   aiohttp
@@ -41,12 +34,6 @@ jaraco-context==6.1.2
     # via keyring
 jaraco-functools==4.4.0
     # via keyring
-jsonschema==4.26.0
-    # via nbformat
-jsonschema-specifications==2025.9.1
-    # via jsonschema
-jupyter-core==5.9.1
-    # via nbformat
 keyring==25.7.0
     # via sky-claw (pyproject.toml)
 more-itertools==11.0.1
@@ -57,10 +44,6 @@ multidict==6.7.1
     # via
     #   aiohttp
     #   yarl
-nbformat==5.10.4
-    # via sky-claw (pyproject.toml)
-platformdirs==4.9.6
-    # via jupyter-core
 propcache==0.4.1
     # via
     #   aiohttp
@@ -79,29 +62,14 @@ pywin32-ctypes==0.2.3
     # via keyring
 rarfile==4.2
     # via sky-claw (pyproject.toml)
-referencing==0.37.0
-    # via
-    #   jsonschema
-    #   jsonschema-specifications
-rpds-py==0.30.0
-    # via
-    #   jsonschema
-    #   referencing
-soupsieve==2.8.3
-    # via beautifulsoup4
 sv-ttk==2.6.1
     # via sky-claw (pyproject.toml)
 tenacity==9.1.4
     # via sky-claw (pyproject.toml)
 tomli-w==1.2.0
     # via sky-claw (pyproject.toml)
-traitlets==5.14.3
-    # via
-    #   jupyter-core
-    #   nbformat
 typing-extensions==4.15.0
     # via
-    #   beautifulsoup4
     #   pydantic
     #   pydantic-core
     #   typing-inspection
