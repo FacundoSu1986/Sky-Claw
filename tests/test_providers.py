@@ -17,6 +17,7 @@ from sky_claw.agent.providers import (
     _convert_messages_to_openai,
     _convert_tools_to_openai,
     _parse_openai_response,
+    _should_retry,
 )
 
 
@@ -430,3 +431,47 @@ class TestCreateProvider:
             with patch.dict(os.environ, env, clear=True):
                 provider = create_provider()
                 assert isinstance(provider, OllamaProvider)
+
+
+# ------------------------------------------------------------------
+# _should_retry – fix verification (audit finding #1: syntax guard)
+# ------------------------------------------------------------------
+
+
+class TestShouldRetry:
+    """Verify _should_retry is syntactically correct and behaves as expected.
+
+    This test class guards against the extra-parenthesis SyntaxError that
+    was identified in the audit (providers.py line ~47).
+    """
+
+    def test_retries_on_connection_error(self) -> None:
+        exc = aiohttp.ClientConnectionError()
+        assert _should_retry(exc) is True
+
+    def test_retries_on_timeout(self) -> None:
+        import asyncio
+
+        exc = asyncio.TimeoutError()
+        assert _should_retry(exc) is True
+
+    def test_retries_on_429(self) -> None:
+        from unittest.mock import Mock
+
+        exc = aiohttp.ClientResponseError(request_info=Mock(), history=(), status=429)
+        assert _should_retry(exc) is True
+
+    def test_retries_on_503(self) -> None:
+        from unittest.mock import Mock
+
+        exc = aiohttp.ClientResponseError(request_info=Mock(), history=(), status=503)
+        assert _should_retry(exc) is True
+
+    def test_no_retry_on_400(self) -> None:
+        from unittest.mock import Mock
+
+        exc = aiohttp.ClientResponseError(request_info=Mock(), history=(), status=400)
+        assert _should_retry(exc) is False
+
+    def test_no_retry_on_generic_exception(self) -> None:
+        assert _should_retry(ValueError("unrelated")) is False
