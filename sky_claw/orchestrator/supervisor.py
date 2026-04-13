@@ -656,7 +656,7 @@ class SupervisorAgent:
                 "limit": 254,
                 "error": str(exc),
             }
-        except (OSError, ValueError) as exc:
+        except (ValueError, OSError) as exc:
             logger.error(
                 "[M-04] Error inesperado durante validación de plugins: %s", exc, exc_info=True
             )
@@ -1337,7 +1337,7 @@ class SupervisorAgent:
                     texgen_snapshot_info, "texgen_execution_error"
                 )
             raise
-        except (OSError, sqlite3.Error) as e:
+        except (OSError, sqlite3.Error, RuntimeError) as e:
             logger.error("Unexpected error in DynDOLOD pipeline: %s", e, exc_info=True)
             if snapshot_info:
                 await self._rollback_dyndolod_on_failure(
