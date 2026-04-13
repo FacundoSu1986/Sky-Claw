@@ -658,7 +658,9 @@ class SupervisorAgent:
             }
         except (ValueError, OSError) as exc:
             logger.error(
-                "[M-04] Error inesperado durante validación de plugins: %s", exc, exc_info=True
+                "[M-04] Error inesperado durante validación de plugins: %s",
+                exc,
+                exc_info=True,
             )
             return {"valid": False, "error": str(exc)}
 
@@ -965,7 +967,9 @@ class SupervisorAgent:
             logger.info("Reporte JSON de conflictos generado exitosamente")
             return json_report
         except (OSError, RuntimeError) as e:
-            logger.error(f"Error generando reporte JSON de conflictos: {e}", exc_info=True)
+            logger.error(
+                f"Error generando reporte JSON de conflictos: {e}", exc_info=True
+            )
             raise
 
     async def execute_synthesis_pipeline(
@@ -1229,21 +1233,31 @@ class SupervisorAgent:
                             "Snapshot creado para DynDOLOD.esp: %s", snapshot_info
                         )
                     except (OSError, RuntimeError) as e:
-                        logger.warning("No se pudo crear snapshot de DynDOLOD.esp: %s", e)
+                        logger.warning(
+                            "No se pudo crear snapshot de DynDOLOD.esp: %s", e
+                        )
                         # Continuar sin snapshot - no es fatal
 
                 # Snapshot del directorio TexGen Output si existe
                 if texgen_output_path.exists():
                     try:
-                        texgen_snapshot_info = await self.snapshot_manager.create_snapshot(
-                            texgen_output_path,
-                            metadata={"source": "dyndolod_pipeline_texgen", "preset": preset},
+                        texgen_snapshot_info = (
+                            await self.snapshot_manager.create_snapshot(
+                                texgen_output_path,
+                                metadata={
+                                    "source": "dyndolod_pipeline_texgen",
+                                    "preset": preset,
+                                },
+                            )
                         )
                         logger.debug(
-                            "Snapshot creado para TexGen Output: %s", texgen_snapshot_info
+                            "Snapshot creado para TexGen Output: %s",
+                            texgen_snapshot_info,
                         )
                     except (OSError, RuntimeError) as e:
-                        logger.warning("No se pudo crear snapshot de TexGen Output: %s", e)
+                        logger.warning(
+                            "No se pudo crear snapshot de TexGen Output: %s", e
+                        )
                         # Continuar sin snapshot - no es fatal
 
             # 3. Registrar inicio de operación en journal
@@ -1386,27 +1400,33 @@ class SupervisorAgent:
         try:
             await self.journal.log_operation(
                 agent_id="dyndolod_runner",
-                operation_type="dyndolod_pipeline_complete"
-                if success
-                else "dyndolod_pipeline_failed",
-                file_path=str(result.dyndolod_mod_path)
-                if result.dyndolod_mod_path
-                else "",
+                operation_type=(
+                    "dyndolod_pipeline_complete"
+                    if success
+                    else "dyndolod_pipeline_failed"
+                ),
+                file_path=(
+                    str(result.dyndolod_mod_path) if result.dyndolod_mod_path else ""
+                ),
                 details={
                     "success": success,
                     "preset": preset,
-                    "texgen_success": result.texgen_result.success
-                    if result.texgen_result
-                    else False,
-                    "dyndolod_success": result.dyndolod_result.success
-                    if result.dyndolod_result
-                    else False,
-                    "texgen_mod_path": str(result.texgen_mod_path)
-                    if result.texgen_mod_path
-                    else None,
-                    "dyndolod_mod_path": str(result.dyndolod_mod_path)
-                    if result.dyndolod_mod_path
-                    else None,
+                    "texgen_success": (
+                        result.texgen_result.success if result.texgen_result else False
+                    ),
+                    "dyndolod_success": (
+                        result.dyndolod_result.success
+                        if result.dyndolod_result
+                        else False
+                    ),
+                    "texgen_mod_path": (
+                        str(result.texgen_mod_path) if result.texgen_mod_path else None
+                    ),
+                    "dyndolod_mod_path": (
+                        str(result.dyndolod_mod_path)
+                        if result.dyndolod_mod_path
+                        else None
+                    ),
                     "errors": result.errors,
                 },
             )
@@ -1524,9 +1544,11 @@ class SupervisorAgent:
                 # Crear PatchPlan desde el resultado para ejecutar
                 plan = PatchPlan(
                     strategy_type=strategy_type,
-                    target_plugins=[p.plugin_a for p in report.plugin_pairs[:1]]
-                    if report.plugin_pairs
-                    else [],
+                    target_plugins=(
+                        [p.plugin_a for p in report.plugin_pairs[:1]]
+                        if report.plugin_pairs
+                        else []
+                    ),
                     output_plugin=str(result.output_path),
                     form_ids=[],
                     estimated_records=result.records_patched,
@@ -1546,12 +1568,16 @@ class SupervisorAgent:
                         conflicts_resolved=len(report.plugin_pairs),
                         xedit_exit_code=script_result.exit_code,
                         warnings=script_result.warnings,
-                        error=None
-                        if script_result.exit_code == 0
-                        else script_result.stderr,
+                        error=(
+                            None
+                            if script_result.exit_code == 0
+                            else script_result.stderr
+                        ),
                     )
                 except (OSError, RuntimeError) as script_error:
-                    logger.error("Error ejecutando script xEdit: %s", script_error, exc_info=True)
+                    logger.error(
+                        "Error ejecutando script xEdit: %s", script_error, exc_info=True
+                    )
                     # PASO C (fallo): Rollback automático
                     await self._rollback_on_failure(snapshot_path, target_plugin)
                     raise PatchingError(
@@ -1644,9 +1670,9 @@ class SupervisorAgent:
                     "critical_conflicts": report.critical_conflicts,
                     "records_patched": result.records_patched,
                     "conflicts_resolved": result.conflicts_resolved,
-                    "output_path": str(result.output_path)
-                    if result.output_path
-                    else None,
+                    "output_path": (
+                        str(result.output_path) if result.output_path else None
+                    ),
                     "warnings": result.warnings,
                 },
             )
