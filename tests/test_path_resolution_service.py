@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from sky_claw.core.path_resolver import PathResolutionService, PathResolver
-from sky_claw.security.path_validator import PathValidator, PathViolation
+from sky_claw.security.path_validator import PathValidator
 
 
 @pytest.fixture

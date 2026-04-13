@@ -33,7 +33,6 @@ from sky_claw.orchestrator.maintenance_daemon import (
     get_max_backup_size_mb,
 )
 from sky_claw.core.event_bus import CoreEventBus, Event
-from sky_claw.core.event_payloads import ModlistChangedPayload
 from sky_claw.core.path_resolver import PathResolutionService
 from sky_claw.orchestrator.telemetry_daemon import TelemetryDaemon
 from sky_claw.orchestrator.watcher_daemon import WatcherDaemon
