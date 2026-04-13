@@ -67,7 +67,7 @@ class CoreEventBus:
         self._dispatch_task = asyncio.create_task(
             self._dispatch_loop(), name="core-event-bus-dispatch"
         )
-        logger.info("CoreEventBus iniciado (queue_max=%d", self._queue.maxsize)
+        logger.info("CoreEventBus iniciado (queue_max=%d)", self._queue.maxsize)
 
     async def stop(self) -> None:
         """Detiene el loop de dispatch de forma grácil."""
