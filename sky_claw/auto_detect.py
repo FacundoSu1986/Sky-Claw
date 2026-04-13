@@ -24,6 +24,15 @@ from sky_claw.config import (
 
 logger = logging.getLogger(__name__)
 
+# Module-level aliases — used directly by AutoDetector methods so that
+# tests can patch them via patch("sky_claw.auto_detect._MO2_COMMON", ...).
+_MO2_COMMON: tuple[str, ...] = MO2_COMMON_PATHS
+_STEAM_DEFAULT_PATHS: tuple[str, ...] = STEAM_DEFAULT_PATHS
+_SKYRIM_COMMON: tuple[str, ...] = SKYRIM_COMMON_PATHS
+_LOOT_COMMON: tuple[str, ...] = LOOT_SEARCH_PATHS
+_XEDIT_COMMON: tuple[str, ...] = XEDIT_SEARCH_PATHS
+_SEARCH_TIMEOUT: float = SEARCH_TIMEOUT_SECONDS
+
 # ---------------------------------------------------------------------------
 # Windows registry helper (stdlib winreg, Windows-only)
 # ---------------------------------------------------------------------------
@@ -100,13 +109,13 @@ class AutoDetector:
     async def find_mo2() -> pathlib.Path | None:
         """Locate Mod Organizer 2 (portable install with profiles)."""
         return await asyncio.wait_for(
-            AutoDetector._find_mo2_inner(), timeout=SEARCH_TIMEOUT_SECONDS
+            AutoDetector._find_mo2_inner(), timeout=_SEARCH_TIMEOUT
         )
 
     @staticmethod
     async def _find_mo2_inner() -> pathlib.Path | None:
         # 1. Common portable paths.
-        for raw in MO2_COMMON_PATHS:
+        for raw in _MO2_COMMON:
             p = pathlib.Path(raw)
             if (p / "ModOrganizer.exe").exists():
                 logger.info("Auto-detected MO2 at %s", p)
@@ -135,7 +144,7 @@ class AutoDetector:
     async def find_skyrim() -> pathlib.Path | None:
         """Locate Skyrim Special Edition."""
         return await asyncio.wait_for(
-            AutoDetector._find_skyrim_inner(), timeout=SEARCH_TIMEOUT_SECONDS
+            AutoDetector._find_skyrim_inner(), timeout=_SEARCH_TIMEOUT
         )
 
     @staticmethod
@@ -153,7 +162,7 @@ class AutoDetector:
                 return p
 
         # 2. Steam libraryfolders.vdf
-        for steam_root in STEAM_DEFAULT_PATHS:
+        for steam_root in _STEAM_DEFAULT_PATHS:
             vdf = pathlib.Path(steam_root) / "steamapps" / "libraryfolders.vdf"
             libs = _parse_steam_library_folders(vdf)
             if libs:
@@ -163,7 +172,7 @@ class AutoDetector:
                     return found
 
         # 3. Common direct paths
-        for raw in SKYRIM_COMMON_PATHS:
+        for raw in _SKYRIM_COMMON:
             p = pathlib.Path(raw)
             if (p / "SkyrimSE.exe").exists():
                 logger.info("Auto-detected Skyrim at %s", p)
@@ -175,12 +184,12 @@ class AutoDetector:
     async def find_loot() -> pathlib.Path | None:
         """Locate the LOOT executable."""
         return await asyncio.wait_for(
-            AutoDetector._find_loot_inner(), timeout=SEARCH_TIMEOUT_SECONDS
+            AutoDetector._find_loot_inner(), timeout=_SEARCH_TIMEOUT
         )
 
     @staticmethod
     async def _find_loot_inner() -> pathlib.Path | None:
-        for raw in LOOT_SEARCH_PATHS:
+        for raw in _LOOT_COMMON:
             p = pathlib.Path(raw)
             exe = p / "LOOT.exe"
             if exe.exists():
@@ -201,12 +210,12 @@ class AutoDetector:
     async def find_xedit() -> pathlib.Path | None:
         """Locate the SSEEdit executable."""
         return await asyncio.wait_for(
-            AutoDetector._find_xedit_inner(), timeout=SEARCH_TIMEOUT_SECONDS
+            AutoDetector._find_xedit_inner(), timeout=_SEARCH_TIMEOUT
         )
 
     @staticmethod
     async def _find_xedit_inner() -> pathlib.Path | None:
-        for raw in XEDIT_SEARCH_PATHS:
+        for raw in _XEDIT_COMMON:
             p = pathlib.Path(raw)
             exe = p / "SSEEdit.exe"
             if exe.exists():

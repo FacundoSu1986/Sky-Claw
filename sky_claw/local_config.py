@@ -62,7 +62,7 @@ class LocalConfig:
             stored = keyring.get_password("sky_claw", service_name)
             if stored:
                 return stored
-        except (keyring.errors.KeyringError, OSError) as exc:
+        except (keyring.errors.KeyringError, OSError, Exception) as exc:
             logger.error("Failed to read from keyring: %s", exc)
 
         # Migration logic
@@ -73,7 +73,7 @@ class LocalConfig:
             if decoded:
                 try:
                     keyring.set_password("sky_claw", service_name, decoded)
-                except (keyring.errors.KeyringError, OSError) as exc:
+                except (keyring.errors.KeyringError, OSError, Exception) as exc:
                     logger.error("Failed to migrate key to keyring: %s", exc)
             return decoded
         except (ValueError, UnicodeDecodeError) as exc:
@@ -89,7 +89,7 @@ class LocalConfig:
         try:
             keyring.set_password("sky_claw", "api_key", key)
             self.api_key_b64 = None  # Clear legacy
-        except (keyring.errors.KeyringError, OSError) as exc:
+        except (keyring.errors.KeyringError, OSError, Exception) as exc:
             logger.warning(
                 "Could not store API key in keyring (%s). "
                 "Falling back to base64 encoding in config file.",
@@ -106,7 +106,7 @@ class LocalConfig:
         try:
             keyring.set_password("sky_claw", "nexus_api_key", key)
             self.nexus_api_key_b64 = None
-        except (keyring.errors.KeyringError, OSError) as exc:
+        except (keyring.errors.KeyringError, OSError, Exception) as exc:
             logger.warning(
                 "Could not store Nexus API key in keyring (%s). "
                 "Falling back to base64 encoding in config file.",
@@ -123,7 +123,7 @@ class LocalConfig:
         try:
             keyring.set_password("sky_claw", "telegram_bot_token", token)
             self.telegram_bot_token_b64 = None
-        except (keyring.errors.KeyringError, OSError) as exc:
+        except (keyring.errors.KeyringError, OSError, Exception) as exc:
             logger.warning(
                 "Could not store Telegram token in keyring (%s). "
                 "Falling back to base64 encoding in config file.",
