@@ -76,24 +76,44 @@ class CredentialVault:
                 "Vault salt initialization failed — refusing to use weak deterministic fallback"
             ) from e
 
-    def __init__(self, db_path: str, master_key: bytes | str):
-        """
-        Inicializa la bóveda con el path a la DB SQLite local para almacenar
+    def __init__(self, db_path: str, master_key: bytes | str) -> None:
+        """Inicializa la bóveda con el path a la DB SQLite local para almacenar
         los cibercódigos. La clave maestra inyectada se deriva con PBKDF2
         para obtener una clave fuerte de 32 bytes para Fernet.
+
+        El salt es generado dinámicamente (os.urandom) y persistido en disco
+        de forma segura por _get_or_create_salt(). Nunca se usa un salt estático.
         """
-        salt = self._get_or_create_salt()
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=salt,
-            iterations=480000,
-        )
-        key_material = (
-            master_key if isinstance(master_key, bytes) else master_key.encode("utf-8")
-        )
-        derived_key = base64.urlsafe_b64encode(kdf.derive(key_material))
-        self.fernet = Fernet(derived_key)
+        try:
+            salt = self._get_or_create_salt()
+        except RuntimeError:
+            logger.critical(
+                "SECURITY: CredentialVault cannot obtain a cryptographic salt. "
+                "Vault initialization aborted to prevent insecure key derivation."
+            )
+            raise
+        try:
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=salt,
+                iterations=480000,
+            )
+            key_material = (
+                master_key
+                if isinstance(master_key, bytes)
+                else master_key.encode("utf-8")
+            )
+            derived_key = base64.urlsafe_b64encode(kdf.derive(key_material))
+            self.fernet = Fernet(derived_key)
+        except Exception as exc:
+            logger.critical(
+                "SECURITY: KDF key derivation failed during CredentialVault init: %s",
+                exc,
+            )
+            raise RuntimeError(
+                "CredentialVault KDF initialization failed — vault is unusable"
+            ) from exc
         self.db_path = db_path
 
     async def _execute_pragmas(self, conn: aiosqlite.Connection):
