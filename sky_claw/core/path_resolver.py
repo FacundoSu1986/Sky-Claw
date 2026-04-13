@@ -185,7 +185,7 @@ class PathResolutionService:
                     exc,
                 )
                 continue
-            except Exception as exc:
+            except Exception:
                 logger.error(
                     "MO2 candidate path falló validación de seguridad: %s",
                     raw,
@@ -224,7 +224,7 @@ class PathResolutionService:
                             return validated
                         except (FileNotFoundError, OSError):
                             continue
-                        except Exception as exc:
+                        except Exception:
                             logger.error(
                                 "MO2 LOCALAPPDATA child falló validación: %s",
                                 child,
@@ -259,7 +259,7 @@ class PathResolutionService:
                 return validated
             except (FileNotFoundError, OSError):
                 continue
-            except Exception as exc:
+            except Exception:
                 logger.error(
                     "MO2 Program Files candidate falló validación: %s",
                     pf_raw,
@@ -388,7 +388,7 @@ class PathResolutionService:
             try:
                 resolved_mods = mods_path.resolve(strict=True)
                 return resolved_mods
-            except (FileNotFoundError, OSError) as exc:
+            except (FileNotFoundError, OSError):
                 logger.error(
                     "Auto-detect MO2 mods path falló: %s",
                     mods_path,

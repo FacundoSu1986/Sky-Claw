@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -18,10 +17,9 @@ from sky_claw.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
     LockInfo,
-    LockReleaseError,
     SnapshotTransactionLock,
 )
-from sky_claw.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
+from sky_claw.db.snapshot_manager import FileSnapshotManager
 
 
 # =============================================================================
@@ -324,7 +322,7 @@ async def test_snapshot_transaction_lock_rollback_on_error(
             resource_id="rollback_test.esp",
             agent_id="dyndolod-agent",
             target_files=[target],
-        ) as ctx:
+        ) as _:
             # Modify file, then crash
             target.write_text("corrupted state")
             raise RuntimeError("pipeline exploded")
@@ -394,8 +392,6 @@ async def test_snapshot_transaction_lock_releases_on_snapshot_failure(
     # create_snapshot method to raise JournalSnapshotError.
     target_file = tmp_path / "will_fail.esp"
     target_file.write_text("content")
-
-    original_create = snap_mgr.create_snapshot
 
     async def _failing_create(*args: object, **kwargs: object) -> None:
         raise JournalSnapshotError("Simulated snapshot I/O failure")
