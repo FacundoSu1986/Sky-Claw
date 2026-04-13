@@ -18,6 +18,7 @@ import logging
 import pathlib
 import sys
 import keyring
+import keyring.errors
 from dataclasses import dataclass, asdict
 from typing import Any, cast, Protocol
 
@@ -61,7 +62,7 @@ class LocalConfig:
             stored = keyring.get_password("sky_claw", service_name)
             if stored:
                 return stored
-        except Exception as exc:
+        except (keyring.errors.KeyringError, OSError) as exc:
             logger.error("Failed to read from keyring: %s", exc)
 
         # Migration logic
@@ -72,10 +73,10 @@ class LocalConfig:
             if decoded:
                 try:
                     keyring.set_password("sky_claw", service_name, decoded)
-                except Exception as exc:
+                except (keyring.errors.KeyringError, OSError) as exc:
                     logger.error("Failed to migrate key to keyring: %s", exc)
             return decoded
-        except Exception as exc:
+        except (ValueError, UnicodeDecodeError) as exc:
             logger.error("Failed to decode legacy key: %s", exc)
             return None
 
@@ -88,7 +89,7 @@ class LocalConfig:
         try:
             keyring.set_password("sky_claw", "api_key", key)
             self.api_key_b64 = None  # Clear legacy
-        except Exception as exc:
+        except (keyring.errors.KeyringError, OSError) as exc:
             logger.warning(
                 "Could not store API key in keyring (%s). "
                 "Falling back to base64 encoding in config file.",
@@ -105,7 +106,7 @@ class LocalConfig:
         try:
             keyring.set_password("sky_claw", "nexus_api_key", key)
             self.nexus_api_key_b64 = None
-        except Exception as exc:
+        except (keyring.errors.KeyringError, OSError) as exc:
             logger.warning(
                 "Could not store Nexus API key in keyring (%s). "
                 "Falling back to base64 encoding in config file.",
@@ -122,7 +123,7 @@ class LocalConfig:
         try:
             keyring.set_password("sky_claw", "telegram_bot_token", token)
             self.telegram_bot_token_b64 = None
-        except Exception as exc:
+        except (keyring.errors.KeyringError, OSError) as exc:
             logger.warning(
                 "Could not store Telegram token in keyring (%s). "
                 "Falling back to base64 encoding in config file.",

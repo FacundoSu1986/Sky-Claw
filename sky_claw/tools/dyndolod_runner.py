@@ -275,7 +275,7 @@ class DynDOLODRunner:
             )
         except DynDOLODExecutionError:
             raise
-        except Exception as e:
+        except (OSError, asyncio.TimeoutError, RuntimeError) as e:
             logger.exception("Error inesperado ejecutando TexGen: %s", e)
             return ToolExecutionResult(
                 success=False,
@@ -353,7 +353,7 @@ class DynDOLODRunner:
             )
         except DynDOLODExecutionError:
             raise
-        except Exception as e:
+        except (OSError, asyncio.TimeoutError, RuntimeError) as e:
             logger.exception("Error inesperado ejecutando DynDOLOD: %s", e)
             return ToolExecutionResult(
                 success=False,
@@ -995,7 +995,7 @@ class DynDOLODRunner:
         except OSError as e:
             logger.error("Error de I/O validando output %s: %s", output_path, e)
             return False
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception("Error inesperado validando output %s: %s", output_path, e)
             return False
 

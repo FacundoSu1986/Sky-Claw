@@ -267,8 +267,11 @@ class SupervisorAgent:
         try:
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(self.interface.connect())
-        except Exception as e:
-            logger.error(f"TaskGroup del Supervisor cancelado por error fatal: {e}")
+        except* Exception as eg:
+            for exc in eg.exceptions:
+                logger.error(
+                    "TaskGroup del Supervisor — sub-error: %s", exc, exc_info=exc
+                )
         finally:
             # ARC-01: Detener demonios extraídos (LIFO)
             await self._watcher_daemon.stop()

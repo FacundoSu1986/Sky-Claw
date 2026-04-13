@@ -3,6 +3,7 @@ import os
 import pathlib
 import tomllib
 import keyring
+import keyring.errors
 from typing import Any, Optional
 import sys
 
@@ -81,14 +82,14 @@ class Config:
                     self._data[key] = stored
                     if plaintext and plaintext == stored:
                         migrated = True
-            except Exception:
+            except (keyring.errors.KeyringError, OSError):
                 stored = None
 
             if plaintext and not stored:
                 try:
                     keyring.set_password("sky_claw", key, plaintext)
                     migrated = True
-                except Exception:
+                except (keyring.errors.KeyringError, OSError):
                     pass
 
         # S3-FIX: If we migrated secrets to keyring, scrub them from the TOML on disk.
@@ -100,7 +101,7 @@ class Config:
                 logger.info(
                     "Migrated sensitive keys to keyring and scrubbed plaintext from TOML."
                 )
-            except Exception as exc:
+            except (OSError, IOError) as exc:
                 logger.critical(
                     "Failed to scrub plaintext secrets from TOML after keyring migration: %s. "
                     "Sensitive data may remain on disk at %s.",
@@ -158,9 +159,8 @@ class Config:
                     # Also update flatly for any remaining top-level keys
                     # This might overwrite what we just set if both formats exist, but that's okay.
                     self._data.update(file_data)
-            except Exception as exc:
-                print(f"Warning: Failed to load config.toml: {exc}")
-                pass
+            except (tomllib.TOMLDecodeError, OSError, ValueError) as exc:
+                logger.warning("Failed to load config.toml: %s", exc)
 
     def _load_from_env(self):
         for key in self._data.keys():
@@ -198,7 +198,7 @@ class Config:
             if val:
                 try:
                     keyring.set_password("sky_claw", key, str(val))
-                except Exception as exc:
+                except (keyring.errors.KeyringError, OSError) as exc:
                     logger.warning(
                         "Could not store '%s' in keyring: %s. "
                         "Secret will NOT be persisted — configure a keyring backend.",
@@ -294,3 +294,66 @@ ALLOWED_METHODS = {
 TELEGRAM_PATH_PREFIX = "/bot"
 NEXUS_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 NEXUS_DOWNLOAD_TIMEOUT_SECONDS = 600
+
+# ── Centralized Search Paths (DRY — A4) ─────────────────────────────
+STEAM_DEFAULT_PATHS: tuple[str, ...] = (
+    r"C:\Program Files (x86)\Steam",
+    r"C:\Program Files\Steam",
+    r"D:\Steam",
+    r"D:\SteamLibrary",
+    r"E:\Steam",
+    r"E:\SteamLibrary",
+    r"F:\Steam",
+    r"F:\SteamLibrary",
+)
+
+MO2_COMMON_PATHS: tuple[str, ...] = (
+    r"C:\Modding\MO2",
+    r"D:\Modding\MO2",
+    r"E:\Modding\MO2",
+    r"C:\MO2Portable",
+    r"D:\MO2Portable",
+    r"C:\Games\MO2",
+    r"D:\Games\MO2",
+)
+
+SKYRIM_COMMON_PATHS: tuple[str, ...] = (
+    r"C:\Program Files (x86)\Steam\steamapps\common\Skyrim Special Edition",
+    r"C:\Program Files\Steam\steamapps\common\Skyrim Special Edition",
+    r"D:\SteamLibrary\steamapps\common\Skyrim Special Edition",
+    r"D:\Steam\steamapps\common\Skyrim Special Edition",
+    r"E:\SteamLibrary\steamapps\common\Skyrim Special Edition",
+    r"D:\Games\Skyrim Special Edition",
+    r"E:\Games\Skyrim Special Edition",
+)
+
+LOOT_SEARCH_PATHS: tuple[str, ...] = (
+    r"C:\Modding\LOOT",
+    r"D:\Modding\LOOT",
+    r"C:\Program Files\LOOT",
+    r"C:\Program Files (x86)\LOOT",
+)
+
+XEDIT_SEARCH_PATHS: tuple[str, ...] = (
+    r"C:\Modding\SSEEdit",
+    r"D:\Modding\SSEEdit",
+    r"C:\Modding\xEdit",
+    r"D:\Modding\xEdit",
+    r"C:\Program Files\SSEEdit",
+)
+
+COMMON_TOOL_ROOTS: tuple[str, ...] = (
+    r"C:\Modding",
+    r"D:\Modding",
+    r"E:\Modding",
+    r"C:\Games",
+    r"D:\Games",
+)
+
+# ── Magic Number Constants (A5) ──────────────────────────────────────
+SKYRIM_SE_APPID: str = "489830"
+SEARCH_TIMEOUT_SECONDS: float = 5.0
+AE_MIN_SIZE_MB: int = 60
+AE_MIN_MINOR_VERSION: int = 6
+PROCESS_KILL_TIMEOUT_SECONDS: float = 3.0
+CREATE_NO_WINDOW: int = 0x08000000

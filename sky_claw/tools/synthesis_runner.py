@@ -213,7 +213,7 @@ class SynthesisRunner:
             stdout, stderr, return_code = await self._execute_process(args)
         except SynthesisExecutionError:
             raise
-        except Exception as e:
+        except (OSError, asyncio.TimeoutError, RuntimeError) as e:
             logger.exception("Error inesperado ejecutando Synthesis: %s", e)
             return SynthesisResult(
                 success=False,
@@ -444,6 +444,6 @@ class SynthesisRunner:
         except OSError as e:
             logger.error("Error de I/O validando ESP %s: %s", esp_path, e)
             return False
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception("Error inesperado validando ESP %s: %s", esp_path, e)
             return False

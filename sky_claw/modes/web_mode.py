@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import logging
 
 from aiohttp import web
 
@@ -7,6 +8,8 @@ from sky_claw.security.auth_token_manager import AuthTokenManager
 from sky_claw.web.app import WebApp
 from sky_claw.local_config import load as load_local_config
 from sky_claw.app_context import AppContext
+
+logger = logging.getLogger(__name__)
 
 
 async def _run_web(ctx: AppContext, port: int) -> None:
@@ -33,7 +36,7 @@ async def _run_web(ctx: AppContext, port: int) -> None:
     await site.start()
 
     url = f"http://localhost:{port}"
-    print(f"\n  Sky-Claw Web UI: {url}\n")
+    logger.info("Sky-Claw Web UI: %s", url)
     import webbrowser
 
     webbrowser.open(url)

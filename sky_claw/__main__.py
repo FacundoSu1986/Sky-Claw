@@ -153,7 +153,7 @@ async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> N
 
     logger.info("Sky-Claw starting in %s mode", args.mode)
     if args.mode == "oneshot" and not args.command:
-        print("Error: oneshot mode requires a command argument.", file=sys.stderr)
+        logger.error("Oneshot mode requires a command argument.")
         sys.exit(1)
 
     ctx = AppContext(args)

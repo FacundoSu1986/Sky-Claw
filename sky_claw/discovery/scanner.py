@@ -18,6 +18,15 @@ import os
 import pathlib
 import shutil
 
+from sky_claw.config import (
+    AE_MIN_MINOR_VERSION,
+    AE_MIN_SIZE_MB,
+    COMMON_TOOL_ROOTS,
+    MO2_COMMON_PATHS,
+    SEARCH_TIMEOUT_SECONDS,
+    SKYRIM_COMMON_PATHS,
+    STEAM_DEFAULT_PATHS,
+)
 from sky_claw.discovery.environment import (
     EnvironmentSnapshot,
     HealthStatus,
@@ -29,8 +38,6 @@ from sky_claw.discovery.environment import (
 )
 
 logger = logging.getLogger(__name__)
-
-_SEARCH_TIMEOUT = 5.0
 
 # ── Windows Registry ──────────────────────────────────────────────────
 
@@ -56,22 +63,11 @@ def _reg_read(hive: int, subkey: str, value_name: str) -> str | None:
 
 # ── Steam Library Parser ──────────────────────────────────────────────
 
-_STEAM_DEFAULT_PATHS = (
-    r"C:\Program Files (x86)\Steam",
-    r"C:\Program Files\Steam",
-    r"D:\Steam",
-    r"D:\SteamLibrary",
-    r"E:\Steam",
-    r"E:\SteamLibrary",
-    r"F:\Steam",
-    r"F:\SteamLibrary",
-)
-
 
 def _parse_steam_libraries() -> list[pathlib.Path]:
     """Find all Steam library folders from libraryfolders.vdf."""
     folders: list[pathlib.Path] = []
-    for steam_root in _STEAM_DEFAULT_PATHS:
+    for steam_root in STEAM_DEFAULT_PATHS:
         vdf = pathlib.Path(steam_root) / "steamapps" / "libraryfolders.vdf"
         if not vdf.exists():
             continue
@@ -91,13 +87,6 @@ def _parse_steam_libraries() -> list[pathlib.Path]:
 
 # ── Tool Search Paths ─────────────────────────────────────────────────
 
-_COMMON_TOOL_ROOTS = (
-    r"C:\Modding",
-    r"D:\Modding",
-    r"E:\Modding",
-    r"C:\Games",
-    r"D:\Games",
-)
 
 _WRYE_BASH_NAMES = ("Wrye Bash.exe", "Wrye Bash Launcher.exe")
 _DYNDOLOD_NAMES = ("DynDOLOD64.exe", "DynDOLOD.exe", "DynDOLODx64.exe")
@@ -146,11 +135,11 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
                         # VarFileInfo → fixed version info
                         pass
         pe.close()
-    except Exception:
+    except (ImportError, OSError, ValueError):
         # pefile not installed or PE parsing failed — try file size heuristic
         try:
             size_mb = exe_path.stat().st_size / (1024 * 1024)
-            if size_mb > 60:  # AE executables are typically >60MB
+            if size_mb > AE_MIN_SIZE_MB:  # AE executables are typically >60MB
                 edition = SkyrimEdition.AE
         except OSError:
             pass
@@ -162,7 +151,7 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
             if (
                 len(major_minor) >= 2
                 and int(major_minor[0]) >= 1
-                and int(major_minor[1]) >= 6
+                and int(major_minor[1]) >= AE_MIN_MINOR_VERSION
             ):
                 edition = SkyrimEdition.AE
         except (ValueError, IndexError):
@@ -188,7 +177,7 @@ class EnvironmentScanner:
         """Run all detectors concurrently and build an EnvironmentSnapshot."""
         try:
             return await asyncio.wait_for(
-                self._scan_inner(), timeout=_SEARCH_TIMEOUT * 3
+                self._scan_inner(), timeout=SEARCH_TIMEOUT_SECONDS * 3
             )
         except asyncio.TimeoutError:
             logger.warning("Environment scan timed out")
@@ -369,16 +358,7 @@ class EnvironmentScanner:
                 return candidate_le
 
         # 4. Common direct paths
-        common = (
-            r"C:\Program Files (x86)\Steam\steamapps\common\Skyrim Special Edition",
-            r"C:\Program Files\Steam\steamapps\common\Skyrim Special Edition",
-            r"D:\SteamLibrary\steamapps\common\Skyrim Special Edition",
-            r"D:\Steam\steamapps\common\Skyrim Special Edition",
-            r"E:\SteamLibrary\steamapps\common\Skyrim Special Edition",
-            r"D:\Games\Skyrim Special Edition",
-            r"E:\Games\Skyrim Special Edition",
-        )
-        for raw in common:
+        for raw in SKYRIM_COMMON_PATHS:
             p = pathlib.Path(raw)
             if (p / "SkyrimSE.exe").exists():
                 return p
@@ -389,16 +369,7 @@ class EnvironmentScanner:
 
     async def _find_mo2(self) -> pathlib.Path | None:
         """Locate Mod Organizer 2."""
-        common = (
-            r"C:\Modding\MO2",
-            r"D:\Modding\MO2",
-            r"E:\Modding\MO2",
-            r"C:\MO2Portable",
-            r"D:\MO2Portable",
-            r"C:\Games\MO2",
-            r"D:\Games\MO2",
-        )
-        for raw in common:
+        for raw in MO2_COMMON_PATHS:
             p = pathlib.Path(raw)
             if (p / "ModOrganizer.exe").exists():
                 return p
@@ -494,7 +465,7 @@ class EnvironmentScanner:
                 roots.append(tools_dir)
 
         # Common modding roots
-        for raw in _COMMON_TOOL_ROOTS:
+        for raw in COMMON_TOOL_ROOTS:
             p = pathlib.Path(raw)
             if p.is_dir():
                 roots.append(p)
