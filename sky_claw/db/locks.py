@@ -70,7 +70,8 @@ class LockAcquisitionError(LockError):
         self.resource_id = resource_id
         self.agent_id = agent_id
         super().__init__(
-            message or f"Failed to acquire lock on '{resource_id}' for agent '{agent_id}'"
+            message
+            or f"Failed to acquire lock on '{resource_id}' for agent '{agent_id}'"
         )
 
 

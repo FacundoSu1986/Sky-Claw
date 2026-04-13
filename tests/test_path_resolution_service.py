@@ -115,13 +115,17 @@ class TestDetectMo2Path:
         path_resolver: PathResolutionService,
     ) -> None:
         """Retorna None cuando ninguna ruta candidata contiene MO2."""
-        with patch(
-            "sky_claw.core.path_resolver._CANDIDATE_MO2_PATHS",
-            (r"Z:\nonexistent\path",),
-        ), patch(
-            "sky_claw.core.path_resolver._CANDIDATE_PF_PATHS",
-            (r"Z:\nonexistent\pf",),
-        ), patch.dict(os.environ, {}, clear=False):
+        with (
+            patch(
+                "sky_claw.core.path_resolver._CANDIDATE_MO2_PATHS",
+                (r"Z:\nonexistent\path",),
+            ),
+            patch(
+                "sky_claw.core.path_resolver._CANDIDATE_PF_PATHS",
+                (r"Z:\nonexistent\pf",),
+            ),
+            patch.dict(os.environ, {}, clear=False),
+        ):
             # Asegurar que LOCALAPPDATA no existe o apunta a nowhere
             env = os.environ.copy()
             env.pop("LOCALAPPDATA", None)
@@ -156,9 +160,7 @@ class TestResolveModlistPath:
         """Lanza RuntimeError si ninguna ruta puede resolverse."""
         with patch.dict(os.environ, {}, clear=True):
             # Sin MO2_PATH, sin auto-detect, sin fallback válido
-            with patch.object(
-                path_resolver, "detect_mo2_path", return_value=None
-            ):
+            with patch.object(path_resolver, "detect_mo2_path", return_value=None):
                 with pytest.raises(RuntimeError, match="No se pudo resolver"):
                     path_resolver.resolve_modlist_path("MissingProfile")
 
@@ -185,9 +187,7 @@ class TestGetMo2ModsPath:
     ) -> None:
         """Lanza RuntimeError si no puede detectar MO2."""
         with patch.dict(os.environ, {}, clear=True):
-            with patch.object(
-                path_resolver, "detect_mo2_path", return_value=None
-            ):
+            with patch.object(path_resolver, "detect_mo2_path", return_value=None):
                 with pytest.raises(RuntimeError, match="No se pudo detectar"):
                     path_resolver.get_mo2_mods_path()
 

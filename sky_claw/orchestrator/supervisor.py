@@ -95,7 +95,9 @@ class SupervisorAgent:
         )
 
         # Resolver ruta de modlist: MO2_PATH env var > auto-detección > fallback WSL2
-        self.modlist_path = str(self._path_resolver.resolve_modlist_path(self.profile_name))
+        self.modlist_path = str(
+            self._path_resolver.resolve_modlist_path(self.profile_name)
+        )
 
         # Sprint-1: Core event bus (instanciable, no singleton)
         self._event_bus = CoreEventBus()
@@ -172,8 +174,6 @@ class SupervisorAgent:
 
         logger.info("PatchOrchestrator será inicializado lazy bajo demanda")
 
-    
-
     def _ensure_patch_orchestrator(self) -> PatchOrchestrator:
         """Asegura que el PatchOrchestrator esté inicializado.
 
@@ -247,11 +247,13 @@ class SupervisorAgent:
         # Sprint-1: Iniciar event bus y suscribir bridge de telemetría
         await self._event_bus.start()
         self._event_bus.subscribe(
-            "system.telemetry.*", self._bridge_telemetry_to_ws,
+            "system.telemetry.*",
+            self._bridge_telemetry_to_ws,
         )
         # Sprint-1.5: Suscribir al evento de cambio en modlist
         self._event_bus.subscribe(
-            "system.modlist.changed", self._trigger_proactive_analysis,
+            "system.modlist.changed",
+            self._trigger_proactive_analysis,
         )
         # ARC-01: Iniciar demonios extraídos
         await self._maintenance_daemon.start()
@@ -434,7 +436,9 @@ class SupervisorAgent:
         # CRIT-003: Validar paths antes de usar
         game_path = self._path_resolver.validate_env_path(game_path_str, "SKYRIM_PATH")
         mo2_path = self._path_resolver.validate_env_path(mo2_path_str, "MO2_PATH")
-        synthesis_exe = self._path_resolver.validate_env_path(synthesis_exe_str, "SYNTHESIS_EXE")
+        synthesis_exe = self._path_resolver.validate_env_path(
+            synthesis_exe_str, "SYNTHESIS_EXE"
+        )
 
         # Si la validación falla, no continuar
         if not game_path or not mo2_path or not synthesis_exe:
@@ -528,8 +532,12 @@ class SupervisorAgent:
         # CRIT-003: Validar paths antes de usar
         game_path = self._path_resolver.validate_env_path(game_path_str, "SKYRIM_PATH")
         mo2_path = self._path_resolver.validate_env_path(mo2_path_str, "MO2_PATH")
-        mo2_mods_path = self._path_resolver.validate_env_path(mo2_mods_path_str, "MO2_MODS_PATH")
-        dyndolod_exe = self._path_resolver.validate_env_path(dyndolod_exe_str, "DYNDLOD_EXE")
+        mo2_mods_path = self._path_resolver.validate_env_path(
+            mo2_mods_path_str, "MO2_MODS_PATH"
+        )
+        dyndolod_exe = self._path_resolver.validate_env_path(
+            dyndolod_exe_str, "DYNDLOD_EXE"
+        )
         texgen_exe = (
             self._path_resolver.validate_env_path(texgen_exe_str, "TEXGEN_EXE")
             if texgen_exe_str
@@ -594,7 +602,9 @@ class SupervisorAgent:
 
         game_path = self._path_resolver.validate_env_path(game_path_str, "SKYRIM_PATH")
         mo2_path = self._path_resolver.validate_env_path(mo2_path_str, "MO2_PATH")
-        wrye_bash_path = self._path_resolver.validate_env_path(wrye_bash_path_str, "WRYE_BASH_PATH")
+        wrye_bash_path = self._path_resolver.validate_env_path(
+            wrye_bash_path_str, "WRYE_BASH_PATH"
+        )
 
         if not game_path or not mo2_path or not wrye_bash_path:
             raise WryeBashExecutionError(
@@ -808,14 +818,6 @@ class SupervisorAgent:
                 profile,
             )
         return self._asset_detector
-
-    
-
-    
-
-    
-
-    
 
     def scan_asset_conflicts(self) -> list[AssetConflictReport]:
         """FASE 5: Herramienta READ-ONLY para escanear conflictos de assets.
@@ -1244,27 +1246,33 @@ class SupervisorAgent:
         try:
             await self.journal.log_operation(
                 agent_id="dyndolod_runner",
-                operation_type="dyndolod_pipeline_complete"
-                if success
-                else "dyndolod_pipeline_failed",
-                file_path=str(result.dyndolod_mod_path)
-                if result.dyndolod_mod_path
-                else "",
+                operation_type=(
+                    "dyndolod_pipeline_complete"
+                    if success
+                    else "dyndolod_pipeline_failed"
+                ),
+                file_path=(
+                    str(result.dyndolod_mod_path) if result.dyndolod_mod_path else ""
+                ),
                 details={
                     "success": success,
                     "preset": preset,
-                    "texgen_success": result.texgen_result.success
-                    if result.texgen_result
-                    else False,
-                    "dyndolod_success": result.dyndolod_result.success
-                    if result.dyndolod_result
-                    else False,
-                    "texgen_mod_path": str(result.texgen_mod_path)
-                    if result.texgen_mod_path
-                    else None,
-                    "dyndolod_mod_path": str(result.dyndolod_mod_path)
-                    if result.dyndolod_mod_path
-                    else None,
+                    "texgen_success": (
+                        result.texgen_result.success if result.texgen_result else False
+                    ),
+                    "dyndolod_success": (
+                        result.dyndolod_result.success
+                        if result.dyndolod_result
+                        else False
+                    ),
+                    "texgen_mod_path": (
+                        str(result.texgen_mod_path) if result.texgen_mod_path else None
+                    ),
+                    "dyndolod_mod_path": (
+                        str(result.dyndolod_mod_path)
+                        if result.dyndolod_mod_path
+                        else None
+                    ),
                     "errors": result.errors,
                 },
             )
@@ -1381,9 +1389,11 @@ class SupervisorAgent:
                 # Crear PatchPlan desde el resultado para ejecutar
                 plan = PatchPlan(
                     strategy_type=strategy_type,
-                    target_plugins=[p.plugin_a for p in report.plugin_pairs[:1]]
-                    if report.plugin_pairs
-                    else [],
+                    target_plugins=(
+                        [p.plugin_a for p in report.plugin_pairs[:1]]
+                        if report.plugin_pairs
+                        else []
+                    ),
                     output_plugin=str(result.output_path),
                     form_ids=[],
                     estimated_records=result.records_patched,
@@ -1403,9 +1413,11 @@ class SupervisorAgent:
                         conflicts_resolved=len(report.plugin_pairs),
                         xedit_exit_code=script_result.exit_code,
                         warnings=script_result.warnings,
-                        error=None
-                        if script_result.exit_code == 0
-                        else script_result.stderr,
+                        error=(
+                            None
+                            if script_result.exit_code == 0
+                            else script_result.stderr
+                        ),
                     )
                 except Exception as script_error:
                     logger.error("Error ejecutando script xEdit: %s", script_error)
@@ -1500,9 +1512,9 @@ class SupervisorAgent:
                     "critical_conflicts": report.critical_conflicts,
                     "records_patched": result.records_patched,
                     "conflicts_resolved": result.conflicts_resolved,
-                    "output_path": str(result.output_path)
-                    if result.output_path
-                    else None,
+                    "output_path": (
+                        str(result.output_path) if result.output_path else None
+                    ),
                     "warnings": result.warnings,
                 },
             )
