@@ -21,7 +21,11 @@ from .contracts import (
     verify_contract,
 )
 from .event_bus import CoreEventBus, Event
-from .event_payloads import ModlistChangedPayload
+from .event_payloads import (
+    ModlistChangedPayload,
+    SynthesisPipelineStartedPayload,
+    SynthesisPipelineCompletedPayload,
+)
 from .path_resolver import PathResolver, PathResolutionService
 from .validators import (
     SSRFValidator,
@@ -59,6 +63,8 @@ __all__ = [
     "CoreEventBus",
     "Event",
     "ModlistChangedPayload",
+    "SynthesisPipelineStartedPayload",
+    "SynthesisPipelineCompletedPayload",
     # Path Resolution
     "PathResolver",
     "PathResolutionService",

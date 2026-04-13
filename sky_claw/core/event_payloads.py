@@ -43,3 +43,61 @@ class ModlistChangedPayload(BaseModel):
             Diccionario plano con todos los campos del payload.
         """
         return self.model_dump()
+
+
+class SynthesisPipelineStartedPayload(BaseModel):
+    """Payload inmutable para el evento ``synthesis.pipeline.started``.
+
+    Publicado por :class:`SynthesisPipelineService` al iniciar la ejecución
+    del pipeline de Synthesis.
+
+    Attributes:
+        patcher_ids: IDs de los patchers a ejecutar.
+        target_esp: Ruta absoluta al ESP objetivo.
+        snapshot_enabled: Si se habilitó snapshot pre-ejecución.
+        started_at: Timestamp de inicio (epoch float, autogenerado).
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    patcher_ids: tuple[str, ...]
+    target_esp: str
+    snapshot_enabled: bool
+    started_at: float = Field(default_factory=time.time)
+
+    def to_log_dict(self) -> dict[str, object]:
+        """Serialización compatible con el sistema de logging estructurado."""
+        return self.model_dump()
+
+
+class SynthesisPipelineCompletedPayload(BaseModel):
+    """Payload inmutable para el evento ``synthesis.pipeline.completed``.
+
+    Publicado por :class:`SynthesisPipelineService` al finalizar la ejecución
+    del pipeline de Synthesis (éxito o fallo).
+
+    Attributes:
+        patcher_ids: IDs de los patchers solicitados.
+        target_esp: Ruta absoluta al ESP objetivo.
+        success: Si la ejecución fue exitosa.
+        patchers_executed: IDs de los patchers que se ejecutaron.
+        errors: Errores detectados durante la ejecución.
+        duration_seconds: Duración total de la ejecución.
+        rolled_back: Si se ejecutó rollback automático.
+        completed_at: Timestamp de finalización (epoch float, autogenerado).
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    patcher_ids: tuple[str, ...]
+    target_esp: str
+    success: bool
+    patchers_executed: tuple[str, ...]
+    errors: tuple[str, ...]
+    duration_seconds: float
+    rolled_back: bool
+    completed_at: float = Field(default_factory=time.time)
+
+    def to_log_dict(self) -> dict[str, object]:
+        """Serialización compatible con el sistema de logging estructurado."""
+        return self.model_dump()

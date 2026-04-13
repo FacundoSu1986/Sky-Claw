@@ -15,6 +15,7 @@ from sky_claw.orchestrator.ws_event_streamer import LangGraphEventStreamer
 
 # FASE 1.5: Imports de componentes de rollback
 from sky_claw.db.journal import OperationJournal
+from sky_claw.db.locks import DistributedLockManager
 from sky_claw.db.rollback_manager import RollbackManager
 from sky_claw.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
 
@@ -38,16 +39,8 @@ from sky_claw.core.path_resolver import PathResolutionService
 from sky_claw.orchestrator.telemetry_daemon import TelemetryDaemon
 from sky_claw.orchestrator.watcher_daemon import WatcherDaemon
 
-# FASE 3: Imports de componentes de Synthesis
-from sky_claw.tools.synthesis_runner import (
-    SynthesisRunner,
-    SynthesisConfig,
-    SynthesisResult,
-    SynthesisExecutionError,
-)
-from sky_claw.tools.patcher_pipeline import (
-    PatcherPipeline,
-)
+# FASE 3: SynthesisPipelineService (extraído del Supervisor — Sprint 2)
+from sky_claw.tools.synthesis_service import SynthesisPipelineService
 
 # FASE 6: Imports de componentes de Wrye Bash
 from sky_claw.tools.wrye_bash_runner import (
@@ -115,6 +108,17 @@ class SupervisorAgent:
             db=self.db,
             event_bus=self._event_bus,
         )
+        # Sprint-2: SynthesisPipelineService — extraído del Supervisor
+        self._synthesis_service = SynthesisPipelineService(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self.snapshot_manager,
+            journal=self.journal,
+            path_resolver=self._path_resolver,
+            event_bus=self._event_bus,
+            pipeline_config_path=pathlib.Path(BACKUP_STAGING_DIR)
+            / "synthesis_pipeline.json",
+        )
+
         # FASE 2: Inicializar orquestador de parches
         self._init_patch_orchestrator()
 
@@ -139,6 +143,11 @@ class SupervisorAgent:
             journal=self.journal, snapshot_manager=self.snapshot_manager
         )
 
+        # Sprint-2: DistributedLockManager para bloqueos concurrentes
+        self._lock_manager = DistributedLockManager(
+            db_path=backup_dir / "locks.db",
+        )
+
         # CRIT-003: PathValidator para validación de variables de entorno
         self._path_validator = PathValidator(roots=[backup_dir])
 
@@ -159,10 +168,6 @@ class SupervisorAgent:
         # XEditRunner requiere paths configurados - usar lazy initialization
         self._xedit_runner: XEditRunner | None = None
         self._patch_orchestrator: PatchOrchestrator | None = None
-
-        # FASE 3: Synthesis integration (lazy init)
-        self._synthesis_runner: SynthesisRunner | None = None
-        self._patcher_pipeline: PatcherPipeline | None = None
 
         # FASE 4: DynDOLOD/TexGen integration (lazy init)
         self._dyndolod_runner: DynDOLODRunner | None = None
@@ -237,6 +242,8 @@ class SupervisorAgent:
         # FASE 1.5: Abrir journal de operaciones
         await self.journal.open()
         await self.snapshot_manager.initialize()
+        # Sprint-2: Inicializar lock manager (requiere async init)
+        await self._lock_manager.initialize()
 
         # Vincular con la señal de ejecución de la interfaz
         self.interface.register_command_callback(self.handle_execution_signal)
@@ -276,6 +283,8 @@ class SupervisorAgent:
             await self._maintenance_daemon.stop()
             # Sprint-1: Detener event bus después de los demonios
             await self._event_bus.stop()
+            # Sprint-2: Cerrar lock manager
+            await self._lock_manager.close()
             # FASE 1.5: Cerrar journal al terminar
             await self.journal.close()
             await self.db.close()
@@ -341,9 +350,9 @@ class SupervisorAgent:
                         "reason": "Usuario denegó la operación.",
                     }
 
-            # FASE 3: Synthesis Pipeline Integration
+            # FASE 3: Synthesis Pipeline (delegado a SynthesisPipelineService)
             case "execute_synthesis_pipeline":
-                return await self.execute_synthesis_pipeline(**payload_dict)
+                return await self._synthesis_service.execute_pipeline(**payload_dict)
 
             # FASE 4: DynDOLOD/TexGen Pipeline Integration
             case "generate_lods":
@@ -409,97 +418,6 @@ class SupervisorAgent:
     def get_rollback_manager(self) -> RollbackManager:
         """Retorna el RollbackManager para inyección de dependencias."""
         return self.rollback_manager
-
-    # =========================================================================
-    # FASE 3: Synthesis Pipeline Integration
-    # =========================================================================
-
-    def _ensure_synthesis_runner(self) -> SynthesisRunner:
-        """FASE 3: Asegura que el SynthesisRunner esté inicializado.
-
-        Usa inicialización lazy porque SynthesisRunner requiere paths que
-        pueden no estar disponibles al instanciar SupervisorAgent.
-
-        Returns:
-            SynthesisRunner inicializado.
-
-        Raises:
-            SynthesisExecutionError: Si no se puede inicializar.
-        """
-        if self._synthesis_runner is not None:
-            return self._synthesis_runner
-
-        # Obtener paths desde entorno o config
-        game_path_str = os.environ.get("SKYRIM_PATH", "")
-        mo2_path_str = os.environ.get("MO2_PATH", "")
-        synthesis_exe_str = os.environ.get("SYNTHESIS_EXE", "")
-
-        # CRIT-003: Validar paths antes de usar
-        game_path = self._path_resolver.validate_env_path(game_path_str, "SKYRIM_PATH")
-        mo2_path = self._path_resolver.validate_env_path(mo2_path_str, "MO2_PATH")
-        synthesis_exe = self._path_resolver.validate_env_path(
-            synthesis_exe_str, "SYNTHESIS_EXE"
-        )
-
-        # Si la validación falla, no continuar
-        if not game_path or not mo2_path or not synthesis_exe:
-            raise SynthesisExecutionError(
-                "Cannot initialize SynthesisRunner: "
-                "SKYRIM_PATH, MO2_PATH, and SYNTHESIS_EXE environment variables must be valid paths"
-            )
-
-        if not synthesis_exe.exists():
-            raise SynthesisExecutionError(
-                f"Synthesis executable not found: {synthesis_exe}"
-            )
-
-        # Directorio de salida (overwrite de MO2 o directorio de mods)
-        output_path = mo2_path / "overwrite"
-        if not output_path.exists():
-            output_path = mo2_path / "mods" / "Synthesis Output"
-
-        config = SynthesisConfig(
-            game_path=game_path,
-            mo2_path=mo2_path,
-            output_path=output_path,
-            synthesis_exe=synthesis_exe,
-            timeout_seconds=300,
-        )
-
-        self._synthesis_runner = SynthesisRunner(config)
-
-        logger.info(
-            "SynthesisRunner inicializado: game=%s, output=%s",
-            game_path,
-            output_path,
-        )
-
-        return self._synthesis_runner
-
-    def _ensure_patcher_pipeline(self) -> PatcherPipeline:
-        """FASE 3: Asegura que el PatcherPipeline esté inicializado.
-
-        Returns:
-            PatcherPipeline inicializado.
-        """
-        if self._patcher_pipeline is not None:
-            return self._patcher_pipeline
-
-        # Cargar desde archivo de configuración si existe
-        pipeline_path = pathlib.Path(BACKUP_STAGING_DIR) / "synthesis_pipeline.json"
-
-        if pipeline_path.exists():
-            self._patcher_pipeline = PatcherPipeline.from_json(pipeline_path)
-            logger.info(
-                "PatcherPipeline cargado desde %s: %d patchers",
-                pipeline_path,
-                len(self._patcher_pipeline),
-            )
-        else:
-            self._patcher_pipeline = PatcherPipeline(pipeline_config_path=pipeline_path)
-            logger.info("PatcherPipeline inicializado vacío")
-
-        return self._patcher_pipeline
 
     def _ensure_dyndolod_runner(self) -> DynDOLODRunner:
         """FASE 4: Asegura que el DynDOLODRunner esté inicializado.
@@ -860,194 +778,6 @@ class SupervisorAgent:
                 f"Error generando reporte JSON de conflictos: {e}", exc_info=True
             )
             raise
-
-    async def execute_synthesis_pipeline(
-        self,
-        patcher_ids: list[str] | None = None,
-        create_snapshot: bool = True,
-    ) -> SynthesisResult:
-        """
-        FASE 3: Ejecuta el pipeline de Synthesis con protección transaccional.
-
-        Lógica crítica (Fail-safe):
-        1. Si create_snapshot=True, usar FileSnapshotManager para crear
-           snapshot del Synthesis.esp existente
-        2. Ejecutar SynthesisRunner.run_pipeline()
-        3. Si falla o el ESP está corrupto, restaurar snapshot automáticamente
-        4. Registrar operación en OperationJournal
-
-        Args:
-            patcher_ids: Lista de IDs de patchers a ejecutar. Si es None,
-                         usa los patchers habilitados del pipeline.
-            create_snapshot: Si True, crea snapshot antes de ejecutar.
-
-        Returns:
-            SynthesisResult con el resultado de la ejecución.
-        """
-        logger.info(
-            "Iniciando pipeline Synthesis: patchers=%s, snapshot=%s",
-            len(patcher_ids) if patcher_ids else "pipeline",
-            create_snapshot,
-        )
-
-        # Asegurar que los componentes estén inicializados
-        try:
-            runner = self._ensure_synthesis_runner()
-            pipeline = self._ensure_patcher_pipeline()
-        except SynthesisExecutionError as e:
-            logger.error("Error inicializando Synthesis: %s", e)
-            return SynthesisResult(
-                success=False,
-                output_esp=None,
-                return_code=-1,
-                stdout="",
-                stderr=str(e),
-                patchers_executed=[],
-                errors=[str(e)],
-            )
-
-        # Determinar patchers a ejecutar
-        if patcher_ids is None:
-            enabled_patchers = pipeline.get_enabled_patchers()
-            patcher_ids = [p.patcher_id for p in enabled_patchers]
-
-        if not patcher_ids:
-            logger.warning("No hay patchers para ejecutar")
-            return SynthesisResult(
-                success=False,
-                output_esp=None,
-                return_code=0,
-                stdout="",
-                stderr="No patchers to execute",
-                patchers_executed=[],
-                errors=["No patchers configured or enabled"],
-            )
-
-        # PASO 1: Crear snapshot del ESP existente si existe
-        snapshot_path: pathlib.Path | None = None
-        target_esp = runner._config.output_path / "Synthesis.esp"
-
-        if create_snapshot and target_esp.exists():
-            try:
-                snapshot_path = await self.snapshot_manager.create_snapshot(
-                    target_esp,
-                    metadata={"source": "synthesis_pipeline", "patchers": patcher_ids},
-                )
-                logger.debug("Snapshot creado: %s", snapshot_path)
-            except (OSError, RuntimeError) as e:
-                logger.warning("No se pudo crear snapshot: %s", e)
-                # Continuar sin snapshot - no es fatal
-
-        # PASO 2: Ejecutar pipeline
-        try:
-            result = await runner.run_pipeline(patcher_ids)
-        except SynthesisExecutionError as e:
-            logger.error("Error ejecutando Synthesis: %s", e)
-            result = SynthesisResult(
-                success=False,
-                output_esp=None,
-                return_code=e.return_code or -1,
-                stdout="",
-                stderr=e.stderr or str(e),
-                patchers_executed=[],
-                errors=[str(e)],
-            )
-
-        # PASO 3: Verificar resultado y rollback si es necesario
-        if not result.success and snapshot_path and target_esp.exists():
-            logger.warning("Pipeline falló, ejecutando rollback...")
-            await self._rollback_synthesis_on_failure(snapshot_path, target_esp)
-
-        # Validar ESP generado si el resultado fue exitoso
-        if result.success and result.output_esp:
-            is_valid = await runner.validate_synthesis_esp(result.output_esp)
-            if not is_valid:
-                logger.error("ESP generado está corrupto: %s", result.output_esp)
-                if snapshot_path:
-                    await self._rollback_synthesis_on_failure(snapshot_path, target_esp)
-                result = SynthesisResult(
-                    success=False,
-                    output_esp=result.output_esp,
-                    return_code=result.return_code,
-                    stdout=result.stdout,
-                    stderr=result.stderr + "\nESP validation failed",
-                    patchers_executed=result.patchers_executed,
-                    errors=result.errors
-                    + ["ESP validation failed: corrupted or invalid"],
-                )
-
-        # PASO 4: Registrar en journal
-        await self._log_synthesis_result(result, patcher_ids)
-
-        if result.success:
-            logger.info(
-                "Pipeline Synthesis exitoso: %s (%d patchers)",
-                result.output_esp,
-                len(result.patchers_executed),
-            )
-        else:
-            logger.error(
-                "Pipeline Synthesis falló: %s",
-                "; ".join(result.errors) if result.errors else "Unknown error",
-            )
-
-        return result
-
-    async def _rollback_synthesis_on_failure(
-        self,
-        snapshot_path: pathlib.Path,
-        target: pathlib.Path,
-    ) -> None:
-        """Ejecuta rollback automático en caso de fallo de Synthesis.
-
-        Args:
-            snapshot_path: Path al snapshot creado antes del fallo.
-            target: Path al archivo ESP que necesita restauración.
-        """
-        logger.warning("Iniciando rollback de Synthesis para %s", target.name)
-
-        try:
-            await self.snapshot_manager.restore_snapshot(snapshot_path, target)
-            logger.info("Rollback de Synthesis completado exitosamente")
-        except (OSError, RuntimeError) as rollback_error:
-            # Esto es CRÍTICO - el archivo puede estar corrupto
-            logger.critical(
-                "ROLLBACK de Synthesis FALLÓ para %s: %s. El archivo puede estar corrupto!",
-                target.name,
-                rollback_error,
-                exc_info=True,
-            )
-
-    async def _log_synthesis_result(
-        self,
-        result: SynthesisResult,
-        patcher_ids: list[str],
-    ) -> None:
-        """Registra el resultado de Synthesis en el journal.
-
-        Args:
-            result: Resultado de la ejecución.
-            patcher_ids: IDs de patchers ejecutados.
-        """
-        try:
-            await self.journal.log_operation(
-                agent_id="synthesis_runner",
-                operation_type="synthesis_pipeline",
-                file_path=str(result.output_esp) if result.output_esp else "",
-                details={
-                    "success": result.success,
-                    "return_code": result.return_code,
-                    "patchers_requested": patcher_ids,
-                    "patchers_executed": result.patchers_executed,
-                    "errors": result.errors,
-                },
-            )
-            logger.debug("Operación de Synthesis registrada en journal")
-        except (OSError, sqlite3.Error) as e:
-            # No fallar la operación si el logging falla
-            logger.warning(
-                "No se pudo registrar operación de Synthesis en journal: %s", e
-            )
 
     # =========================================================================
     # FASE 4: DynDOLOD/TexGen Pipeline Integration

@@ -22,6 +22,7 @@ from .patcher_pipeline import (
     PatcherNotFoundError,
     PatcherConfigError,
 )
+from .synthesis_service import SynthesisPipelineService
 from .dyndolod_runner import (
     DynDOLODRunner,
     DynDOLODConfig,
@@ -40,6 +41,8 @@ __all__ = [
     "SynthesisTimeoutError",
     "SynthesisNotFoundError",
     "SynthesisValidationError",
+    # Synthesis Service
+    "SynthesisPipelineService",
     # Patcher Pipeline
     "PatcherPipeline",
     "PatcherDefinition",
