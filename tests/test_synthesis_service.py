@@ -635,6 +635,7 @@ async def test_journal_transaction_lifecycle_failure(
 async def test_unexpected_exception_marks_journal_rolled_back(
     synthesis_service: SynthesisPipelineService,
     mock_journal: AsyncMock,
+    event_bus: CoreEventBus,
     tmp_path: pathlib.Path,
 ) -> None:
     """An unexpected OSError inside the lock context marks journal rolled back.
@@ -644,9 +645,20 @@ async def test_unexpected_exception_marks_journal_rolled_back(
     (SynthesisExecutionError / SynthesisValidationError / LockAcquisitionError),
     the journal transaction must still be marked rolled back and the service
     must return an error dict instead of propagating the exception.
+    Additionally, synthesis.pipeline.completed must always be published (success=False).
     """
     output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
     output_esp.touch()
+
+    received: list[Event] = []
+    completed_event = asyncio.Event()
+
+    async def _capture_event(e: Event) -> None:
+        received.append(e)
+        if e.topic == "synthesis.pipeline.completed":
+            completed_event.set()
+
+    event_bus.subscribe("synthesis.pipeline.*", _capture_event)
 
     with (
         patch.object(
@@ -680,3 +692,8 @@ async def test_unexpected_exception_marks_journal_rolled_back(
     mock_journal.begin_transaction.assert_awaited_once()
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
     mock_journal.commit_transaction.assert_not_awaited()
+
+    # synthesis.pipeline.completed MUST always be published, even on unexpected errors
+    await asyncio.wait_for(completed_event.wait(), timeout=5.0)
+    completed = next(e for e in received if e.topic == "synthesis.pipeline.completed")
+    assert completed.payload["success"] is False

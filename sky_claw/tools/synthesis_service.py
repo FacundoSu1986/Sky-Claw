@@ -245,6 +245,13 @@ class SynthesisPipelineService:
         result: SynthesisResult
         rolled_back = False
         tx_id: int | None = None
+        # Tracks whether an exception was raised while the SnapshotTransactionLock
+        # context was still active.  Set to True on entry, back to False once the
+        # `async with` block completes without error.  The `except Exception` handler
+        # uses this to distinguish "exception inside the lock (snapshots were restored
+        # by __aexit__)" from "exception outside the lock (e.g. commit_transaction
+        # raised)", where no snapshot rollback actually occurred.
+        in_lock_context = False
 
         try:
             async with SnapshotTransactionLock(
@@ -255,6 +262,7 @@ class SynthesisPipelineService:
                 target_files=target_files,
                 metadata={"source": "synthesis_pipeline", "patchers": patcher_ids},
             ):
+                in_lock_context = True
                 # Begin journal transaction AFTER lock+snapshot acquired
                 tx_id = await self._journal.begin_transaction(
                     description="synthesis_pipeline",
@@ -282,7 +290,10 @@ class SynthesisPipelineService:
                         stderr=result.stderr,
                     )
 
-            # Normal exit — commit journal
+            # Normal exit — lock context exited without error
+            in_lock_context = False
+
+            # Commit journal
             if tx_id is not None:
                 await self._journal.commit_transaction(tx_id)
 
@@ -318,13 +329,13 @@ class SynthesisPipelineService:
 
         except Exception as exc:
             # Unexpected exception (OSError, asyncio.TimeoutError, etc.)
-            # SnapshotTransactionLock.__aexit__ already restored snapshots and
-            # released the lock via its own finally block.
-            # The journal transaction was opened but never committed — mark it
-            # rolled back so the journal row does not remain in PENDING state.
+            # Only set rolled_back=True when the exception occurred inside the lock
+            # context — __aexit__ restores snapshots in that case.  If the exception
+            # happened after the lock was released (e.g. commit_transaction raised),
+            # no snapshot rollback occurred so rolled_back must remain False.
             # Note: asyncio.CancelledError is BaseException, not Exception —
             # it intentionally propagates through here uncaught.
-            rolled_back = bool(target_files)
+            rolled_back = in_lock_context and bool(target_files)
             if tx_id is not None:
                 try:
                     await self._journal.mark_transaction_rolled_back(tx_id)
