@@ -305,9 +305,7 @@ class SynthesisPipelineService:
 
         except LockAcquisitionError as exc:
             # Lock was never acquired — no journal TX started, no snapshots to restore
-            logger.warning(
-                "Lock contention para %s: %s", self.RESOURCE_ID, exc
-            )
+            logger.warning("Lock contention para %s: %s", self.RESOURCE_ID, exc)
             result = SynthesisResult(
                 success=False,
                 output_esp=None,

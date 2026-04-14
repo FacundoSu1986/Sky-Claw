@@ -519,7 +519,10 @@ async def test_lock_contention(
 
     with (
         patch.object(
-            SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=run_result
+            SynthesisRunner,
+            "run_pipeline",
+            new_callable=AsyncMock,
+            return_value=run_result,
         ),
         patch.object(
             SynthesisRunner,
