@@ -84,9 +84,7 @@ class TestFindSkyrim:
         skyrim_dir.mkdir(parents=True)
         (skyrim_dir / "SkyrimSE.exe").touch()
 
-        vdf_content = (
-            f'"libraryfolders"\n{{\n  "0"\n  {{\n    "path"\t\t"{steam_dir}"\n  }}\n}}'
-        )
+        vdf_content = f'"libraryfolders"\n{{\n  "0"\n  {{\n    "path"\t\t"{steam_dir}"\n  }}\n}}'
         vdf_path = apps_dir / "libraryfolders.vdf"
         vdf_path.write_text(vdf_content, encoding="utf-8")
 
@@ -201,9 +199,7 @@ class TestDetectAll:
 
         with patch.object(AutoDetector, "_find_mo2_inner", side_effect=_slow):
             with patch("sky_claw.auto_detect._SEARCH_TIMEOUT", 0.01):
-                with patch(
-                    "sky_claw.auto_detect._read_registry_value", return_value=None
-                ):
+                with patch("sky_claw.auto_detect._read_registry_value", return_value=None):
                     with patch("sky_claw.auto_detect._STEAM_DEFAULT_PATHS", ()):
                         with patch("sky_claw.auto_detect._SKYRIM_COMMON", ()):
                             with patch("sky_claw.auto_detect._LOOT_COMMON", ()):
@@ -255,9 +251,7 @@ class TestRegistryHelper:
 
 class TestAutoDetectEndpoint:
     @pytest.mark.asyncio
-    async def test_auto_detect_endpoint(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_auto_detect_endpoint(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         from sky_claw.web.app import WebApp
 
         router = MagicMock()
@@ -291,9 +285,7 @@ class TestAutoDetectEndpoint:
 
 class TestInstallToolsEndpoint:
     @pytest.mark.asyncio
-    async def test_install_tools_no_installer(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_install_tools_no_installer(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         from sky_claw.web.app import WebApp
 
         router = MagicMock()
@@ -342,9 +334,7 @@ class TestSystemPromptZeroConfig:
 
 class TestSetupAutoFill:
     @pytest.mark.asyncio
-    async def test_get_setup_includes_tool_paths(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_get_setup_includes_tool_paths(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         from sky_claw.web.app import WebApp
 
         router = MagicMock()

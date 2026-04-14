@@ -164,9 +164,7 @@ class SSRFValidator:
 
         for pattern in BLOCKED_HOSTNAME_PATTERNS:
             if pattern.search(hostname_lower):
-                logger.warning(
-                    f"SSRF blocked: hostname coincide con patrón - {hostname_lower}"
-                )
+                logger.warning(f"SSRF blocked: hostname coincide con patrón - {hostname_lower}")
                 return SSRFValidationResult(
                     is_valid=False,
                     normalized_url=None,
@@ -188,9 +186,7 @@ class SSRFValidator:
 
         if not resolved_ips:
             # Fail-closed: si no se puede resolver DNS, bloquear la request
-            logger.warning(
-                f"SSRF: DNS resolution failed for {hostname_lower} — blocking (fail-closed)"
-            )
+            logger.warning(f"SSRF: DNS resolution failed for {hostname_lower} — blocking (fail-closed)")
             return SSRFValidationResult(
                 is_valid=False,
                 normalized_url=None,
@@ -203,9 +199,7 @@ class SSRFValidator:
                     ip_obj = ipaddress.ip_address(ip_str)
                     for network in BLOCKED_NETWORKS:
                         if ip_obj in network:
-                            logger.warning(
-                                f"SSRF blocked: IP {ip_str} en red bloqueada {network}"
-                            )
+                            logger.warning(f"SSRF blocked: IP {ip_str} en red bloqueada {network}")
                             return SSRFValidationResult(
                                 is_valid=False,
                                 normalized_url=None,
@@ -242,9 +236,7 @@ class SSRFValidator:
         query = f"?{parsed.query}" if parsed.query else ""
 
         # No incluir puerto si es el default del scheme
-        if port and not (
-            (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
-        ):
+        if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
             netloc = f"{hostname}:{port}"
         else:
             netloc = hostname

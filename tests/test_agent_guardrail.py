@@ -65,9 +65,7 @@ class TestBeforeModelCallback:
     ]
 
     @pytest.mark.parametrize("payload", INJECTION_INPUTS)
-    async def test_injection_attack_raises_security_violation(
-        self, payload: str
-    ) -> None:
+    async def test_injection_attack_raises_security_violation(self, payload: str) -> None:
         guardrail = AgentGuardrail()
         with pytest.raises(SecurityViolationError):
             await guardrail.before_model_callback(payload)
@@ -75,9 +73,7 @@ class TestBeforeModelCallback:
     async def test_ssn_raises_security_violation(self) -> None:
         guardrail = AgentGuardrail()
         with pytest.raises(SecurityViolationError):
-            await guardrail.before_model_callback(
-                "My SSN is 123-45-6789, please verify."
-            )
+            await guardrail.before_model_callback("My SSN is 123-45-6789, please verify.")
 
     async def test_credit_card_raises_security_violation(self) -> None:
         guardrail = AgentGuardrail()
@@ -87,9 +83,7 @@ class TestBeforeModelCallback:
     async def test_api_key_raises_security_violation(self) -> None:
         guardrail = AgentGuardrail()
         with pytest.raises(SecurityViolationError):
-            await guardrail.before_model_callback(
-                "Use this key: sk-abc123def456ghi789jkl012mno345pqr"
-            )
+            await guardrail.before_model_callback("Use this key: sk-abc123def456ghi789jkl012mno345pqr")
 
     async def test_password_field_raises_security_violation(self) -> None:
         guardrail = AgentGuardrail()
@@ -98,9 +92,7 @@ class TestBeforeModelCallback:
 
     async def test_clean_skyrim_input_passes_unchanged(self) -> None:
         guardrail = AgentGuardrail()
-        result = await guardrail.before_model_callback(
-            "Install Mod SKSE 3.0 for Skyrim Anniversary Edition."
-        )
+        result = await guardrail.before_model_callback("Install Mod SKSE 3.0 for Skyrim Anniversary Edition.")
         assert isinstance(result, str)
         assert len(result) > 0
 
@@ -129,9 +121,7 @@ class TestAfterModelCallback:
     async def test_windows_absolute_path_raises_security_violation(self) -> None:
         guardrail = AgentGuardrail()
         with pytest.raises(SecurityViolationError):
-            await guardrail.after_model_callback(
-                r"The file is at C:\Users\Admin\secret.txt"
-            )
+            await guardrail.after_model_callback(r"The file is at C:\Users\Admin\secret.txt")
 
     async def test_unix_absolute_path_raises_security_violation(self) -> None:
         guardrail = AgentGuardrail()
@@ -146,9 +136,7 @@ class TestAfterModelCallback:
     async def test_wsl_mnt_path_does_not_raise(self) -> None:
         """WSL /mnt/ paths are legitimate tool output and must NOT be flagged."""
         guardrail = AgentGuardrail()
-        result = await guardrail.after_model_callback(
-            "Mod installed at /mnt/c/Games/Skyrim/Mods/SKSE"
-        )
+        result = await guardrail.after_model_callback("Mod installed at /mnt/c/Games/Skyrim/Mods/SKSE")
         assert isinstance(result, str)
 
     async def test_valid_json_schema_passes(self) -> None:
@@ -162,16 +150,12 @@ class TestAfterModelCallback:
     async def test_invalid_json_raises_orchestration_error(self) -> None:
         guardrail = AgentGuardrail()
         with pytest.raises(AgentOrchestrationError):
-            await guardrail.after_model_callback(
-                "not json at all", expected_schema=ModResult
-            )
+            await guardrail.after_model_callback("not json at all", expected_schema=ModResult)
 
     async def test_schema_mismatch_raises_orchestration_error(self) -> None:
         guardrail = AgentGuardrail()
         with pytest.raises(AgentOrchestrationError):
-            await guardrail.after_model_callback(
-                '{"wrong_field": 999}', expected_schema=ModResult
-            )
+            await guardrail.after_model_callback('{"wrong_field": 999}', expected_schema=ModResult)
 
     async def test_no_schema_any_output_passes(self) -> None:
         guardrail = AgentGuardrail()
@@ -258,12 +242,8 @@ class TestSecureLlmCall:
         provider.chat.side_effect = capture_chat
         guardrail = AgentGuardrail()
 
-        await secure_llm_call(
-            provider, self._messages("First clean message"), guardrail
-        )
-        await secure_llm_call(
-            provider, self._messages("Second clean message"), guardrail
-        )
+        await secure_llm_call(provider, self._messages("First clean message"), guardrail)
+        await secure_llm_call(provider, self._messages("Second clean message"), guardrail)
 
         assert len(call_args) == 2
         first_user_content = call_args[0][-1]["content"]

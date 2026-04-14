@@ -160,9 +160,7 @@ class TestLocalConfigApiKey:
 
 class TestSetupEndpoint:
     @pytest.mark.asyncio
-    async def test_get_setup_returns_config(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_get_setup_returns_config(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         from sky_claw.web.app import WebApp
         from unittest.mock import MagicMock
 
@@ -188,9 +186,7 @@ class TestSetupEndpoint:
         assert "api_key_b64" not in data
 
     @pytest.mark.asyncio
-    async def test_post_setup_saves_config(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_post_setup_saves_config(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         from sky_claw.web.app import WebApp
         from unittest.mock import MagicMock
 
@@ -220,9 +216,7 @@ class TestSetupEndpoint:
         assert loaded.get_api_key() == "sk-test-key"
 
     @pytest.mark.asyncio
-    async def test_index_redirects_on_first_run(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_index_redirects_on_first_run(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         from sky_claw.web.app import WebApp
         from unittest.mock import MagicMock
 
@@ -243,9 +237,7 @@ class TestSetupEndpoint:
         assert "/setup.html" in resp.headers.get("Location", "")
 
     @pytest.mark.asyncio
-    async def test_index_serves_chat_after_setup(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_index_serves_chat_after_setup(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         from sky_claw.web.app import WebApp
         from unittest.mock import MagicMock
 
@@ -328,9 +320,7 @@ class TestApiKeyInjection:
         assert key.startswith("sk-")
         assert not key.startswith("sk-ant")
 
-    def test_env_var_priority_anthropic(
-        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_var_priority_anthropic(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Env var takes priority over local_config for ANTHROPIC_API_KEY."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "env-anthropic-key")
         cfg = LocalConfig()
@@ -346,9 +336,7 @@ class TestApiKeyInjection:
         # Env var should remain unchanged.
         assert os.environ["ANTHROPIC_API_KEY"] == "env-anthropic-key"
 
-    def test_env_var_priority_deepseek(
-        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_var_priority_deepseek(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Env var takes priority over local_config for DEEPSEEK_API_KEY."""
         monkeypatch.setenv("DEEPSEEK_API_KEY", "env-deepseek-key")
         cfg = LocalConfig()
@@ -408,9 +396,7 @@ class TestSystemPrompt:
 
 class TestSetupWithNexusKey:
     @pytest.mark.asyncio
-    async def test_post_setup_saves_nexus_key(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_post_setup_saves_nexus_key(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         from sky_claw.web.app import WebApp
         from unittest.mock import MagicMock
 
@@ -438,9 +424,7 @@ class TestSetupWithNexusKey:
         assert loaded.first_run is False
 
     @pytest.mark.asyncio
-    async def test_post_setup_without_nexus_key(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_post_setup_without_nexus_key(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         from sky_claw.web.app import WebApp
         from unittest.mock import MagicMock
 

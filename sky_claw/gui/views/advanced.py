@@ -55,9 +55,7 @@ def build_advanced_panel(snapshot: EnvironmentSnapshot | None) -> None:
                 _info_row("Ruta", str(snapshot.mo2.path))
                 _info_row("Perfiles", ", ".join(snapshot.mo2.profiles))
             else:
-                ui.label("No detectado — usando carpeta Data directamente").classes(
-                    "sky-text-warning"
-                )
+                ui.label("No detectado — usando carpeta Data directamente").classes("sky-text-warning")
 
         ui.separator().classes("sky-separator-subtle")
 
@@ -78,9 +76,7 @@ def build_advanced_panel(snapshot: EnvironmentSnapshot | None) -> None:
                     with ui.row().classes("sky-advanced-tool-row"):
                         ui.icon("warning", color="warning", size="1rem")
                         ui.label(miss.name).classes("sky-advanced-tool-name")
-                        ui.link("Descargar →", miss.download_url, new_tab=True).classes(
-                            "sky-advanced-link"
-                        )
+                        ui.link("Descargar →", miss.download_url, new_tab=True).classes("sky-advanced-link")
 
         ui.separator().classes("sky-separator-subtle")
 

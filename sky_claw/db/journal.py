@@ -237,9 +237,7 @@ class OperationJournal:
         validator = PathTraversalValidator(allow_absolute=True)
         result = validator.validate(raw_path)
         if not result.is_valid:
-            raise ValueError(
-                f"Path traversal detected in journal path '{raw_path}': {result.error_message}"
-            )
+            raise ValueError(f"Path traversal detected in journal path '{raw_path}': {result.error_message}")
 
         self._db_path = pathlib.Path(raw_path)
         self._db: aiosqlite.Connection | None = None
@@ -256,9 +254,7 @@ class OperationJournal:
             await self._db.executescript(self._SCHEMA_SQL)
             await self._db.execute("PRAGMA journal_mode=WAL")
             await self._db.execute("PRAGMA foreign_keys=ON")
-            logger.info(
-                "Journal database opened", extra={"db_path": str(self._db_path)}
-            )
+            logger.info("Journal database opened", extra={"db_path": str(self._db_path)})
         except sqlite3.Error as e:
             raise JournalConnectionError(f"Failed to open journal database: {e}") from e
 
@@ -317,9 +313,7 @@ class OperationJournal:
                 transaction_id = cursor.lastrowid
 
                 if transaction_id is None:
-                    raise JournalTransactionError(
-                        "Failed to get transaction ID after insert"
-                    )
+                    raise JournalTransactionError("Failed to get transaction ID after insert")
 
                 self._current_transaction = transaction_id
 
@@ -336,9 +330,7 @@ class OperationJournal:
                 return transaction_id
 
             except sqlite3.Error as e:
-                raise JournalTransactionError(
-                    f"Failed to begin transaction: {e}"
-                ) from e
+                raise JournalTransactionError(f"Failed to begin transaction: {e}") from e
 
     async def commit_transaction(self, transaction_id: int) -> None:
         """
@@ -377,9 +369,7 @@ class OperationJournal:
                 if self._current_transaction == transaction_id:
                     self._current_transaction = None
 
-                logger.info(
-                    "Transaction committed", extra={"transaction_id": transaction_id}
-                )
+                logger.info("Transaction committed", extra={"transaction_id": transaction_id})
 
             except sqlite3.Error as e:
                 raise JournalTransactionError(
@@ -477,12 +467,8 @@ class OperationJournal:
                             description=row[2],
                             status=TransactionStatus(row[3]),
                             created_at=datetime.fromisoformat(row[4]),
-                            committed_at=datetime.fromisoformat(row[5])
-                            if row[5]
-                            else None,
-                            rolled_back_at=datetime.fromisoformat(row[6])
-                            if row[6]
-                            else None,
+                            committed_at=datetime.fromisoformat(row[5]) if row[5] else None,
+                            rolled_back_at=datetime.fromisoformat(row[6]) if row[6] else None,
                         )
                     )
 
@@ -524,9 +510,7 @@ class OperationJournal:
 
         tx_id = transaction_id or self._current_transaction
         if tx_id is None:
-            raise JournalTransactionError(
-                "No active transaction. Call begin_transaction first."
-            )
+            raise JournalTransactionError("No active transaction. Call begin_transaction first.")
 
         async with self._lock:
             try:
@@ -568,9 +552,7 @@ class OperationJournal:
                 return entry_id
 
             except sqlite3.Error as e:
-                raise JournalTransactionError(
-                    f"Failed to log operation: {e}", transaction_id=tx_id
-                ) from e
+                raise JournalTransactionError(f"Failed to log operation: {e}", transaction_id=tx_id) from e
 
     async def complete_operation(self, entry_id: int) -> None:
         """
@@ -582,9 +564,7 @@ class OperationJournal:
         await self._update_status(entry_id, OperationStatus.COMPLETED)
         logger.debug("Operation completed", extra={"entry_id": entry_id})
 
-    async def fail_operation(
-        self, entry_id: int, error: str = "", metadata: dict[str, Any] | None = None
-    ) -> None:
+    async def fail_operation(self, entry_id: int, error: str = "", metadata: dict[str, Any] | None = None) -> None:
         """
         Marcar una operación como fallida.
 
@@ -642,9 +622,7 @@ class OperationJournal:
 
             await db.commit()
 
-        logger.info(
-            "Operation rolled back", extra={"entry_id": entry_id, "details": details}
-        )
+        logger.info("Operation rolled back", extra={"entry_id": entry_id, "details": details})
 
     async def _update_status(self, entry_id: int, status: OperationStatus) -> None:
         """Actualizar el estado de una operación."""
@@ -661,9 +639,7 @@ class OperationJournal:
     # QUERY OPERATIONS
     # =========================================================================
 
-    async def get_operations_by_transaction(
-        self, transaction_id: int
-    ) -> list[JournalEntry]:
+    async def get_operations_by_transaction(self, transaction_id: int) -> list[JournalEntry]:
         """
         Obtener todas las operaciones de una transacción.
 
@@ -732,9 +708,7 @@ class OperationJournal:
 
                 return self._row_to_entry(row)
 
-    async def get_operations_by_agent(
-        self, agent_id: str, limit: int = 100
-    ) -> list[JournalEntry]:
+    async def get_operations_by_agent(self, agent_id: str, limit: int = 100) -> list[JournalEntry]:
         """
         Obtener todas las operaciones de un agente.
 
@@ -767,9 +741,7 @@ class OperationJournal:
 
                 return entries
 
-    async def get_operations_by_path(
-        self, target_path: str, limit: int = 50
-    ) -> list[JournalEntry]:
+    async def get_operations_by_path(self, target_path: str, limit: int = 50) -> list[JournalEntry]:
         """
         Obtener operaciones que afectaron un path específico.
 

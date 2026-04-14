@@ -44,9 +44,7 @@ class ChatController:
         self.app_state.add_chat_message("user", message)
         await self.process_user_message(message)
 
-    def prepare_messages_for_view(
-        self, messages: List[Dict[str, str]]
-    ) -> List[Dict[str, Any]]:
+    def prepare_messages_for_view(self, messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         """Convierte formato interno de AppState al formato esperado por la vista."""
         return [
             {

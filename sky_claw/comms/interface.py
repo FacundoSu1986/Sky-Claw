@@ -53,9 +53,7 @@ class InterfaceAgent:
     async def request_hitl(self, req: HitlApprovalRequest) -> str:
         # Si no hay conexión, aborta por seguridad en lugar de colgar el agente
         if not self.ws_connection:
-            logger.error(
-                "RCA: Intento de HITL sin conexión a Gateway. Abortando acción destructiva."
-            )
+            logger.error("RCA: Intento de HITL sin conexión a Gateway. Abortando acción destructiva.")
             return "denied"
 
         import uuid

@@ -37,8 +37,7 @@ def create_header(
         ui.element: El elemento contenedor del header
     """
     with ui.element("div").classes(
-        "h-16 bg-[#0a0a0a] border-b border-[#1f2937] flex items-center "
-        "justify-between px-6"
+        "h-16 bg-[#0a0a0a] border-b border-[#1f2937] flex items-center justify-between px-6"
     ) as header:
         with ui.column():
             ui.label(title).classes("text-white font-bold text-xl")
@@ -47,15 +46,13 @@ def create_header(
 
         with ui.element("div").classes("flex-1 max-w-md mx-8"):
             with ui.element("div").classes(
-                "relative bg-[#0f0f0f] border border-[#1f2937] rounded-xl "
-                "overflow-hidden sky-input-premium"
+                "relative bg-[#0f0f0f] border border-[#1f2937] rounded-xl overflow-hidden sky-input-premium"
             ):
                 search_input = ui.input(
                     placeholder=search_placeholder,
                     value="",
                 ).classes(
-                    "w-full px-4 py-3 bg-transparent border-none text-white "
-                    "placeholder-[#6b7280] focus:outline-none"
+                    "w-full px-4 py-3 bg-transparent border-none text-white placeholder-[#6b7280] focus:outline-none"
                 )
 
                 if on_search:
@@ -72,8 +69,7 @@ def create_header(
                     "text-white font-bold cursor-pointer sky-card-hover"
                 )
                 .style(
-                    f"background: linear-gradient(135deg, "
-                    f"{COLORS['accent_violet']}, {COLORS['accent_pink']});"
+                    f"background: linear-gradient(135deg, {COLORS['accent_violet']}, {COLORS['accent_pink']});"
                 ) as avatar
             ):
                 ui.label(user_initials)

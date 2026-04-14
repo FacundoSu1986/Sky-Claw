@@ -111,9 +111,7 @@ class SynthesisPipelineService:
 
         game_path = self._path_resolver.validate_env_path(game_path_str, "SKYRIM_PATH")
         mo2_path = self._path_resolver.validate_env_path(mo2_path_str, "MO2_PATH")
-        synthesis_exe = self._path_resolver.validate_env_path(
-            synthesis_exe_str, "SYNTHESIS_EXE"
-        )
+        synthesis_exe = self._path_resolver.validate_env_path(synthesis_exe_str, "SYNTHESIS_EXE")
 
         if not game_path or not mo2_path or not synthesis_exe:
             raise SynthesisExecutionError(
@@ -123,9 +121,7 @@ class SynthesisPipelineService:
             )
 
         if not synthesis_exe.exists():
-            raise SynthesisExecutionError(
-                f"Synthesis executable not found: {synthesis_exe}"
-            )
+            raise SynthesisExecutionError(f"Synthesis executable not found: {synthesis_exe}")
 
         output_path = mo2_path / "overwrite"
         if not output_path.exists():
@@ -157,18 +153,14 @@ class SynthesisPipelineService:
             return self._patcher_pipeline
 
         if self._pipeline_config_path.exists():
-            self._patcher_pipeline = PatcherPipeline.from_json(
-                self._pipeline_config_path
-            )
+            self._patcher_pipeline = PatcherPipeline.from_json(self._pipeline_config_path)
             logger.info(
                 "PatcherPipeline cargado desde %s: %d patchers",
                 self._pipeline_config_path,
                 len(self._patcher_pipeline),
             )
         else:
-            self._patcher_pipeline = PatcherPipeline(
-                pipeline_config_path=self._pipeline_config_path
-            )
+            self._patcher_pipeline = PatcherPipeline(pipeline_config_path=self._pipeline_config_path)
             logger.info("PatcherPipeline inicializado vacío")
 
         return self._patcher_pipeline

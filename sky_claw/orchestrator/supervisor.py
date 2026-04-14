@@ -89,9 +89,7 @@ class SupervisorAgent:
         )
 
         # Resolver ruta de modlist: MO2_PATH env var > auto-detección > fallback WSL2
-        self.modlist_path = str(
-            self._path_resolver.resolve_modlist_path(self.profile_name)
-        )
+        self.modlist_path = str(self._path_resolver.resolve_modlist_path(self.profile_name))
 
         # Sprint-1: Core event bus (instanciable, no singleton)
         self._event_bus = CoreEventBus()
@@ -115,8 +113,7 @@ class SupervisorAgent:
             journal=self.journal,
             path_resolver=self._path_resolver,
             event_bus=self._event_bus,
-            pipeline_config_path=pathlib.Path(BACKUP_STAGING_DIR)
-            / "synthesis_pipeline.json",
+            pipeline_config_path=pathlib.Path(BACKUP_STAGING_DIR) / "synthesis_pipeline.json",
         )
 
         # FASE 2: Inicializar orquestador de parches
@@ -139,9 +136,7 @@ class SupervisorAgent:
         self.snapshot_manager = FileSnapshotManager(
             snapshot_dir=backup_dir / "snapshots", max_size_mb=get_max_backup_size_mb()
         )
-        self.rollback_manager = RollbackManager(
-            journal=self.journal, snapshot_manager=self.snapshot_manager
-        )
+        self.rollback_manager = RollbackManager(journal=self.journal, snapshot_manager=self.snapshot_manager)
 
         # Sprint-2: DistributedLockManager para bloqueos concurrentes
         self._lock_manager = DistributedLockManager(
@@ -248,9 +243,7 @@ class SupervisorAgent:
         # Vincular con la señal de ejecución de la interfaz
         self.interface.register_command_callback(self.handle_execution_signal)
 
-        logger.info(
-            "SupervisorAgent inicializado: IPC y Watcher listos. Lanzando TaskGroup de fondo..."
-        )
+        logger.info("SupervisorAgent inicializado: IPC y Watcher listos. Lanzando TaskGroup de fondo...")
 
         # Sprint-1: Iniciar event bus y suscribir bridge de telemetría
         await self._event_bus.start()
@@ -273,9 +266,7 @@ class SupervisorAgent:
                 tg.create_task(self.interface.connect())
         except* Exception as eg:
             for exc in eg.exceptions:
-                logger.error(
-                    "TaskGroup del Supervisor — sub-error: %s", exc, exc_info=exc
-                )
+                logger.error("TaskGroup del Supervisor — sub-error: %s", exc, exc_info=exc)
         finally:
             # ARC-01: Detener demonios extraídos (LIFO)
             await self._watcher_daemon.stop()
@@ -303,8 +294,7 @@ class SupervisorAgent:
             event: Evento con payload :class:`ModlistChangedPayload`.
         """
         logger.info(
-            "Analizando topología del Load Order por cambio detectado — "
-            "profile=%s, mtime=%.1f->%.1f",
+            "Analizando topología del Load Order por cambio detectado — profile=%s, mtime=%.1f->%.1f",
             event.payload.get("profile_name", "unknown"),
             event.payload.get("previous_mtime", 0.0),
             event.payload.get("current_mtime", 0.0),
@@ -313,9 +303,7 @@ class SupervisorAgent:
 
     async def handle_execution_signal(self, payload: dict):
         """Reacciona a la señal de ignición forzada desde la GUI."""
-        logger.info(
-            "Ignición forzada desde GUI detectada. Despertando demonio proactivo."
-        )
+        logger.info("Ignición forzada desde GUI detectada. Despertando demonio proactivo.")
         await self._trigger_proactive_analysis()
 
     # FASE 1.5: Worker de pruning pasivo
@@ -451,17 +439,9 @@ class SupervisorAgent:
         # CRIT-003: Validar paths antes de usar
         game_path = self._path_resolver.validate_env_path(game_path_str, "SKYRIM_PATH")
         mo2_path = self._path_resolver.validate_env_path(mo2_path_str, "MO2_PATH")
-        mo2_mods_path = self._path_resolver.validate_env_path(
-            mo2_mods_path_str, "MO2_MODS_PATH"
-        )
-        dyndolod_exe = self._path_resolver.validate_env_path(
-            dyndolod_exe_str, "DYNDLOD_EXE"
-        )
-        texgen_exe = (
-            self._path_resolver.validate_env_path(texgen_exe_str, "TEXGEN_EXE")
-            if texgen_exe_str
-            else None
-        )
+        mo2_mods_path = self._path_resolver.validate_env_path(mo2_mods_path_str, "MO2_MODS_PATH")
+        dyndolod_exe = self._path_resolver.validate_env_path(dyndolod_exe_str, "DYNDLOD_EXE")
+        texgen_exe = self._path_resolver.validate_env_path(texgen_exe_str, "TEXGEN_EXE") if texgen_exe_str else None
 
         # Si la validación falla, no continuar
         if not game_path or not mo2_path or not mo2_mods_path or not dyndolod_exe:
@@ -472,9 +452,7 @@ class SupervisorAgent:
             )
 
         if not dyndolod_exe.exists():
-            raise DynDOLODExecutionError(
-                f"DynDOLOD executable not found: {dyndolod_exe}"
-            )
+            raise DynDOLODExecutionError(f"DynDOLOD executable not found: {dyndolod_exe}")
 
         config = DynDOLODConfig(
             game_path=game_path,
@@ -521,9 +499,7 @@ class SupervisorAgent:
 
         game_path = self._path_resolver.validate_env_path(game_path_str, "SKYRIM_PATH")
         mo2_path = self._path_resolver.validate_env_path(mo2_path_str, "MO2_PATH")
-        wrye_bash_path = self._path_resolver.validate_env_path(
-            wrye_bash_path_str, "WRYE_BASH_PATH"
-        )
+        wrye_bash_path = self._path_resolver.validate_env_path(wrye_bash_path_str, "WRYE_BASH_PATH")
 
         if not game_path or not mo2_path or not wrye_bash_path:
             raise WryeBashExecutionError(
@@ -532,9 +508,7 @@ class SupervisorAgent:
             )
 
         if not wrye_bash_path.exists():
-            raise WryeBashExecutionError(
-                f"Wrye Bash executable not found: {wrye_bash_path}"
-            )
+            raise WryeBashExecutionError(f"Wrye Bash executable not found: {wrye_bash_path}")
 
         config = WryeBashConfig(
             wrye_bash_path=wrye_bash_path,
@@ -576,9 +550,7 @@ class SupervisorAgent:
                 with open(modlist_path, encoding="utf-8") as fh:
                     for line in fh:
                         line = line.strip()
-                        if line.startswith("+") and line.lower().endswith(
-                            (".esp", ".esm")
-                        ):
+                        if line.startswith("+") and line.lower().endswith((".esp", ".esm")):
                             active_plugins.append(line[1:])
 
             analyzer = ConflictAnalyzer()
@@ -774,9 +746,7 @@ class SupervisorAgent:
             logger.info("Reporte JSON de conflictos generado exitosamente")
             return json_report
         except (OSError, RuntimeError) as e:
-            logger.error(
-                f"Error generando reporte JSON de conflictos: {e}", exc_info=True
-            )
+            logger.error(f"Error generando reporte JSON de conflictos: {e}", exc_info=True)
             raise
 
     # =========================================================================
@@ -848,35 +818,27 @@ class SupervisorAgent:
                             dyndolod_esp,
                             metadata={"source": "dyndolod_pipeline", "preset": preset},
                         )
-                        logger.debug(
-                            "Snapshot creado para DynDOLOD.esp: %s", snapshot_info
-                        )
+                        logger.debug("Snapshot creado para DynDOLOD.esp: %s", snapshot_info)
                     except (OSError, RuntimeError) as e:
-                        logger.warning(
-                            "No se pudo crear snapshot de DynDOLOD.esp: %s", e
-                        )
+                        logger.warning("No se pudo crear snapshot de DynDOLOD.esp: %s", e)
                         # Continuar sin snapshot - no es fatal
 
                 # Snapshot del directorio TexGen Output si existe
                 if texgen_output_path.exists():
                     try:
-                        texgen_snapshot_info = (
-                            await self.snapshot_manager.create_snapshot(
-                                texgen_output_path,
-                                metadata={
-                                    "source": "dyndolod_pipeline_texgen",
-                                    "preset": preset,
-                                },
-                            )
+                        texgen_snapshot_info = await self.snapshot_manager.create_snapshot(
+                            texgen_output_path,
+                            metadata={
+                                "source": "dyndolod_pipeline_texgen",
+                                "preset": preset,
+                            },
                         )
                         logger.debug(
                             "Snapshot creado para TexGen Output: %s",
                             texgen_snapshot_info,
                         )
                     except (OSError, RuntimeError) as e:
-                        logger.warning(
-                            "No se pudo crear snapshot de TexGen Output: %s", e
-                        )
+                        logger.warning("No se pudo crear snapshot de TexGen Output: %s", e)
                         # Continuar sin snapshot - no es fatal
 
             # 3. Registrar inicio de operación en journal
@@ -898,11 +860,7 @@ class SupervisorAgent:
             # 4. Registrar mods en la base de datos si fueron exitosos
             if result.success:
                 # Registrar TexGen Output
-                if (
-                    result.texgen_mod_path
-                    and result.texgen_result
-                    and result.texgen_result.success
-                ):
+                if result.texgen_mod_path and result.texgen_result and result.texgen_result.success:
                     try:
                         await self.db.add_mod(
                             name="TexGen Output",
@@ -911,16 +869,10 @@ class SupervisorAgent:
                         )
                         logger.info("TexGen Output registered in database")
                     except (OSError, sqlite3.Error) as e:
-                        logger.warning(
-                            "Could not register TexGen Output in database: %s", e
-                        )
+                        logger.warning("Could not register TexGen Output in database: %s", e)
 
                 # Registrar DynDOLOD Output
-                if (
-                    result.dyndolod_mod_path
-                    and result.dyndolod_result
-                    and result.dyndolod_result.success
-                ):
+                if result.dyndolod_mod_path and result.dyndolod_result and result.dyndolod_result.success:
                     try:
                         await self.db.add_mod(
                             name="DynDOLOD Output",
@@ -929,9 +881,7 @@ class SupervisorAgent:
                         )
                         logger.info("DynDOLOD Output registered in database")
                     except (OSError, sqlite3.Error) as e:
-                        logger.warning(
-                            "Could not register DynDOLOD Output in database: %s", e
-                        )
+                        logger.warning("Could not register DynDOLOD Output in database: %s", e)
 
                 # Registrar éxito en journal
                 await self._log_dyndolod_result(result, preset, success=True)
@@ -951,35 +901,23 @@ class SupervisorAgent:
         except DynDOLODTimeoutError as e:
             logger.error("DynDOLOD pipeline timeout: %s", e, exc_info=True)
             if snapshot_info:
-                await self._rollback_dyndolod_on_failure(
-                    snapshot_info, "dyndolod_timeout"
-                )
+                await self._rollback_dyndolod_on_failure(snapshot_info, "dyndolod_timeout")
             if texgen_snapshot_info:
-                await self._rollback_dyndolod_on_failure(
-                    texgen_snapshot_info, "texgen_timeout"
-                )
+                await self._rollback_dyndolod_on_failure(texgen_snapshot_info, "texgen_timeout")
             raise
         except DynDOLODExecutionError as e:
             logger.error("DynDOLOD execution error: %s", e, exc_info=True)
             if snapshot_info:
-                await self._rollback_dyndolod_on_failure(
-                    snapshot_info, "dyndolod_execution_error"
-                )
+                await self._rollback_dyndolod_on_failure(snapshot_info, "dyndolod_execution_error")
             if texgen_snapshot_info:
-                await self._rollback_dyndolod_on_failure(
-                    texgen_snapshot_info, "texgen_execution_error"
-                )
+                await self._rollback_dyndolod_on_failure(texgen_snapshot_info, "texgen_execution_error")
             raise
         except (OSError, sqlite3.Error, RuntimeError) as e:
             logger.error("Unexpected error in DynDOLOD pipeline: %s", e, exc_info=True)
             if snapshot_info:
-                await self._rollback_dyndolod_on_failure(
-                    snapshot_info, "dyndolod_unexpected_error"
-                )
+                await self._rollback_dyndolod_on_failure(snapshot_info, "dyndolod_unexpected_error")
             if texgen_snapshot_info:
-                await self._rollback_dyndolod_on_failure(
-                    texgen_snapshot_info, "texgen_unexpected_error"
-                )
+                await self._rollback_dyndolod_on_failure(texgen_snapshot_info, "texgen_unexpected_error")
             raise
 
     async def _log_dyndolod_start(self, preset: str, run_texgen: bool) -> None:
@@ -1019,41 +957,21 @@ class SupervisorAgent:
         try:
             await self.journal.log_operation(
                 agent_id="dyndolod_runner",
-                operation_type=(
-                    "dyndolod_pipeline_complete"
-                    if success
-                    else "dyndolod_pipeline_failed"
-                ),
-                file_path=(
-                    str(result.dyndolod_mod_path) if result.dyndolod_mod_path else ""
-                ),
+                operation_type=("dyndolod_pipeline_complete" if success else "dyndolod_pipeline_failed"),
+                file_path=(str(result.dyndolod_mod_path) if result.dyndolod_mod_path else ""),
                 details={
                     "success": success,
                     "preset": preset,
-                    "texgen_success": (
-                        result.texgen_result.success if result.texgen_result else False
-                    ),
-                    "dyndolod_success": (
-                        result.dyndolod_result.success
-                        if result.dyndolod_result
-                        else False
-                    ),
-                    "texgen_mod_path": (
-                        str(result.texgen_mod_path) if result.texgen_mod_path else None
-                    ),
-                    "dyndolod_mod_path": (
-                        str(result.dyndolod_mod_path)
-                        if result.dyndolod_mod_path
-                        else None
-                    ),
+                    "texgen_success": (result.texgen_result.success if result.texgen_result else False),
+                    "dyndolod_success": (result.dyndolod_result.success if result.dyndolod_result else False),
+                    "texgen_mod_path": (str(result.texgen_mod_path) if result.texgen_mod_path else None),
+                    "dyndolod_mod_path": (str(result.dyndolod_mod_path) if result.dyndolod_mod_path else None),
                     "errors": result.errors,
                 },
             )
             logger.debug("Resultado de DynDOLOD registrado en journal")
         except (OSError, sqlite3.Error) as e:
-            logger.warning(
-                "No se pudo registrar resultado de DynDOLOD en journal: %s", e
-            )
+            logger.warning("No se pudo registrar resultado de DynDOLOD en journal: %s", e)
 
     async def _rollback_dyndolod_on_failure(
         self,
@@ -1079,8 +997,7 @@ class SupervisorAgent:
         except (OSError, RuntimeError) as rollback_error:
             # Esto es CRÍTICO - los archivos pueden estar corruptos
             logger.critical(
-                "ROLLBACK de DynDOLOD FALLÓ (snapshot: %s): %s. "
-                "Los archivos pueden estar en estado inconsistente!",
+                "ROLLBACK de DynDOLOD FALLÓ (snapshot: %s): %s. Los archivos pueden estar en estado inconsistente!",
                 snapshot_info.snapshot_path,
                 rollback_error,
                 exc_info=True,
@@ -1163,11 +1080,7 @@ class SupervisorAgent:
                 # Crear PatchPlan desde el resultado para ejecutar
                 plan = PatchPlan(
                     strategy_type=strategy_type,
-                    target_plugins=(
-                        [p.plugin_a for p in report.plugin_pairs[:1]]
-                        if report.plugin_pairs
-                        else []
-                    ),
+                    target_plugins=([p.plugin_a for p in report.plugin_pairs[:1]] if report.plugin_pairs else []),
                     output_plugin=str(result.output_path),
                     form_ids=[],
                     estimated_records=result.records_patched,
@@ -1175,9 +1088,7 @@ class SupervisorAgent:
                 )
 
                 try:
-                    script_result: ScriptExecutionResult = (
-                        await self._xedit_runner.execute_patch(plan)
-                    )
+                    script_result: ScriptExecutionResult = await self._xedit_runner.execute_patch(plan)
 
                     # Actualizar resultado con datos de ejecución
                     result = PatchResult(
@@ -1187,16 +1098,10 @@ class SupervisorAgent:
                         conflicts_resolved=len(report.plugin_pairs),
                         xedit_exit_code=script_result.exit_code,
                         warnings=script_result.warnings,
-                        error=(
-                            None
-                            if script_result.exit_code == 0
-                            else script_result.stderr
-                        ),
+                        error=(None if script_result.exit_code == 0 else script_result.stderr),
                     )
                 except (OSError, RuntimeError) as script_error:
-                    logger.error(
-                        "Error ejecutando script xEdit: %s", script_error, exc_info=True
-                    )
+                    logger.error("Error ejecutando script xEdit: %s", script_error, exc_info=True)
                     # PASO C (fallo): Rollback automático
                     await self._rollback_on_failure(snapshot_path, target_plugin)
                     raise PatchingError(
@@ -1219,9 +1124,7 @@ class SupervisorAgent:
                 result.xedit_exit_code,
             )
             await self._rollback_on_failure(snapshot_path, target_plugin)
-            raise PatchingError(
-                f"xEdit falló con código {result.xedit_exit_code}: {result.error}"
-            )
+            raise PatchingError(f"xEdit falló con código {result.xedit_exit_code}: {result.error}")
 
         # Éxito: Loggear en journal
         await self._log_patch_success(report, target_plugin, result)
@@ -1262,9 +1165,7 @@ class SupervisorAgent:
                 exc_info=True,
             )
             # Re-lanzar para notificar al caller
-            raise PatchingError(
-                f"Rollback falló críticamente: {rollback_error}"
-            ) from rollback_error
+            raise PatchingError(f"Rollback falló críticamente: {rollback_error}") from rollback_error
 
     async def _log_patch_success(
         self,
@@ -1289,9 +1190,7 @@ class SupervisorAgent:
                     "critical_conflicts": report.critical_conflicts,
                     "records_patched": result.records_patched,
                     "conflicts_resolved": result.conflicts_resolved,
-                    "output_path": (
-                        str(result.output_path) if result.output_path else None
-                    ),
+                    "output_path": (str(result.output_path) if result.output_path else None),
                     "warnings": result.warnings,
                 },
             )
@@ -1302,9 +1201,7 @@ class SupervisorAgent:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
     supervisor = SupervisorAgent()
     # asyncio.run(supervisor.start()) # En producción

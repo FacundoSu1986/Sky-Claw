@@ -85,9 +85,7 @@ async def adb(tmp_path: pathlib.Path) -> AsyncModRegistry:
 
 class TestSyncEngineRun:
     @pytest.mark.asyncio
-    async def test_full_sync_processes_mods(
-        self, tmp_path: pathlib.Path, adb: AsyncModRegistry
-    ) -> None:
+    async def test_full_sync_processes_mods(self, tmp_path: pathlib.Path, adb: AsyncModRegistry) -> None:
         mo2 = _make_mo2(
             tmp_path,
             "+ModA-1001-v1\n+ModB-1002-v2\n-ModC-1003-v3\n",
@@ -95,9 +93,7 @@ class TestSyncEngineRun:
         gw = NetworkGateway()
         masterlist = MasterlistClient(gateway=gw, api_key="fake")
 
-        async def fake_fetch(
-            mod_id: int, session: aiohttp.ClientSession
-        ) -> dict[str, Any]:
+        async def fake_fetch(mod_id: int, session: aiohttp.ClientSession) -> dict[str, Any]:
             return _fake_mod_info(mod_id, f"Mod-{mod_id}")
 
         engine = SyncEngine(
@@ -116,16 +112,12 @@ class TestSyncEngineRun:
         assert result.failed == 0
 
     @pytest.mark.asyncio
-    async def test_network_failure_skips_mod(
-        self, tmp_path: pathlib.Path, adb: AsyncModRegistry
-    ) -> None:
+    async def test_network_failure_skips_mod(self, tmp_path: pathlib.Path, adb: AsyncModRegistry) -> None:
         mo2 = _make_mo2(tmp_path, "+FailMod-2001-v1\n+GoodMod-2002-v1\n")
         gw = NetworkGateway()
         masterlist = MasterlistClient(gateway=gw, api_key="fake")
 
-        async def flaky_fetch(
-            mod_id: int, session: aiohttp.ClientSession
-        ) -> dict[str, Any]:
+        async def flaky_fetch(mod_id: int, session: aiohttp.ClientSession) -> dict[str, Any]:
             if mod_id == 2001:
                 raise MasterlistFetchError("API 503")
             return _fake_mod_info(mod_id)
@@ -147,9 +139,7 @@ class TestSyncEngineRun:
         assert len(result.errors) == 1
 
     @pytest.mark.asyncio
-    async def test_no_extractable_id_skips(
-        self, tmp_path: pathlib.Path, adb: AsyncModRegistry
-    ) -> None:
+    async def test_no_extractable_id_skips(self, tmp_path: pathlib.Path, adb: AsyncModRegistry) -> None:
         mo2 = _make_mo2(tmp_path, "+NoIdMod\n")
         gw = NetworkGateway()
         masterlist = MasterlistClient(gateway=gw, api_key="fake")
@@ -170,9 +160,7 @@ class TestSyncEngineRun:
         assert result.processed == 0
 
     @pytest.mark.asyncio
-    async def test_empty_modlist(
-        self, tmp_path: pathlib.Path, adb: AsyncModRegistry
-    ) -> None:
+    async def test_empty_modlist(self, tmp_path: pathlib.Path, adb: AsyncModRegistry) -> None:
         mo2 = _make_mo2(tmp_path, "")
         gw = NetworkGateway()
         masterlist = MasterlistClient(gateway=gw, api_key="fake")

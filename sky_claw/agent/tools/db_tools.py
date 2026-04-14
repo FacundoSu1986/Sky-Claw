@@ -43,9 +43,7 @@ async def install_mod(registry: AsyncModRegistry, nexus_id: int, version: str) -
         name=f"nexus-{params.nexus_id}",
         version=params.version,
     )
-    await registry.log_tasks_batch(
-        [(mod_id, "install_mod", "registered", f"v{params.version}")]
-    )
+    await registry.log_tasks_batch([(mod_id, "install_mod", "registered", f"v{params.version}")])
     return json.dumps(
         {
             "mod_id": mod_id,

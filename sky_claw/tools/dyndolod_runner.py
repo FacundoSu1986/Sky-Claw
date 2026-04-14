@@ -235,9 +235,7 @@ class DynDOLODRunner:
             config.timeout_seconds,
         )
 
-    async def run_texgen(
-        self, extra_args: list[str] | None = None
-    ) -> ToolExecutionResult:
+    async def run_texgen(self, extra_args: list[str] | None = None) -> ToolExecutionResult:
         """
         Ejecuta TexGen en modo headless.
 
@@ -429,9 +427,7 @@ class DynDOLODRunner:
             DynDOLODTimeoutError: Si se excede el timeout.
             DynDOLODExecutionError: Si el proceso falla críticamente.
         """
-        effective_timeout = (
-            timeout if timeout is not None else self._config.timeout_seconds
-        )
+        effective_timeout = timeout if timeout is not None else self._config.timeout_seconds
         heartbeat_interval = self._config.heartbeat_interval
 
         # Windows: CREATE_NO_WINDOW to avoid console popups.
@@ -508,9 +504,7 @@ class DynDOLODRunner:
             drain_out.cancel()
             drain_err.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(
-                    heartbeat, drain_out, drain_err, return_exceptions=True
-                )
+                await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
             raise DynDOLODTimeoutError(effective_timeout, tool_name)
         except Exception as e:
             proc.kill()
@@ -522,9 +516,7 @@ class DynDOLODRunner:
             drain_out.cancel()
             drain_err.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(
-                    heartbeat, drain_out, drain_err, return_exceptions=True
-                )
+                await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
             raise DynDOLODExecutionError(
                 f"Unexpected error during {tool_name} execution: {e}",
                 return_code=proc.returncode,
@@ -744,9 +736,7 @@ class DynDOLODRunner:
             dyndolod_result is not None
             and dyndolod_result.success
             and dyndolod_mod_path is not None
-            and (
-                not run_texgen or (texgen_result is not None and texgen_result.success)
-            )
+            and (not run_texgen or (texgen_result is not None and texgen_result.success))
         )
 
         result = DynDOLODPipelineResult(

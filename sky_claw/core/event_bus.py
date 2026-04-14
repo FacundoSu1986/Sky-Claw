@@ -59,14 +59,10 @@ class CoreEventBus:
     async def start(self) -> None:
         """Inicia el loop de dispatch como tarea de fondo."""
         if self._dispatch_task is not None:
-            logger.warning(
-                "CoreEventBus ya está corriendo, ignorando start() duplicado"
-            )
+            logger.warning("CoreEventBus ya está corriendo, ignorando start() duplicado")
             return
         self._running = True
-        self._dispatch_task = asyncio.create_task(
-            self._dispatch_loop(), name="core-event-bus-dispatch"
-        )
+        self._dispatch_task = asyncio.create_task(self._dispatch_loop(), name="core-event-bus-dispatch")
         logger.info("CoreEventBus iniciado (queue_max=%d)", self._queue.maxsize)
 
     async def stop(self) -> None:

@@ -120,9 +120,7 @@ class AsyncToolRegistry:
 
     async def _download_mod(self, nexus_id: int, file_id: int | None = None) -> str:
         """Download a mod with HITL approval (P0-2: re-fetches fresh URL on execute)."""
-        return await download_mod(
-            self._downloader, self._hitl, self._sync_engine, nexus_id, file_id
-        )
+        return await download_mod(self._downloader, self._hitl, self._sync_engine, nexus_id, file_id)
 
     async def _run_loot_sort(self, profile: str) -> str:
         """Run LOOT sort, auto-initializing LOOTRunner from loot_exe if needed."""
@@ -226,9 +224,7 @@ class AsyncToolRegistry:
                 "properties": {"profile": {"type": "string"}},
                 "required": ["profile"],
             },
-            fn=lambda profile: run_loot_sort(
-                self._mo2, self._loot_runner, self._loot_exe, profile
-            ),
+            fn=lambda profile: run_loot_sort(self._mo2, self._loot_runner, self._loot_exe, profile),
         )
         self._tools["run_xedit_script"] = ToolDescriptor(
             name="run_xedit_script",
@@ -241,9 +237,7 @@ class AsyncToolRegistry:
                 },
                 "required": ["script_name", "plugins"],
             },
-            fn=lambda script_name, plugins: run_xedit_script(
-                self._xedit_runner, script_name, plugins
-            ),
+            fn=lambda script_name, plugins: run_xedit_script(self._xedit_runner, script_name, plugins),
         )
         self._tools["preview_mod_installer"] = ToolDescriptor(
             name="preview_mod_installer",
@@ -253,9 +247,7 @@ class AsyncToolRegistry:
                 "properties": {"archive_path": {"type": "string"}},
                 "required": ["archive_path"],
             },
-            fn=lambda archive_path: preview_mod_installer(
-                self._fomod_installer, archive_path
-            ),
+            fn=lambda archive_path: preview_mod_installer(self._fomod_installer, archive_path),
         )
         self._tools["install_mod_from_archive"] = ToolDescriptor(
             name="install_mod_from_archive",
@@ -283,9 +275,7 @@ class AsyncToolRegistry:
                 },
                 "required": ["archive_path"],
             },
-            fn=lambda archive_path, selections=None: resolve_fomod(
-                self._fomod_installer, archive_path, selections
-            ),
+            fn=lambda archive_path, selections=None: resolve_fomod(self._fomod_installer, archive_path, selections),
         )
         self._tools["analyze_esp_conflicts"] = ToolDescriptor(
             name="analyze_esp_conflicts",
@@ -298,9 +288,7 @@ class AsyncToolRegistry:
                 },
                 "required": ["profile"],
             },
-            fn=lambda profile, plugins=None: analyze_esp_conflicts(
-                self._mo2, self._xedit_runner, profile, plugins
-            ),
+            fn=lambda profile, plugins=None: analyze_esp_conflicts(self._mo2, self._xedit_runner, profile, plugins),
         )
         self._tools["run_pandora"] = ToolDescriptor(
             name="run_pandora",
@@ -361,9 +349,7 @@ class AsyncToolRegistry:
                 },
                 "required": ["mod_name"],
             },
-            fn=lambda mod_name, profile="Default": uninstall_mod(
-                self._mo2, mod_name, profile
-            ),
+            fn=lambda mod_name, profile="Default": uninstall_mod(self._mo2, mod_name, profile),
         )
         self._tools["toggle_mod"] = ToolDescriptor(
             name="toggle_mod",
@@ -377,9 +363,7 @@ class AsyncToolRegistry:
                 },
                 "required": ["mod_name", "enable"],
             },
-            fn=lambda mod_name, enable, profile="Default": toggle_mod(
-                self._mo2, mod_name, enable, profile
-            ),
+            fn=lambda mod_name, enable, profile="Default": toggle_mod(self._mo2, mod_name, enable, profile),
         )
         self._tools["launch_game"] = ToolDescriptor(
             name="launch_game",

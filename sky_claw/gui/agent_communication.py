@@ -67,10 +67,7 @@ class AgentCommunicationClient:
     def start(self) -> None:
         """Schedule the connection loop as a background task."""
         if websockets is None:
-            logger.error(
-                "websockets library not installed — "
-                "agent communication disabled. Run: pip install websockets"
-            )
+            logger.error("websockets library not installed — agent communication disabled. Run: pip install websockets")
             return
         self._running = True
         self._task = asyncio.create_task(self._connection_loop())
@@ -158,10 +155,7 @@ class AgentCommunicationClient:
             ) as e:
                 if not self._running:
                     break
-                logger.warning(
-                    f"⚠️ Daemon connection lost ({type(e).__name__}). "
-                    f"Reconnecting in {backoff:.1f}s..."
-                )
+                logger.warning(f"⚠️ Daemon connection lost ({type(e).__name__}). Reconnecting in {backoff:.1f}s...")
             except Exception as e:
                 logger.error(f"❌ Unexpected error in agent comm: {e}")
             finally:

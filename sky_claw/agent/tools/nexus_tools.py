@@ -72,9 +72,7 @@ async def download_mod(
                 connector=GatewayTCPConnector(gateway, limit=10),
             )
         else:
-            logger.warning(
-                "download_mod called without gateway — creating unprotected session"
-            )
+            logger.warning("download_mod called without gateway — creating unprotected session")
             session = aiohttp.ClientSession()
         own_session = True
 
@@ -83,9 +81,7 @@ async def download_mod(
         # Step 1 - Consultar metadata del archivo antes asking the operator.
         # ------------------------------------------------------------------
         try:
-            file_info = await downloader.get_file_info(
-                params.nexus_id, params.file_id, session
-            )
+            file_info = await downloader.get_file_info(params.nexus_id, params.file_id, session)
         except Exception as exc:
             logger.error(
                 "Failed to fetch metadata for mod=%d file=%d: %s",
@@ -156,9 +152,7 @@ async def download_mod(
             else:
                 dl_session = aiohttp.ClientSession()
             async with dl_session:
-                fresh_info = await _downloader.get_file_info(
-                    _nexus_id, _file_id, dl_session
-                )
+                fresh_info = await _downloader.get_file_info(_nexus_id, _file_id, dl_session)
                 await _downloader.download(fresh_info, dl_session)
 
         sync_engine.enqueue_download(

@@ -121,9 +121,7 @@ class AsyncModRegistry:
         validator = PathTraversalValidator(allow_absolute=True)
         result = validator.validate(raw_path)
         if not result.is_valid:
-            raise ValueError(
-                f"Path traversal detected in database path '{raw_path}': {result.error_message}"
-            )
+            raise ValueError(f"Path traversal detected in database path '{raw_path}': {result.error_message}")
 
         self._db_path = raw_path
         self._conn: aiosqlite.Connection | None = None
@@ -150,9 +148,7 @@ class AsyncModRegistry:
             async with self._conn.execute("PRAGMA quick_check") as cur:
                 row = await cur.fetchone()
                 if row is None or str(row[0]).lower() != "ok":
-                    raise RuntimeError(
-                        f"SQLite integrity check failed for {self._db_path}"
-                    )
+                    raise RuntimeError(f"SQLite integrity check failed for {self._db_path}")
         except RuntimeError:
             await self._conn.close()
             self._conn = None
@@ -161,9 +157,7 @@ class AsyncModRegistry:
 
             db_exists = db_file.exists()
             if db_exists:
-                backup_path = db_file.with_name(
-                    f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}"
-                )
+                backup_path = db_file.with_name(f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}")
 
                 @retry(
                     retry=retry_if_exception_type(OSError),
@@ -176,9 +170,7 @@ class AsyncModRegistry:
 
                 try:
                     await _do_backup()
-                    logger.warning(
-                        "Corrupt database moved to %s. Rebuilding...", backup_path
-                    )
+                    logger.warning("Corrupt database moved to %s. Rebuilding...", backup_path)
                 except OSError as e:
                     logger.error("Failed to backup corrupt database: %s", e)
                     raise
@@ -228,9 +220,7 @@ class AsyncModRegistry:
             await self._conn.commit()
             return int(row[0])
 
-    async def set_vfs_status(
-        self, nexus_id: int, *, installed: bool, enabled: bool
-    ) -> None:
+    async def set_vfs_status(self, nexus_id: int, *, installed: bool, enabled: bool) -> None:
         """Update the VFS installation and activation status for a mod."""
         if self._conn is None:
             raise RuntimeError("Database is not open")
@@ -244,9 +234,7 @@ class AsyncModRegistry:
         """Return the mod row for *nexus_id*, or ``None``."""
         if self._conn is None:
             raise RuntimeError("Database is not open")
-        async with self._conn.execute(
-            "SELECT * FROM mods WHERE nexus_id = ?", (nexus_id,)
-        ) as cur:
+        async with self._conn.execute("SELECT * FROM mods WHERE nexus_id = ?", (nexus_id,)) as cur:
             return await cur.fetchone()
 
     async def is_empty(self) -> bool:
@@ -274,8 +262,7 @@ class AsyncModRegistry:
             raise RuntimeError("Database is not open")
         escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         async with self._conn.execute(
-            "SELECT mod_id, nexus_id, name, version, installed, enabled_in_vfs "
-            "FROM mods WHERE name LIKE ? ESCAPE '\\'",
+            "SELECT mod_id, nexus_id, name, version, installed, enabled_in_vfs FROM mods WHERE name LIKE ? ESCAPE '\\'",
             (f"%{escaped}%",),
         ) as cur:
             rows = await cur.fetchall()

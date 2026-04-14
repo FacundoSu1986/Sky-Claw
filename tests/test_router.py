@@ -100,9 +100,7 @@ class TestHistorySchema:
     @pytest.mark.asyncio
     async def test_schema_created(self, router: LLMRouter) -> None:
         assert router._conn is not None
-        async with router._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ) as cur:
+        async with router._conn.execute("SELECT name FROM sqlite_master WHERE type='table'") as cur:
             tables = {row[0] for row in await cur.fetchall()}
         assert "chat_history" in tables
 
@@ -259,9 +257,7 @@ class TestChatEndTurn:
         router._gateway.request = AsyncMock(return_value=mock_cm)
         mock_session = MagicMock(spec=aiohttp.ClientSession)
 
-        result = await router.chat(
-            "Run nonexistent tool", mock_session, chat_id="test-err"
-        )
+        result = await router.chat("Run nonexistent tool", mock_session, chat_id="test-err")
         assert result == "Tool failed."
         # The error should have been caught and sent as tool_result
         assert call_count == 2

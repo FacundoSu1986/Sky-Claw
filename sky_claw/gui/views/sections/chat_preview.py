@@ -73,10 +73,7 @@ def create_chat_preview(
         with (
             ui.element("div")
             .classes("p-4 border-b border-[#1f2937]")
-            .style(
-                f"background: linear-gradient(135deg, "
-                f"{COLORS['accent_violet']}20, {COLORS['accent_cyan']}20);"
-            )
+            .style(f"background: linear-gradient(135deg, {COLORS['accent_violet']}20, {COLORS['accent_cyan']}20);")
         ):
             with ui.row().classes("items-center gap-3"):
                 # Icono del agente
@@ -103,9 +100,7 @@ def create_chat_preview(
         # ═══════════════════════════════════════════════════════════════
         # ÁREA DE MENSAJES
         # ═══════════════════════════════════════════════════════════════
-        messages_container = ui.element("div").classes(
-            "p-4 h-48 overflow-y-auto sky-scrollbar"
-        )
+        messages_container = ui.element("div").classes("p-4 h-48 overflow-y-auto sky-scrollbar")
 
         with messages_container:
             # Mostrar mensaje de bienvenida si no hay mensajes
@@ -118,8 +113,7 @@ def create_chat_preview(
             elif not messages:
                 # Mensaje de bienvenida por defecto
                 create_chat_message(
-                    "Hello, Dragonborn! I can help you manage your Skyrim mods. "
-                    "What would you like to do?",
+                    "Hello, Dragonborn! I can help you manage your Skyrim mods. What would you like to do?",
                     is_user=False,
                     timestamp="Now",
                 )

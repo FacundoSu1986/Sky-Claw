@@ -87,20 +87,12 @@ class ToTConfig(BaseModel):
     model_config = {"extra": "forbid", "strict": True}
 
     # Parámetros de búsqueda
-    max_depth: int = Field(
-        default=5, ge=1, le=10, description="Profundidad máxima del árbol"
-    )
-    max_thoughts_per_step: int = Field(
-        default=3, ge=1, le=5, description="Pensamientos a generar por paso"
-    )
-    beam_width: int = Field(
-        default=3, ge=1, le=5, description="Ancho del beam para Beam Search"
-    )
+    max_depth: int = Field(default=5, ge=1, le=10, description="Profundidad máxima del árbol")
+    max_thoughts_per_step: int = Field(default=3, ge=1, le=5, description="Pensamientos a generar por paso")
+    beam_width: int = Field(default=3, ge=1, le=5, description="Ancho del beam para Beam Search")
 
     # Parámetros de evaluación y poda dinámica
-    pruning_method: PruningMethod = Field(
-        default=PruningMethod.RELATIVE_TOP_K, description="Método de poda dinámica"
-    )
+    pruning_method: PruningMethod = Field(default=PruningMethod.RELATIVE_TOP_K, description="Método de poda dinámica")
     pruning_threshold: float = Field(
         default=0.3,
         ge=0.0,
@@ -119,23 +111,15 @@ class ToTConfig(BaseModel):
         le=1.0,
         description="Percentil mínimo para mantener (solo si pruning_method=RELATIVE_PERCENTILE)",
     )
-    solution_threshold: float = Field(
-        default=0.9, ge=0.0, le=1.0, description="Umbral para considerar solución"
-    )
+    solution_threshold: float = Field(default=0.9, ge=0.0, le=1.0, description="Umbral para considerar solución")
 
     # Parámetros de backtracking
     enable_backtracking: bool = Field(default=True, description="Habilitar retroceso")
-    max_backtracks: int = Field(
-        default=3, ge=0, le=10, description="Máximo de retrocesos permitidos"
-    )
+    max_backtracks: int = Field(default=3, ge=0, le=10, description="Máximo de retrocesos permitidos")
 
     # Parámetros de timeout
-    timeout_seconds: int = Field(
-        default=60, ge=10, le=300, description="Timeout total en segundos"
-    )
-    thought_timeout_seconds: int = Field(
-        default=5, ge=1, le=30, description="Timeout por pensamiento"
-    )
+    timeout_seconds: int = Field(default=60, ge=10, le=300, description="Timeout total en segundos")
+    thought_timeout_seconds: int = Field(default=5, ge=1, le=30, description="Timeout por pensamiento")
 
     # Estrategia de búsqueda
     search_strategy: SearchStrategyType = Field(
@@ -143,28 +127,16 @@ class ToTConfig(BaseModel):
     )
 
     # Parámetros MCTS
-    mcts_exploration_constant: float = Field(
-        default=1.414, ge=0.0, le=5.0, description="Constante C para UCB1 en MCTS"
-    )
-    mcts_max_rollout_depth: int = Field(
-        default=3, ge=1, le=10, description="Profundidad máxima de rollout en MCTS"
-    )
-    mcts_iterations: int = Field(
-        default=100, ge=10, le=1000, description="Número de iteraciones MCTS"
-    )
+    mcts_exploration_constant: float = Field(default=1.414, ge=0.0, le=5.0, description="Constante C para UCB1 en MCTS")
+    mcts_max_rollout_depth: int = Field(default=3, ge=1, le=10, description="Profundidad máxima de rollout en MCTS")
+    mcts_iterations: int = Field(default=100, ge=10, le=1000, description="Número de iteraciones MCTS")
 
     # Detección de ciclos
-    enable_cycle_detection: bool = Field(
-        default=True, description="Habilitar detección de estados repetidos"
-    )
+    enable_cycle_detection: bool = Field(default=True, description="Habilitar detección de estados repetidos")
 
     # Paralelismo
-    enable_parallel_expansion: bool = Field(
-        default=True, description="Habilitar expansión paralela de nodos"
-    )
-    max_parallel_expansions: int = Field(
-        default=5, ge=1, le=10, description="Máximo de expansiones paralelas"
-    )
+    enable_parallel_expansion: bool = Field(default=True, description="Habilitar expansión paralela de nodos")
+    max_parallel_expansions: int = Field(default=5, ge=1, le=10, description="Máximo de expansiones paralelas")
 
 
 # ============================================================================
@@ -333,9 +305,7 @@ class SolutionChecker(Protocol[T, S]):
 class SearchStrategyProtocol(Protocol[T, S]):
     """Protocolo para estrategias de búsqueda."""
 
-    async def search(
-        self, root: ThoughtNode[T], engine: "TreeOfThoughtEngine[T, S]"
-    ) -> Optional[S]:
+    async def search(self, root: ThoughtNode[T], engine: "TreeOfThoughtEngine[T, S]") -> Optional[S]:
         """
         Ejecuta la búsqueda desde el nodo raíz.
 

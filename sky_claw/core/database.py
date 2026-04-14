@@ -108,15 +108,11 @@ class DatabaseAgent:
 
     async def get_circuit_breaker_state(self, domain: str) -> dict:
         conn = await self._get_conn()
-        async with conn.execute(
-            "SELECT * FROM scraper_state WHERE domain = ?", (domain,)
-        ) as cursor:
+        async with conn.execute("SELECT * FROM scraper_state WHERE domain = ?", (domain,)) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else {"failures": 0, "locked_until": 0}
 
-    async def update_circuit_breaker(
-        self, domain: str, failures: int, locked_until: float
-    ):
+    async def update_circuit_breaker(self, domain: str, failures: int, locked_until: float):
         conn = await self._get_conn()
         try:
             await conn.execute(
@@ -139,9 +135,7 @@ class DatabaseAgent:
 
     async def get_memory(self, key: str) -> Optional[str]:
         conn = await self._get_conn()
-        async with conn.execute(
-            "SELECT value FROM agent_memory WHERE key = ?", (key,)
-        ) as cursor:
+        async with conn.execute("SELECT value FROM agent_memory WHERE key = ?", (key,)) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else None
 
@@ -170,23 +164,18 @@ class DatabaseAgent:
         """Obtiene lista de mods con filtro opcional por status."""
         conn = await self._get_conn()
         if status:
-            async with conn.execute(
-                "SELECT * FROM mods WHERE status = ? ORDER BY name", (status,)
-            ) as cursor:
+            async with conn.execute("SELECT * FROM mods WHERE status = ? ORDER BY name", (status,)) as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
         else:
             async with conn.execute("SELECT * FROM mods ORDER BY name") as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
 
-    async def add_mod(
-        self, name: str, version: str = None, size_mb: float = 0, source: str = None
-    ) -> int:
+    async def add_mod(self, name: str, version: str = None, size_mb: float = 0, source: str = None) -> int:
         """Añade o actualiza un mod y devuelve su ID."""
         conn = await self._get_conn()
         try:
             await conn.execute(
-                "INSERT OR REPLACE INTO mods (name, version, size_mb, source, status) "
-                "VALUES (?, ?, ?, ?, 'active')",
+                "INSERT OR REPLACE INTO mods (name, version, size_mb, source, status) VALUES (?, ?, ?, ?, 'active')",
                 (name, version, size_mb, source),
             )
             await conn.commit()
@@ -207,14 +196,10 @@ class DatabaseAgent:
             ) as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
         else:
-            async with conn.execute(
-                "SELECT * FROM conflicts ORDER BY detected_at DESC"
-            ) as cursor:
+            async with conn.execute("SELECT * FROM conflicts ORDER BY detected_at DESC") as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
 
-    async def log_activity(
-        self, event_type: str, message: str, details: Optional[Dict] = None
-    ) -> None:
+    async def log_activity(self, event_type: str, message: str, details: Optional[Dict] = None) -> None:
         """Registra actividad en el log."""
         conn = await self._get_conn()
         try:

@@ -298,8 +298,7 @@ class PathResolutionService:
             if validated_base:
                 return validated_base / "profiles" / profile / "modlist.txt"
             logger.warning(
-                "MO2_PATH='%s' rechazado por validación de seguridad (CRIT-003). "
-                "Intentando auto-detección.",
+                "MO2_PATH='%s' rechazado por validación de seguridad (CRIT-003). Intentando auto-detección.",
                 mo2_base_str,
             )
 
@@ -309,9 +308,7 @@ class PathResolutionService:
             return mo2_base / "profiles" / profile / "modlist.txt"
 
         # 3. Fallback: WSL2 default path — también validado
-        fallback_path = (
-            pathlib.Path("/mnt/c/Modding/MO2") / "profiles" / profile / "modlist.txt"
-        )
+        fallback_path = pathlib.Path("/mnt/c/Modding/MO2") / "profiles" / profile / "modlist.txt"
         try:
             validated_fallback = self._path_validator.validate(fallback_path)
             logger.warning(
@@ -400,8 +397,7 @@ class PathResolutionService:
                 )
 
         raise RuntimeError(
-            "No se pudo detectar la ruta de MO2. "
-            "Configure MO2_PATH o MO2_MODS_PATH en las variables de entorno."
+            "No se pudo detectar la ruta de MO2. Configure MO2_PATH o MO2_MODS_PATH en las variables de entorno."
         )
 
     def get_active_profile(self) -> str:

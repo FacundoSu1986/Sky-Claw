@@ -105,9 +105,7 @@ def build_actions_panel(
         if on_prepare_game:
             btn.on("click", lambda: asyncio.create_task(on_prepare_game()))
 
-        ui.label("Ejecuta toda la secuencia de optimización en orden").classes(
-            "sky-action-master-desc"
-        )
+        ui.label("Ejecuta toda la secuencia de optimización en orden").classes("sky-action-master-desc")
 
     ui.separator().classes("sky-separator")
 
@@ -151,11 +149,7 @@ def _build_single_action(
         with ui.row().classes("sky-action-footer items-center justify-between"):
             if is_available:
                 ui.badge("Disponible", color="positive").props("outline")
-                btn = (
-                    ui.button("Ejecutar")
-                    .classes("sky-action-btn")
-                    .props("unelevated dense no-caps")
-                )
+                btn = ui.button("Ejecutar").classes("sky-action-btn").props("unelevated dense no-caps")
                 if on_action:
                     btn.on("click", lambda k=key: asyncio.create_task(on_action(k)))
             else:
@@ -166,9 +160,7 @@ def _build_single_action(
                     .props("unelevated dense no-caps")
                 )
                 if on_install_tool:
-                    btn.on(
-                        "click", lambda k=key: asyncio.create_task(on_install_tool(k))
-                    )
+                    btn.on("click", lambda k=key: asyncio.create_task(on_install_tool(k)))
 
         # Technical name (subtle)
         ui.label(action_def["technical_name"]).classes("sky-action-tech-name")

@@ -124,14 +124,10 @@ class TestAutoDetect500:
 
         # Must NOT echo the internal exception message
         error_text = body["error"]
-        assert secret_detail not in error_text, (
-            f"Exception detail leaked in response: {error_text!r}"
-        )
+        assert secret_detail not in error_text, f"Exception detail leaked in response: {error_text!r}"
 
     @pytest.mark.asyncio
-    async def test_500_returns_generic_message(
-        self, aiohttp_client, mock_router, mock_session, mock_local_config
-    ):
+    async def test_500_returns_generic_message(self, aiohttp_client, mock_router, mock_session, mock_local_config):
         """The generic message should be a non-empty, human-readable string."""
         web_app = _make_web_app(router=mock_router, session=mock_session)
 
@@ -148,9 +144,7 @@ class TestAutoDetect500:
         assert len(body["error"]) > 0
 
     @pytest.mark.asyncio
-    async def test_200_on_success(
-        self, aiohttp_client, mock_router, mock_session, mock_local_config
-    ):
+    async def test_200_on_success(self, aiohttp_client, mock_router, mock_session, mock_local_config):
         """Sanity check: when detect_all succeeds, 200 is returned."""
         web_app = _make_web_app(router=mock_router, session=mock_session)
 
@@ -176,9 +170,7 @@ class TestChat500:
     """Confirm that a router exception is NOT forwarded verbatim to the client."""
 
     @pytest.mark.asyncio
-    async def test_500_does_not_leak_exception_detail(
-        self, aiohttp_client, mock_session, mock_local_config
-    ):
+    async def test_500_does_not_leak_exception_detail(self, aiohttp_client, mock_session, mock_local_config):
         secret_detail = "db password=hunter2 at host internal.corp"
         router = MagicMock()
         router.chat = AsyncMock(side_effect=RuntimeError(secret_detail))
@@ -193,14 +185,10 @@ class TestChat500:
         assert "error" in body
 
         error_text = body["error"]
-        assert secret_detail not in error_text, (
-            f"Exception detail leaked in /api/chat response: {error_text!r}"
-        )
+        assert secret_detail not in error_text, f"Exception detail leaked in /api/chat response: {error_text!r}"
 
     @pytest.mark.asyncio
-    async def test_500_returns_generic_message(
-        self, aiohttp_client, mock_session, mock_local_config
-    ):
+    async def test_500_returns_generic_message(self, aiohttp_client, mock_session, mock_local_config):
         router = MagicMock()
         router.chat = AsyncMock(side_effect=Exception("boom"))
 
@@ -214,9 +202,7 @@ class TestChat500:
         assert len(body["error"]) > 0
 
     @pytest.mark.asyncio
-    async def test_500_body_is_json(
-        self, aiohttp_client, mock_session, mock_local_config
-    ):
+    async def test_500_body_is_json(self, aiohttp_client, mock_session, mock_local_config):
         """Even on error the response must be valid JSON."""
         router = MagicMock()
         router.chat = AsyncMock(side_effect=Exception("crash"))
@@ -239,9 +225,7 @@ class TestSetupLoopbackMiddleware:
     # --- GET /api/setup ---
 
     @pytest.mark.asyncio
-    async def test_get_setup_allowed_from_loopback(
-        self, aiohttp_client, mock_session, mock_local_config
-    ):
+    async def test_get_setup_allowed_from_loopback(self, aiohttp_client, mock_session, mock_local_config):
         web_app = _make_web_app(session=mock_session)
         client = await _client(web_app, aiohttp_client)
 
@@ -250,9 +234,7 @@ class TestSetupLoopbackMiddleware:
         assert resp.status == 200
 
     @pytest.mark.asyncio
-    async def test_get_setup_blocked_from_remote_ip(
-        self, aiohttp_client, mock_session, mock_local_config
-    ):
+    async def test_get_setup_blocked_from_remote_ip(self, aiohttp_client, mock_session, mock_local_config):
         """A non-loopback peer address must receive HTTP 403."""
         web_app = _make_web_app(session=mock_session)
         web_app.create_app()
@@ -277,9 +259,7 @@ class TestSetupLoopbackMiddleware:
         assert response.status == 403
 
     @pytest.mark.asyncio
-    async def test_get_setup_blocked_from_arbitrary_remote(
-        self, aiohttp_client, mock_session, mock_local_config
-    ):
+    async def test_get_setup_blocked_from_arbitrary_remote(self, aiohttp_client, mock_session, mock_local_config):
         """Any non-loopback IP is blocked, regardless of subnet."""
         web_app = _make_web_app(session=mock_session)
 
@@ -292,9 +272,7 @@ class TestSetupLoopbackMiddleware:
                 remote_request,
                 handler=AsyncMock(),
             )
-            assert response.status == 403, (
-                f"Expected 403 for remote {remote_ip}, got {response.status}"
-            )
+            assert response.status == 403, f"Expected 403 for remote {remote_ip}, got {response.status}"
 
     @pytest.mark.asyncio
     async def test_setup_allowed_from_127_0_0_1(self, mock_session, mock_local_config):
@@ -312,9 +290,7 @@ class TestSetupLoopbackMiddleware:
         assert response.status == 200
 
     @pytest.mark.asyncio
-    async def test_setup_allowed_from_ipv6_loopback(
-        self, mock_session, mock_local_config
-    ):
+    async def test_setup_allowed_from_ipv6_loopback(self, mock_session, mock_local_config):
         """::1 (IPv6 loopback) must also be permitted."""
         web_app = _make_web_app(session=mock_session)
 
@@ -331,24 +307,18 @@ class TestSetupLoopbackMiddleware:
     # --- POST /api/setup ---
 
     @pytest.mark.asyncio
-    async def test_post_setup_blocked_from_remote_ip(
-        self, mock_session, mock_local_config
-    ):
+    async def test_post_setup_blocked_from_remote_ip(self, mock_session, mock_local_config):
         web_app = _make_web_app(session=mock_session)
 
         remote_request = MagicMock(spec=web.Request)
         remote_request.path = "/api/setup"
         remote_request.remote = "192.168.1.100"
 
-        response = await web_app._setup_auth_middleware(
-            remote_request, handler=AsyncMock()
-        )
+        response = await web_app._setup_auth_middleware(remote_request, handler=AsyncMock())
         assert response.status == 403
 
     @pytest.mark.asyncio
-    async def test_non_setup_path_not_affected_by_loopback_check(
-        self, mock_session, mock_local_config
-    ):
+    async def test_non_setup_path_not_affected_by_loopback_check(self, mock_session, mock_local_config):
         """Loopback restriction must NOT apply to other endpoints."""
         web_app = _make_web_app(router=_make_mock_router(), session=mock_session)
 
@@ -381,9 +351,7 @@ class TestChatBearerAuth:
     # --- Missing Authorization header ---
 
     @pytest.mark.asyncio
-    async def test_missing_auth_header_returns_401(
-        self, aiohttp_client, mock_session, mock_local_config
-    ):
+    async def test_missing_auth_header_returns_401(self, aiohttp_client, mock_session, mock_local_config):
         auth_mgr = self._make_auth_manager(valid=True)
         web_app = _make_web_app(
             router=_make_mock_router(),
@@ -399,9 +367,7 @@ class TestChatBearerAuth:
     # --- Wrong scheme (not Bearer) ---
 
     @pytest.mark.asyncio
-    async def test_non_bearer_scheme_returns_401(
-        self, aiohttp_client, mock_session, mock_local_config
-    ):
+    async def test_non_bearer_scheme_returns_401(self, aiohttp_client, mock_session, mock_local_config):
         auth_mgr = self._make_auth_manager(valid=True)
         web_app = _make_web_app(
             router=_make_mock_router(),
@@ -420,9 +386,7 @@ class TestChatBearerAuth:
     # --- Invalid / wrong token ---
 
     @pytest.mark.asyncio
-    async def test_invalid_token_returns_401(
-        self, aiohttp_client, mock_session, mock_local_config
-    ):
+    async def test_invalid_token_returns_401(self, aiohttp_client, mock_session, mock_local_config):
         auth_mgr = self._make_auth_manager(valid=False)
         web_app = _make_web_app(
             router=_make_mock_router(),
@@ -441,9 +405,7 @@ class TestChatBearerAuth:
     # --- Valid token ---
 
     @pytest.mark.asyncio
-    async def test_valid_token_returns_200(
-        self, aiohttp_client, mock_session, mock_local_config
-    ):
+    async def test_valid_token_returns_200(self, aiohttp_client, mock_session, mock_local_config):
         auth_mgr = self._make_auth_manager(valid=True)
         router = _make_mock_router("authenticated response")
         web_app = _make_web_app(
@@ -465,9 +427,7 @@ class TestChatBearerAuth:
     # --- No auth_manager: token is not required ---
 
     @pytest.mark.asyncio
-    async def test_no_auth_manager_does_not_require_token(
-        self, aiohttp_client, mock_session, mock_local_config
-    ):
+    async def test_no_auth_manager_does_not_require_token(self, aiohttp_client, mock_session, mock_local_config):
         """If auth_manager is None, /api/chat must work without a token."""
         router = _make_mock_router("open response")
         web_app = _make_web_app(router=router, session=mock_session, auth_manager=None)
@@ -481,9 +441,7 @@ class TestChatBearerAuth:
     # --- validate() is called with the token from the header ---
 
     @pytest.mark.asyncio
-    async def test_validate_called_with_token_value(
-        self, aiohttp_client, mock_session, mock_local_config
-    ):
+    async def test_validate_called_with_token_value(self, aiohttp_client, mock_session, mock_local_config):
         auth_mgr = self._make_auth_manager(valid=True)
         web_app = _make_web_app(
             router=_make_mock_router(),

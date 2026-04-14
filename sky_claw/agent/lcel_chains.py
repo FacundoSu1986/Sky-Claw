@@ -48,9 +48,7 @@ class ToolExecutor(RunnableLambda if LANGCHAIN_AVAILABLE else object):
         Returns:
             Resultado de la ejecución como string
         """
-        logger.info(
-            "Ejecutando herramienta: %s con input: %s", self.tool_name, tool_input
-        )
+        logger.info("Ejecutando herramienta: %s con input: %s", self.tool_name, tool_input)
 
         # Simular ejecución - en producción esto llamaría a la herramienta real
         result = f"[{self.tool_name}] Result: {tool_input}"
@@ -79,9 +77,7 @@ class PromptComposer:
         self.system_prompt = system_prompt
         self._tool_registry = tool_registry
 
-    def compose_tool_prompt(
-        self, tool_name: str, tool_input: Dict[str, Any], tool_description: str
-    ) -> Any:
+    def compose_tool_prompt(self, tool_name: str, tool_input: Dict[str, Any], tool_description: str) -> Any:
         """Compone un prompt para una herramienta específica.
 
         Args:
@@ -122,9 +118,7 @@ class PromptComposer:
 
         return template.format_messages(**formatted_input)
 
-    def compose_multi_tool_prompt(
-        self, tools: List[Dict[str, Any]], task_description: str
-    ) -> Any:
+    def compose_multi_tool_prompt(self, tools: List[Dict[str, Any]], task_description: str) -> Any:
         """Compone un prompt para múltiples herramientas.
 
         Args:
@@ -134,9 +128,7 @@ class PromptComposer:
         Returns:
             Prompt compuesto para múltiples herramientas
         """
-        tool_descriptions = "\n".join(
-            [f"- {tool['name']}: {tool['description']}" for tool in tools]
-        )
+        tool_descriptions = "\n".join([f"- {tool['name']}: {tool['description']}" for tool in tools])
 
         if not LANGCHAIN_AVAILABLE:
             return [
@@ -163,9 +155,7 @@ class PromptComposer:
 
         formatted_tools = [f"{tool['name']}: {tool['input']}" for tool in tools]
 
-        return template.format_messages(
-            tools=formatted_tools, task_description=task_description
-        )
+        return template.format_messages(tools=formatted_tools, task_description=task_description)
 
     def compose_rag_prompt(self, query: str, context: str, sources: List[str]) -> Any:
         """Compone un prompt para RAG (Retrieval-Augmented Generation).
@@ -222,9 +212,7 @@ class ChainBuilder:
         """
         self._tool_executor = tool_executor
 
-    def create_tool_chain(
-        self, tool_name: str, tool_description: str, next_step: Optional[str] = None
-    ) -> Any:
+    def create_tool_chain(self, tool_name: str, tool_description: str, next_step: Optional[str] = None) -> Any:
         """Crea una cadena LCEL para ejecutar una herramienta.
 
         Args:
@@ -251,9 +239,7 @@ class ChainBuilder:
 
         return chain
 
-    def create_sequential_chain(
-        self, steps: List[Dict[str, Any]], task_description: str
-    ) -> Any:
+    def create_sequential_chain(self, steps: List[Dict[str, Any]], task_description: str) -> Any:
         """Crea una cadena secuencial de pasos.
 
         Args:
@@ -288,9 +274,7 @@ class ChainBuilder:
 
             # Capturar step_tool en el closure de forma segura
             captured_tool = step_tool
-            step_lambda = RunnableLambda(
-                func=lambda x, t=captured_tool: t(x), name=f"step_{i + 1}"
-            )
+            step_lambda = RunnableLambda(func=lambda x, t=captured_tool: t(x), name=f"step_{i + 1}")
 
             if not chain_steps:
                 chain_steps = [step_lambda]
@@ -301,9 +285,7 @@ class ChainBuilder:
 
         return chain
 
-    def create_conditional_chain(
-        self, condition: str, true_chain: Any, false_chain: Any
-    ) -> Any:
+    def create_conditional_chain(self, condition: str, true_chain: Any, false_chain: Any) -> Any:
         """Crea una cadena condicional LCEL.
 
         Args:
@@ -320,9 +302,7 @@ class ChainBuilder:
 
         return route
 
-    def create_with_retry(
-        self, chain: Any, max_retries: int = 3, retry_delay: float = 1.0
-    ) -> Any:
+    def create_with_retry(self, chain: Any, max_retries: int = 3, retry_delay: float = 1.0) -> Any:
         """Crea una cadena con lógica de reintentos.
 
         Args:
@@ -345,9 +325,7 @@ class ChainBuilder:
                     return result
                 except Exception as exc:
                     last_error = exc
-                    logger.warning(
-                        "Intento %d/%d falló: %s", attempt + 1, max_retries, exc
-                    )
+                    logger.warning("Intento %d/%d falló: %s", attempt + 1, max_retries, exc)
                     if attempt < max_retries - 1:
                         await asyncio.sleep(retry_delay)
             raise last_error  # type: ignore[misc]
@@ -361,10 +339,6 @@ class ChainBuilder:
 # ---------------------------------------------------------------------------
 # Instancias globales para uso común
 # ---------------------------------------------------------------------------
-_prompt_composer = PromptComposer(
-    system_prompt="Eres un asistente de modding de Skyrim SE/AE."
-)
-_default_tool_executor = ToolExecutor(
-    tool_name="default", tool_description="Herramienta por defecto para Sky-Claw"
-)
+_prompt_composer = PromptComposer(system_prompt="Eres un asistente de modding de Skyrim SE/AE.")
+_default_tool_executor = ToolExecutor(tool_name="default", tool_description="Herramienta por defecto para Sky-Claw")
 chain_builder = ChainBuilder(tool_executor=_default_tool_executor)

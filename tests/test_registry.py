@@ -27,9 +27,7 @@ class TestSchemaCreation:
     @pytest.mark.asyncio
     async def test_tables_exist(self, db: ModRegistry) -> None:
         assert db._conn is not None
-        async with db._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ) as cur:
+        async with db._conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name") as cur:
             rows = await cur.fetchall()
         tables = {row[0] for row in rows}
         assert {"mods", "dependencies", "task_log"} <= tables
@@ -43,9 +41,7 @@ class TestSchemaCreation:
 class TestModCRUD:
     @pytest.mark.asyncio
     async def test_insert_and_get(self, db: ModRegistry) -> None:
-        mod_id = await db.upsert_mod(
-            nexus_id=1234, name="SKSE", version="2.2.6", author="ianpatt"
-        )
+        mod_id = await db.upsert_mod(nexus_id=1234, name="SKSE", version="2.2.6", author="ianpatt")
         assert mod_id >= 1
         row = await db.get_mod(1234)
         assert row is not None

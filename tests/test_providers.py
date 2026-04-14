@@ -305,9 +305,7 @@ class TestOllamaProvider:
 
         session = MagicMock(spec=aiohttp.ClientSession)
 
-        result = await provider.chat(
-            [{"role": "user", "content": "test"}], [], session, gateway=mock_gateway
-        )
+        result = await provider.chat([{"role": "user", "content": "test"}], [], session, gateway=mock_gateway)
 
         assert result["stop_reason"] == "end_turn"
         call_url = mock_gateway.request.call_args[0][1]
@@ -322,9 +320,7 @@ class TestOllamaProvider:
         mock_response.status = 200
         mock_response.raise_for_status = MagicMock()
         mock_response.json = AsyncMock(
-            return_value={
-                "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]
-            }
+            return_value={"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}
         )
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
@@ -334,9 +330,7 @@ class TestOllamaProvider:
 
         session = MagicMock(spec=aiohttp.ClientSession)
 
-        await provider.chat(
-            [{"role": "user", "content": "x"}], [], session, gateway=mock_gateway
-        )
+        await provider.chat([{"role": "user", "content": "x"}], [], session, gateway=mock_gateway)
 
         # Ollama doesn't send auth headers
         call_kwargs = mock_gateway.request.call_args[1]

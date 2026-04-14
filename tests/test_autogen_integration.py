@@ -58,13 +58,9 @@ def test_autogen_config():
         print(f"[PASS] Default config created: model={llm_config['model']}")
 
         # Test custom config
-        custom_config = AutoGenConfig(
-            model="gpt-4-turbo", api_key="test_key", temperature=0.5, max_tokens=1000
-        )
+        custom_config = AutoGenConfig(model="gpt-4-turbo", api_key="test_key", temperature=0.5, max_tokens=1000)
         custom_llm = custom_config.to_llm_config()
-        print(
-            f"[PASS] Custom config created: model={custom_llm['model']}, temp={custom_llm['temperature']}"
-        )
+        print(f"[PASS] Custom config created: model={custom_llm['model']}, temp={custom_llm['temperature']}")
 
         return True
     except Exception as e:
@@ -145,16 +141,12 @@ def test_multi_agent_orchestrator():
 
         # Test conversation (async)
         async def run_test_conversation():
-            results = await orchestrator.run_conversation(
-                initial_message="Hello, this is a test message."
-            )
+            results = await orchestrator.run_conversation(initial_message="Hello, this is a test message.")
             return results
 
         # Run async test
         results = asyncio.run(run_test_conversation())
-        print(
-            f"[PASS] Conversation completed: {results['rounds']} rounds, status={results['status']}"
-        )
+        print(f"[PASS] Conversation completed: {results['rounds']} rounds, status={results['status']}")
 
         # Test add/remove agent
         agent3 = AutoGenWrapper(
@@ -167,9 +159,7 @@ def test_multi_agent_orchestrator():
         print(f"[PASS] Agent added: {len(orchestrator.agents)} agents now")
 
         removed = orchestrator.remove_agent("Agent3")
-        print(
-            f"[PASS] Agent removed: {removed}, {len(orchestrator.agents)} agents remaining"
-        )
+        print(f"[PASS] Agent removed: {removed}, {len(orchestrator.agents)} agents remaining")
 
         return True
     except Exception as e:
@@ -228,9 +218,7 @@ def test_get_orchestrator():
 
         # Get orchestrator instance
         orchestrator1 = get_orchestrator(tool_executor=executor)
-        print(
-            f"[PASS] First orchestrator instance obtained: {len(orchestrator1.agents)} agents"
-        )
+        print(f"[PASS] First orchestrator instance obtained: {len(orchestrator1.agents)} agents")
 
         # Get same instance (should be singleton)
         orchestrator2 = get_orchestrator(tool_executor=executor)
@@ -277,9 +265,7 @@ def test_agent_communication():
         # Test async communication
         async def test_send_receive():
             # Send message
-            response = await sender.send_message(
-                message="Hello from Sender!", recipient=receiver
-            )
+            response = await sender.send_message(message="Hello from Sender!", recipient=receiver)
             return response
 
         response = asyncio.run(test_send_receive())

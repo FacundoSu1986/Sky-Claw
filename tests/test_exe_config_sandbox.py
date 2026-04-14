@@ -52,9 +52,7 @@ class TestExeConfigPath:
 
 
 class TestApiKeyFromConfig:
-    def test_anthropic_key_detection(
-        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_anthropic_key_detection(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Key starting with sk-ant sets ANTHROPIC_API_KEY."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
@@ -76,9 +74,7 @@ class TestApiKeyFromConfig:
 
         assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-my-anthropic-key"
 
-    def test_deepseek_key_detection(
-        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_deepseek_key_detection(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Key starting with sk- (non-ant) sets DEEPSEEK_API_KEY."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
@@ -100,9 +96,7 @@ class TestApiKeyFromConfig:
 
         assert os.environ["DEEPSEEK_API_KEY"] == "sk-deepseek-my-key"
 
-    def test_generic_key_defaults_to_deepseek(
-        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_generic_key_defaults_to_deepseek(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Generic key (not sk-) maps to DEEPSEEK_API_KEY."""
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
@@ -311,9 +305,7 @@ class TestAppContextConfigPath:
 
 class TestSetupWizardConfigPath:
     @pytest.mark.asyncio
-    async def test_setup_saves_to_config_path(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_setup_saves_to_config_path(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         """POST /api/setup saves to the config_path provided to WebApp."""
         from sky_claw.web.app import WebApp
 
@@ -341,9 +333,7 @@ class TestSetupWizardConfigPath:
         assert loaded.first_run is False
 
     @pytest.mark.asyncio
-    async def test_setup_loads_from_config_path(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_setup_loads_from_config_path(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         """GET /api/setup reads from the config_path provided to WebApp."""
         from sky_claw.web.app import WebApp
 

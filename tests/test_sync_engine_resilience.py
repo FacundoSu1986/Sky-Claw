@@ -52,9 +52,7 @@ class TestSyncEngineResilience:
         return AsyncMock()
 
     @pytest.fixture
-    def sync_engine(
-        self, mock_registry, mock_controller, mock_client, mock_downloader, mock_hitl
-    ):
+    def sync_engine(self, mock_registry, mock_controller, mock_client, mock_downloader, mock_hitl):
         """Fixture que proporciona SyncEngine con todos los mocks."""
         engine = SyncEngine(
             mo2=mock_controller,
@@ -126,9 +124,7 @@ class TestSyncEngineResilience:
         assert await sync_engine.metrics.get_error_count() >= 3
 
     @pytest.mark.asyncio
-    async def test_orchestrator_remains_operational_after_all_failures(
-        self, sync_engine, mock_registry
-    ):
+    async def test_orchestrator_remains_operational_after_all_failures(self, sync_engine, mock_registry):
         """Test: El orquestador permanece operativo después de todos los fallos."""
 
         # Simulate multiple error types

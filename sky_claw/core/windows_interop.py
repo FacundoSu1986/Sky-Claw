@@ -95,9 +95,7 @@ class ModdingToolsAgent:
         err_str = stderr.decode("utf-8", errors="replace").strip()
 
         if proc.returncode != 0:
-            logger.error(
-                "RCA: LOOT falló con código %d. Stderr: %s", proc.returncode, err_str
-            )
+            logger.error("RCA: LOOT falló con código %d. Stderr: %s", proc.returncode, err_str)
             return {"status": "error", "logs": err_str}
 
         return {"status": "success", "logs": out_str}

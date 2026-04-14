@@ -15,9 +15,7 @@ async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
     if ctx.sender is None:
         logger.error("TELEGRAM_BOT_TOKEN required.")
         sys.exit(1)
-    webhook_handler = TelegramWebhook(
-        router=ctx.router, sender=ctx.sender, session=ctx.session, hitl=ctx.hitl
-    )
+    webhook_handler = TelegramWebhook(router=ctx.router, sender=ctx.sender, session=ctx.session, hitl=ctx.hitl)
     polling = TelegramPolling(
         token=ctx.sender._token,
         webhook_handler=webhook_handler,

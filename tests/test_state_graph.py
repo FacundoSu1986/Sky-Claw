@@ -260,9 +260,7 @@ class TestSupervisorStateGraph:
         """Test submitting an event to the workflow."""
         sg = SupervisorStateGraph()
 
-        result = await sg.submit_event(
-            WorkflowEventType.USER_COMMAND, {"command": "test_command"}
-        )
+        result = await sg.submit_event(WorkflowEventType.USER_COMMAND, {"command": "test_command"})
 
         assert result is not None
         assert result["pending_event"] == WorkflowEventType.USER_COMMAND.value
@@ -282,9 +280,7 @@ class TestStateGraphIntegration:
         sg = SupervisorStateGraph()
         integration = StateGraphIntegration(sg)
 
-        result = integration.translate_modlist_event(
-            mtime=12345.0, path="/test/modlist.txt"
-        )
+        result = integration.translate_modlist_event(mtime=12345.0, path="/test/modlist.txt")
 
         assert result["event_type"] == WorkflowEventType.MODLIST_CHANGED
         assert result["event_data"]["mtime"] == 12345.0
@@ -295,9 +291,7 @@ class TestStateGraphIntegration:
         sg = SupervisorStateGraph()
         integration = StateGraphIntegration(sg)
 
-        result = integration.translate_user_command(
-            command="query_mod", params={"mod_id": 123}
-        )
+        result = integration.translate_user_command(command="query_mod", params={"mod_id": 123})
 
         assert result["event_type"] == WorkflowEventType.USER_COMMAND
         assert result["event_data"]["command"] == "query_mod"

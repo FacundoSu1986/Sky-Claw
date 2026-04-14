@@ -45,9 +45,7 @@ logger = logging.getLogger(__name__)
 def _should_retry(exc: BaseException) -> bool:
     if isinstance(exc, (aiohttp.ClientConnectionError, asyncio.TimeoutError)):
         return True
-    return isinstance(exc, aiohttp.ClientResponseError) and (
-        exc.status == 429 or exc.status >= 500
-    )
+    return isinstance(exc, aiohttp.ClientResponseError) and (exc.status == 429 or exc.status >= 500)
 
 
 class LLMProvider(ABC):
@@ -116,9 +114,7 @@ class AnthropicProvider(LLMProvider):
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
-        async with await gateway.request(
-            "POST", self.API_URL, session, json=body, headers=headers
-        ) as resp:
+        async with await gateway.request("POST", self.API_URL, session, json=body, headers=headers) as resp:
             if resp.status >= 400:
                 text = await resp.text()
                 logger.error("Anthropic error %d: %s", resp.status, text)
@@ -198,9 +194,7 @@ def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str
                         )
                 msg_dict: dict[str, Any] = {
                     "role": role,
-                    "content": "\n".join(text_parts)
-                    if text_parts
-                    else ("..." if not tool_calls else None),
+                    "content": "\n".join(text_parts) if text_parts else ("..." if not tool_calls else None),
                 }
                 if tool_calls:
                     msg_dict["tool_calls"] = tool_calls
@@ -238,9 +232,7 @@ def _parse_openai_response(data: dict[str, Any]) -> dict[str, Any]:
                     "input": args,
                 }
             )
-    stop_reason = (
-        "tool_use" if tool_calls or finish_reason == "tool_calls" else "end_turn"
-    )
+    stop_reason = "tool_use" if tool_calls or finish_reason == "tool_calls" else "end_turn"
     usage = data.get("usage", {})
     return {
         "stop_reason": stop_reason,
@@ -265,9 +257,7 @@ class DeepSeekProvider(LLMProvider):
         stop=stop_after_attempt(5),
         retry=retry_if_exception(_should_retry),
     )
-    async def chat(
-        self, messages, tools, session, gateway, *, system_prompt="", model=""
-    ):
+    async def chat(self, messages, tools, session, gateway, *, system_prompt="", model=""):
         model = model or self.DEFAULT_MODEL
         oai_messages = _convert_messages_to_openai(messages)
         if system_prompt:
@@ -280,9 +270,7 @@ class DeepSeekProvider(LLMProvider):
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        async with await gateway.request(
-            "POST", self.API_URL, session, json=body, headers=headers
-        ) as resp:
+        async with await gateway.request("POST", self.API_URL, session, json=body, headers=headers) as resp:
             if resp.status >= 400:
                 text = await resp.text()
                 logger.error(
@@ -307,9 +295,7 @@ class OllamaProvider(LLMProvider):
         stop=stop_after_attempt(5),
         retry=retry_if_exception(_should_retry),
     )
-    async def chat(
-        self, messages, tools, session, gateway, *, system_prompt="", model=""
-    ):
+    async def chat(self, messages, tools, session, gateway, *, system_prompt="", model=""):
         model = model or self.DEFAULT_MODEL
         oai_messages = _convert_messages_to_openai(messages)
         if system_prompt:

@@ -65,9 +65,7 @@ class BodySlideRunner:
                 **kwargs,
             )
 
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=self.config.timeout_seconds
-            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self.config.timeout_seconds)
 
             duration = time.monotonic() - start_time
             success = process.returncode == 0

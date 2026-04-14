@@ -136,9 +136,7 @@ class ConditionalPattern(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    conditions: CompositeDependency = pydantic.Field(
-        default_factory=CompositeDependency
-    )
+    conditions: CompositeDependency = pydantic.Field(default_factory=CompositeDependency)
     files: list[FileInstall] = pydantic.Field(default_factory=list)
 
 
@@ -155,6 +153,4 @@ class FomodConfig(pydantic.BaseModel):
     module_name: str = ""
     required_files: list[FileInstall] = pydantic.Field(default_factory=list)
     install_steps: list[InstallStep] = pydantic.Field(default_factory=list)
-    conditional_installs: list[ConditionalPattern] = pydantic.Field(
-        default_factory=list
-    )
+    conditional_installs: list[ConditionalPattern] = pydantic.Field(default_factory=list)

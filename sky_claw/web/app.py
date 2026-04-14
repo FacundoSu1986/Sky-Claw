@@ -126,9 +126,7 @@ class WebApp:
             peer = request.remote or ""
             if peer not in ("127.0.0.1", "::1", "localhost"):
                 logger.warning("Setup endpoint blocked for non-local peer: %s", peer)
-                return web.Response(
-                    status=403, text="Forbidden: setup only accessible from localhost"
-                )
+                return web.Response(status=403, text="Forbidden: setup only accessible from localhost")
 
         if path == "/api/chat" and self._auth_manager is not None:
             auth_header = request.headers.get("Authorization", "")
@@ -136,9 +134,7 @@ class WebApp:
                 return web.Response(status=401, text="Unauthorized")
             token = auth_header[len("Bearer ") :]
             if not self._auth_manager.validate(token):
-                logger.warning(
-                    "Invalid auth token on /api/chat from %s", request.remote
-                )
+                logger.warning("Invalid auth token on /api/chat from %s", request.remote)
                 return web.Response(status=401, text="Unauthorized")
 
         return await handler(request)
@@ -239,10 +235,7 @@ class WebApp:
             except Exception as exc:
                 logger.exception("on_setup_complete callback failed: %s", exc)
                 return web.json_response(
-                    {
-                        "error": "Configuration saved but initialization failed. "
-                        "Please restart the application."
-                    },
+                    {"error": "Configuration saved but initialization failed. Please restart the application."},
                     status=500,
                 )
 
@@ -255,32 +248,24 @@ class WebApp:
             return web.json_response(result)
         except Exception as exc:
             logger.error("Auto-detect error: %s", exc)
-            return web.json_response(
-                {"error": "Auto-detection failed. Check server logs."}, status=500
-            )
+            return web.json_response({"error": "Auto-detection failed. Check server logs."}, status=500)
 
     async def _handle_install_tools(self, request: web.Request) -> web.Response:
         """Install missing LOOT / SSEEdit via ToolsInstaller."""
         if self._tools_installer is None:
-            return web.json_response(
-                {"error": "ToolsInstaller not available"}, status=503
-            )
+            return web.json_response({"error": "ToolsInstaller not available"}, status=503)
 
         try:
             data: dict[str, Any] = await request.json()
         except json.JSONDecodeError:
             data = {}
 
-        install_dir = pathlib.Path(
-            data.get("install_dir", "") or str(self._config_path.parent / "tools")
-        )
+        install_dir = pathlib.Path(data.get("install_dir", "") or str(self._config_path.parent / "tools"))
         results: dict[str, str] = {}
 
         if data.get("install_loot", True):
             try:
-                loot_result = await self._tools_installer.ensure_loot(
-                    session=self._session, install_dir=install_dir
-                )
+                loot_result = await self._tools_installer.ensure_loot(session=self._session, install_dir=install_dir)
                 results["loot"] = str(loot_result.exe_path)
                 # Persist to config.
                 cfg = load_local_config(self._config_path)
@@ -292,9 +277,7 @@ class WebApp:
 
         if data.get("install_xedit", True):
             try:
-                xedit_result = await self._tools_installer.ensure_xedit(
-                    session=self._session, install_dir=install_dir
-                )
+                xedit_result = await self._tools_installer.ensure_xedit(session=self._session, install_dir=install_dir)
                 results["xedit"] = str(xedit_result.exe_path)
                 cfg = load_local_config(self._config_path)
                 cfg.xedit_exe = str(xedit_result.exe_path)
@@ -313,10 +296,7 @@ class WebApp:
         """
         if self._router is None:
             return web.json_response(
-                {
-                    "error": "Sky-Claw no está configurado todavía. "
-                    "Completá el setup wizard primero."
-                },
+                {"error": "Sky-Claw no está configurado todavía. Completá el setup wizard primero."},
                 status=503,
             )
 
@@ -330,15 +310,11 @@ class WebApp:
             return web.json_response({"error": "Empty message"}, status=400)
 
         try:
-            response = await self._router.chat(
-                message, self._session, chat_id=self._chat_id
-            )
+            response = await self._router.chat(message, self._session, chat_id=self._chat_id)
             return web.json_response({"response": response})
         except Exception as exc:
             logger.exception("Chat error: %s", exc)
             return web.json_response(
-                {
-                    "error": "Error del Agente. Revisa tu API Key en la config inicial y consulta los logs del servidor."
-                },
+                {"error": "Error del Agente. Revisa tu API Key en la config inicial y consulta los logs del servidor."},
                 status=500,
             )

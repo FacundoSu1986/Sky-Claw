@@ -22,22 +22,16 @@ async def _gui_logic_loop(ctx: AppContext) -> None:
             if item[0] == "chat":
                 text = item[1]
                 if not ctx.router:
-                    ctx.gui_queue.put(
-                        ("error", "Router no inicializado. Completá el setup primero.")
-                    )
+                    ctx.gui_queue.put(("error", "Router no inicializado. Completá el setup primero."))
                     continue
                 correlation_id_var.set(str(uuid.uuid4()))
                 try:
-                    response = await ctx.router.chat(
-                        text, ctx.session, chat_id="gui-session"
-                    )
+                    response = await ctx.router.chat(text, ctx.session, chat_id="gui-session")
                     ctx.gui_queue.put(("response", response))
                     consecutive_errors = 0
                 except Exception as e:
                     logger.exception("Logic error in chat: %s", e)
-                    ctx.gui_queue.put(
-                        ("error", f"Error procesando comando: {type(e).__name__}: {e}")
-                    )
+                    ctx.gui_queue.put(("error", f"Error procesando comando: {type(e).__name__}: {e}"))
         except asyncio.CancelledError:
             break
         except Exception as e:

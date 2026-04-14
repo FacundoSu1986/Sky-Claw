@@ -65,23 +65,15 @@ def create_sidebar(
                     ui.label("Sky-Claw").classes("text-white font-bold text-lg")
                     # Connection indicator
                     with ui.row().classes("items-center gap-1"):
-                        ui.html(
-                            f'<span class="sky-connection-dot {status_dot_class}"></span>'
-                        )
+                        ui.html(f'<span class="sky-connection-dot {status_dot_class}"></span>')
                         ui.label(status_text).classes("text-[#6b7280] text-xs")
 
         # Navigation
         with ui.element("div").classes("flex-1 p-4"):
-            ui.label("NAVIGATION").classes(
-                "text-[#6b7280] text-xs font-semibold tracking-wider mb-4 px-4"
-            )
+            ui.label("NAVIGATION").classes("text-[#6b7280] text-xs font-semibold tracking-wider mb-4 px-4")
             for text, active in nav_items:
-                active_class = (
-                    "bg-[#8b5cf6]/10 border-l-2 border-[#8b5cf6]" if active else ""
-                )
-                text_class = (
-                    "text-white" if active else "text-[#9ca3af] hover:text-white"
-                )
+                active_class = "bg-[#8b5cf6]/10 border-l-2 border-[#8b5cf6]" if active else ""
+                text_class = "text-white" if active else "text-[#9ca3af] hover:text-white"
                 with (
                     ui.button()
                     .classes(

@@ -60,9 +60,7 @@ class WatcherDaemon:
     async def start(self) -> None:
         """Inicia el loop de monitoreo como tarea de fondo."""
         if self._task is not None:
-            logger.warning(
-                "WatcherDaemon ya está corriendo, ignorando start() duplicado"
-            )
+            logger.warning("WatcherDaemon ya está corriendo, ignorando start() duplicado")
             return
         self._task = asyncio.create_task(self._watch_loop(), name="watcher-modlist")
         logger.info(
@@ -105,9 +103,7 @@ class WatcherDaemon:
                             "Modificación detectada en MO2 desde fuera del agente. "
                             "Publicando evento system.modlist.changed."
                         )
-                        await self._db.set_memory(
-                            mem_key, str(current_mtime), time.time()
-                        )
+                        await self._db.set_memory(mem_key, str(current_mtime), time.time())
 
                         payload = ModlistChangedPayload(
                             profile_name=self._profile_name,

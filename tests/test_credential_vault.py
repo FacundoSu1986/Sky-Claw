@@ -56,9 +56,7 @@ class TestCredentialVaultDynamicSalt:
             # confirms the plumbing is wired correctly.
             assert vault.fernet is not None
 
-    def test_two_vaults_with_different_salts_produce_different_fernet_keys(
-        self, tmp_path
-    ) -> None:
+    def test_two_vaults_with_different_salts_produce_different_fernet_keys(self, tmp_path) -> None:
         """Different salts → different derived keys → different Fernet tokens."""
         db_path = str(tmp_path / "v.db")
         master_key = "shared-master-key"
@@ -89,9 +87,7 @@ class TestCredentialVaultDynamicSalt:
             "Static hardcoded salt found in credential_vault — audit finding #4 regression"
         )
 
-    def test_salt_failure_raises_runtime_error_with_logging(
-        self, tmp_path, caplog
-    ) -> None:
+    def test_salt_failure_raises_runtime_error_with_logging(self, tmp_path, caplog) -> None:
         """When salt I/O fails, __init__ raises RuntimeError and logs CRITICAL."""
         db_path = str(tmp_path / "fail.db")
 

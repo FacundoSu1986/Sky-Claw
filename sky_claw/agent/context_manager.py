@@ -21,9 +21,7 @@ class ContextManager:
         self.db_path: str = db_path
         self.profile_path: str = mo2_profile_path
 
-    async def build_prompt_context(
-        self, query: str, target_mods: Optional[List[str]] = None
-    ) -> str:
+    async def build_prompt_context(self, query: str, target_mods: Optional[List[str]] = None) -> str:
         """
         Synthesizes loadorder status and mod registry metadata into a coherent pre-prompt.
         """
@@ -41,14 +39,10 @@ class ContextManager:
 
         if mod_results:
             for mod in mod_results:
-                status: str = (
-                    "✅ Installed/Active" if mod["enabled_in_vfs"] else "⏳ Inactive"
-                )
+                status: str = "✅ Installed/Active" if mod["enabled_in_vfs"] else "⏳ Inactive"
                 context_block += f"- [{mod['nexus_id']}] {mod['name']} v{mod['version']} | {status}\n"
         else:
-            context_block += (
-                "- No matches found in local SQLite registry for specific query mods.\n"
-            )
+            context_block += "- No matches found in local SQLite registry for specific query mods.\n"
 
         return context_block
 
@@ -94,9 +88,5 @@ class ContextManager:
         """Helper for thread-safe file reading."""
         with open(path, "r", encoding="utf-8") as f:
             lines = f.readlines()
-            plugins = [
-                line.strip()
-                for line in lines
-                if line.strip() and not line.startswith("#")
-            ]
+            plugins = [line.strip() for line in lines if line.strip() and not line.startswith("#")]
             return f"{len(plugins)} active plugins detected."

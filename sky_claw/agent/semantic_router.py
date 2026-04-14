@@ -78,18 +78,14 @@ class SemanticRouter:
             try:
                 from fastembed import FastEmbedEncoder
 
-                self._encoder = FastEmbedEncoder(
-                    model_name="all-MiniLM-L6-v2", cache_dir="./.cache/embeddings"
-                )
+                self._encoder = FastEmbedEncoder(model_name="all-MiniLM-L6-v2", cache_dir="./.cache/embeddings")
                 logger.info("FastEmbedEncoder inicializado")
             except ImportError:
                 logger.warning("fastembed no instalado, usando fallback a LLM")
                 self._encoder = None
         return self._encoder
 
-    async def classify(
-        self, query: str, fallback_route: str = "unknown"
-    ) -> RouteClassification:
+    async def classify(self, query: str, fallback_route: str = "unknown") -> RouteClassification:
         """
         Clasifica una query de usuario en una ruta específica.
 
@@ -105,9 +101,7 @@ class SemanticRouter:
         if encoder is None:
             # Fallback a clasificación LLM
             logger.warning("Usando fallback a clasificación LLM")
-            return RouteClassification(
-                route=fallback_route, confidence=0.0, fallback_to_llm=True
-            )
+            return RouteClassification(route=fallback_route, confidence=0.0, fallback_to_llm=True)
 
         # Buscar mejor coincidencia semántica
         best_route = None
@@ -122,20 +116,12 @@ class SemanticRouter:
                     best_route = route_name
 
         if best_route and best_score >= self.confidence_threshold:
-            logger.info(
-                f"Query clasificada como '{best_route}' con confianza {best_score:.2f}"
-            )
-            return RouteClassification(
-                route=best_route, confidence=best_score, fallback_to_llm=False
-            )
+            logger.info(f"Query clasificada como '{best_route}' con confianza {best_score:.2f}")
+            return RouteClassification(route=best_route, confidence=best_score, fallback_to_llm=False)
 
         # Fallback si la confianza es baja
-        logger.info(
-            f"Confianza {best_score:.2f} < threshold {self.confidence_threshold}, usando fallback"
-        )
-        return RouteClassification(
-            route=fallback_route, confidence=best_score, fallback_to_llm=True
-        )
+        logger.info(f"Confianza {best_score:.2f} < threshold {self.confidence_threshold}, usando fallback")
+        return RouteClassification(route=fallback_route, confidence=best_score, fallback_to_llm=True)
 
     def _calculate_similarity(self, query: str, utterance: str) -> float:
         """
@@ -159,9 +145,7 @@ class SemanticRouter:
 
         return len(intersection) / len(union)
 
-    async def batch_classify(
-        self, queries: list[str], fallback_route: str = "unknown"
-    ) -> list[RouteClassification]:
+    async def batch_classify(self, queries: list[str], fallback_route: str = "unknown") -> list[RouteClassification]:
         """
         Clasifica múltiples queries en batch.
 

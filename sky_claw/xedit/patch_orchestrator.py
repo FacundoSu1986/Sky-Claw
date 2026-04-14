@@ -75,9 +75,7 @@ class PatchStrategyType(Enum):
     """Available patching strategies."""
 
     CREATE_MERGED_PATCH = "create_merged_patch"  # Para combinación general de records
-    EXECUTE_XEDIT_SCRIPT = (
-        "execute_xedit_script"  # Para correcciones específicas de FormID
-    )
+    EXECUTE_XEDIT_SCRIPT = "execute_xedit_script"  # Para correcciones específicas de FormID
     FORWARD_DECLARATION = "forward_declaration"  # Para forward de records
 
 
@@ -279,14 +277,10 @@ class CreateMergedPatch(PatchStrategy):
             raise ScriptGenerationError("Cannot create plan: no conflicts provided")
 
         # Filtrar solo conflictos de leveled lists
-        valid_conflicts = [
-            c for c in conflicts if c.record_type.upper() in self.HANDLED_TYPES
-        ]
+        valid_conflicts = [c for c in conflicts if c.record_type.upper() in self.HANDLED_TYPES]
 
         if not valid_conflicts:
-            raise ScriptGenerationError(
-                "No leveled list conflicts found in provided list"
-            )
+            raise ScriptGenerationError("No leveled list conflicts found in provided list")
 
         # Recopilar plugins y FormIDs únicos
         target_plugins: set[str] = set()
@@ -428,8 +422,7 @@ class ExecuteXEditScript(PatchStrategy):
         output_plugin = "SkyClaw_CriticalPatch.esp"
 
         logger.info(
-            "ExecuteXEditScript plan created: %d critical conflicts, "
-            "%d plugins, script=%s, HITL=%s",
+            "ExecuteXEditScript plan created: %d critical conflicts, %d plugins, script=%s, HITL=%s",
             len(critical_conflicts),
             len(target_plugins),
             script_name,
@@ -602,9 +595,7 @@ class PatchOrchestrator:
                 records_patched=plan.estimated_records,
                 conflicts_resolved=len(all_conflicts),
                 xedit_exit_code=0,
-                warnings=(
-                    ["Requires Human-in-the-Loop review"] if plan.requires_hitl else []
-                ),
+                warnings=(["Requires Human-in-the-Loop review"] if plan.requires_hitl else []),
             )
 
         except StrategySelectionError as e:
@@ -676,9 +667,7 @@ class PatchOrchestrator:
             f"record_type={conflict.record_type}, severity={conflict.severity}"
         )
 
-    async def _select_best_strategy(
-        self, conflicts: list["RecordConflict"]
-    ) -> PatchStrategy:
+    async def _select_best_strategy(self, conflicts: list["RecordConflict"]) -> PatchStrategy:
         """Selecciona la mejor estrategia para un conjunto de conflictos.
 
         Evalúa todos los conflictos y selecciona la estrategia con mayor
@@ -721,9 +710,7 @@ class PatchOrchestrator:
                 best_strategy = strategy
 
         if best_strategy is None or best_score == 0:
-            raise StrategySelectionError(
-                f"No strategy can handle any of the {len(conflicts)} conflicts"
-            )
+            raise StrategySelectionError(f"No strategy can handle any of the {len(conflicts)} conflicts")
 
         return best_strategy
 

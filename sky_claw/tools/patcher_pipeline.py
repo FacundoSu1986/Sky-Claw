@@ -380,9 +380,7 @@ class PatcherPipeline:
 
         return {
             "patchers": [p.patcher_id for p in enabled_patchers],
-            "patcher_configs": {
-                p.patcher_id: p.config for p in enabled_patchers if p.config
-            },
+            "patcher_configs": {p.patcher_id: p.config for p in enabled_patchers if p.config},
             "total_enabled": len(enabled_patchers),
             "total_disabled": len(self._patchers) - len(enabled_patchers),
         }

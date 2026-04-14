@@ -69,9 +69,7 @@ _WIN_ABS_PATH_RE = re.compile(r"[A-Za-z]:\\[\\A-Za-z0-9_.+\- ]+")
 # Path leakage — Unix absolute paths under sensitive top-level dirs.
 # /mnt/ is intentionally excluded: WSL mount points (/mnt/c/...) appear
 # legitimately in tool output and must not trigger false positives.
-_UNIX_ABS_PATH_RE = re.compile(
-    r"(?<!\w)/(?:etc|usr|var|home|root|proc|sys|tmp|dev)/\S+"
-)
+_UNIX_ABS_PATH_RE = re.compile(r"(?<!\w)/(?:etc|usr|var|home|root|proc|sys|tmp|dev)/\S+")
 
 # Path leakage — UNC / network share paths (\\server\share)
 _UNC_PATH_RE = re.compile(r"\\\\[A-Za-z0-9_.\-]+\\[A-Za-z0-9_$.\-]+")
@@ -147,9 +145,7 @@ class AgentGuardrail:
 
     def __init__(self, config: AgentGuardrailConfig | None = None) -> None:
         self._config: AgentGuardrailConfig = config or AgentGuardrailConfig()
-        self._inspector: TextInspector = TextInspector(
-            max_bytes=self._config.max_input_length
-        )
+        self._inspector: TextInspector = TextInspector(max_bytes=self._config.max_input_length)
 
     # ------------------------------------------------------------------
     # Input gate
@@ -187,18 +183,12 @@ class AgentGuardrail:
             if blocking:
                 msg = blocking[0]["message"]
                 logger.warning("Guardrail: injection blocked (TextInspector) — %s", msg)
-                raise SecurityViolationError(
-                    f"Prompt injection detected in user input: {msg}"
-                )
+                raise SecurityViolationError(f"Prompt injection detected in user input: {msg}")
             # 2b — supplementary guardrail patterns (covers phrases TextInspector
             #      rates MEDIUM or does not include at all)
             if m := _GUARDRAIL_INJECTION_RE.search(text):
-                logger.warning(
-                    "Guardrail: injection blocked (guardrail pattern) — %r", m.group()
-                )
-                raise SecurityViolationError(
-                    f"Prompt injection detected in user input: {m.group()!r}"
-                )
+                logger.warning("Guardrail: injection blocked (guardrail pattern) — %r", m.group())
+                raise SecurityViolationError(f"Prompt injection detected in user input: {m.group()!r}")
 
         # 3 — PII detection
         if cfg.detect_pii:
@@ -319,31 +309,21 @@ def _check_pii(text: str) -> None:
     if _SSN_RE.search(text):
         raise SecurityViolationError("PII detected in input: SSN pattern found")
     if _CREDIT_CARD_RE.search(text):
-        raise SecurityViolationError(
-            "PII detected in input: credit/debit card number pattern found"
-        )
+        raise SecurityViolationError("PII detected in input: credit/debit card number pattern found")
     if _API_KEY_RE.search(text):
         raise SecurityViolationError("PII detected in input: API key pattern found")
     if _PASSWORD_RE.search(text):
-        raise SecurityViolationError(
-            "PII detected in input: password assignment pattern found"
-        )
+        raise SecurityViolationError("PII detected in input: password assignment pattern found")
 
 
 def _check_paths(text: str) -> None:
     """Raise ``SecurityViolationError`` if *text* leaks absolute filesystem paths."""
     if m := _WIN_ABS_PATH_RE.search(text):
-        raise SecurityViolationError(
-            f"Absolute path leaked in model output: {m.group()!r}"
-        )
+        raise SecurityViolationError(f"Absolute path leaked in model output: {m.group()!r}")
     if m := _UNIX_ABS_PATH_RE.search(text):
-        raise SecurityViolationError(
-            f"Absolute path leaked in model output: {m.group()!r}"
-        )
+        raise SecurityViolationError(f"Absolute path leaked in model output: {m.group()!r}")
     if m := _UNC_PATH_RE.search(text):
-        raise SecurityViolationError(
-            f"Absolute path leaked in model output: {m.group()!r}"
-        )
+        raise SecurityViolationError(f"Absolute path leaked in model output: {m.group()!r}")
 
 
 def _extract_last_user_content(messages: list[dict[str, Any]]) -> str:

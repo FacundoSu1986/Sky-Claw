@@ -68,9 +68,7 @@ class TestGenerate:
         with patch("sky_claw.security.auth_token_manager.restrict_to_owner"):
             token = mgr.generate()
         forbidden = set("+/=")
-        assert not forbidden.intersection(token), (
-            f"Token contains forbidden characters: {set(token) & forbidden}"
-        )
+        assert not forbidden.intersection(token), f"Token contains forbidden characters: {set(token) & forbidden}"
 
     def test_generate_is_random(self, tmp_path):
         """Two successive calls must produce different tokens."""
@@ -270,9 +268,7 @@ class TestTokenFile:
             token = mgr.generate()
 
         written = mgr._token_path.read_text(encoding="utf-8")
-        assert written == token, (
-            "Token file content must exactly match the returned token"
-        )
+        assert written == token, "Token file content must exactly match the returned token"
 
     def test_revoke_deletes_token_file(self, tmp_path):
         mgr = _make_manager(tmp_path)
@@ -315,9 +311,7 @@ class TestTokenFile:
         token_dir = tmp_path / "tokens"
         token_dir.mkdir()
 
-        with patch(
-            "sky_claw.security.auth_token_manager.restrict_to_owner"
-        ) as mock_restrict:
+        with patch("sky_claw.security.auth_token_manager.restrict_to_owner") as mock_restrict:
             mgr = AuthTokenManager(token_dir=str(token_dir))
             mock_restrict.reset_mock()  # reset the __init__ call
             mgr.generate()

@@ -62,11 +62,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--mo2-root",
         type=pathlib.Path,
-        default=pathlib.Path(
-            os.environ.get(
-                "SKY_CLAW_MO2_ROOT", str(SystemPaths.get_base_drive() / "MO2Portable")
-            )
-        ),
+        default=pathlib.Path(os.environ.get("SKY_CLAW_MO2_ROOT", str(SystemPaths.get_base_drive() / "MO2Portable"))),
         help="Path to the MO2 portable instance",
     )
     parser.add_argument(
@@ -95,9 +91,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--operator-chat-id",
         type=int,
-        default=int(_env)
-        if (_env := os.environ.get("SKY_CLAW_OPERATOR_CHAT_ID", ""))
-        else None,
+        default=int(_env) if (_env := os.environ.get("SKY_CLAW_OPERATOR_CHAT_ID", "")) else None,
         help="Telegram chat ID for HITL operator notifications (env: SKY_CLAW_OPERATOR_CHAT_ID)",
     )
     parser.add_argument(
@@ -122,9 +116,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--install-dir",
         type=pathlib.Path,
-        default=pathlib.Path(
-            os.environ.get("SKY_CLAW_INSTALL_DIR", str(SystemPaths.modding_root()))
-        ),
+        default=pathlib.Path(os.environ.get("SKY_CLAW_INSTALL_DIR", str(SystemPaths.modding_root()))),
         help="Directory for auto-installing tools like LOOT/SSEEdit (env: SKY_CLAW_INSTALL_DIR)",
     )
     parser.add_argument(

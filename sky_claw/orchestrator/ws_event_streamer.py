@@ -31,9 +31,7 @@ class LangGraphEventStreamer:
         self.graph = graph
         self.interface = interface
 
-    async def stream_execute(
-        self, initial_state: Optional[StateGraphState] = None
-    ) -> StateGraphState:
+    async def stream_execute(self, initial_state: Optional[StateGraphState] = None) -> StateGraphState:
         """Ejecuta el grafo mientras transmite eventos 'agent_state' por nodo significativo."""
         state = initial_state or self.graph.get_initial_state()
         config = {"configurable": {"thread_id": state["workflow_id"]}}
@@ -49,9 +47,7 @@ class LangGraphEventStreamer:
                             {
                                 "node": node_name,
                                 "event": "update",
-                                "message": NODE_MESSAGES.get(
-                                    node_name.lower(), f"Nodo: {node_name}"
-                                ),
+                                "message": NODE_MESSAGES.get(node_name.lower(), f"Nodo: {node_name}"),
                             },
                         )
                     if delta:

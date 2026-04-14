@@ -98,9 +98,7 @@ class Config:
         if migrated:
             try:
                 self.save()
-                logger.info(
-                    "Migrated sensitive keys to keyring and scrubbed plaintext from TOML."
-                )
+                logger.info("Migrated sensitive keys to keyring and scrubbed plaintext from TOML.")
             except (OSError, IOError) as exc:
                 logger.critical(
                     "Failed to scrub plaintext secrets from TOML after keyring migration: %s. "
@@ -231,11 +229,7 @@ def _get_config() -> Config:
 
 def _get_db_path() -> pathlib.Path:
     cfg = _get_config()
-    return (
-        pathlib.Path(cfg.mo2_root) / "mod_registry.db"
-        if cfg.mo2_root
-        else pathlib.Path("mod_registry.db")
-    )
+    return pathlib.Path(cfg.mo2_root) / "mod_registry.db" if cfg.mo2_root else pathlib.Path("mod_registry.db")
 
 
 DB_PATH = _get_db_path()

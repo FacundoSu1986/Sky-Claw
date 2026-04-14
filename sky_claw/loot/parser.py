@@ -27,9 +27,7 @@ class LOOTResult:
 _PLUGIN_LINE = re.compile(r"^\s*\d+\.\s+(.+\.es[pmlt])$", re.IGNORECASE)
 _WARNING_LINE = re.compile(r"(?:warn(?:ing)?)\s*:\s*(.+)", re.IGNORECASE)
 _ERROR_LINE = re.compile(r"(?:error)\s*:\s*(.+)", re.IGNORECASE)
-_PATCH_REQ_LINE = re.compile(
-    r"requires (?:a )?patch for\s+(.+?)(?:\.|$)", re.IGNORECASE
-)
+_PATCH_REQ_LINE = re.compile(r"requires (?:a )?patch for\s+(.+?)(?:\.|$)", re.IGNORECASE)
 
 
 class LOOTOutputParser:

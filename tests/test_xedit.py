@@ -25,11 +25,7 @@ from sky_claw.xedit.runner import (
 
 class TestXEditOutputParser:
     def test_parse_processing_lines(self) -> None:
-        stdout = (
-            "[00:01] Processing: Skyrim.esm\n"
-            "[00:02] Processing: Update.esm\n"
-            "[00:03] Processing: Requiem.esp\n"
-        )
+        stdout = "[00:01] Processing: Skyrim.esm\n[00:02] Processing: Update.esm\n[00:03] Processing: Requiem.esp\n"
         result = XEditOutputParser.parse(stdout=stdout, stderr="", return_code=0)
         assert result.processed_plugins == ["Skyrim.esm", "Update.esm", "Requiem.esp"]
         assert result.success is True
@@ -55,9 +51,7 @@ class TestXEditOutputParser:
         assert result.success is False
 
     def test_parse_stderr_errors(self) -> None:
-        result = XEditOutputParser.parse(
-            stdout="", stderr="Fatal: Out of memory\n", return_code=1
-        )
+        result = XEditOutputParser.parse(stdout="", stderr="Fatal: Out of memory\n", return_code=1)
         assert len(result.errors) == 1
         assert "Out of memory" in result.errors[0]
 
@@ -258,11 +252,7 @@ class TestXEditTool:
                 return_value=XEditResult(
                     return_code=0,
                     processed_plugins=["Skyrim.esm"],
-                    conflicts=[
-                        XEditConflict(
-                            plugin="Requiem.esp", record="WEAP", detail="Damage"
-                        )
-                    ],
+                    conflicts=[XEditConflict(plugin="Requiem.esp", record="WEAP", detail="Damage")],
                     errors=[],
                 )
             )

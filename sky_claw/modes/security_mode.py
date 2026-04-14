@@ -10,9 +10,7 @@ logger = logging.getLogger(__name__)
 async def _run_security(ctx: AppContext, command_str: str | None) -> None:
     """Ejecuta operaciones de auditoría Purple Team desde la CLI."""
     if not command_str:
-        logger.info(
-            "Uso: python -m sky_claw --mode security 'scan <path>' o 'approve <path>'"
-        )
+        logger.info("Uso: python -m sky_claw --mode security 'scan <path>' o 'approve <path>'")
         return
 
     parts = command_str.split(maxsplit=1)
@@ -44,9 +42,7 @@ async def _run_security(ctx: AppContext, command_str: str | None) -> None:
         if result.get("summary", {}).get("is_safe"):
             logger.info("El recurso es seguro según las políticas de Abril 2026.")
         else:
-            logger.warning(
-                "SE HAN DETECTADO RIESGOS CRÍTICOS. Se recomienda revisión manual."
-            )
+            logger.warning("SE HAN DETECTADO RIESGOS CRÍTICOS. Se recomienda revisión manual.")
 
     elif action == "approve":
         GovernanceManager.get_instance().approve_file(path_str)

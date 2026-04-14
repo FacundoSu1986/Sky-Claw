@@ -181,11 +181,7 @@ class TestParserErrors:
         """defusedxml should reject XML files with entity declarations."""
         bomb_file = tmp_path / "bomb.xml"
         bomb_file.write_text(
-            '<?xml version="1.0"?>'
-            "<!DOCTYPE bomb ["
-            '  <!ENTITY a "aaaa">'
-            "]>"
-            "<config><moduleName>&a;</moduleName></config>",
+            '<?xml version="1.0"?><!DOCTYPE bomb [  <!ENTITY a "aaaa">]><config><moduleName>&a;</moduleName></config>',
             encoding="utf-8",
         )
         with pytest.raises(FomodParserSecurityError):

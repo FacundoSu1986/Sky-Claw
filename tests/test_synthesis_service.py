@@ -170,7 +170,14 @@ async def test_happy_path_pipeline_succeeds(
     with (
         patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=result),
         patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=True),
-        patch.dict("os.environ", {"SKYRIM_PATH": str(tmp_path / "Skyrim"), "MO2_PATH": str(tmp_path / "MO2"), "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe")}),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
     ):
         out = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a", "patcher_b"])
 
@@ -202,7 +209,14 @@ async def test_pipeline_failure_triggers_rollback(
 
     with (
         patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=fail_result),
-        patch.dict("os.environ", {"SKYRIM_PATH": str(tmp_path / "Skyrim"), "MO2_PATH": str(tmp_path / "MO2"), "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe")}),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
     ):
         out = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
 
@@ -234,7 +248,14 @@ async def test_esp_validation_failure_triggers_rollback(
     with (
         patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=success_result),
         patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=False),
-        patch.dict("os.environ", {"SKYRIM_PATH": str(tmp_path / "Skyrim"), "MO2_PATH": str(tmp_path / "MO2"), "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe")}),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
     ):
         out = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
 
@@ -256,8 +277,15 @@ async def test_no_patchers_early_return(
     tmp_path: pathlib.Path,
 ) -> None:
     """Empty patcher list returns error without acquiring lock or journal."""
-    with patch.dict("os.environ", {"SKYRIM_PATH": str(tmp_path / "Skyrim"), "MO2_PATH": str(tmp_path / "MO2"), "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe")}) :
-        out = await synthesis_service.execute_pipeline(patcher_ids=[])   
+    with patch.dict(
+        "os.environ",
+        {
+            "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+            "MO2_PATH": str(tmp_path / "MO2"),
+            "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+        },
+    ):
+        out = await synthesis_service.execute_pipeline(patcher_ids=[])
 
     assert out["success"] is False
     assert "No patchers" in out["errors"][0]
@@ -305,7 +333,14 @@ async def test_create_snapshot_false_no_rollback(
 
     with (
         patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=fail_result),
-        patch.dict("os.environ", {"SKYRIM_PATH": str(tmp_path / "Skyrim"), "MO2_PATH": str(tmp_path / "MO2"), "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe")}),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
     ):
         out = await synthesis_service.execute_pipeline(
             patcher_ids=["patcher_a"],
@@ -338,7 +373,14 @@ async def test_first_run_esp_not_exists(
     with (
         patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=result),
         patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=True),
-        patch.dict("os.environ", {"SKYRIM_PATH": str(tmp_path / "Skyrim"), "MO2_PATH": str(tmp_path / "MO2"), "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe")}),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
     ):
         out = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
 
@@ -368,7 +410,14 @@ async def test_events_published(
     with (
         patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=result),
         patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=True),
-        patch.dict("os.environ", {"SKYRIM_PATH": str(tmp_path / "Skyrim"), "MO2_PATH": str(tmp_path / "MO2"), "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe")}),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
     ):
         await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
 
@@ -407,7 +456,14 @@ async def test_lock_contention(
     with (
         patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=result),
         patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=True),
-        patch.dict("os.environ", {"SKYRIM_PATH": str(tmp_path / "Skyrim"), "MO2_PATH": str(tmp_path / "MO2"), "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe")}),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
     ):
         with pytest.raises(LockAcquisitionError):
             await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
@@ -432,7 +488,14 @@ async def test_journal_transaction_lifecycle_success(
     with (
         patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=result),
         patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=True),
-        patch.dict("os.environ", {"SKYRIM_PATH": str(tmp_path / "Skyrim"), "MO2_PATH": str(tmp_path / "MO2"), "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe")}),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
     ):
         await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
 
@@ -456,7 +519,14 @@ async def test_journal_transaction_lifecycle_failure(
 
     with (
         patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=fail_result),
-        patch.dict("os.environ", {"SKYRIM_PATH": str(tmp_path / "Skyrim"), "MO2_PATH": str(tmp_path / "MO2"), "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe")}),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
     ):
         await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
 

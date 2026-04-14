@@ -42,8 +42,7 @@ def create_features_section(
             # Feature: Smart Search
             create_feature_card(
                 title="Smart Search",
-                description="Natural language search across thousands of "
-                "Skyrim mods with AI-powered recommendations",
+                description="Natural language search across thousands of Skyrim mods with AI-powered recommendations",
                 icon_svg=f'''
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
                          stroke="{COLORS["accent_violet"]}" stroke-width="2">
@@ -53,16 +52,13 @@ def create_features_section(
                 ''',
                 badge="NEW",
                 badge_type="violet",
-                on_click=lambda: (
-                    on_feature_click("Smart Search") if on_feature_click else None
-                ),
+                on_click=lambda: on_feature_click("Smart Search") if on_feature_click else None,
             )
 
             # Feature: Conflict Resolution
             create_feature_card(
                 title="Conflict Resolution",
-                description="Automatically detect and resolve mod conflicts "
-                "using advanced dependency analysis",
+                description="Automatically detect and resolve mod conflicts using advanced dependency analysis",
                 icon_svg="""
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
                          stroke="#ef4444" stroke-width="2">
@@ -72,18 +68,13 @@ def create_features_section(
                                  2 0 0 1-1.52-2.93z"/>
                     </svg>
                 """,
-                on_click=lambda: (
-                    on_feature_click("Conflict Resolution")
-                    if on_feature_click
-                    else None
-                ),
+                on_click=lambda: on_feature_click("Conflict Resolution") if on_feature_click else None,
             )
 
             # Feature: Zero-Trust Security
             create_feature_card(
                 title="Zero-Trust Security",
-                description="HITL protection with Telegram integration for "
-                "approving external downloads safely",
+                description="HITL protection with Telegram integration for approving external downloads safely",
                 icon_svg=f'''
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
                          stroke="{COLORS["accent_cyan"]}" stroke-width="2">
@@ -91,9 +82,5 @@ def create_features_section(
                         <path d="m9 12 2 2 4-4"/>
                     </svg>
                 ''',
-                on_click=lambda: (
-                    on_feature_click("Zero-Trust Security")
-                    if on_feature_click
-                    else None
-                ),
+                on_click=lambda: on_feature_click("Zero-Trust Security") if on_feature_click else None,
             )

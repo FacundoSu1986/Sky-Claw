@@ -164,9 +164,7 @@ class TestModMetadata:
     def test_mod_metadata_name_max_length(self):
         """Test longitud máxima de name (200 caracteres)."""
         long_name = "A" * 200
-        mod = ModMetadata(
-            mod_id=1, name=long_name, version="1.0.0", category="other", author="Author"
-        )
+        mod = ModMetadata(mod_id=1, name=long_name, version="1.0.0", category="other", author="Author")
         assert mod.name == long_name
 
         # Exceder longitud máxima
@@ -182,9 +180,7 @@ class TestModMetadata:
     def test_mod_metadata_author_max_length(self):
         """Test longitud máxima de author (100 caracteres)."""
         long_author = "A" * 100
-        mod = ModMetadata(
-            mod_id=1, name="Test", version="1.0.0", category="other", author=long_author
-        )
+        mod = ModMetadata(mod_id=1, name="Test", version="1.0.0", category="other", author=long_author)
         assert mod.author == long_author
 
         # Exceder longitud máxima
@@ -388,28 +384,20 @@ class TestSecurityAuditResponse:
         """Test límites de risk_score (0.0 - 1.0)."""
         # Valores válidos
         for score in [0.0, 0.5, 1.0]:
-            response = SecurityAuditResponse(
-                target="test", findings=[], risk_score=score, recommendations=[]
-            )
+            response = SecurityAuditResponse(target="test", findings=[], risk_score=score, recommendations=[])
             assert response.risk_score == score
 
         # Valor mayor a 1.0
         with pytest.raises(ValidationError):
-            SecurityAuditResponse(
-                target="test", findings=[], risk_score=1.5, recommendations=[]
-            )
+            SecurityAuditResponse(target="test", findings=[], risk_score=1.5, recommendations=[])
 
         # Valor negativo
         with pytest.raises(ValidationError):
-            SecurityAuditResponse(
-                target="test", findings=[], risk_score=-0.1, recommendations=[]
-            )
+            SecurityAuditResponse(target="test", findings=[], risk_score=-0.1, recommendations=[])
 
     def test_security_audit_response_empty_findings(self):
         """Test respuesta con lista de findings vacía."""
-        response = SecurityAuditResponse(
-            target="test", findings=[], risk_score=0.0, recommendations=[]
-        )
+        response = SecurityAuditResponse(target="test", findings=[], risk_score=0.0, recommendations=[])
         assert response.findings == []
         assert response.recommendations == []
 
@@ -438,9 +426,7 @@ class TestSSRFValidation:
         """Test que URLs con localhost son bloqueadas."""
         with pytest.raises(ValidationError) as exc_info:
             ScrapingQuery(query="test", url="http://localhost/admin")
-        assert (
-            "SSRF" in str(exc_info.value) or "bloqueado" in str(exc_info.value).lower()
-        )
+        assert "SSRF" in str(exc_info.value) or "bloqueado" in str(exc_info.value).lower()
 
     def test_ssrf_blocks_127_0_0_1(self):
         """Test que URLs con 127.0.0.1 son bloqueadas."""
@@ -484,16 +470,12 @@ class TestSSRFValidation:
     def test_ssrf_blocks_google_metadata(self):
         """Test que Google Cloud metadata endpoint es bloqueado."""
         with pytest.raises(ValidationError):
-            ScrapingQuery(
-                query="test", url="http://metadata.google.internal/computeMetadata/v1/"
-            )
+            ScrapingQuery(query="test", url="http://metadata.google.internal/computeMetadata/v1/")
 
     def test_ssrf_blocks_kubernetes_internal(self):
         """Test que endpoints internos de Kubernetes son bloqueados."""
         with pytest.raises(ValidationError):
-            ScrapingQuery(
-                query="test", url="http://kubernetes.default/api/v1/namespaces"
-            )
+            ScrapingQuery(query="test", url="http://kubernetes.default/api/v1/namespaces")
 
     def test_ssrf_blocks_internal_domain(self):
         """Test que dominios .internal son bloqueados."""
@@ -516,9 +498,7 @@ class TestSSRFValidation:
     def test_ssrf_accepts_public_url(self):
         """Test que URLs públicas son aceptadas."""
         # Esta URL debe ser aceptada sin lanzar ValidationError
-        query = ScrapingQuery(
-            query="test", url="https://www.nexusmods.com/skyrimspecialedition/mods/1234"
-        )
+        query = ScrapingQuery(query="test", url="https://www.nexusmods.com/skyrimspecialedition/mods/1234")
         assert query.url is not None
         assert "nexusmods.com" in query.url
 
@@ -540,10 +520,7 @@ class TestPathTraversalValidation:
         """Test que ../ es bloqueado."""
         with pytest.raises(ValidationError) as exc_info:
             SecurityAuditRequest(target_path="../../../etc/passwd")
-        assert (
-            "traversal" in str(exc_info.value).lower()
-            or "path" in str(exc_info.value).lower()
-        )
+        assert "traversal" in str(exc_info.value).lower() or "path" in str(exc_info.value).lower()
 
     def test_path_traversal_blocks_double_dot_backslash(self):
         """Test que ..\\ es bloqueado."""
@@ -665,9 +642,7 @@ class TestAgentToolRequest:
 
     def test_valid_request(self):
         """Test solicitud válida."""
-        request = AgentToolRequest(
-            tool_name="scrape_mod", parameters={"mod_id": 123}, priority="high"
-        )
+        request = AgentToolRequest(tool_name="scrape_mod", parameters={"mod_id": 123}, priority="high")
         assert request.tool_name == "scrape_mod"
         assert request.parameters == {"mod_id": 123}
         assert request.priority == "high"
@@ -720,27 +695,21 @@ class TestAgentToolResponse:
 
     def test_success_response(self):
         """Test respuesta exitosa."""
-        response = AgentToolResponse(
-            tool_name="scrape_mod", success=True, result={"data": "test"}
-        )
+        response = AgentToolResponse(tool_name="scrape_mod", success=True, result={"data": "test"})
         assert response.success is True
         assert response.result == {"data": "test"}
         assert response.error is None
 
     def test_error_response(self):
         """Test respuesta con error."""
-        response = AgentToolResponse(
-            tool_name="scrape_mod", success=False, error="Connection timeout"
-        )
+        response = AgentToolResponse(tool_name="scrape_mod", success=False, error="Connection timeout")
         assert response.success is False
         assert response.result is None
         assert response.error == "Connection timeout"
 
     def test_response_with_execution_time(self):
         """Test respuesta con tiempo de ejecución."""
-        response = AgentToolResponse(
-            tool_name="test", success=True, execution_time_ms=150.5
-        )
+        response = AgentToolResponse(tool_name="test", success=True, execution_time_ms=150.5)
         assert response.execution_time_ms == 150.5
 
     def test_extra_fields_forbidden(self):
@@ -773,9 +742,7 @@ class TestAgentIntegration:
         y procesar un SecurityAuditRequest válido.
         """
         # Crear request válido
-        request = SecurityAuditRequest(
-            target_path="mods/test.esp", audit_type="file", depth=1
-        )
+        request = SecurityAuditRequest(target_path="mods/test.esp", audit_type="file", depth=1)
 
         # Verificar que el request se construye correctamente
         assert request.target_path == "mods/test.esp"
@@ -795,9 +762,7 @@ class TestAgentIntegration:
         y procesar un ScrapingQuery válido.
         """
         # Crear query válida
-        query = ScrapingQuery(
-            query="skyrim armor mods", target_data="files", include_description=True
-        )
+        query = ScrapingQuery(query="skyrim armor mods", target_data="files", include_description=True)
 
         # Verificar que el query se construye correctamente
         assert query.query == "skyrim armor mods"

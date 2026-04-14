@@ -111,9 +111,7 @@ class EventBus:
                 self._loop = asyncio.get_running_loop()
             except RuntimeError:
                 self._loop = None
-            self._processor = threading.Thread(
-                target=self._process_events, daemon=True, name="EventBus-processor"
-            )
+            self._processor = threading.Thread(target=self._process_events, daemon=True, name="EventBus-processor")
             self._processor.start()
 
     def stop(self) -> None:

@@ -107,9 +107,7 @@ class SyncMetrics:
 
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _error_count: int = field(default=0, init=False)
-    _error_types: Dict[str, int] = field(
-        default_factory=lambda: defaultdict(int), init=False
-    )
+    _error_types: Dict[str, int] = field(default_factory=lambda: defaultdict(int), init=False)
 
     async def get_error_count(self) -> int:
         """Retorna el contador de errores."""
@@ -177,9 +175,7 @@ class SyncEngine:
         self._shutdown_event = asyncio.Event()
         # Retry wait strategy; override in tests to avoid real sleeps
         self._fetch_retry_wait = (
-            fetch_retry_wait
-            if fetch_retry_wait is not None
-            else wait_exponential(multiplier=2, min=2, max=30)
+            fetch_retry_wait if fetch_retry_wait is not None else wait_exponential(multiplier=2, min=2, max=30)
         )
         # H-06: Inicializar métricas
         self.metrics = SyncMetrics()
@@ -196,9 +192,7 @@ class SyncEngine:
         self._shutdown_event.set()
 
         if self._download_tasks:
-            logger.info(
-                "Cancelling %d background download tasks...", len(self._download_tasks)
-            )
+            logger.info("Cancelling %d background download tasks...", len(self._download_tasks))
             for task in self._download_tasks:
                 task.cancel()
 
@@ -264,9 +258,7 @@ class SyncEngine:
                 operation_type=operation_type,
                 target_path=str(target_path),
                 transaction_id=transaction_id,
-                snapshot_path=str(snapshot_info.snapshot_path)
-                if snapshot_info
-                else None,
+                snapshot_path=str(snapshot_info.snapshot_path) if snapshot_info else None,
             )
 
             # 4. Ejecutar la operación
@@ -286,14 +278,10 @@ class SyncEngine:
                     str(exc),
                     exc_info=True,
                 )
-                await self._rollback_manager._journal.fail_operation(
-                    entry_id, error=str(exc)
-                )
+                await self._rollback_manager._journal.fail_operation(entry_id, error=str(exc))
 
                 # Ejecutar rollback
-                rollback_result = await self._rollback_manager.undo_last_operation(
-                    self._agent_id
-                )
+                rollback_result = await self._rollback_manager.undo_last_operation(self._agent_id)
                 rollback_result.success = False
 
                 raise
@@ -360,9 +348,7 @@ class SyncEngine:
         semaphore = asyncio.Semaphore(self._cfg.api_semaphore_limit)
 
         # Generar las tareas asincrónicas
-        tasks = [
-            self._check_and_update_mod(mod, session, semaphore) for mod in tracked_mods
-        ]
+        tasks = [self._check_and_update_mod(mod, session, semaphore) for mod in tracked_mods]
 
         logger.info(
             "Iniciando verificación de actualizaciones para %d mods...",
@@ -511,18 +497,14 @@ class SyncEngine:
         try:
             async with self._rollback_manager:
                 # Iniciar transacción
-                transaction_id = (
-                    await self._rollback_manager._journal.begin_transaction(
-                        description=f"update_{mod_name}",
-                        mod_id=mod.get("nexus_id"),
-                        agent_id=self._agent_id,
-                    )
+                transaction_id = await self._rollback_manager._journal.begin_transaction(
+                    description=f"update_{mod_name}",
+                    mod_id=mod.get("nexus_id"),
+                    agent_id=self._agent_id,
                 )
 
                 # Ejecutar actualización con soporte de rollback
-                result = await self._check_and_update_mod_internal(
-                    mod, session, semaphore, transaction_id
-                )
+                result = await self._check_and_update_mod_internal(mod, session, semaphore, transaction_id)
 
                 # Marcar transacción como committed
                 await self._rollback_manager._journal.commit_transaction(transaction_id)
@@ -545,9 +527,7 @@ class SyncEngine:
             try:
                 await self._rollback_manager.undo_last_operation(self._agent_id)
             except Exception as rollback_exc:
-                logger.critical(
-                    "Rollback also failed for mod %s: %s", mod_name, str(rollback_exc)
-                )
+                logger.critical("Rollback also failed for mod %s: %s", mod_name, str(rollback_exc))
                 return {
                     "status": "error",
                     "name": mod_name,
@@ -684,18 +664,12 @@ class SyncEngine:
     # Sync Local Load Order (Legacy Logic)
     # ------------------------------------------------------------------
 
-    async def run(
-        self, session: aiohttp.ClientSession, profile: str = "Default"
-    ) -> SyncResult:
-        queue: asyncio.Queue[list[tuple[str, bool]] | None] = asyncio.Queue(
-            maxsize=self._cfg.queue_maxsize
-        )
+    async def run(self, session: aiohttp.ClientSession, profile: str = "Default") -> SyncResult:
+        queue: asyncio.Queue[list[tuple[str, bool]] | None] = asyncio.Queue(maxsize=self._cfg.queue_maxsize)
         semaphore = asyncio.Semaphore(self._cfg.api_semaphore_limit)
         result = SyncResult()
 
-        producer = asyncio.create_task(
-            self._produce(queue, profile), name="sync-producer"
-        )
+        producer = asyncio.create_task(self._produce(queue, profile), name="sync-producer")
         workers = [
             asyncio.create_task(
                 self._consume(queue, session, semaphore, result),
@@ -720,9 +694,7 @@ class SyncEngine:
         )
         return result
 
-    def enqueue_download(
-        self, coro: Coroutine[Any, Any, Any], context: str = "unknown"
-    ) -> asyncio.Task[Any]:
+    def enqueue_download(self, coro: Coroutine[Any, Any, Any], context: str = "unknown") -> asyncio.Task[Any]:
         async def _download_wrapper() -> None:
             try:
                 await coro
@@ -742,9 +714,7 @@ class SyncEngine:
                 detail = f"{context} failed: {exc}"
                 try:
                     # H-06: Actualizar estado de tarea a "failed" en SQLite
-                    await self._registry.log_tasks_batch(
-                        [(None, "download_mod", "failed", detail)]
-                    )
+                    await self._registry.log_tasks_batch([(None, "download_mod", "failed", detail)])
                 except Exception as comp_exc:
                     logger.error("Failed to log compensation task: %s", comp_exc)
                 finally:
@@ -756,9 +726,7 @@ class SyncEngine:
         task.add_done_callback(self._download_tasks.discard)
         return task
 
-    async def _produce(
-        self, queue: asyncio.Queue[list[tuple[str, bool]] | None], profile: str
-    ) -> None:
+    async def _produce(self, queue: asyncio.Queue[list[tuple[str, bool]] | None], profile: str) -> None:
         """PRF-01: Producer with backpressure via bounded queue.
 
         ``await queue.put(batch)`` suspends the producer coroutine when the

@@ -47,9 +47,7 @@ def create_mods_preview(
         ...     on_mod_click=lambda name: print(f"Clicked: {name}"),
         ... )
     """
-    with ui.element("div").classes(
-        "bg-[#0f0f0f] border border-[#1f2937] rounded-2xl p-6"
-    ):
+    with ui.element("div").classes("bg-[#0f0f0f] border border-[#1f2937] rounded-2xl p-6"):
         # Header con título y botón "View All"
         with ui.row().classes("items-center justify-between mb-6"):
             ui.label(title).classes("text-white font-bold text-lg")
@@ -77,9 +75,7 @@ def create_mods_preview(
                     name=mod_name,
                     status=mod.get("status", "inactive"),
                     size=size,
-                    on_click=lambda m=mod_name: (
-                        on_mod_click(m) if on_mod_click else None
-                    ),
+                    on_click=lambda m=mod_name: on_mod_click(m) if on_mod_click else None,
                 )
         else:
             ui.label(empty_message).classes("text-[#6b7280] text-center py-4")

@@ -81,9 +81,7 @@ def _extract_zip(archive: pathlib.Path, dest: pathlib.Path) -> None:
                 raise PathViolation(f"Zip-slip detected: {info.filename!r}")
             target_path = (dest_resolved / info.filename).resolve()
             if not target_path.is_relative_to(dest_resolved):
-                raise PathViolation(
-                    f"Path traversal detected: {info.filename!r} escapes sandbox"
-                )
+                raise PathViolation(f"Path traversal detected: {info.filename!r} escapes sandbox")
             target_path.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(info) as src, open(target_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
@@ -93,9 +91,7 @@ def _extract_7z(archive: pathlib.Path, dest: pathlib.Path) -> None:
     try:
         import py7zr
     except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "py7zr is required for .7z extraction — pip install py7zr"
-        ) from exc
+        raise RuntimeError("py7zr is required for .7z extraction — pip install py7zr") from exc
 
     dest_resolved = dest.resolve()
     with py7zr.SevenZipFile(archive, "r") as szf:
@@ -104,9 +100,7 @@ def _extract_7z(archive: pathlib.Path, dest: pathlib.Path) -> None:
                 raise PathViolation(f"Zip-slip detected in 7z: {name!r}")
             target_path = (dest_resolved / name).resolve()
             if not target_path.is_relative_to(dest_resolved):
-                raise PathViolation(
-                    f"Path traversal detected in 7z: {name!r} escapes sandbox"
-                )
+                raise PathViolation(f"Path traversal detected in 7z: {name!r} escapes sandbox")
 
         # Validated strictly. We extract one by one avoiding extractall.
         for name in szf.getnames():
@@ -117,9 +111,7 @@ def _extract_rar(archive: pathlib.Path, dest: pathlib.Path) -> None:
     try:
         import rarfile
     except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "rarfile is required for .rar extraction — pip install rarfile"
-        ) from exc
+        raise RuntimeError("rarfile is required for .rar extraction — pip install rarfile") from exc
 
     dest_resolved = dest.resolve()
     with rarfile.RarFile(archive, "r") as rf:
@@ -130,9 +122,7 @@ def _extract_rar(archive: pathlib.Path, dest: pathlib.Path) -> None:
                 raise PathViolation(f"Zip-slip detected in rar: {info.filename!r}")
             target_path = (dest_resolved / info.filename).resolve()
             if not target_path.is_relative_to(dest_resolved):
-                raise PathViolation(
-                    f"Path traversal detected in rar: {info.filename!r} escapes sandbox"
-                )
+                raise PathViolation(f"Path traversal detected in rar: {info.filename!r} escapes sandbox")
             target_path.parent.mkdir(parents=True, exist_ok=True)
             with rf.open(info) as src, open(target_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
@@ -228,8 +218,7 @@ class FomodInstaller:
             return InstallResult(
                 mod_name=mod_name,
                 errors=[
-                    f"Unsupported archive format: {suffix!r}. "
-                    f"Supported: {', '.join(sorted(_SUPPORTED_EXTENSIONS))}"
+                    f"Unsupported archive format: {suffix!r}. Supported: {', '.join(sorted(_SUPPORTED_EXTENSIONS))}"
                 ],
             )
 

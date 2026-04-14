@@ -20,9 +20,7 @@ _REDACTION_PATTERNS = [
     re.compile(r"[0-9]{8,10}:[a-zA-Z0-9_\-]{35}"),  # Telegram bot token
     re.compile(r"sk-[a-zA-Z0-9]{20,}"),  # LLM API Keys (DeepSeek/OpenAI)
     re.compile(rf"(?i)(Users[\\/]){re.escape(_CURRENT_USER)}"),  # Windows User Path
-    re.compile(
-        r'(?i)(?:api_key|apikey|token)["\s:=]+([A-Za-z0-9_\-]{16,})'
-    ),  # General Generic Keys
+    re.compile(r'(?i)(?:api_key|apikey|token)["\s:=]+([A-Za-z0-9_\-]{16,})'),  # General Generic Keys
 ]
 
 
@@ -91,9 +89,7 @@ def setup_logging(level: int = logging.INFO, log_file: str = "sky_claw.log"):
 
     # --- Console Handler ---
     console_handler = logging.StreamHandler(sys.stdout)
-    console_formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] [%(correlation_id)s] %(name)s: %(message)s"
-    )
+    console_formatter = logging.Formatter("%(asctime)s [%(levelname)s] [%(correlation_id)s] %(name)s: %(message)s")
     console_handler.setFormatter(console_formatter)
     console_handler.addFilter(corr_filter)
     console_handler.addFilter(redact_filter)
@@ -102,9 +98,7 @@ def setup_logging(level: int = logging.INFO, log_file: str = "sky_claw.log"):
     # --- File Handlers (Rotating) ---
     os.makedirs("logs", exist_ok=True)
 
-    json_formatter = json.JsonFormatter(
-        "%(asctime)s %(levelname)s %(correlation_id)s %(name)s %(message)s"
-    )
+    json_formatter = json.JsonFormatter("%(asctime)s %(levelname)s %(correlation_id)s %(name)s %(message)s")
 
     def _add_rotating_handler(logger_obj, filename, propagate=True):
         file_path = os.path.join("logs", filename)
@@ -129,6 +123,4 @@ def setup_logging(level: int = logging.INFO, log_file: str = "sky_claw.log"):
     security_logger = logging.getLogger("SkyClaw.Security")
     _add_rotating_handler(security_logger, "watcher_security.log", propagate=False)
 
-    logging.info(
-        "Logging initialized (Rotating Enabled) - Core and Specialized Watchers"
-    )
+    logging.info("Logging initialized (Rotating Enabled) - Core and Specialized Watchers")

@@ -82,9 +82,7 @@ class TelegramPolling:
                     connector=GatewayTCPConnector(self._gateway, limit=10),
                 )
             else:
-                logger.warning(
-                    "TelegramPolling started without gateway — creating unprotected session"
-                )
+                logger.warning("TelegramPolling started without gateway — creating unprotected session")
                 self._session = aiohttp.ClientSession()
             own_session = True
         try:
@@ -112,18 +110,14 @@ class TelegramPolling:
             "offset": self._last_update_id + 1,
             "timeout": 30,
         }
-        async with await self._gateway.request(
-            "GET", self._url, self._session, params=params
-        ) as resp:
+        async with await self._gateway.request("GET", self._url, self._session, params=params) as resp:
             if resp.status != 200:
                 logger.warning("Telegram getUpdates returned %d", resp.status)
                 return
 
             data = await resp.json()
             if not data.get("ok"):
-                logger.warning(
-                    "Telegram getUpdates failed: %s", data.get("description")
-                )
+                logger.warning("Telegram getUpdates failed: %s", data.get("description"))
                 return
 
             results = data.get("result", [])
@@ -149,15 +143,11 @@ class TelegramPolling:
         # CWE-284: Drop-Early Middleware
         if self._authorized_chat_id is not None:
             message = (
-                update.get("message")
-                or update.get("edited_message")
-                or update.get("callback_query", {}).get("message")
+                update.get("message") or update.get("edited_message") or update.get("callback_query", {}).get("message")
             )
             if message:
                 chat_id = message.get("chat", {}).get("id")
-                if chat_id is not None and str(chat_id) != str(
-                    self._authorized_chat_id
-                ):
+                if chat_id is not None and str(chat_id) != str(self._authorized_chat_id):
                     logger.warning(
                         "CWE-284: Unauthorized access attempt from chat_id=%s. Dropping update.",
                         chat_id,

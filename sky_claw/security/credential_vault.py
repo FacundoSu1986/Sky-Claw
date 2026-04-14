@@ -46,9 +46,7 @@ class CredentialVault:
                         logger.debug("Salt existente recuperado correctamente")
                         return salt
                     else:
-                        logger.warning(
-                            f"Salt con longitud inválida ({len(salt)} bytes), regenerando..."
-                        )
+                        logger.warning(f"Salt con longitud inválida ({len(salt)} bytes), regenerando...")
 
             # Crear directorio padre con permisos 0700 (solo propietario)
             os.makedirs(salt_dir, mode=0o700, exist_ok=True)
@@ -72,9 +70,7 @@ class CredentialVault:
                 f"CRITICAL: Vault salt file I/O failed: {e}. "
                 f"Please manually create {salt_file} with 32 random bytes and retry."
             )
-            raise RuntimeError(
-                "Vault salt initialization failed — refusing to use weak deterministic fallback"
-            ) from e
+            raise RuntimeError("Vault salt initialization failed — refusing to use weak deterministic fallback") from e
 
     def __init__(self, db_path: str, master_key: bytes | str) -> None:
         """Inicializa la bóveda con el path a la DB SQLite local para almacenar
@@ -99,11 +95,7 @@ class CredentialVault:
                 salt=salt,
                 iterations=480000,
             )
-            key_material = (
-                master_key
-                if isinstance(master_key, bytes)
-                else master_key.encode("utf-8")
-            )
+            key_material = master_key if isinstance(master_key, bytes) else master_key.encode("utf-8")
             derived_key = base64.urlsafe_b64encode(kdf.derive(key_material))
             self.fernet = Fernet(derived_key)
         except Exception as exc:
@@ -111,9 +103,7 @@ class CredentialVault:
                 "SECURITY: KDF key derivation failed during CredentialVault init: %s",
                 exc,
             )
-            raise RuntimeError(
-                "CredentialVault KDF initialization failed — vault is unusable"
-            ) from exc
+            raise RuntimeError("CredentialVault KDF initialization failed — vault is unusable") from exc
         self.db_path = db_path
 
     async def _execute_pragmas(self, conn: aiosqlite.Connection):
@@ -133,9 +123,7 @@ class CredentialVault:
                     )"""
                 )
                 await conn.commit()
-            logger.info(
-                "🔐 Bóveda de credenciales instanciada e inicializada (Zero Trust local SQLite)."
-            )
+            logger.info("🔐 Bóveda de credenciales instanciada e inicializada (Zero Trust local SQLite).")
         except Exception as e:
             logger.error(f"❌ Fallo al inicializar Bóveda Criptográfica: {e}")
             raise
@@ -164,9 +152,7 @@ class CredentialVault:
     async def set_secret(self, service_name: str, plain_secret: str) -> bool:
         """Cifra en memoria y almacena en SQLite safely."""
         try:
-            cipher_text = self.fernet.encrypt(plain_secret.encode("utf-8")).decode(
-                "utf-8"
-            )
+            cipher_text = self.fernet.encrypt(plain_secret.encode("utf-8")).decode("utf-8")
             async with aiosqlite.connect(self.db_path) as conn:
                 await self._execute_pragmas(conn)
                 await conn.execute(
@@ -174,12 +160,8 @@ class CredentialVault:
                     (service_name, cipher_text),
                 )
                 await conn.commit()
-            logger.info(
-                f"🛡️ Secreto guardado exitosamente en bóveda para: {service_name}"
-            )
+            logger.info(f"🛡️ Secreto guardado exitosamente en bóveda para: {service_name}")
             return True
         except Exception as e:
-            logger.error(
-                f"RCA (Vault): Error cifrando secreto para {service_name} - {e}"
-            )
+            logger.error(f"RCA (Vault): Error cifrando secreto para {service_name} - {e}")
             return False

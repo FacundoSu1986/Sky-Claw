@@ -115,15 +115,9 @@ class ReactiveState:
         # Suscribirse al EventBus para sincronizar la UI
         if event_bus_instance:
             event_bus_instance.subscribe(EventType.MOD_ADDED, self.handle_mod_added)
-            event_bus_instance.subscribe(
-                EventType.CONFLICT_DETECTED, self.handle_conflict_detected
-            )
-            event_bus_instance.subscribe(
-                EventType.LLM_RESPONSE, self._handle_llm_notification
-            )
-            event_bus_instance.subscribe(
-                EventType.AGENT_STATUS_CHANGE, self._handle_agent_status
-            )
+            event_bus_instance.subscribe(EventType.CONFLICT_DETECTED, self.handle_conflict_detected)
+            event_bus_instance.subscribe(EventType.LLM_RESPONSE, self._handle_llm_notification)
+            event_bus_instance.subscribe(EventType.AGENT_STATUS_CHANGE, self._handle_agent_status)
 
     # ── Properties ─────────────────────────────────────────────────────────────
 
@@ -164,9 +158,7 @@ class ReactiveState:
             conflicts = await get_db_agent().get_conflicts(resolved=False)
             self.active_mods.set(len(mods))
             self.conflicts_count.set(len(conflicts))
-            self.pending_updates.set(
-                sum(1 for m in mods if m.get("needs_update", False))
-            )
+            self.pending_updates.set(sum(1 for m in mods if m.get("needs_update", False)))
             total_size = sum(m.get("size_mb", 0) for m in mods)
             self.storage_used.set(round(total_size / 1024, 1))
         except Exception as exc:
@@ -340,15 +332,11 @@ def main_page():
         {"name": "Ordinator", "status": "conflict", "size_mb": 45},
     ]
 
-    chat_messages = _chat_controller.prepare_messages_for_view(
-        state._app_state._chat_messages
-    )
+    chat_messages = _chat_controller.prepare_messages_for_view(state._app_state._chat_messages)
 
     # Inyección de dependencias: métodos de controladores como callbacks de vistas
     callbacks = {
-        "on_send_message": lambda msg: asyncio.create_task(
-            _chat_controller.handle_send_message(msg)
-        ),
+        "on_send_message": lambda msg: asyncio.create_task(_chat_controller.handle_send_message(msg)),
         "on_view_all_mods": _mod_controller.handle_view_all_mods,
         "on_mod_click": _mod_controller.handle_mod_click,
         "on_navigate": _nav_controller.handle_navigation,

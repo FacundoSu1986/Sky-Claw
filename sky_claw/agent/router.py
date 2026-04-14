@@ -135,8 +135,7 @@ class LLMRouter:
 
         # LangChain LCEL Integration
         self._lcel_prompt_composer = PromptComposer(
-            system_prompt=system_prompt
-            or "Eres un asistente de modding de Skyrim SE/AE.",
+            system_prompt=system_prompt or "Eres un asistente de modding de Skyrim SE/AE.",
             tool_registry=tool_registry,
         )
         # Tool executor por defecto para cadenas LCEL
@@ -168,37 +167,25 @@ class LLMRouter:
 
     async def reload_provider(self, new_provider_name: str) -> bool:
         """Cambia el LLM subyacente en caliente extrayendo llaves Zero-Trust del Vault."""
-        logger.info(
-            f"🔄 Iniciando secuencia de Hot-Swap hacia [{new_provider_name}]..."
-        )
+        logger.info(f"🔄 Iniciando secuencia de Hot-Swap hacia [{new_provider_name}]...")
         if not self._vault:
-            logger.error(
-                "RCA: Bóveda criptográfica (Vault) no asginada. Fallo de Hot-Swap."
-            )
+            logger.error("RCA: Bóveda criptográfica (Vault) no asginada. Fallo de Hot-Swap.")
             return False
 
         # Las llaves deben guardarse en la Bóveda como '{provider}_api_key'
         api_key = await self._vault.get_secret(f"{new_provider_name}_api_key")
         if not api_key:
-            logger.error(
-                f"RCA: Clave maestra no hallada en SQLite WAL para {new_provider_name}."
-            )
+            logger.error(f"RCA: Clave maestra no hallada en SQLite WAL para {new_provider_name}.")
             return False
 
         async with self._provider_lock:
             # Fábrica estática instanciada de providers.py - Inyección de dependencia
             try:
-                self._provider = create_provider(
-                    provider_name=new_provider_name, api_key=api_key
-                )
-                logger.info(
-                    f"🚀 Hot-Swap finalizado: LLM Router ahora utilizando {type(self._provider).__name__}."
-                )
+                self._provider = create_provider(provider_name=new_provider_name, api_key=api_key)
+                logger.info(f"🚀 Hot-Swap finalizado: LLM Router ahora utilizando {type(self._provider).__name__}.")
                 return True
             except Exception as e:
-                logger.error(
-                    f"RCA Crítico: El patrón de fábrica devolvió un Provider defectuoso: {e}"
-                )
+                logger.error(f"RCA Crítico: El patrón de fábrica devolvió un Provider defectuoso: {e}")
                 return False
 
     # ------------------------------------------------------------------
@@ -245,8 +232,7 @@ class LLMRouter:
             target_agent=routed.get("target_agent"),
             tool_name=routed.get("tool_name"),
             parameters=routed.get("parameters", {}),
-            requires_context=routed.get("intent")
-            in ["CONSULTA_MODDING", "RAG_CONSULTA"],
+            requires_context=routed.get("intent") in ["CONSULTA_MODDING", "RAG_CONSULTA"],
             metadata=metadata or {},
         )
 
@@ -263,9 +249,7 @@ class LLMRouter:
         if route_classification.intent == "CONSULTA_MODDING":
             if progress_callback:
                 asyncio.create_task(progress_callback("searching_registry", 20))
-            injected_context = await self._context_manager.build_prompt_context(
-                user_message
-            )
+            injected_context = await self._context_manager.build_prompt_context(user_message)
 
             # Usar LCEL para componer prompt RAG
             if route_classification.requires_context:
@@ -274,9 +258,7 @@ class LLMRouter:
                     context=injected_context,
                     sources=["mod_registry", "conflict_db"],
                 )
-                logger.debug(
-                    f"📝 LCEL RAG prompt compuesto: {len(rag_prompt)} mensajes"
-                )
+                logger.debug(f"📝 LCEL RAG prompt compuesto: {len(rag_prompt)} mensajes")
 
         # Input gate — guardrail (Titan v7.0) or legacy sanitize_for_prompt
         if self._guardrail:
@@ -284,7 +266,9 @@ class LLMRouter:
                 user_message = await self._guardrail.before_model_callback(user_message)
             except SecurityViolationError as exc:
                 logger.warning("Guardrail blocked input: %s", exc)
-                return "\u26a0\ufe0f Tu mensaje fue bloqueado por una pol\u00edtica de seguridad. Por favor reformulalo."
+                return (
+                    "\u26a0\ufe0f Tu mensaje fue bloqueado por una pol\u00edtica de seguridad. Por favor reformulalo."
+                )
             except AgentOrchestrationError as exc:
                 logger.error("Orchestration error on input: %s", exc)
                 return "\u26a0\ufe0f Error de orquestaci\u00f3n en la entrada."
@@ -323,17 +307,11 @@ class LLMRouter:
                 stop_reason = response_data.get("stop_reason", "end_turn")
                 content_blocks: list[dict[str, Any]] = response_data.get("content", [])
 
-                await self._save_message(
-                    chat_id, "assistant", json.dumps(content_blocks)
-                )
+                await self._save_message(chat_id, "assistant", json.dumps(content_blocks))
                 messages.append({"role": "assistant", "content": content_blocks})
 
                 if stop_reason != "tool_use":
-                    text_parts = [
-                        block.get("text", "")
-                        for block in content_blocks
-                        if block.get("type") == "text"
-                    ]
+                    text_parts = [block.get("text", "") for block in content_blocks if block.get("type") == "text"]
                     final_text = "\n".join(text_parts)
 
                     # Output gate — guardrail (Titan v7.0)
@@ -368,17 +346,13 @@ class LLMRouter:
                                     "description", f"Ejecutar {tool_name}"
                                 ),
                             )
-                            logger.debug(
-                                f"🔧 LCEL tool prompt compuesto para {tool_name}"
-                            )
+                            logger.debug(f"🔧 LCEL tool prompt compuesto para {tool_name}")
 
                         # Ejecutar herramienta con compatibilidad AsyncToolRegistry
                         result_str = await self._tools.execute(tool_name, tool_input)
                         consecutive_errors = 0
                         if progress_callback:
-                            asyncio.create_task(
-                                progress_callback(f"executed_{tool_name}", 100)
-                            )
+                            asyncio.create_task(progress_callback(f"executed_{tool_name}", 100))
                     except (
                         KeyError,
                         ValueError,
@@ -459,8 +433,7 @@ class LLMRouter:
         if self._conn is None:
             raise RuntimeError("Router database is not open")
         async with self._conn.execute(
-            "SELECT role, content FROM chat_history "
-            "WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
             (chat_id, self._max_context),
         ) as cur:
             rows = await cur.fetchall()

@@ -49,6 +49,4 @@ class ModController:
 
     def handle_conflict_detected(self, event: SkyClawEvent) -> None:
         """Reacciona al evento CONFLICT_DETECTED desde el daemon."""
-        _logger.warning(
-            "Conflicto detectado: %s", event.data.get("description", "desconocido")
-        )
+        _logger.warning("Conflicto detectado: %s", event.data.get("description", "desconocido"))

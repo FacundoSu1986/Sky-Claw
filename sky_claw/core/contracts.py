@@ -55,18 +55,13 @@ def _ensure_registry() -> None:
         _schemas_module = importlib.import_module("sky_claw.core.schemas")
     except ImportError:
         logger.warning(
-            "No se pudo importar sky_claw.core.schemas — "
-            "los decoradores de contratos funcionarán en modo pass-through."
+            "No se pudo importar sky_claw.core.schemas — los decoradores de contratos funcionarán en modo pass-through."
         )
         return
 
     for attr_name in dir(_schemas_module):
         attr = getattr(_schemas_module, attr_name)
-        if (
-            isinstance(attr, type)
-            and issubclass(attr, BaseModel)
-            and attr is not BaseModel
-        ):
+        if isinstance(attr, type) and issubclass(attr, BaseModel) and attr is not BaseModel:
             _SCHEMA_REGISTRY[attr_name] = attr
 
     logger.debug(
@@ -190,9 +185,7 @@ def validate_input(method_name: str) -> Callable:
                     exc.errors(),
                 )
                 raise ValueError(
-                    f"Entrada inválida para {schema_key}: "
-                    f"{exc.error_count()} error(es) de validación.\n"
-                    f"{exc}"
+                    f"Entrada inválida para {schema_key}: {exc.error_count()} error(es) de validación.\n{exc}"
                 ) from exc
 
         return wrapper
@@ -237,8 +230,7 @@ def validate_output(method_name: str) -> Callable:
                 else:
                     # No es dict ni BaseModel — no se puede validar con Pydantic.
                     logger.debug(
-                        "[CONTRACT·OUT] %s retornó %s — "
-                        "salteando validación Pydantic (tipo no-dict).",
+                        "[CONTRACT·OUT] %s retornó %s — salteando validación Pydantic (tipo no-dict).",
                         schema_key,
                         type(result).__name__,
                     )
@@ -254,9 +246,7 @@ def validate_output(method_name: str) -> Callable:
                     exc.errors(),
                 )
                 raise ValueError(
-                    f"Salida inválida para {schema_key}: "
-                    f"{exc.error_count()} error(es) de validación.\n"
-                    f"{exc}"
+                    f"Salida inválida para {schema_key}: {exc.error_count()} error(es) de validación.\n{exc}"
                 ) from exc
 
         return wrapper
@@ -304,9 +294,7 @@ def validate_contract(method_name: str) -> Callable:
                             schema_key,
                             exc.errors(),
                         )
-                        raise ValueError(
-                            f"Entrada inválida para {schema_key}: {exc}"
-                        ) from exc
+                        raise ValueError(f"Entrada inválida para {schema_key}: {exc}") from exc
 
             # ── Fase 2: Ejecutar función (una sola vez) ──
             result = await func(self, *clean_args, **clean_kwargs)
@@ -319,9 +307,7 @@ def validate_contract(method_name: str) -> Callable:
                         if isinstance(result, dict):
                             validated_out = output_cls.model_validate(result)
                         elif isinstance(result, BaseModel):
-                            validated_out = output_cls.model_validate(
-                                result.model_dump()
-                            )
+                            validated_out = output_cls.model_validate(result.model_dump())
                         else:
                             return result
 
@@ -334,9 +320,7 @@ def validate_contract(method_name: str) -> Callable:
                             schema_key,
                             exc.errors(),
                         )
-                        raise ValueError(
-                            f"Salida inválida para {schema_key}: {exc}"
-                        ) from exc
+                        raise ValueError(f"Salida inválida para {schema_key}: {exc}") from exc
 
             return result
 

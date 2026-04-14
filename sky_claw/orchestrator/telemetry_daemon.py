@@ -52,9 +52,7 @@ class TelemetryDaemon:
     async def start(self) -> None:
         """Inicia el loop de telemetría como tarea de fondo."""
         if self._task is not None:
-            logger.warning(
-                "TelemetryDaemon ya está corriendo, ignorando start() duplicado"
-            )
+            logger.warning("TelemetryDaemon ya está corriendo, ignorando start() duplicado")
             return
         self._task = asyncio.create_task(self._telemetry_loop(), name="telemetry-1hz")
         logger.info("TelemetryDaemon iniciado (interval=%.1fs)", self._interval)

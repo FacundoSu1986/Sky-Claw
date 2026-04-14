@@ -77,9 +77,7 @@ class TestAppContext:
         return a
 
     @pytest.mark.asyncio
-    async def test_start_and_stop(
-        self, args: MagicMock, tmp_path: pathlib.Path
-    ) -> None:
+    async def test_start_and_stop(self, args: MagicMock, tmp_path: pathlib.Path) -> None:
         # Use a clean temp config to avoid reading real ~/.sky_claw/config.toml
         clean_config = tmp_path / "config.toml"
         clean_config.write_text("")
@@ -144,9 +142,7 @@ class TestOneshot:
             await _main(["--mode", "oneshot", "search Requiem"])
 
             mock_instance.start.assert_awaited_once()
-            mock_router.chat.assert_awaited_once_with(
-                "search Requiem", mock_instance.session, chat_id="oneshot"
-            )
+            mock_router.chat.assert_awaited_once_with("search Requiem", mock_instance.session, chat_id="oneshot")
             mock_instance.stop.assert_awaited_once()
 
 
@@ -154,9 +150,7 @@ class TestTelegram:
     """Tests for telegram mode."""
 
     @pytest.mark.asyncio
-    async def test_telegram_exits_without_token(
-        self, tmp_path: pathlib.Path, monkeypatch
-    ) -> None:
+    async def test_telegram_exits_without_token(self, tmp_path: pathlib.Path, monkeypatch) -> None:
         """Without TELEGRAM_BOT_TOKEN, telegram mode exits with code 1."""
         monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
 

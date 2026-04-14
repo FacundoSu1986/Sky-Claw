@@ -22,9 +22,7 @@ class TestAsyncSchemaCreation:
     @pytest.mark.asyncio
     async def test_tables_exist(self, adb: AsyncModRegistry) -> None:
         assert adb._conn is not None
-        async with adb._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ) as cur:
+        async with adb._conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name") as cur:
             rows = await cur.fetchall()
             tables = {row[0] for row in rows}
         assert {"mods", "dependencies", "task_log"} <= tables
@@ -78,9 +76,7 @@ class TestMicroBatching:
         ]
         await adb.insert_deps_batch(deps)
         assert adb._conn is not None
-        async with adb._conn.execute(
-            "SELECT * FROM dependencies WHERE mod_id = ?", (mod_id,)
-        ) as cur:
+        async with adb._conn.execute("SELECT * FROM dependencies WHERE mod_id = ?", (mod_id,)) as cur:
             found = await cur.fetchall()
         assert len(found) == 2
 

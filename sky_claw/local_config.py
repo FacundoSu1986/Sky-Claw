@@ -91,8 +91,7 @@ class LocalConfig:
             self.api_key_b64 = None  # Clear legacy
         except (keyring.errors.KeyringError, OSError, Exception) as exc:
             logger.warning(
-                "Could not store API key in keyring (%s). "
-                "Falling back to base64 encoding in config file.",
+                "Could not store API key in keyring (%s). Falling back to base64 encoding in config file.",
                 type(exc).__name__,
             )
             self.api_key_b64 = base64.b64encode(key.encode()).decode()
@@ -108,8 +107,7 @@ class LocalConfig:
             self.nexus_api_key_b64 = None
         except (keyring.errors.KeyringError, OSError, Exception) as exc:
             logger.warning(
-                "Could not store Nexus API key in keyring (%s). "
-                "Falling back to base64 encoding in config file.",
+                "Could not store Nexus API key in keyring (%s). Falling back to base64 encoding in config file.",
                 type(exc).__name__,
             )
             self.nexus_api_key_b64 = base64.b64encode(key.encode()).decode()
@@ -125,8 +123,7 @@ class LocalConfig:
             self.telegram_bot_token_b64 = None
         except (keyring.errors.KeyringError, OSError, Exception) as exc:
             logger.warning(
-                "Could not store Telegram token in keyring (%s). "
-                "Falling back to base64 encoding in config file.",
+                "Could not store Telegram token in keyring (%s). Falling back to base64 encoding in config file.",
                 type(exc).__name__,
             )
             self.telegram_bot_token_b64 = base64.b64encode(token.encode()).decode()

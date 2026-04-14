@@ -62,12 +62,8 @@ def parse_fomod(xml_path: pathlib.Path) -> FomodConfig:
             forbid_external=True,
         )
     except (DTDForbidden, EntitiesForbidden, ExternalReferenceForbidden) as exc:
-        logger.critical(
-            "XML injection attempt detected in FOMOD: %s — %s", xml_path, exc
-        )
-        raise FomodParserSecurityError(
-            f"XML security violation in {xml_path}: {exc}"
-        ) from exc
+        logger.critical("XML injection attempt detected in FOMOD: %s — %s", xml_path, exc)
+        raise FomodParserSecurityError(f"XML security violation in {xml_path}: {exc}") from exc
     except (ET.ParseError, DefusedXmlException) as exc:
         raise FomodParseError(f"Failed to parse XML: {exc}") from exc
 
@@ -80,9 +76,7 @@ def parse_fomod(xml_path: pathlib.Path) -> FomodConfig:
 
     required_files = _parse_file_list(root.find("requiredInstallFiles"))
     install_steps = _parse_install_steps(root.find("installSteps"))
-    conditional_installs = _parse_conditional_installs(
-        root.find("conditionalFileInstalls")
-    )
+    conditional_installs = _parse_conditional_installs(root.find("conditionalFileInstalls"))
 
     return FomodConfig(
         module_name=module_name,
@@ -109,12 +103,8 @@ def parse_fomod_string(xml_string: str) -> FomodConfig:
             forbid_external=True,
         )
     except (DTDForbidden, EntitiesForbidden, ExternalReferenceForbidden) as exc:
-        logger.critical(
-            "XML injection attempt detected in FOMOD string input — %s", exc
-        )
-        raise FomodParserSecurityError(
-            f"XML security violation in FOMOD string: {exc}"
-        ) from exc
+        logger.critical("XML injection attempt detected in FOMOD string input — %s", exc)
+        raise FomodParserSecurityError(f"XML security violation in FOMOD string: {exc}") from exc
     except (ET.ParseError, DefusedXmlException) as exc:
         raise FomodParseError(f"Failed to parse XML: {exc}") from exc
 
@@ -125,9 +115,7 @@ def parse_fomod_string(xml_string: str) -> FomodConfig:
 
     required_files = _parse_file_list(root.find("requiredInstallFiles"))
     install_steps = _parse_install_steps(root.find("installSteps"))
-    conditional_installs = _parse_conditional_installs(
-        root.find("conditionalFileInstalls")
-    )
+    conditional_installs = _parse_conditional_installs(root.find("conditionalFileInstalls"))
 
     return FomodConfig(
         module_name=module_name,
@@ -159,9 +147,7 @@ def _parse_file_list(element: _stdlib_ET.Element | None) -> list[FileInstall]:
                 dest = _norm_path(el.get("destination", ""))
                 priority = int(el.get("priority", "0"))
                 if source:
-                    files.append(
-                        FileInstall(source=source, destination=dest, priority=priority)
-                    )
+                    files.append(FileInstall(source=source, destination=dest, priority=priority))
             except (ValueError, TypeError):
                 logger.warning("Skipping malformed file element: %s", ET.tostring(el))
     return files
@@ -362,11 +348,7 @@ def _parse_conditional_installs(
     for pattern_el in patterns_el.findall("pattern"):
         try:
             deps_el = pattern_el.find("dependencies")
-            conditions = (
-                _parse_composite_dependency_direct(deps_el)
-                if deps_el is not None
-                else CompositeDependency()
-            )
+            conditions = _parse_composite_dependency_direct(deps_el) if deps_el is not None else CompositeDependency()
             files = _parse_file_list(pattern_el.find("files"))
             patterns.append(ConditionalPattern(conditions=conditions, files=files))
         except Exception:

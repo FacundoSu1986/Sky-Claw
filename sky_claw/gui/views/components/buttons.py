@@ -28,13 +28,11 @@ def create_cta_button(
     """
     if variant == "primary":
         button_classes = (
-            "sky-btn-cta px-8 py-4 rounded-full text-white font-semibold text-lg "
-            "flex items-center gap-3 cursor-pointer"
+            "sky-btn-cta px-8 py-4 rounded-full text-white font-semibold text-lg flex items-center gap-3 cursor-pointer"
         )
     elif variant == "secondary":
         button_classes = (
-            "sky-btn-secondary px-6 py-3 rounded-xl text-white font-medium "
-            "flex items-center gap-2 cursor-pointer"
+            "sky-btn-secondary px-6 py-3 rounded-xl text-white font-medium flex items-center gap-2 cursor-pointer"
         )
     else:
         button_classes = (
@@ -47,7 +45,5 @@ def create_cta_button(
         if icon_svg:
             ui.html(f'<span class="mr-2">{icon_svg}</span>')
         ui.label(text)
-        button.on(
-            "click", lambda: [on_click(), ui.run_javascript("playSkyrimSound('click')")]
-        )
+        button.on("click", lambda: [on_click(), ui.run_javascript("playSkyrimSound('click')")])
     return button

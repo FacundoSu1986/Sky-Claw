@@ -201,9 +201,7 @@ class TestChatNotConfigured:
 
 class TestSetupCallback:
     @pytest.mark.asyncio
-    async def test_setup_triggers_callback(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_setup_triggers_callback(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         """POST /api/setup invokes the on_setup_complete callback."""
         from sky_claw.web.app import WebApp
 
@@ -238,9 +236,7 @@ class TestSetupCallback:
         assert web_app._router is not None
 
     @pytest.mark.asyncio
-    async def test_setup_callback_failure_returns_500(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_setup_callback_failure_returns_500(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         """If on_setup_complete raises, POST /api/setup returns 500."""
         from sky_claw.web.app import WebApp
 
@@ -268,9 +264,7 @@ class TestSetupCallback:
         assert "initialization failed" in data["error"]
 
     @pytest.mark.asyncio
-    async def test_setup_without_callback_still_saves(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_setup_without_callback_still_saves(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         """Without callback, POST /api/setup still saves config normally."""
         from sky_claw.web.app import WebApp
 
@@ -315,9 +309,7 @@ class TestWebAppNullRouter:
         assert web_app._router is None
 
     @pytest.mark.asyncio
-    async def test_index_redirects_on_first_run(
-        self, tmp_path: pathlib.Path, aiohttp_client
-    ) -> None:
+    async def test_index_redirects_on_first_run(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         """With first_run=True, / redirects to /setup.html even without router."""
         from sky_claw.web.app import WebApp
 
