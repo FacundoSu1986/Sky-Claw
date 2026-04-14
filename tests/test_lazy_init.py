@@ -15,7 +15,6 @@ import pytest
 from sky_claw.config import Config
 from sky_claw.local_config import LocalConfig, load, save
 
-
 # ---------------------------------------------------------------------------
 # 1. AppContext.is_configured property
 # ---------------------------------------------------------------------------

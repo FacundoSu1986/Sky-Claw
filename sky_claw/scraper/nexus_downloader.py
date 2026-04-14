@@ -310,7 +310,9 @@ class NexusDownloader:
                 timeout = aiohttp.ClientTimeout(total=self._timeout, sock_read=60)
                 headers = {"apikey": self._api_key}
                 # Inicializar ambos hashes para cálculo dual
-                md5_hash = hashlib.md5(usedforsecurity=False)  # nosec B324 - used for file integrity checksum, not security
+                md5_hash = hashlib.md5(
+                    usedforsecurity=False
+                )  # nosec B324 - used for file integrity checksum, not security
                 sha256_hash = hashlib.sha256()
 
                 try:

@@ -9,7 +9,6 @@ import logging
 
 from sky_claw.core.schemas import RouteClassification
 
-
 logger = logging.getLogger("SkyClaw.SemanticRouter")
 
 

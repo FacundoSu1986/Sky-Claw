@@ -18,7 +18,6 @@ from sky_claw.xedit.conflict_analyzer import (
 )
 from sky_claw.xedit.output_parser import XEditOutputParser, XEditResult
 
-
 # ---------------------------------------------------------------------------
 # Sample xEdit output
 # ---------------------------------------------------------------------------

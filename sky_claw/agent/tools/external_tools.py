@@ -83,9 +83,11 @@ async def setup_tools(
                     if local_cfg:
                         local_cfg.loot_exe = str(result.exe_path)
                     results["loot"] = {
-                        "status": "already_installed"
-                        if result.already_existed
-                        else "installed",
+                        "status": (
+                            "already_installed"
+                            if result.already_existed
+                            else "installed"
+                        ),
                         "exe_path": str(result.exe_path),
                         "version": result.version,
                     }
@@ -94,9 +96,11 @@ async def setup_tools(
                     if not result.already_existed and local_cfg:
                         local_cfg.xedit_exe = str(result.exe_path)
                     results["xedit"] = {
-                        "status": "already_installed"
-                        if result.already_existed
-                        else "installed",
+                        "status": (
+                            "already_installed"
+                            if result.already_existed
+                            else "installed"
+                        ),
                         "exe_path": str(result.exe_path),
                         "version": result.version,
                     }
@@ -107,9 +111,11 @@ async def setup_tools(
                     if local_cfg:
                         local_cfg.pandora_exe = str(result.exe_path)
                     results["pandora"] = {
-                        "status": "already_installed"
-                        if result.already_existed
-                        else "installed",
+                        "status": (
+                            "already_installed"
+                            if result.already_existed
+                            else "installed"
+                        ),
                         "exe_path": str(result.exe_path),
                         "version": result.version,
                     }
@@ -122,9 +128,11 @@ async def setup_tools(
                     if local_cfg:
                         local_cfg.bodyslide_exe = str(result.exe_path)
                     results["bodyslide"] = {
-                        "status": "already_installed"
-                        if result.already_existed
-                        else "installed",
+                        "status": (
+                            "already_installed"
+                            if result.already_existed
+                            else "installed"
+                        ),
                         "exe_path": str(result.exe_path),
                         "version": result.version,
                     }

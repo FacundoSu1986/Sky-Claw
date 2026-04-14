@@ -11,7 +11,6 @@ from nicegui import ui
 
 from ..components import create_feature_card
 
-
 # Colores del tema (extraídos del monolito para mantener invariante visual)
 COLORS = {
     "accent_violet": "#8b5cf6",
@@ -44,13 +43,13 @@ def create_features_section(
                 title="Smart Search",
                 description="Natural language search across thousands of "
                 "Skyrim mods with AI-powered recommendations",
-                icon_svg=f'''
+                icon_svg=f"""
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
                          stroke="{COLORS["accent_violet"]}" stroke-width="2">
                         <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
                         <path d="M11 8v6"/><path d="M8 11h6"/>
                     </svg>
-                ''',
+                """,
                 badge="NEW",
                 badge_type="violet",
                 on_click=lambda: (
@@ -84,13 +83,13 @@ def create_features_section(
                 title="Zero-Trust Security",
                 description="HITL protection with Telegram integration for "
                 "approving external downloads safely",
-                icon_svg=f'''
+                icon_svg=f"""
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
                          stroke="{COLORS["accent_cyan"]}" stroke-width="2">
                         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                         <path d="m9 12 2 2 4-4"/>
                     </svg>
-                ''',
+                """,
                 on_click=lambda: (
                     on_feature_click("Zero-Trust Security")
                     if on_feature_click

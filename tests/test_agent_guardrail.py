@@ -20,7 +20,6 @@ from sky_claw.security.agent_guardrail import (
     secure_llm_call,
 )
 
-
 # ---------------------------------------------------------------------------
 # Shared fixture schema (used by schema-validation tests)
 # ---------------------------------------------------------------------------

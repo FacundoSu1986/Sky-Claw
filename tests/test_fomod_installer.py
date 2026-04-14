@@ -13,7 +13,6 @@ from sky_claw.fomod.installer import (
 )
 from sky_claw.security.path_validator import PathValidator, PathViolation
 
-
 # ------------------------------------------------------------------
 # Fixtures
 # ------------------------------------------------------------------

@@ -13,14 +13,15 @@ from sky_claw.mo2.vfs import MO2Controller
 from sky_claw.orchestrator.sync_engine import SyncEngine
 from sky_claw.scraper.masterlist import MasterlistClient
 from sky_claw.security.network_gateway import EgressPolicy, NetworkGateway
-from sky_claw.security.path_validator import PathValidator  # noqa: F401 — used in _make_mo2
+from sky_claw.security.path_validator import (
+    PathValidator,
+)  # noqa: F401 — used in _make_mo2
 from sky_claw.agent.tools import (
     AsyncToolRegistry,
     InstallModParams,
     ProfileParams,
     SearchModParams,
 )
-
 
 # ------------------------------------------------------------------
 # Helpers

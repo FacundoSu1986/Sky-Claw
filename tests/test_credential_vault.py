@@ -85,9 +85,9 @@ class TestCredentialVaultDynamicSalt:
         import sky_claw.security.credential_vault as vault_module
 
         source = inspect.getsource(vault_module)
-        assert "sky_claw_static_salt_for_vault" not in source, (
-            "Static hardcoded salt found in credential_vault — audit finding #4 regression"
-        )
+        assert (
+            "sky_claw_static_salt_for_vault" not in source
+        ), "Static hardcoded salt found in credential_vault — audit finding #4 regression"
 
     def test_salt_failure_raises_runtime_error_with_logging(
         self, tmp_path, caplog
@@ -104,6 +104,6 @@ class TestCredentialVaultDynamicSalt:
                 with pytest.raises(RuntimeError):
                     CredentialVault(db_path=db_path, master_key="key")
 
-        assert any("SECURITY" in r.message for r in caplog.records), (
-            "Expected a CRITICAL security log when salt generation fails"
-        )
+        assert any(
+            "SECURITY" in r.message for r in caplog.records
+        ), "Expected a CRITICAL security log when salt generation fails"

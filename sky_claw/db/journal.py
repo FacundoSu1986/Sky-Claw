@@ -477,12 +477,12 @@ class OperationJournal:
                             description=row[2],
                             status=TransactionStatus(row[3]),
                             created_at=datetime.fromisoformat(row[4]),
-                            committed_at=datetime.fromisoformat(row[5])
-                            if row[5]
-                            else None,
-                            rolled_back_at=datetime.fromisoformat(row[6])
-                            if row[6]
-                            else None,
+                            committed_at=(
+                                datetime.fromisoformat(row[5]) if row[5] else None
+                            ),
+                            rolled_back_at=(
+                                datetime.fromisoformat(row[6]) if row[6] else None
+                            ),
                         )
                     )
 

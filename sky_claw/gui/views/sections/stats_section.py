@@ -12,7 +12,6 @@ from nicegui import ui
 
 from ..components import create_stat_card
 
-
 # Colores del tema (extraídos del monolito para mantener invariante visual)
 COLORS = {
     "accent_violet": "#8b5cf6",
@@ -48,14 +47,14 @@ def create_stats_section(stats: Dict[str, Any]) -> None:
             title="Active Mods",
             value_var=stats.get("active_mods", 0),
             subtitle="from last week",
-            icon_svg=f'''
+            icon_svg=f"""
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
                      stroke="{COLORS["accent_violet"]}" stroke-width="2">
                     <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2
                              0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2
                              2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
                 </svg>
-            ''',
+            """,
             trend="↑ 12%",
             trend_positive=True,
         )
@@ -95,7 +94,7 @@ def create_stats_section(stats: Dict[str, Any]) -> None:
             title="Storage",
             value_var=stats.get("storage_used", 0),
             subtitle="GB used",
-            icon_svg=f'''
+            icon_svg=f"""
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
                      stroke="{COLORS["accent_cyan"]}" stroke-width="2">
                     <rect x="2" y="4" width="20" height="16" rx="2"/>
@@ -103,5 +102,5 @@ def create_stats_section(stats: Dict[str, Any]) -> None:
                     <path d="M10 8h.01"/>
                     <path d="M14 8h.01"/>
                 </svg>
-            ''',
+            """,
         )

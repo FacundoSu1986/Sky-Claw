@@ -37,7 +37,6 @@ from .types import (
 # Importar desde el módulo strategies
 from .strategies import create_search_strategy
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -488,9 +487,9 @@ class TreeOfThoughtEngine(Generic[T, S]):
             "promising_nodes": sum(
                 1 for n in all_nodes if n.evaluation == EvaluationResult.PROMISING
             ),
-            "avg_score": sum(n.score for n in all_nodes) / len(all_nodes)
-            if all_nodes
-            else 0,
+            "avg_score": (
+                sum(n.score for n in all_nodes) / len(all_nodes) if all_nodes else 0
+            ),
             "states_visited": self._cycle_detector.visited_count,
         }
 
@@ -502,9 +501,11 @@ class TreeOfThoughtEngine(Generic[T, S]):
         def node_to_dict(node: ThoughtNode[T]) -> Dict[str, Any]:
             return {
                 "id": node.id,
-                "thought": node.thought[:100] + "..."
-                if len(node.thought) > 100
-                else node.thought,
+                "thought": (
+                    node.thought[:100] + "..."
+                    if len(node.thought) > 100
+                    else node.thought
+                ),
                 "depth": node.depth,
                 "score": round(node.score, 3),
                 "evaluation": node.evaluation.value,

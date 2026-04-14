@@ -27,8 +27,8 @@ from core import search, get_cip_brief
 
 # Model options
 MODELS = {
-    "flash": "gemini-2.5-flash-image",      # Nano Banana Flash - fast, default
-    "pro": "gemini-3-pro-image-preview"      # Nano Banana Pro - quality, 4K text
+    "flash": "gemini-2.5-flash-image",  # Nano Banana Flash - fast, default
+    "pro": "gemini-3-pro-image-preview",  # Nano Banana Pro - quality, 4K text
 }
 DEFAULT_MODEL = "flash"
 
@@ -50,20 +50,21 @@ def load_logo_image(logo_path):
     try:
         img = Image.open(logo_path)
         # Convert to RGB if necessary (Gemini works best with RGB)
-        if img.mode in ('RGBA', 'P'):
+        if img.mode in ("RGBA", "P"):
             # Create white background for transparent images
-            background = Image.new('RGB', img.size, (255, 255, 255))
-            if img.mode == 'RGBA':
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            if img.mode == "RGBA":
                 background.paste(img, mask=img.split()[3])  # Use alpha channel as mask
             else:
                 background.paste(img)
             img = background
-        elif img.mode != 'RGB':
-            img = img.convert('RGB')
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
         return img
     except Exception as e:
         print(f"Error loading logo: {e}")
         return None
+
 
 # Load environment variables
 def load_env():
@@ -71,7 +72,7 @@ def load_env():
     env_paths = [
         Path(__file__).parent.parent.parent / ".env",
         Path.home() / ".claude" / "skills" / ".env",
-        Path.home() / ".claude" / ".env"
+        Path.home() / ".claude" / ".env",
     ]
     for env_path in env_paths:
         if env_path.exists():
@@ -81,12 +82,20 @@ def load_env():
                     if line and not line.startswith("#") and "=" in line:
                         key, value = line.split("=", 1)
                         if key not in os.environ:
-                            os.environ[key] = value.strip('"\'')
+                            os.environ[key] = value.strip("\"'")
+
 
 load_env()
 
 
-def build_cip_prompt(deliverable, brand_name, style=None, industry=None, mockup=None, use_logo_image=False):
+def build_cip_prompt(
+    deliverable,
+    brand_name,
+    style=None,
+    industry=None,
+    mockup=None,
+    use_logo_image=False,
+):
     """Build an optimized prompt for CIP mockup generation
 
     Args:
@@ -100,7 +109,11 @@ def build_cip_prompt(deliverable, brand_name, style=None, industry=None, mockup=
 
     # Get deliverable details
     deliverable_info = search(deliverable, "deliverable", 1)
-    deliverable_data = deliverable_info.get("results", [{}])[0] if deliverable_info.get("results") else {}
+    deliverable_data = (
+        deliverable_info.get("results", [{}])[0]
+        if deliverable_info.get("results")
+        else {}
+    )
 
     # Get style details
     style_info = search(style or "corporate minimal", "style", 1) if style else {}
@@ -108,7 +121,9 @@ def build_cip_prompt(deliverable, brand_name, style=None, industry=None, mockup=
 
     # Get industry details
     industry_info = search(industry or "technology", "industry", 1) if industry else {}
-    industry_data = industry_info.get("results", [{}])[0] if industry_info.get("results") else {}
+    industry_data = (
+        industry_info.get("results", [{}])[0] if industry_info.get("results") else {}
+    )
 
     # Get mockup context
     mockup_context = deliverable_data.get("Mockup Context", "clean professional")
@@ -125,8 +140,12 @@ def build_cip_prompt(deliverable, brand_name, style=None, industry=None, mockup=
     logo_placement = deliverable_data.get("Logo Placement", "center")
 
     style_name = style_data.get("Style Name", style or "corporate")
-    primary_colors = style_data.get("Primary Colors", industry_data.get("Primary Colors", "#0F172A #FFFFFF"))
-    typography = style_data.get("Typography", industry_data.get("Typography", "clean sans-serif"))
+    primary_colors = style_data.get(
+        "Primary Colors", industry_data.get("Primary Colors", "#0F172A #FFFFFF")
+    )
+    typography = style_data.get(
+        "Typography", industry_data.get("Typography", "clean sans-serif")
+    )
     materials = style_data.get("Materials", "premium quality")
     finishes = style_data.get("Finishes", "professional")
 
@@ -149,7 +168,7 @@ def build_cip_prompt(deliverable, brand_name, style=None, industry=None, mockup=
             f"Mood: {mood}",
             "Photorealistic product photography",
             "Soft natural lighting, professional studio quality",
-            "8K resolution, sharp details"
+            "8K resolution, sharp details",
         ]
     else:
         # Pure text-to-image prompt
@@ -167,7 +186,7 @@ def build_cip_prompt(deliverable, brand_name, style=None, industry=None, mockup=
             "photorealistic product photography",
             "soft natural lighting",
             "high quality professional shot",
-            "8k resolution detailed"
+            "8k resolution detailed",
         ]
 
     prompt = ", ".join([p for p in prompt_parts if p])
@@ -179,11 +198,13 @@ def build_cip_prompt(deliverable, brand_name, style=None, industry=None, mockup=
         "brand": brand_name,
         "colors": primary_colors,
         "mockup_context": mockup_context,
-        "logo_placement": logo_placement
+        "logo_placement": logo_placement,
     }
 
 
-def generate_with_nano_banana(prompt_data, output_dir=None, model_key="flash", aspect_ratio="1:1", logo_image=None):
+def generate_with_nano_banana(
+    prompt_data, output_dir=None, model_key="flash", aspect_ratio="1:1", logo_image=None
+):
     """Generate image using Gemini Nano Banana (native image generation)
 
     Supports two modes:
@@ -230,7 +251,9 @@ def generate_with_nano_banana(prompt_data, output_dir=None, model_key="flash", a
     print(f"   Model: {model_name}")
     print(f"   Context: {prompt_data['mockup_context']}")
     if logo_image:
-        print(f"   Logo: Using provided image ({logo_image.size[0]}x{logo_image.size[1]})")
+        print(
+            f"   Logo: Using provided image ({logo_image.size[0]}x{logo_image.size[1]})"
+        )
 
     try:
         # Build contents: either just prompt or [prompt, image] for image editing
@@ -246,17 +269,15 @@ def generate_with_nano_banana(prompt_data, output_dir=None, model_key="flash", a
             model=model_name,
             contents=contents,
             config=types.GenerateContentConfig(
-                response_modalities=['IMAGE'],  # Uppercase required
-                image_config=types.ImageConfig(
-                    aspect_ratio=aspect_ratio
-                )
-            )
+                response_modalities=["IMAGE"],  # Uppercase required
+                image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+            ),
         )
 
         # Extract image from response
         if response.candidates and response.candidates[0].content.parts:
             for part in response.candidates[0].content.parts:
-                if hasattr(part, 'inline_data') and part.inline_data:
+                if hasattr(part, "inline_data") and part.inline_data:
                     # Save image
                     output_dir = output_dir or Path.cwd()
                     output_dir = Path(output_dir)
@@ -264,7 +285,9 @@ def generate_with_nano_banana(prompt_data, output_dir=None, model_key="flash", a
 
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     brand_slug = prompt_data["brand"].lower().replace(" ", "-")
-                    deliverable_slug = prompt_data["deliverable"].lower().replace(" ", "-")
+                    deliverable_slug = (
+                        prompt_data["deliverable"].lower().replace(" ", "-")
+                    )
                     filename = f"{brand_slug}-{deliverable_slug}-{timestamp}.png"
                     filepath = output_dir / filename
 
@@ -283,7 +306,16 @@ def generate_with_nano_banana(prompt_data, output_dir=None, model_key="flash", a
         return None
 
 
-def generate_cip_set(brand_name, industry, style=None, deliverables=None, output_dir=None, model_key="flash", logo_path=None, aspect_ratio="1:1"):
+def generate_cip_set(
+    brand_name,
+    industry,
+    style=None,
+    deliverables=None,
+    output_dir=None,
+    model_key="flash",
+    logo_path=None,
+    aspect_ratio="1:1",
+):
     """Generate a complete CIP set for a brand
 
     Args:
@@ -309,7 +341,13 @@ def generate_cip_set(brand_name, industry, style=None, deliverables=None, output
 
     # Default deliverables if not specified
     if not deliverables:
-        deliverables = ["business card", "letterhead", "office signage", "vehicle", "polo shirt"]
+        deliverables = [
+            "business card",
+            "letterhead",
+            "office signage",
+            "vehicle",
+            "polo shirt",
+        ]
 
     results = []
     for deliverable in deliverables:
@@ -318,7 +356,7 @@ def generate_cip_set(brand_name, industry, style=None, deliverables=None, output
             brand_name=brand_name,
             style=brief.get("style", {}).get("Style Name"),
             industry=industry,
-            use_logo_image=(logo_image is not None)
+            use_logo_image=(logo_image is not None),
         )
 
         filepath = generate_with_nano_banana(
@@ -326,14 +364,16 @@ def generate_cip_set(brand_name, industry, style=None, deliverables=None, output
             output_dir,
             model_key=model_key,
             aspect_ratio=aspect_ratio,
-            logo_image=logo_image
+            logo_image=logo_image,
         )
         if filepath:
-            results.append({
-                "deliverable": deliverable,
-                "filepath": filepath,
-                "prompt": prompt_data["prompt"]
-            })
+            results.append(
+                {
+                    "deliverable": deliverable,
+                    "filepath": filepath,
+                    "prompt": prompt_data["prompt"],
+                }
+            )
 
     return results
 
@@ -345,10 +385,12 @@ def check_logo_required(brand_name, skip_prompt=False):
         str: 'continue' to proceed without logo, 'generate' to use logo-design skill, 'exit' to abort
     """
     if skip_prompt:
-        return 'continue'
+        return "continue"
 
     print(f"\n⚠️  No logo image provided for '{brand_name}'")
-    print("   Without a logo, AI will generate its own interpretation of the brand logo.")
+    print(
+        "   Without a logo, AI will generate its own interpretation of the brand logo."
+    )
     print("")
     print("   Options:")
     print("   1. Continue without logo (AI-generated logo interpretation)")
@@ -358,13 +400,13 @@ def check_logo_required(brand_name, skip_prompt=False):
 
     try:
         choice = input("   Enter choice [1/2/3] (default: 1): ").strip()
-        if choice == '2':
-            return 'generate'
-        elif choice == '3':
-            return 'exit'
-        return 'continue'
+        if choice == "2":
+            return "generate"
+        elif choice == "3":
+            return "exit"
+        return "continue"
     except (EOFError, KeyboardInterrupt):
-        return 'continue'
+        return "continue"
 
 
 def main():
@@ -395,11 +437,13 @@ Models:
 Image Editing Mode:
   When --logo is provided, uses Gemini's text-and-image-to-image capability
   to incorporate your ACTUAL logo into the CIP mockups.
-        """
+        """,
     )
 
     parser.add_argument("--brand", "-b", required=True, help="Brand name")
-    parser.add_argument("--logo", "-l", help="Path to brand logo image (enables image editing mode)")
+    parser.add_argument(
+        "--logo", "-l", help="Path to brand logo image (enables image editing mode)"
+    )
     parser.add_argument("--deliverable", "-d", help="Single deliverable to generate")
     parser.add_argument("--deliverables", help="Comma-separated list of deliverables")
     parser.add_argument("--industry", "-i", default="technology", help="Industry type")
@@ -407,11 +451,24 @@ Image Editing Mode:
     parser.add_argument("--mockup", "-m", help="Mockup context")
     parser.add_argument("--set", action="store_true", help="Generate full CIP set")
     parser.add_argument("--output", "-o", help="Output directory")
-    parser.add_argument("--model", default="flash", choices=["flash", "pro"], help="Model: flash (fast) or pro (quality)")
-    parser.add_argument("--ratio", default="1:1", help="Aspect ratio (1:1, 16:9, 4:3, etc.)")
-    parser.add_argument("--prompt-only", action="store_true", help="Only show prompt, don't generate")
+    parser.add_argument(
+        "--model",
+        default="flash",
+        choices=["flash", "pro"],
+        help="Model: flash (fast) or pro (quality)",
+    )
+    parser.add_argument(
+        "--ratio", default="1:1", help="Aspect ratio (1:1, 16:9, 4:3, etc.)"
+    )
+    parser.add_argument(
+        "--prompt-only", action="store_true", help="Only show prompt, don't generate"
+    )
     parser.add_argument("--json", "-j", action="store_true", help="Output as JSON")
-    parser.add_argument("--no-logo-prompt", action="store_true", help="Skip logo prompt, proceed without logo")
+    parser.add_argument(
+        "--no-logo-prompt",
+        action="store_true",
+        help="Skip logo prompt, proceed without logo",
+    )
 
     args = parser.parse_args()
 
@@ -425,12 +482,14 @@ Image Editing Mode:
     elif not args.prompt_only:
         # No logo provided - ask user what to do
         action = check_logo_required(args.brand, skip_prompt=args.no_logo_prompt)
-        if action == 'generate':
+        if action == "generate":
             print("\n💡 To generate a logo, use the logo-design skill:")
-            print(f"   python e:/Pruba antigravity/.agents/skills/design/scripts/logo/generate.py --brand \"{args.brand}\" --industry \"{args.industry}\"")
+            print(
+                f'   python e:/Pruba antigravity/.agents/skills/design/scripts/logo/generate.py --brand "{args.brand}" --industry "{args.industry}"'
+            )
             print("\n   Then re-run this command with --logo <generated_logo.png>")
             sys.exit(0)
-        elif action == 'exit':
+        elif action == "exit":
             print("\n   Provide logo with: --logo /path/to/your/logo.png")
             sys.exit(0)
         # else: continue without logo
@@ -443,9 +502,22 @@ Image Editing Mode:
 
         if args.prompt_only:
             results = []
-            deliverables = deliverables or ["business card", "letterhead", "office signage", "vehicle", "polo shirt"]
+            deliverables = deliverables or [
+                "business card",
+                "letterhead",
+                "office signage",
+                "vehicle",
+                "polo shirt",
+            ]
             for d in deliverables:
-                prompt_data = build_cip_prompt(d, args.brand, args.style, args.industry, args.mockup, use_logo_image=use_logo)
+                prompt_data = build_cip_prompt(
+                    d,
+                    args.brand,
+                    args.style,
+                    args.industry,
+                    args.mockup,
+                    use_logo_image=use_logo,
+                )
                 results.append(prompt_data)
             if args.json:
                 print(json.dumps(results, indent=2))
@@ -454,8 +526,14 @@ Image Editing Mode:
                     print(f"\n{r['deliverable']}:\n{r['prompt']}\n")
         else:
             results = generate_cip_set(
-                args.brand, args.industry, args.style, deliverables, args.output,
-                model_key=args.model, logo_path=args.logo, aspect_ratio=args.ratio
+                args.brand,
+                args.industry,
+                args.style,
+                deliverables,
+                args.output,
+                model_key=args.model,
+                logo_path=args.logo,
+                aspect_ratio=args.ratio,
             )
             if args.json:
                 print(json.dumps(results, indent=2))
@@ -464,7 +542,14 @@ Image Editing Mode:
     else:
         # Generate single deliverable
         deliverable = args.deliverable or "business card"
-        prompt_data = build_cip_prompt(deliverable, args.brand, args.style, args.industry, args.mockup, use_logo_image=use_logo)
+        prompt_data = build_cip_prompt(
+            deliverable,
+            args.brand,
+            args.style,
+            args.industry,
+            args.mockup,
+            use_logo_image=use_logo,
+        )
 
         if args.prompt_only:
             if args.json:
@@ -473,8 +558,11 @@ Image Editing Mode:
                 print(f"\nPrompt:\n{prompt_data['prompt']}")
         else:
             filepath = generate_with_nano_banana(
-                prompt_data, args.output, model_key=args.model,
-                aspect_ratio=args.ratio, logo_image=logo_image
+                prompt_data,
+                args.output,
+                model_key=args.model,
+                aspect_ratio=args.ratio,
+                logo_image=logo_image,
             )
             if args.json:
                 print(json.dumps({"filepath": filepath, **prompt_data}, indent=2))

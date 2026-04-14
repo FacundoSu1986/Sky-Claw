@@ -20,7 +20,6 @@ from sky_claw.agent.providers import (
     _should_retry,
 )
 
-
 # ------------------------------------------------------------------
 # Tool/message conversion helpers
 # ------------------------------------------------------------------

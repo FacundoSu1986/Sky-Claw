@@ -19,7 +19,6 @@ from aiohttp.test_utils import TestClient
 from sky_claw.web.app import WebApp
 from sky_claw.security.auth_token_manager import AuthTokenManager
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -124,9 +123,9 @@ class TestAutoDetect500:
 
         # Must NOT echo the internal exception message
         error_text = body["error"]
-        assert secret_detail not in error_text, (
-            f"Exception detail leaked in response: {error_text!r}"
-        )
+        assert (
+            secret_detail not in error_text
+        ), f"Exception detail leaked in response: {error_text!r}"
 
     @pytest.mark.asyncio
     async def test_500_returns_generic_message(
@@ -193,9 +192,9 @@ class TestChat500:
         assert "error" in body
 
         error_text = body["error"]
-        assert secret_detail not in error_text, (
-            f"Exception detail leaked in /api/chat response: {error_text!r}"
-        )
+        assert (
+            secret_detail not in error_text
+        ), f"Exception detail leaked in /api/chat response: {error_text!r}"
 
     @pytest.mark.asyncio
     async def test_500_returns_generic_message(
@@ -292,9 +291,9 @@ class TestSetupLoopbackMiddleware:
                 remote_request,
                 handler=AsyncMock(),
             )
-            assert response.status == 403, (
-                f"Expected 403 for remote {remote_ip}, got {response.status}"
-            )
+            assert (
+                response.status == 403
+            ), f"Expected 403 for remote {remote_ip}, got {response.status}"
 
     @pytest.mark.asyncio
     async def test_setup_allowed_from_127_0_0_1(self, mock_session, mock_local_config):

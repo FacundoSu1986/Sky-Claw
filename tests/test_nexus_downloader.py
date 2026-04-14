@@ -36,7 +36,6 @@ from sky_claw.security.network_gateway import (
 )
 from sky_claw.security.path_validator import PathValidator
 
-
 # ---------------------------------------------------------------------------
 # Fixtures & helpers
 # ---------------------------------------------------------------------------

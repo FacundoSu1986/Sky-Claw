@@ -12,7 +12,6 @@ import pytest
 from sky_claw.local_config import LocalConfig, load, save, get_exe_dir
 from sky_claw.security.path_validator import PathValidator, PathViolation
 
-
 # ---------------------------------------------------------------------------
 # Bug 1: Config path resolves to exe dir when frozen
 # ---------------------------------------------------------------------------

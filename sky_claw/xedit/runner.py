@@ -597,9 +597,9 @@ end.
             # Usar el primer FormID y los plugins del plan
             return ScriptGenerator.generate_forward_script(
                 form_id=patch_plan.form_ids[0],
-                source=patch_plan.target_plugins[0]
-                if patch_plan.target_plugins
-                else "",
+                source=(
+                    patch_plan.target_plugins[0] if patch_plan.target_plugins else ""
+                ),
                 target=patch_plan.output_plugin,
             )
 

@@ -13,7 +13,6 @@ from pydantic import field_validator
 
 from sky_claw.config import SystemPaths
 
-
 # HOTFIX: Sandbox directories for path validation
 ALLOWED_SANDBOX_DIRS = [
     SystemPaths.modding_root().resolve(),

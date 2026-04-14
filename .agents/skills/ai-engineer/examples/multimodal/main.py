@@ -25,14 +25,14 @@ def main() -> None:
     parser.add_argument("--image", type=Path, help="Imagen a procesar")
     parser.add_argument("--document", type=Path, help="Documento a analizar")
     args = parser.parse_args()
-    
+
     logger.info("Iniciando ejemplo multimodal")
-    
+
     # Nota: Este es un template - adaptar a implementación real
     # if args.image:
     #     result = vision_model.analyze(args.image)
     #     logger.info(f"Análisis: {result}")
-    
+
     logger.info("Ejemplo completado - adaptar a tu implementación")
 
 

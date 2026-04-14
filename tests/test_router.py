@@ -20,7 +20,6 @@ from sky_claw.scraper.masterlist import MasterlistClient
 from sky_claw.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.security.path_validator import PathValidator
 
-
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------

@@ -20,9 +20,11 @@ def format_output(result):
     output = []
     output.append(f"## Logo Design Search Results")
     output.append(f"**Domain:** {result['domain']} | **Query:** {result['query']}")
-    output.append(f"**Source:** {result['file']} | **Found:** {result['count']} results\n")
+    output.append(
+        f"**Source:** {result['file']} | **Found:** {result['count']} results\n"
+    )
 
-    for i, row in enumerate(result['results'], 1):
+    for i, row in enumerate(result["results"], 1):
         output.append(f"### Result {i}")
         for key, value in row.items():
             value_str = str(value)
@@ -67,8 +69,12 @@ def generate_design_brief(query, brand_name=None):
     if "style" in results:
         output.append("## STYLE RECOMMENDATIONS")
         for r in results["style"]:
-            output.append(f"**{r.get('Style Name', 'N/A')}** ({r.get('Category', 'N/A')})")
-            output.append(f"- Colors: {r.get('Primary Colors', 'N/A')} | {r.get('Secondary Colors', 'N/A')}")
+            output.append(
+                f"**{r.get('Style Name', 'N/A')}** ({r.get('Category', 'N/A')})"
+            )
+            output.append(
+                f"- Colors: {r.get('Primary Colors', 'N/A')} | {r.get('Secondary Colors', 'N/A')}"
+            )
             output.append(f"- Typography: {r.get('Typography', 'N/A')}")
             output.append(f"- Effects: {r.get('Effects', 'N/A')}")
             output.append(f"- Best For: {r.get('Best For', 'N/A')}")
@@ -94,11 +100,26 @@ def generate_design_brief(query, brand_name=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Logo Design Search")
     parser.add_argument("query", help="Search query")
-    parser.add_argument("--domain", "-d", choices=list(CSV_CONFIG.keys()), help="Search domain")
-    parser.add_argument("--max-results", "-n", type=int, default=MAX_RESULTS, help="Max results (default: 3)")
+    parser.add_argument(
+        "--domain", "-d", choices=list(CSV_CONFIG.keys()), help="Search domain"
+    )
+    parser.add_argument(
+        "--max-results",
+        "-n",
+        type=int,
+        default=MAX_RESULTS,
+        help="Max results (default: 3)",
+    )
     parser.add_argument("--json", action="store_true", help="Output as JSON")
-    parser.add_argument("--design-brief", "-db", action="store_true", help="Generate comprehensive design brief")
-    parser.add_argument("--brand-name", "-p", type=str, default=None, help="Brand name for design brief")
+    parser.add_argument(
+        "--design-brief",
+        "-db",
+        action="store_true",
+        help="Generate comprehensive design brief",
+    )
+    parser.add_argument(
+        "--brand-name", "-p", type=str, default=None, help="Brand name for design brief"
+    )
 
     args = parser.parse_args()
 
@@ -109,6 +130,7 @@ if __name__ == "__main__":
         result = search(args.query, args.domain, args.max_results)
         if args.json:
             import json
+
             print(json.dumps(result, indent=2, ensure_ascii=False))
         else:
             print(format_output(result))

@@ -9,7 +9,6 @@ import pytest
 
 from sky_claw.__main__ import _parse_args, AppContext, _main
 
-
 # ------------------------------------------------------------------
 # Argument parsing
 # ------------------------------------------------------------------

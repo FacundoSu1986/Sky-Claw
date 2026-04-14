@@ -20,7 +20,6 @@ from ..sections.cta_section import create_cta_section
 from ..layout.header import create_header
 from ..layout.sidebar import create_sidebar
 
-
 # Colores del tema (extraídos del monolito para mantener invariante visual)
 COLORS = {
     "glow_violet": "#8b5cf6",

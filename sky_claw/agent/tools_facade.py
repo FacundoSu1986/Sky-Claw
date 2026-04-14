@@ -55,7 +55,6 @@ from sky_claw.agent.tools import (
     setup_tools,
 )
 
-
 __all__ = [
     # Clase principal
     "AsyncToolRegistry",

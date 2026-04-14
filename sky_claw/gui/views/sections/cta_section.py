@@ -12,7 +12,6 @@ from nicegui import ui
 
 from ..components import create_cta_button
 
-
 # Colores del tema (extraídos del monolito para mantener invariante visual)
 COLORS = {
     "accent_violet": "#8b5cf6",

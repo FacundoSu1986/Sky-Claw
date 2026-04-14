@@ -22,7 +22,6 @@ from sky_claw.scraper.masterlist import MasterlistClient, MasterlistFetchError
 from sky_claw.security.network_gateway import NetworkGateway
 from sky_claw.security.path_validator import PathValidator
 
-
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------

@@ -198,9 +198,11 @@ def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str
                         )
                 msg_dict: dict[str, Any] = {
                     "role": role,
-                    "content": "\n".join(text_parts)
-                    if text_parts
-                    else ("..." if not tool_calls else None),
+                    "content": (
+                        "\n".join(text_parts)
+                        if text_parts
+                        else ("..." if not tool_calls else None)
+                    ),
                 }
                 if tool_calls:
                     msg_dict["tool_calls"] = tool_calls

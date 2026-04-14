@@ -398,12 +398,16 @@ class AppContext:
                 animation_hub=AnimationHub(
                     mo2=mo2,
                     config=EngineConfig(
-                        pandora_exe=pathlib.Path(local_cfg.pandora_exe)
-                        if local_cfg.pandora_exe
-                        else None,
-                        bodyslide_exe=pathlib.Path(local_cfg.bodyslide_exe)
-                        if local_cfg.bodyslide_exe
-                        else None,
+                        pandora_exe=(
+                            pathlib.Path(local_cfg.pandora_exe)
+                            if local_cfg.pandora_exe
+                            else None
+                        ),
+                        bodyslide_exe=(
+                            pathlib.Path(local_cfg.bodyslide_exe)
+                            if local_cfg.bodyslide_exe
+                            else None
+                        ),
                     ),
                     path_validator=validator,
                 ),

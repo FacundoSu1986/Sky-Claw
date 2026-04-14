@@ -24,7 +24,6 @@ import pytest
 
 from sky_claw.security.hitl import Decision, HITLGuard, HITLRequest
 
-
 # ---------------------------------------------------------------------------
 # Helpers / factories
 # ---------------------------------------------------------------------------

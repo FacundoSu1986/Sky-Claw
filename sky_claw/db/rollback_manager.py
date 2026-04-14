@@ -89,9 +89,11 @@ class RollbackManager:
             success=True,
             transaction_id=entry.id,
             entries_restored=1 if entry.snapshot_path else 0,
-            files_deleted=1
-            if entry.operation_type
-            in [OperationType.FILE_CREATE, OperationType.MOD_INSTALL]
-            else 0,
+            files_deleted=(
+                1
+                if entry.operation_type
+                in [OperationType.FILE_CREATE, OperationType.MOD_INSTALL]
+                else 0
+            ),
             errors=[],
         )

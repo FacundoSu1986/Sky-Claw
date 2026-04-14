@@ -21,7 +21,6 @@ from sky_claw.db.locks import (
 )
 from sky_claw.db.snapshot_manager import FileSnapshotManager
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================

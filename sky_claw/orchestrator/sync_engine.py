@@ -264,9 +264,9 @@ class SyncEngine:
                 operation_type=operation_type,
                 target_path=str(target_path),
                 transaction_id=transaction_id,
-                snapshot_path=str(snapshot_info.snapshot_path)
-                if snapshot_info
-                else None,
+                snapshot_path=(
+                    str(snapshot_info.snapshot_path) if snapshot_info else None
+                ),
             )
 
             # 4. Ejecutar la operación

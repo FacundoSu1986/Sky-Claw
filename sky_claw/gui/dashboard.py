@@ -536,17 +536,17 @@ class DashboardGUI:
                     ui.button(
                         "Actualizar",
                         on_click=self._update_all,
-                    ).classes("px-3 py-1 rounded-lg text-xs").props(
-                        "ripple flat no-caps"
-                    ).style(
+                    ).classes(
+                        "px-3 py-1 rounded-lg text-xs"
+                    ).props("ripple flat no-caps").style(
                         "color: var(--sky-text-secondary); border: 1px solid var(--sky-surface-border);"
                     )
                     ui.button(
                         "Escanear",
                         on_click=self._scan_all,
-                    ).classes("px-3 py-1 rounded-lg text-xs").props(
-                        "ripple flat no-caps"
-                    ).style(
+                    ).classes(
+                        "px-3 py-1 rounded-lg text-xs"
+                    ).props("ripple flat no-caps").style(
                         "color: var(--sky-text-secondary); border: 1px solid var(--sky-surface-border);"
                     )
 
@@ -674,9 +674,9 @@ class DashboardGUI:
                 ui.button(
                     "Enviar",
                     on_click=self._send_message,
-                ).classes("sky-wizard-cta px-5 py-2 rounded-xl font-semibold").props(
-                    "ripple"
-                )
+                ).classes(
+                    "sky-wizard-cta px-5 py-2 rounded-xl font-semibold"
+                ).props("ripple")
 
     def append_chat_message(
         self, text: str, is_user: bool = False, style: str = "normal"
@@ -691,9 +691,11 @@ class DashboardGUI:
                 pass
 
         style_map = {
-            "normal": "sky-chat-message--assistant"
-            if not is_user
-            else "sky-chat-message--user",
+            "normal": (
+                "sky-chat-message--assistant"
+                if not is_user
+                else "sky-chat-message--user"
+            ),
             "success": "sky-chat-message--success",
             "error": "sky-chat-message--error",
         }

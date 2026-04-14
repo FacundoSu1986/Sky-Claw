@@ -19,8 +19,8 @@ from pathlib import Path
 from datetime import datetime
 
 # Fix encoding for Windows
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stdout.encoding != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # Colors para terminal
 GREEN = "\033[92m"
@@ -36,6 +36,7 @@ CONFIG_PATH = Path.home() / ".sky_claw" / "config.toml"
 # ═══════════════════════════════════════════════════════════════════════════════
 # Test Cases (Tree of Thoughts Pensamiento B)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class FrontendBridgeTestSuite:
     def __init__(self):
@@ -69,7 +70,9 @@ class FrontendBridgeTestSuite:
         if content:
             payload["content"] = content
 
-        print(f"  📤 Enviando {BOLD}{msg_type}{RESET}: {json.dumps(content or {})[:80]}...")
+        print(
+            f"  📤 Enviando {BOLD}{msg_type}{RESET}: {json.dumps(content or {})[:80]}..."
+        )
         await self.ws.send(json.dumps(payload))
 
         try:
@@ -94,7 +97,13 @@ class FrontendBridgeTestSuite:
             return False
 
         content = response.get("content", {})
-        required_fields = {"llm_provider", "telegram_chat_id", "has_llm_key", "has_nexus_key", "has_telegram_token"}
+        required_fields = {
+            "llm_provider",
+            "telegram_chat_id",
+            "has_llm_key",
+            "has_nexus_key",
+            "has_telegram_token",
+        }
         missing = required_fields - set(content.keys())
 
         if missing:
@@ -105,7 +114,9 @@ class FrontendBridgeTestSuite:
         secrets = {"llm_api_key", "nexus_api_key", "telegram_bot_token"}
         exposed = secrets & set(content.keys())
         if exposed:
-            print(f"  {RED}❌ SECURITY: Secretos expuestos al frontend: {exposed}{RESET}")
+            print(
+                f"  {RED}❌ SECURITY: Secretos expuestos al frontend: {exposed}{RESET}"
+            )
             return False
 
         print(f"  {GREEN}✅ CONFIG_DATA válido:{RESET}")
@@ -140,16 +151,20 @@ class FrontendBridgeTestSuite:
         await asyncio.sleep(0.5)
         if CONFIG_PATH.exists():
             content = CONFIG_PATH.read_text()
-            if "llm_provider = \"ollama\"" in content:
+            if 'llm_provider = "ollama"' in content:
                 print(f"  {GREEN}✅ TOML actualizado (llm_provider = ollama){RESET}")
             else:
-                print(f"  {YELLOW}⚠️ TOML aún no refleja cambio (¿eventual consistency?){RESET}")
+                print(
+                    f"  {YELLOW}⚠️ TOML aún no refleja cambio (¿eventual consistency?){RESET}"
+                )
 
         return True
 
     async def test_update_config_invalid_token(self) -> bool:
         """TEST 3: UPDATE_CONFIG con Telegram token inválido (sin ':')."""
-        print(f"\n{BOLD}=== TEST 3: UPDATE_CONFIG (INVÁLIDO - Token Telegram) ==={RESET}")
+        print(
+            f"\n{BOLD}=== TEST 3: UPDATE_CONFIG (INVÁLIDO - Token Telegram) ==={RESET}"
+        )
 
         test_data = {
             "telegram_bot_token": "invalid_token_without_colon",
@@ -170,7 +185,9 @@ class FrontendBridgeTestSuite:
             print(f"     Mensaje: {error_msg}")
             return True
         else:
-            print(f"  {YELLOW}⚠️ Error rechazado pero mensaje poco claro: {error_msg}{RESET}")
+            print(
+                f"  {YELLOW}⚠️ Error rechazado pero mensaje poco claro: {error_msg}{RESET}"
+            )
             return False
 
     async def test_update_config_invalid_chatid(self) -> bool:
@@ -196,12 +213,16 @@ class FrontendBridgeTestSuite:
             print(f"     Mensaje: {error_msg}")
             return True
         else:
-            print(f"  {YELLOW}⚠️ Error rechazado pero mensaje poco claro: {error_msg}{RESET}")
+            print(
+                f"  {YELLOW}⚠️ Error rechazado pero mensaje poco claro: {error_msg}{RESET}"
+            )
             return False
 
     async def test_update_config_excessive_length(self) -> bool:
         """TEST 5: UPDATE_CONFIG con API key demasiado larga (> 512 chars)."""
-        print(f"\n{BOLD}=== TEST 5: UPDATE_CONFIG (INVÁLIDO - Longitud excesiva) ==={RESET}")
+        print(
+            f"\n{BOLD}=== TEST 5: UPDATE_CONFIG (INVÁLIDO - Longitud excesiva) ==={RESET}"
+        )
 
         test_data = {
             "llm_api_key": "x" * 600,  # Excede max 512
@@ -222,7 +243,9 @@ class FrontendBridgeTestSuite:
             print(f"     Mensaje: {error_msg}")
             return True
         else:
-            print(f"  {YELLOW}⚠️ Error rechazado pero mensaje poco claro: {error_msg}{RESET}")
+            print(
+                f"  {YELLOW}⚠️ Error rechazado pero mensaje poco claro: {error_msg}{RESET}"
+            )
             return False
 
     async def test_query_message(self) -> bool:
@@ -260,8 +283,14 @@ class FrontendBridgeTestSuite:
             ("GET_CONFIG", self.test_get_config),
             ("UPDATE_CONFIG (VÁLIDO)", self.test_update_config_valid),
             ("UPDATE_CONFIG (Token inválido)", self.test_update_config_invalid_token),
-            ("UPDATE_CONFIG (Chat ID inválido)", self.test_update_config_invalid_chatid),
-            ("UPDATE_CONFIG (Longitud excesiva)", self.test_update_config_excessive_length),
+            (
+                "UPDATE_CONFIG (Chat ID inválido)",
+                self.test_update_config_invalid_chatid,
+            ),
+            (
+                "UPDATE_CONFIG (Longitud excesiva)",
+                self.test_update_config_excessive_length,
+            ),
             ("QUERY (Chat)", self.test_query_message),
         ]
 
@@ -300,7 +329,9 @@ class FrontendBridgeTestSuite:
         if success_rate >= 80:
             print(f"\n{BOLD}{GREEN}🎯 RAMA MAESTRA VIABLE (P >= 0.8){RESET}")
         else:
-            print(f"\n{BOLD}{YELLOW}⚠️ RAMA MAESTRA REQUIERE ITERACIÓN (P < 0.8){RESET}")
+            print(
+                f"\n{BOLD}{YELLOW}⚠️ RAMA MAESTRA REQUIERE ITERACIÓN (P < 0.8){RESET}"
+            )
 
         print()
 
@@ -308,6 +339,7 @@ class FrontendBridgeTestSuite:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 async def main():
     suite = FrontendBridgeTestSuite()

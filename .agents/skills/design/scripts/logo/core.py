@@ -18,18 +18,58 @@ CSV_CONFIG = {
     "style": {
         "file": "styles.csv",
         "search_cols": ["Style Name", "Category", "Keywords", "Best For"],
-        "output_cols": ["Style Name", "Category", "Keywords", "Primary Colors", "Secondary Colors", "Typography", "Effects", "Best For", "Avoid For", "Complexity", "Era"]
+        "output_cols": [
+            "Style Name",
+            "Category",
+            "Keywords",
+            "Primary Colors",
+            "Secondary Colors",
+            "Typography",
+            "Effects",
+            "Best For",
+            "Avoid For",
+            "Complexity",
+            "Era",
+        ],
     },
     "color": {
         "file": "colors.csv",
-        "search_cols": ["Palette Name", "Category", "Keywords", "Psychology", "Best For"],
-        "output_cols": ["Palette Name", "Category", "Keywords", "Primary Hex", "Secondary Hex", "Accent Hex", "Background Hex", "Text Hex", "Psychology", "Best For", "Avoid For"]
+        "search_cols": [
+            "Palette Name",
+            "Category",
+            "Keywords",
+            "Psychology",
+            "Best For",
+        ],
+        "output_cols": [
+            "Palette Name",
+            "Category",
+            "Keywords",
+            "Primary Hex",
+            "Secondary Hex",
+            "Accent Hex",
+            "Background Hex",
+            "Text Hex",
+            "Psychology",
+            "Best For",
+            "Avoid For",
+        ],
     },
     "industry": {
         "file": "industries.csv",
         "search_cols": ["Industry", "Keywords", "Recommended Styles", "Mood"],
-        "output_cols": ["Industry", "Keywords", "Recommended Styles", "Primary Colors", "Typography", "Common Symbols", "Mood", "Best Practices", "Avoid"]
-    }
+        "output_cols": [
+            "Industry",
+            "Keywords",
+            "Recommended Styles",
+            "Primary Colors",
+            "Typography",
+            "Common Symbols",
+            "Mood",
+            "Best Practices",
+            "Avoid",
+        ],
+    },
 }
 
 
@@ -49,7 +89,7 @@ class BM25:
 
     def tokenize(self, text):
         """Lowercase, split, remove punctuation, filter short words"""
-        text = re.sub(r'[^\w\s]', ' ', str(text).lower())
+        text = re.sub(r"[^\w\s]", " ", str(text).lower())
         return [w for w in text.split() if len(w) > 2]
 
     def fit(self, documents):
@@ -88,7 +128,9 @@ class BM25:
                     tf = term_freqs[token]
                     idf = self.idf[token]
                     numerator = tf * (self.k1 + 1)
-                    denominator = tf + self.k1 * (1 - self.b + self.b * doc_len / self.avgdl)
+                    denominator = tf + self.k1 * (
+                        1 - self.b + self.b * doc_len / self.avgdl
+                    )
                     score += idf * numerator / denominator
 
             scores.append((idx, score))
@@ -99,7 +141,7 @@ class BM25:
 # ============ SEARCH FUNCTIONS ============
 def _load_csv(filepath):
     """Load CSV and return list of dicts"""
-    with open(filepath, 'r', encoding='utf-8') as f:
+    with open(filepath, "r", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
@@ -133,12 +175,59 @@ def detect_domain(query):
     query_lower = query.lower()
 
     domain_keywords = {
-        "style": ["style", "minimalist", "vintage", "modern", "retro", "geometric", "abstract", "emblem", "badge", "wordmark", "mascot", "luxury", "playful", "corporate"],
-        "color": ["color", "palette", "hex", "#", "rgb", "blue", "red", "green", "gold", "warm", "cool", "vibrant", "pastel"],
-        "industry": ["tech", "healthcare", "finance", "legal", "restaurant", "food", "fashion", "beauty", "education", "sports", "fitness", "real estate", "crypto", "gaming"]
+        "style": [
+            "style",
+            "minimalist",
+            "vintage",
+            "modern",
+            "retro",
+            "geometric",
+            "abstract",
+            "emblem",
+            "badge",
+            "wordmark",
+            "mascot",
+            "luxury",
+            "playful",
+            "corporate",
+        ],
+        "color": [
+            "color",
+            "palette",
+            "hex",
+            "#",
+            "rgb",
+            "blue",
+            "red",
+            "green",
+            "gold",
+            "warm",
+            "cool",
+            "vibrant",
+            "pastel",
+        ],
+        "industry": [
+            "tech",
+            "healthcare",
+            "finance",
+            "legal",
+            "restaurant",
+            "food",
+            "fashion",
+            "beauty",
+            "education",
+            "sports",
+            "fitness",
+            "real estate",
+            "crypto",
+            "gaming",
+        ],
     }
 
-    scores = {domain: sum(1 for kw in keywords if kw in query_lower) for domain, keywords in domain_keywords.items()}
+    scores = {
+        domain: sum(1 for kw in keywords if kw in query_lower)
+        for domain, keywords in domain_keywords.items()
+    }
     best = max(scores, key=scores.get)
     return best if scores[best] > 0 else "style"
 
@@ -154,14 +243,16 @@ def search(query, domain=None, max_results=MAX_RESULTS):
     if not filepath.exists():
         return {"error": f"File not found: {filepath}", "domain": domain}
 
-    results = _search_csv(filepath, config["search_cols"], config["output_cols"], query, max_results)
+    results = _search_csv(
+        filepath, config["search_cols"], config["output_cols"], query, max_results
+    )
 
     return {
         "domain": domain,
         "query": query,
         "file": config["file"],
         "count": len(results),
-        "results": results
+        "results": results,
     }
 
 

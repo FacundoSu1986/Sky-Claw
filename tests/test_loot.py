@@ -12,7 +12,6 @@ from sky_claw.loot.cli import LOOTConfig, LOOTRunner, LOOTNotFoundError
 from sky_claw.loot.masterlist import MasterlistDownloader
 from sky_claw.loot.parser import LOOTOutputParser, LOOTResult
 
-
 # ------------------------------------------------------------------
 # LOOTOutputParser
 # ------------------------------------------------------------------

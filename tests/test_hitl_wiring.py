@@ -22,7 +22,6 @@ from sky_claw.security.hitl import Decision, HITLGuard
 from sky_claw.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.security.path_validator import PathValidator
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -423,9 +422,9 @@ class TestAppContextWiring:
 
         try:
             assert ctx.hitl is not None, "HITLGuard should always be created"
-            assert ctx.network.downloader is not None, (
-                "NexusDownloader should be created when NEXUS_API_KEY is set"
-            )
+            assert (
+                ctx.network.downloader is not None
+            ), "NexusDownloader should be created when NEXUS_API_KEY is set"
             assert ctx.network.downloader.staging_dir == tmp_path / "staging"
         finally:
             await ctx.stop()

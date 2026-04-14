@@ -126,12 +126,10 @@ class CredentialVault:
         try:
             async with aiosqlite.connect(self.db_path) as conn:
                 await self._execute_pragmas(conn)
-                await conn.execute(
-                    """CREATE TABLE IF NOT EXISTS sky_vault (
+                await conn.execute("""CREATE TABLE IF NOT EXISTS sky_vault (
                         service TEXT PRIMARY KEY,
                         cipher_text TEXT NOT NULL
-                    )"""
-                )
+                    )""")
                 await conn.commit()
             logger.info(
                 "🔐 Bóveda de credenciales instanciada e inicializada (Zero Trust local SQLite)."
