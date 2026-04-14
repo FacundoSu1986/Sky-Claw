@@ -15,7 +15,6 @@ import pytest
 from sky_claw.core.event_bus import CoreEventBus, Event
 from sky_claw.db.locks import (
     DistributedLockManager,
-    LockAcquisitionError,
 )
 from sky_claw.db.snapshot_manager import FileSnapshotManager
 from sky_claw.tools.synthesis_runner import (
@@ -452,9 +451,12 @@ async def test_events_published(
 ) -> None:
     """Both started and completed events are published with correct topics."""
     received: list[Event] = []
+    completed_event = asyncio.Event()
 
     async def _capture_event(e: Event) -> None:
         received.append(e)
+        if e.topic == "synthesis.pipeline.completed":
+            completed_event.set()
 
     event_bus.subscribe("synthesis.pipeline.*", _capture_event)
 
@@ -483,8 +485,8 @@ async def test_events_published(
     ):
         await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
 
-    # Give event bus time to dispatch
-    await asyncio.sleep(0.2)
+    # Wait deterministically for the completed event to be dispatched
+    await asyncio.wait_for(completed_event.wait(), timeout=5.0)
 
     topics = [e.topic for e in received]
     assert "synthesis.pipeline.started" in topics
@@ -507,17 +509,17 @@ async def test_lock_contention(
     lock_manager: DistributedLockManager,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Pre-acquired lock from another agent causes LockAcquisitionError."""
+    """Pre-acquired lock from another agent returns error dict — no exception raised."""
     # Pre-acquire the lock
     await lock_manager.acquire_lock("Synthesis.esp", "other-agent")
 
     output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
     output_esp.touch()
-    result = _make_success_result(output_esp)
+    run_result = _make_success_result(output_esp)
 
     with (
         patch.object(
-            SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=result
+            SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=run_result
         ),
         patch.object(
             SynthesisRunner,
@@ -533,9 +535,11 @@ async def test_lock_contention(
                 "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
             },
         ),
-        pytest.raises(LockAcquisitionError),
     ):
-        await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
+        out = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is False
+    assert any("Lock contention" in e for e in out["errors"])
 
 
 # =============================================================================

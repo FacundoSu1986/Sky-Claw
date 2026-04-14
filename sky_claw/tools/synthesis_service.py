@@ -36,7 +36,11 @@ from sky_claw.core.event_payloads import (
     SynthesisPipelineCompletedPayload,
     SynthesisPipelineStartedPayload,
 )
-from sky_claw.db.locks import DistributedLockManager, SnapshotTransactionLock
+from sky_claw.db.locks import (
+    DistributedLockManager,
+    LockAcquisitionError,
+    SnapshotTransactionLock,
+)
 from sky_claw.tools.patcher_pipeline import PatcherPipeline
 from sky_claw.tools.synthesis_runner import (
     SynthesisConfig,
@@ -297,6 +301,21 @@ class SynthesisPipelineService:
                 stderr=str(exc),
                 patchers_executed=[],
                 errors=[str(exc)],
+            )
+
+        except LockAcquisitionError as exc:
+            # Lock was never acquired — no journal TX started, no snapshots to restore
+            logger.warning(
+                "Lock contention para %s: %s", self.RESOURCE_ID, exc
+            )
+            result = SynthesisResult(
+                success=False,
+                output_esp=None,
+                return_code=-1,
+                stdout="",
+                stderr=str(exc),
+                patchers_executed=[],
+                errors=[f"Lock contention: {exc}"],
             )
 
         duration = time.monotonic() - t0

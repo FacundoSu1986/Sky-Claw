@@ -349,7 +349,31 @@ class SupervisorAgent:
 
             # FASE 3: Synthesis Pipeline (delegado a SynthesisPipelineService)
             case "execute_synthesis_pipeline":
-                return await self._synthesis_service.execute_pipeline(**payload_dict)
+                try:
+                    result = await self._synthesis_service.execute_pipeline(
+                        **payload_dict
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "RCA: Falló execute_synthesis_pipeline; se convierte la excepción a error dict."
+                    )
+                    return {
+                        "status": "error",
+                        "reason": "SynthesisPipelineExecutionFailed",
+                        "details": str(exc),
+                    }
+
+                if not isinstance(result, dict):
+                    logger.error(
+                        "RCA: execute_synthesis_pipeline devolvió un tipo inválido: %s",
+                        type(result).__name__,
+                    )
+                    return {
+                        "status": "error",
+                        "reason": "InvalidSynthesisPipelineResult",
+                    }
+
+                return result
 
             # FASE 4: DynDOLOD/TexGen Pipeline Integration
             case "generate_lods":
