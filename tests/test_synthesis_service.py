@@ -205,10 +205,13 @@ async def test_pipeline_failure_triggers_rollback(
     original_content = b"original ESP content"
     output_esp.write_bytes(original_content)
 
-    fail_result = _make_failure_result()
+    async def _corrupting_pipeline(*args: object, **kwargs: object) -> SynthesisResult:
+        """Simulate a pipeline that corrupts the file before failing."""
+        output_esp.write_bytes(b"CORRUPTED_BY_PIPELINE")
+        return _make_failure_result()
 
     with (
-        patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=fail_result),
+        patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, side_effect=_corrupting_pipeline),
         patch.dict(
             "os.environ",
             {
@@ -221,7 +224,7 @@ async def test_pipeline_failure_triggers_rollback(
         out = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
 
     assert out["success"] is False
-    # File should be restored to original content
+    # File should be restored to original content after rollback
     assert output_esp.read_bytes() == original_content
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
     mock_journal.commit_transaction.assert_not_awaited()
@@ -243,10 +246,13 @@ async def test_esp_validation_failure_triggers_rollback(
     original_content = b"good ESP before run"
     output_esp.write_bytes(original_content)
 
-    success_result = _make_success_result(output_esp)
+    async def _corrupting_success_pipeline(*args: object, **kwargs: object) -> SynthesisResult:
+        """Simulate a pipeline that corrupts the file but reports success."""
+        output_esp.write_bytes(b"CORRUPTED_ESP_OUTPUT")
+        return _make_success_result(output_esp)
 
     with (
-        patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=success_result),
+        patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, side_effect=_corrupting_success_pipeline),
         patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=False),
         patch.dict(
             "os.environ",
@@ -261,6 +267,7 @@ async def test_esp_validation_failure_triggers_rollback(
 
     assert out["success"] is False
     assert "validation failed" in out["errors"][0].lower() or "corrupted" in out["errors"][0].lower()
+    # File should be restored to original content after rollback
     assert output_esp.read_bytes() == original_content
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
 
@@ -401,7 +408,11 @@ async def test_events_published(
 ) -> None:
     """Both started and completed events are published with correct topics."""
     received: list[Event] = []
-    event_bus.subscribe("synthesis.pipeline.*", lambda e: received.append(e))
+
+    async def _capture_event(e: Event) -> None:
+        received.append(e)
+
+    event_bus.subscribe("synthesis.pipeline.*", _capture_event)
 
     output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
     output_esp.touch()

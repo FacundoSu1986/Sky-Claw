@@ -49,7 +49,7 @@ from sky_claw.tools.synthesis_runner import (
     SynthesisValidationError,
 )
 
-logger = logging.getLogger("SkyClaw.SynthesisService")
+logger = logging.getLogger(__name__)
 
 # Directorio de staging de backups (compartido con supervisor)
 _BACKUP_STAGING_DIR = ".skyclaw_backups/"
@@ -222,19 +222,15 @@ class SynthesisPipelineService:
             )
         )
 
-        # --- Journal transaction ---
-        tx_id = await self._journal.begin_transaction(
-            description="synthesis_pipeline",
-            agent_id=self.AGENT_ID,
-        )
-
         # --- Transactional execution ---
+        # Order: lock → snapshot → begin_transaction → execute → commit/abort
         target_files: list[pathlib.Path] = []
         if create_snapshot and target_esp.exists():
             target_files = [target_esp]
 
         result: SynthesisResult
         rolled_back = False
+        tx_id: int | None = None
 
         try:
             async with SnapshotTransactionLock(
@@ -245,6 +241,12 @@ class SynthesisPipelineService:
                 target_files=target_files,
                 metadata={"source": "synthesis_pipeline", "patchers": patcher_ids},
             ):
+                # Begin journal transaction AFTER lock+snapshot acquired
+                tx_id = await self._journal.begin_transaction(
+                    description="synthesis_pipeline",
+                    agent_id=self.AGENT_ID,
+                )
+
                 result = await runner.run_pipeline(patcher_ids)
 
                 # Validar ESP DENTRO del context manager para activar rollback
@@ -265,17 +267,20 @@ class SynthesisPipelineService:
                     )
 
             # Normal exit — commit journal
-            await self._journal.commit_transaction(tx_id)
+            if tx_id is not None:
+                await self._journal.commit_transaction(tx_id)
 
         except (SynthesisExecutionError, SynthesisValidationError) as exc:
             # __aexit__ ya restauró los snapshots
             rolled_back = bool(target_files)
-            await self._journal.mark_transaction_rolled_back(tx_id)
+            if tx_id is not None:
+                await self._journal.mark_transaction_rolled_back(tx_id)
             logger.error("Pipeline Synthesis falló: %s", exc)
+            _rc = getattr(exc, "return_code", None)
             result = SynthesisResult(
                 success=False,
                 output_esp=target_esp if target_esp.exists() else None,
-                return_code=getattr(exc, "return_code", None) or -1,
+                return_code=_rc if _rc is not None else -1,
                 stdout="",
                 stderr=str(exc),
                 patchers_executed=[],

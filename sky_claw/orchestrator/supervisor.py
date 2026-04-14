@@ -62,8 +62,8 @@ from sky_claw.tools.dyndolod_runner import (
 # FASE 5: Imports de componentes de detección de conflictos de assets
 from sky_claw.assets import AssetConflictDetector, AssetConflictReport
 
-logger = logging.getLogger("SkyClaw.Supervisor")
-security_logger = logging.getLogger("SkyClaw.Security")
+logger = logging.getLogger(__name__)
+security_logger = logging.getLogger(f"{__name__}.security")
 
 # FASE 1.5: Constante para directorio de staging de backups
 BACKUP_STAGING_DIR = ".skyclaw_backups/"

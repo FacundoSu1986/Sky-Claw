@@ -16,7 +16,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-logger = logging.getLogger("SkyClaw.CoreEventBus")
+logger = logging.getLogger(__name__)
 
 Subscriber = Callable[["Event"], Awaitable[None]]
 
