@@ -12,25 +12,25 @@ from typing import Any
 import aiohttp
 import keyring
 
-from sky_claw.agent.providers import create_provider, ProviderConfigError
+from sky_claw.agent.animation_hub import AnimationHub, EngineConfig
+from sky_claw.agent.providers import ProviderConfigError, create_provider
 from sky_claw.agent.router import LLMRouter
 from sky_claw.agent.tools_facade import AsyncToolRegistry
+from sky_claw.auto_detect import AutoDetector
 from sky_claw.comms.telegram import TelegramWebhook
-from sky_claw.comms.telegram_sender import TelegramSender
 from sky_claw.comms.telegram_polling import TelegramPolling
+from sky_claw.comms.telegram_sender import TelegramSender
+from sky_claw.config import LOOT_COMMON_PATHS, XEDIT_COMMON_PATHS, Config, SystemPaths
 from sky_claw.db.async_registry import AsyncModRegistry
-from sky_claw.config import Config, XEDIT_COMMON_PATHS, LOOT_COMMON_PATHS, SystemPaths
+from sky_claw.local_config import load as _load_legacy_json
 from sky_claw.mo2.vfs import MO2Controller
 from sky_claw.orchestrator.sync_engine import SyncEngine
 from sky_claw.scraper.masterlist import MasterlistClient
 from sky_claw.scraper.nexus_downloader import NexusDownloader
 from sky_claw.security.hitl import HITLGuard, HITLRequest
-from sky_claw.security.network_gateway import NetworkGateway, GatewayTCPConnector
+from sky_claw.security.network_gateway import GatewayTCPConnector, NetworkGateway
 from sky_claw.security.path_validator import PathValidator
-from sky_claw.auto_detect import AutoDetector
 from sky_claw.tools_installer import ToolsInstaller, scan_common_paths
-from sky_claw.agent.animation_hub import AnimationHub, EngineConfig
-from sky_claw.local_config import load as _load_legacy_json
 
 logger = logging.getLogger("sky_claw")
 

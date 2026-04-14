@@ -1,13 +1,16 @@
 """LangGraph event streamer — emite mensajes 'agent_state' por nodo significativo."""
 
 from __future__ import annotations
+
 import logging
-from typing import Optional
-from sky_claw.comms.interface import InterfaceAgent
-from sky_claw.orchestrator.state_graph import (
-    SupervisorStateGraph,
-    StateGraphState,
-)
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sky_claw.comms.interface import InterfaceAgent
+    from sky_claw.orchestrator.state_graph import (
+        StateGraphState,
+        SupervisorStateGraph,
+    )
 
 logger = logging.getLogger("SkyClaw.WSEventStreamer")
 
@@ -32,7 +35,7 @@ class LangGraphEventStreamer:
         self.interface = interface
 
     async def stream_execute(
-        self, initial_state: Optional[StateGraphState] = None
+        self, initial_state: StateGraphState | None = None
     ) -> StateGraphState:
         """Ejecuta el grafo mientras transmite eventos 'agent_state' por nodo significativo."""
         state = initial_state or self.graph.get_initial_state()

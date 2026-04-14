@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-
 from sky_claw.security.hitl import HITLGuard
 from sky_claw.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.security.path_validator import PathValidator
@@ -20,7 +19,6 @@ from sky_claw.tools_installer import (
     find_exe_in_dir,
     scan_common_paths,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -563,6 +561,7 @@ class TestAppContextToolsInstaller:
     @pytest.mark.asyncio
     async def test_tools_installer_wired(self, tmp_path: pathlib.Path) -> None:
         import argparse
+
         from sky_claw.__main__ import AppContext
 
         args = argparse.Namespace(

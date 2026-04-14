@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import pathlib
+from typing import TYPE_CHECKING
 
 import pytest
-
 from sky_claw.db.async_registry import AsyncModRegistry
+
+if TYPE_CHECKING:
+    import pathlib
 
 
 @pytest.fixture()
@@ -61,7 +63,7 @@ class TestMicroBatching:
             (1003, "ModC", "3.0", "auth3", "cat3", "", False, False),
         ]
         await adb.upsert_mods_batch(rows)
-        for nexus_id, name, *_ in rows:
+        for nexus_id, _name, *_ in rows:
             row = await adb.get_mod(nexus_id)
             assert row is not None
 

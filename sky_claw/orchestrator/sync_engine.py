@@ -18,10 +18,10 @@ import asyncio
 import configparser
 import logging
 import pathlib
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Coroutine, Dict
-from collections import defaultdict
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from tenacity import (
@@ -31,20 +31,25 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
-from sky_claw.db.async_registry import AsyncModRegistry
+
 from sky_claw.config import SystemPaths
+
+# FASE 1.5: Imports de componentes de rollback
 from sky_claw.scraper.masterlist import (
     CircuitOpenError,
     MasterlistClient,
     MasterlistFetchError,
 )
-from sky_claw.mo2.vfs import MO2Controller
-from sky_claw.scraper.nexus_downloader import NexusDownloader
-from sky_claw.security.hitl import HITLGuard, Decision
+from sky_claw.security.hitl import Decision, HITLGuard
 
-# FASE 1.5: Imports de componentes de rollback
-from sky_claw.db.journal import OperationType
-from sky_claw.db.rollback_manager import RollbackManager
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
+    from sky_claw.db.async_registry import AsyncModRegistry
+    from sky_claw.db.journal import OperationType
+    from sky_claw.db.rollback_manager import RollbackManager
+    from sky_claw.mo2.vfs import MO2Controller
+    from sky_claw.scraper.nexus_downloader import NexusDownloader
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +112,7 @@ class SyncMetrics:
 
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _error_count: int = field(default=0, init=False)
-    _error_types: Dict[str, int] = field(
+    _error_types: dict[str, int] = field(
         default_factory=lambda: defaultdict(int), init=False
     )
 
@@ -116,7 +121,7 @@ class SyncMetrics:
         async with self._lock:
             return self._error_count
 
-    async def get_error_types(self) -> Dict[str, int]:
+    async def get_error_types(self) -> dict[str, int]:
         """Retorna una copia del diccionario de tipos de errores."""
         async with self._lock:
             return dict(self._error_types)
@@ -371,7 +376,7 @@ class SyncEngine:
 
         # Ejecución paralela con contención de fallas
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        for mod, result in zip(tracked_mods, results):
+        for mod, result in zip(tracked_mods, results, strict=False):
             if isinstance(result, Exception):
                 logger.error(
                     "Error aislando tarea de actualización para %r: %s",
@@ -552,7 +557,7 @@ class SyncEngine:
                     "status": "error",
                     "name": mod_name,
                     "nexus_id": nexus_id,
-                    "error": f"Update failed, rollback error: {str(rollback_exc)}",
+                    "error": f"Update failed, rollback error: {rollback_exc!s}",
                     "rollback_performed": True,
                     "rollback_success": False,
                 }

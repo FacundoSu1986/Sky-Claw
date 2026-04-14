@@ -14,10 +14,13 @@ import fnmatch
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from sky_claw.config import HITL_TIMEOUT_SECONDS, OUT_OF_SCOPE_HOSTS
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +79,7 @@ class HITLGuard:
     def requires_approval(self, url: str) -> bool:
         """Return ``True`` if *url* is outside the autonomous scope."""
         hostname = (urlparse(url).hostname or "").lower()
-        for pattern in self._hosts:
-            if fnmatch.fnmatch(hostname, pattern):
-                return True
-        return False
+        return any(fnmatch.fnmatch(hostname, pattern) for pattern in self._hosts)
 
     # ------------------------------------------------------------------
     # Request / Respond cycle
@@ -127,7 +127,7 @@ class HITLGuard:
 
         try:
             await asyncio.wait_for(req._event.wait(), timeout=self._timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             req.decision = Decision.TIMEOUT
             logger.warning("HITL: timeout for %s", request_id)
         finally:

@@ -9,17 +9,16 @@ asyncio_mode = "auto" is set globally in pyproject.toml, so no
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock
-from pydantic import BaseModel
 
+import pytest
+from pydantic import BaseModel
 from sky_claw.core.errors import AgentOrchestrationError, SecurityViolationError
 from sky_claw.security.agent_guardrail import (
     AgentGuardrail,
     AgentGuardrailConfig,
     secure_llm_call,
 )
-
 
 # ---------------------------------------------------------------------------
 # Shared fixture schema (used by schema-validation tests)

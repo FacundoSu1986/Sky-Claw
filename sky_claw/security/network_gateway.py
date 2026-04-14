@@ -210,7 +210,7 @@ class NetworkGateway:
 
             try:
                 response = await session.request(method, current_url, **hop_kwargs)
-            except asyncio.TimeoutError as _exc:
+            except TimeoutError as _exc:
                 logger.error(f"Timeout al contactar {current_url}")
                 raise NetworkGatewayTimeout(
                     f"La petición a {current_url} excedió el tiempo límite."
@@ -269,9 +269,9 @@ class NetworkGateway:
 
     def _check_telegram_path(self, hostname: str, path: str) -> None:
         """Ensure Telegram requests go through /bot<token>/…."""
-        if hostname == "api.telegram.org":
-            if not path.startswith(self._policy.telegram_path_prefix):
-                raise EgressViolation(
-                    f"Telegram path '{path}' does not start with "
-                    f"'{self._policy.telegram_path_prefix}'"
-                )
+        if hostname == "api.telegram.org" and not path.startswith(
+            self._policy.telegram_path_prefix
+        ):
+            raise EgressViolation(
+                f"Telegram path '{path}' does not start with '{self._policy.telegram_path_prefix}'"
+            )

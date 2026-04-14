@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncGenerator
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
 from aiohttp import web
-
-from sky_claw.comms.telegram import TelegramWebhook, _DEDUP_MAX_SIZE
+from sky_claw.comms.telegram import _DEDUP_MAX_SIZE, TelegramWebhook
 from sky_claw.comms.telegram_sender import (
+    MAX_MESSAGE_LENGTH,
     TelegramSender,
     TelegramSendError,
-    MAX_MESSAGE_LENGTH,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 # ------------------------------------------------------------------
 # Helpers
@@ -80,7 +81,7 @@ class TestTelegramWebhook:
 
     @pytest.mark.asyncio
     async def test_valid_update_returns_200(self, aiohttp_client, webhook_app) -> None:
-        app, webhook, _, _ = webhook_app
+        app, _webhook, _, _ = webhook_app
         client = await aiohttp_client(app)
         resp = await client.post("/webhook", json=_make_update(1))
         assert resp.status == 200
@@ -101,7 +102,7 @@ class TestTelegramWebhook:
 
     @pytest.mark.asyncio
     async def test_deduplication(self, aiohttp_client, webhook_app) -> None:
-        app, webhook, mock_router, _ = webhook_app
+        app, _webhook, mock_router, _ = webhook_app
         client = await aiohttp_client(app)
 
         await client.post("/webhook", json=_make_update(42))
@@ -126,7 +127,7 @@ class TestTelegramWebhook:
     async def test_missing_message_text_returns_200(
         self, aiohttp_client, webhook_app
     ) -> None:
-        app, webhook, mock_router, _ = webhook_app
+        app, _webhook, mock_router, _ = webhook_app
         client = await aiohttp_client(app)
 
         update = {"update_id": 99, "message": {"chat": {"id": 1}}}
@@ -139,7 +140,7 @@ class TestTelegramWebhook:
     async def test_missing_update_id_returns_200(
         self, aiohttp_client, webhook_app
     ) -> None:
-        app, webhook, mock_router, _ = webhook_app
+        app, _webhook, mock_router, _ = webhook_app
         client = await aiohttp_client(app)
 
         update = {"message": {"text": "hi", "chat": {"id": 1}}}
@@ -166,7 +167,7 @@ class TestTelegramWebhook:
     async def test_router_error_sends_error_message(
         self, aiohttp_client, webhook_app
     ) -> None:
-        app, webhook, mock_router, mock_sender = webhook_app
+        app, _webhook, mock_router, mock_sender = webhook_app
         mock_router.chat = AsyncMock(side_effect=RuntimeError("API down"))
         client = await aiohttp_client(app)
 

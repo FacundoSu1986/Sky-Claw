@@ -7,13 +7,17 @@ These tools require the MO2 VFS context to see installed mods.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-import pathlib
 import sys
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from sky_claw.mo2.vfs import MO2Controller
-from sky_claw.security.path_validator import PathValidator
+if TYPE_CHECKING:
+    import pathlib
+
+    from sky_claw.mo2.vfs import MO2Controller
+    from sky_claw.security.path_validator import PathValidator
 
 logger = logging.getLogger(__name__)
 
@@ -83,13 +87,11 @@ class AnimationHub:
                 stderr=asyncio.subprocess.PIPE,
                 **kwargs,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
-        except asyncio.TimeoutError:
+            _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+        except TimeoutError:
             proc.kill()
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
-                pass
             return {
                 "status": "error",
                 "message": "Error: Pandora timed out after 5 minutes.",
@@ -150,13 +152,11 @@ class AnimationHub:
                 stderr=asyncio.subprocess.PIPE,
                 **kwargs,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
-        except asyncio.TimeoutError:
+            _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+        except TimeoutError:
             proc.kill()
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
-                pass
             return {
                 "status": "error",
                 "message": "Error: BodySlide timed out after 10 minutes.",

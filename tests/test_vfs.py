@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import pathlib
+from typing import TYPE_CHECKING
 
 import pytest
-
 from sky_claw.mo2.vfs import MO2Controller
 from sky_claw.security.path_validator import PathValidator, PathViolation
+
+if TYPE_CHECKING:
+    import pathlib
 
 
 @pytest.fixture()
@@ -17,13 +19,7 @@ def mo2_root(tmp_path: pathlib.Path) -> pathlib.Path:
     profile_dir.mkdir(parents=True)
     modlist = profile_dir / "modlist.txt"
     modlist.write_text(
-        "+SKSE-30150-v2-2-6\n"
-        "-DisabledMod-9999\n"
-        "*Separator\n"
-        "# comment line\n"
-        "\n"
-        "+SkyUI-3863-v5-2\n"
-        "+AnotherMod-12345\n",
+        "+SKSE-30150-v2-2-6\n-DisabledMod-9999\n*Separator\n# comment line\n\n+SkyUI-3863-v5-2\n+AnotherMod-12345\n",
         encoding="utf-8",
     )
     return tmp_path
@@ -169,8 +165,9 @@ class TestGameControl:
 
     @pytest.mark.asyncio
     async def test_close_game(self, controller: MO2Controller, monkeypatch) -> None:
-        import psutil
         from unittest.mock import MagicMock
+
+        import psutil
 
         mock_proc_1 = MagicMock()
         mock_proc_1.info = {"name": "SkyrimSE.exe"}

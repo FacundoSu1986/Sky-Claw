@@ -11,16 +11,12 @@ import asyncio
 import collections
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from aiohttp import web
 
-from sky_claw.agent.router import LLMRouter
-from sky_claw.comms.telegram_sender import TelegramSender
-from sky_claw.security.hitl import HITLGuard
 from sky_claw.logging_config import correlation_id_var
-from sky_claw.orchestrator.sync_engine import UpdatePayload
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +44,12 @@ def _parse_hitl_command(text: str) -> tuple[bool, str] | None:
 
 
 import html  # noqa: E402
+
+if TYPE_CHECKING:
+    from sky_claw.agent.router import LLMRouter
+    from sky_claw.comms.telegram_sender import TelegramSender
+    from sky_claw.orchestrator.sync_engine import UpdatePayload
+    from sky_claw.security.hitl import HITLGuard
 
 
 def escape_html(text: str) -> str:
@@ -389,10 +391,9 @@ class TelegramWebhook:
         "not found" message is sent instead.
         """
         # H-03: Validación anti-spoofing
-        if message is not None:
-            if not self._validate_sender(message):
-                logger.warning("Intento de spoofing HITL detectado y bloqueado.")
-                return
+        if message is not None and not self._validate_sender(message):
+            logger.warning("Intento de spoofing HITL detectado y bloqueado.")
+            return
 
         assert self._hitl is not None
         found = await self._hitl.respond(request_id, approved)

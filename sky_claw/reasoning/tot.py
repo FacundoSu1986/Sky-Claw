@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Tree of Thoughts (ToT) Reasoning Module - Facade
 
@@ -17,68 +16,67 @@ References:
 """
 
 # Types and Protocols
-from .types import (
-    SearchStrategyType,
-    EvaluationResult,
-    PruningMethod,
-    ToTConfig,
-    ThoughtNode,
-    ThoughtGenerator,
-    ThoughtEvaluator,
-    SolutionChecker,
-    SearchStrategyProtocol,
+# Engine and Components
+from .engine import (
+    CycleDetector,
+    DefaultThoughtEvaluator,
+    DefaultThoughtGenerator,
+    PruningPolicy,
+    TreeOfThoughtEngine,
+    create_tot_engine,
 )
 
 # Search Strategies
 from .strategies import (
     BaseSearchStrategy,
+    BeamSearchStrategy,
+    BestFirstSearchStrategy,
     BFSSearchStrategy,
     DFSSearchStrategy,
-    BestFirstSearchStrategy,
-    BeamSearchStrategy,
     MCTSSearchStrategy,
     create_search_strategy,
 )
-
-# Engine and Components
-from .engine import (
-    CycleDetector,
-    PruningPolicy,
-    TreeOfThoughtEngine,
-    create_tot_engine,
-    DefaultThoughtGenerator,
-    DefaultThoughtEvaluator,
+from .types import (
+    EvaluationResult,
+    PruningMethod,
+    SearchStrategyProtocol,
+    SearchStrategyType,
+    SolutionChecker,
+    ThoughtEvaluator,
+    ThoughtGenerator,
+    ThoughtNode,
+    ToTConfig,
 )
 
 __all__ = [
-    # Configuración
-    "ToTConfig",
-    "SearchStrategyType",
-    "EvaluationResult",
-    "PruningMethod",
-    # Estructuras de datos
-    "ThoughtNode",
-    # Protocolos
-    "ThoughtGenerator",
-    "ThoughtEvaluator",
-    "SolutionChecker",
-    "SearchStrategyProtocol",
+    "BFSSearchStrategy",
     # Estrategias de búsqueda
     "BaseSearchStrategy",
-    "BFSSearchStrategy",
-    "DFSSearchStrategy",
-    "BestFirstSearchStrategy",
     "BeamSearchStrategy",
-    "MCTSSearchStrategy",
+    "BestFirstSearchStrategy",
     # Componentes auxiliares
     "CycleDetector",
-    "PruningPolicy",
-    # Motor principal
-    "TreeOfThoughtEngine",
-    # Factory
-    "create_tot_engine",
-    "create_search_strategy",
+    "DFSSearchStrategy",
+    "DefaultThoughtEvaluator",
     # Implementaciones por defecto
     "DefaultThoughtGenerator",
-    "DefaultThoughtEvaluator",
+    "EvaluationResult",
+    "MCTSSearchStrategy",
+    "PruningMethod",
+    "PruningPolicy",
+    "SearchStrategyProtocol",
+    "SearchStrategyType",
+    "SolutionChecker",
+    "ThoughtEvaluator",
+    # Protocolos
+    "ThoughtGenerator",
+    # Estructuras de datos
+    "ThoughtNode",
+    # Configuración
+    "ToTConfig",
+    # Motor principal
+    "TreeOfThoughtEngine",
+    "create_search_strategy",
+    # Factory
+    "create_tot_engine",
 ]

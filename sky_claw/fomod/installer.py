@@ -16,15 +16,17 @@ import shutil
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiofiles
 import aiofiles.os
 
-from sky_claw.fomod.models import FileInstall
-from sky_claw.fomod.parser import parse_fomod, FomodParseError
+from sky_claw.fomod.parser import FomodParseError, parse_fomod
 from sky_claw.fomod.resolver import FomodResolver
 from sky_claw.security.path_validator import PathValidator, PathViolation
+
+if TYPE_CHECKING:
+    from sky_claw.fomod.models import FileInstall
 
 
 async def async_copy2(src: pathlib.Path, dst: pathlib.Path) -> None:
@@ -228,8 +230,7 @@ class FomodInstaller:
             return InstallResult(
                 mod_name=mod_name,
                 errors=[
-                    f"Unsupported archive format: {suffix!r}. "
-                    f"Supported: {', '.join(sorted(_SUPPORTED_EXTENSIONS))}"
+                    f"Unsupported archive format: {suffix!r}. Supported: {', '.join(sorted(_SUPPORTED_EXTENSIONS))}"
                 ],
             )
 
@@ -419,4 +420,4 @@ class FomodInstaller:
 
 
 # Re-import for preview
-from sky_claw.fomod.parser import parse_fomod_string  # noqa: E402, F811
+from sky_claw.fomod.parser import parse_fomod_string  # noqa: E402

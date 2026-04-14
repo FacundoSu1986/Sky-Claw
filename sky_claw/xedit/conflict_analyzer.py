@@ -7,12 +7,14 @@ severity and grouped by plugin pair for easy presentation by the LLM.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sky_claw.xedit.runner import XEditRunner
+if TYPE_CHECKING:
+    from sky_claw.xedit.runner import XEditRunner
 
 logger = logging.getLogger(__name__)
 
@@ -328,8 +330,7 @@ class ConflictAnalyzer:
         info_count = sum(1 for c in _flat_conflicts(report) if c.severity == "info")
         if info_count > 0 and not suggestions:
             suggestions.append(
-                f"{info_count} minor conflict(s) (textures, strings) — "
-                "generally safe to ignore."
+                f"{info_count} minor conflict(s) (textures, strings) — generally safe to ignore."
             )
 
         return suggestions
@@ -378,8 +379,7 @@ class ConflictAnalyzer:
             return "No record-level conflicts detected between loaded plugins."
 
         lines = [
-            f"Found {report.total_conflicts} record-level conflict(s) "
-            f"({report.critical_conflicts} critical).",
+            f"Found {report.total_conflicts} record-level conflict(s) ({report.critical_conflicts} critical).",
         ]
 
         if report.plugin_pairs:
@@ -451,10 +451,8 @@ def parse_summary_line(stdout: str) -> dict[str, int]:
         for part in line.split("|")[1:]:
             if "=" in part:
                 key, val = part.split("=", 1)
-                try:
+                with contextlib.suppress(ValueError):
                     result[key.strip()] = int(val.strip())
-                except ValueError:
-                    pass
         return result
     return {}
 

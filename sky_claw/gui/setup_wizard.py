@@ -5,14 +5,17 @@ from __future__ import annotations
 import json
 import logging
 import secrets
-from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 import keyring
 from nicegui import ui
 
-from .icons import _ICON_SETTINGS, _ICON_ROCKET
+from .icons import _ICON_ROCKET, _ICON_SETTINGS
 from .utils import _load_css
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -36,20 +39,20 @@ class SetupWizardModal:
     def __init__(self, config_path: Path, on_complete: Callable) -> None:
         self._config_path = config_path
         self._on_complete = on_complete
-        self._overlay_el: Optional[ui.element] = None
+        self._overlay_el: ui.element | None = None
         self._step = 1
-        self._step_label: Optional[ui.label] = None
-        self._step1_container: Optional[ui.element] = None
-        self._step2_container: Optional[ui.element] = None
+        self._step_label: ui.label | None = None
+        self._step1_container: ui.element | None = None
+        self._step2_container: ui.element | None = None
         # Input references
-        self._api_key_input: Optional[ui.input] = None
-        self._telegram_id_input: Optional[ui.input] = None
-        self._frequency_input: Optional[ui.input] = None
+        self._api_key_input: ui.input | None = None
+        self._telegram_id_input: ui.input | None = None
+        self._frequency_input: ui.input | None = None
         self._provider_toggle = None
-        self._nexus_input: Optional[ui.input] = None
-        self._telegram_token_input: Optional[ui.input] = None
+        self._nexus_input: ui.input | None = None
+        self._telegram_token_input: ui.input | None = None
         # Draft fields (non-sensitive) for localStorage
-        self._draft_fields: Dict[str, ui.input] = {}
+        self._draft_fields: dict[str, ui.input] = {}
 
     def build(self) -> None:
         """Renderiza el overlay fijo sobre el dashboard."""
@@ -127,8 +130,7 @@ class SetupWizardModal:
                             )
                             .classes("w-full")
                             .props(
-                                'dark standout="bg-transparent" '
-                                'input-class="sky-wizard-input" color=amber maxlength=32'
+                                'dark standout="bg-transparent" input-class="sky-wizard-input" color=amber maxlength=32'
                             )
                         )
                         ui.label("ID único de tu cuenta de Telegram").classes(
@@ -146,8 +148,7 @@ class SetupWizardModal:
                             )
                             .classes("w-full")
                             .props(
-                                'dark standout="bg-transparent" '
-                                'input-class="sky-wizard-input" color=amber maxlength=10'
+                                'dark standout="bg-transparent" input-class="sky-wizard-input" color=amber maxlength=10'
                             )
                         )
                         ui.label("Frecuencia de monitoreos en milisegundos").classes(

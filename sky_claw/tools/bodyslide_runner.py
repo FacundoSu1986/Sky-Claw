@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import pathlib
 import sys
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pathlib
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +83,7 @@ class BodySlideRunner:
                 duration_seconds=duration,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error("BodySlide execution timed out.")
             return BodySlideResult(
                 success=False,

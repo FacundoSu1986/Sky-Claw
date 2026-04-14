@@ -1,12 +1,11 @@
-# -*- coding: utf-8 -*-
 """
 test_autogen_integration.py - Pruebas de integración para AutoGen.
 Verifica que la integración de AutoGen funcione correctamente con
 la arquitectura Sky-Claw.
 """
 
-import sys
 import os
+import sys
 import traceback
 
 # Insertar el directorio del proyecto al inicio del path
@@ -24,9 +23,9 @@ def test_autogen_imports():
         from sky_claw.agent.autogen_integration import (  # noqa: F401
             AUTOGEN_AVAILABLE,
             AutoGenConfig,
-            SkyClawConversableAgent,
             AutoGenWrapper,
             MultiAgentOrchestrator,
+            SkyClawConversableAgent,
             create_sky_claw_agents,
             get_orchestrator,
         )
@@ -80,7 +79,7 @@ def test_autogen_wrapper():
     print("Test 3: AutoGenWrapper Functionality")
     print("=" * 60)
     try:
-        from sky_claw.agent.autogen_integration import AutoGenWrapper, AutoGenConfig
+        from sky_claw.agent.autogen_integration import AutoGenConfig, AutoGenWrapper
 
         # Create assistant agent
         assistant = AutoGenWrapper(
@@ -118,12 +117,13 @@ def test_multi_agent_orchestrator():
     print("Test 4: MultiAgentOrchestrator Functionality")
     print("=" * 60)
     try:
+        import asyncio
+
         from sky_claw.agent.autogen_integration import (
+            AutoGenConfig,
             AutoGenWrapper,
             MultiAgentOrchestrator,
-            AutoGenConfig,
         )
-        import asyncio
 
         # Create test agents
         agent1 = AutoGenWrapper(
@@ -186,8 +186,8 @@ def test_create_sky_claw_agents():
     print("=" * 60)
     try:
         from sky_claw.agent.autogen_integration import (
-            create_sky_claw_agents,
             AutoGenConfig,
+            create_sky_claw_agents,
         )
         from sky_claw.agent.lcel_chains import ToolExecutor
 
@@ -257,8 +257,9 @@ def test_agent_communication():
     print("Test 7: Agent-to-Agent Communication")
     print("=" * 60)
     try:
-        from sky_claw.agent.autogen_integration import AutoGenWrapper, AutoGenConfig
         import asyncio
+
+        from sky_claw.agent.autogen_integration import AutoGenConfig, AutoGenWrapper
 
         # Create two agents
         sender = AutoGenWrapper(

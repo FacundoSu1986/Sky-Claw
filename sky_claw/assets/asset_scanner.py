@@ -10,16 +10,17 @@ No debe modificar, mover ni ocultar archivos.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import Enum
-from pathlib import Path
-from typing import TYPE_CHECKING, Final, Optional
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import Enum
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from sky_claw.security.path_validator import PathValidator
 
 from sky_claw.security.path_validator import PathViolation
@@ -114,13 +115,12 @@ class AssetConflictDetector:
         """
         self._mo2_mods_path = mo2_mods_path
         self._profile_name = profile_name
-        self._modlist_path: Optional[Path] = None
-        self._mods_path: Optional[Path] = None
+        self._modlist_path: Path | None = None
+        self._mods_path: Path | None = None
         self._path_validator = path_validator
 
         logger.debug(
-            f"AssetConflictDetector inicializado: mods_path={mo2_mods_path}, "
-            f"profile={profile_name}"
+            f"AssetConflictDetector inicializado: mods_path={mo2_mods_path}, profile={profile_name}"
         )
 
     @property
@@ -177,7 +177,7 @@ class AssetConflictDetector:
                 except PathViolation:
                     logger.error("Path traversal blocked for modlist: %s", modlist_path)
                     raise
-            with open(modlist_path, "r", encoding="utf-8") as f:
+            with open(modlist_path, encoding="utf-8") as f:
                 lines = f.readlines()
 
             # MO2 guarda los mods en orden inverso de prioridad
@@ -200,7 +200,7 @@ class AssetConflictDetector:
             )
             return enabled_mods
 
-        except IOError as e:
+        except OSError as e:
             logger.error(f"Error leyendo modlist.txt: {e}")
             raise
 
@@ -268,7 +268,7 @@ class AssetConflictDetector:
             logger.debug(f"Checksum calculado para {file_path.name}: {checksum}")
             return checksum
 
-        except IOError as e:
+        except OSError as e:
             logger.error(f"Error calculando checksum para {file_path}: {e}")
             raise
 
@@ -323,7 +323,7 @@ class AssetConflictDetector:
             if calculate_checksums:
                 try:
                     checksum = self.calculate_checksum(file_path)
-                except (FileNotFoundError, IOError) as e:
+                except (OSError, FileNotFoundError) as e:
                     logger.warning(
                         f"Error calculando checksum, usando placeholder: {e}"
                     )
@@ -419,9 +419,7 @@ class AssetConflictDetector:
             conflicts.append(conflict_report)
 
             logger.debug(
-                f"Conflicto detectado: {relative_path} - "
-                f"ganador: {winner.mod_name}, "
-                f"sobrescritos: {overwritten}"
+                f"Conflicto detectado: {relative_path} - ganador: {winner.mod_name}, sobrescritos: {overwritten}"
             )
 
         logger.info(f"Detección completada: {len(conflicts)} conflictos encontrados")
@@ -459,7 +457,7 @@ class AssetConflictDetector:
 
         # Construir estructura del reporte
         report = {
-            "scan_timestamp": datetime.now(timezone.utc).isoformat(),
+            "scan_timestamp": datetime.now(UTC).isoformat(),
             "profile": self._profile_name,
             "mods_path": str(self._mo2_mods_path),
             "total_conflicts": len(conflicts),

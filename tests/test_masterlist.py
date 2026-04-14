@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 
 import aiohttp
 import pytest
-
 from sky_claw.scraper.masterlist import MasterlistClient, MasterlistFetchError
 from sky_claw.security.network_gateway import (
     EgressPolicy,

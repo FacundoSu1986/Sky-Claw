@@ -5,14 +5,13 @@ Burbuja visual para mensajes de chat con estilo diferenciado usuario/agente.
 VIEW PURO - Sin lógica de negocio, solo presentación.
 """
 
-from typing import Optional
 from nicegui import ui
 
 
 def create_chat_message(
     message: str,
     is_user: bool = False,
-    timestamp: Optional[str] = None,
+    timestamp: str | None = None,
 ) -> ui.element:
     """Crea una burbuja de mensaje de chat.
 

@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import pathlib
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-from sky_claw.__main__ import _parse_args, AppContext, _main
-
+from sky_claw.__main__ import AppContext, _main, _parse_args
 
 # ------------------------------------------------------------------
 # Argument parsing

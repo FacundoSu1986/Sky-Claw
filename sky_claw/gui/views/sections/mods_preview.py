@@ -7,16 +7,18 @@ VIEW PURO - Sin lógica de negocio, solo presentación.
 Separada de la lógica de obtención de datos.
 """
 
-from typing import List, Dict, Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
+
 from nicegui import ui
 
-from ..components import create_mod_list_item, create_cta_button
+from ..components import create_cta_button, create_mod_list_item
 
 
 def create_mods_preview(
-    mods: List[Dict[str, Any]],
-    on_view_all: Optional[Callable] = None,
-    on_mod_click: Optional[Callable[[str], None]] = None,
+    mods: list[dict[str, Any]],
+    on_view_all: Callable | None = None,
+    on_mod_click: Callable[[str], None] | None = None,
     title: str = "Recent Mods",
     empty_message: str = "No mods found",
 ) -> None:
@@ -66,10 +68,7 @@ def create_mods_preview(
             for mod in mods:
                 # Convertir tamaño a GB si es necesario
                 size_mb = mod.get("size_mb", 0)
-                if size_mb > 1024:
-                    size = f"{size_mb / 1024:.1f} GB"
-                else:
-                    size = f"{size_mb} MB"
+                size = f"{size_mb / 1024:.1f} GB" if size_mb > 1024 else f"{size_mb} MB"
 
                 # Crear item del mod
                 mod_name = mod.get("name", "Unknown")

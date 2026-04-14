@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 types.py - Definiciones de tipos base para el motor Tree-of-Thought.
 
@@ -19,18 +18,13 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Dict,
     Generic,
-    List,
-    Optional,
     Protocol,
-    Tuple,
     TypeVar,
     runtime_checkable,
 )
@@ -38,6 +32,8 @@ from typing import (
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sky_claw.reasoning.engine import TreeOfThoughtEngine
 
 
@@ -54,7 +50,7 @@ S = TypeVar("S")  # Tipo de solución
 # ============================================================================
 
 
-class SearchStrategyType(str, Enum):
+class SearchStrategyType(StrEnum):
     """Tipos de estrategias de búsqueda para explorar el árbol de pensamientos."""
 
     BFS = "bfs"  # Breadth-First Search - Explora nivel por nivel
@@ -64,7 +60,7 @@ class SearchStrategyType(str, Enum):
     MCTS = "mcts"  # Monte Carlo Tree Search - Exploración con simulaciones
 
 
-class EvaluationResult(str, Enum):
+class EvaluationResult(StrEnum):
     """Resultados posibles de la evaluación de un pensamiento."""
 
     PROMISING = "promising"  # Vale la pena explorar
@@ -73,7 +69,7 @@ class EvaluationResult(str, Enum):
     UNCERTAIN = "uncertain"  # Necesita más exploración
 
 
-class PruningMethod(str, Enum):
+class PruningMethod(StrEnum):
     """Métodos de poda dinámica."""
 
     FIXED_THRESHOLD = "fixed_threshold"  # Umbral fijo (legacy)
@@ -198,19 +194,19 @@ class ThoughtNode(Generic[T]):
     thought: str = ""
     depth: int = 0
     score: float = 0.0
-    parent: Optional["ThoughtNode[T]"] = None
-    children: List["ThoughtNode[T]"] = field(default_factory=list)
+    parent: ThoughtNode[T] | None = None
+    children: list[ThoughtNode[T]] = field(default_factory=list)
     evaluation: EvaluationResult = EvaluationResult.UNCERTAIN
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def add_child(self, child: "ThoughtNode[T]") -> None:
+    def add_child(self, child: ThoughtNode[T]) -> None:
         """Agrega un nodo hijo y establece la referencia padre."""
         child.parent = self
         child.depth = self.depth + 1
         self.children.append(child)
 
-    def get_path_to_root(self) -> List["ThoughtNode[T]"]:
+    def get_path_to_root(self) -> list[ThoughtNode[T]]:
         """Retorna el camino desde este nodo hasta la raíz."""
         path = [self]
         current = self.parent
@@ -219,7 +215,7 @@ class ThoughtNode(Generic[T]):
             current = current.parent
         return list(reversed(path))
 
-    def get_all_descendants(self) -> List["ThoughtNode[T]"]:
+    def get_all_descendants(self) -> list[ThoughtNode[T]]:
         """Retorna todos los descendientes de este nodo."""
         descendants = []
         for child in self.children:
@@ -231,7 +227,7 @@ class ThoughtNode(Generic[T]):
         """Verifica si este nodo es una hoja (sin hijos)."""
         return len(self.children) == 0
 
-    def get_state_hash(self, hash_func: Optional[Callable[[T], str]] = None) -> str:
+    def get_state_hash(self, hash_func: Callable[[T], str] | None = None) -> str:
         """
         Genera un hash único para el estado de este nodo.
 
@@ -242,13 +238,10 @@ class ThoughtNode(Generic[T]):
         Returns:
             Hash SHA-256 del estado
         """
-        if hash_func:
-            state_str = hash_func(self.state)
-        else:
-            state_str = str(self.state)
+        state_str = hash_func(self.state) if hash_func else str(self.state)
         return hashlib.sha256(state_str.encode()).hexdigest()
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convierte el nodo a diccionario para serialización."""
         return {
             "id": self.id,
@@ -272,8 +265,8 @@ class ThoughtGenerator(Protocol[T]):
     """Protocolo para generadores de pensamientos candidatos."""
 
     async def generate(
-        self, current_state: T, n: int = 3, context: Optional[Dict[str, Any]] = None
-    ) -> List[Tuple[T, str]]:
+        self, current_state: T, n: int = 3, context: dict[str, Any] | None = None
+    ) -> list[tuple[T, str]]:
         """
         Genera n pensamientos candidatos a partir del estado actual.
 
@@ -296,8 +289,8 @@ class ThoughtEvaluator(Protocol[T]):
         self,
         thought: T,
         thought_description: str,
-        context: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[float, EvaluationResult]:
+        context: dict[str, Any] | None = None,
+    ) -> tuple[float, EvaluationResult]:
         """
         Evalúa un pensamiento y retorna su score y resultado.
 
@@ -316,7 +309,7 @@ class ThoughtEvaluator(Protocol[T]):
 class SolutionChecker(Protocol[T, S]):
     """Protocolo para verificar si un estado es solución."""
 
-    def check(self, state: T) -> Optional[S]:
+    def check(self, state: T) -> S | None:
         """
         Verifica si el estado dado es una solución válida.
 
@@ -334,8 +327,8 @@ class SearchStrategyProtocol(Protocol[T, S]):
     """Protocolo para estrategias de búsqueda."""
 
     async def search(
-        self, root: ThoughtNode[T], engine: "TreeOfThoughtEngine[T, S]"
-    ) -> Optional[S]:
+        self, root: ThoughtNode[T], engine: TreeOfThoughtEngine[T, S]
+    ) -> S | None:
         """
         Ejecuta la búsqueda desde el nodo raíz.
 
@@ -350,20 +343,20 @@ class SearchStrategyProtocol(Protocol[T, S]):
 
 
 __all__ = [
-    # TypeVars
-    "T",
-    "S",
-    # Enums
-    "SearchStrategyType",
     "EvaluationResult",
     "PruningMethod",
-    # Config
-    "ToTConfig",
-    # Data structures
-    "ThoughtNode",
+    "S",
+    "SearchStrategyProtocol",
+    # Enums
+    "SearchStrategyType",
+    "SolutionChecker",
+    # TypeVars
+    "T",
+    "ThoughtEvaluator",
     # Protocols
     "ThoughtGenerator",
-    "ThoughtEvaluator",
-    "SolutionChecker",
-    "SearchStrategyProtocol",
+    # Data structures
+    "ThoughtNode",
+    # Config
+    "ToTConfig",
 ]

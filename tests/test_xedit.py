@@ -4,19 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-import pathlib
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-from sky_claw.xedit.output_parser import XEditOutputParser, XEditResult, XEditConflict
+from sky_claw.xedit.output_parser import XEditConflict, XEditOutputParser, XEditResult
 from sky_claw.xedit.runner import (
-    XEditRunner,
-    XEditNotFoundError,
-    XEditValidationError,
     ScriptGenerator,
+    XEditNotFoundError,
+    XEditRunner,
+    XEditValidationError,
 )
 
+if TYPE_CHECKING:
+    import pathlib
 
 # ------------------------------------------------------------------
 # XEditOutputParser
@@ -25,11 +26,7 @@ from sky_claw.xedit.runner import (
 
 class TestXEditOutputParser:
     def test_parse_processing_lines(self) -> None:
-        stdout = (
-            "[00:01] Processing: Skyrim.esm\n"
-            "[00:02] Processing: Update.esm\n"
-            "[00:03] Processing: Requiem.esp\n"
-        )
+        stdout = "[00:01] Processing: Skyrim.esm\n[00:02] Processing: Update.esm\n[00:03] Processing: Requiem.esp\n"
         result = XEditOutputParser.parse(stdout=stdout, stderr="", return_code=0)
         assert result.processed_plugins == ["Skyrim.esm", "Update.esm", "Requiem.esp"]
         assert result.success is True
@@ -182,16 +179,18 @@ class TestXEditRunnerExecution:
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
         mock_proc.kill = MagicMock()
 
-        with patch(
-            "sky_claw.xedit.runner.asyncio.create_subprocess_exec",
-            return_value=mock_proc,
-        ):
-            with patch(
+        with (
+            patch(
+                "sky_claw.xedit.runner.asyncio.create_subprocess_exec",
+                return_value=mock_proc,
+            ),
+            patch(
                 "sky_claw.xedit.runner.asyncio.wait_for",
                 side_effect=asyncio.TimeoutError,
-            ):
-                with pytest.raises(RuntimeError, match="timed out"):
-                    await runner.run_script("list_conflicts.pas", ["Skyrim.esm"])
+            ),
+            pytest.raises(RuntimeError, match="timed out"),
+        ):
+            await runner.run_script("list_conflicts.pas", ["Skyrim.esm"])
 
 
 # ------------------------------------------------------------------

@@ -4,10 +4,10 @@ Contiene componentes estructurales como sidebar, header, footer.
 Cada componente es "tonto" - solo maneja presentación visual.
 """
 
-from .sidebar import create_sidebar
 from .header import create_header
+from .sidebar import create_sidebar
 
 __all__ = [
-    "create_sidebar",
     "create_header",
+    "create_sidebar",
 ]

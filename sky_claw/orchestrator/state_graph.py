@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 LangGraph StateGraph Integration for Sky-Claw SupervisorAgent.
 
@@ -14,15 +13,18 @@ Gracefully degrades when LangGraph is not installed.
 from __future__ import annotations
 
 import logging
-from enum import Enum
-from typing import Any, Dict, List, Optional, Callable, TypedDict
 from datetime import datetime
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, TypedDict
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # Conditional imports for graceful degradation
 try:
-    from langgraph.graph import StateGraph, END
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.constants import START
+    from langgraph.graph import END, StateGraph
 
     LANGGRAPH_AVAILABLE = True
 except ImportError:
@@ -52,7 +54,7 @@ logger = logging.getLogger("SkyClaw.StateGraph")
 # =============================================================================
 
 
-class SupervisorState(str, Enum):
+class SupervisorState(StrEnum):
     """Estados del SupervisorAgent en el workflow de LangGraph."""
 
     INIT = "init"
@@ -72,7 +74,7 @@ class SupervisorState(str, Enum):
     GENERATING_LODS = "generating_lods"
 
 
-class WorkflowEventType(str, Enum):
+class WorkflowEventType(StrEnum):
     """Tipos de eventos que pueden disparar transiciones."""
 
     MODLIST_CHANGED = "modlist_changed"
@@ -92,7 +94,7 @@ class StateGraphValidator:
     para prevenir estados inválidos en el workflow.
     """
 
-    _VALID_TRANSITIONS: Dict[SupervisorState, set[SupervisorState]] = {
+    _VALID_TRANSITIONS: dict[SupervisorState, set[SupervisorState]] = {
         SupervisorState.INIT: {SupervisorState.IDLE, SupervisorState.ERROR},
         SupervisorState.IDLE: {
             SupervisorState.WATCHING,
@@ -153,7 +155,7 @@ class StateGraphValidator:
     }
 
     @classmethod
-    def valid_transitions(cls) -> Dict[SupervisorState, set[SupervisorState]]:
+    def valid_transitions(cls) -> dict[SupervisorState, set[SupervisorState]]:
         """Retorna el diccionario de transiciones válidas."""
         return cls._VALID_TRANSITIONS.copy()
 
@@ -209,37 +211,37 @@ if PYDANTIC_AVAILABLE:
 
         # Estado actual
         current_state: SupervisorState = Field(default=SupervisorState.INIT)
-        previous_state: Optional[SupervisorState] = None
+        previous_state: SupervisorState | None = None
 
         # Datos del contexto
         profile_name: str = Field(default="Default")
-        modlist_path: Optional[str] = None
+        modlist_path: str | None = None
         last_mtime: float = 0.0
 
         # Evento actual
-        pending_event: Optional[WorkflowEventType] = None
-        event_data: Dict[str, Any] = Field(default_factory=dict)
+        pending_event: WorkflowEventType | None = None
+        event_data: dict[str, Any] = Field(default_factory=dict)
 
         # Resultados de herramientas
-        tool_name: Optional[str] = None
-        tool_payload: Dict[str, Any] = Field(default_factory=dict)
-        tool_result: Optional[Dict[str, Any]] = None
+        tool_name: str | None = None
+        tool_payload: dict[str, Any] = Field(default_factory=dict)
+        tool_result: dict[str, Any] | None = None
 
         # HITL
-        hitl_request: Optional[Dict[str, Any]] = None
-        hitl_response: Optional[str] = None  # "approved", "denied", "timeout"
+        hitl_request: dict[str, Any] | None = None
+        hitl_response: str | None = None  # "approved", "denied", "timeout"
 
         # Historial de transiciones
-        transition_history: List[Dict[str, Any]] = Field(default_factory=list)
+        transition_history: list[dict[str, Any]] = Field(default_factory=list)
 
         # Errores
-        last_error: Optional[str] = None
+        last_error: str | None = None
         error_count: int = 0
 
         # FASE 1.5: Campos de rollback para resiliencia
         rollback_triggered: bool = Field(default=False)
-        rollback_result: Optional[Dict[str, Any]] = None
-        rollback_transaction_id: Optional[int] = None
+        rollback_result: dict[str, Any] | None = None
+        rollback_transaction_id: int | None = None
 
         # Metadata
         created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -298,24 +300,24 @@ class StateGraphState(TypedDict):
 
     workflow_id: str
     current_state: str
-    previous_state: Optional[str]
+    previous_state: str | None
     profile_name: str
-    modlist_path: Optional[str]
+    modlist_path: str | None
     last_mtime: float
-    pending_event: Optional[str]
-    event_data: Dict[str, Any]
-    tool_name: Optional[str]
-    tool_payload: Dict[str, Any]
-    tool_result: Optional[Dict[str, Any]]
-    hitl_request: Optional[Dict[str, Any]]
-    hitl_response: Optional[str]
-    transition_history: List[Dict[str, Any]]
-    last_error: Optional[str]
+    pending_event: str | None
+    event_data: dict[str, Any]
+    tool_name: str | None
+    tool_payload: dict[str, Any]
+    tool_result: dict[str, Any] | None
+    hitl_request: dict[str, Any] | None
+    hitl_response: str | None
+    transition_history: list[dict[str, Any]]
+    last_error: str | None
     error_count: int
     # FASE 1.5: Campos de rollback para resiliencia
     rollback_triggered: bool
-    rollback_result: Optional[Dict[str, Any]]
-    rollback_transaction_id: Optional[int]
+    rollback_result: dict[str, Any] | None
+    rollback_transaction_id: int | None
 
 
 # =============================================================================
@@ -327,7 +329,7 @@ class StateGraphNodes:
     """Nodos del grafo de estados para Sky-Claw."""
 
     @staticmethod
-    def init_node(state: StateGraphState) -> Dict[str, Any]:
+    def init_node(state: StateGraphState) -> dict[str, Any]:
         """Nodo de inicialización del workflow."""
         logger.info(f"[StateGraph] Inicializando workflow: {state.get('workflow_id')}")
         return {
@@ -336,19 +338,19 @@ class StateGraphNodes:
         }
 
     @staticmethod
-    def idle_node(state: StateGraphState) -> Dict[str, Any]:
+    def idle_node(state: StateGraphState) -> dict[str, Any]:
         """Nodo de espera - esperando eventos."""
         logger.debug("[StateGraph] En estado IDLE, esperando eventos...")
         return {"current_state": SupervisorState.IDLE.value}
 
     @staticmethod
-    def watching_node(state: StateGraphState) -> Dict[str, Any]:
+    def watching_node(state: StateGraphState) -> dict[str, Any]:
         """Nodo de monitoreo - detectando cambios."""
         logger.debug("[StateGraph] Monitoreando cambios en modlist...")
         return {"current_state": SupervisorState.WATCHING.value}
 
     @staticmethod
-    def analyzing_node(state: StateGraphState) -> Dict[str, Any]:
+    def analyzing_node(state: StateGraphState) -> dict[str, Any]:
         """Nodo de análisis - procesando cambios detectados."""
         state.get("event_data", {})
         logger.info(f"[StateGraph] Analizando evento: {state.get('pending_event')}")
@@ -358,7 +360,7 @@ class StateGraphNodes:
         }
 
     @staticmethod
-    def dispatching_node(state: StateGraphState) -> Dict[str, Any]:
+    def dispatching_node(state: StateGraphState) -> dict[str, Any]:
         """Nodo de despacho - ejecutando herramientas."""
         tool_name = state.get("tool_name")
         logger.info(f"[StateGraph] Despachando herramienta: {tool_name}")
@@ -368,7 +370,7 @@ class StateGraphNodes:
         }
 
     @staticmethod
-    def hitl_wait_node(state: StateGraphState) -> Dict[str, Any]:
+    def hitl_wait_node(state: StateGraphState) -> dict[str, Any]:
         """Nodo de espera HITL - esperando aprobación humana."""
         hitl_request = state.get("hitl_request", {})
         logger.info(
@@ -380,7 +382,7 @@ class StateGraphNodes:
         }
 
     @staticmethod
-    def completed_node(state: StateGraphState) -> Dict[str, Any]:
+    def completed_node(state: StateGraphState) -> dict[str, Any]:
         """Nodo de completado - operación finalizada."""
         logger.info("[StateGraph] Operación completada exitosamente")
         return {
@@ -390,7 +392,7 @@ class StateGraphNodes:
         }
 
     @staticmethod
-    def error_node(state: StateGraphState) -> Dict[str, Any]:
+    def error_node(state: StateGraphState) -> dict[str, Any]:
         """Nodo de error - manejo de errores."""
         error_count = state.get("error_count", 0) + 1
         logger.error(
@@ -403,7 +405,7 @@ class StateGraphNodes:
 
     # FASE 1.5: Nodos de rollback para resiliencia
     @staticmethod
-    def rolling_back_node(state: StateGraphState) -> Dict[str, Any]:
+    def rolling_back_node(state: StateGraphState) -> dict[str, Any]:
         """Nodo de rollback - ejecuta reversión de operaciones fallidas."""
         logger.info(
             f"[StateGraph] Iniciando rollback para transaction: {state.get('rollback_transaction_id')}"
@@ -415,7 +417,7 @@ class StateGraphNodes:
         }
 
     @staticmethod
-    def error_fatal_node(state: StateGraphState) -> Dict[str, Any]:
+    def error_fatal_node(state: StateGraphState) -> dict[str, Any]:
         """Nodo de error fatal - estado terminal sin recuperación posible."""
         logger.critical(
             f"[StateGraph] Error fatal detectado. Rollback falló: {state.get('last_error')}"
@@ -432,7 +434,7 @@ class StateGraphNodes:
 
     # FASE 2: Nodo de parcheo transaccional
     @staticmethod
-    def patching_node(state: StateGraphState) -> Dict[str, Any]:
+    def patching_node(state: StateGraphState) -> dict[str, Any]:
         """Nodo de parcheo transaccional - ejecuta resolución de conflictos.
 
         Este nodo representa el estado intermedio donde se ejecuta el protocolo
@@ -589,11 +591,10 @@ class StateGraphEdges:
             return StateGraphEdges._validate_and_route(
                 SupervisorState.PATCHING, SupervisorState.ERROR
             )
-        elif tool_result.get("status") == "success":
-            return StateGraphEdges._validate_and_route(
-                SupervisorState.PATCHING, SupervisorState.COMPLETED
-            )
-        elif tool_result.get("status") == "aborted":
+        elif (
+            tool_result.get("status") == "success"
+            or tool_result.get("status") == "aborted"
+        ):
             return StateGraphEdges._validate_and_route(
                 SupervisorState.PATCHING, SupervisorState.COMPLETED
             )
@@ -632,11 +633,10 @@ class StateGraphEdges:
             return StateGraphEdges._validate_and_route(
                 SupervisorState.DISPATCHING, SupervisorState.ERROR
             )
-        elif tool_result.get("status") == "success":
-            return StateGraphEdges._validate_and_route(
-                SupervisorState.DISPATCHING, SupervisorState.COMPLETED
-            )
-        elif tool_result.get("status") == "aborted":
+        elif (
+            tool_result.get("status") == "success"
+            or tool_result.get("status") == "aborted"
+        ):
             return StateGraphEdges._validate_and_route(
                 SupervisorState.DISPATCHING, SupervisorState.COMPLETED
             )
@@ -715,11 +715,11 @@ class SupervisorStateGraph:
 
     def __init__(self, profile_name: str = "Default"):
         self.profile_name = profile_name
-        self.graph: Optional[StateGraph] = None
-        self.checkpointer: Optional[MemorySaver] = None
+        self.graph: StateGraph | None = None
+        self.checkpointer: MemorySaver | None = None
         self.compiled_graph = None
-        self._state: Optional[WorkflowState] = None
-        self._callbacks: Dict[str, Callable] = {}
+        self._state: WorkflowState | None = None
+        self._callbacks: dict[str, Callable] = {}
 
         if LANGGRAPH_AVAILABLE:
             self._build_graph()
@@ -852,7 +852,7 @@ class SupervisorStateGraph:
         }
 
     async def execute(
-        self, initial_state: Optional[StateGraphState] = None
+        self, initial_state: StateGraphState | None = None
     ) -> StateGraphState:
         """
         Ejecuta el workflow de forma asíncrona.
@@ -880,7 +880,7 @@ class SupervisorStateGraph:
             return state
 
     async def _execute_fallback(
-        self, initial_state: Optional[StateGraphState] = None
+        self, initial_state: StateGraphState | None = None
     ) -> StateGraphState:
         """Ejecución fallback sin LangGraph."""
         state = initial_state or self.get_initial_state()
@@ -912,8 +912,8 @@ class SupervisorStateGraph:
     async def submit_event(
         self,
         event_type: WorkflowEventType,
-        event_data: Optional[Dict[str, Any]] = None,
-        thread_id: Optional[str] = None,
+        event_data: dict[str, Any] | None = None,
+        thread_id: str | None = None,
     ) -> StateGraphState:
         """
         Envía un evento al workflow en ejecución.
@@ -935,7 +935,7 @@ class SupervisorStateGraph:
 
         return await self.execute(state)
 
-    def visualize(self, output_path: Optional[str] = None) -> Optional[str]:
+    def visualize(self, output_path: str | None = None) -> str | None:
         """
         Genera una visualización del grafo en formato Mermaid.
 
@@ -999,7 +999,7 @@ stateDiagram-v2
 ```
 """
 
-    def get_state_summary(self, state: StateGraphState) -> Dict[str, Any]:
+    def get_state_summary(self, state: StateGraphState) -> dict[str, Any]:
         """Retorna un resumen legible del estado actual."""
         return {
             "workflow_id": state.get("workflow_id"),
@@ -1094,7 +1094,7 @@ class StateGraphIntegration:
             )
             state["hitl_response"] = response
 
-    def translate_modlist_event(self, mtime: float, path: str) -> Dict[str, Any]:
+    def translate_modlist_event(self, mtime: float, path: str) -> dict[str, Any]:
         """Traduce un evento de cambio de modlist al formato del grafo."""
         return {
             "event_type": WorkflowEventType.MODLIST_CHANGED,
@@ -1102,8 +1102,8 @@ class StateGraphIntegration:
         }
 
     def translate_user_command(
-        self, command: str, params: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, command: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
         """Traduce un comando de usuario al formato del grafo."""
         return {
             "event_type": WorkflowEventType.USER_COMMAND,
@@ -1116,19 +1116,19 @@ class StateGraphIntegration:
 # =============================================================================
 
 __all__ = [
+    # Availability flags
+    "LANGGRAPH_AVAILABLE",
+    "StateGraphEdges",
+    "StateGraphIntegration",
+    # Graph components
+    "StateGraphNodes",
+    "StateGraphState",
     # Enums
     "SupervisorState",
+    "SupervisorStateGraph",
     "WorkflowEventType",
     # State classes
     "WorkflowState",
-    "StateGraphState",
-    # Graph components
-    "StateGraphNodes",
-    "StateGraphEdges",
-    "SupervisorStateGraph",
-    "StateGraphIntegration",
     # Factory
     "create_supervisor_state_graph",
-    # Availability flags
-    "LANGGRAPH_AVAILABLE",
 ]

@@ -20,7 +20,8 @@ import json
 import logging
 import time
 import uuid
-from typing import Optional, Callable, Dict, Any
+from collections.abc import Callable
+from typing import Any
 
 try:
     import websockets
@@ -30,6 +31,8 @@ try:
     )
 except ImportError:
     websockets = None  # Graceful degradation if not installed
+
+import contextlib
 
 from sky_claw.security.auth_token_manager import AuthTokenManager
 
@@ -50,9 +53,9 @@ class AgentCommunicationClient:
     def __init__(
         self,
         daemon_url: str = "ws://localhost:8765/ws/ui",
-        on_message: Optional[Callable[[Dict[str, Any]], None]] = None,
-        on_connection_change: Optional[Callable[[bool], None]] = None,
-        token_dir: Optional[str] = None,
+        on_message: Callable[[dict[str, Any]], None] | None = None,
+        on_connection_change: Callable[[bool], None] | None = None,
+        token_dir: str | None = None,
     ):
         self._daemon_url = daemon_url
         self._on_message = on_message
@@ -60,7 +63,7 @@ class AgentCommunicationClient:
         self._token_dir = token_dir
         self._ws = None
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -68,8 +71,7 @@ class AgentCommunicationClient:
         """Schedule the connection loop as a background task."""
         if websockets is None:
             logger.error(
-                "websockets library not installed — "
-                "agent communication disabled. Run: pip install websockets"
+                "websockets library not installed — agent communication disabled. Run: pip install websockets"
             )
             return
         self._running = True
@@ -83,15 +85,13 @@ class AgentCommunicationClient:
             await self._ws.close()
         if self._task and not self._task.done():
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
         logger.info("AgentCommunicationClient stopped.")
 
     # ── Outbound (UI → Daemon) ────────────────────────────────────────
 
-    async def send_command(self, command: str, payload: Optional[Dict] = None) -> bool:
+    async def send_command(self, command: str, payload: dict | None = None) -> bool:
         """
         Fire-and-forget: send a command to the daemon.
 
@@ -159,8 +159,7 @@ class AgentCommunicationClient:
                 if not self._running:
                     break
                 logger.warning(
-                    f"⚠️ Daemon connection lost ({type(e).__name__}). "
-                    f"Reconnecting in {backoff:.1f}s..."
+                    f"⚠️ Daemon connection lost ({type(e).__name__}). Reconnecting in {backoff:.1f}s..."
                 )
             except Exception as e:
                 logger.error(f"❌ Unexpected error in agent comm: {e}")

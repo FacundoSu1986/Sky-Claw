@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import json
 import logging
-import pathlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from sky_claw.security.network_gateway import NetworkGateway, GatewayTCPConnector
+from sky_claw.security.network_gateway import GatewayTCPConnector, NetworkGateway
+
 from .schemas import SetupToolsParams
+
+if TYPE_CHECKING:
+    import pathlib
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +50,8 @@ async def setup_tools(
     Returns:
         JSON string with installation results.
     """
-    from sky_claw.tools_installer import ToolInstallError
     from sky_claw.local_config import save as save_local_config
+    from sky_claw.tools_installer import ToolInstallError
 
     params = SetupToolsParams(tools=tools or ["loot", "xedit", "pandora", "bodyslide"])
 
@@ -131,8 +134,7 @@ async def setup_tools(
                 else:
                     results[tool_name] = {
                         "error": (
-                            f"Unknown tool: {tool_name!r}. "
-                            "Supported: loot, xedit, pandora, bodyslide"
+                            f"Unknown tool: {tool_name!r}. Supported: loot, xedit, pandora, bodyslide"
                         )
                     }
             except ToolInstallError as exc:

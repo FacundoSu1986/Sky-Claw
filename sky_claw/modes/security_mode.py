@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-from sky_claw.app_context import AppContext
+if TYPE_CHECKING:
+    from sky_claw.app_context import AppContext
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +21,8 @@ async def _run_security(ctx: AppContext, command_str: str | None) -> None:
     action = parts[0].lower()
     path_str = parts[1] if len(parts) > 1 else "."
 
-    from sky_claw.security.metacognitive_logic import audit_resource
     from sky_claw.security.governance import GovernanceManager
+    from sky_claw.security.metacognitive_logic import audit_resource
 
     if action == "scan":
         logger.info("Iniciando auditoría Purple Team para: %s...", path_str)

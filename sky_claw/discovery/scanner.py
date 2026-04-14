@@ -179,7 +179,7 @@ class EnvironmentScanner:
             return await asyncio.wait_for(
                 self._scan_inner(), timeout=SEARCH_TIMEOUT_SECONDS * 3
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Environment scan timed out")
             snap = EnvironmentSnapshot()
             snap.health_status = HealthStatus.CRITICAL
@@ -299,9 +299,7 @@ class EnvironmentScanner:
 
         # ── 4. Compute Health ─────────────────────────────────────────
         critical_missing = [m for m in snap.missing if m.is_critical]
-        if critical_missing:
-            snap.health_status = HealthStatus.NEEDS_SETUP
-        elif snap.missing:
+        if critical_missing or snap.missing:
             snap.health_status = HealthStatus.NEEDS_SETUP
         else:
             snap.health_status = HealthStatus.READY

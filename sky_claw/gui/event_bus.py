@@ -10,7 +10,10 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class EventType(Enum):
@@ -29,7 +32,7 @@ class EventType(Enum):
 @dataclass
 class SkyClawEvent:
     type: EventType
-    data: Dict[str, Any]
+    data: dict[str, Any]
     timestamp: datetime = field(default_factory=datetime.now)
     source: str = "system"
 
@@ -52,7 +55,7 @@ class EventBus:
         if self._initialized:
             return
         self._initialized = True
-        self._subscribers: Dict[EventType, List[Callable]] = defaultdict(list)
+        self._subscribers: dict[EventType, list[Callable]] = defaultdict(list)
         self._subscribers_lock = threading.Lock()
         self._event_queue: queue.Queue = queue.Queue()
         self._running = False

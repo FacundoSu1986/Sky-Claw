@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Validador Anti-SSRF para prevenir Server-Side Request Forgery.
 
@@ -11,8 +10,8 @@ import ipaddress
 import logging
 import re
 import socket
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
 from urllib.parse import urlparse
 
 logger = logging.getLogger("SkyClaw.validators.ssrf")
@@ -57,9 +56,9 @@ class SSRFValidationResult:
     """Resultado de validación SSRF."""
 
     is_valid: bool
-    normalized_url: Optional[str]
-    blocked_reason: Optional[str]
-    resolved_ip: Optional[str] = None
+    normalized_url: str | None
+    blocked_reason: str | None
+    resolved_ip: str | None = None
 
 
 class SSRFValidator:
@@ -76,7 +75,7 @@ class SSRFValidator:
         _dns_resolver: Función para resolver DNS (inyectable para testing)
     """
 
-    def __init__(self, dns_resolver: Optional[Callable[[str], list]] = None):
+    def __init__(self, dns_resolver: Callable[[str], list] | None = None):
         """
         Inicializa el validador SSRF.
 

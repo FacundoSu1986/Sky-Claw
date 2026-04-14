@@ -6,7 +6,7 @@ import sys
 
 def main():
     # Test 1: SchemaRegistry population
-    from sky_claw.core.contracts import list_registered_schemas, get_schema_class
+    from sky_claw.core.contracts import get_schema_class, list_registered_schemas
 
     schemas = list_registered_schemas()
     assert len(schemas) == 7, f"Expected 7 schemas, got {len(schemas)}"
@@ -55,8 +55,9 @@ def main():
     asyncio.run(test_invalid_input())
 
     # Test 5: validate_output
-    from sky_claw.core.contracts import validate_output
     from datetime import datetime
+
+    from sky_claw.core.contracts import validate_output
 
     class SupervisorAgent2:
         @validate_output("dispatch_tool")

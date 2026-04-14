@@ -6,7 +6,9 @@ para binding reactivo del valor.
 VIEW PURO - Sin lógica de negocio, solo presentación.
 """
 
-from typing import Any, Optional, Callable
+from collections.abc import Callable
+from typing import Any
+
 from nicegui import ui
 
 # Colores del tema (extraídos del monolito para mantener invariante visual)
@@ -21,9 +23,9 @@ def create_stat_card(
     value_var: Any,
     subtitle: str = "",
     icon_svg: str = "",
-    trend: Optional[str] = None,
+    trend: str | None = None,
     trend_positive: bool = True,
-    on_click: Optional[Callable] = None,
+    on_click: Callable | None = None,
 ) -> ui.element:
     """Crea una tarjeta de estadística con bind reactivo.
 

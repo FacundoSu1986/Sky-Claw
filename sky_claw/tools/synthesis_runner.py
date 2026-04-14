@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import pathlib
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import pathlib
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +215,7 @@ class SynthesisRunner:
             stdout, stderr, return_code = await self._execute_process(args)
         except SynthesisExecutionError:
             raise
-        except (OSError, asyncio.TimeoutError, RuntimeError) as e:
+        except (TimeoutError, OSError, RuntimeError) as e:
             logger.exception("Error inesperado ejecutando Synthesis: %s", e)
             return SynthesisResult(
                 success=False,
@@ -343,7 +345,7 @@ class SynthesisRunner:
             )
         except FileNotFoundError:
             raise SynthesisNotFoundError(self._config.synthesis_exe)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             await proc.communicate()
             raise SynthesisTimeoutError(self._config.timeout_seconds)
@@ -444,6 +446,6 @@ class SynthesisRunner:
         except OSError as e:
             logger.error("Error de I/O validando ESP %s: %s", esp_path, e)
             return False
-        except (OSError, RuntimeError) as e:
+        except RuntimeError as e:
             logger.exception("Error inesperado validando ESP %s: %s", esp_path, e)
             return False

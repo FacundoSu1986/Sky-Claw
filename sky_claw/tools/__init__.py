@@ -6,51 +6,54 @@ Este paquete proporciona integración con:
 - Gestión de pipelines de patchers
 """
 
-from .synthesis_runner import (
-    SynthesisRunner,
-    SynthesisConfig,
-    SynthesisResult,
-    SynthesisExecutionError,
-    SynthesisTimeoutError,
-    SynthesisNotFoundError,
-    SynthesisValidationError,
+from .dyndolod_runner import (
+    DynDOLODConfig,
+    DynDOLODExecutionError,
+    DynDOLODNotFoundError,
+    DynDOLODPipelineResult,
+    DynDOLODRunner,
+    DynDOLODTimeoutError,
 )
 from .patcher_pipeline import (
-    PatcherPipeline,
-    PatcherDefinition,
-    PatcherPipelineError,
-    PatcherNotFoundError,
     PatcherConfigError,
+    PatcherDefinition,
+    PatcherNotFoundError,
+    PatcherPipeline,
+    PatcherPipelineError,
 )
-from .dyndolod_runner import (
-    DynDOLODRunner,
-    DynDOLODConfig,
-    DynDOLODPipelineResult,
-    DynDOLODExecutionError,
-    DynDOLODTimeoutError,
-    DynDOLODNotFoundError,
+from .synthesis_runner import (
+    SynthesisConfig,
+    SynthesisExecutionError,
+    SynthesisNotFoundError,
+    SynthesisResult,
+    SynthesisRunner,
+    SynthesisTimeoutError,
+    SynthesisValidationError,
 )
+from .synthesis_service import SynthesisPipelineService
 
 __all__ = [
-    # Synthesis Runner
-    "SynthesisRunner",
-    "SynthesisConfig",
-    "SynthesisResult",
-    "SynthesisExecutionError",
-    "SynthesisTimeoutError",
-    "SynthesisNotFoundError",
-    "SynthesisValidationError",
-    # Patcher Pipeline
-    "PatcherPipeline",
-    "PatcherDefinition",
-    "PatcherPipelineError",
-    "PatcherNotFoundError",
-    "PatcherConfigError",
+    "DynDOLODConfig",
+    "DynDOLODExecutionError",
+    "DynDOLODNotFoundError",
+    "DynDOLODPipelineResult",
     # DynDOLOD Runner
     "DynDOLODRunner",
-    "DynDOLODConfig",
-    "DynDOLODPipelineResult",
-    "DynDOLODExecutionError",
     "DynDOLODTimeoutError",
-    "DynDOLODNotFoundError",
+    "PatcherConfigError",
+    "PatcherDefinition",
+    "PatcherNotFoundError",
+    # Patcher Pipeline
+    "PatcherPipeline",
+    "PatcherPipelineError",
+    "SynthesisConfig",
+    "SynthesisExecutionError",
+    "SynthesisNotFoundError",
+    # Synthesis Service
+    "SynthesisPipelineService",
+    "SynthesisResult",
+    # Synthesis Runner
+    "SynthesisRunner",
+    "SynthesisTimeoutError",
+    "SynthesisValidationError",
 ]

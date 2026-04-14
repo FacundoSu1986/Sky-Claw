@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Tests for LangGraph StateGraph integration in Sky-Claw.
 
@@ -11,6 +10,7 @@ Tests verify:
 
 import os
 import sys
+
 import pytest
 
 # Insert project root at start of path to avoid conflicts
@@ -19,14 +19,14 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from sky_claw.orchestrator.state_graph import (  # noqa: E402
-    SupervisorState,
-    WorkflowEventType,
-    SupervisorStateGraph,
-    StateGraphNodes,
+    LANGGRAPH_AVAILABLE,
     StateGraphEdges,
     StateGraphIntegration,
+    StateGraphNodes,
+    SupervisorState,
+    SupervisorStateGraph,
+    WorkflowEventType,
     create_supervisor_state_graph,
-    LANGGRAPH_AVAILABLE,
 )
 
 # Standard LangGraph end-node sentinel

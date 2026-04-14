@@ -8,12 +8,17 @@ directory (where ``SkyrimSE.exe`` lives).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-import pathlib
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from sky_claw.loot.parser import LOOTOutputParser, LOOTResult
-from sky_claw.security.path_validator import PathValidator
+
+if TYPE_CHECKING:
+    import pathlib
+
+    from sky_claw.security.path_validator import PathValidator
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +105,10 @@ class LOOTRunner:
             )
         except FileNotFoundError:
             raise LOOTNotFoundError(f"LOOT executable not found at {loot_path}")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
-                pass
             raise LOOTTimeoutError(self._config.timeout)
 
         stdout_text = stdout.decode(errors="replace")

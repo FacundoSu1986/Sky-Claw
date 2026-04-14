@@ -1,11 +1,11 @@
 import logging
 import logging.handlers
-import sys
 import os
-from contextvars import ContextVar
-from pythonjsonlogger import json
-
 import re
+import sys
+from contextvars import ContextVar
+
+from pythonjsonlogger import json
 
 from sky_claw.config import Config
 

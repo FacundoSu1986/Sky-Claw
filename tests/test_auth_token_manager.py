@@ -15,12 +15,13 @@ from __future__ import annotations
 import hashlib
 import secrets
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+from sky_claw.security.auth_token_manager import _TOKEN_TTL, AuthTokenManager
 
-from sky_claw.security.auth_token_manager import AuthTokenManager, _TOKEN_TTL
-
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Helpers

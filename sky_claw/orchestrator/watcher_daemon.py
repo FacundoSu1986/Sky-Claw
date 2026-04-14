@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sky_claw.core.database import DatabaseAgent
 
+import contextlib
+
 from sky_claw.core.event_bus import CoreEventBus, Event
 from sky_claw.core.event_payloads import ModlistChangedPayload
 
@@ -76,10 +78,8 @@ class WatcherDaemon:
         if self._task is None:
             return
         self._task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await self._task
-        except asyncio.CancelledError:
-            pass
         self._task = None
         logger.info("WatcherDaemon detenido")
 

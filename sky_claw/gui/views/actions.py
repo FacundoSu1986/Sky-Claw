@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Awaitable
+from typing import TYPE_CHECKING, Any
 
 from nicegui import ui
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from sky_claw.discovery.environment import EnvironmentSnapshot
 
 logger = logging.getLogger(__name__)

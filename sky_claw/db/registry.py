@@ -6,14 +6,17 @@ correlation.
 
 from __future__ import annotations
 
-import pathlib
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import TYPE_CHECKING
 
 import aiosqlite
 
 from sky_claw.config import DB_PATH
+
+if TYPE_CHECKING:
+    import pathlib
+    from collections.abc import AsyncGenerator
 
 logger = logging.getLogger(__name__)
 

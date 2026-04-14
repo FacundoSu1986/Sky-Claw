@@ -9,13 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from sky_claw.agent.tools import AsyncToolRegistry
 from sky_claw.scraper.nexus_downloader import FileInfo, NexusDownloader
-from sky_claw.security.hitl import HITLGuard, Decision
+from sky_claw.security.hitl import Decision, HITLGuard
 
 
 class TestLootAutoInit:

@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import json
-import pathlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-
 from sky_claw.agent.providers import AnthropicProvider
-from sky_claw.agent.router import LLMRouter, MAX_CONTEXT_MESSAGES, MAX_TOOL_ROUNDS
+from sky_claw.agent.router import MAX_CONTEXT_MESSAGES, MAX_TOOL_ROUNDS, LLMRouter
 from sky_claw.agent.tools import AsyncToolRegistry
 from sky_claw.db.async_registry import AsyncModRegistry
 from sky_claw.mo2.vfs import MO2Controller
@@ -20,6 +18,8 @@ from sky_claw.scraper.masterlist import MasterlistClient
 from sky_claw.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.security.path_validator import PathValidator
 
+if TYPE_CHECKING:
+    import pathlib
 
 # ------------------------------------------------------------------
 # Helpers

@@ -1,12 +1,11 @@
-# -*- coding: utf-8 -*-
 """
 test_lcel_stability.py - Pruebas de estabilidad para la integración LCEL.
 Verifica que la lógica de importación condicional sea robusta y que no existan
 errores de dependencias residuales.
 """
 
-import sys
 import os
+import sys
 import traceback
 
 # Insertar el directorio del proyecto al inicio del path para evitar conflictos
@@ -22,20 +21,20 @@ def test_core_imports():
     print("=" * 60)
     try:
         from sky_claw.core import (  # noqa: F401
+            AgentToolRequest,
+            AgentToolResponse,
             CircuitBreakerTripped,
-            WSLInteropError,
             DatabaseAgent,
             ModMetadata,
+            RouteClassification,
             ScrapingQuery,
             SecurityAuditRequest,
             SecurityAuditResponse,
-            AgentToolRequest,
-            AgentToolResponse,
-            RouteClassification,
+            WSLInteropError,
+            get_contract_schema,
+            validate_contract,
             validate_input,
             validate_output,
-            validate_contract,
-            get_contract_schema,
         )
 
         print("[PASS] All core module imports successful")
@@ -55,11 +54,11 @@ def test_agent_imports():
     try:
         from sky_claw.agent import (  # noqa: F401
             AsyncToolRegistry,
-            LLMRouter,
-            ToolExecutor,
-            PromptComposer,
             ChainBuilder,
+            LLMRouter,
+            PromptComposer,
             RouteClassification,
+            ToolExecutor,
         )
 
         print("[PASS] All agent module imports successful")

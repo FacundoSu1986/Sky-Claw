@@ -5,7 +5,6 @@ Tarjeta visual para mostrar características/funcionalidades con badge opcional.
 VIEW PURO - Sin lógica de negocio, solo presentación.
 """
 
-from typing import Optional
 from nicegui import ui
 
 # Colores del tema (extraídos del monolito para mantener invariante visual)
@@ -18,9 +17,9 @@ def create_feature_card(
     title: str,
     description: str,
     icon_svg: str,
-    badge: Optional[str] = None,
+    badge: str | None = None,
     badge_type: str = "info",
-    on_click: Optional[callable] = None,
+    on_click: callable | None = None,
 ) -> ui.element:
     """Crea una tarjeta de feature con badge opcional.
 

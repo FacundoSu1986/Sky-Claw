@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import pathlib
 import time
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-from sky_claw.loot.cli import LOOTConfig, LOOTRunner, LOOTNotFoundError
+from sky_claw.loot.cli import LOOTConfig, LOOTNotFoundError, LOOTRunner
 from sky_claw.loot.masterlist import MasterlistDownloader
 from sky_claw.loot.parser import LOOTOutputParser, LOOTResult
 
+if TYPE_CHECKING:
+    import pathlib
 
 # ------------------------------------------------------------------
 # LOOTOutputParser
@@ -20,13 +21,7 @@ from sky_claw.loot.parser import LOOTOutputParser, LOOTResult
 
 class TestLOOTOutputParser:
     def test_parse_sorted_plugins(self) -> None:
-        stdout = (
-            "Sorting plugins...\n"
-            "  1. Skyrim.esm\n"
-            "  2. Update.esm\n"
-            "  3. Dawnguard.esm\n"
-            "  4. Requiem.esp\n"
-        )
+        stdout = "Sorting plugins...\n  1. Skyrim.esm\n  2. Update.esm\n  3. Dawnguard.esm\n  4. Requiem.esp\n"
         result = LOOTOutputParser.parse(stdout=stdout, stderr="", return_code=0)
         assert result.sorted_plugins == [
             "Skyrim.esm",

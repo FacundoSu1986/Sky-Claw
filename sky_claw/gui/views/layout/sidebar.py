@@ -5,7 +5,8 @@ Barra lateral de navegación con estado de conexión del agente.
 VIEW PURO - Sin lógica de negocio, solo presentación.
 """
 
-from typing import Optional, Callable, List, Tuple
+from collections.abc import Callable
+
 from nicegui import ui
 
 # Colores del tema (extraídos del monolito para mantener invariante visual)
@@ -16,9 +17,9 @@ COLORS = {
 
 
 def create_sidebar(
-    on_navigate: Optional[Callable[[str], None]] = None,
+    on_navigate: Callable[[str], None] | None = None,
     is_agent_connected: bool = False,
-    nav_items: Optional[List[Tuple[str, bool]]] = None,
+    nav_items: list[tuple[str, bool]] | None = None,
 ) -> ui.element:
     """Crea el sidebar con navegación y estado de conexión.
 
@@ -47,9 +48,11 @@ def create_sidebar(
         "w-64 h-screen bg-[#0a0a0a] border-r border-[#1f2937] flex flex-col sky-sidebar"
     ) as sidebar:
         # Logo
-        with ui.element("div").classes("p-6 border-b border-[#1f2937]"):
-            with ui.row().classes("items-center gap-3"):
-                ui.html(f"""
+        with (
+            ui.element("div").classes("p-6 border-b border-[#1f2937]"),
+            ui.row().classes("items-center gap-3"),
+        ):
+            ui.html(f"""
                     <div class="w-10 h-10 rounded-xl flex items-center justify-center sky-glow-static"
                          style="background: linear-gradient(135deg,
                                 {COLORS["accent_violet"]}, {COLORS["accent_cyan"]});">
@@ -61,14 +64,14 @@ def create_sidebar(
                         </svg>
                     </div>
                 """)
-                with ui.column():
-                    ui.label("Sky-Claw").classes("text-white font-bold text-lg")
-                    # Connection indicator
-                    with ui.row().classes("items-center gap-1"):
-                        ui.html(
-                            f'<span class="sky-connection-dot {status_dot_class}"></span>'
-                        )
-                        ui.label(status_text).classes("text-[#6b7280] text-xs")
+            with ui.column():
+                ui.label("Sky-Claw").classes("text-white font-bold text-lg")
+                # Connection indicator
+                with ui.row().classes("items-center gap-1"):
+                    ui.html(
+                        f'<span class="sky-connection-dot {status_dot_class}"></span>'
+                    )
+                    ui.label(status_text).classes("text-[#6b7280] text-xs")
 
         # Navigation
         with ui.element("div").classes("flex-1 p-4"):

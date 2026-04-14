@@ -8,7 +8,10 @@ Extraído de tools.py como parte de la refactorización M-13.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Awaitable
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 
 class ToolDescriptor:
@@ -21,7 +24,7 @@ class ToolDescriptor:
         fn: The async callable that implements the tool
     """
 
-    __slots__ = ("name", "description", "input_schema", "fn")
+    __slots__ = ("description", "fn", "input_schema", "name")
 
     def __init__(
         self,

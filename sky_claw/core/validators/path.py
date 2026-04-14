@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Validador Anti-Path Traversal para prevenir ataques de recorrido de directorios.
 
@@ -11,7 +10,6 @@ import pathlib
 import re
 import urllib.parse
 from dataclasses import dataclass
-from typing import Optional, Set
 
 logger = logging.getLogger("SkyClaw.validators.path")
 
@@ -55,8 +53,8 @@ class PathValidationResult:
     """Resultado de validación de path."""
 
     is_valid: bool
-    normalized_path: Optional[str]
-    error_message: Optional[str]
+    normalized_path: str | None
+    error_message: str | None
     is_absolute: bool
 
 
@@ -77,7 +75,7 @@ class PathTraversalValidator:
 
     def __init__(
         self,
-        allowed_roots: Optional[Set[pathlib.Path]] = None,
+        allowed_roots: set[pathlib.Path] | None = None,
         allow_absolute: bool = False,
     ):
         """
@@ -274,7 +272,7 @@ class PathTraversalValidator:
 
 
 def validate_path_traversal(
-    path: str, allowed_roots: Optional[Set[pathlib.Path]] = None
+    path: str, allowed_roots: set[pathlib.Path] | None = None
 ) -> str:
     """
     Función de conveniencia para usar como field_validator.

@@ -7,13 +7,15 @@ y la interfaz Protocol PathResolver.
 from __future__ import annotations
 
 import os
-import pathlib
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
-
 from sky_claw.core.path_resolver import PathResolutionService, PathResolver
 from sky_claw.security.path_validator import PathValidator
+
+if TYPE_CHECKING:
+    import pathlib
 
 
 @pytest.fixture

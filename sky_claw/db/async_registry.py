@@ -12,17 +12,20 @@ import logging
 import pathlib
 import sqlite3
 import time
-from typing import Sequence
+from typing import TYPE_CHECKING
 
 import aiosqlite
 from tenacity import (
     retry,
     retry_if_exception_type,
-    wait_exponential,
     stop_after_attempt,
+    wait_exponential,
 )
 
 from sky_claw.config import DB_PATH
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -274,8 +277,7 @@ class AsyncModRegistry:
             raise RuntimeError("Database is not open")
         escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         async with self._conn.execute(
-            "SELECT mod_id, nexus_id, name, version, installed, enabled_in_vfs "
-            "FROM mods WHERE name LIKE ? ESCAPE '\\'",
+            "SELECT mod_id, nexus_id, name, version, installed, enabled_in_vfs FROM mods WHERE name LIKE ? ESCAPE '\\'",
             (f"%{escaped}%",),
         ) as cur:
             rows = await cur.fetchall()

@@ -2,8 +2,8 @@ import asyncio
 import hashlib
 import logging
 import pathlib
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Awaitable, Callable
 
 import aiofiles
 import aiohttp
@@ -224,10 +224,7 @@ class NexusDownloader:
                         if isinstance(target_file.get("file_id"), list):
                             file_id = target_file["file_id"][1]
 
-                meta_url = (
-                    f"{_NEXUS_API_BASE}/games/{self._game_domain}"
-                    f"/mods/{nexus_id}/files/{file_id}.json"
-                )
+                meta_url = f"{_NEXUS_API_BASE}/games/{self._game_domain}/mods/{nexus_id}/files/{file_id}.json"
                 await self._gateway.authorize("GET", meta_url)
 
                 async with session.get(
@@ -343,7 +340,7 @@ class NexusDownloader:
                     raise DownloadError(
                         f"Download failed for {file_info.file_name!r}: {exc}"
                     ) from exc
-                except (OSError, asyncio.TimeoutError) as exc:
+                except (TimeoutError, OSError) as exc:
                     await _cleanup(dest)
                     raise DownloadError(
                         f"I/O or timeout error for {file_info.file_name!r}: {exc}"
@@ -356,8 +353,7 @@ class NexusDownloader:
                     if actual_md5.lower() != file_info.md5.lower():
                         await _cleanup(dest)
                         raise HashValidationError(
-                            f"MD5 mismatch for {file_info.file_name!r}: "
-                            f"expected={file_info.md5!r} got={actual_md5!r}"
+                            f"MD5 mismatch for {file_info.file_name!r}: expected={file_info.md5!r} got={actual_md5!r}"
                         )
                     logger.info(
                         "MD5 validado OK para %s (%s)", file_info.file_name, actual_md5
@@ -400,8 +396,8 @@ class NexusDownloader:
         progress_cb: ProgressCallback,
     ) -> pathlib.Path:
         """Fallback for non-premium accounts: open browser and watch staging_dir."""
-        import webbrowser
         import shutil
+        import webbrowser
 
         # Generate official download tab URL
         url = (
@@ -513,10 +509,7 @@ class NexusDownloader:
         Raises:
             DownloadError: When the API returns an error or no links.
         """
-        url = (
-            f"{_NEXUS_API_BASE}/games/{self._game_domain}"
-            f"/mods/{nexus_id}/files/{file_id}/download_link.json"
-        )
+        url = f"{_NEXUS_API_BASE}/games/{self._game_domain}/mods/{nexus_id}/files/{file_id}/download_link.json"
         await self._gateway.authorize("GET", url)
 
         headers = {"apikey": self._api_key, "Accept": "application/json"}

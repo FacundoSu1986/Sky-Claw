@@ -21,9 +21,7 @@ import uuid
 from unittest.mock import AsyncMock
 
 import pytest
-
 from sky_claw.security.hitl import Decision, HITLGuard, HITLRequest
-
 
 # ---------------------------------------------------------------------------
 # Helpers / factories

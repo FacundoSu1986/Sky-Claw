@@ -6,11 +6,11 @@ en un grid de 3 columnas.
 VIEW PURO - Sin lógica de negocio, solo presentación.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
+
 from nicegui import ui
 
 from ..components import create_feature_card
-
 
 # Colores del tema (extraídos del monolito para mantener invariante visual)
 COLORS = {
@@ -20,7 +20,7 @@ COLORS = {
 
 
 def create_features_section(
-    on_feature_click: Optional[Callable[[str], None]] = None,
+    on_feature_click: Callable[[str], None] | None = None,
 ) -> None:
     """Sección de features/características de la app.
 
@@ -42,8 +42,7 @@ def create_features_section(
             # Feature: Smart Search
             create_feature_card(
                 title="Smart Search",
-                description="Natural language search across thousands of "
-                "Skyrim mods with AI-powered recommendations",
+                description="Natural language search across thousands of Skyrim mods with AI-powered recommendations",
                 icon_svg=f'''
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
                          stroke="{COLORS["accent_violet"]}" stroke-width="2">
@@ -61,8 +60,7 @@ def create_features_section(
             # Feature: Conflict Resolution
             create_feature_card(
                 title="Conflict Resolution",
-                description="Automatically detect and resolve mod conflicts "
-                "using advanced dependency analysis",
+                description="Automatically detect and resolve mod conflicts using advanced dependency analysis",
                 icon_svg="""
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
                          stroke="#ef4444" stroke-width="2">
@@ -82,8 +80,7 @@ def create_features_section(
             # Feature: Zero-Trust Security
             create_feature_card(
                 title="Zero-Trust Security",
-                description="HITL protection with Telegram integration for "
-                "approving external downloads safely",
+                description="HITL protection with Telegram integration for approving external downloads safely",
                 icon_svg=f'''
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
                          stroke="{COLORS["accent_cyan"]}" stroke-width="2">

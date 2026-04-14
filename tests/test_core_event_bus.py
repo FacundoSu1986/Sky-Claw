@@ -6,10 +6,9 @@ Sprint 1: Strangler Fig — validación del bus de eventos core.
 from __future__ import annotations
 
 import asyncio
+
 import pytest
-
 from sky_claw.core.event_bus import CoreEventBus, Event
-
 
 # ---------------------------------------------------------------------------
 # CoreEventBus unit tests

@@ -5,14 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import pathlib
-from typing import Any, AsyncGenerator
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-from tenacity import wait_none
-
 from sky_claw.agent.tools import AsyncToolRegistry, DownloadModParams
 from sky_claw.db.async_registry import AsyncModRegistry
 from sky_claw.mo2.vfs import MO2Controller
@@ -25,8 +22,8 @@ from sky_claw.scraper.nexus_downloader import (
     HashValidationError,
     MD5ValidationError,  # Alias de compatibilidad hacia atrás
     NexusDownloader,
-    validate_sha256_format,
     _cleanup,
+    validate_sha256_format,
 )
 from sky_claw.security.hitl import Decision, HITLGuard
 from sky_claw.security.network_gateway import (
@@ -35,7 +32,11 @@ from sky_claw.security.network_gateway import (
     NetworkGateway,
 )
 from sky_claw.security.path_validator import PathValidator
+from tenacity import wait_none
 
+if TYPE_CHECKING:
+    import pathlib
+    from collections.abc import AsyncGenerator
 
 # ---------------------------------------------------------------------------
 # Fixtures & helpers
@@ -947,17 +948,19 @@ class TestDownloadModHITLDenied:
             mock_session.__aexit__ = AsyncMock(return_value=False)
             mock_session_cls.return_value = mock_session
 
-            with patch.object(downloader, "get_file_info", return_value=fi):
-                with patch.object(
+            with (
+                patch.object(downloader, "get_file_info", return_value=fi),
+                patch.object(
                     guard,
                     "request_approval",
                     return_value=Decision.DENIED,
-                ):
-                    result = json.loads(
-                        await registry.execute(
-                            "download_mod", {"nexus_id": 10, "file_id": 20}
-                        )
+                ),
+            ):
+                result = json.loads(
+                    await registry.execute(
+                        "download_mod", {"nexus_id": 10, "file_id": 20}
                     )
+                )
 
         assert result["status"] == "denied"
         assert result["decision"] == "denied"
@@ -990,17 +993,19 @@ class TestDownloadModHITLDenied:
             mock_session.__aexit__ = AsyncMock(return_value=False)
             mock_session_cls.return_value = mock_session
 
-            with patch.object(downloader, "get_file_info", return_value=fi):
-                with patch.object(
+            with (
+                patch.object(downloader, "get_file_info", return_value=fi),
+                patch.object(
                     guard,
                     "request_approval",
                     return_value=Decision.TIMEOUT,
-                ):
-                    result = json.loads(
-                        await registry.execute(
-                            "download_mod", {"nexus_id": 11, "file_id": 21}
-                        )
+                ),
+            ):
+                result = json.loads(
+                    await registry.execute(
+                        "download_mod", {"nexus_id": 11, "file_id": 21}
                     )
+                )
 
         assert result["status"] == "denied"
         assert result["decision"] == "timeout"

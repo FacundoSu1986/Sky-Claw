@@ -178,7 +178,7 @@ class VFSOrchestrator:
         tool_path = tool_path.strip()
 
         # Construcción del comando VFS de MO2
-        command: list[str] = [self._mo2_path, self._MO2_VFS_FLAG, tool_path] + args
+        command: list[str] = [self._mo2_path, self._MO2_VFS_FLAG, tool_path, *args]
 
         logger.info(
             "Iniciando ejecución VFS - Herramienta: %s, Argumentos: %s",
@@ -200,7 +200,7 @@ class VFSOrchestrator:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     process.communicate(), timeout=self._timeout_seconds
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.critical(
                     "Timeout excedido para %s después de %d segundos",
                     tool_path,
@@ -211,7 +211,7 @@ class VFSOrchestrator:
                 process.terminate()
                 try:
                     await asyncio.wait_for(process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(
                         "Proceso no terminó graciosamente, forzando kill - PID: %d",
                         process.pid,
@@ -263,11 +263,7 @@ class VFSOrchestrator:
 
     def __repr__(self) -> str:
         """Representación formal del orquestador."""
-        return (
-            f"VFSOrchestrator("
-            f"mo2_path='{self._mo2_path}', "
-            f"timeout_seconds={self._timeout_seconds})"
-        )
+        return f"VFSOrchestrator(mo2_path='{self._mo2_path}', timeout_seconds={self._timeout_seconds})"
 
     def __str__(self) -> str:
         """Representación en string del orquestador."""

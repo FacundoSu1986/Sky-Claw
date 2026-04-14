@@ -9,16 +9,17 @@ Tests:
 """
 
 import asyncio
+import os
+import sys
+from unittest.mock import AsyncMock
+
 import pytest
 from tenacity import wait_none
-from unittest.mock import AsyncMock
-import sys
-import os
 
 # Add path to sky_claw module
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from sky_claw.orchestrator.sync_engine import SyncEngine, SyncConfig
+from sky_claw.orchestrator.sync_engine import SyncConfig, SyncEngine
 
 
 class TestSyncEngineResilience:
@@ -96,7 +97,7 @@ class TestSyncEngineResilience:
 
         async def timeout_download():
             await asyncio.sleep(0.1)  # Simulate timeout
-            raise asyncio.TimeoutError("Simulated timeout")
+            raise TimeoutError("Simulated timeout")
 
         tasks = [timeout_download() for _ in range(5)]
 

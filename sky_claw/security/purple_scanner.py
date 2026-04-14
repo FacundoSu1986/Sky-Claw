@@ -9,7 +9,7 @@ import ast
 import logging
 import re
 from pathlib import Path
-from typing import List, Set, Dict, Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +66,9 @@ MALICIOUS_PAYLOAD_PATTERNS = [
 class PurpleScanner(ast.NodeVisitor):
     def __init__(self, filename: str = "<unknown>"):
         self.filename = filename
-        self.findings: List[Dict[str, Any]] = []
-        self.tainted_vars: Set[str] = set()
-        self.const_map: Dict[str, str] = {}  # Seguimiento simple de constantes string
+        self.findings: list[dict[str, Any]] = []
+        self.tainted_vars: set[str] = set()
+        self.const_map: dict[str, str] = {}  # Seguimiento simple de constantes string
         self._current_scope: str = "global"
 
     def report(
@@ -89,7 +89,7 @@ class PurpleScanner(ast.NodeVisitor):
             }
         )
 
-    def _resolve_const(self, node: ast.AST) -> Optional[str]:
+    def _resolve_const(self, node: ast.AST) -> str | None:
         """Intenta resolver el valor de un nodo a un string constante."""
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
@@ -123,9 +123,8 @@ class PurpleScanner(ast.NodeVisitor):
 
     def _is_tainted_source(self, node: ast.AST) -> bool:
         """Determina si un nodo es una fuente de datos no confiables."""
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name):
-                return node.func.id in ("input", "open", "f.read", "__import__")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return node.func.id in ("input", "open", "f.read", "__import__")
         return False
 
     def visit_Call(self, node: ast.Call):
@@ -141,16 +140,15 @@ class PurpleScanner(ast.NodeVisitor):
             )
 
         # 2. Detección de ofuscación vía getattr(__builtins__, 'exec')
-        if func_name == "getattr":
-            if len(node.args) >= 2:
-                attr_value = self._resolve_const(node.args[1])
-                if attr_value in DANGEROUS_SINKS:
-                    self.report(
-                        f"Ofuscación por getattr detectada ('{attr_value}')",
-                        node,
-                        severity="CRITICAL",
-                        confidence=0.95,
-                    )
+        if func_name == "getattr" and len(node.args) >= 2:
+            attr_value = self._resolve_const(node.args[1])
+            if attr_value in DANGEROUS_SINKS:
+                self.report(
+                    f"Ofuscación por getattr detectada ('{attr_value}')",
+                    node,
+                    severity="CRITICAL",
+                    confidence=0.95,
+                )
 
         # 3. Taint Tracking: ¿Se está pasando variable sucia a un sink?
         for arg in node.args:
@@ -203,7 +201,7 @@ class PurpleScanner(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _scan_text_payloads(filepath: Path) -> List[Dict[str, Any]]:
+def _scan_text_payloads(filepath: Path) -> list[dict[str, Any]]:
     """
     Escanea archivos de texto (.bat, .ps1, .ini) buscando payloads maliciosos.
 
@@ -213,10 +211,10 @@ def _scan_text_payloads(filepath: Path) -> List[Dict[str, Any]]:
     Returns:
         Lista de hallazgos detectados
     """
-    findings: List[Dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
 
     # Lectura robusta con múltiples encodings
-    content: Optional[str] = None
+    content: str | None = None
     for encoding in ["utf-8", "latin-1"]:
         try:
             content = filepath.read_text(encoding=encoding, errors="ignore")
@@ -258,7 +256,7 @@ def _scan_text_payloads(filepath: Path) -> List[Dict[str, Any]]:
     return findings
 
 
-def run_scan(code: str, filename: str = "main.py") -> List[Dict[str, Any]]:
+def run_scan(code: str, filename: str = "main.py") -> list[dict[str, Any]]:
     """
     Punto de entrada principal para el escaneo de seguridad.
 
@@ -295,7 +293,7 @@ def run_scan(code: str, filename: str = "main.py") -> List[Dict[str, Any]]:
         return []
 
 
-def scan_file(filepath: Path) -> List[Dict[str, Any]]:
+def scan_file(filepath: Path) -> list[dict[str, Any]]:
     """
     Escanea un archivo del sistema de archivos.
 

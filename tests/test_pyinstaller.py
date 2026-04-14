@@ -7,7 +7,6 @@ import pathlib
 from unittest.mock import patch
 
 import pytest
-
 from sky_claw.local_config import LocalConfig, load, save
 
 
@@ -163,8 +162,9 @@ class TestSetupEndpoint:
     async def test_get_setup_returns_config(
         self, tmp_path: pathlib.Path, aiohttp_client
     ) -> None:
-        from sky_claw.web.app import WebApp
         from unittest.mock import MagicMock
+
+        from sky_claw.web.app import WebApp
 
         router = MagicMock()
         session = MagicMock()
@@ -191,8 +191,9 @@ class TestSetupEndpoint:
     async def test_post_setup_saves_config(
         self, tmp_path: pathlib.Path, aiohttp_client
     ) -> None:
-        from sky_claw.web.app import WebApp
         from unittest.mock import MagicMock
+
+        from sky_claw.web.app import WebApp
 
         router = MagicMock()
         session = MagicMock()
@@ -223,8 +224,9 @@ class TestSetupEndpoint:
     async def test_index_redirects_on_first_run(
         self, tmp_path: pathlib.Path, aiohttp_client
     ) -> None:
-        from sky_claw.web.app import WebApp
         from unittest.mock import MagicMock
+
+        from sky_claw.web.app import WebApp
 
         router = MagicMock()
         session = MagicMock()
@@ -246,8 +248,9 @@ class TestSetupEndpoint:
     async def test_index_serves_chat_after_setup(
         self, tmp_path: pathlib.Path, aiohttp_client
     ) -> None:
-        from sky_claw.web.app import WebApp
         from unittest.mock import MagicMock
+
+        from sky_claw.web.app import WebApp
 
         router = MagicMock()
         session = MagicMock()
@@ -339,9 +342,8 @@ class TestApiKeyInjection:
         # Simulate the injection logic from __main__.py
         api_key = cfg.get_api_key()
         assert api_key is not None
-        if api_key.startswith("sk-ant"):
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                os.environ["ANTHROPIC_API_KEY"] = api_key
+        if api_key.startswith("sk-ant") and not os.environ.get("ANTHROPIC_API_KEY"):
+            os.environ["ANTHROPIC_API_KEY"] = api_key
 
         # Env var should remain unchanged.
         assert os.environ["ANTHROPIC_API_KEY"] == "env-anthropic-key"
@@ -411,8 +413,9 @@ class TestSetupWithNexusKey:
     async def test_post_setup_saves_nexus_key(
         self, tmp_path: pathlib.Path, aiohttp_client
     ) -> None:
-        from sky_claw.web.app import WebApp
         from unittest.mock import MagicMock
+
+        from sky_claw.web.app import WebApp
 
         router = MagicMock()
         session = MagicMock()
@@ -441,8 +444,9 @@ class TestSetupWithNexusKey:
     async def test_post_setup_without_nexus_key(
         self, tmp_path: pathlib.Path, aiohttp_client
     ) -> None:
-        from sky_claw.web.app import WebApp
         from unittest.mock import MagicMock
+
+        from sky_claw.web.app import WebApp
 
         router = MagicMock()
         session = MagicMock()

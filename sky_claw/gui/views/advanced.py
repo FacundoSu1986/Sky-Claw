@@ -66,7 +66,7 @@ def build_advanced_panel(snapshot: EnvironmentSnapshot | None) -> None:
             ui.label("HERRAMIENTAS DETECTADAS").classes("sky-advanced-title")
 
             if snapshot.tools:
-                for key, tool in snapshot.tools.items():
+                for _key, tool in snapshot.tools.items():
                     with ui.row().classes("sky-advanced-tool-row"):
                         ui.icon("check_circle", color="positive", size="1rem")
                         ui.label(tool.name).classes("sky-advanced-tool-name")

@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-
 from sky_claw.comms.telegram import TelegramWebhook, _parse_hitl_command
 from sky_claw.comms.telegram_sender import TelegramSender
 from sky_claw.db.async_registry import AsyncModRegistry
@@ -21,7 +20,6 @@ from sky_claw.scraper.nexus_downloader import FileInfo, NexusDownloader
 from sky_claw.security.hitl import Decision, HITLGuard
 from sky_claw.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.security.path_validator import PathValidator
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -137,7 +135,7 @@ class TestWebhookHITLApprove:
         self, aiohttp_client
     ) -> None:
         guard = HITLGuard(notify_fn=None, timeout=5)
-        webhook, router, sender = _make_webhook(hitl=guard)
+        webhook, _router, sender = _make_webhook(hitl=guard)
 
         # Register a pending request manually.
         req_task = asyncio.create_task(
@@ -162,7 +160,7 @@ class TestWebhookHITLApprove:
     @pytest.mark.asyncio
     async def test_deny_found_calls_respond_and_confirms(self, aiohttp_client) -> None:
         guard = HITLGuard(notify_fn=None, timeout=5)
-        webhook, router, sender = _make_webhook(hitl=guard)
+        webhook, _router, sender = _make_webhook(hitl=guard)
 
         req_task = asyncio.create_task(
             guard.request_approval(reason="test_reason", request_id="download-5-6")
@@ -219,7 +217,7 @@ class TestWebhookHITLApprove:
     @pytest.mark.asyncio
     async def test_hitl_command_does_not_reach_llm_router(self, aiohttp_client) -> None:
         guard = HITLGuard(notify_fn=None, timeout=5)
-        webhook, router, sender = _make_webhook(hitl=guard)
+        webhook, router, _sender = _make_webhook(hitl=guard)
 
         app = aiohttp.web.Application()
         app.router.add_post("/webhook", webhook.handle_update)
@@ -250,7 +248,7 @@ class TestWebhookHITLApprove:
         self, aiohttp_client
     ) -> None:
         """When hitl=None, /approve is treated as normal text by the LLM."""
-        webhook, router, sender = _make_webhook(hitl=None)
+        webhook, router, _sender = _make_webhook(hitl=None)
 
         app = aiohttp.web.Application()
         app.router.add_post("/webhook", webhook.handle_update)
@@ -267,7 +265,7 @@ class TestWebhookHITLApprove:
     ) -> None:
         """'/approve' with no ID is not a valid HITL command — goes to LLM."""
         guard = HITLGuard(notify_fn=None, timeout=5)
-        webhook, router, sender = _make_webhook(hitl=guard)
+        webhook, router, _sender = _make_webhook(hitl=guard)
 
         app = aiohttp.web.Application()
         app.router.add_post("/webhook", webhook.handle_update)
@@ -397,6 +395,7 @@ class TestAppContextWiring:
     ) -> None:
         """start() wires hitl + downloader when NEXUS_API_KEY is set."""
         import argparse
+
         from sky_claw.__main__ import AppContext
 
         args = argparse.Namespace(
@@ -436,6 +435,7 @@ class TestAppContextWiring:
     ) -> None:
         """start() leaves downloader=None when NEXUS_API_KEY is absent."""
         import argparse
+
         from sky_claw.__main__ import AppContext
 
         args = argparse.Namespace(
@@ -480,6 +480,7 @@ class TestAppContextWiring:
         self, tmp_path: pathlib.Path
     ) -> None:
         import argparse
+
         from sky_claw.__main__ import AppContext
 
         args = argparse.Namespace(
@@ -512,6 +513,7 @@ class TestAppContextWiring:
     @pytest.mark.asyncio
     async def test_sender_none_without_bot_token(self, tmp_path: pathlib.Path) -> None:
         import argparse
+
         from sky_claw.__main__ import AppContext
 
         args = argparse.Namespace(

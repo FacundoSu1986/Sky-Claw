@@ -1,13 +1,17 @@
 from __future__ import annotations
+
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from sky_claw.local_config import load as load_local_config
 from sky_claw.security.auth_token_manager import AuthTokenManager
 from sky_claw.web.app import WebApp
-from sky_claw.local_config import load as load_local_config
-from sky_claw.app_context import AppContext
+
+if TYPE_CHECKING:
+    from sky_claw.app_context import AppContext
 
 logger = logging.getLogger(__name__)
 

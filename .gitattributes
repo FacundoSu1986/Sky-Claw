@@ -1,0 +1,2 @@
+# Enforce Unix line endings for Python files across all platforms
+*.py text eol=lf

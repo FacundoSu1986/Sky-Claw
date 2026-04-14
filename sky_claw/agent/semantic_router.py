@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 semantic_router.py - Router semántico para clasificación O(1) de intents de usuario.
 Utiliza FastEmbed para embeddings locales y clasificación semántica.
@@ -8,7 +7,6 @@ import asyncio
 import logging
 
 from sky_claw.core.schemas import RouteClassification
-
 
 logger = logging.getLogger("SkyClaw.SemanticRouter")
 

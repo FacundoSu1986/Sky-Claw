@@ -3,21 +3,22 @@
 from __future__ import annotations
 
 import json
-import pathlib
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from sky_claw.xedit.conflict_analyzer import (
     ConflictAnalyzer,
     ConflictReport,
-    RecordConflict,
     PluginConflictPair,
+    RecordConflict,
     parse_conflict_lines,
     parse_summary_line,
 )
 from sky_claw.xedit.output_parser import XEditOutputParser, XEditResult
 
+if TYPE_CHECKING:
+    import pathlib
 
 # ---------------------------------------------------------------------------
 # Sample xEdit output

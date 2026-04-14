@@ -1,11 +1,12 @@
 import logging
 import os
 import pathlib
+import sys
 import tomllib
+from typing import Any
+
 import keyring
 import keyring.errors
-from typing import Any, Optional
-import sys
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ class Config:
     DEFAULT_CONFIG_DIR = pathlib.Path.home() / ".sky_claw"
     DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.toml"
 
-    def __init__(self, config_path: Optional[pathlib.Path] = None):
+    def __init__(self, config_path: pathlib.Path | None = None):
         self._config_path = config_path or self.DEFAULT_CONFIG_FILE
         self._data: dict[str, Any] = self._load_defaults()
         self._load_from_file()
@@ -101,7 +102,7 @@ class Config:
                 logger.info(
                     "Migrated sensitive keys to keyring and scrubbed plaintext from TOML."
                 )
-            except (OSError, IOError) as exc:
+            except OSError as exc:
                 logger.critical(
                     "Failed to scrub plaintext secrets from TOML after keyring migration: %s. "
                     "Sensitive data may remain on disk at %s.",
@@ -163,7 +164,7 @@ class Config:
                 logger.warning("Failed to load config.toml: %s", exc)
 
     def _load_from_env(self):
-        for key in self._data.keys():
+        for key in self._data:
             env_key = f"SKY_CLAW_{key.upper()}"
             env_val = os.environ.get(env_key)
             if env_val:

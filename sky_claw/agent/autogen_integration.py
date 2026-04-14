@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 autogen_integration.py - Integración de Microsoft AutoGen para Sky-Claw.
 Implementa orquestación multi-agente con conversaciones entre agentes,
@@ -9,12 +8,13 @@ usando implementaciones stub.
 """
 
 import logging
-from typing import Optional, Any, Dict, List, Callable
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from typing import Any, Optional
 
 try:
     import autogen  # noqa: F401
-    from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
+    from autogen import AssistantAgent, GroupChat, GroupChatManager, UserProxyAgent
 
     AUTOGEN_AVAILABLE = True
 except ImportError:
@@ -35,8 +35,8 @@ class AutoGenConfig:
     def __init__(
         self,
         model: str = "gpt-4",
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 2000,
         timeout: int = 60,
@@ -48,7 +48,7 @@ class AutoGenConfig:
         self.max_tokens = max_tokens
         self.timeout = timeout
 
-    def to_llm_config(self) -> Dict[str, Any]:
+    def to_llm_config(self) -> dict[str, Any]:
         """Convierte la configuración a formato AutoGen LLM config."""
         config = {
             "model": self.model,
@@ -74,13 +74,13 @@ class SkyClawConversableAgent(ABC):
         self,
         name: str,
         system_message: str,
-        tool_executor: Optional[Any] = None,
+        tool_executor: Any | None = None,
         **kwargs,
     ):
         self.name = name
         self.system_message = system_message
         self._tool_executor = tool_executor
-        self._message_history: List[Dict[str, Any]] = []
+        self._message_history: list[dict[str, Any]] = []
         self._kwargs = kwargs
 
     @abstractmethod
@@ -97,7 +97,7 @@ class SkyClawConversableAgent(ABC):
         """Recibe un mensaje de otro agente."""
         pass
 
-    def get_history(self) -> List[Dict[str, Any]]:
+    def get_history(self) -> list[dict[str, Any]]:
         """Retorna el historial de mensajes del agente."""
         return self._message_history.copy()
 
@@ -114,8 +114,8 @@ class AutoGenWrapper(SkyClawConversableAgent):
         name: str,
         system_message: str,
         agent_type: str = "assistant",
-        tool_executor: Optional[Any] = None,
-        config: Optional[AutoGenConfig] = None,
+        tool_executor: Any | None = None,
+        config: AutoGenConfig | None = None,
         human_input_mode: str = "NEVER",
         max_consecutive_auto_reply: int = 10,
         **kwargs,
@@ -231,9 +231,9 @@ class MultiAgentOrchestrator:
 
     def __init__(
         self,
-        agents: List[AutoGenWrapper],
+        agents: list[AutoGenWrapper],
         max_round: int = 10,
-        route_classification_callback: Optional[Callable] = None,
+        route_classification_callback: Callable | None = None,
     ):
         self.agents = agents
         self.max_round = max_round
@@ -260,8 +260,8 @@ class MultiAgentOrchestrator:
             logger.info(f"GroupChat inicializado con {len(autogen_agents)} agentes")
 
     async def run_conversation(
-        self, initial_message: str, starter_agent: Optional[AutoGenWrapper] = None
-    ) -> Dict[str, Any]:
+        self, initial_message: str, starter_agent: AutoGenWrapper | None = None
+    ) -> dict[str, Any]:
         """Ejecuta una conversación multi-agente.
 
         Args:
@@ -334,8 +334,8 @@ class MultiAgentOrchestrator:
 
 
 def create_sky_claw_agents(
-    tool_executor: Any, config: Optional[AutoGenConfig] = None
-) -> Dict[str, AutoGenWrapper]:
+    tool_executor: Any, config: AutoGenConfig | None = None
+) -> dict[str, AutoGenWrapper]:
     """Factory function para crear agentes Sky-Claw preconfigurados.
 
     Crea un conjunto de agentes conversacionales especializados para
@@ -419,11 +419,11 @@ Usa las herramientas de base de datos disponibles para las operaciones CRUD.""",
 
 
 # Instancia global del orquestador (lazy initialization)
-_orchestrator_instance: Optional[MultiAgentOrchestrator] = None
+_orchestrator_instance: MultiAgentOrchestrator | None = None
 
 
 def get_orchestrator(
-    tool_executor: Any, config: Optional[AutoGenConfig] = None, force_new: bool = False
+    tool_executor: Any, config: AutoGenConfig | None = None, force_new: bool = False
 ) -> MultiAgentOrchestrator:
     """Obtiene la instancia global del orquestador multi-agente.
 

@@ -1,6 +1,7 @@
 """Strategy pattern handlers for GUI queue messages."""
 
 from __future__ import annotations
+
 import abc
 from typing import Any
 

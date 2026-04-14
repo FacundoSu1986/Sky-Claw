@@ -40,11 +40,12 @@ import pathlib
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiosqlite
 
-from sky_claw.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
+if TYPE_CHECKING:
+    from sky_claw.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
 
 logger = logging.getLogger(__name__)
 
@@ -395,8 +396,7 @@ class DistributedLockManager:
         """Query current lock state for a resource (may be expired)."""
         conn = self._ensure_conn()
         async with conn.execute(
-            "SELECT resource_id, agent_id, acquired_at, expires_at "
-            "FROM resource_locks WHERE resource_id = ?",
+            "SELECT resource_id, agent_id, acquired_at, expires_at FROM resource_locks WHERE resource_id = ?",
             (resource_id,),
         ) as cursor:
             row = await cursor.fetchone()

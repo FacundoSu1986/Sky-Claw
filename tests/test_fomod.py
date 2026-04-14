@@ -6,13 +6,12 @@ import pathlib
 import textwrap
 
 import pytest
-
+from sky_claw.core.errors import FomodParserSecurityError
 from sky_claw.fomod.models import (
     FomodConfig,
     GroupType,
 )
-from sky_claw.core.errors import FomodParserSecurityError
-from sky_claw.fomod.parser import parse_fomod, parse_fomod_string, FomodParseError
+from sky_claw.fomod.parser import FomodParseError, parse_fomod, parse_fomod_string
 from sky_claw.fomod.resolver import FomodResolver
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "fomod"
@@ -181,11 +180,7 @@ class TestParserErrors:
         """defusedxml should reject XML files with entity declarations."""
         bomb_file = tmp_path / "bomb.xml"
         bomb_file.write_text(
-            '<?xml version="1.0"?>'
-            "<!DOCTYPE bomb ["
-            '  <!ENTITY a "aaaa">'
-            "]>"
-            "<config><moduleName>&a;</moduleName></config>",
+            '<?xml version="1.0"?><!DOCTYPE bomb [  <!ENTITY a "aaaa">]><config><moduleName>&a;</moduleName></config>',
             encoding="utf-8",
         )
         with pytest.raises(FomodParserSecurityError):

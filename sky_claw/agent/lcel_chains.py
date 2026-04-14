@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 lcel_chains.py - Cadenas LangChain Expression Language para Sky-Claw.
 Implementa composición declarativa de prompts y manejo de herramientas
@@ -7,11 +6,11 @@ utilizando el patrón LCEL (LangChain Expression Language).
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 try:
-    from langchain_core.prompts import ChatPromptTemplate
     from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
     from langchain_core.runnables import RunnableLambda
 
     LANGCHAIN_AVAILABLE = True
@@ -39,7 +38,7 @@ class ToolExecutor(RunnableLambda if LANGCHAIN_AVAILABLE else object):
         self.tool_name = tool_name
         self.tool_description = tool_description
 
-    def __call__(self, tool_input: Dict[str, Any]) -> str:
+    def __call__(self, tool_input: dict[str, Any]) -> str:
         """Ejecuta la herramienta con el input proporcionado.
 
         Args:
@@ -68,7 +67,7 @@ class PromptComposer:
     def __init__(
         self,
         system_prompt: str = "Eres un asistente de modding de Skyrim SE/AE.",
-        tool_registry: Optional[Any] = None,
+        tool_registry: Any | None = None,
     ):
         """Inicializa el compositor de prompts.
 
@@ -80,7 +79,7 @@ class PromptComposer:
         self._tool_registry = tool_registry
 
     def compose_tool_prompt(
-        self, tool_name: str, tool_input: Dict[str, Any], tool_description: str
+        self, tool_name: str, tool_input: dict[str, Any], tool_description: str
     ) -> Any:
         """Compone un prompt para una herramienta específica.
 
@@ -123,7 +122,7 @@ class PromptComposer:
         return template.format_messages(**formatted_input)
 
     def compose_multi_tool_prompt(
-        self, tools: List[Dict[str, Any]], task_description: str
+        self, tools: list[dict[str, Any]], task_description: str
     ) -> Any:
         """Compone un prompt para múltiples herramientas.
 
@@ -167,7 +166,7 @@ class PromptComposer:
             tools=formatted_tools, task_description=task_description
         )
 
-    def compose_rag_prompt(self, query: str, context: str, sources: List[str]) -> Any:
+    def compose_rag_prompt(self, query: str, context: str, sources: list[str]) -> Any:
         """Compone un prompt para RAG (Retrieval-Augmented Generation).
 
         Args:
@@ -223,7 +222,7 @@ class ChainBuilder:
         self._tool_executor = tool_executor
 
     def create_tool_chain(
-        self, tool_name: str, tool_description: str, next_step: Optional[str] = None
+        self, tool_name: str, tool_description: str, next_step: str | None = None
     ) -> Any:
         """Crea una cadena LCEL para ejecutar una herramienta.
 
@@ -252,7 +251,7 @@ class ChainBuilder:
         return chain
 
     def create_sequential_chain(
-        self, steps: List[Dict[str, Any]], task_description: str
+        self, steps: list[dict[str, Any]], task_description: str
     ) -> Any:
         """Crea una cadena secuencial de pasos.
 

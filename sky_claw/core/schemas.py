@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 schemas.py - Modelos de validación Pydantic para entrada/salida de agentes del sistema Sky-Claw.
 """
@@ -6,11 +5,11 @@ schemas.py - Modelos de validación Pydantic para entrada/salida de agentes del 
 import logging
 import re
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .validators import validate_url_ssrf, validate_path_strict
+from .validators import validate_path_strict, validate_url_ssrf
 
 logger = logging.getLogger("SkyClaw.schemas")
 
@@ -26,7 +25,7 @@ class ModMetadata(BaseModel):
     category: Literal["armor", "weapon", "quest", "interface", "gameplay", "other"]
     author: str = Field(..., max_length=100)
     dependencies: list[int] = Field(default_factory=list)
-    description: Optional[str] = Field(None, max_length=2000)
+    description: str | None = Field(None, max_length=2000)
     downloaded_at: datetime = Field(default_factory=datetime.utcnow)
 
     @field_validator("name")
@@ -42,19 +41,19 @@ class ScrapingQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     query: str = Field(..., min_length=1, max_length=500)
-    url: Optional[str] = Field(None, description="URL objetivo para scraping")
-    mod_id: Optional[int] = Field(None, gt=0)
+    url: str | None = Field(None, description="URL objetivo para scraping")
+    mod_id: int | None = Field(None, gt=0)
     force_stealth: bool = Field(
         default=False, description="Forzar scraping por Playwright omitiendo la API"
     )
-    target_data: Optional[
-        Literal["dependencies", "files", "changelog", "forum_known_issues"]
-    ] = Field(default=None, description="Tipo de información a extraer")
+    target_data: (
+        Literal["dependencies", "files", "changelog", "forum_known_issues"] | None
+    ) = Field(default=None, description="Tipo de información a extraer")
     include_description: bool = True
 
     @field_validator("url", mode="before")
     @classmethod
-    def validate_url_ssrf(cls, v: Optional[str]) -> Optional[str]:
+    def validate_url_ssrf(cls, v: str | None) -> str | None:
         """Valida URL contra ataques SSRF."""
         if v is None:
             return v
@@ -147,11 +146,11 @@ class RouteClassification(BaseModel):
         ..., ge=0.0, le=1.0, description="Confianza de la clasificación"
     )
 
-    target_agent: Optional[str] = Field(
+    target_agent: str | None = Field(
         None, description="Agente objetivo si el intento requiere despacho específico"
     )
 
-    tool_name: Optional[str] = Field(
+    tool_name: str | None = Field(
         None,
         description="Nombre de la herramienta si el intento es EJECUCION_HERRAMIENTA",
     )
@@ -185,8 +184,8 @@ class AgentToolResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     tool_name: str
-    result: Optional[dict] = None
+    result: dict | None = None
     success: bool
-    error: Optional[str] = None
-    execution_time_ms: Optional[float] = None
+    error: str | None = None
+    execution_time_ms: float | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)

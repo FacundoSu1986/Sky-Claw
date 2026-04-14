@@ -23,13 +23,11 @@ import pathlib
 import sys
 
 import pytest
-
 from sky_claw.security.path_validator import (
     PathValidator,
     PathViolation,
     sandboxed_io,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -11,10 +11,8 @@ import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from sky_claw.config import Config
 from sky_claw.local_config import LocalConfig, load, save
-
 
 # ---------------------------------------------------------------------------
 # 1. AppContext.is_configured property
@@ -364,4 +362,3 @@ class TestStartShortcut:
             ctx.router = MagicMock()
 
         ctx.start_minimal = mock_minimal
-        ctx

@@ -1,9 +1,12 @@
 import asyncio
+import contextlib
 import logging
 import pathlib
-from typing import Callable, Coroutine, List, Optional, Any
-from sky_claw.core.windows_interop import ModdingToolsAgent
+from collections.abc import Callable, Coroutine
+from typing import Any
+
 from sky_claw.config import SystemPaths
+from sky_claw.core.windows_interop import ModdingToolsAgent
 from sky_claw.security.path_validator import PathValidator, PathViolation
 
 # Standard 2026 Process Orchestration
@@ -21,14 +24,14 @@ class ManagedToolExecutor:
 
     def __init__(self, timeout: float = 300.0):
         self.timeout: float = timeout
-        self.proc: Optional[asyncio.subprocess.Process] = None
+        self.proc: asyncio.subprocess.Process | None = None
         self._abort_event: asyncio.Event = asyncio.Event()
 
     async def execute(
         self,
         binary_path: str,
-        args: List[str],
-        on_output_callback: Optional[Callable[[str], Coroutine[Any, Any, None]]] = None,
+        args: list[str],
+        on_output_callback: Callable[[str], Coroutine[Any, Any, None]] | None = None,
     ) -> int:
         """
         Executes binary with WSL->Win interop. Captures output line-by-line.
@@ -36,7 +39,7 @@ class ManagedToolExecutor:
         self._abort_event.clear()
 
         # Interop Layer: Translate argument paths to ensure Windows binaries receive valid C:\... strings
-        win_args: List[str] = []
+        win_args: list[str] = []
         # Validator setup based on SystemPaths modding root bounds for strict safety
         try:
             validator = PathValidator([SystemPaths.modding_root()])
@@ -110,7 +113,7 @@ class ManagedToolExecutor:
                 # Wait for completion OR timeout OR abort signal
                 await asyncio.wait_for(self.proc.wait(), timeout=self.timeout)
                 await monitor_task
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error(f"⚠️ WATCHDOG: Timeout de {self.timeout}s alcanzado.")
                 await self.abort()
                 raise
@@ -129,7 +132,7 @@ class ManagedToolExecutor:
             return -1
 
     async def _stream_telemetry(
-        self, callback: Optional[Callable[[str], Coroutine[Any, Any, None]]]
+        self, callback: Callable[[str], Coroutine[Any, Any, None]] | None
     ):
         """Streams stdout and stderr concurrently to the provided telemetry callback."""
         if not self.proc or not self.proc.stdout or not self.proc.stderr:
@@ -157,10 +160,8 @@ class ManagedToolExecutor:
         """Triggers the emergency stop from an external thread or task."""
         self._abort_event.set()
         if self.proc:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 self.proc.terminate()
-            except ProcessLookupError:
-                pass
 
     async def abort(self):
         """Forcefully terminates the managed sub-process and its family."""
@@ -173,7 +174,7 @@ class ManagedToolExecutor:
             # Wait for death
             try:
                 await asyncio.wait_for(self.proc.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "💀 ABORT: El proceso no responde a terminate(). Usando kill()."
                 )

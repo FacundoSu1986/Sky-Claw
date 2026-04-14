@@ -644,7 +644,7 @@ class FileSnapshotManager:
     # CONTEXT MANAGER
     # =========================================================================
 
-    async def __aenter__(self) -> "FileSnapshotManager":
+    async def __aenter__(self) -> FileSnapshotManager:
         """Context manager entry."""
         await self.initialize()
         return self

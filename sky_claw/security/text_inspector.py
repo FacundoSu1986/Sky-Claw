@@ -4,9 +4,9 @@ Analizador de inyección de prompts indirecta (Indirect Prompt Injection).
 Detecta patrones maliciosos en archivos de texto, MD y configuración.
 """
 
-import re
 import logging
-from typing import List, Dict, Any
+import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ class TextInspector:
     def __init__(self, max_bytes: int = 10240):  # 10 KB límite por rendimiento
         self.max_bytes = max_bytes
 
-    def inspect(self, content: str, filename: str = "doc.md") -> List[Dict[str, Any]]:
+    def inspect(self, content: str, filename: str = "doc.md") -> list[dict[str, Any]]:
         """Busca patrones de inyección y anomalías en el texto."""
         findings = []
 
@@ -100,7 +100,7 @@ class TextInspector:
         return findings
 
 
-def scan_text(content: str, filename: str = "README.md") -> List[Dict[str, Any]]:
+def scan_text(content: str, filename: str = "README.md") -> list[dict[str, Any]]:
     """Punto de entrada principal para inspección de texto."""
     inspector = TextInspector()
     return inspector.inspect(content, filename)

@@ -1,15 +1,15 @@
 # tests/test_journal.py
 
-import pytest
 import pathlib
 
+import pytest
 from sky_claw.db.journal import (
     OperationJournal,
-    OperationType,
     OperationStatus,
+    OperationType,
 )
-from sky_claw.db.snapshot_manager import FileSnapshotManager
 from sky_claw.db.rollback_manager import RollbackManager
+from sky_claw.db.snapshot_manager import FileSnapshotManager
 
 
 @pytest.fixture

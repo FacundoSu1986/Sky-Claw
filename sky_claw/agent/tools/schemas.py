@@ -13,7 +13,6 @@ from pydantic import field_validator
 
 from sky_claw.config import SystemPaths
 
-
 # HOTFIX: Sandbox directories for path validation
 ALLOWED_SANDBOX_DIRS = [
     SystemPaths.modding_root().resolve(),
@@ -196,16 +195,16 @@ class ToggleModParams(pydantic.BaseModel):
 
 
 __all__ = [
-    "SearchModParams",
-    "ProfileParams",
-    "InstallModParams",
-    "XEditAnalysisParams",
-    "DownloadModParams",
-    "PreviewInstallerParams",
-    "InstallFromArchiveParams",
-    "ResolveFomodParams",
-    "SetupToolsParams",
     "AnalyzeConflictsParams",
+    "DownloadModParams",
+    "InstallFromArchiveParams",
+    "InstallModParams",
     "ModNameParams",
+    "PreviewInstallerParams",
+    "ProfileParams",
+    "ResolveFomodParams",
+    "SearchModParams",
+    "SetupToolsParams",
     "ToggleModParams",
+    "XEditAnalysisParams",
 ]

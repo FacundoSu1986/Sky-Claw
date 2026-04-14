@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from sky_claw.security.network_gateway import (
     EgressPolicy,
     EgressViolation,

@@ -12,7 +12,7 @@ import logging
 import pathlib
 import zipfile
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
@@ -20,9 +20,11 @@ from sky_claw.config import (
     SystemPaths,
 )
 from sky_claw.security.hitl import Decision, HITLGuard
-from sky_claw.security.network_gateway import NetworkGateway
 from sky_claw.security.path_validator import PathValidator, PathViolation
-from sky_claw.scraper.nexus_downloader import NexusDownloader
+
+if TYPE_CHECKING:
+    from sky_claw.scraper.nexus_downloader import NexusDownloader
+    from sky_claw.security.network_gateway import NetworkGateway
 
 logger = logging.getLogger(__name__)
 
@@ -234,9 +236,7 @@ class ToolsInstaller:
             reason=f"Install LOOT {version}?",
             url=asset.download_url,
             detail=(
-                f"Asset: {asset.name}\n"
-                f"Size: {asset.size / (1024 * 1024):.1f} MB\n"
-                f"Source: GitHub loot/loot releases"
+                f"Asset: {asset.name}\nSize: {asset.size / (1024 * 1024):.1f} MB\nSource: GitHub loot/loot releases"
             ),
         )
         if decision is not Decision.APPROVED:
@@ -439,9 +439,7 @@ class ToolsInstaller:
             reason=f"Install BodySlide and Outfit Studio (Nexus ID {nexus_id})?",
             url=f"https://www.nexusmods.com/skyrimspecialedition/mods/{nexus_id}",
             detail=(
-                f"File: {file_info.file_name}\n"
-                f"Size: {file_info.size_bytes / (1024 * 1024):.1f} MB\n"
-                f"Source: Nexus Mods"
+                f"File: {file_info.file_name}\nSize: {file_info.size_bytes / (1024 * 1024):.1f} MB\nSource: Nexus Mods"
             ),
         )
         if decision is not Decision.APPROVED:
@@ -525,8 +523,7 @@ class ToolsInstaller:
 
         available = [a.get("name", "?") for a in assets]
         raise ToolInstallError(
-            f"No asset matching '{keyword}' (.zip/.7z) in release {version}. "
-            f"Available: {available}"
+            f"No asset matching '{keyword}' (.zip/.7z) in release {version}. Available: {available}"
         )
 
     async def _download_asset(
@@ -579,8 +576,7 @@ class ToolsInstaller:
         if asset.size > 0 and downloaded != asset.size:
             dest.unlink(missing_ok=True)
             raise ToolInstallError(
-                f"Size mismatch for {asset.name}: "
-                f"expected {asset.size}, got {downloaded}"
+                f"Size mismatch for {asset.name}: expected {asset.size}, got {downloaded}"
             )
 
         logger.info(

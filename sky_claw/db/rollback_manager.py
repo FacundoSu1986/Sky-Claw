@@ -6,9 +6,12 @@ import logging
 import pathlib
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from .journal import OperationJournal, OperationType, OperationStatus
-from .snapshot_manager import FileSnapshotManager
+from .journal import OperationJournal, OperationStatus, OperationType
+
+if TYPE_CHECKING:
+    from .snapshot_manager import FileSnapshotManager
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +46,7 @@ class RollbackManager:
         self._journal = journal
         self._snapshots = snapshot_manager
 
-    async def __aenter__(self) -> "RollbackManager":
+    async def __aenter__(self) -> RollbackManager:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -76,7 +79,7 @@ class RollbackManager:
                 await self._snapshots.restore_snapshot(
                     pathlib.Path(entry.snapshot_path), pathlib.Path(entry.target_path)
                 )
-            except (OSError, IOError) as e:
+            except OSError as e:
                 logger.critical(
                     "Rollback failed for %s: %s", agent_id, str(e), exc_info=True
                 )

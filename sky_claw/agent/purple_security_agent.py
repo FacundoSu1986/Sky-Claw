@@ -4,14 +4,15 @@ Agente Experto en Ciberseguridad con Razonamiento Metacognitivo.
 """
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Any
 
 # Importar esquemas Pydantic para validación estricta
 from sky_claw.core.schemas import SecurityAuditRequest, SecurityAuditResponse
 
+from ..security.governance import GovernanceManager
+
 # Importar lógica metacognitiva centralizada
 from ..security.metacognitive_logic import audit_resource
-from ..security.governance import GovernanceManager
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class PurpleSecurityAgent:
         self.name = name
         self.role = "Cyber Security Expert (Purple Team)"
         self.version = "5.5 Titan"
-        self.last_audit: Optional[Dict[str, Any]] = None
+        self.last_audit: dict[str, Any] | None = None
 
     async def audit_local_file(
         self, request: SecurityAuditRequest
@@ -65,7 +66,7 @@ class PurpleSecurityAgent:
         return self._build_audit_response(target_path, result)
 
     def _build_audit_response(
-        self, target: str, result: Dict[str, Any]
+        self, target: str, result: dict[str, Any]
     ) -> SecurityAuditResponse:
         """Construye una respuesta SecurityAuditResponse a partir del resultado de auditoría.
 
@@ -104,7 +105,7 @@ class PurpleSecurityAgent:
             recommendations=recommendations,
         )
 
-    def _format_audit_findings(self, result: Dict[str, Any]) -> str:
+    def _format_audit_findings(self, result: dict[str, Any]) -> str:
         """Formatea el resultado de auditoría en el formato metacognitivo solicitado."""
         confidence_str = f"{result['confidence']:.2f}"
         result.get("status", "IDLE")

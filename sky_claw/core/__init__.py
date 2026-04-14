@@ -1,73 +1,79 @@
 """Core package for Sky-Claw daemon components."""
 
-from .models import CircuitBreakerTripped, WSLInteropError
-from .database import DatabaseAgent
-from .schemas import (
-    ModMetadata,
-    ScrapingQuery,
-    SecurityAuditRequest,
-    SecurityAuditResponse,
-    AgentToolRequest,
-    AgentToolResponse,
-    RouteClassification,
-)
 from .contracts import (
-    validate_input,
-    validate_output,
-    validate_contract,
     get_contract_schema,
     get_schema_class,
     list_registered_schemas,
+    validate_contract,
+    validate_input,
+    validate_output,
     verify_contract,
 )
+from .database import DatabaseAgent
 from .event_bus import CoreEventBus, Event
-from .event_payloads import ModlistChangedPayload
-from .path_resolver import PathResolver, PathResolutionService
+from .event_payloads import (
+    ModlistChangedPayload,
+    SynthesisPipelineCompletedPayload,
+    SynthesisPipelineStartedPayload,
+)
+from .models import CircuitBreakerTripped, WSLInteropError
+from .path_resolver import PathResolutionService, PathResolver
+from .schemas import (
+    AgentToolRequest,
+    AgentToolResponse,
+    ModMetadata,
+    RouteClassification,
+    ScrapingQuery,
+    SecurityAuditRequest,
+    SecurityAuditResponse,
+)
 from .validators import (
-    SSRFValidator,
-    SSRFValidationResult,
-    validate_url_ssrf,
     PathTraversalValidator,
     PathValidationResult,
-    validate_path_traversal,
+    SSRFValidationResult,
+    SSRFValidator,
     validate_path_strict,
+    validate_path_traversal,
+    validate_url_ssrf,
 )
 
 __all__ = [
+    "AgentToolRequest",
+    "AgentToolResponse",
     # Excepciones
     "CircuitBreakerTripped",
-    "WSLInteropError",
+    # Event Bus
+    "CoreEventBus",
     # Database
     "DatabaseAgent",
+    "Event",
     # Schemas
     "ModMetadata",
+    "ModlistChangedPayload",
+    "PathResolutionService",
+    # Path Resolution
+    "PathResolver",
+    "PathTraversalValidator",
+    "PathValidationResult",
+    "RouteClassification",
+    "SSRFValidationResult",
+    # Validators
+    "SSRFValidator",
     "ScrapingQuery",
     "SecurityAuditRequest",
     "SecurityAuditResponse",
-    "AgentToolRequest",
-    "AgentToolResponse",
-    "RouteClassification",
-    # Contracts
-    "validate_input",
-    "validate_output",
-    "validate_contract",
+    "SynthesisPipelineCompletedPayload",
+    "SynthesisPipelineStartedPayload",
+    "WSLInteropError",
     "get_contract_schema",
     "get_schema_class",
     "list_registered_schemas",
-    "verify_contract",
-    # Event Bus
-    "CoreEventBus",
-    "Event",
-    "ModlistChangedPayload",
-    # Path Resolution
-    "PathResolver",
-    "PathResolutionService",
-    # Validators
-    "SSRFValidator",
-    "SSRFValidationResult",
-    "validate_url_ssrf",
-    "PathTraversalValidator",
-    "PathValidationResult",
-    "validate_path_traversal",
+    "validate_contract",
+    # Contracts
+    "validate_input",
+    "validate_output",
     "validate_path_strict",
+    "validate_path_traversal",
+    "validate_url_ssrf",
+    "verify_contract",
 ]

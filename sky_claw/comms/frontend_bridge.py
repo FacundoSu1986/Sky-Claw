@@ -31,13 +31,13 @@ import logging
 import os
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import keyring
 import websockets
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
-from sky_claw.agent.providers import create_provider, ProviderConfigError
+from sky_claw.agent.providers import ProviderConfigError, create_provider
 from sky_claw.config import Config
 
 if TYPE_CHECKING:
@@ -91,7 +91,7 @@ class WebSocketClient(Protocol):
         """Close the WebSocket connection."""
         ...
 
-    def __aenter__(self) -> "WebSocketClient":
+    def __aenter__(self) -> WebSocketClient:
         """Context manager entry."""
         ...
 
@@ -131,7 +131,7 @@ class FrontendBridge:
         router: Any,
         session: Any,
         config: Config,
-        app_context: "AppContext",
+        app_context: AppContext,
         gateway_url: str = "ws://127.0.0.1:18789",
         keyring_client: Any = None,
     ) -> None:
@@ -151,7 +151,7 @@ class FrontendBridge:
         self.config = config
         self.ctx = app_context
         self.gateway_url = gateway_url
-        self.ws: Optional[WebSocketClient] = None
+        self.ws: WebSocketClient | None = None
         self._is_running = False
         self._running_lock = asyncio.Lock()
         self._active_queries: set[asyncio.Task[Any]] = set()
@@ -251,8 +251,7 @@ class FrontendBridge:
         """
         if self._reconnect_count >= MAX_RECONNECT_ATTEMPTS:
             logger.warning(
-                "⚠️ Límite de intentos de reconexión (%d) alcanzado. "
-                "Pausa de %d segundos antes de reintentar...",
+                "⚠️ Límite de intentos de reconexión (%d) alcanzado. Pausa de %d segundos antes de reintentar...",
                 MAX_RECONNECT_ATTEMPTS,
                 RECONNECT_PAUSE_DURATION,
             )
@@ -305,8 +304,7 @@ class FrontendBridge:
             token = self._keyring_client.get_password("sky_claw", "ws_auth_token") or ""
         if not token:
             raise AuthError(
-                "WS_AUTH_TOKEN no configurado en entorno ni en keyring. "
-                "Ejecuta el setup inicial para generar el token."
+                "WS_AUTH_TOKEN no configurado en entorno ni en keyring. Ejecuta el setup inicial para generar el token."
             )
 
         await ws.send(json.dumps({"type": "auth", "token": token}))
@@ -485,8 +483,7 @@ class FrontendBridge:
                 await self._send_config_result(
                     msg_id,
                     False,
-                    f"Proveedor LLM inválido: '{llm_provider}'. "
-                    f"Opciones: {', '.join(VALID_PROVIDERS)}",
+                    f"Proveedor LLM inválido: '{llm_provider}'. Opciones: {', '.join(VALID_PROVIDERS)}",
                 )
                 return
 
@@ -581,8 +578,7 @@ class FrontendBridge:
                     )
                 else:
                     reload_messages.append(
-                        f"LLM: no se pudo cambiar a {target_provider} "
-                        "(verifica la API key)"
+                        f"LLM: no se pudo cambiar a {target_provider} (verifica la API key)"
                     )
 
             # Telegram hot-reload
@@ -842,8 +838,7 @@ class FrontendBridge:
             self._keyring_client.set_password("sky_claw", key, value)
         except Exception as exc:
             logger.warning(
-                "Keyring set failed for '%s': %s. "
-                "Value will be stored in TOML as fallback.",
+                "Keyring set failed for '%s': %s. Value will be stored in TOML as fallback.",
                 key,
                 exc,
             )

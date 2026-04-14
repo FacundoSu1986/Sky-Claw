@@ -7,11 +7,12 @@ VIEW PURO - Sin lógica de negocio, solo presentación.
 Separada de la lógica de procesamiento de mensajes.
 """
 
-from typing import List, Dict, Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
+
 from nicegui import ui
 
 from ..components import create_chat_message
-
 
 # Colores del tema (extraídos del monolito para mantener invariante visual)
 COLORS = {
@@ -21,13 +22,13 @@ COLORS = {
 
 
 def create_chat_preview(
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     is_thinking: bool = False,
-    on_send_message: Optional[Callable[[str], None]] = None,
+    on_send_message: Callable[[str], None] | None = None,
     placeholder: str = "Ask me anything about your mods...",
     title: str = "AI Assistant",
     subtitle: str = "Powered by DeepSeek",
-    welcome_message: Optional[Dict[str, Any]] = None,
+    welcome_message: dict[str, Any] | None = None,
 ) -> ui.element:
     """Preview del chat con el agente.
 
@@ -74,8 +75,7 @@ def create_chat_preview(
             ui.element("div")
             .classes("p-4 border-b border-[#1f2937]")
             .style(
-                f"background: linear-gradient(135deg, "
-                f"{COLORS['accent_violet']}20, {COLORS['accent_cyan']}20);"
+                f"background: linear-gradient(135deg, {COLORS['accent_violet']}20, {COLORS['accent_cyan']}20);"
             )
         ):
             with ui.row().classes("items-center gap-3"):
@@ -118,8 +118,7 @@ def create_chat_preview(
             elif not messages:
                 # Mensaje de bienvenida por defecto
                 create_chat_message(
-                    "Hello, Dragonborn! I can help you manage your Skyrim mods. "
-                    "What would you like to do?",
+                    "Hello, Dragonborn! I can help you manage your Skyrim mods. What would you like to do?",
                     is_user=False,
                     timestamp="Now",
                 )

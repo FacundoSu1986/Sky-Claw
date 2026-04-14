@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import json
 import logging
-import pathlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    import pathlib
+
     from sky_claw.security.path_validator import PathValidator
 
 from sky_claw.security.path_validator import PathViolation
@@ -199,7 +200,7 @@ class PatcherPipeline:
                 logger.error("Path traversal blocked for pipeline load: %s", path)
                 raise
 
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
 
         if not isinstance(data, dict):

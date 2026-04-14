@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 strategies.py - Estrategias de búsqueda para el motor Tree-of-Thought.
 
@@ -18,21 +17,20 @@ Contenido:
 
 from __future__ import annotations
 
-import asyncio
-import math
 import heapq
+import math
 from abc import ABC, abstractmethod
 from collections import deque
-from typing import Generic, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic
 
 # Importar desde el módulo types creado anteriormente
 from .types import (
-    T,
+    EvaluationResult,
     S,
     SearchStrategyType,
-    EvaluationResult,
-    ToTConfig,
+    T,
     ThoughtNode,
+    ToTConfig,
 )
 
 if TYPE_CHECKING:
@@ -57,14 +55,14 @@ class BaseSearchStrategy(ABC, Generic[T, S]):
 
     @abstractmethod
     async def search(
-        self, root: ThoughtNode[T], engine: "TreeOfThoughtEngine[T, S]"
-    ) -> Optional[S]:
+        self, root: ThoughtNode[T], engine: TreeOfThoughtEngine[T, S]
+    ) -> S | None:
         """Ejecuta la búsqueda desde el nodo raíz."""
         ...
 
     def _check_solution(
-        self, node: ThoughtNode[T], engine: "TreeOfThoughtEngine[T, S]"
-    ) -> Optional[S]:
+        self, node: ThoughtNode[T], engine: TreeOfThoughtEngine[T, S]
+    ) -> S | None:
         """Verifica si un nodo contiene una solución."""
         solution = engine.checker.check(node.state)
         if solution:
@@ -82,8 +80,8 @@ class BFSSearchStrategy(BaseSearchStrategy[T, S]):
     """Búsqueda en anchura (Breadth-First Search)."""
 
     async def search(
-        self, root: ThoughtNode[T], engine: "TreeOfThoughtEngine[T, S]"
-    ) -> Optional[S]:
+        self, root: ThoughtNode[T], engine: TreeOfThoughtEngine[T, S]
+    ) -> S | None:
         queue = deque([root])
 
         while queue:
@@ -119,10 +117,10 @@ class DFSSearchStrategy(BaseSearchStrategy[T, S]):
     """Búsqueda en profundidad con backtracking explícito."""
 
     async def search(
-        self, root: ThoughtNode[T], engine: "TreeOfThoughtEngine[T, S]"
-    ) -> Optional[S]:
+        self, root: ThoughtNode[T], engine: TreeOfThoughtEngine[T, S]
+    ) -> S | None:
         # Pila con (nodo, índice_de_exploración_de_hijos)
-        stack: List[Tuple[ThoughtNode[T], int]] = [(root, 0)]
+        stack: list[tuple[ThoughtNode[T], int]] = [(root, 0)]
         backtrack_count = 0
 
         while stack:
@@ -181,13 +179,13 @@ class BestFirstSearchStrategy(BaseSearchStrategy[T, S]):
     """Búsqueda best-first (prioriza nodos con mayor score)."""
 
     async def search(
-        self, root: ThoughtNode[T], engine: "TreeOfThoughtEngine[T, S]"
-    ) -> Optional[S]:
+        self, root: ThoughtNode[T], engine: TreeOfThoughtEngine[T, S]
+    ) -> S | None:
         # Cola de prioridad: (-score, id, node) - negativo para max-heap
-        priority_queue: List[Tuple[float, str, ThoughtNode[T]]] = [
+        priority_queue: list[tuple[float, str, ThoughtNode[T]]] = [
             (-root.score, root.id, root)
         ]
-        visited_ids: Set[str] = set()
+        visited_ids: set[str] = set()
 
         while priority_queue:
             _, _, current = heapq.heappop(priority_queue)
@@ -226,11 +224,11 @@ class BeamSearchStrategy(BaseSearchStrategy[T, S]):
     """Búsqueda beam (mantiene solo los k mejores nodos por nivel)."""
 
     async def search(
-        self, root: ThoughtNode[T], engine: "TreeOfThoughtEngine[T, S]"
-    ) -> Optional[S]:
+        self, root: ThoughtNode[T], engine: TreeOfThoughtEngine[T, S]
+    ) -> S | None:
         current_level = [root]
 
-        for depth in range(self._config.max_depth):
+        for _depth in range(self._config.max_depth):
             if not current_level:
                 break
 
@@ -263,13 +261,13 @@ class MCTSSearchStrategy(BaseSearchStrategy[T, S]):
     """Búsqueda Monte Carlo Tree Search con UCB1 correcto."""
 
     async def search(
-        self, root: ThoughtNode[T], engine: "TreeOfThoughtEngine[T, S]"
-    ) -> Optional[S]:
+        self, root: ThoughtNode[T], engine: TreeOfThoughtEngine[T, S]
+    ) -> S | None:
         # Inicializar metadatos MCTS en la raíz
         root.metadata["mcts_visits"] = 1
         root.metadata["mcts_total_score"] = root.score
 
-        for iteration in range(self._config.mcts_iterations):
+        for _iteration in range(self._config.mcts_iterations):
             # Selection: Encontrar nodo prometedor usando UCB1
             node = self._select_promising_node(root)
 
@@ -367,7 +365,7 @@ class MCTSSearchStrategy(BaseSearchStrategy[T, S]):
         return node
 
     async def _simulate(
-        self, node: ThoughtNode[T], engine: "TreeOfThoughtEngine[T, S]"
+        self, node: ThoughtNode[T], engine: TreeOfThoughtEngine[T, S]
     ) -> float:
         """
         Realiza un rollout desde el nodo hasta la profundidad máxima
@@ -428,7 +426,7 @@ class MCTSSearchStrategy(BaseSearchStrategy[T, S]):
                 current = temp_node
                 depth += 1
 
-            except (Exception, asyncio.TimeoutError) as e:
+            except (TimeoutError, Exception) as e:
                 logger.debug(f"Rollout error at depth {depth}: {e}")
                 break
 
@@ -483,11 +481,11 @@ def create_search_strategy(
 
 
 __all__ = [
-    "BaseSearchStrategy",
     "BFSSearchStrategy",
-    "DFSSearchStrategy",
-    "BestFirstSearchStrategy",
+    "BaseSearchStrategy",
     "BeamSearchStrategy",
+    "BestFirstSearchStrategy",
+    "DFSSearchStrategy",
     "MCTSSearchStrategy",
     "create_search_strategy",
 ]

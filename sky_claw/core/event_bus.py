@@ -10,13 +10,14 @@ Parte del Sprint 1: Strangler Fig — desacoplamiento de ``supervisor.py``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fnmatch
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-logger = logging.getLogger("SkyClaw.CoreEventBus")
+logger = logging.getLogger(__name__)
 
 Subscriber = Callable[["Event"], Awaitable[None]]
 
@@ -75,10 +76,8 @@ class CoreEventBus:
             return
         self._running = False
         await self._queue.put(None)  # Sentinel de apagado
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await self._dispatch_task
-        except asyncio.CancelledError:
-            pass
         self._dispatch_task = None
         logger.info("CoreEventBus detenido")
 
@@ -93,10 +92,8 @@ class CoreEventBus:
 
     def unsubscribe(self, pattern: str, callback: Subscriber) -> None:
         """Elimina un suscriptor previamente registrado."""
-        try:
+        with contextlib.suppress(ValueError):
             self._subscriptions.remove((pattern, callback))
-        except ValueError:
-            pass
 
     async def publish(self, event: Event) -> None:
         """Publica un evento en la cola para dispatch asíncrono."""

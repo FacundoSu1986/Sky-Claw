@@ -14,14 +14,14 @@ from typing import Any
 from sky_claw.security.hitl import Decision
 
 from .schemas import (
-    ProfileParams,
-    XEditAnalysisParams,
-    PreviewInstallerParams,
-    InstallFromArchiveParams,
-    ResolveFomodParams,
     AnalyzeConflictsParams,
+    InstallFromArchiveParams,
     ModNameParams,
+    PreviewInstallerParams,
+    ProfileParams,
+    ResolveFomodParams,
     ToggleModParams,
+    XEditAnalysisParams,
 )
 
 logger = logging.getLogger(__name__)
@@ -196,7 +196,7 @@ async def resolve_fomod(
     )
     if fomod_installer is None:
         return json.dumps({"error": "FOMOD installer is not configured"})
-    from sky_claw.fomod.parser import parse_fomod_string, FomodParseError
+    from sky_claw.fomod.parser import FomodParseError, parse_fomod_string
     from sky_claw.fomod.resolver import FomodResolver
 
     archive = pathlib.Path(params.archive_path)
@@ -233,8 +233,7 @@ async def analyze_esp_conflicts(
     if xedit_runner is None:
         return json.dumps(
             {
-                "error": "xEdit runner is not configured. "
-                "Use the setup_tools tool to install SSEEdit first.",
+                "error": "xEdit runner is not configured. Use the setup_tools tool to install SSEEdit first.",
             }
         )
     target_plugins = params.plugins

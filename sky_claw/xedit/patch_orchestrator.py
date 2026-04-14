@@ -140,7 +140,7 @@ class PatchResult:
         xedit_exit_code: int,
         warnings: list[str] | None = None,
         error: str | None = None,
-    ) -> "PatchResult":
+    ) -> PatchResult:
         """Factory method para crear PatchResult con lista de warnings mutable.
 
         Args:
@@ -184,7 +184,7 @@ class PatchStrategy(ABC):
     """
 
     @abstractmethod
-    async def can_handle(self, conflict: "RecordConflict") -> bool:
+    async def can_handle(self, conflict: RecordConflict) -> bool:
         """Determina si esta estrategia puede manejar el conflicto.
 
         Args:
@@ -196,7 +196,7 @@ class PatchStrategy(ABC):
         ...
 
     @abstractmethod
-    async def create_plan(self, conflicts: list["RecordConflict"]) -> PatchPlan:
+    async def create_plan(self, conflicts: list[RecordConflict]) -> PatchPlan:
         """Crea un plan de parcheo detallado.
 
         Args:
@@ -246,7 +246,7 @@ class CreateMergedPatch(PatchStrategy):
         """
         self._output_dir = output_dir or pathlib.Path(".")
 
-    async def can_handle(self, conflict: "RecordConflict") -> bool:
+    async def can_handle(self, conflict: RecordConflict) -> bool:
         """Verifica si el conflicto es de tipo leveled list.
 
         Args:
@@ -263,7 +263,7 @@ class CreateMergedPatch(PatchStrategy):
         )
         return can_handle
 
-    async def create_plan(self, conflicts: list["RecordConflict"]) -> PatchPlan:
+    async def create_plan(self, conflicts: list[RecordConflict]) -> PatchPlan:
         """Crea un plan para generar un merged patch de leveled lists.
 
         Args:
@@ -369,7 +369,7 @@ class ExecuteXEditScript(PatchStrategy):
         self._scripts_dir = scripts_dir or pathlib.Path(".")
         self._output_dir = output_dir or pathlib.Path(".")
 
-    async def can_handle(self, conflict: "RecordConflict") -> bool:
+    async def can_handle(self, conflict: RecordConflict) -> bool:
         """Verifica si el conflicto es de severidad crítica.
 
         Args:
@@ -387,7 +387,7 @@ class ExecuteXEditScript(PatchStrategy):
         )
         return is_critical
 
-    async def create_plan(self, conflicts: list["RecordConflict"]) -> PatchPlan:
+    async def create_plan(self, conflicts: list[RecordConflict]) -> PatchPlan:
         """Crea un plan para ejecutar script xEdit de corrección.
 
         Args:
@@ -428,8 +428,7 @@ class ExecuteXEditScript(PatchStrategy):
         output_plugin = "SkyClaw_CriticalPatch.esp"
 
         logger.info(
-            "ExecuteXEditScript plan created: %d critical conflicts, "
-            "%d plugins, script=%s, HITL=%s",
+            "ExecuteXEditScript plan created: %d critical conflicts, %d plugins, script=%s, HITL=%s",
             len(critical_conflicts),
             len(target_plugins),
             script_name,
@@ -454,7 +453,7 @@ class ExecuteXEditScript(PatchStrategy):
         """
         return 20
 
-    def _select_script_for_conflicts(self, conflicts: list["RecordConflict"]) -> str:
+    def _select_script_for_conflicts(self, conflicts: list[RecordConflict]) -> str:
         """Selecciona el script Pascal apropiado para los conflictos.
 
         Args:
@@ -511,9 +510,9 @@ class PatchOrchestrator:
 
     def __init__(
         self,
-        xedit_runner: "XEditRunner",
-        snapshot_manager: "FileSnapshotManager",
-        rollback_manager: "RollbackManager",
+        xedit_runner: XEditRunner,
+        snapshot_manager: FileSnapshotManager,
+        rollback_manager: RollbackManager,
         strategies: list[PatchStrategy] | None = None,
     ) -> None:
         """Inicializa el orquestador de parcheo.
@@ -538,7 +537,7 @@ class PatchOrchestrator:
             [s.__class__.__name__ for s in self._strategies],
         )
 
-    async def resolve(self, report: "ConflictReport") -> PatchResult:
+    async def resolve(self, report: ConflictReport) -> PatchResult:
         """Resuelve conflictos usando la estrategia óptima.
 
         Protocolo Transaccional:
@@ -569,7 +568,7 @@ class PatchOrchestrator:
             )
 
         # Recolectar todos los conflictos del reporte
-        all_conflicts: list["RecordConflict"] = []
+        all_conflicts: list[RecordConflict] = []
         for pair in report.plugin_pairs:
             all_conflicts.extend(pair.conflicts)
 
@@ -638,7 +637,7 @@ class PatchOrchestrator:
                 error=f"Patching error: {e}",
             )
 
-    async def select_strategy(self, conflict: "RecordConflict") -> PatchStrategy:
+    async def select_strategy(self, conflict: RecordConflict) -> PatchStrategy:
         """Selecciona la estrategia óptima para un conflicto.
 
         Itera sobre las estrategias disponibles (ordenadas por prioridad)
@@ -677,7 +676,7 @@ class PatchOrchestrator:
         )
 
     async def _select_best_strategy(
-        self, conflicts: list["RecordConflict"]
+        self, conflicts: list[RecordConflict]
     ) -> PatchStrategy:
         """Selecciona la mejor estrategia para un conjunto de conflictos.
 

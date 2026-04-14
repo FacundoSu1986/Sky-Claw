@@ -4,14 +4,15 @@ Framework de decisión secuencial de 5 pasos para Auditoría Purple Team.
 """
 
 import logging
-from typing import Dict, Any
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+from .governance import GovernanceManager
 
 # Importar componentes de seguridad
 from .purple_scanner import run_scan
 from .text_inspector import scan_text
-from .governance import GovernanceManager
 
 logger = logging.getLogger(__name__)
 
@@ -19,14 +20,14 @@ logger = logging.getLogger(__name__)
 class SecurityMetacognition:
     def __init__(self, target_path: str):
         self.target_path = Path(target_path)
-        self.session_data: Dict[str, Any] = {
+        self.session_data: dict[str, Any] = {
             "start_time": datetime.now().isoformat(),
             "findings": [],
             "confidence": 1.0,
             "status": "INIT",
         }
 
-    async def execute_cycle(self) -> Dict[str, Any]:
+    async def execute_cycle(self) -> dict[str, Any]:
         """Ejecuta el ciclo metacognitivo completo de 5 pasos."""
         try:
             # Fase 1: DESCOMPONER
@@ -86,7 +87,7 @@ class SecurityMetacognition:
                 continue
 
             try:
-                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                with open(file_path, encoding="utf-8", errors="ignore") as f:
                     content = f.read()
 
                 # Escáner según extensión
@@ -151,7 +152,7 @@ class SecurityMetacognition:
         self.session_data["status"] = "COMPLETED"
 
 
-async def audit_resource(path: str) -> Dict[str, Any]:
+async def audit_resource(path: str) -> dict[str, Any]:
     """Punto de entrada asíncrono para auditoría Purple Team."""
     logic = SecurityMetacognition(path)
     return await logic.execute_cycle()

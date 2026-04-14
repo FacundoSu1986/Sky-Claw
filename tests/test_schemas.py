@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 test_schemas.py - Tests unitarios completos para schemas de validación Pydantic.
 
@@ -6,19 +5,18 @@ Este módulo contiene tests unitarios para verificar el funcionamiento correcto
 de los esquemas Pydantic y los validadores de seguridad del sistema Sky-Claw.
 """
 
-import pytest
 from datetime import datetime
-from pydantic import ValidationError
 
+import pytest
+from pydantic import ValidationError
 from sky_claw.core.schemas import (
+    AgentToolRequest,
+    AgentToolResponse,
     ModMetadata,
     ScrapingQuery,
     SecurityAuditRequest,
     SecurityAuditResponse,
-    AgentToolRequest,
-    AgentToolResponse,
 )
-
 
 # =============================================================================
 # Tests Unitarios para ModMetadata

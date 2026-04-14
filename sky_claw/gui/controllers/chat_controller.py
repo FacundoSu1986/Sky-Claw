@@ -6,10 +6,14 @@ RESTRICCIÓN: CERO NiceGUI. Solo manipula AppState y EventBus.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List
+from typing import TYPE_CHECKING, Any
 
 from sky_claw.gui.event_bus import EventBus, EventType, SkyClawEvent
-from sky_claw.gui.models.app_state import AppState
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from sky_claw.gui.models.app_state import AppState
 
 _logger = logging.getLogger("SkyClaw.ChatController")
 
@@ -45,8 +49,8 @@ class ChatController:
         await self.process_user_message(message)
 
     def prepare_messages_for_view(
-        self, messages: List[Dict[str, str]]
-    ) -> List[Dict[str, Any]]:
+        self, messages: list[dict[str, str]]
+    ) -> list[dict[str, Any]]:
         """Convierte formato interno de AppState al formato esperado por la vista."""
         return [
             {

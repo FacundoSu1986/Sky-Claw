@@ -40,5 +40,15 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
+[tool.ruff.lint]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # Ambiguous unicode (intentional in docs/test comments)
+    "RUF006",  # asyncio.create_task reference (fire-and-forget pattern)
+    "RUF012",  # Mutable class attributes (intentional class constants)
+    "SIM102", "SIM103", "SIM117",  # Simplification suggestions (cosmetic)
+    "N802", "N806", "N817", "N818",  # Naming conventions (pre-existing throughout)
+    "B904",  # raise from err (pre-existing exception style)
+]
+
 [tool.setuptools]
 packages = ["sky_claw"]

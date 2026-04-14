@@ -3,24 +3,25 @@
 from __future__ import annotations
 
 import json
-import pathlib
+from typing import TYPE_CHECKING
 
-import pytest
 import pydantic
-
-from sky_claw.db.async_registry import AsyncModRegistry
-from sky_claw.mo2.vfs import MO2Controller
-from sky_claw.orchestrator.sync_engine import SyncEngine
-from sky_claw.scraper.masterlist import MasterlistClient
-from sky_claw.security.network_gateway import EgressPolicy, NetworkGateway
-from sky_claw.security.path_validator import PathValidator  # noqa: F401 — used in _make_mo2
+import pytest
 from sky_claw.agent.tools import (
     AsyncToolRegistry,
     InstallModParams,
     ProfileParams,
     SearchModParams,
 )
+from sky_claw.db.async_registry import AsyncModRegistry
+from sky_claw.mo2.vfs import MO2Controller
+from sky_claw.orchestrator.sync_engine import SyncEngine
+from sky_claw.scraper.masterlist import MasterlistClient
+from sky_claw.security.network_gateway import EgressPolicy, NetworkGateway
+from sky_claw.security.path_validator import PathValidator
 
+if TYPE_CHECKING:
+    import pathlib
 
 # ------------------------------------------------------------------
 # Helpers

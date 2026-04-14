@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 contracts.py — Validación de contratos entre agentes del sistema Sky-Claw.
 
@@ -18,9 +17,12 @@ from __future__ import annotations
 
 import functools
 import logging
-from typing import Any, Callable, Dict, Optional, Type
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger("SkyClaw.Contracts")
 
@@ -31,7 +33,7 @@ logger = logging.getLogger("SkyClaw.Contracts")
 
 # Mapa nombre_de_clase (str) -> Clase Pydantic (Type[BaseModel])
 # Poblado lazily en la primera llamada a _ensure_registry().
-_SCHEMA_REGISTRY: Dict[str, Type[BaseModel]] = {}
+_SCHEMA_REGISTRY: dict[str, type[BaseModel]] = {}
 _REGISTRY_POPULATED: bool = False
 
 
@@ -55,8 +57,7 @@ def _ensure_registry() -> None:
         _schemas_module = importlib.import_module("sky_claw.core.schemas")
     except ImportError:
         logger.warning(
-            "No se pudo importar sky_claw.core.schemas — "
-            "los decoradores de contratos funcionarán en modo pass-through."
+            "No se pudo importar sky_claw.core.schemas — los decoradores de contratos funcionarán en modo pass-through."
         )
         return
 
@@ -85,7 +86,7 @@ def _ensure_registry() -> None:
 #     _SCHEMA_REGISTRY en O(1).
 #   - None / tipo primitivo ("dict", "str", "list[dict]") → sin validación
 #     Pydantic, se deja pasar.
-CONTRACT_SCHEMAS: Dict[str, Dict[str, Optional[str]]] = {
+CONTRACT_SCHEMAS: dict[str, dict[str, str | None]] = {
     "SupervisorAgent.dispatch_tool": {
         "input": "AgentToolRequest",
         "output": "AgentToolResponse",
@@ -109,7 +110,7 @@ CONTRACT_SCHEMAS: Dict[str, Dict[str, Optional[str]]] = {
 }
 
 
-def _resolve_schema(name: Optional[str]) -> Optional[Type[BaseModel]]:
+def _resolve_schema(name: str | None) -> type[BaseModel] | None:
     """Busca un modelo Pydantic en el registry O(1). Retorna None si no aplica."""
     if name is None:
         return None
@@ -190,9 +191,7 @@ def validate_input(method_name: str) -> Callable:
                     exc.errors(),
                 )
                 raise ValueError(
-                    f"Entrada inválida para {schema_key}: "
-                    f"{exc.error_count()} error(es) de validación.\n"
-                    f"{exc}"
+                    f"Entrada inválida para {schema_key}: {exc.error_count()} error(es) de validación.\n{exc}"
                 ) from exc
 
         return wrapper
@@ -237,8 +236,7 @@ def validate_output(method_name: str) -> Callable:
                 else:
                     # No es dict ni BaseModel — no se puede validar con Pydantic.
                     logger.debug(
-                        "[CONTRACT·OUT] %s retornó %s — "
-                        "salteando validación Pydantic (tipo no-dict).",
+                        "[CONTRACT·OUT] %s retornó %s — salteando validación Pydantic (tipo no-dict).",
                         schema_key,
                         type(result).__name__,
                     )
@@ -254,9 +252,7 @@ def validate_output(method_name: str) -> Callable:
                     exc.errors(),
                 )
                 raise ValueError(
-                    f"Salida inválida para {schema_key}: "
-                    f"{exc.error_count()} error(es) de validación.\n"
-                    f"{exc}"
+                    f"Salida inválida para {schema_key}: {exc.error_count()} error(es) de validación.\n{exc}"
                 ) from exc
 
         return wrapper
@@ -350,7 +346,7 @@ def validate_contract(method_name: str) -> Callable:
 # ============================================================================
 
 
-def get_contract_schema(agent_method: str) -> Dict[str, Optional[str]]:
+def get_contract_schema(agent_method: str) -> dict[str, str | None]:
     """
     Retorna las definiciones de schema para un método específico.
 
@@ -363,7 +359,7 @@ def get_contract_schema(agent_method: str) -> Dict[str, Optional[str]]:
     return CONTRACT_SCHEMAS.get(agent_method, {})
 
 
-def get_schema_class(name: str) -> Optional[Type[BaseModel]]:
+def get_schema_class(name: str) -> type[BaseModel] | None:
     """
     Retorna la clase Pydantic registrada por nombre, o None.
 
@@ -390,7 +386,7 @@ def verify_contract(agent_class: type, method_name: str) -> bool:
     return hasattr(method, "__wrapped__")
 
 
-def list_registered_schemas() -> Dict[str, Type[BaseModel]]:
+def list_registered_schemas() -> dict[str, type[BaseModel]]:
     """Retorna una copia del SchemaRegistry para inspección."""
     _ensure_registry()
     return dict(_SCHEMA_REGISTRY)
@@ -402,11 +398,11 @@ def list_registered_schemas() -> Dict[str, Type[BaseModel]]:
 
 __all__ = [
     "CONTRACT_SCHEMAS",
-    "validate_input",
-    "validate_output",
-    "validate_contract",
     "get_contract_schema",
     "get_schema_class",
-    "verify_contract",
     "list_registered_schemas",
+    "validate_contract",
+    "validate_input",
+    "validate_output",
+    "verify_contract",
 ]

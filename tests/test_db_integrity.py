@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import pathlib
+from typing import TYPE_CHECKING
 
 import pytest
-
 from sky_claw.db.async_registry import AsyncModRegistry
 from sky_claw.db.registry import ModRegistry
+
+if TYPE_CHECKING:
+    import pathlib
 
 
 class TestAsyncRegistryIntegrity:

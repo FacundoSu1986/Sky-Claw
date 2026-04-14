@@ -9,16 +9,18 @@ Covers:
 
 from __future__ import annotations
 
-import pathlib
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient
-
-from sky_claw.web.app import WebApp
 from sky_claw.security.auth_token_manager import AuthTokenManager
+from sky_claw.web.app import WebApp
 
+if TYPE_CHECKING:
+    import pathlib
+
+    from aiohttp.test_utils import TestClient
 
 # ---------------------------------------------------------------------------
 # Shared helpers

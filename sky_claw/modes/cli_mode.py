@@ -1,11 +1,15 @@
 from __future__ import annotations
+
 import asyncio
 import logging
 import sys
 import uuid
+from typing import TYPE_CHECKING
 
 from sky_claw.logging_config import correlation_id_var
-from sky_claw.app_context import AppContext
+
+if TYPE_CHECKING:
+    from sky_claw.app_context import AppContext
 
 logger = logging.getLogger(__name__)
 

@@ -6,13 +6,11 @@ import pathlib
 import zipfile
 
 import pytest
-
 from sky_claw.fomod.installer import (
     FomodInstaller,
     _is_safe_path,
 )
 from sky_claw.security.path_validator import PathValidator, PathViolation
-
 
 # ------------------------------------------------------------------
 # Fixtures

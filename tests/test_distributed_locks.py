@@ -7,11 +7,10 @@ exponential backoff, rollback-on-failure, and lock release safety.
 from __future__ import annotations
 
 import asyncio
-import pathlib
 import time
+from typing import TYPE_CHECKING
 
 import pytest
-
 from sky_claw.db.locks import (
     DEFAULT_LOCK_TTL_SECONDS,
     DistributedLockManager,
@@ -21,6 +20,8 @@ from sky_claw.db.locks import (
 )
 from sky_claw.db.snapshot_manager import FileSnapshotManager
 
+if TYPE_CHECKING:
+    import pathlib
 
 # =============================================================================
 # Fixtures

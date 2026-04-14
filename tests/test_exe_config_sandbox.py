@@ -5,13 +5,11 @@ from __future__ import annotations
 import os
 import pathlib
 import tempfile
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-
-from sky_claw.local_config import LocalConfig, load, save, get_exe_dir
+from sky_claw.local_config import LocalConfig, get_exe_dir, load, save
 from sky_claw.security.path_validator import PathValidator, PathViolation
-
 
 # ---------------------------------------------------------------------------
 # Bug 1: Config path resolves to exe dir when frozen
@@ -70,9 +68,8 @@ class TestApiKeyFromConfig:
         assert api_key.startswith("sk-ant")
 
         # Simulate __main__.py injection logic.
-        if api_key.startswith("sk-ant"):
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                os.environ["ANTHROPIC_API_KEY"] = api_key
+        if api_key.startswith("sk-ant") and not os.environ.get("ANTHROPIC_API_KEY"):
+            os.environ["ANTHROPIC_API_KEY"] = api_key
 
         assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-my-anthropic-key"
 
@@ -129,9 +126,12 @@ class TestApiKeyFromConfig:
         cfg.set_api_key("sk-ant-should-not-replace")
         api_key = cfg.get_api_key()
 
-        if api_key and api_key.startswith("sk-ant"):
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                os.environ["ANTHROPIC_API_KEY"] = api_key
+        if (
+            api_key
+            and api_key.startswith("sk-ant")
+            and not os.environ.get("ANTHROPIC_API_KEY")
+        ):
+            os.environ["ANTHROPIC_API_KEY"] = api_key
 
         assert os.environ["ANTHROPIC_API_KEY"] == "env-key-stays"
 
@@ -255,10 +255,11 @@ class TestMo2RootOverride:
         cli_mo2 = pathlib.Path("C:/MO2Portable")
 
         _MO2_DEFAULT = str(pathlib.Path("C:/MO2Portable"))
-        if cfg.mo2_root and str(cli_mo2) == _MO2_DEFAULT:
-            result = pathlib.Path(cfg.mo2_root)
-        else:
-            result = cli_mo2
+        result = (
+            pathlib.Path(cfg.mo2_root)
+            if cfg.mo2_root and str(cli_mo2) == _MO2_DEFAULT
+            else cli_mo2
+        )
 
         assert result == pathlib.Path("D:/Modding/MO2")
 
@@ -268,10 +269,11 @@ class TestMo2RootOverride:
         cli_mo2 = pathlib.Path("E:/Custom/MO2")
 
         _MO2_DEFAULT = str(pathlib.Path("C:/MO2Portable"))
-        if cfg.mo2_root and str(cli_mo2) == _MO2_DEFAULT:
-            result = pathlib.Path(cfg.mo2_root)
-        else:
-            result = cli_mo2
+        result = (
+            pathlib.Path(cfg.mo2_root)
+            if cfg.mo2_root and str(cli_mo2) == _MO2_DEFAULT
+            else cli_mo2
+        )
 
         assert result == pathlib.Path("E:/Custom/MO2")
 
@@ -281,10 +283,11 @@ class TestMo2RootOverride:
         cli_mo2 = pathlib.Path("C:/MO2Portable")
 
         _MO2_DEFAULT = str(pathlib.Path("C:/MO2Portable"))
-        if cfg.mo2_root and str(cli_mo2) == _MO2_DEFAULT:
-            result = pathlib.Path(cfg.mo2_root)
-        else:
-            result = cli_mo2
+        result = (
+            pathlib.Path(cfg.mo2_root)
+            if cfg.mo2_root and str(cli_mo2) == _MO2_DEFAULT
+            else cli_mo2
+        )
 
         assert result == pathlib.Path("C:/MO2Portable")
 

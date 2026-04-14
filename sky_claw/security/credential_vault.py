@@ -1,13 +1,13 @@
+import base64
+import logging
 import os
 import platform
-import aiosqlite
-import logging
-import base64
 from pathlib import Path
+
+import aiosqlite
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from typing import Optional
 
 from sky_claw.security.file_permissions import restrict_to_owner
 
@@ -140,7 +140,7 @@ class CredentialVault:
             logger.error(f"❌ Fallo al inicializar Bóveda Criptográfica: {e}")
             raise
 
-    async def get_secret(self, service_name: str) -> Optional[str]:
+    async def get_secret(self, service_name: str) -> str | None:
         """Recupera y descifra asincrónicamente con aislamiento de transacción."""
         try:
             async with aiosqlite.connect(self.db_path) as conn:

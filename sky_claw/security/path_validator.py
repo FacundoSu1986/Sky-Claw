@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import functools
 import pathlib
-from typing import Callable, Iterable, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
 
 P = ParamSpec("P")
 R = TypeVar("R")

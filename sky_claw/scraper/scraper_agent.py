@@ -1,10 +1,11 @@
-import time
 import logging
+import time
+
+from sky_claw.core.database import DatabaseAgent
 
 # Playwright and requests-html strictly banned locally in WSL2 per SRE (Cloudflare constraints).
 from sky_claw.core.models import CircuitBreakerTripped
-from sky_claw.core.schemas import ScrapingQuery, ModMetadata
-from sky_claw.core.database import DatabaseAgent
+from sky_claw.core.schemas import ModMetadata, ScrapingQuery
 
 logger = logging.getLogger("SkyClaw.Scraper")
 
@@ -75,7 +76,7 @@ class ScraperAgent:
             await self.db.update_circuit_breaker(domain, new_failures, lock_time)
 
             logger.warning(
-                f"Fallo de extracción en {domain}. Fallos: {new_failures}. Error: {str(e)}"
+                f"Fallo de extracción en {domain}. Fallos: {new_failures}. Error: {e!s}"
             )
             raise
 
@@ -101,8 +102,7 @@ class ScraperAgent:
         Use la API oficial de Nexus Mods en su lugar.
         """
         logger.warning(
-            "Acceso bloqueado por ToS: Scraping evasivo deshabilitado. "
-            "El recurso no está disponible vía API."
+            "Acceso bloqueado por ToS: Scraping evasivo deshabilitado. El recurso no está disponible vía API."
         )
         return {
             "status": "error",

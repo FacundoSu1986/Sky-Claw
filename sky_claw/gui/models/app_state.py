@@ -1,10 +1,10 @@
 """AppState - Modelo de Estado Centralizado PURE DATA. FASE 4 MVC."""
 
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Dict, List, Optional
 
 
 @dataclass
@@ -21,10 +21,10 @@ class AppState:
     wizard_step: int = 1
 
     # Datos puros de los mensajes (diccionarios o strings, NO widgets gráficos)
-    _chat_messages: List[Dict[str, str]] = field(default_factory=list)
+    _chat_messages: list[dict[str, str]] = field(default_factory=list)
 
     # Datos de los inputs del usuario, no las cajas de texto físicas
-    form_data: Dict[str, str] = field(default_factory=dict)
+    form_data: dict[str, str] = field(default_factory=dict)
 
     # Tareas asíncronas de fondo (mantenido por seguridad del event loop)
     _bg_tasks: set = field(default_factory=set)
@@ -43,11 +43,11 @@ class AppState:
 
 
 # Implementación del Singleton/Factory — thread-safe con Lock
-_GLOBAL_APP_STATE: Optional[AppState] = None
+_GLOBAL_APP_STATE: AppState | None = None
 _STATE_LOCK = Lock()
 
 
-def get_app_state(config_path: Optional[Path] = None) -> AppState:
+def get_app_state(config_path: Path | None = None) -> AppState:
     """Garantiza una única instancia del estado global para evitar desincronizaciones."""
     global _GLOBAL_APP_STATE
     with _STATE_LOCK:

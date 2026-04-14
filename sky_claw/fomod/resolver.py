@@ -124,19 +124,17 @@ class FomodResolver:
         if group_type == GroupType.SELECT_ALL:
             return plugin_names
 
-        if group_type == GroupType.SELECT_EXACTLY_ONE:
-            if len(selected) != 1:
-                if not selected:
-                    result.pending_decisions.append(
-                        f"{step_name}/{group_name}: must select exactly one"
-                    )
-                return selected
-
-        if group_type == GroupType.SELECT_AT_LEAST_ONE:
+        if group_type == GroupType.SELECT_EXACTLY_ONE and len(selected) != 1:
             if not selected:
                 result.pending_decisions.append(
-                    f"{step_name}/{group_name}: must select at least one"
+                    f"{step_name}/{group_name}: must select exactly one"
                 )
+            return selected
+
+        if group_type == GroupType.SELECT_AT_LEAST_ONE and not selected:
+            result.pending_decisions.append(
+                f"{step_name}/{group_name}: must select at least one"
+            )
 
         return selected
 
@@ -151,7 +149,7 @@ class FomodResolver:
         for fd in conditions.flag_deps:
             results.append(flags.get(fd.flag, "") == fd.value)
 
-        for fd in conditions.file_deps:
+        for _ in conditions.file_deps:
             # File deps cannot be fully evaluated without filesystem access.
             # Default to True (optimistic).
             results.append(True)

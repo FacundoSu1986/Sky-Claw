@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 import logging
+
 from sky_claw.core.models import LootExecutionParams, WSLInteropError
 
 logger = logging.getLogger("SkyClaw.Interop")
@@ -29,12 +31,10 @@ class ModdingToolsAgent:
                 proc.communicate(),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
-                pass
             raise WSLInteropError(f"wslpath tardó más de {timeout}s para: {wsl_path}")
         if proc.returncode != 0:
             err_str = stderr.decode("utf-8", errors="replace").strip()
@@ -78,12 +78,10 @@ class ModdingToolsAgent:
                 proc.communicate(),
                 timeout=120.0,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
-                pass
             logger.error("LOOT excedió el timeout de 120s")
             return {
                 "status": "error",

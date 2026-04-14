@@ -11,11 +11,12 @@ import asyncio
 import collections
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import aiohttp
+if TYPE_CHECKING:
+    import aiohttp
 
-from sky_claw.security.network_gateway import NetworkGateway
+    from sky_claw.security.network_gateway import NetworkGateway
 
 logger = logging.getLogger(__name__)
 

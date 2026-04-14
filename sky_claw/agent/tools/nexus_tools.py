@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import TYPE_CHECKING
 
 import aiohttp
 
-from sky_claw.scraper.nexus_downloader import NexusDownloader
-from sky_claw.security.network_gateway import NetworkGateway, GatewayTCPConnector
 from sky_claw.security.hitl import Decision, HITLGuard
-from sky_claw.orchestrator.sync_engine import SyncEngine
+from sky_claw.security.network_gateway import GatewayTCPConnector, NetworkGateway
+
 from .schemas import DownloadModParams
+
+if TYPE_CHECKING:
+    from sky_claw.orchestrator.sync_engine import SyncEngine
+    from sky_claw.scraper.nexus_downloader import NexusDownloader
 
 logger = logging.getLogger(__name__)
 

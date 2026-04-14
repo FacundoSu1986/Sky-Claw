@@ -7,11 +7,11 @@ VIEW PURO - Sin lógica de negocio, solo presentación.
 Recibe datos como parámetros, NO accede directamente al estado.
 """
 
-from typing import Dict, Any
+from typing import Any
+
 from nicegui import ui
 
 from ..components import create_stat_card
-
 
 # Colores del tema (extraídos del monolito para mantener invariante visual)
 COLORS = {
@@ -20,7 +20,7 @@ COLORS = {
 }
 
 
-def create_stats_section(stats: Dict[str, Any]) -> None:
+def create_stats_section(stats: dict[str, Any]) -> None:
     """Sección de estadísticas del dashboard.
 
     Muestra 4 tarjetas con métricas clave en un grid de 4 columnas.

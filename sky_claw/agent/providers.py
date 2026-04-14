@@ -167,45 +167,44 @@ def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str
         if isinstance(content, str):
             result.append({"role": role, "content": content})
             continue
-        if isinstance(content, list):
-            if content and isinstance(content[0], dict):
-                first_type = content[0].get("type", "")
-                if first_type == "tool_result":
-                    for block in content:
-                        result.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": block.get("tool_use_id", ""),
-                                "content": block.get("content", ""),
-                            }
-                        )
-                    continue
-                text_parts = []
-                tool_calls = []
+        if isinstance(content, list) and content and isinstance(content[0], dict):
+            first_type = content[0].get("type", "")
+            if first_type == "tool_result":
                 for block in content:
-                    if block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
-                    elif block.get("type") == "tool_use":
-                        tool_calls.append(
-                            {
-                                "id": block.get("id", uuid.uuid4().hex),
-                                "type": "function",
-                                "function": {
-                                    "name": block["name"],
-                                    "arguments": json.dumps(block.get("input", {})),
-                                },
-                            }
-                        )
-                msg_dict: dict[str, Any] = {
-                    "role": role,
-                    "content": "\n".join(text_parts)
-                    if text_parts
-                    else ("..." if not tool_calls else None),
-                }
-                if tool_calls:
-                    msg_dict["tool_calls"] = tool_calls
-                result.append(msg_dict)
+                    result.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": block.get("tool_use_id", ""),
+                            "content": block.get("content", ""),
+                        }
+                    )
                 continue
+            text_parts = []
+            tool_calls = []
+            for block in content:
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif block.get("type") == "tool_use":
+                    tool_calls.append(
+                        {
+                            "id": block.get("id", uuid.uuid4().hex),
+                            "type": "function",
+                            "function": {
+                                "name": block["name"],
+                                "arguments": json.dumps(block.get("input", {})),
+                            },
+                        }
+                    )
+            msg_dict: dict[str, Any] = {
+                "role": role,
+                "content": "\n".join(text_parts)
+                if text_parts
+                else ("..." if not tool_calls else None),
+            }
+            if tool_calls:
+                msg_dict["tool_calls"] = tool_calls
+            result.append(msg_dict)
+            continue
         result.append({"role": role, "content": str(content)})
     return result
 

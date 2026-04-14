@@ -9,17 +9,18 @@ Esta página es un "presentador" que:
 3. Compone las secciones visuales
 """
 
-from typing import Dict, Callable, Any, List
+from collections.abc import Callable
+from typing import Any
+
 from nicegui import ui
 
-from ..sections.stats_section import create_stats_section
-from ..sections.features_section import create_features_section
-from ..sections.mods_preview import create_mods_preview
-from ..sections.chat_preview import create_chat_preview
-from ..sections.cta_section import create_cta_section
 from ..layout.header import create_header
 from ..layout.sidebar import create_sidebar
-
+from ..sections.chat_preview import create_chat_preview
+from ..sections.cta_section import create_cta_section
+from ..sections.features_section import create_features_section
+from ..sections.mods_preview import create_mods_preview
+from ..sections.stats_section import create_stats_section
 
 # Colores del tema (extraídos del monolito para mantener invariante visual)
 COLORS = {
@@ -29,11 +30,11 @@ COLORS = {
 
 
 def render_dashboard(
-    stats: Dict[str, Any],
-    mods: List[Dict[str, Any]],
-    chat_messages: List[Dict[str, Any]],
+    stats: dict[str, Any],
+    mods: list[dict[str, Any]],
+    chat_messages: list[dict[str, Any]],
     is_thinking: bool,
-    callbacks: Dict[str, Callable],
+    callbacks: dict[str, Callable],
 ) -> None:
     """Renderiza la página completa del dashboard.
 
@@ -147,11 +148,11 @@ def render_dashboard(
 
 
 def render_dashboard_page_content(
-    stats: Dict[str, Any],
-    mods: List[Dict[str, Any]],
-    chat_messages: List[Dict[str, Any]],
+    stats: dict[str, Any],
+    mods: list[dict[str, Any]],
+    chat_messages: list[dict[str, Any]],
     is_thinking: bool,
-    callbacks: Dict[str, Callable],
+    callbacks: dict[str, Callable],
 ) -> None:
     """Renderiza solo el contenido del dashboard (sin sidebar ni header).
 

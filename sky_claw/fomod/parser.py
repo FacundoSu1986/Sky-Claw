@@ -8,8 +8,7 @@ are logged and skipped rather than crashing the entire parse.
 from __future__ import annotations
 
 import logging
-import pathlib
-import xml.etree.ElementTree as _stdlib_ET
+from typing import TYPE_CHECKING
 
 import defusedxml.ElementTree as ET
 from defusedxml import (
@@ -34,6 +33,10 @@ from sky_claw.fomod.models import (
     InstallStep,
     Plugin,
 )
+
+if TYPE_CHECKING:
+    import pathlib
+    import xml.etree.ElementTree as _stdlib_ET
 
 logger = logging.getLogger(__name__)
 

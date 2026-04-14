@@ -7,11 +7,11 @@ VIEW PURO - Sin lógica de negocio, solo presentación.
 Recibe callbacks como parámetros, NO ejecuta lógica directamente.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
+
 from nicegui import ui
 
 from ..components import create_cta_button
-
 
 # Colores del tema (extraídos del monolito para mantener invariante visual)
 COLORS = {
@@ -22,7 +22,7 @@ COLORS = {
 
 def create_cta_section(
     on_primary_action: Callable,
-    on_secondary_action: Optional[Callable] = None,
+    on_secondary_action: Callable | None = None,
     primary_text: str = "Get Started",
     secondary_text: str = "Watch Demo",
     title: str = "Ready to transform your modding experience?",
@@ -79,8 +79,7 @@ def create_cta_section(
         with ui.column().classes("relative z-10 items-center text-center"):
             # Badge de versión
             ui.label(badge_text).classes(
-                "px-4 py-1 rounded-full text-sm font-semibold mb-6 "
-                "sky-badge sky-badge--violet"
+                "px-4 py-1 rounded-full text-sm font-semibold mb-6 sky-badge sky-badge--violet"
             )
 
             # Título principal

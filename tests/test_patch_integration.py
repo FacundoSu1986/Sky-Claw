@@ -9,28 +9,28 @@ Este módulo verifica la integración completa del sistema de parcheo transaccio
 Fase 2: Dynamic Patching & xEdit Integration
 """
 
-import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from sky_claw.xedit.conflict_analyzer import (
+    ConflictReport,
+    PluginConflictPair,
+    RecordConflict,
+)
 from sky_claw.xedit.patch_orchestrator import (
+    CreateMergedPatch,
+    ExecuteXEditScript,
+    PatchExecutionError,
+    PatchingError,
     PatchOrchestrator,
     PatchPlan,
     PatchResult,
     PatchStrategyType,
-    CreateMergedPatch,
-    ExecuteXEditScript,
-    PatchingError,
-    StrategySelectionError,
-    PatchExecutionError,
     ScriptGenerationError,
+    StrategySelectionError,
 )
-from sky_claw.xedit.conflict_analyzer import (
-    ConflictReport,
-    RecordConflict,
-    PluginConflictPair,
-)
-from sky_claw.xedit.runner import XEditRunner, ScriptExecutionResult
+from sky_claw.xedit.runner import ScriptExecutionResult, XEditRunner
 
 
 class TestPatchOrchestratorIntegration:

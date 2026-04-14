@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from sky_claw.security.network_gateway import NetworkGateway
+if TYPE_CHECKING:
+    from sky_claw.security.network_gateway import NetworkGateway
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +72,11 @@ class _CircuitBreaker:
     def state(self) -> str:
         """Return the current state, promoting OPEN → HALF-OPEN when the
         recovery timeout has elapsed."""
-        if self._state == "open":
-            if time.monotonic() - self._last_failure_time >= self._recovery_timeout:
-                self._state = "half-open"
+        if (
+            self._state == "open"
+            and time.monotonic() - self._last_failure_time >= self._recovery_timeout
+        ):
+            self._state = "half-open"
         return self._state
 
     def record_success(self) -> None:

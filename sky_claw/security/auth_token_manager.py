@@ -8,12 +8,12 @@ Generates a one-time token at NiceGUI startup.  The Background Daemon
 reads it from a secure temp file to authenticate the WebSocket upgrade.
 """
 
-import secrets
+import contextlib
 import hashlib
 import logging
+import secrets
 import time
 from pathlib import Path
-from typing import Optional
 
 from sky_claw.security.file_permissions import restrict_to_owner
 
@@ -36,9 +36,9 @@ class AuthTokenManager:
       3. NiceGUI server validates incoming headers with validate().
     """
 
-    def __init__(self, token_dir: Optional[str] = None):
-        self._token: Optional[str] = None
-        self._token_hash: Optional[str] = None
+    def __init__(self, token_dir: str | None = None):
+        self._token: str | None = None
+        self._token_hash: str | None = None
         self._created_at: float = 0.0
 
         if token_dir:
@@ -96,10 +96,8 @@ class AuthTokenManager:
 
         if self._token_path.exists():
             # Overwrite with zeros before unlinking to prevent forensic recovery
-            try:
+            with contextlib.suppress(OSError):
                 self._token_path.write_bytes(b"\x00" * 64)
-            except OSError:
-                pass
             self._token_path.unlink(missing_ok=True)
 
         logger.info("Auth token revoked.")
@@ -107,7 +105,7 @@ class AuthTokenManager:
     # ── Client / Daemon Side ─────────────────────────────────────────
 
     @classmethod
-    def read_token_file(cls, token_dir: Optional[str] = None) -> Optional[str]:
+    def read_token_file(cls, token_dir: str | None = None) -> str | None:
         """Read the token from the shared file (called by the Daemon)."""
         if token_dir:
             path = Path(token_dir) / "ws_auth_token"

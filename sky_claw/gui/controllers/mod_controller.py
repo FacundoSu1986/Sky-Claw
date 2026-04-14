@@ -6,9 +6,12 @@ RESTRICCIÓN: CERO NiceGUI. Solo manipula AppState y EventBus.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from sky_claw.gui.event_bus import EventBus, EventType, SkyClawEvent
-from sky_claw.gui.models.app_state import AppState
+
+if TYPE_CHECKING:
+    from sky_claw.gui.models.app_state import AppState
 
 _logger = logging.getLogger("SkyClaw.ModController")
 

@@ -20,9 +20,7 @@ import pathlib
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    pass
-
-from sky_claw.security.path_validator import PathValidator
+    from sky_claw.security.path_validator import PathValidator
 
 logger = logging.getLogger("SkyClaw.PathResolution")
 security_logger = logging.getLogger("SkyClaw.Security")
@@ -298,8 +296,7 @@ class PathResolutionService:
             if validated_base:
                 return validated_base / "profiles" / profile / "modlist.txt"
             logger.warning(
-                "MO2_PATH='%s' rechazado por validación de seguridad (CRIT-003). "
-                "Intentando auto-detección.",
+                "MO2_PATH='%s' rechazado por validación de seguridad (CRIT-003). Intentando auto-detección.",
                 mo2_base_str,
             )
 
@@ -400,8 +397,7 @@ class PathResolutionService:
                 )
 
         raise RuntimeError(
-            "No se pudo detectar la ruta de MO2. "
-            "Configure MO2_PATH o MO2_MODS_PATH en las variables de entorno."
+            "No se pudo detectar la ruta de MO2. Configure MO2_PATH o MO2_MODS_PATH en las variables de entorno."
         )
 
     def get_active_profile(self) -> str:

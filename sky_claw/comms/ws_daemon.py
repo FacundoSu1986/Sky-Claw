@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import websockets
-import uuid
-import time
-from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 import sys
+import time
+import uuid
 from pathlib import Path
-from typing import Set, Optional
+
+import websockets
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 # Zero Trust AST Import (Local Repo Resolution)
 WORK_DIR = Path(__file__).resolve().parent.parent.parent
@@ -37,7 +37,7 @@ class TelegramDaemon:
         router,
         session,
         gateway_url="ws://localhost:8080",
-        ui_broadcast: Optional["UIBroadcastServer"] = None,
+        ui_broadcast: UIBroadcastServer | None = None,
     ):
         self.router = router
         self.session = session
@@ -218,7 +218,7 @@ class TelegramDaemon:
                 err_payload = {
                     "type": "error",
                     "payload": {
-                        "text": f"SISTEMA: Error en procesamiento del comando: {str(e)}"
+                        "text": f"SISTEMA: Error en procesamiento del comando: {e!s}"
                     },
                 }
                 await self.ws.send(json.dumps(err_payload))
@@ -240,7 +240,7 @@ class UIBroadcastServer:
     def __init__(self, host: str = "127.0.0.1", port: int = 8765):
         self.host = host
         self.port = port
-        self._clients: Set = set()
+        self._clients: set = set()
         self._server = None
         self._auth = AuthTokenManager()
         self._logger = logging.getLogger("SkyClaw.UIBroadcast")

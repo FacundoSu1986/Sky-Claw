@@ -17,10 +17,11 @@ import json
 import logging
 import pathlib
 import sys
+from dataclasses import asdict, dataclass
+from typing import Any, Protocol, cast
+
 import keyring
 import keyring.errors
-from dataclasses import dataclass, asdict
-from typing import Any, cast, Protocol
 
 
 class DataclassInstance(Protocol):
@@ -91,8 +92,7 @@ class LocalConfig:
             self.api_key_b64 = None  # Clear legacy
         except (keyring.errors.KeyringError, OSError, Exception) as exc:
             logger.warning(
-                "Could not store API key in keyring (%s). "
-                "Falling back to base64 encoding in config file.",
+                "Could not store API key in keyring (%s). Falling back to base64 encoding in config file.",
                 type(exc).__name__,
             )
             self.api_key_b64 = base64.b64encode(key.encode()).decode()
@@ -108,8 +108,7 @@ class LocalConfig:
             self.nexus_api_key_b64 = None
         except (keyring.errors.KeyringError, OSError, Exception) as exc:
             logger.warning(
-                "Could not store Nexus API key in keyring (%s). "
-                "Falling back to base64 encoding in config file.",
+                "Could not store Nexus API key in keyring (%s). Falling back to base64 encoding in config file.",
                 type(exc).__name__,
             )
             self.nexus_api_key_b64 = base64.b64encode(key.encode()).decode()
@@ -125,8 +124,7 @@ class LocalConfig:
             self.telegram_bot_token_b64 = None
         except (keyring.errors.KeyringError, OSError, Exception) as exc:
             logger.warning(
-                "Could not store Telegram token in keyring (%s). "
-                "Falling back to base64 encoding in config file.",
+                "Could not store Telegram token in keyring (%s). Falling back to base64 encoding in config file.",
                 type(exc).__name__,
             )
             self.telegram_bot_token_b64 = base64.b64encode(token.encode()).decode()
@@ -161,7 +159,7 @@ def load(path: pathlib.Path = _DEFAULT_PATH) -> LocalConfig:
 
 def save(config: LocalConfig, path: pathlib.Path = _DEFAULT_PATH) -> None:
     """Persist *config* to *path* as pretty-printed JSON."""
-    data = asdict(cast(DataclassInstance, config))
+    data = asdict(cast("DataclassInstance", config))
     path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",

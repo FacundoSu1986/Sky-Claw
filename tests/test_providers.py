@@ -7,19 +7,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-
 from sky_claw.agent.providers import (
     AnthropicProvider,
     DeepSeekProvider,
     OllamaProvider,
     ProviderConfigError,
-    create_provider,
     _convert_messages_to_openai,
     _convert_tools_to_openai,
     _parse_openai_response,
     _should_retry,
+    create_provider,
 )
-
 
 # ------------------------------------------------------------------
 # Tool/message conversion helpers
@@ -450,9 +448,8 @@ class TestShouldRetry:
         assert _should_retry(exc) is True
 
     def test_retries_on_timeout(self) -> None:
-        import asyncio
 
-        exc = asyncio.TimeoutError()
+        exc = TimeoutError()
         assert _should_retry(exc) is True
 
     def test_retries_on_429(self) -> None:

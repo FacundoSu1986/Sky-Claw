@@ -1,6 +1,7 @@
 import logging
+from typing import Literal
+
 from pydantic import BaseModel, Field
-from typing import List, Literal
 
 logger = logging.getLogger("SkyClaw.Models")
 
@@ -49,7 +50,7 @@ class XEditConflictAnalysisParams(BaseModel):
 
     model_config = {"strict": True}
 
-    target_plugins: List[str] = Field(
+    target_plugins: list[str] = Field(
         ..., min_length=1, description="Lista de archivos .esp/.esm a analizar."
     )
     pascal_script_name: str = Field(

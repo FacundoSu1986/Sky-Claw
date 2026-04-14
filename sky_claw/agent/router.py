@@ -11,25 +11,28 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import aiohttp
 import aiosqlite
 
-from sky_claw.agent.providers import LLMProvider, create_provider
-from sky_claw.agent.tools_facade import AsyncToolRegistry
-from sky_claw.security.sanitize import sanitize_for_prompt
-from sky_claw.agent.semantic_router import SemanticRouter
 from sky_claw.agent.context_manager import ContextManager
-from sky_claw.security.credential_vault import CredentialVault
-from sky_claw.security.agent_guardrail import AgentGuardrail
-from sky_claw.core.errors import AgentOrchestrationError, SecurityViolationError
 from sky_claw.agent.lcel_chains import (
-    PromptComposer,
     ChainBuilder,
+    PromptComposer,
     ToolExecutor,
 )
+from sky_claw.agent.providers import LLMProvider, create_provider
+from sky_claw.agent.semantic_router import SemanticRouter
+from sky_claw.core.errors import AgentOrchestrationError, SecurityViolationError
 from sky_claw.core.schemas import RouteClassification
+from sky_claw.security.sanitize import sanitize_for_prompt
+
+if TYPE_CHECKING:
+    import aiohttp
+
+    from sky_claw.agent.tools_facade import AsyncToolRegistry
+    from sky_claw.security.agent_guardrail import AgentGuardrail
+    from sky_claw.security.credential_vault import CredentialVault
 
 logger = logging.getLogger(__name__)
 
@@ -459,8 +462,7 @@ class LLMRouter:
         if self._conn is None:
             raise RuntimeError("Router database is not open")
         async with self._conn.execute(
-            "SELECT role, content FROM chat_history "
-            "WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
             (chat_id, self._max_context),
         ) as cur:
             rows = await cur.fetchall()

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 reasoning package - Motores de razonamiento avanzado para Sky-Claw.
 
@@ -13,19 +12,19 @@ Módulos:
 """
 
 from .tot import (
-    ThoughtNode,
-    TreeOfThoughtEngine,
-    ToTConfig,
-    SearchStrategyType,
     EvaluationResult,
+    SearchStrategyType,
+    ThoughtNode,
+    ToTConfig,
+    TreeOfThoughtEngine,
     create_tot_engine,
 )
 
 __all__ = [
-    "ThoughtNode",
-    "TreeOfThoughtEngine",
-    "ToTConfig",
-    "SearchStrategyType",
     "EvaluationResult",
+    "SearchStrategyType",
+    "ThoughtNode",
+    "ToTConfig",
+    "TreeOfThoughtEngine",
     "create_tot_engine",
 ]

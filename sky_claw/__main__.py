@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import os
 import pathlib
@@ -22,10 +23,10 @@ from sky_claw.app_context import AppContext
 from sky_claw.config import SystemPaths
 from sky_claw.logging_config import setup_logging
 from sky_claw.modes.cli_mode import _run_cli, _run_oneshot
+from sky_claw.modes.gui_mode import run_gui_mode
+from sky_claw.modes.security_mode import _run_security
 from sky_claw.modes.telegram_mode import _run_telegram
 from sky_claw.modes.web_mode import _run_web
-from sky_claw.modes.security_mode import _run_security
-from sky_claw.modes.gui_mode import run_gui_mode
 
 logger = logging.getLogger("sky_claw")
 
@@ -144,10 +145,11 @@ async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> N
 
     Accepts either raw argv strings (for testing) or a pre-parsed Namespace.
     """
-    if isinstance(argv_or_args, argparse.Namespace):
-        args = argv_or_args
-    else:
-        args = _parse_args(argv_or_args)
+    args = (
+        argv_or_args
+        if isinstance(argv_or_args, argparse.Namespace)
+        else _parse_args(argv_or_args)
+    )
     log_level = logging.DEBUG if args.verbose else logging.INFO
     setup_logging(level=log_level)
 
@@ -187,10 +189,8 @@ def main(argv: list[str] | None = None) -> None:
         setup_logging(level=log_level)
         run_gui_mode(args)
     else:
-        try:
+        with contextlib.suppress(KeyboardInterrupt):
             asyncio.run(_main(args))
-        except KeyboardInterrupt:
-            pass
 
 
 if __name__ == "__main__":

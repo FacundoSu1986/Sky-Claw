@@ -1,8 +1,9 @@
-import aiosqlite
-import os
-import logging
 import asyncio
-from typing import List, Dict, Any, Optional
+import logging
+import os
+from typing import Any
+
+import aiosqlite
 
 # Standard 2026 Context Management
 logger = logging.getLogger("SkyClaw.ContextManager")
@@ -22,7 +23,7 @@ class ContextManager:
         self.profile_path: str = mo2_profile_path
 
     async def build_prompt_context(
-        self, query: str, target_mods: Optional[List[str]] = None
+        self, query: str, target_mods: list[str] | None = None
     ) -> str:
         """
         Synthesizes loadorder status and mod registry metadata into a coherent pre-prompt.
@@ -52,7 +53,7 @@ class ContextManager:
 
         return context_block
 
-    async def _get_mod_metadata(self, names: List[str]) -> List[Dict[str, Any]]:
+    async def _get_mod_metadata(self, names: list[str]) -> list[dict[str, Any]]:
         """Queries local SQLite registry for mod facts."""
         if not names:
             # Fallback to last updated mods if no specific names provided
@@ -63,7 +64,7 @@ class ContextManager:
             query = "SELECT * FROM mods WHERE name IN (" + placeholders + ")"  # nosec
             params = tuple(names)
 
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
@@ -92,7 +93,7 @@ class ContextManager:
 
     def _read_lo_safe(self, path: str) -> str:
         """Helper for thread-safe file reading."""
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             lines = f.readlines()
             plugins = [
                 line.strip()

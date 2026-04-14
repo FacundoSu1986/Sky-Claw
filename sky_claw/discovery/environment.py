@@ -7,12 +7,14 @@ and transmission to the GUI or Telegram reporter.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
-from pathlib import Path
-from typing import Any
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
-class SkyrimEdition(str, Enum):
+class SkyrimEdition(StrEnum):
     """Supported Skyrim editions."""
 
     SE = "Special Edition"
@@ -21,7 +23,7 @@ class SkyrimEdition(str, Enum):
     UNKNOWN = "Unknown"
 
 
-class HealthStatus(str, Enum):
+class HealthStatus(StrEnum):
     """Overall health of the modding environment."""
 
     READY = "ready"  # All critical tools found

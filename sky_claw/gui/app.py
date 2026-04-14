@@ -14,27 +14,31 @@ Arquitectura:
 from __future__ import annotations
 
 import abc
+import contextlib
 import json
 import logging
 import queue
 import secrets
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 import keyring
-from nicegui import ui, app
+from nicegui import app, ui
 
 from .icons import (
-    _ICON_LAYERS,
-    _ICON_CHAT,
-    _ICON_SETTINGS,
-    _ICON_ROCKET,
     _ICON_ANVIL,
     _ICON_CART,
+    _ICON_CHAT,
+    _ICON_LAYERS,
+    _ICON_ROCKET,
+    _ICON_SETTINGS,
 )
 from .models.app_state import AppState, get_app_state
 from .views.actions import build_actions_panel
 from .views.advanced import build_advanced_panel
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -61,27 +65,27 @@ def _load_css() -> None:
 
 class MessageHandlerStrategy(abc.ABC):
     @abc.abstractmethod
-    def handle(self, gui: "DashboardGUI", data: Any) -> None:
+    def handle(self, gui: DashboardGUI, data: Any) -> None:
         pass
 
 
 class ResponseHandler(MessageHandlerStrategy):
-    def handle(self, gui: "DashboardGUI", data: Any) -> None:
+    def handle(self, gui: DashboardGUI, data: Any) -> None:
         gui.append_chat_message(str(data), is_user=False)
 
 
 class ModlistHandler(MessageHandlerStrategy):
-    def handle(self, gui: "DashboardGUI", data: Any) -> None:
+    def handle(self, gui: DashboardGUI, data: Any) -> None:
         gui.update_mod_list(data)
 
 
 class SuccessHandler(MessageHandlerStrategy):
-    def handle(self, gui: "DashboardGUI", data: Any) -> None:
+    def handle(self, gui: DashboardGUI, data: Any) -> None:
         gui.append_chat_message(str(data), is_user=False, style="success")
 
 
 class ErrorHandler(MessageHandlerStrategy):
-    def handle(self, gui: "DashboardGUI", data: Any) -> None:
+    def handle(self, gui: DashboardGUI, data: Any) -> None:
         gui.append_chat_message(str(data), is_user=False, style="error")
 
 
@@ -105,15 +109,15 @@ class SetupWizardModal:
         self,
         config_path: Path,
         on_complete: Callable,
-        app_state: Optional[AppState] = None,
+        app_state: AppState | None = None,
     ) -> None:
         self._config_path = config_path
         self._on_complete = on_complete
         self._state = app_state or get_app_state()
-        self._overlay_el: Optional[ui.element] = None
+        self._overlay_el: ui.element | None = None
         # Input references (ahora delegadas a AppState)
         # Draft fields (non-sensitive) for localStorage
-        self._draft_fields: Dict[str, ui.input] = {}
+        self._draft_fields: dict[str, ui.input] = {}
 
     def build(self) -> None:
         """Renderiza el overlay fijo sobre el dashboard."""
@@ -194,8 +198,7 @@ class SetupWizardModal:
                             )
                             .classes("w-full")
                             .props(
-                                'dark standout="bg-transparent" '
-                                'input-class="sky-wizard-input" color=amber maxlength=32'
+                                'dark standout="bg-transparent" input-class="sky-wizard-input" color=amber maxlength=32'
                             )
                         )
                         self._state.register_ui_element(
@@ -216,8 +219,7 @@ class SetupWizardModal:
                             )
                             .classes("w-full")
                             .props(
-                                'dark standout="bg-transparent" '
-                                'input-class="sky-wizard-input" color=amber maxlength=10'
+                                'dark standout="bg-transparent" input-class="sky-wizard-input" color=amber maxlength=10'
                             )
                         )
                         self._state.register_ui_element(
@@ -515,7 +517,7 @@ class SetupPage:
 class DashboardGUI:
     """Dashboard premium con sidebar, stats, widgets, chat — tema Nórdico/Rúnico."""
 
-    def __init__(self, ctx: Any, app_state: Optional[AppState] = None) -> None:
+    def __init__(self, ctx: Any, app_state: AppState | None = None) -> None:
         self.ctx = ctx
         self._state = app_state or get_app_state()
 
@@ -631,8 +633,7 @@ class DashboardGUI:
                     """)
                     with ui.column().classes("gap-0"):
                         ui.label("SKY-CLAW").style(
-                            "color: var(--sky-gold); font-weight:800; font-size:1.1rem; "
-                            "letter-spacing:0.15em;"
+                            "color: var(--sky-gold); font-weight:800; font-size:1.1rem; letter-spacing:0.15em;"
                         )
                         ui.label("Technical Operations").style(
                             "color: var(--sky-text-muted); font-size:0.65rem;"
@@ -691,8 +692,7 @@ class DashboardGUI:
         ):
             with ui.column().classes("gap-0"):
                 ui.label("OPERACIONES TÉCNICAS").style(
-                    "color: var(--sky-text-primary); font-weight:700; font-size:1.1rem; "
-                    "letter-spacing:0.1em;"
+                    "color: var(--sky-text-primary); font-weight:700; font-size:1.1rem; letter-spacing:0.1em;"
                 )
 
             # Header actions
@@ -701,8 +701,7 @@ class DashboardGUI:
                     ui.button(label_text).classes("px-3 py-1 rounded-lg text-xs").props(
                         "ripple flat no-caps"
                     ).style(
-                        "color: var(--sky-text-secondary); "
-                        "border: 1px solid var(--sky-surface-border);"
+                        "color: var(--sky-text-secondary); border: 1px solid var(--sky-surface-border);"
                     )
 
                 # Avatar
@@ -1015,7 +1014,7 @@ class DashboardGUI:
             ):
                 self._mod_container = ui.column().classes("w-full")
 
-    def update_mod_list(self, mods: List[str]) -> None:
+    def update_mod_list(self, mods: list[str]) -> None:
         if not self._mod_container:
             return
         self._mod_container.clear()
@@ -1064,8 +1063,7 @@ class DashboardGUI:
     # ── Chat Panel ────────────────────────────────────────────────────
     def _build_chat_panel(self) -> None:
         with ui.column().classes(
-            "w-1/2 sky-widget-panel overflow-hidden "
-            "sky-animate-in--delay-2 sky-animate-in flex"
+            "w-1/2 sky-widget-panel overflow-hidden sky-animate-in--delay-2 sky-animate-in flex"
         ):
             # Header
             with (
@@ -1074,10 +1072,10 @@ class DashboardGUI:
                 .style(
                     "border-bottom: 1px solid var(--sky-surface-border); "
                     "background: linear-gradient(135deg, rgba(200,168,78,0.08), rgba(6,182,212,0.08));"
-                )
+                ),
+                ui.row().classes("items-center gap-3"),
             ):
-                with ui.row().classes("items-center gap-3"):
-                    ui.html(f"""
+                ui.html(f"""
                         <div style="width:40px;height:40px;border-radius:12px;display:flex;
                                     align-items:center;justify-content:center;
                                     background:linear-gradient(135deg, #C8A84E, #06b6d4);"
@@ -1085,13 +1083,13 @@ class DashboardGUI:
                             {_ICON_CHAT}
                         </div>
                     """)
-                    with ui.column().classes("gap-0"):
-                        ui.label("Asistente IA").style(
-                            "color: var(--sky-text-primary); font-weight:700;"
-                        )
-                        ui.label("Escribiendo...").style(
-                            "color: var(--sky-text-muted); font-size:0.75rem; display:none;"
-                        )
+                with ui.column().classes("gap-0"):
+                    ui.label("Asistente IA").style(
+                        "color: var(--sky-text-primary); font-weight:700;"
+                    )
+                    ui.label("Escribiendo...").style(
+                        "color: var(--sky-text-muted); font-size:0.75rem; display:none;"
+                    )
 
             # Messages
             self._chat_scroll = (
@@ -1145,10 +1143,8 @@ class DashboardGUI:
 
         while len(self._message_elements) >= MAX_CHAT_MESSAGES:
             oldest = self._message_elements.pop(0)
-            try:
+            with contextlib.suppress(ValueError, KeyError):
                 self._chat_container.remove(oldest)
-            except (ValueError, KeyError):
-                pass
 
         style_map = {
             "normal": "sky-chat-message--assistant"
@@ -1165,8 +1161,7 @@ class DashboardGUI:
             el = ui.element("div").classes(f"sky-chat-message {cls}")
             with el:
                 ui.label(text).style(
-                    "color: var(--sky-text-primary); font-size:0.875rem; "
-                    "line-height:1.6; word-break:break-word;"
+                    "color: var(--sky-text-primary); font-size:0.875rem; line-height:1.6; word-break:break-word;"
                 )
 
         self._message_elements.append(el)
@@ -1290,8 +1285,7 @@ body {
 </style>
 """)
             ui.label("CONFIGURACIÓN").style(
-                "color: var(--sky-gold); font-weight:700; font-size:1.1rem; "
-                "letter-spacing:0.1em; margin-bottom:1rem;"
+                "color: var(--sky-gold); font-weight:700; font-size:1.1rem; letter-spacing:0.1em; margin-bottom:1rem;"
             )
 
             # Provider
@@ -1299,8 +1293,10 @@ body {
             provider_input = (
                 ui.toggle(
                     ["anthropic", "deepseek", "ollama"],
-                    value=getattr(self.ctx, "_args", None)
-                    and getattr(self.ctx._args, "provider", "deepseek")
+                    value=(
+                        getattr(self.ctx, "_args", None)
+                        and getattr(self.ctx._args, "provider", "deepseek")
+                    )
                     or "deepseek",
                 )
                 .classes("w-full mb-3")
@@ -1353,8 +1349,7 @@ body {
                 )
                 .classes("w-full mb-4")
                 .props(
-                    'dark standout="bg-transparent" '
-                    'input-class="sky-wizard-input" color=amber maxlength=512'
+                    'dark standout="bg-transparent" input-class="sky-wizard-input" color=amber maxlength=512'
                 )
             )
 
@@ -1448,8 +1443,8 @@ body {
             if self.ctx.polling:
                 await self.ctx.polling.stop()
 
-            from sky_claw.comms.telegram_sender import TelegramSender
             from sky_claw.comms.telegram_polling import TelegramPolling
+            from sky_claw.comms.telegram_sender import TelegramSender
 
             self.ctx.sender = TelegramSender(
                 bot_token=token, gateway=self.ctx.gateway, session=self.ctx.session

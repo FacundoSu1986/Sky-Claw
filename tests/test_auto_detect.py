@@ -6,14 +6,12 @@ import pathlib
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from sky_claw.auto_detect import (
     AutoDetector,
     _parse_steam_library_folders,
     _read_registry_value,
 )
 from sky_claw.local_config import LocalConfig, save
-
 
 # ---------------------------------------------------------------------------
 # find_mo2
@@ -34,9 +32,11 @@ class TestFindMo2:
 
     @pytest.mark.asyncio
     async def test_returns_none_when_not_found(self) -> None:
-        with patch("sky_claw.auto_detect._MO2_COMMON", ()):
-            with patch("sky_claw.auto_detect.os.environ", {}):
-                result = await AutoDetector.find_mo2()
+        with (
+            patch("sky_claw.auto_detect._MO2_COMMON", ()),
+            patch("sky_claw.auto_detect.os.environ", {}),
+        ):
+            result = await AutoDetector.find_mo2()
 
         assert result is None
 
@@ -138,9 +138,11 @@ class TestFindTools:
 
     @pytest.mark.asyncio
     async def test_loot_not_found(self) -> None:
-        with patch("sky_claw.auto_detect._LOOT_COMMON", ()):
-            with patch("shutil.which", return_value=None):
-                result = await AutoDetector.find_loot()
+        with (
+            patch("sky_claw.auto_detect._LOOT_COMMON", ()),
+            patch("shutil.which", return_value=None),
+        ):
+            result = await AutoDetector.find_loot()
 
         assert result is None
 
@@ -157,9 +159,11 @@ class TestFindTools:
 
     @pytest.mark.asyncio
     async def test_xedit_not_found(self) -> None:
-        with patch("sky_claw.auto_detect._XEDIT_COMMON", ()):
-            with patch("shutil.which", return_value=None):
-                result = await AutoDetector.find_xedit()
+        with (
+            patch("sky_claw.auto_detect._XEDIT_COMMON", ()),
+            patch("shutil.which", return_value=None),
+        ):
+            result = await AutoDetector.find_xedit()
 
         assert result is None
 

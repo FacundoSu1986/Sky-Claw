@@ -22,10 +22,10 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from sky_claw.security.path_validator import PathValidator
 from sky_claw.xedit.output_parser import XEditOutputParser, XEditResult
 
 if TYPE_CHECKING:
+    from sky_claw.security.path_validator import PathValidator
     from sky_claw.xedit.patch_orchestrator import PatchPlan
 
 logger = logging.getLogger(__name__)
@@ -195,21 +195,21 @@ begin
   sourcePlugin := FileByName('{source_plugin}');
   targetPlugin := FileByName('{target_plugin}');
   processedCount := 0;
-  
+
   if not Assigned(sourcePlugin) then
   begin
     AddMessage('ERROR: Source plugin not found: {source_plugin}');
     Result := 1;
     Exit;
   end;
-  
+
   if not Assigned(targetPlugin) then
   begin
     AddMessage('ERROR: Target plugin not found: {target_plugin}');
     Result := 1;
     Exit;
   end;
-  
+
   AddMessage(Format('Forwarding records from %s to %s', ['{source_plugin}', '{target_plugin}']));
   Result := 0;
 end;
@@ -221,7 +221,7 @@ var
 begin
   formId := FormID(e);
   recordSig := Signature(e);
-  
+
   // Check if this is one of the target FormIDs
   if (formId = '{form_id}') or (Pos(formId, '{form_id}') > 0) then
   begin
@@ -230,7 +230,7 @@ begin
     // Implementation depends on specific requirements
     Inc(processedCount);
   end;
-  
+
   Result := 0;
 end;
 
@@ -255,9 +255,9 @@ function Initialize: integer;
 begin
   outputPluginName := '{output_plugin}';
   processedCount := 0;
-  
+
   AddMessage(Format('Creating merged leveled list plugin: %s', [outputPluginName]));
-  
+
   // Try to load existing plugin or create new one
   mergedPlugin := FileByName(outputPluginName);
   if not Assigned(mergedPlugin) then
@@ -270,7 +270,7 @@ begin
       Exit;
     end;
   end;
-  
+
   AddMessage('Output plugin ready: ' + outputPluginName);
   Result := 0;
 end;
@@ -283,7 +283,7 @@ var
 begin
   recordType := Signature(e);
   formId := FormID(e);
-  
+
   // Process LVLI, LVLN, LVSP records
   if (recordType = 'LVLI') or (recordType = 'LVLN') or (recordType = 'LVSP') then
   begin
@@ -291,7 +291,7 @@ begin
     if Pos(recordType, '{record_types}') > 0 then
     begin
       AddMessage(Format('Merging %s record: %s', [recordType, formId]));
-      
+
       // Copy record to merged plugin
       newRecord := wbCopyElementToRecord(e, mergedPlugin, False, True);
       if Assigned(newRecord) then
@@ -304,18 +304,18 @@ begin
       end;
     end;
   end;
-  
+
   Result := 0;
 end;
 
 function Finalize: integer;
 begin
   AddMessage(Format('MergeLeveledList complete. Merged %d records.', [processedCount]));
-  
+
   // Clean up masters
   CleanMasters(mergedPlugin);
   AddMessage('Masters cleaned.');
-  
+
   Result := 0;
 end;
 
@@ -337,10 +337,10 @@ begin
   outputName := '{output_plugin}';
   processedCount := 0;
   errorCount := 0;
-  
+
   AddMessage('=== Sky-Claw Patch Application ===');
   AddMessage('Output plugin: ' + outputName);
-  
+
   // Load or create output plugin
   outputPlugin := FileByName(outputName);
   if not Assigned(outputPlugin) then
@@ -358,7 +358,7 @@ begin
   begin
     AddMessage('Using existing output plugin');
   end;
-  
+
   Result := 0;
 end;
 
@@ -371,17 +371,17 @@ begin
   recordSig := Signature(e);
   formId := FormID(e);
   shouldProcess := False;
-  
+
   // Check record signatures to process
   {record_filter}
-  
+
   if shouldProcess then
   begin
     try
       // Apply patch logic here
       // This is a placeholder for specific patch operations
       Inc(processedCount);
-      
+
       if (processedCount mod 100) = 0 then
       begin
         AddMessage(Format('Processed %d records...', [processedCount]));
@@ -394,7 +394,7 @@ begin
       end;
     end;
   end;
-  
+
   Result := 0;
 end;
 
@@ -403,7 +403,7 @@ begin
   AddMessage('=== Patch Application Summary ===');
   AddMessage(Format('Records processed: %d', [processedCount]));
   AddMessage(Format('Errors encountered: %d', [errorCount]));
-  
+
   if errorCount > 0 then
   begin
     AddMessage('WARNING: Errors occurred during patching');
@@ -573,7 +573,7 @@ end.
         return script
 
     @staticmethod
-    def generate_script_from_plan(patch_plan: "PatchPlan") -> str:
+    def generate_script_from_plan(patch_plan: PatchPlan) -> str:
         """Genera un script Pascal basado en un PatchPlan.
 
         Args:
@@ -754,8 +754,7 @@ class XEditRunner:
         for plugin in plugins:
             if not _SAFE_PLUGIN_NAME.match(plugin):
                 raise XEditValidationError(
-                    f"Invalid plugin name: {plugin!r}. "
-                    f"Must match {_SAFE_PLUGIN_NAME.pattern}"
+                    f"Invalid plugin name: {plugin!r}. Must match {_SAFE_PLUGIN_NAME.pattern}"
                 )
 
         # Validar path de xEdit
@@ -831,7 +830,7 @@ class XEditRunner:
 
     async def execute_patch(
         self,
-        patch_plan: "PatchPlan",
+        patch_plan: PatchPlan,
     ) -> ScriptExecutionResult:
         """Ejecuta un plan de parcheo usando el script generado.
 
@@ -928,8 +927,7 @@ class XEditRunner:
             for flag in flags:
                 if flag not in _ALLOWED_XEDIT_FLAGS:
                     raise XEditValidationError(
-                        f"Disallowed xEdit flag: {flag!r}. "
-                        f"Allowed: {sorted(_ALLOWED_XEDIT_FLAGS)}"
+                        f"Disallowed xEdit flag: {flag!r}. Allowed: {sorted(_ALLOWED_XEDIT_FLAGS)}"
                     )
                 if flag not in cmd:  # Evitar duplicados
                     cmd.append(flag)
@@ -1054,7 +1052,7 @@ class XEditRunner:
             raise XEditNotFoundError(
                 f"xEdit executable not found at {self._xedit_path}"
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             await proc.communicate()
             raise XEditTimeoutError(f"xEdit timed out after {self._timeout}s")
@@ -1068,13 +1066,11 @@ class XEditRunner:
         """Validate script name and plugin names against injection."""
         if not _SAFE_SCRIPT_NAME.match(script_name):
             raise XEditValidationError(
-                f"Invalid script name: {script_name!r}. "
-                f"Must match {_SAFE_SCRIPT_NAME.pattern}"
+                f"Invalid script name: {script_name!r}. Must match {_SAFE_SCRIPT_NAME.pattern}"
             )
 
         for plugin in plugins:
             if not _SAFE_PLUGIN_NAME.match(plugin):
                 raise XEditValidationError(
-                    f"Invalid plugin name: {plugin!r}. "
-                    f"Must match {_SAFE_PLUGIN_NAME.pattern}"
+                    f"Invalid plugin name: {plugin!r}. Must match {_SAFE_PLUGIN_NAME.pattern}"
                 )
