@@ -9,6 +9,7 @@ Sprint 2, Fase 3: Strangler Fig — desacoplamiento de ``supervisor.py``.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import os
@@ -214,16 +215,25 @@ class DynDOLODPipelineService:
                 "duration_seconds": duration,
             }
 
-        # Determinar archivos a proteger con snapshot
+        # Determinar archivos a proteger con snapshot.
+        # El backend actual de snapshots sólo soporta archivos regulares; no
+        # directorios. Por lo tanto, ``create_snapshot=True`` protege únicamente
+        # ``DynDOLOD.esp`` si existe en el momento de adquirir el lock.
         dyndolod_output_path = runner._config.mo2_mods_path / "DynDOLOD Output"
         dyndolod_esp = dyndolod_output_path / "DynDOLOD.esp"
 
         target_files: list[pathlib.Path] = []
         if create_snapshot:
-            if dyndolod_esp.exists():
+            if dyndolod_esp.exists() and dyndolod_esp.is_file():
                 target_files.append(dyndolod_esp)
-            if dyndolod_output_path.exists() and dyndolod_output_path.is_dir():
-                target_files.append(dyndolod_output_path)
+            else:
+                logger.warning(
+                    "create_snapshot=True solicitado, pero no existe un archivo "
+                    "snapshotteable en %s; el rollback no restaurará assets "
+                    "generados dentro de '%s'.",
+                    dyndolod_esp,
+                    dyndolod_output_path,
+                )
 
         # 3. Ejecutar bajo lock transaccional
         try:
@@ -300,9 +310,19 @@ class DynDOLODPipelineService:
                     duration,
                 )
 
+                # Normalizar pathlib.Path → str para compatibilidad JSON/WS.
+                result_dict = dataclasses.asdict(result)
+                for key, val in result_dict.items():
+                    if isinstance(val, pathlib.Path):
+                        result_dict[key] = str(val)
+                    elif isinstance(val, dict):
+                        for k2, v2 in val.items():
+                            if isinstance(v2, pathlib.Path):
+                                val[k2] = str(v2)
+
                 return {
                     "success": True,
-                    **dataclasses.asdict(result),
+                    **result_dict,
                     "duration_seconds": duration,
                 }
 
@@ -358,6 +378,21 @@ class DynDOLODPipelineService:
                 "duration_seconds": duration,
                 "rolled_back": rolled_back,
             }
+
+        except asyncio.CancelledError:
+            # Cancelación de task — hacer cleanup mínimo y re-lanzar.
+            duration = time.monotonic() - start_time
+            logger.warning("DynDOLOD pipeline cancelled after %.1fs", duration)
+            if tx_id is not None:
+                try:
+                    await self._journal.mark_transaction_rolled_back(tx_id)
+                except Exception as journal_exc:
+                    logger.error(
+                        "Failed to mark TX %d as rolled back on cancel: %s",
+                        tx_id,
+                        journal_exc,
+                    )
+            raise
 
         except Exception as exc:
             # PREVENCIÓN T11: Red de seguridad final — NUNCA dejar TX en PENDING

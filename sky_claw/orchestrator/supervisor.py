@@ -628,8 +628,9 @@ class SupervisorAgent:
             logger.error("[FASE-6] WryeBashExecutionError: %s", exc)
             return {"success": False, "error": str(exc)}
 
-        # PASO 3: Registrar resultado mediante logging estructurado
-        # (La persistencia transaccional se maneja vía commit_transaction/mark_transaction_rolled_back)
+        # PASO 3: Registrar resultado mediante logging estructurado.
+        # Nota: este flujo NO usa OperationJournal; la observabilidad se
+        # logra exclusivamente vía logger.info con extra={} estructurado.
         logger.info(
             "[FASE-6] Bashed Patch result logged",
             extra={
@@ -913,15 +914,17 @@ class SupervisorAgent:
         target_plugin: pathlib.Path,
         result: PatchResult,
     ) -> None:
-        """Registra una operación de parcheo exitosa en el journal.
+        """Registra una operación de parcheo exitosa mediante logging estructurado.
+
+        Nota: no se usa ``OperationJournal`` en este flujo; los datos se
+        emiten como logging estructurado (``extra={}``) para observabilidad.
 
         Args:
             report: Reporte de conflictos resueltos.
             target_plugin: Plugin modificado.
             result: Resultado del parcheo.
         """
-        # Persistencia transaccional ya manejada por commit_transaction/mark_transaction_rolled_back.
-        # Registrar resultado mediante logging estructurado para observabilidad.
+        # Emitir log estructurado para observabilidad.
         logger.info(
             "Operación de parcheo registrada",
             extra={
