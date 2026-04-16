@@ -101,3 +101,61 @@ class SynthesisPipelineCompletedPayload(BaseModel):
     def to_log_dict(self) -> dict[str, object]:
         """Serialización compatible con el sistema de logging estructurado."""
         return self.model_dump()
+
+
+class DynDOLODPipelineStartedPayload(BaseModel):
+    """Payload inmutable para el evento ``pipeline.dyndolod.started``.
+
+    Publicado por :class:`DynDOLODPipelineService` al iniciar la ejecución
+    del pipeline de generación de LODs (TexGen + DynDOLOD).
+
+    Attributes:
+        preset: Nivel de calidad del preset (Low, Medium, High).
+        run_texgen: Si se ejecutará TexGen antes de DynDOLOD.
+        started_at: Timestamp de inicio (epoch float, autogenerado).
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    preset: str
+    run_texgen: bool
+    started_at: float = Field(default_factory=time.time)
+
+    def to_log_dict(self) -> dict[str, object]:
+        """Serialización compatible con el sistema de logging estructurado."""
+        return self.model_dump()
+
+
+class DynDOLODPipelineCompletedPayload(BaseModel):
+    """Payload inmutable para el evento ``pipeline.dyndolod.completed``.
+
+    Publicado por :class:`DynDOLODPipelineService` al finalizar la ejecución
+    del pipeline de generación de LODs (éxito o fallo).
+
+    Attributes:
+        preset: Nivel de calidad del preset (Low, Medium, High).
+        run_texgen: Si se ejecutó TexGen antes de DynDOLOD.
+        success: Si la ejecución fue exitosa.
+        texgen_success: Si TexGen se ejecutó correctamente.
+        dyndolod_success: Si DynDOLOD se ejecutó correctamente.
+        errors: Errores detectados durante la ejecución.
+        duration_seconds: Duración total de la ejecución.
+        rolled_back: Si se ejecutó rollback automático.
+        completed_at: Timestamp de finalización (epoch float, autogenerado).
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    preset: str
+    run_texgen: bool
+    success: bool
+    texgen_success: bool
+    dyndolod_success: bool
+    errors: tuple[str, ...]
+    duration_seconds: float
+    rolled_back: bool
+    completed_at: float = Field(default_factory=time.time)
+
+    def to_log_dict(self) -> dict[str, object]:
+        """Serialización compatible con el sistema de logging estructurado."""
+        return self.model_dump()

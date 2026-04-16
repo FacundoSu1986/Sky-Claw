@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import pathlib
-import sqlite3
 
 # FASE 5: Imports de componentes de detección de conflictos de assets
 from sky_claw.assets import AssetConflictDetector, AssetConflictReport
@@ -30,14 +29,8 @@ from sky_claw.orchestrator.ws_event_streamer import LangGraphEventStreamer
 from sky_claw.scraper.scraper_agent import ScraperAgent
 from sky_claw.security.path_validator import PathValidator
 
-# FASE 4: Imports de componentes de DynDOLOD/TexGen
-from sky_claw.tools.dyndolod_runner import (
-    DynDOLODConfig,
-    DynDOLODExecutionError,
-    DynDOLODPipelineResult,
-    DynDOLODRunner,
-    DynDOLODTimeoutError,
-)
+# FASE 4: DynDOLODPipelineService (extraído del Supervisor — Sprint 2)
+from sky_claw.tools.dyndolod_service import DynDOLODPipelineService
 
 # FASE 3: SynthesisPipelineService (extraído del Supervisor — Sprint 2)
 from sky_claw.tools.synthesis_service import SynthesisPipelineService
@@ -117,6 +110,15 @@ class SupervisorAgent:
             / "synthesis_pipeline.json",
         )
 
+        # Sprint-2: DynDOLODPipelineService — extraído del Supervisor
+        self._dyndolod_service = DynDOLODPipelineService(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self.snapshot_manager,
+            journal=self.journal,
+            path_resolver=self._path_resolver,
+            event_bus=self._event_bus,
+        )
+
         # FASE 2: Inicializar orquestador de parches
         self._init_patch_orchestrator()
 
@@ -166,9 +168,6 @@ class SupervisorAgent:
         # XEditRunner requiere paths configurados - usar lazy initialization
         self._xedit_runner: XEditRunner | None = None
         self._patch_orchestrator: PatchOrchestrator | None = None
-
-        # FASE 4: DynDOLOD/TexGen integration (lazy init)
-        self._dyndolod_runner: DynDOLODRunner | None = None
 
         # FASE 5: Asset conflict detector (lazy init)
         self._asset_detector: AssetConflictDetector | None = None
@@ -235,7 +234,7 @@ class SupervisorAgent:
 
         return self._patch_orchestrator
 
-    async def start(self):
+    async def start(self) -> None:
         await self.db.init_db()
         # FASE 1.5: Abrir journal de operaciones
         await self.journal.open()
@@ -315,7 +314,7 @@ class SupervisorAgent:
             )
         # Aquí se inyectaría la llamada real a la herramienta de parsing local.
 
-    async def handle_execution_signal(self, payload: dict):
+    async def handle_execution_signal(self, payload: dict[str, object]) -> None:
         """Reacciona a la señal de ignición forzada desde la GUI."""
         logger.info(
             "Ignición forzada desde GUI detectada. Despertando demonio proactivo."
@@ -382,9 +381,9 @@ class SupervisorAgent:
 
                 return result
 
-            # FASE 4: DynDOLOD/TexGen Pipeline Integration
+            # FASE 4: DynDOLOD/TexGen Pipeline — delegado a DynDOLODPipelineService
             case "generate_lods":
-                return await self.execute_dyndolod_pipeline(**payload_dict)
+                return await self._dyndolod_service.execute(**payload_dict)
 
             # FASE 5: Asset Conflict Detection Integration
             case "scan_asset_conflicts":
@@ -447,80 +446,6 @@ class SupervisorAgent:
         """Retorna el RollbackManager para inyección de dependencias."""
         return self.rollback_manager
 
-    def _ensure_dyndolod_runner(self) -> DynDOLODRunner:
-        """FASE 4: Asegura que el DynDOLODRunner esté inicializado.
-
-        Usa inicialización lazy porque DynDOLODRunner requiere paths que
-        pueden no estar disponibles al instanciar SupervisorAgent.
-
-        Variables de entorno requeridas:
-        - DYNDLOD_EXE: Ruta a DynDOLODx64.exe
-        - TEXGEN_EXE: Ruta a TexGenx64.exe (opcional)
-        - SKYRIM_PATH: Ruta al directorio de Skyrim SE/AE
-        - MO2_PATH: Ruta al directorio de MO2
-        - MO2_MODS_PATH: Ruta a la carpeta mods de MO2
-
-        Returns:
-            DynDOLODRunner inicializado.
-
-        Raises:
-            DynDOLODExecutionError: Si no se puede inicializar.
-        """
-        if self._dyndolod_runner is not None:
-            return self._dyndolod_runner
-
-        # Obtener paths desde entorno o config
-        game_path_str = os.environ.get("SKYRIM_PATH", "")
-        mo2_path_str = os.environ.get("MO2_PATH", "")
-        mo2_mods_path_str = os.environ.get("MO2_MODS_PATH", "")
-        dyndolod_exe_str = os.environ.get("DYNDLOD_EXE", "")
-        texgen_exe_str = os.environ.get("TEXGEN_EXE", "")
-
-        # CRIT-003: Validar paths antes de usar
-        game_path = self._path_resolver.validate_env_path(game_path_str, "SKYRIM_PATH")
-        mo2_path = self._path_resolver.validate_env_path(mo2_path_str, "MO2_PATH")
-        mo2_mods_path = self._path_resolver.validate_env_path(
-            mo2_mods_path_str, "MO2_MODS_PATH"
-        )
-        dyndolod_exe = self._path_resolver.validate_env_path(
-            dyndolod_exe_str, "DYNDLOD_EXE"
-        )
-        texgen_exe = (
-            self._path_resolver.validate_env_path(texgen_exe_str, "TEXGEN_EXE")
-            if texgen_exe_str
-            else None
-        )
-
-        # Si la validación falla, no continuar
-        if not game_path or not mo2_path or not mo2_mods_path or not dyndolod_exe:
-            raise DynDOLODExecutionError(
-                "Cannot initialize DynDOLODRunner: "
-                "SKYRIM_PATH, MO2_PATH, MO2_MODS_PATH, and DYNDLOD_EXE "
-                "environment variables must be valid paths"
-            )
-
-        if not dyndolod_exe.exists():
-            raise DynDOLODExecutionError(
-                f"DynDOLOD executable not found: {dyndolod_exe}"
-            )
-
-        config = DynDOLODConfig(
-            game_path=game_path,
-            mo2_path=mo2_path,
-            mo2_mods_path=mo2_mods_path,
-            dyndolod_exe=dyndolod_exe,
-            texgen_exe=texgen_exe,
-        )
-
-        self._dyndolod_runner = DynDOLODRunner(config)
-
-        logger.info(
-            "DynDOLODRunner inicializado: game=%s, dyndolod=%s",
-            game_path,
-            dyndolod_exe,
-        )
-
-        return self._dyndolod_runner
 
     # =========================================================================
     # FASE 6: Wrye Bash Integration
@@ -704,24 +629,20 @@ class SupervisorAgent:
             logger.error("[FASE-6] WryeBashExecutionError: %s", exc)
             return {"success": False, "error": str(exc)}
 
-        # PASO 3: Registrar en journal
-        try:
-            await self.journal.log_operation(
-                agent_id="wrye_bash_runner",
-                operation_type="bashed_patch_generation",
-                file_path="Bashed Patch, 0.esp",
-                details={
-                    "success": result.success,
-                    "return_code": result.return_code,
-                    "duration_seconds": result.duration_seconds,
-                    "profile": active_profile,
-                },
-            )
-        except (OSError, sqlite3.Error) as journal_exc:
-            logger.warning(
-                "[FASE-6] No se pudo registrar Bashed Patch en journal: %s",
-                journal_exc,
-            )
+        # PASO 3: Registrar resultado mediante logging estructurado
+        # (La persistencia transaccional se maneja vía commit_transaction/mark_transaction_rolled_back)
+        logger.info(
+            "[FASE-6] Bashed Patch result logged",
+            extra={
+                "agent_id": "wrye_bash_runner",
+                "operation_type": "bashed_patch_generation",
+                "file_path": "Bashed Patch, 0.esp",
+                "success": result.success,
+                "return_code": result.return_code,
+                "duration_seconds": result.duration_seconds,
+                "profile": active_profile,
+            },
+        )
 
         if result.success:
             logger.info(
@@ -807,311 +728,6 @@ class SupervisorAgent:
             )
             raise
 
-    # =========================================================================
-    # FASE 4: DynDOLOD/TexGen Pipeline Integration
-    # =========================================================================
-
-    async def execute_dyndolod_pipeline(
-        self,
-        preset: str = "Medium",
-        run_texgen: bool = True,
-        create_snapshot: bool = True,
-        texgen_args: list[str] | None = None,
-        dyndolod_args: list[str] | None = None,
-    ) -> DynDOLODPipelineResult:
-        """
-        FASE 4: Ejecuta el pipeline completo de generación de LODs.
-
-        Flujo transaccional:
-        1. Crear snapshot (si create_snapshot=True)
-        2. Ejecutar TexGen → Empaquetar → Registrar en DB
-        3. Ejecutar DynDOLOD → Empaquetar → Registrar en DB
-        4. Si falla, ejecutar rollback
-
-        Args:
-            preset: Nivel de calidad (Low, Medium, High)
-            run_texgen: Si True, ejecuta TexGen antes de DynDOLOD
-            create_snapshot: Si True, crea snapshot para rollback
-            texgen_args: Argumentos adicionales para TexGen
-            dyndolod_args: Argumentos adicionales para DynDOLOD
-
-        Returns:
-            DynDOLODPipelineResult con resultados completos
-        """
-
-        logger.info(
-            "Iniciando pipeline DynDOLOD: preset=%s, texgen=%s, snapshot=%s",
-            preset,
-            run_texgen,
-            create_snapshot,
-        )
-
-        try:
-            # 1. Asegurar que el runner está inicializado
-            try:
-                runner = self._ensure_dyndolod_runner()
-            except DynDOLODExecutionError as e:
-                logger.error("Error inicializando DynDOLOD: %s", e)
-                return DynDOLODPipelineResult(
-                    success=False,
-                    texgen_result=None,
-                    dyndolod_result=None,
-                    texgen_mod_path=None,
-                    dyndolod_mod_path=None,
-                    errors=[str(e)],
-                )
-
-            # 2. Crear snapshot de los archivos de salida existentes si existen
-            snapshot_info: SnapshotInfo | None = None
-            texgen_snapshot_info: SnapshotInfo | None = None
-            dyndolod_output_path = runner._config.mo2_mods_path / "DynDOLOD Output"
-            texgen_output_path = runner._config.mo2_mods_path / "TexGen Output"
-
-            if create_snapshot:
-                # Snapshot del DynDOLOD.esp si existe
-                dyndolod_esp = dyndolod_output_path / "DynDOLOD.esp"
-                if dyndolod_esp.exists():
-                    try:
-                        snapshot_info = await self.snapshot_manager.create_snapshot(
-                            dyndolod_esp,
-                            metadata={"source": "dyndolod_pipeline", "preset": preset},
-                        )
-                        logger.debug(
-                            "Snapshot creado para DynDOLOD.esp: %s", snapshot_info
-                        )
-                    except (OSError, RuntimeError) as e:
-                        logger.warning(
-                            "No se pudo crear snapshot de DynDOLOD.esp: %s", e
-                        )
-                        # Continuar sin snapshot - no es fatal
-
-                # Snapshot del directorio TexGen Output si existe
-                if texgen_output_path.exists():
-                    try:
-                        texgen_snapshot_info = (
-                            await self.snapshot_manager.create_snapshot(
-                                texgen_output_path,
-                                metadata={
-                                    "source": "dyndolod_pipeline_texgen",
-                                    "preset": preset,
-                                },
-                            )
-                        )
-                        logger.debug(
-                            "Snapshot creado para TexGen Output: %s",
-                            texgen_snapshot_info,
-                        )
-                    except (OSError, RuntimeError) as e:
-                        logger.warning(
-                            "No se pudo crear snapshot de TexGen Output: %s", e
-                        )
-                        # Continuar sin snapshot - no es fatal
-
-            # 3. Registrar inicio de operación en journal
-            await self._log_dyndolod_start(preset, run_texgen)
-
-            # 4. Ejecutar pipeline completo
-            logger.info(
-                "Starting DynDOLOD pipeline (preset: %s, texgen: %s)",
-                preset,
-                run_texgen,
-            )
-            result = await runner.run_full_pipeline(
-                run_texgen=run_texgen,
-                preset=preset,
-                texgen_args=texgen_args,
-                dyndolod_args=dyndolod_args,
-            )
-
-            # 4. Registrar mods en la base de datos si fueron exitosos
-            if result.success:
-                # Registrar TexGen Output
-                if (
-                    result.texgen_mod_path
-                    and result.texgen_result
-                    and result.texgen_result.success
-                ):
-                    try:
-                        await self.db.add_mod(
-                            name="TexGen Output",
-                            version="1.0.0",
-                            source="sky_claw_dyndolod_pipeline",
-                        )
-                        logger.info("TexGen Output registered in database")
-                    except (OSError, sqlite3.Error) as e:
-                        logger.warning(
-                            "Could not register TexGen Output in database: %s", e
-                        )
-
-                # Registrar DynDOLOD Output
-                if (
-                    result.dyndolod_mod_path
-                    and result.dyndolod_result
-                    and result.dyndolod_result.success
-                ):
-                    try:
-                        await self.db.add_mod(
-                            name="DynDOLOD Output",
-                            version="1.0.0",
-                            source="sky_claw_dyndolod_pipeline",
-                        )
-                        logger.info("DynDOLOD Output registered in database")
-                    except (OSError, sqlite3.Error) as e:
-                        logger.warning(
-                            "Could not register DynDOLOD Output in database: %s", e
-                        )
-
-                # Registrar éxito en journal
-                await self._log_dyndolod_result(result, preset, success=True)
-
-                logger.info(
-                    "Pipeline DynDOLOD exitoso: texgen=%s, dyndolod=%s",
-                    result.texgen_mod_path,
-                    result.dyndolod_mod_path,
-                )
-            else:
-                # Pipeline falló - registrar errores
-                logger.error("DynDOLOD pipeline failed: %s", "; ".join(result.errors))
-                await self._log_dyndolod_result(result, preset, success=False)
-
-            return result
-
-        except DynDOLODTimeoutError as e:
-            logger.error("DynDOLOD pipeline timeout: %s", e, exc_info=True)
-            if snapshot_info:
-                await self._rollback_dyndolod_on_failure(
-                    snapshot_info, "dyndolod_timeout"
-                )
-            if texgen_snapshot_info:
-                await self._rollback_dyndolod_on_failure(
-                    texgen_snapshot_info, "texgen_timeout"
-                )
-            raise
-        except DynDOLODExecutionError as e:
-            logger.error("DynDOLOD execution error: %s", e, exc_info=True)
-            if snapshot_info:
-                await self._rollback_dyndolod_on_failure(
-                    snapshot_info, "dyndolod_execution_error"
-                )
-            if texgen_snapshot_info:
-                await self._rollback_dyndolod_on_failure(
-                    texgen_snapshot_info, "texgen_execution_error"
-                )
-            raise
-        except (OSError, sqlite3.Error, RuntimeError) as e:
-            logger.error("Unexpected error in DynDOLOD pipeline: %s", e, exc_info=True)
-            if snapshot_info:
-                await self._rollback_dyndolod_on_failure(
-                    snapshot_info, "dyndolod_unexpected_error"
-                )
-            if texgen_snapshot_info:
-                await self._rollback_dyndolod_on_failure(
-                    texgen_snapshot_info, "texgen_unexpected_error"
-                )
-            raise
-
-    async def _log_dyndolod_start(self, preset: str, run_texgen: bool) -> None:
-        """Registra el inicio del pipeline DynDOLOD en el journal.
-
-        Args:
-            preset: Nivel de calidad del preset.
-            run_texgen: Si se ejecuta TexGen.
-        """
-        try:
-            await self.journal.log_operation(
-                agent_id="dyndolod_runner",
-                operation_type="dyndolod_pipeline_start",
-                file_path="",
-                details={
-                    "preset": preset,
-                    "run_texgen": run_texgen,
-                },
-            )
-            logger.debug("Inicio de DynDOLOD pipeline registrado en journal")
-        except (OSError, sqlite3.Error) as e:
-            logger.warning("No se pudo registrar inicio de DynDOLOD en journal: %s", e)
-
-    async def _log_dyndolod_result(
-        self,
-        result: DynDOLODPipelineResult,
-        preset: str,
-        success: bool,
-    ) -> None:
-        """Registra el resultado del pipeline DynDOLOD en el journal.
-
-        Args:
-            result: Resultado de la ejecución.
-            preset: Nivel de calidad del preset.
-            success: Si la operación fue exitosa.
-        """
-        try:
-            await self.journal.log_operation(
-                agent_id="dyndolod_runner",
-                operation_type=(
-                    "dyndolod_pipeline_complete"
-                    if success
-                    else "dyndolod_pipeline_failed"
-                ),
-                file_path=(
-                    str(result.dyndolod_mod_path) if result.dyndolod_mod_path else ""
-                ),
-                details={
-                    "success": success,
-                    "preset": preset,
-                    "texgen_success": (
-                        result.texgen_result.success if result.texgen_result else False
-                    ),
-                    "dyndolod_success": (
-                        result.dyndolod_result.success
-                        if result.dyndolod_result
-                        else False
-                    ),
-                    "texgen_mod_path": (
-                        str(result.texgen_mod_path) if result.texgen_mod_path else None
-                    ),
-                    "dyndolod_mod_path": (
-                        str(result.dyndolod_mod_path)
-                        if result.dyndolod_mod_path
-                        else None
-                    ),
-                    "errors": result.errors,
-                },
-            )
-            logger.debug("Resultado de DynDOLOD registrado en journal")
-        except (OSError, sqlite3.Error) as e:
-            logger.warning(
-                "No se pudo registrar resultado de DynDOLOD en journal: %s", e
-            )
-
-    async def _rollback_dyndolod_on_failure(
-        self,
-        snapshot_info: "SnapshotInfo",
-        reason: str,
-    ) -> None:
-        """Ejecuta rollback automático en caso de fallo del pipeline DynDOLOD.
-
-        Args:
-            snapshot_info: Información del snapshot creado antes del fallo.
-            reason: Razón del rollback para logging.
-        """
-        logger.warning("Iniciando rollback de DynDOLOD pipeline (razón: %s)", reason)
-
-        try:
-            # Restaurar estado desde snapshot
-            dyndolod_esp = pathlib.Path(snapshot_info.original_path)
-            await self.snapshot_manager.restore_snapshot(
-                pathlib.Path(snapshot_info.snapshot_path),
-                dyndolod_esp,
-            )
-            logger.info("Rollback de DynDOLOD completado exitosamente")
-        except (OSError, RuntimeError) as rollback_error:
-            # Esto es CRÍTICO - los archivos pueden estar corruptos
-            logger.critical(
-                "ROLLBACK de DynDOLOD FALLÓ (snapshot: %s): %s. Los archivos pueden estar en estado inconsistente!",
-                snapshot_info.snapshot_path,
-                rollback_error,
-                exc_info=True,
-            )
 
     # =========================================================================
     # FASE 2: Parcheo Transaccional
@@ -1306,26 +922,24 @@ class SupervisorAgent:
             target_plugin: Plugin modificado.
             result: Resultado del parcheo.
         """
-        try:
-            await self.journal.log_operation(
-                agent_id="patch_orchestrator",
-                operation_type="patch_execution",
-                file_path=str(target_plugin),
-                details={
-                    "total_conflicts": report.total_conflicts,
-                    "critical_conflicts": report.critical_conflicts,
-                    "records_patched": result.records_patched,
-                    "conflicts_resolved": result.conflicts_resolved,
-                    "output_path": (
-                        str(result.output_path) if result.output_path else None
-                    ),
-                    "warnings": result.warnings,
-                },
-            )
-            logger.debug("Operación de parcheo registrada en journal")
-        except (OSError, sqlite3.Error) as e:
-            # No fallar la operación si el logging falla
-            logger.warning("No se pudo registrar operación en journal: %s", e)
+        # Persistencia transaccional ya manejada por commit_transaction/mark_transaction_rolled_back.
+        # Registrar resultado mediante logging estructurado para observabilidad.
+        logger.info(
+            "Operación de parcheo registrada",
+            extra={
+                "agent_id": "patch_orchestrator",
+                "operation_type": "patch_execution",
+                "file_path": str(target_plugin),
+                "total_conflicts": report.total_conflicts,
+                "critical_conflicts": report.critical_conflicts,
+                "records_patched": result.records_patched,
+                "conflicts_resolved": result.conflicts_resolved,
+                "output_path": (
+                    str(result.output_path) if result.output_path else None
+                ),
+                "warnings": result.warnings,
+            },
+        )
 
 
 if __name__ == "__main__":
