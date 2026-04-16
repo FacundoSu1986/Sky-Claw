@@ -291,21 +291,28 @@ class SupervisorAgent:
         """Strangler Fig: reenvía eventos del bus al transporte WebSocket legacy."""
         await self.interface.send_event("telemetry", event.payload)
 
-    async def _trigger_proactive_analysis(self, event: Event) -> None:
+    async def _trigger_proactive_analysis(self, event: Event | None = None) -> None:
         """Maneja eventos de cambio en modlist publicados por WatcherDaemon.
 
         Suscrito al tópico ``system.modlist.changed`` del CoreEventBus.
         Extrae el payload estructurado para logging y futura lógica de análisis.
+        También puede ser invocado manualmente desde la GUI sin evento.
 
         Args:
-            event: Evento con payload :class:`ModlistChangedPayload`.
+            event: Evento con payload :class:`ModlistChangedPayload`, o None
+                   cuando se dispara manualmente desde la GUI.
         """
-        logger.info(
-            "Analizando topología del Load Order por cambio detectado — profile=%s, mtime=%.1f->%.1f",
-            event.payload.get("profile_name", "unknown"),
-            event.payload.get("previous_mtime", 0.0),
-            event.payload.get("current_mtime", 0.0),
-        )
+        if event is not None:
+            logger.info(
+                "Analizando topología del Load Order por cambio detectado — profile=%s, mtime=%.1f->%.1f",
+                event.payload.get("profile_name", "unknown"),
+                event.payload.get("previous_mtime", 0.0),
+                event.payload.get("current_mtime", 0.0),
+            )
+        else:
+            logger.info(
+                "Análisis proactivo disparado manualmente desde la GUI (sin evento de bus)."
+            )
         # Aquí se inyectaría la llamada real a la herramienta de parsing local.
 
     async def handle_execution_signal(self, payload: dict):
