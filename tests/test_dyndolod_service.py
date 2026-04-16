@@ -186,7 +186,9 @@ async def test_execute_success_publishes_events(
 
     service._runner = mock_runner
 
-    result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
+    result = await service.execute(
+        preset="High", run_texgen=True, create_snapshot=False
+    )
 
     assert result["success"] is True
 
@@ -221,7 +223,9 @@ async def test_execute_success_returns_pipeline_data(
 
     service._runner = mock_runner
 
-    result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+    result = await service.execute(
+        preset="Medium", run_texgen=True, create_snapshot=False
+    )
 
     assert result["success"] is True
     assert "duration_seconds" in result
@@ -250,7 +254,9 @@ async def test_execute_domain_error_marks_rollback(
 
     service._runner = mock_runner
 
-    result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+    result = await service.execute(
+        preset="Medium", run_texgen=True, create_snapshot=False
+    )
 
     assert result["success"] is False
     assert result["rolled_back"] is True
@@ -288,7 +294,9 @@ async def test_execute_timeout_error_marks_rollback(
 
     service._runner = mock_runner
 
-    result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+    result = await service.execute(
+        preset="Medium", run_texgen=True, create_snapshot=False
+    )
 
     assert result["success"] is False
     assert result["rolled_back"] is True
@@ -312,7 +320,9 @@ async def test_unexpected_oserror_marks_rollback_and_emits_completed(
     Lección T11: NUNCA dejar una transacción en estado PENDING.
     """
     mock_runner = AsyncMock(spec=DynDOLODRunner)
-    mock_runner.run_full_pipeline = AsyncMock(side_effect=OSError("Disk full during validation"))
+    mock_runner.run_full_pipeline = AsyncMock(
+        side_effect=OSError("Disk full during validation")
+    )
 
     mock_config = MagicMock()
     mock_config.mo2_mods_path = tmp_path / "mods"
@@ -321,7 +331,9 @@ async def test_unexpected_oserror_marks_rollback_and_emits_completed(
 
     service._runner = mock_runner
 
-    result = await service.execute(preset="Low", run_texgen=False, create_snapshot=False)
+    result = await service.execute(
+        preset="Low", run_texgen=False, create_snapshot=False
+    )
 
     # Must NOT raise — returns error dict
     assert result["success"] is False
@@ -353,8 +365,12 @@ async def test_unexpected_error_with_journal_failure(
 ) -> None:
     """Even if journal.mark_transaction_rolled_back fails, the service still returns error dict."""
     mock_runner = AsyncMock(spec=DynDOLODRunner)
-    mock_runner.run_full_pipeline = AsyncMock(side_effect=RuntimeError("Unexpected crash"))
-    mock_journal.mark_transaction_rolled_back = AsyncMock(side_effect=OSError("Journal DB locked"))
+    mock_runner.run_full_pipeline = AsyncMock(
+        side_effect=RuntimeError("Unexpected crash")
+    )
+    mock_journal.mark_transaction_rolled_back = AsyncMock(
+        side_effect=OSError("Journal DB locked")
+    )
 
     mock_config = MagicMock()
     mock_config.mo2_mods_path = tmp_path / "mods"
@@ -364,7 +380,9 @@ async def test_unexpected_error_with_journal_failure(
     service._runner = mock_runner
 
     # Must NOT raise even with double failure
-    result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+    result = await service.execute(
+        preset="Medium", run_texgen=True, create_snapshot=False
+    )
 
     assert result["success"] is False
     assert result["rolled_back"] is True
@@ -392,7 +410,9 @@ async def test_lock_acquisition_failure_returns_error(
 ) -> None:
     """LockAcquisitionError returns error dict without touching journal."""
     mock_lock_manager.acquire_lock = AsyncMock(
-        side_effect=LockAcquisitionError("dyndolod-pipeline", "dyndolod-pipeline-service")
+        side_effect=LockAcquisitionError(
+            "dyndolod-pipeline", "dyndolod-pipeline-service"
+        )
     )
 
     mock_runner = AsyncMock(spec=DynDOLODRunner)
@@ -402,7 +422,9 @@ async def test_lock_acquisition_failure_returns_error(
     mock_runner._config = mock_config
     service._runner = mock_runner
 
-    result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+    result = await service.execute(
+        preset="Medium", run_texgen=True, create_snapshot=False
+    )
 
     assert result["success"] is False
     assert "Lock acquisition failed" in result["errors"][0]
@@ -457,7 +479,9 @@ async def test_validation_failure_triggers_rollback(
 
     service._runner = mock_runner
 
-    result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
+    result = await service.execute(
+        preset="High", run_texgen=True, create_snapshot=False
+    )
 
     assert result["success"] is False
     assert result["rolled_back"] is True

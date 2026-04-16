@@ -446,7 +446,6 @@ class SupervisorAgent:
         """Retorna el RollbackManager para inyección de dependencias."""
         return self.rollback_manager
 
-
     # =========================================================================
     # FASE 6: Wrye Bash Integration
     # =========================================================================
@@ -727,7 +726,6 @@ class SupervisorAgent:
                 f"Error generando reporte JSON de conflictos: {e}", exc_info=True
             )
             raise
-
 
     # =========================================================================
     # FASE 2: Parcheo Transaccional
