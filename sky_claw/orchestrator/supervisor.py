@@ -17,7 +17,7 @@ from sky_claw.core.windows_interop import ModdingToolsAgent
 from sky_claw.db.journal import OperationJournal
 from sky_claw.db.locks import DistributedLockManager
 from sky_claw.db.rollback_manager import RollbackManager
-from sky_claw.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
+from sky_claw.db.snapshot_manager import FileSnapshotManager
 from sky_claw.orchestrator.maintenance_daemon import (
     MaintenanceDaemon,
     get_max_backup_size_mb,
