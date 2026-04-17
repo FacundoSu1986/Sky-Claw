@@ -200,3 +200,15 @@ class TestMatchingPattern:
         """Returns None when no pattern matches"""
         gw = self.make_gateway(["*.nexusmods.com", "api.telegram.org"])
         assert gw._matching_pattern("evil.example.com") is None
+
+    def test_bare_asterisk_does_not_wildcard_match(self) -> None:
+        """A bare '*' pattern is treated as a literal, not a wildcard."""
+        gw = self.make_gateway(["*"])
+        # Should NOT match any real hostname
+        assert gw._matching_pattern("nexusmods.com") is None
+
+    def test_dotless_literal_matches_exactly(self) -> None:
+        """A pattern without a dot matches only the exact string."""
+        gw = self.make_gateway(["localhost"])
+        assert gw._matching_pattern("localhost") is not None
+        assert gw._matching_pattern("not-localhost") is None

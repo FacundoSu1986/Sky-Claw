@@ -246,13 +246,25 @@ class NetworkGateway:
     # ------------------------------------------------------------------
 
     def _matching_pattern(self, hostname: str) -> str | None:
-        """Return the first allow-list pattern that matches *hostname*.
+        """Return the first allow-list pattern that matches *hostname*, or None.
 
-        Pattern semantics (strict DNS-aware, not glob-based):
-        - ``"*.example.com"``  matches subdomains only: ``"api.example.com"`` ✓,
-          ``"example.com"`` ✗, ``"evil.example.com.attacker.com"`` ✗
-        - ``"example.com"``    exact match only
-        - Matching is case-insensitive (DNS hostnames are case-insensitive per RFC 4343)
+        Pattern semantics (strict DNS-aware, replaces the former glob/fnmatch logic):
+
+        - ``"*.example.com"``  — wildcard prefix: matches ``"api.example.com"`` and
+          ``"a.b.example.com"`` (any depth), but NOT ``"example.com"`` (base domain)
+          and NOT ``"evil.example.com.attacker.com"`` (superdomain injection).
+        - ``"example.com"``    — exact match only; subdomains do NOT match.
+
+        Matching is case-insensitive (DNS hostnames are case-insensitive, RFC 4343).
+        The *hostname* argument is normalised to lowercase internally.
+
+        Malformed patterns (e.g. bare ``"*"`` or dotless literals) are handled
+        gracefully: ``"*"`` will never match as a wildcard (it lacks the ``*.`` prefix)
+        and will only match the literal string ``"*"``; dotless literals match exactly.
+
+        Returns:
+            The matched pattern string from the allow-list, or ``None`` if no
+            pattern matches *hostname*.
         """
         hostname_lower = hostname.lower()
         for pattern in self._policy.allowed_hosts:
