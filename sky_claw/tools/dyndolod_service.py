@@ -310,15 +310,17 @@ class DynDOLODPipelineService:
                     duration,
                 )
 
-                # Normalizar pathlib.Path → str para compatibilidad JSON/WS.
-                result_dict = dataclasses.asdict(result)
-                for key, val in result_dict.items():
-                    if isinstance(val, pathlib.Path):
-                        result_dict[key] = str(val)
-                    elif isinstance(val, dict):
-                        for k2, v2 in val.items():
-                            if isinstance(v2, pathlib.Path):
-                                val[k2] = str(v2)
+                # Normalizar pathlib.Path → str de forma recursiva para compatibilidad JSON/WS.
+                def normalize_for_serialization(obj: Any) -> Any:
+                    if isinstance(obj, pathlib.Path):
+                        return str(obj)
+                    if isinstance(obj, dict):
+                        return {k: normalize_for_serialization(v) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [normalize_for_serialization(v) for v in obj]
+                    return obj
+
+                result_dict = normalize_for_serialization(dataclasses.asdict(result))
 
                 return {
                     "success": True,

@@ -326,6 +326,10 @@ class SupervisorAgent:
         """
         Enrutador estricto. El LLM devuelve 'tool_name' y 'payload_dict'.
         Se valida con Pydantic inmediatamente.
+        
+        Puntos de inyección (Sprints recientes):
+        - generate_lods redirige a DynDOLODPipelineService
+        - execute_synthesis_pipeline redirige a SynthesisPipelineService
         """
         match tool_name:
             case "query_mod_metadata":
