@@ -13,7 +13,6 @@ Every outbound request made by Sky-Claw **must** pass through
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import ipaddress
 import logging
 import socket
@@ -247,10 +246,26 @@ class NetworkGateway:
     # ------------------------------------------------------------------
 
     def _matching_pattern(self, hostname: str) -> str | None:
-        """Return the first allow-list pattern that matches *hostname*."""
+        """Return the first allow-list pattern that matches *hostname*.
+
+        Pattern semantics (strict DNS-aware, not glob-based):
+        - ``"*.example.com"``  matches subdomains only: ``"api.example.com"`` ✓,
+          ``"example.com"`` ✗, ``"evil.example.com.attacker.com"`` ✗
+        - ``"example.com"``    exact match only
+        - Matching is case-insensitive (DNS hostnames are case-insensitive per RFC 4343)
+        """
+        hostname_lower = hostname.lower()
         for pattern in self._policy.allowed_hosts:
-            if fnmatch.fnmatch(hostname, pattern):
-                return pattern
+            pattern_lower = pattern.lower()
+            if pattern_lower.startswith("*."):
+                base_domain = pattern_lower[2:]          # "example.com"
+                # Must end with ".example.com" (dot + base) — subdomain only
+                if hostname_lower.endswith("." + base_domain):
+                    return pattern
+            else:
+                # Exact match (case-insensitive)
+                if hostname_lower == pattern_lower:
+                    return pattern
         return None
 
     def _check_host_allowed(self, hostname: str) -> None:
