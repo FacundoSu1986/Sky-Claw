@@ -128,8 +128,11 @@ class HITLGuard:
         try:
             await asyncio.wait_for(req._event.wait(), timeout=self._timeout)
         except TimeoutError:
-            req.decision = Decision.TIMEOUT
-            logger.warning("HITL: timeout for %s", request_id)
+            req.decision = Decision.DENIED
+            logger.warning(
+                "HITL: timeout for %s — auto-denied (fail-secure policy)",
+                request_id,
+            )
         finally:
             async with self._lock:
                 self._pending.pop(request_id, None)

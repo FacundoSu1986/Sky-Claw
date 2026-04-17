@@ -364,10 +364,11 @@ class TestRespond:
 
 class TestTimeout:
     @pytest.mark.asyncio
-    async def test_no_response_within_timeout_returns_timeout(self) -> None:
+    async def test_no_response_within_timeout_returns_denied(self) -> None:
+        """No response within timeout → DENIED (fail-secure policy)."""
         guard = HITLGuard(notify_fn=None, timeout=0)
         decision = await guard.request_approval(reason="timeout_test")
-        assert decision == Decision.TIMEOUT
+        assert decision == Decision.DENIED
 
     @pytest.mark.asyncio
     async def test_timeout_clears_pending_entry(self) -> None:
@@ -383,7 +384,7 @@ class TestTimeout:
 
     @pytest.mark.asyncio
     async def test_timeout_decision_on_hitl_request(self) -> None:
-        """The HITLRequest.decision field must be TIMEOUT after expiry."""
+        """The HITLRequest.decision field must be DENIED after expiry (fail-secure)."""
         last_req: list[HITLRequest] = []
 
         async def capture(req: HITLRequest) -> None:
@@ -392,9 +393,9 @@ class TestTimeout:
 
         guard = HITLGuard(notify_fn=capture, timeout=0)
         decision = await guard.request_approval(reason="decision_field_test")
-        assert decision == Decision.TIMEOUT
+        assert decision == Decision.DENIED
         if last_req:
-            assert last_req[0].decision == Decision.TIMEOUT
+            assert last_req[0].decision == Decision.DENIED
 
 
 # ---------------------------------------------------------------------------
@@ -437,10 +438,10 @@ class TestNotifyFnFailure:
 
     @pytest.mark.asyncio
     async def test_none_notify_fn_times_out_normally(self) -> None:
-        """With no notify_fn the guard should wait then time out."""
+        """With no notify_fn the guard should wait then time out → DENIED (fail-secure)."""
         guard = HITLGuard(notify_fn=None, timeout=0)
         decision = await guard.request_approval(reason="no_notify_fn")
-        assert decision == Decision.TIMEOUT
+        assert decision == Decision.DENIED
 
     @pytest.mark.asyncio
     async def test_notify_value_error_is_fail_closed(self) -> None:
@@ -514,3 +515,58 @@ class TestConcurrency:
         await guard.respond(ids[1], approved=False)
         d2 = await t2
         assert d2 == Decision.DENIED
+
+
+# ---------------------------------------------------------------------------
+# TestHITLFailSecure
+# ---------------------------------------------------------------------------
+
+
+class TestHITLFailSecure:
+    """Verify fail-secure behavior: timeout → DENIED, not TIMEOUT."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_denied(self) -> None:
+        """When operator doesn't respond, decision must be DENIED (fail-secure)."""
+
+        async def stall(req: HITLRequest) -> None:
+            # Do NOT resolve; let timeout fire
+            pass
+
+        guard = HITLGuard(notify_fn=stall, timeout=0)
+        decision = await guard.request_approval(reason="fail_secure_timeout_test")
+        assert decision == Decision.DENIED
+        # Ensure it's explicitly NOT TIMEOUT
+        assert decision != Decision.TIMEOUT
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_not_approved(self) -> None:
+        """A timed-out request must never be approved."""
+
+        async def stall(req: HITLRequest) -> None:
+            # Do NOT resolve; let timeout fire
+            pass
+
+        guard = HITLGuard(notify_fn=stall, timeout=0)
+        decision = await guard.request_approval(reason="timeout_denied_test")
+        assert decision != Decision.APPROVED
+        assert decision == Decision.DENIED
+
+    @pytest.mark.asyncio
+    async def test_timeout_with_short_duration(self) -> None:
+        """Timeout with 0.05s should also return DENIED."""
+
+        async def stall(req: HITLRequest) -> None:
+            # Do NOT set event; let timeout occur
+            pass
+
+        guard = HITLGuard(notify_fn=stall, timeout=0)
+        decision = await guard.request_approval(reason="short_timeout_test")
+        assert decision == Decision.DENIED
+
+    @pytest.mark.asyncio
+    async def test_decision_timeout_enum_still_exists(self) -> None:
+        """Decision.TIMEOUT must still exist (may be used in logs/UI)."""
+        # Verify the enum value exists (not deleted)
+        assert hasattr(Decision, "TIMEOUT")
+        assert Decision.TIMEOUT.value == "timeout"
