@@ -109,13 +109,24 @@ def _is_safe_path(member_path: str) -> bool:
 
 
 def _extract_zip_safe(archive: pathlib.Path, dest: pathlib.Path) -> None:
-    """Extract a zip archive with zip-slip protection."""
+    """Extract a zip archive with zip-slip protection.
+
+    Validates both the relative path (no '..' or absolute paths) and the
+    resolved destination path (must remain inside *dest* after resolution).
+    """
+    dest_resolved = dest.resolve()
     with zipfile.ZipFile(archive, "r") as zf:
         for info in zf.infolist():
             if info.is_dir():
                 continue
             if not _is_safe_path(info.filename):
                 raise PathViolation(f"Zip-slip detected: {info.filename!r}")
+            # Secondary check: resolved path must stay inside dest
+            target = (dest / info.filename).resolve()
+            if not target.is_relative_to(dest_resolved):
+                raise PathViolation(
+                    f"Zip-slip (resolved path escapes sandbox): {info.filename!r}"
+                )
             zf.extract(info, dest)
 
 
