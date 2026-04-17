@@ -129,3 +129,86 @@ class TestPrivateIPBlocking:
     async def test_link_local_blocked(self, gw_strict: NetworkGateway) -> None:
         with pytest.raises(EgressViolation, match="private/loopback"):
             await gw_strict.authorize("GET", "http://169.254.0.1/x")
+
+
+# ------------------------------------------------------------------
+# Dot-based domain matcher (_matching_pattern semantics)
+# ------------------------------------------------------------------
+
+
+class TestMatchingPattern:
+    """Verify dot-based hostname matching semantics."""
+
+    def make_gateway(self, allowed_hosts: list[str]) -> NetworkGateway:
+        policy = EgressPolicy(
+            allowed_hosts=frozenset(allowed_hosts),
+            block_private_ips=False,
+        )
+        return NetworkGateway(policy)
+
+    def test_wildcard_matches_subdomain(self) -> None:
+        """*.nexusmods.com matches api.nexusmods.com"""
+        gw = self.make_gateway(["*.nexusmods.com"])
+        assert gw._matching_pattern("api.nexusmods.com") is not None
+
+    def test_wildcard_matches_deep_subdomain(self) -> None:
+        """*.nexusmods.com matches staticdelivery.nexusmods.com"""
+        gw = self.make_gateway(["*.nexusmods.com"])
+        assert gw._matching_pattern("staticdelivery.nexusmods.com") is not None
+
+    def test_wildcard_does_not_match_base(self) -> None:
+        """*.nexusmods.com does NOT match nexusmods.com (no subdomain)"""
+        gw = self.make_gateway(["*.nexusmods.com"])
+        assert gw._matching_pattern("nexusmods.com") is None
+
+    def test_wildcard_does_not_match_superdomain(self) -> None:
+        """*.nexusmods.com does NOT match api.nexusmods.com.evil.com"""
+        gw = self.make_gateway(["*.nexusmods.com"])
+        assert gw._matching_pattern("api.nexusmods.com.evil.com") is None
+
+    def test_wildcard_does_not_match_unrelated_host(self) -> None:
+        """*.nexusmods.com does NOT match evil-nexusmods-fake.com"""
+        gw = self.make_gateway(["*.nexusmods.com"])
+        assert gw._matching_pattern("evil-nexusmods-fake.com") is None
+
+    def test_exact_match(self) -> None:
+        """api.telegram.org matches exactly api.telegram.org"""
+        gw = self.make_gateway(["api.telegram.org"])
+        assert gw._matching_pattern("api.telegram.org") is not None
+
+    def test_exact_no_match_subdomain(self) -> None:
+        """api.telegram.org does NOT match x.api.telegram.org"""
+        gw = self.make_gateway(["api.telegram.org"])
+        assert gw._matching_pattern("x.api.telegram.org") is None
+
+    def test_exact_no_match_different_host(self) -> None:
+        """api.telegram.org does NOT match api.telegram.org.evil.com"""
+        gw = self.make_gateway(["api.telegram.org"])
+        assert gw._matching_pattern("api.telegram.org.evil.com") is None
+
+    def test_case_insensitive_wildcard(self) -> None:
+        """API.NEXUSMODS.COM matches *.nexusmods.com (DNS is case-insensitive per RFC 4343)"""
+        gw = self.make_gateway(["*.nexusmods.com"])
+        assert gw._matching_pattern("API.NEXUSMODS.COM") is not None
+
+    def test_case_insensitive_exact(self) -> None:
+        """API.TELEGRAM.ORG matches api.telegram.org"""
+        gw = self.make_gateway(["api.telegram.org"])
+        assert gw._matching_pattern("API.TELEGRAM.ORG") is not None
+
+    def test_no_match_returns_none(self) -> None:
+        """Returns None when no pattern matches"""
+        gw = self.make_gateway(["*.nexusmods.com", "api.telegram.org"])
+        assert gw._matching_pattern("evil.example.com") is None
+
+    def test_bare_asterisk_does_not_wildcard_match(self) -> None:
+        """A bare '*' pattern is treated as a literal, not a wildcard."""
+        gw = self.make_gateway(["*"])
+        # Should NOT match any real hostname
+        assert gw._matching_pattern("nexusmods.com") is None
+
+    def test_dotless_literal_matches_exactly(self) -> None:
+        """A pattern without a dot matches only the exact string."""
+        gw = self.make_gateway(["localhost"])
+        assert gw._matching_pattern("localhost") is not None
+        assert gw._matching_pattern("not-localhost") is None

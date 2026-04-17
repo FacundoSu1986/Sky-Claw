@@ -509,3 +509,54 @@ class TestAnalyzeEspConflictsTool:
         assert len(result["suggestions"]) > 0
 
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# validate_load_order_limit — full vs light pool distinction
+# ---------------------------------------------------------------------------
+
+
+class TestValidateLoadOrderLimit:
+    """Tests for validate_load_order_limit covering both full and light pools."""
+
+    @pytest.fixture
+    def analyzer(self):
+        """ConflictAnalyzer instance for testing."""
+        return ConflictAnalyzer()
+
+    def test_full_plugins_within_limit(self, analyzer):
+        plugins = [f"mod{i:03d}.esp" for i in range(254)]
+        analyzer.validate_load_order_limit(plugins)  # Must not raise
+
+    def test_full_plugins_exceed_limit(self, analyzer):
+        plugins = [f"mod{i:03d}.esp" for i in range(255)]
+        with pytest.raises(RuntimeError, match="Full plugin limit exceeded"):
+            analyzer.validate_load_order_limit(plugins)
+
+    def test_light_plugins_within_limit(self, analyzer):
+        plugins = [f"mod{i:04d}.esl" for i in range(4096)]
+        analyzer.validate_load_order_limit(plugins)  # Must not raise
+
+    def test_light_plugins_exceed_limit(self, analyzer):
+        plugins = [f"mod{i:04d}.esl" for i in range(4097)]
+        with pytest.raises(RuntimeError, match="Light plugin limit exceeded"):
+            analyzer.validate_load_order_limit(plugins)
+
+    def test_mixed_plugins_within_both_limits(self, analyzer):
+        """250 full + 100 light = legal, should not raise."""
+        full = [f"mod{i:03d}.esp" for i in range(250)]
+        light = [f"mod{i:03d}.esl" for i in range(100)]
+        analyzer.validate_load_order_limit(full + light)  # Must not raise
+
+    def test_full_exceeds_but_light_within(self, analyzer):
+        """Only full pool violation raises."""
+        full = [f"mod{i:03d}.esp" for i in range(255)]
+        light = [f"mod{i:03d}.esl" for i in range(50)]
+        with pytest.raises(RuntimeError, match="Full plugin limit exceeded"):
+            analyzer.validate_load_order_limit(full + light)
+
+    def test_esl_not_counted_in_full_pool(self, analyzer):
+        """254 .esp + any .esl should not exceed full limit."""
+        full = [f"mod{i:03d}.esp" for i in range(254)]
+        light = [f"mod{i:03d}.esl" for i in range(100)]
+        analyzer.validate_load_order_limit(full + light)  # Must not raise

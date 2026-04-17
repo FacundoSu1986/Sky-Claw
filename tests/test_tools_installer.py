@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import pathlib
+import zipfile
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,9 +14,11 @@ import pytest
 from sky_claw.security.hitl import HITLGuard
 from sky_claw.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.security.path_validator import PathValidator
+from sky_claw.security.path_validator import PathViolation
 from sky_claw.tools_installer import (
     ToolInstallError,
     ToolsInstaller,
+    _extract_zip_safe,
     find_exe_in_dir,
     scan_common_paths,
 )
@@ -590,3 +593,70 @@ class TestAppContextToolsInstaller:
             assert ctx.tools_installer is not None
         finally:
             await ctx.stop()
+
+
+# ---------------------------------------------------------------------------
+# _extract_zip_safe — zip-slip protection (A-03)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractZipSafe:
+    """Tests for zip-slip protection in _extract_zip_safe."""
+
+    def test_normal_extraction_succeeds(self, tmp_path: pathlib.Path) -> None:
+        """A clean zip file extracts correctly."""
+        zip_path = tmp_path / "archive.zip"
+        dest = tmp_path / "dest"
+        dest.mkdir()
+
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("readme.txt", "hello world")
+
+        _extract_zip_safe(zip_path, dest)
+
+        assert (dest / "readme.txt").exists()
+        assert (dest / "readme.txt").read_text(encoding="utf-8") == "hello world"
+
+    def test_dotdot_path_raises(self, tmp_path: pathlib.Path) -> None:
+        """Zip with '../evil.txt' raises PathViolation."""
+        zip_path = tmp_path / "malicious.zip"
+        dest = tmp_path / "dest"
+        dest.mkdir()
+
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("../evil.txt", "evil content")
+
+        with pytest.raises(PathViolation):
+            _extract_zip_safe(zip_path, dest)
+
+        # No file should have escaped outside dest
+        assert not (tmp_path / "evil.txt").exists()
+
+    def test_absolute_path_raises(self, tmp_path: pathlib.Path) -> None:
+        """Zip with '/etc/passwd' raises PathViolation."""
+        zip_path = tmp_path / "absolute.zip"
+        dest = tmp_path / "dest"
+        dest.mkdir()
+
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("/etc/passwd", "root:x:0:0")
+
+        with pytest.raises(PathViolation):
+            _extract_zip_safe(zip_path, dest)
+
+        # Verify NO file was extracted inside dest
+        assert not any(dest.iterdir()), "No files should be extracted from malicious zip"
+
+    def test_nested_normal_path_succeeds(self, tmp_path: pathlib.Path) -> None:
+        """A zip with 'subdir/file.txt' extracts correctly."""
+        zip_path = tmp_path / "nested.zip"
+        dest = tmp_path / "dest"
+        dest.mkdir()
+
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("subdir/file.txt", "nested content")
+
+        _extract_zip_safe(zip_path, dest)
+
+        assert (dest / "subdir" / "file.txt").exists()
+        assert (dest / "subdir" / "file.txt").read_text(encoding="utf-8") == "nested content"

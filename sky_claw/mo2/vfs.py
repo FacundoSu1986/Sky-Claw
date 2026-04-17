@@ -8,19 +8,45 @@ manipulation, tool execution (LOOT CLI, SSEEdit) via the
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
+import pathlib
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
 import psutil
 
 if TYPE_CHECKING:
-    import pathlib
     from collections.abc import AsyncGenerator
 
     from sky_claw.security.path_validator import PathValidator
 
 logger = logging.getLogger(__name__)
+
+
+async def _write_modlist_atomic(path: pathlib.Path, lines: list[str]) -> None:
+    """Write *lines* to *path* with UTF-8 BOM, using an atomic tmp→rename swap.
+
+    Each line is normalised to end with ``\\n`` so MO2 is happy on all
+    platforms.  The file is first written to ``<path>.tmp`` with
+    ``encoding="utf-8-sig"`` (which prepends the BOM automatically), then
+    renamed over the original so the swap is atomic.
+    """
+    tmp: pathlib.Path = path.with_suffix(path.suffix + ".tmp")
+    normalised = [
+        (line if line.endswith("\n") else line.rstrip("\r\n") + "\n")
+        for line in lines
+    ]
+    try:
+        async with aiofiles.open(tmp, mode="w", encoding="utf-8-sig") as fh:
+            await fh.writelines(normalised)
+        await asyncio.to_thread(os.replace, tmp, path)
+    except Exception:
+        # Limpiar tmp huérfano si la escritura o el rename falla
+        with contextlib.suppress(OSError):
+            await asyncio.to_thread(tmp.unlink, missing_ok=True)
+        raise
 
 
 class ModlistParseError(Exception):
@@ -156,8 +182,7 @@ class MO2Controller:
             if not found:
                 return
 
-            async with aiofiles.open(validated, mode="w", encoding="utf-8") as fh:
-                await fh.writelines(lines)
+            await _write_modlist_atomic(validated, lines)
             logger.info("Removed %s from modlist for profile %r", mod_name, profile)
 
     async def toggle_mod_in_modlist(
@@ -201,8 +226,7 @@ class MO2Controller:
                 return
 
             if changed:
-                async with aiofiles.open(validated, mode="w", encoding="utf-8") as fh:
-                    await fh.writelines(lines)
+                await _write_modlist_atomic(validated, lines)
                 state = "Enabled" if enable else "Disabled"
                 logger.info("%s %s in modlist for profile %r", state, mod_name, profile)
 

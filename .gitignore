@@ -67,6 +67,12 @@ dummy_*.py
 nul
 .kilo/
 
+# Scratch / temporary exploration directories (not part of the project)
+scratch/
+autoskills_tmp/
+scrapskyclaw/
+plans/
+
 # Git worktrees (isolated workspaces)
 .worktrees/
 
