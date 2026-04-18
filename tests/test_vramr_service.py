@@ -117,15 +117,11 @@ def make_fake_proc(
 
     proc.stdout = MagicMock()
     proc.stdout.readline = AsyncMock(
-        side_effect=stdout_side_effect
-        if stdout_side_effect is not None
-        else [*stdout_lines, b""],
+        side_effect=stdout_side_effect if stdout_side_effect is not None else [*stdout_lines, b""],
     )
     proc.stderr = MagicMock()
     proc.stderr.readline = AsyncMock(
-        side_effect=stderr_side_effect
-        if stderr_side_effect is not None
-        else [*stderr_lines, b""],
+        side_effect=stderr_side_effect if stderr_side_effect is not None else [*stderr_lines, b""],
     )
     proc.wait = AsyncMock(return_value=exit_code)
     proc.kill = MagicMock()
@@ -347,8 +343,10 @@ async def test_timeout_kills_process_and_cleans_up(
         (output_dir / "pending.dds").write_bytes(b"x")
         return fake
 
-    with patch.object(vramr_mod.asyncio, "create_subprocess_exec", AsyncMock(side_effect=_fake_create)), \
-         patch.object(vramr_mod.asyncio, "wait_for", wait_for_mock):
+    with (
+        patch.object(vramr_mod.asyncio, "create_subprocess_exec", AsyncMock(side_effect=_fake_create)),
+        patch.object(vramr_mod.asyncio, "wait_for", wait_for_mock),
+    ):
         result = await svc.execute_pipeline(
             vramr_exe=vramr_exe,
             args=[],
@@ -832,12 +830,14 @@ async def test_release_lock_failure_is_swallowed(
         await original_release(*a, **kw)
         raise RuntimeError("simulated release failure")
 
-    with patch.object(lock_manager, "release_lock", side_effect=failing_release), \
-         patch.object(
-             vramr_mod.asyncio,
-             "create_subprocess_exec",
-             AsyncMock(return_value=make_fake_proc(exit_code=0)),
-         ):
+    with (
+        patch.object(lock_manager, "release_lock", side_effect=failing_release),
+        patch.object(
+            vramr_mod.asyncio,
+            "create_subprocess_exec",
+            AsyncMock(return_value=make_fake_proc(exit_code=0)),
+        ),
+    ):
         result = await svc.execute_pipeline(
             vramr_exe=vramr_exe,
             args=[],

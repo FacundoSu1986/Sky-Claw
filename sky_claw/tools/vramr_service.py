@@ -50,9 +50,7 @@ class VRAMrExecutionError(Exception):
     def __init__(self, exit_code: int, stderr_tail: str = "") -> None:
         self.exit_code = exit_code
         self.stderr_tail = stderr_tail
-        super().__init__(
-            f"VRAMr failed with exit code {exit_code}: {stderr_tail}"
-        )
+        super().__init__(f"VRAMr failed with exit code {exit_code}: {stderr_tail}")
 
 
 class VRAMrPipelineService:
