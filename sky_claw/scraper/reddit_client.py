@@ -17,16 +17,12 @@ import logging
 import re
 import time
 from collections import deque
+from collections.abc import Callable
 from types import TracebackType
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import quote_plus
 
 import aiohttp
-from sky_claw.security.network_gateway import (
-    EgressViolationError,
-    NetworkGateway,
-    NetworkGatewayTimeout,
-)
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from tenacity import (
     AsyncRetrying,
@@ -34,6 +30,12 @@ from tenacity import (
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
+)
+
+from sky_claw.security.network_gateway import (
+    EgressViolationError,
+    NetworkGateway,
+    NetworkGatewayTimeout,
 )
 
 logger = logging.getLogger("SkyClaw.Scraper.Reddit")
@@ -273,13 +275,7 @@ class RedditKnowledgeResolver:
                 result = await self._fetch_and_format(cleaned)
                 async with self._cache_lock:
                     self._cache[cache_key] = result
-            except (
-                aiohttp.ClientError,
-                asyncio.TimeoutError,
-                EgressViolationError
-                NetworkGatewayTimeout,
-                _TransientHTTPError,
-            ) as exc:
+            except (TimeoutError, aiohttp.ClientError, EgressViolationError, NetworkGatewayTimeout, _TransientHTTPError) as exc:
                 logger.warning(
                     "reddit.search_failed",
                     extra={"mod_name": cleaned, "error": repr(exc)},
