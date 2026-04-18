@@ -248,6 +248,7 @@ ALLOWED_HOSTS = frozenset(
         "github.com",
         "raw.githubusercontent.com",
         "api.anthropic.com",
+        "www.reddit.com",
     ]
 )
 OUT_OF_SCOPE_HOSTS = frozenset(
@@ -285,6 +286,7 @@ ALLOWED_METHODS = {
     "premium-files.nexusmods.com": frozenset(["GET"]),
     "cf-files.nexusmods.com": frozenset(["GET"]),
     "staticdelivery.nexusmods.com": frozenset(["GET"]),
+    "www.reddit.com": frozenset(["GET"]),
 }
 TELEGRAM_PATH_PREFIX = "/bot"
 NEXUS_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
