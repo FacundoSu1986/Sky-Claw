@@ -138,59 +138,66 @@ class VRAMrPipelineService:
         rolled_back: bool = False
         tx_id: int | None = None
 
+        # Usar el path completo como resource_id para unicidad.
+        # (evita colisiones entre outputs en distintos paths con el mismo basename)
+        lock_resource_id = str(validated_output)
+
         try:
-            async with self._lock_scope(resource_id=validated_output.name):
-                tx_id = await self._journal.begin_transaction(
-                    description="vramr_pipeline",
-                    agent_id=self.AGENT_ID,
-                )
-                exit_code, stdout_lines, stderr_lines = await self._run_vramr(
-                    validated_exe,
-                    list(args),
-                    effective_timeout,
-                )
-                if exit_code != 0:
-                    tail = "\n".join(stderr_lines[-_TAIL_LINES:])
-                    raise VRAMrExecutionError(exit_code, tail)
+            async with self._lock_scope(resource_id=lock_resource_id):
+                # Todos los cambios + post-procesado ocurren dentro del lock
+                # para mantener atomicidad y evitar ventanas de race.
+                try:
+                    tx_id = await self._journal.begin_transaction(
+                        description="vramr_pipeline",
+                        agent_id=self.AGENT_ID,
+                    )
+                    exit_code, stdout_lines, stderr_lines = await self._run_vramr(
+                        validated_exe,
+                        list(args),
+                        effective_timeout,
+                    )
+                    if exit_code != 0:
+                        tail = "\n".join(stderr_lines[-_TAIL_LINES:])
+                        raise VRAMrExecutionError(exit_code, tail)
 
-            # Salida limpia del lock → commit del journal
-            await self._journal.commit_transaction(tx_id)
+                    # Commit dentro del lock
+                    await self._journal.commit_transaction(tx_id)
 
-        except VRAMrExecutionError as exc:
-            rolled_back = True
-            self._cleanup_output_dir(validated_output, existed_before)
-            await self._safe_mark_rolled_back(tx_id)
-            logger.error("VRAMr falló: %s", exc)
-            error = f"VRAMr exit {exc.exit_code}: {exc.stderr_tail}"
+                except VRAMrExecutionError as exc:
+                    rolled_back = True
+                    self._cleanup_output_dir(validated_output, existed_before)
+                    await self._safe_mark_rolled_back(tx_id)
+                    logger.error("VRAMr falló: %s", exc)
+                    error = f"VRAMr exit {exc.exit_code}: {exc.stderr_tail}"
+
+                except TimeoutError:
+                    rolled_back = tx_id is not None
+                    self._cleanup_output_dir(validated_output, existed_before)
+                    await self._safe_mark_rolled_back(tx_id)
+                    logger.error(
+                        "VRAMr excedió el timeout de %.1fs",
+                        effective_timeout,
+                    )
+                    error = f"VRAMr timed out after {effective_timeout}s"
+
+                except Exception as exc:  # Regla T11 — catch-all
+                    rolled_back = tx_id is not None
+                    self._cleanup_output_dir(validated_output, existed_before)
+                    await self._safe_mark_rolled_back(tx_id)
+                    logger.error(
+                        "Error inesperado en VRAMr pipeline: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    error = f"Unexpected error: {exc}"
 
         except LockAcquisitionError as exc:
             logger.warning(
                 "Lock contention para VRAMr (%s): %s",
-                validated_output.name,
+                lock_resource_id,
                 exc,
             )
             error = f"Lock contention: {exc}"
-
-        except TimeoutError:
-            rolled_back = tx_id is not None
-            self._cleanup_output_dir(validated_output, existed_before)
-            await self._safe_mark_rolled_back(tx_id)
-            logger.error(
-                "VRAMr excedió el timeout de %.1fs",
-                effective_timeout,
-            )
-            error = f"VRAMr timed out after {effective_timeout}s"
-
-        except Exception as exc:  # Regla T11 — catch-all
-            rolled_back = tx_id is not None
-            self._cleanup_output_dir(validated_output, existed_before)
-            await self._safe_mark_rolled_back(tx_id)
-            logger.error(
-                "Error inesperado en VRAMr pipeline: %s",
-                exc,
-                exc_info=True,
-            )
-            error = f"Unexpected error: {exc}"
 
         duration = time.monotonic() - t0
         success = error is None

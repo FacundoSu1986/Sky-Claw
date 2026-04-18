@@ -376,7 +376,8 @@ async def test_lock_contention_returns_error_without_rollback(
     output_dir: pathlib.Path,
 ) -> None:
     # Pre-adquirir el mismo resource_id desde otro agente.
-    await lock_manager.acquire_lock(output_dir.name, "other-agent")
+    # Nota: desde 4.7, el código usa str(validated_output) como resource_id, no .name
+    await lock_manager.acquire_lock(str(output_dir), "other-agent")
 
     svc = make_service(
         lock_manager=lock_manager,
