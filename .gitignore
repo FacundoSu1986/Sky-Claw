@@ -66,6 +66,17 @@ dummy_*.py
 # Generated and accidental Windows output
 nul
 .kilo/
+# Scratch / temporary exploration directories (not part of the project)
+scratch/
+autoskills_tmp/
+scrapskyclaw/
+plans/
+
+# Git worktrees (isolated workspaces)
+.worktrees/
+
+# Environments and Secrets
+**/.env
 # Environments and Secrets
 **/.env
 

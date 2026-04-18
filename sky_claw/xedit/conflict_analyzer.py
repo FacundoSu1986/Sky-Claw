@@ -74,6 +74,16 @@ DEFAULT_WARNING_TYPES: frozenset[str] = frozenset(
 
 _SCRIPT_NAME = "list_all_conflicts.pas"
 
+# ---------------------------------------------------------------------------
+# Plugin pool limits (Skyrim SSE/AE)
+# ---------------------------------------------------------------------------
+
+#: Maximum number of full plugins (.esp, .esm) allowed simultaneously.
+FULL_PLUGIN_LIMIT: int = 254
+
+#: Maximum number of light plugins (.esl) allowed simultaneously.
+LIGHT_PLUGIN_LIMIT: int = 4096
+
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -176,21 +186,40 @@ class ConflictAnalyzer:
     # ------------------------------------------------------------------
 
     def validate_load_order_limit(self, plugins: list[str]) -> None:
-        """Validates the strict engine plugin limit of 254 plugins.
+        """Validates the Skyrim SSE/AE plugin limits for both full and light pools.
+
+        Skyrim SE/AE has two independent plugin pools:
+        - Full plugins (.esp, .esm): max 254
+        - Light plugins (.esl): max 4096
 
         Args:
-            plugins: List of plugin filenames.
+            plugins: List of plugin filenames (basename or full path accepted).
 
         Raises:
-            RuntimeError: If the count exceeds 254.
+            RuntimeError: If either pool exceeds its respective limit.
         """
-        active_plugins = [p for p in plugins if p.lower().endswith((".esp", ".esm"))]
-        if len(active_plugins) > 254:
+        full_plugins = [p for p in plugins if p.lower().endswith((".esp", ".esm"))]
+        light_plugins = [p for p in plugins if p.lower().endswith(".esl")]
+
+        if len(full_plugins) > FULL_PLUGIN_LIMIT:
             logger.critical(
-                f"CRITICAL ALERT: Plugin limit exceeded! ({len(active_plugins)} > 254)"
+                "CRITICAL ALERT: Full plugin limit exceeded! (%d > %d)",
+                len(full_plugins),
+                FULL_PLUGIN_LIMIT,
             )
             raise RuntimeError(
-                f"Load order limit of 254 plugins exceeded: found {len(active_plugins)} active plugins."
+                f"Full plugin limit exceeded: {len(full_plugins)}/{FULL_PLUGIN_LIMIT}. "
+                "Consider converting small mods (<2048 new records) to ESL format in xEdit."
+            )
+
+        if len(light_plugins) > LIGHT_PLUGIN_LIMIT:
+            logger.critical(
+                "CRITICAL ALERT: Light plugin limit exceeded! (%d > %d)",
+                len(light_plugins),
+                LIGHT_PLUGIN_LIMIT,
+            )
+            raise RuntimeError(
+                f"Light plugin limit exceeded: {len(light_plugins)}/{LIGHT_PLUGIN_LIMIT}."
             )
 
     async def verify_masters(
