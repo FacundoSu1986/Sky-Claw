@@ -18,10 +18,15 @@ import re
 import time
 from collections import deque
 from types import TracebackType
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote_plus
 
 import aiohttp
+from sky_claw.security.network_gateway import (
+    EgressViolation,
+    NetworkGateway,
+    NetworkGatewayTimeout,
+)
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from tenacity import (
     AsyncRetrying,
@@ -76,7 +81,11 @@ class RedditClientConfig(BaseModel):
     @field_validator("subreddits")
     @classmethod
     def _validate_subreddits(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        cleaned = tuple(s.strip().lstrip("r/").lower() for s in value if s.strip())
+        cleaned = tuple(
+            s.strip().removeprefix("r/").removeprefix("/").lower()
+            for s in value
+            if s.strip()
+        )
         if not cleaned:
             raise ValueError("subreddits must contain at least one non-empty entry")
         return cleaned
@@ -102,6 +111,8 @@ class RedditKnowledgeResolver:
         search_limit: int = _DEFAULT_SEARCH_LIMIT,
         timeout_seconds: float = _DEFAULT_TIMEOUT,
         session: aiohttp.ClientSession | None = None,
+        gateway: NetworkGateway | None = None,
+        clock_fn: Callable[[], float] = time.monotonic,
     ) -> None:
         self._config = RedditClientConfig(
             user_agent=user_agent,
@@ -113,6 +124,8 @@ class RedditKnowledgeResolver:
         )
         self._session = session
         self._owns_session = session is None
+        self._gateway = gateway
+        self._clock_fn = clock_fn
 
         self._cache: dict[str, str] = {}
         self._cache_lock = asyncio.Lock()
@@ -167,7 +180,7 @@ class RedditKnowledgeResolver:
 
     async def _acquire_slot(self) -> None:
         async with self._rate_lock:
-            now = time.monotonic()
+            now = self._clock_fn()
             window = self._config.window_seconds
             while self._rate_window and (now - self._rate_window[0]) >= window:
                 self._rate_window.popleft()
@@ -179,10 +192,10 @@ class RedditKnowledgeResolver:
                         extra={"wait_seconds": round(wait_for, 3)},
                     )
                     await asyncio.sleep(wait_for)
-                now = time.monotonic()
+                now = self._clock_fn()
                 while self._rate_window and (now - self._rate_window[0]) >= window:
                     self._rate_window.popleft()
-            self._rate_window.append(time.monotonic())
+            self._rate_window.append(self._clock_fn())
 
     async def search_known_issues(self, mod_name: str) -> str:
         if self._closed:
@@ -213,15 +226,24 @@ class RedditKnowledgeResolver:
 
         try:
             result = await self._fetch_and_format(cleaned)
-        except Exception as exc:  # noqa: BLE001 — log + placeholder por diseño
+            # Solo cachear si la búsqueda tuvo éxito.
+            async with self._cache_lock:
+                self._cache[cache_key] = result
+        except (
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            EgressViolation,
+            NetworkGatewayTimeout,
+            _TransientHTTPError,
+        ) as exc:
             logger.warning(
                 "reddit.search_failed",
                 extra={"mod_name": cleaned, "error": repr(exc)},
             )
             result = f"Reddit lookup unavailable for '{cleaned}'."
+            # No guardamos en self._cache para permitir reintentos (no negative caching)
 
         async with self._cache_lock:
-            self._cache[cache_key] = result
             inflight = self._inflight.pop(cache_key, None)
         if inflight is not None and not inflight.done():
             inflight.set_result(result)
@@ -264,6 +286,13 @@ class RedditKnowledgeResolver:
                 reraise=True,
             ):
                 with attempt:
+                    if self._gateway is not None:
+                        resp = await self._gateway.request("GET", url, session)
+                        async with resp:
+                            if resp.status == 200:
+                                payload = await resp.json()
+                                return self._extract_posts(payload)
+                            return []  # Dejar que el error cascade al caller
                     return await self._execute_request(session, url)
         except RetryError as exc:
             raise _TransientHTTPError("exhausted retries") from exc

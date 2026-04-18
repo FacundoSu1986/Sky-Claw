@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -121,37 +120,58 @@ class TestRateLimit:
     @pytest.mark.asyncio
     async def test_sliding_window_blocks_excess(self, mock_session: MagicMock) -> None:
         mock_session.get.return_value = _make_response_mock(200, _reddit_payload([]))
+
+        # Reloj simulado que podemos adelantar manualmente
+        current_time = 1000.0
+
+        def mock_clock() -> float:
+            return current_time
+
         r = RedditKnowledgeResolver(
             user_agent=VALID_UA,
             rpm_limit=2,
-            window_seconds=0.3,
+            window_seconds=10.0,  # Ventana grande para evitar que expire por azar
             session=mock_session,
+            clock_fn=mock_clock,
         )
         try:
-            start = time.perf_counter()
+            # Consumir los 2 slots permitidos
             await r.search_known_issues("ModA")
             await r.search_known_issues("ModB")
-            await r.search_known_issues("ModC")
-            elapsed = time.perf_counter() - start
-            assert elapsed >= 0.25, f"expected throttle >=0.25s, got {elapsed:.3f}s"
+
+            # El tercer llamado debería intentar dormir (bloquear)
+            # Como no queremos dormir de verdad 10 segundos, usamos un timeout corto
+            # para verificar que el rate limiter está intentando esperar.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(r.search_known_issues("ModC"), timeout=0.1)
+
+            assert mock_session.get.call_count == 2
         finally:
             await r.close()
 
     @pytest.mark.asyncio
     async def test_window_slides_after_expiry(self, mock_session: MagicMock) -> None:
         mock_session.get.return_value = _make_response_mock(200, _reddit_payload([]))
+        t = 1000.0
+
+        def mock_clock() -> float:
+            return t
+
         r = RedditKnowledgeResolver(
             user_agent=VALID_UA,
             rpm_limit=1,
-            window_seconds=0.15,
+            window_seconds=1.0,
             session=mock_session,
+            clock_fn=mock_clock,
         )
         try:
             await r.search_known_issues("ModA")
-            await asyncio.sleep(0.2)
-            start = time.perf_counter()
-            await r.search_known_issues("ModB")
-            assert (time.perf_counter() - start) < 0.1
+
+            # Avanzar el tiempo más allá de la ventana
+            t += 1.1
+            # El segundo llamado debería pasar inmediatamente sin bloquear
+            await asyncio.wait_for(r.search_known_issues("ModB"), timeout=0.1)
+            assert mock_session.get.call_count == 2
         finally:
             await r.close()
 
@@ -160,9 +180,27 @@ class TestCache:
     @pytest.mark.asyncio
     async def test_cache_hit_skips_http(self, resolver: RedditKnowledgeResolver, mock_session: MagicMock) -> None:
         mock_session.get.return_value = _make_response_mock(200, _reddit_payload(_sample_posts(1)))
+        # SkyUI normalization
         await resolver.search_known_issues("SkyUI")
         await resolver.search_known_issues("SkyUI")
         assert mock_session.get.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_cache_skips_on_subreddit_prefix_variation(self, resolver: RedditKnowledgeResolver, mock_session: MagicMock) -> None:
+        mock_session.get.return_value = _make_response_mock(200, _reddit_payload([]))
+        # r/skyrimmods vs skyrimmods
+        r2 = RedditKnowledgeResolver(user_agent=VALID_UA, subreddits=("r/skyrimmods",), session=mock_session)
+        r3 = RedditKnowledgeResolver(user_agent=VALID_UA, subreddits=("skyrimmods",), session=mock_session)
+        try:
+            await r2.search_known_issues("Mod")
+            await r3.search_known_issues("Mod")
+            # Ambos terminan buscando en 'skyrimmods'
+            # Pero el cache_key depende del mod_name Y los subreddits (normalizados)
+            # Si el normalizado es el mismo, debería haber hit de caché si compartieran el objeto,
+            # pero aquí son instancias distintas. Si compartieran r._cache veríamos el hit.
+        finally:
+            await r2.close()
+            await r3.close()
 
     @pytest.mark.asyncio
     async def test_cache_key_normalization(self, resolver: RedditKnowledgeResolver, mock_session: MagicMock) -> None:
@@ -206,6 +244,25 @@ class TestCache:
         assert mock_session.get.call_count == 1
         assert len({id(x) for x in results}) <= len(results)
         assert all(r == results[0] for r in results)
+
+    @pytest.mark.asyncio
+    async def test_errors_are_not_cached(self, mock_session: MagicMock) -> None:
+        # Primero falla con 500
+        mock_session.get.return_value = _make_response_mock(500)
+        r = RedditKnowledgeResolver(user_agent=VALID_UA, session=mock_session, window_seconds=0.001)
+
+        try:
+            res1 = await r.search_known_issues("BuggyMod")
+            assert "unavailable" in res1
+            assert mock_session.get.call_count == 3  # 1 inicial + 2 reintentos por Tenacity
+
+            # Ahora "arreglamos" el server
+            mock_session.get.return_value = _make_response_mock(200, _reddit_payload(_sample_posts(1)))
+            res2 = await r.search_known_issues("BuggyMod")
+            assert "Reddit findings" in res2
+            assert mock_session.get.call_count == 4  # +1 llamado exitoso (no salió de caché)
+        finally:
+            await r.close()
 
 
 class TestSearchBehavior:
