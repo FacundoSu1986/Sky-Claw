@@ -4,7 +4,6 @@ import os
 import pathlib
 from typing import Any
 
-# FASE 5: Imports de componentes de detección de conflictos de assets
 from sky_claw.assets import AssetConflictDetector, AssetConflictReport
 from sky_claw.comms.interface import InterfaceAgent
 from sky_claw.core.database import DatabaseAgent
@@ -13,8 +12,6 @@ from sky_claw.core.models import HitlApprovalRequest, LootExecutionParams
 from sky_claw.core.path_resolver import PathResolutionService
 from sky_claw.core.schemas import ScrapingQuery
 from sky_claw.core.windows_interop import ModdingToolsAgent
-
-# FASE 1.5: Imports de componentes de rollback
 from sky_claw.db.journal import OperationJournal
 from sky_claw.db.locks import DistributedLockManager
 from sky_claw.db.rollback_manager import RollbackManager
@@ -29,22 +26,13 @@ from sky_claw.orchestrator.watcher_daemon import WatcherDaemon
 from sky_claw.orchestrator.ws_event_streamer import LangGraphEventStreamer
 from sky_claw.scraper.scraper_agent import ScraperAgent
 from sky_claw.security.path_validator import PathValidator
-
-# FASE 4: DynDOLODPipelineService (extraído del Supervisor — Sprint 2)
 from sky_claw.tools.dyndolod_service import DynDOLODPipelineService
-# Deleting incorrect import: from sky_claw.tools.patcher_pipeline import PatchStrategyType
-
-# FASE 3: SynthesisPipelineService (extraído del Supervisor — Sprint 2)
 from sky_claw.tools.synthesis_service import SynthesisPipelineService
-
-# FASE 6: Imports de componentes de Wrye Bash
 from sky_claw.tools.wrye_bash_runner import (
     WryeBashConfig,
     WryeBashExecutionError,
     WryeBashRunner,
 )
-
-# Sprint-2 Fase 4: XEditPipelineService — extraído del Supervisor
 from sky_claw.tools.xedit_service import XEditPipelineService
 from sky_claw.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport
 
