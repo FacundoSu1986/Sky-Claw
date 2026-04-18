@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import pathlib
-import sqlite3
 from typing import Any
 
 # FASE 5: Imports de componentes de detección de conflictos de assets
@@ -33,6 +32,7 @@ from sky_claw.security.path_validator import PathValidator
 
 # FASE 4: DynDOLODPipelineService (extraído del Supervisor — Sprint 2)
 from sky_claw.tools.dyndolod_service import DynDOLODPipelineService
+# Deleting incorrect import: from sky_claw.tools.patcher_pipeline import PatchStrategyType
 
 # FASE 3: SynthesisPipelineService (extraído del Supervisor — Sprint 2)
 from sky_claw.tools.synthesis_service import SynthesisPipelineService
@@ -46,8 +46,8 @@ from sky_claw.tools.wrye_bash_runner import (
 
 # Sprint-2 Fase 4: XEditPipelineService — extraído del Supervisor
 from sky_claw.tools.xedit_service import XEditPipelineService
+from sky_claw.xedit import PatchStrategyType
 from sky_claw.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport
-from sky_claw.tools.patcher_pipeline import PatchStrategyType
 
 logger = logging.getLogger(__name__)
 security_logger = logging.getLogger(f"{__name__}.security")
@@ -76,9 +76,7 @@ class SupervisorAgent:
         )
 
         # Resolver ruta de modlist: MO2_PATH env var > auto-detección > fallback WSL2
-        self.modlist_path = str(
-            self._path_resolver.resolve_modlist_path(self.profile_name)
-        )
+        self.modlist_path = str(self._path_resolver.resolve_modlist_path(self.profile_name))
 
         # Sprint-1: Core event bus (instanciable, no singleton)
         self._event_bus = CoreEventBus()
@@ -95,7 +93,7 @@ class SupervisorAgent:
             db=self.db,
             event_bus=self._event_bus,
         )
-        
+
         # Sprint-2: Inicializar Servicios Extraídos (Strangler Fig)
         self._synthesis_service = SynthesisPipelineService(
             lock_manager=self._lock_manager,
@@ -103,8 +101,7 @@ class SupervisorAgent:
             journal=self.journal,
             path_resolver=self._path_resolver,
             event_bus=self._event_bus,
-            pipeline_config_path=pathlib.Path(BACKUP_STAGING_DIR)
-            / "synthesis_pipeline.json",
+            pipeline_config_path=pathlib.Path(BACKUP_STAGING_DIR) / "synthesis_pipeline.json",
         )
 
         self._dyndolod_service = DynDOLODPipelineService(
@@ -143,7 +140,7 @@ class SupervisorAgent:
         self.snapshot_manager = FileSnapshotManager(
             snapshot_dir=backup_dir / "snapshots", max_size_mb=get_max_backup_size_mb()
         )
-        
+
         # El orquestador y vfs son delegados al xedit_service
         self.rollback_manager = RollbackManager(
             db=self.db,
@@ -177,9 +174,7 @@ class SupervisorAgent:
         # Vincular con la señal de ejecución de la interfaz
         self.interface.register_command_callback(self.handle_execution_signal)
 
-        logger.info(
-            "SupervisorAgent inicializado: IPC y Watcher listos. Lanzando TaskGroup de fondo..."
-        )
+        logger.info("SupervisorAgent inicializado: IPC y Watcher listos. Lanzando TaskGroup de fondo...")
 
         # Sprint-1: Iniciar event bus y suscribir bridge de telemetría
         await self._event_bus.start()
@@ -202,9 +197,7 @@ class SupervisorAgent:
                 tg.create_task(self.interface.connect())
         except* Exception as eg:
             for exc in eg.exceptions:
-                logger.error(
-                    "TaskGroup del Supervisor — sub-error: %s", exc, exc_info=exc
-                )
+                logger.error("TaskGroup del Supervisor — sub-error: %s", exc, exc_info=exc)
         finally:
             # ARC-01: Detener demonios extraídos (LIFO)
             await self._watcher_daemon.stop()
@@ -241,17 +234,14 @@ class SupervisorAgent:
                 event.payload.get("current_mtime", 0.0),
             )
         else:
-            logger.info(
-                "Análisis proactivo disparado manualmente desde la GUI (sin evento de bus)."
-            )
+            logger.info("Análisis proactivo disparado manualmente desde la GUI (sin evento de bus).")
         # Aquí se inyectaría la llamada real a la herramienta de parsing local.
 
     async def handle_execution_signal(self, payload: dict[str, object]) -> None:
         """Reacciona a la señal de ignición forzada desde la GUI."""
-        logger.info(
-            "Ignición forzada desde GUI detectada. Despertando demonio proactivo."
-        )
+        logger.info("Ignición forzada desde GUI detectada. Despertando demonio proactivo.")
         from sky_claw.orchestrator.events import Event
+
         await self._trigger_proactive_analysis(Event(topic="system.manual.trigger", payload=payload))
 
     # FASE 1.5: Worker de pruning pasivo
@@ -294,13 +284,9 @@ class SupervisorAgent:
             # FASE 3: Synthesis Pipeline (delegado a SynthesisPipelineService)
             case "execute_synthesis_pipeline":
                 try:
-                    pipeline_result = await self._synthesis_service.execute_pipeline(
-                        **payload_dict
-                    )
+                    pipeline_result = await self._synthesis_service.execute_pipeline(**payload_dict)
                 except Exception as exc:
-                    logger.exception(
-                        "RCA: Falló execute_synthesis_pipeline; se convierte la excepción a error dict."
-                    )
+                    logger.exception("RCA: Falló execute_synthesis_pipeline; se convierte la excepción a error dict.")
                     return {
                         "status": "error",
                         "reason": "SynthesisPipelineExecutionFailed",
@@ -327,12 +313,12 @@ class SupervisorAgent:
                     patch_result = await self._xedit_service.execute_patch(
                         target_plugin=target_plugin,
                         report=report,
-                        strategy=PatchStrategyType(payload_dict.get("strategy", PatchStrategyType.CREATE_MERGED_PATCH.value)),
+                        strategy=PatchStrategyType(
+                            payload_dict.get("strategy", PatchStrategyType.CREATE_MERGED_PATCH.value)
+                        ),
                     )
                 except Exception as exc:
-                    logger.exception(
-                        "RCA: Falló resolve_conflict_with_patch; se convierte la excepción a error dict."
-                    )
+                    logger.exception("RCA: Falló resolve_conflict_with_patch; se convierte la excepción a error dict.")
                     return {
                         "status": "error",
                         "reason": "XEditPatchExecutionFailed",
@@ -358,6 +344,7 @@ class SupervisorAgent:
             # FASE 5: Asset Conflict Detection Integration
             case "scan_asset_conflicts":
                 import dataclasses
+
                 conflicts = self.scan_asset_conflicts()
                 return {"status": "success", "conflicts": [dataclasses.asdict(c) for c in conflicts]}
 
@@ -445,9 +432,7 @@ class SupervisorAgent:
 
         game_path = self._path_resolver.validate_env_path(game_path_str, "SKYRIM_PATH")
         mo2_path = self._path_resolver.validate_env_path(mo2_path_str, "MO2_PATH")
-        wrye_bash_path = self._path_resolver.validate_env_path(
-            wrye_bash_path_str, "WRYE_BASH_PATH"
-        )
+        wrye_bash_path = self._path_resolver.validate_env_path(wrye_bash_path_str, "WRYE_BASH_PATH")
 
         if not game_path or not mo2_path or not wrye_bash_path:
             raise WryeBashExecutionError(
@@ -456,9 +441,7 @@ class SupervisorAgent:
             )
 
         if not wrye_bash_path.exists():
-            raise WryeBashExecutionError(
-                f"Wrye Bash executable not found: {wrye_bash_path}"
-            )
+            raise WryeBashExecutionError(f"Wrye Bash executable not found: {wrye_bash_path}")
 
         config = WryeBashConfig(
             wrye_bash_path=wrye_bash_path,
@@ -500,9 +483,7 @@ class SupervisorAgent:
                 with open(modlist_path, encoding="utf-8") as fh:
                     for line in fh:
                         line = line.strip()
-                        if line.startswith("+") and line.lower().endswith(
-                            (".esp", ".esm")
-                        ):
+                        if line.startswith("+") and line.lower().endswith((".esp", ".esm")):
                             active_plugins.append(line[1:])
 
             analyzer = ConflictAnalyzer()
@@ -695,15 +676,12 @@ class SupervisorAgent:
             logger.info("Reporte JSON de conflictos generado exitosamente")
             return json_report
         except (OSError, RuntimeError) as e:
-            logger.error(
-                f"Error generando reporte JSON de conflictos: {e}", exc_info=True
-            )
+            logger.error(f"Error generando reporte JSON de conflictos: {e}", exc_info=True)
             raise
 
+
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
     supervisor = SupervisorAgent()
     # asyncio.run(supervisor.start()) # En producción
