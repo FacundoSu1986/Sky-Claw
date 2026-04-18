@@ -54,6 +54,44 @@ class _TransientHTTPError(Exception):
     """Marker para fallos 5xx/timeouts que tenacity debe reintentar."""
 
 
+class RedditPostData(BaseModel):
+    """Esquema de datos para una publicación de Reddit."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="ignore")
+
+    title: str = ""
+    score: int = 0
+    subreddit: str = ""
+    permalink: str = ""
+    selftext: str = ""
+
+
+class RedditChild(BaseModel):
+    """Envoltorio 't3' de Reddit."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="ignore")
+
+    kind: str
+    data: RedditPostData
+
+
+class RedditListingData(BaseModel):
+    """Cuerpo de un listado de Reddit."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="ignore")
+
+    children: list[RedditChild] = Field(default_factory=list)
+
+
+class RedditListing(BaseModel):
+    """Respuesta completa de un listado de Reddit."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="ignore")
+
+    kind: str
+    data: RedditListingData
+
+
 class RedditClientConfig(BaseModel):
     """Configuración inmutable del cliente Reddit (directiva D6)."""
 
@@ -225,28 +263,34 @@ class RedditKnowledgeResolver:
             return await pending
 
         try:
-            result = await self._fetch_and_format(cleaned)
-            # Solo cachear si la búsqueda tuvo éxito.
+            try:
+                result = await self._fetch_and_format(cleaned)
+                async with self._cache_lock:
+                    self._cache[cache_key] = result
+            except (
+                aiohttp.ClientError,
+                asyncio.TimeoutError,
+                EgressViolation,
+                NetworkGatewayTimeout,
+                _TransientHTTPError,
+            ) as exc:
+                logger.warning(
+                    "reddit.search_failed",
+                    extra={"mod_name": cleaned, "error": repr(exc)},
+                )
+                result = f"Reddit lookup unavailable for '{cleaned}'."
+        finally:
             async with self._cache_lock:
-                self._cache[cache_key] = result
-        except (
-            aiohttp.ClientError,
-            asyncio.TimeoutError,
-            EgressViolation,
-            NetworkGatewayTimeout,
-            _TransientHTTPError,
-        ) as exc:
-            logger.warning(
-                "reddit.search_failed",
-                extra={"mod_name": cleaned, "error": repr(exc)},
-            )
-            result = f"Reddit lookup unavailable for '{cleaned}'."
-            # No guardamos en self._cache para permitir reintentos (no negative caching)
-
-        async with self._cache_lock:
-            inflight = self._inflight.pop(cache_key, None)
-        if inflight is not None and not inflight.done():
-            inflight.set_result(result)
+                inflight = self._inflight.pop(cache_key, None)
+                if inflight is not None and not inflight.done():
+                    # Si terminamos por cancelación o error no capturado,
+                    # resolvemos el future para liberar a otros 'callers'.
+                    # Usamos set_result(result) si result existe (error controlado)
+                    # o cancelamos si fue una cancelación real.
+                    if "result" in locals():
+                        inflight.set_result(result)
+                    else:
+                        inflight.cancel()
 
         logger.info(
             "reddit.search_completed",
@@ -286,13 +330,6 @@ class RedditKnowledgeResolver:
                 reraise=True,
             ):
                 with attempt:
-                    if self._gateway is not None:
-                        resp = await self._gateway.request("GET", url, session)
-                        async with resp:
-                            if resp.status == 200:
-                                payload = await resp.json()
-                                return self._extract_posts(payload)
-                            return []  # Dejar que el error cascade al caller
                     return await self._execute_request(session, url)
         except RetryError as exc:
             raise _TransientHTTPError("exhausted retries") from exc
@@ -300,8 +337,13 @@ class RedditKnowledgeResolver:
 
     async def _execute_request(
         self, session: aiohttp.ClientSession, url: str
-    ) -> list[dict[str, Any]]:
-        async with session.get(url) as response:
+    ) -> list[RedditPostData]:
+        if self._gateway is not None:
+            resp_cm = await self._gateway.request("GET", url, session)
+        else:
+            resp_cm = session.get(url)
+
+        async with resp_cm as response:
             status = response.status
             if status == 200:
                 payload = await response.json()
@@ -326,33 +368,26 @@ class RedditKnowledgeResolver:
         return "&".join(f"{k}={quote_plus(v)}" for k, v in params.items())
 
     @staticmethod
-    def _extract_posts(payload: Any) -> list[dict[str, Any]]:
-        if not isinstance(payload, dict):
+    def _extract_posts(payload: Any) -> list[RedditPostData]:
+        try:
+            listing = RedditListing.model_validate(payload)
+            return [child.data for child in listing.data.children]
+        except Exception:
+            logger.warning(
+                "reddit.invalid_payload",
+                extra={"payload_preview": str(payload)[:200]},
+            )
             return []
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            return []
-        children = data.get("children")
-        if not isinstance(children, list):
-            return []
-        posts: list[dict[str, Any]] = []
-        for child in children:
-            if not isinstance(child, dict):
-                continue
-            post = child.get("data")
-            if isinstance(post, dict):
-                posts.append(post)
-        return posts
 
-    def _format_posts(self, mod_name: str, posts: list[dict[str, Any]]) -> str:
+    def _format_posts(self, mod_name: str, posts: list[RedditPostData]) -> str:
         lines = [f"Reddit findings for '{mod_name}':"]
         for post in posts:
-            title = str(post.get("title", "")).strip() or "(untitled)"
-            score = post.get("score", 0)
-            subreddit = post.get("subreddit", "?")
-            permalink = post.get("permalink", "")
+            title = post.title.strip() or "(untitled)"
+            score = post.score
+            subreddit = post.subreddit or "?"
+            permalink = post.permalink
             url = f"https://www.reddit.com{permalink}" if permalink else ""
-            snippet_raw = str(post.get("selftext", "")).strip()
+            snippet_raw = post.selftext.strip()
             snippet = snippet_raw[:_SNIPPET_MAX]
             if len(snippet_raw) > _SNIPPET_MAX:
                 snippet += "..."
