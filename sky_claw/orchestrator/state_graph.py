@@ -1021,7 +1021,7 @@ class StateGraphIntegration:
     async def _on_hitl_wait(self, state: StateGraphState) -> None:
         """Callback para estado HITL_WAIT."""
         if self._supervisor:
-            hitl_request = state.get("hitl_request", {})
+            hitl_request = state.get("hitl_request") or {}
             response = await self._supervisor.interface.request_hitl(
                 self._supervisor._create_hitl_request(hitl_request)
             )

@@ -146,7 +146,7 @@ class TestAgenticLoopGuardrail:
         # The last 3 elements are [hash(B), hash(A), hash(A)] — NOT all identical
         # So the breaker should NOT trip
         # Verify guardrail is still active (not cleared)
-        assert len(guardrail._history) == 4
+        assert len(guardrail.snapshot()) == 4
 
     def test_consecutive_pattern_trips_correctly(self) -> None:
         """FIX 4: Verify that consecutive repeats DO trigger the breaker correctly.

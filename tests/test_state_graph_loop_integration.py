@@ -143,7 +143,11 @@ class TestDispatchingLoopDetection:
 
         state = _base_state()
         state["loop_detected"] = True
-        state["hitl_request"] = {"action_type": "loop_detected"}
+        state["hitl_request"] = {
+            "action_type": "circuit_breaker_halt",
+            "reason": "Loop detected",
+            "context_data": {"tool_name": "t", "occurrences": 1},
+        }
         graph.loop_guardrail.register_and_check("t", {"x": 1})
         assert len(graph.loop_guardrail.snapshot()) == 1
 

@@ -41,8 +41,9 @@ class AgenticLoopGuardrail:
             tool_args: Kwargs con los que se invocará la herramienta.
 
         Raises:
-            CircuitBreakerTrippedError: Si la misma (tool_name, tool_args) ya
-                apareció ``max_repeats`` veces dentro de la ventana actual.
+            CircuitBreakerTrippedError: Si la misma (tool_name, tool_args) aparece
+                ``max_repeats`` veces **consecutivas** (últimos N elementos idénticos).
+                Detección de bucles infinitos, no incidental repeats.
                 Tras el disparo, el historial queda limpio para que una
                 eventual aprobación HITL pueda reintentar sin re-tripear.
         """
