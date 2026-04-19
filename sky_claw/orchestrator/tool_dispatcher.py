@@ -1,0 +1,106 @@
+"""OrchestrationToolDispatcher — registry-based replacement for the
+legacy SupervisorAgent.dispatch_tool match/case (Strangler Fig refactor).
+
+This dispatcher serves the orchestration layer (LangGraph callbacks,
+internal services) and returns dicts. It is INTENTIONALLY separate from
+sky_claw.agent.tools.AsyncToolRegistry, which serves the LLM-facing
+agent layer (returns JSON strings, integrates with LLMRouter).
+
+Two registries, one clear seam each.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from sky_claw.orchestrator.tool_strategies.base import (
+    DuplicateToolError,
+    NextCall,
+    ToolMiddleware,
+    ToolNotFoundError,
+    ToolStrategy,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class OrchestrationToolDispatcher:
+    """Registry of ToolStrategy + per-strategy middleware chains.
+
+    Caller-facing contract — `dispatch(tool_name, payload_dict)`:
+      - On match: run the middleware chain (outer → inner → strategy.execute).
+      - On miss: return {"status": "error", "reason": "ToolNotFound"} (legacy
+        contract preserved verbatim from supervisor.py:345-347).
+    """
+
+    def __init__(self) -> None:
+        self._strategies: dict[str, ToolStrategy] = {}
+        self._middleware: dict[str, list[ToolMiddleware]] = {}
+
+    def register(
+        self,
+        strategy: ToolStrategy,
+        *,
+        middleware: list[ToolMiddleware] | None = None,
+    ) -> None:
+        """Add a strategy keyed by `strategy.name`.
+
+        Middleware list is applied OUTER-FIRST: middleware[0] wraps middleware[1]
+        which wraps ... which wraps strategy.execute. Each middleware decides
+        whether to invoke `next_call` (advance) or short-circuit.
+        """
+        if strategy.name in self._strategies:
+            raise DuplicateToolError(f"Tool '{strategy.name}' already registered.")
+        self._strategies[strategy.name] = strategy
+        self._middleware[strategy.name] = list(middleware) if middleware else []
+
+    async def dispatch(
+        self,
+        tool_name: str,
+        payload_dict: dict[str, Any],
+    ) -> dict[str, Any]:
+        strategy = self._strategies.get(tool_name)
+        if strategy is None:
+            logger.error(f"RCA: LLM alucinó la herramienta '{tool_name}'.")
+            return {"status": "error", "reason": "ToolNotFound"}
+
+        middlewares = self._middleware[tool_name]
+
+        async def innermost() -> dict[str, Any]:
+            return await strategy.execute(payload_dict)
+
+        current: NextCall = innermost
+        for mw in reversed(middlewares):
+            current = _make_thunk(mw, strategy, payload_dict, current)
+
+        return await current()
+
+    def registered_tools(self) -> list[str]:
+        """Snapshot of currently registered tool names (for introspection / tests)."""
+        return list(self._strategies.keys())
+
+
+def _make_thunk(
+    middleware: ToolMiddleware,
+    strategy: ToolStrategy,
+    payload_dict: dict[str, Any],
+    next_call: NextCall,
+) -> NextCall:
+    """Bind middleware + its successor into a zero-arg awaitable.
+
+    A separate function (not a closure inside the loop) prevents the classic
+    late-binding bug where every iteration would capture the final `mw`.
+    """
+
+    async def thunk() -> dict[str, Any]:
+        return await middleware(strategy, payload_dict, next_call)
+
+    return thunk
+
+
+__all__ = [
+    "DuplicateToolError",
+    "OrchestrationToolDispatcher",
+    "ToolNotFoundError",
+]
