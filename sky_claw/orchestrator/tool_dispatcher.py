@@ -12,7 +12,7 @@ Two registries, one clear seam each.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sky_claw.orchestrator.tool_strategies.base import (
     DuplicateToolError,
@@ -21,6 +21,12 @@ from sky_claw.orchestrator.tool_strategies.base import (
     ToolNotFoundError,
     ToolStrategy,
 )
+from sky_claw.orchestrator.tool_strategies.query_mod_metadata import (
+    QueryModMetadataStrategy,
+)
+
+if TYPE_CHECKING:
+    from sky_claw.orchestrator.supervisor import SupervisorAgent
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +105,25 @@ def _make_thunk(
     return thunk
 
 
+def build_orchestration_dispatcher(
+    supervisor: SupervisorAgent,
+) -> OrchestrationToolDispatcher:
+    """Wire all migrated tool strategies onto a fresh dispatcher.
+
+    Called from SupervisorAgent.__init__ AFTER all collaborators
+    (services, agents, daemons) are constructed. Strategies are migrated
+    one-by-one in the Strangler Fig refactor; the legacy match/case in
+    SupervisorAgent.dispatch_tool delegates to this dispatcher only for
+    tool names that have been moved over.
+    """
+    dispatcher = OrchestrationToolDispatcher()
+    dispatcher.register(QueryModMetadataStrategy(scraper=supervisor.scraper))
+    return dispatcher
+
+
 __all__ = [
     "DuplicateToolError",
     "OrchestrationToolDispatcher",
     "ToolNotFoundError",
+    "build_orchestration_dispatcher",
 ]

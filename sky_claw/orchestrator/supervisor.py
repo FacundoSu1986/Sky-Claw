@@ -10,7 +10,6 @@ from sky_claw.core.database import DatabaseAgent
 from sky_claw.core.event_bus import CoreEventBus, Event
 from sky_claw.core.models import HitlApprovalRequest, LootExecutionParams
 from sky_claw.core.path_resolver import PathResolutionService
-from sky_claw.core.schemas import ScrapingQuery
 from sky_claw.core.windows_interop import ModdingToolsAgent
 from sky_claw.db.journal import OperationJournal
 from sky_claw.db.locks import DistributedLockManager
@@ -22,6 +21,7 @@ from sky_claw.orchestrator.maintenance_daemon import (
 )
 from sky_claw.orchestrator.state_graph import create_supervisor_state_graph
 from sky_claw.orchestrator.telemetry_daemon import TelemetryDaemon
+from sky_claw.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 from sky_claw.orchestrator.watcher_daemon import WatcherDaemon
 from sky_claw.orchestrator.ws_event_streamer import LangGraphEventStreamer
 from sky_claw.scraper.scraper_agent import ScraperAgent
@@ -109,6 +109,11 @@ class SupervisorAgent:
         # Lazy init para runners legacy que aún no son servicios puros (WryeBash, AssetDetector)
         self._asset_detector: AssetConflictDetector | None = None
         self._wrye_bash_runner: WryeBashRunner | None = None
+
+        # Strangler Fig: dispatcher para herramientas migradas. Las branches del match/case
+        # delegan progresivamente a este dispatcher. Se construye al final del __init__
+        # para garantizar que todos los services y agents ya están listos.
+        self._tool_dispatcher = build_orchestration_dispatcher(self)
 
     def _init_rollback_components(self) -> None:
         """FASE 1.5: Inicializa los componentes de resiliencia para rollback.
@@ -242,11 +247,8 @@ class SupervisorAgent:
         """
         match tool_name:
             case "query_mod_metadata":
-                # Crear ScrapingQuery validado con Pydantic
-                query = ScrapingQuery(**payload_dict)
-                result = await self.scraper.query_nexus(query)
-                # Convertir ModMetadata a dict para compatibilidad con la interfaz
-                return result.model_dump()
+                # Strangler Fig: migrado a QueryModMetadataStrategy (canary).
+                return await self._tool_dispatcher.dispatch(tool_name, payload_dict)
 
             case "execute_loot_sorting":
                 params = LootExecutionParams(**payload_dict)

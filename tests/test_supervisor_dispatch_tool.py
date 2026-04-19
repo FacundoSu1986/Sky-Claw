@@ -20,6 +20,7 @@ import pytest
 from sky_claw.core.models import HitlApprovalRequest, LootExecutionParams
 from sky_claw.core.schemas import ScrapingQuery
 from sky_claw.orchestrator.supervisor import SupervisorAgent
+from sky_claw.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 from sky_claw.xedit.conflict_analyzer import ConflictReport
 
 
@@ -40,6 +41,7 @@ def supervisor() -> SupervisorAgent:
     sup._dyndolod_service = MagicMock()
     sup._dyndolod_service.execute = AsyncMock()
     sup.profile_name = "TestProfile"
+    sup._tool_dispatcher = build_orchestration_dispatcher(sup)
     return sup
 
 
