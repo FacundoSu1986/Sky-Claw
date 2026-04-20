@@ -49,6 +49,7 @@ def supervisor() -> SupervisorAgent:
 # query_mod_metadata
 # ---------------------------------------------------------------------------
 
+
 async def test_query_mod_metadata_validates_with_pydantic(supervisor):
     """Invalid payload raises pydantic.ValidationError; valid payload calls scraper.query_nexus
     with a ScrapingQuery instance and returns model_dump() of the result."""
@@ -75,6 +76,7 @@ async def test_query_mod_metadata_invalid_payload_raises(supervisor):
 # ---------------------------------------------------------------------------
 # execute_loot_sorting (HITL-gated)
 # ---------------------------------------------------------------------------
+
 
 async def test_execute_loot_sorting_hitl_approved(supervisor):
     """When interface.request_hitl returns 'approved', tools.run_loot is called with LootExecutionParams."""
@@ -116,6 +118,7 @@ async def test_execute_loot_sorting_hitl_denied(supervisor):
 # execute_synthesis_pipeline (try/except + dict guard)
 # ---------------------------------------------------------------------------
 
+
 async def test_execute_synthesis_pipeline_success(supervisor):
     supervisor._synthesis_service.execute_pipeline.return_value = {"status": "ok", "patches": 3}
 
@@ -146,6 +149,7 @@ async def test_execute_synthesis_pipeline_non_dict_result(supervisor):
 # ---------------------------------------------------------------------------
 # resolve_conflict_with_patch (try/except + dict guard + ConflictReport ctor)
 # ---------------------------------------------------------------------------
+
 
 async def test_resolve_conflict_with_patch_success(supervisor):
     import pathlib
@@ -198,6 +202,7 @@ async def test_resolve_conflict_with_patch_non_dict_result(supervisor):
 # generate_lods
 # ---------------------------------------------------------------------------
 
+
 async def test_generate_lods_delegates(supervisor):
     supervisor._dyndolod_service.execute.return_value = {"status": "ok", "lods": 1234}
 
@@ -210,6 +215,7 @@ async def test_generate_lods_delegates(supervisor):
 # ---------------------------------------------------------------------------
 # scan_asset_conflicts (raw + JSON variants)
 # ---------------------------------------------------------------------------
+
 
 async def test_scan_asset_conflicts_returns_dataclass_dicts(supervisor):
     @dataclasses.dataclass
@@ -241,6 +247,7 @@ async def test_scan_asset_conflicts_json(supervisor):
 # generate_bashed_patch (delegates to supervisor method)
 # ---------------------------------------------------------------------------
 
+
 async def test_generate_bashed_patch_delegates(supervisor):
     supervisor.execute_wrye_bash_pipeline = AsyncMock(return_value={"success": True, "return_code": 0})
 
@@ -256,6 +263,7 @@ async def test_generate_bashed_patch_delegates(supervisor):
 # ---------------------------------------------------------------------------
 # validate_plugin_limit (default + explicit profile)
 # ---------------------------------------------------------------------------
+
 
 async def test_validate_plugin_limit_default_profile(supervisor):
     supervisor._run_plugin_limit_guard = AsyncMock(return_value={"valid": True})
@@ -278,6 +286,7 @@ async def test_validate_plugin_limit_explicit_profile(supervisor):
 # ---------------------------------------------------------------------------
 # Unknown tool fallback
 # ---------------------------------------------------------------------------
+
 
 async def test_unknown_tool_returns_tool_not_found(supervisor):
     """LLM hallucinated tool name → exact legacy error dict."""

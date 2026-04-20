@@ -29,9 +29,5 @@ class ValidatePluginLimitStrategy:
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         # Avoid eager evaluation of default_profile_getter() if "profile" key exists.
         # dict.get(key, default) evaluates default first, so use explicit check instead.
-        profile = (
-            payload_dict["profile"]
-            if "profile" in payload_dict
-            else self.default_profile_getter()
-        )
+        profile = payload_dict["profile"] if "profile" in payload_dict else self.default_profile_getter()
         return await self.plugin_limit_guard(profile)
