@@ -64,9 +64,12 @@ class HitlApprovalRequest(BaseModel):
 
     model_config = {"strict": True}
 
-    action_type: Literal["download_external", "destructive_xedit", "circuit_breaker_halt"] = Field(
-        ..., description="Tipo de acción que requiere aprobación."
-    )
+    action_type: Literal[
+        "download_external",
+        "destructive_xedit",
+        "circuit_breaker_halt",
+        "reorder_load_order",
+    ] = Field(..., description="Tipo de acción que requiere aprobación.")
     reason: str = Field(
         ...,
         description="Justificación técnica generada por el agente (Thought) para el usuario.",
