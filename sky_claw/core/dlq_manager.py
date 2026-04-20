@@ -11,13 +11,17 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import aiosqlite
 
 from sky_claw.core.event_bus import Event, Subscriber
+
+if TYPE_CHECKING:
+    pass
 
 logger = logging.getLogger("SkyClaw.DLQ")
 
@@ -72,7 +76,7 @@ class DLQManager:
         db_path: Ruta al archivo SQLite de la DLQ.
         handler_resolver: Callable que dado un handler_name retorna el Subscriber o None.
         max_attempts: Número máximo de intentos antes de marcar como 'dead'.
-        base_backoff_s: Segundos base para el backoff (delay = base ** attempts).
+        base_backoff_s: Base del backoff exponencial (delay = base^attempt segundos).
         poll_interval_s: Segundos entre polls cuando la DLQ está vacía.
         batch_size: Máximo de filas procesadas por tick.
         clock: Función que retorna epoch en ms (inyectable para tests).
@@ -97,14 +101,29 @@ class DLQManager:
         self._batch_size = batch_size
         self._clock = clock
         self._retry_task: asyncio.Task[None] | None = None
+        self._schema_ensured: bool = False
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     async def start(self) -> None:
         """Inicia el worker de reintento como asyncio.Task de fondo."""
-        raise NotImplementedError
+        if self._retry_task is not None:
+            logger.warning("DLQManager ya está corriendo, ignorando start() duplicado")
+            return
+        self._retry_task = asyncio.create_task(self._retry_loop(), name="dlq-retry-worker")
+        logger.info("DLQManager iniciado (db=%s)", self._db_path)
 
     async def stop(self) -> None:
         """Detiene el worker de reintento de forma grácil."""
-        raise NotImplementedError
+        if self._retry_task is None:
+            return
+        self._retry_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._retry_task
+        self._retry_task = None
+        logger.info("DLQManager detenido")
 
     async def enqueue(self, event: Event, handler: Subscriber, exc: BaseException) -> None:
         """Persiste un evento fallido en la DLQ.
@@ -114,45 +133,242 @@ class DLQManager:
             handler: El callback que lanzó la excepción.
             exc: La excepción capturada.
         """
-        raise NotImplementedError
+        await self._ensure_schema()
+        now = self._clock()
+        name = self._handler_name(handler)
+        next_retry = self._compute_next_retry_at(now, 1, self._base_backoff_s)
+        payload_json = json.dumps(event.payload, sort_keys=True, default=str)
+
+        async with self._connect() as db:
+            await db.execute(
+                """
+                INSERT INTO dead_letter_events
+                    (topic, payload_json, source, event_ts_ms, handler_name,
+                     error_type, error_message, attempts, next_retry_at,
+                     status, enqueued_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?)
+                """,
+                (
+                    event.topic,
+                    payload_json,
+                    event.source,
+                    event.timestamp_ms,
+                    name,
+                    type(exc).__name__,
+                    str(exc),
+                    next_retry,
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+
+        logger.debug(
+            "DLQ: encolado evento '%s' desde handler '%s' (error: %s)",
+            event.topic,
+            name,
+            type(exc).__name__,
+        )
 
     async def list_pending(self) -> list[DLQRow]:
         """Retorna todas las filas con status='pending'."""
-        raise NotImplementedError
+        await self._ensure_schema()
+        return await self._select_by_status("pending")
 
     async def list_dead(self) -> list[DLQRow]:
         """Retorna todas las filas con status='dead'."""
-        raise NotImplementedError
+        await self._ensure_schema()
+        return await self._select_by_status("dead")
+
+    # ------------------------------------------------------------------
+    # Internal — schema / connection
+    # ------------------------------------------------------------------
 
     async def _ensure_schema(self) -> None:
         """Crea el directorio y la tabla si no existen."""
-        raise NotImplementedError
+        if self._schema_ensured:
+            return
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        async with self._connect() as db:
+            await db.executescript(_DDL)
+            await db.commit()
+        self._schema_ensured = True
+
+    @contextlib.asynccontextmanager
+    async def _connect(self) -> AsyncGenerator[aiosqlite.Connection, None]:
+        """Abre conexión con pragmas de producción."""
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA foreign_keys=ON")
+            await db.execute("PRAGMA synchronous=NORMAL")
+            await db.execute("PRAGMA busy_timeout=5000")
+            db.row_factory = aiosqlite.Row
+            yield db
+
+    # ------------------------------------------------------------------
+    # Internal — retry loop
+    # ------------------------------------------------------------------
 
     async def _retry_loop(self) -> None:
         """Loop de reintento que corre como tarea de fondo."""
-        raise NotImplementedError
+        await self._ensure_schema()
+        try:
+            while True:
+                rows = await self._fetch_due_batch(limit=self._batch_size)
+                if not rows:
+                    await asyncio.sleep(self._poll_interval_s)
+                    continue
+                for row in rows:
+                    await self._process_row(row)
+        except asyncio.CancelledError:
+            raise
 
     async def _process_row(self, row: DLQRow) -> None:
         """Procesa una sola fila: resuelve handler, reintenta, actualiza estado."""
-        raise NotImplementedError
+        now = self._clock()
+        async with self._connect() as db:
+            await db.execute(
+                "UPDATE dead_letter_events SET status='in_progress', updated_at=? WHERE id=?",
+                (now, row.id),
+            )
+            await db.commit()
 
-    async def _mark_dead(self, row: DLQRow, reason: str) -> None:
+        handler = self._handler_resolver(row.handler_name)
+        if handler is None:
+            await self._mark_dead(row, "handler_not_registered")
+            return
+
+        event = Event(
+            topic=row.topic,
+            payload=row.payload,
+            timestamp_ms=row.event_ts_ms,
+            source=row.source,
+        )
+        try:
+            await handler(event)
+        except Exception as exc:
+            new_attempts = row.attempts + 1
+            if new_attempts >= self._max_attempts:
+                await self._mark_dead(row, str(exc), attempts=new_attempts)
+                logger.warning(
+                    "DLQ: evento '%s' handler '%s' agotó %d intentos → dead",
+                    row.topic,
+                    row.handler_name,
+                    self._max_attempts,
+                )
+            else:
+                now2 = self._clock()
+                next_retry = self._compute_next_retry_at(now2, new_attempts, self._base_backoff_s)
+                async with self._connect() as db:
+                    await db.execute(
+                        """
+                        UPDATE dead_letter_events
+                        SET status='pending', attempts=?, next_retry_at=?,
+                            error_type=?, error_message=?, updated_at=?
+                        WHERE id=?
+                        """,
+                        (
+                            new_attempts,
+                            next_retry,
+                            type(exc).__name__,
+                            str(exc),
+                            now2,
+                            row.id,
+                        ),
+                    )
+                    await db.commit()
+        else:
+            async with self._connect() as db:
+                await db.execute("DELETE FROM dead_letter_events WHERE id=?", (row.id,))
+                await db.commit()
+            logger.info(
+                "DLQ: evento '%s' handler '%s' reintentado con éxito (intentos=%d)",
+                row.topic,
+                row.handler_name,
+                row.attempts + 1,
+            )
+
+    async def _mark_dead(self, row: DLQRow, reason: str, *, attempts: int | None = None) -> None:
         """Marca una fila como 'dead' con el motivo dado."""
-        raise NotImplementedError
+        now = self._clock()
+        final_attempts = attempts if attempts is not None else row.attempts
+        async with self._connect() as db:
+            await db.execute(
+                """
+                UPDATE dead_letter_events
+                SET status='dead', error_message=?, updated_at=?, attempts=?
+                WHERE id=?
+                """,
+                (reason, now, final_attempts, row.id),
+            )
+            await db.commit()
 
     async def _fetch_due_batch(self, limit: int) -> list[DLQRow]:
         """Retorna filas pendientes cuyo next_retry_at ya venció."""
-        raise NotImplementedError
+        now = self._clock()
+        await self._ensure_schema()
+        async with self._connect() as db:
+            async with db.execute(
+                """
+                SELECT id, topic, payload_json, source, event_ts_ms, handler_name,
+                       error_type, error_message, attempts, next_retry_at,
+                       status, enqueued_at, updated_at
+                FROM dead_letter_events
+                WHERE status = 'pending' AND next_retry_at <= ?
+                ORDER BY next_retry_at ASC
+                LIMIT ?
+                """,
+                (now, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [self._row_from_sqlite(r) for r in rows]
 
-    def _next_retry_at(self, attempts: int) -> int:
-        """Calcula el epoch ms para el próximo intento usando backoff exponencial."""
-        raise NotImplementedError
+    # ------------------------------------------------------------------
+    # Internal — helpers
+    # ------------------------------------------------------------------
+
+    async def _select_by_status(self, status: str) -> list[DLQRow]:
+        async with self._connect() as db:
+            async with db.execute(
+                """
+                SELECT id, topic, payload_json, source, event_ts_ms, handler_name,
+                       error_type, error_message, attempts, next_retry_at,
+                       status, enqueued_at, updated_at
+                FROM dead_letter_events
+                WHERE status = ?
+                ORDER BY id ASC
+                """,
+                (status,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [self._row_from_sqlite(r) for r in rows]
+
+    @staticmethod
+    def _row_from_sqlite(row: aiosqlite.Row) -> DLQRow:
+        return DLQRow(
+            id=row["id"],
+            topic=row["topic"],
+            payload=json.loads(row["payload_json"]),
+            source=row["source"],
+            event_ts_ms=row["event_ts_ms"],
+            handler_name=row["handler_name"],
+            error_type=row["error_type"],
+            error_message=row["error_message"],
+            attempts=row["attempts"],
+            next_retry_at=row["next_retry_at"],
+            status=row["status"],
+            enqueued_at=row["enqueued_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _compute_next_retry_at(now_ms: int, attempt: int, base_backoff_s: int = 2) -> int:
+        """Calcula el epoch ms para el próximo intento: now + base^attempt * 1000 ms."""
+        return now_ms + (base_backoff_s**attempt) * 1000
 
     @staticmethod
     def _handler_name(cb: Subscriber) -> str:
         """Genera un identificador estable para un callable."""
-        raise NotImplementedError
-
-    async def _connect(self) -> aiosqlite.Connection:
-        """Abre conexión con pragmas de producción."""
-        raise NotImplementedError
+        mod = getattr(cb, "__module__", "unknown")
+        qn = getattr(cb, "__qualname__", None)
+        return f"{mod}.{qn}" if qn else repr(cb)
