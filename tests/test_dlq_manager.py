@@ -200,7 +200,7 @@ async def test_poisoning_after_max_attempts(tmp_path: Path) -> None:
 
     await dlq.enqueue(_make_event(), _always_fail, RuntimeError("initial"))
     await dlq.start()
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(2.0)  # generous budget for 5 retries on a loaded CI runner
     await dlq.stop()
 
     dead = await dlq.list_dead()

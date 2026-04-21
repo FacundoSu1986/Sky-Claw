@@ -118,6 +118,18 @@ class AsyncToolRegistry:
             for td in self._tools.values()
         ]
 
+    def hermes_system_prompt_block(self) -> str:
+        """Serialize registered tools as a <tools>…</tools> XML block for Hermes-style prompting."""
+        schemas = [
+            {
+                "name": td.name,
+                "description": td.description,
+                "parameters": td.input_schema,
+            }
+            for td in self._tools.values()
+        ]
+        return f"<tools>\n{json.dumps(schemas, indent=2, ensure_ascii=False)}\n</tools>"
+
     async def _download_mod(self, nexus_id: int, file_id: int | None = None) -> str:
         """Download a mod with HITL approval (P0-2: re-fetches fresh URL on execute)."""
         return await download_mod(self._downloader, self._hitl, self._sync_engine, nexus_id, file_id)

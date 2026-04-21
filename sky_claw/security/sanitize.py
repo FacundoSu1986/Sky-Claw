@@ -46,6 +46,8 @@ _INJECTION_PATTERNS = re.compile(
     r"|</assistant>"
     r"|<tool_use>"  # Tool injection markers
     r"|</tool_use>"
+    r"|<tool_call>"  # Hermes-style tool injection markers
+    r"|</tool_call>"
     r"|<function_call>"
     r"|</function_call>"
     r"|<tool_result>"
