@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
 
 [project]
 name = "sky-claw"
@@ -34,6 +34,7 @@ dev = [
     "pytest-asyncio>=1.0",
     "pytest-aiohttp>=1.0,<2",
     "pytest-cov",
+    "ruff>=0.4",
 ]
 
 [tool.pytest.ini_options]
@@ -113,5 +114,5 @@ module = [
 ]
 ignore_errors = true
 
-[tool.setuptools]
+[tool.hatch.build.targets.wheel]
 packages = ["sky_claw"]
