@@ -147,25 +147,10 @@
                 </div>
             </div>
 
+            <!-- Virtual-scrolling viewport. js/log-view.js injects the
+                 spacer + window and renders only the visible rows. -->
             <div class="ops-orbe__stream" id="ops-log-stream"
-                role="log" aria-live="polite" aria-atomic="false" tabindex="0">
-                <!-- Placeholder log lines (Phase 1 static preview; Phase 2 will stream) -->
-                <div class="ops-log-line ops-log-line--info">
-                    <span class="ops-log-line__time">14:32:01.120</span>
-                    <span class="ops-log-line__level">INFO</span>
-                    <span class="ops-log-line__msg">Operations Hub inicializado. Esperando enlace con backend…</span>
-                </div>
-                <div class="ops-log-line ops-log-line--debug">
-                    <span class="ops-log-line__time">14:32:01.245</span>
-                    <span class="ops-log-line__level">DEBUG</span>
-                    <span class="ops-log-line__msg">WebSocket /api/status: fase 2 aún no implementada (Phase 1: layout only)</span>
-                </div>
-                <div class="ops-log-line ops-log-line--success">
-                    <span class="ops-log-line__time">14:32:01.390</span>
-                    <span class="ops-log-line__level">OK</span>
-                    <span class="ops-log-line__msg">Dark Glass + Medieval theme loaded correctly.</span>
-                </div>
-            </div>
+                role="log" aria-live="polite" aria-atomic="false" tabindex="0"></div>
 
             <div class="ops-orbe__empty" id="ops-orbe-empty" hidden>
                 <svg class="ops-orbe__empty-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"

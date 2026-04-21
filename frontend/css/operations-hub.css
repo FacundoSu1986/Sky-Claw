@@ -278,14 +278,16 @@
 .ops-orbe__stream {
     flex: 1;
     overflow-y: auto;
-    overflow-x: auto;
+    overflow-x: hidden;
     padding: 6px 0;
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
     font-size: 12px;
     line-height: 1.4;
     font-variant-numeric: tabular-nums;
     scrollbar-gutter: stable;
-    scroll-behavior: smooth;
+    /* scroll-behavior stays 'auto' (default) — smooth scroll would animate
+       every programmatic auto-scroll jump during log bursts and never
+       actually reach the bottom. */
 }
 
 .ops-orbe__stream::-webkit-scrollbar {
@@ -303,14 +305,38 @@
     background: var(--bronze-deep);
 }
 
-/* Log line — minimal padding, high-density */
+/* Virtual-scroll wrappers — one tall spacer holds the scroll thumb span,
+   one absolutely-positioned window translates vertically as the user
+   scrolls. Row height below is locked so `computeVisibleRange` in
+   js/log-view.js can do O(1) math. */
+.ops-orbe__vscroll-spacer {
+    position: relative;
+    width: 100%;
+    /* height is set inline by js/log-view.js: total_rows * ROW_HEIGHT */
+}
+
+.ops-orbe__vscroll-window {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    will-change: transform;
+    /* transform: translateY(offset) is set inline by js/log-view.js */
+}
+
+/* Log line — strict fixed height for virtual scrolling (MUST match
+   ROW_HEIGHT in frontend/js/log-view.js). Single-line with ellipsis;
+   the full message is available via the native title tooltip. */
 .ops-log-line {
     display: grid;
     grid-template-columns: 78px 58px 1fr;
     gap: 8px;
-    padding: 1px 16px 1px 16px;
-    white-space: pre-wrap;
-    word-break: break-word;
+    padding: 0 16px;
+    height: 20px;
+    line-height: 20px;
+    align-items: center;
+    white-space: nowrap;
+    overflow: hidden;
 }
 
 .ops-log-line:hover {
@@ -344,6 +370,9 @@
 
 .ops-log-line__msg {
     color: var(--es-text-light);
+    min-width: 0;                 /* allow grid cell to shrink below content */
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Empty state */

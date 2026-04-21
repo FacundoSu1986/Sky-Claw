@@ -12,6 +12,7 @@
 
 import { AppState } from './appstate.js';
 import { WebSocketClient, buildWsUrl } from './websocket-client.js';
+import { LogView } from './log-view.js';
 
 /** WebSocket endpoint served by OperationsHubWSHandler. */
 export const WS_PATH = '/api/status';
@@ -228,13 +229,58 @@ export function createOperationsHub({
 }
 
 
+/**
+ * Mount the DOM binders that are ready to bind against the given state.
+ * Today: LogView (Phase 4). Phase 5 will append Arsenal/Telemetría binders.
+ *
+ * Exported so tests and future reuse can opt in/out granularly.
+ *
+ * @param {AppState} state
+ * @returns {{logView: LogView|null, dispose: () => void}}
+ */
+export function mountDomBinders(state) {
+    const binders = [];
+
+    const logContainer = document.getElementById('ops-log-stream');
+    const filterButtons = document.querySelectorAll('.ops-orbe__filter-btn');
+    const clearButton = document.getElementById('ops-clear-logs');
+    const autoScrollButton = document.getElementById('ops-autoscroll');
+    const emptyState = document.getElementById('ops-orbe-empty');
+
+    let logView = null;
+    if (logContainer) {
+        logView = new LogView({
+            state,
+            container: logContainer,
+            filterButtons,
+            clearButton,
+            autoScrollButton,
+            emptyState,
+        });
+        binders.push(logView);
+    } else {
+        // eslint-disable-next-line no-console
+        console.warn('[OperationsHub] #ops-log-stream not found; LogView not mounted');
+    }
+
+    const dispose = () => {
+        for (const b of binders) {
+            try { b.dispose?.(); } catch { /* no-op */ }
+        }
+    };
+
+    return { logView, dispose };
+}
+
+
 // ─────────────────── Auto-bootstrap when loaded in a browser ───────────────
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     const boot = () => {
         const hub = createOperationsHub();
-        // Expose on window for Phase 4/5 DOM binders + DevTools debugging.
-        window.SkyClawOperationsHub = hub;
+        const binders = mountDomBinders(hub.state);
+        // Expose on window for Phase 5 binders + DevTools debugging.
+        window.SkyClawOperationsHub = { ...hub, binders };
     };
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', boot, { once: true });
