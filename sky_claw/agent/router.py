@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import aiosqlite
 
 from sky_claw.agent.context_manager import ContextManager
+from sky_claw.agent.hermes_parser import extract_tool_calls, has_tool_calls
 from sky_claw.agent.lcel_chains import (
     ChainBuilder,
     PromptComposer,
@@ -38,6 +39,13 @@ logger = logging.getLogger(__name__)
 
 MAX_CONTEXT_MESSAGES = 20
 MAX_TOOL_ROUNDS = 10
+MAX_HERMES_RETRIES = 3
+
+_HERMES_TOOL_INSTRUCTIONS = (
+    "\n\nYou have access to the following tools. To call a tool, respond with a "
+    "<tool_call> block containing a JSON object with \"name\" and \"arguments\" keys. "
+    "Wait for the tool result before continuing. If no tool is needed, reply normally.\n\n"
+)
 
 
 # BUG-002 FIX: Función de validación de API keys
@@ -105,6 +113,7 @@ class LLMRouter:
         vault: CredentialVault | None = None,
         gateway: Any | None = None,
         guardrail: AgentGuardrail | None = None,
+        hermes_mode: bool = False,
     ) -> None:
         if provider is None and not vault:
             # BUG-002 FIX: Validar API key antes de instanciar provider
@@ -135,6 +144,7 @@ class LLMRouter:
         self._context_manager = ContextManager(registry_db, mo2_profile)
         self._gateway = gateway
         self._guardrail = guardrail
+        self._hermes_mode = hermes_mode
 
         # LangChain LCEL Integration
         self._lcel_prompt_composer = PromptComposer(
@@ -283,15 +293,26 @@ class LLMRouter:
 
         tool_schemas = self._tools.tool_schemas() if self._tools else []
         consecutive_errors = 0
+        hermes_error_count = 0
 
         for _round in range(MAX_TOOL_ROUNDS):
             try:
+                effective_system = f"{self._system_prompt}\n\n{injected_context}"
+                effective_tools = tool_schemas
+                if self._hermes_mode and self._tools:
+                    effective_system = (
+                        effective_system
+                        + _HERMES_TOOL_INSTRUCTIONS
+                        + self._tools.hermes_system_prompt_block()
+                    )
+                    effective_tools = []
+
                 chat_kwargs = {
                     "messages": messages,
-                    "tools": tool_schemas,
+                    "tools": effective_tools,
                     "session": session,
                     "gateway": self._gateway,
-                    "system_prompt": f"{self._system_prompt}\n\n{injected_context}",
+                    "system_prompt": effective_system,
                 }
                 if self._model:
                     chat_kwargs["model"] = self._model
@@ -312,6 +333,49 @@ class LLMRouter:
 
                 await self._save_message(chat_id, "assistant", json.dumps(content_blocks))
                 messages.append({"role": "assistant", "content": content_blocks})
+
+                # ── Hermes mode: detect <tool_call> tags in plain text ──────────────
+                if self._hermes_mode:
+                    full_text = "\n".join(
+                        block.get("text", "")
+                        for block in content_blocks
+                        if block.get("type") == "text"
+                    )
+                    if has_tool_calls(full_text):
+                        try:
+                            calls = extract_tool_calls(full_text)
+                        except ValueError as exc:
+                            hermes_error_count += 1
+                            if hermes_error_count >= MAX_HERMES_RETRIES:
+                                return "Error: max self-healing retries exceeded (parse error)."
+                            messages.append(
+                                {"role": "tool", "content": f"Error parsing tool call: {exc}"}
+                            )
+                            continue
+                        for call in calls:
+                            tool_name_h = call["name"]
+                            tool_args_h = call["arguments"]
+                            try:
+                                result_str_h = await self._tools.execute(tool_name_h, tool_args_h)
+                                hermes_error_count = 0
+                            except Exception as exc:
+                                hermes_error_count += 1
+                                if hermes_error_count >= MAX_HERMES_RETRIES:
+                                    return "Error: max self-healing retries exceeded (execution error)."
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "content": f"Error executing {tool_name_h}: {exc}",
+                                    }
+                                )
+                                break
+                            messages.append({"role": "tool", "content": result_str_h})
+                        messages = messages[-self._max_context :]
+                        continue
+                    else:
+                        hermes_error_count = 0
+                        return full_text
+                # ── end Hermes branch ────────────────────────────────────────────────
 
                 if stop_reason != "tool_use":
                     text_parts = [block.get("text", "") for block in content_blocks if block.get("type") == "text"]
