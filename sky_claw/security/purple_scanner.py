@@ -204,6 +204,20 @@ class PurpleScanner(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _read_file_with_fallback(filepath: Path) -> str:
+    """Read *filepath* with UTF-8 first, then latin-1 as fallback.
+
+    ``errors="replace"`` is preferred over ``errors="ignore"`` to preserve
+    line structure — dropped bytes can shift regex matches and cause the
+    payload scanner to miss malicious patterns in non-UTF-8 scripts.
+    """
+    try:
+        return filepath.read_text(encoding="utf-8", errors="strict")
+    except UnicodeDecodeError:
+        logger.debug("UTF-8 decode failed for %s, falling back to latin-1", filepath)
+        return filepath.read_text(encoding="latin-1", errors="replace")
+
+
 def _scan_text_payloads(content: str, filename: str) -> list[dict[str, Any]]:
     """
     Escanea archivos de texto (.bat, .ps1, .ini) buscando payloads maliciosos.
@@ -211,7 +225,7 @@ def _scan_text_payloads(content: str, filename: str) -> list[dict[str, Any]]:
     Args:
         content: Contenido del archivo
         filename: Nombre del archivo
-    
+
     Returns:
         Lista de hallazgos detectados
     """
@@ -287,7 +301,7 @@ def scan_file(filepath: Path) -> list[dict[str, Any]]:
 
     if extension in TEXT_SCAN_EXTENSIONS or extension == ".py":
         try:
-            code = filepath.read_text(encoding="utf-8", errors="ignore")
+            code = _read_file_with_fallback(filepath)
             if extension in TEXT_SCAN_EXTENSIONS:
                 return _scan_text_payloads(code, str(filepath))
             return run_scan(code, str(filepath))

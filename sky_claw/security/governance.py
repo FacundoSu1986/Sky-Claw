@@ -13,10 +13,10 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sky_claw.security.file_permissions import restrict_to_owner
-
 import aiosqlite
 from pydantic import BaseModel
+
+from sky_claw.security.file_permissions import restrict_to_owner
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,10 @@ class GovernanceManager:
         would be world-readable between write and chmod.
         """
         if self._hmac_key_path.exists():
+            # Best-effort hardening: previous installations may have left the
+            # key file world-readable. Tighten ACLs on every load so upgrades
+            # converge to owner-only permissions.
+            restrict_to_owner(self._hmac_key_path)
             return self._hmac_key_path.read_bytes()
         key = os.urandom(32)
         tmp_path = self._hmac_key_path.with_suffix(".tmp")

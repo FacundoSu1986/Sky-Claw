@@ -57,7 +57,7 @@ SUSPICIOUS_UNICODE = [
 
 
 class TextInspector:
-    def __init__(self, max_chars: int = 10240):  # 10 KB límite por rendimiento
+    def __init__(self, max_chars: int = 10240):  # Límite por rendimiento: 10_240 caracteres
         self.max_chars = max_chars
 
     def inspect(self, content: str, filename: str = "doc.md") -> list[dict[str, Any]]:

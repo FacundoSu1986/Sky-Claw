@@ -144,9 +144,11 @@ class CredentialVault:
                         plain_secret = self.fernet.decrypt(cipher_text).decode("utf-8")
                         return plain_secret
             return None
-        except Exception as e:
+        except Exception:
             svc_hash = hashlib.sha256(service_name.encode()).hexdigest()[:8]
-            logger.error(
+            # logger.exception preserves the full traceback while keeping the
+            # service name hashed — no PII leak, full diagnostics.
+            logger.exception(
                 "RCA (Vault): Error descifrando secreto (service_hash=%s). "
                 "Posible corrupción o clave maestra inválida.",
                 svc_hash,
@@ -167,8 +169,8 @@ class CredentialVault:
             svc_hash = hashlib.sha256(service_name.encode()).hexdigest()[:8]
             logger.info("🛡️ Secreto guardado exitosamente en bóveda (service_hash=%s).", svc_hash)
             return True
-        except Exception as e:
-            logger.error(
+        except Exception:
+            logger.exception(
                 "RCA (Vault): Error cifrando secreto (service_hash=%s).",
                 hashlib.sha256(service_name.encode()).hexdigest()[:8],
             )

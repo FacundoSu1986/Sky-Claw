@@ -14,6 +14,7 @@ Arquitectura:
 from __future__ import annotations
 
 import abc
+import asyncio
 import contextlib
 import json
 import logging
@@ -1307,9 +1308,9 @@ body {
                         status_label.set_text(f"Error: {e}")
                         status_label.style("color: var(--sky-error);")
 
-                save_btn = ui.button("Guardar").classes(
-                    "sky-wizard-cta px-6 py-2 rounded-xl font-semibold"
-                ).props("ripple")
+                save_btn = (
+                    ui.button("Guardar").classes("sky-wizard-cta px-6 py-2 rounded-xl font-semibold").props("ripple")
+                )
 
                 async def _on_save_click() -> None:
                     save_btn.disable()

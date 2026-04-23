@@ -103,10 +103,7 @@ def sanitize_for_prompt(
 
     if len(text) > max_length:
         suffix = "... [truncated]"
-        if max_length > len(suffix):
-            text = text[: max_length - len(suffix)] + suffix
-        else:
-            text = text[:max_length]
+        text = text[: max_length - len(suffix)] + suffix if max_length > len(suffix) else text[:max_length]
 
     return text
 
