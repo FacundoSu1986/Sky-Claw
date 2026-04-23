@@ -78,19 +78,22 @@ class GovernanceManager:
                 """)
                 await db.commit()
         except Exception as e:
-            logger.error(f"Error inicializando DB de gobernanza: {e}")
+            logger.error("Error inicializando DB de gobernanza: %s", e)
 
     def _get_or_create_hmac_key(self) -> bytes:
         """Obtiene la clave HMAC del disco o genera una nueva.
 
-        The key file is restricted to owner-only permissions to prevent
-        local users from reading the key and forging whitelist signatures.
+        Writes to a sibling temp file first, restricts permissions, then
+        renames atomically — eliminates the TOCTOU window where the key
+        would be world-readable between write and chmod.
         """
         if self._hmac_key_path.exists():
             return self._hmac_key_path.read_bytes()
         key = os.urandom(32)
-        self._hmac_key_path.write_bytes(key)
-        restrict_to_owner(self._hmac_key_path)
+        tmp_path = self._hmac_key_path.with_suffix(".tmp")
+        tmp_path.write_bytes(key)
+        restrict_to_owner(tmp_path)
+        tmp_path.replace(self._hmac_key_path)
         return key
 
     def _compute_hmac(self, content: bytes, key: bytes) -> str:
@@ -119,8 +122,7 @@ class GovernanceManager:
             except RuntimeError:
                 raise
             except Exception as e:
-                logger.critical(f"Error crítico cargando whitelist: {e}. Abortando para prevenir pérdida de datos.")
-                # Evita que el framework inicie con una whitelist comprometida
+                logger.critical("Error crítico cargando whitelist: %s. Abortando para prevenir pérdida de datos.", e)
                 raise RuntimeError(f"Integridad de whitelist comprometida: {e}") from e
         return set()
 
@@ -136,7 +138,7 @@ class GovernanceManager:
             sig = self._compute_hmac(raw, key)
             self._hmac_sig_path.write_text(sig)
         except Exception as e:
-            logger.error(f"Error guardando whitelist: {e}")
+            logger.error("Error guardando whitelist: %s", e)
 
     def get_file_hash(self, file_path: str) -> str | None:
         """Calcula el hash SHA-256 de un archivo. Retorna None si falla."""
@@ -147,7 +149,7 @@ class GovernanceManager:
                     sha256_hash.update(byte_block)
             return sha256_hash.hexdigest()
         except Exception as e:
-            logger.error(f"Error hasheando archivo {file_path}: {e}")
+            logger.error("Error hasheando archivo %s: %s", file_path, e)
             return None
 
     async def is_scanned_and_clean(self, file_path: str) -> bool:
@@ -168,7 +170,7 @@ class GovernanceManager:
                 if row and row[0] == "CLEAN":
                     return True
         except Exception as e:
-            logger.error(f"Error consultando caché de escaneo: {e}")
+            logger.error("Error consultando caché de escaneo: %s", e)
         return False
 
     async def update_scan_result(self, file_path: str, results: list[dict], status: str):
@@ -196,7 +198,7 @@ class GovernanceManager:
                 )
                 await db.commit()
         except Exception as e:
-            logger.error(f"Error actualizando caché: {e}")
+            logger.error("Error actualizando caché: %s", e)
 
     def approve_file(self, file_path: str):
         """Añade un archivo a la lista blanca (HITL)."""

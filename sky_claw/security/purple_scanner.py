@@ -221,7 +221,7 @@ def _scan_text_payloads(content: str, filename: str) -> list[dict[str, Any]]:
     for line_num, line in enumerate(content.splitlines(), start=1):
         for pattern, description in MALICIOUS_PAYLOAD_PATTERNS:
             if pattern.search(line):
-                logger.critical(f"AMENAZA DETECTADA en {filename}:{line_num} - {description}")
+                logger.critical("AMENAZA DETECTADA en %s:%d - %s", filename, line_num, description)
                 findings.append(
                     {
                         "message": description,

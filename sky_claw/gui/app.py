@@ -486,7 +486,6 @@ class DashboardGUI:
         self.ctx = ctx
         self._state = app_state or get_app_state()
 
-        # ── CRITICAL FIX (CRIT-01): Inicializar TODOS los atributos de instancia ──
         self._running: bool = True
         self._is_thinking: bool = False
         self._message_elements: list = []
@@ -499,11 +498,10 @@ class DashboardGUI:
         self._health_banner: Any = None
         self._actions_container: Any = None
         self._env_snapshot: Any = None
-        self._bg_tasks: set = set()
+        self._bg_tasks: set[asyncio.Task] = set()
         self._status_dot: Any = None
         self._status_label: Any = None
 
-        # ── CRITICAL FIX (CRIT-02): Handlers en self.handlers para _poll_queue ──
         self.handlers: dict[str, Any] = {
             "response": ResponseHandler(),
             "modlist": ModlistHandler(),
@@ -1038,7 +1036,7 @@ class DashboardGUI:
             oldest = self._message_elements.pop(0)
             with contextlib.suppress(ValueError, KeyError, AttributeError):
                 self._chat_container.remove(oldest)
-                oldest.delete()  # FIX (Memory Leak): Libera explícitamente los listeners y nodos del DOM de NiceGUI.
+                oldest.delete()
 
         style_map = {
             "normal": "sky-chat-message--assistant" if not is_user else "sky-chat-message--user",

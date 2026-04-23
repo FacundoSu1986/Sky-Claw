@@ -168,9 +168,8 @@ class CredentialVault:
             logger.info("🛡️ Secreto guardado exitosamente en bóveda (service_hash=%s).", svc_hash)
             return True
         except Exception as e:
-            svc_hash = hashlib.sha256(service_name.encode()).hexdigest()[:8]
             logger.error(
                 "RCA (Vault): Error cifrando secreto (service_hash=%s).",
-                svc_hash,
+                hashlib.sha256(service_name.encode()).hexdigest()[:8],
             )
             return False

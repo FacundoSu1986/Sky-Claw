@@ -19,8 +19,9 @@ from sky_claw.core.event_bus import CoreEventBus, Event, create_bus_with_dlq
 
 async def _poll_pending(dlq: DLQManager, *, min_count: int = 1, timeout: float = 3.0) -> list[DLQRow]:
     """Poll dlq.list_pending() until at least *min_count* rows appear or timeout."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
         rows = await dlq.list_pending()
         if len(rows) >= min_count:
             return rows
