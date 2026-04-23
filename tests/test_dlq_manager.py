@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 import pytest
@@ -52,6 +53,21 @@ def _make_dlq(
 
 async def _always_fail(event: Event) -> None:
     raise RuntimeError("boom")
+
+
+async def _poll_until(check: Any, *, timeout: float = 30.0, interval: float = 0.05) -> None:
+    """Espera (poll) hasta que ``check()`` retorne truthy o se agote ``timeout`` segundos.
+
+    Reemplaza ``asyncio.sleep`` con budget fijo: en CI Windows, las operaciones
+    SQLite/aiosqlite pueden ser lentas y un sleep estático resulta frágil.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if await check():
+            return
+        await asyncio.sleep(interval)
+    pytest.fail(f"Condición no cumplida en {timeout}s")
 
 
 # ---------------------------------------------------------------------------
@@ -134,14 +150,13 @@ async def test_retry_worker_reinvokes_only_failed_handler(tmp_path: Path) -> Non
     """Handler que falla 1 vez y después tiene éxito → fila borrada, llamado 2 veces."""
     calls: list[Event] = []
     fail_on_first = [True]
-    retry_succeeded = asyncio.Event()  # sincronización por condición, no por tiempo
 
     async def flaky_handler(event: Event) -> None:
         calls.append(event)
         if fail_on_first[0]:
             fail_on_first[0] = False
             raise RuntimeError("first attempt fails")
-        retry_succeeded.set()  # señala éxito en 2do intento
+        # segunda llamada → éxito, la fila será borrada por el worker
 
     handler_name = DLQManager._handler_name(flaky_handler)
     tick = [0]
@@ -161,10 +176,14 @@ async def test_retry_worker_reinvokes_only_failed_handler(tmp_path: Path) -> Non
     exc = RuntimeError("first attempt fails")
     await dlq.enqueue(_make_event(), flaky_handler, exc)
     await dlq.start()
-    # Esperar condición en lugar de tiempo fijo — determinístico independientemente
-    # de la velocidad del runner. El asyncio.sleep(0.15) previo era insuficiente
-    # en Windows CI con SQLite I/O overhead (2 ciclos de DB en 150ms = frágil).
-    await asyncio.wait_for(retry_succeeded.wait(), timeout=5.0)
+
+    # Polling determinístico: espera hasta que la fila sea borrada (retry exitoso).
+    # Reemplaza asyncio.wait_for con timeout fijo — en Windows CI las operaciones
+    # SQLite/aiosqlite pueden acumularse y superar budgets estáticos (5 s → flaky).
+    async def pending_is_empty() -> bool:
+        return len(await dlq.list_pending()) == 0
+
+    await _poll_until(pending_is_empty, timeout=30.0)
     await dlq.stop()
 
     # La fila debe haber sido eliminada (éxito en 2do intento)
@@ -205,7 +224,13 @@ async def test_poisoning_after_max_attempts(tmp_path: Path) -> None:
 
     await dlq.enqueue(_make_event(), _always_fail, RuntimeError("initial"))
     await dlq.start()
-    await asyncio.sleep(2.0)  # generous budget for 5 retries on a loaded CI runner
+
+    # Polling determinístico: espera hasta que la fila pase a 'dead' tras 5 intentos.
+    # asyncio.sleep(2.0) era insuficiente en Windows CI con 5 ciclos SQLite/aiosqlite.
+    async def has_dead_row() -> bool:
+        return len(await dlq.list_dead()) == 1
+
+    await _poll_until(has_dead_row, timeout=30.0)
     await dlq.stop()
 
     dead = await dlq.list_dead()
