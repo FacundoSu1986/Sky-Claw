@@ -136,9 +136,7 @@ class AsyncPathResolver:
                 exc,
                 exc_info=True,
             )
-            domain_exc = AsyncPathResolutionError(
-                f"No se pudo resolver la ruta {raw_path!r} (strict={strict})"
-            )
+            domain_exc = AsyncPathResolutionError(f"No se pudo resolver la ruta {raw_path!r} (strict={strict})")
             domain_exc.__cause__ = exc
             async with self._lock:
                 self._inflight.pop(key, None)
