@@ -1,5 +1,12 @@
 {
     "kilo-code.new.browserAutomation.enabled": true,
-    "python.defaultInterpreterPath": "e:\\Skyclaw1.4.26.16.32\\Sky-Claw-fresh\\.venv\\Scripts\\python.exe",
-    "python.terminal.activateEnvironment": true
+    "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+    "python.terminal.activateEnvironment": true,
+    "superpowers.version": "5.0.7",
+    "superpowers.source": ".antigravity/superpowers/",
+    "superpowers.skillsPath": ".agents/skills/",
+    "superpowers.agents": {
+        "roo_code": ".roo/skills/",
+        "kilocode": ".kilocode/skills/"
+    }
 }
