@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import logging
 import os
 import platform
@@ -62,7 +63,7 @@ class CredentialVault:
             # Establecer permisos del archivo a 0600 (solo propietario: lectura/escritura)
             restrict_to_owner(Path(salt_file))
 
-            logger.info(f"Nuevo salt generado y almacenado en: {salt_file}")
+            logger.info("Nuevo salt generado y almacenado correctamente.")
             return salt
 
         except Exception as e:
@@ -143,9 +144,14 @@ class CredentialVault:
                         plain_secret = self.fernet.decrypt(cipher_text).decode("utf-8")
                         return plain_secret
             return None
-        except Exception as e:
-            logger.error(
-                f"RCA (Vault): Error descifrando secreto para {service_name}. Posible corrupción o clave maestra inválida - {e}"
+        except Exception:
+            svc_hash = hashlib.sha256(service_name.encode()).hexdigest()[:8]
+            # logger.exception preserves the full traceback while keeping the
+            # service name hashed — no PII leak, full diagnostics.
+            logger.exception(
+                "RCA (Vault): Error descifrando secreto (service_hash=%s). "
+                "Posible corrupción o clave maestra inválida.",
+                svc_hash,
             )
             return None
 
@@ -160,8 +166,12 @@ class CredentialVault:
                     (service_name, cipher_text),
                 )
                 await conn.commit()
-            logger.info(f"🛡️ Secreto guardado exitosamente en bóveda para: {service_name}")
+            svc_hash = hashlib.sha256(service_name.encode()).hexdigest()[:8]
+            logger.info("🛡️ Secreto guardado exitosamente en bóveda (service_hash=%s).", svc_hash)
             return True
-        except Exception as e:
-            logger.error(f"RCA (Vault): Error cifrando secreto para {service_name} - {e}")
+        except Exception:
+            logger.exception(
+                "RCA (Vault): Error cifrando secreto (service_hash=%s).",
+                hashlib.sha256(service_name.encode()).hexdigest()[:8],
+            )
             return False

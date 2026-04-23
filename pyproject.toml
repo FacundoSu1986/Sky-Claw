@@ -42,7 +42,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py311"
 line-length = 120
 src = ["sky_claw", "tests"]
 
@@ -74,7 +74,7 @@ indent-style = "space"
 line-ending = "auto"
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.11"
 # Progressive typing: strict checks disabled until modules are fully annotated.
 # Re-enable individual checks as typing coverage improves.
 strict = false

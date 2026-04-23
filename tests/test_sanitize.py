@@ -260,23 +260,27 @@ class TestSanitizeForPrompt:
         text = "a" * (DEFAULT_MAX_LENGTH + 1)
         result = sanitize_for_prompt(text)
         assert result.endswith("... [truncated]")
-        assert len(result) == DEFAULT_MAX_LENGTH + len("... [truncated]")
+        # max_length is a hard ceiling: output is exactly max_length chars.
+        assert len(result) == DEFAULT_MAX_LENGTH
 
     def test_truncates_large_input(self) -> None:
         text = "b" * 100_000
         result = sanitize_for_prompt(text, max_length=50)
         assert result.endswith("... [truncated]")
-        assert len(result) == 50 + len("... [truncated]")
+        # Hard ceiling: 50 chars total (suffix fits within limit).
+        assert len(result) == 50
 
     def test_custom_max_length_zero(self) -> None:
-        # max_length=0 means any non-empty string triggers truncation.
+        # max_length=0 cannot fit even the suffix — hard-cut to empty string.
         result = sanitize_for_prompt("x", max_length=0)
-        assert result == "... [truncated]"
+        assert result == ""
 
     def test_truncation_suffix_literal(self) -> None:
         # Confirm the exact suffix string (three dots, space, [truncated]).
-        result = sanitize_for_prompt("z" * 200, max_length=10)
+        # max_length must exceed len(suffix)=15 to guarantee suffix appears.
+        result = sanitize_for_prompt("z" * 200, max_length=20)
         assert result.endswith("... [truncated]")
+        assert len(result) == 20
 
     # ------------------------------------------------------------------ #
     # Unicode edge cases                                                  #

@@ -14,6 +14,7 @@ Arquitectura:
 from __future__ import annotations
 
 import abc
+import asyncio
 import contextlib
 import json
 import logging
@@ -126,9 +127,9 @@ class SetupWizardModal:
         self._state.wizard_overlay = self._overlay_el
 
         with self._overlay_el:
-            # Modal container — stopPropagation para evitar propagación de clics
+            # Modal container — optimizado
             modal = ui.element("div").classes("sky-wizard-modal")
-            modal.on("click", lambda e: None, [])  # absorb clicks
+            # Nota: Eliminado el lambda vacío en 'click' para prevenir overhead de WebSocket.
 
             with modal:
                 # Header
@@ -486,13 +487,29 @@ class DashboardGUI:
         self.ctx = ctx
         self._state = app_state or get_app_state()
 
-        # Inicializar handlers de mensajes (Strategy Pattern)
-        self._state.handlers = {
+        self._running: bool = True
+        self._is_thinking: bool = False
+        self._message_elements: list = []
+        self._chat_container: Any = None
+        self._chat_scroll: Any = None
+        self._chat_input: Any = None
+        self._thinking_label: Any = None
+        self._mod_container: Any = None
+        self._stat_labels: dict[str, Any] = {}
+        self._health_banner: Any = None
+        self._actions_container: Any = None
+        self._env_snapshot: Any = None
+        self._bg_tasks: set[asyncio.Task] = set()
+        self._status_dot: Any = None
+        self._status_label: Any = None
+
+        self.handlers: dict[str, Any] = {
             "response": ResponseHandler(),
             "modlist": ModlistHandler(),
             "success": SuccessHandler(),
             "error": ErrorHandler(),
         }
+        self._state.handlers = self.handlers  # Sincronizar con AppState
 
     def build(self) -> None:
         _load_css()
@@ -1018,8 +1035,9 @@ class DashboardGUI:
 
         while len(self._message_elements) >= MAX_CHAT_MESSAGES:
             oldest = self._message_elements.pop(0)
-            with contextlib.suppress(ValueError, KeyError):
+            with contextlib.suppress(ValueError, KeyError, AttributeError):
                 self._chat_container.remove(oldest)
+                oldest.delete()
 
         style_map = {
             "normal": "sky-chat-message--assistant" if not is_user else "sky-chat-message--user",
@@ -1067,6 +1085,17 @@ class DashboardGUI:
         self.append_chat_message(text, is_user=True)
         self._chat_input.value = ""
         self._show_thinking()
+
+        # FIX: Validar logic_queue antes de enviar
+        if not hasattr(self.ctx, "logic_queue") or self.ctx.logic_queue is None:
+            logger.error("logic_queue no disponible — mensaje perdido")
+            self.append_chat_message(
+                "⚠️ Error interno: canal de comunicación no inicializado.",
+                is_user=False,
+                style="error",
+            )
+            self._hide_thinking()
+            return
         self.ctx.logic_queue.put(("chat", text))
 
     # ── Footer ────────────────────────────────────────────────────────
@@ -1090,11 +1119,15 @@ class DashboardGUI:
 
     # ── Queue Polling ─────────────────────────────────────────────────
     def _poll_queue(self) -> None:
-        if not self._running:
+        # FIX: getattr defensivo para evitar AttributeError si _running no existe
+        if not getattr(self, "_running", False):
+            return
+        gui_queue = getattr(self.ctx, "gui_queue", None)
+        if gui_queue is None:
             return
         try:
             while True:
-                msg_type, data = self.ctx.gui_queue.get_nowait()
+                msg_type, data = gui_queue.get_nowait()
                 handler = self.handlers.get(msg_type)
                 if handler:
                     handler.handle(self, data)
@@ -1102,6 +1135,8 @@ class DashboardGUI:
                     logger.warning("Mensaje desconocido en cola UI: '%s'", msg_type)
         except queue.Empty:
             pass
+        except AttributeError as e:
+            logger.error("AttributeError en _poll_queue (atributo faltante): %s", e)
         except Exception:
             logger.exception("Error procesando cola GUI:")
 
@@ -1273,9 +1308,20 @@ body {
                         status_label.set_text(f"Error: {e}")
                         status_label.style("color: var(--sky-error);")
 
-                ui.button("Guardar", on_click=_save_settings).classes(
-                    "sky-wizard-cta px-6 py-2 rounded-xl font-semibold"
-                ).props("ripple")
+                save_btn = (
+                    ui.button("Guardar").classes("sky-wizard-cta px-6 py-2 rounded-xl font-semibold").props("ripple")
+                )
+
+                async def _on_save_click() -> None:
+                    save_btn.disable()
+                    save_btn.set_text("Guardando...")
+                    try:
+                        await _save_settings()
+                    finally:
+                        save_btn.enable()
+                        save_btn.set_text("Guardar")
+
+                save_btn.on("click", _on_save_click)
 
         dialog.open()
 

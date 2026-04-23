@@ -57,15 +57,15 @@ SUSPICIOUS_UNICODE = [
 
 
 class TextInspector:
-    def __init__(self, max_bytes: int = 10240):  # 10 KB límite por rendimiento
-        self.max_bytes = max_bytes
+    def __init__(self, max_chars: int = 10240):  # Límite por rendimiento: 10_240 caracteres
+        self.max_chars = max_chars
 
     def inspect(self, content: str, filename: str = "doc.md") -> list[dict[str, Any]]:
         """Busca patrones de inyección y anomalías en el texto."""
         findings = []
 
         # Limitar contenido para rendimiento
-        content_fragment = content[: self.max_bytes]
+        content_fragment = content[: self.max_chars]
 
         # 1. Buscar inyección de prompts
         for pattern, desc, severity in INJECTION_PATTERNS:

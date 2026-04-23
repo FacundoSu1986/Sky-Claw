@@ -13,8 +13,20 @@ from pathlib import Path
 
 import pytest
 
-from sky_claw.core.dlq_manager import DLQManager
+from sky_claw.core.dlq_manager import DLQManager, DLQRow
 from sky_claw.core.event_bus import CoreEventBus, Event, create_bus_with_dlq
+
+
+async def _poll_pending(dlq: DLQManager, *, min_count: int = 1, timeout: float = 3.0) -> list[DLQRow]:
+    """Poll dlq.list_pending() until at least *min_count* rows appear or timeout."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        rows = await dlq.list_pending()
+        if len(rows) >= min_count:
+            return rows
+        await asyncio.sleep(0.05)
+    return await dlq.list_pending()
 
 
 @pytest.mark.asyncio
@@ -26,6 +38,7 @@ async def test_failing_handler_goes_to_dlq(tmp_path: Path) -> None:
         handler_resolver=bus._handler_index.get,
     )
     bus._dlq = dlq
+    await dlq._ensure_schema()  # pre-create schema to avoid SQLite locking race
     await bus.start()
 
     async def telegram_handler(event: Event) -> None:
@@ -34,9 +47,7 @@ async def test_failing_handler_goes_to_dlq(tmp_path: Path) -> None:
     bus.subscribe("notif.*", telegram_handler)
 
     await bus.publish(Event(topic="notif.critical", payload={"msg": "hi"}))
-    await asyncio.sleep(0.2)
-
-    pending = await dlq.list_pending()
+    pending = await _poll_pending(dlq, min_count=1)
     assert len(pending) == 1
     row = pending[0]
     assert row.topic == "notif.critical"
@@ -83,6 +94,7 @@ async def test_only_failed_handler_enqueued_not_successful_one(tmp_path: Path) -
         handler_resolver=bus._handler_index.get,
     )
     bus._dlq = dlq
+    await dlq._ensure_schema()  # pre-create schema to avoid SQLite locking race
     await bus.start()
 
     good_calls: list[Event] = []
@@ -97,13 +109,12 @@ async def test_only_failed_handler_enqueued_not_successful_one(tmp_path: Path) -
     bus.subscribe("multi.*", bad_handler)
 
     await bus.publish(Event(topic="multi.test", payload={"x": 1}))
-    await asyncio.sleep(0.15)
+    pending = await _poll_pending(dlq, min_count=1)
 
     # Good handler fue llamado exactamente una vez
     assert len(good_calls) == 1
 
     # DLQ tiene sólo la fila del bad_handler
-    pending = await dlq.list_pending()
     assert len(pending) == 1
     assert pending[0].handler_name.endswith("bad_handler")
 

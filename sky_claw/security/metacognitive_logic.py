@@ -4,7 +4,7 @@ Framework de decisión secuencial de 5 pasos para Auditoría Purple Team.
 """
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +21,7 @@ class SecurityMetacognition:
     def __init__(self, target_path: str):
         self.target_path = Path(target_path)
         self.session_data: dict[str, Any] = {
-            "start_time": datetime.now().isoformat(),
+            "start_time": datetime.now(UTC).isoformat(),
             "findings": [],
             "confidence": 1.0,
             "status": "INIT",
@@ -64,8 +64,10 @@ class SecurityMetacognition:
         if self.target_path.is_file():
             files = [self.target_path]
         else:
-            # Escanear recursivamente buscando .py, .md, .txt
-            files = list(self.target_path.rglob("*.[pm][yd]*")) + list(self.target_path.rglob("*.txt"))
+            py_files = list(self.target_path.rglob("*.py"))
+            md_files = list(self.target_path.rglob("*.md"))
+            txt_files = list(self.target_path.rglob("*.txt"))
+            files = py_files + md_files + txt_files
 
         self.session_data["files_to_scan"] = sorted([str(f) for f in files])
         return True
@@ -136,7 +138,7 @@ class SecurityMetacognition:
         else:
             self.session_data["final_decision"] = "ACCEPT/EXECUTE"
 
-        self.session_data["end_time"] = datetime.now().isoformat()
+        self.session_data["end_time"] = datetime.now(UTC).isoformat()
         self.session_data["status"] = "COMPLETED"
 
 

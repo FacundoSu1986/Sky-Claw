@@ -16,6 +16,8 @@ from pathlib import Path
 import aiosqlite
 from pydantic import BaseModel
 
+from sky_claw.security.file_permissions import restrict_to_owner
+
 logger = logging.getLogger(__name__)
 
 # Configuración por defecto de gobernanza
@@ -36,12 +38,21 @@ class GovernanceManager:
 
     @classmethod
     def get_instance(cls, base_path: str = ".") -> "GovernanceManager":
-        """Método factory con lazy loading thread-safe."""
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls(base_path)
-        return cls._instance
+        """Método factory con lazy loading thread-safe.
+
+        Raises RuntimeError if called with a different base_path than the
+        existing singleton — prevents silent misconfiguration.
+        """
+        with cls._lock:
+            if cls._instance is not None:
+                if str(cls._instance.base_path.resolve()) != str(Path(base_path).resolve()):
+                    raise RuntimeError(
+                        f"GovernanceManager singleton conflict: "
+                        f"existing={cls._instance.base_path}, requested={base_path}"
+                    )
+                return cls._instance
+            cls._instance = cls(base_path)
+            return cls._instance
 
     def __init__(self, base_path: str = "."):
         self.base_path = Path(base_path)
@@ -67,14 +78,26 @@ class GovernanceManager:
                 """)
                 await db.commit()
         except Exception as e:
-            logger.error(f"Error inicializando DB de gobernanza: {e}")
+            logger.error("Error inicializando DB de gobernanza: %s", e)
 
     def _get_or_create_hmac_key(self) -> bytes:
-        """Obtiene la clave HMAC del disco o genera una nueva."""
+        """Obtiene la clave HMAC del disco o genera una nueva.
+
+        Writes to a sibling temp file first, restricts permissions, then
+        renames atomically — eliminates the TOCTOU window where the key
+        would be world-readable between write and chmod.
+        """
         if self._hmac_key_path.exists():
+            # Best-effort hardening: previous installations may have left the
+            # key file world-readable. Tighten ACLs on every load so upgrades
+            # converge to owner-only permissions.
+            restrict_to_owner(self._hmac_key_path)
             return self._hmac_key_path.read_bytes()
         key = os.urandom(32)
-        self._hmac_key_path.write_bytes(key)
+        tmp_path = self._hmac_key_path.with_suffix(".tmp")
+        tmp_path.write_bytes(key)
+        restrict_to_owner(tmp_path)
+        tmp_path.replace(self._hmac_key_path)
         return key
 
     def _compute_hmac(self, content: bytes, key: bytes) -> str:
@@ -87,8 +110,15 @@ class GovernanceManager:
             try:
                 raw = self.whitelist_path.read_bytes()
 
-                # Validar HMAC si los archivos de integridad existen
-                if self._hmac_key_path.exists() and self._hmac_sig_path.exists():
+                # Validar HMAC si los archivos de integridad existen.
+                # Si existe la clave pero falta la firma, fallar cerrado:
+                # podría indicar que un atacante borró la firma para evadir la verificación.
+                if self._hmac_key_path.exists():
+                    if not self._hmac_sig_path.exists():
+                        raise RuntimeError(
+                            "Archivo de firma HMAC ausente pero la clave existe: "
+                            "la integridad de la whitelist no puede verificarse"
+                        )
                     key = self._hmac_key_path.read_bytes()
                     expected = self._hmac_sig_path.read_text().strip()
                     actual = self._compute_hmac(raw, key)
@@ -103,8 +133,7 @@ class GovernanceManager:
             except RuntimeError:
                 raise
             except Exception as e:
-                logger.critical(f"Error crítico cargando whitelist: {e}. Abortando para prevenir pérdida de datos.")
-                # Evita que el framework inicie con una whitelist comprometida
+                logger.critical("Error crítico cargando whitelist: %s. Abortando para prevenir pérdida de datos.", e)
                 raise RuntimeError(f"Integridad de whitelist comprometida: {e}") from e
         return set()
 
@@ -119,8 +148,9 @@ class GovernanceManager:
             key = self._get_or_create_hmac_key()
             sig = self._compute_hmac(raw, key)
             self._hmac_sig_path.write_text(sig)
+            restrict_to_owner(self._hmac_sig_path)
         except Exception as e:
-            logger.error(f"Error guardando whitelist: {e}")
+            logger.error("Error guardando whitelist: %s", e)
 
     def get_file_hash(self, file_path: str) -> str | None:
         """Calcula el hash SHA-256 de un archivo. Retorna None si falla."""
@@ -131,7 +161,7 @@ class GovernanceManager:
                     sha256_hash.update(byte_block)
             return sha256_hash.hexdigest()
         except Exception as e:
-            logger.error(f"Error hasheando archivo {file_path}: {e}")
+            logger.error("Error hasheando archivo %s: %s", file_path, e)
             return None
 
     async def is_scanned_and_clean(self, file_path: str) -> bool:
@@ -152,7 +182,7 @@ class GovernanceManager:
                 if row and row[0] == "CLEAN":
                     return True
         except Exception as e:
-            logger.error(f"Error consultando caché de escaneo: {e}")
+            logger.error("Error consultando caché de escaneo: %s", e)
         return False
 
     async def update_scan_result(self, file_path: str, results: list[dict], status: str):
@@ -180,7 +210,7 @@ class GovernanceManager:
                 )
                 await db.commit()
         except Exception as e:
-            logger.error(f"Error actualizando caché: {e}")
+            logger.error("Error actualizando caché: %s", e)
 
     def approve_file(self, file_path: str):
         """Añade un archivo a la lista blanca (HITL)."""

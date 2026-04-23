@@ -51,8 +51,8 @@ logger = logging.getLogger("SkyClaw.AgentGuardrail")
 # PII — SSN (US format)
 _SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 
-# PII — credit/debit card numbers (13-16 digits, optional spaces/hyphens)
-_CREDIT_CARD_RE = re.compile(r"\b(?:\d[ -]?){13,16}\b")
+# PII — credit/debit card numbers (13-16 digits, grouped)
+_CREDIT_CARD_RE = re.compile(r"\b(?:\d{4}[ -]?){3}\d{1,4}\b")
 
 # PII — API keys (sk- prefix à la OpenAI/Anthropic, or long token with suffix)
 _API_KEY_RE = re.compile(
@@ -145,7 +145,7 @@ class AgentGuardrail:
 
     def __init__(self, config: AgentGuardrailConfig | None = None) -> None:
         self._config: AgentGuardrailConfig = config or AgentGuardrailConfig()
-        self._inspector: TextInspector = TextInspector(max_bytes=self._config.max_input_length)
+        self._inspector: TextInspector = TextInspector(max_chars=self._config.max_input_length)
 
     # ------------------------------------------------------------------
     # Input gate

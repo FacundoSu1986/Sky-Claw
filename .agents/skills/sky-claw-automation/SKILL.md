@@ -1,6 +1,6 @@
 ---
 name: sky-claw-automation
-description: Automatiza el ciclo de vida de mods de Skyrim: scraping en Nexus Mods, gestión de base de datos SQLite y notificaciones vía Telegram. Úsalo para buscar actualizaciones, validar compatibilidades y ejecutar tareas de mantenimiento en App-nexus.
+description: "Automatiza el ciclo de vida de mods de Skyrim: scraping en Nexus Mods, gestión de base de datos SQLite y notificaciones vía Telegram. Úsalo para buscar actualizaciones, validar compatibilidades y ejecutar tareas de mantenimiento en App-nexus."
 ---
 
 # Sky-Claw: Skyrim Modding Automation Skill

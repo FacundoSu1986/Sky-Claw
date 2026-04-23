@@ -8,6 +8,7 @@ Prevents path-traversal attacks via ``..`` components.
 from __future__ import annotations
 
 import functools
+import inspect
 import pathlib
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
@@ -108,14 +109,29 @@ def sandboxed_io(
     validator = PathValidator(roots)
 
     def decorator(fn: Callable[P, R]) -> Callable[P, R]:
+        # Resolve the signature once at decoration time so instance methods
+        # (where args[0] is `self`) and non-first-position path arguments
+        # are bound to the correct parameter name.
+        sig = inspect.signature(fn)
+        if arg_name not in sig.parameters:
+            raise TypeError(
+                f"sandboxed_io: function '{fn.__name__}' has no parameter named '{arg_name}' — cannot validate path"
+            )
+
         @functools.wraps(fn)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            # Try to pull the path from kwargs first, then positional.
-            raw_path = kwargs.get(arg_name)
-            if raw_path is None and args:
-                raw_path = args[0]  # type: ignore[arg-type]
-            if raw_path is not None:
-                validator.validate(raw_path)  # type: ignore[arg-type]
+            try:
+                bound = sig.bind_partial(*args, **kwargs)
+            except TypeError as e:
+                raise PathViolationError(
+                    f"Sandboxed function '{fn.__name__}' called with invalid arguments: {e}"
+                ) from e
+            raw_path = bound.arguments.get(arg_name)
+            if raw_path is None:
+                raise PathViolationError(
+                    f"Sandboxed function '{fn.__name__}' called without required path argument '{arg_name}'"
+                )
+            validator.validate(raw_path)  # type: ignore[arg-type]
             return fn(*args, **kwargs)
 
         return wrapper

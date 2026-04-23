@@ -70,6 +70,22 @@ hiddenimports = [
     "sky_claw.xedit.runner",
     "sky_claw.xedit.output_parser",
     "sky_claw.xedit.conflict_analyzer",
+    # New modules (added during migration audit 2026-04-22)
+    "sky_claw.core.dlq_manager",
+    "sky_claw.orchestrator.tool_dispatcher",
+    "sky_claw.orchestrator.tool_strategies",
+    "sky_claw.orchestrator.tool_strategies.base",
+    "sky_claw.orchestrator.tool_strategies.execute_loot_sorting",
+    "sky_claw.orchestrator.tool_strategies.execute_synthesis",
+    "sky_claw.orchestrator.tool_strategies.generate_bashed_patch",
+    "sky_claw.orchestrator.tool_strategies.generate_lods",
+    "sky_claw.orchestrator.tool_strategies.middleware",
+    "sky_claw.orchestrator.tool_strategies.query_mod_metadata",
+    "sky_claw.orchestrator.tool_strategies.resolve_conflict_patch",
+    "sky_claw.orchestrator.tool_strategies.scan_asset_conflicts",
+    "sky_claw.orchestrator.tool_strategies.validate_plugin_limit",
+    "sky_claw.security.loop_guardrail",
+    "sky_claw.agent.hermes_parser",
 ]
 
 a = Analysis(
