@@ -2,7 +2,7 @@ name: Sky-Claw CI/CD
 
 on:
   push:
-    branches: [main, master, "feature/**"]
+    branches: [main, master, "feature/**", "claude/**", "copilot/**", "fix/**", "hotfix/**"]
   pull_request:
     branches: [main, master]
 
@@ -43,9 +43,8 @@ jobs:
       - run: |
           pip install -e ".[dev]"
           pip install mypy types-aiofiles
-      - name: Mypy strict check
-        run: mypy sky_claw/ --ignore-missing-imports --no-error-summary || true
-        # Start with --ignore-missing-imports, tighten later
+      - name: Mypy check
+        run: mypy sky_claw/ --ignore-missing-imports --no-error-summary
 
   # ── Gate 3: Test Suite ───────────────────────────────
   test:
@@ -87,7 +86,7 @@ jobs:
   # ── Gate 5: Build ────────────────────────────────────
   build:
     name: "📦 Build"
-    needs: [lint, test, security]
+    needs: [lint, typecheck, test, security]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
