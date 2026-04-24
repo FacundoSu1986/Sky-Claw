@@ -17,10 +17,11 @@ import time
 import sys
 from pathlib import Path
 from datetime import datetime
+from typing import Any, Optional
 
 # Fix encoding for Windows
 if sys.stdout.encoding != 'utf-8':
-    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8')  # type: ignore[attr-defined, union-attr]
 
 # Colors para terminal
 GREEN = "\033[92m"
@@ -59,9 +60,9 @@ class FrontendBridgeTestSuite:
         if self.ws:
             await self.ws.close()
 
-    async def send_message(self, msg_type: str, content: dict = None) -> dict:
+    async def send_message(self, msg_type: str, content: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """Envía un mensaje y captura la respuesta."""
-        payload = {
+        payload: dict[str, Any] = {
             "type": msg_type,
             "id": str(uuid.uuid4()),
             "timestamp": datetime.now().isoformat(),

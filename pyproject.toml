@@ -75,6 +75,10 @@ line-ending = "auto"
 
 [tool.mypy]
 python_version = "3.11"
+# Best practices for path resolution
+explicit_package_bases = true
+namespace_packages = true
+mypy_path = "."
 # Progressive typing: strict checks disabled until modules are fully annotated.
 # Re-enable individual checks as typing coverage improves.
 strict = false
@@ -85,7 +89,14 @@ ignore_missing_imports = true
 show_error_codes = true
 show_column_numbers = true
 pretty = true
-exclude = ["tests/", "scratch/", "autoskills_tmp/", "project_scrape/"]
+exclude = [
+    '^tests/',
+    '^scratch/',
+    '^autoskills_tmp/',
+    '^project_scrape/',
+    '^\.venv/',
+    '^\.agents/',
+]
 
 # Modules with unresolved type errors — ignore until annotated
 [[tool.mypy.overrides]]
