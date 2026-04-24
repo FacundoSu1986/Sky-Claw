@@ -268,10 +268,7 @@ class AppContext:
                 logger.warning("LLM provider config error: %s — falling back to Ollama", exc)
                 from sky_claw.agent.providers import OllamaProvider
 
-                # Propagate any available API key so Ollama can use it
-                # if the local instance is fronted by an auth-gated proxy.
-                fallback_key = getattr(local_cfg, f"{provider_name}_api_key", "") or local_cfg.llm_api_key or ""
-                provider = OllamaProvider(api_key=fallback_key)
+                provider = OllamaProvider()
 
             nexus_key = local_cfg.nexus_api_key or ""
             bot_token = local_cfg.telegram_bot_token or ""

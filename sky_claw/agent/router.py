@@ -67,9 +67,18 @@ def _is_valid_api_key(key: str | None) -> bool:
         return False
     # Placeholders comunes que deben ser rechazados
     placeholders = {
-        "your_api_key_here", "insert_your_key", "xxx", "sk-xxx", "sk-...",
-        "your-api-key", "change_me", "api_key_here", "paste_your_key",
-        "sk-test", "sk-placeholder", "sk-your-key-here",
+        "your_api_key_here",
+        "insert_your_key",
+        "xxx",
+        "sk-xxx",
+        "sk-...",
+        "your-api-key",
+        "change_me",
+        "api_key_here",
+        "paste_your_key",
+        "sk-test",
+        "sk-placeholder",
+        "sk-your-key-here",
     }
     if len(set(stripped)) <= 2:
         return False
@@ -353,7 +362,12 @@ class LLMRouter:
                             if hermes_error_count >= MAX_HERMES_RETRIES:
                                 return "Error: max self-healing retries exceeded (parse error)."
                             # role="user" — Hermes mode has no native tool_call_id contract
-                            messages.append({"role": "user", "content": sanitize_for_prompt(f"[Tool Error] Error parsing tool call: {exc}")})
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": sanitize_for_prompt(f"[Tool Error] Error parsing tool call: {exc}"),
+                                }
+                            )
                             continue
                         for call in calls:
                             tool_name_h = call["name"]
@@ -367,7 +381,9 @@ class LLMRouter:
                                 hermes_error_count += 1
                                 if hermes_error_count >= MAX_HERMES_RETRIES:
                                     return "Error: max self-healing retries exceeded (execution error)."
-                                error_content = sanitize_for_prompt(f"[Tool Error] Error executing {tool_name_h}: {exc}")
+                                error_content = sanitize_for_prompt(
+                                    f"[Tool Error] Error executing {tool_name_h}: {exc}"
+                                )
                                 await self._save_message(chat_id, "user", error_content)
                                 messages.append({"role": "user", "content": error_content})
                                 continue  # give every call its own error response; don't drop the rest

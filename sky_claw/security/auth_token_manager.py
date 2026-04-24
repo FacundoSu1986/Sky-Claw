@@ -119,6 +119,7 @@ class AuthTokenManager:
                 await self._rotation_task
             self._rotation_task = None
             logger.info("Token rotation stopped")
+
     def revoke(self) -> None:
         """Revoke the current token atomically — clear memory first, then disk."""
         # Clear in-memory state FIRST to prevent concurrent validate() from succeeding
@@ -166,7 +167,9 @@ class AuthTokenManager:
                 token = payload.get("token")
                 created_at = payload.get("created_at", 0)
                 if created_at and (time.time() - created_at) > _TOKEN_TTL:
-                    logger.warning(f"Token file at {path} is expired (age={time.time()-created_at:.0f}s > TTL={_TOKEN_TTL}s)")
+                    logger.warning(
+                        f"Token file at {path} is expired (age={time.time() - created_at:.0f}s > TTL={_TOKEN_TTL}s)"
+                    )
                     return None
                 return token if token else None
         except json.JSONDecodeError:
