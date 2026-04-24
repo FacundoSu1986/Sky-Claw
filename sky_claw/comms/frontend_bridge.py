@@ -666,19 +666,20 @@ class FrontendBridge:
 
         Args:
             provider_name: "deepseek", "anthropic", or "ollama"
-            api_key: Optional API key (required for deepseek/anthropic)
+            api_key: Optional API key (skipped for ollama)
 
         Returns:
             True if swap succeeded, False if provider config invalid
 
         Invariant: Provider swap happens atomically under lock.
-                   If creation fails, the previous provider stays intact.
                    No queries are interrupted during the swap.
         """
         try:
             key = api_key or self._get_keyring(PROVIDER_KEY_MAP.get(provider_name, "llm_api_key"))
 
+            # Ollama doesn't require an API key
             if not key and provider_name != "ollama":
+                # Try the generic llm_api_key as fallback
                 key = self._get_keyring("llm_api_key")
                 if not key:
                     logger.error("No API key found for provider '%s'.", provider_name)
@@ -686,24 +687,21 @@ class FrontendBridge:
 
             new_provider = create_provider(provider_name=provider_name, api_key=key)
 
-            # ── Atomic swap under lock ──
+            # ── Atomic swap under lock (C3 fix: proper lock usage) ──
             async with self.ctx.router._provider_lock:
-                previous = self.ctx.router._provider
                 self.ctx.router._provider = new_provider
 
             logger.info(
-                "🚀 Hot-Swap LLM completado: %s → %s",
-                type(previous).__name__ if previous else "None",
+                "🚀 Hot-Swap LLM completado: ahora usando %s",
                 type(new_provider).__name__,
             )
             return True
 
         except ProviderConfigError as exc:
             logger.error("Provider config error during hot-swap: %s", exc)
-            # Provider stays untouched — no rollback needed.
             return False
         except Exception as exc:
-            logger.exception("Hot-swap failed, previous provider preserved: %s", exc)
+            logger.exception("Hot-swap failed: %s", exc)
             return False
 
     async def _reload_telegram(self, token: str, chat_id: str = "") -> bool:

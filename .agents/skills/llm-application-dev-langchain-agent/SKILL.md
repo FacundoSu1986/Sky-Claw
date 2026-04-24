@@ -1,59 +1,52 @@
 ---
 name: llm-application-dev-langchain-agent
 description: Provides expert guidance for developing production-grade AI systems using LangChain 0.1+ and LangGraph. Focuses on async patterns, observability, and specialized RAG architectures.
-metadata:
-  version: 2.0.0
-  last_updated: 2026-04-23
-  compatibility:
-    - Python 3.11+
-    - LangChain 0.1+
-    - LangGraph 0.1+
 ---
 
-# Experto en Desarrollo de Agentes con LangChain/LangGraph
+# LangChain/LangGraph Agent Development Expert
 
-Esta skill proporciona patrones comprehensivos y mejores prácticas para construir sistemas de agentes de IA sofisticados usando el ecosistema más reciente de LangChain.
+This skill provides comprehensive patterns and best practices for building sophisticated AI agent systems using the latest LangChain ecosystem.
 
-## Cuándo usar esta skill
+## When to use this skill
 
-- Diseñar o implementar agentes con LangChain/LangGraph.
-- Optimizar pipelines de RAG con embeddings especializados.
-- Implementar orquestación multi-agente o enrutamiento basado en supervisor.
-- Transicionar prototipos a producción con observabilidad y manejo de errores.
+- Designing or implementing LangChain/LangGraph agents.
+- Optimizing RAG pipelines with specialized embeddings (Voyage AI).
+- Implementing multi-agent orchestration or supervisor-based routing.
+- Transitioning prototypes to production with observability and error handling.
 
-## Árbol de Decisiones: Elegir tu Arquitectura
+## Decision Tree: Choosing Your Architecture
 
-Antes de la implementación, evalúa la complejidad de la tarea:
+Before implementation, evaluate the task complexity:
 
-- **¿La tarea es directa y de un solo paso?** 
-  → Usa una **Chain** básica con salida basada en prompts.
-- **¿La tarea requiere razonamiento multi-paso con selección de herramientas?**
-  → Usa un **Agente ReAct** (`create_react_agent`).
-- **¿El proceso es no lineal, requiriendo gestión compleja de estado o bucles?**
-  → Usa **LangGraph** (`StateGraph` personalizado).
-- **¿La tarea involucra múltiples dominios distintos de expertise?**
-  → Usa **Orquestación Multi-Agente** con un supervisor.
+- **Is the task straightforward and single-step?** 
+  → Use a basic **Chain** with prompt-based output.
+- **Does the task require multi-step reasoning with tool selection?**
+  → Use a **ReAct Agent** (`create_react_agent`).
+- **Is the process non-linear, requiring complex state management or loops?**
+  → Use **LangGraph** (Custom `StateGraph`).
+- **Does the task involve multiple distinct domains of expertise?**
+  → Use **Multi-Agent Orchestration** with a supervisor.
 
-## Cómo usarla
+## How to use it
 
-1.  **Lee el manual de implementación**: Sigue los ejemplos detallados en `.agents/skills/llm-application-dev-langchain-agent/resources/implementation-playbook.md` si está disponible.
-2.  **Define el estado**: Inicializa tu `AgentState` con los campos necesarios de sesión y contexto.
-3.  **Implementa patrones**: Sigue las listas de verificación y patrones de producción detallados a continuación.
+1.  **Read the implementation playbook**: Follow detailed examples in [implementation-playbook.md](file:///e:/Pruba%20antigravity/sky-claw/.agents/skills/llm-application-dev-langchain-agent/resources/implementation-playbook.md).
+2.  **Define state**: Initialize your `AgentState` with necessary session and context fields.
+3.  **Implement patterns**: Follow the checklists and production patterns detailed below.
 
 
-## Requisitos Core
+## Core Requirements
 
-- Usar las APIs más recientes de LangChain 0.1+ y LangGraph
-- Implementar patrones async en todo el sistema
-- Incluir manejo comprehensivo de errores y fallbacks
-- Integrar LangSmith para observabilidad (si está configurado)
-- Diseñar para escalabilidad y deployment en producción
-- Implementar mejores prácticas de seguridad
-- Optimizar para eficiencia de costos
+- Use latest LangChain 0.1+ and LangGraph APIs
+- Implement async patterns throughout
+- Include comprehensive error handling and fallbacks
+- Integrate LangSmith for observability
+- Design for scalability and production deployment
+- Implement security best practices
+- Optimize for cost efficiency
 
-## Arquitectura Esencial
+## Essential Architecture
 
-### Gestión de Estado en LangGraph
+### LangGraph State Management
 ```python
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import create_react_agent
@@ -64,60 +57,61 @@ class AgentState(TypedDict):
     context: Annotated[dict, "retrieved context"]
 ```
 
-### Modelo y Embeddings
-- **LLM primario**: Configurable vía `agent_config.yaml` o variables de entorno.
-- **Embeddings locales recomendados**: `FastEmbed` o modelos de `sentence-transformers` para soberanía de datos.
-- **Si se usa API externa**: Documentar la exfiltración y obtener aprobación si la skill `skyclaw-purple-auditor` lo requiere.
+### Model & Embeddings
+- **Primary LLM**: Claude Sonnet 4.5 (`claude-sonnet-4-5`)
+- **Embeddings**: Voyage AI (`voyage-3-large`) - officially recommended by Anthropic for Claude
+- **Specialized**: `voyage-code-3` (code), `voyage-finance-2` (finance), `voyage-law-2` (legal)
 
-## Tipos de Agentes
+## Agent Types
 
-1. **Agentes ReAct**: Razonamiento multi-paso con uso de herramientas
-   - Usa `create_react_agent(llm, tools, state_modifier)`
-   - Mejor para tareas de propósito general
+1. **ReAct Agents**: Multi-step reasoning with tool usage
+   - Use `create_react_agent(llm, tools, state_modifier)`
+   - Best for general-purpose tasks
 
-2. **Plan-and-Execute**: Tareas complejas que requieren planificación previa
-   - Nodos separados de planificación y ejecución
-   - Seguimiento de progreso a través del estado
+2. **Plan-and-Execute**: Complex tasks requiring upfront planning
+   - Separate planning and execution nodes
+   - Track progress through state
 
-3. **Orquestación Multi-Agente**: Agentes especializados con enrutamiento de supervisor
-   - Usa `Command[Literal["agent1", "agent2", END]]` para enrutamiento
-   - El supervisor decide el siguiente agente basado en el contexto
+3. **Multi-Agent Orchestration**: Specialized agents with supervisor routing
+   - Use `Command[Literal["agent1", "agent2", END]]` for routing
+   - Supervisor decides next agent based on context
 
-## Sistemas de Memoria
+## Memory Systems
 
-- **Corto plazo**: `ConversationTokenBufferMemory` (ventana basada en tokens)
-- **Resumen**: `ConversationSummaryMemory` (comprimir historiales largos)
-- **Memoria Vectorial**: `VectorStoreRetrieverMemory` con búsqueda semántica (local)
-- **Híbrida**: Combina múltiples tipos de memoria para contexto comprehensivo
+- **Short-term**: `ConversationTokenBufferMemory` (token-based windowing)
+- **Summarization**: `ConversationSummaryMemory` (compress long histories)
+- **Entity Tracking**: `ConversationEntityMemory` (track people, places, facts)
+- **Vector Memory**: `VectorStoreRetrieverMemory` with semantic search
+- **Hybrid**: Combine multiple memory types for comprehensive context
 
-## Pipeline de RAG (Local-First)
+## RAG Pipeline
 
 ```python
-from langchain_community.embeddings import FastEmbedEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_voyageai import VoyageAIEmbeddings
+from langchain_pinecone import PineconeVectorStore
 
-# Embeddings locales de alto rendimiento
-embeddings = FastEmbedEmbeddings(model_name="all-MiniLM-L6-v2")
+# Setup embeddings (voyage-3-large recommended for Claude)
+embeddings = VoyageAIEmbeddings(model="voyage-3-large")
 
-# Vector store local (soberanía de datos)
-vectorstore = Chroma(
-    persist_directory="./data/chroma_db",
-    embedding_function=embeddings
+# Vector store with hybrid search
+vectorstore = PineconeVectorStore(
+    index=index,
+    embedding=embeddings
 )
 
 # Retriever with reranking
 base_retriever = vectorstore.as_retriever(
-    search_type="similarity",
-    search_kwargs={"k": 20}
+    search_type="hybrid",
+    search_kwargs={"k": 20, "alpha": 0.5}
 )
 ```
 
-### Patrones Avanzados de RAG
-- **HyDE**: Generar documentos hipotéticos para mejor retrieval
-- **RAG Fusion**: Múltiples perspectivas de query para resultados comprehensivos
-- **Reranking**: Usar cross-encoder local para optimización de relevancia
+### Advanced RAG Patterns
+- **HyDE**: Generate hypothetical documents for better retrieval
+- **RAG Fusion**: Multiple query perspectives for comprehensive results
+- **Reranking**: Use Cohere Rerank for relevance optimization
 
-## Herramientas e Integración
+## Tools & Integration
 
 ```python
 from langchain_core.tools import StructuredTool
@@ -143,9 +137,9 @@ tool = StructuredTool.from_function(
 )
 ```
 
-## Deployment en Producción
+## Production Deployment
 
-### Servidor FastAPI con Streaming
+### FastAPI Server with Streaming
 ```python
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
@@ -160,28 +154,28 @@ async def invoke_agent(request: AgentRequest):
     return await agent.ainvoke({"messages": [...]})
 ```
 
-### Monitoreo y Observabilidad
-- **LangSmith**: Tracear todas las ejecuciones del agente (opcional, requiere API key)
-- **Prometheus**: Trackear métricas (requests, latencia, errores)
-- **Logging Estructurado**: Usa `structlog` para logs consistentes
-- **Health Checks**: Validar LLM, herramientas, memoria y servicios externos
+### Monitoring & Observability
+- **LangSmith**: Trace all agent executions
+- **Prometheus**: Track metrics (requests, latency, errors)
+- **Structured Logging**: Use `structlog` for consistent logs
+- **Health Checks**: Validate LLM, tools, memory, and external services
 
-### Estrategias de Optimización
-- **Caching**: Redis local o en-memoria para response caching con TTL
-- **Connection Pooling**: Reusar conexiones de vector DB
-- **Load Balancing**: Múltiples workers de agente con enrutamiento round-robin
-- **Manejo de Timeouts**: Setear timeouts en todas las operaciones async
-- **Lógica de Reintentos**: Exponential backoff con máximo de reintentos
+### Optimization Strategies
+- **Caching**: Redis for response caching with TTL
+- **Connection Pooling**: Reuse vector DB connections
+- **Load Balancing**: Multiple agent workers with round-robin routing
+- **Timeout Handling**: Set timeouts on all async operations
+- **Retry Logic**: Exponential backoff with max retries
 
-## Testing y Evaluación
+## Testing & Evaluation
 
 ```python
 from langsmith.evaluation import evaluate
 
-# Run evaluation suite (requiere LangSmith configurado)
+# Run evaluation suite
 eval_config = RunEvalConfig(
     evaluators=["qa", "context_qa", "cot_qa"],
-    eval_llm=ChatAnthropic(model="claude-sonnet-4")
+    eval_llm=ChatAnthropic(model="claude-sonnet-4-5")
 )
 
 results = await evaluate(
@@ -191,9 +185,9 @@ results = await evaluate(
 )
 ```
 
-## Patrones Clave
+## Key Patterns
 
-### Patrón de State Graph
+### State Graph Pattern
 ```python
 builder = StateGraph(MessagesState)
 builder.add_node("node1", node1_func)
@@ -204,7 +198,7 @@ builder.add_edge("node2", END)
 agent = builder.compile(checkpointer=checkpointer)
 ```
 
-### Patrón Async
+### Async Pattern
 ```python
 async def process_request(message: str, session_id: str):
     result = await agent.ainvoke(
@@ -214,7 +208,7 @@ async def process_request(message: str, session_id: str):
     return result["messages"][-1].content
 ```
 
-### Patrón de Manejo de Errores
+### Error Handling Pattern
 ```python
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -227,33 +221,32 @@ async def call_with_retry():
         raise
 ```
 
-## Lista de Verificación de Implementación
+## Implementation Checklist
 
-- [ ] Configurar LLM (local o vía env vars)
-- [ ] Setup embeddings locales (FastEmbed o similar)
-- [ ] Crear herramientas con soporte async y manejo de errores
-- [ ] Implementar sistema de memoria (elegir tipo según el caso de uso)
-- [ ] Construir state graph con LangGraph
-- [ ] Agregar tracing/observabilidad (LangSmith opcional)
-- [ ] Implementar streaming de responses
-- [ ] Configurar health checks y monitoreo
-- [ ] Agregar capa de caching
-- [ ] Configurar lógica de reintentos y timeouts
-- [ ] Escribir tests de evaluación
-- [ ] Documentar endpoints de API y uso
+- [ ] Initialize LLM with Claude Sonnet 4.5
+- [ ] Setup Voyage AI embeddings (voyage-3-large)
+- [ ] Create tools with async support and error handling
+- [ ] Implement memory system (choose type based on use case)
+- [ ] Build state graph with LangGraph
+- [ ] Add LangSmith tracing
+- [ ] Implement streaming responses
+- [ ] Setup health checks and monitoring
+- [ ] Add caching layer (Redis)
+- [ ] Configure retry logic and timeouts
+- [ ] Write evaluation tests
+- [ ] Document API endpoints and usage
 
-## Mejores Prácticas
+## Best Practices
 
-1. **Siempre usa async**: `ainvoke`, `astream`, `aget_relevant_documents`
-2. **Maneja errores gracefulmente**: Try/except con fallbacks
-3. **Monitorea todo**: Tracea, loguea y mide todas las operaciones
-4. **Optimiza costos**: Cachea responses, usa límites de tokens, comprime memoria
-5. **Asegura secrets**: Variables de entorno, nunca hardcodear
-6. **Testea exhaustivamente**: Unit tests, integration tests, evaluation suites
-7. **Documenta extensivamente**: Documentación de API, diagramas de arquitectura, runbooks
-8. **Controla versiones del estado**: Usa checkpointers para reproducibilidad
-9. **Soberanía de datos**: Preferir embeddings y vector stores locales
+1. **Always use async**: `ainvoke`, `astream`, `aget_relevant_documents`
+2. **Handle errors gracefully**: Try/except with fallbacks
+3. **Monitor everything**: Trace, log, and metric all operations
+4. **Optimize costs**: Cache responses, use token limits, compress memory
+5. **Secure secrets**: Environment variables, never hardcode
+6. **Test thoroughly**: Unit tests, integration tests, evaluation suites
+7. **Document extensively**: API docs, architecture diagrams, runbooks
+8. **Version control state**: Use checkpointers for reproducibility
 
 ---
 
-Construye agentes de LangChain listos para producción, escalables y observables siguiendo estos patrones.
+Build production-ready, scalable, and observable LangChain agents following these patterns.

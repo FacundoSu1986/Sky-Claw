@@ -1,13 +1,6 @@
 ---
 name: local-dev-aider-pairing
 description: Pair programming con Aider para modificación de código integrada con Git, generación de parches, y refactorización local-first. Usar para parchear mods, crear scripts Papyrus, o refactorizar lógica interna de Sky-Claw. No usar para cambios triviales que no justifiquen la sobrecarga de Aider.
-metadata:
-  version: 1.1.0
-  last_updated: 2026-04-23
-  compatibility:
-    - Python 3.11+
-    - Git
-    - Aider
 ---
 
 # Local Dev Aider Pairing

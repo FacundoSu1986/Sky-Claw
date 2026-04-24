@@ -427,7 +427,7 @@ Image Editing Mode:
         action = check_logo_required(args.brand, skip_prompt=args.no_logo_prompt)
         if action == 'generate':
             print("\n💡 To generate a logo, use the logo-design skill:")
-            print(f"   python .agents/skills/design/scripts/logo/generate.py --brand \"{args.brand}\" --industry \"{args.industry}\"")
+            print(f"   python e:/Pruba antigravity/.agents/skills/design/scripts/logo/generate.py --brand \"{args.brand}\" --industry \"{args.industry}\"")
             print("\n   Then re-run this command with --logo <generated_logo.png>")
             sys.exit(0)
         elif action == 'exit':

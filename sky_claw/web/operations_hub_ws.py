@@ -251,19 +251,9 @@ class OperationsHubWSHandler:
 
 
 def _json_fallback(obj: object) -> object:
-    """Best-effort JSON fallback for payload objects that are not built-ins.
-
-    Pydantic models are serialised with ``mode="json"`` so that non-native
-    types (``datetime``, ``Enum``, ``UUID``, ``Decimal``) are coerced to
-    JSON-friendly primitives (ISO-8601 strings, member values, etc.) instead
-    of raising ``TypeError`` inside :func:`json.dumps`.
-    """
+    """Best-effort JSON fallback for payload objects that are not built-ins."""
     if hasattr(obj, "model_dump"):
-        try:
-            return obj.model_dump(mode="json")  # pydantic v2 BaseModel
-        except TypeError:
-            # Tolera implementaciones legacy o mocks que no exponen ``mode``.
-            return obj.model_dump()
+        return obj.model_dump()  # pydantic BaseModel
     if hasattr(obj, "__dataclass_fields__"):
         from dataclasses import asdict
 

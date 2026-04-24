@@ -1,91 +1,85 @@
 ---
 name: agent-orchestration-multi-agent-optimize
-description: "Optimiza sistemas multi-agente con perfilado coordinado, distribución de carga de trabajo y orquestación consciente de costos. Usa cuando se busca mejorar el rendimiento, el throughput o la confiabilidad de agentes."
-metadata:
-  version: 1.1.0
-  last_updated: 2026-04-23
-  compatibility:
-    - Python 3.11+
-    - asyncio
+description: "Optimize multi-agent systems with coordinated profiling, workload distribution, and cost-aware orchestration. Use when improving agent performance, throughput, or reliability."
 ---
 
-# Toolkit de Optimización Multi-Agente
+# Multi-Agent Optimization Toolkit
 
-## Usa esta skill cuando
+## Use this skill when
 
-- Se busca mejorar la coordinación, el throughput o la latencia multi-agente
-- Se perfilan flujos de trabajo de agentes para identificar cuellos de botella
-- Se diseñan estrategias de orquestación para flujos de trabajo complejos
-- Se optimizan costos, uso de contexto o eficiencia de herramientas
+- Improving multi-agent coordination, throughput, or latency
+- Profiling agent workflows to identify bottlenecks
+- Designing orchestration strategies for complex workflows
+- Optimizing cost, context usage, or tool efficiency
 
-## No uses esta skill cuando
+## Do not use this skill when
 
-- Solo necesitas ajustar el prompt de un agente individual
-- No existen métricas medibles ni datos de evaluación
-- La tarea no está relacionada con la orquestación multi-agente
+- You only need to tune a single agent prompt
+- There are no measurable metrics or evaluation data
+- The task is unrelated to multi-agent orchestration
 
-## Instrucciones
+## Instructions
 
-1. Establece métricas base y objetivos de rendimiento.
-2. Perfila las cargas de trabajo de los agentes e identifica cuellos de botella de coordinación.
-3. Aplica cambios de orquestación y controles de costos de forma incremental.
-4. Valida las mejoras con pruebas repetibles y mecanismos de rollback.
+1. Establish baseline metrics and target performance goals.
+2. Profile agent workloads and identify coordination bottlenecks.
+3. Apply orchestration changes and cost controls incrementally.
+4. Validate improvements with repeatable tests and rollbacks.
 
-## Seguridad
+## Safety
 
-- Evita desplegar cambios de orquestación sin pruebas de regresión.
-- Despliega los cambios gradualmente para prevenir regresiones a nivel de sistema.
+- Avoid deploying orchestration changes without regression testing.
+- Roll out changes gradually to prevent system-wide regressions.
 
-## Rol: Especialista en Ingeniería de Rendimiento Multi-Agente Impulsado por IA
+## Role: AI-Powered Multi-Agent Performance Engineering Specialist
 
-### Contexto
+### Context
 
-La Herramienta de Optimización Multi-Agente es un framework avanzado impulsado por IA, diseñado para mejorar holísticamente el rendimiento del sistema mediante optimización inteligente y coordinada basada en agentes. Aprovechando técnicas de vanguardia en orquestación de IA, esta herramienta proporciona un enfoque integral para la ingeniería de rendimiento en múltiples dominios.
+The Multi-Agent Optimization Tool is an advanced AI-driven framework designed to holistically improve system performance through intelligent, coordinated agent-based optimization. Leveraging cutting-edge AI orchestration techniques, this tool provides a comprehensive approach to performance engineering across multiple domains.
 
-### Capacidades Principales
+### Core Capabilities
 
-- Coordinación inteligente multi-agente
-- Perfilado de rendimiento e identificación de cuellos de botella
-- Estrategias de optimización adaptativas
-- Optimización de rendimiento cross-domain
-- Seguimiento de costos y eficiencia
+- Intelligent multi-agent coordination
+- Performance profiling and bottleneck identification
+- Adaptive optimization strategies
+- Cross-domain performance optimization
+- Cost and efficiency tracking
 
-## Manejo de Argumentos
+## Arguments Handling
 
-La herramienta procesa argumentos de optimización con parámetros de entrada flexibles:
+The tool processes optimization arguments with flexible input parameters:
 
-- `$TARGET`: Sistema/aplicación principal a optimizar
-- `$PERFORMANCE_GOALS`: Métricas y objetivos de rendimiento específicos
-- `$OPTIMIZATION_SCOPE`: Profundidad de la optimización (quick-win, comprehensive)
-- `$BUDGET_CONSTRAINTS`: Limitaciones de costos y recursos
-- `$QUALITY_METRICS`: Umbrales de calidad de rendimiento
+- `$TARGET`: Primary system/application to optimize
+- `$PERFORMANCE_GOALS`: Specific performance metrics and objectives
+- `$OPTIMIZATION_SCOPE`: Depth of optimization (quick-win, comprehensive)
+- `$BUDGET_CONSTRAINTS`: Cost and resource limitations
+- `$QUALITY_METRICS`: Performance quality thresholds
 
-## 1. Perfilado de Rendimiento Multi-Agente
+## 1. Multi-Agent Performance Profiling
 
-### Estrategia de Perfilado
+### Profiling Strategy
 
-- Monitoreo de rendimiento distribuido a través de las capas del sistema
-- Recolección y análisis de métricas en tiempo real
-- Seguimiento continuo de firmas de rendimiento
+- Distributed performance monitoring across system layers
+- Real-time metrics collection and analysis
+- Continuous performance signature tracking
 
-#### Agentes de Perfilado
+#### Profiling Agents
 
-1. **Agente de Rendimiento de Base de Datos**
-   - Análisis de tiempo de ejecución de queries
-   - Seguimiento de utilización de índices
-   - Monitoreo de consumo de recursos
+1. **Database Performance Agent**
+   - Query execution time analysis
+   - Index utilization tracking
+   - Resource consumption monitoring
 
-2. **Agente de Rendimiento de Aplicación**
-   - Perfilado de CPU y memoria
-   - Evaluación de complejidad algorítmica
-   - Análisis de concurrencia y operaciones async
+2. **Application Performance Agent**
+   - CPU and memory profiling
+   - Algorithmic complexity assessment
+   - Concurrency and async operation analysis
 
-3. **Agente de Rendimiento de Frontend**
-   - Métricas de rendimiento de renderizado
-   - Optimización de requests de red
-   - Monitoreo de Core Web Vitals
+3. **Frontend Performance Agent**
+   - Rendering performance metrics
+   - Network request optimization
+   - Core Web Vitals monitoring
 
-### Ejemplo de Código de Perfilado
+### Profiling Code Example
 
 ```python
 def multi_agent_profiler(target_system):
@@ -102,20 +96,20 @@ def multi_agent_profiler(target_system):
     return aggregate_performance_metrics(performance_profile)
 ```
 
-## 2. Optimización de Ventana de Contexto
+## 2. Context Window Optimization
 
-### Técnicas de Optimización
+### Optimization Techniques
 
-- Compresión inteligente de contexto
-- Filtrado por relevancia semántica
-- Redimensionamiento dinámico de la ventana de contexto
-- Gestión del presupuesto de tokens
+- Intelligent context compression
+- Semantic relevance filtering
+- Dynamic context window resizing
+- Token budget management
 
-### Algoritmo de Compresión de Contexto
+### Context Compression Algorithm
 
 ```python
 def compress_context(context, max_tokens=4000):
-    # Compresión semántica usando truncamiento basado en embeddings
+    # Semantic compression using embedding-based truncation
     compressed_context = semantic_truncate(
         context,
         max_tokens=max_tokens,
@@ -124,16 +118,16 @@ def compress_context(context, max_tokens=4000):
     return compressed_context
 ```
 
-## 3. Eficiencia en la Coordinación de Agentes
+## 3. Agent Coordination Efficiency
 
-### Principios de Coordinación
+### Coordination Principles
 
-- Diseño de ejecución en paralelo
-- Sobrecarga mínima de comunicación inter-agente
-- Distribución dinámica de carga de trabajo
-- Interacciones entre agentes tolerantes a fallos
+- Parallel execution design
+- Minimal inter-agent communication overhead
+- Dynamic workload distribution
+- Fault-tolerant agent interactions
 
-### Framework de Orquestación
+### Orchestration Framework
 
 ```python
 class MultiAgentOrchestrator:
@@ -143,7 +137,7 @@ class MultiAgentOrchestrator:
         self.performance_tracker = PerformanceTracker()
 
     def optimize(self, target_system):
-        # Ejecución paralela de agentes con optimización coordinada
+        # Parallel agent execution with coordinated optimization
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = {
                 executor.submit(agent.optimize, target_system): agent
@@ -156,91 +150,90 @@ class MultiAgentOrchestrator:
                 self.performance_tracker.log(agent, result)
 ```
 
-## 4. Optimización de Ejecución Paralela
+## 4. Parallel Execution Optimization
 
-### Estrategias Clave
+### Key Strategies
 
-- Procesamiento asíncrono de agentes
-- Particionamiento de carga de trabajo
-- Asignación dinámica de recursos
-- Operaciones de bloqueo mínimas
+- Asynchronous agent processing
+- Workload partitioning
+- Dynamic resource allocation
+- Minimal blocking operations
 
-## 5. Estrategias de Optimización de Costos
+## 5. Cost Optimization Strategies
 
-### Gestión de Costos de LLM
+### LLM Cost Management
 
-- Seguimiento de uso de tokens
-- Selección adaptativa de modelos
-- Caching y reuso de resultados
-- Prompt engineering eficiente
+- Token usage tracking
+- Adaptive model selection
+- Caching and result reuse
+- Efficient prompt engineering
 
-### Ejemplo de Seguimiento de Costos
+### Cost Tracking Example
 
 ```python
 class CostOptimizer:
     def __init__(self):
-        self.token_budget = 100000  # Presupuesto mensual
+        self.token_budget = 100000  # Monthly budget
         self.token_usage = 0
-        # Ejemplo de costos por 1K tokens (valores ilustrativos; ajustar según modelo real)
         self.model_costs = {
-            'advanced-model': 0.03,
-            'standard-model': 0.015,
-            'fast-model': 0.0025
+            'gpt-5': 0.03,
+            'claude-4-sonnet': 0.015,
+            'claude-4-haiku': 0.0025
         }
 
     def select_optimal_model(self, complexity):
-        # Selección dinámica de modelo basada en complejidad de tarea y presupuesto
+        # Dynamic model selection based on task complexity and budget
         pass
 ```
 
-## 6. Técnicas de Reducción de Latencia
+## 6. Latency Reduction Techniques
 
-### Aceleración de Rendimiento
+### Performance Acceleration
 
-- Caching predictivo
-- Pre-calentamiento de contextos de agentes
-- Memoización inteligente de resultados
-- Reducción de comunicación round-trip
+- Predictive caching
+- Pre-warming agent contexts
+- Intelligent result memoization
+- Reduced round-trip communication
 
-## 7. Compromisos entre Calidad y Velocidad
+## 7. Quality vs Speed Tradeoffs
 
-### Espectro de Optimización
+### Optimization Spectrum
 
-- Umbrales de rendimiento
-- Márgenes de degradación aceptables
-- Optimización consciente de calidad
-- Selección inteligente de compromisos
+- Performance thresholds
+- Acceptable degradation margins
+- Quality-aware optimization
+- Intelligent compromise selection
 
-## 8. Monitoreo y Mejora Continua
+## 8. Monitoring and Continuous Improvement
 
-### Framework de Observabilidad
+### Observability Framework
 
-- Dashboards de rendimiento en tiempo real
-- Feedback loops de optimización automatizados
-- Mejora impulsada por machine learning
-- Estrategias de optimización adaptativas
+- Real-time performance dashboards
+- Automated optimization feedback loops
+- Machine learning-driven improvement
+- Adaptive optimization strategies
 
-## Flujos de Trabajo de Referencia
+## Reference Workflows
 
-### Flujo de Trabajo 1: Optimización de Plataforma de E-Commerce
+### Workflow 1: E-Commerce Platform Optimization
 
-1. Perfilado de rendimiento inicial
-2. Optimización basada en agentes
-3. Seguimiento de costos y rendimiento
-4. Ciclo de mejora continua
+1. Initial performance profiling
+2. Agent-based optimization
+3. Cost and performance tracking
+4. Continuous improvement cycle
 
-### Flujo de Trabajo 2: Mejora de Rendimiento de API Empresarial
+### Workflow 2: Enterprise API Performance Enhancement
 
-1. Análisis comprehensivo del sistema
-2. Optimización multi-agente en capas
-3. Refinamiento iterativo de rendimiento
-4. Estrategia de escalado eficiente en costos
+1. Comprehensive system analysis
+2. Multi-layered agent optimization
+3. Iterative performance refinement
+4. Cost-efficient scaling strategy
 
-## Consideraciones Clave
+## Key Considerations
 
-- Siempre mide antes y después de la optimización
-- Mantén la estabilidad del sistema durante la optimización
-- Balancea las ganancias de rendimiento con el consumo de recursos
-- Implementa cambios graduales y reversibles
+- Always measure before and after optimization
+- Maintain system stability during optimization
+- Balance performance gains with resource consumption
+- Implement gradual, reversible changes
 
-Optimización Objetivo: $ARGUMENTS
+Target Optimization: $ARGUMENTS

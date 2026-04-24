@@ -21,7 +21,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sky_claw.core.dlq_manager import DLQManager
@@ -29,57 +29,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 Subscriber = Callable[["Event"], Awaitable[None]]
-
-# ---------------------------------------------------------------------------
-# Tópicos GUI-facing (consumidos por el puente WebSocket → Operations Hub)
-# ---------------------------------------------------------------------------
-#
-# Convención jerárquica: ``ops.<category>.<subcategory>``.  El puente WS y el
-# cliente frontend matchean con patrones ``fnmatch`` de la forma
-# ``ops.<category>.*``; los tópicos planos (ej. ``ops.telemetry``) son
-# ignorados por esos patrones, de modo que cualquier emisor nuevo DEBE usar
-# al menos un sub-segmento después del prefijo.
-
-#: Tick de métricas del sistema — emitido por TelemetryDaemon a 1 Hz.
-#: Sub-tópico único (no hay otras categorías de telemetría hoy).
-OPS_TELEMETRY_TOPIC: Final[str] = "ops.telemetry.tick"
-
-#: Prefijo para cambios de ciclo de vida de procesos/herramientas.
-#: Los emisores construyen el tópico final como ``ops.process.<state>``
-#: donde ``state ∈ {"started", "completed", "error"}``.  Usar el helper
-#: :func:`ops_process_topic` para no hardcodear el prefijo.
-OPS_PROCESS_TOPIC_PREFIX: Final[str] = "ops.process"
-
-#: Prefijo para entradas de log estructurado destinadas al Orbe de Visión.
-#: Los emisores construyen el tópico final como ``ops.log.<level>``
-#: donde ``level ∈ {"info", "warning", "error", "critical"}``.  Usar el
-#: helper :func:`ops_log_topic` para no hardcodear el prefijo.
-OPS_LOG_TOPIC_PREFIX: Final[str] = "ops.log"
-
-
-def ops_process_topic(state: str) -> str:
-    """Construye el tópico CoreEventBus para una transición de proceso.
-
-    Args:
-        state: Estado del proceso (``started`` | ``completed`` | ``error``).
-
-    Returns:
-        Cadena con formato ``ops.process.<state>``.
-    """
-    return f"{OPS_PROCESS_TOPIC_PREFIX}.{state}"
-
-
-def ops_log_topic(level: str) -> str:
-    """Construye el tópico CoreEventBus para una entrada de log.
-
-    Args:
-        level: Nivel de severidad (``info`` | ``warning`` | ``error`` |
-            ``critical``).
-
-    Returns:
-        Cadena con formato ``ops.log.<level>``.
-    """
-    return f"{OPS_LOG_TOPIC_PREFIX}.{level}"
 
 
 @dataclass(frozen=True, slots=True)

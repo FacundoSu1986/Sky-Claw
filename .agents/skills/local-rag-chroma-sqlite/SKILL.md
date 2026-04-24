@@ -1,13 +1,6 @@
 ---
 name: local-rag-chroma-sqlite
 description: Construye y consulta una base de conocimiento local de mods usando ChromaDB para búsqueda vectorial y SQLite para datos estructurados. Usar para responder preguntas sobre requisitos de mods, buscar compatibilidad en repositorios locales, o construir un compendio de la colección del usuario. No usar para datos en tiempo real de Nexus Mods.
-metadata:
-  version: 1.1.0
-  last_updated: 2026-04-23
-  compatibility:
-    - Python 3.11+
-    - ChromaDB
-    - SQLite
 ---
 
 # Local RAG con ChromaDB + SQLite
@@ -66,8 +59,7 @@ results = collection.query(
 
 # Búsqueda híbrida: vector + SQL
 mod_ids = [r["mod_id"] for r in results["metadatas"][0]]
-placeholders = ','.join('?' * len(mod_ids))
-sql_details = db.execute(f"SELECT * FROM mods WHERE mod_id IN ({placeholders})", mod_ids)
+sql_details = db.execute("SELECT * FROM mods WHERE mod_id IN (?)", mod_ids)
 ```
 
 ### 5. Reglas de Oro

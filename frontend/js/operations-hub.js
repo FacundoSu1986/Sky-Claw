@@ -120,24 +120,17 @@ export function applyFrameToState(state, frame) {
         });
     }
 
-    // Process table (ops.process.started / .completed / .error — Fase 7)
-    // Defensive: payload may be null, malformed, or missing AppState methods.
-    if (matchesTopic(topic, 'ops.process.*') && payload && typeof payload === 'object') {
-        const id = payload.process_id ?? payload.id ?? payload.name;
-        if (id && typeof state.updateProcess === 'function') {
-            const patch = {
-                state: payload.state ?? payload.status ?? topic.split('.').pop() ?? 'unknown',
-                label: payload.label ?? payload.tool_name ?? payload.name ?? String(id),
+    // Process table
+    if (matchesTopic(topic, 'ops.process.*')) {
+        const id = payload?.process_id ?? payload?.id ?? payload?.name;
+        if (id) {
+            state.updateProcess(String(id), {
+                state: payload.state ?? payload.status ?? 'unknown',
+                label: payload.label ?? payload.name ?? String(id),
                 progress: Number.isFinite(payload.progress) ? payload.progress : null,
                 topic,
                 updatedAt: frame.timestamp_ms ?? Date.now(),
-            };
-            // Optional enrichment — only populate keys the payload actually carries.
-            if (typeof payload.tool_name === 'string') patch.toolName = payload.tool_name;
-            if (Number.isFinite(payload.exit_code)) patch.exitCode = payload.exit_code;
-            if (Number.isFinite(payload.duration_seconds)) patch.durationSeconds = payload.duration_seconds;
-            if (typeof payload.error_message === 'string') patch.errorMessage = payload.error_message;
-            state.updateProcess(String(id), patch);
+            });
         }
     }
 

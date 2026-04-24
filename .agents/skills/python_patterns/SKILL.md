@@ -5,7 +5,7 @@ description: Referencia de patrones de diseño en Python idiomático (GoF + Pyth
 
 # Python Patterns (Referencia de Arquitectura)
 
-Referencia de patrones de diseño clásicos en versión idiomática de Python, basada en el repositorio local `.agents/skills/python_patterns`.
+Referencia de patrones de diseño clásicos en versión idiomática de Python, basada en el repositorio local `e:\Pruba antigravity\python-patterns`.
 
 ## Cuándo Usar
 
@@ -26,7 +26,7 @@ Referencia de patrones de diseño clásicos en versión idiomática de Python, b
 ### 1. Consultar Patrones
 Al enfrentar un problema arquitectónico, consultar ejemplos dentro de:
 ```
-.agents/skills/python_patterns\patterns\
+e:\Pruba antigravity\python-patterns\patterns\
 ├── behavioral/    # Strategy, Observer, Command, State, etc.
 ├── creational/    # Factory, Singleton, Builder, Prototype, etc.
 └── structural/    # Adapter, Decorator, Facade, Proxy, etc.

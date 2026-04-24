@@ -238,7 +238,7 @@ class LLMRouter:
 
         # 1. Semantic Routing con RouteClassification (LCEL Integration)
         routing_data = {"payload": {"text": user_message}, "metadata": metadata or {}}
-        routed = await self._semantic_router.route(routing_data)
+        routed = self._semantic_router.route(routing_data)
 
         # Convertir a RouteClassification schema para validación
         route_classification = RouteClassification(

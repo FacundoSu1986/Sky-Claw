@@ -19,15 +19,6 @@ class SemanticRouter:
     Soporta fallback a clasificación LLM si la confianza es baja.
     """
 
-    # Mapeo de rutas internas a intents válidos del schema RouteClassification
-    ROUTE_TO_INTENT: dict[str, str] = {
-        "scrape_mod": "CONSULTA_MODDING",
-        "security_audit": "EJECUCION_HERRAMIENTA",
-        "resolve_conflict": "CONSULTA_MODDING",
-        "database_query": "RAG_CONSULTA",
-        "modding_tools": "EJECUCION_HERRAMIENTA",
-    }
-
     # Rutas semánticas definidas para cada agente/herramienta
     ROUTES = {
         "scrape_mod": [
@@ -92,24 +83,23 @@ class SemanticRouter:
                 self._encoder = None
         return self._encoder
 
-    async def classify(self, query: str, fallback_intent: str = "CHAT_GENERAL") -> RouteClassification:
+    async def classify(self, query: str, fallback_route: str = "unknown") -> RouteClassification:
         """
         Clasifica una query de usuario en una ruta específica.
 
         Args:
             query: Texto de la consulta del usuario
-            fallback_intent: Intent a usar si la confianza es baja.
-                Debe ser uno de los valores válidos del Literal en RouteClassification.
+            fallback_route: Ruta a usar si la confianza es baja
 
         Returns:
-            RouteClassification con el intent y confianza.
+            RouteClassification con la ruta y confianza
         """
         encoder = await self._get_encoder()
 
         if encoder is None:
             # Fallback a clasificación LLM
             logger.warning("Usando fallback a clasificación LLM")
-            return RouteClassification(intent=fallback_intent, confidence=0.0)
+            return RouteClassification(route=fallback_route, confidence=0.0, fallback_to_llm=True)
 
         # Buscar mejor coincidencia semántica
         best_route = None
@@ -124,43 +114,12 @@ class SemanticRouter:
                     best_route = route_name
 
         if best_route and best_score >= self.confidence_threshold:
-            intent = self.ROUTE_TO_INTENT.get(best_route, fallback_intent)
-            logger.info(f"Query clasificada como '{best_route}' → intent '{intent}' con confianza {best_score:.2f}")
-            return RouteClassification(intent=intent, confidence=best_score)
+            logger.info(f"Query clasificada como '{best_route}' con confianza {best_score:.2f}")
+            return RouteClassification(route=best_route, confidence=best_score, fallback_to_llm=False)
 
         # Fallback si la confianza es baja
         logger.info(f"Confianza {best_score:.2f} < threshold {self.confidence_threshold}, usando fallback")
-        return RouteClassification(intent=fallback_intent, confidence=best_score)
-
-    async def route(self, routing_data: dict) -> dict:
-        """
-        Punto de entrada público para el LLMRouter.
-
-        Transforma el formato de datos del router (dict con payload/metadata)
-        en una clasificación semántica, delegando en :meth:`classify`.
-
-        Args:
-            routing_data: Diccionario con estructura
-                ``{"payload": {"text": str}, "metadata": dict}``.
-
-        Returns:
-            Diccionario plano con las claves que ``LLMRouter.chat`` espera:
-            ``intent``, ``confidence``, ``target_agent``, ``tool_name``,
-            ``parameters`` y ``original_text``.
-        """
-        text = routing_data.get("payload", {}).get("text", "")
-        metadata = routing_data.get("metadata", {})
-
-        classification = await self.classify(text)
-
-        return {
-            "intent": classification.intent,
-            "confidence": classification.confidence,
-            "target_agent": classification.target_agent,
-            "tool_name": classification.tool_name,
-            "parameters": classification.parameters,
-            "original_text": text,
-        }
+        return RouteClassification(route=fallback_route, confidence=best_score, fallback_to_llm=True)
 
     def _calculate_similarity(self, query: str, utterance: str) -> float:
         """
@@ -184,20 +143,18 @@ class SemanticRouter:
 
         return len(intersection) / len(union)
 
-    async def batch_classify(
-        self, queries: list[str], fallback_intent: str = "CHAT_GENERAL"
-    ) -> list[RouteClassification]:
+    async def batch_classify(self, queries: list[str], fallback_route: str = "unknown") -> list[RouteClassification]:
         """
         Clasifica múltiples queries en batch.
 
         Args:
             queries: Lista de consultas a clasificar
-            fallback_intent: Intent a usar si la confianza es baja
+            fallback_route: Ruta a usar si la confianza es baja
 
         Returns:
             Lista de RouteClassification
         """
-        tasks = [self.classify(q, fallback_intent) for q in queries]
+        tasks = [self.classify(q, fallback_route) for q in queries]
         # H-01: return_exceptions=True para prevenir crashes del orquestador
         return await asyncio.gather(*tasks, return_exceptions=True)
 

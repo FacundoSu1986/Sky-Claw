@@ -1,14 +1,6 @@
 ---
 name: metacognitive-context-orchestrator
 description: Framework de razonamiento metacognitivo enterprise con gestión de contexto vectorial local, calibración bayesiana de confianza, y orquestación multi-agente. Úsalo para implementar demonios asíncronos en WSL2 con soberanía de datos estricta.
-metadata:
-  version: 2.2.0
-  last_updated: 2026-04-23
-  compatibility:
-    - Python 3.11+
-    - asyncio
-    - WSL2
-    - Sky-Claw Metacognitive Framework v2.1
 ---
 
 # Metacognitive Context Orchestrator

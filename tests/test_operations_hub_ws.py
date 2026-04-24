@@ -5,28 +5,21 @@ Phase 2 of the Operations Hub GUI wiring.  Covers:
 - Initial snapshot frame delivery on connect.
 - Ping → pong round trip.
 - Graceful client disconnect removes the socket from the roster.
-- Fase 7: serialización de payloads Pydantic con ``mode="json"`` para
-  tolerar campos no-nativos (``datetime``, ``Enum``, ...) sin volcar al
-  cliente un ``TypeError`` de ``json.dumps``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
-from enum import Enum
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from pydantic import BaseModel, ConfigDict
 
 from sky_claw.core.event_bus import CoreEventBus, Event
 from sky_claw.web.operations_hub_ws import (
     DEFAULT_FORWARDED_PATTERNS,
     OperationsHubWSHandler,
-    _json_fallback,
     register_operations_hub_routes,
 )
 
@@ -167,103 +160,3 @@ async def test_client_count_tracks_connections(ws_client_factory) -> None:
     # After the context exits, the server coroutine should observe disconnect.
     await asyncio.sleep(0.1)
     assert handler.client_count == 0
-
-
-# --------------------------------------------------------------------------- #
-# Fase 7 — serialización Pydantic con mode="json"                             #
-# --------------------------------------------------------------------------- #
-
-
-class _Severity(str, Enum):
-    """Enum de prueba para verificar la serialización JSON-compat."""
-
-    WARNING = "warning"
-    CRITICAL = "critical"
-
-
-class _PydanticFrame(BaseModel):
-    """Payload Pydantic con campos no-JSON nativos (datetime + Enum)."""
-
-    model_config = ConfigDict(frozen=True, strict=True)
-    severity: _Severity
-    occurred_at: datetime
-    message: str
-
-
-def test_json_fallback_serializes_pydantic_with_datetime() -> None:
-    """``_json_fallback`` debe delegar a ``model_dump(mode='json')``.
-
-    Sin ``mode='json'`` los campos ``datetime``/``Enum`` salen como objetos
-    nativos y el ``json.dumps`` externo lanza ``TypeError``.  Con la
-    corrección de Fase 7 se convierten a ISO-8601/valor respectivamente.
-    """
-    frame = _PydanticFrame(
-        severity=_Severity.WARNING,
-        occurred_at=datetime(2026, 4, 23, 12, 0, tzinfo=timezone.utc),
-        message="umbral de RAM",
-    )
-
-    dumped = _json_fallback(frame)
-
-    assert isinstance(dumped, dict)
-    assert dumped["severity"] == "warning"  # Enum → valor primitivo
-    assert isinstance(dumped["occurred_at"], str)  # datetime → ISO string
-    assert dumped["occurred_at"].startswith("2026-04-23")
-    # Además, el dict resultante debe ser serializable por json.dumps sin error.
-    json.dumps(dumped)
-
-
-@pytest.mark.asyncio
-async def test_bus_event_with_pydantic_payload_broadcasts_without_type_error(
-    ws_client_factory, event_bus: CoreEventBus
-) -> None:
-    """Un payload Pydantic con datetime se propaga al cliente sin error."""
-    client, _handler = ws_client_factory
-    async with client.ws_connect("/api/status") as ws:
-        await asyncio.wait_for(ws.receive_str(), timeout=1.0)  # snapshot
-
-        # Publicamos un evento cuyo payload NO es dict plano — contiene un
-        # modelo Pydantic con datetime.  Antes de Fase 7 esto rompía el
-        # dispatch del bus con TypeError en json.dumps.
-        payload_model = _PydanticFrame(
-            severity=_Severity.CRITICAL,
-            occurred_at=datetime(2026, 4, 23, 10, 30, tzinfo=timezone.utc),
-            message="bus flooded",
-        )
-        # _json_fallback sólo se activa cuando el VALOR dentro del payload
-        # es un modelo; el payload en sí se mantiene dict para respetar el
-        # contrato del Event.
-        await event_bus.publish(
-            Event(
-                topic="ops.log.critical",
-                payload={"detail": payload_model},
-                source="telemetry-daemon",
-            )
-        )
-
-        msg = await asyncio.wait_for(ws.receive_str(), timeout=1.0)
-        frame = json.loads(msg)
-
-        assert frame["event_type"] == "ops.log.critical"
-        assert frame["payload"]["detail"]["severity"] == "critical"
-        assert frame["payload"]["detail"]["occurred_at"].startswith("2026-04-23")
-
-
-def test_default_patterns_cover_fase7_hierarchical_topics() -> None:
-    """Los patrones actuales matchean los tópicos jerárquicos de Fase 7."""
-    import fnmatch
-
-    fase7_samples = (
-        "ops.telemetry.tick",
-        "ops.process.started",
-        "ops.process.completed",
-        "ops.process.error",
-        "ops.log.info",
-        "ops.log.warning",
-        "ops.log.error",
-        "ops.log.critical",
-    )
-    for topic in fase7_samples:
-        assert any(
-            fnmatch.fnmatch(topic, p) for p in DEFAULT_FORWARDED_PATTERNS
-        ), f"Tópico {topic!r} no matchea ningún patrón del puente WS"

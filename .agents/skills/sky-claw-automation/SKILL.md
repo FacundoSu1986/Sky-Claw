@@ -1,14 +1,6 @@
 ---
 name: sky-claw-automation
 description: "Automatiza el ciclo de vida de mods de Skyrim: scraping en Nexus Mods, gestión de base de datos SQLite y notificaciones vía Telegram. Úsalo para buscar actualizaciones, validar compatibilidades y ejecutar tareas de mantenimiento en App-nexus."
-metadata:
-  version: 2.0.0
-  last_updated: 2026-04-23
-  compatibility:
-    - Python 3.11+
-    - SQLite
-    - Playwright/Selenium
-    - Telegram Bot API
 ---
 
 # Sky-Claw: Skyrim Modding Automation Skill
@@ -57,14 +49,6 @@ Esta habilidad permite al agente operar como un backend inteligente para la gest
 - **Nomenclatura:** Seguir estándar de Python (PEP 8) para scripts de automatización.
 
 ## Recursos Disponibles
-
-| Recurso | Tipo | Descripción |
-|---------|------|-------------|
-| `scripts/scrape_project.py` | Script Python | Scraping genérico de metadatos de proyecto |
-| `scripts/setup_env.ps1` | PowerShell | Configuración de entorno y dependencias |
-| `scripts/first_run.py` | Script Python | Inicialización de base de datos y configuración |
-| `sky_claw/db/` | Módulo Python | Lógica de persistencia SQLite |
-| `sky_claw/comms/` | Módulo Python | Integración con Telegram y notificaciones |
-| `logs/sky_claw.log` | Log | Registro de operaciones del sistema |
-
-> **Nota:** Los scripts `nexus_scraper.py`, `db_manager.py` y `telegram_reports.json` mencionados en versiones anteriores han sido consolidados en los módulos del paquete `sky_claw/`. No referenciar archivos inexistentes.
+- `/scripts/nexus_scraper.py`: Script base para extracción de datos.
+- `/scripts/db_manager.py`: Utilidad para interactuar con SQLite.
+- `/templates/telegram_reports.json`: Plantillas de mensajes para el bot.

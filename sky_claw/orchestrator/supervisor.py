@@ -112,9 +112,7 @@ class SupervisorAgent:
         # Strangler Fig: dispatcher para herramientas migradas. Las branches del match/case
         # delegan progresivamente a este dispatcher. Se construye al final del __init__
         # para garantizar que todos los services y agents ya están listos.
-        # Fase 7: se inyecta el event_bus para que ProcessEmittingMiddleware propague
-        # ops.process.* al Operations Hub desde cada estrategia.
-        self._tool_dispatcher = build_orchestration_dispatcher(self, event_bus=self._event_bus)
+        self._tool_dispatcher = build_orchestration_dispatcher(self)
 
     def _init_rollback_components(self) -> None:
         """FASE 1.5: Inicializa los componentes de resiliencia para rollback.

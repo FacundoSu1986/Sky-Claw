@@ -1,13 +1,6 @@
 ---
 name: local-automation-interpreter
 description: Automatiza herramientas de modding de Windows (LOOT, xEdit, MO2) usando Open Interpreter con ejecución sandboxed. Usar cuando Sky-Claw necesite ejecutar scripts PowerShell/CMD para parchear mods, manipular carpetas, o actualizar el registro de mods. No usar para tareas que no requieran interacción con el sistema de archivos o binarios de modding.
-metadata:
-  version: 1.1.0
-  last_updated: 2026-04-23
-  compatibility:
-    - Python 3.11+
-    - Windows PowerShell
-    - Open Interpreter
 ---
 
 # Local Automation Interpreter
