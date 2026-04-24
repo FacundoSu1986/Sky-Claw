@@ -330,6 +330,27 @@ class SyncEngine:
         except Exception as e:
             logger.error("Error durante passive pruning: %s", e)
 
+    async def _bounded_gather(
+        self,
+        coroutines: list[Coroutine[Any, Any, Any]],
+        *,
+        max_concurrency: int,
+    ) -> list[Any]:
+        """Ejecuta corutinas en lotes limitando solo la cantidad de tasks vivas."""
+        if not coroutines:
+            return []
+
+        results: list[Any] = []
+        batch_size = max(max_concurrency * 2, 1)
+
+        for start in range(0, len(coroutines), batch_size):
+            batch = coroutines[start : start + batch_size]
+            tasks = [asyncio.create_task(coro) for coro in batch]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            results.extend(batch_results)
+
+        return results
+
     def _get_max_backup_size_bytes(self) -> int:
         """Obtiene el tamaño máximo de backups desde configuración."""
         if self._cfg is None:
@@ -364,8 +385,11 @@ class SyncEngine:
             payload.total_checked,
         )
 
-        # Ejecución paralela con contención de fallas
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Ejecución paralela con contención de fallas y materialización acotada
+        results = await self._bounded_gather(
+            tasks,
+            max_concurrency=self._cfg.api_semaphore_limit,
+        )
         for mod, result in zip(tracked_mods, results, strict=False):
             if isinstance(result, Exception):
                 logger.error(
