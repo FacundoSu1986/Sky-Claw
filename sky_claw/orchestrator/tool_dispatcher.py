@@ -35,6 +35,9 @@ from sky_claw.orchestrator.tool_strategies.middleware import (
     DictResultGuardMiddleware,
     ErrorWrappingMiddleware,
 )
+from sky_claw.orchestrator.tool_strategies.process_emitter import (
+    ProcessEmittingMiddleware,
+)
 from sky_claw.orchestrator.tool_strategies.query_mod_metadata import (
     QueryModMetadataStrategy,
 )
@@ -50,6 +53,7 @@ from sky_claw.orchestrator.tool_strategies.validate_plugin_limit import (
 )
 
 if TYPE_CHECKING:
+    from sky_claw.core.event_bus import CoreEventBus
     from sky_claw.orchestrator.supervisor import SupervisorAgent
 
 logger = logging.getLogger(__name__)
@@ -131,6 +135,8 @@ def _make_thunk(
 
 def build_orchestration_dispatcher(
     supervisor: SupervisorAgent,
+    *,
+    event_bus: CoreEventBus | None = None,
 ) -> OrchestrationToolDispatcher:
     """Wire all migrated tool strategies onto a fresh dispatcher.
 
@@ -139,58 +145,85 @@ def build_orchestration_dispatcher(
     one-by-one in the Strangler Fig refactor; the legacy match/case in
     SupervisorAgent.dispatch_tool delegates to this dispatcher only for
     tool names that have been moved over.
+
+    Args:
+        supervisor: El :class:`SupervisorAgent` desde el que se resuelven
+            las dependencias de cada estrategia.
+        event_bus: CoreEventBus opcional.  Si se pasa, cada estrategia
+            recibe un :class:`ProcessEmittingMiddleware` registrado como la
+            capa OUTERMOST, propagando ``ops.process.*`` al Operations Hub.
+            Si es ``None`` (default), el dispatcher mantiene el
+            comportamiento clásico sin telemetría de procesos.
     """
     dispatcher = OrchestrationToolDispatcher()
 
-    dispatcher.register(QueryModMetadataStrategy(scraper=supervisor.scraper))
+    def _register(
+        strategy: ToolStrategy,
+        *,
+        inner_middleware: list[ToolMiddleware] | None = None,
+    ) -> None:
+        """Registra una estrategia prependiendo ProcessEmittingMiddleware si hay bus.
 
-    dispatcher.register(
+        La ordenación final es: [ProcessEmitting, *inner_middleware, strategy]
+        — el emitter es OUTERMOST para ver excepciones crudas antes de que
+        ErrorWrappingMiddleware las transforme a dict.
+        """
+        chain: list[ToolMiddleware] = []
+        if event_bus is not None:
+            chain.append(ProcessEmittingMiddleware(event_bus))
+        if inner_middleware:
+            chain.extend(inner_middleware)
+        dispatcher.register(strategy, middleware=chain or None)
+
+    _register(QueryModMetadataStrategy(scraper=supervisor.scraper))
+
+    _register(
         ExecuteLootSortingStrategy(
             tools=supervisor.tools,
             interface=supervisor.interface,
         ),
     )
 
-    dispatcher.register(
+    _register(
         ExecuteSynthesisPipelineStrategy(service=supervisor._synthesis_service),
-        middleware=[
+        inner_middleware=[
             ErrorWrappingMiddleware("SynthesisPipelineExecutionFailed"),
             DictResultGuardMiddleware("InvalidSynthesisPipelineResult"),
         ],
     )
 
-    dispatcher.register(
+    _register(
         ResolveConflictWithPatchStrategy(service=supervisor._xedit_service),
-        middleware=[
+        inner_middleware=[
             ErrorWrappingMiddleware("XEditPatchExecutionFailed"),
             DictResultGuardMiddleware("InvalidXEditPatchResult"),
         ],
     )
 
-    dispatcher.register(GenerateLodsStrategy(service=supervisor._dyndolod_service))
+    _register(GenerateLodsStrategy(service=supervisor._dyndolod_service))
 
     # Lambdas re-resolve attributes on each call so test fixtures can
     # monkey-patch the supervisor methods AFTER the dispatcher is wired
     # (and so the lazy `asset_detector` property keeps its semantics).
-    dispatcher.register(
+    _register(
         ScanAssetConflictsStrategy(
             scan_callable=lambda: supervisor.scan_asset_conflicts(),
         ),
     )
 
-    dispatcher.register(
+    _register(
         ScanAssetConflictsJsonStrategy(
             scan_json_callable=lambda: supervisor.scan_asset_conflicts_json(),
         ),
     )
 
-    dispatcher.register(
+    _register(
         GenerateBashedPatchStrategy(
             wrye_bash_pipeline=lambda **kwargs: supervisor.execute_wrye_bash_pipeline(**kwargs),
         ),
     )
 
-    dispatcher.register(
+    _register(
         ValidatePluginLimitStrategy(
             plugin_limit_guard=lambda profile: supervisor._run_plugin_limit_guard(profile),
             default_profile_getter=lambda: supervisor.profile_name,

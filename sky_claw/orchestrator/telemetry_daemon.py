@@ -7,6 +7,9 @@ Parte de la refactorización ARC-01 (Fat Object → SRP).
 Sprint 1: Migrado de callback directo a CoreEventBus.
 Fase 6: Añadidas emisiones GUI-facing ``ops.telemetry`` y ``ops.system_log``
          cuando el uso de RAM supera el umbral configurable.
+Fase 7: Migración de tópicos planos a convención jerárquica
+         (``ops.telemetry.tick`` y ``ops.log.<level>``) para alinear con los
+         patrones ``fnmatch`` del puente WS (``ops.<cat>.*``).
 """
 
 from __future__ import annotations
@@ -21,10 +24,10 @@ from typing import Final
 import psutil
 
 from sky_claw.core.event_bus import (
-    OPS_SYSTEM_LOG_TOPIC,
     OPS_TELEMETRY_TOPIC,
     CoreEventBus,
     Event,
+    ops_log_topic,
 )
 
 logger = logging.getLogger("SkyClaw.Telemetry")
@@ -55,11 +58,12 @@ class TelemetryDaemon:
     y las publica al CoreEventBus en dos tópicos:
 
     * ``system.telemetry.metrics`` — tópico legacy (backward-compatible).
-    * ``ops.telemetry`` — tópico GUI-facing consumido por el Operations Hub.
+    * ``ops.telemetry.tick`` — tópico GUI-facing consumido por el Operations
+      Hub (matchea el patrón ``ops.telemetry.*`` del puente WS).
 
     Adicionalmente, cuando el uso global de RAM del sistema supera
-    ``ram_warn_threshold_pct``, emite un evento ``ops.system_log`` de nivel
-    ``warning`` (limitado a uno por ventana de ``ram_warn_cooldown_s``).
+    ``ram_warn_threshold_pct``, emite un evento ``ops.log.warning`` (limitado
+    a uno por ventana de ``ram_warn_cooldown_s``).
 
     Args:
         event_bus:             Instancia del CoreEventBus donde publicar.
@@ -174,7 +178,7 @@ class TelemetryDaemon:
             logger.warning(msg)
             await self._event_bus.publish(
                 Event(
-                    topic=OPS_SYSTEM_LOG_TOPIC,
+                    topic=ops_log_topic("warning"),
                     payload={
                         "level": "warning",
                         "message": msg,

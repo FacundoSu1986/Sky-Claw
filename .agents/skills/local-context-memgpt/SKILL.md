@@ -1,6 +1,13 @@
 ---
 name: local-context-memgpt
-description: Implementa MemGPT como sistema de memoria a largo plazo local-first para agentes Sky-Claw. Usar cuando la ventana de contexto se exceda, se necesite recordar historial de mods entre sesiones, o mantener preferencias persistentes. No usar para consultas simples sin necesidad de memoria persistente.
+description: Implementa Letta (anteriormente MemGPT) como sistema de memoria a largo plazo local-first para agentes Sky-Claw. Usar cuando la ventana de contexto se exceda, se necesite recordar historial de mods entre sesiones, o mantener preferencias persistentes. No usar para consultas simples sin necesidad de memoria persistente.
+metadata:
+  version: 2.0.0
+  last_updated: 2026-04-23
+  compatibility:
+    - Python 3.11+
+    - Letta (MemGPT legacy)
+    - SQLite local
 ---
 
 # Local Context MemGPT
@@ -26,15 +33,15 @@ Sistema de memoria a largo plazo local-first usando MemGPT para agentes Sky-Claw
 
 ### 1. Configuración del Motor
 ```bash
-pip install memgpt
-memgpt configure  # Seleccionar SQLite local
+pip install letta  # MemGPT fue rebrandeado a Letta en 2024
+letta configure    # Seleccionar SQLite local
 ```
 
 ### 2. Integración con Sky-Claw
 ```python
 from sky_claw.agent.specialized_bridges import MemGPTBridge
 
-# Inicializar sesión de agente
+# Inicializar sesión de agente (bridge compatible con Letta/MemGPT)
 bridge = MemGPTBridge(config=local_config)
 session = await bridge.initialize_session(user_id="tg-user-123")
 ```

@@ -286,8 +286,9 @@ class DeepSeekProvider(LLMProvider):
 class OllamaProvider(LLMProvider):
     DEFAULT_MODEL = "llama3.1"
 
-    def __init__(self, base_url="http://localhost:11434"):
+    def __init__(self, base_url="http://localhost:11434", api_key: str = ""):
         self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
 
     @retry(
         wait=wait_exponential(multiplier=1.5, min=2, max=60),
@@ -304,7 +305,10 @@ class OllamaProvider(LLMProvider):
         if oai_tools:
             body["tools"] = oai_tools
         url = f"{self._base_url}/v1/chat/completions"
-        async with await gateway.request("POST", url, session, json=body) as resp:
+        headers = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        async with await gateway.request("POST", url, session, json=body, headers=headers) as resp:
             if resp.status >= 400:
                 text = await resp.text()
                 logger.error("Ollama error %d: %s", resp.status, text)
@@ -339,7 +343,7 @@ def create_provider(*, provider_name=None, api_key=None, model=None):
             return DeepSeekProvider(key)
         if name == "ollama":
             logger.info("Using Ollama provider (local)")
-            return OllamaProvider()
+            return OllamaProvider(api_key=api_key or "")
         raise ProviderConfigError(f"Unknown provider: {name}")
 
     # Auto-detect from environment
@@ -353,5 +357,6 @@ def create_provider(*, provider_name=None, api_key=None, model=None):
         logger.info("Auto-detected DeepSeek provider")
         return DeepSeekProvider(deepseek_key)
 
+    # Propagate the api_key to Ollama in case it fronts an auth-gated proxy.
     logger.info("No API keys found — falling back to Ollama")
-    return OllamaProvider()
+    return OllamaProvider(api_key=api_key or "")

@@ -190,7 +190,7 @@ class DynDOLODPipelineStartedPayload(BaseModel):
 
 
 class OpsTelemetryPayload(BaseModel):
-    """Payload para el tópico ``ops.telemetry``.
+    """Payload para el tópico ``ops.telemetry.tick``.
 
     Emitido por :class:`TelemetryDaemon` a 1 Hz con las métricas de sistema
     que el Operations Hub necesita para pintar los paneles de Telemetría.
@@ -217,11 +217,14 @@ class OpsTelemetryPayload(BaseModel):
 
 
 class OpsProcessChangePayload(BaseModel):
-    """Payload para el tópico ``ops.process_change``.
+    """Payload para los tópicos ``ops.process.<state>``.
 
-    Emitido por el ToolDispatcher (y orquestadores de pipeline) cada vez que
-    una herramienta inicia, termina o falla.  El Operations Hub lo usa para
-    actualizar el panel de Arsenal y el contador de procesos activos.
+    Emitido por :class:`ProcessEmittingMiddleware` (y orquestadores de
+    pipeline) cada vez que una herramienta inicia, termina o falla.  El
+    Operations Hub lo usa para actualizar el panel de Arsenal y el contador
+    de procesos activos.  El sufijo del tópico (``started`` | ``completed``
+    | ``error``) duplica ``payload.state`` para habilitar filtros
+    ``fnmatch`` sin deserializar el payload.
 
     Attributes:
         process_id:       Identificador único del proceso (UUID o hash).
@@ -250,11 +253,14 @@ class OpsProcessChangePayload(BaseModel):
 
 
 class OpsSystemLogPayload(BaseModel):
-    """Payload para el tópico ``ops.system_log``.
+    """Payload para los tópicos ``ops.log.<level>``.
 
     Entrada de log estructurado destinada al Orbe de Visión de la GUI.
     Cualquier capa del backend puede emitir este tópico para notificar al
-    operador (ej. advertencia de RAM alta, error de red, conflicto detectado).
+    operador (ej. advertencia de RAM alta, error de red, conflicto
+    detectado).  El sufijo del tópico (``info`` | ``warning`` | ``error`` |
+    ``critical``) duplica ``payload.level`` para habilitar filtros
+    ``fnmatch`` sin deserializar el payload.
 
     Attributes:
         level:   Nivel de severidad: ``info`` | ``warning`` | ``error``

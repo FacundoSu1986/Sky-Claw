@@ -1,17 +1,23 @@
-"""Tests para las emisiones ops.* de Fase 6.
+"""Tests para las emisiones ops.* de Fase 6 (migradas a convención jerárquica en Fase 7).
 
 Cubre:
-- Constantes de tópicos exportadas desde sky_claw.core.
-- Modelos Pydantic OpsProcessChangePayload, OpsSystemLogPayload, OpsTelemetryPayload.
-- TelemetryDaemon emite ops.telemetry (nuevo) Y system.telemetry.metrics (legacy).
-- TelemetryDaemon incluye uptime_s en el payload ops.telemetry.
-- TelemetryDaemon emite ops.system_log de nivel warning cuando RAM supera umbral.
+- Constantes/helpers de tópicos exportados desde sky_claw.core
+  (``ops.telemetry.tick``, prefijos ``ops.process``, ``ops.log``).
+- Modelos Pydantic OpsProcessChangePayload, OpsSystemLogPayload,
+  OpsTelemetryPayload.
+- TelemetryDaemon emite ``ops.telemetry.tick`` (nuevo) Y
+  ``system.telemetry.metrics`` (legacy).
+- TelemetryDaemon incluye ``uptime_s`` en el payload ``ops.telemetry.tick``.
+- TelemetryDaemon emite ``ops.log.warning`` cuando RAM supera umbral.
 - Cooldown evita emisión duplicada de advertencia RAM en ventana corta.
+- Los nuevos tópicos matchean los patrones ``fnmatch`` del puente WS
+  (``ops.<cat>.*``), garantizando propagación al frontend.
 """
 
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import time
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -20,11 +26,13 @@ import psutil
 import pytest
 
 from sky_claw.core.event_bus import (
-    OPS_PROCESS_CHANGE_TOPIC,
-    OPS_SYSTEM_LOG_TOPIC,
+    OPS_LOG_TOPIC_PREFIX,
+    OPS_PROCESS_TOPIC_PREFIX,
     OPS_TELEMETRY_TOPIC,
     CoreEventBus,
     Event,
+    ops_log_topic,
+    ops_process_topic,
 )
 from sky_claw.core.event_payloads import (
     OpsProcessChangePayload,
@@ -34,25 +42,61 @@ from sky_claw.core.event_payloads import (
 
 
 # ---------------------------------------------------------------------------
-# Constantes de tópico
+# Constantes y helpers de tópico (Fase 7 — convención jerárquica)
 # ---------------------------------------------------------------------------
 
 
 class TestOpsTopicConstants:
     """Verifica que las constantes de tópico tienen los valores correctos."""
 
-    def test_ops_telemetry_topic(self) -> None:
-        assert OPS_TELEMETRY_TOPIC == "ops.telemetry"
+    def test_ops_telemetry_topic_is_hierarchical(self) -> None:
+        """ops.telemetry.tick usa sub-segmento para matchear ops.telemetry.*"""
+        assert OPS_TELEMETRY_TOPIC == "ops.telemetry.tick"
+        assert fnmatch.fnmatch(OPS_TELEMETRY_TOPIC, "ops.telemetry.*")
 
-    def test_ops_process_change_topic(self) -> None:
-        assert OPS_PROCESS_CHANGE_TOPIC == "ops.process_change"
+    def test_ops_process_topic_prefix(self) -> None:
+        assert OPS_PROCESS_TOPIC_PREFIX == "ops.process"
 
-    def test_ops_system_log_topic(self) -> None:
-        assert OPS_SYSTEM_LOG_TOPIC == "ops.system_log"
+    def test_ops_log_topic_prefix(self) -> None:
+        assert OPS_LOG_TOPIC_PREFIX == "ops.log"
+
+    def test_ops_process_topic_helper(self) -> None:
+        assert ops_process_topic("started") == "ops.process.started"
+        assert ops_process_topic("completed") == "ops.process.completed"
+        assert ops_process_topic("error") == "ops.process.error"
+
+    def test_ops_process_topics_match_ws_pattern(self) -> None:
+        """Los tópicos ops.process.<state> deben matchear ops.process.* del WS."""
+        for state in ("started", "completed", "error"):
+            topic = ops_process_topic(state)
+            assert fnmatch.fnmatch(topic, "ops.process.*"), (
+                f"Tópico {topic!r} no matchea ops.process.*"
+            )
+
+    def test_ops_log_topic_helper(self) -> None:
+        assert ops_log_topic("info") == "ops.log.info"
+        assert ops_log_topic("warning") == "ops.log.warning"
+        assert ops_log_topic("error") == "ops.log.error"
+        assert ops_log_topic("critical") == "ops.log.critical"
+
+    def test_ops_log_topics_match_ws_pattern(self) -> None:
+        """Los tópicos ops.log.<level> deben matchear ops.log.* del WS."""
+        for level in ("info", "warning", "error", "critical"):
+            topic = ops_log_topic(level)
+            assert fnmatch.fnmatch(topic, "ops.log.*"), (
+                f"Tópico {topic!r} no matchea ops.log.*"
+            )
 
     def test_all_topics_start_with_ops_prefix(self) -> None:
-        for topic in (OPS_TELEMETRY_TOPIC, OPS_PROCESS_CHANGE_TOPIC, OPS_SYSTEM_LOG_TOPIC):
-            assert topic.startswith("ops."), f"Tópico {topic!r} no comienza con 'ops.'"
+        samples = (
+            OPS_TELEMETRY_TOPIC,
+            ops_process_topic("started"),
+            ops_log_topic("info"),
+        )
+        for topic in samples:
+            assert topic.startswith("ops."), (
+                f"Tópico {topic!r} no comienza con 'ops.'"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -185,8 +229,8 @@ def _make_fake_vmem(percent: float = 50.0) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_telemetry_daemon_emits_ops_telemetry() -> None:
-    """TelemetryDaemon publica al tópico ops.telemetry en cada ciclo."""
+async def test_telemetry_daemon_emits_ops_telemetry_tick() -> None:
+    """TelemetryDaemon publica al tópico ops.telemetry.tick en cada ciclo."""
     from sky_claw.orchestrator.telemetry_daemon import TelemetryDaemon
 
     bus = CoreEventBus()
@@ -195,7 +239,8 @@ async def test_telemetry_daemon_emits_ops_telemetry() -> None:
     async def capture(event: Event) -> None:
         ops_events.append(event)
 
-    bus.subscribe("ops.telemetry", capture)
+    # Usa el patrón real del puente WS para garantizar que matchea.
+    bus.subscribe("ops.telemetry.*", capture)
 
     fake_proc = _make_fake_process(cpu=10.0, rss_mb=256.0)
     fake_vmem = _make_fake_vmem(percent=40.0)
@@ -213,7 +258,7 @@ async def test_telemetry_daemon_emits_ops_telemetry() -> None:
 
     assert len(ops_events) >= 2
     ev = ops_events[0]
-    assert ev.topic == "ops.telemetry"
+    assert ev.topic == "ops.telemetry.tick"
     assert ev.source == "telemetry-daemon"
     assert "cpu" in ev.payload
     assert "ram_mb" in ev.payload
@@ -254,7 +299,7 @@ async def test_telemetry_daemon_still_emits_legacy_topic() -> None:
 
 @pytest.mark.asyncio
 async def test_telemetry_daemon_uptime_s_grows_over_time() -> None:
-    """uptime_s en ops.telemetry crece monótonamente entre ciclos."""
+    """uptime_s en ops.telemetry.tick crece monótonamente entre ciclos."""
     from sky_claw.orchestrator.telemetry_daemon import TelemetryDaemon
 
     bus = CoreEventBus()
@@ -263,7 +308,7 @@ async def test_telemetry_daemon_uptime_s_grows_over_time() -> None:
     async def capture(event: Event) -> None:
         ops_events.append(event)
 
-    bus.subscribe("ops.telemetry", capture)
+    bus.subscribe("ops.telemetry.*", capture)
 
     fake_proc = _make_fake_process()
     fake_vmem = _make_fake_vmem()
@@ -286,8 +331,8 @@ async def test_telemetry_daemon_uptime_s_grows_over_time() -> None:
 
 
 @pytest.mark.asyncio
-async def test_telemetry_daemon_emits_system_log_on_ram_threshold() -> None:
-    """Cuando RAM supera el umbral, se emite ops.system_log con level=warning."""
+async def test_telemetry_daemon_emits_ops_log_warning_on_ram_threshold() -> None:
+    """Cuando RAM supera el umbral, se emite ops.log.warning."""
     from sky_claw.orchestrator.telemetry_daemon import TelemetryDaemon
 
     bus = CoreEventBus()
@@ -296,7 +341,7 @@ async def test_telemetry_daemon_emits_system_log_on_ram_threshold() -> None:
     async def capture(event: Event) -> None:
         log_events.append(event)
 
-    bus.subscribe("ops.system_log", capture)
+    bus.subscribe("ops.log.*", capture)
 
     fake_proc = _make_fake_process(cpu=5.0, rss_mb=100.0)
     # RAM al 95% — supera el umbral por defecto de 80%
@@ -321,7 +366,7 @@ async def test_telemetry_daemon_emits_system_log_on_ram_threshold() -> None:
 
     assert len(log_events) >= 1
     ev = log_events[0]
-    assert ev.topic == "ops.system_log"
+    assert ev.topic == "ops.log.warning"
     assert ev.payload["level"] == "warning"
     assert "95.0" in ev.payload["message"]
     assert ev.payload["source"] == "telemetry-daemon"
@@ -329,7 +374,7 @@ async def test_telemetry_daemon_emits_system_log_on_ram_threshold() -> None:
 
 @pytest.mark.asyncio
 async def test_telemetry_daemon_no_log_below_ram_threshold() -> None:
-    """Cuando RAM está por debajo del umbral, NO se emite ops.system_log."""
+    """Cuando RAM está por debajo del umbral, NO se emite ops.log.*."""
     from sky_claw.orchestrator.telemetry_daemon import TelemetryDaemon
 
     bus = CoreEventBus()
@@ -338,7 +383,7 @@ async def test_telemetry_daemon_no_log_below_ram_threshold() -> None:
     async def capture(event: Event) -> None:
         log_events.append(event)
 
-    bus.subscribe("ops.system_log", capture)
+    bus.subscribe("ops.log.*", capture)
 
     fake_proc = _make_fake_process()
     # RAM al 30% — muy por debajo del umbral
@@ -355,7 +400,7 @@ async def test_telemetry_daemon_no_log_below_ram_threshold() -> None:
         await daemon.stop()
         await bus.stop()
 
-    assert len(log_events) == 0, "No debe emitirse ops.system_log con RAM baja"
+    assert len(log_events) == 0, "No debe emitirse ops.log.* con RAM baja"
 
 
 @pytest.mark.asyncio
@@ -369,7 +414,7 @@ async def test_telemetry_daemon_ram_cooldown_limits_warnings() -> None:
     async def capture(event: Event) -> None:
         log_events.append(event)
 
-    bus.subscribe("ops.system_log", capture)
+    bus.subscribe("ops.log.*", capture)
 
     fake_proc = _make_fake_process()
     fake_vmem = _make_fake_vmem(percent=90.0)
