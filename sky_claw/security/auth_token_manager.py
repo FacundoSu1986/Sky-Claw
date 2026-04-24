@@ -8,9 +8,12 @@ Generates a one-time token at NiceGUI startup.  The Background Daemon
 reads it from a secure temp file to authenticate the WebSocket upgrade.
 """
 
+import asyncio
 import contextlib
 import hashlib
+import json
 import logging
+import os
 import secrets
 import time
 from pathlib import Path
@@ -50,6 +53,7 @@ class AuthTokenManager:
         self._token_dir.mkdir(parents=True, exist_ok=True)
         restrict_to_owner(self._token_dir)
         self._token_path = self._token_dir / "ws_auth_token"
+        self._rotation_task: asyncio.Task | None = None
 
     # ── Server Side ──────────────────────────────────────────────────
 
@@ -59,10 +63,14 @@ class AuthTokenManager:
         self._token_hash = self._hash(self._token)
         self._created_at = time.time()
 
-        # Write plaintext token to a file readable by the daemon.
-        # The daemon needs plaintext for the WS handshake (IPC channel).
-        self._token_path.write_text(self._token, encoding="utf-8")
-        # Restrict permissions (cross-platform)
+        # Write token with metadata (JSON) so the client can validate TTL.
+        # The daemon reads plaintext via read_token_file() for WS handshake.
+        payload = {
+            "token": self._token,
+            "created_at": self._created_at,
+            "ttl": _TOKEN_TTL,
+        }
+        self._token_path.write_text(json.dumps(payload), encoding="utf-8")
         restrict_to_owner(self._token_path)
 
         logger.info(f"Auth token generated (TTL={_TOKEN_TTL}s)")
@@ -87,6 +95,31 @@ class AuthTokenManager:
 
         return is_valid
 
+    # ── Token Rotation (April 2026 hardening) ─────────────────────
+
+    async def start_rotation(self) -> None:
+        """Rotate token proactively at half TTL to limit exposure window."""
+        if self._rotation_task is not None:
+            logger.warning("Token rotation already running")
+            return
+        self._rotation_task = asyncio.create_task(self._rotation_loop())
+        logger.info("Token rotation started (interval=%ds)", _TOKEN_TTL / 2)
+
+    async def _rotation_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_TOKEN_TTL / 2)
+            logger.info("Rotating auth token...")
+            self.generate()
+
+    async def stop_rotation(self) -> None:
+        """Cancel the token rotation task."""
+        if self._rotation_task:
+            self._rotation_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._rotation_task
+            self._rotation_task = None
+            logger.info("Token rotation stopped")
+
     def revoke(self) -> None:
         """Revoke the current token atomically — clear memory first, then disk."""
         # Clear in-memory state FIRST to prevent concurrent validate() from succeeding
@@ -95,9 +128,13 @@ class AuthTokenManager:
         self._created_at = 0.0
 
         if self._token_path.exists():
-            # Overwrite with zeros before unlinking to prevent forensic recovery
+            # Secure delete: overwrite with random data matching file size,
+            # then zero out, then unlink.
             with contextlib.suppress(OSError):
-                self._token_path.write_bytes(b"\x00" * 64)
+                file_size = self._token_path.stat().st_size
+                if file_size > 0:
+                    self._token_path.write_bytes(os.urandom(file_size))
+                    self._token_path.write_bytes(b"\x00" * file_size)
             self._token_path.unlink(missing_ok=True)
 
         logger.info("Auth token revoked.")
@@ -106,7 +143,10 @@ class AuthTokenManager:
 
     @classmethod
     def read_token_file(cls, token_dir: str | None = None) -> str | None:
-        """Read the token from the shared file (called by the Daemon)."""
+        """Read the token from the shared file, validating TTL.
+
+        Returns None if the file is missing, malformed, or expired.
+        Backwards-compatible: also reads legacy plaintext tokens."""
         if token_dir:
             path = Path(token_dir) / "ws_auth_token"
         else:
@@ -116,8 +156,28 @@ class AuthTokenManager:
             logger.warning(f"Token file not found at {path}")
             return None
 
-        token = path.read_text(encoding="utf-8").strip()
-        return token if token else None
+        raw = path.read_text(encoding="utf-8").strip()
+        if not raw:
+            return None
+
+        # Try JSON format first (April 2026+), fall back to legacy plaintext
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                token = payload.get("token")
+                created_at = payload.get("created_at", 0)
+                if created_at and (time.time() - created_at) > _TOKEN_TTL:
+                    logger.warning(
+                        f"Token file at {path} is expired (age={time.time() - created_at:.0f}s > TTL={_TOKEN_TTL}s)"
+                    )
+                    return None
+                return token if token else None
+        except json.JSONDecodeError:
+            pass
+
+        # Legacy plaintext token
+        logger.debug("Reading legacy plaintext token (consider regenerating)")
+        return raw
 
     # ── Internal ─────────────────────────────────────────────────────
 

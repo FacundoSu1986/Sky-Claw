@@ -30,6 +30,7 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from sky_claw.core.event_bus import CoreEventBus, Event
+    from sky_claw.security.auth_token_manager import AuthTokenManager
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +73,12 @@ class OperationsHubWSHandler:
         *,
         forwarded_patterns: tuple[str, ...] = DEFAULT_FORWARDED_PATTERNS,
         heartbeat_seconds: float = HEARTBEAT_SECONDS,
+        auth_manager: AuthTokenManager | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._patterns = forwarded_patterns
         self._heartbeat = heartbeat_seconds
+        self._auth_manager = auth_manager
         self._clients: set[web.WebSocketResponse] = set()
         self._clients_lock = asyncio.Lock()
         self._started = False
@@ -159,6 +162,14 @@ class OperationsHubWSHandler:
     # aiohttp route handler                                               #
     # ------------------------------------------------------------------ #
 
+    def _validate_ws_auth(self, request: web.Request) -> bool:
+        if self._auth_manager is None:
+            return True
+        token = request.headers.get("X-Auth-Token", "")
+        if not token:
+            return False
+        return self._auth_manager.validate(token)
+
     async def websocket_handler(self, request: web.Request) -> web.WebSocketResponse:
         """aiohttp handler mounted at ``/api/status``.
 
@@ -166,6 +177,15 @@ class OperationsHubWSHandler:
         ``snapshot`` frame, and then forwards any client commands (``ping``,
         etc.) while the connection stays open.
         """
+        if not self._validate_ws_auth(request):
+            logger.warning("Operations Hub WS auth rejected (remote=%s)", request.remote)
+            ws_reject = web.WebSocketResponse()
+            await ws_reject.prepare(request)
+            await ws_reject.close(
+                code=aiohttp.WSCloseCode.POLICY_VIOLATION,
+                message=b"Authentication required",
+            )
+            return ws_reject
         ws = web.WebSocketResponse(heartbeat=self._heartbeat)
         await ws.prepare(request)
 
@@ -265,6 +285,7 @@ def register_operations_hub_routes(
     app: web.Application,
     event_bus: CoreEventBus,
     *,
+    auth_manager: AuthTokenManager | None = None,
     route_path: str = "/api/status",
     forwarded_patterns: tuple[str, ...] = DEFAULT_FORWARDED_PATTERNS,
 ) -> OperationsHubWSHandler:
@@ -281,7 +302,7 @@ def register_operations_hub_routes(
         :meth:`~OperationsHubWSHandler.start` once the bus is running, and
         :meth:`~OperationsHubWSHandler.stop` during shutdown.
     """
-    handler = OperationsHubWSHandler(event_bus, forwarded_patterns=forwarded_patterns)
+    handler = OperationsHubWSHandler(event_bus, auth_manager=auth_manager, forwarded_patterns=forwarded_patterns)
     app.router.add_get(route_path, handler.websocket_handler)
     logger.info("Operations Hub WebSocket route registered at %s", route_path)
     return handler

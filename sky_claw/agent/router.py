@@ -66,7 +66,22 @@ def _is_valid_api_key(key: str | None) -> bool:
     if not stripped or len(stripped) < 8:
         return False
     # Placeholders comunes que deben ser rechazados
-    placeholders = {"your_api_key_here", "insert_your_key", "xxx", "sk-xxx", "sk-..."}
+    placeholders = {
+        "your_api_key_here",
+        "insert_your_key",
+        "xxx",
+        "sk-xxx",
+        "sk-...",
+        "your-api-key",
+        "change_me",
+        "api_key_here",
+        "paste_your_key",
+        "sk-test",
+        "sk-placeholder",
+        "sk-your-key-here",
+    }
+    if len(set(stripped)) <= 2:
+        return False
     return stripped.lower() not in placeholders
 
 
@@ -347,7 +362,12 @@ class LLMRouter:
                             if hermes_error_count >= MAX_HERMES_RETRIES:
                                 return "Error: max self-healing retries exceeded (parse error)."
                             # role="user" — Hermes mode has no native tool_call_id contract
-                            messages.append({"role": "user", "content": f"[Tool Error] Error parsing tool call: {exc}"})
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": sanitize_for_prompt(f"[Tool Error] Error parsing tool call: {exc}"),
+                                }
+                            )
                             continue
                         for call in calls:
                             tool_name_h = call["name"]
@@ -361,13 +381,15 @@ class LLMRouter:
                                 hermes_error_count += 1
                                 if hermes_error_count >= MAX_HERMES_RETRIES:
                                     return "Error: max self-healing retries exceeded (execution error)."
-                                error_content = f"[Tool Error] Error executing {tool_name_h}: {exc}"
+                                error_content = sanitize_for_prompt(
+                                    f"[Tool Error] Error executing {tool_name_h}: {exc}"
+                                )
                                 await self._save_message(chat_id, "user", error_content)
                                 messages.append({"role": "user", "content": error_content})
                                 continue  # give every call its own error response; don't drop the rest
                             if len(result_str_h) > 4000:
                                 result_str_h = result_str_h[:4000] + "\n\n[... truncated ...]"
-                            tool_content = f"[Tool Result] {result_str_h}"
+                            tool_content = sanitize_for_prompt(f"[Tool Result] {result_str_h}")
                             await self._save_message(chat_id, "user", tool_content)
                             messages.append({"role": "user", "content": tool_content})
                         messages = messages[-self._max_context :]
@@ -452,7 +474,7 @@ class LLMRouter:
                         feedback = {
                             "error": "Critical tool execution failure.",
                             "exception_type": type(exc).__name__,
-                            "details": str(exc),
+                            "details": sanitize_for_prompt(str(exc)),
                             "instruction": "Verify that requirements are met and that external processes (LOOT/xEdit) are not blocked.",
                         }
                         result_str = json.dumps(feedback)
@@ -472,6 +494,9 @@ class LLMRouter:
                 messages.append({"role": "user", "content": tool_results})
                 messages = messages[-self._max_context :]
             except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except (MemoryError, SystemError, RecursionError, AttributeError, ImportError, SyntaxError) as fatal:
+                logger.critical("Fatal router error, cannot continue: %s", fatal, exc_info=True)
                 raise
             except Exception as outer_exc:
                 logger.exception("System-level router failure: %s", outer_exc)

@@ -175,7 +175,7 @@ class WebApp:
         # supplied.  The handler is started/stopped by the enclosing AppContext
         # so its lifecycle matches the bus it forwards from.
         if self._event_bus is not None:
-            self.ops_hub_handler = register_operations_hub_routes(app, self._event_bus)
+            self.ops_hub_handler = register_operations_hub_routes(app, self._event_bus, auth_manager=self._auth_manager)
 
         return app
 

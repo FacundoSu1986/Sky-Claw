@@ -185,13 +185,16 @@ class NetworkGateway:
             await self.authorize(method, current_url)
 
             parsed = urlparse(current_url)
-            if parsed.scheme != "https":
+            is_loopback = self._is_loopback_host(parsed.hostname or "")
+            if parsed.scheme != "https" and not is_loopback:
                 raise EgressViolationError(f"Insecure scheme '{parsed.scheme}' blocked: {current_url}")
 
             hop_kwargs = dict(kwargs)
             safe_timeout = aiohttp.ClientTimeout(total=45, connect=10)
             if "timeout" not in hop_kwargs:
                 hop_kwargs["timeout"] = safe_timeout
+            if is_loopback and parsed.scheme == "http":
+                hop_kwargs["ssl"] = False
 
             try:
                 response = await session.request(method, current_url, **hop_kwargs)
@@ -226,6 +229,18 @@ class NetworkGateway:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _is_loopback_host(self, hostname: str) -> bool:
+        if not hostname:
+            return False
+        hostname_lower = hostname.lower()
+        if hostname_lower in ("localhost", "127.0.0.1", "::1"):
+            return True
+        try:
+            addr = ipaddress.ip_address(hostname_lower)
+            return addr.is_loopback
+        except ValueError:
+            return False
 
     def _matching_pattern(self, hostname: str) -> str | None:
         """Return the first allow-list pattern that matches *hostname*, or None.

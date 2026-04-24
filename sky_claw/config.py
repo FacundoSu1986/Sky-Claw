@@ -162,6 +162,12 @@ class Config:
                 logger.warning("Failed to load config.toml: %s", exc)
 
     def _load_from_env(self):
+        # Security gate: environment overrides require explicit opt-in.
+        # Prevents accidental/malicious poisoning via SKY_CLAW_* env vars.
+        allow_env = os.environ.get("SKY_CLAW_ALLOW_ENV_OVERRIDES", "").lower() in ("true", "1", "yes")
+        if not allow_env:
+            logger.debug("SKY_CLAW_ALLOW_ENV_OVERRIDES not set — skipping environment variable overrides")
+            return
         for key in self._data:
             env_key = f"SKY_CLAW_{key.upper()}"
             env_val = os.environ.get(env_key)

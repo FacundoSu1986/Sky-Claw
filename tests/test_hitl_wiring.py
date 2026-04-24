@@ -423,7 +423,7 @@ class TestHITLNotifyFn:
 class TestAppContextWiring:
     @pytest.mark.asyncio
     async def test_hitl_and_downloader_wired_when_keys_set(self, tmp_path: pathlib.Path) -> None:
-        """start() wires hitl + downloader when NEXUS_API_KEY is set."""
+        """start_full() wires hitl + downloader when nexus_api_key is in keyring."""
         import argparse
 
         from sky_claw.__main__ import AppContext
@@ -439,20 +439,23 @@ class TestAppContextWiring:
             install_dir=tmp_path / "tools",
         )
 
-        with patch.dict(
-            "os.environ",
-            {
-                "ANTHROPIC_API_KEY": "test-key",
-                "NEXUS_API_KEY": "nexus-key",
-                "TELEGRAM_BOT_TOKEN": "",
-            },
+        clean_config = tmp_path / "config.toml"
+        clean_config.write_text("")
+
+        keyring_store = {"nexus_api_key": "nexus-key"}
+
+        with (
+            patch("keyring.get_password", side_effect=lambda _svc, key: keyring_store.get(key)),
+            patch("keyring.set_password"),
         ):
             ctx = AppContext(args)
-            await ctx.start()
+            await ctx.start_minimal()
+            ctx.config_path = clean_config
+            await ctx.start_full()
 
         try:
             assert ctx.hitl is not None, "HITLGuard should always be created"
-            assert ctx.network.downloader is not None, "NexusDownloader should be created when NEXUS_API_KEY is set"
+            assert ctx.network.downloader is not None, "NexusDownloader should be created when nexus_api_key is set"
             assert ctx.network.downloader.staging_dir == tmp_path / "staging"
         finally:
             await ctx.stop()
@@ -503,6 +506,7 @@ class TestAppContextWiring:
 
     @pytest.mark.asyncio
     async def test_sender_created_when_bot_token_set(self, tmp_path: pathlib.Path) -> None:
+        """start_full() creates sender when telegram_bot_token is in keyring."""
         import argparse
 
         from sky_claw.__main__ import AppContext
@@ -518,16 +522,20 @@ class TestAppContextWiring:
             install_dir=tmp_path / "tools",
         )
 
-        with patch.dict(
-            "os.environ",
-            {
-                "ANTHROPIC_API_KEY": "test-key",
-                "NEXUS_API_KEY": "",
-                "TELEGRAM_BOT_TOKEN": "123:TOKEN",
-            },
+        clean_config = tmp_path / "config.toml"
+        clean_config.write_text("")
+
+        keyring_store = {"telegram_bot_token": "123:TOKEN"}
+
+        with (
+            patch("keyring.get_password", side_effect=lambda _svc, key: keyring_store.get(key)),
+            patch("keyring.set_password"),
+            patch("sky_claw.comms.telegram_polling.TelegramPolling.start", new=AsyncMock()),
         ):
             ctx = AppContext(args)
-            await ctx.start()
+            await ctx.start_minimal()
+            ctx.config_path = clean_config
+            await ctx.start_full()
 
         try:
             assert ctx.sender is not None

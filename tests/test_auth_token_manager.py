@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import time
 from typing import TYPE_CHECKING
@@ -269,7 +270,11 @@ class TestTokenFile:
             token = mgr.generate()
 
         written = mgr._token_path.read_text(encoding="utf-8")
-        assert written == token, "Token file content must exactly match the returned token"
+        # April 2026 hardening: file now stores JSON with token + metadata
+        payload = json.loads(written)
+        assert payload["token"] == token, "Token file must contain the returned token"
+        assert "created_at" in payload, "Token file must contain created_at"
+        assert payload["ttl"] == 3600, "Token file must contain ttl=3600"
 
     def test_revoke_deletes_token_file(self, tmp_path):
         mgr = _make_manager(tmp_path)

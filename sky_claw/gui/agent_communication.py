@@ -64,6 +64,8 @@ class AgentCommunicationClient:
         self._ws = None
         self._running = False
         self._task: asyncio.Task | None = None
+        self._consecutive_auth_failures = 0
+        self._auth_lockout_until: float = 0.0
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -128,6 +130,13 @@ class AgentCommunicationClient:
 
         while self._running:
             try:
+                # ── Rate-limiting: lockout after 5 consecutive auth failures ──
+                if self._consecutive_auth_failures >= 5 and time.time() < self._auth_lockout_until:
+                    remaining = int(self._auth_lockout_until - time.time())
+                    logger.warning(f"Auth lockout active — {remaining}s remaining")
+                    await asyncio.sleep(min(remaining, 30))
+                    continue
+
                 # Read token for authentication
                 token = AuthTokenManager.read_token_file(self._token_dir)
                 extra_headers = {}
@@ -137,10 +146,12 @@ class AgentCommunicationClient:
                 async with websockets.connect(
                     self._daemon_url,
                     open_timeout=10,
-                    additional_headers=extra_headers,
+                    extra_headers=extra_headers,
                 ) as ws:
                     self._ws = ws
                     backoff = 2.0  # Reset on success
+                    self._consecutive_auth_failures = 0
+                    self._auth_lockout_until = 0.0
                     logger.info("✅ Connected to Background Daemon (UI channel).")
 
                     if self._on_connection_change:
@@ -157,6 +168,10 @@ class AgentCommunicationClient:
                 if not self._running:
                     break
                 logger.warning(f"⚠️ Daemon connection lost ({type(e).__name__}). Reconnecting in {backoff:.1f}s...")
+                self._consecutive_auth_failures += 1
+                if self._consecutive_auth_failures >= 5:
+                    self._auth_lockout_until = time.time() + 300.0
+                    logger.warning("AUTH LOCKOUT: 5 consecutive failures. Pausing 5 min.")
             except Exception as e:
                 logger.error(f"❌ Unexpected error in agent comm: {e}")
             finally:
@@ -166,7 +181,7 @@ class AgentCommunicationClient:
 
             if self._running:
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 1.5, 60.0)
+                backoff = min(backoff * 1.5, 30.0)
 
     async def _listen(self, ws) -> None:
         """Process incoming messages from the daemon."""

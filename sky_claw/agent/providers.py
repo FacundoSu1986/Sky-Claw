@@ -326,24 +326,22 @@ def create_provider(*, provider_name=None, api_key=None, model=None):
     if provider_name:
         name = provider_name.lower()
         if name == "anthropic":
-            key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-            if not key:
-                raise ProviderConfigError("ANTHROPIC_API_KEY is required.")
+            if not api_key:
+                raise ProviderConfigError("ANTHROPIC_API_KEY is required. Provide it via setup wizard or config.toml.")
             logger.info("Using Anthropic provider")
-            return AnthropicProvider(key)
+            return AnthropicProvider(api_key)
         if name == "deepseek":
-            key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
-            if not key:
-                raise ProviderConfigError("DEEPSEEK_API_KEY is required.")
+            if not api_key:
+                raise ProviderConfigError("DEEPSEEK_API_KEY is required. Provide it via setup wizard or config.toml.")
             logger.info("Using DeepSeek provider")
-            return DeepSeekProvider(key)
+            return DeepSeekProvider(api_key)
         if name == "ollama":
             logger.info("Using Ollama provider (local)")
             return OllamaProvider()
         raise ProviderConfigError(f"Unknown provider: {name}")
 
-    # Auto-detect from environment
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    # Auto-detect from environment; explicit api_key takes precedence.
+    anthropic_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if anthropic_key:
         logger.info("Auto-detected Anthropic provider")
         return AnthropicProvider(anthropic_key)

@@ -234,8 +234,24 @@ class AppContext:
 
             provider_name = self._args.provider if self._args.provider else local_cfg.llm_provider
             try:
-                # Extraer llave dinámicamente sin tocar os.environ
-                api_key = getattr(local_cfg, f"{provider_name}_api_key", None) or local_cfg.llm_api_key
+                # Extraer llave dinámicamente sin tocar os.environ.
+                # Usamos keyring directamente para evitar el cortocircuito
+                # con cadenas vacías que enmascara fallos de credenciales.
+                provider_key_name = f"{provider_name}_api_key"
+                api_key = getattr(local_cfg, provider_key_name, None)
+                if not api_key:
+                    api_key = local_cfg.llm_api_key
+                    if api_key:
+                        logger.info(
+                            "Using generic llm_api_key for provider '%s' (provider-specific key '%s' is empty).",
+                            provider_name,
+                            provider_key_name,
+                        )
+                if not api_key:
+                    raise ProviderConfigError(
+                        f"No API key found for provider '{provider_name}'. "
+                        f"Checked keyring keys: '{provider_key_name}' and 'llm_api_key'."
+                    )
 
                 provider = create_provider(
                     provider_name=provider_name,
@@ -254,8 +270,8 @@ class AppContext:
 
                 provider = OllamaProvider()
 
-            nexus_key = os.environ.get("NEXUS_API_KEY") or local_cfg.nexus_api_key or ""
-            bot_token = os.environ.get("TELEGRAM_BOT_TOKEN") or local_cfg.telegram_bot_token or ""
+            nexus_key = local_cfg.nexus_api_key or ""
+            bot_token = local_cfg.telegram_bot_token or ""
             operator_chat_id: int | None = self._args.operator_chat_id
 
             if local_cfg.telegram_chat_id:

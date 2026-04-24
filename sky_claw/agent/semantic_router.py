@@ -10,6 +10,17 @@ from sky_claw.core.schemas import RouteClassification
 
 logger = logging.getLogger("SkyClaw.SemanticRouter")
 
+# Maps internal semantic route names to valid RouteClassification intent values.
+_ROUTE_TO_INTENT: dict[str, str] = {
+    "scrape_mod": "EJECUCION_HERRAMIENTA",
+    "security_audit": "EJECUCION_HERRAMIENTA",
+    "resolve_conflict": "CONSULTA_MODDING",
+    "database_query": "RAG_CONSULTA",
+    "modding_tools": "EJECUCION_HERRAMIENTA",
+}
+
+_FALLBACK_INTENT = "CHAT_GENERAL"
+
 
 class SemanticRouter:
     """
@@ -83,43 +94,44 @@ class SemanticRouter:
                 self._encoder = None
         return self._encoder
 
-    async def classify(self, query: str, fallback_route: str = "unknown") -> RouteClassification:
+    async def classify(self, query: str) -> RouteClassification:
         """
         Clasifica una query de usuario en una ruta específica.
 
         Args:
             query: Texto de la consulta del usuario
-            fallback_route: Ruta a usar si la confianza es baja
 
         Returns:
-            RouteClassification con la ruta y confianza
+            RouteClassification con intent válido según el schema. El nombre de la
+            ruta semántica original se preserva en ``parameters["semantic_route"]``.
         """
         encoder = await self._get_encoder()
 
         if encoder is None:
-            # Fallback a clasificación LLM
             logger.warning("Usando fallback a clasificación LLM")
-            return RouteClassification(route=fallback_route, confidence=0.0, fallback_to_llm=True)
+            return RouteClassification(intent=_FALLBACK_INTENT, confidence=0.0)
 
-        # Buscar mejor coincidencia semántica
-        best_route = None
+        best_route: str | None = None
         best_score = 0.0
 
         for route_name, utterances in self.ROUTES.items():
             for utterance in utterances:
-                # Calcular similitud simple (en producción usar embeddings reales)
                 similarity = self._calculate_similarity(query, utterance)
                 if similarity > best_score:
                     best_score = similarity
                     best_route = route_name
 
         if best_route and best_score >= self.confidence_threshold:
-            logger.info(f"Query clasificada como '{best_route}' con confianza {best_score:.2f}")
-            return RouteClassification(route=best_route, confidence=best_score, fallback_to_llm=False)
+            intent = _ROUTE_TO_INTENT.get(best_route, _FALLBACK_INTENT)
+            logger.info("Query clasificada como '%s' (intent=%s) con confianza %.2f", best_route, intent, best_score)
+            return RouteClassification(
+                intent=intent,
+                confidence=best_score,
+                parameters={"semantic_route": best_route},
+            )
 
-        # Fallback si la confianza es baja
-        logger.info(f"Confianza {best_score:.2f} < threshold {self.confidence_threshold}, usando fallback")
-        return RouteClassification(route=fallback_route, confidence=best_score, fallback_to_llm=True)
+        logger.info("Confianza %.2f < threshold %.2f, usando fallback", best_score, self.confidence_threshold)
+        return RouteClassification(intent=_FALLBACK_INTENT, confidence=best_score)
 
     def _calculate_similarity(self, query: str, utterance: str) -> float:
         """
@@ -143,20 +155,30 @@ class SemanticRouter:
 
         return len(intersection) / len(union)
 
-    async def batch_classify(self, queries: list[str], fallback_route: str = "unknown") -> list[RouteClassification]:
+    async def batch_classify(self, queries: list[str]) -> list[RouteClassification]:
         """
         Clasifica múltiples queries en batch.
 
+        Garantiza una respuesta por cada query de entrada: las excepciones se
+        convierten en una clasificación fallback en lugar de descartarse, preservando
+        la alineación posicional con ``queries``.
+
         Args:
             queries: Lista de consultas a clasificar
-            fallback_route: Ruta a usar si la confianza es baja
 
         Returns:
-            Lista de RouteClassification
+            Lista de RouteClassification con la misma longitud que ``queries``.
         """
-        tasks = [self.classify(q, fallback_route) for q in queries]
-        # H-01: return_exceptions=True para prevenir crashes del orquestador
-        return await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [self.classify(q) for q in queries]
+        raw = await asyncio.gather(*tasks, return_exceptions=True)
+        results: list[RouteClassification] = []
+        for i, item in enumerate(raw):
+            if isinstance(item, RouteClassification):
+                results.append(item)
+            else:
+                logger.error("batch_classify: error en query[%d]: %s", i, item)
+                results.append(RouteClassification(intent=_FALLBACK_INTENT, confidence=0.0))
+        return results
 
     def add_route(self, route_name: str, utterances: list[str]) -> None:
         """

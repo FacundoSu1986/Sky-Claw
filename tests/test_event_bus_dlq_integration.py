@@ -154,7 +154,10 @@ async def test_dlq_retry_delivers_to_handler(tmp_path: Path) -> None:
 
     bus.subscribe("retry.*", flaky_handler)
     await bus.publish(Event(topic="retry.test", payload={"attempt": True}))
-    await asyncio.sleep(0.25)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5.0
+    while loop.time() < deadline and len(retried) < 2:
+        await asyncio.sleep(0.05)
     await bus.stop()
 
     # Handler llamado 2 veces: dispatch inicial (falla) + retry (éxito)
