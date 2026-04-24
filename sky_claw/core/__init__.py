@@ -12,9 +12,19 @@ from .contracts import (
 )
 from .database import DatabaseAgent
 from .dlq_manager import DLQManager, DLQRow
-from .event_bus import CoreEventBus, Event, create_bus_with_dlq
+from .event_bus import (
+    OPS_PROCESS_CHANGE_TOPIC,
+    OPS_SYSTEM_LOG_TOPIC,
+    OPS_TELEMETRY_TOPIC,
+    CoreEventBus,
+    Event,
+    create_bus_with_dlq,
+)
 from .event_payloads import (
     ModlistChangedPayload,
+    OpsProcessChangePayload,
+    OpsSystemLogPayload,
+    OpsTelemetryPayload,
     SynthesisPipelineCompletedPayload,
     SynthesisPipelineStartedPayload,
 )
@@ -49,6 +59,9 @@ __all__ = [
     "CircuitBreakerTrippedError",
     # Event Bus + DLQ
     "CoreEventBus",
+    "OPS_PROCESS_CHANGE_TOPIC",
+    "OPS_SYSTEM_LOG_TOPIC",
+    "OPS_TELEMETRY_TOPIC",
     "create_bus_with_dlq",
     # Database
     "DatabaseAgent",
@@ -59,6 +72,10 @@ __all__ = [
     # Schemas
     "ModMetadata",
     "ModlistChangedPayload",
+    # Ops payloads (GUI-facing, Fase 6)
+    "OpsProcessChangePayload",
+    "OpsSystemLogPayload",
+    "OpsTelemetryPayload",
     "PathResolutionService",
     # Path Resolution
     "PathResolver",

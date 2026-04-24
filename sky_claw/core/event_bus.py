@@ -21,7 +21,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from sky_claw.core.dlq_manager import DLQManager
@@ -29,6 +29,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 Subscriber = Callable[["Event"], Awaitable[None]]
+
+# ---------------------------------------------------------------------------
+# Tópicos GUI-facing (consumidos por el puente WebSocket → Operations Hub)
+# ---------------------------------------------------------------------------
+
+#: Métricas de sistema: CPU, RAM, uptime — emitido por TelemetryDaemon a 1 Hz.
+OPS_TELEMETRY_TOPIC: Final[str] = "ops.telemetry"
+
+#: Cambio de estado de una herramienta/proceso (started | completed | error).
+#: Emitido por ToolDispatcher u orquestadores de pipeline.
+OPS_PROCESS_CHANGE_TOPIC: Final[str] = "ops.process_change"
+
+#: Entrada de log estructurado destinada al Orbe de Visión de la GUI.
+#: Emitido por cualquier capa que necesite notificar al operador.
+OPS_SYSTEM_LOG_TOPIC: Final[str] = "ops.system_log"
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,11 +5,13 @@ Todos los payloads heredan de ``pydantic.BaseModel`` con
 y validación de esquemas al cruzar los límites del bus.
 
 Parte del Sprint 1.5: Strangler Fig — desacoplamiento de ``supervisor.py``.
+Fase 6: añadidos payloads ops.* para el puente GUI del Operations Hub.
 """
 
 from __future__ import annotations
 
 import time
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -176,6 +178,98 @@ class DynDOLODPipelineStartedPayload(BaseModel):
     preset: str
     run_texgen: bool
     started_at: float = Field(default_factory=time.time)
+
+    def to_log_dict(self) -> dict[str, object]:
+        """Serialización compatible con el sistema de logging estructurado."""
+        return self.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Payloads ops.* — tópicos GUI-facing del Operations Hub (Fase 6)
+# ---------------------------------------------------------------------------
+
+
+class OpsTelemetryPayload(BaseModel):
+    """Payload para el tópico ``ops.telemetry``.
+
+    Emitido por :class:`TelemetryDaemon` a 1 Hz con las métricas de sistema
+    que el Operations Hub necesita para pintar los paneles de Telemetría.
+
+    Attributes:
+        cpu:          Uso de CPU del proceso (0–100, float).
+        ram_mb:       RAM del proceso en megabytes.
+        ram_percent:  RAM del sistema global en porcentaje (0–100).
+        uptime_s:     Segundos de uptime del demonio de telemetría.
+        ts:           Epoch en segundos (autogenerado).
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    cpu: float
+    ram_mb: float
+    ram_percent: float
+    uptime_s: float
+    ts: float = Field(default_factory=time.time)
+
+    def to_log_dict(self) -> dict[str, object]:
+        """Serialización compatible con el sistema de logging estructurado."""
+        return self.model_dump()
+
+
+class OpsProcessChangePayload(BaseModel):
+    """Payload para el tópico ``ops.process_change``.
+
+    Emitido por el ToolDispatcher (y orquestadores de pipeline) cada vez que
+    una herramienta inicia, termina o falla.  El Operations Hub lo usa para
+    actualizar el panel de Arsenal y el contador de procesos activos.
+
+    Attributes:
+        process_id:       Identificador único del proceso (UUID o hash).
+        tool_name:        Nombre humano de la herramienta (ej. "DynDOLOD").
+        state:            Estado de la transición: ``started`` | ``completed``
+                          | ``error``.
+        exit_code:        Código de salida del proceso (``None`` si en curso).
+        error_message:    Mensaje de error resumido (solo para ``state=error``).
+        duration_seconds: Duración en segundos (solo para terminal states).
+        ts:               Epoch en segundos (autogenerado).
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    process_id: str
+    tool_name: str
+    state: Literal["started", "completed", "error"]
+    exit_code: int | None = None
+    error_message: str | None = None
+    duration_seconds: float | None = None
+    ts: float = Field(default_factory=time.time)
+
+    def to_log_dict(self) -> dict[str, object]:
+        """Serialización compatible con el sistema de logging estructurado."""
+        return self.model_dump()
+
+
+class OpsSystemLogPayload(BaseModel):
+    """Payload para el tópico ``ops.system_log``.
+
+    Entrada de log estructurado destinada al Orbe de Visión de la GUI.
+    Cualquier capa del backend puede emitir este tópico para notificar al
+    operador (ej. advertencia de RAM alta, error de red, conflicto detectado).
+
+    Attributes:
+        level:   Nivel de severidad: ``info`` | ``warning`` | ``error``
+                 | ``critical``.
+        message: Mensaje legible por el humano.
+        source:  Nombre del componente emisor.
+        ts:      Epoch en segundos (autogenerado).
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    level: Literal["info", "warning", "error", "critical"]
+    message: str
+    source: str
+    ts: float = Field(default_factory=time.time)
 
     def to_log_dict(self) -> dict[str, object]:
         """Serialización compatible con el sistema de logging estructurado."""
