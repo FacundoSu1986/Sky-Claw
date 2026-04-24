@@ -59,7 +59,12 @@ results = collection.query(
 
 # Búsqueda híbrida: vector + SQL
 mod_ids = [r["mod_id"] for r in results["metadatas"][0]]
-sql_details = db.execute("SELECT * FROM mods WHERE mod_id IN (?)", mod_ids)
+if mod_ids:
+    placeholders = ",".join(["?"] * len(mod_ids))
+    sql = "SELECT * FROM mods WHERE mod_id IN (" + placeholders + ")"
+    sql_details = db.execute(sql, mod_ids)
+else:
+    sql_details = []
 ```
 
 ### 5. Reglas de Oro

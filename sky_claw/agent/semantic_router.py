@@ -99,7 +99,7 @@ class SemanticRouter:
         if encoder is None:
             # Fallback a clasificación LLM
             logger.warning("Usando fallback a clasificación LLM")
-            return RouteClassification(route=fallback_route, confidence=0.0, fallback_to_llm=True)
+            return RouteClassification(intent=fallback_route, confidence=0.0)
 
         # Buscar mejor coincidencia semántica
         best_route = None
@@ -115,11 +115,11 @@ class SemanticRouter:
 
         if best_route and best_score >= self.confidence_threshold:
             logger.info(f"Query clasificada como '{best_route}' con confianza {best_score:.2f}")
-            return RouteClassification(route=best_route, confidence=best_score, fallback_to_llm=False)
+            return RouteClassification(intent=best_route, confidence=best_score)
 
         # Fallback si la confianza es baja
         logger.info(f"Confianza {best_score:.2f} < threshold {self.confidence_threshold}, usando fallback")
-        return RouteClassification(route=fallback_route, confidence=best_score, fallback_to_llm=True)
+        return RouteClassification(intent=fallback_route, confidence=best_score)
 
     def _calculate_similarity(self, query: str, utterance: str) -> float:
         """
@@ -156,7 +156,8 @@ class SemanticRouter:
         """
         tasks = [self.classify(q, fallback_route) for q in queries]
         # H-01: return_exceptions=True para prevenir crashes del orquestador
-        return await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return [r for r in results if isinstance(r, RouteClassification)]
 
     def add_route(self, route_name: str, utterances: list[str]) -> None:
         """
