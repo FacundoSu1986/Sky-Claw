@@ -724,6 +724,32 @@ class SupervisorStateGraph:
         else:
             logger.warning("[StateGraph] LangGraph no disponible. Usando implementación fallback.")
 
+    def _make_callback_aware_node(self, state_value: str, node_fn: Any) -> Any:
+        """M-1 FIX: Envuelve un nodo para invocar callbacks registrados antes de ejecutarlo.
+
+        Los callbacks registrados vía register_callback() se almacenan en self._callbacks
+        pero los nodos originales (funciones estáticas) nunca los invocan. Este wrapper
+        resuelve esa desconexión: invoca el callback async antes de ejecutar la lógica
+        del nodo, permitiendo que el cortacircuitos cognitivo y el flujo HITL funcionen.
+
+        Args:
+            state_value: Nombre del estado (ej. "dispatching").
+            node_fn: Función de nodo original (StateGraphNodes.xxx_node).
+
+        Returns:
+            Función async que invoca callback + nodo original.
+        """
+        graph_ref = self  # closure capture
+
+        async def wrapped_node(state: StateGraphState) -> dict[str, Any]:
+            callback_key = f"{state_value}_callback"
+            callback = graph_ref._callbacks.get(callback_key)
+            if callback is not None:
+                await callback(state)
+            return node_fn(state)
+
+        return wrapped_node
+
     def _build_graph(self) -> None:
         """Construye el grafo de estados con nodos y aristas."""
         if not LANGGRAPH_AVAILABLE:
@@ -732,13 +758,22 @@ class SupervisorStateGraph:
         # Crear el grafo con el estado tipado
         builder = StateGraph(StateGraphState)
 
-        # Agregar nodos
+        # Agregar nodos — los tres estados con callbacks usan wrapper M-1 FIX
         builder.add_node(SupervisorState.INIT.value, StateGraphNodes.init_node)
         builder.add_node(SupervisorState.IDLE.value, StateGraphNodes.idle_node)
         builder.add_node(SupervisorState.WATCHING.value, StateGraphNodes.watching_node)
-        builder.add_node(SupervisorState.ANALYZING.value, StateGraphNodes.analyzing_node)
-        builder.add_node(SupervisorState.DISPATCHING.value, StateGraphNodes.dispatching_node)
-        builder.add_node(SupervisorState.HITL_WAIT.value, StateGraphNodes.hitl_wait_node)
+        builder.add_node(
+            SupervisorState.ANALYZING.value,
+            self._make_callback_aware_node(SupervisorState.ANALYZING.value, StateGraphNodes.analyzing_node),
+        )
+        builder.add_node(
+            SupervisorState.DISPATCHING.value,
+            self._make_callback_aware_node(SupervisorState.DISPATCHING.value, StateGraphNodes.dispatching_node),
+        )
+        builder.add_node(
+            SupervisorState.HITL_WAIT.value,
+            self._make_callback_aware_node(SupervisorState.HITL_WAIT.value, StateGraphNodes.hitl_wait_node),
+        )
         builder.add_node(SupervisorState.COMPLETED.value, StateGraphNodes.completed_node)
         builder.add_node(SupervisorState.ERROR.value, StateGraphNodes.error_node)
         # FASE 1.5: Nodos de rollback

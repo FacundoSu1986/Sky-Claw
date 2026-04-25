@@ -18,7 +18,10 @@ from sky_claw.orchestrator.maintenance_daemon import (
     MaintenanceDaemon,
     get_max_backup_size_mb,
 )
-from sky_claw.orchestrator.state_graph import create_supervisor_state_graph
+from sky_claw.orchestrator.state_graph import (
+    StateGraphIntegration,
+    create_supervisor_state_graph,
+)
 from sky_claw.orchestrator.telemetry_daemon import TelemetryDaemon
 from sky_claw.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 from sky_claw.orchestrator.watcher_daemon import WatcherDaemon
@@ -113,6 +116,11 @@ class SupervisorAgent:
         # delegan progresivamente a este dispatcher. Se construye al final del __init__
         # para garantizar que todos los services y agents ya están listos.
         self._tool_dispatcher = build_orchestration_dispatcher(self)
+
+        # M-1 FIX: Wire StateGraphIntegration para activar cortacircuitos cognitivo y HITL.
+        # Los callbacks se registran en el grafo y los nodos los invocan vía wrapper.
+        self._graph_integration = StateGraphIntegration(self.state_graph)
+        self._graph_integration.connect_supervisor(self)
 
     def _init_rollback_components(self) -> None:
         """FASE 1.5: Inicializa los componentes de resiliencia para rollback.
