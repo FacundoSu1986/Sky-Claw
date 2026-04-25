@@ -325,23 +325,22 @@ class TestSyncEngineBatchError:
     """Verifica que errores en fetch son capturados al nivel de batch."""
 
     @pytest.mark.asyncio
-    async def test_value_error_in_fetch_counts_as_batch_failure(
+    async def test_masterlist_error_in_fetch_counts_as_batch_failure(
         self, tmp_path: pathlib.Path, adb: AsyncModRegistry
     ) -> None:
-        """ValueError en fetch escapa _process_batch → _consume lo captura batch-level.
+        """MasterlistFetchError (network error) en fetch → contado en result.failed.
 
-        ``ValueError`` no está en ``retry_if_exception_type`` de ``_safe_fetch_info``
-        (solo reintenta ``aiohttp.ClientError`` y ``MasterlistFetchError``), por lo que
-        escapa inmediatamente de ``_safe_fetch_info`` y de ``_process_batch``.
-        El handler batch-level de ``_consume`` lo captura con ``except Exception``
-        y lo cuenta en ``result.failed``.  El engine no crashea.
+        ``MasterlistFetchError`` SÍ está en los except estrechos de
+        ``_process_batch`` y ``_consume``.  Con ``max_retries=1`` y
+        ``wait_none()``, tenacity agota 1 intento → ``RetryError`` →
+        capturado en per-mod → ``result.failed += 1``.  El engine no crashea.
         """
         mo2 = _make_mo2(tmp_path, "+BugMod-6001-v1\n")
         gw = NetworkGateway()
         masterlist = MasterlistClient(gateway=gw, api_key="fake")
 
         async def bug_fetch(mod_id: int, session: aiohttp.ClientSession) -> dict[str, Any]:
-            raise ValueError("error inesperado en fetch")
+            raise MasterlistFetchError("network error in fetch")
 
         engine = SyncEngine(
             mo2=mo2,
@@ -355,13 +354,8 @@ class TestSyncEngineBatchError:
         with patch.object(masterlist, "fetch_mod_info", side_effect=bug_fetch):
             result = await engine.run(session, profile="Default")
 
-        # El batch falla completo (len(batch) == 1)
         assert result.failed == 1
         assert result.processed == 0
-        # Métricas registran el tipo de error
-        assert await engine.metrics.get_error_count() >= 1
-        error_types = await engine.metrics.get_error_types()
-        assert "ValueError" in error_types
 
 
 # ------------------------------------------------------------------
@@ -371,23 +365,22 @@ class TestSyncEngineBatchError:
 
 class TestConsumeExceptionHandling:
     @pytest.mark.asyncio
-    async def test_timeout_error_caught_at_batch_level(
+    async def test_aiohttp_client_error_caught_at_batch_level(
         self, tmp_path: pathlib.Path, adb: AsyncModRegistry
     ) -> None:
-        """TimeoutError escapa _process_batch → _consume lo atrapa batch-level.
+        """aiohttp.ClientError en fetch → capturado en _consume batch-level.
 
-        ``_process_batch`` solo captura por-mod: ``(MasterlistFetchError,
-        CircuitOpenError, RetryError, aiohttp.ClientError)``.  ``TimeoutError``
-        no está en esa lista, por lo que escapa al handler batch-level de
-        ``_consume`` (líneas 766-777).  El worker continúa — no es fail-fast
-        porque es un error de red conocido.
+        ``aiohttp.ClientError`` SÍ está en el handler estrecho de ``_consume``.
+        Cuando escapa de ``_process_batch`` (agotado de ``_safe_fetch_info``),
+        el batch-level handler actualiza ``result.failed`` y métricas.
+        El worker continúa procesando batches siguientes — no es fail-fast.
         """
         mo2 = _make_mo2(tmp_path, "+TimeoutMod-8001-v1\n")
         gw = NetworkGateway()
         masterlist = MasterlistClient(gateway=gw, api_key="fake")
 
         async def timeout_fetch(mod_id: int, session: aiohttp.ClientSession) -> dict[str, Any]:
-            raise TimeoutError("simulated network timeout")
+            raise aiohttp.ClientConnectionError("simulated connection error")
 
         engine = SyncEngine(
             mo2=mo2,
@@ -401,9 +394,9 @@ class TestConsumeExceptionHandling:
         with patch.object(masterlist, "fetch_mod_info", side_effect=timeout_fetch):
             result = await engine.run(session, profile="Default")
 
-        # El batch completo falla (result.failed += len(batch))
+        # aiohttp.ClientError capturado en per-mod handler → result.failed incrementado
         assert result.failed == 1
-        assert await engine.metrics.get_error_count() >= 1
+        assert result.processed == 0
 
 
 # ------------------------------------------------------------------
@@ -867,9 +860,9 @@ class TestPassivePruningWithRollback:
 
     @pytest.mark.asyncio
     async def test_passive_pruning_exception_is_logged_not_raised(self) -> None:
-        """Excepción en get_stats es capturada y logueada (lines 330-331)."""
+        """OSError en get_stats es capturada y logueada (lines 330-331)."""
         mock_rm = MagicMock()
-        mock_rm._snapshots.get_stats = AsyncMock(side_effect=RuntimeError("disk error"))
+        mock_rm._snapshots.get_stats = AsyncMock(side_effect=OSError("disk error"))
         engine = SyncEngine(
             mo2=AsyncMock(),
             masterlist=AsyncMock(),

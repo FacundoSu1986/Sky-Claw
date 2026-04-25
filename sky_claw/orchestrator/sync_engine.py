@@ -334,7 +334,7 @@ class SyncEngine:
                     result.deleted_count,
                     result.freed_bytes // (1024 * 1024),
                 )
-        except Exception as e:
+        except (OSError, PermissionError) as e:
             logger.error("Error durante passive pruning: %s", e)
 
     async def _bounded_gather(
@@ -809,7 +809,7 @@ class SyncEngine:
                 await self._process_batch(batch, session, semaphore, result)
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
+            except (MasterlistFetchError, CircuitOpenError, RetryError, aiohttp.ClientError) as exc:
                 # H-02: Logging estructurado para debugging
                 logger.error(
                     "batch_processing_failed",
@@ -897,7 +897,7 @@ def _extract_nexus_id(mod_name: str) -> int | None:
                 modid = config["General"]["modid"]
                 if modid.isdigit() and modid != "0":
                     return int(modid)
-        except Exception as exc:
+        except (OSError, PermissionError, configparser.Error) as exc:
             logger.debug("Failed to read meta.ini for %s: %s", mod_name, exc)
 
     return None
