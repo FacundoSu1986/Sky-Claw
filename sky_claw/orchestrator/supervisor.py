@@ -132,12 +132,11 @@ class SupervisorAgent:
             snapshot_dir=backup_dir / "snapshots", max_size_mb=get_max_backup_size_mb()
         )
 
-        # El orquestador y vfs son delegados al xedit_service
+        # C-1 FIX: RollbackManager solo requiere journal y snapshot_manager.
+        # Se eliminó la dependencia en _xedit_service (que aún no existe en este punto).
         self.rollback_manager = RollbackManager(
-            db=self.db,
+            journal=self.journal,
             snapshot_manager=self.snapshot_manager,
-            orchestrator=self._xedit_service._orchestrator,
-            vfs=self._xedit_service._orchestrator.vfs,
         )
 
         # Sprint-2: DistributedLockManager para bloqueos concurrentes

@@ -466,6 +466,27 @@ class StateGraphNodes:
             "event_data": event_data,
         }
 
+    # FASE 4: Nodo de generación de LODs
+    @staticmethod
+    def generating_lods_node(state: StateGraphState) -> dict[str, Any]:
+        """Nodo de generación de LODs - ejecuta pipeline DynDOLOD.
+
+        Este nodo representa el estado donde se genera LODs para el paisaje.
+        La lógica real de generación vive en DynDOLODPipelineService,
+        despachada desde supervisor.dispatch_tool con tool_name="generate_lods".
+
+        Args:
+            state: Estado actual del workflow.
+
+        Returns:
+            Dict con el nuevo estado GENERATING_LODS.
+        """
+        logger.info("[StateGraph] Iniciando generación de LODs")
+        return {
+            "current_state": SupervisorState.GENERATING_LODS.value,
+            "previous_state": SupervisorState.DISPATCHING.value,
+        }
+
 
 # =============================================================================
 # Conditional Edges
@@ -562,6 +583,36 @@ class StateGraphEdges:
         # Default: completar
         return StateGraphEdges._validate_and_route(SupervisorState.PATCHING, SupervisorState.COMPLETED)
 
+    # FASE 4: Routing desde estado GENERATING_LODS
+    @staticmethod
+    def route_from_generating_lods(state: StateGraphState) -> str:
+        """FASE 4: Determina la transición desde GENERATING_LODS.
+
+        Transiciones:
+        - COMPLETED: LOD generation succeeded
+        - ERROR: LOD generation failed
+        - ROLLING_BACK: If rollback needed on failure
+        """
+        tool_result = state.get("tool_result", {})
+        rollback_triggered = state.get("rollback_triggered", False)
+
+        if state.get("last_error"):
+            if not rollback_triggered:
+                return StateGraphEdges._validate_and_route(
+                    SupervisorState.GENERATING_LODS, SupervisorState.ROLLING_BACK
+                )
+            return StateGraphEdges._validate_and_route(
+                SupervisorState.GENERATING_LODS, SupervisorState.ERROR
+            )
+        elif tool_result and tool_result.get("status") == "success":
+            return StateGraphEdges._validate_and_route(
+                SupervisorState.GENERATING_LODS, SupervisorState.COMPLETED
+            )
+
+        return StateGraphEdges._validate_and_route(
+            SupervisorState.GENERATING_LODS, SupervisorState.COMPLETED
+        )
+
     @staticmethod
     def route_from_hitl_wait(state: StateGraphState) -> str:
         """Determina la transición desde HITL_WAIT basándose en la respuesta."""
@@ -578,14 +629,24 @@ class StateGraphEdges:
 
     @staticmethod
     def route_from_dispatching(state: StateGraphState) -> str:
-        """Determina la transición desde DISPATCHING."""
+        """Determina la transición desde DISPATCHING.
+
+        FASE 4: Incluye soporte para transición a GENERATING_LODS cuando
+        la herramienta despachada es generate_lods.
+        """
         tool_result = state.get("tool_result", {})
+        tool_name = state.get("tool_name", "")
 
         if state.get("loop_detected"):
             return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.HITL_WAIT)
         if state.get("last_error"):
             return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.ERROR)
         elif tool_result and (tool_result.get("status") == "success" or tool_result.get("status") == "aborted"):
+            # FASE 4: Si la herramienta es generate_lods, ir a GENERATING_LODS
+            if tool_name == "generate_lods":
+                return StateGraphEdges._validate_and_route(
+                    SupervisorState.DISPATCHING, SupervisorState.GENERATING_LODS
+                )
             return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.COMPLETED)
 
         return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.COMPLETED)
@@ -685,6 +746,8 @@ class SupervisorStateGraph:
         builder.add_node(SupervisorState.ERROR_FATAL.value, StateGraphNodes.error_fatal_node)
         # FASE 2: Nodo de parcheo transaccional
         builder.add_node(SupervisorState.PATCHING.value, StateGraphNodes.patching_node)
+        # FASE 4: Nodo de generación de LODs
+        builder.add_node(SupervisorState.GENERATING_LODS.value, StateGraphNodes.generating_lods_node)
 
         # Definir punto de entrada
         builder.set_entry_point(SupervisorState.INIT.value)
@@ -709,6 +772,11 @@ class SupervisorStateGraph:
 
         # FASE 2: Aristas condicionales para parcheo
         builder.add_conditional_edges(SupervisorState.PATCHING.value, StateGraphEdges.route_from_patching)
+
+        # FASE 4: Aristas condicionales para generación de LODs
+        builder.add_conditional_edges(
+            SupervisorState.GENERATING_LODS.value, StateGraphEdges.route_from_generating_lods
+        )
 
         # Arista final desde COMPLETED
         builder.add_edge(SupervisorState.COMPLETED.value, SupervisorState.IDLE.value)
