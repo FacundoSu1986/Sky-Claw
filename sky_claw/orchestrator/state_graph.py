@@ -16,7 +16,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, TypedDict
 
 from sky_claw.config import HITL_TIMEOUT_SECONDS
 from sky_claw.core.models import CircuitBreakerTrippedError
@@ -54,6 +54,34 @@ except ImportError:
 
 
 logger = logging.getLogger("SkyClaw.StateGraph")
+
+# TASK-006 (M-4): Maximum entries retained in transition_history.
+# Prevents unbounded memory growth in long-running workflows.
+MAX_TRANSITION_HISTORY: int = 50
+
+
+def capped_transition_history(
+    old: list[dict[str, Any]],
+    new: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """LangGraph reducer for ``transition_history`` that caps growth.
+
+    Merges *old* and *new* lists, then truncates to the most recent
+    ``MAX_TRANSITION_HISTORY`` entries.  Used via ``Annotated`` in
+    ``StateGraphState`` so that every node update automatically applies
+    the cap without manual trimming.
+
+    Args:
+        old: Existing transition history from previous state.
+        new: Newly appended transition entries from the current node.
+
+    Returns:
+        Merged list capped at ``MAX_TRANSITION_HISTORY`` entries.
+    """
+    merged = old + new
+    if len(merged) <= MAX_TRANSITION_HISTORY:
+        return merged
+    return merged[-MAX_TRANSITION_HISTORY:]
 
 
 # =============================================================================
@@ -262,6 +290,9 @@ if PYDANTIC_AVAILABLE:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             )
+            # TASK-006 (M-4): Trim history to prevent unbounded growth
+            if len(self.transition_history) > MAX_TRANSITION_HISTORY:
+                self.transition_history = self.transition_history[-MAX_TRANSITION_HISTORY:]
             self.updated_at = datetime.now(timezone.utc)
 
 else:
@@ -293,6 +324,11 @@ else:
             self.created_at = datetime.now(timezone.utc)
             self.updated_at = datetime.now(timezone.utc)
 
+        def trim_history(self) -> None:
+            """TASK-006 (M-4): Trim transition_history to MAX_TRANSITION_HISTORY."""
+            if len(self.transition_history) > MAX_TRANSITION_HISTORY:
+                self.transition_history = self.transition_history[-MAX_TRANSITION_HISTORY:]
+
 
 # TypedDict para LangGraph (requerido para anotaciones de estado)
 class StateGraphState(TypedDict):
@@ -311,7 +347,7 @@ class StateGraphState(TypedDict):
     tool_result: dict[str, Any] | None
     hitl_request: dict[str, Any] | None
     hitl_response: str | None
-    transition_history: list[dict[str, Any]]
+    transition_history: Annotated[list[dict[str, Any]], capped_transition_history]
     last_error: str | None
     error_count: int
     # FASE 1.5: Campos de rollback para resiliencia
@@ -785,6 +821,9 @@ class SupervisorStateGraph:
         self._callbacks: dict[str, Callable[..., Any]] = {}
         # Cortacircuitos cognitivo: per-graph singleton (el grafo es serial por perfil).
         self.loop_guardrail = AgenticLoopGuardrail(max_repeats=3, window_size=5)
+        # TASK-006 (M-4): TTL tracking for checkpointer thread cleanup.
+        # Maps thread_id → monotonic timestamp of last access.
+        self._thread_timestamps: dict[str, float] = {}
 
         if LANGGRAPH_AVAILABLE:
             self._build_graph()
@@ -901,6 +940,62 @@ class SupervisorStateGraph:
         self._callbacks[key] = callback
         logger.debug(f"[StateGraph] Callback registrado para estado: {state.value}")
 
+    def cleanup_old_threads(self, max_age_seconds: int) -> int:
+        """TASK-006 (M-4): Purge stale thread state from the MemorySaver checkpointer.
+
+        Removes checkpoint data for threads whose last access timestamp
+        exceeds *max_age_seconds*.  Also prunes the corresponding entries
+        from ``_thread_timestamps``.
+
+        The standard ``MemorySaver`` does not expose age-based cleanup, so
+        this method implements a simple TTL layer at the wrapper level by
+        tracking thread access times via ``time.monotonic()``.
+
+        Args:
+            max_age_seconds: Maximum age in seconds.  Threads not accessed
+                within this window are purged.
+
+        Returns:
+            Number of threads removed from the checkpointer.
+        """
+        if not self.checkpointer or max_age_seconds <= 0:
+            return 0
+
+        now = time.monotonic()
+        # Identify stale thread IDs from our TTL tracking
+        stale_thread_ids: list[str] = [
+            tid
+            for tid, ts in self._thread_timestamps.items()
+            if (now - ts) > max_age_seconds
+        ]
+
+        if not stale_thread_ids:
+            return 0
+
+        # Attempt to remove from MemorySaver's internal storage.
+        # MemorySaver stores checkpoints in a dict-like `.storage` attribute
+        # (or `.checkpoints` depending on the LangGraph version).
+        removed = 0
+        for tid in stale_thread_ids:
+            # Try known internal attribute names for MemorySaver
+            storage = getattr(self.checkpointer, "storage", None) or getattr(
+                self.checkpointer, "checkpoints", None
+            )
+            if isinstance(storage, dict) and tid in storage:
+                del storage[tid]
+                removed += 1
+            # Clean up our TTL tracking regardless
+            del self._thread_timestamps[tid]
+
+        if removed > 0:
+            logger.info(
+                "[StateGraph] Cleaned up %d stale thread(s) (max_age=%ds)",
+                removed,
+                max_age_seconds,
+            )
+
+        return removed
+
     def get_initial_state(self) -> StateGraphState:
         """Retorna el estado inicial del workflow."""
         return {
@@ -944,7 +1039,11 @@ class SupervisorStateGraph:
             return await self._execute_fallback(initial_state)
 
         state = initial_state or self.get_initial_state()
-        config = {"configurable": {"thread_id": state["workflow_id"]}}
+        thread_id: str = state["workflow_id"]
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # TASK-006 (M-4): Track thread access time for TTL-based cleanup
+        self._thread_timestamps[thread_id] = time.monotonic()
 
         try:
             # Ejecutar el grafo
@@ -1224,6 +1323,11 @@ class StateGraphIntegration:
 __all__ = [
     # Availability flags
     "LANGGRAPH_AVAILABLE",
+    # TASK-006 (M-4): Public constants
+    "MAX_TRANSITION_HISTORY",
+    # Reducer functions
+    "capped_transition_history",
+    # Integration helpers
     "StateGraphEdges",
     "StateGraphIntegration",
     # Graph components
