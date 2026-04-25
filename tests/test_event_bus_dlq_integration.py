@@ -9,7 +9,9 @@ Verifica el contrato de durabilidad end-to-end:
 from __future__ import annotations
 
 import asyncio
+import inspect
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,16 +19,41 @@ from sky_claw.core.dlq_manager import DLQManager, DLQRow
 from sky_claw.core.event_bus import CoreEventBus, Event, create_bus_with_dlq
 
 
-async def _poll_pending(dlq: DLQManager, *, min_count: int = 1, timeout: float = 3.0) -> list[DLQRow]:
-    """Poll dlq.list_pending() until at least *min_count* rows appear or timeout."""
+async def _poll_until(
+    condition: Any,
+    *,
+    timeout: float = 5.0,
+    interval: float = 0.05,
+    msg: str = "Condición no cumplida en el tiempo esperado",
+) -> None:
+    """Poll *condition* (sync or async callable) until truthy or *timeout* elapses.
+
+    Raises AssertionError with *msg* on timeout so failures are descriptive.
+    Centralises timeout/interval so callers don't repeat the pattern inline.
+    """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while loop.time() < deadline:
+        result = condition()
+        if inspect.isawaitable(result):
+            result = await result  # type: ignore[assignment]
+        if result:
+            return
+        await asyncio.sleep(interval)
+    raise AssertionError(f"{msg} (timeout={timeout}s)")
+
+
+async def _poll_pending(dlq: DLQManager, *, min_count: int = 1, timeout: float = 3.0) -> list[DLQRow]:
+    """Poll dlq.list_pending() until at least *min_count* rows appear or timeout."""
+    rows: list[DLQRow] = []
+
+    async def _check() -> bool:
+        nonlocal rows
         rows = await dlq.list_pending()
-        if len(rows) >= min_count:
-            return rows
-        await asyncio.sleep(0.05)
-    return await dlq.list_pending()
+        return len(rows) >= min_count
+
+    await _poll_until(_check, timeout=timeout, msg=f"DLQ no alcanzó {min_count} filas pending")
+    return rows
 
 
 @pytest.mark.asyncio
@@ -154,10 +181,11 @@ async def test_dlq_retry_delivers_to_handler(tmp_path: Path) -> None:
 
     bus.subscribe("retry.*", flaky_handler)
     await bus.publish(Event(topic="retry.test", payload={"attempt": True}))
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + 5.0
-    while loop.time() < deadline and len(retried) < 2:
-        await asyncio.sleep(0.05)
+    await _poll_until(
+        lambda: len(retried) >= 2,
+        timeout=5.0,
+        msg="Handler no fue llamado 2 veces (initial dispatch + DLQ retry)",
+    )
     await bus.stop()
 
     # Handler llamado 2 veces: dispatch inicial (falla) + retry (éxito)
