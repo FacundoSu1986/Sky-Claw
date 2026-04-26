@@ -2,6 +2,21 @@
 
 Este módulo contiene todos los esquemas de validación para las herramientas del agente.
 Extraído de tools.py como parte de la refactorización M-13.
+
+TASK-012 — Contrato de strict mode (single source of truth):
+
+* Todas las clases ``*Params`` declaran ``model_config = ConfigDict(strict=True)``
+  para que Pydantic rechace cualquier coerción implícita (e.g. ``"42"`` -> ``42``).
+* ``AsyncToolRegistry.tool_schemas()`` deriva el JSON Schema enviado al LLM
+  desde ``model_json_schema()`` vía el helper ``_clean_schema``: editar una
+  clase aquí actualiza automáticamente lo que ve el modelo.
+* ``AsyncToolRegistry.execute()`` valida el dict del LLM contra la clase
+  ``params_model`` ANTES de invocar el handler. Si el modelo alucina campos
+  o tipos, ``pydantic.ValidationError`` se propaga al ``LLMRouter``, que la
+  serializa como feedback estructurado (campo, mensaje, valor recibido) y la
+  devuelve al modelo para autocorrección.
+* Para registrar una nueva tool: definir aquí el schema, importarlo en
+  ``tools/__init__.py`` y pasarlo como ``params_model=`` a ``ToolDescriptor``.
 """
 
 from __future__ import annotations

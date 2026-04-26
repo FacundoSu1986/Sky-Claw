@@ -4,6 +4,8 @@ FACADE: Este archivo actúa como el punto de entrada oficial (Facade)
 que expone AsyncToolRegistry y todos los esquemas y handlers.
 
 Extraído de tools.py como parte de la refactorización M-13.
+TASK-012: validación Pydantic strict centralizada en ``execute`` y
+``input_schema`` derivado de ``model_json_schema`` (single source of truth).
 """
 
 from __future__ import annotations
@@ -12,6 +14,8 @@ import json
 import logging
 import pathlib
 from typing import Any
+
+import pydantic
 
 from sky_claw.config import SystemPaths
 from sky_claw.loot.cli import LOOTConfig, LOOTRunner
@@ -55,6 +59,28 @@ from .system_tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_schema(model_cls: type[pydantic.BaseModel]) -> dict[str, Any]:
+    """Generate a JSON Schema from a Pydantic model and clean it for the Anthropic Tool API.
+
+    Pydantic's ``model_json_schema()`` produces additional metadata keys
+    (``title``, ``$defs``, etc.) that are either redundant for the LLM
+    (the tool already has a ``name`` field) or, in some cases, rejected
+    with HTTP 400 by stricter providers. This helper:
+
+    * removes the root-level ``title`` (the tool name supplies that),
+    * removes per-property ``title`` keys (cosmetic, can mislead the LLM),
+    * preserves ``$defs``/``$ref`` when present (Anthropic accepts them).
+    """
+    schema = model_cls.model_json_schema()
+    schema.pop("title", None)
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for prop_schema in properties.values():
+            if isinstance(prop_schema, dict):
+                prop_schema.pop("title", None)
+    return schema
 
 
 class AsyncToolRegistry:
@@ -161,9 +187,21 @@ class AsyncToolRegistry:
         )
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> str:
+        """Execute a registered tool.
+
+        TASK-012: When the descriptor declares ``params_model`` the
+        arguments dict (which originates from an LLM and is therefore
+        untrusted) is validated through Pydantic strict mode BEFORE
+        the handler is invoked. Any ``pydantic.ValidationError`` raised
+        here propagates to ``LLMRouter.chat`` which formats it as
+        constructive feedback for the model to retry.
+        """
         td = self._tools.get(name)
         if td is None:
             raise KeyError(f"Unknown tool: {name!r}")
+        if td.params_model is not None:
+            validated = td.params_model(**arguments)
+            return await td.fn(**validated.model_dump())
         return await td.fn(**arguments)
 
     def _register_builtins(self) -> None:
@@ -171,137 +209,87 @@ class AsyncToolRegistry:
         self._tools["search_mod"] = ToolDescriptor(
             name="search_mod",
             description="Search the local mod registry by name.",
-            input_schema={
-                "type": "object",
-                "properties": {"mod_name": {"type": "string"}},
-                "required": ["mod_name"],
-            },
+            input_schema=_clean_schema(SearchModParams),
             fn=lambda mod_name: search_mod(self._registry, mod_name),
+            params_model=SearchModParams,
         )
         self._tools["install_mod"] = ToolDescriptor(
             name="install_mod",
             description="Register a mod in the database via the SyncEngine.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "nexus_id": {"type": "integer"},
-                    "version": {"type": "string"},
-                },
-                "required": ["nexus_id", "version"],
-            },
+            input_schema=_clean_schema(InstallModParams),
             fn=lambda nexus_id, version: install_mod(self._registry, nexus_id, version),
+            params_model=InstallModParams,
         )
         # Nexus
         self._tools["download_mod"] = ToolDescriptor(
             name="download_mod",
             description="Download a file from Nexus Mods with HITL approval.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "nexus_id": {"type": "integer"},
-                    "file_id": {"type": "integer"},
-                },
-                "required": ["nexus_id"],
-            },
+            input_schema=_clean_schema(DownloadModParams),
             fn=lambda nexus_id, file_id=None: download_mod(
                 self._downloader, self._hitl, self._sync_engine, nexus_id, file_id
             ),
+            params_model=DownloadModParams,
         )
         # System
         self._tools["check_load_order"] = ToolDescriptor(
             name="check_load_order",
             description="Read the MO2 modlist for a profile.",
-            input_schema={
-                "type": "object",
-                "properties": {"profile": {"type": "string"}},
-                "required": ["profile"],
-            },
+            input_schema=_clean_schema(ProfileParams),
             fn=lambda profile: check_load_order(self._mo2, profile),
+            params_model=ProfileParams,
         )
         self._tools["detect_conflicts"] = ToolDescriptor(
             name="detect_conflicts",
             description="Compare masters of active ESP plugins.",
-            input_schema={
-                "type": "object",
-                "properties": {"profile": {"type": "string"}},
-                "required": ["profile"],
-            },
+            input_schema=_clean_schema(ProfileParams),
             fn=lambda profile: detect_conflicts(self._registry, self._mo2, profile),
+            params_model=ProfileParams,
         )
         self._tools["run_loot_sort"] = ToolDescriptor(
             name="run_loot_sort",
             description="Invoke LOOT to sort load order.",
-            input_schema={
-                "type": "object",
-                "properties": {"profile": {"type": "string"}},
-                "required": ["profile"],
-            },
+            input_schema=_clean_schema(ProfileParams),
             fn=lambda profile: run_loot_sort(self._mo2, self._loot_runner, self._loot_exe, profile),
+            params_model=ProfileParams,
         )
         self._tools["run_xedit_script"] = ToolDescriptor(
             name="run_xedit_script",
             description="Run an xEdit script in headless mode.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "script_name": {"type": "string"},
-                    "plugins": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["script_name", "plugins"],
-            },
+            input_schema=_clean_schema(XEditAnalysisParams),
             fn=lambda script_name, plugins: run_xedit_script(self._xedit_runner, script_name, plugins),
+            params_model=XEditAnalysisParams,
         )
         self._tools["preview_mod_installer"] = ToolDescriptor(
             name="preview_mod_installer",
             description="Preview FOMOD options for a mod archive.",
-            input_schema={
-                "type": "object",
-                "properties": {"archive_path": {"type": "string"}},
-                "required": ["archive_path"],
-            },
+            input_schema=_clean_schema(PreviewInstallerParams),
             fn=lambda archive_path: preview_mod_installer(self._fomod_installer, archive_path),
+            params_model=PreviewInstallerParams,
         )
         self._tools["install_mod_from_archive"] = ToolDescriptor(
             name="install_mod_from_archive",
             description="Install a mod from archive into MO2.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "archive_path": {"type": "string"},
-                    "selections": {"type": "object"},
-                },
-                "required": ["archive_path"],
-            },
+            input_schema=_clean_schema(InstallFromArchiveParams),
             fn=lambda archive_path, selections=None: install_mod_from_archive(
                 self._mo2, self._fomod_installer, self._hitl, archive_path, selections
             ),
+            params_model=InstallFromArchiveParams,
         )
         self._tools["resolve_fomod"] = ToolDescriptor(
             name="resolve_fomod",
             description="Resolve FOMOD installation options.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "archive_path": {"type": "string"},
-                    "selections": {"type": "object"},
-                },
-                "required": ["archive_path"],
-            },
+            input_schema=_clean_schema(ResolveFomodParams),
             fn=lambda archive_path, selections=None: resolve_fomod(self._fomod_installer, archive_path, selections),
+            params_model=ResolveFomodParams,
         )
         self._tools["analyze_esp_conflicts"] = ToolDescriptor(
             name="analyze_esp_conflicts",
             description="Analyze record-level ESP conflicts.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "profile": {"type": "string"},
-                    "plugins": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["profile"],
-            },
+            input_schema=_clean_schema(AnalyzeConflictsParams),
             fn=lambda profile, plugins=None: analyze_esp_conflicts(self._mo2, self._xedit_runner, profile, plugins),
+            params_model=AnalyzeConflictsParams,
         )
+        # Tools without parameters: no params_model, schema kept inline.
         self._tools["run_pandora"] = ToolDescriptor(
             name="run_pandora",
             description="Execute Pandora Behavior Engine.",
@@ -353,38 +341,23 @@ class AsyncToolRegistry:
         self._tools["uninstall_mod"] = ToolDescriptor(
             name="uninstall_mod",
             description="Uninstall a mod completely.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "mod_name": {"type": "string"},
-                    "profile": {"type": "string"},
-                },
-                "required": ["mod_name"],
-            },
+            input_schema=_clean_schema(ModNameParams),
             fn=lambda mod_name, profile="Default": uninstall_mod(self._mo2, mod_name, profile),
+            params_model=ModNameParams,
         )
         self._tools["toggle_mod"] = ToolDescriptor(
             name="toggle_mod",
             description="Enable or disable an installed mod.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "mod_name": {"type": "string"},
-                    "enable": {"type": "boolean"},
-                    "profile": {"type": "string"},
-                },
-                "required": ["mod_name", "enable"],
-            },
+            input_schema=_clean_schema(ToggleModParams),
             fn=lambda mod_name, enable, profile="Default": toggle_mod(self._mo2, mod_name, enable, profile),
+            params_model=ToggleModParams,
         )
         self._tools["launch_game"] = ToolDescriptor(
             name="launch_game",
             description="Launch Skyrim via MO2.",
-            input_schema={
-                "type": "object",
-                "properties": {"profile": {"type": "string"}},
-            },
+            input_schema=_clean_schema(ProfileParams),
             fn=lambda profile="Default": launch_game(self._mo2, profile),
+            params_model=ProfileParams,
         )
         self._tools["close_game"] = ToolDescriptor(
             name="close_game",
@@ -396,10 +369,7 @@ class AsyncToolRegistry:
         self._tools["setup_tools"] = ToolDescriptor(
             name="setup_tools",
             description="Download and install external modding tools.",
-            input_schema={
-                "type": "object",
-                "properties": {"tools": {"type": "array", "items": {"type": "string"}}},
-            },
+            input_schema=_clean_schema(SetupToolsParams),
             fn=lambda tools=None: setup_tools(
                 self._tools_installer,
                 self._install_dir,
@@ -410,6 +380,7 @@ class AsyncToolRegistry:
                 [self._loot_exe],
                 tools,
             ),
+            params_model=SetupToolsParams,
         )
 
 
