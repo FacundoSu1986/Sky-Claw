@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.loot.cli import LOOTConfig, LOOTNotFoundError, LOOTRunner
+from sky_claw.loot.cli import (
+    LOOTConfig,
+    LOOTNotFoundError,
+    LOOTRunner,
+    LOOTTimeoutError,
+)
 from sky_claw.loot.masterlist import MasterlistDownloader
 from sky_claw.loot.parser import LOOTOutputParser, LOOTResult
 
@@ -107,7 +113,10 @@ class TestLOOTRunner:
         mock_proc.returncode = 0
         mock_proc.kill = MagicMock()
 
-        with patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc):
+        with (
+            patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+        ):
             result = await runner.sort()
 
         assert result.success is True
@@ -124,12 +133,11 @@ class TestLOOTRunner:
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
         mock_proc.kill = MagicMock()
 
-        import asyncio
-
         with (
             patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sky_claw.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
-            pytest.raises(RuntimeError, match="timed out"),
+            patch("sky_claw.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            pytest.raises(LOOTTimeoutError, match="timed out"),
         ):
             await runner.sort()
 
@@ -143,7 +151,10 @@ class TestLOOTRunner:
         mock_proc.returncode = 1
         mock_proc.kill = MagicMock()
 
-        with patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc):
+        with (
+            patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+        ):
             result = await runner.sort()
 
         assert result.success is False

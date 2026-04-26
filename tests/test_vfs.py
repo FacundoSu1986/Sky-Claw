@@ -1,7 +1,8 @@
-"""Tests for sky_claw.mo2.vfs – async modlist.txt parser."""
+"""Tests for sky_claw.mo2.vfs -- async modlist.txt parser."""
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 from typing import NamedTuple
 
@@ -133,7 +134,7 @@ class TestDeleteModFiles:
 
 
 class TestBomPreservation:
-    """C-01 – modlist.txt rewrites must retain the UTF-8 BOM required by MO2."""
+    """C-01 -- modlist.txt rewrites must retain the UTF-8 BOM required by MO2."""
 
     @pytest.fixture()
     def bom_controller(self, tmp_path: pathlib.Path) -> BomFixture:
@@ -168,13 +169,19 @@ class TestGameControl:
 
         from unittest.mock import AsyncMock
 
+        import psutil
+
         mock_proc = AsyncMock()
         mock_proc.pid = 12345
         mock_create = AsyncMock(return_value=mock_proc)
 
-        import asyncio
+        async def _fake_verify(pid: int) -> None:
+            return
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_create)
+        monkeypatch.setattr(
+            "sky_claw.mo2.vfs._verify_pid_alive", _fake_verify
+        )
 
         result = await controller.launch_game("Default")
         assert result["status"] == "launched"

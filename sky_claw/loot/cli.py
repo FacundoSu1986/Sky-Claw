@@ -3,6 +3,11 @@
 The previous implementation incorrectly passed ``mo2_root`` as
 ``--game-path``.  LOOT requires the real Skyrim SE installation
 directory (where ``SkyrimSE.exe`` lives).
+
+TASK-011 enhancements:
+- WSL2 conditional path translation via :func:`translate_path_if_wsl`.
+- Full async subprocess with ``asyncio.wait_for`` timeout.
+- Zombie process prevention: ``proc.kill()`` + ``proc.wait()`` on timeout.
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from sky_claw.core.windows_interop import translate_path_if_wsl
 from sky_claw.loot.parser import LOOTOutputParser, LOOTResult
 
 if TYPE_CHECKING:
@@ -50,6 +56,10 @@ class LOOTTimeoutError(RuntimeError):
 class LOOTRunner:
     """Async wrapper for LOOT CLI with correct path handling.
 
+    TASK-011: Integrates WSL2 path translation so that ``game_path`` is
+    automatically converted to Windows format (``C:\\...``) when the agent
+    runs inside WSL2.
+
     Args:
         config: LOOT CLI configuration.
         path_validator: Validator to check paths against sandbox.
@@ -71,7 +81,8 @@ class LOOTRunner:
 
         Raises:
             LOOTNotFoundError: If the LOOT executable does not exist.
-            RuntimeError: If LOOT times out or fails.
+            LOOTTimeoutError: If LOOT exceeds the configured timeout.
+            RuntimeError: If LOOT fails for other reasons.
         """
         loot_path = self._config.loot_exe
         game_path = self._config.game_path
@@ -82,12 +93,15 @@ class LOOTRunner:
         if not loot_path.exists():
             raise LOOTNotFoundError(f"LOOT executable not found at {loot_path}")
 
+        # TASK-011: Translate game_path to Windows format when under WSL2.
+        game_path_win = await translate_path_if_wsl(game_path)
+
         args = [
             str(loot_path),
             "--game",
             self._config.game,
             "--game-path",
-            str(game_path),
+            game_path_win,
             "--sort",
         ]
 
@@ -106,13 +120,15 @@ class LOOTRunner:
         except FileNotFoundError:
             raise LOOTNotFoundError(f"LOOT executable not found at {loot_path}") from None
         except TimeoutError:
-            proc.kill()
+            # TASK-011: Zombie prevention -- kill + reap.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
             raise LOOTTimeoutError(self._config.timeout) from None
 
-        stdout_text = stdout.decode(errors="replace")
-        stderr_text = stderr.decode(errors="replace")
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
 
         if proc.returncode != 0:
             logger.warning("LOOT exited with code %d: %s", proc.returncode, stderr_text)
