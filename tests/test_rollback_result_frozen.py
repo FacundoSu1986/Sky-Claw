@@ -218,9 +218,7 @@ class TestExecuteFileOperationRollbackNoMutation:
         assert call_args[0][2] == 200  # rollback_result.transaction_id
 
     @pytest.mark.asyncio
-    async def test_error_path_rollback_failure_propagates_original_exception(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    async def test_error_path_rollback_failure_propagates_original_exception(self, tmp_path: pathlib.Path) -> None:
         """When rollback itself fails, the original exception still propagates."""
         mock_rm = MagicMock()
         mock_rm.begin_transaction = AsyncMock(return_value=100)

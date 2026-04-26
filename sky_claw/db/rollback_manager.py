@@ -113,9 +113,7 @@ class RollbackManager:
         agent_id: str = "system",
     ) -> int:
         """Begin a new journal transaction; return the transaction ID."""
-        return await self._journal.begin_transaction(
-            description=description, mod_id=mod_id, agent_id=agent_id
-        )
+        return await self._journal.begin_transaction(description=description, mod_id=mod_id, agent_id=agent_id)
 
     async def commit_transaction(self, transaction_id: int) -> None:
         """Mark a journal transaction as committed."""

@@ -251,9 +251,7 @@ class TestSyncEngineRun:
         assert result.failed == 0
 
     @pytest.mark.asyncio
-    async def test_info_missing_mod_id_skips_mod(
-        self, tmp_path: pathlib.Path, adb: AsyncModRegistry
-    ) -> None:
+    async def test_info_missing_mod_id_skips_mod(self, tmp_path: pathlib.Path, adb: AsyncModRegistry) -> None:
         """Si fetch_mod_info retorna dict sin 'mod_id', el mod se marca como skipped."""
         mo2 = _make_mo2(tmp_path, "+SomeMod-7001-v1\n")
         gw = NetworkGateway()
@@ -278,9 +276,7 @@ class TestSyncEngineRun:
         assert result.processed == 0
 
     @pytest.mark.asyncio
-    async def test_network_error_degrades_gracefully(
-        self, tmp_path: pathlib.Path, adb: AsyncModRegistry
-    ) -> None:
+    async def test_network_error_degrades_gracefully(self, tmp_path: pathlib.Path, adb: AsyncModRegistry) -> None:
         """Errores de red en un mod no impiden el procesamiento de los demás.
 
         El mod 5001 agota 5 reintentos con ``wait_none()`` (reraise=True) →
@@ -520,9 +516,7 @@ class TestCheckForUpdates:
             {"name": "BrokenMod", "nexus_id": 11111, "version": "1.0", "installed": True},
         ]
         mock_masterlist = AsyncMock()
-        mock_masterlist.fetch_mod_info = AsyncMock(
-            side_effect=aiohttp.ClientError("network failure")
-        )
+        mock_masterlist.fetch_mod_info = AsyncMock(side_effect=aiohttp.ClientError("network failure"))
 
         engine = SyncEngine(
             mo2=AsyncMock(),
@@ -697,9 +691,7 @@ class TestShutdown:
 
 class TestExecuteFileOperation:
     @pytest.mark.asyncio
-    async def test_no_rollback_manager_runs_operation_directly(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    async def test_no_rollback_manager_runs_operation_directly(self, tmp_path: pathlib.Path) -> None:
         """Sin rollback_manager, execute_file_operation delega directo y retorna el resultado."""
         engine = SyncEngine(
             mo2=AsyncMock(),
@@ -755,9 +747,7 @@ class TestSyncMetricsConcurrency:
         metrics = SyncMetrics()
         n = 100
 
-        await asyncio.gather(
-            *[metrics.increment_error_type("TestError") for _ in range(n)]
-        )
+        await asyncio.gather(*[metrics.increment_error_type("TestError") for _ in range(n)])
 
         total = await metrics.get_error_count()
         assert total == n, f"Contador esperado {n}, obtenido {total} (race condition)"

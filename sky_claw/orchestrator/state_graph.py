@@ -654,17 +654,11 @@ class StateGraphEdges:
                 return StateGraphEdges._validate_and_route(
                     SupervisorState.GENERATING_LODS, SupervisorState.ROLLING_BACK
                 )
-            return StateGraphEdges._validate_and_route(
-                SupervisorState.GENERATING_LODS, SupervisorState.ERROR
-            )
+            return StateGraphEdges._validate_and_route(SupervisorState.GENERATING_LODS, SupervisorState.ERROR)
         elif tool_result and tool_result.get("status") == "success":
-            return StateGraphEdges._validate_and_route(
-                SupervisorState.GENERATING_LODS, SupervisorState.COMPLETED
-            )
+            return StateGraphEdges._validate_and_route(SupervisorState.GENERATING_LODS, SupervisorState.COMPLETED)
 
-        return StateGraphEdges._validate_and_route(
-            SupervisorState.GENERATING_LODS, SupervisorState.COMPLETED
-        )
+        return StateGraphEdges._validate_and_route(SupervisorState.GENERATING_LODS, SupervisorState.COMPLETED)
 
     @staticmethod
     def route_from_hitl_wait(state: StateGraphState) -> str:
@@ -682,22 +676,14 @@ class StateGraphEdges:
         # Condición D — Respuesta recibida del humano
         if hitl_response is not None:
             if hitl_response == "approved":
-                return StateGraphEdges._validate_and_route(
-                    SupervisorState.HITL_WAIT, SupervisorState.DISPATCHING
-                )
+                return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.DISPATCHING)
             elif hitl_response == "denied":
-                return StateGraphEdges._validate_and_route(
-                    SupervisorState.HITL_WAIT, SupervisorState.COMPLETED
-                )
+                return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.COMPLETED)
             elif hitl_response == "timeout":
-                return StateGraphEdges._validate_and_route(
-                    SupervisorState.HITL_WAIT, SupervisorState.ERROR
-                )
+                return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.ERROR)
             # Respuesta desconocida — tratar como denegada
             logger.warning("[StateGraph] HITL response desconocido: %s", hitl_response)
-            return StateGraphEdges._validate_and_route(
-                SupervisorState.HITL_WAIT, SupervisorState.COMPLETED
-            )
+            return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.COMPLETED)
 
         # hitl_response is None — evaluar timeout
         hitl_started_at = state.get("hitl_started_at")
@@ -706,9 +692,7 @@ class StateGraphEdges:
         if hitl_started_at is None:
             logger.error("[StateGraph] Estado HITL inconsistente: hitl_started_at ausente")
             state["last_error"] = "Estado HITL inconsistente: hitl_started_at ausente"
-            return StateGraphEdges._validate_and_route(
-                SupervisorState.HITL_WAIT, SupervisorState.ERROR
-            )
+            return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.ERROR)
 
         # Evaluar elapsed time contra HITL_TIMEOUT_SECONDS
         elapsed = time.monotonic() - hitl_started_at
@@ -720,12 +704,8 @@ class StateGraphEdges:
                 elapsed,
                 HITL_TIMEOUT_SECONDS,
             )
-            state["last_error"] = (
-                f"Timeout esperando aprobación humana después de {HITL_TIMEOUT_SECONDS}s"
-            )
-            return StateGraphEdges._validate_and_route(
-                SupervisorState.HITL_WAIT, SupervisorState.ERROR
-            )
+            state["last_error"] = f"Timeout esperando aprobación humana después de {HITL_TIMEOUT_SECONDS}s"
+            return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.ERROR)
 
         # Condición B — Espera legítima, sin expirar
         return SupervisorState.HITL_WAIT.value
@@ -747,9 +727,7 @@ class StateGraphEdges:
         elif tool_result and (tool_result.get("status") == "success" or tool_result.get("status") == "aborted"):
             # FASE 4: Si la herramienta es generate_lods, ir a GENERATING_LODS
             if tool_name == "generate_lods":
-                return StateGraphEdges._validate_and_route(
-                    SupervisorState.DISPATCHING, SupervisorState.GENERATING_LODS
-                )
+                return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.GENERATING_LODS)
             return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.COMPLETED)
 
         return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.COMPLETED)
@@ -915,9 +893,7 @@ class SupervisorStateGraph:
         builder.add_conditional_edges(SupervisorState.PATCHING.value, StateGraphEdges.route_from_patching)
 
         # FASE 4: Aristas condicionales para generación de LODs
-        builder.add_conditional_edges(
-            SupervisorState.GENERATING_LODS.value, StateGraphEdges.route_from_generating_lods
-        )
+        builder.add_conditional_edges(SupervisorState.GENERATING_LODS.value, StateGraphEdges.route_from_generating_lods)
 
         # Arista final desde COMPLETED
         builder.add_edge(SupervisorState.COMPLETED.value, SupervisorState.IDLE.value)
@@ -964,9 +940,7 @@ class SupervisorStateGraph:
         now = time.monotonic()
         # Identify stale thread IDs from our TTL tracking
         stale_thread_ids: list[str] = [
-            tid
-            for tid, ts in self._thread_timestamps.items()
-            if (now - ts) > max_age_seconds
+            tid for tid, ts in self._thread_timestamps.items() if (now - ts) > max_age_seconds
         ]
 
         if not stale_thread_ids:
@@ -978,9 +952,7 @@ class SupervisorStateGraph:
         removed = 0
         for tid in stale_thread_ids:
             # Try known internal attribute names for MemorySaver
-            storage = getattr(self.checkpointer, "storage", None) or getattr(
-                self.checkpointer, "checkpoints", None
-            )
+            storage = getattr(self.checkpointer, "storage", None) or getattr(self.checkpointer, "checkpoints", None)
             if isinstance(storage, dict) and tid in storage:
                 del storage[tid]
                 removed += 1
