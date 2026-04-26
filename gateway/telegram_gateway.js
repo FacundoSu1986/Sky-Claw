@@ -100,7 +100,17 @@ wss.on("connection", (ws, req) => {
                     clearTimeout(authTimeout);
                     ws.send(JSON.stringify({ type: "auth_success" }));
                     console.log(`[GW] SEC-007: Daemon authenticated successfully`);
-                    // Set daemon socket only after successful auth
+                    // Si ya había un daemon registrado y vivo, cerrarlo grácilmente
+                    // antes de reemplazarlo. Sin esto, una reconexión rápida del
+                    // daemon dejaba el socket anterior huérfano (memory leak +
+                    // mensajes potencialmente entregados al destinatario incorrecto).
+                    if (daemonSocket && daemonSocket !== ws && daemonSocket.readyState === 1) {
+                        try {
+                            daemonSocket.close(4000, "Replaced by new daemon connection");
+                        } catch (closeErr) {
+                            console.warn("[GW] Error cerrando daemon previo:", closeErr.message);
+                        }
+                    }
                     daemonSocket = ws;
                     return;
                 } else {
@@ -142,7 +152,12 @@ wss.on("connection", (ws, req) => {
 
     ws.on("close", () => {
         console.log("[GW] Daemon disconnected");
-        daemonSocket = null;
+        // Solo limpiar la referencia global si este ws es el daemon activo;
+        // de lo contrario podría borrar el socket recién registrado por una
+        // reconexión que provocó el close de uno anterior.
+        if (daemonSocket === ws) {
+            daemonSocket = null;
+        }
     });
 
     ws.on("error", (err) => {
