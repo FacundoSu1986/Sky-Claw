@@ -19,17 +19,38 @@ class CredentialVault:
     """Bóveda Criptográfica asíncrona para Zero-Trust y secretos en WAL."""
 
     @staticmethod
+    def _read_and_validate_salt(path: str) -> bytes | None:
+        """Lee el salt desde *path*. Devuelve None si no existe, no se puede leer o
+        no tiene exactamente 32 bytes (formato inválido = corrupto)."""
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            return None
+        if len(data) != 32:
+            logger.warning("Salt en %s con longitud %d (esperado 32) — descartado.", path, len(data))
+            return None
+        return data
+
+    @staticmethod
     def _get_or_create_salt() -> bytes:
         """
-        Genera o recupera el salt único por máquina de forma segura.
+        Genera o recupera el salt único por máquina con fallback de backup.
 
-        El salt se almacena en el perfil del usuario:- Windows: %USERPROFILE%\\.sky_claw\\vault_salt.bin
-        - Linux/Mac: ~/.sky_claw/vault_salt.bin
+        El salt se persiste en DOS archivos espejo para tolerar corrupción:
+          - primary: ~/.sky_claw/vault_salt.bin
+          - backup:  ~/.sky_claw/vault_salt.bin.backup
+
+        Estrategia de recuperación:
+          1. Si ambos existen y coinciden → devolver primary.
+          2. Si divergen → loguear CRITICAL y preferir primary (autoridad), reescribir backup.
+          3. Si solo primary existe → sincronizar backup desde primary.
+          4. Si solo backup existe → restaurar primary desde backup.
+          5. Si ninguno existe → generar nuevo (LOG CRITICAL: secretos previos irrecuperables).
 
         Returns:
             bytes: Salt de 32 bytes (256 bits) para PBKDF2HMAC.
         """
-        # Determinar ruta base según SO
         if platform.system() == "Windows":
             base_dir = os.environ.get("USERPROFILE", os.path.expanduser("~"))
         else:
@@ -37,39 +58,60 @@ class CredentialVault:
 
         salt_dir = os.path.join(base_dir, ".sky_claw")
         salt_file = os.path.join(salt_dir, "vault_salt.bin")
+        backup_file = os.path.join(salt_dir, "vault_salt.bin.backup")
 
         try:
-            # Si el archivo existe, leer y retornar el salt
-            if os.path.exists(salt_file):
-                with open(salt_file, "rb") as f:
-                    salt = f.read()
-                    if len(salt) == 32:
-                        logger.debug("Salt existente recuperado correctamente")
-                        return salt
-                    else:
-                        logger.warning(f"Salt con longitud inválida ({len(salt)} bytes), regenerando...")
-
-            # Crear directorio padre con permisos 0700 (solo propietario)
             os.makedirs(salt_dir, mode=0o700, exist_ok=True)
             restrict_to_owner(Path(salt_dir))
 
-            # Generar salt criptográficamente seguro de 32 bytes
+            primary = CredentialVault._read_and_validate_salt(salt_file)
+            backup = CredentialVault._read_and_validate_salt(backup_file)
+
+            if primary is not None and backup is not None:
+                if primary == backup:
+                    logger.debug("Salt existente recuperado correctamente (primary == backup).")
+                    return primary
+                logger.critical(
+                    "SECURITY: %s y %s divergen. Reteniendo primary y reescribiendo backup. "
+                    "Investigar posible manipulación o copia parcial entre máquinas.",
+                    salt_file,
+                    backup_file,
+                )
+                Path(backup_file).write_bytes(primary)
+                restrict_to_owner(Path(backup_file))
+                return primary
+
+            if primary is not None:
+                logger.warning("Salt backup ausente — sincronizando desde primary.")
+                Path(backup_file).write_bytes(primary)
+                restrict_to_owner(Path(backup_file))
+                return primary
+
+            if backup is not None:
+                logger.warning("Salt primary corrupto/ausente — restaurando desde backup.")
+                Path(salt_file).write_bytes(backup)
+                restrict_to_owner(Path(salt_file))
+                return backup
+
+            # Caso 5: ningún salt válido — generar nuevo (operación destructiva).
             salt = os.urandom(32)
-
-            # Guardar el salt en el archivo
-            with open(salt_file, "wb") as f:
-                f.write(salt)
-
-            # Establecer permisos del archivo a 0600 (solo propietario: lectura/escritura)
+            Path(salt_file).write_bytes(salt)
+            Path(backup_file).write_bytes(salt)
             restrict_to_owner(Path(salt_file))
-
-            logger.info("Nuevo salt generado y almacenado correctamente.")
+            restrict_to_owner(Path(backup_file))
+            logger.critical(
+                "SECURITY: nuevo salt generado en %s (+ backup). "
+                "Cualquier secreto cifrado con un salt anterior queda IRRECUPERABLE.",
+                salt_file,
+            )
             return salt
 
         except Exception as e:
             logger.critical(
-                f"CRITICAL: Vault salt file I/O failed: {e}. "
-                f"Please manually create {salt_file} with 32 random bytes and retry."
+                "CRITICAL: Vault salt file I/O failed: %s. "
+                "Please manually create %s with 32 random bytes (and a sibling .backup) and retry.",
+                e,
+                salt_file,
             )
             raise RuntimeError("Vault salt initialization failed — refusing to use weak deterministic fallback") from e
 
