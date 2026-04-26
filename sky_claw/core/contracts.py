@@ -79,10 +79,17 @@ def _ensure_registry() -> None:
             logger.warning(
                 "No se pudo importar sky_claw.core.schemas — los decoradores de contratos funcionarán en modo pass-through."
             )
-        finally:
-            # Marcar como poblado incluso ante ImportError para evitar
-            # tormentas de reintentos en cada llamada subsiguiente.
+            # Suprimir reintentos: el módulo no existe, no mejorará.
             _REGISTRY_POPULATED = True
+            return
+        except Exception:
+            # Excepción inesperada (SyntaxError, RuntimeError, etc.):
+            # limpiar dict parcial y re-lanzar SIN fijar la bandera,
+            # permitiendo reintentos futuros si la causa se resuelve.
+            _SCHEMA_REGISTRY.clear()
+            raise
+        # Población exitosa — fijar bandera dentro del lock.
+        _REGISTRY_POPULATED = True
 
 
 # ============================================================================

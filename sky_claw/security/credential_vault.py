@@ -19,6 +19,21 @@ class CredentialVault:
     """Bóveda Criptográfica asíncrona para Zero-Trust y secretos en WAL."""
 
     @staticmethod
+    def _atomic_write_bytes(path: str | Path, data: bytes) -> None:
+        """Escribe bytes de forma atómica: tmp → restrict → replace.
+
+        Elimina la ventana TOCTOU donde el archivo existe con permisos
+        por defecto (umask) entre write y chmod, y evita archivos corruptos
+        por escritura parcial si el proceso cae a mitad.
+        Sigue el mismo patrón que GovernanceManager._get_or_create_hmac_key.
+        """
+        p = Path(path)
+        tmp_path = p.with_suffix(p.suffix + ".tmp")
+        tmp_path.write_bytes(data)
+        restrict_to_owner(tmp_path)
+        tmp_path.replace(p)
+
+    @staticmethod
     def _read_and_validate_salt(path: str) -> bytes | None:
         """Lee el salt desde *path*. Devuelve None si no existe, no se puede leer o
         no tiene exactamente 32 bytes (formato inválido = corrupto)."""
@@ -77,28 +92,23 @@ class CredentialVault:
                     salt_file,
                     backup_file,
                 )
-                Path(backup_file).write_bytes(primary)
-                restrict_to_owner(Path(backup_file))
+                CredentialVault._atomic_write_bytes(backup_file, primary)
                 return primary
 
             if primary is not None:
                 logger.warning("Salt backup ausente — sincronizando desde primary.")
-                Path(backup_file).write_bytes(primary)
-                restrict_to_owner(Path(backup_file))
+                CredentialVault._atomic_write_bytes(backup_file, primary)
                 return primary
 
             if backup is not None:
                 logger.warning("Salt primary corrupto/ausente — restaurando desde backup.")
-                Path(salt_file).write_bytes(backup)
-                restrict_to_owner(Path(salt_file))
+                CredentialVault._atomic_write_bytes(salt_file, backup)
                 return backup
 
             # Caso 5: ningún salt válido — generar nuevo (operación destructiva).
             salt = os.urandom(32)
-            Path(salt_file).write_bytes(salt)
-            Path(backup_file).write_bytes(salt)
-            restrict_to_owner(Path(salt_file))
-            restrict_to_owner(Path(backup_file))
+            CredentialVault._atomic_write_bytes(salt_file, salt)
+            CredentialVault._atomic_write_bytes(backup_file, salt)
             logger.critical(
                 "SECURITY: nuevo salt generado en %s (+ backup). "
                 "Cualquier secreto cifrado con un salt anterior queda IRRECUPERABLE.",
@@ -106,7 +116,7 @@ class CredentialVault:
             )
             return salt
 
-        except Exception as e:
+        except OSError as e:
             logger.critical(
                 "CRITICAL: Vault salt file I/O failed: %s. "
                 "Please manually create %s with 32 random bytes (and a sibling .backup) and retry.",
