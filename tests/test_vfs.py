@@ -5,7 +5,6 @@ from __future__ import annotations
 import pathlib
 from typing import NamedTuple
 
-import psutil
 import pytest
 
 from sky_claw.mo2.vfs import MO2Controller
@@ -193,7 +192,7 @@ class TestGameControl:
         mock_proc_2 = MagicMock()
         mock_proc_2.info = {"name": "chrome.exe"}
 
-        monkeypatch.setattr(psutil, "process_iter", lambda x: [mock_proc_1, mock_proc_2])
+        monkeypatch.setattr("psutil.process_iter", lambda x: [mock_proc_1, mock_proc_2])
 
         result = await controller.close_game()
         assert result["status"] == "closed"
