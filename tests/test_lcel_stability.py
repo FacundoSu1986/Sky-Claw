@@ -38,11 +38,10 @@ def test_core_imports():
         )
 
         print("[PASS] All core module imports successful")
-        return True
     except ImportError as e:
         print(f"[FAIL] Core import error: {e}")
         traceback.print_exc()
-        return False
+        raise AssertionError(f"Core import error: {e}") from e
 
 
 def test_agent_imports():
@@ -62,11 +61,10 @@ def test_agent_imports():
         )
 
         print("[PASS] All agent module imports successful")
-        return True
     except ImportError as e:
         print(f"[FAIL] Agent import error: {e}")
         traceback.print_exc()
-        return False
+        raise AssertionError(f"Agent import error: {e}") from e
 
 
 def test_lcel_conditional_import():
@@ -83,11 +81,10 @@ def test_lcel_conditional_import():
             print("[PASS] Graceful degradation: LangChain not installed, using stubs")
         else:
             print("[PASS] LangChain is available")
-        return True
     except ImportError as e:
         print(f"[FAIL] LCEL import error: {e}")
         traceback.print_exc()
-        return False
+        raise AssertionError(f"LCEL import error: {e}") from e
 
 
 def test_route_classification():
@@ -109,31 +106,31 @@ def test_route_classification():
         print(f"[PASS] Valid route created: intent={route.intent}, confidence={route.confidence}")
     except Exception as e:
         print(f"[FAIL] Valid route error: {e}")
-        return False
+        raise AssertionError(f"Valid route creation failed: {e}") from e
 
     # Test 4b: Invalid confidence (out of range)
     try:
-        route = RouteClassification(
+        RouteClassification(
             intent="CHAT_GENERAL",
             confidence=1.5,  # Invalid: > 1.0
         )
-        print("[FAIL] Should have failed for invalid confidence")
-        return False
+        raise AssertionError("Should have failed for invalid confidence")
+    except AssertionError:
+        raise
     except Exception as e:
         print(f"[PASS] Correctly rejected invalid confidence: {type(e).__name__}")
 
     # Test 4c: Invalid intent
     try:
-        route = RouteClassification(
+        RouteClassification(
             intent="INVALID_INTENT",  # Invalid intent
             confidence=0.5,
         )
-        print("[FAIL] Should have failed for invalid intent")
-        return False
+        raise AssertionError("Should have failed for invalid intent")
+    except AssertionError:
+        raise
     except Exception as e:
         print(f"[PASS] Correctly rejected invalid intent: {type(e).__name__}")
-
-    return True
 
 
 def test_tool_executor():
@@ -148,11 +145,10 @@ def test_tool_executor():
         executor = ToolExecutor(tool_name="test_tool", tool_description="Test description")
         result = executor({"param": "value"})
         print(f"[PASS] ToolExecutor executed successfully: {result[:50]}...")
-        return True
     except Exception as e:
         print(f"[FAIL] ToolExecutor error: {e}")
         traceback.print_exc()
-        return False
+        raise AssertionError(f"ToolExecutor error: {e}") from e
 
 
 def test_prompt_composer():
@@ -180,11 +176,10 @@ def test_prompt_composer():
         )
         print(f"[PASS] RAG prompt composed with {len(rag_prompt)} messages")
 
-        return True
     except Exception as e:
         print(f"[FAIL] PromptComposer error: {e}")
         traceback.print_exc()
-        return False
+        raise AssertionError(f"PromptComposer error: {e}") from e
 
 
 def test_chain_builder():
@@ -211,11 +206,19 @@ def test_chain_builder():
         seq_chain = builder.create_sequential_chain(steps, "Test task")
         print(f"[PASS] Sequential chain created, type: {type(seq_chain).__name__}")
 
-        return True
     except Exception as e:
         print(f"[FAIL] ChainBuilder error: {e}")
         traceback.print_exc()
-        return False
+        raise AssertionError(f"ChainBuilder error: {e}") from e
+
+
+def _run_test(name: str, fn: object) -> tuple[str, bool]:
+    """Run a single test function, returning (name, passed)."""
+    try:
+        fn()
+        return (name, True)
+    except Exception:
+        return (name, False)
 
 
 def main():
@@ -227,14 +230,15 @@ def main():
     print(f"Python version: {sys.version}")
     print()
 
-    results = []
-    results.append(("Core Imports", test_core_imports()))
-    results.append(("Agent Imports", test_agent_imports()))
-    results.append(("LCEL Conditional Import", test_lcel_conditional_import()))
-    results.append(("RouteClassification", test_route_classification()))
-    results.append(("ToolExecutor", test_tool_executor()))
-    results.append(("PromptComposer", test_prompt_composer()))
-    results.append(("ChainBuilder", test_chain_builder()))
+    results = [
+        _run_test("Core Imports", test_core_imports),
+        _run_test("Agent Imports", test_agent_imports),
+        _run_test("LCEL Conditional Import", test_lcel_conditional_import),
+        _run_test("RouteClassification", test_route_classification),
+        _run_test("ToolExecutor", test_tool_executor),
+        _run_test("PromptComposer", test_prompt_composer),
+        _run_test("ChainBuilder", test_chain_builder),
+    ]
 
     print()
     print("*" * 60)

@@ -113,9 +113,11 @@ class PromptComposer:
         )
 
         # Formatear el input para el template
-        formatted_input = {key: str(value) for key, value in tool_input.items()}
-
-        return template.format_messages(**formatted_input)
+        return template.format_messages(
+            tool_name=tool_name,
+            tool_description=tool_description,
+            tool_input=str(tool_input),
+        )
 
     def compose_multi_tool_prompt(self, tools: list[dict[str, Any]], task_description: str) -> Any:
         """Compone un prompt para múltiples herramientas.
@@ -185,19 +187,16 @@ class PromptComposer:
             [
                 ("system", self.system_prompt),
                 ("user", "Consulta: {query}"),
-                ("user", "Contexto:"),
-                ("user", context),
-                ("user", "Fuentes:"),
-                ("user", sources),
-                ("role", "user"),
+                ("user", "Contexto: {context}"),
+                ("user", "Fuentes: {sources}"),
                 (
-                    "content",
+                    "user",
                     "Usa el contexto y las fuentes para responder la consulta.",
                 ),
             ]
         )
 
-        return template.format_messages(query=query, context=context, sources=sources)
+        return template.format_messages(query=query, context=context, sources=str(sources))
 
 
 class ChainBuilder:
@@ -225,16 +224,16 @@ class ChainBuilder:
         if not LANGCHAIN_AVAILABLE:
             return lambda x: self._tool_executor(tool_input=x)
 
-        tool = self._tool_executor(tool_name, tool_description)
+        tool = ToolExecutor(tool_name, tool_description)
+        runnable_tool = RunnableLambda(func=tool)
 
-        # Definir la cadena LCEL
-        chain = {
-            "role": "user",
-            "content": f"Ejecuta la herramienta {tool_name}.",
-        } | tool
+        # Definir la cadena LCEL: prompt -> tool executor
+        prompt = ChatPromptTemplate.from_messages([("user", f"Ejecuta la herramienta {tool_name}.")])
+        chain = prompt | runnable_tool
 
         if next_step:
-            chain = (chain, {"role": "user", "content": f"Luego, {next_step}."})
+            next_prompt = ChatPromptTemplate.from_messages([("user", f"Luego, {next_step}.")])
+            chain = chain | next_prompt
 
         return chain
 
@@ -253,7 +252,7 @@ class ChainBuilder:
             def execute_steps(x: Any) -> list[Any]:
                 results = []
                 for step in steps:
-                    tool = self._tool_executor(
+                    tool = ToolExecutor(
                         step.get("tool", "Herramienta"),
                         step.get("description", "Descripci��n de paso"),
                     )
@@ -266,7 +265,7 @@ class ChainBuilder:
         chain: Any = None
 
         for i, step in enumerate(steps):
-            step_tool = self._tool_executor(
+            step_tool = ToolExecutor(
                 step.get("tool", "Herramienta"),
                 step.get("description", f"Descripción de paso {i + 1}"),
             )

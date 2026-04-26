@@ -70,12 +70,7 @@ async def setup_tools(
     if gateway is None:
         logger.error("setup_tools called without NetworkGateway — aborting (Zero-Trust policy)")
         return json.dumps(
-            {
-                "error": (
-                    "NetworkGateway is required for all egress. "
-                    "Configure the gateway before calling this tool."
-                )
-            }
+            {"error": ("NetworkGateway is required for all egress. Configure the gateway before calling this tool.")}
         )
 
     own_session = False
