@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import threading
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
@@ -35,42 +36,53 @@ logger = logging.getLogger("SkyClaw.Contracts")
 # Poblado lazily en la primera llamada a _ensure_registry().
 _SCHEMA_REGISTRY: dict[str, type[BaseModel]] = {}
 _REGISTRY_POPULATED: bool = False
+# Lock para inicialización thread-safe (double-checked locking).
+# Sin el lock, dos hilos podían entrar a _ensure_registry() en paralelo,
+# ambos pasar la guardia booleana y duplicar la población — o peor,
+# leer _SCHEMA_REGISTRY a medio poblar.
+_REGISTRY_LOCK = threading.Lock()
 
 
 def _ensure_registry() -> None:
     """
-    Lazy-init: escanea sky_claw.core.schemas la primera vez que se
-    necesita resolver un schema.  Todas las llamadas subsequentes
-    son un no-op (O(1) check de bandera booleana).
+    Lazy-init thread-safe: escanea sky_claw.core.schemas la primera vez
+    que se necesita resolver un schema. Llamadas subsequentes son O(1)
+    (lectura de bandera booleana sin lock).
 
     Se difiere a primera invocación para evitar circular imports con
-    sky_claw.core.__init__.py que importa este módulo.
+    sky_claw.core.__init__.py que importa este módulo. La bandera se
+    fija dentro del lock y *después* de poblar el dict para que ningún
+    lector pueda observar `_REGISTRY_POPULATED=True` con un dict
+    parcialmente poblado.
     """
     global _REGISTRY_POPULATED
     if _REGISTRY_POPULATED:
         return
-    _REGISTRY_POPULATED = True
+    with _REGISTRY_LOCK:
+        # Double-check: otro hilo pudo haber poblado mientras esperábamos el lock.
+        if _REGISTRY_POPULATED:
+            return
+        try:
+            import importlib
 
-    try:
-        import importlib
-
-        _schemas_module = importlib.import_module("sky_claw.core.schemas")
-    except ImportError:
-        logger.warning(
-            "No se pudo importar sky_claw.core.schemas — los decoradores de contratos funcionarán en modo pass-through."
-        )
-        return
-
-    for attr_name in dir(_schemas_module):
-        attr = getattr(_schemas_module, attr_name)
-        if isinstance(attr, type) and issubclass(attr, BaseModel) and attr is not BaseModel:
-            _SCHEMA_REGISTRY[attr_name] = attr
-
-    logger.debug(
-        "SchemaRegistry poblado con %d modelos: %s",
-        len(_SCHEMA_REGISTRY),
-        list(_SCHEMA_REGISTRY.keys()),
-    )
+            _schemas_module = importlib.import_module("sky_claw.core.schemas")
+            for attr_name in dir(_schemas_module):
+                attr = getattr(_schemas_module, attr_name)
+                if isinstance(attr, type) and issubclass(attr, BaseModel) and attr is not BaseModel:
+                    _SCHEMA_REGISTRY[attr_name] = attr
+            logger.debug(
+                "SchemaRegistry poblado con %d modelos: %s",
+                len(_SCHEMA_REGISTRY),
+                list(_SCHEMA_REGISTRY.keys()),
+            )
+        except ImportError:
+            logger.warning(
+                "No se pudo importar sky_claw.core.schemas — los decoradores de contratos funcionarán en modo pass-through."
+            )
+        finally:
+            # Marcar como poblado incluso ante ImportError para evitar
+            # tormentas de reintentos en cada llamada subsiguiente.
+            _REGISTRY_POPULATED = True
 
 
 # ============================================================================
