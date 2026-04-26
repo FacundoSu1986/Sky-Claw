@@ -46,10 +46,7 @@ async def _write_modlist_atomic(path: pathlib.Path, lines: list[str]) -> None:
     automatically), then renamed over the original so the swap is atomic.
     """
     tmp: pathlib.Path = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
-    normalised = [
-        (line if line.endswith("\n") else line.rstrip("\r\n") + "\n")
-        for line in lines
-    ]
+    normalised = [(line if line.endswith("\n") else line.rstrip("\r\n") + "\n") for line in lines]
     try:
         async with aiofiles.open(tmp, mode="w", encoding="utf-8-sig") as fh:
             await fh.writelines(normalised)

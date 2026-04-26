@@ -137,9 +137,7 @@ class TestLOOTRunnerTimeout:
         runner = LOOTRunner(config)
 
         mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(
-            return_value=(b"  1. Skyrim.esm\n  2. Update.esm\n", b"")
-        )
+        mock_proc.communicate = AsyncMock(return_value=(b"  1. Skyrim.esm\n  2. Update.esm\n", b""))
         mock_proc.returncode = 0
         mock_proc.kill = MagicMock()
 
@@ -174,9 +172,7 @@ class TestMO2LaunchGameSpawn:
     """Verify that launch_game() verifies PID appearance without blocking."""
 
     @pytest.mark.asyncio
-    async def test_spawn_verification_succeeds(
-        self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]
-    ) -> None:
+    async def test_spawn_verification_succeeds(self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]) -> None:
         """When PID appears promptly, launch succeeds and proc is NOT killed."""
         mo2_root, validator = tmp_mo2_env
         controller = MO2Controller(mo2_root, validator, launch_timeout=5)
@@ -197,9 +193,7 @@ class TestMO2LaunchGameSpawn:
         assert result["pid"] == 12345
 
     @pytest.mark.asyncio
-    async def test_spawn_timeout_triggers_kill(
-        self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]
-    ) -> None:
+    async def test_spawn_timeout_triggers_kill(self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]) -> None:
         """When PID never appears, proc.kill() must be invoked."""
         mo2_root, validator = tmp_mo2_env
         controller = MO2Controller(mo2_root, validator, launch_timeout=5)
@@ -218,9 +212,7 @@ class TestMO2LaunchGameSpawn:
         mock_proc.kill.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_spawn_timeout_reaps_process(
-        self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]
-    ) -> None:
+    async def test_spawn_timeout_reaps_process(self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]) -> None:
         """After kill on spawn failure, proc.wait() is awaited."""
         mo2_root, validator = tmp_mo2_env
         controller = MO2Controller(mo2_root, validator, launch_timeout=5)
@@ -249,9 +241,7 @@ class TestMO2LaunchGameSpawn:
         mock_proc.kill.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_launch_missing_exe_raises(
-        self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]
-    ) -> None:
+    async def test_launch_missing_exe_raises(self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]) -> None:
         """FileNotFoundError when ModOrganizer.exe does not exist."""
         mo2_root, validator = tmp_mo2_env
         (mo2_root / "ModOrganizer.exe").unlink()
@@ -261,9 +251,7 @@ class TestMO2LaunchGameSpawn:
             await controller.launch_game("Default")
 
     @pytest.mark.asyncio
-    async def test_launch_uses_configurable_timeout(
-        self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]
-    ) -> None:
+    async def test_launch_uses_configurable_timeout(self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]) -> None:
         """The launch_timeout parameter controls spawn verification timeout."""
         mo2_root, validator = tmp_mo2_env
         controller = MO2Controller(mo2_root, validator, launch_timeout=42)
@@ -293,9 +281,7 @@ class TestMO2CloseGameAsync:
     """Verify that close_game() delegates psutil to a thread."""
 
     @pytest.mark.asyncio
-    async def test_close_game_uses_to_thread(
-        self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]
-    ) -> None:
+    async def test_close_game_uses_to_thread(self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]) -> None:
         """close_game() wraps _kill_game_processes in asyncio.to_thread."""
         mo2_root, validator = tmp_mo2_env
         controller = MO2Controller(mo2_root, validator)
@@ -309,9 +295,7 @@ class TestMO2CloseGameAsync:
         assert result["killed_processes"] == ["SkyrimSE.exe"]
 
     @pytest.mark.asyncio
-    async def test_close_game_returns_killed_list(
-        self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]
-    ) -> None:
+    async def test_close_game_returns_killed_list(self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]) -> None:
         """close_game() returns the list of killed process names."""
         mo2_root, validator = tmp_mo2_env
         controller = MO2Controller(mo2_root, validator)
@@ -355,9 +339,7 @@ class TestWSL2PathTranslation:
         mock_translate.assert_called_once_with("/mnt/c/Modding/MO2", timeout=10.0)
 
     @pytest.mark.asyncio
-    async def test_native_windows_passes_through(
-        self, *, _reset_wsl2_cache: None
-    ) -> None:
+    async def test_native_windows_passes_through(self, *, _reset_wsl2_cache: None) -> None:
         """On native Windows, a valid Windows path passes through unchanged."""
         with patch("sky_claw.core.windows_interop.is_wsl2_cached", return_value=False):
             result = await translate_path_if_wsl(r"C:\Modding\MO2")
@@ -365,9 +347,7 @@ class TestWSL2PathTranslation:
         assert result == r"C:\Modding\MO2"
 
     @pytest.mark.asyncio
-    async def test_native_windows_rejects_linux_path(
-        self, *, _reset_wsl2_cache: None
-    ) -> None:
+    async def test_native_windows_rejects_linux_path(self, *, _reset_wsl2_cache: None) -> None:
         """On native Windows, a Linux-style /mnt/ path raises ValueError."""
         with (
             patch("sky_claw.core.windows_interop.is_wsl2_cached", return_value=False),
@@ -376,9 +356,7 @@ class TestWSL2PathTranslation:
             await translate_path_if_wsl("/mnt/c/Modding/MO2")
 
     @pytest.mark.asyncio
-    async def test_native_windows_rejects_unix_absolute(
-        self, *, _reset_wsl2_cache: None
-    ) -> None:
+    async def test_native_windows_rejects_unix_absolute(self, *, _reset_wsl2_cache: None) -> None:
         """On native Windows, a Unix absolute path raises ValueError."""
         with (
             patch("sky_claw.core.windows_interop.is_wsl2_cached", return_value=False),
@@ -387,9 +365,7 @@ class TestWSL2PathTranslation:
             await translate_path_if_wsl("/home/user/mods")
 
     @pytest.mark.asyncio
-    async def test_custom_timeout_forwarded(
-        self, *, _reset_wsl2_cache: None
-    ) -> None:
+    async def test_custom_timeout_forwarded(self, *, _reset_wsl2_cache: None) -> None:
         """Custom timeout is forwarded to _translate_wsl_to_win."""
         with (
             patch("sky_claw.core.windows_interop.is_wsl2_cached", return_value=True),
@@ -492,9 +468,7 @@ class TestLOOTRunnerWSL2Integration:
         assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_sort_wsl2_translation_failure(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    async def test_sort_wsl2_translation_failure(self, tmp_path: pathlib.Path) -> None:
         """If translate_path_if_wsl raises, the error propagates."""
         config = _make_loot_config(tmp_path)
         runner = LOOTRunner(config)
@@ -520,9 +494,7 @@ class TestMO2LaunchGameWSL2:
     """Verify launch_game() uses native cwd and does not translate it."""
 
     @pytest.mark.asyncio
-    async def test_launch_uses_native_cwd(
-        self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]
-    ) -> None:
+    async def test_launch_uses_native_cwd(self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]) -> None:
         """launch_game() passes the native path (Linux or Windows) as cwd."""
         mo2_root, validator = tmp_mo2_env
         controller = MO2Controller(mo2_root, validator, launch_timeout=5)

@@ -74,16 +74,9 @@ async def download_mod(
     # when gateway=None, preventing a false-success path where enqueue returns
     # "ok" but _do_download() silently aborts because it cannot authorise egress.
     if gateway is None:
-        logger.error(
-            "download_mod called without NetworkGateway — aborting (Zero-Trust policy)"
-        )
+        logger.error("download_mod called without NetworkGateway — aborting (Zero-Trust policy)")
         return json.dumps(
-            {
-                "error": (
-                    "NetworkGateway is required for all egress. "
-                    "Configure the gateway before calling this tool."
-                )
-            }
+            {"error": ("NetworkGateway is required for all egress. Configure the gateway before calling this tool.")}
         )
 
     own_session = False

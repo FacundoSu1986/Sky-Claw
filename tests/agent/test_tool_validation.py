@@ -153,9 +153,7 @@ class TestSchemaDerivation:
         for name, schema in by_name.items():
             for prop_name, prop_schema in schema.get("properties", {}).items():
                 if isinstance(prop_schema, dict):
-                    assert "title" not in prop_schema, (
-                        f"tool {name!r} property {prop_name!r} still has 'title'"
-                    )
+                    assert "title" not in prop_schema, f"tool {name!r} property {prop_name!r} still has 'title'"
 
     def test_search_mod_schema_matches_pydantic(self, registry: AsyncToolRegistry) -> None:
         schemas = {s["name"]: s["input_schema"] for s in registry.tool_schemas()}

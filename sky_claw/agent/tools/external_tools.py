@@ -67,16 +67,9 @@ async def setup_tools(
     # when gateway=None, preventing a false-success path where the installer
     # runs with an unvetted session that bypasses SSRF/allow-list enforcement.
     if gateway is None:
-        logger.error(
-            "setup_tools called without NetworkGateway — aborting (Zero-Trust policy)"
-        )
+        logger.error("setup_tools called without NetworkGateway — aborting (Zero-Trust policy)")
         return json.dumps(
-            {
-                "error": (
-                    "NetworkGateway is required for all egress. "
-                    "Configure the gateway before calling this tool."
-                )
-            }
+            {"error": ("NetworkGateway is required for all egress. Configure the gateway before calling this tool.")}
         )
 
     own_session = False

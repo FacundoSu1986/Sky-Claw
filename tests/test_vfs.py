@@ -177,9 +177,7 @@ class TestGameControl:
             return
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_create)
-        monkeypatch.setattr(
-            "sky_claw.mo2.vfs._verify_pid_alive", _fake_verify
-        )
+        monkeypatch.setattr("sky_claw.mo2.vfs._verify_pid_alive", _fake_verify)
 
         result = await controller.launch_game("Default")
         assert result["status"] == "launched"

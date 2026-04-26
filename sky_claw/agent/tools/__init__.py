@@ -190,7 +190,11 @@ class AsyncToolRegistry:
     async def _download_mod(self, nexus_id: int, file_id: int | None = None) -> str:
         """Download a mod with HITL approval (P0-2: re-fetches fresh URL on execute)."""
         return await download_mod(
-            self._downloader, self._hitl, self._sync_engine, nexus_id, file_id,
+            self._downloader,
+            self._hitl,
+            self._sync_engine,
+            nexus_id,
+            file_id,
             gateway=self._resolve_gateway(),
         )
 
@@ -260,7 +264,11 @@ class AsyncToolRegistry:
             description="Download a file from Nexus Mods with HITL approval.",
             input_schema=_clean_schema(DownloadModParams),
             fn=lambda nexus_id, file_id=None: download_mod(
-                self._downloader, self._hitl, self._sync_engine, nexus_id, file_id,
+                self._downloader,
+                self._hitl,
+                self._sync_engine,
+                nexus_id,
+                file_id,
                 gateway=self._resolve_gateway(),
             ),
             params_model=DownloadModParams,
