@@ -48,20 +48,25 @@ logger = logging.getLogger("SkyClaw.AgentGuardrail")
 # Module-level compiled patterns (compiled once at import time for performance)
 # ---------------------------------------------------------------------------
 
-# PII — SSN (US format)
-_SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
-
-# PII — credit/debit card numbers (13-16 digits, grouped)
-_CREDIT_CARD_RE = re.compile(r"\b(?:\d{4}[ -]?){3}\d{1,4}\b")
-
-# PII — API keys (sk- prefix à la OpenAI/Anthropic, or long token with suffix)
-_API_KEY_RE = re.compile(
-    r"\b(?:sk-[A-Za-z0-9]{15,}|[A-Za-z0-9]{32,}(?:_key|_secret|_token))\b",
+# PII — combined detector. One compiled pattern with named groups beats four
+# sequential `re.search` calls in both clarity and runtime (single scan instead
+# of four). Alternation order encodes priority: SSN > card > api_key > password.
+# IGNORECASE applies to the whole pattern; SSN/card alternations are digit-only
+# so the flag is harmless for them.
+_COMBINED_PII_RE = re.compile(
+    r"(?P<ssn>\b\d{3}-\d{2}-\d{4}\b)"
+    r"|(?P<card>\b(?:\d{4}[ -]?){3}\d{1,4}\b)"
+    r"|(?P<api_key>\b(?:sk-[A-Za-z0-9]{15,}|[A-Za-z0-9]{32,}(?:_key|_secret|_token))\b)"
+    r"|(?P<password>password\s*[=:]\s*\S+)",
     re.IGNORECASE,
 )
 
-# PII — bare password assignment
-_PASSWORD_RE = re.compile(r"(?i)password\s*[=:]\s*\S+")
+_PII_MESSAGES: dict[str, str] = {
+    "ssn": "PII detected in input: SSN pattern found",
+    "card": "PII detected in input: credit/debit card number pattern found",
+    "api_key": "PII detected in input: API key pattern found",
+    "password": "PII detected in input: password assignment pattern found",
+}
 
 # Path leakage — Windows absolute path (e.g. C:\Users\...)
 _WIN_ABS_PATH_RE = re.compile(r"[A-Za-z]:\\[\\A-Za-z0-9_.+\- ]+")
@@ -306,14 +311,12 @@ async def secure_llm_call(
 
 def _check_pii(text: str) -> None:
     """Raise ``SecurityViolationError`` if *text* contains PII patterns."""
-    if _SSN_RE.search(text):
-        raise SecurityViolationError("PII detected in input: SSN pattern found")
-    if _CREDIT_CARD_RE.search(text):
-        raise SecurityViolationError("PII detected in input: credit/debit card number pattern found")
-    if _API_KEY_RE.search(text):
-        raise SecurityViolationError("PII detected in input: API key pattern found")
-    if _PASSWORD_RE.search(text):
-        raise SecurityViolationError("PII detected in input: password assignment pattern found")
+    match = _COMBINED_PII_RE.search(text)
+    if match is None:
+        return
+    for name, value in match.groupdict().items():
+        if value is not None:
+            raise SecurityViolationError(_PII_MESSAGES[name])
 
 
 def _check_paths(text: str) -> None:

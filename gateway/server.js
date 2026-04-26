@@ -259,19 +259,26 @@ uiServer.on('connection', (ws) => {
         console.log(`[UI] Nueva conexión de interfaz web autenticada.`);
         uiSockets.add(ws);
 
-        // C-06: Rate limiting - 10 comandos/segundo por conexión (Ventana Deslizante 1s)
-        ws._rateLimitCount = 0;
-        ws._rateLimitReset = Date.now() + 1000;
+        // C-06: Rate limiting con ventana deslizante real (10 mensajes / 1 s).
+        // La versión anterior usaba ventana fija (reset cada 1 s) que permitía
+        // ráfagas de hasta 20 mensajes en el límite entre ventanas. Aquí
+        // mantenemos los timestamps de los últimos mensajes y filtramos por
+        // antigüedad antes de cada decisión: imposible exceder N en cualquier
+        // ventana de tamaño W. Tope de memoria por socket: RATE_LIMIT_MAX entradas.
+        const RATE_LIMIT_WINDOW_MS = 1000;
+        const RATE_LIMIT_MAX = 10;
+        ws._messageTimestamps = [];
 
         ws.on('message', (data) => {
-            // C-06: Verificar rate limiting antes de procesar
             const now = Date.now();
-            if (now > ws._rateLimitReset) {
-                ws._rateLimitCount = 0;
-                ws._rateLimitReset = now + 1000;
-            }
-            if (ws._rateLimitCount >= 10) {
-                // C-06: Drop silencioso - límite excedido
+            // Descartar timestamps fuera de la ventana en O(k) donde k <= MAX.
+            ws._messageTimestamps = ws._messageTimestamps.filter(
+                ts => now - ts < RATE_LIMIT_WINDOW_MS
+            );
+
+            if (ws._messageTimestamps.length >= RATE_LIMIT_MAX) {
+                // Drop silencioso — el límite NO se desbloquea hasta que
+                // el timestamp más antiguo salga de la ventana.
                 console.log(JSON.stringify({
                     event: "rate_limit",
                     timestamp: new Date().toISOString(),
@@ -280,7 +287,7 @@ uiServer.on('connection', (ws) => {
                 }));
                 return;
             }
-            ws._rateLimitCount++;
+            ws._messageTimestamps.push(now);
 
             let command;
             try {
@@ -318,9 +325,8 @@ uiServer.on('connection', (ws) => {
 
         ws.on('close', () => {
             console.log('[UI] Interfaz web desconectada.');
-            // C-06: Limpieza de estado para evitar fugas de memoria
-            ws._rateLimitCount = 0;
-            ws._rateLimitReset = 0;
+            // C-06: Liberar el array de timestamps para que el GC reclame memoria.
+            ws._messageTimestamps = null;
             uiSockets.delete(ws);
         });
     }); // end requireAuth
