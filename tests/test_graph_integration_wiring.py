@@ -14,6 +14,8 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+import pytest  # noqa: E402
+
 from sky_claw.orchestrator.state_graph import (  # noqa: E402
     LANGGRAPH_AVAILABLE,
     StateGraphEdges,
@@ -21,8 +23,6 @@ from sky_claw.orchestrator.state_graph import (  # noqa: E402
     SupervisorState,
     SupervisorStateGraph,
 )
-
-import pytest  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not LANGGRAPH_AVAILABLE, reason="LangGraph not installed")
 

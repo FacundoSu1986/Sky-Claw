@@ -34,7 +34,6 @@ from sky_claw.orchestrator.state_graph import (  # noqa: E402
     WorkflowEventType,
 )
 
-
 # ---------------------------------------------------------------------------
 # C-2: Ghost Node GENERATING_LODS — Verification Tests
 # ---------------------------------------------------------------------------

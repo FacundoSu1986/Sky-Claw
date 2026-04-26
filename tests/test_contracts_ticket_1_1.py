@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+from datetime import UTC
 
 
 def main():
@@ -51,7 +52,7 @@ def main():
     asyncio.run(test_invalid_input())
 
     # Test 5: validate_output
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sky_claw.core.contracts import validate_output
 
@@ -61,7 +62,7 @@ def main():
             return {
                 "tool_name": "test",
                 "success": True,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             }
 
     async def test_valid_output():
@@ -85,7 +86,7 @@ def main():
             return {
                 "tool_name": kwargs["tool_name"],
                 "success": True,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             }
 
     async def test_full_contract():

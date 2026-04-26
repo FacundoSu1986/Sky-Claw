@@ -753,16 +753,16 @@ class TestSyncMetricsConcurrency:
         ``increment_error_type``.  El contador final debe ser exactamente 100.
         """
         metrics = SyncMetrics()
-        N = 100
+        n = 100
 
         await asyncio.gather(
-            *[metrics.increment_error_type("TestError") for _ in range(N)]
+            *[metrics.increment_error_type("TestError") for _ in range(n)]
         )
 
         total = await metrics.get_error_count()
-        assert total == N, f"Contador esperado {N}, obtenido {total} (race condition)"
+        assert total == n, f"Contador esperado {n}, obtenido {total} (race condition)"
         error_types = await metrics.get_error_types()
-        assert error_types.get("TestError", 0) == N
+        assert error_types.get("TestError", 0) == n
 
     @pytest.mark.asyncio
     async def test_record_error_increments_by_exception_type(self) -> None:

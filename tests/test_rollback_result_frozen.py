@@ -9,17 +9,15 @@ Validates that:
 
 from __future__ import annotations
 
-import asyncio
 import pathlib
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sky_claw.db.rollback_manager import RollbackResult
 from sky_claw.orchestrator.sync_engine import SyncEngine
-
 
 # ------------------------------------------------------------------
 # 1. RollbackResult frozen dataclass contract
@@ -49,7 +47,7 @@ class TestRollbackResultFrozen:
 
     def test_construction_with_all_fields(self) -> None:
         """All fields can be set at construction time."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         result = RollbackResult(
             success=True,
             transaction_id=10,
@@ -97,7 +95,7 @@ class TestRollbackResultFrozen:
 
     def test_frozen_equality(self) -> None:
         """Two RollbackResults with same field values are equal."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         r1 = RollbackResult(success=True, transaction_id=5, timestamp=now)
         r2 = RollbackResult(success=True, transaction_id=5, timestamp=now)
         assert r1 == r2
@@ -125,21 +123,16 @@ class TestExecuteFileOperationRollbackNoMutation:
         - Would crash with FrozenInstanceError on a frozen dataclass
         - Masked the actual rollback outcome (success could have been True)
 
-        After TASK-004, the result is logged but never mutated.
+        After TASK-004 + Phase-C (proxy API), the result is logged but never mutated.
         """
-        # Setup mock rollback_manager
+        # Setup mock rollback_manager via public proxy API (Phase C)
         mock_rm = MagicMock()
-
-        # Journal mocks
-        mock_rm._journal.begin_transaction = AsyncMock(return_value=100)
-        mock_rm._journal.begin_operation = AsyncMock(return_value=200)
-        mock_rm._journal.fail_operation = AsyncMock()
-        mock_rm._journal.complete_operation = AsyncMock()
-        mock_rm._journal.commit_transaction = AsyncMock()
-
-        # Snapshot mock — no pre-existing file
-        mock_rm._snapshots = MagicMock()
-        mock_rm._snapshots.create_snapshot = AsyncMock(return_value=MagicMock(snapshot_path="/fake/snap"))
+        mock_rm.begin_transaction = AsyncMock(return_value=100)
+        mock_rm.begin_operation = AsyncMock(return_value=200)
+        mock_rm.fail_operation = AsyncMock()
+        mock_rm.complete_operation = AsyncMock()
+        mock_rm.commit_transaction = AsyncMock()
+        mock_rm.create_snapshot = AsyncMock(return_value=MagicMock(snapshot_path="/fake/snap"))
 
         # undo_last_operation returns a SUCCESSFUL rollback
         expected_result = RollbackResult(
@@ -148,11 +141,6 @@ class TestExecuteFileOperationRollbackNoMutation:
             entries_restored=1,
         )
         mock_rm.undo_last_operation = AsyncMock(return_value=expected_result)
-
-        # _passive_pruning mock (called in finally block)
-        mock_rm._snapshots.get_stats = AsyncMock(
-            return_value=MagicMock(total_size_bytes=0)
-        )
 
         engine = SyncEngine(
             mo2=AsyncMock(),
@@ -188,12 +176,12 @@ class TestExecuteFileOperationRollbackNoMutation:
     async def test_error_path_logs_rollback_outcome(self, tmp_path: pathlib.Path) -> None:
         """After rollback, the engine logs the actual outcome (success + transaction_id)."""
         mock_rm = MagicMock()
-        mock_rm._journal.begin_transaction = AsyncMock(return_value=100)
-        mock_rm._journal.begin_operation = AsyncMock(return_value=200)
-        mock_rm._journal.fail_operation = AsyncMock()
-        mock_rm._snapshots = MagicMock()
-        mock_rm._snapshots.create_snapshot = AsyncMock(return_value=MagicMock(snapshot_path="/snap"))
-        mock_rm._snapshots.get_stats = AsyncMock(return_value=MagicMock(total_size_bytes=0))
+        mock_rm.begin_transaction = AsyncMock(return_value=100)
+        mock_rm.begin_operation = AsyncMock(return_value=200)
+        mock_rm.fail_operation = AsyncMock()
+        mock_rm.complete_operation = AsyncMock()
+        mock_rm.commit_transaction = AsyncMock()
+        mock_rm.create_snapshot = AsyncMock(return_value=MagicMock(snapshot_path="/snap"))
 
         rollback_result = RollbackResult(success=True, transaction_id=200)
         mock_rm.undo_last_operation = AsyncMock(return_value=rollback_result)
@@ -235,12 +223,12 @@ class TestExecuteFileOperationRollbackNoMutation:
     ) -> None:
         """When rollback itself fails, the original exception still propagates."""
         mock_rm = MagicMock()
-        mock_rm._journal.begin_transaction = AsyncMock(return_value=100)
-        mock_rm._journal.begin_operation = AsyncMock(return_value=200)
-        mock_rm._journal.fail_operation = AsyncMock()
-        mock_rm._snapshots = MagicMock()
-        mock_rm._snapshots.create_snapshot = AsyncMock(return_value=MagicMock(snapshot_path="/snap"))
-        mock_rm._snapshots.get_stats = AsyncMock(return_value=MagicMock(total_size_bytes=0))
+        mock_rm.begin_transaction = AsyncMock(return_value=100)
+        mock_rm.begin_operation = AsyncMock(return_value=200)
+        mock_rm.fail_operation = AsyncMock()
+        mock_rm.complete_operation = AsyncMock()
+        mock_rm.commit_transaction = AsyncMock()
+        mock_rm.create_snapshot = AsyncMock(return_value=MagicMock(snapshot_path="/snap"))
 
         rollback_result = RollbackResult(
             success=False,

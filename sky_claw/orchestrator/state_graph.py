@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Any, TypedDict
 
@@ -235,7 +235,7 @@ if PYDANTIC_AVAILABLE:
         """Estado del workflow de LangGraph para Sky-Claw."""
 
         # Identificación
-        workflow_id: str = Field(default_factory=lambda: f"wf_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}")
+        workflow_id: str = Field(default_factory=lambda: f"wf_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}")
 
         # Estado actual
         current_state: SupervisorState = Field(default=SupervisorState.INIT)
@@ -272,8 +272,8 @@ if PYDANTIC_AVAILABLE:
         rollback_transaction_id: int | None = None
 
         # Metadata
-        created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-        updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+        created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+        updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
         def add_transition(
             self,
@@ -287,13 +287,13 @@ if PYDANTIC_AVAILABLE:
                     "from": from_state.value,
                     "to": to_state.value,
                     "reason": reason,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                 }
             )
             # TASK-006 (M-4): Trim history to prevent unbounded growth
             if len(self.transition_history) > MAX_TRANSITION_HISTORY:
                 self.transition_history = self.transition_history[-MAX_TRANSITION_HISTORY:]
-            self.updated_at = datetime.now(timezone.utc)
+            self.updated_at = datetime.now(UTC)
 
 else:
     # Fallback sin Pydantic
@@ -301,7 +301,7 @@ else:
         """Estado del workflow sin Pydantic."""
 
         def __init__(self) -> None:
-            self.workflow_id = f"wf_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+            self.workflow_id = f"wf_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
             self.current_state = SupervisorState.INIT
             self.previous_state = None
             self.profile_name = "Default"
@@ -321,8 +321,8 @@ else:
             self.rollback_triggered = False
             self.rollback_result = None
             self.rollback_transaction_id = None
-            self.created_at = datetime.now(timezone.utc)
-            self.updated_at = datetime.now(timezone.utc)
+            self.created_at = datetime.now(UTC)
+            self.updated_at = datetime.now(UTC)
 
         def trim_history(self) -> None:
             """TASK-006 (M-4): Trim transition_history to MAX_TRANSITION_HISTORY."""
@@ -999,7 +999,7 @@ class SupervisorStateGraph:
     def get_initial_state(self) -> StateGraphState:
         """Retorna el estado inicial del workflow."""
         return {
-            "workflow_id": f"wf_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}",
+            "workflow_id": f"wf_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
             "current_state": SupervisorState.INIT.value,
             "previous_state": None,
             "profile_name": self.profile_name,

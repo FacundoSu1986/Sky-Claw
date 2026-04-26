@@ -18,8 +18,7 @@ Validates that:
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -29,12 +28,9 @@ from sky_claw.orchestrator.state_graph import (
     PYDANTIC_AVAILABLE,
     SupervisorState,
     SupervisorStateGraph,
+    WorkflowState,  # Pydantic or fallback depending on env
     capped_transition_history,
 )
-from sky_claw.orchestrator.state_graph import (
-    WorkflowState,  # Pydantic or fallback depending on env
-)
-
 
 # ---------------------------------------------------------------------------
 # Problem 1: Custom reducer for transition_history
@@ -314,10 +310,10 @@ class TestExecuteTracksTimestamps:
 
         # Execute will likely end quickly (graph runs through nodes)
         # We just need to verify the timestamp was recorded
-        try:
+        import contextlib
+
+        with contextlib.suppress(Exception):
             await graph.execute(initial)
-        except Exception:
-            pass  # Graph execution may fail in test env; timestamp tracking is what matters
 
         assert thread_id in graph._thread_timestamps
         assert isinstance(graph._thread_timestamps[thread_id], float)

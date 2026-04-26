@@ -13,8 +13,6 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-import pytest
-
 from sky_claw.config import HITL_TIMEOUT_SECONDS
 from sky_claw.orchestrator.state_graph import (
     StateGraphEdges,

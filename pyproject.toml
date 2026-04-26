@@ -115,13 +115,16 @@ module = [
     "sky_claw.db.*",
     "sky_claw.mo2.*",
     "sky_claw.security.*",
+    "sky_claw.core.*",
     "sky_claw.app_context",
+    "sky_claw.auto_detect",
     "sky_claw.config",
     "sky_claw.logging_config",
     "sky_claw.local_config",
     "sky_claw.__main__",
     "sky_claw.tools_installer",
     "sky_claw.discovery.*",
+    "sky_claw.loot.*",
 ]
 ignore_errors = true
 

@@ -14,7 +14,7 @@ import pathlib
 import shutil
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sky_claw.db.journal import JournalSnapshotError
@@ -148,7 +148,7 @@ class FileSnapshotManager:
         async with self._lock:
             try:
                 # Generar ID único para el snapshot
-                timestamp = datetime.now(timezone.utc)
+                timestamp = datetime.now(UTC)
                 snapshot_id = self._generate_snapshot_id(file_path, timestamp)
 
                 # Crear estructura de directorios por fecha
@@ -214,7 +214,7 @@ class FileSnapshotManager:
             raise JournalSnapshotError(f"Cannot create snapshot: file does not exist: {file_path}")
 
         try:
-            timestamp = datetime.now(timezone.utc)
+            timestamp = datetime.now(UTC)
             snapshot_id = self._generate_snapshot_id(file_path, timestamp)
 
             date_dir = self._snapshot_dir / timestamp.strftime("%Y-%m-%d")
