@@ -15,18 +15,25 @@ import pytest
 
 from sky_claw.core.dlq_manager import DLQManager, DLQRow
 from sky_claw.core.event_bus import CoreEventBus, Event, create_bus_with_dlq
+from tests.polling_utils import poll_until
 
 
 async def _poll_pending(dlq: DLQManager, *, min_count: int = 1, timeout: float = 3.0) -> list[DLQRow]:
-    """Poll dlq.list_pending() until at least *min_count* rows appear or timeout."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
+    """Consulta dlq.list_pending() hasta que aparezcan al menos *min_count* filas.
+
+    Retorna las filas una vez alcanzado el umbral.  Si *min_count* no aparece
+    antes de *timeout*, propaga el ``AssertionError`` lanzado por
+    ``poll_until``.
+    """
+    rows: list[DLQRow] = []
+
+    async def _check() -> bool:
+        nonlocal rows
         rows = await dlq.list_pending()
-        if len(rows) >= min_count:
-            return rows
-        await asyncio.sleep(0.05)
-    return await dlq.list_pending()
+        return len(rows) >= min_count
+
+    await poll_until(_check, timeout=timeout, msg=f"DLQ no alcanzó {min_count} filas pending")
+    return rows
 
 
 @pytest.mark.asyncio
@@ -154,10 +161,11 @@ async def test_dlq_retry_delivers_to_handler(tmp_path: Path) -> None:
 
     bus.subscribe("retry.*", flaky_handler)
     await bus.publish(Event(topic="retry.test", payload={"attempt": True}))
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + 5.0
-    while loop.time() < deadline and len(retried) < 2:
-        await asyncio.sleep(0.05)
+    await poll_until(
+        lambda: len(retried) >= 2,
+        timeout=5.0,
+        msg="Handler no fue llamado 2 veces (initial dispatch + DLQ retry)",
+    )
     await bus.stop()
 
     # Handler llamado 2 veces: dispatch inicial (falla) + retry (éxito)
@@ -211,7 +219,6 @@ async def test_bus_without_dlq_still_works(tmp_path: Path) -> None:
     bus.subscribe("t", ok_handler)
     bus.subscribe("t", bad_handler)
     await bus.start()
-
     await bus.publish(Event(topic="t", payload={}))
     await asyncio.sleep(0.1)
 

@@ -252,57 +252,63 @@ class SyncEngine:
             return await operation
 
         rm = self._rollback_manager
-        transaction_id: int | None = None
         entry_id: int | None = None
 
-        # 1. Iniciar transacción
-        transaction_id = await rm.begin_transaction(
-            description=description or f"file_operation: {operation_type.value}",
-            agent_id=self._agent_id,
-        )
-
-        # 2. Capturar snapshot si el archivo existe
-        snapshot_info = None
-        if target_path.exists() and target_path.is_file():
-            snapshot_info = await rm.create_snapshot(target_path)
-
-        # 3. Registrar inicio de operación
-        entry_id = await rm.begin_operation(
-            agent_id=self._agent_id,
-            operation_type=operation_type,
-            target_path=str(target_path),
-            transaction_id=transaction_id,
-            snapshot_path=snapshot_info.snapshot_path if snapshot_info else None,
-        )
-
-        # 4. Ejecutar la operación
         try:
-            result = await operation
-
-            # 5. Marcar como completada
-            await rm.complete_operation(entry_id)
-            await rm.commit_transaction(transaction_id)
-
-            return result
-
-        except Exception as exc:
-            # 6. Error: marcar como fallida y ejecutar rollback
-            logger.error(
-                "Operación falló, ejecutando rollback automático: %s",
-                str(exc),
-                exc_info=True,
-            )
-            await rm.fail_operation(entry_id, error=str(exc))
-
-            # Ejecutar rollback — result already reflects actual outcome
-            rollback_result = await rm.undo_last_operation(self._agent_id)
-            logger.warning(
-                "Rollback automático completado: success=%s, transaction=%s",
-                rollback_result.success,
-                rollback_result.transaction_id,
+            # 1. Iniciar transacción
+            transaction_id = await rm.begin_transaction(
+                description=description or f"file_operation: {operation_type.value}",
+                agent_id=self._agent_id,
             )
 
-            raise
+            # 2. Capturar snapshot si el archivo existe
+            snapshot_info = None
+            if target_path.exists() and target_path.is_file():
+                snapshot_info = await rm.create_snapshot(target_path)
+
+            # 3. Registrar inicio de operación
+            entry_id = await rm.begin_operation(
+                agent_id=self._agent_id,
+                operation_type=operation_type,
+                target_path=str(target_path),
+                transaction_id=transaction_id,
+                snapshot_path=snapshot_info.snapshot_path if snapshot_info else None,
+            )
+
+            # 4. Ejecutar la operación
+            try:
+                result = await operation
+
+                # 5. Marcar como completada
+                await rm.complete_operation(entry_id)
+                await rm.commit_transaction(transaction_id)
+
+                return result
+
+            except Exception as exc:
+                # 6. Error: marcar como fallida y ejecutar rollback
+                logger.error(
+                    "Operación falló, ejecutando rollback automático: %s",
+                    str(exc),
+                    exc_info=True,
+                )
+                await rm.fail_operation(entry_id, error=str(exc))
+
+                # Ejecutar rollback — result already reflects actual outcome
+                rollback_result = await rm.undo_last_operation(self._agent_id)
+                logger.warning(
+                    "Rollback automático completado: success=%s, transaction=%s",
+                    rollback_result.success,
+                    rollback_result.transaction_id,
+                )
+
+                raise
+
+        finally:
+            # Bound snapshot storage growth: prune on every file operation,
+            # success or failure.  Logs and swallows its own errors so it never
+            # masks the real outcome of the operation above.
+            await self._passive_pruning()
 
     async def _passive_pruning(self) -> None:
         """FASE 1.5: Ejecuta pruning pasivo del directorio de backups.

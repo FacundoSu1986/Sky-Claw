@@ -218,10 +218,16 @@ class DLQManager:
                 try:
                     rows = await self._fetch_due_batch(limit=self._batch_size)
                     if not rows:
+                        # Yield to event loop even when poll_interval_s==0 to avoid
+                        # a busy-spin and allow aiosqlite callbacks to progress.
                         await asyncio.sleep(self._poll_interval_s)
                         continue
                     for row in rows:
                         await self._process_row(row)
+                    # After processing a batch: if poll_interval_s==0 still yield so
+                    # other coroutines (e.g. test assertions) get a chance to run.
+                    if self._poll_interval_s == 0:
+                        await asyncio.sleep(0)
                 except Exception as exc:
                     logger.error(
                         "DLQ worker error (continuando): %s",
