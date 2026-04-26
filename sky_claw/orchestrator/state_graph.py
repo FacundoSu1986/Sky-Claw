@@ -13,10 +13,12 @@ Gracefully degrades when LangGraph is not installed.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import time
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, TypedDict
 
+from sky_claw.config import HITL_TIMEOUT_SECONDS
 from sky_claw.core.models import CircuitBreakerTrippedError
 from sky_claw.security.loop_guardrail import AgenticLoopGuardrail
 
@@ -52,6 +54,34 @@ except ImportError:
 
 
 logger = logging.getLogger("SkyClaw.StateGraph")
+
+# TASK-006 (M-4): Maximum entries retained in transition_history.
+# Prevents unbounded memory growth in long-running workflows.
+MAX_TRANSITION_HISTORY: int = 50
+
+
+def capped_transition_history(
+    old: list[dict[str, Any]],
+    new: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """LangGraph reducer for ``transition_history`` that caps growth.
+
+    Merges *old* and *new* lists, then truncates to the most recent
+    ``MAX_TRANSITION_HISTORY`` entries.  Used via ``Annotated`` in
+    ``StateGraphState`` so that every node update automatically applies
+    the cap without manual trimming.
+
+    Args:
+        old: Existing transition history from previous state.
+        new: Newly appended transition entries from the current node.
+
+    Returns:
+        Merged list capped at ``MAX_TRANSITION_HISTORY`` entries.
+    """
+    merged = old + new
+    if len(merged) <= MAX_TRANSITION_HISTORY:
+        return merged
+    return merged[-MAX_TRANSITION_HISTORY:]
 
 
 # =============================================================================
@@ -205,7 +235,7 @@ if PYDANTIC_AVAILABLE:
         """Estado del workflow de LangGraph para Sky-Claw."""
 
         # Identificación
-        workflow_id: str = Field(default_factory=lambda: f"wf_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}")
+        workflow_id: str = Field(default_factory=lambda: f"wf_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}")
 
         # Estado actual
         current_state: SupervisorState = Field(default=SupervisorState.INIT)
@@ -242,8 +272,8 @@ if PYDANTIC_AVAILABLE:
         rollback_transaction_id: int | None = None
 
         # Metadata
-        created_at: datetime = Field(default_factory=datetime.utcnow)
-        updated_at: datetime = Field(default_factory=datetime.utcnow)
+        created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+        updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
         def add_transition(
             self,
@@ -257,10 +287,13 @@ if PYDANTIC_AVAILABLE:
                     "from": from_state.value,
                     "to": to_state.value,
                     "reason": reason,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                 }
             )
-            self.updated_at = datetime.utcnow()
+            # TASK-006 (M-4): Trim history to prevent unbounded growth
+            if len(self.transition_history) > MAX_TRANSITION_HISTORY:
+                self.transition_history = self.transition_history[-MAX_TRANSITION_HISTORY:]
+            self.updated_at = datetime.now(UTC)
 
 else:
     # Fallback sin Pydantic
@@ -268,7 +301,7 @@ else:
         """Estado del workflow sin Pydantic."""
 
         def __init__(self) -> None:
-            self.workflow_id = f"wf_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+            self.workflow_id = f"wf_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
             self.current_state = SupervisorState.INIT
             self.previous_state = None
             self.profile_name = "Default"
@@ -288,8 +321,13 @@ else:
             self.rollback_triggered = False
             self.rollback_result = None
             self.rollback_transaction_id = None
-            self.created_at = datetime.utcnow()
-            self.updated_at = datetime.utcnow()
+            self.created_at = datetime.now(UTC)
+            self.updated_at = datetime.now(UTC)
+
+        def trim_history(self) -> None:
+            """TASK-006 (M-4): Trim transition_history to MAX_TRANSITION_HISTORY."""
+            if len(self.transition_history) > MAX_TRANSITION_HISTORY:
+                self.transition_history = self.transition_history[-MAX_TRANSITION_HISTORY:]
 
 
 # TypedDict para LangGraph (requerido para anotaciones de estado)
@@ -309,13 +347,15 @@ class StateGraphState(TypedDict):
     tool_result: dict[str, Any] | None
     hitl_request: dict[str, Any] | None
     hitl_response: str | None
-    transition_history: list[dict[str, Any]]
+    transition_history: Annotated[list[dict[str, Any]], capped_transition_history]
     last_error: str | None
     error_count: int
     # FASE 1.5: Campos de rollback para resiliencia
     rollback_triggered: bool
     rollback_result: dict[str, Any] | None
     rollback_transaction_id: int | None
+    # HITL timeout tracking — monotonic timestamp when HITL_WAIT was first entered
+    hitl_started_at: float | None
     # Cortacircuitos cognitivo: AgenticLoopGuardrail sets these on trip.
     loop_detected: bool
     loop_context: dict[str, Any] | None
@@ -372,13 +412,26 @@ class StateGraphNodes:
 
     @staticmethod
     def hitl_wait_node(state: StateGraphState) -> dict[str, Any]:
-        """Nodo de espera HITL - esperando aprobación humana."""
+        """Nodo de espera HITL - esperando aprobación humana.
+
+        Inyecta ``hitl_started_at`` con ``time.monotonic()`` en la primera
+        entrada al ciclo de espera.  Las iteraciones subsecuentes preservan
+        el timestamp original para que el timeout se mida desde el primer
+        ingreso, no desde la última re-entrada.
+        """
         hitl_request: dict[str, Any] = state.get("hitl_request") or {}
-        logger.info(f"[StateGraph] Esperando aprobación HITL: {hitl_request.get('action_type')}")
-        return {
+        logger.info("[StateGraph] Esperando aprobación HITL: %s", hitl_request.get("action_type"))
+
+        updates: dict[str, Any] = {
             "current_state": SupervisorState.HITL_WAIT.value,
             "previous_state": SupervisorState.DISPATCHING.value,
         }
+
+        # Preservar timestamp original; solo inyectar si es None (primera vez)
+        if state.get("hitl_started_at") is None:
+            updates["hitl_started_at"] = time.monotonic()
+
+        return updates
 
     @staticmethod
     def completed_node(state: StateGraphState) -> dict[str, Any]:
@@ -464,6 +517,27 @@ class StateGraphNodes:
             "current_state": SupervisorState.PATCHING.value,
             "previous_state": SupervisorState.ANALYZING.value,
             "event_data": event_data,
+        }
+
+    # FASE 4: Nodo de generación de LODs
+    @staticmethod
+    def generating_lods_node(state: StateGraphState) -> dict[str, Any]:
+        """Nodo de generación de LODs - ejecuta pipeline DynDOLOD.
+
+        Este nodo representa el estado donde se genera LODs para el paisaje.
+        La lógica real de generación vive en DynDOLODPipelineService,
+        despachada desde supervisor.dispatch_tool con tool_name="generate_lods".
+
+        Args:
+            state: Estado actual del workflow.
+
+        Returns:
+            Dict con el nuevo estado GENERATING_LODS.
+        """
+        logger.info("[StateGraph] Iniciando generación de LODs")
+        return {
+            "current_state": SupervisorState.GENERATING_LODS.value,
+            "previous_state": SupervisorState.DISPATCHING.value,
         }
 
 
@@ -562,30 +636,102 @@ class StateGraphEdges:
         # Default: completar
         return StateGraphEdges._validate_and_route(SupervisorState.PATCHING, SupervisorState.COMPLETED)
 
+    # FASE 4: Routing desde estado GENERATING_LODS
+    @staticmethod
+    def route_from_generating_lods(state: StateGraphState) -> str:
+        """FASE 4: Determina la transición desde GENERATING_LODS.
+
+        Transiciones:
+        - COMPLETED: LOD generation succeeded
+        - ERROR: LOD generation failed
+        - ROLLING_BACK: If rollback needed on failure
+        """
+        tool_result = state.get("tool_result", {})
+        rollback_triggered = state.get("rollback_triggered", False)
+
+        if state.get("last_error"):
+            if not rollback_triggered:
+                return StateGraphEdges._validate_and_route(
+                    SupervisorState.GENERATING_LODS, SupervisorState.ROLLING_BACK
+                )
+            return StateGraphEdges._validate_and_route(SupervisorState.GENERATING_LODS, SupervisorState.ERROR)
+        elif tool_result and tool_result.get("status") == "success":
+            return StateGraphEdges._validate_and_route(SupervisorState.GENERATING_LODS, SupervisorState.COMPLETED)
+
+        return StateGraphEdges._validate_and_route(SupervisorState.GENERATING_LODS, SupervisorState.COMPLETED)
+
     @staticmethod
     def route_from_hitl_wait(state: StateGraphState) -> str:
-        """Determina la transición desde HITL_WAIT basándose en la respuesta."""
+        """Determina la transición desde HITL_WAIT con timeout de seguridad.
+
+        Lógica de decisión evaluada en orden estricto (matches implementation):
+
+        D. Respuesta recibida (``hitl_response`` no es None) → transición según respuesta:
+           - ``"approved"``  → DISPATCHING
+           - ``"denied"``    → COMPLETED  (graceful no-op)
+           - ``"timeout"``   → ERROR
+           - desconocido     → COMPLETED  (fail-safe)
+        C. Estado inconsistente (``hitl_started_at`` ausente) → ERROR
+        A. Timeout alcanzado (elapsed ≥ HITL_TIMEOUT_SECONDS) → ERROR
+        B. Espera legítima (sin expirar) → HITL_WAIT (continuar polling)
+        """
         hitl_response = state.get("hitl_response")
 
-        if hitl_response == "approved":
-            return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.DISPATCHING)
-        elif hitl_response == "denied":
+        # Condición D — Respuesta recibida del humano
+        if hitl_response is not None:
+            if hitl_response == "approved":
+                return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.DISPATCHING)
+            elif hitl_response == "denied":
+                return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.COMPLETED)
+            elif hitl_response == "timeout":
+                return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.ERROR)
+            # Respuesta desconocida — tratar como denegada
+            logger.warning("[StateGraph] HITL response desconocido: %s", hitl_response)
             return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.COMPLETED)
-        elif hitl_response == "timeout":
+
+        # hitl_response is None — evaluar timeout
+        hitl_started_at = state.get("hitl_started_at")
+
+        # Condición C — Estado inconsistente: sin timestamp de inicio
+        if hitl_started_at is None:
+            logger.error("[StateGraph] Estado HITL inconsistente: hitl_started_at ausente")
+            state["last_error"] = "Estado HITL inconsistente: hitl_started_at ausente"
             return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.ERROR)
 
-        return SupervisorState.HITL_WAIT.value  # Seguir esperando
+        # Evaluar elapsed time contra HITL_TIMEOUT_SECONDS
+        elapsed = time.monotonic() - hitl_started_at
+
+        # Condición A — Timeout alcanzado
+        if elapsed >= HITL_TIMEOUT_SECONDS:
+            logger.warning(
+                "[StateGraph] HITL timeout alcanzado: %.1fs >= %ds",
+                elapsed,
+                HITL_TIMEOUT_SECONDS,
+            )
+            state["last_error"] = f"Timeout esperando aprobación humana después de {HITL_TIMEOUT_SECONDS}s"
+            return StateGraphEdges._validate_and_route(SupervisorState.HITL_WAIT, SupervisorState.ERROR)
+
+        # Condición B — Espera legítima, sin expirar
+        return SupervisorState.HITL_WAIT.value
 
     @staticmethod
     def route_from_dispatching(state: StateGraphState) -> str:
-        """Determina la transición desde DISPATCHING."""
+        """Determina la transición desde DISPATCHING.
+
+        FASE 4: Incluye soporte para transición a GENERATING_LODS cuando
+        la herramienta despachada es generate_lods.
+        """
         tool_result = state.get("tool_result", {})
+        tool_name = state.get("tool_name", "")
 
         if state.get("loop_detected"):
             return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.HITL_WAIT)
         if state.get("last_error"):
             return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.ERROR)
         elif tool_result and (tool_result.get("status") == "success" or tool_result.get("status") == "aborted"):
+            # FASE 4: Si la herramienta es generate_lods, ir a GENERATING_LODS
+            if tool_name == "generate_lods":
+                return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.GENERATING_LODS)
             return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.COMPLETED)
 
         return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.COMPLETED)
@@ -657,11 +803,40 @@ class SupervisorStateGraph:
         self._callbacks: dict[str, Callable[..., Any]] = {}
         # Cortacircuitos cognitivo: per-graph singleton (el grafo es serial por perfil).
         self.loop_guardrail = AgenticLoopGuardrail(max_repeats=3, window_size=5)
+        # TASK-006 (M-4): TTL tracking for checkpointer thread cleanup.
+        # Maps thread_id → monotonic timestamp of last access.
+        self._thread_timestamps: dict[str, float] = {}
 
         if LANGGRAPH_AVAILABLE:
             self._build_graph()
         else:
             logger.warning("[StateGraph] LangGraph no disponible. Usando implementación fallback.")
+
+    def _make_callback_aware_node(self, state_value: str, node_fn: Any) -> Any:
+        """M-1 FIX: Envuelve un nodo para invocar callbacks registrados antes de ejecutarlo.
+
+        Los callbacks registrados vía register_callback() se almacenan en self._callbacks
+        pero los nodos originales (funciones estáticas) nunca los invocan. Este wrapper
+        resuelve esa desconexión: invoca el callback async antes de ejecutar la lógica
+        del nodo, permitiendo que el cortacircuitos cognitivo y el flujo HITL funcionen.
+
+        Args:
+            state_value: Nombre del estado (ej. "dispatching").
+            node_fn: Función de nodo original (StateGraphNodes.xxx_node).
+
+        Returns:
+            Función async que invoca callback + nodo original.
+        """
+        graph_ref = self  # closure capture
+
+        async def wrapped_node(state: StateGraphState) -> dict[str, Any]:
+            callback_key = f"{state_value}_callback"
+            callback = graph_ref._callbacks.get(callback_key)
+            if callback is not None:
+                await callback(state)
+            return node_fn(state)
+
+        return wrapped_node
 
     def _build_graph(self) -> None:
         """Construye el grafo de estados con nodos y aristas."""
@@ -671,13 +846,22 @@ class SupervisorStateGraph:
         # Crear el grafo con el estado tipado
         builder = StateGraph(StateGraphState)
 
-        # Agregar nodos
+        # Agregar nodos — los tres estados con callbacks usan wrapper M-1 FIX
         builder.add_node(SupervisorState.INIT.value, StateGraphNodes.init_node)
         builder.add_node(SupervisorState.IDLE.value, StateGraphNodes.idle_node)
         builder.add_node(SupervisorState.WATCHING.value, StateGraphNodes.watching_node)
-        builder.add_node(SupervisorState.ANALYZING.value, StateGraphNodes.analyzing_node)
-        builder.add_node(SupervisorState.DISPATCHING.value, StateGraphNodes.dispatching_node)
-        builder.add_node(SupervisorState.HITL_WAIT.value, StateGraphNodes.hitl_wait_node)
+        builder.add_node(
+            SupervisorState.ANALYZING.value,
+            self._make_callback_aware_node(SupervisorState.ANALYZING.value, StateGraphNodes.analyzing_node),
+        )
+        builder.add_node(
+            SupervisorState.DISPATCHING.value,
+            self._make_callback_aware_node(SupervisorState.DISPATCHING.value, StateGraphNodes.dispatching_node),
+        )
+        builder.add_node(
+            SupervisorState.HITL_WAIT.value,
+            self._make_callback_aware_node(SupervisorState.HITL_WAIT.value, StateGraphNodes.hitl_wait_node),
+        )
         builder.add_node(SupervisorState.COMPLETED.value, StateGraphNodes.completed_node)
         builder.add_node(SupervisorState.ERROR.value, StateGraphNodes.error_node)
         # FASE 1.5: Nodos de rollback
@@ -685,6 +869,8 @@ class SupervisorStateGraph:
         builder.add_node(SupervisorState.ERROR_FATAL.value, StateGraphNodes.error_fatal_node)
         # FASE 2: Nodo de parcheo transaccional
         builder.add_node(SupervisorState.PATCHING.value, StateGraphNodes.patching_node)
+        # FASE 4: Nodo de generación de LODs
+        builder.add_node(SupervisorState.GENERATING_LODS.value, StateGraphNodes.generating_lods_node)
 
         # Definir punto de entrada
         builder.set_entry_point(SupervisorState.INIT.value)
@@ -710,6 +896,9 @@ class SupervisorStateGraph:
         # FASE 2: Aristas condicionales para parcheo
         builder.add_conditional_edges(SupervisorState.PATCHING.value, StateGraphEdges.route_from_patching)
 
+        # FASE 4: Aristas condicionales para generación de LODs
+        builder.add_conditional_edges(SupervisorState.GENERATING_LODS.value, StateGraphEdges.route_from_generating_lods)
+
         # Arista final desde COMPLETED
         builder.add_edge(SupervisorState.COMPLETED.value, SupervisorState.IDLE.value)
 
@@ -731,10 +920,62 @@ class SupervisorStateGraph:
         self._callbacks[key] = callback
         logger.debug(f"[StateGraph] Callback registrado para estado: {state.value}")
 
+    def cleanup_old_threads(self, max_age_seconds: int) -> int:
+        """TASK-006 (M-4): Purge stale thread state from the MemorySaver checkpointer.
+
+        Removes checkpoint data for threads whose last access timestamp
+        exceeds *max_age_seconds*.  Also prunes the corresponding entries
+        from ``_thread_timestamps``.
+
+        The standard ``MemorySaver`` does not expose age-based cleanup, so
+        this method implements a simple TTL layer at the wrapper level by
+        tracking thread access times via ``time.monotonic()``.
+
+        Args:
+            max_age_seconds: Maximum age in seconds.  Threads not accessed
+                within this window are purged.
+
+        Returns:
+            Number of threads removed from the checkpointer.
+        """
+        if not self.checkpointer or max_age_seconds <= 0:
+            return 0
+
+        now = time.monotonic()
+        # Identify stale thread IDs from our TTL tracking
+        stale_thread_ids: list[str] = [
+            tid for tid, ts in self._thread_timestamps.items() if (now - ts) > max_age_seconds
+        ]
+
+        if not stale_thread_ids:
+            return 0
+
+        # Attempt to remove from MemorySaver's internal storage.
+        # MemorySaver stores checkpoints in a dict-like `.storage` attribute
+        # (or `.checkpoints` depending on the LangGraph version).
+        removed = 0
+        for tid in stale_thread_ids:
+            # Try known internal attribute names for MemorySaver
+            storage = getattr(self.checkpointer, "storage", None) or getattr(self.checkpointer, "checkpoints", None)
+            if isinstance(storage, dict) and tid in storage:
+                del storage[tid]
+                removed += 1
+            # Clean up our TTL tracking regardless
+            del self._thread_timestamps[tid]
+
+        if removed > 0:
+            logger.info(
+                "[StateGraph] Cleaned up %d stale thread(s) (max_age=%ds)",
+                removed,
+                max_age_seconds,
+            )
+
+        return removed
+
     def get_initial_state(self) -> StateGraphState:
         """Retorna el estado inicial del workflow."""
         return {
-            "workflow_id": f"wf_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
+            "workflow_id": f"wf_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}",
             "current_state": SupervisorState.INIT.value,
             "previous_state": None,
             "profile_name": self.profile_name,
@@ -757,6 +998,7 @@ class SupervisorStateGraph:
             # Cortacircuitos cognitivo
             "loop_detected": False,
             "loop_context": None,
+            "hitl_started_at": None,
         }
 
     async def execute(self, initial_state: StateGraphState | None = None) -> StateGraphState:
@@ -773,7 +1015,11 @@ class SupervisorStateGraph:
             return await self._execute_fallback(initial_state)
 
         state = initial_state or self.get_initial_state()
-        config = {"configurable": {"thread_id": state["workflow_id"]}}
+        thread_id: str = state["workflow_id"]
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # TASK-006 (M-4): Track thread access time for TTL-based cleanup
+        self._thread_timestamps[thread_id] = time.monotonic()
 
         try:
             # Ejecutar el grafo
@@ -786,7 +1032,13 @@ class SupervisorStateGraph:
             return state
 
     async def _execute_fallback(self, initial_state: StateGraphState | None = None) -> StateGraphState:
-        """Ejecución fallback sin LangGraph."""
+        """Ejecución fallback sin LangGraph.
+
+        M-7 FIX: The final state now reflects the actual outcome:
+        - COMPLETED only when dispatching succeeds (no ``last_error``).
+        - ERROR when ``last_error`` is set (tool failure, bad state, etc.).
+        - IDLE for unrecognized events (no false COMPLETED).
+        """
         state = initial_state or self.get_initial_state()
 
         # Simular transiciones básicas
@@ -808,8 +1060,23 @@ class SupervisorStateGraph:
                     state["current_state"] = SupervisorState.DISPATCHING.value
                     state["previous_state"] = SupervisorState.ANALYZING.value
 
-            state["current_state"] = SupervisorState.COMPLETED.value
-            state["previous_state"] = SupervisorState.DISPATCHING.value
+                    # M-7 FIX: reflect actual dispatch outcome
+                    if state.get("last_error"):
+                        state["current_state"] = SupervisorState.ERROR.value
+                        state["previous_state"] = SupervisorState.DISPATCHING.value
+                    else:
+                        state["current_state"] = SupervisorState.COMPLETED.value
+                        state["previous_state"] = SupervisorState.DISPATCHING.value
+                else:
+                    # No tool to dispatch — analysis completed successfully
+                    state["current_state"] = SupervisorState.COMPLETED.value
+                    state["previous_state"] = SupervisorState.ANALYZING.value
+            else:
+                # Unrecognized event type — stay IDLE, don't falsely claim COMPLETED
+                logger.warning(
+                    "[StateGraph] Fallback: unrecognized event '%s', staying IDLE",
+                    event,
+                )
 
         return state
 
@@ -1053,6 +1320,11 @@ class StateGraphIntegration:
 __all__ = [
     # Availability flags
     "LANGGRAPH_AVAILABLE",
+    # TASK-006 (M-4): Public constants
+    "MAX_TRANSITION_HISTORY",
+    # Reducer functions
+    "capped_transition_history",
+    # Integration helpers
     "StateGraphEdges",
     "StateGraphIntegration",
     # Graph components

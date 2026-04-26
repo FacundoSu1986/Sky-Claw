@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+from datetime import UTC
 
 
 def main():
@@ -61,7 +62,7 @@ def main():
             return {
                 "tool_name": "test",
                 "success": True,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             }
 
     async def test_valid_output():
@@ -85,7 +86,7 @@ def main():
             return {
                 "tool_name": kwargs["tool_name"],
                 "success": True,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             }
 
     async def test_full_contract():

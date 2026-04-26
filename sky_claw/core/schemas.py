@@ -4,8 +4,8 @@ schemas.py - Modelos de validación Pydantic para entrada/salida de agentes del 
 
 import logging
 import re
-from datetime import datetime
-from typing import Literal
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -26,7 +26,7 @@ class ModMetadata(BaseModel):
     author: str = Field(..., max_length=100)
     dependencies: list[int] = Field(default_factory=list)
     description: str | None = Field(None, max_length=2000)
-    downloaded_at: datetime = Field(default_factory=datetime.utcnow)
+    downloaded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("name")
     @classmethod
@@ -62,6 +62,24 @@ class ScrapingQuery(BaseModel):
     def sanitize_query(cls, v: str) -> str:
         """Sanitiza la consulta removiendo caracteres peligrosos."""
         return re.sub(r'[<>"\']', "", v).strip()
+
+
+class NexusModInfo(BaseModel):
+    """Validated metadata returned by MasterlistClient.fetch_mod_info.
+
+    ``extra="ignore"`` tolerates new Nexus API fields without breaking.
+    Serialize for transport with ``.model_dump(mode="json")`` to guarantee
+    safe JSON serialization (e.g. via CoreEventBus or WebSocket bridge).
+    """
+
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    mod_id: int
+    name: str
+    version: str
+    author: str
+    category_id: str
+    download_url: str | None = None
 
 
 class SecurityAuditRequest(BaseModel):
@@ -108,10 +126,10 @@ class SecurityAuditResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     target: str
-    findings: list[dict]
+    findings: list[dict[str, Any]]
     risk_score: float = Field(..., ge=0.0, le=1.0)
     recommendations: list[str]
-    audited_at: datetime = Field(default_factory=datetime.utcnow)
+    audited_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class AgentToolRequest(BaseModel):
@@ -120,11 +138,11 @@ class AgentToolRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     tool_name: str = Field(..., min_length=1)
-    parameters: dict = Field(default_factory=dict)
+    parameters: dict[str, Any] = Field(default_factory=dict)
     priority: Literal["low", "medium", "high", "critical"] = "medium"
     requires_confirmation: bool = False
     timeout_seconds: int = Field(30, gt=0)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class RouteClassification(BaseModel):
@@ -149,7 +167,7 @@ class RouteClassification(BaseModel):
         description="Nombre de la herramienta si el intento es EJECUCION_HERRAMIENTA",
     )
 
-    parameters: dict = Field(
+    parameters: dict[str, Any] = Field(
         default_factory=dict,
         description="Parámetros extraídos para la herramienta o agente",
     )
@@ -159,7 +177,7 @@ class RouteClassification(BaseModel):
         description="Si se requiere contexto adicional (RAG, historial, etc.)",
     )
 
-    metadata: dict = Field(default_factory=dict, description="Metadatos adicionales para orquestación")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Metadatos adicionales para orquestación")
 
     @field_validator("confidence")
     @classmethod
@@ -176,8 +194,8 @@ class AgentToolResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     tool_name: str
-    result: dict | None = None
+    result: dict[str, Any] | None = None
     success: bool
     error: str | None = None
     execution_time_ms: float | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

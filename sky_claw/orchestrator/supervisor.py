@@ -18,7 +18,10 @@ from sky_claw.orchestrator.maintenance_daemon import (
     MaintenanceDaemon,
     get_max_backup_size_mb,
 )
-from sky_claw.orchestrator.state_graph import create_supervisor_state_graph
+from sky_claw.orchestrator.state_graph import (
+    StateGraphIntegration,
+    create_supervisor_state_graph,
+)
 from sky_claw.orchestrator.telemetry_daemon import TelemetryDaemon
 from sky_claw.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 from sky_claw.orchestrator.watcher_daemon import WatcherDaemon
@@ -114,6 +117,11 @@ class SupervisorAgent:
         # para garantizar que todos los services y agents ya están listos.
         self._tool_dispatcher = build_orchestration_dispatcher(self)
 
+        # M-1 FIX: Wire StateGraphIntegration para activar cortacircuitos cognitivo y HITL.
+        # Los callbacks se registran en el grafo y los nodos los invocan vía wrapper.
+        self._graph_integration = StateGraphIntegration(self.state_graph)
+        self._graph_integration.connect_supervisor(self)
+
     def _init_rollback_components(self) -> None:
         """FASE 1.5: Inicializa los componentes de resiliencia para rollback.
 
@@ -132,12 +140,11 @@ class SupervisorAgent:
             snapshot_dir=backup_dir / "snapshots", max_size_mb=get_max_backup_size_mb()
         )
 
-        # El orquestador y vfs son delegados al xedit_service
+        # C-1 FIX: RollbackManager solo requiere journal y snapshot_manager.
+        # Se eliminó la dependencia en _xedit_service (que aún no existe en este punto).
         self.rollback_manager = RollbackManager(
-            db=self.db,
+            journal=self.journal,
             snapshot_manager=self.snapshot_manager,
-            orchestrator=self._xedit_service._orchestrator,
-            vfs=self._xedit_service._orchestrator.vfs,
         )
 
         # Sprint-2: DistributedLockManager para bloqueos concurrentes
