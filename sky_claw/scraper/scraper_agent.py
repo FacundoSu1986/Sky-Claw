@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from pydantic import ValidationError
@@ -12,12 +14,18 @@ from sky_claw.core.database import DatabaseAgent
 from sky_claw.core.models import CircuitBreakerTrippedError
 from sky_claw.core.schemas import ModMetadata, ScrapingQuery
 
+if TYPE_CHECKING:
+    from sky_claw.security.network_gateway import NetworkGateway
+
 logger = logging.getLogger("SkyClaw.Scraper")
 
 
 class ScraperAgent:
-    def __init__(self, db: DatabaseAgent) -> None:
+    def __init__(self, db: DatabaseAgent, gateway: NetworkGateway | None = None) -> None:
         self.db = db
+        # NetworkGateway enforces the egress allow-list (SSRF protection).
+        # All outbound requests in _api_request MUST route through it when provided.
+        self._gateway = gateway
         self.nexus_api_key: str | None = None  # Loaded via secure config (e.g. keyring)
         self.max_failures: int = 3
 
@@ -36,8 +44,11 @@ class ScraperAgent:
         domain = "nexusmods.com"
         state = await self.db.get_circuit_breaker_state(domain)
 
-        # 1. Evaluar Circuit Breaker — use monotonic clock to avoid wall-clock jumps
-        if time.monotonic() < state["locked_until"]:
+        # 1. Evaluar Circuit Breaker.
+        # time.time() is correct here: locked_until is persisted to SQLite and read
+        # across process restarts.  time.monotonic() resets on each process start,
+        # so comparing it against a stored value would keep the breaker locked forever.
+        if time.time() < state["locked_until"]:
             logger.error("RCA: Circuit Breaker abierto para %s. Abortando para proteger IP local.", domain)
             raise CircuitBreakerTrippedError(f"Bloqueo activo hasta {state['locked_until']}")
 
@@ -68,7 +79,7 @@ class ScraperAgent:
         except (TimeoutError, aiohttp.ClientError, ValueError, ValidationError) as e:
             # 2. RCA del fallo y actualización del Circuit Breaker
             new_failures = state["failures"] + 1
-            lock_time = time.monotonic() + (300 * new_failures) if new_failures >= self.max_failures else 0
+            lock_time = time.time() + (300 * new_failures) if new_failures >= self.max_failures else 0
             await self.db.update_circuit_breaker(domain, new_failures, lock_time)
             logger.warning("Fallo de extracción en %s. Fallos: %d. Error: %s", domain, new_failures, e)
             raise
@@ -101,10 +112,18 @@ class ScraperAgent:
                 reraise=True,
             ):
                 with attempt:
-                    async with s.get(url, headers=headers) as resp:
+                    if self._gateway is not None:
+                        # Route through NetworkGateway to enforce egress allow-list
+                        # and prevent SSRF.  gateway.request() validates the URL
+                        # before forwarding and follows redirects safely.
+                        resp = await self._gateway.request("GET", url, s, headers=headers)
                         resp.raise_for_status()
                         data: dict[str, Any] = await resp.json()
-                        return {"status": "success", "source": "API", "data": data}
+                    else:
+                        async with s.get(url, headers=headers) as resp:
+                            resp.raise_for_status()
+                            data = await resp.json()
+                    return {"status": "success", "source": "API", "data": data}
             return {}  # unreachable: reraise=True propagates on exhaustion
 
         if session is not None:

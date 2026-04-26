@@ -664,12 +664,16 @@ class StateGraphEdges:
     def route_from_hitl_wait(state: StateGraphState) -> str:
         """Determina la transición desde HITL_WAIT con timeout de seguridad.
 
-        Lógica de decisión evaluada en orden estricto:
+        Lógica de decisión evaluada en orden estricto (matches implementation):
 
-        A. Timeout alcanzado → ERROR
+        D. Respuesta recibida (``hitl_response`` no es None) → transición según respuesta:
+           - ``"approved"``  → DISPATCHING
+           - ``"denied"``    → COMPLETED  (graceful no-op)
+           - ``"timeout"``   → ERROR
+           - desconocido     → COMPLETED  (fail-safe)
+        C. Estado inconsistente (``hitl_started_at`` ausente) → ERROR
+        A. Timeout alcanzado (elapsed ≥ HITL_TIMEOUT_SECONDS) → ERROR
         B. Espera legítima (sin expirar) → HITL_WAIT (continuar polling)
-        C. Estado inconsistente (sin timestamp) → ERROR
-        D. Respuesta recibida → transición según respuesta
         """
         hitl_response = state.get("hitl_response")
 

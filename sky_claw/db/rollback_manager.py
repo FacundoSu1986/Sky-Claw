@@ -119,6 +119,16 @@ class RollbackManager:
         """Mark a journal transaction as committed."""
         await self._journal.commit_transaction(transaction_id)
 
+    async def mark_transaction_rolled_back(self, transaction_id: int) -> None:
+        """Mark a journal transaction as rolled back without undoing file operations.
+
+        Use this when a transaction was started but no file operations were
+        recorded (e.g. update cycle aborted early due to network error or HITL
+        denial).  Unlike ``undo_last_operation``, this method never touches the
+        filesystem — it only updates the journal row.
+        """
+        await self._journal.mark_transaction_rolled_back(transaction_id)
+
     async def begin_operation(
         self,
         agent_id: str,

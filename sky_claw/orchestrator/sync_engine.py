@@ -373,14 +373,23 @@ class SyncEngine:
         async def _wrapped_worker(idx: int, mod: dict[str, Any]) -> None:
             """Acquires the concurrency semaphore then runs the full lifecycle.
 
-            Exceptions are captured (not re-raised) so TaskGroup never aborts
-            the other workers.  The post-loop classification handles Exception
-            results as failed_mods.
+            Only catches expected per-mod failures (network, circuit-open, retry
+            exhaustion, bad data).  Unexpected exceptions (bugs, MemoryError,
+            asyncio.CancelledError) propagate so TaskGroup can cancel peers and
+            surface the real problem.
             """
             async with concurrency_limit:
                 try:
                     results[idx] = await self._check_and_update_mod(mod, session, api_semaphore)
-                except Exception as exc:
+                except (
+                    MasterlistFetchError,
+                    CircuitOpenError,
+                    RetryError,
+                    aiohttp.ClientError,
+                    ValueError,
+                    OSError,
+                ) as exc:
+                    # Expected per-mod failures — isolate so other mods continue
                     results[idx] = exc
 
         async with asyncio.TaskGroup() as tg:
@@ -448,6 +457,8 @@ class SyncEngine:
             # 1. Fetch metadata with Semaphore + exponential backoff
             info = await self._safe_fetch_info(nexus_id, session, semaphore)
             if not info:
+                if rm is not None and transaction_id is not None:
+                    await rm.commit_transaction(transaction_id)  # no-op: no file ops recorded
                 return {
                     "status": "error",
                     "name": mod_name,
@@ -463,6 +474,8 @@ class SyncEngine:
                 return {"status": "up_to_date", "name": mod_name}
 
             if self._downloader is None:
+                if rm is not None and transaction_id is not None:
+                    await rm.commit_transaction(transaction_id)  # no-op: no file ops recorded
                 return {
                     "status": "error",
                     "name": mod_name,
@@ -490,6 +503,8 @@ class SyncEngine:
                 )
                 if decision != Decision.APPROVED:
                     logger.warning("Descarga abortada por HITL para %s", mod_name)
+                    if rm is not None and transaction_id is not None:
+                        await rm.mark_transaction_rolled_back(transaction_id)  # user denied
                     return {
                         "status": "error",
                         "name": mod_name,
@@ -529,13 +544,17 @@ class SyncEngine:
             return result
 
         except (MasterlistFetchError, CircuitOpenError, RetryError, aiohttp.ClientError) as exc:
-            # Expected network failure — graceful degradation, no re-raise
-            if rm is not None:
-                logger.warning("Network error updating %s, rolling back: %s", mod_name, exc)
+            # Expected network failure — graceful degradation, no re-raise.
+            # No file operations were recorded under this transaction, so
+            # mark_transaction_rolled_back (journal-only) is correct here.
+            # Calling undo_last_operation would incorrectly undo an *unrelated*
+            # previous operation for this agent.
+            if rm is not None and transaction_id is not None:
+                logger.warning("Network error updating %s; marking transaction rolled back: %s", mod_name, exc)
                 try:
-                    await rm.undo_last_operation(self._agent_id)
+                    await rm.mark_transaction_rolled_back(transaction_id)
                 except Exception as rb_exc:
-                    logger.critical("Rollback failed for %s: %s", mod_name, rb_exc)
+                    logger.critical("mark_transaction_rolled_back failed for %s: %s", mod_name, rb_exc)
             return {
                 "status": "error",
                 "name": mod_name,
@@ -544,13 +563,14 @@ class SyncEngine:
             }
 
         except Exception as exc:
-            # Unexpected bug — rollback if possible, then re-raise (fail-fast)
-            if rm is not None:
-                logger.error("Unexpected error updating %s, rolling back: %s", mod_name, exc)
+            # Unexpected bug — mark transaction rolled back, then re-raise (fail-fast).
+            # Same reasoning: no file ops recorded, so journal-only cleanup suffices.
+            if rm is not None and transaction_id is not None:
+                logger.error("Unexpected error updating %s; marking transaction rolled back: %s", mod_name, exc)
                 try:
-                    await rm.undo_last_operation(self._agent_id)
+                    await rm.mark_transaction_rolled_back(transaction_id)
                 except Exception as rb_exc:
-                    logger.critical("Rollback also failed for %s: %s", mod_name, rb_exc)
+                    logger.critical("mark_transaction_rolled_back also failed for %s: %s", mod_name, rb_exc)
             raise
 
     async def _safe_fetch_info(
