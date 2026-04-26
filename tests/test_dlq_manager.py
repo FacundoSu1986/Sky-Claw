@@ -2,11 +2,15 @@
 Todos los tests usan tmp_path para aislar la DB — nunca escriben en ~/.sky_claw/.
 El reloj se inyecta para controlar backoff sin asyncio.sleep reales.
 """
+
 from __future__ import annotations
+
 import asyncio
 from pathlib import Path
+
 import aiosqlite
 import pytest
+
 from sky_claw.core.dlq_manager import DLQManager
 from sky_claw.core.event_bus import Event, Subscriber
 from tests.polling_utils import poll_until
@@ -18,8 +22,10 @@ _TOPIC = "notif.critical"
 _PAYLOAD = {"msg": "test"}
 _SOURCE = "test-source"
 
+
 def _make_event() -> Event:
     return Event(topic=_TOPIC, payload=_PAYLOAD, source=_SOURCE)
+
 
 def _make_dlq(
     tmp_path: Path,
@@ -42,8 +48,10 @@ def _make_dlq(
         clock=clock,
     )
 
+
 async def _always_fail(event: Event) -> None:
     raise RuntimeError("boom")
+
 
 # ---------------------------------------------------------------------------
 # Test #1 — schema bootstrap
@@ -69,6 +77,7 @@ async def test_schema_bootstraps_on_first_use(tmp_path: Path) -> None:
             idx = await cur.fetchone()
         assert idx is not None, "El índice idx_dlq_status_retry debe existir"
 
+
 # ---------------------------------------------------------------------------
 # Test #2 — enqueue/list
 # ---------------------------------------------------------------------------
@@ -90,6 +99,7 @@ async def test_enqueue_persists_event_data(tmp_path: Path) -> None:
     assert r.status == "pending"
     assert r.attempts == 0
 
+
 # ---------------------------------------------------------------------------
 # Test #3 — list_dead
 # ---------------------------------------------------------------------------
@@ -108,6 +118,7 @@ async def test_list_dead_only_returns_dead_rows(tmp_path: Path) -> None:
     assert len(dead) == 1
     assert len(pending) == 0
 
+
 # ---------------------------------------------------------------------------
 # Test #4 — retry loop (integration)
 # ---------------------------------------------------------------------------
@@ -116,22 +127,26 @@ async def test_retry_loop_eventually_marks_dead(tmp_path: Path) -> None:
     """El worker reintenta hasta agotar max_attempts y marca como dead."""
     # Reloj que avanza 1 hora en cada llamada para saltar el backoff
     tick = [0]
+
     def advancing_clock() -> int:
         t = tick[0]
         tick[0] += 3600 * 1000
         return t
+
     dlq = DLQManager(
         db_path=tmp_path / "dlq.db",
-        handler_resolver={CoreEventBus._handler_name(_always_fail): _always_fail}.get,
+        handler_resolver={DLQManager._handler_name(_always_fail): _always_fail}.get,
         max_attempts=5,
         poll_interval_s=0,
         clock=advancing_clock,
     )
     await dlq.enqueue(_make_event(), _always_fail, RuntimeError("initial"))
     await dlq.start()
+
     # Polling determinístico: espera hasta que la fila pase a 'dead' tras 5 intentos.
     async def has_dead_row() -> bool:
         return len(await dlq.list_dead()) == 1
+
     await poll_until(has_dead_row, timeout=30.0)
     await dlq.stop()
     dead = await dlq.list_dead()
@@ -141,14 +156,17 @@ async def test_retry_loop_eventually_marks_dead(tmp_path: Path) -> None:
     assert dead[0].attempts == 5
     assert dead[0].status == "dead"
 
+
 # ---------------------------------------------------------------------------
 # Test #5 — backoff exponencial
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_backoff_schedule_is_exponential(tmp_path: Path) -> None:
     """Los deltas de next_retry_at deben ser 2000, 4000, 8000, 16000 ms."""
+
     async def always_fail_handler(event: Event) -> None:
         raise RuntimeError("boom")
+
     # Enqueue con clock fijo para verificar primer next_retry_at
     fixed_dlq = DLQManager(
         db_path=tmp_path / "fixed.db",
@@ -164,18 +182,23 @@ async def test_backoff_schedule_is_exponential(tmp_path: Path) -> None:
         result = DLQManager._compute_next_retry_at(0, attempt, base_backoff_s=2)
         assert result == expected, f"attempt={attempt}: esperado {expected}, got {result}"
 
+
 # ---------------------------------------------------------------------------
 # Test #6 — handler no registrado → transient (reintenta luego)
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_missing_handler_is_transient(tmp_path: Path) -> None:
     """Si handler_resolver retorna None, la fila vuelve a pending (transient, no dead)."""
+
     async def some_handler(event: Event) -> None:
         pass
+
     # Clock que no avanza mucho — para que next_retry_at quede en el futuro
     fixed_now = [1_000_000]
+
     def fixed_clock() -> int:
         return fixed_now[0]
+
     # Resolver vacío — handler no encontrado
     dlq = DLQManager(
         db_path=tmp_path / "dlq.db",
@@ -194,6 +217,7 @@ async def test_missing_handler_is_transient(tmp_path: Path) -> None:
     assert len(dead) == 0
     assert pending[0].next_retry_at > pending[0].updated_at  # Scheduled para reintento
 
+
 # ---------------------------------------------------------------------------
 # Test #7 — batch limit
 # ---------------------------------------------------------------------------
@@ -205,8 +229,10 @@ async def test_batch_limit_respected(tmp_path: Path) -> None:
         handler_resolver={}.get,
         clock=lambda: 0,
     )
+
     async def dummy_handler(e: Event) -> None:
         raise RuntimeError("x")
+
     for _ in range(100):
         await dlq.enqueue(_make_event(), dummy_handler, RuntimeError("x"))
     # Con clock=lambda: 0, next_retry_at=2000 → aún no vencido si now=0
@@ -214,6 +240,7 @@ async def test_batch_limit_respected(tmp_path: Path) -> None:
     dlq._clock = lambda: 999_999_999
     batch = await dlq._fetch_due_batch(limit=50)
     assert len(batch) == 50
+
 
 # ---------------------------------------------------------------------------
 # Test #8 — stop grácil

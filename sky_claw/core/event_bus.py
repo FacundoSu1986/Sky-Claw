@@ -114,6 +114,8 @@ class CoreEventBus:
 
     async def publish(self, event: Event) -> None:
         """Publica un evento en la cola para dispatch asíncrono."""
+        if not self._running:
+            raise RuntimeError("bus is not running")
         await self._queue.put(event)
 
     async def _dispatch_loop(self) -> None:
