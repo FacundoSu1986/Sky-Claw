@@ -169,8 +169,6 @@ class TestGameControl:
 
         from unittest.mock import AsyncMock
 
-        import psutil
-
         mock_proc = AsyncMock()
         mock_proc.pid = 12345
         mock_create = AsyncMock(return_value=mock_proc)
