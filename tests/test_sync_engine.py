@@ -504,6 +504,43 @@ class TestCheckForUpdates:
         assert "Downloader not configured" in payload.failed_mods[0]["error"]
 
     @pytest.mark.asyncio
+    async def test_taskgroup_propagates_bug_exception(self) -> None:
+        """RuntimeError (bug inesperado) en _check_and_update_mod escapa al TaskGroup.
+
+        ``_wrapped_worker`` solo captura errores esperados por-mod:
+        ``MasterlistFetchError, CircuitOpenError, RetryError, aiohttp.ClientError,
+        ValueError, OSError``.  Un ``RuntimeError`` (bug de programación) NO está en
+        esa lista → escapa al ``asyncio.TaskGroup`` → ``ExceptionGroup`` propagada al
+        llamador (fail-fast cooperativo).  Contrasta con ``ValueError`` que SÍ es
+        capturado y aislado (otros mods siguen procesándose).
+        """
+        mock_registry = AsyncMock()
+        mock_registry.search_mods.return_value = [
+            {"name": "BugMod", "nexus_id": 77777, "version": "1.0", "installed": True},
+        ]
+
+        engine = SyncEngine(
+            mo2=AsyncMock(),
+            masterlist=AsyncMock(),
+            registry=mock_registry,
+            fetch_retry_wait=wait_none(),
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        # Simular bug interno en _check_and_update_mod (no una excepción de red)
+        engine._check_and_update_mod = AsyncMock(  # type: ignore[method-assign]
+            side_effect=RuntimeError("Simulated internal programming bug")
+        )
+
+        # RuntimeError NO está en la lista de _wrapped_worker → TaskGroup lo propaga
+        with pytest.raises(ExceptionGroup) as exc_info:
+            await engine.check_for_updates(session)
+
+        # El ExceptionGroup contiene el RuntimeError original
+        assert any(isinstance(exc, RuntimeError) for exc in exc_info.value.exceptions)
+        assert any("Simulated internal programming bug" in str(exc) for exc in exc_info.value.exceptions)
+
+    @pytest.mark.asyncio
     async def test_network_error_degrades_gracefully_in_check(self) -> None:
         """aiohttp.ClientError escapando TaskGroup → except* (lines 413-417) + task.exception() (line 430).
 
