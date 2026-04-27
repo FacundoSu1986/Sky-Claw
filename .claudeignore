@@ -1,0 +1,76 @@
+# ========================================
+# Sky-Claw .claudeignore
+# Prevents agent indexing of heavy dirs
+# Backup: .claudeignore.bak
+# ========================================
+
+# Virtual environments (4,115 files)
+.venv/
+venv/
+
+# Kilocode plugin (3,448+ files in node_modules)
+.kilocode/
+.kilo/
+**/node_modules/
+
+# LLM chat history (agent metadata)
+.llm-chat-history/
+
+# Agent skills and config (187 files, includes binary fonts)
+.agents/
+
+# Antigravity session state
+.antigravity/
+
+# Python caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# Build artifacts
+dist/
+build/
+
+# Logs (1.4MB sky_claw.log)
+logs/
+
+# Plans and scratch
+plans/
+scratch/
+
+# Database files
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Serena MCP data
+.serena/
+
+# Roo Code config
+.roo/
+
+# Scraping dumps (not source code, text-only exports)
+skyscraping/
+project_scrape/
+
+# Generated file lists (UTF-16, causes read errors)
+tracked_files.txt
+
+# Lock files (large, auto-generated)
+*.lock
+
+# Mypy daemon cache
+.dmypy.json
+
+# Backup files
+*.bak

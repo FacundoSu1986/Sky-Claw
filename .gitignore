@@ -91,3 +91,5 @@ plans/
 !/.antigravity/config.json
 !/.antigravity/settings.json
 
+# Auditoría y extracción
+skyscraping/

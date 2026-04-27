@@ -1,0 +1,15 @@
+{
+    "permissions": {
+        "deny": [
+            "Bash(git init*)",
+            "Bash(git worktree*)",
+            "Bash(git clone*)",
+            "Bash(mkdir .git*)",
+            "Bash(New-Item*git*)"
+        ]
+    },
+    "env": {
+        "CLAUDE_DISABLE_GIT_INIT": "1",
+        "CLAUDE_DISABLE_WORKTREES": "1"
+    }
+}

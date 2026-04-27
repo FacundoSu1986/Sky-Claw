@@ -1,0 +1,38 @@
+# Sky-Claw Frontend — Prettier ignore rules
+# Prevents Prettier from touching non-frontend or generated files
+
+# Build artifacts
+dist/
+build/
+*.min.js
+*.min.css
+
+# Third-party libraries
+vendor/
+node_modules/
+
+# Generated / scraped content
+../project_scrape/
+../skyscraping/
+
+# Python files — handled by Ruff, NOT Prettier
+*.py
+*.pyi
+*.pyx
+
+# Config files that may have special formatting
+*.lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Binary files
+*.woff
+*.woff2
+*.ttf
+*.eot
+*.png
+*.jpg
+*.gif
+*.svg
+*.ico

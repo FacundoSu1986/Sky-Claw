@@ -1,0 +1,15 @@
+.venv/
+.kilocode/
+.llm-chat-history/
+.agents/
+.antigravity/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+logs/
+plans/
+node_modules/
+__pycache__/
+*.sqlite3
+*.pyc
