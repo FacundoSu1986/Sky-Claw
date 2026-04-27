@@ -88,9 +88,7 @@ def _ensure_registry() -> None:
             # discard any partial state so the next call can retry cleanly,
             # and propagate the original exception with full traceback.
             _SCHEMA_REGISTRY.clear()
-            logger.exception(
-                "Error inesperado poblando SchemaRegistry — se reintentará en la próxima llamada."
-            )
+            logger.exception("Error inesperado poblando SchemaRegistry — se reintentará en la próxima llamada.")
             raise
 
 
