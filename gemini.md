@@ -18,7 +18,7 @@ Debes aplicar rigurosamente el bucle OODA (Observar, Orientar, Decidir, Actuar) 
 ### [O] ORIENTAR (Orient)
 Alinear los subproblemas con las reglas estrictas y la realidad arquitectónica del entorno:
 - **Stack Tecnológico**:
-  - *Runtime*: Python 3.12+ (Tipado estricto).
+  - *Runtime*: Python 3.11+ (Tipado estricto).
   - *Base de Datos*: SQLite + aiosqlite (WAL) con transaccionalidad mediante `SnapshotTransactionLock` y rollback automático en pipelines (xEdit, Synthesis, DynDOLOD). Prohibido modificar estado DB sin context manager.
   - *Validación*: Pydantic v2 obligando a `ConfigDict(strict=True, frozen=True)` en todos los schemas.
   - *Seguridad Zero-Trust*:

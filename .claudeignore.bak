@@ -1,4 +1,4 @@
-﻿.venv/
+.venv/
 .kilocode/
 .llm-chat-history/
 .agents/

@@ -4,9 +4,12 @@ Sky Claw Sync - Extracción Modular de Código Fuente
 Genera la carpeta skyscraping/ con archivos .txt organizados por funcionalidad arquitectónica.
 """
 
+import logging
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Base directory is the project root
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -31,39 +34,6 @@ LANG_MAP = {
     ".md": "Markdown",
 }
 
-# Skip patterns
-SKIP_DIRS = {
-    "__pycache__",
-    ".git",
-    ".mypy_cache",
-    ".ruff_cache",
-    "node_modules",
-    ".agents",
-    ".antigravity",
-    ".claude",
-    ".github",
-    ".junie",
-    "project_scrape",
-    "skyscraping",
-}
-SKIP_EXTENSIONS = {
-    ".pyc",
-    ".pyo",
-    ".exe",
-    ".dll",
-    ".so",
-    ".dylib",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".ico",
-    ".zip",
-    ".tar",
-    ".gz",
-}
-SKIP_FILES = {".gitignore", ".DS_Store", "Thumbs.db"}
-
 
 def get_lang(ext: str) -> str:
     return LANG_MAP.get(ext, f"Unknown ({ext})")
@@ -77,10 +47,10 @@ def read_file_safe(filepath: Path) -> str | None:
             return filepath.read_text(encoding=enc)
         except (UnicodeDecodeError, UnicodeError):
             continue
-        except Exception as e:
-            print(f"  [WARN] Cannot read {filepath}: {e}")
+        except OSError as e:
+            logger.warning("Cannot read %s: %s", filepath, e)
             return None
-    print(f"  [WARN] Could not decode {filepath} with any encoding")
+    logger.warning("Could not decode %s with any encoding", filepath)
     return None
 
 

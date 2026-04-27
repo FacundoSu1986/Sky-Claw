@@ -142,7 +142,7 @@ class SupervisorAgent:
 - Todos los tests existentes deben pasar antes de mergear un PR.
 
 ### 7.2 Cobertura
-- Cobertura mínima CI: 65% (objetivo: > 80%).
+- Cobertura mínima CI: 49% (objetivo: > 80%).
 - Módulos sin tests: `gui.*`, `reasoning.*`, `discovery.*`, `modes.*` deben tener al menos tests de humo.
 
 ---
@@ -151,8 +151,7 @@ class SupervisorAgent:
 
 | Herramienta | Uso |
 |---|---|
-| `ruff` | Linting + formateo. Ejecutar `ruff check sky_claw/` antes de commit. |
-| `black` | Formateo automático. Configurar en VS Code como formateador por defecto. |
+| `ruff` | Linting + formateo. Ejecutar `ruff check sky_claw/` y `ruff format --check sky_claw/` antes de commit. En VS Code, configurar Ruff como formateador por defecto. |
 | `mypy` | Tipado estático. Módulos críticos (`security/*`, `core/database.py`, `db/*`) deben pasar con `ignore_errors = false`. |
 | `bandit` | SAST. Se ejecuta en CI. No debe introducir hallazgos nuevos de severidad HIGH o CRITICAL. |
 

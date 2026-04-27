@@ -7,24 +7,45 @@
     2. Removes Claude Code worktrees (the primary trigger for git init)
     3. Creates a read-only sentinel FILE named ".git" to block git init
        (git init fails if .git exists as a file, not a directory)
-    4. Optionally starts a background watcher to auto-remove .git if recreated
 .NOTES
     Root cause: Claude Code (.claude/worktrees/) and Kilo Code (initGit API)
     both auto-initialize git repos. The worktree feature requires a .git repo.
+    $ProjectRoot defaults to the parent of the directory containing this script.
+    Pass -ProjectRoot explicitly to target a different path.
 #>
 
 param(
+    [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
     [switch]$RemoveWorktree,
-    [switch]$InstallWatcher,
     [switch]$Uninstall
 )
 
-$ProjectRoot = "E:\Skyclaw_Main_Sync"
+# Validate project root exists
+if (-not (Test-Path -Path $ProjectRoot -PathType Container)) {
+    throw "Project root does not exist or is not a directory: $ProjectRoot"
+}
+$ProjectRoot = (Resolve-Path -Path $ProjectRoot -ErrorAction Stop).Path
+
+# Validate this is actually the Sky-Claw repo (refuse to operate on arbitrary dirs)
+$RepositoryMarkerPath = Join-Path $ProjectRoot "pyproject.toml"
+if (-not (Test-Path -Path $RepositoryMarkerPath -PathType Leaf)) {
+    throw "Refusing to modify '$ProjectRoot': repository marker 'pyproject.toml' not found. Pass -ProjectRoot explicitly if the repo root differs."
+}
+
 $GitPath = Join-Path $ProjectRoot ".git"
 $WorktreePath = Join-Path $ProjectRoot ".claude\worktrees"
 $SentinelContent = "# This file blocks git init. Do NOT delete or convert to directory.`n# Created by fix_git_guard.ps1`n# Root cause: Claude Code worktrees + Kilo Code initGit auto-create .git dirs`n"
 
 function Remove-GitDirectory {
+    # Safety: ensure ProjectRoot is set and non-empty before operating
+    if (-not $ProjectRoot -or -not (Test-Path -Path $ProjectRoot -PathType Container)) {
+        throw "Cannot remove .git: ProjectRoot '$ProjectRoot' is not a valid directory."
+    }
+    # Safety: ensure we only remove .git directly inside the validated project root
+    $ExpectedGitPath = Join-Path (Resolve-Path $ProjectRoot).Path ".git"
+    if ($GitPath -ne $ExpectedGitPath) {
+        throw "GitPath '$GitPath' does not match expected path '$ExpectedGitPath'. Aborting to prevent accidental data loss."
+    }
     if (Test-Path $GitPath -PathType Container) {
         Write-Host "[FIX] Removing existing .git directory..." -ForegroundColor Yellow
         Remove-Item -Path $GitPath -Recurse -Force
