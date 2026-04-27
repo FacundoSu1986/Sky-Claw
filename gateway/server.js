@@ -181,6 +181,46 @@ const agentMutex = new Mutex();
 const uiSockets = new Set();
 const pendingCommands = [];
 
+// F2.3: Exponential-backoff reconnect notifications to UI clients.
+// The gateway is a server (it doesn't dial out to the daemon), so there is
+// nothing to retry here. Instead we broadcast escalating STATUS messages to
+// every connected UI so operators know the daemon is still gone, without
+// spamming them at a fixed 1-second rate.
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
+const RECONNECT_MAX_ATTEMPTS = 10;
+let _reconnectAttempts = 0;
+let _reconnectTimer = null;
+
+function _notifyDaemonStatus(content) {
+    uiSockets.forEach(ui => {
+        if (ui.readyState === 1) ui.send(JSON.stringify({ type: 'STATUS', content }));
+    });
+}
+
+function _scheduleReconnectNotify() {
+    if (_reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+        _notifyDaemonStatus('[OFFLINE] Daemon unreachable — manual intervention required');
+        return;
+    }
+    const delay = Math.min(RECONNECT_BASE_MS * Math.pow(2, _reconnectAttempts), RECONNECT_MAX_MS);
+    _reconnectAttempts++;
+    _reconnectTimer = setTimeout(() => {
+        if (!agentSocket) {
+            _notifyDaemonStatus(`[BUFFERING] Daemon offline — awaiting reconnect (attempt ${_reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS})`);
+            _scheduleReconnectNotify();
+        }
+    }, delay);
+}
+
+function _cancelReconnectTimer() {
+    if (_reconnectTimer !== null) {
+        clearTimeout(_reconnectTimer);
+        _reconnectTimer = null;
+    }
+    _reconnectAttempts = 0;
+}
+
 const tlsCreds = getOrCreateTlsCerts();
 
 // --- Servidor para el Agente Python (Daemon) ---
@@ -189,6 +229,8 @@ const agentServer = new WebSocketServer({ port: AGENT_PORT, host: BIND_ADDRESS, 
 agentServer.on('connection', (ws) => {
     requireAuth(ws, 'AGENT', () => {
         console.log(`[AGENT] Daemon autenticado desde ${ws._socket.remoteAddress}`);
+        // F2.3: Daemon reconnected — cancel any pending backoff notification timer.
+        _cancelReconnectTimer();
         agentSocket = ws;
 
         // Procesar cola de comandos pendientes (Resiliencia de Estado)
@@ -228,10 +270,10 @@ agentServer.on('connection', (ws) => {
         ws.on('close', () => {
             console.warn('[AGENT] Daemon desconectado. Entrando en modo de espera/buffer.');
             agentSocket = null;
-            // Notificar a las UIs sobre la caída (Chaos resilience)
-            uiSockets.forEach(ui => {
-                if (ui.readyState === 1) ui.send(JSON.stringify({ type: 'STATUS', content: '[BUFFERING] Reconnecting to Daemon....' }));
-            });
+            // F2.3: Broadcast immediate disconnect notice then start exponential-backoff
+            // status updates so UIs remain informed without being flooded.
+            _notifyDaemonStatus('[BUFFERING] Daemon desconectado — Reconnecting...');
+            _scheduleReconnectNotify();
         });
 
         ws.on('error', (err) => {
