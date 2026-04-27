@@ -44,7 +44,7 @@ jobs:
           pip install -e ".[dev]"
           pip install mypy types-aiofiles
       - name: Mypy check
-        run: mypy sky_claw/ --ignore-missing-imports --no-error-summary
+        run: python -m mypy sky_claw/ --ignore-missing-imports --no-error-summary
 
   # ── Gate 3: Test Suite ───────────────────────────────
   test:
