@@ -442,7 +442,6 @@ class TestShouldRetry:
         assert _should_retry(exc) is True
 
     def test_retries_on_timeout(self) -> None:
-
         exc = TimeoutError()
         assert _should_retry(exc) is True
 

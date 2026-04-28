@@ -17,10 +17,9 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
-if TYPE_CHECKING:
-    from sky_claw.security.path_validator import PathValidator
+from sky_claw.core.contracts import PathValidatorProtocol
 
 logger = logging.getLogger("SkyClaw.PathResolution")
 security_logger = logging.getLogger("SkyClaw.Security")
@@ -120,7 +119,7 @@ class PathResolutionService:
 
     def __init__(
         self,
-        path_validator: PathValidator,
+        path_validator: PathValidatorProtocol,
         profile_name: str = "Default",
     ) -> None:
         self._path_validator = path_validator

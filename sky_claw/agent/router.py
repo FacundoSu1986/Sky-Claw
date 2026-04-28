@@ -362,12 +362,16 @@ class LLMRouter:
                     chat_kwargs["model"] = self._model
 
                 # Lock transaccional SRE para Hot-Swapping seguro sin caída de Event Loop
+                # RND-01: Timeout de 120s para evitar que un provider colgado bloquee el lock indefinidamente
                 async with self._provider_lock:
                     if not self._provider:
                         raise RuntimeError(
                             "SISTEMA: LLM Provider nulo. Iniciar Hot-Swap o configurar API Key primaria."
                         )
-                    response_data = await self._provider.chat(**chat_kwargs)
+                    response_data = await asyncio.wait_for(
+                        self._provider.chat(**chat_kwargs),
+                        timeout=120.0,
+                    )
 
                 if response_data is None or not isinstance(response_data, dict):
                     return "Error: El proveedor de IA no devolvió datos."

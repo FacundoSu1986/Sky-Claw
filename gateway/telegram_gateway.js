@@ -170,12 +170,42 @@ console.log(`[GW] WebSocket Server listening on port ${WS_PORT}`);
 // 2. Telegram Perimeter Layer (Stateless)
 const bot = new Bot(TELEGRAM_BOT_TOKEN);
 
+// GTG-03: Token bucket rate limiter per user_id (5 msgs/min, burst 10)
+const userBuckets = new Map();
+const RATE_LIMIT_TOKENS = 5;
+const RATE_LIMIT_BURST = 10;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+
+function checkRateLimit(userId) {
+    const now = Date.now();
+    let bucket = userBuckets.get(userId);
+    if (!bucket) {
+        bucket = { tokens: RATE_LIMIT_TOKENS, last: now };
+        userBuckets.set(userId, bucket);
+    }
+    // Refill tokens based on elapsed time
+    const elapsed = now - bucket.last;
+    bucket.tokens = Math.min(RATE_LIMIT_BURST, bucket.tokens + (elapsed / RATE_LIMIT_WINDOW_MS) * RATE_LIMIT_TOKENS);
+    bucket.last = now;
+    if (bucket.tokens < 1) return false;
+    bucket.tokens--;
+    return true;
+}
+
 bot.on("message:text", async (ctx) => {
     const userId = ctx.from.id;
 
     // Zero Trust validation
     if (userId !== ALLOWED_USER_ID) {
         // Drop silently to prevent log spam/probing
+        return;
+    }
+
+    // GTG-03: Rate limit check
+    if (!checkRateLimit(userId)) {
+        console.warn(`[GW] Rate limit exceeded for user ${userId} — message dropped`);
+        await ctx.reply("SISTEMA: Rate limit alcanzado. Espera unos segundos.")
+            .catch(err => console.error("[GW] Reply failed:", err.message));
         return;
     }
 
@@ -201,7 +231,8 @@ bot.on("message:text", async (ctx) => {
         console.log(`[GW] Dispatched msg ${msgUuid} to daemon`);
     } else {
         console.error(`[GW] No daemon connected. Message dropped.`);
-        ctx.reply("SISTEMA: Conexión con el núcleo Python no establecida.");
+        await ctx.reply("SISTEMA: Conexión con el núcleo Python no establecida.")
+            .catch(err => console.error("[GW] Reply failed:", err.message));
     }
 });
 

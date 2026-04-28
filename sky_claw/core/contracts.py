@@ -15,10 +15,13 @@ Refactorizado: 2026-04-03 (Ticket 1.1 — C-03)
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
+import pathlib
 import threading
-from typing import TYPE_CHECKING, Any
+from collections.abc import Coroutine
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ValidationError
 
@@ -402,11 +405,49 @@ def list_registered_schemas() -> dict[str, type[BaseModel]]:
 
 
 # ============================================================================
+# Architectural Protocols — Dependency Inversion (LAY-01, LAY-03)
+# ============================================================================
+
+
+@runtime_checkable
+class DownloadQueue(Protocol):
+    """LAY-01: Protocol for enqueuing download coroutines.
+
+    Decouples the Agent layer from the Orchestrator layer by defining
+    the minimal interface that ``SyncEngine`` must satisfy.
+    """
+
+    def enqueue_download(
+        self,
+        coro: Coroutine[Any, Any, Any],
+        context: str = "unknown",
+    ) -> asyncio.Task[Any]: ...
+
+
+@runtime_checkable
+class PathValidatorProtocol(Protocol):
+    """LAY-03: Protocol for path validation against a sandbox.
+
+    Decouples the Core layer from the Security layer by defining
+    the minimal interface that ``PathValidator`` must satisfy.
+    """
+
+    def validate(
+        self,
+        path: str | pathlib.Path,
+        *,
+        strict_symlink: bool = True,
+    ) -> pathlib.Path: ...
+
+
+# ============================================================================
 # Exports
 # ============================================================================
 
 __all__ = [
     "CONTRACT_SCHEMAS",
+    "DownloadQueue",
+    "PathValidatorProtocol",
     "get_contract_schema",
     "get_schema_class",
     "list_registered_schemas",

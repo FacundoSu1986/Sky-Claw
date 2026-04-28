@@ -1,14 +1,44 @@
-import os
 import math
+import os
 
 # Configuración
 PROJECT_ROOT = "."
 OUTPUT_DIR = "project_scrape"
-EXCLUDE_DIRS = {".git", "node_modules", "__pycache__", "venv", ".env", "dist", "build", ".agents", ".agent", ".claude", "logs", "external_libs", OUTPUT_DIR}
+EXCLUDE_DIRS = {
+    ".git",
+    "node_modules",
+    "__pycache__",
+    "venv",
+    ".env",
+    "dist",
+    "build",
+    ".agents",
+    ".agent",
+    ".claude",
+    "logs",
+    "external_libs",
+    OUTPUT_DIR,
+}
 EXCLUDE_FILES = {"mod_registry.db", "mod_registry.db-shm", "mod_registry.db-wal", "sky_claw_state.db"}
-INCLUDE_EXTENSIONS = {".py", ".js", ".html", ".css", ".md", ".json", ".txt", ".sh", ".bat", ".ps1", ".toml", ".yaml", ".yml", "Dockerfile"}
+INCLUDE_EXTENSIONS = {
+    ".py",
+    ".js",
+    ".html",
+    ".css",
+    ".md",
+    ".json",
+    ".txt",
+    ".sh",
+    ".bat",
+    ".ps1",
+    ".toml",
+    ".yaml",
+    ".yml",
+    "Dockerfile",
+}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico"}
-MAX_FILE_SIZE_TEXT = 500 * 1024 # 500KB
+MAX_FILE_SIZE_TEXT = 500 * 1024  # 500KB
+
 
 def get_project_files():
     text_files = []
@@ -33,16 +63,17 @@ def get_project_files():
 
     return text_files, image_files
 
+
 def scrape_text_files(files):
     content_list = []
     total_chars = 0
 
     for file_path in files:
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(file_path, encoding="utf-8", errors="ignore") as f:
                 content = f.read()
                 rel_path = os.path.relpath(file_path, PROJECT_ROOT)
-                header = f"\n{'='*80}\nFILE: {rel_path}\n{'='*80}\n"
+                header = f"\n{'=' * 80}\nFILE: {rel_path}\n{'=' * 80}\n"
                 full_content = header + content
                 content_list.append(full_content)
                 total_chars += len(full_content)
@@ -50,6 +81,7 @@ def scrape_text_files(files):
             print(f"Error reading {file_path}: {e}")
 
     return content_list, total_chars
+
 
 def main():
     if not os.path.exists(OUTPUT_DIR):
@@ -59,7 +91,7 @@ def main():
     text_files, image_files = get_project_files()
 
     # Crear lista de imágenes
-    image_list_content = "\n" + "="*80 + "\nLISTA DE IMÁGENES ENCONTRADAS\n" + "="*80 + "\n"
+    image_list_content = "\n" + "=" * 80 + "\nLISTA DE IMÁGENES ENCONTRADAS\n" + "=" * 80 + "\n"
     for img in image_files:
         image_list_content += f"- {os.path.relpath(img, PROJECT_ROOT)}\n"
 
@@ -99,6 +131,7 @@ def main():
     with open(filename, "w", encoding="utf-8") as f:
         f.write(current_content)
     print(f"Archivo creado: {filename} ({len(current_content)} chars)")
+
 
 if __name__ == "__main__":
     main()

@@ -9,6 +9,7 @@ Validation is now centralized in AsyncToolRegistry.execute().
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -141,7 +142,8 @@ async def setup_tools(
             await session.close()
 
     # Persist configuration if tools were installed
+    # RND-02: Delegar I/O síncrono a thread pool para no bloquear el event loop
     if local_cfg and config_path:
-        save_local_config(local_cfg, config_path)
+        await asyncio.to_thread(save_local_config, local_cfg, config_path)
 
     return json.dumps(results)

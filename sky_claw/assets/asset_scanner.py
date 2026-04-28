@@ -93,7 +93,7 @@ class AssetConflictDetector:
     ASSET_EXTENSIONS: Final[dict[AssetType, frozenset[str]]] = {
         AssetType.MESH: frozenset({".nif"}),
         AssetType.TEXTURE: frozenset({".dds", ".png", ".jpg", ".jpeg", ".tga"}),
-        AssetType.SCRIPT: frozenset({".pex"}),
+        AssetType.SCRIPT: frozenset({".pex", ".psc"}),
         AssetType.CONFIG: frozenset({".ini", ".json", ".xml"}),
         AssetType.SOUND: frozenset({".wav", ".xwm", ".fuz"}),
         AssetType.ANIMATION: frozenset({".hkx", ".anim"}),

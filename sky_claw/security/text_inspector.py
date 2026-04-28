@@ -61,43 +61,61 @@ class TextInspector:
         self.max_chars = max_chars
 
     def inspect(self, content: str, filename: str = "doc.md") -> list[dict[str, Any]]:
-        """Busca patrones de inyección y anomalías en el texto."""
-        findings = []
+        """Busca patrones de inyección y anomalías en el texto.
 
-        # Limitar contenido para rendimiento
-        content_fragment = content[: self.max_chars]
+        SEC-09: Uses sliding-window analysis (start + end of content) to detect
+        payloads placed beyond the initial ``max_chars`` boundary.
+        """
+        findings: list[dict[str, Any]] = []
 
-        # 1. Buscar inyección de prompts
-        for pattern, desc, severity in INJECTION_PATTERNS:
-            matches = re.finditer(pattern, content_fragment)
-            for m in matches:
-                line_idx = content_fragment.count("\n", 0, m.start()) + 1
-                findings.append(
-                    {
-                        "message": f"Posible Indirect Prompt Injection: {desc}",
-                        "line": line_idx,
-                        "severity": severity,
-                        "confidence": 0.85,
-                        "file": filename,
-                    }
-                )
+        # SEC-09: Analizar inicio Y final del contenido (ventanas deslizantes)
+        if len(content) <= self.max_chars:
+            fragments = [content]
+        else:
+            half = self.max_chars // 2
+            fragments = [content[:half], content[-half:]]
 
-        # 2. Buscar anomalías Unicode
-        for pattern, desc, severity in SUSPICIOUS_UNICODE:
-            matches = re.finditer(pattern, content_fragment)
-            for m in matches:
-                line_idx = content_fragment.count("\n", 0, m.start()) + 1
-                findings.append(
-                    {
-                        "message": f"Anomalía de texto: {desc}",
-                        "line": line_idx,
-                        "severity": severity,
-                        "confidence": 0.7,
-                        "file": filename,
-                    }
-                )
+        for content_fragment in fragments:
+            # 1. Buscar inyección de prompts
+            for pattern, desc, severity in INJECTION_PATTERNS:
+                matches = re.finditer(pattern, content_fragment)
+                for m in matches:
+                    line_idx = content_fragment.count("\n", 0, m.start()) + 1
+                    findings.append(
+                        {
+                            "message": f"Posible Indirect Prompt Injection: {desc}",
+                            "line": line_idx,
+                            "severity": severity,
+                            "confidence": 0.85,
+                            "file": filename,
+                        }
+                    )
 
-        return findings
+            # 2. Buscar anomalías Unicode
+            for pattern, desc, severity in SUSPICIOUS_UNICODE:
+                matches = re.finditer(pattern, content_fragment)
+                for m in matches:
+                    line_idx = content_fragment.count("\n", 0, m.start()) + 1
+                    findings.append(
+                        {
+                            "message": f"Anomalía de texto: {desc}",
+                            "line": line_idx,
+                            "severity": severity,
+                            "confidence": 0.7,
+                            "file": filename,
+                        }
+                    )
+
+        # Deduplicate findings by (message, severity, file) to avoid double-reporting
+        seen: set[tuple[str, str, str]] = set()
+        unique_findings: list[dict[str, Any]] = []
+        for f in findings:
+            key = (f["message"], f["severity"], f["file"])
+            if key not in seen:
+                seen.add(key)
+                unique_findings.append(f)
+
+        return unique_findings
 
 
 def scan_text(content: str, filename: str = "README.md") -> list[dict[str, Any]]:

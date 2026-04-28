@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import pathlib
 import shutil
@@ -166,6 +167,14 @@ class FileSnapshotManager:
                 # Copiar archivo (copy-on-write cuando es posible)
                 await asyncio.to_thread(shutil.copy2, file_path, snapshot_path)
 
+                # SSP-001: Persistir checksum completo en sidecar .meta.json
+                meta_path = snapshot_path.with_suffix(snapshot_path.suffix + ".meta.json")
+                await asyncio.to_thread(
+                    meta_path.write_text,
+                    json.dumps({"checksum": checksum}, ensure_ascii=False),
+                    "utf-8",
+                )
+
                 # Verificar tamaño límite
                 await self._enforce_size_limit()
 
@@ -228,6 +237,13 @@ class FileSnapshotManager:
 
             shutil.copy2(file_path, snapshot_path)
 
+            # SSP-001: Persistir checksum completo en sidecar .meta.json
+            meta_path = snapshot_path.with_suffix(snapshot_path.suffix + ".meta.json")
+            meta_path.write_text(
+                json.dumps({"checksum": checksum}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
             return SnapshotInfo(
                 snapshot_id=snapshot_id,
                 original_path=str(file_path),
@@ -279,22 +295,22 @@ class FileSnapshotManager:
                 backup_path: pathlib.Path | None = None
                 if target.exists():
                     backup_path = target.with_suffix(target.suffix + ".restore_backup")
-                    shutil.copy2(target, backup_path)
+                    await asyncio.to_thread(shutil.copy2, target, backup_path)
 
                 # Restaurar desde snapshot
                 await asyncio.to_thread(shutil.copy2, snapshot_file, target)
 
                 # Verificar checksum si se solicita
                 if verify_checksum:
-                    # Leer checksum del nombre del archivo (si está disponible)
-                    expected_checksum = self._extract_checksum_from_path(snapshot_file)
+                    # SSP-001: Leer checksum desde sidecar .meta.json (fuente fiable)
+                    expected_checksum = self._extract_checksum_from_meta(snapshot_file)
                     if expected_checksum:
                         actual_checksum = await self._calculate_checksum(target)
                         if actual_checksum != expected_checksum:
                             # Restaurar backup si falla verificación
                             if backup_path and backup_path.exists():
-                                shutil.copy2(backup_path, target)
-                                backup_path.unlink()
+                                await asyncio.to_thread(shutil.copy2, backup_path, target)
+                                await asyncio.to_thread(backup_path.unlink)
                             raise JournalSnapshotError(
                                 f"Checksum verification failed for {target}. "
                                 f"Expected: {expected_checksum[:16]}..., "
@@ -411,10 +427,10 @@ class FileSnapshotManager:
                     if not snapshot_file.is_file():
                         continue
 
-                    file_size = snapshot_file.stat().st_size
+                    file_size = (await asyncio.to_thread(snapshot_file.stat)).st_size
 
                     if not dry_run:
-                        snapshot_file.unlink()
+                        await asyncio.to_thread(snapshot_file.unlink)
 
                     deleted_count += 1
                     freed_bytes += file_size
@@ -452,8 +468,9 @@ class FileSnapshotManager:
         for date_dir in self._snapshot_dir.iterdir():
             if date_dir.is_dir():
                 try:
-                    dir_time = time.strptime(date_dir.name, "%Y-%m-%d")
-                    dir_timestamp = time.mktime(dir_time)
+                    # SSP-003: Usar UTC consistentemente (no time.mktime que asume timezone local)
+                    dir_dt = datetime.strptime(date_dir.name, "%Y-%m-%d").replace(tzinfo=UTC)
+                    dir_timestamp = dir_dt.timestamp()
                     date_dirs.append((date_dir, dir_timestamp))
                 except ValueError:
                     continue
@@ -465,9 +482,13 @@ class FileSnapshotManager:
             if current_size <= self._max_size_bytes * 0.9:  # 90% del límite
                 break
 
-            dir_size = sum(f.stat().st_size for f in date_dir.rglob("*") if f.is_file())
+            # SSP-002: Delegar cálculo de tamaño y eliminación a thread pool
+            def _calc_dir_size_and_remove(d: pathlib.Path) -> int:
+                sz = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                shutil.rmtree(d)
+                return sz
 
-            shutil.rmtree(date_dir)
+            dir_size = await asyncio.to_thread(_calc_dir_size_and_remove, date_dir)
             current_size -= dir_size
 
             logger.info(
@@ -480,13 +501,12 @@ class FileSnapshotManager:
 
     async def _calculate_total_size(self) -> int:
         """Calcula el tamaño total de todos los snapshots."""
-        total_size = 0
 
-        for file_path in self._snapshot_dir.rglob("*"):
-            if file_path.is_file():
-                total_size += file_path.stat().st_size
+        # SSP-002: Delegar recorrido de filesystem a thread pool
+        def _walk_size(directory: pathlib.Path) -> int:
+            return sum(f.stat().st_size for f in directory.rglob("*") if f.is_file())
 
-        return total_size
+        return await asyncio.to_thread(_walk_size, self._snapshot_dir)
 
     # =========================================================================
     # STATISTICS
@@ -505,30 +525,36 @@ class FileSnapshotManager:
         newest: datetime | None = None
         by_extension: dict[str, int] = {}
 
-        for file_path in self._snapshot_dir.rglob("*"):
-            if not file_path.is_file():
-                continue
+        # SSP-002: Delegar recorrido de filesystem a thread pool
+        def _collect_stats(
+            directory: pathlib.Path,
+        ) -> tuple[int, int, datetime | None, datetime | None, dict[str, int]]:
+            ts = 0
+            count = 0
+            old: datetime | None = None
+            new: datetime | None = None
+            ext_map: dict[str, int] = {}
+            for fp in directory.rglob("*"):
+                if not fp.is_file():
+                    continue
+                count += 1
+                sz = fp.stat().st_size
+                ts += sz
+                try:
+                    fd = datetime.strptime(fp.parent.name, "%Y-%m-%d")
+                    if old is None or fd < old:
+                        old = fd
+                    if new is None or fd > new:
+                        new = fd
+                except ValueError:
+                    pass
+                ext = fp.suffix.lower()
+                ext_map[ext] = ext_map.get(ext, 0) + 1
+            return count, ts, old, new, ext_map
 
-            total_snapshots += 1
-            file_size = file_path.stat().st_size
-            total_size += file_size
-
-            # Extraer fecha del path
-            try:
-                parent_name = file_path.parent.name
-                file_date = datetime.strptime(parent_name, "%Y-%m-%d")
-
-                if oldest is None or file_date < oldest:
-                    oldest = file_date
-                if newest is None or file_date > newest:
-                    newest = file_date
-
-            except ValueError:
-                pass
-
-            # Contar por extensión
-            ext = file_path.suffix.lower() or ".no_ext"
-            by_extension[ext] = by_extension.get(ext, 0) + 1
+        total_snapshots, total_size, oldest, newest, by_extension = await asyncio.to_thread(
+            _collect_stats, self._snapshot_dir
+        )
 
         return SnapshotStats(
             total_snapshots=total_snapshots,
@@ -595,6 +621,28 @@ class FileSnapshotManager:
             # Checksum truncado (no se puede verificar)
             return None
 
+        return None
+
+    def _extract_checksum_from_meta(self, snapshot_path: pathlib.Path) -> str | None:
+        """
+        SSP-001: Lee el checksum SHA256 completo desde el sidecar .meta.json.
+
+        Args:
+            snapshot_path: Path al archivo de snapshot.
+
+        Returns:
+            Checksum SHA256 de 64 caracteres hex, o None si el meta no existe/malformado.
+        """
+        meta_path = snapshot_path.with_suffix(snapshot_path.suffix + ".meta.json")
+        if not meta_path.exists():
+            return None
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+            checksum = data.get("checksum", "")
+            if self.validate_checksum_format(checksum):
+                return checksum
+        except (OSError, ValueError, json.JSONDecodeError):
+            logger.warning("Failed to read snapshot meta: %s", meta_path)
         return None
 
     def validate_checksum_format(self, checksum: str) -> bool:

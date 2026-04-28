@@ -10,13 +10,13 @@ from sky_claw.core.database import DatabaseAgent
 from sky_claw.core.event_bus import CoreEventBus, Event
 from sky_claw.core.path_resolver import PathResolutionService
 from sky_claw.core.windows_interop import ModdingToolsAgent
-from sky_claw.db.journal import OperationJournal
-from sky_claw.db.locks import DistributedLockManager
 from sky_claw.db.rollback_manager import RollbackManager
-from sky_claw.db.snapshot_manager import FileSnapshotManager
 from sky_claw.orchestrator.maintenance_daemon import (
     MaintenanceDaemon,
-    get_max_backup_size_mb,
+)
+from sky_claw.orchestrator.rollback_factory import (
+    RollbackComponents,
+    create_rollback_components,
 )
 from sky_claw.orchestrator.state_graph import (
     StateGraphIntegration,
@@ -27,7 +27,6 @@ from sky_claw.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 from sky_claw.orchestrator.watcher_daemon import WatcherDaemon
 from sky_claw.orchestrator.ws_event_streamer import LangGraphEventStreamer
 from sky_claw.scraper.scraper_agent import ScraperAgent
-from sky_claw.security.path_validator import PathValidator
 from sky_claw.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.tools.synthesis_service import SynthesisPipelineService
 from sky_claw.tools.wrye_bash_runner import (
@@ -123,43 +122,17 @@ class SupervisorAgent:
         self._graph_integration.connect_supervisor(self)
 
     def _init_rollback_components(self) -> None:
-        """FASE 1.5: Inicializa los componentes de resiliencia para rollback.
+        """FASE 1.5 + SUP-04: Inicializa los componentes de resiliencia para rollback.
 
-        Crea las instancias de:
-        - OperationJournal: Para registrar operaciones de archivos
-        - FileSnapshotManager: Para capturar snapshots antes de modificaciones
-        - RollbackManager: Para coordinar la reversión de operaciones
+        Delega la construcción al factory method ``create_rollback_components``
+        para desacoplar ``SupervisorAgent`` de la creación concreta de dependencias.
         """
-        # Directorio de backups relativo al VFS
-        backup_dir = pathlib.Path(BACKUP_STAGING_DIR)
-        backup_dir.mkdir(parents=True, exist_ok=True)
-
-        # Inicializar componentes
-        self.journal = OperationJournal(db_path=backup_dir / "journal.db")
-        self.snapshot_manager = FileSnapshotManager(
-            snapshot_dir=backup_dir / "snapshots", max_size_mb=get_max_backup_size_mb()
-        )
-
-        # C-1 FIX: RollbackManager solo requiere journal y snapshot_manager.
-        # Se eliminó la dependencia en _xedit_service (que aún no existe en este punto).
-        self.rollback_manager = RollbackManager(
-            journal=self.journal,
-            snapshot_manager=self.snapshot_manager,
-        )
-
-        # Sprint-2: DistributedLockManager para bloqueos concurrentes
-        self._lock_manager = DistributedLockManager(
-            db_path=backup_dir / "locks.db",
-        )
-
-        # CRIT-003: PathValidator para validación de variables de entorno
-        self._path_validator = PathValidator(roots=[backup_dir])
-
-        logger.info(
-            "Componentes de rollback inicializados: backup_dir=%s, max_size_mb=%d",
-            backup_dir,
-            get_max_backup_size_mb(),
-        )
+        components: RollbackComponents = create_rollback_components(BACKUP_STAGING_DIR)
+        self.journal = components.journal
+        self.snapshot_manager = components.snapshot_manager
+        self.rollback_manager = components.rollback_manager
+        self._lock_manager = components.lock_manager
+        self._path_validator = components.path_validator
 
     async def start(self) -> None:
         await self.db.init_db()
@@ -185,10 +158,12 @@ class SupervisorAgent:
             "system.modlist.changed",
             self._trigger_proactive_analysis,
         )
-        # ARC-01: Iniciar demonios extraídos
-        await self._maintenance_daemon.start()
-        await self._telemetry_daemon.start()
-        await self._watcher_daemon.start()
+        # ARC-01 + SUP-05: Iniciar demonios con TaskGroup para fail-fast colectivo.
+        # Si un daemon falla al iniciar, los demás se cancelan automáticamente.
+        async with asyncio.TaskGroup() as daemon_tg:
+            daemon_tg.create_task(self._maintenance_daemon.start())
+            daemon_tg.create_task(self._telemetry_daemon.start())
+            daemon_tg.create_task(self._watcher_daemon.start())
 
         try:
             async with asyncio.TaskGroup() as tg:
@@ -285,7 +260,8 @@ class SupervisorAgent:
                 "errors": result.errors,
             }
 
-        except (OSError, RuntimeError) as e:
+        # SUP-06: Capturar Exception genérica para garantizar contrato dict de retorno
+        except Exception as e:
             logger.exception("Error crítico durante rollback: %s", e)
             return {"success": False, "error": str(e)}
 

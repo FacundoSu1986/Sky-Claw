@@ -11,17 +11,18 @@ Protocolo Tree of Thoughts:
 
 import asyncio
 import json
-import websockets
-import uuid
-import time
 import sys
-from pathlib import Path
+import time
+import uuid
 from datetime import datetime
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any
+
+import websockets
 
 # Fix encoding for Windows
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout.reconfigure(encoding='utf-8')  # type: ignore[attr-defined, union-attr]
+if sys.stdout.encoding != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined, union-attr]
 
 # Colors para terminal
 GREEN = "\033[92m"
@@ -37,6 +38,7 @@ CONFIG_PATH = Path.home() / ".sky_claw" / "config.toml"
 # ═══════════════════════════════════════════════════════════════════════════════
 # Test Cases (Tree of Thoughts Pensamiento B)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class FrontendBridgeTestSuite:
     def __init__(self):
@@ -60,7 +62,7 @@ class FrontendBridgeTestSuite:
         if self.ws:
             await self.ws.close()
 
-    async def send_message(self, msg_type: str, content: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    async def send_message(self, msg_type: str, content: dict[str, Any] | None = None) -> dict[str, Any]:
         """Envía un mensaje y captura la respuesta."""
         payload: dict[str, Any] = {
             "type": msg_type,
@@ -78,7 +80,7 @@ class FrontendBridgeTestSuite:
             response = json.loads(response_raw)
             print(f"  📥 Respuesta recibida: {response['type']}")
             return response
-        except asyncio.TimeoutError:
+        except TimeoutError:
             print(f"  {RED}⏱️ Timeout esperando respuesta{RESET}")
             return {}
         except Exception as e:
@@ -141,7 +143,7 @@ class FrontendBridgeTestSuite:
         await asyncio.sleep(0.5)
         if CONFIG_PATH.exists():
             content = CONFIG_PATH.read_text()
-            if "llm_provider = \"ollama\"" in content:
+            if 'llm_provider = "ollama"' in content:
                 print(f"  {GREEN}✅ TOML actualizado (llm_provider = ollama){RESET}")
             else:
                 print(f"  {YELLOW}⚠️ TOML aún no refleja cambio (¿eventual consistency?){RESET}")
@@ -250,9 +252,9 @@ class FrontendBridgeTestSuite:
 
     async def run_all(self):
         """Ejecuta la suite completa."""
-        print(f"\n{BOLD}{'='*70}{RESET}")
+        print(f"\n{BOLD}{'=' * 70}{RESET}")
         print(f"{BOLD}FrontendBridge Test Suite (Tree of Thoughts Protocol){RESET}")
-        print(f"{BOLD}{'='*70}{RESET}")
+        print(f"{BOLD}{'=' * 70}{RESET}")
 
         if not await self.connect():
             return
@@ -284,9 +286,9 @@ class FrontendBridgeTestSuite:
         total = len(self.results)
         success_rate = (passed / total * 100) if total > 0 else 0
 
-        print(f"\n{BOLD}{'='*70}{RESET}")
+        print(f"\n{BOLD}{'=' * 70}{RESET}")
         print(f"{BOLD}RESULTADOS (Tree of Thoughts - Fase 3: Proyección){RESET}")
-        print(f"{BOLD}{'='*70}{RESET}\n")
+        print(f"{BOLD}{'=' * 70}{RESET}\n")
 
         for test_name, result in self.results:
             status = f"{GREEN}✅ PASS{RESET}" if result else f"{RED}❌ FAIL{RESET}"
@@ -296,7 +298,7 @@ class FrontendBridgeTestSuite:
         print(f"  Pasaron: {GREEN}{passed}/{total}{RESET}")
         print(f"  Tasa de éxito: {GREEN}{success_rate:.1f}%{RESET}")
         print(f"  Tiempo total: {elapsed:.2f}s")
-        print(f"  P(success) = {success_rate/100:.2f}")
+        print(f"  P(success) = {success_rate / 100:.2f}")
 
         if success_rate >= 80:
             print(f"\n{BOLD}{GREEN}🎯 RAMA MAESTRA VIABLE (P >= 0.8){RESET}")
@@ -309,6 +311,7 @@ class FrontendBridgeTestSuite:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 async def main():
     suite = FrontendBridgeTestSuite()

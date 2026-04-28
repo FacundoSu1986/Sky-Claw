@@ -5,31 +5,41 @@ import sys
 # Add parent directory to path to import sky_claw
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
 
-from sky_claw.config import Config
 from sky_claw.auto_detect import AutoDetector
+from sky_claw.config import Config
+
 
 async def first_run_wizard():
-    print("\n" + "="*40)
+    print("\n" + "=" * 40)
     print("      Sky-Claw: Asistente de Configuracion")
-    print("="*40 + "\n")
+    print("=" * 40 + "\n")
 
     config = Config()
 
     print("[1/3] LLM y API Keys")
-    provider = input(f"Proveedor de LLM (anthropic/openai/deepseek/ollama) [{config.llm_provider}]: ").strip().lower() or config.llm_provider
+    provider = (
+        input(f"Proveedor de LLM (anthropic/openai/deepseek/ollama) [{config.llm_provider}]: ").strip().lower()
+        or config.llm_provider
+    )
 
     if provider == "openai":
         api_key = input(f"API Key para OpenAI [{config.openai_api_key}]: ").strip() or config.openai_api_key
         model = input(f"Modelo (ej: gpt-4o) [{config.llm_model}]: ").strip() or config.llm_model or "gpt-4o"
     elif provider == "deepseek":
         api_key = input(f"API Key para DeepSeek [{config.deepseek_api_key}]: ").strip() or config.deepseek_api_key
-        model = input(f"Modelo (ej: deepseek-chat) [{config.llm_model}]: ").strip() or config.llm_model or "deepseek-chat"
+        model = (
+            input(f"Modelo (ej: deepseek-chat) [{config.llm_model}]: ").strip() or config.llm_model or "deepseek-chat"
+        )
     elif provider == "ollama":
         api_key = ""
         model = input(f"Modelo (ej: llama3.1) [{config.llm_model}]: ").strip() or config.llm_model or "llama3.1"
-    else: # anthropic default
+    else:  # anthropic default
         api_key = input(f"API Key para Anthropic [{config.anthropic_api_key}]: ").strip() or config.anthropic_api_key
-        model = input(f"Modelo (ej: claude-3-5-sonnet-20240620) [{config.llm_model}]: ").strip() or config.llm_model or "claude-3-5-sonnet-20240620"
+        model = (
+            input(f"Modelo (ej: claude-3-5-sonnet-20240620) [{config.llm_model}]: ").strip()
+            or config.llm_model
+            or "claude-3-5-sonnet-20240620"
+        )
 
     nexus_key = input(f"API Key de Nexus Mods (opcional) [{config.nexus_api_key}]: ").strip() or config.nexus_api_key
 
@@ -37,8 +47,12 @@ async def first_run_wizard():
     print("Escaneando rutas comunes...")
     detected = await AutoDetector.detect_all()
 
-    mo2_root = input(f"Ruta de MO2 Root [{detected.get('mo2_root', config.mo2_root)}]: ").strip() or detected.get("mo2_root", config.mo2_root)
-    skyrim_path = input(f"Ruta de Skyrim [{detected.get('skyrim_path', config.skyrim_path)}]: ").strip() or detected.get("skyrim_path", config.skyrim_path)
+    mo2_root = input(f"Ruta de MO2 Root [{detected.get('mo2_root', config.mo2_root)}]: ").strip() or detected.get(
+        "mo2_root", config.mo2_root
+    )
+    skyrim_path = input(
+        f"Ruta de Skyrim [{detected.get('skyrim_path', config.skyrim_path)}]: "
+    ).strip() or detected.get("skyrim_path", config.skyrim_path)
 
     print("\n[3/3] Telegram (Opcional)")
     bot_token = input(f"Telegram Bot Token [{config.telegram_bot_token}]: ").strip() or config.telegram_bot_token
@@ -67,10 +81,11 @@ async def first_run_wizard():
 
     # Save
     config.save()
-    print("\n" + "="*40)
+    print("\n" + "=" * 40)
     print("Configuracion guardada en: " + str(config._config_path))
     print("Ya podes iniciar Sky-Claw!")
-    print("="*40 + "\n")
+    print("=" * 40 + "\n")
+
 
 if __name__ == "__main__":
     asyncio.run(first_run_wizard())

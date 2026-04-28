@@ -177,14 +177,19 @@ class AppContext:
         """Internal implementation of start_full (lock-free)."""
         assert self.config_path is not None, "start_minimal() must run first"
 
-        if self.polling is not None:
-            await self.polling.stop()
-            self.polling = None
-        if self.router is not None:
-            await self.router.close()
-            self.router = None
-
-        await self.database.close()
+        # ARC-01: Teardown previo envuelto en try/except para garantizar
+        # que la reconstrucción del exit stack ocurra incluso si el cierre
+        # de recursos previos falla.
+        try:
+            if self.polling is not None:
+                await self.polling.stop()
+                self.polling = None
+            if self.router is not None:
+                await self.router.close()
+                self.router = None
+            await self.database.close()
+        except Exception:
+            logger.exception("Teardown previo falló; continuando con fresh init")
 
         # Reset the exit stack for a fresh initialization cycle, keeping
         # only the network.close callback registered by start_minimal.
@@ -463,6 +468,10 @@ class AppContext:
                 exc_info=True,
             )
             await self._exit_stack.aclose()
+            # ARC-03: Sanitizar referencias para evitar zombie state tras rollback fallido
+            self.router = self.polling = self.hitl = self.sender = None
+            self.frontend_bridge = None
+            self.tools_installer = None
             raise
 
     async def start(self) -> None:

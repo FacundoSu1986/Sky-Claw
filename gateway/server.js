@@ -119,16 +119,16 @@ function timingSafeEqual(a, b) {
     if (typeof a !== 'string' || typeof b !== 'string') {
         return false;
     }
+    // Convertir a Buffers antes de comparar longitudes para manejar UTF-8 multibyte
+    const bufA = Buffer.from(a, 'utf8');
+    const bufB = Buffer.from(b, 'utf8');
     // Si las longitudes no coinciden, retornar false sin lanzar error
-    if (a.length !== b.length) {
+    if (bufA.length !== bufB.length) {
         return false;
     }
-    // Convertir a Buffers y comparar de forma segura
+    // Comparar de forma segura
     try {
-        return crypto.timingSafeEqual(
-            Buffer.from(a, 'utf8'),
-            Buffer.from(b, 'utf8')
-        );
+        return crypto.timingSafeEqual(bufA, bufB);
     } catch {
         return false;
     }
@@ -231,6 +231,15 @@ agentServer.on('connection', (ws) => {
         console.log(`[AGENT] Daemon autenticado desde ${ws._socket.remoteAddress}`);
         // F2.3: Daemon reconnected — cancel any pending backoff notification timer.
         _cancelReconnectTimer();
+
+        // Cerrar agente previo antes de asignar el nuevo (previene socket huérfano)
+        if (agentSocket && agentSocket !== ws && agentSocket.readyState === ws.OPEN) {
+            try {
+                agentSocket.close(4000, 'Replaced by new agent connection');
+            } catch (closeErr) {
+                console.warn('[AGENT] Error cerrando agente previo:', closeErr.message);
+            }
+        }
         agentSocket = ws;
 
         // Procesar cola de comandos pendientes (Resiliencia de Estado)

@@ -166,7 +166,8 @@ class FomodInstaller:
         archive_path = self._validator.validate(archive_path)
         mod_name = archive_path.stem
 
-        fomod_xml = self._extract_fomod_xml(archive_path)
+        # RND-03: Delegar I/O síncrono (zipfile) a thread pool
+        fomod_xml = await asyncio.to_thread(self._extract_fomod_xml, archive_path)
         if fomod_xml is None:
             return FomodPreview(mod_name=mod_name, has_fomod=False)
 
@@ -226,9 +227,9 @@ class FomodInstaller:
 
         tmp_dir = pathlib.Path(tempfile.mkdtemp(prefix="skyclaw_install_"))
         try:
-            # Extract
+            # Extract — RND-03: Delegar extracción síncrona a thread pool
             try:
-                extractor(archive_path, tmp_dir)
+                await asyncio.to_thread(extractor, archive_path, tmp_dir)
             except PathViolationError:
                 raise
             except Exception as exc:
@@ -255,7 +256,7 @@ class FomodInstaller:
                     mod_name,
                 )
         finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, tmp_dir, ignore_errors=True)
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -10,6 +10,7 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+from sky_claw.core.errors import SecurityViolationError
 from sky_claw.security.file_permissions import restrict_to_owner
 
 logger = logging.getLogger("SkyClaw.CredentialVault")
@@ -188,6 +189,7 @@ class CredentialVault:
 
     async def get_secret(self, service_name: str) -> str | None:
         """Recupera y descifra asincrónicamente con aislamiento de transacción."""
+        svc_hash = hashlib.sha256(service_name.encode()).hexdigest()[:8]
         try:
             async with aiosqlite.connect(self.db_path) as conn:
                 await self._execute_pragmas(conn)
@@ -196,20 +198,25 @@ class CredentialVault:
                     (service_name,),
                 ) as cursor:
                     row = await cursor.fetchone()
-                    if row:
-                        cipher_text = row[0].encode("utf-8")
+                    if not row:
+                        return None  # Secreto legítimamente no configurado
+                    cipher_text = row[0].encode("utf-8")
+                    try:
                         plain_secret = self.fernet.decrypt(cipher_text).decode("utf-8")
-                        return plain_secret
-            return None
-        except Exception:
-            svc_hash = hashlib.sha256(service_name.encode()).hexdigest()[:8]
-            # logger.exception preserves the full traceback while keeping the
-            # service name hashed — no PII leak, full diagnostics.
-            logger.exception(
-                "RCA (Vault): Error descifrando secreto (service_hash=%s). "
-                "Posible corrupción o clave maestra inválida.",
-                svc_hash,
-            )
+                    except Exception as decrypt_exc:
+                        if "InvalidToken" in type(decrypt_exc).__name__:
+                            logger.critical(
+                                "SECURITY: Vault tampering detected for service_hash=%s. "
+                                "Ciphertext integrity check failed — possible corruption or key mismatch.",
+                                svc_hash,
+                            )
+                            raise SecurityViolationError(
+                                "Vault integrity check failed — possible tampering"
+                            ) from decrypt_exc
+                        raise
+                    return plain_secret
+        except aiosqlite.Error:
+            logger.exception("RCA (Vault): Database error accessing service_hash=%s.", svc_hash)
             return None
 
     async def set_secret(self, service_name: str, plain_secret: str) -> bool:

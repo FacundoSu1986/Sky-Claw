@@ -21,8 +21,9 @@ from sky_claw.security.hitl import Decision, HITLGuard
 from sky_claw.security.network_gateway import GatewayTCPConnector, NetworkGateway
 
 if TYPE_CHECKING:
-    from sky_claw.orchestrator.sync_engine import SyncEngine
     from sky_claw.scraper.nexus_downloader import NexusDownloader
+
+from sky_claw.core.contracts import DownloadQueue
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 async def download_mod(
     downloader: NexusDownloader | None,
     hitl: HITLGuard | None,
-    sync_engine: SyncEngine,
+    sync_engine: DownloadQueue,
     nexus_id: int,
     file_id: int | None = None,
     *,

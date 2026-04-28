@@ -102,7 +102,7 @@ class PurpleScanner(ast.NodeVisitor):
             return self.const_map[node.id]
         return None
 
-    def visit_Assign(self, node: ast.Assign):
+    def visit_Assign(self, node: ast.Assign):  # noqa: N802
         """Rastrea asignaciones de constantes y variables 'sucias' (tainted)."""
         value_const = self._resolve_const(node.value)
 
@@ -123,11 +123,14 @@ class PurpleScanner(ast.NodeVisitor):
 
     def _is_tainted_source(self, node: ast.AST) -> bool:
         """Determina si un nodo es una fuente de datos no confiables."""
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            return node.func.id in ("input", "open", "f.read", "__import__")
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                return node.func.id in ("input", "open", "__import__")
+            if isinstance(node.func, ast.Attribute):
+                return node.func.attr == "read"
         return False
 
-    def visit_Call(self, node: ast.Call):
+    def visit_Call(self, node: ast.Call):  # noqa: N802
         """Inspecciona llamadas a funciones buscando sinks peligrosos y ofuscación."""
         func_name = self._get_func_name(node.func)
 
@@ -183,7 +186,7 @@ class PurpleScanner(ast.NodeVisitor):
             return f"{base}.{node.attr}" if base else node.attr
         return ""
 
-    def visit_Import(self, node: ast.Import):
+    def visit_Import(self, node: ast.Import):  # noqa: N802
         for name in node.names:
             if name.name in ("os", "subprocess", "builtin", "importlib"):
                 self.report(
@@ -194,7 +197,7 @@ class PurpleScanner(ast.NodeVisitor):
                 )
         self.generic_visit(node)
 
-    def visit_ImportFrom(self, node: ast.ImportFrom):
+    def visit_ImportFrom(self, node: ast.ImportFrom):  # noqa: N802
         if node.module in ("os", "subprocess", "importlib"):
             self.report(
                 f"Importación parcial de módulo sensible: {node.module}",

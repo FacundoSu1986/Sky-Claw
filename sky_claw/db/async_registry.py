@@ -71,15 +71,17 @@ CREATE TABLE IF NOT EXISTS task_log (
 );
 """
 
+# DB-002: Unified upsert — single and batch now update the same columns
 _UPSERT_MOD_SQL = """\
-INSERT INTO mods (nexus_id, name, version, author, category, download_url)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO mods (nexus_id, name, version, author, category, download_url, installed, enabled_in_vfs)
+VALUES (?, ?, ?, ?, ?, ?, 0, 0)
 ON CONFLICT(nexus_id) DO UPDATE SET
-    name         = excluded.name,
-    version      = excluded.version,
-    author       = excluded.author,
-    download_url = excluded.download_url,
-    updated_at   = datetime('now')
+    name           = excluded.name,
+    version        = excluded.version,
+    author         = excluded.author,
+    category       = excluded.category,
+    download_url   = excluded.download_url,
+    updated_at     = datetime('now')
 RETURNING mod_id
 """
 
@@ -106,6 +108,14 @@ _LOG_TASK_SQL = """\
 INSERT INTO task_log (mod_id, action, status, detail)
 VALUES (?, ?, ?, ?)
 """
+
+
+class _DatabaseCorruptionError(RuntimeError):
+    """DB-004: Specific exception for database integrity failures.
+
+    Prevents unrelated ``RuntimeError`` instances from triggering the
+    corrupt-database recovery path (rename + recreate).
+    """
 
 
 class AsyncModRegistry:
@@ -151,8 +161,9 @@ class AsyncModRegistry:
             async with self._conn.execute("PRAGMA quick_check") as cur:
                 row = await cur.fetchone()
                 if row is None or str(row[0]).lower() != "ok":
-                    raise RuntimeError(f"SQLite integrity check failed for {self._db_path}")
-        except RuntimeError:
+                    # DB-004: Use specific exception to avoid catching unrelated RuntimeErrors
+                    raise _DatabaseCorruptionError(f"SQLite integrity check failed for {self._db_path}")
+        except _DatabaseCorruptionError:
             await self._conn.close()
             self._conn = None
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -17,6 +18,9 @@ if TYPE_CHECKING:
     from sky_claw.xedit.runner import XEditRunner
 
 logger = logging.getLogger(__name__)
+
+# SCA-004: Regex for validating FormID format (8 hex digits)
+_FORMID_RE = re.compile(r"^[0-9A-Fa-f]{8}$")
 
 # ---------------------------------------------------------------------------
 # Severity classification — configurable via constructor
@@ -27,7 +31,8 @@ DEFAULT_CRITICAL_TYPES: frozenset[str] = frozenset(
     {
         "NPC_",
         "QUST",
-        "SCPT",
+        "SCEN",  # SCA-001: Replaced obsolete SCPT (Oblivion) with Skyrim SE/AE relevant types
+        "INFO",
         "PERK",
         "SPEL",
         "MGEF",
@@ -313,7 +318,7 @@ class ConflictAnalyzer:
             )
 
         # Quest/script conflicts.
-        quest_count = type_counts.get("QUST", 0) + type_counts.get("SCPT", 0)
+        quest_count = type_counts.get("QUST", 0) + type_counts.get("SCEN", 0) + type_counts.get("INFO", 0)
         if quest_count > 0:
             suggestions.append(
                 f"{quest_count} quest/script conflict(s) — "
@@ -437,10 +442,15 @@ def parse_conflict_lines(stdout: str) -> list[RecordConflict]:
             logger.warning("Malformed CONFLICT line (expected 6 fields): %s", line)
             continue
         try:
+            form_id = parts[1].strip()
+            # SCA-004: Validate FormID format (8 hex digits)
+            if not _FORMID_RE.match(form_id):
+                logger.warning("Invalid FormID '%s' in line: %s", form_id, line)
+                continue
             losers = [entry.strip() for entry in parts[5].split(",") if entry.strip()]
             conflicts.append(
                 RecordConflict(
-                    form_id=parts[1].strip(),
+                    form_id=form_id,
                     editor_id=parts[2].strip(),
                     record_type=parts[3].strip(),
                     winner=parts[4].strip(),
