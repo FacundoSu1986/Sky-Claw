@@ -62,12 +62,18 @@ class CoreEventBus:
         dlq: Dead Letter Queue opcional. Si es None, comportamiento fire-and-forget original.
     """
 
+    # Maximum number of subscriber coroutines that may run concurrently.
+    # Exceeding this limit causes the offending dispatch to be dropped with a
+    # WARNING instead of spawning an unbounded number of tasks (backpressure).
+    _MAX_PENDING_TASKS: int = 50
+
     def __init__(self, *, max_queue_size: int = 1024, dlq: DLQManager | None = None) -> None:
         self._subscriptions: list[tuple[str, Subscriber]] = []
         self._queue: asyncio.Queue[Event | None] = asyncio.Queue(
             maxsize=max_queue_size,
         )
         self._dispatch_task: asyncio.Task[None] | None = None
+        self._pending_tasks: set[asyncio.Task] = set()
         self._running: bool = False
         self._dlq = dlq
         self._handler_index: dict[str, Subscriber] = {}
@@ -88,10 +94,24 @@ class CoreEventBus:
         if self._dispatch_task is None:
             return
         self._running = False
-        await self._queue.put(None)  # Sentinel de apagado
+        # Use put_nowait to avoid blocking when the queue is full.
+        # If the queue is full the sentinel can never be consumed (dispatch_loop
+        # won't drain because _running is False), so we cancel the task directly.
+        try:
+            self._queue.put_nowait(None)
+        except asyncio.QueueFull:
+            self._dispatch_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await self._dispatch_task
         self._dispatch_task = None
+        # Cancel in-flight subscriber tasks and await their cancellation so that
+        # no coroutine outlives the bus and unhandled exceptions are not silently
+        # swallowed by the garbage collector.
+        for task in list(self._pending_tasks):
+            task.cancel()
+        if self._pending_tasks:
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+        self._pending_tasks.clear()
         if self._dlq is not None:
             await self._dlq.stop()
         logger.info("CoreEventBus detenido")
@@ -129,7 +149,17 @@ class CoreEventBus:
 
             for pattern, callback in self._subscriptions:
                 if fnmatch.fnmatch(event.topic, pattern):
-                    asyncio.create_task(self._safe_execute(callback, event))
+                    if len(self._pending_tasks) >= self._MAX_PENDING_TASKS:
+                        logger.warning(
+                            "Event bus backpressure: %d pending tasks — dropping dispatch for '%s' handler '%s'",
+                            len(self._pending_tasks),
+                            event.topic,
+                            getattr(callback, "__name__", repr(callback)),
+                        )
+                        continue
+                    task = asyncio.create_task(self._safe_execute(callback, event))
+                    self._pending_tasks.add(task)
+                    task.add_done_callback(self._pending_tasks.discard)
 
             self._queue.task_done()
 

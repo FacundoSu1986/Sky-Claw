@@ -35,6 +35,8 @@ dev = [
     "pytest-aiohttp>=1.0,<2",
     "pytest-cov",
     "ruff>=0.4",
+    "mypy>=1.0",
+    "types-aiofiles",
 ]
 
 [tool.pytest.ini_options]

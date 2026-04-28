@@ -108,8 +108,13 @@ class AuthTokenManager:
     async def _rotation_loop(self) -> None:
         while True:
             await asyncio.sleep(_TOKEN_TTL / 2)
-            logger.info("Rotating auth token...")
-            self.generate()
+            try:
+                logger.info("Rotating auth token...")
+                self.generate()
+            except Exception:
+                # Log and continue — a single rotation failure must not kill
+                # the loop and leave tokens permanently stale.
+                logger.exception("Token rotation failed — will retry at next interval")
 
     async def stop_rotation(self) -> None:
         """Cancel the token rotation task."""

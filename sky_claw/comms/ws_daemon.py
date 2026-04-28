@@ -236,6 +236,7 @@ class UIBroadcastServer:
     async def start(self) -> None:
         """Generate auth token and start the WS server."""
         self._auth.generate()
+        await self._auth.start_rotation()
         self._server = await websockets.serve(
             self._handler,
             self.host,
@@ -248,6 +249,7 @@ class UIBroadcastServer:
         if self._server:
             self._server.close()
             await self._server.wait_closed()
+        await self._auth.stop_rotation()
         self._auth.revoke()
         self._logger.info("🛑 UIBroadcastServer stopped.")
 

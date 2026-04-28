@@ -13,6 +13,11 @@ concurrency:
 permissions:
   contents: read
 
+# CI-FIX-001: Opt into Node.js 24 now — Node.js 20 actions are deprecated
+# and will be forced off on 2026-06-02 and removed 2026-09-16.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # ── Gate 1: Code Quality ─────────────────────────────
   lint:
@@ -24,7 +29,11 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install ruff
+      # CI-FIX-002: Install ruff via dev extras for version consistency with
+      # local dev environment. Avoids silent format drift caused by unpinned
+      # `pip install ruff` resolving to a different minor/patch than local.
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
       - name: Ruff check
         run: ruff check sky_claw/ tests/ --output-format=github
       - name: Ruff format check
@@ -40,9 +49,8 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: |
-          pip install -e ".[dev]"
-          pip install mypy types-aiofiles
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
       - name: Mypy check
         run: python -m mypy sky_claw/ --ignore-missing-imports --no-error-summary
 
@@ -56,7 +64,8 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install -e ".[dev]"
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
       - name: Run tests with coverage
         run: pytest --cov=sky_claw --cov-report=xml --cov-fail-under=49 tests/
       - name: Upload coverage
@@ -75,13 +84,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install bandit pip-audit setuptools
+      - name: Install security tools + project
+        run: |
+          pip install -e .
+          pip install bandit pip-audit setuptools
       - name: Bandit (SAST)
         run: bandit -r sky_claw/ -ll
       - name: Pip-audit (SCA)
-        run: |
-          pip install -e .
-          pip-audit --skip-editable -r requirements.lock
+        run: pip-audit --skip-editable -r requirements.lock
 
   # ── Gate 5: Build ────────────────────────────────────
   build:
@@ -93,7 +103,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: |
+      - name: Install build dependencies
+        run: |
           pip install pyinstaller
           pip install -e .
       - name: Build executable

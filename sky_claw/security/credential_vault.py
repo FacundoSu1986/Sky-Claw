@@ -19,19 +19,22 @@ class CredentialVault:
     """Bóveda Criptográfica asíncrona para Zero-Trust y secretos en WAL."""
 
     @staticmethod
-    def _atomic_write_bytes(path: str | Path, data: bytes) -> None:
-        """Escribe bytes de forma atómica: tmp → restrict → replace.
+    def _write_salt_atomic(path: str, data: bytes) -> None:
+        """Write *data* to *path* atomically to prevent TOCTOU and partial writes.
 
-        Elimina la ventana TOCTOU donde el archivo existe con permisos
-        por defecto (umask) entre write y chmod, y evita archivos corruptos
-        por escritura parcial si el proceso cae a mitad.
-        Sigue el mismo patrón que GovernanceManager._get_or_create_hmac_key.
+        Mirrors the pattern used in GovernanceManager._get_or_create_hmac_key:
+        write to a sibling .tmp file, restrict permissions, then rename into place.
+        The temp file is unlinked on any error so no partial artifact is left behind.
         """
-        p = Path(path)
-        tmp_path = p.with_suffix(p.suffix + ".tmp")
-        tmp_path.write_bytes(data)
-        restrict_to_owner(tmp_path)
-        tmp_path.replace(p)
+        target = Path(path)
+        tmp = target.with_name(target.name + ".tmp")
+        try:
+            tmp.write_bytes(data)
+            restrict_to_owner(tmp)
+            tmp.replace(target)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def _read_and_validate_salt(path: str) -> bytes | None:
@@ -92,23 +95,23 @@ class CredentialVault:
                     salt_file,
                     backup_file,
                 )
-                CredentialVault._atomic_write_bytes(backup_file, primary)
+                CredentialVault._write_salt_atomic(backup_file, primary)
                 return primary
 
             if primary is not None:
                 logger.warning("Salt backup ausente — sincronizando desde primary.")
-                CredentialVault._atomic_write_bytes(backup_file, primary)
+                CredentialVault._write_salt_atomic(backup_file, primary)
                 return primary
 
             if backup is not None:
                 logger.warning("Salt primary corrupto/ausente — restaurando desde backup.")
-                CredentialVault._atomic_write_bytes(salt_file, backup)
+                CredentialVault._write_salt_atomic(salt_file, backup)
                 return backup
 
             # Caso 5: ningún salt válido — generar nuevo (operación destructiva).
             salt = os.urandom(32)
-            CredentialVault._atomic_write_bytes(salt_file, salt)
-            CredentialVault._atomic_write_bytes(backup_file, salt)
+            CredentialVault._write_salt_atomic(salt_file, salt)
+            CredentialVault._write_salt_atomic(backup_file, salt)
             logger.critical(
                 "SECURITY: nuevo salt generado en %s (+ backup). "
                 "Cualquier secreto cifrado con un salt anterior queda IRRECUPERABLE.",
@@ -124,6 +127,8 @@ class CredentialVault:
                 salt_file,
             )
             raise RuntimeError("Vault salt initialization failed — refusing to use weak deterministic fallback") from e
+        # Non-OSError exceptions (programming bugs, permission model errors, etc.)
+        # propagate unwrapped so the full traceback is preserved for diagnosis.
 
     def __init__(self, db_path: str, master_key: bytes | str) -> None:
         """Inicializa la bóveda con el path a la DB SQLite local para almacenar

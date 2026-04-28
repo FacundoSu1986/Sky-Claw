@@ -25,6 +25,7 @@ async def _run_web(ctx: AppContext, port: int) -> None:
 
     auth_manager = AuthTokenManager()
     auth_manager.generate()
+    await auth_manager.start_rotation()
 
     web_app = WebApp(
         router=ctx.router,
@@ -49,6 +50,7 @@ async def _run_web(ctx: AppContext, port: int) -> None:
     except asyncio.CancelledError:
         pass
     finally:
+        await auth_manager.stop_rotation()
         await runner.cleanup()
 
 

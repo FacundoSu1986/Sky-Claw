@@ -17,6 +17,7 @@ import ipaddress
 import logging
 import socket
 import ssl
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -60,6 +61,9 @@ class GatewayTCPConnector(aiohttp.TCPConnector):
         super().__init__(resolver=resolver, **kwargs)
 
 
+_MAX_PINNED_ENTRIES = 1024
+
+
 class SafeResolver(aiohttp.abc.AbstractResolver):
     """DNS resolver with IP validation and pinning against TOCTOU/rebinding.
 
@@ -67,11 +71,15 @@ class SafeResolver(aiohttp.abc.AbstractResolver):
     lifetime of this resolver instance.  Subsequent ``resolve()`` calls for the
     same ``(host, port)`` return the cached answer, preventing an attacker from
     swapping DNS records between the check and the use (DNS rebinding).
+
+    The pin cache is an LRU OrderedDict capped at ``_MAX_PINNED_ENTRIES`` entries
+    to prevent unbounded memory growth when many distinct hostnames are resolved
+    within a single session.
     """
 
     def __init__(self, policy: EgressPolicy) -> None:
         self._policy = policy
-        self._pinned: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        self._pinned: OrderedDict[tuple[str, int], list[dict[str, Any]]] = OrderedDict()
 
     async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET) -> list[dict[str, Any]]:
         pin_key = (host, port)
@@ -79,6 +87,8 @@ class SafeResolver(aiohttp.abc.AbstractResolver):
         # DNS Pinning: return the previously validated result if available.
         pinned = self._pinned.get(pin_key)
         if pinned is not None:
+            # LRU: promote to most-recently-used end.
+            self._pinned.move_to_end(pin_key)
             return pinned
 
         loop = asyncio.get_running_loop()
@@ -118,6 +128,9 @@ class SafeResolver(aiohttp.abc.AbstractResolver):
 
         # Pin the validated addresses — all future calls bypass DNS entirely.
         self._pinned[pin_key] = result
+        # LRU eviction: drop oldest entry when cap is exceeded.
+        if len(self._pinned) > _MAX_PINNED_ENTRIES:
+            self._pinned.popitem(last=False)
         return result
 
     async def close(self) -> None:

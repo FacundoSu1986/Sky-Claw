@@ -75,21 +75,21 @@ def _ensure_registry() -> None:
                 len(_SCHEMA_REGISTRY),
                 list(_SCHEMA_REGISTRY.keys()),
             )
+            # Flag set only after successful population.
+            _REGISTRY_POPULATED = True
         except ImportError:
             logger.warning(
                 "No se pudo importar sky_claw.core.schemas — los decoradores de contratos funcionarán en modo pass-through."
             )
-            # Suprimir reintentos: el módulo no existe, no mejorará.
+            # Module absent is permanent — suppress retries to avoid log storms.
             _REGISTRY_POPULATED = True
-            return
         except Exception:
-            # Excepción inesperada (SyntaxError, RuntimeError, etc.):
-            # limpiar dict parcial y re-lanzar SIN fijar la bandera,
-            # permitiendo reintentos futuros si la causa se resuelve.
+            # Unexpected error (SyntaxError, RuntimeError in schemas, etc.):
+            # discard any partial state so the next call can retry cleanly,
+            # and propagate the original exception with full traceback.
             _SCHEMA_REGISTRY.clear()
+            logger.exception("Error inesperado poblando SchemaRegistry — se reintentará en la próxima llamada.")
             raise
-        # Población exitosa — fijar bandera dentro del lock.
-        _REGISTRY_POPULATED = True
 
 
 # ============================================================================
