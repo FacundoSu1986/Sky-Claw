@@ -109,10 +109,3 @@ Sky-Claw aplica una política de seguridad estricta:
 ## 📄 Licencia
 
 MIT
-e (PyInstaller)
-
----
-
-## Licencia
-
-MIT
