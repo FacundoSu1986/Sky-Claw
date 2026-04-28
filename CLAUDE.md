@@ -1,24 +1,29 @@
 # Project: Skyclaw Main Sync
 
-## CRITICAL RULES — GIT OPERATIONS BLOCKED
+## Git — Reglas de operación
 
-**NEVER execute any of the following under any circumstances:**
+`.git` **debe preservarse**. No lo elimines aunque el IDE congele el panel del agente.
 
-- `git init`
-- `git clone`
-- `git worktree add`
-- `git worktree remove`
-- Creating or modifying `.git/` directories
-- Any command that initializes, creates, or modifies Git repository structures
+**Operaciones PROHIBIDAS bajo cualquier circunstancia:**
 
-**Rationale:** This project must NOT have a `.git` directory. The presence of `.git` causes a critical failure that disables the AI agent panel in the Antigravity IDE.
+- `git init` — crea un nuevo repositorio (nunca necesario aquí)
+- `git clone` — crea un checkout separado (usar worktrees en su lugar)
+- `git worktree add` / `git worktree remove` — solo el sistema de agentes gestiona worktrees
+- Crear o eliminar manualmente directorios `.git/`
 
-**If you need version control context:** Use `git log`, `git diff`, `git show`, or `git status` ONLY if a `.git` already exists elsewhere. Never create one.
+**Si el panel de Antigravity se congela con `.git` presente:**  
+→ Consultar `docs/TROUBLESHOOTING_ANTIGRAVITY.md` antes de cualquier acción destructiva.  
+→ La causa habitual es `files.watcherExclude` incompleto en `.antigravity/settings.json`, NO el tamaño de `.git`.
+
+**Operaciones de lectura permitidas en cualquier momento:**  
+`git log`, `git diff`, `git show`, `git status`, `git branch`, `git config --list`
 
 ## Worktrees
 
-**DO NOT use the `using-git-worktrees` skill in this project.** The worktree feature requires a Git repository and will trigger `git init` automatically.
+El sistema de agentes gestiona worktrees bajo `.claude/worktrees/`. Estas rutas están excluidas del file-watcher del IDE y del índice Git (`.gitignore`). No las toques manualmente.
+
+**NO usar el skill `using-git-worktrees`** — las worktrees son creadas y eliminadas por el harness de Claude Code automáticamente.
 
 ## Parallel Agents
 
-When using `dispatching-parallel-agents`, ensure no sub-agent executes `git init` or creates worktrees. All agents must respect the rules above.
+Cuando uses `dispatching-parallel-agents`, ningún sub-agente debe ejecutar `git init` ni crear worktrees fuera de `.claude/worktrees/`. Todos los agentes deben respetar las reglas anteriores.

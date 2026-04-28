@@ -91,5 +91,15 @@ plans/
 !/.antigravity/config.json
 !/.antigravity/settings.json
 
+# Python tooling caches (must never be tracked — bloat the IDE file-watcher)
+.mypy_cache/
+.ruff_cache/
+
+# Local-only worktrees (live on disk only; not part of project history)
+.claude/worktrees/
+
+# Local agent artifacts (skills/cache/state — keep on disk, untrack from git)
+.agents/
+
 # Auditoría y extracción
 skyscraping/
