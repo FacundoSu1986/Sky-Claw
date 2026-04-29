@@ -13,15 +13,14 @@ Validates:
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from sky_claw.security.prompt_armor import (
     PromptArmor,
     PromptArmorConfig,
     build_system_header,
-    encapsulate_external_data,
     validate_prompt_integrity,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -227,9 +226,9 @@ class TestInjectionResistance:
 class TestConfigImmutability:
     def test_config_is_frozen(self) -> None:
         cfg = PromptArmorConfig()
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             cfg.enable_xml_encapsulation = False  # type: ignore[misc]
 
     def test_config_strict_validation(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             PromptArmorConfig(max_external_block_size="not_an_int")  # type: ignore[arg-type]

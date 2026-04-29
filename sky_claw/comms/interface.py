@@ -2,11 +2,9 @@ import asyncio
 import json
 import logging
 
-import websockets
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from sky_claw.comms._transport import (
-    AuthError,
     assert_safe_ws_url,
     authenticated_connect,
 )

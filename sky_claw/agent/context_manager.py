@@ -7,7 +7,6 @@ import aiosqlite
 
 from sky_claw.security.prompt_armor import (
     PromptArmor,
-    PromptArmorConfig,
 )
 
 # Standard 2026 Context Management

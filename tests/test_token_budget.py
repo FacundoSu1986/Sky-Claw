@@ -14,21 +14,18 @@ Validates:
 
 from __future__ import annotations
 
-import time
-
 import pytest
+from pydantic import ValidationError
 
 from sky_claw.agent.token_budget import (
     BudgetVerdict,
     TokenBudgetConfig,
     TokenBudgetManager,
-    TokenSessionReport,
 )
 from sky_claw.agent.token_circuit_breaker import (
     TokenCircuitBreaker,
     TokenCircuitBreakerConfig,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -42,7 +39,7 @@ def _make_messages(*contents: str) -> list[dict]:
 def _make_large_messages(count: int, chars_per_msg: int = 4000) -> list[dict]:
     """Create messages that simulate a large conversation."""
     msgs: list[dict] = [{"role": "system", "content": "System prompt"}]
-    for i in range(count):
+    for _ in range(count):
         msgs.append({"role": "user", "content": "A" * chars_per_msg})
         msgs.append({"role": "assistant", "content": "B" * chars_per_msg})
     return msgs
@@ -331,12 +328,12 @@ class TestCircuitBreaker:
 class TestConfigImmutability:
     def test_budget_config_frozen(self) -> None:
         cfg = TokenBudgetConfig()
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             cfg.max_context_tokens = 99999  # type: ignore[misc]
 
     def test_breaker_config_frozen(self) -> None:
         cfg = TokenCircuitBreakerConfig()
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             cfg.spike_threshold_tokens = 99999  # type: ignore[misc]
 
     def test_verdict_frozen(self) -> None:
@@ -346,5 +343,5 @@ class TestConfigImmutability:
             max_tokens=1000,
             utilization_pct=10.0,
         )
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             v.action = "reject"  # type: ignore[misc]

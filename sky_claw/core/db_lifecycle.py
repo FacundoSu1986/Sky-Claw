@@ -19,8 +19,6 @@ from __future__ import annotations
 
 import atexit
 import logging
-import os
-import signal
 import sqlite3
 import time
 from pathlib import Path

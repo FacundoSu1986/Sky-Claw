@@ -30,11 +30,11 @@ from sky_claw.scraper.nexus_downloader import NexusDownloader
 from sky_claw.security.hitl import HITLGuard, HITLRequest
 from sky_claw.security.network_gateway import GatewayTCPConnector, NetworkGateway
 from sky_claw.security.path_validator import PathValidator
+from sky_claw.security.prompt_armor import build_system_header
 from sky_claw.tools_installer import ToolsInstaller, scan_common_paths
 
 logger = logging.getLogger("sky_claw")
 
-from sky_claw.security.prompt_armor import build_system_header
 
 SYSTEM_PROMPT = (
     build_system_header()

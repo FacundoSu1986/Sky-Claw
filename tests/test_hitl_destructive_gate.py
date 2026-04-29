@@ -22,7 +22,6 @@ from sky_claw.orchestrator.tool_strategies.middleware import (
     HitlGateMiddleware,
 )
 
-
 # ---------------------------------------------------------------------------
 # Stubs
 # ---------------------------------------------------------------------------
@@ -131,7 +130,7 @@ class TestDestructiveToolPatterns:
             "generate_lods",
             "resolve_conflict_patch",
         }
-        assert DESTRUCTIVE_TOOL_PATTERNS == expected
+        assert expected == DESTRUCTIVE_TOOL_PATTERNS
 
     def test_query_mod_metadata_not_destructive(self) -> None:
         assert "query_mod_metadata" not in DESTRUCTIVE_TOOL_PATTERNS

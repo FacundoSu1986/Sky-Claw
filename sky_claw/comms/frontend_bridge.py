@@ -35,11 +35,10 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import keyring
 import websockets
-
-from sky_claw.comms._transport import assert_safe_ws_url
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from sky_claw.agent.providers import ProviderConfigError, create_provider
+from sky_claw.comms._transport import assert_safe_ws_url
 from sky_claw.config import Config
 
 if TYPE_CHECKING:

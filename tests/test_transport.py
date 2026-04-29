@@ -19,7 +19,6 @@ from sky_claw.comms._transport import (
     authenticated_connect,
 )
 
-
 # ---------------------------------------------------------------------------
 # assert_safe_ws_url — accepted URLs
 # ---------------------------------------------------------------------------

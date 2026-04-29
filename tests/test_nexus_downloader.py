@@ -1168,9 +1168,6 @@ class TestDownloadFilenameHardening:
         self, tmp_path: pathlib.Path
     ) -> None:
         """A legitimate filename must produce a path inside staging_dir."""
-        import importlib
-
-        import pathlib as _pathlib
 
         downloader = _make_downloader(tmp_path)
         staging = tmp_path / "staging"

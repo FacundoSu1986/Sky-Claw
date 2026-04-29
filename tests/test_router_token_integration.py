@@ -8,14 +8,14 @@ the router's chat loop.
 from __future__ import annotations
 
 import asyncio
-import json
+import pathlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sky_claw.agent.providers import AnthropicProvider
-from sky_claw.agent.router import DEFAULT_TOOL_ROUND_TIMEOUT, LLMRouter
+from sky_claw.agent.router import LLMRouter
 from sky_claw.agent.token_budget import TokenBudgetConfig, TokenBudgetManager
 from sky_claw.agent.token_circuit_breaker import (
     TokenCircuitBreaker,
@@ -28,9 +28,6 @@ from sky_claw.orchestrator.sync_engine import SyncEngine
 from sky_claw.scraper.masterlist import MasterlistClient
 from sky_claw.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.security.path_validator import PathValidator
-
-import pathlib
-
 
 # ------------------------------------------------------------------
 # Helpers
@@ -378,7 +375,6 @@ class TestToolRoundTimeout:
         r._provider.chat = AsyncMock(side_effect=_mock_chat)
 
         # Make tool execution hang (sleep longer than timeout)
-        original_execute = r._tools.execute
 
         async def _slow_execute(name: str, args: dict) -> str:
             await asyncio.sleep(300)

@@ -20,7 +20,7 @@ import logging
 import time
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 logger = logging.getLogger("SkyClaw.TokenBudget")
 
