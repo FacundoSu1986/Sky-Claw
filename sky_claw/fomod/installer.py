@@ -23,7 +23,7 @@ import aiofiles.os
 
 from sky_claw.fomod.parser import FomodParseError, parse_fomod
 from sky_claw.fomod.resolver import FomodResolver
-from sky_claw.security.path_validator import PathValidator, PathViolationError
+from sky_claw.security.path_validator import PathValidator, PathViolationError, safe_join
 
 if TYPE_CHECKING:
     from sky_claw.fomod.models import FileInstall
@@ -379,20 +379,47 @@ class FomodInstaller:
         mod_dest: pathlib.Path,
         files: list[FileInstall],
     ) -> list[str]:
-        """Copy resolved FOMOD files to the mod destination."""
+        """Copy resolved FOMOD files to the mod destination.
+
+        Each ``<file source="..." destination="..."/>`` attribute pair from the
+        FOMOD manifest is attacker-controlled.  We use :func:`safe_join` to
+        sandbox both the source (must stay inside *content_root*) and the
+        destination (must stay inside *mod_dest*) before any I/O.
+
+        Poisoned entries are logged at CRITICAL level and skipped — the rest of
+        the install continues so legitimate files are not lost.
+        """
         copied: list[str] = []
 
         for file_install in files:
-            src = content_root / file_install.source
             dest_rel = file_install.destination or file_install.source
-            dest = mod_dest / dest_rel
+
+            # --- sandbox source ---
+            try:
+                src = safe_join(content_root, file_install.source)
+            except PathViolationError as exc:
+                logger.critical("FOMOD source path escapes content root — skipping entry: %s", exc)
+                continue
+
+            # --- sandbox destination ---
+            try:
+                dest = safe_join(mod_dest, dest_rel)
+            except PathViolationError as exc:
+                logger.critical("FOMOD destination path escapes mod dest — skipping entry: %s", exc)
+                continue
 
             if src.is_dir():
                 for child in src.rglob("*"):
                     if child.is_dir():
                         continue
                     child_rel = child.relative_to(src)
-                    child_dest = dest / child_rel
+
+                    try:
+                        child_dest = safe_join(dest, child_rel)
+                    except PathViolationError as exc:
+                        logger.critical("FOMOD child dest escapes sandbox — skipping: %s", exc)
+                        continue
+
                     await aiofiles.os.makedirs(child_dest.parent, exist_ok=True)
                     await async_copy2(child, child_dest)
                     copied.append(str(pathlib.PurePosixPath(dest_rel) / child_rel))

@@ -1,34 +1,47 @@
 import json
 import logging
 import sqlite3
+from pathlib import Path
 
 import aiosqlite
+
+from sky_claw.core.db_lifecycle import DatabaseLifecycleManager
 
 logger = logging.getLogger("SkyClaw.Database")
 
 
 class DatabaseAgent:
-    """
-    Gestor central de base de datos SQLite para Sky-Claw.
+    """Gestor central de base de datos SQLite para Sky-Claw.
 
-    Modo WAL habilitado con pragmas de concurrencia optimizados.
+    FASE 1.5.2: Delegates WAL lifecycle management to
+    DatabaseLifecycleManager while preserving the identical public API.
+
     Contiene esquemas para: scraper, agent_memory, mods, conflicts, activity_log.
     """
 
     def __init__(self, db_path: str = "sky_claw_state.db"):
         self.db_path = db_path
         self._conn: aiosqlite.Connection | None = None
+        self._lifecycle: DatabaseLifecycleManager | None = None
 
     async def init_db(self):
-        """Inicializa esquemas con modo WAL y pragmas de concurrencia."""
-        self._conn = await aiosqlite.connect(self.db_path)
-        self._conn.row_factory = aiosqlite.Row
+        """Inicializa esquemas con modo WAL y pragmas de concurrencia.
 
-        # ── WAL & Concurrency Hardening ──
-        await self._conn.execute("PRAGMA journal_mode=WAL")
-        await self._conn.execute("PRAGMA foreign_keys=ON")
-        await self._conn.execute("PRAGMA synchronous=NORMAL")
-        await self._conn.execute("PRAGMA busy_timeout=5000")
+        FASE 1.5.2: Uses DatabaseLifecycleManager for WAL recovery and
+        hardened pragmas. Maintains identical behavior to the legacy init.
+        """
+        db_path = Path(self.db_path)
+
+        # FASE 1.5.2: Use lifecycle manager for WAL recovery + pragmas
+        self._lifecycle = DatabaseLifecycleManager(db_paths=[db_path])
+        await self._lifecycle.init_all()
+
+        # Get the managed connection
+        self._conn = self._lifecycle.get_connection(self.db_path)
+        if self._conn is None:
+            raise RuntimeError(f"DatabaseLifecycleManager failed to initialize {self.db_path}")
+
+        self._conn.row_factory = aiosqlite.Row
 
         # ── Core tables (Scraper / Agent Memory) ──
         await self._conn.execute("""
@@ -90,11 +103,21 @@ class DatabaseAgent:
         )
 
     async def close(self):
-        """Cierra la conexión persistente a la base de datos."""
-        conn = self._conn
-        if conn:
+        """Cierra la conexión persistente con checkpointing de WAL.
+
+        FASE 1.5.2: Delegates to DatabaseLifecycleManager.shutdown_all()
+        which executes PRAGMA wal_checkpoint(TRUNCATE) before closing.
+        """
+        if self._lifecycle is not None:
+            await self._lifecycle.shutdown_all()
+            self._lifecycle = None
             self._conn = None
-            await conn.close()
+        else:
+            # Fallback for legacy codepath without lifecycle manager
+            conn = self._conn
+            if conn:
+                self._conn = None
+                await conn.close()
 
     async def _get_conn(self) -> aiosqlite.Connection:
         """Devuelve la conexión persistente; lanza error si no fue inicializada."""

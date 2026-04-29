@@ -5,6 +5,10 @@ from typing import Any
 
 import aiosqlite
 
+from sky_claw.security.prompt_armor import (
+    PromptArmor,
+)
+
 # Standard 2026 Context Management
 logger = logging.getLogger("SkyClaw.ContextManager")
 
@@ -16,15 +20,27 @@ class ContextManager:
     Implements a sovereign data layer, retrieving local plugin topology and mod
     metadata without external egress. Orchestrates non-blocking I/O for
     LLM prompt injection.
+
+    FASE 1.5.1: All external data is encapsulated via PromptArmor to prevent
+    prompt injection from file contents.
     """
 
-    def __init__(self, db_path: str, mo2_profile_path: str):
+    def __init__(
+        self,
+        db_path: str,
+        mo2_profile_path: str,
+        armor: PromptArmor | None = None,
+    ):
         self.db_path: str = db_path
         self.profile_path: str = mo2_profile_path
+        self._armor = armor or PromptArmor()
 
     async def build_prompt_context(self, query: str, target_mods: list[str] | None = None) -> str:
         """
         Synthesizes loadorder status and mod registry metadata into a coherent pre-prompt.
+
+        FASE 1.5.1: External data is encapsulated in XML CDATA blocks via PromptArmor
+        to prevent the LLM from interpreting file contents as instructions.
         """
         # Concurrent non-blocking data retrieval
         # H-01: return_exceptions=True para prevenir crashes del orquestador
@@ -34,14 +50,30 @@ class ContextManager:
             return_exceptions=True,
         )
 
+        # FASE 1.5.1: Encapsulate load order info as external data
+        lo_encapsulated = self._armor.encapsulate_external_data(
+            "loadorder.txt",
+            str(lo_info),
+        )
+
         context_block: str = "### LOCAL MODDING TOPOLOGY (Zero Trust Edge 2026)\n"
-        context_block += f"Load Order Status: {lo_info}\n"
+        context_block += lo_encapsulated + "\n"
         context_block += "Registry Metadata for Session:\n"
 
-        if mod_results:
+        if mod_results and isinstance(mod_results, list):
+            # FASE 1.5.1: Encapsulate mod metadata as external data
+            mod_lines: list[str] = []
             for mod in mod_results:
                 status: str = "✅ Installed/Active" if mod["enabled_in_vfs"] else "⏳ Inactive"
-                context_block += f"- [{mod['nexus_id']}] {mod['name']} v{mod['version']} | {status}\n"
+                mod_lines.append(f"- [{mod['nexus_id']}] {mod['name']} v{mod['version']} | {status}")
+            mod_text = "\n".join(mod_lines)
+            context_block += (
+                self._armor.encapsulate_external_data(
+                    "mod_metadata",
+                    mod_text,
+                )
+                + "\n"
+            )
         else:
             context_block += "- No matches found in local SQLite registry for specific query mods.\n"
 

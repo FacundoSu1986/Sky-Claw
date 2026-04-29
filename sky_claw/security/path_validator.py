@@ -23,6 +23,93 @@ class PathViolationError(Exception):
     """Raised when an I/O path escapes the sandbox."""
 
 
+# ---------------------------------------------------------------------------
+# Standalone helpers — usable without a full PathValidator instance
+# ---------------------------------------------------------------------------
+
+
+def assert_safe_component(name: str | None, *, field: str = "name") -> str:
+    """Validate that *name* is a single safe path component.
+
+    A safe component:
+    - is a non-empty ``str``
+    - is not the traversal sentinel ``"."`` or ``".."``
+    - contains no path separators (``/`` or ``\\``)
+    - contains no NUL bytes
+    - contains no ASCII control characters (U+0000–U+001F)
+
+    Unicode letters, digits, spaces, hyphens, underscores, dots embedded
+    in a longer name (e.g. ``"mod_v1.2"``) are all accepted.
+
+    Parameters
+    ----------
+    name:
+        The component string to validate.
+    field:
+        Human-readable label for error messages (e.g. ``"mod_name"``).
+
+    Returns
+    -------
+    str
+        The original *name*, unchanged, if it passes all checks.
+
+    Raises
+    ------
+    PathViolationError
+        When any rule is violated.
+    """
+    if name is None or not isinstance(name, str):
+        raise PathViolationError(f"{field}: expected a non-empty string, got {type(name).__name__}")
+    if not name:
+        raise PathViolationError(f"{field}: must not be empty")
+    if name in (".", ".."):
+        raise PathViolationError(f"{field}: traversal segment {name!r} is not a valid component")
+    if "/" in name or "\\" in name:
+        raise PathViolationError(f"{field}: path separators are not allowed in a component, got {name!r}")
+    if "\x00" in name:
+        raise PathViolationError(f"{field}: NUL byte is not allowed")
+    for ch in name:
+        if ord(ch) < 0x20:
+            raise PathViolationError(f"{field}: control character {ch!r} (U+{ord(ch):04X}) is not allowed")
+    return name
+
+
+def safe_join(root: str | pathlib.Path, untrusted: str | pathlib.Path) -> pathlib.Path:
+    """Join *untrusted* onto *root* and verify the result stays inside *root*.
+
+    Unlike the ``/`` operator on :class:`pathlib.Path`, this function fully
+    resolves both paths and rejects any result that escapes *root* — whether
+    via ``..`` segments, absolute overrides, or symlink chains.
+
+    Parameters
+    ----------
+    root:
+        The trusted sandbox root directory.
+    untrusted:
+        An attacker-controlled relative path to append.
+
+    Returns
+    -------
+    pathlib.Path
+        The resolved, sandboxed path.
+
+    Raises
+    ------
+    PathViolationError
+        When the resolved candidate escapes *root*.
+    """
+    root_resolved = pathlib.Path(root).resolve()
+    candidate = (root_resolved / untrusted).resolve()
+    try:
+        candidate.relative_to(root_resolved)
+    except ValueError as exc:
+        raise PathViolationError(
+            f"Untrusted path {str(untrusted)!r} escapes root {str(root_resolved)!r} "
+            f"(would resolve to {str(candidate)!r})"
+        ) from exc
+    return candidate
+
+
 class PathValidator:
     """Validates that a path is within the allowed sandbox roots.
 

@@ -25,6 +25,7 @@ def manager(tmp_path: pathlib.Path):
     mgr = FileSnapshotManager(snapshot_dir=snap_dir, max_size_mb=100)
     # initialize() is sync-like (mkdir), call it directly
     import asyncio
+
     asyncio.run(mgr.initialize())
     return mgr
 
@@ -39,9 +40,7 @@ class TestSnapshotChecksumSidecar:
         original.write_text("hello snapshot", encoding="utf-8")
 
         info = await manager.create_snapshot(original)
-        meta_path = pathlib.Path(info.snapshot_path).with_suffix(
-            pathlib.Path(info.snapshot_path).suffix + ".meta.json"
-        )
+        meta_path = pathlib.Path(info.snapshot_path).with_suffix(pathlib.Path(info.snapshot_path).suffix + ".meta.json")
 
         assert meta_path.exists(), f"Meta sidecar not found: {meta_path}"
         data = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -51,7 +50,9 @@ class TestSnapshotChecksumSidecar:
         int(data["checksum"], 16)
 
     @pytest.mark.asyncio
-    async def test_restore_snapshot_verifies_checksum_from_sidecar(self, manager: FileSnapshotManager, tmp_path: pathlib.Path):
+    async def test_restore_snapshot_verifies_checksum_from_sidecar(
+        self, manager: FileSnapshotManager, tmp_path: pathlib.Path
+    ):
         """Restoring a corrupted snapshot must raise JournalSnapshotError."""
         original = tmp_path / "original.txt"
         original.write_text("pristine content", encoding="utf-8")

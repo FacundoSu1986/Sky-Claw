@@ -1,9 +1,10 @@
 """Demonio de mantenimiento pasivo extraído del SupervisorAgent.
 
 Responsabilidad única: ejecutar tareas de limpieza de bajo nivel en background
-(pruning de snapshots antiguos, control de tamaño de backups).
+(pruning de snapshots antiguos, control de tamaño de backups, WAL checkpointing).
 
 Parte de la refactorización ARC-01 (Fat Object → SRP).
+FASE 1.5.2: Added periodic WAL checkpointing to prevent unbounded growth.
 """
 
 from __future__ import annotations
@@ -15,9 +16,13 @@ import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from sky_claw.core.db_lifecycle import DatabaseLifecycleManager
     from sky_claw.db.snapshot_manager import FileSnapshotManager
 
 logger = logging.getLogger("SkyClaw.MaintenanceDaemon")
+
+# FASE 1.5.2: Default interval for periodic WAL checkpointing
+DEFAULT_CHECKPOINT_INTERVAL_SECONDS = 300  # 5 minutes
 
 
 def get_max_backup_size_mb() -> int:
@@ -36,12 +41,18 @@ class MaintenanceDaemon:
 
     Ejecuta tareas periódicas de limpieza del filesystem y base de datos:
     - Pruning de snapshots antiguos cuando el directorio de backups excede el límite.
+    - FASE 1.5.2: Periodic WAL checkpointing via DatabaseLifecycleManager.
 
     Recibe sus dependencias por inyección (no instancia nada internamente).
     """
 
-    def __init__(self, snapshot_manager: FileSnapshotManager) -> None:
+    def __init__(
+        self,
+        snapshot_manager: FileSnapshotManager,
+        lifecycle_manager: DatabaseLifecycleManager | None = None,
+    ) -> None:
         self._snapshot_manager = snapshot_manager
+        self._lifecycle_manager = lifecycle_manager
         self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -63,40 +74,70 @@ class MaintenanceDaemon:
         logger.info("MaintenanceDaemon detenido")
 
     async def _pruning_loop(self) -> None:
-        """FASE 1.5: Worker de limpieza pasiva de snapshots antiguos.
+        """FASE 1.5: Worker de limpieza pasiva de snapshots antiguos + WAL checkpoint.
 
         Verifica el tamaño del directorio de backups y elimina los registros
         de journal y snapshots más antiguos si excede el límite.
+
+        FASE 1.5.2: Also executes periodic WAL checkpoint (PASSIVE mode)
+        every DEFAULT_CHECKPOINT_INTERVAL_SECONDS to prevent unbounded growth.
         """
+        checkpoint_counter = 0
         while True:
             try:
-                # Ejecutar cada hora
-                await asyncio.sleep(3600)
+                # FASE 1.5.2: Checkpoint every 5 minutes (300s)
+                # Pruning check every 1 hour (3600s)
+                # So checkpoint runs ~12 times between each pruning check
+                await asyncio.sleep(DEFAULT_CHECKPOINT_INTERVAL_SECONDS)
+                checkpoint_counter += 1
 
-                stats = await self._snapshot_manager.get_stats()
-                max_size_bytes = get_max_backup_size_mb() * 1024 * 1024
+                # FASE 1.5.2: Periodic WAL checkpoint (PASSIVE mode)
+                await self._checkpoint_tick()
 
-                if stats.total_size_bytes > max_size_bytes:
-                    logger.warning(
-                        "Límite de tamaño de backups excedido: %d MB > %d MB. Iniciando pruning...",
-                        stats.total_size_bytes // (1024 * 1024),
-                        max_size_bytes // (1024 * 1024),
-                    )
-
-                    # Limpiar snapshots antiguos (más de 30 días)
-                    result = await self._snapshot_manager.cleanup_old_snapshots(days_old=30)
-
-                    logger.info(
-                        "Pruning completado: %d snapshots eliminados, %d MB liberados",
-                        result.deleted_count,
-                        result.freed_bytes // (1024 * 1024),
-                    )
-
-                    if result.errors:
-                        for error in result.errors:
-                            logger.error("Error durante pruning: %s", error)
+                # Run pruning check every 12th tick (~1 hour)
+                if checkpoint_counter % 12 == 0:
+                    await self._pruning_check()
 
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
-                logger.error("Error en worker de pruning pasivo: %s", e)
+
+    async def _checkpoint_tick(self) -> None:
+        """FASE 1.5.2: Periodic WAL checkpoint to prevent unbounded growth."""
+        if self._lifecycle_manager is None:
+            return
+        try:
+            results = await self._lifecycle_manager.checkpoint_all(mode="PASSIVE")
+            for db_path, info in results.items():
+                if "error" in info:
+                    logger.error("WAL checkpoint failed for %s: %s", db_path, info["error"])
+        except Exception as e:
+            logger.error("WAL checkpoint tick failed: %s", e)
+
+    async def _pruning_check(self) -> None:
+        """Check backup size and prune if needed."""
+        try:
+            stats = await self._snapshot_manager.get_stats()
+            max_size_bytes = get_max_backup_size_mb() * 1024 * 1024
+
+            if stats.total_size_bytes > max_size_bytes:
+                logger.warning(
+                    "Límite de tamaño de backups excedido: %d MB > %d MB. Iniciando pruning...",
+                    stats.total_size_bytes // (1024 * 1024),
+                    max_size_bytes // (1024 * 1024),
+                )
+
+                # Limpiar snapshots antiguos (más de 30 días)
+                result = await self._snapshot_manager.cleanup_old_snapshots(days_old=30)
+
+                logger.info(
+                    "Pruning completado: %d snapshots eliminados, %d MB liberados",
+                    result.deleted_count,
+                    result.freed_bytes // (1024 * 1024),
+                )
+
+                if result.errors:
+                    for error in result.errors:
+                        logger.error("Error durante pruning: %s", error)
+
+        except Exception as e:
+            logger.error("Pruning check failed: %s", e)

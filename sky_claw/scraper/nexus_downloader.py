@@ -19,6 +19,11 @@ from sky_claw.config import (
     NEXUS_DOWNLOAD_TIMEOUT_SECONDS,
 )
 from sky_claw.security.network_gateway import NetworkGateway
+from sky_claw.security.path_validator import (
+    PathViolationError,
+    assert_safe_component,
+    safe_join,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +236,17 @@ class NexusDownloader:
 
                 size_bytes: int = int(data.get("size_in_bytes") or data.get("size", 0) * 1024)
                 md5: str = str(data.get("md5") or "")
-                file_name: str = str(data.get("file_name", f"mod_{nexus_id}_file_{file_id}"))
+
+                # Security: strip path components from the API-supplied filename
+                # so that "../../evil.dll" becomes "evil.dll" before storage in
+                # FileInfo.  assert_safe_component then rejects control characters
+                # and remaining separator-like constructs.
+                raw_file_name: str = str(data.get("file_name", f"mod_{nexus_id}_file_{file_id}"))
+                file_name: str = pathlib.Path(raw_file_name).name or raw_file_name
+                try:
+                    assert_safe_component(file_name, field="file_name")
+                except PathViolationError as exc:
+                    raise DownloadError(f"Nexus API returned unsafe filename {raw_file_name!r}: {exc}") from exc
 
                 try:
                     download_url = await self._get_download_url(nexus_id, file_id, session)
@@ -255,10 +270,15 @@ class NexusDownloader:
         session: aiohttp.ClientSession,
         progress_cb: ProgressCallback = None,
     ) -> pathlib.Path:
+        # Security: validate the filename before touching the filesystem.
+        # Callers may construct FileInfo directly (bypassing get_file_info),
+        # so this is the authoritative enforcement point.
+        assert_safe_component(file_info.file_name, field="file_name")
+
         # Handle FREE_FALLBACK before the retry loop – no retry needed here
         async with self._semaphore:
             self._staging_dir.mkdir(parents=True, exist_ok=True)
-            dest = self._staging_dir / file_info.file_name
+            dest = safe_join(self._staging_dir, file_info.file_name)
             if file_info.download_url == "FREE_FALLBACK":
                 return await self._handle_manual_fallback(file_info, dest, progress_cb)
 
@@ -276,7 +296,7 @@ class NexusDownloader:
                     await asyncio.sleep(self._random.uniform(0.1, 0.5))
 
                     self._staging_dir.mkdir(parents=True, exist_ok=True)
-                    dest = self._staging_dir / file_info.file_name
+                    dest = safe_join(self._staging_dir, file_info.file_name)
 
                 await self._gateway.authorize("GET", file_info.download_url)
 
@@ -388,7 +408,7 @@ class NexusDownloader:
         logger.info("Waiting for %r to appear in %s ...", file_info.file_name, mo2_downloads_dir)
 
         # Poll the downloads folder
-        target_in_downloads = mo2_downloads_dir / file_info.file_name
+        target_in_downloads = safe_join(mo2_downloads_dir, file_info.file_name)
 
         timeout_seconds = 3600  # Wait up to 1 hour
         poll_interval = 2.0

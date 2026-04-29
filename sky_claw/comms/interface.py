@@ -2,17 +2,21 @@ import asyncio
 import json
 import logging
 
-import websockets
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
+from sky_claw.comms._transport import (
+    assert_safe_ws_url,
+    authenticated_connect,
+)
 from sky_claw.core.models import HitlApprovalRequest
 
 logger = logging.getLogger("SkyClaw.Interface")
 
 
 class InterfaceAgent:
-    def __init__(self, gateway_url: str = "ws://127.0.0.1:18789"):
-        self.gateway_url = gateway_url
+    def __init__(self, gateway_url: str = "ws://127.0.0.1:18789", *, token_dir: str | None = None):
+        self.gateway_url = assert_safe_ws_url(gateway_url)
+        self._token_dir = token_dir
         self.ws_connection = None
         self._pending_hitl = {}
         self._command_callbacks = []
@@ -22,7 +26,7 @@ class InterfaceAgent:
         backoff = 2.0
         while True:
             try:
-                self.ws_connection = await websockets.connect(self.gateway_url)
+                self.ws_connection = await authenticated_connect(self.gateway_url, token_dir=self._token_dir)
                 logger.info(f"Conectado al Gateway Node.js en {self.gateway_url}")
                 backoff = 2.0  # Reset backoff tras conexión exitosa
                 await self._listen_to_gateway()

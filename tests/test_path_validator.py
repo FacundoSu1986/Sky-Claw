@@ -27,6 +27,8 @@ import pytest
 from sky_claw.security.path_validator import (
     PathValidator,
     PathViolationError,
+    assert_safe_component,
+    safe_join,
     sandboxed_io,
 )
 
@@ -470,3 +472,132 @@ class TestSandboxedIODecorator:
         result = fn_with_extra(valid, mode="rb")
         assert result == "rb"
         assert len(call_log) == 1
+
+
+# ---------------------------------------------------------------------------
+# TestSafeJoin
+# ---------------------------------------------------------------------------
+
+
+class TestSafeJoin:
+    """safe_join must sandbox the resolved result inside root."""
+
+    def test_normal_relative_path(self, tmp_path: pathlib.Path) -> None:
+        result = safe_join(tmp_path, "mods/Requiem")
+        assert result == (tmp_path / "mods" / "Requiem").resolve()
+
+    def test_nested_path_accepted(self, tmp_path: pathlib.Path) -> None:
+        result = safe_join(tmp_path, "a/b/c/d.esp")
+        assert result.is_relative_to(tmp_path.resolve())
+
+    def test_double_dot_rejected(self, tmp_path: pathlib.Path) -> None:
+        with pytest.raises(PathViolationError, match="escapes root"):
+            safe_join(tmp_path, "../etc/passwd")
+
+    def test_deep_double_dot_rejected(self, tmp_path: pathlib.Path) -> None:
+        with pytest.raises(PathViolationError, match="escapes root"):
+            safe_join(tmp_path, "a/b/../../../../../../etc/passwd")
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX absolute path test")
+    def test_absolute_posix_path_rejected(self, tmp_path: pathlib.Path) -> None:
+        with pytest.raises(PathViolationError, match="escapes root"):
+            safe_join(tmp_path, "/etc/shadow")
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows absolute path test")
+    def test_absolute_windows_path_rejected(self, tmp_path: pathlib.Path) -> None:
+        with pytest.raises(PathViolationError, match="escapes root"):
+            safe_join(tmp_path, "C:\\Windows\\System32\\cmd.exe")
+
+    def test_string_root_accepted(self, tmp_path: pathlib.Path) -> None:
+        result = safe_join(str(tmp_path), "sub/file.txt")
+        assert result.is_relative_to(tmp_path.resolve())
+
+    def test_path_untrusted_accepted(self, tmp_path: pathlib.Path) -> None:
+        result = safe_join(tmp_path, pathlib.Path("sub/file.txt"))
+        assert result.is_relative_to(tmp_path.resolve())
+
+    def test_empty_string_yields_root(self, tmp_path: pathlib.Path) -> None:
+        result = safe_join(tmp_path, "")
+        assert result == tmp_path.resolve()
+
+    def test_dot_segment_yields_root(self, tmp_path: pathlib.Path) -> None:
+        result = safe_join(tmp_path, ".")
+        assert result == tmp_path.resolve()
+
+    def test_mixed_traversal_and_valid_rejected(self, tmp_path: pathlib.Path) -> None:
+        with pytest.raises(PathViolationError):
+            safe_join(tmp_path, "valid/../../../etc")
+
+
+# ---------------------------------------------------------------------------
+# TestAssertSafeComponent
+# ---------------------------------------------------------------------------
+
+
+class TestAssertSafeComponent:
+    """assert_safe_component must reject hostile path components."""
+
+    def test_normal_mod_name_accepted(self) -> None:
+        assert assert_safe_component("Requiem") == "Requiem"
+
+    def test_name_with_dots_and_hyphens_accepted(self) -> None:
+        assert assert_safe_component("SkyUI_5.2-SE") == "SkyUI_5.2-SE"
+
+    def test_unicode_name_accepted(self) -> None:
+        assert assert_safe_component("MódNàme") == "MódNàme"
+
+    def test_returns_original_unchanged(self) -> None:
+        name = "Requiem"
+        assert assert_safe_component(name) is name
+
+    def test_empty_string_rejected(self) -> None:
+        with pytest.raises(PathViolationError, match="must not be empty"):
+            assert_safe_component("")
+
+    def test_none_rejected(self) -> None:
+        with pytest.raises(PathViolationError):
+            assert_safe_component(None)  # type: ignore[arg-type]
+
+    def test_non_string_rejected(self) -> None:
+        with pytest.raises(PathViolationError):
+            assert_safe_component(123)  # type: ignore[arg-type]
+
+    def test_single_dot_rejected(self) -> None:
+        with pytest.raises(PathViolationError, match="traversal"):
+            assert_safe_component(".")
+
+    def test_double_dot_rejected(self) -> None:
+        with pytest.raises(PathViolationError, match="traversal"):
+            assert_safe_component("..")
+
+    def test_forward_slash_rejected(self) -> None:
+        with pytest.raises(PathViolationError, match="separators"):
+            assert_safe_component("mods/evil")
+
+    def test_backslash_rejected(self) -> None:
+        with pytest.raises(PathViolationError, match="separators"):
+            assert_safe_component("mods\\evil")
+
+    def test_newline_injection_rejected(self) -> None:
+        with pytest.raises(PathViolationError, match="control character"):
+            assert_safe_component("legit\nevil_entry")
+
+    def test_carriage_return_rejected(self) -> None:
+        with pytest.raises(PathViolationError, match="control character"):
+            assert_safe_component("mod\rname")
+
+    def test_tab_rejected(self) -> None:
+        with pytest.raises(PathViolationError, match="control character"):
+            assert_safe_component("mod\tname")
+
+    def test_bell_char_rejected(self) -> None:
+        with pytest.raises(PathViolationError, match="control character"):
+            assert_safe_component("mod\x07name")
+
+    def test_nul_byte_rejected(self) -> None:
+        with pytest.raises(PathViolationError, match="NUL"):
+            assert_safe_component("mod\x00name")
+
+    def test_field_name_appears_in_error(self) -> None:
+        with pytest.raises(PathViolationError, match="mod_name"):
+            assert_safe_component("..", field="mod_name")

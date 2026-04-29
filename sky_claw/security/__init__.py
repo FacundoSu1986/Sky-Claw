@@ -13,6 +13,15 @@ from sky_claw.security.metacognitive_logic import SecurityMetacognition, audit_r
 from sky_claw.security.network_gateway import NetworkGateway
 from sky_claw.security.path_validator import PathValidator, sandboxed_io
 
+# FASE 1.5.1: Prompt Armor — semantic hardening against file-based injection
+from sky_claw.security.prompt_armor import (
+    PromptArmor,
+    PromptArmorConfig,
+    build_system_header,
+    encapsulate_external_data,
+    validate_prompt_integrity,
+)
+
 # Nuevos componentes de ciberseguridad avanzada (v5.5 Titan)
 from sky_claw.security.purple_scanner import PurpleScanner, run_scan
 from sky_claw.security.sanitize import safe_json_loads, sanitize_for_prompt
@@ -27,14 +36,19 @@ __all__ = [
     "HITLGuard",
     "NetworkGateway",
     "PathValidator",
+    "PromptArmor",
+    "PromptArmorConfig",
     "PurpleScanner",
     "SecurityMetacognition",
     "TextInspector",
     "audit_resource",
+    "build_system_header",
+    "encapsulate_external_data",
     "run_scan",
     "safe_json_loads",
     "sandboxed_io",
     "sanitize_for_prompt",
     "scan_text",
     "secure_llm_call",
+    "validate_prompt_integrity",
 ]

@@ -25,6 +25,8 @@ from sky_claw.agent.lcel_chains import (
 )
 from sky_claw.agent.providers import LLMProvider, create_provider
 from sky_claw.agent.semantic_router import SemanticRouter
+from sky_claw.agent.token_budget import TokenBudgetManager
+from sky_claw.agent.token_circuit_breaker import TokenCircuitBreaker
 from sky_claw.core.errors import AgentOrchestrationError, SecurityViolationError
 from sky_claw.core.schemas import RouteClassification
 from sky_claw.security.sanitize import sanitize_for_prompt
@@ -38,9 +40,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# FASE 1.5.3: Legacy constants kept for backward compatibility with tests.
+# Actual budget management is delegated to TokenBudgetManager.
 MAX_CONTEXT_MESSAGES = 20
 MAX_TOOL_ROUNDS = 10
 MAX_HERMES_RETRIES = 3
+
+# FASE 1.5.3: Default tool round timeout
+DEFAULT_TOOL_ROUND_TIMEOUT = 120.0
 
 _HERMES_TOOL_INSTRUCTIONS = (
     "\n\nYou have access to the following tools. To call a tool, respond with a "
@@ -201,6 +208,10 @@ class LLMRouter:
         )
         self._lcel_chain_builder = ChainBuilder(tool_executor=self._lcel_tool_executor)
 
+        # FASE 1.5.3: Token budget management and circuit breaker
+        self._token_budget = TokenBudgetManager()
+        self._circuit_breaker = TokenCircuitBreaker()
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -343,6 +354,41 @@ class LLMRouter:
 
         for _round in range(MAX_TOOL_ROUNDS):
             try:
+                # ── FASE 1.5.3: Pre-call budget check ──────────────────────
+                # Handles context growth from accumulated tool results.
+                budget_verdict = self._token_budget.check_budget(messages)
+                if budget_verdict.action == "reject":
+                    logger.warning(
+                        "TokenBudget: context rejected at %.1f%% utilization (%d/%d tokens)",
+                        budget_verdict.utilization_pct,
+                        budget_verdict.current_tokens,
+                        budget_verdict.max_tokens,
+                    )
+                    return (
+                        "\u26a0\ufe0f El contexto de la conversaci\u00f3n excede el presupuesto de tokens. "
+                        "Inicia una nueva conversaci\u00f3n."
+                    )
+                if budget_verdict.action == "truncate":
+                    messages = self._token_budget.truncate_older_messages(messages)
+                    logger.info("TokenBudget: truncated context to fit budget")
+                elif budget_verdict.action == "summarize":
+                    messages = self._token_budget.summarize_older_messages(messages)
+                    logger.info("TokenBudget: summarized older context")
+
+                # Re-estimate after potential summarization/truncation
+                pre_call_tokens = self._token_budget._estimate_messages_tokens(messages)
+
+                # ── FASE 1.5.3: Circuit breaker pre-check ──────────────────
+                if not self._circuit_breaker.check_request(pre_call_tokens):
+                    logger.warning(
+                        "TokenCircuitBreaker: request rejected (state=%s, est=%d tokens)",
+                        self._circuit_breaker.state,
+                        pre_call_tokens,
+                    )
+                    return (
+                        "\u26a0\ufe0f Circuit breaker activado \u2014 consumo de tokens excesivo. Espera y reintenta."
+                    )
+
                 effective_system = f"{self._system_prompt}\n\n{injected_context}"
                 effective_tools = tool_schemas
                 if self._hermes_mode and self._tools:
@@ -379,6 +425,11 @@ class LLMRouter:
                 stop_reason = response_data.get("stop_reason", "end_turn")
                 content_blocks: list[dict[str, Any]] = response_data.get("content", [])
 
+                # ── FASE 1.5.3: Record token usage after LLM response ──────
+                response_tokens = self._token_budget.estimate_tokens(json.dumps(content_blocks, default=str))
+                self._token_budget.record_usage(pre_call_tokens + response_tokens)
+                self._circuit_breaker.record_response(pre_call_tokens + response_tokens)
+
                 await self._save_message(chat_id, "assistant", json.dumps(content_blocks))
                 messages.append({"role": "assistant", "content": content_blocks})
 
@@ -409,7 +460,10 @@ class LLMRouter:
                             tool_name_h = call["name"]
                             tool_args_h = call["arguments"]
                             try:
-                                result_str_h = await self._tools.execute(tool_name_h, tool_args_h)
+                                result_str_h = await asyncio.wait_for(
+                                    self._tools.execute(tool_name_h, tool_args_h),
+                                    timeout=DEFAULT_TOOL_ROUND_TIMEOUT,
+                                )
                                 hermes_exec_error_count = 0
                             except (asyncio.CancelledError, KeyboardInterrupt):
                                 raise
@@ -496,7 +550,10 @@ class LLMRouter:
                             logger.debug(f"🔧 LCEL tool prompt compuesto para {tool_name}")
 
                         # Ejecutar herramienta con compatibilidad AsyncToolRegistry
-                        result_str = await self._tools.execute(tool_name, tool_input)
+                        result_str = await asyncio.wait_for(
+                            self._tools.execute(tool_name, tool_input),
+                            timeout=DEFAULT_TOOL_ROUND_TIMEOUT,
+                        )
                         consecutive_errors = 0
                         if progress_callback:
                             asyncio.create_task(progress_callback(f"executed_{tool_name}", 100))

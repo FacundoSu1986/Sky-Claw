@@ -39,6 +39,7 @@ import pydantic
 from pydantic import BaseModel, ConfigDict, Field
 
 from sky_claw.core.errors import AgentOrchestrationError, SecurityViolationError
+from sky_claw.security.prompt_armor import validate_prompt_integrity
 from sky_claw.security.sanitize import sanitize_for_prompt
 from sky_claw.security.text_inspector import TextInspector
 
@@ -124,6 +125,7 @@ class AgentGuardrailConfig(BaseModel):
     detect_paths: bool = True
     detect_injection: bool = True
     sanitize_input: bool = True
+    validate_prompt_integrity: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +206,24 @@ class AgentGuardrail:
             text = sanitize_for_prompt(text, max_length=cfg.max_input_length)
 
         return text
+
+    async def validate_messages_integrity(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """FASE 1.5.1: Validate that <external_data> tags only appear in user messages.
+
+        Raises:
+            SecurityViolationError: If <external_data> tags are found in
+                system or assistant messages (indicates prompt tampering).
+        """
+        if not self._config.validate_prompt_integrity:
+            return
+        if not validate_prompt_integrity(messages):
+            raise SecurityViolationError(
+                "Prompt integrity violation: <external_data> tags detected "
+                "in non-user message. Possible prompt injection attack."
+            )
 
     # ------------------------------------------------------------------
     # Output gate

@@ -63,22 +63,45 @@ class GovernanceManager:
         self.whitelist = self._load_whitelist()
 
     async def _init_db(self):
-        """Inicializa la base de datos de caché de escaneo."""
+        """Inicializa la base de datos de caché de escaneo.
+
+        FASE 1.5.2: Uses hardened pragmas consistent with DatabaseLifecycleManager.
+        """
         try:
-            async with aiosqlite.connect(self.cache_db_path) as db:
-                await db.execute("PRAGMA journal_mode=WAL")
-                await db.execute("""
-                    CREATE TABLE IF NOT EXISTS scan_cache (
-                        file_hash TEXT PRIMARY KEY,
-                        file_path TEXT,
-                        last_scan_time TEXT,
-                        scan_results TEXT,
-                        status TEXT
-                    )
-                """)
-                await db.commit()
+            db = await aiosqlite.connect(self.cache_db_path)
+            # FASE 1.5.2: Hardened pragmas (consistent with db_lifecycle.py)
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA foreign_keys=ON")
+            await db.execute("PRAGMA synchronous=NORMAL")
+            await db.execute("PRAGMA busy_timeout=5000")
+            await db.execute("PRAGMA temp_store=MEMORY")
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS scan_cache (
+                    file_hash TEXT PRIMARY KEY,
+                    file_path TEXT,
+                    last_scan_time TEXT,
+                    scan_results TEXT,
+                    status TEXT
+                )
+            """)
+            await db.commit()
+            # Store connection for later shutdown
+            self._db_conn = db
         except Exception as e:
             logger.error("Error inicializando DB de gobernanza: %s", e)
+
+    async def _shutdown_db(self) -> None:
+        """FASE 1.5.2: Graceful shutdown with WAL checkpoint."""
+        conn = getattr(self, "_db_conn", None)
+        if conn is not None:
+            try:
+                await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                await conn.close()
+                logger.info("GovernanceManager: DB shutdown with checkpoint complete")
+            except Exception as e:
+                logger.error("GovernanceManager: error during DB shutdown: %s", e)
+            finally:
+                self._db_conn = None
 
     def _get_or_create_hmac_key(self) -> bytes:
         """Obtiene la clave HMAC del disco o genera una nueva.

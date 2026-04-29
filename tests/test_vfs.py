@@ -201,3 +201,81 @@ class TestGameControl:
         assert result["status"] == "closed"
         assert "SkyrimSE.exe" in result["killed_processes"]
         mock_proc_1.kill.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TestHostileComponentInputs
+# ---------------------------------------------------------------------------
+
+
+class TestHostileComponentInputs:
+    """assert_safe_component must fire before any filesystem I/O in MO2Controller."""
+
+    @pytest.fixture()
+    def ctrl(self, tmp_path: pathlib.Path) -> MO2Controller:
+        validator = PathValidator(roots=[tmp_path])
+        return MO2Controller(tmp_path, path_validator=validator)
+
+    # --- add_mod_to_modlist ---
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad_name",
+        [
+            "evil\nfake_entry",  # newline injection
+            "../escape",  # traversal
+            "mods/subdir",  # forward slash
+            "mods\\subdir",  # backslash
+        ],
+    )
+    async def test_add_mod_hostile_mod_name_raises(self, ctrl: MO2Controller, bad_name: str) -> None:
+        with pytest.raises(PathViolationError):
+            await ctrl.add_mod_to_modlist(bad_name)
+
+    @pytest.mark.asyncio
+    async def test_add_mod_hostile_profile_raises(self, ctrl: MO2Controller) -> None:
+        with pytest.raises(PathViolationError):
+            await ctrl.add_mod_to_modlist("LegitMod", profile="../escape")
+
+    # --- delete_mod_files ---
+
+    @pytest.mark.asyncio
+    async def test_delete_mod_separator_raises(self, ctrl: MO2Controller) -> None:
+        with pytest.raises(PathViolationError):
+            await ctrl.delete_mod_files("../../secret")
+
+    # --- remove_mod_from_modlist ---
+
+    @pytest.mark.asyncio
+    async def test_remove_mod_newline_injection_raises(self, ctrl: MO2Controller) -> None:
+        with pytest.raises(PathViolationError):
+            await ctrl.remove_mod_from_modlist("legit\nevil")
+
+    # --- toggle_mod_in_modlist ---
+
+    @pytest.mark.asyncio
+    async def test_toggle_mod_separator_raises(self, ctrl: MO2Controller) -> None:
+        with pytest.raises(PathViolationError):
+            await ctrl.toggle_mod_in_modlist("mods/evil")
+
+    # --- read_modlist ---
+
+    @pytest.mark.asyncio
+    async def test_read_modlist_hostile_profile_raises(self, ctrl: MO2Controller) -> None:
+        with pytest.raises(PathViolationError):
+            # read_modlist is an async generator — must iterate to trigger
+            async for _ in ctrl.read_modlist(profile="../evil"):
+                pass
+
+    # --- smoke test: legitimate inputs still work ---
+
+    @pytest.mark.asyncio
+    async def test_legitimate_inputs_still_work(self, ctrl: MO2Controller, tmp_path: pathlib.Path) -> None:
+        profile_dir = tmp_path / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "modlist.txt").write_text("+ExistingMod\n", encoding="utf-8")
+
+        await ctrl.add_mod_to_modlist("NewMod", profile="Default")
+
+        content = (profile_dir / "modlist.txt").read_text(encoding="utf-8")
+        assert "+NewMod" in content

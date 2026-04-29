@@ -53,9 +53,7 @@ class TestCredentialVaultGetSecret:
         assert any("Database error" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_get_secret_invalid_token_raises_security_violation(
-        self, vault, caplog
-    ):
+    async def test_get_secret_invalid_token_raises_security_violation(self, vault, caplog):
         """Corrupted ciphertext → SecurityViolationError, not None."""
         # Prime the vault with a valid secret
         await vault.initialize()
