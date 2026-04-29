@@ -11,6 +11,12 @@ from pathlib import Path
 import websockets
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
+from sky_claw.comms._transport import (
+    AuthError,
+    assert_safe_ws_url,
+    authenticated_connect,
+)
+
 # Zero Trust AST Import (Local Repo Resolution)
 WORK_DIR = Path(__file__).resolve().parent.parent.parent
 AST_SKILLS_PATH = WORK_DIR / ".agents" / "skills" / "skyclaw-purple-auditor" / "scripts"
@@ -38,10 +44,13 @@ class TelegramDaemon:
         session,
         gateway_url="ws://localhost:8080",
         ui_broadcast: UIBroadcastServer | None = None,
+        *,
+        token_dir: str | None = None,
     ):
         self.router = router
         self.session = session
-        self.gateway_url = gateway_url
+        self.gateway_url = assert_safe_ws_url(gateway_url)
+        self._token_dir = token_dir
         self.ws = None
         self._is_running = False
         self._running_lock = asyncio.Lock()
@@ -60,12 +69,13 @@ class TelegramDaemon:
         while self._is_running:
             try:
                 # Use a custom connection timeout to prevent hanging
-                async with websockets.connect(self.gateway_url, open_timeout=10) as ws:
+                async with authenticated_connect(self.gateway_url, token_dir=self._token_dir, open_timeout=10) as ws:
                     self.ws = ws
                     logger.info("✅ Enlace establecido con Telegram Gateway (Stateless Perimeter Layer).")
                     backoff = 2.0  # Reset backoff upon successful connection
                     await self._listen_loop()
             except (
+                AuthError,
                 ConnectionClosed,
                 ConnectionClosedError,
                 ConnectionRefusedError,

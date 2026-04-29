@@ -35,6 +35,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import keyring
 import websockets
+
+from sky_claw.comms._transport import assert_safe_ws_url
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from sky_claw.agent.providers import ProviderConfigError, create_provider
@@ -150,7 +152,7 @@ class FrontendBridge:
         self.session = session
         self.config = config
         self.ctx = app_context
-        self.gateway_url = gateway_url
+        self.gateway_url = assert_safe_ws_url(gateway_url)
         self.ws: WebSocketClient | None = None
         self._is_running = False
         self._running_lock = asyncio.Lock()

@@ -103,3 +103,24 @@ plans/
 
 # Auditoría y extracción
 skyscraping/
+project_scrape/
+Auditorias/
+
+# Informes y reportes residuales (no código fuente)
+INFORME_ANALISIS_ESTATICO.md
+informe_revision.md
+CODE_REVIEW_RESOLUTION.md
+SYNC_PROTOCOL_REPORT.md
+REFACTOR-VALIDATION.md
+IMPLEMENTATION-SUMMARY.txt
+"plan KIMI fase2.txt"
+
+# Kimi agent config
+.kimi/
+
+# Agent metadata inside source tree
+sky_claw/.kilocode/
+sky_claw/.llm-chat-history/
+
+# Backup files
+*.backup

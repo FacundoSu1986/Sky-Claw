@@ -1118,3 +1118,114 @@ class TestNetworkGatewayCDN:
         gw = NetworkGateway(EgressPolicy(block_private_ips=False))
         with pytest.raises(EgressViolationError):
             await gw.authorize("POST", "https://cf-files.nexusmods.com/file.zip")
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.3c — filename path-traversal hardening
+# ---------------------------------------------------------------------------
+
+
+from sky_claw.security.path_validator import PathViolationError  # noqa: E402
+
+
+class TestDownloadFilenameHardening:
+    """NexusDownloader must reject file_name values that escape staging_dir.
+
+    Attack vector: MITM or rogue API response returns
+    ``file_name: "../../Windows/System32/evil.dll"`` — without sanitization
+    this would write outside the staging directory.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad_name",
+        [
+            "../../Windows/evil.dll",       # classic traversal
+            "../config/settings.json",       # one-level traversal
+            "sub/dir/file.zip",             # forward slash in component
+            "sub\\dir\\file.zip",           # backslash separators
+            "evil\x00.zip",                 # NUL byte
+            "evil\ninjected.zip",           # newline injection
+        ],
+    )
+    async def test_download_hostile_filename_raises_before_io(
+        self, tmp_path: pathlib.Path, bad_name: str
+    ) -> None:
+        """PathViolationError must be raised before any filesystem or network I/O."""
+        downloader = _make_downloader(tmp_path)
+        file_info = _make_file_info(file_name=bad_name)
+
+        session_mock = AsyncMock()  # must NOT be called
+
+        with pytest.raises(PathViolationError):
+            await downloader.download(file_info, session_mock)
+
+        # No network call should have been made.
+        session_mock.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_download_normal_filename_resolves_inside_staging(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """A legitimate filename must produce a path inside staging_dir."""
+        import importlib
+
+        import pathlib as _pathlib
+
+        downloader = _make_downloader(tmp_path)
+        staging = tmp_path / "staging"
+        content = b"MOD_CONTENT_BYTES"
+        file_info = _make_file_info(
+            file_name="SkyUI_5.2-SE.zip",
+            md5=_md5_of(content),
+            size_bytes=len(content),
+            download_url="https://premium-files.nexusmods.com/SkyUI.zip",
+        )
+
+        session_mock = _make_session(_make_aiohttp_response(status=200, content=content))
+        result = await downloader.download(file_info, session_mock)
+
+        assert result.name == "SkyUI_5.2-SE.zip"
+        assert result.is_relative_to(staging.resolve())
+
+    @pytest.mark.asyncio
+    async def test_get_file_info_strips_path_traversal_from_api_filename(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """get_file_info must strip path components from API-returned file_name.
+
+        A MITM returning ``file_name: "../../evil.dll"`` must end up as
+        ``"evil.dll"`` in the resulting FileInfo, or raise DownloadError.
+        """
+        from sky_claw.scraper.nexus_downloader import DownloadError
+
+        downloader = _make_downloader(tmp_path)
+
+        # Craft a mock that returns a traversal filename from the Nexus metadata API.
+        meta_resp = _make_aiohttp_response(
+            status=200,
+            json_data={
+                "file_name": "../../evil.dll",
+                "size_in_bytes": 1024,
+                "md5": "",
+            },
+        )
+        dl_link_resp = _make_aiohttp_response(
+            status=200,
+            json_data=[{"URI": "https://premium-files.nexusmods.com/file/100/200"}],
+        )
+        session_mock = _make_session(meta_resp, dl_link_resp)
+
+        # Either the traversal is stripped to "evil.dll" (safe), OR a DownloadError
+        # is raised because the sanitized name still fails validation.
+        try:
+            info = await downloader.get_file_info(100, 200, session_mock)
+            # If we get here, the filename must have been sanitised to a safe component.
+            # The result must contain no path separators and no traversal segments.
+            assert "/" not in info.file_name
+            assert "\\" not in info.file_name
+            assert info.file_name not in (".", "..")
+            parts = info.file_name.replace("\\", "/").split("/")
+            assert all(p not in (".", "..") for p in parts)
+        except DownloadError:
+            pass  # Also acceptable — raised when the sanitised name is still unsafe

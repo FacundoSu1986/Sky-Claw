@@ -383,3 +383,126 @@ class TestAddModToModlist:
 
         content = modlist.read_text(encoding="utf-8")
         assert "+FirstMod\n" in content
+
+
+# ------------------------------------------------------------------
+# Malicious FOMOD manifest — path-traversal via source/destination attrs
+# ------------------------------------------------------------------
+
+_MALICIOUS_DEST_FOMOD_XML = """\
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+  <moduleName>Evil Mod</moduleName>
+  <installSteps order="Explicit">
+    <installStep name="Step1">
+      <optionalFileGroups order="Explicit">
+        <group name="G1" type="SelectAll">
+          <plugins order="Explicit">
+            <plugin name="All">
+              <files>
+                <!-- destination escapes the mod folder -->
+                <file source="data/legit.esp"
+                      destination="../../escape/injected.esp" />
+                <!-- legitimate entry must still install -->
+                <file source="data/legit.esp"
+                      destination="legit.esp" />
+              </files>
+              <typeDescriptor><type name="Optional"/></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+  </installSteps>
+</config>
+"""
+
+_MALICIOUS_SOURCE_FOMOD_XML = """\
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+  <moduleName>Evil Mod</moduleName>
+  <installSteps order="Explicit">
+    <installStep name="Step1">
+      <optionalFileGroups order="Explicit">
+        <group name="G1" type="SelectAll">
+          <plugins order="Explicit">
+            <plugin name="All">
+              <files>
+                <!-- source tries to escape the content root -->
+                <file source="../../outside/secret.dll"
+                      destination="plugins/secret.dll" />
+                <!-- legitimate entry must still install -->
+                <file source="data/legit.esp"
+                      destination="legit.esp" />
+              </files>
+              <typeDescriptor><type name="Optional"/></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+  </installSteps>
+</config>
+"""
+
+
+def _build_fomod_zip(
+    tmp_path: pathlib.Path,
+    fomod_xml: str,
+    extra_files: dict[str, bytes] | None = None,
+) -> pathlib.Path:
+    """Create a zip archive with the given FOMOD XML and optional extra files."""
+    archive = tmp_path / "evil_mod.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("fomod/ModuleConfig.xml", fomod_xml)
+        for name, data in (extra_files or {}).items():
+            zf.writestr(name, data)
+    return archive
+
+
+class TestMaliciousFomodManifest:
+    """Integration tests: malicious FOMOD manifests must not escape the sandbox."""
+
+    @pytest.mark.asyncio
+    async def test_malicious_destination_is_rejected_legit_entry_installs(
+        self, sandbox: pathlib.Path, validator: PathValidator
+    ) -> None:
+        """A poisoned destination= must be skipped; the clean entry must still copy."""
+        mo2_mods = sandbox / "mods"
+        mo2_mods.mkdir(parents=True)
+
+        archive = _build_fomod_zip(
+            sandbox,
+            _MALICIOUS_DEST_FOMOD_XML,
+            extra_files={"data/legit.esp": b"SKYRIM_ESP"},
+        )
+
+        installer = FomodInstaller(path_validator=validator)
+        result = await installer.install(archive, mo2_mods)
+
+        # The traversal entry must NOT be in the copied list.
+        assert not any("escape" in f or ".." in f for f in result.files_copied)
+        # The legitimate entry MUST have installed.
+        assert any("legit.esp" in f for f in result.files_copied)
+
+    @pytest.mark.asyncio
+    async def test_malicious_source_is_rejected_legit_entry_installs(
+        self, sandbox: pathlib.Path, validator: PathValidator
+    ) -> None:
+        """A poisoned source= must be skipped; the clean entry must still copy."""
+        mo2_mods = sandbox / "mods"
+        mo2_mods.mkdir(parents=True)
+
+        archive = _build_fomod_zip(
+            sandbox,
+            _MALICIOUS_SOURCE_FOMOD_XML,
+            extra_files={"data/legit.esp": b"SKYRIM_ESP"},
+        )
+
+        installer = FomodInstaller(path_validator=validator)
+        result = await installer.install(archive, mo2_mods)
+
+        # The escaping source must not have produced any output.
+        assert not any("secret.dll" in f for f in result.files_copied)
+        # The legitimate entry MUST have installed.
+        assert any("legit.esp" in f for f in result.files_copied)

@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
     from sky_claw.security.path_validator import PathValidator
 
+from sky_claw.security.path_validator import assert_safe_component
+
 logger = logging.getLogger(__name__)
 
 # TASK-011: Default timeout for game-launch *spawn* verification (seconds).
@@ -108,6 +110,7 @@ class MO2Controller:
         Yields one tuple per valid mod entry, consuming O(1) memory.
         Corrupt or unparseable lines are logged and skipped.
         """
+        assert_safe_component(profile, field="profile")
         modlist_path = self._root / "profiles" / profile / "modlist.txt"
         validated = self._validator.validate(modlist_path)
 
@@ -145,6 +148,8 @@ class MO2Controller:
             mod_name: The mod directory name (e.g. ``"Requiem"``).
             profile: MO2 profile name.
         """
+        assert_safe_component(mod_name, field="mod_name")
+        assert_safe_component(profile, field="profile")
         modlist_path = self._root / "profiles" / profile / "modlist.txt"
         validated = self._validator.validate(modlist_path)
 
@@ -180,6 +185,8 @@ class MO2Controller:
             mod_name: The mod directory name.
             profile: MO2 profile name.
         """
+        assert_safe_component(mod_name, field="mod_name")
+        assert_safe_component(profile, field="profile")
         modlist_path = self._root / "profiles" / profile / "modlist.txt"
         validated = self._validator.validate(modlist_path)
 
@@ -216,6 +223,8 @@ class MO2Controller:
             profile: MO2 profile name.
             enable: True to enable (+), False to disable (-).
         """
+        assert_safe_component(mod_name, field="mod_name")
+        assert_safe_component(profile, field="profile")
         modlist_path = self._root / "profiles" / profile / "modlist.txt"
         validated = self._validator.validate(modlist_path)
 
@@ -250,6 +259,7 @@ class MO2Controller:
         Args:
             mod_name: The mod directory name.
         """
+        assert_safe_component(mod_name, field="mod_name")
         mod_dir = self._root / "mods" / mod_name
         validated = self._validator.validate(mod_dir)
 
@@ -278,6 +288,7 @@ class MO2Controller:
             GameLaunchTimeoutError: If the launch process fails to appear
                 in the process table within the configured timeout.
         """
+        assert_safe_component(profile, field="profile")
         mo2_exe = self._root / "ModOrganizer.exe"
         validated_exe = self._validator.validate(mo2_exe)
 
