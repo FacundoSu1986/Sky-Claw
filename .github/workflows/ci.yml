@@ -23,9 +23,10 @@ jobs:
   lint:
     name: "🔍 Lint (Ruff)"
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
         with:
           python-version: "3.11"
           cache: pip
@@ -43,9 +44,10 @@ jobs:
   typecheck:
     name: "🏷️ Type Check (Mypy)"
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
         with:
           python-version: "3.11"
           cache: pip
@@ -58,9 +60,10 @@ jobs:
   test:
     name: "🧪 Tests (Pytest)"
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
         with:
           python-version: "3.11"
           cache: pip
@@ -70,7 +73,7 @@ jobs:
         run: pytest --cov=sky_claw --cov-report=xml --cov-fail-under=49 tests/
       - name: Upload coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-report
           path: coverage.xml
@@ -79,11 +82,13 @@ jobs:
   security:
     name: "🛡️ Security Scan"
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
         with:
           python-version: "3.11"
+          cache: pip
       - name: Install security tools + project
         run: |
           pip install -e .
@@ -98,18 +103,20 @@ jobs:
     name: "📦 Build"
     needs: [lint, typecheck, test, security]
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
         with:
           python-version: "3.11"
+          cache: pip
       - name: Install build dependencies
         run: |
           pip install pyinstaller
           pip install -e .
       - name: Build executable
         run: pyinstaller sky_claw.spec --clean
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: SkyClawApp-exe
           path: dist/SkyClawApp.exe
