@@ -376,20 +376,23 @@ class LLMRouter:
                     logger.info("TokenBudget: summarized older context")
 
                 # Re-estimate after potential summarization/truncation
-                pre_call_tokens = self._token_budget._estimate_messages_tokens(messages)
+                # Construir effective_system ANTES del circuit-breaker para incluir su
+                # costo en pre_call_tokens. Evita bypass del límite cuando system_prompt
+                # o injected_context (RAG) son grandes y messages solos no exceden el umbral.
+                effective_system = f"{self._system_prompt}\n\n{injected_context}"
+                system_tokens = self._token_budget.estimate_tokens(effective_system)
+                pre_call_tokens = self._token_budget._estimate_messages_tokens(messages) + system_tokens
 
                 # ── FASE 1.5.3: Circuit breaker pre-check ──────────────────
                 if not self._circuit_breaker.check_request(pre_call_tokens):
                     logger.warning(
-                        "TokenCircuitBreaker: request rejected (state=%s, est=%d tokens)",
+                        "TokenCircuitBreaker: request rejected (state=%s, est=%d tokens incl. system)",
                         self._circuit_breaker.state,
                         pre_call_tokens,
                     )
                     return (
                         "\u26a0\ufe0f Circuit breaker activado \u2014 consumo de tokens excesivo. Espera y reintenta."
                     )
-
-                effective_system = f"{self._system_prompt}\n\n{injected_context}"
                 effective_tools = tool_schemas
                 if self._hermes_mode and self._tools:
                     effective_system = (

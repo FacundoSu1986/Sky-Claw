@@ -32,8 +32,10 @@ from sky_claw.orchestrator.tool_strategies.generate_bashed_patch import (
 )
 from sky_claw.orchestrator.tool_strategies.generate_lods import GenerateLodsStrategy
 from sky_claw.orchestrator.tool_strategies.middleware import (
+    DESTRUCTIVE_TOOL_PATTERNS,
     DictResultGuardMiddleware,
     ErrorWrappingMiddleware,
+    HitlGateMiddleware,
 )
 from sky_claw.orchestrator.tool_strategies.query_mod_metadata import (
     QueryModMetadataStrategy,
@@ -131,6 +133,8 @@ def _make_thunk(
 
 def build_orchestration_dispatcher(
     supervisor: SupervisorAgent,
+    *,
+    hitl_gate: HitlGateMiddleware | None = None,
 ) -> OrchestrationToolDispatcher:
     """Wire all migrated tool strategies onto a fresh dispatcher.
 
@@ -139,16 +143,27 @@ def build_orchestration_dispatcher(
     one-by-one in the Strangler Fig refactor; the legacy match/case in
     SupervisorAgent.dispatch_tool delegates to this dispatcher only for
     tool names that have been moved over.
+
+    FASE 1.5.1: Destructive tools are wrapped with HitlGateMiddleware
+    when a ``hitl_gate`` instance is provided. Without it, the gate
+    operates in fail-open mode (logs a warning, proceeds without approval).
     """
     dispatcher = OrchestrationToolDispatcher()
 
+    # FASE 1.5.1: Shared HITL gate for destructive tools.
+    # When hitl_gate is None, a default fail-open gate is created that
+    # logs warnings but proceeds — safe for migration / testing.
+    gate = hitl_gate or HitlGateMiddleware()
+
     dispatcher.register(QueryModMetadataStrategy(scraper=supervisor.scraper))
 
+    # FASE 1.5.1: execute_loot_sorting is destructive → HITL gate
     dispatcher.register(
         ExecuteLootSortingStrategy(
             tools=supervisor.tools,
             interface=supervisor.interface,
         ),
+        middleware=[gate],
     )
 
     dispatcher.register(
@@ -159,15 +174,21 @@ def build_orchestration_dispatcher(
         ],
     )
 
+    # FASE 1.5.1: resolve_conflict_patch is destructive → HITL gate outermost
     dispatcher.register(
         ResolveConflictWithPatchStrategy(service=supervisor._xedit_service),
         middleware=[
+            gate,
             ErrorWrappingMiddleware("XEditPatchExecutionFailed"),
             DictResultGuardMiddleware("InvalidXEditPatchResult"),
         ],
     )
 
-    dispatcher.register(GenerateLodsStrategy(service=supervisor._dyndolod_service))
+    # FASE 1.5.1: generate_lods is destructive → HITL gate
+    dispatcher.register(
+        GenerateLodsStrategy(service=supervisor._dyndolod_service),
+        middleware=[gate],
+    )
 
     # Lambdas re-resolve attributes on each call so test fixtures can
     # monkey-patch the supervisor methods AFTER the dispatcher is wired
@@ -184,10 +205,12 @@ def build_orchestration_dispatcher(
         ),
     )
 
+    # FASE 1.5.1: generate_bashed_patch is destructive → HITL gate
     dispatcher.register(
         GenerateBashedPatchStrategy(
             wrye_bash_pipeline=lambda **kwargs: supervisor.execute_wrye_bash_pipeline(**kwargs),
         ),
+        middleware=[gate],
     )
 
     dispatcher.register(

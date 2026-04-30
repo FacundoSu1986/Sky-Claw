@@ -109,6 +109,7 @@ export function applyFrameToState(state, frame) {
         || matchesTopic(topic, 'xedit.patch.*')
         || matchesTopic(topic, 'pipeline.dyndolod.*')
         || matchesTopic(topic, 'system.modlist.*')
+        || matchesTopic(topic, 'ops.tool.*')
     ) {
         state.appendLog({
             level: inferLogLevel(topic, payload),
@@ -132,6 +133,30 @@ export function applyFrameToState(state, frame) {
                 updatedAt: frame.timestamp_ms ?? Date.now(),
             });
         }
+    }
+
+    // FASE 1.5.4: Granular tool lifecycle events — map to process table
+    // so the UI shows real spinners/progress instead of optimistic success.
+    const TOOL_EVENT_MAP = {
+        'tool_started':            'running',
+        'tool_progress':           'running',
+        'tool_completed':          'completed',
+        'tool_failed':             'failed',
+        'tool_requires_approval':  'awaiting_approval',
+    };
+    const toolState = TOOL_EVENT_MAP[topic];
+    if (toolState) {
+        const toolId = payload?.task_id ?? payload?.tool ?? topic;
+        const toolLabel = payload?.tool
+            ? `🔧 ${payload.tool}`
+            : topic;
+        state.updateProcess(String(toolId), {
+            state: toolState,
+            label: toolLabel,
+            progress: Number.isFinite(payload?.progress) ? payload.progress : null,
+            topic,
+            updatedAt: frame.timestamp_ms ?? Date.now(),
+        });
     }
 
     // Telemetry

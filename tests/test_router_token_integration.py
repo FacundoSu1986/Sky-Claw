@@ -281,6 +281,53 @@ class TestCircuitBreakerRejection:
         # Provider should NOT have been called
         await r.close()
 
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_includes_effective_system_tokens(
+        self, tool_registry: AsyncToolRegistry, tmp_path: pathlib.Path
+    ) -> None:
+        """FASE 1.5.4 hardening: el circuit-breaker debe incluir el costo de
+        ``effective_system`` (system_prompt + injected_context) en pre_call_tokens
+        para que un system_prompt grande no haga bypass del límite del breaker.
+
+        Se construye un router con system_prompt enorme y un breaker cuyo
+        ``max_tokens_per_request`` está calibrado para rechazar SOLO si
+        system_tokens se suman a messages_tokens.
+        """
+        # System prompt grande (~10k chars → ~2.5k tokens estimados a 4 chars/token)
+        big_system = "X" * 10_000
+
+        # Breaker con spike_threshold = 1000 tokens. Mensajes chicos (~5 tokens)
+        # no dispararían por sí solos; pero al sumar system_tokens (~2500) sí se
+        # debe cruzar el threshold y trippear el breaker.
+        cb_config = TokenCircuitBreakerConfig(spike_threshold_tokens=1000)
+        r = _make_router(tmp_path, tool_registry, cb_config=cb_config)
+        await r.open()
+        r._system_prompt = big_system
+        r._semantic_router.route = MagicMock(
+            return_value={
+                "intent": "CHAT_GENERAL",
+                "confidence": 0.7,
+                "target_agent": None,
+                "tool_name": None,
+                "parameters": {},
+                "original_text": "",
+            }
+        )
+
+        # Provider mock: si fuera llamado, el test falla silenciosamente sin assert,
+        # pero el path correcto retorna el mensaje de circuit breaker antes.
+        r._provider = MagicMock()
+        r._provider.chat = AsyncMock(return_value=_end_turn_response("never"))
+
+        session = MagicMock()
+        result = await r.chat("hi", session, chat_id="sysbreaker1")
+
+        assert "Circuit breaker activado" in result, (
+            "El circuit-breaker debió rechazar al sumar system_tokens a pre_call_tokens"
+        )
+        r._provider.chat.assert_not_called()
+        await r.close()
+
 
 # ------------------------------------------------------------------
 # Tests: Usage recording
@@ -365,7 +412,6 @@ class TestToolRoundTimeout:
         r._provider.chat = AsyncMock(side_effect=_mock_chat)
 
         # Make tool execution hang (sleep longer than timeout)
-
         async def _slow_execute(name: str, args: dict) -> str:
             await asyncio.sleep(300)
             return "should not reach here"
