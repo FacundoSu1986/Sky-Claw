@@ -111,11 +111,14 @@ class ToolEventStreamer:
         payload_keys: list[str] | None = None,
     ) -> None:
         """Emit ``tool_started`` event."""
-        await self._safe_emit(TOOL_EVENT_STARTED, {
-            "tool": tool_name,
-            "task_id": task_id,
-            "payload_keys": payload_keys or [],
-        })
+        await self._safe_emit(
+            TOOL_EVENT_STARTED,
+            {
+                "tool": tool_name,
+                "task_id": task_id,
+                "payload_keys": payload_keys or [],
+            },
+        )
 
     async def emit_progress(
         self,
@@ -126,12 +129,15 @@ class ToolEventStreamer:
         message: str = "",
     ) -> None:
         """Emit ``tool_progress`` event."""
-        await self._safe_emit(TOOL_EVENT_PROGRESS, {
-            "tool": tool_name,
-            "task_id": task_id,
-            "progress": progress,
-            "message": message,
-        })
+        await self._safe_emit(
+            TOOL_EVENT_PROGRESS,
+            {
+                "tool": tool_name,
+                "task_id": task_id,
+                "progress": progress,
+                "message": message,
+            },
+        )
 
     async def emit_completed(
         self,
@@ -141,11 +147,14 @@ class ToolEventStreamer:
         status: str = "success",
     ) -> None:
         """Emit ``tool_completed`` event."""
-        await self._safe_emit(TOOL_EVENT_COMPLETED, {
-            "tool": tool_name,
-            "task_id": task_id,
-            "status": status,
-        })
+        await self._safe_emit(
+            TOOL_EVENT_COMPLETED,
+            {
+                "tool": tool_name,
+                "task_id": task_id,
+                "status": status,
+            },
+        )
 
     async def emit_failed(
         self,
@@ -156,12 +165,15 @@ class ToolEventStreamer:
         error_type: str = "",
     ) -> None:
         """Emit ``tool_failed`` event."""
-        await self._safe_emit(TOOL_EVENT_FAILED, {
-            "tool": tool_name,
-            "task_id": task_id,
-            "error": error,
-            "error_type": error_type,
-        })
+        await self._safe_emit(
+            TOOL_EVENT_FAILED,
+            {
+                "tool": tool_name,
+                "task_id": task_id,
+                "error": error,
+                "error_type": error_type,
+            },
+        )
 
     async def emit_requires_approval(
         self,
@@ -172,12 +184,15 @@ class ToolEventStreamer:
         timeout: float = 120.0,
     ) -> None:
         """Emit ``tool_requires_approval`` event for HITL flow."""
-        await self._safe_emit(TOOL_EVENT_REQUIRES_APPROVAL, {
-            "tool": tool_name,
-            "task_id": task_id,
-            "reason": reason,
-            "timeout": timeout,
-        })
+        await self._safe_emit(
+            TOOL_EVENT_REQUIRES_APPROVAL,
+            {
+                "tool": tool_name,
+                "task_id": task_id,
+                "reason": reason,
+                "timeout": timeout,
+            },
+        )
 
     async def _safe_emit(self, event_type: str, payload: dict[str, Any]) -> None:
         """Emit event, swallowing errors to avoid disrupting tool execution."""

@@ -185,9 +185,7 @@ class TestValidTransitions:
         sm = ToolStateMachine()
         task = sm.create_task("tool", {})
         sm.transition(task.task_id, "RUNNING")
-        updated = sm.transition(
-            task.task_id, "FAILED", error_message="Timeout"
-        )
+        updated = sm.transition(task.task_id, "FAILED", error_message="Timeout")
         assert updated.state == "FAILED"
         assert updated.error_message == "Timeout"
 
@@ -195,9 +193,7 @@ class TestValidTransitions:
         sm = ToolStateMachine()
         task = sm.create_task("list_mods", {"status": "active"})
         sm.transition(task.task_id, "RUNNING")
-        final = sm.transition(
-            task.task_id, "COMPLETED", result={"status": "success"}
-        )
+        final = sm.transition(task.task_id, "COMPLETED", result={"status": "success"})
         assert final.state == "COMPLETED"
         assert final.result == {"status": "success"}
 
@@ -348,6 +344,7 @@ class TestTaskManagement:
         task = sm.create_task("tool", {})
         original_updated = task.updated_at
         import time
+
         time.sleep(0.01)
         updated = sm.transition(task.task_id, "RUNNING")
         assert updated.updated_at >= original_updated

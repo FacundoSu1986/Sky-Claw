@@ -49,6 +49,7 @@ async def test_failing_handler_goes_to_dlq(tmp_path: Path) -> None:
     await bus.start()
 
     try:
+
         async def telegram_handler(event: Event) -> None:
             raise RuntimeError("telegram api 500")
 
@@ -81,6 +82,7 @@ async def test_successful_handler_not_enqueued(tmp_path: Path) -> None:
     await bus.start()
 
     try:
+
         async def ok_handler(event: Event) -> None:
             pass
 
