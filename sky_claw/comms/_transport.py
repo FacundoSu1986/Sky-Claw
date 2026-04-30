@@ -115,22 +115,16 @@ def assert_safe_ws_url(
         When any rule is violated.
     """
     if not isinstance(url, str) or not url:
-        raise InsecureTransportError(
-            "transport URL must be a non-empty string"
-        )
+        raise InsecureTransportError("transport URL must be a non-empty string")
 
     parsed = urlparse(url)
     scheme = parsed.scheme.lower()
 
     if scheme not in {"ws", "wss"}:
-        raise InsecureTransportError(
-            f"unsupported transport scheme {scheme!r}; expected 'ws' or 'wss'"
-        )
+        raise InsecureTransportError(f"unsupported transport scheme {scheme!r}; expected 'ws' or 'wss'")
 
     if not parsed.hostname:
-        raise InsecureTransportError(
-            f"transport URL is missing a host: {url!r}"
-        )
+        raise InsecureTransportError(f"transport URL is missing a host: {url!r}")
 
     # wss:// is unconditionally safe.
     if scheme == "wss":
@@ -140,14 +134,11 @@ def assert_safe_ws_url(
     host = parsed.hostname.lower()
     if not _is_loopback(host):
         raise InsecureTransportError(
-            f"plaintext ws:// is forbidden for non-loopback host {host!r}; "
-            "use wss:// or bind to 127.0.0.1/localhost"
+            f"plaintext ws:// is forbidden for non-loopback host {host!r}; use wss:// or bind to 127.0.0.1/localhost"
         )
 
     if not allow_plaintext_loopback:
-        raise InsecureTransportError(
-            "plaintext ws:// is disabled by configuration; use wss:// even on loopback"
-        )
+        raise InsecureTransportError("plaintext ws:// is disabled by configuration; use wss:// even on loopback")
 
     return url
 

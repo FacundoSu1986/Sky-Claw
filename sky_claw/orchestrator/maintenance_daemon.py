@@ -109,9 +109,7 @@ class MaintenanceDaemon:
             results = await self._lifecycle_manager.checkpoint_all(mode="PASSIVE")
             for db_path, info in results.items():
                 if "error" in info:
-                    logger.error(
-                        "WAL checkpoint failed for %s: %s", db_path, info["error"]
-                    )
+                    logger.error("WAL checkpoint failed for %s: %s", db_path, info["error"])
         except Exception as e:
             logger.error("WAL checkpoint tick failed: %s", e)
 

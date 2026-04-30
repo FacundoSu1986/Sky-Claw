@@ -246,9 +246,7 @@ class NexusDownloader:
                 try:
                     assert_safe_component(file_name, field="file_name")
                 except PathViolationError as exc:
-                    raise DownloadError(
-                        f"Nexus API returned unsafe filename {raw_file_name!r}: {exc}"
-                    ) from exc
+                    raise DownloadError(f"Nexus API returned unsafe filename {raw_file_name!r}: {exc}") from exc
 
                 try:
                     download_url = await self._get_download_url(nexus_id, file_id, session)

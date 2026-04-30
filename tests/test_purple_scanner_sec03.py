@@ -21,9 +21,7 @@ exec(payload)
 """
         findings = run_scan(code, filename="test_read_taint.py")
         taint_findings = [f for f in findings if "Variable sucia" in f["message"]]
-        assert len(taint_findings) >= 1, (
-            f"Expected taint-flow finding for f.read() → exec(), got: {findings}"
-        )
+        assert len(taint_findings) >= 1, f"Expected taint-flow finding for f.read() → exec(), got: {findings}"
         assert any("payload" in f["message"] for f in taint_findings)
 
     def test_open_is_tainted_source(self):
@@ -34,9 +32,7 @@ eval(data)
 """
         findings = run_scan(code, filename="test_open_taint.py")
         taint_findings = [f for f in findings if "Variable sucia" in f["message"]]
-        assert len(taint_findings) >= 1, (
-            f"Expected taint-flow finding for open() → eval(), got: {findings}"
-        )
+        assert len(taint_findings) >= 1, f"Expected taint-flow finding for open() → eval(), got: {findings}"
 
     def test_input_is_tainted_source(self):
         """Variable assigned from input() must be marked tainted."""
@@ -46,9 +42,7 @@ exec(user_input)
 """
         findings = run_scan(code, filename="test_input_taint.py")
         taint_findings = [f for f in findings if "Variable sucia" in f["message"]]
-        assert len(taint_findings) >= 1, (
-            f"Expected taint-flow finding for input() → exec(), got: {findings}"
-        )
+        assert len(taint_findings) >= 1, f"Expected taint-flow finding for input() → exec(), got: {findings}"
 
     def test_arbitrary_read_attribute_is_tainted(self):
         """Any obj.read() should be treated as tainted (conservative policy)."""
@@ -58,9 +52,7 @@ os.system(buf)
 """
         findings = run_scan(code, filename="test_stream_read.py")
         taint_findings = [f for f in findings if "Variable sucia" in f["message"]]
-        assert len(taint_findings) >= 1, (
-            f"Expected taint-flow finding for stream.read() → os.system(), got: {findings}"
-        )
+        assert len(taint_findings) >= 1, f"Expected taint-flow finding for stream.read() → os.system(), got: {findings}"
 
     def test_non_read_attribute_not_tainted(self):
         """Attributes other than 'read' should NOT be tainted."""
@@ -70,6 +62,4 @@ exec(val)
 """
         findings = run_scan(code, filename="test_non_read.py")
         taint_findings = [f for f in findings if "Variable sucia" in f["message"]]
-        assert len(taint_findings) == 0, (
-            f"Did not expect taint finding for obj.calculate(), got: {findings}"
-        )
+        assert len(taint_findings) == 0, f"Did not expect taint finding for obj.calculate(), got: {findings}"

@@ -27,7 +27,7 @@ import logging
 import re
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 logger = logging.getLogger("SkyClaw.PromptArmor")
 
@@ -159,11 +159,7 @@ class PromptArmor:
         # Escape CDATA closers to prevent breaking encapsulation
         escaped = self._escape_cdata(content)
 
-        result = (
-            f'<external_data source="{source}">\n'
-            f"<![CDATA[{escaped}]]>\n"
-            f"</external_data>"
-        )
+        result = f'<external_data source="{source}">\n<![CDATA[{escaped}]]>\n</external_data>'
 
         if truncated:
             result += "\n[DATA TRUNCATED — exceeded max_external_block_size]"
@@ -209,15 +205,13 @@ class PromptArmor:
             if not isinstance(content, str):
                 continue
             # Only user messages may contain <external_data> tags
-            if role in ("system", "assistant"):
-                if _EXTERNAL_DATA_OPEN_RE.search(content):
-                    logger.error(
-                        "PromptArmor INTEGRITY VIOLATION: <external_data> tag "
-                        "found in %s message. Content preview: %.200s",
-                        role,
-                        content,
-                    )
-                    return False
+            if role in ("system", "assistant") and _EXTERNAL_DATA_OPEN_RE.search(content):
+                logger.error(
+                    "PromptArmor INTEGRITY VIOLATION: <external_data> tag found in %s message. Content preview: %.200s",
+                    role,
+                    content,
+                )
+                return False
         return True
 
     # ------------------------------------------------------------------

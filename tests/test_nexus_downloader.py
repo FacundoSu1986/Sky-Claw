@@ -1140,17 +1140,15 @@ class TestDownloadFilenameHardening:
     @pytest.mark.parametrize(
         "bad_name",
         [
-            "../../Windows/evil.dll",       # classic traversal
-            "../config/settings.json",       # one-level traversal
-            "sub/dir/file.zip",             # forward slash in component
-            "sub\\dir\\file.zip",           # backslash separators
-            "evil\x00.zip",                 # NUL byte
-            "evil\ninjected.zip",           # newline injection
+            "../../Windows/evil.dll",  # classic traversal
+            "../config/settings.json",  # one-level traversal
+            "sub/dir/file.zip",  # forward slash in component
+            "sub\\dir\\file.zip",  # backslash separators
+            "evil\x00.zip",  # NUL byte
+            "evil\ninjected.zip",  # newline injection
         ],
     )
-    async def test_download_hostile_filename_raises_before_io(
-        self, tmp_path: pathlib.Path, bad_name: str
-    ) -> None:
+    async def test_download_hostile_filename_raises_before_io(self, tmp_path: pathlib.Path, bad_name: str) -> None:
         """PathViolationError must be raised before any filesystem or network I/O."""
         downloader = _make_downloader(tmp_path)
         file_info = _make_file_info(file_name=bad_name)
@@ -1164,13 +1162,8 @@ class TestDownloadFilenameHardening:
         session_mock.get.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_download_normal_filename_resolves_inside_staging(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    async def test_download_normal_filename_resolves_inside_staging(self, tmp_path: pathlib.Path) -> None:
         """A legitimate filename must produce a path inside staging_dir."""
-        import importlib
-
-        import pathlib as _pathlib
 
         downloader = _make_downloader(tmp_path)
         staging = tmp_path / "staging"
@@ -1189,9 +1182,7 @@ class TestDownloadFilenameHardening:
         assert result.is_relative_to(staging.resolve())
 
     @pytest.mark.asyncio
-    async def test_get_file_info_strips_path_traversal_from_api_filename(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    async def test_get_file_info_strips_path_traversal_from_api_filename(self, tmp_path: pathlib.Path) -> None:
         """get_file_info must strip path components from API-returned file_name.
 
         A MITM returning ``file_name: "../../evil.dll"`` must end up as

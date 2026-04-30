@@ -85,8 +85,7 @@ class TokenCircuitBreaker:
                 self._state = "half_open"
                 self._half_open_used = False
                 logger.info(
-                    "TokenCircuitBreaker: OPEN → HALF_OPEN "
-                    "(recovery timeout %ds elapsed)",
+                    "TokenCircuitBreaker: OPEN → HALF_OPEN (recovery timeout %ds elapsed)",
                     self._config.recovery_timeout_seconds,
                 )
         return self._state
@@ -105,13 +104,17 @@ class TokenCircuitBreaker:
         if current_state == "closed":
             # Check for single-request spike
             if estimated_tokens > self._config.spike_threshold_tokens:
-                self._trip(f"Spike detected: {estimated_tokens} tokens > {self._config.spike_threshold_tokens} threshold")
+                self._trip(
+                    f"Spike detected: {estimated_tokens} tokens > {self._config.spike_threshold_tokens} threshold"
+                )
                 return False
 
             # Check window budget
             self._maybe_reset_window()
             if self._window_consumed + estimated_tokens > self._config.window_budget_tokens:
-                self._trip(f"Window budget exceeded: {self._window_consumed + estimated_tokens} > {self._config.window_budget_tokens}")
+                self._trip(
+                    f"Window budget exceeded: {self._window_consumed + estimated_tokens} > {self._config.window_budget_tokens}"
+                )
                 return False
 
             return True
@@ -139,8 +142,7 @@ class TokenCircuitBreaker:
                 self._state = "closed"
                 self._half_open_used = False
                 logger.info(
-                    "TokenCircuitBreaker: HALF_OPEN → CLOSED "
-                    "(probe request successful, %d tokens used)",
+                    "TokenCircuitBreaker: HALF_OPEN → CLOSED (probe request successful, %d tokens used)",
                     tokens_used,
                 )
             else:
@@ -163,8 +165,7 @@ class TokenCircuitBreaker:
         self._state = "open"
         self._opened_at = time.monotonic()
         logger.warning(
-            "TokenCircuitBreaker: → OPEN (%s). "
-            "All requests will be rejected for %ds.",
+            "TokenCircuitBreaker: → OPEN (%s). All requests will be rejected for %ds.",
             reason,
             self._config.recovery_timeout_seconds,
         )

@@ -19,8 +19,6 @@ from __future__ import annotations
 
 import atexit
 import logging
-import os
-import signal
 import sqlite3
 import time
 from pathlib import Path
@@ -197,6 +195,7 @@ class DatabaseLifecycleManager:
                 corrupted_name = f"{path_str}-wal.corrupted.{timestamp}"
                 try:
                     import shutil
+
                     shutil.move(str(wal_path), corrupted_name)
                     logger.error(
                         "Renamed corrupted WAL to %s for forensics",
@@ -269,8 +268,7 @@ class DatabaseLifecycleManager:
                     results[path_str] = result
 
                     logger.info(
-                        "WAL checkpoint (%s) for %s: %d frames checkpointed, "
-                        "WAL size %d→%d bytes",
+                        "WAL checkpoint (%s) for %s: %d frames checkpointed, WAL size %d→%d bytes",
                         mode,
                         path_str,
                         result["checkpointed_frames"],
@@ -281,8 +279,7 @@ class DatabaseLifecycleManager:
                     # Exceptional TRUNCATE if WAL exceeds critical threshold
                     if mode == "PASSIVE" and wal_size_before > self._config.wal_critical_threshold_bytes:
                         logger.warning(
-                            "WAL size %d bytes exceeds critical threshold %d — "
-                            "executing emergency TRUNCATE for %s",
+                            "WAL size %d bytes exceeds critical threshold %d — executing emergency TRUNCATE for %s",
                             wal_size_before,
                             self._config.wal_critical_threshold_bytes,
                             path_str,
@@ -326,9 +323,7 @@ class DatabaseLifecycleManager:
         try:
             await self.checkpoint_all(mode="TRUNCATE")
         except Exception as e:
-            logger.critical(
-                "DatabaseLifecycle: checkpoint during shutdown FAILED: %s", e
-            )
+            logger.critical("DatabaseLifecycle: checkpoint during shutdown FAILED: %s", e)
 
         # Step 2: Close all connections
         for path_str, conn in list(self._connections.items()):
@@ -440,16 +435,13 @@ class DatabaseLifecycleManager:
                 elapsed = _time.monotonic() - start
                 if elapsed > SHUTDOWN_CHECKPOINT_TIMEOUT_SECONDS:
                     logger.critical(
-                        "Sync shutdown TIMEOUT (%.1fs) for %s — aborting checkpoint. "
-                        "Last error: %s",
+                        "Sync shutdown TIMEOUT (%.1fs) for %s — aborting checkpoint. Last error: %s",
                         elapsed,
                         path_str,
                         e,
                     )
                     break
-                logger.error(
-                    "Sync shutdown checkpoint failed for %s: %s", path_str, e
-                )
+                logger.error("Sync shutdown checkpoint failed for %s: %s", path_str, e)
 
     # ------------------------------------------------------------------
     # Accessors

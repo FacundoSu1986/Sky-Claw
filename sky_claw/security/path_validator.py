@@ -59,26 +59,18 @@ def assert_safe_component(name: str | None, *, field: str = "name") -> str:
         When any rule is violated.
     """
     if name is None or not isinstance(name, str):
-        raise PathViolationError(
-            f"{field}: expected a non-empty string, got {type(name).__name__}"
-        )
+        raise PathViolationError(f"{field}: expected a non-empty string, got {type(name).__name__}")
     if not name:
         raise PathViolationError(f"{field}: must not be empty")
     if name in (".", ".."):
-        raise PathViolationError(
-            f"{field}: traversal segment {name!r} is not a valid component"
-        )
+        raise PathViolationError(f"{field}: traversal segment {name!r} is not a valid component")
     if "/" in name or "\\" in name:
-        raise PathViolationError(
-            f"{field}: path separators are not allowed in a component, got {name!r}"
-        )
+        raise PathViolationError(f"{field}: path separators are not allowed in a component, got {name!r}")
     if "\x00" in name:
         raise PathViolationError(f"{field}: NUL byte is not allowed")
     for ch in name:
         if ord(ch) < 0x20:
-            raise PathViolationError(
-                f"{field}: control character {ch!r} (U+{ord(ch):04X}) is not allowed"
-            )
+            raise PathViolationError(f"{field}: control character {ch!r} (U+{ord(ch):04X}) is not allowed")
     return name
 
 

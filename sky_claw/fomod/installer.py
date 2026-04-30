@@ -398,18 +398,14 @@ class FomodInstaller:
             try:
                 src = safe_join(content_root, file_install.source)
             except PathViolationError as exc:
-                logger.critical(
-                    "FOMOD source path escapes content root — skipping entry: %s", exc
-                )
+                logger.critical("FOMOD source path escapes content root — skipping entry: %s", exc)
                 continue
 
             # --- sandbox destination ---
             try:
                 dest = safe_join(mod_dest, dest_rel)
             except PathViolationError as exc:
-                logger.critical(
-                    "FOMOD destination path escapes mod dest — skipping entry: %s", exc
-                )
+                logger.critical("FOMOD destination path escapes mod dest — skipping entry: %s", exc)
                 continue
 
             if src.is_dir():
@@ -421,9 +417,7 @@ class FomodInstaller:
                     try:
                         child_dest = safe_join(dest, child_rel)
                     except PathViolationError as exc:
-                        logger.critical(
-                            "FOMOD child dest escapes sandbox — skipping: %s", exc
-                        )
+                        logger.critical("FOMOD child dest escapes sandbox — skipping: %s", exc)
                         continue
 
                     await aiofiles.os.makedirs(child_dest.parent, exist_ok=True)

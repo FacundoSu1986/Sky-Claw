@@ -57,11 +57,13 @@ class TestAppContextResilience:
         # but succeed on the second call (aclose callback) so the exception
         # propagated to the caller is the one from LLMRouter, not DB close.
         db_close_calls = 0
+
         async def fail_once():
             nonlocal db_close_calls
             db_close_calls += 1
             if db_close_calls == 1:
                 raise RuntimeError("DB close failure")
+
         ctx.database.close = fail_once
 
         # Aggressively mock everything after teardown so we fail fast at a known point

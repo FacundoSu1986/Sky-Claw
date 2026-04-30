@@ -13,13 +13,12 @@ Validates:
 from __future__ import annotations
 
 import asyncio
-import os
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import aiosqlite
 import pytest
+from pydantic import ValidationError
 
 from sky_claw.core.db_lifecycle import (
     DatabaseLifecycleConfig,
@@ -27,10 +26,10 @@ from sky_claw.core.db_lifecycle import (
     WALHealth,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def tmp_db_dir(tmp_path: Path) -> Path:
@@ -56,6 +55,7 @@ def lifecycle(db_path: Path) -> DatabaseLifecycleManager:
 # ---------------------------------------------------------------------------
 # Initialization + Pragmas
 # ---------------------------------------------------------------------------
+
 
 class TestInit:
     @pytest.mark.asyncio
@@ -103,6 +103,7 @@ class TestInit:
 # Recovery from Orphaned WAL
 # ---------------------------------------------------------------------------
 
+
 class TestRecovery:
     @pytest.mark.asyncio
     async def test_recovery_from_orphan_wal(self, db_path: Path) -> None:
@@ -117,7 +118,6 @@ class TestRecovery:
         await conn.close()
 
         # Step 2: Verify WAL file exists (orphaned)
-        wal_path = Path(str(db_path) + "-wal")
         # WAL may or may not exist depending on SQLite's auto-checkpoint,
         # but the recovery logic should handle both cases gracefully
 
@@ -149,6 +149,7 @@ class TestRecovery:
 # ---------------------------------------------------------------------------
 # Checkpointing
 # ---------------------------------------------------------------------------
+
 
 class TestCheckpoint:
     @pytest.mark.asyncio
@@ -188,6 +189,7 @@ class TestCheckpoint:
 # ---------------------------------------------------------------------------
 # Shutdown
 # ---------------------------------------------------------------------------
+
 
 class TestShutdown:
     @pytest.mark.asyncio
@@ -232,6 +234,7 @@ class TestShutdown:
 # Health Check
 # ---------------------------------------------------------------------------
 
+
 class TestHealthCheck:
     @pytest.mark.asyncio
     async def test_health_check_healthy(self, lifecycle: DatabaseLifecycleManager, db_path: Path) -> None:
@@ -274,6 +277,7 @@ class TestHealthCheck:
 # ---------------------------------------------------------------------------
 # Concurrent Writers
 # ---------------------------------------------------------------------------
+
 
 class TestConcurrency:
     @pytest.mark.asyncio
@@ -333,14 +337,15 @@ class TestConcurrency:
 # Config Immutability
 # ---------------------------------------------------------------------------
 
+
 class TestConfig:
     def test_config_is_frozen(self) -> None:
         cfg = DatabaseLifecycleConfig()
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             cfg.wal_checkpoint_interval_seconds = 999  # type: ignore[misc]
 
     def test_config_strict_validation(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             DatabaseLifecycleConfig(busy_timeout_ms="not_int")  # type: ignore[arg-type]
 
     def test_wal_health_is_frozen(self) -> None:
@@ -350,5 +355,5 @@ class TestConfig:
             wal_size_bytes=0,
             status="healthy",
         )
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             health.status = "critical"  # type: ignore[misc]

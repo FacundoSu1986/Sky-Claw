@@ -22,9 +22,7 @@ class TestAssetScannerPscMapping:
         psc_file.write_text("; Papyrus source", encoding="utf-8")
 
         asset_type = detector.get_asset_type(psc_file)
-        assert asset_type is AssetType.SCRIPT, (
-            f"Expected SCRIPT for .psc, got {asset_type}"
-        )
+        assert asset_type is AssetType.SCRIPT, f"Expected SCRIPT for .psc, got {asset_type}"
 
     def test_pex_is_script_type(self, tmp_path: pathlib.Path):
         """A .pex file must continue to be classified as SCRIPT."""
@@ -34,9 +32,7 @@ class TestAssetScannerPscMapping:
         pex_file.write_bytes(b"\x00\x01\x02")
 
         asset_type = detector.get_asset_type(pex_file)
-        assert asset_type is AssetType.SCRIPT, (
-            f"Expected SCRIPT for .pex, got {asset_type}"
-        )
+        assert asset_type is AssetType.SCRIPT, f"Expected SCRIPT for .pex, got {asset_type}"
 
     def test_asset_extensions_include_psc(self):
         """The canonical extension map must list .psc under SCRIPT."""

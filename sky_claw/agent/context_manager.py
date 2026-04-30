@@ -7,7 +7,6 @@ import aiosqlite
 
 from sky_claw.security.prompt_armor import (
     PromptArmor,
-    PromptArmorConfig,
 )
 
 # Standard 2026 Context Management
@@ -68,10 +67,13 @@ class ContextManager:
                 status: str = "✅ Installed/Active" if mod["enabled_in_vfs"] else "⏳ Inactive"
                 mod_lines.append(f"- [{mod['nexus_id']}] {mod['name']} v{mod['version']} | {status}")
             mod_text = "\n".join(mod_lines)
-            context_block += self._armor.encapsulate_external_data(
-                "mod_metadata",
-                mod_text,
-            ) + "\n"
+            context_block += (
+                self._armor.encapsulate_external_data(
+                    "mod_metadata",
+                    mod_text,
+                )
+                + "\n"
+            )
         else:
             context_block += "- No matches found in local SQLite registry for specific query mods.\n"
 

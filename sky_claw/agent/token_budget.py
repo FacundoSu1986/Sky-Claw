@@ -20,7 +20,7 @@ import logging
 import time
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 logger = logging.getLogger("SkyClaw.TokenBudget")
 
@@ -191,9 +191,7 @@ class TokenBudgetManager:
     # Summarization
     # ------------------------------------------------------------------
 
-    def summarize_older_messages(
-        self, messages: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def summarize_older_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Apply sliding window summarization to older messages.
 
         Algorithm:
@@ -247,10 +245,7 @@ class TokenBudgetManager:
                 preview = "[multi-part content]"
             summary_parts.append(f"[{role}]: {preview}")
 
-        summary_text = (
-            "CONTEXT SUMMARY (auto-generated):\n"
-            + "\n".join(summary_parts)
-        )
+        summary_text = "CONTEXT SUMMARY (auto-generated):\n" + "\n".join(summary_parts)
 
         # Cap summary to prevent it from being too large
         max_summary_chars = int(self._config.max_context_tokens * _CHARS_PER_TOKEN * 0.15)
@@ -264,8 +259,7 @@ class TokenBudgetManager:
 
         self._summarization_count += 1
         logger.info(
-            "TokenBudget: summarized %d older messages into 1 summary block "
-            "(%d chars). Preserved %d recent messages.",
+            "TokenBudget: summarized %d older messages into 1 summary block (%d chars). Preserved %d recent messages.",
             len(older),
             len(summary_text),
             len(recent),
@@ -277,9 +271,7 @@ class TokenBudgetManager:
     # Truncation (aggressive)
     # ------------------------------------------------------------------
 
-    def truncate_older_messages(
-        self, messages: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def truncate_older_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Aggressively truncate older messages to fit budget.
 
         Unlike summarization, this simply drops older messages entirely,
@@ -299,8 +291,7 @@ class TokenBudgetManager:
 
         if dropped > 0:
             logger.warning(
-                "TokenBudget: DROPPED %d older messages to fit budget. "
-                "Preserved %d recent messages.",
+                "TokenBudget: DROPPED %d older messages to fit budget. Preserved %d recent messages.",
                 dropped,
                 len(recent),
             )
@@ -320,9 +311,7 @@ class TokenBudgetManager:
         duration = time.monotonic() - self._session_start
         return TokenSessionReport(
             total_tokens_consumed=self._total_tokens_consumed,
-            estimated_cost_usd=round(
-                self._total_tokens_consumed * self._cost_per_token, 6
-            ),
+            estimated_cost_usd=round(self._total_tokens_consumed * self._cost_per_token, 6),
             peak_context_tokens=self._peak_context_tokens,
             summarization_count=self._summarization_count,
             session_duration_seconds=round(duration, 2),

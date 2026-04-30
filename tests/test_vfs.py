@@ -222,15 +222,13 @@ class TestHostileComponentInputs:
     @pytest.mark.parametrize(
         "bad_name",
         [
-            "evil\nfake_entry",        # newline injection
-            "../escape",               # traversal
-            "mods/subdir",            # forward slash
-            "mods\\subdir",           # backslash
+            "evil\nfake_entry",  # newline injection
+            "../escape",  # traversal
+            "mods/subdir",  # forward slash
+            "mods\\subdir",  # backslash
         ],
     )
-    async def test_add_mod_hostile_mod_name_raises(
-        self, ctrl: MO2Controller, bad_name: str
-    ) -> None:
+    async def test_add_mod_hostile_mod_name_raises(self, ctrl: MO2Controller, bad_name: str) -> None:
         with pytest.raises(PathViolationError):
             await ctrl.add_mod_to_modlist(bad_name)
 
@@ -272,9 +270,7 @@ class TestHostileComponentInputs:
     # --- smoke test: legitimate inputs still work ---
 
     @pytest.mark.asyncio
-    async def test_legitimate_inputs_still_work(
-        self, ctrl: MO2Controller, tmp_path: pathlib.Path
-    ) -> None:
+    async def test_legitimate_inputs_still_work(self, ctrl: MO2Controller, tmp_path: pathlib.Path) -> None:
         profile_dir = tmp_path / "profiles" / "Default"
         profile_dir.mkdir(parents=True)
         (profile_dir / "modlist.txt").write_text("+ExistingMod\n", encoding="utf-8")

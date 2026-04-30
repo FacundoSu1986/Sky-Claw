@@ -14,25 +14,23 @@ Validates:
 
 from __future__ import annotations
 
-import time
-
 import pytest
+from pydantic import ValidationError
 
 from sky_claw.agent.token_budget import (
     BudgetVerdict,
     TokenBudgetConfig,
     TokenBudgetManager,
-    TokenSessionReport,
 )
 from sky_claw.agent.token_circuit_breaker import (
     TokenCircuitBreaker,
     TokenCircuitBreakerConfig,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_messages(*contents: str) -> list[dict]:
     """Create a list of user messages from strings."""
@@ -42,7 +40,7 @@ def _make_messages(*contents: str) -> list[dict]:
 def _make_large_messages(count: int, chars_per_msg: int = 4000) -> list[dict]:
     """Create messages that simulate a large conversation."""
     msgs: list[dict] = [{"role": "system", "content": "System prompt"}]
-    for i in range(count):
+    for _ in range(count):
         msgs.append({"role": "user", "content": "A" * chars_per_msg})
         msgs.append({"role": "assistant", "content": "B" * chars_per_msg})
     return msgs
@@ -51,6 +49,7 @@ def _make_large_messages(count: int, chars_per_msg: int = 4000) -> list[dict]:
 # ---------------------------------------------------------------------------
 # TokenBudgetManager — Token Estimation
 # ---------------------------------------------------------------------------
+
 
 class TestTokenEstimation:
     def test_empty_string(self) -> None:
@@ -72,6 +71,7 @@ class TestTokenEstimation:
 # TokenBudgetManager — Budget Check
 # ---------------------------------------------------------------------------
 
+
 class TestBudgetCheck:
     def test_allow_under_threshold(self) -> None:
         mgr = TokenBudgetManager(TokenBudgetConfig(max_context_tokens=10_000))
@@ -82,10 +82,12 @@ class TestBudgetCheck:
 
     def test_summarize_at_warning(self) -> None:
         # 75% of 1000 tokens = 750 tokens = 3000 chars
-        mgr = TokenBudgetManager(TokenBudgetConfig(
-            max_context_tokens=1000,
-            messages_to_preserve=2,
-        ))
+        mgr = TokenBudgetManager(
+            TokenBudgetConfig(
+                max_context_tokens=1000,
+                messages_to_preserve=2,
+            )
+        )
         msgs = _make_messages("A" * 3000)
         verdict = mgr.check_budget(msgs)
         assert verdict.action == "summarize"
@@ -93,10 +95,12 @@ class TestBudgetCheck:
 
     def test_truncate_at_critical(self) -> None:
         # 90% of 1000 tokens = 900 tokens = 3600 chars
-        mgr = TokenBudgetManager(TokenBudgetConfig(
-            max_context_tokens=1000,
-            messages_to_preserve=2,
-        ))
+        mgr = TokenBudgetManager(
+            TokenBudgetConfig(
+                max_context_tokens=1000,
+                messages_to_preserve=2,
+            )
+        )
         msgs = _make_messages("A" * 3600)
         verdict = mgr.check_budget(msgs)
         assert verdict.action == "truncate"
@@ -114,12 +118,15 @@ class TestBudgetCheck:
 # TokenBudgetManager — Summarization
 # ---------------------------------------------------------------------------
 
+
 class TestSummarization:
     def test_summarize_preserves_recent(self) -> None:
-        mgr = TokenBudgetManager(TokenBudgetConfig(
-            max_context_tokens=10_000,
-            messages_to_preserve=4,
-        ))
+        mgr = TokenBudgetManager(
+            TokenBudgetConfig(
+                max_context_tokens=10_000,
+                messages_to_preserve=4,
+            )
+        )
         msgs = [
             {"role": "system", "content": "System"},
             {"role": "user", "content": "Old message 1"},
@@ -145,25 +152,31 @@ class TestSummarization:
         assert len(summary_msgs) == 1
 
     def test_summarize_disabled(self) -> None:
-        mgr = TokenBudgetManager(TokenBudgetConfig(
-            enable_auto_summarization=False,
-        ))
+        mgr = TokenBudgetManager(
+            TokenBudgetConfig(
+                enable_auto_summarization=False,
+            )
+        )
         msgs = _make_messages("A", "B", "C")
         result = mgr.summarize_older_messages(msgs)
         assert result == msgs  # Unchanged
 
     def test_summarize_too_few_messages(self) -> None:
-        mgr = TokenBudgetManager(TokenBudgetConfig(
-            messages_to_preserve=10,
-        ))
+        mgr = TokenBudgetManager(
+            TokenBudgetConfig(
+                messages_to_preserve=10,
+            )
+        )
         msgs = _make_messages("A", "B")
         result = mgr.summarize_older_messages(msgs)
         assert result == msgs  # Not enough to summarize
 
     def test_summarization_count_tracked(self) -> None:
-        mgr = TokenBudgetManager(TokenBudgetConfig(
-            messages_to_preserve=2,
-        ))
+        mgr = TokenBudgetManager(
+            TokenBudgetConfig(
+                messages_to_preserve=2,
+            )
+        )
         msgs = [
             {"role": "system", "content": "Sys"},
             {"role": "user", "content": "A"},
@@ -180,11 +193,14 @@ class TestSummarization:
 # TokenBudgetManager — Truncation
 # ---------------------------------------------------------------------------
 
+
 class TestTruncation:
     def test_truncate_drops_older_messages(self) -> None:
-        mgr = TokenBudgetManager(TokenBudgetConfig(
-            messages_to_preserve=2,
-        ))
+        mgr = TokenBudgetManager(
+            TokenBudgetConfig(
+                messages_to_preserve=2,
+            )
+        )
         msgs = [
             {"role": "system", "content": "Sys"},
             {"role": "user", "content": "Old 1"},
@@ -205,6 +221,7 @@ class TestTruncation:
 # ---------------------------------------------------------------------------
 # TokenBudgetManager — Session Report
 # ---------------------------------------------------------------------------
+
 
 class TestSessionReport:
     def test_record_usage(self) -> None:
@@ -228,6 +245,7 @@ class TestSessionReport:
 # TokenCircuitBreaker — State Machine
 # ---------------------------------------------------------------------------
 
+
 class TestCircuitBreaker:
     def test_starts_closed(self) -> None:
         cb = TokenCircuitBreaker()
@@ -238,45 +256,55 @@ class TestCircuitBreaker:
         assert cb.check_request(1000) is True
 
     def test_trips_on_spike(self) -> None:
-        cb = TokenCircuitBreaker(TokenCircuitBreakerConfig(
-            spike_threshold_tokens=1000,
-        ))
+        cb = TokenCircuitBreaker(
+            TokenCircuitBreakerConfig(
+                spike_threshold_tokens=1000,
+            )
+        )
         assert cb.check_request(2000) is False
         assert cb.state == "open"
 
     def test_open_rejects_all(self) -> None:
-        cb = TokenCircuitBreaker(TokenCircuitBreakerConfig(
-            spike_threshold_tokens=100,
-        ))
+        cb = TokenCircuitBreaker(
+            TokenCircuitBreakerConfig(
+                spike_threshold_tokens=100,
+            )
+        )
         cb.check_request(200)  # Trip to OPEN
         assert cb.state == "open"
         assert cb.check_request(10) is False
         assert cb.check_request(1) is False
 
     def test_half_open_after_recovery(self) -> None:
-        cb = TokenCircuitBreaker(TokenCircuitBreakerConfig(
-            spike_threshold_tokens=100,
-            recovery_timeout_seconds=0,  # Immediate recovery
-        ))
+        cb = TokenCircuitBreaker(
+            TokenCircuitBreakerConfig(
+                spike_threshold_tokens=100,
+                recovery_timeout_seconds=0,  # Immediate recovery
+            )
+        )
         cb.check_request(200)  # Trip to OPEN
         # With 0-second recovery, next state access → HALF_OPEN
         assert cb.state == "half_open"
 
     def test_half_open_allows_one_probe(self) -> None:
-        cb = TokenCircuitBreaker(TokenCircuitBreakerConfig(
-            spike_threshold_tokens=100,
-            recovery_timeout_seconds=0,
-        ))
+        cb = TokenCircuitBreaker(
+            TokenCircuitBreakerConfig(
+                spike_threshold_tokens=100,
+                recovery_timeout_seconds=0,
+            )
+        )
         cb.check_request(200)  # Trip to OPEN
         assert cb.state == "half_open"
         assert cb.check_request(50) is True  # Probe allowed
         assert cb.check_request(50) is False  # Second rejected
 
     def test_half_open_to_closed_on_success(self) -> None:
-        cb = TokenCircuitBreaker(TokenCircuitBreakerConfig(
-            spike_threshold_tokens=100,
-            recovery_timeout_seconds=0,
-        ))
+        cb = TokenCircuitBreaker(
+            TokenCircuitBreakerConfig(
+                spike_threshold_tokens=100,
+                recovery_timeout_seconds=0,
+            )
+        )
         cb.check_request(200)  # Trip to OPEN
         assert cb.state == "half_open"
         cb.check_request(50)  # Probe
@@ -284,10 +312,12 @@ class TestCircuitBreaker:
         assert cb.state == "closed"
 
     def test_half_open_to_open_on_spike(self) -> None:
-        cb = TokenCircuitBreaker(TokenCircuitBreakerConfig(
-            spike_threshold_tokens=100,
-            recovery_timeout_seconds=60,  # Non-zero so OPEN stays OPEN
-        ))
+        cb = TokenCircuitBreaker(
+            TokenCircuitBreakerConfig(
+                spike_threshold_tokens=100,
+                recovery_timeout_seconds=60,  # Non-zero so OPEN stays OPEN
+            )
+        )
         cb.check_request(200)  # Trip to OPEN
         assert cb.state == "open"
         # Manually force to HALF_OPEN for testing
@@ -298,20 +328,24 @@ class TestCircuitBreaker:
         assert cb.state == "open"
 
     def test_manual_reset(self) -> None:
-        cb = TokenCircuitBreaker(TokenCircuitBreakerConfig(
-            spike_threshold_tokens=100,
-        ))
+        cb = TokenCircuitBreaker(
+            TokenCircuitBreakerConfig(
+                spike_threshold_tokens=100,
+            )
+        )
         cb.check_request(200)  # Trip to OPEN
         assert cb.state == "open"
         cb.reset()
         assert cb.state == "closed"
 
     def test_window_budget_enforcement(self) -> None:
-        cb = TokenCircuitBreaker(TokenCircuitBreakerConfig(
-            spike_threshold_tokens=100_000,  # High spike threshold
-            window_budget_tokens=1000,
-            window_duration_seconds=300,
-        ))
+        cb = TokenCircuitBreaker(
+            TokenCircuitBreakerConfig(
+                spike_threshold_tokens=100_000,  # High spike threshold
+                window_budget_tokens=1000,
+                window_duration_seconds=300,
+            )
+        )
         assert cb.check_request(300) is True
         cb.record_response(300)
         assert cb.check_request(300) is True
@@ -328,15 +362,16 @@ class TestCircuitBreaker:
 # Config Immutability
 # ---------------------------------------------------------------------------
 
+
 class TestConfigImmutability:
     def test_budget_config_frozen(self) -> None:
         cfg = TokenBudgetConfig()
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             cfg.max_context_tokens = 99999  # type: ignore[misc]
 
     def test_breaker_config_frozen(self) -> None:
         cfg = TokenCircuitBreakerConfig()
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             cfg.spike_threshold_tokens = 99999  # type: ignore[misc]
 
     def test_verdict_frozen(self) -> None:
@@ -346,5 +381,5 @@ class TestConfigImmutability:
             max_tokens=1000,
             utilization_pct=10.0,
         )
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             v.action = "reject"  # type: ignore[misc]
