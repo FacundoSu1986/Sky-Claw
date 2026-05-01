@@ -43,12 +43,12 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["antigravity/tests"]
 
 [tool.ruff]
 target-version = "py311"
 line-length = 120
-src = ["sky_claw", "tests"]
+src = ["sky_claw", "antigravity/tests", "local"]
 
 [tool.ruff.lint]
 select = [

@@ -12,25 +12,25 @@ from typing import Any
 import aiohttp
 import keyring
 
-from sky_claw.agent.animation_hub import AnimationHub, EngineConfig
-from sky_claw.agent.providers import ProviderConfigError, create_provider
-from sky_claw.agent.router import LLMRouter
-from sky_claw.agent.tools_facade import AsyncToolRegistry
+from sky_claw.antigravity.agent.animation_hub import AnimationHub, EngineConfig
+from sky_claw.antigravity.agent.providers import ProviderConfigError, create_provider
+from sky_claw.antigravity.agent.router import LLMRouter
+from sky_claw.antigravity.agent.tools_facade import AsyncToolRegistry
+from sky_claw.antigravity.comms.telegram import TelegramWebhook
+from sky_claw.antigravity.comms.telegram_polling import TelegramPolling
+from sky_claw.antigravity.comms.telegram_sender import TelegramSender
+from sky_claw.antigravity.db.async_registry import AsyncModRegistry
+from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
+from sky_claw.antigravity.scraper.masterlist import MasterlistClient
+from sky_claw.antigravity.scraper.nexus_downloader import NexusDownloader
+from sky_claw.antigravity.security.hitl import HITLGuard, HITLRequest
+from sky_claw.antigravity.security.network_gateway import GatewayTCPConnector, NetworkGateway
+from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.antigravity.security.prompt_armor import build_system_header
 from sky_claw.auto_detect import AutoDetector
-from sky_claw.comms.telegram import TelegramWebhook
-from sky_claw.comms.telegram_polling import TelegramPolling
-from sky_claw.comms.telegram_sender import TelegramSender
 from sky_claw.config import LOOT_COMMON_PATHS, XEDIT_COMMON_PATHS, Config, SystemPaths
-from sky_claw.db.async_registry import AsyncModRegistry
+from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local_config import load as _load_legacy_json
-from sky_claw.mo2.vfs import MO2Controller
-from sky_claw.orchestrator.sync_engine import SyncEngine
-from sky_claw.scraper.masterlist import MasterlistClient
-from sky_claw.scraper.nexus_downloader import NexusDownloader
-from sky_claw.security.hitl import HITLGuard, HITLRequest
-from sky_claw.security.network_gateway import GatewayTCPConnector, NetworkGateway
-from sky_claw.security.path_validator import PathValidator
-from sky_claw.security.prompt_armor import build_system_header
 from sky_claw.tools_installer import ToolsInstaller, scan_common_paths
 
 logger = logging.getLogger("sky_claw")
@@ -273,7 +273,7 @@ class AppContext:
                 )
             except ProviderConfigError as exc:
                 logger.warning("LLM provider config error: %s — falling back to Ollama", exc)
-                from sky_claw.agent.providers import OllamaProvider
+                from sky_claw.antigravity.agent.providers import OllamaProvider
 
                 provider = OllamaProvider()
 
@@ -431,7 +431,7 @@ class AppContext:
             self._exit_stack.push_async_callback(self._close_router)
 
             # Initialize Frontend Bridge (Gateway port 18789 ↔ Daemon)
-            from sky_claw.comms.frontend_bridge import FrontendBridge
+            from sky_claw.antigravity.comms.frontend_bridge import FrontendBridge
 
             self.frontend_bridge = FrontendBridge(
                 router=self.router,
