@@ -101,9 +101,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--staging-dir",
         type=pathlib.Path,
-        default=pathlib.Path(
-            str(SystemPaths.get_base_drive() / "MO2Portable/downloads")
-        ),
+        default=pathlib.Path(str(SystemPaths.get_base_drive() / "MO2Portable/downloads")),
         help="MO2 staging directory for mod downloads",
     )
     parser.add_argument(

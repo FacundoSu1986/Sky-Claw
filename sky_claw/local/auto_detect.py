@@ -37,6 +37,7 @@ _SEARCH_TIMEOUT: float = SEARCH_TIMEOUT_SECONDS
 # Local AppData helper (patchable by tests)
 # ---------------------------------------------------------------------------
 
+
 def _local_appdata() -> pathlib.Path | None:
     r"""Return the user's local application data directory.
 

@@ -6,6 +6,7 @@ from typing import Any
 from sky_claw.antigravity.comms.interface import InterfaceAgent
 from sky_claw.antigravity.core.database import DatabaseAgent
 from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
+from sky_claw.antigravity.core.models import HitlApprovalRequest
 from sky_claw.antigravity.core.path_resolver import PathResolutionService
 from sky_claw.antigravity.core.windows_interop import ModdingToolsAgent
 from sky_claw.antigravity.db.rollback_manager import RollbackManager
@@ -35,7 +36,6 @@ from sky_claw.local.tools.wrye_bash_runner import (
 )
 from sky_claw.local.tools.xedit_service import XEditPipelineService
 from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer
-from sky_claw.antigravity.core.models import HitlApprovalRequest
 
 logger = logging.getLogger(__name__)
 security_logger = logging.getLogger(f"{__name__}.security")

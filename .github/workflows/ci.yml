@@ -36,9 +36,9 @@ jobs:
       - name: Install dev dependencies
         run: pip install -e ".[dev]"
       - name: Ruff check
-        run: ruff check sky_claw/ tests/ --output-format=github
+        run: ruff check sky_claw/ antigravity/tests/ --output-format=github
       - name: Ruff format check
-        run: ruff format --check sky_claw/ tests/
+        run: ruff format --check sky_claw/ antigravity/tests/
 
   # ── Gate 2: Type Safety ──────────────────────────────
   typecheck:
@@ -70,7 +70,7 @@ jobs:
       - name: Install dev dependencies
         run: pip install -e ".[dev]"
       - name: Run tests with coverage
-        run: pytest --cov=sky_claw --cov-report=xml --cov-fail-under=49 tests/
+        run: pytest --cov=sky_claw --cov-report=xml --cov-fail-under=49 antigravity/tests/
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

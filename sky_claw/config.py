@@ -159,7 +159,6 @@ class Config:
             except (tomllib.TOMLDecodeError, OSError, ValueError) as exc:
                 logger.warning("Failed to load config.toml: %s", exc)
 
-
     def __getattr__(self, name: str) -> Any:
         if name in self._data:
             return self._data[name]
