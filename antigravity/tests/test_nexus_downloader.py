@@ -1,4 +1,4 @@
-"""Tests for sky_claw.scraper.nexus_downloader and the download_mod tool."""
+"""Tests for sky_claw.antigravity.scraper.nexus_downloader and the download_mod tool."""
 
 from __future__ import annotations
 
@@ -850,7 +850,7 @@ class TestDownloadModMissingConfig:
 class TestDownloadModMetadataFailure:
     @pytest.mark.asyncio
     async def test_metadata_error_returns_error_json(self, tool_registry: AsyncToolRegistry) -> None:
-        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -895,7 +895,7 @@ class TestDownloadModHITLDenied:
 
         fi = _make_file_info(nexus_id=10, file_id=20, file_name="denied.zip")
 
-        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -935,7 +935,7 @@ class TestDownloadModHITLDenied:
         )
         fi = _make_file_info(nexus_id=11, file_id=21, file_name="timeout.zip")
 
-        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -992,7 +992,7 @@ class TestDownloadModApproved:
             enqueued.append(task)
             return task
 
-        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -1035,7 +1035,7 @@ class TestDownloadModApproved:
             coro.close()
             return MagicMock()
 
-        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)

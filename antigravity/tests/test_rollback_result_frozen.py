@@ -204,7 +204,7 @@ class TestExecuteFileOperationRollbackNoMutation:
 
         with (
             pytest.raises(ValueError, match="boom"),
-            patch("sky_claw.orchestrator.sync_engine.logger") as mock_logger,
+            patch("sky_claw.antigravity.orchestrator.sync_engine.logger") as mock_logger,
         ):
             await engine.execute_file_operation(
                 operation_type=MagicMock(value="FILE_MODIFY"),

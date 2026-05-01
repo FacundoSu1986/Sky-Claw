@@ -1,4 +1,4 @@
-"""Tests for sky_claw.mo2.vfs -- async modlist.txt parser."""
+"""Tests for sky_claw.local.mo2.vfs -- async modlist.txt parser."""
 
 from __future__ import annotations
 
@@ -177,7 +177,7 @@ class TestGameControl:
             return
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mock_create)
-        monkeypatch.setattr("sky_claw.mo2.vfs._verify_pid_alive", _fake_verify)
+        monkeypatch.setattr("sky_claw.local.mo2.vfs._verify_pid_alive", _fake_verify)
 
         result = await controller.launch_game("Default")
         assert result["status"] == "launched"

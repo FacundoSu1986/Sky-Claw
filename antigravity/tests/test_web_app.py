@@ -1,4 +1,4 @@
-"""Tests for sky_claw.web.app.WebApp — security-focused.
+"""Tests for sky_claw.antigravity.web.app.WebApp — security-focused.
 
 Covers:
 - /api/auto-detect 500 must NOT leak exception details
@@ -79,8 +79,8 @@ def mock_local_config(tmp_path):
     cfg.bodyslide_exe = ""
 
     with (
-        patch("sky_claw.web.app.load_local_config", return_value=cfg),
-        patch("sky_claw.web.app.save_local_config"),
+        patch("sky_claw.antigravity.web.app.load_local_config", return_value=cfg),
+        patch("sky_claw.antigravity.web.app.save_local_config"),
     ):
         yield cfg
 
@@ -112,7 +112,7 @@ class TestAutoDetect500:
         web_app = _make_web_app(router=mock_router, session=mock_session)
 
         with patch(
-            "sky_claw.web.app.AutoDetector.detect_all",
+            "sky_claw.antigravity.web.app.AutoDetector.detect_all",
             new_callable=AsyncMock,
             side_effect=RuntimeError(secret_detail),
         ):
@@ -135,7 +135,7 @@ class TestAutoDetect500:
         web_app = _make_web_app(router=mock_router, session=mock_session)
 
         with patch(
-            "sky_claw.web.app.AutoDetector.detect_all",
+            "sky_claw.antigravity.web.app.AutoDetector.detect_all",
             new_callable=AsyncMock,
             side_effect=Exception("anything"),
         ):
@@ -152,7 +152,7 @@ class TestAutoDetect500:
         web_app = _make_web_app(router=mock_router, session=mock_session)
 
         with patch(
-            "sky_claw.web.app.AutoDetector.detect_all",
+            "sky_claw.antigravity.web.app.AutoDetector.detect_all",
             new_callable=AsyncMock,
             return_value={"mo2_root": "C:\\MO2"},
         ):

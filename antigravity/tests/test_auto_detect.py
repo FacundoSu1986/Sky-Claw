@@ -7,12 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sky_claw.auto_detect import (
+from sky_claw.local.auto_detect import (
     AutoDetector,
     _parse_steam_library_folders,
     _read_registry_value,
 )
-from sky_claw.local_config import LocalConfig, save
+from sky_claw.local.local_config import LocalConfig, save
 
 # ---------------------------------------------------------------------------
 # find_mo2
@@ -26,7 +26,7 @@ class TestFindMo2:
         mo2_dir.mkdir()
         (mo2_dir / "ModOrganizer.exe").touch()
 
-        with patch("sky_claw.auto_detect._MO2_COMMON", (str(mo2_dir),)):
+        with patch("sky_claw.local.auto_detect._MO2_COMMON", (str(mo2_dir),)):
             result = await AutoDetector.find_mo2()
 
         assert result == mo2_dir
@@ -34,8 +34,8 @@ class TestFindMo2:
     @pytest.mark.asyncio
     async def test_returns_none_when_not_found(self) -> None:
         with (
-            patch("sky_claw.auto_detect._MO2_COMMON", ()),
-            patch("sky_claw.auto_detect.os.environ", {}),
+            patch("sky_claw.local.auto_detect._MO2_COMMON", ()),
+            patch("sky_claw.local.auto_detect.os.environ", {}),
         ):
             result = await AutoDetector.find_mo2()
 
@@ -47,7 +47,7 @@ class TestFindMo2:
         mo2_dir.mkdir(parents=True)
         (mo2_dir / "ModOrganizer.exe").touch()
 
-        with patch("sky_claw.auto_detect._MO2_COMMON", ()), patch.dict("os.environ", {"LOCALAPPDATA": str(tmp_path)}):
+        with patch("sky_claw.local.auto_detect._MO2_COMMON", ()), patch.dict("os.environ", {"LOCALAPPDATA": str(tmp_path)}):
             result = await AutoDetector.find_mo2()
 
         assert result == mo2_dir
@@ -66,7 +66,7 @@ class TestFindSkyrim:
         (skyrim_dir / "SkyrimSE.exe").touch()
 
         with patch(
-            "sky_claw.auto_detect._read_registry_value",
+            "sky_claw.local.auto_detect._read_registry_value",
             return_value=str(skyrim_dir),
         ):
             result = await AutoDetector.find_skyrim()
@@ -89,8 +89,8 @@ class TestFindSkyrim:
         vdf_path.write_text(vdf_content, encoding="utf-8")
 
         with (
-            patch("sky_claw.auto_detect._read_registry_value", return_value=None),
-            patch("sky_claw.auto_detect._STEAM_DEFAULT_PATHS", (str(steam_dir),)),
+            patch("sky_claw.local.auto_detect._read_registry_value", return_value=None),
+            patch("sky_claw.local.auto_detect._STEAM_DEFAULT_PATHS", (str(steam_dir),)),
         ):
             result = await AutoDetector.find_skyrim()
 
@@ -103,9 +103,9 @@ class TestFindSkyrim:
         (skyrim_dir / "SkyrimSE.exe").touch()
 
         with (
-            patch("sky_claw.auto_detect._read_registry_value", return_value=None),
-            patch("sky_claw.auto_detect._STEAM_DEFAULT_PATHS", ()),
-            patch("sky_claw.auto_detect._SKYRIM_COMMON", (str(skyrim_dir),)),
+            patch("sky_claw.local.auto_detect._read_registry_value", return_value=None),
+            patch("sky_claw.local.auto_detect._STEAM_DEFAULT_PATHS", ()),
+            patch("sky_claw.local.auto_detect._SKYRIM_COMMON", (str(skyrim_dir),)),
         ):
             result = await AutoDetector.find_skyrim()
 
@@ -114,9 +114,9 @@ class TestFindSkyrim:
     @pytest.mark.asyncio
     async def test_returns_none_when_not_found(self) -> None:
         with (
-            patch("sky_claw.auto_detect._read_registry_value", return_value=None),
-            patch("sky_claw.auto_detect._STEAM_DEFAULT_PATHS", ()),
-            patch("sky_claw.auto_detect._SKYRIM_COMMON", ()),
+            patch("sky_claw.local.auto_detect._read_registry_value", return_value=None),
+            patch("sky_claw.local.auto_detect._STEAM_DEFAULT_PATHS", ()),
+            patch("sky_claw.local.auto_detect._SKYRIM_COMMON", ()),
         ):
             result = await AutoDetector.find_skyrim()
 
@@ -135,7 +135,7 @@ class TestFindTools:
         loot_dir.mkdir()
         (loot_dir / "LOOT.exe").touch()
 
-        with patch("sky_claw.auto_detect._LOOT_COMMON", (str(loot_dir),)):
+        with patch("sky_claw.local.auto_detect._LOOT_COMMON", (str(loot_dir),)):
             result = await AutoDetector.find_loot()
 
         assert result == loot_dir / "LOOT.exe"
@@ -143,7 +143,7 @@ class TestFindTools:
     @pytest.mark.asyncio
     async def test_loot_not_found(self) -> None:
         with (
-            patch("sky_claw.auto_detect._LOOT_COMMON", ()),
+            patch("sky_claw.local.auto_detect._LOOT_COMMON", ()),
             patch("shutil.which", return_value=None),
         ):
             result = await AutoDetector.find_loot()
@@ -156,7 +156,7 @@ class TestFindTools:
         xedit_dir.mkdir()
         (xedit_dir / "SSEEdit.exe").touch()
 
-        with patch("sky_claw.auto_detect._XEDIT_COMMON", (str(xedit_dir),)):
+        with patch("sky_claw.local.auto_detect._XEDIT_COMMON", (str(xedit_dir),)):
             result = await AutoDetector.find_xedit()
 
         assert result == xedit_dir / "SSEEdit.exe"
@@ -164,7 +164,7 @@ class TestFindTools:
     @pytest.mark.asyncio
     async def test_xedit_not_found(self) -> None:
         with (
-            patch("sky_claw.auto_detect._XEDIT_COMMON", ()),
+            patch("sky_claw.local.auto_detect._XEDIT_COMMON", ()),
             patch("shutil.which", return_value=None),
         ):
             result = await AutoDetector.find_xedit()
@@ -185,12 +185,12 @@ class TestDetectAll:
         (mo2_dir / "ModOrganizer.exe").touch()
 
         with (
-            patch("sky_claw.auto_detect._MO2_COMMON", (str(mo2_dir),)),
-            patch("sky_claw.auto_detect._read_registry_value", return_value=None),
-            patch("sky_claw.auto_detect._STEAM_DEFAULT_PATHS", ()),
-            patch("sky_claw.auto_detect._SKYRIM_COMMON", ()),
-            patch("sky_claw.auto_detect._LOOT_COMMON", ()),
-            patch("sky_claw.auto_detect._XEDIT_COMMON", ()),
+            patch("sky_claw.local.auto_detect._MO2_COMMON", (str(mo2_dir),)),
+            patch("sky_claw.local.auto_detect._read_registry_value", return_value=None),
+            patch("sky_claw.local.auto_detect._STEAM_DEFAULT_PATHS", ()),
+            patch("sky_claw.local.auto_detect._SKYRIM_COMMON", ()),
+            patch("sky_claw.local.auto_detect._LOOT_COMMON", ()),
+            patch("sky_claw.local.auto_detect._XEDIT_COMMON", ()),
             patch("shutil.which", return_value=None),
         ):
             result = await AutoDetector.detect_all()
@@ -211,12 +211,12 @@ class TestDetectAll:
 
         with (
             patch.object(AutoDetector, "_find_mo2_inner", side_effect=_slow),
-            patch("sky_claw.auto_detect._SEARCH_TIMEOUT", 0.01),
-            patch("sky_claw.auto_detect._read_registry_value", return_value=None),
-            patch("sky_claw.auto_detect._STEAM_DEFAULT_PATHS", ()),
-            patch("sky_claw.auto_detect._SKYRIM_COMMON", ()),
-            patch("sky_claw.auto_detect._LOOT_COMMON", ()),
-            patch("sky_claw.auto_detect._XEDIT_COMMON", ()),
+            patch("sky_claw.local.auto_detect._SEARCH_TIMEOUT", 0.01),
+            patch("sky_claw.local.auto_detect._read_registry_value", return_value=None),
+            patch("sky_claw.local.auto_detect._STEAM_DEFAULT_PATHS", ()),
+            patch("sky_claw.local.auto_detect._SKYRIM_COMMON", ()),
+            patch("sky_claw.local.auto_detect._LOOT_COMMON", ()),
+            patch("sky_claw.local.auto_detect._XEDIT_COMMON", ()),
             patch("shutil.which", return_value=None),
         ):
             result = await AutoDetector.detect_all()
@@ -253,7 +253,7 @@ class TestSteamVdfParser:
 
 class TestRegistryHelper:
     def test_returns_none_without_winreg(self) -> None:
-        with patch("sky_claw.auto_detect._HAS_WINREG", False):
+        with patch("sky_claw.local.auto_detect._HAS_WINREG", False):
             result = _read_registry_value(0, "SOME\\KEY", "Value")
         assert result is None
 

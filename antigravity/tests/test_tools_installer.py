@@ -15,7 +15,7 @@ import pytest
 from sky_claw.antigravity.security.hitl import HITLGuard
 from sky_claw.antigravity.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
-from sky_claw.tools_installer import (
+from sky_claw.local.tools_installer import (
     ToolInstallError,
     ToolsInstaller,
     _extract_zip_safe,
@@ -364,14 +364,14 @@ class TestEnsureXedit:
 
 class TestLocalConfig:
     def test_load_defaults_when_file_missing(self, tmp_path: pathlib.Path) -> None:
-        from sky_claw.local_config import load
+        from sky_claw.local.local_config import load
 
         cfg = load(tmp_path / "nonexistent.json")
         assert cfg.first_run is True
         assert cfg.loot_exe is None
 
     def test_save_and_load_roundtrip(self, tmp_path: pathlib.Path) -> None:
-        from sky_claw.local_config import LocalConfig, load, save
+        from sky_claw.local.local_config import LocalConfig, load, save
 
         cfg = LocalConfig(
             loot_exe="C:/LOOT/loot.exe",
@@ -387,7 +387,7 @@ class TestLocalConfig:
         assert loaded.first_run is False
 
     def test_load_handles_corrupt_json(self, tmp_path: pathlib.Path) -> None:
-        from sky_claw.local_config import load
+        from sky_claw.local.local_config import load
 
         path = tmp_path / "bad.json"
         path.write_text("{not json", encoding="utf-8")

@@ -8,7 +8,7 @@ from aiohttp import web
 
 from sky_claw.antigravity.security.auth_token_manager import AuthTokenManager
 from sky_claw.antigravity.web.app import WebApp
-from sky_claw.local_config import load as load_local_config
+from sky_claw.local.local_config import load as load_local_config
 
 if TYPE_CHECKING:
     from sky_claw.app_context import AppContext

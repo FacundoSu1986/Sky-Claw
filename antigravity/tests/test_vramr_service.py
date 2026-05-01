@@ -10,7 +10,7 @@ Cubren:
 * Drain-task que lanza excepción sin tumbar la pipeline.
 * Event bus real + sincronización con ``asyncio.Event`` (sin ``asyncio.sleep``).
 
-Meta: 100% de cobertura de ramas en :mod:`sky_claw.tools.vramr_service`.
+Meta: 100% de cobertura de ramas en :mod:`sky_claw.local.tools.vramr_service`.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from sky_claw.local.tools.vramr_service import (
     VRAMrExecutionError,
     VRAMrPipelineService,
 )
-from sky_claw.tools import vramr_service as vramr_mod
+from sky_claw.local.tools import vramr_service as vramr_mod
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -456,7 +456,7 @@ async def test_stdout_logged_as_info_stderr_as_warning(
     output_dir: pathlib.Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.DEBUG, logger="sky_claw.tools.vramr_service")
+    caplog.set_level(logging.DEBUG, logger="sky_claw.local.tools.vramr_service")
     svc = make_service(
         lock_manager=lock_manager,
         mock_journal=mock_journal,
@@ -583,7 +583,7 @@ async def test_drain_task_exception_does_not_crash_pipeline(
     output_dir: pathlib.Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="sky_claw.tools.vramr_service")
+    caplog.set_level(logging.WARNING, logger="sky_claw.local.tools.vramr_service")
     svc = make_service(
         lock_manager=lock_manager,
         mock_journal=mock_journal,
@@ -817,7 +817,7 @@ async def test_release_lock_failure_is_swallowed(
     output_dir: pathlib.Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="sky_claw.tools.vramr_service")
+    caplog.set_level(logging.WARNING, logger="sky_claw.local.tools.vramr_service")
     svc = make_service(
         lock_manager=lock_manager,
         mock_journal=mock_journal,
@@ -861,7 +861,7 @@ async def test_journal_mark_rolled_back_failure_is_logged(
     output_dir: pathlib.Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.CRITICAL, logger="sky_claw.tools.vramr_service")
+    caplog.set_level(logging.CRITICAL, logger="sky_claw.local.tools.vramr_service")
     journal = AsyncMock()
     journal.begin_transaction = AsyncMock(return_value=42)
     journal.commit_transaction = AsyncMock()
@@ -942,7 +942,7 @@ async def test_cleanup_when_entry_unlink_fails_logs_warning(
     tmp_path: pathlib.Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="sky_claw.tools.vramr_service")
+    caplog.set_level(logging.WARNING, logger="sky_claw.local.tools.vramr_service")
     d = tmp_path / "out"
     d.mkdir()
     bad = d / "bad"

@@ -82,7 +82,7 @@ class TestLootAutoInit:
         )
 
         # Mock LOOTRunner to avoid actual execution
-        with patch("sky_claw.agent.tools.LOOTRunner") as mock_loot_runner_cls:
+        with patch("sky_claw.antigravity.agent.tools.LOOTRunner") as mock_loot_runner_cls:
             mock_runner = MagicMock()
             mock_runner.sort = AsyncMock(
                 return_value=MagicMock(

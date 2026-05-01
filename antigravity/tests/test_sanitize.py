@@ -1,4 +1,4 @@
-"""Comprehensive tests for sky_claw.security.sanitize.
+"""Comprehensive tests for sky_claw.antigravity.security.sanitize.
 
 Covers:
 - sanitize_for_prompt: control character stripping, prompt injection patterns,

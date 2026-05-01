@@ -1,4 +1,4 @@
-"""Tests for sky_claw.security.network_gateway."""
+"""Tests for sky_claw.antigravity.security.network_gateway."""
 
 from __future__ import annotations
 

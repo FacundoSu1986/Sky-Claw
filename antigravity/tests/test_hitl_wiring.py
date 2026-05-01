@@ -530,7 +530,7 @@ class TestAppContextWiring:
         with (
             patch("keyring.get_password", side_effect=lambda _svc, key: keyring_store.get(key)),
             patch("keyring.set_password"),
-            patch("sky_claw.comms.telegram_polling.TelegramPolling.start", new=AsyncMock()),
+            patch("sky_claw.antigravity.comms.telegram_polling.TelegramPolling.start", new=AsyncMock()),
         ):
             ctx = AppContext(args)
             await ctx.start_minimal()
@@ -703,7 +703,7 @@ class TestEndToEndHITLFlow:
         tool_result: dict[str, Any] = {}
 
         async def _run_tool() -> None:
-            with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
+            with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
                 mock_sess = AsyncMock()
                 mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
                 mock_sess.__aexit__ = AsyncMock(return_value=False)
@@ -800,7 +800,7 @@ class TestEndToEndHITLFlow:
         tool_result: dict[str, Any] = {}
 
         async def _run_tool() -> None:
-            with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
+            with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
                 mock_sess = AsyncMock()
                 mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
                 mock_sess.__aexit__ = AsyncMock(return_value=False)

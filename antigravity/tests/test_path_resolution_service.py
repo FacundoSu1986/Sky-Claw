@@ -106,7 +106,7 @@ class TestDetectMo2Path:
 
         # Patchear las rutas candidatas para apuntar al sandbox
         with patch(
-            "sky_claw.core.path_resolver._CANDIDATE_MO2_PATHS",
+            "sky_claw.antigravity.core.path_resolver._CANDIDATE_MO2_PATHS",
             (str(mo2_dir),),
         ):
             result = path_resolver.detect_mo2_path()
@@ -120,11 +120,11 @@ class TestDetectMo2Path:
         """Retorna None cuando ninguna ruta candidata contiene MO2."""
         with (
             patch(
-                "sky_claw.core.path_resolver._CANDIDATE_MO2_PATHS",
+                "sky_claw.antigravity.core.path_resolver._CANDIDATE_MO2_PATHS",
                 (r"Z:\nonexistent\path",),
             ),
             patch(
-                "sky_claw.core.path_resolver._CANDIDATE_PF_PATHS",
+                "sky_claw.antigravity.core.path_resolver._CANDIDATE_PF_PATHS",
                 (r"Z:\nonexistent\pf",),
             ),
             patch.dict(os.environ, {}, clear=False),

@@ -7,7 +7,7 @@ Phase 2 Extensions:
     - Integration with PatchOrchestrator via execute_patch()
 
 Usage:
-    from sky_claw.xedit import XEditRunner, ScriptGenerator, ScriptExecutionResult
+    from sky_claw.local.xedit import XEditRunner, ScriptGenerator, ScriptExecutionResult
 
     runner = XEditRunner(
         xedit_path=Path("SSEEdit.exe"),

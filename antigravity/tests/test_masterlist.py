@@ -1,4 +1,4 @@
-"""Tests for sky_claw.scraper.masterlist."""
+"""Tests for sky_claw.antigravity.scraper.masterlist."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 """Cognitive circuit breaker that detects agentic action loops.
 
-Mientras que ``sky_claw.scraper.masterlist._CircuitBreaker`` protege la capa de
+Mientras que ``sky_claw.antigravity.scraper.masterlist._CircuitBreaker`` protege la capa de
 red (baneos de IP), esta clase protege la capa cognitiva: detecta cuando el
 LLM intenta ejecutar la misma herramienta con los mismos argumentos repetidas
 veces seguidas (el típico síntoma de un agente atascado) y transfiere el

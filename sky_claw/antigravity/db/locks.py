@@ -17,7 +17,7 @@ LÓGICA:
     - Expired leases are automatically reclaimed — no manual cleanup needed.
 
 ARQUITECTURA:
-    - Module lives in ``sky_claw.db.locks`` to keep lock infrastructure separate
+    - Module lives in ``sky_claw.antigravity.db.locks`` to keep lock infrastructure separate
       from the mod registry (``async_registry.py``) and journaling (``journal.py``).
     - ``SnapshotTransactionLock`` composes ``DistributedLockManager`` +
       ``FileSnapshotManager`` via constructor injection (DI) — no globals.

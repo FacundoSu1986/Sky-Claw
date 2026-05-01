@@ -5,10 +5,10 @@
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 Arquitectura MVVM:
-  • VIEW:        sky_claw.gui.views          (componentes visuales puros)
+  • VIEW:        sky_claw.antigravity.gui.views          (componentes visuales puros)
   • VIEWMODEL:   ReactiveState               (variables NiceGUI reactivas)
-  • MODEL:       sky_claw.gui.models         (AppState puro, thread-safe)
-  • CONTROLLERS: sky_claw.gui.controllers    (lógica de negocio aislada)
+  • MODEL:       sky_claw.antigravity.gui.models         (AppState puro, thread-safe)
+  • CONTROLLERS: sky_claw.antigravity.gui.controllers    (lógica de negocio aislada)
 
 Este archivo es un Dependency Injector: instancia estado, controladores y vistas.
 NO contiene lógica de negocio propia.

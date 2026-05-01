@@ -1,4 +1,4 @@
-"""Tests for sky_claw.validators.safe_save_validator.
+"""Tests for sky_claw.local.validators.safe_save_validator.
 
 All file I/O uses pytest's tmp_path fixture — no real game files are touched.
 Target: 100% branch coverage.

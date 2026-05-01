@@ -405,15 +405,13 @@ class TestCreateProvider:
         with patch.dict(os.environ, {}, clear=True), pytest.raises(ProviderConfigError, match="ANTHROPIC_API_KEY"):
             create_provider(provider_name="anthropic")
 
-    def test_auto_detect_anthropic(self) -> None:
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-auto"}, clear=True):
-            provider = create_provider()
-            assert isinstance(provider, AnthropicProvider)
+    def test_explicit_api_key_anthropic(self) -> None:
+        provider = create_provider(api_key="sk-auto")
+        assert isinstance(provider, AnthropicProvider)
 
-    def test_auto_detect_deepseek(self) -> None:
-        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "ds-auto"}, clear=True):
-            provider = create_provider()
-            assert isinstance(provider, DeepSeekProvider)
+    def test_explicit_provider_and_key_deepseek(self) -> None:
+        provider = create_provider(provider_name="deepseek", api_key="ds-auto")
+        assert isinstance(provider, DeepSeekProvider)
 
     def test_fallback_to_ollama(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

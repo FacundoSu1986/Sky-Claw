@@ -42,7 +42,7 @@ class TestCredentialVaultGetSecret:
         """aiosqlite.Error during connection/query → return None, log exception."""
         with (
             patch(
-                "sky_claw.security.credential_vault.aiosqlite.connect",
+                "sky_claw.antigravity.security.credential_vault.aiosqlite.connect",
                 side_effect=aiosqlite.Error("disk I/O error"),
             ),
             caplog.at_level(logging.ERROR, logger="SkyClaw.CredentialVault"),

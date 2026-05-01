@@ -1,4 +1,4 @@
-"""Tests for sky_claw.comms.telegram and sky_claw.comms.telegram_sender."""
+"""Tests for sky_claw.antigravity.comms.telegram and sky_claw.antigravity.comms.telegram_sender."""
 
 from __future__ import annotations
 

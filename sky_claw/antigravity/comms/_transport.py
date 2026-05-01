@@ -7,7 +7,7 @@ Enforces two guarantees before any connection is opened:
    construction time, not at runtime.
 
 2. **Bearer-token injection** — callers that require authentication receive
-   the token from :class:`~sky_claw.security.auth_token_manager.AuthTokenManager`
+   the token from :class:`~sky_claw.antigravity.security.auth_token_manager.AuthTokenManager`
    (or an explicit override) and it is attached as the ``X-Auth-Token`` header
    before the handshake.
 
@@ -159,7 +159,7 @@ def authenticated_connect(
     1. Validate *url* via :func:`assert_safe_ws_url`.
     2. Resolve the bearer token:
        * *auth_token* (explicit) takes priority.
-       * Falls back to :meth:`~sky_claw.security.auth_token_manager.AuthTokenManager.read_token_file`
+       * Falls back to :meth:`~sky_claw.antigravity.security.auth_token_manager.AuthTokenManager.read_token_file`
          using *token_dir*.
     3. If *require_auth* is True and no token is available, raise
        :class:`AuthError`.

@@ -27,9 +27,9 @@ from sky_claw.antigravity.web.operations_hub_ws import (
     OperationsHubWSHandler,
     register_operations_hub_routes,
 )
-from sky_claw.auto_detect import AutoDetector
-from sky_claw.local_config import load as load_local_config
-from sky_claw.local_config import save as save_local_config
+from sky_claw.local.auto_detect import AutoDetector
+from sky_claw.local.local_config import load as load_local_config
+from sky_claw.local.local_config import save as save_local_config
 from sky_claw.logging_config import correlation_id_var
 
 if TYPE_CHECKING:

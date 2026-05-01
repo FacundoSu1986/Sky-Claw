@@ -1,6 +1,6 @@
 """Environment Scanner — extended auto-detection of Skyrim, MO2, and modding tools.
 
-Builds on the existing :mod:`sky_claw.auto_detect` module but adds:
+Builds on the existing :mod:`sky_claw.local.auto_detect` module but adds:
 - Skyrim version + edition detection (SE vs AE vs LE)
 - GOG and Epic Games Store detection
 - Wrye Bash, DynDOLOD, and Pandora discovery

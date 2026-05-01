@@ -1,4 +1,4 @@
-"""Comprehensive tests for sky_claw.security.path_validator.
+"""Comprehensive tests for sky_claw.antigravity.security.path_validator.
 
 Covers:
 - PathValidator construction: valid roots, empty roots raises ValueError.

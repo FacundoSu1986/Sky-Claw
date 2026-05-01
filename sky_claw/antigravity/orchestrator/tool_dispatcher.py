@@ -3,7 +3,7 @@ legacy SupervisorAgent.dispatch_tool match/case (Strangler Fig refactor).
 
 This dispatcher serves the orchestration layer (LangGraph callbacks,
 internal services) and returns dicts. It is INTENTIONALLY separate from
-sky_claw.agent.tools.AsyncToolRegistry, which serves the LLM-facing
+sky_claw.antigravity.agent.tools.AsyncToolRegistry, which serves the LLM-facing
 agent layer (returns JSON strings, integrates with LLMRouter).
 
 Two registries, one clear seam each.

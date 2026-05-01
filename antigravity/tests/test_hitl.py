@@ -1,4 +1,4 @@
-"""Comprehensive tests for sky_claw.security.hitl.HITLGuard.
+"""Comprehensive tests for sky_claw.antigravity.security.hitl.HITLGuard.
 
 Covers:
 - requires_approval: pattern matching for out-of-scope hosts (exact, wildcard,

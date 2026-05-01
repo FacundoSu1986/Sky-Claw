@@ -1,4 +1,4 @@
-"""Tests for the circuit breaker in sky_claw.scraper.masterlist."""
+"""Tests for the circuit breaker in sky_claw.antigravity.scraper.masterlist."""
 
 from __future__ import annotations
 

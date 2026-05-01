@@ -3,7 +3,7 @@
 Extrae la lógica de resolución de rutas desde :class:`SupervisorAgent`
 en un servicio inyectable que aplica el Principio de Inversión de
 Dependencias (DIP).  Todas las validaciones pasan por
-:class:`~sky_claw.security.path_validator.PathValidator` para
+:class:`~sky_claw.antigravity.security.path_validator.PathValidator` para
 garantizar la salvaguarda contra Path Traversal (CRIT-003).
 
 Principio EAFP: se usa ``pathlib.Path.resolve(strict=True)`` en lugar

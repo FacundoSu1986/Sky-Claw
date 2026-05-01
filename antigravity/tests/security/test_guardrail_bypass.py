@@ -118,14 +118,6 @@ class TestRagContextSanitized:
                     "build_prompt_context",
                     new=AsyncMock(return_value=poisoned_context),
                 ),
-                # Mock compose_rag_prompt to prevent LangChain template-parsing from
-                # tripping on literal '{...}' JSON braces in the sanitized context.
-                # We're testing *sanitize_for_prompt*, not LangChain internals.
-                patch.object(
-                    router._lcel_prompt_composer,
-                    "compose_rag_prompt",
-                    return_value=[],
-                ),
             ):
                 await router.chat("buscar SkyUI", session=MagicMock(), chat_id="rag-test")
         finally:
@@ -157,12 +149,6 @@ class TestRagContextSanitized:
                     router._context_manager,
                     "build_prompt_context",
                     new=AsyncMock(return_value=poisoned_context),
-                ),
-                # Same rationale: mock LangChain composer, test the sanitizer.
-                patch.object(
-                    router._lcel_prompt_composer,
-                    "compose_rag_prompt",
-                    return_value=[],
                 ),
             ):
                 await router.chat("buscar algo", session=MagicMock(), chat_id="rag-hermes")
@@ -274,7 +260,7 @@ class TestDownloadModZeroTrust:
     @pytest.mark.asyncio
     async def test_no_aiohttp_session_created_when_gateway_none(self) -> None:
         """No ClientSession must be instantiated when gateway is None — Zero-Trust abort."""
-        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
+        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
             await download_mod(
                 downloader=MagicMock(),
                 hitl=MagicMock(),
@@ -309,7 +295,7 @@ class TestDownloadModZeroTrust:
         mock_sync_engine = MagicMock()
         mock_sync_engine.enqueue_download = MagicMock()
 
-        with patch("sky_claw.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
+        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
             mock_cls.return_value.closed = False
@@ -358,7 +344,7 @@ class TestSetupToolsZeroTrust:
     @pytest.mark.asyncio
     async def test_no_aiohttp_session_created_when_gateway_none(self, tmp_path: pathlib.Path) -> None:
         """No ClientSession must be instantiated when gateway is None — Zero-Trust abort."""
-        with patch("sky_claw.agent.tools.external_tools.aiohttp.ClientSession") as mock_cls:
+        with patch("sky_claw.antigravity.agent.tools.external_tools.aiohttp.ClientSession") as mock_cls:
             await setup_tools(
                 tools_installer=MagicMock(),
                 install_dir=tmp_path,

@@ -1,4 +1,4 @@
-"""Tests for sky_claw.agent.animation_hub (MEDIO-001 fix).
+"""Tests for sky_claw.antigravity.agent.animation_hub (MEDIO-001 fix).
 
 Shift-Left Validation: ensures stderr from subprocesses is sanitized via
 sanitize_for_prompt() before being embedded in the JSON response payload.

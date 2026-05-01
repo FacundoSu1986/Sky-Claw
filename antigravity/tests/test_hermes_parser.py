@@ -1,4 +1,4 @@
-"""Tests for sky_claw.agent.hermes_parser — zero-trust XML tool-call extraction."""
+"""Tests for sky_claw.antigravity.agent.hermes_parser — zero-trust XML tool-call extraction."""
 
 from __future__ import annotations
 

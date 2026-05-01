@@ -18,11 +18,6 @@ import pydantic
 
 from sky_claw.antigravity.agent.context_manager import ContextManager
 from sky_claw.antigravity.agent.hermes_parser import extract_tool_calls, has_tool_calls
-from sky_claw.antigravity.agent.lcel_chains import (
-    ChainBuilder,
-    PromptComposer,
-    ToolExecutor,
-)
 from sky_claw.antigravity.agent.providers import LLMProvider, create_provider
 from sky_claw.antigravity.agent.semantic_router import SemanticRouter
 from sky_claw.antigravity.agent.token_budget import TokenBudgetManager
@@ -196,18 +191,6 @@ class LLMRouter:
         if hermes_mode and tool_registry is None:
             raise ValueError("hermes_mode=True requires a tool_registry")
 
-        # LangChain LCEL Integration
-        self._lcel_prompt_composer = PromptComposer(
-            system_prompt=system_prompt or "Eres un asistente de modding de Skyrim SE/AE.",
-            tool_registry=tool_registry,
-        )
-        # Tool executor por defecto para cadenas LCEL
-        self._lcel_tool_executor = ToolExecutor(
-            tool_name="lcel_default",
-            tool_description="Ejecutor de herramientas LCEL por defecto",
-        )
-        self._lcel_chain_builder = ChainBuilder(tool_executor=self._lcel_tool_executor)
-
         # FASE 1.5.3: Token budget management and circuit breaker
         self._token_budget = TokenBudgetManager()
         self._circuit_breaker = TokenCircuitBreaker()
@@ -316,15 +299,6 @@ class LLMRouter:
             # TASK-013 P0: sanitize RAG context to prevent prompt-injection via
             # poisoned mod metadata scraped from Nexus Mods.
             injected_context = sanitize_for_prompt(injected_context)
-
-            # Usar LCEL para componer prompt RAG
-            if route_classification.requires_context:
-                rag_prompt = self._lcel_prompt_composer.compose_rag_prompt(
-                    query=user_message,
-                    context=injected_context,
-                    sources=["mod_registry", "conflict_db"],
-                )
-                logger.debug(f"📝 LCEL RAG prompt compuesto: {len(rag_prompt)} mensajes")
 
         # Input gate — guardrail (Titan v7.0) or legacy sanitize_for_prompt
         if self._guardrail:
@@ -541,17 +515,6 @@ class LLMRouter:
                     tool_input: dict[str, Any] = block.get("input", {})
 
                     try:
-                        # Usar LCEL para componer prompt de herramienta si está disponible
-                        if route_classification.intent == "EJECUCION_HERRAMIENTA":
-                            self._lcel_prompt_composer.compose_tool_prompt(
-                                tool_name=tool_name,
-                                tool_input=tool_input,
-                                tool_description=route_classification.parameters.get(
-                                    "description", f"Ejecutar {tool_name}"
-                                ),
-                            )
-                            logger.debug(f"🔧 LCEL tool prompt compuesto para {tool_name}")
-
                         # Ejecutar herramienta con compatibilidad AsyncToolRegistry
                         result_str = await asyncio.wait_for(
                             self._tools.execute(tool_name, tool_input),

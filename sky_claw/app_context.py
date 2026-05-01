@@ -27,11 +27,11 @@ from sky_claw.antigravity.security.hitl import HITLGuard, HITLRequest
 from sky_claw.antigravity.security.network_gateway import GatewayTCPConnector, NetworkGateway
 from sky_claw.antigravity.security.path_validator import PathValidator
 from sky_claw.antigravity.security.prompt_armor import build_system_header
-from sky_claw.auto_detect import AutoDetector
+from sky_claw.local.auto_detect import AutoDetector
 from sky_claw.config import LOOT_COMMON_PATHS, XEDIT_COMMON_PATHS, Config, SystemPaths
 from sky_claw.local.mo2.vfs import MO2Controller
-from sky_claw.local_config import load as _load_legacy_json
-from sky_claw.tools_installer import ToolsInstaller, scan_common_paths
+from sky_claw.local.local_config import load as _load_legacy_json
+from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
 
 logger = logging.getLogger("sky_claw")
 
@@ -114,7 +114,7 @@ class AppContext:
         self.sender: TelegramSender | None = None
         self.polling: TelegramPolling | None = None
         self.tools_installer: ToolsInstaller | None = None
-        self.frontend_bridge: Any | None = None  # From sky_claw.comms.frontend_bridge
+        self.frontend_bridge: Any | None = None  # From sky_claw.antigravity.comms.frontend_bridge
 
         # ARC-02: AsyncExitStack para compensación atómica ante fallos
         self._exit_stack = AsyncExitStack()

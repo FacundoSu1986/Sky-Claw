@@ -1,4 +1,4 @@
-"""Tests for sky_claw.db.async_registry."""
+"""Tests for sky_claw.antigravity.db.async_registry."""
 
 from __future__ import annotations
 

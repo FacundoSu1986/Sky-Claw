@@ -3,7 +3,7 @@
 __version__ = "0.1.0"
 
 # FASE 5: Asset Conflict Detection Module
-from sky_claw.assets import (
+from sky_claw.local.assets import (
     AssetConflictDetector,
     AssetConflictReport,
     AssetInfo,

@@ -5,7 +5,7 @@ import sys
 # Add parent directory to path to import sky_claw
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
 
-from sky_claw.auto_detect import AutoDetector
+from sky_claw.local.auto_detect import AutoDetector
 from sky_claw.config import Config
 
 

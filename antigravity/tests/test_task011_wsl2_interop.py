@@ -91,9 +91,9 @@ class TestLOOTRunnerTimeout:
         mock_proc.wait = AsyncMock()
 
         with (
-            patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
-            patch("sky_claw.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
             pytest.raises(LOOTTimeoutError, match="timed out"),
         ):
             await runner.sort()
@@ -121,9 +121,9 @@ class TestLOOTRunnerTimeout:
             return await coro
 
         with (
-            patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.loot.cli.asyncio.wait_for", side_effect=_wait_for_side_effect),
-            patch("sky_claw.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.loot.cli.asyncio.wait_for", side_effect=_wait_for_side_effect),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
             pytest.raises(LOOTTimeoutError),
         ):
             await runner.sort()
@@ -142,8 +142,8 @@ class TestLOOTRunnerTimeout:
         mock_proc.kill = MagicMock()
 
         with (
-            patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
         ):
             result = await runner.sort()
 
@@ -183,8 +183,8 @@ class TestMO2LaunchGameSpawn:
         mock_proc.wait = AsyncMock()
 
         with (
-            patch("sky_claw.mo2.vfs.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.mo2.vfs.psutil.pid_exists", return_value=True),
+            patch("sky_claw.local.mo2.vfs.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.mo2.vfs.psutil.pid_exists", return_value=True),
         ):
             result = await controller.launch_game("Default")
 
@@ -203,8 +203,8 @@ class TestMO2LaunchGameSpawn:
         mock_proc.wait = AsyncMock()
 
         with (
-            patch("sky_claw.mo2.vfs.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.mo2.vfs.psutil.pid_exists", return_value=False),
+            patch("sky_claw.local.mo2.vfs.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.mo2.vfs.psutil.pid_exists", return_value=False),
             pytest.raises(GameLaunchTimeoutError, match="timed out"),
         ):
             await controller.launch_game("Default")
@@ -231,9 +231,9 @@ class TestMO2LaunchGameSpawn:
             return await coro
 
         with (
-            patch("sky_claw.mo2.vfs.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.mo2.vfs.psutil.pid_exists", return_value=False),
-            patch("sky_claw.mo2.vfs.asyncio.wait_for", side_effect=_wait_for_side_effect),
+            patch("sky_claw.local.mo2.vfs.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.mo2.vfs.psutil.pid_exists", return_value=False),
+            patch("sky_claw.local.mo2.vfs.asyncio.wait_for", side_effect=_wait_for_side_effect),
             pytest.raises(GameLaunchTimeoutError),
         ):
             await controller.launch_game("Default")
@@ -262,9 +262,9 @@ class TestMO2LaunchGameSpawn:
         mock_proc.wait = AsyncMock()
 
         with (
-            patch("sky_claw.mo2.vfs.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.mo2.vfs.psutil.pid_exists", return_value=True),
-            patch("sky_claw.mo2.vfs.asyncio.wait_for", return_value=None) as mock_wf,
+            patch("sky_claw.local.mo2.vfs.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.mo2.vfs.psutil.pid_exists", return_value=True),
+            patch("sky_claw.local.mo2.vfs.asyncio.wait_for", return_value=None) as mock_wf,
         ):
             await controller.launch_game("Default")
 
@@ -286,7 +286,7 @@ class TestMO2CloseGameAsync:
         mo2_root, validator = tmp_mo2_env
         controller = MO2Controller(mo2_root, validator)
 
-        with patch("sky_claw.mo2.vfs.asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
+        with patch("sky_claw.local.mo2.vfs.asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
             mock_to_thread.return_value = ["SkyrimSE.exe"]
             result = await controller.close_game()
 
@@ -307,7 +307,7 @@ class TestMO2CloseGameAsync:
         mock_notepad = MagicMock()
         mock_notepad.info = {"pid": 2, "name": "notepad.exe"}
 
-        with patch("sky_claw.mo2.vfs.psutil.process_iter", return_value=[mock_proc_item, mock_notepad]):
+        with patch("sky_claw.local.mo2.vfs.psutil.process_iter", return_value=[mock_proc_item, mock_notepad]):
             result = await controller.close_game()
 
         assert result["status"] == "closed"
@@ -327,9 +327,9 @@ class TestWSL2PathTranslation:
     async def test_wsl2_translates_path(self, *, _reset_wsl2_cache: None) -> None:
         """Under WSL2, path is translated via wslpath."""
         with (
-            patch("sky_claw.core.windows_interop.is_wsl2_cached", return_value=True),
+            patch("sky_claw.antigravity.core.windows_interop.is_wsl2_cached", return_value=True),
             patch(
-                "sky_claw.core.windows_interop._translate_wsl_to_win",
+                "sky_claw.antigravity.core.windows_interop._translate_wsl_to_win",
                 return_value=r"C:\Modding\MO2",
             ) as mock_translate,
         ):
@@ -341,7 +341,7 @@ class TestWSL2PathTranslation:
     @pytest.mark.asyncio
     async def test_native_windows_passes_through(self, *, _reset_wsl2_cache: None) -> None:
         """On native Windows, a valid Windows path passes through unchanged."""
-        with patch("sky_claw.core.windows_interop.is_wsl2_cached", return_value=False):
+        with patch("sky_claw.antigravity.core.windows_interop.is_wsl2_cached", return_value=False):
             result = await translate_path_if_wsl(r"C:\Modding\MO2")
 
         assert result == r"C:\Modding\MO2"
@@ -350,7 +350,7 @@ class TestWSL2PathTranslation:
     async def test_native_windows_rejects_linux_path(self, *, _reset_wsl2_cache: None) -> None:
         """On native Windows, a Linux-style /mnt/ path raises ValueError."""
         with (
-            patch("sky_claw.core.windows_interop.is_wsl2_cached", return_value=False),
+            patch("sky_claw.antigravity.core.windows_interop.is_wsl2_cached", return_value=False),
             pytest.raises(ValueError, match="Linux-style path"),
         ):
             await translate_path_if_wsl("/mnt/c/Modding/MO2")
@@ -359,7 +359,7 @@ class TestWSL2PathTranslation:
     async def test_native_windows_rejects_unix_absolute(self, *, _reset_wsl2_cache: None) -> None:
         """On native Windows, a Unix absolute path raises ValueError."""
         with (
-            patch("sky_claw.core.windows_interop.is_wsl2_cached", return_value=False),
+            patch("sky_claw.antigravity.core.windows_interop.is_wsl2_cached", return_value=False),
             pytest.raises(ValueError, match="Linux-style path"),
         ):
             await translate_path_if_wsl("/home/user/mods")
@@ -368,9 +368,9 @@ class TestWSL2PathTranslation:
     async def test_custom_timeout_forwarded(self, *, _reset_wsl2_cache: None) -> None:
         """Custom timeout is forwarded to _translate_wsl_to_win."""
         with (
-            patch("sky_claw.core.windows_interop.is_wsl2_cached", return_value=True),
+            patch("sky_claw.antigravity.core.windows_interop.is_wsl2_cached", return_value=True),
             patch(
-                "sky_claw.core.windows_interop._translate_wsl_to_win",
+                "sky_claw.antigravity.core.windows_interop._translate_wsl_to_win",
                 return_value="C:\\test",
             ) as mock_translate,
         ):
@@ -389,14 +389,14 @@ class TestIsWSL2Detection:
 
     def test_win32_returns_false(self, *, _reset_wsl2_cache: None) -> None:
         """On win32 platform, is_wsl2() always returns False."""
-        with patch("sky_claw.core.windows_interop.sys") as mock_sys:
+        with patch("sky_claw.antigravity.core.windows_interop.sys") as mock_sys:
             mock_sys.platform = "win32"
             assert is_wsl2() is False
 
     def test_linux_with_proc_version_wsl(self, *, _reset_wsl2_cache: None) -> None:
         """On Linux with WSL signature in /proc/version, returns True."""
         with (
-            patch("sky_claw.core.windows_interop.sys") as mock_sys,
+            patch("sky_claw.antigravity.core.windows_interop.sys") as mock_sys,
             patch(
                 "pathlib.Path.read_text",
                 return_value="Linux version 5.15 microsoft-standard-WSL2",
@@ -408,12 +408,12 @@ class TestIsWSL2Detection:
     def test_linux_without_wsl(self, *, _reset_wsl2_cache: None) -> None:
         """On Linux without WSL, returns False."""
         with (
-            patch("sky_claw.core.windows_interop.sys") as mock_sys,
+            patch("sky_claw.antigravity.core.windows_interop.sys") as mock_sys,
             patch(
                 "pathlib.Path.read_text",
                 return_value="Linux version 5.15 generic",
             ),
-            patch("sky_claw.core.windows_interop.os.path.isdir", return_value=False),
+            patch("sky_claw.antigravity.core.windows_interop.os.path.isdir", return_value=False),
         ):
             mock_sys.platform = "linux"
             assert is_wsl2() is False
@@ -423,7 +423,7 @@ class TestIsWSL2Detection:
         import sky_claw.antigravity.core.windows_interop as _mod
 
         _mod._WSL2_ACTIVE = None
-        with patch("sky_claw.core.windows_interop.is_wsl2", return_value=True):
+        with patch("sky_claw.antigravity.core.windows_interop.is_wsl2", return_value=True):
             result1 = asyncio.run(is_wsl2_cached())
             result2 = asyncio.run(is_wsl2_cached())
 
@@ -451,9 +451,9 @@ class TestLOOTRunnerWSL2Integration:
         mock_proc.kill = MagicMock()
 
         with (
-            patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
             patch(
-                "sky_claw.loot.cli.translate_path_if_wsl",
+                "sky_claw.local.loot.cli.translate_path_if_wsl",
                 return_value=r"C:\Skyrim",
             ) as mock_translate,
         ):
@@ -477,7 +477,7 @@ class TestLOOTRunnerWSL2Integration:
 
         with (
             patch(
-                "sky_claw.loot.cli.translate_path_if_wsl",
+                "sky_claw.local.loot.cli.translate_path_if_wsl",
                 side_effect=WSLInteropError("wslpath failed"),
             ),
             pytest.raises(WSLInteropError, match="wslpath failed"),
@@ -508,8 +508,8 @@ class TestMO2LaunchGameWSL2:
             return
 
         with (
-            patch("sky_claw.mo2.vfs.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
-            patch("sky_claw.mo2.vfs._verify_pid_alive", side_effect=_fake_verify),
+            patch("sky_claw.local.mo2.vfs.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+            patch("sky_claw.local.mo2.vfs._verify_pid_alive", side_effect=_fake_verify),
         ):
             result = await controller.launch_game("Default")
 

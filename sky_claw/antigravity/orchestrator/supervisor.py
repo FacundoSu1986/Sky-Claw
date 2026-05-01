@@ -26,7 +26,7 @@ from sky_claw.antigravity.orchestrator.tool_dispatcher import build_orchestratio
 from sky_claw.antigravity.orchestrator.watcher_daemon import WatcherDaemon
 from sky_claw.antigravity.orchestrator.ws_event_streamer import LangGraphEventStreamer
 from sky_claw.antigravity.scraper.scraper_agent import ScraperAgent
-from sky_claw.assets import AssetConflictDetector, AssetConflictReport
+from sky_claw.local.assets import AssetConflictDetector, AssetConflictReport
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
 from sky_claw.local.tools.wrye_bash_runner import (
@@ -219,7 +219,7 @@ class SupervisorAgent:
         """Enrutador estricto. Delega al OrchestrationToolDispatcher.
 
         El dispatcher mapea `tool_name` a una `ToolStrategy` registrada (ver
-        :func:`sky_claw.orchestrator.tool_dispatcher.build_orchestration_dispatcher`)
+        :func:`sky_claw.antigravity.orchestrator.tool_dispatcher.build_orchestration_dispatcher`)
         y aplica la cadena de middleware correspondiente (Pydantic dentro de
         la strategy, ErrorWrapping + DictResultGuard alrededor según se registren).
 

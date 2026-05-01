@@ -419,7 +419,7 @@ class TestToolRoundTimeout:
         r._tools.execute = _slow_execute
 
         # Use a very short timeout for testing
-        with patch("sky_claw.agent.router.DEFAULT_TOOL_ROUND_TIMEOUT", 0.1):
+        with patch("sky_claw.antigravity.agent.router.DEFAULT_TOOL_ROUND_TIMEOUT", 0.1):
             session = MagicMock()
             # The timeout error should be caught by the existing OSError handler
             # (asyncio.TimeoutError is a subclass of TimeoutError → OSError in 3.11+)
@@ -542,7 +542,7 @@ class TestHermesToolTimeout:
 
         r._tools.execute = _slow_execute
 
-        with patch("sky_claw.agent.router.DEFAULT_TOOL_ROUND_TIMEOUT", 0.1):
+        with patch("sky_claw.antigravity.agent.router.DEFAULT_TOOL_ROUND_TIMEOUT", 0.1):
             session = MagicMock()
             result = await r.chat("run hermes tool", session, chat_id="hermes_timeout")
 

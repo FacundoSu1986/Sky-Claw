@@ -54,8 +54,8 @@ async def setup_tools(
     Returns:
         JSON string with installation results.
     """
-    from sky_claw.local_config import save as save_local_config
-    from sky_claw.tools_installer import ToolInstallError
+    from sky_claw.local.local_config import save as save_local_config
+    from sky_claw.local.tools_installer import ToolInstallError
 
     if tools_installer is None:
         return json.dumps({"error": "Tools installer is not configured"})

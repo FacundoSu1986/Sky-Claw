@@ -1,4 +1,4 @@
-"""Tests for sky_claw.scraper.reddit_client.RedditKnowledgeResolver."""
+"""Tests for sky_claw.antigravity.scraper.reddit_client.RedditKnowledgeResolver."""
 
 from __future__ import annotations
 

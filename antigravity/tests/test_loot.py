@@ -132,8 +132,8 @@ class TestLOOTRunner:
         mock_proc.kill = MagicMock()
 
         with (
-            patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
         ):
             result = await runner.sort()
 
@@ -152,9 +152,9 @@ class TestLOOTRunner:
         mock_proc.kill = MagicMock()
 
         with (
-            patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
-            patch("sky_claw.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
             pytest.raises(LOOTTimeoutError, match="timed out"),
         ):
             await runner.sort()
@@ -172,10 +172,10 @@ class TestLOOTRunner:
         mock_taskkill = MagicMock()
 
         with (
-            patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
-            patch("sky_claw.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
-            patch("sky_claw.loot.cli.subprocess.run", mock_taskkill),
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            patch("sky_claw.local.loot.cli.subprocess.run", mock_taskkill),
             patch.dict(os.environ, {"WSL_DISTRO_NAME": "Ubuntu"}),
             pytest.raises(LOOTTimeoutError, match="timed out"),
         ):
@@ -198,8 +198,8 @@ class TestLOOTRunner:
         mock_proc.kill = MagicMock()
 
         with (
-            patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
         ):
             result = await runner.sort()
 

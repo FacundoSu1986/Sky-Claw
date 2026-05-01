@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sky_claw.local_config import LocalConfig, load, save
+from sky_claw.local.local_config import LocalConfig, load, save
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +78,7 @@ class TestFrozenPaths:
     def test_static_dir_normal(self) -> None:
         from sky_claw.antigravity.web.app import _get_static_dir
 
-        with patch("sky_claw.web.app.sys") as mock_sys:
+        with patch("sky_claw.antigravity.web.app.sys") as mock_sys:
             mock_sys.frozen = False
             # Re-import won't help; call the function directly.
             # In non-frozen mode it uses __file__.
@@ -88,7 +88,7 @@ class TestFrozenPaths:
     def test_static_dir_frozen(self) -> None:
         from sky_claw.antigravity.web.app import _get_static_dir
 
-        with patch("sky_claw.web.app.sys") as mock_sys:
+        with patch("sky_claw.antigravity.web.app.sys") as mock_sys:
             mock_sys.frozen = True
             mock_sys._MEIPASS = "/tmp/fake_meipass"
             result = _get_static_dir()
@@ -98,7 +98,7 @@ class TestFrozenPaths:
     def test_exe_dir_normal(self) -> None:
         from sky_claw.antigravity.web.app import _get_exe_dir
 
-        with patch("sky_claw.web.app.sys") as mock_sys:
+        with patch("sky_claw.antigravity.web.app.sys") as mock_sys:
             mock_sys.frozen = False
             result = _get_exe_dir()
             assert result == pathlib.Path.cwd()
@@ -106,7 +106,7 @@ class TestFrozenPaths:
     def test_exe_dir_frozen(self) -> None:
         from sky_claw.antigravity.web.app import _get_exe_dir
 
-        with patch("sky_claw.web.app.sys") as mock_sys:
+        with patch("sky_claw.antigravity.web.app.sys") as mock_sys:
             mock_sys.frozen = True
             mock_sys.executable = "/tmp/dist/SkyClawApp.exe"
             result = _get_exe_dir()

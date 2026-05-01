@@ -2,7 +2,7 @@
 contracts.py — Validación de contratos entre agentes del sistema Sky-Claw.
 
 Implementa un SchemaRegistry poblado al inicializar el módulo con los modelos
-Pydantic v2 de sky_claw.core.schemas, y decoradores @validate_input,
+Pydantic v2 de sky_claw.antigravity.core.schemas, y decoradores @validate_input,
 @validate_output y @validate_contract para asegurar cumplimiento de contratos
 en tiempo de ejecución con lookup O(1).
 
@@ -48,12 +48,12 @@ _REGISTRY_LOCK = threading.Lock()
 
 def _ensure_registry() -> None:
     """
-    Lazy-init thread-safe: escanea sky_claw.core.schemas la primera vez
+    Lazy-init thread-safe: escanea sky_claw.antigravity.core.schemas la primera vez
     que se necesita resolver un schema. Llamadas subsequentes son O(1)
     (lectura de bandera booleana sin lock).
 
     Se difiere a primera invocación para evitar circular imports con
-    sky_claw.core.__init__.py que importa este módulo. La bandera se
+    sky_claw.antigravity.core.__init__.py que importa este módulo. La bandera se
     fija dentro del lock y *después* de poblar el dict para que ningún
     lector pueda observar `_REGISTRY_POPULATED=True` con un dict
     parcialmente poblado.
@@ -68,7 +68,7 @@ def _ensure_registry() -> None:
         try:
             import importlib
 
-            _schemas_module = importlib.import_module("sky_claw.core.schemas")
+            _schemas_module = importlib.import_module("sky_claw.antigravity.core.schemas")
             for attr_name in dir(_schemas_module):
                 attr = getattr(_schemas_module, attr_name)
                 if isinstance(attr, type) and issubclass(attr, BaseModel) and attr is not BaseModel:
@@ -82,7 +82,7 @@ def _ensure_registry() -> None:
             _REGISTRY_POPULATED = True
         except ImportError:
             logger.warning(
-                "No se pudo importar sky_claw.core.schemas — los decoradores de contratos funcionarán en modo pass-through."
+                "No se pudo importar sky_claw.antigravity.core.schemas — los decoradores de contratos funcionarán en modo pass-through."
             )
             # Module absent is permanent — suppress retries to avoid log storms.
             _REGISTRY_POPULATED = True
@@ -137,7 +137,7 @@ def _resolve_schema(name: str | None) -> type[BaseModel] | None:
     if schema_cls is None and name not in ("dict", "str", "list[dict]"):
         logger.warning(
             "Schema '%s' declarado en CONTRACT_SCHEMAS pero no encontrado "
-            "en SchemaRegistry. Verificar sky_claw.core.schemas.",
+            "en SchemaRegistry. Verificar sky_claw.antigravity.core.schemas.",
             name,
         )
     return schema_cls

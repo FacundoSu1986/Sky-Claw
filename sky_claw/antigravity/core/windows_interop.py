@@ -183,7 +183,7 @@ class ModdingToolsAgent:
         """Execute LOOT.exe asynchronously with zombie prevention.
 
         .. deprecated::
-            Prefer :class:`sky_claw.loot.cli.LOOTRunner` which uses
+            Prefer :class:`sky_claw.local.loot.cli.LOOTRunner` which uses
             :class:`LOOTConfig` for configurable paths.
 
         The hardcoded paths below are legacy defaults; new code should

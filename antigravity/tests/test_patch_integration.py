@@ -349,7 +349,7 @@ class TestImportsAndExports:
 
     def test_xedit_module_exports(self):
         """Verifica que el módulo xedit exporta todas las clases necesarias."""
-        from sky_claw import xedit
+        from sky_claw.local import xedit
 
         # Verificar exports del runner
         assert hasattr(xedit, "XEditRunner")

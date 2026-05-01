@@ -61,7 +61,7 @@ class TestHitlWaitReturnsWaitWhenNotExpired:
         now = time.monotonic()
         state = _make_state(hitl_response=None, hitl_started_at=now)
 
-        with patch("sky_claw.orchestrator.state_graph.time.monotonic", return_value=now + 1.0):
+        with patch("sky_claw.antigravity.orchestrator.state_graph.time.monotonic", return_value=now + 1.0):
             result = StateGraphEdges.route_from_hitl_wait(state)
 
         assert result == SupervisorState.HITL_WAIT.value
@@ -72,7 +72,7 @@ class TestHitlWaitReturnsWaitWhenNotExpired:
         state = _make_state(hitl_response=None, hitl_started_at=started)
 
         half_time = started + (HITL_TIMEOUT_SECONDS / 2)
-        with patch("sky_claw.orchestrator.state_graph.time.monotonic", return_value=half_time):
+        with patch("sky_claw.antigravity.orchestrator.state_graph.time.monotonic", return_value=half_time):
             result = StateGraphEdges.route_from_hitl_wait(state)
 
         assert result == SupervisorState.HITL_WAIT.value
@@ -88,7 +88,7 @@ class TestHitlTimeoutRoutesToError:
 
         # Simulate time well past the timeout
         expired_time = started + HITL_TIMEOUT_SECONDS + 1.0
-        with patch("sky_claw.orchestrator.state_graph.time.monotonic", return_value=expired_time):
+        with patch("sky_claw.antigravity.orchestrator.state_graph.time.monotonic", return_value=expired_time):
             result = StateGraphEdges.route_from_hitl_wait(state)
 
         assert result == SupervisorState.ERROR.value
@@ -101,7 +101,7 @@ class TestHitlTimeoutRoutesToError:
         state = _make_state(hitl_response=None, hitl_started_at=started)
 
         exact_boundary = started + HITL_TIMEOUT_SECONDS
-        with patch("sky_claw.orchestrator.state_graph.time.monotonic", return_value=exact_boundary):
+        with patch("sky_claw.antigravity.orchestrator.state_graph.time.monotonic", return_value=exact_boundary):
             result = StateGraphEdges.route_from_hitl_wait(state)
 
         assert result == SupervisorState.ERROR.value
@@ -148,7 +148,7 @@ class TestHitlResponseReceivedRoutesCorrectly:
         expired_time = started + HITL_TIMEOUT_SECONDS + 100.0
         state = _make_state(hitl_response="approved", hitl_started_at=started)
 
-        with patch("sky_claw.orchestrator.state_graph.time.monotonic", return_value=expired_time):
+        with patch("sky_claw.antigravity.orchestrator.state_graph.time.monotonic", return_value=expired_time):
             result = StateGraphEdges.route_from_hitl_wait(state)
 
         # Response takes priority over timeout
@@ -174,7 +174,7 @@ class TestHitlStartedAtPreservedAcrossWaitCycles:
         state = _make_state(hitl_response=None, hitl_started_at=None)
 
         fake_now = 99999.0
-        with patch("sky_claw.orchestrator.state_graph.time.monotonic", return_value=fake_now):
+        with patch("sky_claw.antigravity.orchestrator.state_graph.time.monotonic", return_value=fake_now):
             result = StateGraphNodes.hitl_wait_node(state)
 
         assert result["hitl_started_at"] == fake_now
@@ -185,24 +185,24 @@ class TestHitlStartedAtPreservedAcrossWaitCycles:
         state = _make_state(hitl_response=None, hitl_started_at=None)
         fake_start = 10000.0
 
-        with patch("sky_claw.orchestrator.state_graph.time.monotonic", return_value=fake_start):
+        with patch("sky_claw.antigravity.orchestrator.state_graph.time.monotonic", return_value=fake_start):
             node_result = StateGraphNodes.hitl_wait_node(state)
         state["hitl_started_at"] = node_result["hitl_started_at"]
         assert state["hitl_started_at"] == fake_start
 
         # Step 2: Not yet expired — router returns HITL_WAIT
-        with patch("sky_claw.orchestrator.state_graph.time.monotonic", return_value=fake_start + 10.0):
+        with patch("sky_claw.antigravity.orchestrator.state_graph.time.monotonic", return_value=fake_start + 10.0):
             route = StateGraphEdges.route_from_hitl_wait(state)
         assert route == SupervisorState.HITL_WAIT.value
 
         # Step 3: Second entry — node preserves timestamp
-        with patch("sky_claw.orchestrator.state_graph.time.monotonic", return_value=fake_start + 20.0):
+        with patch("sky_claw.antigravity.orchestrator.state_graph.time.monotonic", return_value=fake_start + 20.0):
             node_result2 = StateGraphNodes.hitl_wait_node(state)
         assert "hitl_started_at" not in node_result2  # Not overwritten
 
         # Step 4: Timeout expired — router returns ERROR
         expired = fake_start + HITL_TIMEOUT_SECONDS + 1.0
-        with patch("sky_claw.orchestrator.state_graph.time.monotonic", return_value=expired):
+        with patch("sky_claw.antigravity.orchestrator.state_graph.time.monotonic", return_value=expired):
             route = StateGraphEdges.route_from_hitl_wait(state)
         assert route == SupervisorState.ERROR.value
         assert "Timeout" in state["last_error"]

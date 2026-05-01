@@ -1,4 +1,4 @@
-"""Tests for sky_claw.agent.tools."""
+"""Tests for sky_claw.antigravity.agent.tools."""
 
 from __future__ import annotations
 

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
-from sky_claw.local_config import LocalConfig, get_exe_dir, load, save
+from sky_claw.local.local_config import LocalConfig, get_exe_dir, load, save
 
 # ---------------------------------------------------------------------------
 # Bug 1: Config path resolves to exe dir when frozen
@@ -20,14 +20,14 @@ from sky_claw.local_config import LocalConfig, get_exe_dir, load, save
 class TestExeConfigPath:
     def test_get_exe_dir_normal(self) -> None:
         """In normal Python, get_exe_dir returns CWD."""
-        with patch("sky_claw.local_config.sys") as mock_sys:
+        with patch("sky_claw.local.local_config.sys") as mock_sys:
             mock_sys.frozen = False
             result = get_exe_dir()
         assert result == pathlib.Path.cwd()
 
     def test_get_exe_dir_frozen(self) -> None:
         """When frozen, get_exe_dir returns the executable's parent."""
-        with patch("sky_claw.local_config.sys") as mock_sys:
+        with patch("sky_claw.local.local_config.sys") as mock_sys:
             mock_sys.frozen = True
             mock_sys.executable = "C:/dist/SkyClawApp.exe"
             result = get_exe_dir()

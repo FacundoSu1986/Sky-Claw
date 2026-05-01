@@ -116,7 +116,7 @@ class TestXEditRunnerValidation:
         mock_proc.kill = MagicMock()
 
         with patch(
-            "sky_claw.xedit.runner.asyncio.create_subprocess_exec",
+            "sky_claw.local.xedit.runner.asyncio.create_subprocess_exec",
             return_value=mock_proc,
         ):
             result = await runner.run_script(
@@ -162,7 +162,7 @@ class TestXEditRunnerExecution:
         mock_proc.kill = MagicMock()
 
         with patch(
-            "sky_claw.xedit.runner.asyncio.create_subprocess_exec",
+            "sky_claw.local.xedit.runner.asyncio.create_subprocess_exec",
             return_value=mock_proc,
         ):
             result = await runner.run_script("list_conflicts.pas", ["Skyrim.esm"])
@@ -180,11 +180,11 @@ class TestXEditRunnerExecution:
 
         with (
             patch(
-                "sky_claw.xedit.runner.asyncio.create_subprocess_exec",
+                "sky_claw.local.xedit.runner.asyncio.create_subprocess_exec",
                 return_value=mock_proc,
             ),
             patch(
-                "sky_claw.xedit.runner.asyncio.wait_for",
+                "sky_claw.local.xedit.runner.asyncio.wait_for",
                 side_effect=asyncio.TimeoutError,
             ),
             pytest.raises(RuntimeError, match="timed out"),

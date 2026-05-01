@@ -1,4 +1,4 @@
-"""Tests for sky_claw.orchestrator.sync_engine."""
+"""Tests for sky_claw.antigravity.orchestrator.sync_engine."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ class TestExtractNexusIdMeta:
         meta_dir.mkdir(parents=True)
         (meta_dir / "meta.ini").write_text("[General]\nmodid=42001\n", encoding="utf-8")
 
-        with patch("sky_claw.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
+        with patch("sky_claw.antigravity.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
             result = _extract_nexus_id(mod_name)
 
         assert result == 42001
@@ -100,7 +100,7 @@ class TestExtractNexusIdMeta:
         meta_dir.mkdir(parents=True)
         (meta_dir / "meta.ini").write_text("[General]\nmodid=0\n", encoding="utf-8")
 
-        with patch("sky_claw.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
+        with patch("sky_claw.antigravity.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
             result = _extract_nexus_id(mod_name)
 
         assert result is None
@@ -112,7 +112,7 @@ class TestExtractNexusIdMeta:
         meta_dir.mkdir(parents=True)
         (meta_dir / "meta.ini").write_text("[OtherSection]\nkey=value\n", encoding="utf-8")
 
-        with patch("sky_claw.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
+        with patch("sky_claw.antigravity.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
             result = _extract_nexus_id(mod_name)
 
         assert result is None
@@ -131,7 +131,7 @@ class TestExtractNexusIdMeta:
         # Sin section header → MissingSectionHeaderError al parsear
         (meta_dir / "meta.ini").write_text("key = value_without_section\n", encoding="utf-8")
 
-        with patch("sky_claw.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
+        with patch("sky_claw.antigravity.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
             result = _extract_nexus_id(mod_name)
 
         assert result is None

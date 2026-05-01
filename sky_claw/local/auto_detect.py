@@ -25,7 +25,7 @@ from sky_claw.config import (
 logger = logging.getLogger(__name__)
 
 # Module-level aliases — used directly by AutoDetector methods so that
-# tests can patch them via patch("sky_claw.auto_detect._MO2_COMMON", ...).
+# tests can patch them via patch("sky_claw.local.auto_detect._MO2_COMMON", ...).
 _MO2_COMMON: tuple[str, ...] = MO2_COMMON_PATHS
 _STEAM_DEFAULT_PATHS: tuple[str, ...] = STEAM_DEFAULT_PATHS
 _SKYRIM_COMMON: tuple[str, ...] = SKYRIM_COMMON_PATHS
