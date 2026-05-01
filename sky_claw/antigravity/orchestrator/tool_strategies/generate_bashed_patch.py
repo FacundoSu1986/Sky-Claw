@@ -25,4 +25,8 @@ class GenerateBashedPatchStrategy:
         self.wrye_bash_pipeline = wrye_bash_pipeline
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
-        return await self.wrye_bash_pipeline(**payload_dict)
+        # Filter to only valid parameters — the LLM may inject extra keys
+        # (e.g. "tool_name") that would cause TypeError on the pipeline.
+        valid_keys = {"profile", "validate_limit"}
+        filtered = {k: v for k, v in payload_dict.items() if k in valid_keys}
+        return await self.wrye_bash_pipeline(**filtered)

@@ -19,4 +19,8 @@ class GenerateLodsStrategy:
         self.service = service
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
-        return await self.service.execute(**payload_dict)
+        # Filter to only valid parameters — the LLM may inject extra keys
+        # (e.g. "tool_name") that would cause TypeError on the service.
+        valid_keys = {"preset", "run_texgen", "create_snapshot", "texgen_args", "dyndolod_args"}
+        filtered = {k: v for k, v in payload_dict.items() if k in valid_keys}
+        return await self.service.execute(**filtered)
