@@ -15,7 +15,6 @@ import argparse
 import asyncio
 import contextlib
 import logging
-import os
 import pathlib
 import sys
 
@@ -25,13 +24,17 @@ from sky_claw.antigravity.modes.security_mode import _run_security
 from sky_claw.antigravity.modes.telegram_mode import _run_telegram
 from sky_claw.antigravity.modes.web_mode import _run_web
 from sky_claw.app_context import AppContext
-from sky_claw.config import SystemPaths
+from sky_claw.config import Config, SystemPaths
 from sky_claw.logging_config import setup_logging
 
 logger = logging.getLogger("sky_claw")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    config = Config()
+    _chat_id_str = config.telegram_chat_id or ""
+    _default_chat_id = int(_chat_id_str) if _chat_id_str.isdigit() else None
+
     parser = argparse.ArgumentParser(
         prog="sky_claw",
         description="Sky-Claw — Autonomous Skyrim mod management agent",
@@ -45,14 +48,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("SKY_CLAW_WEB_PORT", "8888")),
+        default=8888,
         help="Port for the web UI server (default: 8888)",
     )
     parser.add_argument(
         "--provider",
         choices=["anthropic", "deepseek", "ollama"],
-        default=os.environ.get("LLM_PROVIDER"),
-        help="LLM provider (auto-detected if not specified)",
+        default=config.llm_provider or "deepseek",
+        help="LLM provider (default: deepseek)",
     )
     parser.add_argument(
         "command",
@@ -63,62 +66,57 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--mo2-root",
         type=pathlib.Path,
-        default=pathlib.Path(os.environ.get("SKY_CLAW_MO2_ROOT", str(SystemPaths.get_base_drive() / "MO2Portable"))),
+        default=pathlib.Path(config.mo2_root or str(SystemPaths.get_base_drive() / "MO2Portable")),
         help="Path to the MO2 portable instance",
     )
     parser.add_argument(
         "--db-path",
         type=pathlib.Path,
-        default=pathlib.Path(os.environ.get("SKY_CLAW_DB_PATH", "mod_registry.db")),
+        default=pathlib.Path("mod_registry.db"),
         help="Path to the mod registry database",
     )
     parser.add_argument(
         "--loot-exe",
         type=pathlib.Path,
-        default=pathlib.Path(os.environ.get("SKY_CLAW_LOOT_EXE", "loot.exe")),
+        default=pathlib.Path(config.loot_exe or "loot.exe"),
         help="Path to the LOOT CLI executable",
     )
     parser.add_argument(
         "--webhook-host",
-        default=os.environ.get("SKY_CLAW_WEBHOOK_HOST", "127.0.0.1"),  # nosec
+        default="127.0.0.1",  # nosec
         help="Host for the Telegram webhook server (default: 127.0.0.1)",
     )
     parser.add_argument(
         "--webhook-port",
         type=int,
-        default=int(os.environ.get("SKY_CLAW_WEBHOOK_PORT", "8080")),
+        default=8080,
         help="Port for the Telegram webhook server (default: 8080)",
     )
     parser.add_argument(
         "--operator-chat-id",
         type=int,
-        default=int(_env) if (_env := os.environ.get("SKY_CLAW_OPERATOR_CHAT_ID", "")) else None,
-        help="Telegram chat ID for HITL operator notifications (env: SKY_CLAW_OPERATOR_CHAT_ID)",
+        default=_default_chat_id,
+        help="Telegram chat ID for HITL operator notifications",
     )
     parser.add_argument(
         "--staging-dir",
         type=pathlib.Path,
         default=pathlib.Path(
-            os.environ.get(
-                "SKY_CLAW_STAGING_DIR",
-                str(SystemPaths.get_base_drive() / "MO2Portable/downloads"),
-            )
+            str(SystemPaths.get_base_drive() / "MO2Portable/downloads")
         ),
-        help="MO2 staging directory for mod downloads (env: SKY_CLAW_STAGING_DIR)",
+        help="MO2 staging directory for mod downloads",
     )
     parser.add_argument(
         "--xedit-exe",
         type=pathlib.Path,
-        default=pathlib.Path(os.environ.get("SKY_CLAW_XEDIT_EXE", ""))
-        if os.environ.get("SKY_CLAW_XEDIT_EXE")
-        else None,
-        help="Path to the SSEEdit executable (env: SKY_CLAW_XEDIT_EXE)",
+        default=pathlib.Path(config.xedit_exe) if config.xedit_exe else None,
+        help="Path to the SSEEdit executable",
     )
     parser.add_argument(
         "--install-dir",
         type=pathlib.Path,
-        default=pathlib.Path(os.environ.get("SKY_CLAW_INSTALL_DIR", str(SystemPaths.modding_root()))),
-        help="Directory for auto-installing tools like LOOT/SSEEdit (env: SKY_CLAW_INSTALL_DIR)",
+        default=pathlib.Path(config.install_dir or str(SystemPaths.modding_root())),
+        help="Directory for auto-installing tools like LOOT/SSEEdit",
     )
     parser.add_argument(
         "--verbose",

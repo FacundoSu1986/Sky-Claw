@@ -482,14 +482,6 @@ class TestAppContextWiring:
         clean_config.write_text("")
 
         with (
-            patch.dict(
-                "os.environ",
-                {
-                    "ANTHROPIC_API_KEY": "test-key",
-                    "NEXUS_API_KEY": "",
-                    "TELEGRAM_BOT_TOKEN": "",
-                },
-            ),
             patch("keyring.get_password", return_value=None),
             patch("keyring.set_password"),
         ):
@@ -563,14 +555,6 @@ class TestAppContextWiring:
         clean_config.write_text("")
 
         with (
-            patch.dict(
-                "os.environ",
-                {
-                    "ANTHROPIC_API_KEY": "test-key",
-                    "NEXUS_API_KEY": "",
-                    "TELEGRAM_BOT_TOKEN": "",
-                },
-            ),
             patch("keyring.get_password", return_value=None),
             patch("keyring.set_password"),
         ):
@@ -600,16 +584,10 @@ class TestArgparse:
     def test_operator_chat_id_defaults_to_none(self) -> None:
         from sky_claw.__main__ import _parse_args
 
-        with patch.dict("os.environ", {"SKY_CLAW_OPERATOR_CHAT_ID": ""}):
+        with patch("sky_claw.__main__.Config") as MockConfig:
+            MockConfig.return_value.telegram_chat_id = ""
             args = _parse_args([])
         assert args.operator_chat_id is None
-
-    def test_operator_chat_id_from_env(self) -> None:
-        from sky_claw.__main__ import _parse_args
-
-        with patch.dict("os.environ", {"SKY_CLAW_OPERATOR_CHAT_ID": "99"}):
-            args = _parse_args([])
-        assert args.operator_chat_id == 99
 
     def test_staging_dir_parsed(self) -> None:
         from sky_claw.__main__ import _parse_args
@@ -617,12 +595,7 @@ class TestArgparse:
         args = _parse_args(["--staging-dir", "/tmp/mods"])
         assert args.staging_dir == pathlib.Path("/tmp/mods")
 
-    def test_staging_dir_from_env(self) -> None:
-        from sky_claw.__main__ import _parse_args
 
-        with patch.dict("os.environ", {"SKY_CLAW_STAGING_DIR": "/env/staging"}):
-            args = _parse_args([])
-        assert args.staging_dir == pathlib.Path("/env/staging")
 
 
 # ---------------------------------------------------------------------------

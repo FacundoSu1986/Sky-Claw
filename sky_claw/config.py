@@ -1,5 +1,4 @@
 import logging
-import os
 import pathlib
 import sys
 import tomllib
@@ -19,7 +18,7 @@ class SystemPaths:
         """Returns the base drive (C:/ or /mnt/c/) based on environment."""
         if sys.platform != "win32":
             # Check for WSL
-            if os.path.exists("/mnt/c"):
+            if pathlib.Path("/mnt/c").exists():
                 return pathlib.Path("/mnt/c")
         return pathlib.Path("C:/")
 
@@ -62,7 +61,6 @@ class Config:
         self._data: dict[str, Any] = self._load_defaults()
         self._load_from_file()
         self._load_from_keyring()
-        self._load_from_env()
 
     def _load_from_keyring(self):
         sensitive_keys = [
@@ -161,22 +159,6 @@ class Config:
             except (tomllib.TOMLDecodeError, OSError, ValueError) as exc:
                 logger.warning("Failed to load config.toml: %s", exc)
 
-    def _load_from_env(self):
-        # Security gate: environment overrides require explicit opt-in.
-        # Prevents accidental/malicious poisoning via SKY_CLAW_* env vars.
-        allow_env = os.environ.get("SKY_CLAW_ALLOW_ENV_OVERRIDES", "").lower() in ("true", "1", "yes")
-        if not allow_env:
-            logger.debug("SKY_CLAW_ALLOW_ENV_OVERRIDES not set — skipping environment variable overrides")
-            return
-        for key in self._data:
-            env_key = f"SKY_CLAW_{key.upper()}"
-            env_val = os.environ.get(env_key)
-            if env_val:
-                # Basic type conversion for boolean
-                if isinstance(self._data[key], bool):
-                    self._data[key] = env_val.lower() in ("true", "1", "yes")
-                else:
-                    self._data[key] = env_val
 
     def __getattr__(self, name: str) -> Any:
         if name in self._data:
