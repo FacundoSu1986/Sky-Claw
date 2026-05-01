@@ -16,6 +16,7 @@ import pathlib
 from typing import Any
 
 from sky_claw.security.hitl import Decision
+from sky_claw.security.sanitize import sanitize_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -352,8 +353,8 @@ async def generate_bashed_patch(wrye_bash_runner: Any) -> str:
         {
             "success": result.success,
             "return_code": result.return_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
+            "stdout": sanitize_for_prompt(result.stdout) if result.stdout else "",
+            "stderr": sanitize_for_prompt(result.stderr) if result.stderr else "",
             "duration_seconds": result.duration_seconds,
         }
     )
@@ -371,8 +372,8 @@ async def run_pandora_behavior(pandora_runner: Any) -> str:
         {
             "success": result.success,
             "return_code": result.return_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
+            "stdout": sanitize_for_prompt(result.stdout) if result.stdout else "",
+            "stderr": sanitize_for_prompt(result.stderr) if result.stderr else "",
             "duration_seconds": result.duration_seconds,
         }
     )
@@ -397,8 +398,8 @@ async def run_bodyslide_batch_direct(
         {
             "success": result.success,
             "return_code": result.return_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
+            "stdout": sanitize_for_prompt(result.stdout) if result.stdout else "",
+            "stderr": sanitize_for_prompt(result.stderr) if result.stderr else "",
             "duration_seconds": result.duration_seconds,
         }
     )

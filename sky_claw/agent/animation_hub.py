@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
     from sky_claw.mo2.vfs import MO2Controller
     from sky_claw.security.path_validator import PathValidator
+from sky_claw.security.sanitize import sanitize_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -102,9 +103,11 @@ class AnimationHub:
         if proc.returncode != 0:
             err_text = stderr.decode(errors="replace").strip() if stderr else ""
             logger.error("Pandora exited with code %d: %s", proc.returncode, err_text)
+            safe_error = sanitize_for_prompt(err_text[:500])
             return {
                 "status": "error",
                 "message": f"Pandora exited with code {proc.returncode}.",
+                "error_details": safe_error,
             }
 
         return {
@@ -167,9 +170,11 @@ class AnimationHub:
         if proc.returncode != 0:
             err_text = stderr.decode(errors="replace").strip() if stderr else ""
             logger.error("BodySlide exited with code %d: %s", proc.returncode, err_text)
+            safe_error = sanitize_for_prompt(err_text[:500])
             return {
                 "status": "error",
                 "message": f"BodySlide exited with code {proc.returncode}.",
+                "error_details": safe_error,
             }
 
         return {

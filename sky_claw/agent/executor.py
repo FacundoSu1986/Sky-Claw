@@ -22,10 +22,18 @@ class ManagedToolExecutor:
     and strict process lifecycle management (Zombie Prevention).
     """
 
-    def __init__(self, timeout: float = 300.0):
+    def __init__(self, timeout: float = 300.0, path_validator: PathValidator | None = None) -> None:
         self.timeout: float = timeout
         self.proc: asyncio.subprocess.Process | None = None
         self._abort_event: asyncio.Event = asyncio.Event()
+        if path_validator is not None:
+            self._validator = path_validator
+        else:
+            try:
+                self._validator = PathValidator([SystemPaths.modding_root()])
+            except (OSError, ValueError):
+                logger.exception("PathValidator initialization failed")
+                self._validator = None
 
     async def execute(
         self,
@@ -40,11 +48,9 @@ class ManagedToolExecutor:
 
         # Interop Layer: Translate argument paths to ensure Windows binaries receive valid C:\... strings
         win_args: list[str] = []
-        # Validator setup based on SystemPaths modding root bounds for strict safety
-        try:
-            validator = PathValidator([SystemPaths.modding_root()])
-        except Exception as ve:
-            logger.error(f"🚨 PathValidator initialization failed: {ve}")
+        validator = self._validator
+        if validator is None:
+            logger.error("PathValidator not available")
             return -1
 
         for arg in args:
