@@ -9,7 +9,7 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sky_claw.antigravity.gui.event_bus import EventBus
+    from sky_claw.antigravity.gui.gui_event_adapter import EventBus
     from sky_claw.antigravity.gui.models.app_state import AppState
 
 _logger = logging.getLogger("SkyClaw.NavigationController")

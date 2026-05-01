@@ -38,6 +38,7 @@ coverage.xml
 
 # Logs
 logs/
+local_logs/
 
 # From architectural review
 *.log

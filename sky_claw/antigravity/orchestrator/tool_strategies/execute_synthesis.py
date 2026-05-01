@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
 
-_LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class ExecuteSynthesisPipelineStrategy:
@@ -29,5 +29,5 @@ class ExecuteSynthesisPipelineStrategy:
         filtered = {k: v for k, v in payload_dict.items() if k in valid_keys}
         unexpected = payload_dict.keys() - valid_keys
         if unexpected:
-            _LOGGER.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
+            logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
         return await self.service.execute_pipeline(**filtered)

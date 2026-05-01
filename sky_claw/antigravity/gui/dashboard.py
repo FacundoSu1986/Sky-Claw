@@ -9,6 +9,7 @@ from typing import Any
 
 from nicegui import ui
 
+from .gui_helpers import MAX_CHAT_MESSAGES, _load_css
 from .icons import (
     _ICON_ANVIL,
     _ICON_CART,
@@ -23,7 +24,6 @@ from .message_handlers import (
     SuccessHandler,
 )
 from .setup_wizard import SetupWizardModal
-from .utils import MAX_CHAT_MESSAGES, _load_css
 from .views.actions import build_actions_panel
 from .views.advanced import build_advanced_panel
 

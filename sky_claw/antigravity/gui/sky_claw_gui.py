@@ -29,7 +29,7 @@ from sky_claw.antigravity.gui.agent_communication import AgentCommunicationClien
 
 # ── Controller imports ─────────────────────────────────────────────────────────
 from sky_claw.antigravity.gui.controllers import ChatController, ModController, NavigationController
-from sky_claw.antigravity.gui.event_bus import EventBus, EventType, SkyClawEvent, event_bus
+from sky_claw.antigravity.gui.gui_event_adapter import EventBus, EventType, SkyClawEvent, event_bus
 from sky_claw.antigravity.gui.models.app_state import AppState, get_app_state
 
 # ── View imports ───────────────────────────────────────────────────────────────

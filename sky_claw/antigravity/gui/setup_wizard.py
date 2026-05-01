@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any
 import keyring
 from nicegui import ui
 
+from .gui_helpers import _load_css
 from .icons import _ICON_ROCKET, _ICON_SETTINGS
-from .utils import _load_css
 
 if TYPE_CHECKING:
     from collections.abc import Callable
