@@ -31,7 +31,7 @@ class ManagedToolExecutor:
         else:
             try:
                 self._validator = PathValidator([SystemPaths.modding_root()])
-            except Exception:
+            except (OSError, ValueError):
                 logger.exception("PathValidator initialization failed")
                 self._validator = None
 

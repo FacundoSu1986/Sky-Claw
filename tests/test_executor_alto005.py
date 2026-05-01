@@ -88,10 +88,24 @@ class TestManagedToolExecutorPathValidator:
 
     @pytest.mark.asyncio
     async def test_execute_aborts_on_validation_failure(self) -> None:
-        """PathViolationError during validation must return -1."""
+        """PathViolationError during WSL path validation must abort before subprocess."""
         validator = MagicMock(spec=PathValidator)
         validator.validate.side_effect = PathViolationError("outside sandbox")
         executor = ManagedToolExecutor(path_validator=validator)
 
-        result = await executor.execute("bin", ["C:\\Modding\\test.exe"])
+        wsl_arg = "/mnt/c/Modding/test"
+        translated = "C:\\Modding\\test"
+        with (
+            patch(
+                "sky_claw.agent.executor.ModdingToolsAgent.translate_path_wsl_to_win",
+                new=AsyncMock(return_value=translated),
+            ),
+            patch(
+                "sky_claw.agent.executor.asyncio.create_subprocess_exec",
+            ) as mock_subproc,
+        ):
+            result = await executor.execute("bin", [wsl_arg])
+
         assert result == -1
+        validator.validate.assert_called_once()
+        mock_subproc.assert_not_called()
