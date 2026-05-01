@@ -596,8 +596,6 @@ class TestArgparse:
         assert args.staging_dir == pathlib.Path("/tmp/mods")
 
 
-
-
 # ---------------------------------------------------------------------------
 # End-to-end HITL flow: download request → notify → /approve → enqueued
 # ---------------------------------------------------------------------------

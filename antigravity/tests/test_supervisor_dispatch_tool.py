@@ -206,10 +206,37 @@ async def test_resolve_conflict_with_patch_non_dict_result(supervisor):
 async def test_generate_lods_delegates(supervisor):
     supervisor._dyndolod_service.execute.return_value = {"status": "ok", "lods": 1234}
 
-    result = await supervisor.dispatch_tool("generate_lods", {"mode": "fast", "extra": True})
+    result = await supervisor.dispatch_tool("generate_lods", {"preset": "High", "run_texgen": False})
 
-    supervisor._dyndolod_service.execute.assert_awaited_once_with(mode="fast", extra=True)
+    supervisor._dyndolod_service.execute.assert_awaited_once_with(preset="High", run_texgen=False)
     assert result == {"status": "ok", "lods": 1234}
+
+
+async def test_generate_lods_filters_extra_llm_keys(supervisor):
+    """VULN-2 fix: Extra keys injected by the LLM (e.g. 'tool_name') are filtered out."""
+    supervisor._dyndolod_service.execute.return_value = {"status": "ok"}
+
+    result = await supervisor.dispatch_tool(
+        "generate_lods",
+        {"preset": "Medium", "tool_name": "generate_lods", "spurious": 42},
+    )
+
+    # Only valid keys should be forwarded
+    supervisor._dyndolod_service.execute.assert_awaited_once_with(preset="Medium")
+    assert result == {"status": "ok"}
+
+
+async def test_execute_synthesis_pipeline_filters_extra_llm_keys(supervisor):
+    """VULN-2 fix: Extra keys injected by the LLM are filtered out."""
+    supervisor._synthesis_service.execute_pipeline.return_value = {"status": "ok"}
+
+    result = await supervisor.dispatch_tool(
+        "execute_synthesis_pipeline",
+        {"patcher_ids": ["a"], "tool_name": "execute_synthesis_pipeline", "extra": True},
+    )
+
+    supervisor._synthesis_service.execute_pipeline.assert_awaited_once_with(patcher_ids=["a"])
+    assert result == {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +287,19 @@ async def test_generate_bashed_patch_delegates(supervisor):
     assert result == {"success": True, "return_code": 0}
 
 
+async def test_generate_bashed_patch_filters_extra_llm_keys(supervisor):
+    """VULN-2 fix: Extra keys injected by the LLM are filtered out."""
+    supervisor.execute_wrye_bash_pipeline = AsyncMock(return_value={"success": True})
+
+    result = await supervisor.dispatch_tool(
+        "generate_bashed_patch",
+        {"profile": "P", "validate_limit": True, "tool_name": "generate_bashed_patch", "extra": 42},
+    )
+
+    supervisor.execute_wrye_bash_pipeline.assert_awaited_once_with(profile="P", validate_limit=True)
+    assert result == {"success": True}
+
+
 # ---------------------------------------------------------------------------
 # validate_plugin_limit (default + explicit profile)
 # ---------------------------------------------------------------------------
@@ -293,3 +333,75 @@ async def test_unknown_tool_returns_tool_not_found(supervisor):
     result = await supervisor.dispatch_tool("nonexistent_tool", {"anything": 1})
 
     assert result == {"status": "error", "reason": "ToolNotFound"}
+
+
+# ---------------------------------------------------------------------------
+# _create_hitl_request (VULN-1 fix: ghost method now exists)
+# ---------------------------------------------------------------------------
+
+
+def test_create_hitl_request_circuit_breaker_halt(supervisor):
+    """Converts a circuit_breaker_halt dict from the graph to HitlApprovalRequest."""
+    hitl_dict = {
+        "action_type": "circuit_breaker_halt",
+        "reason": "Loop detected: patch_plugin called 3 times",
+    }
+    result = supervisor._create_hitl_request(hitl_dict)
+
+    assert isinstance(result, HitlApprovalRequest)
+    assert result.action_type == "circuit_breaker_halt"
+    assert "Loop detected" in result.reason
+
+
+def test_create_hitl_request_destructive_xedit(supervisor):
+    """Converts a destructive_xedit dict to HitlApprovalRequest."""
+    hitl_dict = {
+        "action_type": "destructive_xedit",
+        "reason": "xEdit patch requires approval",
+    }
+    result = supervisor._create_hitl_request(hitl_dict)
+
+    assert isinstance(result, HitlApprovalRequest)
+    assert result.action_type == "destructive_xedit"
+
+
+def test_create_hitl_request_defaults_to_circuit_breaker(supervisor):
+    """When action_type is missing, defaults to circuit_breaker_halt."""
+    hitl_dict = {"reason": "some reason"}
+    result = supervisor._create_hitl_request(hitl_dict)
+
+    assert isinstance(result, HitlApprovalRequest)
+    assert result.action_type == "circuit_breaker_halt"
+    assert result.reason == "some reason"
+
+
+def test_create_hitl_request_empty_reason(supervisor):
+    """When reason is missing, defaults to empty string."""
+    hitl_dict = {"action_type": "download_external"}
+    result = supervisor._create_hitl_request(hitl_dict)
+
+    assert isinstance(result, HitlApprovalRequest)
+    assert result.action_type == "download_external"
+    assert result.reason == ""
+
+
+def test_create_hitl_request_preserves_context_data(supervisor):
+    """context_data from the graph callback is forwarded to HitlApprovalRequest."""
+    hitl_dict = {
+        "action_type": "circuit_breaker_halt",
+        "reason": "guardrail tripped",
+        "context_data": {"loop_count": 3, "tool_name": "patch_plugin"},
+    }
+    result = supervisor._create_hitl_request(hitl_dict)
+
+    assert isinstance(result, HitlApprovalRequest)
+    assert result.context_data == {"loop_count": 3, "tool_name": "patch_plugin"}
+
+
+def test_create_hitl_request_defaults_context_data(supervisor):
+    """When context_data is missing, defaults to empty dict."""
+    hitl_dict = {"action_type": "circuit_breaker_halt", "reason": "test"}
+    result = supervisor._create_hitl_request(hitl_dict)
+
+    assert isinstance(result, HitlApprovalRequest)
+    assert result.context_data == {}

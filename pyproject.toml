@@ -94,7 +94,7 @@ show_error_codes = true
 show_column_numbers = true
 pretty = true
 exclude = [
-    '^tests/',
+    '^antigravity/tests/',
     '^scratch/',
     '^autoskills_tmp/',
     '^project_scrape/',
@@ -105,38 +105,38 @@ exclude = [
 # Modules with unresolved type errors — ignore until annotated
 [[tool.mypy.overrides]]
 module = [
-    "sky_claw.gui.*",
-    "sky_claw.comms.*",
-    "sky_claw.agent.*",
-    "sky_claw.modes.*",
-    "sky_claw.orchestrator.*",
-    "sky_claw.reasoning.*",
-    "sky_claw.scraper.*",
-    "sky_claw.web.*",
-    "sky_claw.tools.*",
-    "sky_claw.fomod.*",
-    "sky_claw.xedit.*",
-    "sky_claw.db.*",
-    "sky_claw.mo2.*",
-    "sky_claw.security.*",
-    "sky_claw.core.*",
+    "sky_claw.antigravity.gui.*",
+    "sky_claw.antigravity.comms.*",
+    "sky_claw.antigravity.agent.*",
+    "sky_claw.antigravity.modes.*",
+    "sky_claw.antigravity.orchestrator.*",
+    "sky_claw.antigravity.reasoning.*",
+    "sky_claw.antigravity.scraper.*",
+    "sky_claw.antigravity.web.*",
+    "sky_claw.antigravity.db.*",
+    "sky_claw.antigravity.security.*",
+    "sky_claw.antigravity.core.*",
+    "sky_claw.local.tools.*",
+    "sky_claw.local.fomod.*",
+    "sky_claw.local.xedit.*",
+    "sky_claw.local.loot.*",
+    "sky_claw.local.mo2.*",
+    "sky_claw.local.validators.*",
+    "sky_claw.local.auto_detect",
+    "sky_claw.local.local_config",
+    "sky_claw.local.discovery.*",
     "sky_claw.app_context",
-    "sky_claw.auto_detect",
     "sky_claw.config",
     "sky_claw.logging_config",
-    "sky_claw.local_config",
     "sky_claw.__main__",
-    "sky_claw.tools_installer",
-    "sky_claw.discovery.*",
-    "sky_claw.loot.*",
+    "sky_claw.local.tools_installer",
 ]
 ignore_errors = true
 
 # Strict mode for refactored modules — overrides the broad ignore above
 [[tool.mypy.overrides]]
 module = [
-    "sky_claw.orchestrator.sync_engine",
-    "sky_claw.core.schemas",
+    "sky_claw.antigravity.orchestrator.sync_engine",
 ]
 strict = true
 ignore_errors = false

@@ -52,6 +52,7 @@ def _base_state(
         "rollback_triggered": False,
         "rollback_result": None,
         "rollback_transaction_id": None,
+        "hitl_started_at": None,
         "loop_detected": False,
         "loop_context": None,
     }

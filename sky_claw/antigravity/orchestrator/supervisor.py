@@ -6,6 +6,7 @@ from typing import Any
 from sky_claw.antigravity.comms.interface import InterfaceAgent
 from sky_claw.antigravity.core.database import DatabaseAgent
 from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
+from sky_claw.antigravity.core.models import HitlApprovalRequest
 from sky_claw.antigravity.core.path_resolver import PathResolutionService
 from sky_claw.antigravity.core.windows_interop import ModdingToolsAgent
 from sky_claw.antigravity.db.rollback_manager import RollbackManager
@@ -226,6 +227,26 @@ class SupervisorAgent:
         legacy preservado verbatim: ``{"status": "error", "reason": "ToolNotFound"}``.
         """
         return await self._tool_dispatcher.dispatch(tool_name, payload_dict)
+
+    def _create_hitl_request(self, hitl_request: dict[str, Any]) -> HitlApprovalRequest:
+        """Convierte un dict de HITL del grafo de estados a un HitlApprovalRequest.
+
+        Bridge entre el ``StateGraphState.hitl_request`` (dict plano del grafo)
+        y el contrato Pydantic que espera :meth:`InterfaceAgent.request_hitl`.
+
+        Args:
+            hitl_request: Dict con ``action_type``, ``reason`` y metadatos
+                opcionales como ``context_data`` inyectados por los callbacks
+                del grafo (``_on_dispatching``, etc.).
+
+        Returns:
+            Instancia validada de :class:`HitlApprovalRequest`.
+        """
+        payload = dict(hitl_request)
+        payload.setdefault("action_type", "circuit_breaker_halt")
+        payload.setdefault("reason", "")
+        payload.setdefault("context_data", {})
+        return HitlApprovalRequest.model_validate(payload)
 
     # FASE 1.5: Método para ejecutar rollback
     async def execute_rollback(self, agent_id: str) -> dict[str, Any]:
