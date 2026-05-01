@@ -18,28 +18,26 @@ function Stop-SurgicalProcess {
     param([string]$PidFile, [string]$Name)
     
     if (Test-Path $PidFile) {
-        if (Test-Path $PidFile) {
-            $SavedPid = Get-Content $PidFile -Raw
-            $SavedPid = $SavedPid.Trim()
-            
-            if ([string]::IsNullOrWhiteSpace($SavedPid)) {
-                Write-Host "[CLEANUP] Archivo $Name.pid vacío. Eliminando..." -ForegroundColor Yellow
-                Remove-Item $PidFile
-                return
-            }
+        $SavedPid = Get-Content $PidFile -Raw
+        $SavedPid = $SavedPid.Trim()
 
-            $Process = Get-Process -Id $SavedPid -ErrorAction SilentlyContinue
-            if ($Process) {
-                Write-Host "[STOP] Deteniendo $Name (PID: $SavedPid)..." -ForegroundColor Cyan
-                Stop-Process -Id $SavedPid -Force -ErrorAction SilentlyContinue
-                # Pequeña espera para asegurar liberación de recursos
-                Start-Sleep -Milliseconds 800 
-            } else {
-                Write-Host "[RESOLVE] El proceso $Name (PID: $SavedPid) ya no existe. Limpiando binario de estado..." -ForegroundColor Gray
-            }
-            
-            Remove-Item $PidFile -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace($SavedPid)) {
+            Write-Host "[CLEANUP] Archivo $Name.pid vacío. Eliminando..." -ForegroundColor Yellow
+            Remove-Item $PidFile
+            return
         }
+
+        $Process = Get-Process -Id $SavedPid -ErrorAction SilentlyContinue
+        if ($Process) {
+            Write-Host "[STOP] Deteniendo $Name (PID: $SavedPid)..." -ForegroundColor Cyan
+            Stop-Process -Id $SavedPid -Force -ErrorAction SilentlyContinue
+            # Pequeña espera para asegurar liberación de recursos
+            Start-Sleep -Milliseconds 800
+        } else {
+            Write-Host "[RESOLVE] El proceso $Name (PID: $SavedPid) ya no existe. Limpiando binario de estado..." -ForegroundColor Gray
+        }
+
+        Remove-Item $PidFile -ErrorAction SilentlyContinue
     }
 }
 

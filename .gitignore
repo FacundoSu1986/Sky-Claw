@@ -78,8 +78,6 @@ plans/
 
 # Environments and Secrets
 **/.env
-# Environments and Secrets
-**/.env
 
 # Serena MCP data (memories, caches, logs)
 .serena/
