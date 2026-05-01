@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.agent.tools.system_tools (MEDIO-001 fix).
+"""Tests for sky_claw.agent.tools.system_tools (MEDIO-001 fix).
 
 Shift-Left Validation: ensures stdout/stderr returned in JSON responses from
 direct runner handlers is sanitized via sanitize_for_prompt().

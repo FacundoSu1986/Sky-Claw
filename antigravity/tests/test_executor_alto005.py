@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.agent.executor (ALTO-005 fix).
+"""Tests for sky_claw.agent.executor (ALTO-005 fix).
 
 Shift-Left Validation: ensures PathValidator is injected in __init__ and
 reused across execute() calls, eliminating per-invocation instantiation.
