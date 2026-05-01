@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -54,7 +55,8 @@ class TestLOOTOutputParser:
         assert result.sorted_plugins == []
         assert result.warnings == []
         assert result.errors == []
-        assert result.success is True
+        # Golden Master: success requires plugins > 0
+        assert result.success is False
 
     def test_parse_mixed_output(self) -> None:
         stdout = (
@@ -73,6 +75,22 @@ class TestLOOTOutputParser:
         stdout = "  1. ccBGSSSE001-Fish.esl\n  2. Unofficial Skyrim Special Edition Patch.esp\n"
         result = LOOTOutputParser.parse(stdout=stdout, stderr="", return_code=0)
         assert len(result.sorted_plugins) == 2
+
+    def test_parse_ansi_escapes(self) -> None:
+        """Golden Master: ANSI escape sequences are stripped before parsing."""
+        stdout = "\x1b[32m  1. Skyrim.esm\x1b[0m\n\x1b[33m  2. Requiem.esp\x1b[0m\n"
+        result = LOOTOutputParser.parse(stdout=stdout, stderr="", return_code=0)
+        assert result.sorted_plugins == ["Skyrim.esm", "Requiem.esp"]
+        assert result.success is True
+
+    def test_parse_native_crash(self) -> None:
+        """Golden Master: native crash signature injects CRITICAL error."""
+        stdout = "  1. Skyrim.esm\nFATAL ERROR: access violation at 0xDEADBEEF\n"
+        result = LOOTOutputParser.parse(stdout=stdout, stderr="", return_code=1)
+        assert result.success is False
+        assert len(result.errors) >= 1
+        assert "CRITICAL" in result.errors[0]
+        assert "crashed natively" in result.errors[0]
 
 
 # ------------------------------------------------------------------
@@ -142,6 +160,34 @@ class TestLOOTRunner:
             await runner.sort()
 
     @pytest.mark.asyncio
+    async def test_loot_timeout_wsl_taskkill(self, tmp_path: pathlib.Path) -> None:
+        """Golden Master: WSL2 taskkill annihilator fires on timeout."""
+        config = self._make_config(tmp_path)
+        runner = LOOTRunner(config)
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        mock_proc.kill = MagicMock()
+
+        mock_taskkill = MagicMock()
+
+        with (
+            patch("sky_claw.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
+            patch("sky_claw.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            patch("sky_claw.loot.cli.subprocess.run", mock_taskkill),
+            patch.dict(os.environ, {"WSL_DISTRO_NAME": "Ubuntu"}),
+            pytest.raises(LOOTTimeoutError, match="timed out"),
+        ):
+            await runner.sort()
+
+        mock_taskkill.assert_called_once_with(
+            ["taskkill.exe", "/F", "/IM", "loot.exe", "/T"],
+            capture_output=True,
+            check=False,
+        )
+
+    @pytest.mark.asyncio
     async def test_sort_with_errors(self, tmp_path: pathlib.Path) -> None:
         config = self._make_config(tmp_path)
         runner = LOOTRunner(config)
@@ -189,8 +235,6 @@ class TestMasterlistDownloader:
         cached = cache_dir / "masterlist.yaml"
         cached.write_text("old content")
         # Set mtime to 2 hours ago
-        import os
-
         old_time = time.time() - 7200
         os.utime(cached, (old_time, old_time))
 

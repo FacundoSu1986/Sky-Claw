@@ -15,6 +15,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import subprocess
+from asyncio.exceptions import TimeoutError as AsyncTimeoutError
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -119,11 +122,21 @@ class LOOTRunner:
             )
         except FileNotFoundError:
             raise LOOTNotFoundError(f"LOOT executable not found at {loot_path}") from None
-        except TimeoutError:
+        except (AsyncTimeoutError, TimeoutError):
             # TASK-011: Zombie prevention -- kill + reap.
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            with contextlib.suppress(TimeoutError):
+
+            # Golden Master: WSL2/Windows native process annihilator (non-blocking).
+            if "WSL_DISTRO_NAME" in os.environ:
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["taskkill.exe", "/F", "/IM", "loot.exe", "/T"],
+                    capture_output=True,
+                    check=False,
+                )
+
+            with contextlib.suppress(AsyncTimeoutError, TimeoutError):
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
             raise LOOTTimeoutError(self._config.timeout) from None
 

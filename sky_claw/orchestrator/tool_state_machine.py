@@ -61,9 +61,6 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     "FAILED": set(),  # terminal
 }
 
-_VALID_INITIAL_STATES: frozenset[str] = frozenset({"PENDING", "AWAITING_APPROVAL"})
-_VALID_INITIAL_STATES_DISPLAY: str = ", ".join(sorted(_VALID_INITIAL_STATES))
-
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -198,10 +195,9 @@ class ToolStateMachine:
         Raises:
             InvalidTransitionError: If initial_state is not a valid state.
         """
-        if initial_state not in _VALID_INITIAL_STATES:
-            raise InvalidTransitionError(
-                f"Invalid initial state: {initial_state}. Allowed: {_VALID_INITIAL_STATES_DISPLAY}"
-            )
+        _valid_initial_states = {"PENDING", "AWAITING_APPROVAL"}
+        if initial_state not in _valid_initial_states:
+            raise InvalidTransitionError(f"Invalid initial state: {initial_state}. Allowed: {_valid_initial_states}")
 
         self._task_counter += 1
         task_id = f"task_{self._task_counter}"

@@ -1,4 +1,11 @@
-"""LOOT output parser — structured extraction from CLI stdout/stderr."""
+"""LOOT output parser — structured extraction from CLI stdout/stderr.
+
+Golden Master hardening:
+- ANSI escape stripping to handle corrupted terminal output.
+- Native crash signature detection (fatal, exception, stack trace, etc.).
+- Strict plugin-line regex to avoid false positives.
+- ``success`` flag requires return_code == 0, no errors, AND plugins found.
+"""
 
 from __future__ import annotations
 
@@ -20,11 +27,22 @@ class LOOTResult:
 
     @property
     def success(self) -> bool:
-        return self.return_code == 0 and not self.errors
+        """Golden Master: strict success requires code 0, no errors, AND plugins."""
+        return self.return_code == 0 and not self.errors and len(self.sorted_plugins) > 0
 
+
+# Golden Master: Module-level compiled regexes.
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_CRASH_SIGNATURE = re.compile(
+    r"(?:fatal|exception|stack trace|access violation|terminate called)",
+    re.IGNORECASE,
+)
 
 # Patterns observed in LOOT CLI output.
-_PLUGIN_LINE = re.compile(r"^\s*\d+\.\s+(.+\.es[pmlt])$", re.IGNORECASE)
+_PLUGIN_LINE = re.compile(
+    r"^\s*\d+\.\s+([^\r\n]+?\.(?:esp|esm|esl|esmp))\s*$",
+    re.IGNORECASE,
+)
 _WARNING_LINE = re.compile(r"(?:warn(?:ing)?)\s*:\s*(.+)", re.IGNORECASE)
 _ERROR_LINE = re.compile(r"(?:error)\s*:\s*(.+)", re.IGNORECASE)
 _PATCH_REQ_LINE = re.compile(r"requires (?:a )?patch for\s+(.+?)(?:\.|$)", re.IGNORECASE)
@@ -41,6 +59,11 @@ class LOOTOutputParser:
     ) -> LOOTResult:
         """Parse raw LOOT output into a LOOTResult.
 
+        Golden Master hardening applied:
+        1. Strips ANSI escape sequences from stdout/stderr.
+        2. Detects native crash signatures and injects a critical error.
+        3. Uses strict plugin-line regex for extraction.
+
         Args:
             stdout: LOOT standard output.
             stderr: LOOT standard error.
@@ -49,13 +72,17 @@ class LOOTOutputParser:
         Returns:
             Structured LOOTResult.
         """
+        # Golden Master: Strip ANSI escape sequences.
+        clean_stdout = _ANSI_ESCAPE.sub("", stdout)
+        clean_stderr = _ANSI_ESCAPE.sub("", stderr)
+
         plugins: list[str] = []
         warnings: list[str] = []
         errors: list[str] = []
         missing_patches: list[dict[str, str]] = []
         current_plugin = "Unknown"
 
-        for line in stdout.splitlines():
+        for line in clean_stdout.splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -88,7 +115,7 @@ class LOOTOutputParser:
                 errors.append(err_match.group(1).strip())
 
         # Also extract errors/warnings from stderr.
-        for line in stderr.splitlines():
+        for line in clean_stderr.splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -101,6 +128,14 @@ class LOOTOutputParser:
             warn_match = _WARNING_LINE.match(line)
             if warn_match:
                 warnings.append(warn_match.group(1).strip())
+
+        # Golden Master: Detect native crash signatures in cleaned output.
+        combined_clean = clean_stdout + "\n" + clean_stderr
+        if _CRASH_SIGNATURE.search(combined_clean):
+            errors.insert(
+                0,
+                "CRITICAL: LOOT process crashed natively — fatal error signature detected in output",
+            )
 
         return LOOTResult(
             return_code=return_code,
