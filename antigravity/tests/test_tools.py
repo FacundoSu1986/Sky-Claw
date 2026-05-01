@@ -165,8 +165,16 @@ class TestDownloadModFreshUrl:
             gateway=NetworkGateway(EgressPolicy(block_private_ips=False)),  # TASK-013 P1
         )
 
-        # Call _download_mod
-        asyncio.run(registry._download_mod(nexus_id=1234, file_id=5678))
+        # Mock aiohttp.ClientSession to avoid creating real sessions that
+        # generate RuntimeWarning when the event loop is closed.
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.closed = False
+
+        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession", return_value=mock_session):
+            # Call _download_mod
+            asyncio.run(registry._download_mod(nexus_id=1234, file_id=5678))
 
         # Verify enqueue was called with a coroutine
         mock_sync_engine.enqueue_download.assert_called_once()
@@ -174,8 +182,9 @@ class TestDownloadModFreshUrl:
         # Get the enqueued coroutine
         enqueued_coro = mock_sync_engine.enqueue_download.call_args[0][0]
 
-        # Run the coroutine to verify it works
-        asyncio.run(enqueued_coro)
+        # Run the coroutine to verify it works (mock session for the closure's own session)
+        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession", return_value=mock_session):
+            asyncio.run(enqueued_coro)
 
         # Verify fresh URL was fetched (get_file_info called twice: once for HITL, once in closure)
         assert mock_downloader.get_file_info.call_count >= 2
