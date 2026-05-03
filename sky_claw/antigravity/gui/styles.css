@@ -1,444 +1,782 @@
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   SKY-CLAW - NORDIC TOTAL CONVERSION v3.0 (2026)
-   ESTILO: The Elder Scrolls V: Skyrim Inspired
+   SKY-CLAW — PREMIUM DARK SPATIAL + NORDIC v4.0 (2026)
+   Aesthetic: forge-dark parchment · gilded iron · rune lamps
+   Type:  MedievalSharp (display) · Cinzel (body) · JetBrains Mono (data) · Noto Sans Runic (glyphs)
+   Palette derived from "Sky-Claw Operations Hub" reference.
    ═══════════════════════════════════════════════════════════════════════════════════ */
 
-:root {
-    /* ── Skyrim Color Palette (OKLCH Perception) ── */
-    --sky-stone-bg: #0C0F12;
-    --sky-parchment: #dbc4a1; /* Pergamino base */
-    --sky-parchment-text: #2c2016; /* Texto sobre pergamino */
-    
-    /* Acentos de Altar / Magia */
-    --sky-gold-glow: oklch(0.85 0.15 85 / 0.8);
-    --sky-gold-dim: oklch(0.7 0.1 85 / 0.4);
-    --sky-amber: #ff9d00;
-    --sky-amber-glow: rgba(255, 157, 0, 0.4);
-    
-    /* System Colors (WCAG 2.2 AAA Focused) */
-    --sky-bg-primary: #0B0E14;
-    --sky-bg-secondary: #12161F;
-    --sky-bg-elevated: #1A212E;
-    --sky-border: rgba(200, 168, 78, 0.2);
-    --sky-surface-border: rgba(255, 255, 255, 0.05);
+@import url('https://fonts.googleapis.com/css2?family=MedievalSharp&family=Cinzel:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Runic&display=swap');
 
-    /* Text */
-    --sky-text-primary: #f8fafc;
-    --sky-text-secondary: #cbd5e1;
-    --sky-text-muted: #94a3b8;
-    
-    /* Typography */
-    --sky-font-family: 'Inter', -apple-system, system-ui, sans-serif;
-    --sky-font-display: 'Futura', 'Trajan Pro', serif;
-    
-    /* Transiciones */
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   0. DESIGN TOKENS — Forge Palette
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+:root {
+    /* ── Inks (deepest backgrounds) ── */
+    --ink-void:       #0a0705;
+    --ink-tar:        #120d08;
+    --ink-pitch:      #1a120a;
+
+    /* ── Forge surfaces ── */
+    --forge-1:        #241811;
+    --forge-2:        #2d1e14;
+    --forge-edge:     #3d2a1b;
+    --iron-rim:       #5a3f28;
+    --iron-hi:        #7a5535;
+
+    /* ── Parchment text scale ── */
+    --parchment:      #e8d4a6;
+    --parchment-dim:  #b89e72;
+    --parchment-mute: #8a7856;
+    --parchment-text: #2c2016; /* For dark text on parchment surfaces */
+
+    /* ── Gilded golds ── */
+    --gold:           #f0b133;
+    --gold-hot:       #ffcb5c;
+    --gold-deep:      #a77219;
+    --gold-soft:      rgba(240, 177, 51, 0.55);
+    --gold-mist:      rgba(240, 177, 51, 0.18);
+    --gold-whisper:   rgba(240, 177, 51, 0.08);
+
+    /* ── Ember / state lamps ── */
+    --ember:          #d9783b;
+    --emerald:        #4fae6f;
+    --emerald-glow:   rgba(79, 174, 111, 0.45);
+    --blood:          #c04a3a;
+    --blood-glow:     rgba(192, 74, 58, 0.45);
+    --amber:          #e09a2a;
+    --amber-glow:     rgba(224, 154, 42, 0.45);
+
+    /* ── Legacy aliases (kept so existing Python keeps working) ── */
+    --sky-bg-primary:     var(--ink-void);
+    --sky-bg-secondary:   #150e08;          /* matches sidebar deep tone */
+    --sky-bg-elevated:    var(--forge-1);
+    --sky-border:         rgba(240, 177, 51, 0.22);
+    --sky-surface-border: rgba(240, 177, 51, 0.10);
+
+    --sky-text-primary:   var(--parchment);
+    --sky-text-secondary: var(--parchment-dim);
+    --sky-text-muted:     var(--parchment-mute);
+
+    --sky-gold:           var(--gold);
+    --sky-gold-glow:      var(--gold-soft);
+    --sky-gold-dim:       var(--gold-mist);
+    --sky-amber:          var(--amber);
+    --sky-amber-glow:     var(--amber-glow);
+
+    --sky-parchment:      var(--parchment);
+    --sky-parchment-text: var(--parchment-text);
+
+    /* ── Typography stacks ── */
+    --f-display:        'MedievalSharp', 'Cinzel', serif;
+    --f-body:           'Cinzel', 'Inter', serif;
+    --f-mono:           'JetBrains Mono', ui-monospace, monospace;
+    --f-rune:           'Noto Sans Runic', 'Segoe UI Historic', serif;
+    --sky-font-family:  var(--f-body);
+    --sky-font-display: var(--f-display);
+
+    /* ── Geometry ── */
+    --rad:    6px;
+    --rad-lg: 10px;
     --sky-transition: 350ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   1. GLOBAL SYSTEM - STONE & PARCHMENT
+   1. GLOBAL — Forge ambient background (radial smoke + parchment noise)
    ═══════════════════════════════════════════════════════════════════════════════════ */
-
 body {
-    background: var(--sky-bg-primary) url('assets/stone_bg.png') repeat fixed !important;
-    background-size: 500px !important;
-    color: #f8fafc;
-    font-family: 'Futura', 'Trajan Pro', serif;
+    font-family: var(--f-body) !important;
+    color: var(--parchment) !important;
+    background:
+        radial-gradient(1200px 700px at 50% -10%, rgba(240,177,51,0.08), transparent 65%),
+        radial-gradient(900px 600px at 85% 110%, rgba(217,120,59,0.06), transparent 65%),
+        radial-gradient(700px 500px at 10% 90%, rgba(240,177,51,0.04), transparent 70%),
+        linear-gradient(180deg, #0e0a06 0%, #0a0705 100%) !important;
+    background-attachment: fixed !important;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
 }
 
-/* Forzar transparencia en los contenedores de NiceGUI para dejar ver el fondo de piedra */
+/* Parchment-grain overlay (fine repeating lines) on top of the body */
+body::before {
+    content: '';
+    position: fixed; inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image:
+        repeating-linear-gradient(0deg, transparent 0 2px, rgba(232,212,166,0.012) 2px 3px),
+        repeating-linear-gradient(90deg, transparent 0 3px, rgba(232,212,166,0.008) 3px 4px);
+    mix-blend-mode: overlay;
+}
+
+/* Force NiceGUI/Quasar containers transparent so the forge background shines through */
 #q-app, .q-layout, .q-page-container, .q-page, .sky-main-content {
     background: transparent !important;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   2. NORDIC COMPONENT SYSTEM
+   2. SIDEBAR — Forge wall with gilded inner edge
    ═══════════════════════════════════════════════════════════════════════════════════ */
-
-/* Tarjeta de Pergamino (Scrolling Texture) */
-.sky-parchment-card {
-    background-image: url('assets/parchment.png');
-    background-size: cover;
-    background-position: center;
-    border: 2px solid #5C4A2A;
-    border-radius: 4px;
-    box-shadow: 
-        0 10px 25px rgba(0, 0, 0, 0.6),
-        inset 0 0 40px rgba(0,0,0,0.1);
+.sky-sidebar {
+    background:
+        linear-gradient(180deg, #1d1209 0%, #140c06 50%, #0c0704 100%) !important;
+    border-right: 1px solid var(--forge-edge) !important;
+    box-shadow: inset -22px 0 36px -22px rgba(0,0,0,0.9);
     position: relative;
-    overflow: hidden;
-    color: var(--sky-parchment-text);
 }
-
-/* Efecto de borde rúnico sutil */
-.sky-parchment-card::before {
+.sky-sidebar::before {
     content: '';
-    position: absolute;
-    top: 5px; left: 5px; right: 5px; bottom: 5px;
-    border: 1px solid rgba(92, 74, 42, 0.2);
+    position: absolute; inset: 0;
+    background: repeating-linear-gradient(0deg, transparent 0 2px, rgba(232,212,166,0.02) 2px 3px);
+    pointer-events: none;
+}
+.sky-sidebar::after { /* gilded inner edge */
+    content: '';
+    position: absolute; top: 0; bottom: 0; right: 0; width: 1px;
+    background: linear-gradient(180deg, transparent, var(--gold-mist) 15%, var(--gold-mist) 85%, transparent);
     pointer-events: none;
 }
 
+.sky-brand-name {
+    font-family: var(--f-display);
+    font-size: 22px; letter-spacing: 3px;
+    color: var(--gold-hot);
+    text-shadow: 0 0 12px var(--gold-mist);
+    line-height: 1;
+}
+.sky-brand-sub {
+    font-family: var(--f-body); font-weight: 600;
+    font-size: 9px; letter-spacing: 4px;
+    color: var(--parchment-mute);
+}
+
+/* Sidebar nav items */
+.sky-nav-item {
+    font-family: var(--f-display) !important;
+    font-size: 13px !important;
+    letter-spacing: 1.8px !important;
+    text-transform: uppercase !important;
+    border-left: 2px solid transparent !important;
+    border-radius: 0 !important;
+    transition: all 0.18s ease !important;
+}
+.sky-nav-item:hover {
+    color: var(--gold) !important;
+    background: linear-gradient(90deg, rgba(240,177,51,0.06), transparent 70%) !important;
+    border-left-color: var(--gold-soft) !important;
+}
+.sky-nav-item--active {
+    color: var(--gold-hot) !important;
+    background: linear-gradient(90deg, rgba(240,177,51,0.14), rgba(240,177,51,0.02) 70%) !important;
+    border-left-color: var(--gold) !important;
+    text-shadow: 0 0 10px var(--gold-mist);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   3. AMBER GLOW & RUNIC INDICATORS
+   3. HEADER — Forge bar with hairline gilded under-rule
    ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-glow-amber {
-    box-shadow: 0 0 20px var(--sky-amber-glow);
-    border-color: var(--sky-amber);
-}
-
-.sky-rune-glow {
-    color: var(--sky-amber);
-    text-shadow: 0 0 8px var(--sky-amber-glow);
-    font-weight: bold;
-}
-
-/* Chat Messages - Skyrim Dialog Style */
-.sky-dialog-box {
-    background: rgba(11, 14, 20, 0.85);
-    backdrop-filter: blur(12px);
-    border: 1px solid var(--sky-gold-dim);
-    border-radius: 2px;
-    padding: 1.25rem;
-    margin-bottom: 2rem;
+.sky-header {
+    background: linear-gradient(180deg, #1c1209, #0f0906) !important;
+    border-bottom: 1px solid var(--forge-edge) !important;
     position: relative;
 }
-
-.sky-dialog-box--user {
-    border-right: 4px solid var(--sky-gold-glow);
+.sky-header::after {
+    content: '';
+    position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--gold-mist) 20%, var(--gold-mist) 80%, transparent);
+    pointer-events: none;
 }
-
-.sky-dialog-box--agent {
-    border-left: 4px solid var(--sky-gold-glow);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   4. MODAL WIZARD (EL PERGAMINO CENTRAL)
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-wizard-nordic {
-    background: url('assets/parchment.png');
-    background-size: 100% 100%;
-    border: 8px solid transparent;
-    border-image: url('data:image/svg+xml;utf8,<svg width="100" height="100" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="5" width="90" height="90" stroke="%235C4A2A" stroke-width="2"/><path d="M0 0 L20 20 M80 20 L100 0 M20 80 L0 100 M100 100 L80 80" stroke="%235C4A2A" stroke-width="2"/></svg>') 20 stretch;
-    padding: 3rem;
-    color: #1a1a1a;
-    box-shadow: 0 0 100px rgba(0,0,0,0.8);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   5. BOTONES Y ACCIONES
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-btn-nordic {
-    background: #1C1714;
-    color: var(--sky-parchment);
-    border: 1px solid #5C4A2A;
+.sky-header-title {
+    font-family: var(--f-display);
+    font-size: 15px; letter-spacing: 5px;
+    color: var(--parchment-dim);
     text-transform: uppercase;
-    letter-spacing: 0.15em;
-    padding: 0.75rem 1.5rem;
-    transition: all 0.2s;
+}
+
+/* Header chips */
+.sky-chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    height: 34px; padding: 0 14px !important;
+    background: linear-gradient(180deg, #24170d, #17100a) !important;
+    border: 1px solid var(--iron-rim) !important;
+    border-radius: 4px !important;
+    font-family: var(--f-display) !important;
+    font-size: 11px !important;
+    letter-spacing: 2px !important;
+    color: var(--parchment-dim) !important;
+    text-transform: uppercase !important;
+    transition: all 0.15s ease !important;
+}
+.sky-chip:hover {
+    border-color: var(--gold-soft) !important;
+    color: var(--gold) !important;
+    box-shadow: 0 0 10px var(--gold-mist) !important;
+}
+
+/* Status pill */
+.sky-status-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 12px; border-radius: 99px;
+    background: rgba(79,174,111,0.08);
+    border: 1px solid rgba(79,174,111,0.4);
+    color: var(--emerald);
+    font-family: var(--f-display); font-size: 10.5px; letter-spacing: 2px;
+}
+.sky-status-pill .pulse {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--emerald);
+    box-shadow: 0 0 8px var(--emerald-glow);
+    animation: sky-breathe 1.8s ease-in-out infinite;
+}
+
+/* Avatar seal */
+.sky-avatar-seal {
+    width: 36px; height: 36px; border-radius: 50%;
+    display: grid; place-items: center;
+    background: radial-gradient(circle, #3a2813 0%, #1a0f07 70%);
+    border: 1px solid var(--iron-rim);
+    color: var(--gold-hot);
+    font-family: var(--f-display);
+    font-size: 0.9rem; letter-spacing: 1px;
     cursor: pointer;
 }
 
-.sky-btn-nordic:hover {
-    background: #2D2520;
-    color: #fff;
-    box-shadow: 
-        0 0 20px rgba(200, 168, 78, 0.3),
-        0 4px 12px rgba(0, 0, 0, 0.4);
-    transform: translateY(-2px) scale(1.02);
-}
-
-.sky-btn-nordic:active {
-    transform: translateY(0);
-}
-
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   6. LEGIBILIDAD TÉCNICA (Dashboard)
+   4. PANELS — "Cristal oscuro" backdrop-blur over forge
    ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-technical-stat {
-    font-family: 'Inter', 'Roboto Mono', monospace;
-    font-weight: 700;
-    color: #fff;
-}
-
-/* Graph Bars - Skyrim Gold/Amber Gradient */
-.sky-bar-amber {
-    background: linear-gradient(180deg, var(--sky-amber), #8B5A00);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   7. ANIMACIONES Y EFECTOS
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-@keyframes sky-pulse-amber {
-    0%, 100% { opacity: 0.8; }
-    50% { opacity: 1; text-shadow: 0 0 15px var(--sky-amber); }
-}
-
-.sky-active-rune {
-    animation: sky-pulse-amber 3s infinite;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   8. SETUP WIZARD & MODALS (EXTENDED)
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-wizard-overlay {
-    background: rgba(0, 0, 0, 0.85);
-    backdrop-filter: blur(8px);
-}
-
-.sky-wizard-modal {
-    background: url('assets/parchment.png');
-    background-size: cover;
-    border: 2px solid #5C4A2A;
-    border-radius: 8px;
-    box-shadow: 0 20px 50px rgba(0,0,0,0.9);
-    color: var(--sky-parchment-text);
-    padding: 2.5rem !important;
-}
-
-.sky-wizard-title {
-    font-family: var(--sky-font-display);
-    font-size: 1.75rem;
-    color: #1a1a1a;
-    letter-spacing: 0.1em;
-    text-align: center;
-    margin-bottom: 2rem;
-    border-bottom: 1px solid rgba(92, 74, 42, 0.3);
-    padding-bottom: 1rem;
-}
-
-.sky-wizard-label {
-    font-family: var(--sky-font-family);
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    color: #5C4A2A;
-    letter-spacing: 0.05em;
-    margin-top: 1rem;
-}
-
-.sky-wizard-input {
-    background: rgba(255, 255, 255, 0.2) !important;
-    border: 1px solid rgba(92, 74, 42, 0.4) !important;
-    border-radius: 4px !important;
-    color: #1a1a1a !important;
-}
-
-.sky-wizard-cta {
-    background: linear-gradient(180deg, #5C4A2A, #3e321d) !important;
-    color: var(--sky-parchment) !important;
-    font-family: var(--sky-font-display);
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    border: 1px solid #1a1a1a !important;
-}
-
-.sky-wizard-description {
-    font-family: var(--sky-font-family);
-    font-size: 0.95rem;
-    color: #2c2016;
-    line-height: 1.6;
-    text-align: center;
-    max-width: 90%;
-    margin: 0 auto;
-}
-
-.sky-wizard-hint {
-    font-family: var(--sky-font-family);
-    font-size: 0.7rem;
-    color: #5C4A2A;
-    font-style: italic;
-    opacity: 0.8;
-}
-
 .sky-widget-panel {
-    background: rgba(18, 22, 31, 0.7);
-    backdrop-filter: blur(10px);
-    border: 1px solid var(--sky-surface-border);
-    border-radius: 12px;
+    position: relative;
+    background:
+        linear-gradient(180deg, rgba(30,20,12,0.78), rgba(20,13,8,0.85)) !important;
+    backdrop-filter: blur(14px) saturate(120%);
+    -webkit-backdrop-filter: blur(14px) saturate(120%);
+    border: 1px solid var(--forge-edge) !important;
+    border-radius: var(--rad-lg) !important;
+    box-shadow:
+        0 8px 24px -10px rgba(0,0,0,0.75),
+        inset 0 1px 0 rgba(232,212,166,0.04);
+}
+.sky-widget-panel::before { /* faint gilded top-rule */
+    content: '';
+    position: absolute; top: 0; left: 12px; right: 12px; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--gold-mist) 18%, var(--gold-mist) 82%, transparent);
+    pointer-events: none;
+}
+.sky-widget-panel::after { /* corner rivets */
+    content: '';
+    position: absolute; inset: 0; pointer-events: none;
+    border-radius: inherit;
+    background:
+        radial-gradient(3px 3px at 10px 10px, var(--gold-deep), transparent 70%),
+        radial-gradient(3px 3px at calc(100% - 10px) 10px, var(--gold-deep), transparent 70%),
+        radial-gradient(3px 3px at 10px calc(100% - 10px), var(--gold-deep), transparent 70%),
+        radial-gradient(3px 3px at calc(100% - 10px) calc(100% - 10px), var(--gold-deep), transparent 70%);
+    opacity: 0.55;
 }
 
-.sky-badge {
-    padding: 0.25rem 0.75rem;
-    border-radius: 99px;
-    font-size: 0.7rem;
-    font-weight: 700;
+.sky-card-hover {
+    transition: transform var(--sky-transition), box-shadow var(--sky-transition), border-color var(--sky-transition);
+}
+.sky-card-hover:hover {
+    transform: translateY(-2px);
+    border-color: var(--gold-soft) !important;
+    box-shadow:
+        0 14px 32px -10px rgba(0,0,0,0.85),
+        0 0 18px var(--gold-mist),
+        inset 0 1px 0 rgba(232,212,166,0.06);
+}
+
+/* Section title (rune + uppercase display) */
+.sky-section-title {
+    font-family: var(--f-display);
+    font-size: 1.1rem; font-weight: 700;
+    color: var(--gold-hot);
+    letter-spacing: 0.18em;
     text-transform: uppercase;
-}
-
-.sky-badge--success {
-    background: rgba(22, 163, 74, 0.2);
-    color: #4ade80;
-    border: 1px solid rgba(74, 222, 128, 0.3);
-}
-
-.sky-badge--error {
-    background: rgba(220, 38, 38, 0.2);
-    color: #f87171;
-    border: 1px solid rgba(248, 113, 113, 0.3);
-}
-
-.sky-scrollbar::-webkit-scrollbar {
-    width: 6px;
-}
-.sky-scrollbar::-webkit-scrollbar-track {
-    background: transparent;
-}
-.sky-scrollbar::-webkit-scrollbar-thumb {
-    background: var(--sky-gold-dim);
-    border-radius: 10px;
-}
-
-.sky-animate-in {
-    animation: sky-fade-up 0.5s ease-out forwards;
-}
-
-@keyframes sky-fade-up {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
+    text-shadow: 0 0 10px var(--gold-mist);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   5. ACTION BUTTONS — "The Invisible Engine" v4.0
+   5. METRIC TILES — big forge numbers
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+.sky-metric-value {
+    font-family: var(--f-display);
+    font-size: 2.25rem;
+    color: var(--gold-hot);
+    letter-spacing: 0.04em;
+    line-height: 1.1;
+    text-shadow: 0 0 12px var(--gold-mist);
+}
+.sky-metric-label {
+    font-family: var(--f-display);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    color: var(--parchment-mute);
+    text-transform: uppercase;
+}
+.sky-metric-icon {
+    width: 48px; height: 48px; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 30% 30%, rgba(240,177,51,0.18), rgba(240,177,51,0.04) 70%);
+    border: 1px solid var(--gold-mist);
+    box-shadow: inset 0 1px 0 rgba(232,212,166,0.06);
+    color: var(--gold);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   6. BUTTONS — "Preparar Juego" / "Instalar Herramienta"
    ═══════════════════════════════════════════════════════════════════════════════════ */
 
+/* Generic forge button (chip-style) */
+.sky-btn-forge {
+    background: linear-gradient(180deg, #24170d, #17100a) !important;
+    color: var(--parchment-dim) !important;
+    border: 1px solid var(--iron-rim) !important;
+    border-radius: 4px !important;
+    font-family: var(--f-display) !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.15em !important;
+    transition: all 0.18s ease !important;
+}
+.sky-btn-forge:hover {
+    border-color: var(--gold-soft) !important;
+    color: var(--gold-hot) !important;
+    background: linear-gradient(180deg, #2a1c0e, #1a1108) !important;
+    box-shadow: 0 0 12px var(--gold-mist), inset 0 1px 0 rgba(232,212,166,0.08) !important;
+}
+
+/* Master CTA — "Preparar Juego" */
 .sky-action-master {
     display: flex; flex-direction: column; align-items: center;
     gap: 0.5rem; padding: 1.2rem; margin-bottom: 1rem;
 }
-
 .sky-action-master-btn {
-    width: 100%; padding: 1rem 2rem !important;
-    font-family: var(--sky-font-display) !important;
-    font-size: 1.3rem !important; letter-spacing: 0.15em !important;
-    color: var(--sky-parchment) !important;
-    background: linear-gradient(135deg, rgba(200,168,78,0.3), rgba(139,109,35,0.5)) !important;
-    border: 2px solid var(--sky-amber) !important; border-radius: 4px !important;
-    text-shadow: 0 0 12px var(--sky-amber-glow);
-    box-shadow: 0 0 15px rgba(255,157,0,0.2), inset 0 1px 0 rgba(255,255,255,0.1);
+    width: 100%;
+    padding: 1.1rem 2rem !important;
+    font-family: var(--f-display) !important;
+    font-size: 1.35rem !important;
+    letter-spacing: 0.22em !important;
+    color: var(--gold-hot) !important;
+    background:
+        linear-gradient(180deg, rgba(58,38,19,0.95), rgba(34,22,12,0.95)) !important;
+    border: 1px solid var(--gold) !important;
+    border-radius: var(--rad) !important;
+    text-shadow: 0 0 12px var(--gold-mist);
+    box-shadow:
+        0 0 22px var(--gold-mist),
+        inset 0 1px 0 rgba(255,203,92,0.18),
+        inset 0 -1px 0 rgba(0,0,0,0.5);
     transition: all var(--sky-transition);
 }
 .sky-action-master-btn:hover {
-    background: linear-gradient(135deg, rgba(200,168,78,0.5), rgba(139,109,35,0.7)) !important;
-    box-shadow: 0 0 25px rgba(255,157,0,0.4); transform: translateY(-1px);
+    background:
+        linear-gradient(180deg, rgba(74,49,24,1), rgba(46,31,17,1)) !important;
+    box-shadow:
+        0 0 32px var(--gold-soft),
+        inset 0 1px 0 rgba(255,203,92,0.28),
+        inset 0 -1px 0 rgba(0,0,0,0.5);
+    transform: translateY(-1px);
 }
-.sky-action-master-desc { font-size: 0.8rem; color: var(--sky-text-muted); text-align: center; }
+.sky-action-master-desc {
+    font-family: var(--f-mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.05em;
+    color: var(--parchment-mute);
+    text-align: center;
+}
 
+/* Tool action grid + cards (parchment-on-forge contrast) */
 .sky-actions-grid {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 0.8rem; padding: 0.5rem 0;
 }
-
 .sky-action-card {
-    background-image: url('assets/parchment.png'); background-size: cover;
-    background-color: var(--sky-parchment);
-    border: 2px solid rgba(80,65,40,0.6); border-radius: 6px;
-    padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem;
+    background: linear-gradient(180deg, rgba(40,27,16,0.92), rgba(24,16,10,0.95));
+    border: 1px solid var(--forge-edge);
+    border-radius: var(--rad);
+    padding: 1rem;
+    display: flex; flex-direction: column; gap: 0.5rem;
     transition: all var(--sky-transition);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.15);
+    box-shadow:
+        0 4px 14px -6px rgba(0,0,0,0.7),
+        inset 0 1px 0 rgba(232,212,166,0.04);
+    position: relative;
+}
+.sky-action-card::before {
+    content: '';
+    position: absolute; top: 0; left: 8px; right: 8px; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--gold-mist), transparent);
+    pointer-events: none;
 }
 .sky-action-card:hover {
-    border-color: var(--sky-amber);
-    box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 10px var(--sky-amber-glow);
+    border-color: var(--gold-soft);
+    box-shadow:
+        0 8px 22px -6px rgba(0,0,0,0.85),
+        0 0 14px var(--gold-mist),
+        inset 0 1px 0 rgba(232,212,166,0.07);
     transform: translateY(-2px);
 }
-.sky-action-card--disabled { opacity: 0.6; filter: grayscale(40%); }
+.sky-action-card--disabled { opacity: 0.55; filter: grayscale(35%); }
 .sky-action-card--disabled:hover { transform: none; }
 
-.sky-action-header { gap: 0.5rem; }
+.sky-action-header { gap: 0.6rem; align-items: center; }
 .sky-action-rune {
-    font-size: 1.8rem; color: #8b6d23;
-    text-shadow: 0 0 8px rgba(139,109,35,0.5); line-height: 1;
+    font-family: var(--f-rune);
+    font-size: 1.6rem;
+    color: var(--gold);
+    text-shadow: 0 0 10px var(--gold-mist);
+    line-height: 1;
 }
 .sky-action-label {
-    font-family: var(--sky-font-display); font-size: 1rem; font-weight: 700;
-    color: var(--sky-parchment-text); letter-spacing: 0.05em; text-transform: uppercase;
+    font-family: var(--f-display);
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--parchment);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
 }
-.sky-action-desc { font-size: 0.78rem; color: #5a4a38; line-height: 1.3; }
+.sky-action-desc {
+    font-family: var(--f-body);
+    font-size: 0.8rem;
+    color: var(--parchment-mute);
+    line-height: 1.45;
+}
+.sky-action-tech-name {
+    font-family: var(--f-mono);
+    font-size: 0.65rem;
+    color: var(--parchment-mute);
+    letter-spacing: 0.04em;
+    text-align: right;
+    opacity: 0.75;
+}
 .sky-action-footer { margin-top: auto; padding-top: 0.5rem; }
 
 .sky-action-btn {
-    font-family: var(--sky-font-display) !important; font-size: 0.75rem !important;
-    background: rgba(80,65,40,0.8) !important; color: var(--sky-parchment) !important;
-    border: 1px solid rgba(139,109,35,0.5) !important; letter-spacing: 0.08em !important;
+    font-family: var(--f-display) !important;
+    font-size: 0.78rem !important;
+    letter-spacing: 0.12em !important;
+    background: linear-gradient(180deg, #2a1c0e, #18110a) !important;
+    color: var(--parchment) !important;
+    border: 1px solid var(--iron-rim) !important;
+    border-radius: 4px !important;
+    text-transform: uppercase !important;
+    transition: all 0.18s ease !important;
 }
-.sky-action-btn:hover { background: rgba(139,109,35,0.9) !important; }
-.sky-action-btn--install { background: rgba(200,100,20,0.7) !important; }
-.sky-action-btn--install:hover { background: rgba(255,157,0,0.8) !important; }
-.sky-action-tech-name { font-size: 0.65rem; color: #8a7a68; font-style: italic; text-align: right; }
+.sky-action-btn:hover {
+    border-color: var(--gold) !important;
+    color: var(--gold-hot) !important;
+    box-shadow: 0 0 10px var(--gold-mist) !important;
+}
+.sky-action-btn--install {
+    background: linear-gradient(180deg, rgba(217,120,59,0.45), rgba(140,70,30,0.55)) !important;
+    border-color: var(--ember) !important;
+    color: var(--parchment) !important;
+}
+.sky-action-btn--install:hover {
+    background: linear-gradient(180deg, rgba(255,157,0,0.55), rgba(217,120,59,0.7)) !important;
+    box-shadow: 0 0 12px rgba(217,120,59,0.5) !important;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   6. MOD LIST
+   7. WIZARD MODAL — Pergamino central with forge backdrop
    ═══════════════════════════════════════════════════════════════════════════════════ */
+.sky-wizard-overlay {
+    position: fixed; inset: 0;
+    background: rgba(8,5,3,0.82);
+    backdrop-filter: blur(10px) saturate(120%);
+    -webkit-backdrop-filter: blur(10px) saturate(120%);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 9000;
+}
+.sky-wizard-modal {
+    width: min(560px, 92vw);
+    max-height: 90vh; overflow-y: auto;
+    padding: 2.5rem !important;
+    background:
+        linear-gradient(180deg, rgba(30,20,12,0.96), rgba(18,12,8,0.97)) !important;
+    border: 1px solid var(--gold-soft) !important;
+    border-radius: var(--rad-lg) !important;
+    box-shadow:
+        0 28px 80px rgba(0,0,0,0.85),
+        0 0 60px var(--gold-mist),
+        inset 0 1px 0 rgba(232,212,166,0.06);
+    color: var(--parchment) !important;
+    position: relative;
+}
+.sky-wizard-modal::before {
+    content: '';
+    position: absolute; top: 0; left: 18px; right: 18px; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--gold), transparent);
+    pointer-events: none;
+}
 
-.sky-modlist-header { padding: 0.8rem 0; }
-.sky-section-title {
-    font-family: var(--sky-font-display); font-size: 1.1rem; font-weight: 700;
-    color: var(--sky-amber); letter-spacing: 0.12em; text-transform: uppercase;
-    text-shadow: 0 0 10px var(--sky-amber-glow);
+.sky-wizard-title {
+    font-family: var(--f-display);
+    font-size: 1.4rem;
+    color: var(--gold-hot);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    text-shadow: 0 0 12px var(--gold-mist);
+}
+.sky-wizard-step {
+    font-family: var(--f-mono);
+    font-size: 0.75rem;
+    color: var(--parchment-mute);
+    letter-spacing: 0.08em;
+}
+.sky-wizard-description {
+    font-family: var(--f-body);
+    font-size: 0.92rem;
+    color: var(--parchment-dim);
+    line-height: 1.65;
+}
+.sky-wizard-label {
+    font-family: var(--f-display);
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--gold);
+    letter-spacing: 0.18em;
+    margin-top: 0.5rem;
+}
+.sky-wizard-hint {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    color: var(--parchment-mute);
+    letter-spacing: 0.04em;
+    font-style: normal;
+}
+.sky-wizard-input {
+    background: rgba(0,0,0,0.45) !important;
+    border: 1px solid var(--forge-edge) !important;
+    border-radius: var(--rad) !important;
+    color: var(--parchment) !important;
+    font-family: var(--f-mono) !important;
+    padding: 0.55rem 0.8rem !important;
+}
+.sky-wizard-input:focus {
+    border-color: var(--gold) !important;
+    box-shadow: 0 0 0 3px var(--gold-mist) !important;
+}
+
+/* Wizard primary CTA */
+.sky-wizard-cta {
+    background:
+        linear-gradient(180deg, rgba(58,38,19,0.95), rgba(34,22,12,0.95)) !important;
+    color: var(--gold-hot) !important;
+    font-family: var(--f-display) !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.18em !important;
+    border: 1px solid var(--gold) !important;
+    border-radius: var(--rad) !important;
+    box-shadow:
+        0 0 16px var(--gold-mist),
+        inset 0 1px 0 rgba(255,203,92,0.18) !important;
+    text-shadow: 0 0 8px var(--gold-mist);
+    transition: all var(--sky-transition);
+}
+.sky-wizard-cta:hover {
+    background:
+        linear-gradient(180deg, rgba(74,49,24,1), rgba(46,31,17,1)) !important;
+    box-shadow:
+        0 0 28px var(--gold-soft),
+        inset 0 1px 0 rgba(255,203,92,0.28) !important;
+    transform: translateY(-1px);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   8. CHAT BUBBLES — Skyrim dialog style
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+.sky-chat-message {
+    background: rgba(0,0,0,0.35);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border: 1px solid var(--forge-edge);
+    border-radius: var(--rad);
+    padding: 0.75rem 0.9rem;
+    margin-bottom: 0.55rem;
+    max-width: 92%;
+    position: relative;
+    transition: border-color 0.15s ease;
+}
+.sky-chat-message--user {
+    align-self: flex-end;
+    margin-left: auto;
+    border-right: 3px solid var(--gold);
+    background: linear-gradient(135deg, rgba(240,177,51,0.10), rgba(0,0,0,0.35));
+}
+.sky-chat-message--assistant {
+    align-self: flex-start;
+    border-left: 3px solid var(--gold);
+    background: linear-gradient(135deg, rgba(0,0,0,0.4), rgba(36,24,17,0.5));
+}
+.sky-chat-message--success {
+    align-self: flex-start;
+    border-left: 3px solid var(--emerald);
+    background: linear-gradient(135deg, rgba(79,174,111,0.10), rgba(0,0,0,0.35));
+}
+.sky-chat-message--error {
+    align-self: flex-start;
+    border-left: 3px solid var(--blood);
+    background: linear-gradient(135deg, rgba(192,74,58,0.12), rgba(0,0,0,0.35));
+}
+.sky-chat-message--info {
+    align-self: flex-start;
+    border-left: 3px solid var(--amber);
+    background: linear-gradient(135deg, rgba(224,154,42,0.10), rgba(0,0,0,0.35));
+}
+
+/* Chat input bar */
+.sky-input-spatial {
+    background: rgba(0,0,0,0.45) !important;
+    border: 1px solid var(--forge-edge) !important;
+    border-radius: var(--rad) !important;
+    color: var(--parchment) !important;
+    font-family: var(--f-body) !important;
+    padding: 0.55rem 0.85rem !important;
+}
+.sky-input-spatial:focus {
+    border-color: var(--gold) !important;
+    box-shadow: 0 0 0 3px var(--gold-mist) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   9. BADGES, STATES, MOD ROWS
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+.sky-badge {
+    padding: 0.22rem 0.7rem;
+    border-radius: 99px;
+    font-family: var(--f-display);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+}
+.sky-badge--success {
+    background: rgba(79,174,111,0.10);
+    color: var(--emerald);
+    border: 1px solid rgba(79,174,111,0.4);
+}
+.sky-badge--error {
+    background: rgba(192,74,58,0.12);
+    color: var(--blood);
+    border: 1px solid rgba(192,74,58,0.4);
 }
 .sky-badge-count {
-    background: rgba(255,157,0,0.2) !important; color: var(--sky-amber) !important;
-    border: 1px solid var(--sky-amber) !important;
+    background: rgba(240,177,51,0.12) !important;
+    color: var(--gold-hot) !important;
+    border: 1px solid var(--gold-mist) !important;
+    font-family: var(--f-mono) !important;
 }
-.sky-modlist-search .q-field__control {
-    background: var(--sky-bg-elevated) !important; border-color: var(--sky-border) !important;
-}
-.sky-modlist-container { max-height: 50vh; overflow-y: auto; padding: 0.3rem 0; }
-.sky-modlist-empty { color: var(--sky-text-muted); font-style: italic; padding: 2rem; text-align: center; }
+
 .sky-mod-row {
     display: flex; align-items: center; gap: 0.8rem;
-    padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--sky-surface-border);
+    padding: 0.55rem 0.85rem;
+    border-bottom: 1px solid var(--sky-surface-border);
     transition: background var(--sky-transition);
 }
-.sky-mod-row:hover { background: rgba(200,168,78,0.05); }
+.sky-mod-row:hover { background: rgba(240,177,51,0.05); }
 .sky-mod-row--disabled { opacity: 0.5; }
 .sky-mod-info { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.sky-mod-name { font-size: 0.9rem; color: var(--sky-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sky-mod-version { font-size: 0.7rem; color: var(--sky-text-muted); }
-.sky-mod-status-ok { color: #4caf50 !important; }
-.sky-mod-status-off { color: var(--sky-text-muted) !important; }
+.sky-mod-name {
+    font-family: var(--f-body);
+    font-size: 0.92rem;
+    color: var(--parchment);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sky-mod-version {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    color: var(--parchment-mute);
+}
+.sky-mod-status-ok  { color: var(--emerald) !important; }
+.sky-mod-status-off { color: var(--parchment-mute) !important; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   7. ADVANCED PANEL
+  10. HEALTH BANNER + ADVANCED PANEL
    ═══════════════════════════════════════════════════════════════════════════════════ */
+.sky-health-banner {
+    background: linear-gradient(180deg, rgba(30,20,12,0.85), rgba(18,12,8,0.9));
+    border: 1px solid var(--forge-edge);
+    border-left: 4px solid var(--amber);
+    border-radius: var(--rad);
+    padding: 0.85rem 1rem;
+    margin-bottom: 1rem;
+    backdrop-filter: blur(6px);
+}
+.sky-health-banner--ready    { border-left-color: var(--emerald); }
+.sky-health-banner--warning  { border-left-color: var(--amber); }
+.sky-health-banner--critical { border-left-color: var(--blood); }
+.sky-health-text {
+    font-family: var(--f-body);
+    font-size: 0.9rem;
+    color: var(--parchment);
+    line-height: 1.55;
+}
 
 .sky-advanced-panel {
-    background: var(--sky-bg-secondary) !important; border: 1px solid var(--sky-border) !important;
-    border-radius: 6px !important; margin-top: 1rem;
+    background: linear-gradient(180deg, rgba(20,13,8,0.85), rgba(10,7,5,0.9)) !important;
+    border: 1px solid var(--forge-edge) !important;
+    border-radius: var(--rad) !important;
+    margin-top: 1rem;
 }
 .sky-advanced-title {
-    font-family: var(--sky-font-display); font-size: 0.85rem; font-weight: 700;
-    color: var(--sky-amber); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 0.4rem;
+    font-family: var(--f-display);
+    font-size: 0.85rem; font-weight: 700;
+    color: var(--gold-hot);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 0.4rem;
 }
 .sky-advanced-tool-row { gap: 0.5rem; align-items: center; padding: 0.2rem 0; }
-.sky-advanced-tool-name { font-weight: 600; color: var(--sky-text-primary); font-size: 0.85rem; }
-.sky-advanced-tool-path { font-size: 0.7rem; color: var(--sky-text-muted); word-break: break-all; }
-.sky-advanced-link { font-size: 0.8rem; color: var(--sky-amber) !important; text-decoration: underline !important; }
+.sky-advanced-tool-name { font-weight: 600; color: var(--parchment); font-size: 0.85rem; }
+.sky-advanced-tool-path { font-family: var(--f-mono); font-size: 0.7rem; color: var(--parchment-mute); word-break: break-all; }
+.sky-advanced-link { font-size: 0.8rem; color: var(--gold-hot) !important; text-decoration: underline !important; }
 .sky-info-row { gap: 0.5rem; padding: 0.15rem 0; }
-.sky-info-label { font-size: 0.8rem; color: var(--sky-text-muted); min-width: 80px; font-weight: 600; }
-.sky-info-value { font-size: 0.8rem; color: var(--sky-text-primary); word-break: break-all; }
-.sky-log-entry { font-size: 0.8rem; color: var(--sky-text-secondary); padding: 0.15rem 0; }
-.sky-text-warning { color: #ff9800; font-size: 0.85rem; }
-.sky-text-muted { color: var(--sky-text-muted); }
-.sky-separator { background: var(--sky-border) !important; margin: 0.5rem 0 !important; }
-.sky-separator-subtle { background: rgba(255,255,255,0.05) !important; margin: 0.3rem 0 !important; }
+.sky-info-label { font-family: var(--f-mono); font-size: 0.78rem; color: var(--parchment-mute); min-width: 80px; font-weight: 600; }
+.sky-info-value { font-family: var(--f-mono); font-size: 0.78rem; color: var(--parchment); word-break: break-all; }
+.sky-log-entry { font-family: var(--f-mono); font-size: 0.78rem; color: var(--parchment-dim); padding: 0.15rem 0; }
+.sky-text-warning { color: var(--amber); font-size: 0.85rem; }
+.sky-text-muted { color: var(--parchment-mute); }
+.sky-separator         { background: var(--forge-edge) !important; margin: 0.5rem 0 !important; }
+.sky-separator-subtle  { background: rgba(232,212,166,0.05) !important; margin: 0.3rem 0 !important; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   8. HEALTH BANNER
+  11. SCROLLBAR + ANIMATIONS
    ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-health-banner {
-    background: var(--sky-bg-secondary); border: 1px solid var(--sky-border);
-    border-left: 4px solid var(--sky-amber); border-radius: 4px; padding: 0.8rem 1rem; margin-bottom: 1rem;
+.sky-scrollbar::-webkit-scrollbar          { width: 6px; }
+.sky-scrollbar::-webkit-scrollbar-track    { background: transparent; }
+.sky-scrollbar::-webkit-scrollbar-thumb    {
+    background: var(--gold-mist);
+    border-radius: 10px;
 }
-.sky-health-banner--ready { border-left-color: #4caf50; }
-.sky-health-banner--warning { border-left-color: #ff9800; }
-.sky-health-banner--critical { border-left-color: #f44336; }
-.sky-health-text { font-size: 0.9rem; color: var(--sky-text-primary); line-height: 1.6; }
+.sky-scrollbar::-webkit-scrollbar-thumb:hover { background: var(--gold-soft); }
+
+@keyframes sky-fade-up {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes sky-breathe {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.55; }
+}
+@keyframes sky-pulse-amber {
+    0%, 100% { opacity: 0.85; text-shadow: 0 0 6px var(--gold-mist); }
+    50%      { opacity: 1;    text-shadow: 0 0 16px var(--gold-soft); }
+}
+
+.sky-animate-in           { animation: sky-fade-up 0.5s ease-out forwards; }
+.sky-animate-in--delay-1  { animation-delay: 0.08s; }
+.sky-animate-in--delay-2  { animation-delay: 0.16s; }
+.sky-glow-static          { box-shadow: 0 0 18px var(--gold-mist); }
+.sky-active-rune          { animation: sky-pulse-amber 3s ease-in-out infinite; color: var(--gold); }
+
+/* Quasar input contrast tweaks inside dark surfaces */
+.q-field--dark .q-field__native,
+.q-field--dark .q-field__prefix,
+.q-field--dark .q-field__suffix,
+.q-field--dark .q-field__input { color: var(--parchment) !important; }
+.q-field--dark .q-field__label { color: var(--parchment-mute) !important; }
+
+/* Quasar toggle contrast */
+.q-toggle__label { color: var(--parchment) !important; font-family: var(--f-display); letter-spacing: 0.08em; }

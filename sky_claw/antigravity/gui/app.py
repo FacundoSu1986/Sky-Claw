@@ -516,8 +516,8 @@ class DashboardGUI:
 
         with (
             ui.element("div")
-            .classes("w-full min-h-screen flex")
-            .style("background: transparent; font-family: var(--sky-font-family);")
+            .classes("w-full min-h-screen flex relative")
+            .style("background: transparent; font-family: var(--f-body); z-index: 1;")
         ):
             self._build_sidebar()
 
@@ -582,26 +582,27 @@ class DashboardGUI:
         with (
             ui.element("div")
             .classes("w-64 min-h-screen flex flex-col shrink-0 sky-sidebar")
-            .style("background: var(--sky-bg-secondary); border-right: 1px solid var(--sky-border);")
+            .style("")
         ):
             # Logo
             with (
-                ui.element("div").classes("p-6").style("border-bottom: 1px solid var(--sky-border);"),
+                ui.element("div").classes("p-6 relative").style("border-bottom: 1px solid var(--forge-edge); z-index:1;"),
                 ui.row().classes("items-center gap-3"),
             ):
                 ui.html(f"""
-                        <div style="width:40px;height:40px;border-radius:12px;display:flex;
-                                    align-items:center;justify-content:center;
-                                    background:linear-gradient(135deg, #C8A84E, #8B7332);"
+                        <div style="width:36px;height:36px;border-radius:50%;display:grid;place-items:center;
+                                    background: radial-gradient(circle, #3a2813 0%, #1a0f07 70%);
+                                    border: 1px solid var(--iron-rim);
+                                    box-shadow: 0 0 14px var(--gold-mist);"
                              class="sky-glow-static">
-                            {_ICON_LAYERS}
+                            <span style="color: var(--gold-hot); filter: drop-shadow(0 0 3px var(--gold-soft));">
+                              {_ICON_LAYERS}
+                            </span>
                         </div>
                     """)
                 with ui.column().classes("gap-0"):
-                    ui.label("SKY-CLAW").style(
-                        "color: var(--sky-gold); font-weight:800; font-size:1.1rem; letter-spacing:0.15em;"
-                    )
-                    ui.label("Technical Operations").style("color: var(--sky-text-muted); font-size:0.65rem;")
+                    ui.label("SKY-CLAW").classes("sky-brand-name")
+                    ui.label("TECHNICAL OPERATIONS").classes("sky-brand-sub")
 
             # Nav
             with ui.column().classes("flex-1 p-4 gap-1"):
@@ -614,28 +615,30 @@ class DashboardGUI:
                 ]
 
                 for text, view, is_active in nav_items:
+                    cls = "w-full text-left px-4 py-3 sky-nav-item"
                     if is_active:
-                        active_style = (
-                            "background: rgba(200,168,78,0.1); "
-                            "border-left: 2px solid var(--sky-gold); "
-                            "color: var(--sky-gold);"
-                        )
-                    else:
-                        active_style = "color: var(--sky-text-secondary);"
-
+                        cls += " sky-nav-item--active"
                     ui.button(
                         text,
                         on_click=lambda v=view: self._navigate(v),
-                    ).classes("w-full text-left px-4 py-3 rounded-xl transition-all duration-200").props(
-                        "ripple flat no-caps"
-                    ).style(active_style)
+                    ).classes(cls).props("ripple flat no-caps")
 
             # Status LLM
             with (
-                ui.element("div").classes("p-4").style("border-top: 1px solid var(--sky-border);"),
+                ui.element("div")
+                .classes("p-4 relative")
+                .style("border-top: 1px solid var(--forge-edge); background: rgba(0,0,0,0.25); z-index:1;"),
                 ui.row().classes("items-center gap-2"),
             ):
-                self._status_label = ui.label("Conectado").style("color: var(--sky-text-muted); font-size:0.75rem;")
+                ui.html(
+                    '<span style="width:9px;height:9px;border-radius:50%;'
+                    'background:var(--emerald);box-shadow:0 0 8px var(--emerald-glow);'
+                    'animation:sky-breathe 2.4s ease-in-out infinite;display:inline-block;"></span>'
+                )
+                self._status_label = ui.label("OPERATOR · CONECTADO").style(
+                    "color: var(--parchment); font-family: var(--f-display); "
+                    "font-size: 0.72rem; letter-spacing: 0.18em;"
+                )
 
     def _navigate(self, view: str) -> None:
         if view == "settings":
@@ -645,57 +648,44 @@ class DashboardGUI:
     def _build_header(self) -> None:
         with (
             ui.element("div")
-            .classes("h-16 flex items-center justify-between px-6 shrink-0")
-            .style("background: var(--sky-bg-secondary); border-bottom: 1px solid var(--sky-border);")
+            .classes("h-16 flex items-center justify-between px-6 shrink-0 sky-header")
         ):
             with ui.column().classes("gap-0"):
-                ui.label("OPERACIONES TÉCNICAS").style(
-                    "color: var(--sky-text-primary); font-weight:700; font-size:1.1rem; letter-spacing:0.1em;"
-                )
+                ui.label("OPERACIONES TÉCNICAS").classes("sky-header-title")
 
             # Header actions
             with ui.row().classes("items-center gap-3"):
-                for label_text in ["Protocolos", "Alerta", "Ayuda"]:
-                    ui.button(label_text).classes("px-3 py-1 rounded-lg text-xs").props("ripple flat no-caps").style(
-                        "color: var(--sky-text-secondary); border: 1px solid var(--sky-surface-border);"
-                    )
+                # Status pill
+                with ui.element("div").classes("sky-status-pill"):
+                    ui.html('<span class="pulse"></span>')
+                    ui.label("OPERATIVO")
 
-                # Avatar
-                with ui.element("div").style(
-                    "width:36px; height:36px; border-radius:50%; display:flex; "
-                    "align-items:center; justify-content:center; cursor:pointer; "
-                    "background: linear-gradient(135deg, var(--sky-gold), #8B7332); "
-                    "color: #1C1714; font-weight:700; font-size:0.8rem;"
-                ):
+                for label_text in ["Protocolos", "Alerta", "Ayuda"]:
+                    ui.button(label_text).classes("sky-chip").props("ripple flat no-caps")
+
+                # Avatar seal
+                with ui.element("div").classes("sky-avatar-seal"):
                     ui.label("SC")
 
     # ── Stat Summary Cards ────────────────────────────────────────────
     def _build_stat_summary(self, title: str, value: str, icon_svg: str) -> None:
         with (
-            ui.element("div").classes("sky-widget-panel flex-1 p-5 sky-card-hover"),
-            ui.row().classes("items-center justify-between"),
+            ui.element("div").classes("sky-widget-panel flex-1 p-5 sky-card-hover sky-animate-in"),
+            ui.row().classes("items-center justify-between w-full"),
         ):
-            with ui.column().classes("gap-1"):
-                ui.label(title).style(
-                    "color: var(--sky-text-muted); font-size:0.7rem; "
-                    "font-weight:600; letter-spacing:0.1em; text-transform:uppercase;"
-                )
+            with ui.column().classes("gap-2"):
+                ui.label(title).classes("sky-metric-label")
                 ui.label(value).classes("sky-metric-value")
-            ui.html(f"""
-                    <div style="width:48px;height:48px;border-radius:12px;display:flex;
-                                align-items:center;justify-content:center;
-                                background:linear-gradient(135deg, rgba(200,168,78,0.12), rgba(6,182,212,0.12));
-                                border: 1px solid rgba(200,168,78,0.2);">
-                        {icon_svg}
-                    </div>
-                """)
+            ui.html(f'<div class="sky-metric-icon">{icon_svg}</div>')
 
     # ── Tools Section — Semantic Actions v4.0 ─────────────────────────
     def _build_tools_section(self) -> None:
         """Build the 'Herramientas' section with health banner + action buttons."""
         with ui.element("div").classes("sky-widget-panel w-full p-4 sky-animate-in"):
             with ui.row().classes("items-center gap-2 mb-3"):
-                ui.label("ᚦ").style("font-size:1.4rem; color: var(--sky-amber);")
+                ui.label("ᚦ").classes("sky-active-rune").style(
+                    "font-family: var(--f-rune); font-size: 1.5rem; line-height: 1;"
+                )
                 ui.label("HERRAMIENTAS").classes("sky-section-title")
 
             self._health_banner = ui.element("div").classes("sky-health-banner sky-health-banner--warning")
@@ -808,20 +798,20 @@ class DashboardGUI:
                 .classes("items-center justify-between p-4")
                 .style("border-bottom: 1px solid var(--sky-surface-border);")
             ):
-                ui.label("Mods Instalados").style("color: var(--sky-text-primary); font-weight:700;")
+                with ui.row().classes("items-center gap-2"):
+                    ui.label("ᚱ").classes("sky-active-rune").style(
+                        "font-family: var(--f-rune); font-size: 1.4rem; line-height: 1;"
+                    )
+                    ui.label("MODS INSTALADOS").classes("sky-section-title")
                 with ui.row().classes("gap-2"):
                     ui.button(
                         "Actualizar",
                         on_click=self._update_all,
-                    ).classes("px-3 py-1 rounded-lg text-xs").props("ripple flat no-caps").style(
-                        "color: var(--sky-text-secondary); border: 1px solid var(--sky-surface-border);"
-                    )
+                    ).classes("sky-btn-forge px-3 py-1 text-xs").props("ripple flat no-caps")
                     ui.button(
                         "Escanear",
                         on_click=self._scan_all,
-                    ).classes("px-3 py-1 rounded-lg text-xs").props("ripple flat no-caps").style(
-                        "color: var(--sky-text-secondary); border: 1px solid var(--sky-surface-border);"
-                    )
+                    ).classes("sky-btn-forge px-3 py-1 text-xs").props("ripple flat no-caps")
 
             with ui.scroll_area().classes("flex-1 sky-scrollbar").style("height: 300px;"):
                 self._mod_container = ui.column().classes("w-full")
@@ -872,22 +862,28 @@ class DashboardGUI:
                 ui.element("div")
                 .classes("p-4")
                 .style(
-                    "border-bottom: 1px solid var(--sky-surface-border); "
-                    "background: linear-gradient(135deg, rgba(200,168,78,0.08), rgba(6,182,212,0.08));"
+                    "border-bottom: 1px solid var(--forge-edge); "
+                    "background: linear-gradient(180deg, rgba(40,27,16,0.6), rgba(20,13,8,0));"
                 ),
                 ui.row().classes("items-center gap-3"),
             ):
                 ui.html(f"""
-                        <div style="width:40px;height:40px;border-radius:12px;display:flex;
-                                    align-items:center;justify-content:center;
-                                    background:linear-gradient(135deg, #C8A84E, #06b6d4);"
+                        <div style="width:40px;height:40px;border-radius:50%;display:grid;place-items:center;
+                                    background: radial-gradient(circle, #3a2813 0%, #1a0f07 70%);
+                                    border: 1px solid var(--iron-rim);
+                                    box-shadow: 0 0 14px var(--gold-mist);"
                              class="sky-glow-static">
-                            {_ICON_CHAT}
+                            <span style="color: var(--gold-hot); filter: drop-shadow(0 0 3px var(--gold-soft));">
+                              {_ICON_CHAT}
+                            </span>
                         </div>
                     """)
                 with ui.column().classes("gap-0"):
-                    ui.label("Asistente IA").style("color: var(--sky-text-primary); font-weight:700;")
-                    ui.label("Escribiendo...").style("color: var(--sky-text-muted); font-size:0.75rem; display:none;")
+                    ui.label("ASISTENTE IA").classes("sky-section-title")
+                    ui.label("Sky-Claw · Operaciones").style(
+                        "color: var(--parchment-mute); font-family: var(--f-mono); "
+                        "font-size: 0.7rem; letter-spacing: 0.08em;"
+                    )
 
             # Messages
             self._chat_scroll = ui.scroll_area().classes("flex-1 sky-scrollbar").style("height: 260px;")
@@ -916,7 +912,7 @@ class DashboardGUI:
                 ui.button(
                     "Enviar",
                     on_click=self._send_message,
-                ).classes("sky-wizard-cta px-5 py-2 rounded-xl font-semibold").props("ripple")
+                ).classes("sky-wizard-cta px-5 py-2").props("ripple no-caps")
 
     def append_chat_message(self, text: str, is_user: bool = False, style: str = "normal") -> None:
         self._hide_thinking()
@@ -991,10 +987,11 @@ class DashboardGUI:
         with (
             ui.element("div")
             .classes("px-6 py-3 flex items-center justify-between")
-            .style("border-top: 1px solid var(--sky-surface-border);")
+            .style("border-top: 1px solid var(--forge-edge); background: rgba(0,0,0,0.25);")
         ):
             ui.label("\u00a9 2026 Sky-Claw Technical Operations Hub. Todos los derechos reservados.").style(
-                "color: var(--sky-text-muted); font-size:0.7rem;"
+                "color: var(--parchment-mute); font-family: var(--f-mono); "
+                "font-size: 0.68rem; letter-spacing: 0.06em;"
             )
 
             with ui.row().classes("gap-4"):
@@ -1003,7 +1000,11 @@ class DashboardGUI:
                     "API Docs",
                     "Soporte Operativo",
                 ]:
-                    ui.label(link_text).style("color: var(--sky-text-muted); font-size:0.7rem; cursor:pointer;")
+                    ui.label(link_text).style(
+                        "color: var(--parchment-mute); font-family: var(--f-display); "
+                        "font-size: 0.68rem; letter-spacing: 0.14em; "
+                        "text-transform: uppercase; cursor: pointer;"
+                    )
 
     # ── Queue Polling ─────────────────────────────────────────────────
     def _poll_queue(self) -> None:
