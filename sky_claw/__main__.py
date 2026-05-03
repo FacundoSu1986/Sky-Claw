@@ -17,6 +17,7 @@ import pkgutil
 # Parche de compatibilidad para Python 3.14+
 # vbuild/NiceGUI fix
 if not hasattr(pkgutil, "find_loader"):
+
     def _find_loader_patch(fullname: str) -> object | None:
         spec = importlib.util.find_spec(fullname)
         return spec.loader if spec else None

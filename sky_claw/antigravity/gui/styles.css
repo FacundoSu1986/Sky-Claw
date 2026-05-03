@@ -5,7 +5,9 @@
    Palette derived from "Sky-Claw Operations Hub" reference.
    ═══════════════════════════════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=MedievalSharp&family=Cinzel:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Runic&display=swap');
+/* External font import removed — use system/local fallbacks for offline support.
+   Font stacks below reference MedievalSharp/Cinzel/JetBrains Mono/Noto Sans Runic
+   via --f-display/--f-body/--f-mono/--f-rune; serve from assets/fonts/ if needed. */
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
    0. DESIGN TOKENS — Forge Palette
@@ -780,3 +782,129 @@ body::before {
 
 /* Quasar toggle contrast */
 .q-toggle__label { color: var(--parchment) !important; font-family: var(--f-display); letter-spacing: 0.08em; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   COMPATIBILITY LAYER — Aliases for view components using pre-v4.0 class names.
+   These let views/components/*.py and dashboard.py keep their existing class refs
+   while the main theme uses the new forge-dark tokens.
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/* sky-stone-bg — root page background used by views/pages/dashboard_page.py */
+.sky-stone-bg {
+    background: var(--ink-void) !important;
+}
+
+/* sky-parchment-card — card surface (views/components/feature_card.py, stat_card.py) */
+.sky-parchment-card {
+    background: linear-gradient(135deg, var(--forge-2), var(--forge-1)) !important;
+    border: 1px solid var(--forge-edge) !important;
+    border-radius: var(--rad-lg) !important;
+    transition: border-color var(--sky-transition), box-shadow var(--sky-transition) !important;
+}
+.sky-parchment-card:hover {
+    border-color: var(--gold-deep) !important;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), 0 0 12px var(--gold-whisper) !important;
+}
+
+/* sky-glow-overlay — ambient radial overlay insert (app.py, setup_wizard.py, feature_card.py) */
+.sky-glow-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at 50% 0%, var(--gold-whisper) 0%, transparent 70%);
+    border-radius: inherit;
+    z-index: 0;
+}
+
+/* sky-input-premium — text input (views/sections/chat_preview.py, views/layout/header.py) */
+.sky-input-premium {
+    background: var(--forge-1) !important;
+    border: 1px solid var(--forge-edge) !important;
+    color: var(--parchment) !important;
+    border-radius: var(--rad) !important;
+    font-family: var(--f-mono) !important;
+    font-size: 0.875rem !important;
+    transition: border-color var(--sky-transition) !important;
+}
+.sky-input-premium:focus {
+    border-color: var(--gold-deep) !important;
+    box-shadow: 0 0 0 2px var(--gold-whisper) !important;
+    outline: none !important;
+}
+
+/* sky-btn-cta — primary CTA button (views/components/buttons.py, chat_preview.py) */
+.sky-btn-cta {
+    background: linear-gradient(135deg, var(--gold-deep), var(--gold)) !important;
+    color: var(--ink-pitch) !important;
+    font-family: var(--f-display) !important;
+    font-size: 0.8rem !important;
+    letter-spacing: 0.12em !important;
+    border: none !important;
+    border-radius: var(--rad) !important;
+    transition: all 0.18s ease !important;
+}
+.sky-btn-cta:hover {
+    background: linear-gradient(135deg, var(--gold), var(--gold-hot)) !important;
+    box-shadow: 0 4px 16px var(--gold-soft) !important;
+}
+
+/* sky-btn-secondary — secondary button (views/components/buttons.py) */
+.sky-btn-secondary {
+    background: var(--forge-2) !important;
+    color: var(--parchment-dim) !important;
+    border: 1px solid var(--forge-edge) !important;
+    font-family: var(--f-display) !important;
+    font-size: 0.8rem !important;
+    letter-spacing: 0.08em !important;
+    border-radius: var(--rad) !important;
+    transition: all 0.18s ease !important;
+}
+.sky-btn-secondary:hover {
+    border-color: var(--iron-hi) !important;
+    color: var(--parchment) !important;
+    background: var(--forge-edge) !important;
+}
+
+/* sky-dialog-box — chat bubble alias (views/components/chat_bubble.py)
+   Maps to sky-chat-message base rules; --user and --agent variants mirror
+   sky-chat-message--user and sky-chat-message--assistant respectively. */
+.sky-dialog-box {
+    background: rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border: 1px solid var(--forge-edge);
+    border-radius: var(--rad);
+    padding: 0.75rem 0.9rem;
+    margin-bottom: 0.55rem;
+    max-width: 75%;
+    position: relative;
+    transition: border-color 0.15s ease;
+}
+.sky-dialog-box--user {
+    align-self: flex-end;
+    margin-left: auto;
+    border-right: 3px solid var(--gold);
+    background: linear-gradient(135deg, rgba(240, 177, 51, 0.10), rgba(0, 0, 0, 0.35));
+}
+.sky-dialog-box--agent {
+    align-self: flex-start;
+    border-left: 3px solid var(--gold);
+    background: linear-gradient(135deg, rgba(0, 0, 0, 0.4), rgba(36, 24, 17, 0.5));
+}
+
+/* sky-badge missing variants */
+.sky-badge--info {
+    background: rgba(79, 174, 240, 0.15) !important;
+    color: #93c5fd !important;
+    border: 1px solid rgba(79, 174, 240, 0.30) !important;
+}
+.sky-badge--warning {
+    background: rgba(224, 154, 42, 0.20) !important;
+    color: var(--amber) !important;
+    border: 1px solid rgba(224, 154, 42, 0.35) !important;
+}
+.sky-badge--violet {
+    background: rgba(139, 92, 246, 0.20) !important;
+    color: #c4b5fd !important;
+    border: 1px solid rgba(139, 92, 246, 0.35) !important;
+}

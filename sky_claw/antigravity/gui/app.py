@@ -579,14 +579,12 @@ class DashboardGUI:
 
     # ── Sidebar ───────────────────────────────────────────────────────
     def _build_sidebar(self) -> None:
-        with (
-            ui.element("div")
-            .classes("w-64 min-h-screen flex flex-col shrink-0 sky-sidebar")
-            .style("")
-        ):
+        with ui.element("div").classes("w-64 min-h-screen flex flex-col shrink-0 sky-sidebar"):
             # Logo
             with (
-                ui.element("div").classes("p-6 relative").style("border-bottom: 1px solid var(--forge-edge); z-index:1;"),
+                ui.element("div")
+                .classes("p-6 relative")
+                .style("border-bottom: 1px solid var(--forge-edge); z-index:1;"),
                 ui.row().classes("items-center gap-3"),
             ):
                 ui.html(f"""
@@ -632,7 +630,7 @@ class DashboardGUI:
             ):
                 ui.html(
                     '<span style="width:9px;height:9px;border-radius:50%;'
-                    'background:var(--emerald);box-shadow:0 0 8px var(--emerald-glow);'
+                    "background:var(--emerald);box-shadow:0 0 8px var(--emerald-glow);"
                     'animation:sky-breathe 2.4s ease-in-out infinite;display:inline-block;"></span>'
                 )
                 self._status_label = ui.label("OPERATOR · CONECTADO").style(
@@ -646,10 +644,7 @@ class DashboardGUI:
 
     # ── Header ────────────────────────────────────────────────────────
     def _build_header(self) -> None:
-        with (
-            ui.element("div")
-            .classes("h-16 flex items-center justify-between px-6 shrink-0 sky-header")
-        ):
+        with ui.element("div").classes("h-16 flex items-center justify-between px-6 shrink-0 sky-header"):
             with ui.column().classes("gap-0"):
                 ui.label("OPERACIONES TÉCNICAS").classes("sky-header-title")
 
@@ -927,6 +922,7 @@ class DashboardGUI:
             "normal": "sky-chat-message--assistant" if not is_user else "sky-chat-message--user",
             "success": "sky-chat-message--success",
             "error": "sky-chat-message--error",
+            "info": "sky-chat-message--info",
         }
         cls = style_map.get(style, style_map["normal"])
         if is_user:
@@ -990,8 +986,7 @@ class DashboardGUI:
             .style("border-top: 1px solid var(--forge-edge); background: rgba(0,0,0,0.25);")
         ):
             ui.label("\u00a9 2026 Sky-Claw Technical Operations Hub. Todos los derechos reservados.").style(
-                "color: var(--parchment-mute); font-family: var(--f-mono); "
-                "font-size: 0.68rem; letter-spacing: 0.06em;"
+                "color: var(--parchment-mute); font-family: var(--f-mono); font-size: 0.68rem; letter-spacing: 0.06em;"
             )
 
             with ui.row().classes("gap-4"):
