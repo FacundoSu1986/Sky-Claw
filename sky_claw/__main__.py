@@ -17,12 +17,18 @@ import logging
 import pathlib
 import sys
 
-from sky_claw.antigravity.modes.cli_mode import _run_cli, _run_oneshot
-from sky_claw.antigravity.modes.security_mode import _run_security
-from sky_claw.antigravity.modes.telegram_mode import _run_telegram
-from sky_claw.app_context import AppContext
-from sky_claw.config import Config, SystemPaths
-from sky_claw.logging_config import setup_logging
+# Apply Python 3.14+ polyfills before importing sky_claw submodules that could
+# transitively pull NiceGUI / vbuild. Must run before the package imports below.
+from sky_claw.compat import setup_python_compat
+
+setup_python_compat()
+
+from sky_claw.antigravity.modes.cli_mode import _run_cli, _run_oneshot  # noqa: E402
+from sky_claw.antigravity.modes.security_mode import _run_security  # noqa: E402
+from sky_claw.antigravity.modes.telegram_mode import _run_telegram  # noqa: E402
+from sky_claw.app_context import AppContext  # noqa: E402
+from sky_claw.config import Config, SystemPaths  # noqa: E402
+from sky_claw.logging_config import setup_logging  # noqa: E402
 
 logger = logging.getLogger("sky_claw")
 
