@@ -10,9 +10,10 @@ from __future__ import annotations
 import importlib.util
 import pkgutil
 import sys
+from typing import Any
 
 
-def _pkgutil_find_loader_polyfill(name: str):
+def _pkgutil_find_loader_polyfill(name: str) -> Any:
     """Polyfill for deprecated pkgutil.find_loader.
 
     Python 3.14 removed ``pkgutil.find_loader(name)`` which returned a loader
