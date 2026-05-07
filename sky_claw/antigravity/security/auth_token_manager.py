@@ -126,8 +126,10 @@ class AuthTokenManager:
                 logger.exception("Token rotation failed — will retry at next interval")
                 continue
             for cb in self._rotation_callbacks:
-                with contextlib.suppress(Exception):
+                try:
                     await cb()
+                except Exception as exc:
+                    logger.warning("Rotation callback %r failed: %s", cb, exc, exc_info=True)
 
     async def stop_rotation(self) -> None:
         """Cancel the token rotation task."""

@@ -1,11 +1,13 @@
 """Tests for sky_claw/antigravity/security/file_permissions.py.
 
-Covers the Windows ICACLS hardening path and its os.chmod fallback:
-  1. icacls succeeds → os.chmod NOT called.
-  2. icacls fails (CalledProcessError) → os.chmod called with correct mode.
-  3. icacls fails AND os.chmod fails → CRITICAL log emitted.
-  4. POSIX path → os.chmod called, icacls NOT called.
-  5. getpass.getuser() raises → falls through directly to os.chmod fallback.
+Covers the Windows ICACLS hardening path and its SID-based retry:
+  1. Username-based icacls succeeds → done.
+  2. Username-based icacls fails → SID resolved → SID-based icacls succeeds.
+  3. Username-based icacls fails → SID resolved → SID-based icacls fails → CRITICAL.
+  4. Username-based icacls fails → SID resolution fails → CRITICAL (no os.chmod).
+  5. getpass.getuser() raises → skip to SID-based path.
+  6. Non-existent path → returns early without calling icacls.
+  7. POSIX path → os.chmod called, icacls NOT called.
 """
 
 from __future__ import annotations
@@ -51,8 +53,8 @@ class TestRestrictWindows:
         with patch.object(fp_mod, "_IS_WINDOWS", True):
             yield
 
-    def test_icacls_success_no_chmod(self, tmp_path):
-        """icacls succeeds → os.chmod must NOT be called."""
+    def test_username_icacls_success(self, tmp_path):
+        """Username-based icacls succeeds → no SID lookup, no os.chmod."""
         target = _make_file(tmp_path)
         with (
             patch("subprocess.run") as mock_run,
@@ -64,86 +66,106 @@ class TestRestrictWindows:
         mock_run.assert_called_once()
         mock_chmod.assert_not_called()
 
-    def test_icacls_failure_triggers_chmod_file(self, tmp_path):
-        """icacls CalledProcessError → os.chmod(path, 0o600) called."""
+    def test_username_fails_sid_icacls_succeeds(self, tmp_path):
+        """Username icacls fails (1332) → SID lookup → SID-based icacls succeeds."""
         target = _make_file(tmp_path)
+        sid = "S-1-5-21-123-456-789-1001"
+
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd)
+            # First call is username-based icacls → fail
+            if "icacls" in cmd and not any(arg.startswith("*S-") for arg in cmd):
+                raise subprocess.CalledProcessError(1332, "icacls")
+            # Second call is powershell SID resolution
+            if "powershell" in cmd[0].lower():
+                m = MagicMock()
+                m.stdout = sid + "\n"
+                return m
+            # Third call is SID-based icacls → succeed
+            return MagicMock(returncode=0)
+
         with (
-            patch(
-                "subprocess.run",
-                side_effect=subprocess.CalledProcessError(1332, "icacls"),
-            ),
+            patch("subprocess.run", side_effect=fake_run),
             patch("os.chmod") as mock_chmod,
         ):
             restrict_to_owner(target)
 
-        mock_chmod.assert_called_once_with(target, 0o600)
+        mock_chmod.assert_not_called()
+        # Verify SID was used in the final icacls call
+        sid_calls = [c for c in run_calls if any(f"*{sid}" in str(a) for a in c)]
+        assert sid_calls, "Expected SID-based icacls call not found"
 
-    def test_icacls_failure_triggers_chmod_dir(self, tmp_path):
-        """icacls failure on a directory → os.chmod(path, 0o700) called."""
-        target = _make_dir(tmp_path)
-        with (
-            patch(
-                "subprocess.run",
-                side_effect=subprocess.CalledProcessError(1332, "icacls"),
-            ),
-            patch("os.chmod") as mock_chmod,
-        ):
-            restrict_to_owner(target)
-
-        mock_chmod.assert_called_once_with(target, 0o700)
-
-    def test_icacls_not_found_triggers_chmod(self, tmp_path):
-        """icacls binary missing (FileNotFoundError) → falls back to os.chmod."""
+    def test_username_fails_sid_icacls_also_fails_logs_critical(self, tmp_path, caplog):
+        """Both icacls attempts fail → CRITICAL logged, no os.chmod."""
         target = _make_file(tmp_path)
+        sid = "S-1-5-21-123-456-789-1001"
+
+        def fake_run(cmd, **kwargs):
+            if "powershell" in cmd[0].lower():
+                m = MagicMock()
+                m.stdout = sid + "\n"
+                return m
+            # All icacls calls fail
+            raise subprocess.CalledProcessError(1332, "icacls")
+
         with (
-            patch("subprocess.run", side_effect=FileNotFoundError("icacls not found")),
+            patch("subprocess.run", side_effect=fake_run),
             patch("os.chmod") as mock_chmod,
-        ):
-            restrict_to_owner(target)
-
-        mock_chmod.assert_called_once_with(target, 0o600)
-
-    def test_icacls_timeout_triggers_chmod(self, tmp_path):
-        """icacls timeout → falls back to os.chmod."""
-        target = _make_file(tmp_path)
-        with (
-            patch(
-                "subprocess.run",
-                side_effect=subprocess.TimeoutExpired("icacls", 10),
-            ),
-            patch("os.chmod") as mock_chmod,
-        ):
-            restrict_to_owner(target)
-
-        mock_chmod.assert_called_once_with(target, 0o600)
-
-    def test_both_fail_logs_critical(self, tmp_path, caplog):
-        """icacls fails AND os.chmod fails → CRITICAL log emitted."""
-        target = _make_file(tmp_path)
-        with (
-            patch(
-                "subprocess.run",
-                side_effect=subprocess.CalledProcessError(1332, "icacls"),
-            ),
-            patch("os.chmod", side_effect=OSError("permission denied")),
             caplog.at_level(logging.CRITICAL),
         ):
             restrict_to_owner(target)
 
-        assert any("Both icacls and chmod failed" in r.message for r in caplog.records)
+        mock_chmod.assert_not_called()
+        assert any("SECURITY" in r.message for r in caplog.records)
 
-    def test_getuser_raises_falls_back_to_chmod(self, tmp_path):
-        """getpass.getuser() raises → skips icacls, falls directly to os.chmod."""
+    def test_sid_resolution_fails_logs_critical(self, tmp_path, caplog):
+        """SID resolution fails (PowerShell error) → CRITICAL, no icacls, no os.chmod."""
         target = _make_file(tmp_path)
+
+        def fake_run(cmd, **kwargs):
+            if "powershell" in cmd[0].lower():
+                raise subprocess.CalledProcessError(1, "powershell")
+            # First icacls (username-based) fails
+            raise subprocess.CalledProcessError(1332, "icacls")
+
+        with (
+            patch("subprocess.run", side_effect=fake_run),
+            patch("os.chmod") as mock_chmod,
+            caplog.at_level(logging.CRITICAL),
+        ):
+            restrict_to_owner(target)
+
+        mock_chmod.assert_not_called()
+        assert any("SECURITY" in r.message for r in caplog.records)
+
+    def test_getuser_raises_falls_back_to_sid(self, tmp_path):
+        """getpass.getuser() raises → skips username grant, attempts SID-based grant."""
+        target = _make_file(tmp_path)
+        sid = "S-1-5-21-123-456-789-1001"
+
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd)
+            if "powershell" in cmd[0].lower():
+                m = MagicMock()
+                m.stdout = sid + "\n"
+                return m
+            return MagicMock(returncode=0)
+
         with (
             patch("getpass.getuser", side_effect=Exception("no user")),
-            patch("subprocess.run") as mock_run,
+            patch("subprocess.run", side_effect=fake_run),
             patch("os.chmod") as mock_chmod,
         ):
             restrict_to_owner(target)
 
-        mock_run.assert_not_called()
-        mock_chmod.assert_called_once_with(target, 0o600)
+        mock_chmod.assert_not_called()
+        # No username-based icacls should have been attempted
+        username_calls = [c for c in run_calls if "icacls" in c and not any(f"*{sid}" in str(a) for a in c)]
+        assert not username_calls, "Should not have attempted username-based icacls"
 
     def test_nonexistent_path_skipped(self, tmp_path):
         """Non-existent path → function returns early without calling icacls."""
@@ -156,6 +178,25 @@ class TestRestrictWindows:
 
         mock_run.assert_not_called()
         mock_chmod.assert_not_called()
+
+    def test_icacls_not_found_escalates_to_sid(self, tmp_path, caplog):
+        """icacls binary missing (FileNotFoundError) → escalates to SID path."""
+        target = _make_file(tmp_path)
+
+        def fake_run(cmd, **kwargs):
+            if "powershell" in cmd[0].lower():
+                raise subprocess.CalledProcessError(1, "powershell")
+            raise FileNotFoundError("icacls not found")
+
+        with (
+            patch("subprocess.run", side_effect=fake_run),
+            patch("os.chmod") as mock_chmod,
+            caplog.at_level(logging.CRITICAL),
+        ):
+            restrict_to_owner(target)
+
+        mock_chmod.assert_not_called()
+        assert any("SECURITY" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

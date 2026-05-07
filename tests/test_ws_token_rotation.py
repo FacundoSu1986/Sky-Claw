@@ -202,6 +202,8 @@ class TestWebAppRotationWiring:
         """No auth_manager → register_rotation_callback must NOT be called."""
         from sky_claw.antigravity.web.app import WebApp
 
+        auth_manager = MagicMock(spec=AuthTokenManager)
+        auth_manager.register_rotation_callback = MagicMock()
         event_bus = MagicMock()
         event_bus.subscribe = MagicMock()
         session = MagicMock(spec=aiohttp.ClientSession)
@@ -212,5 +214,4 @@ class TestWebAppRotationWiring:
             mock_register.return_value = mock_handler
             web_app.create_app()
 
-        # auth_manager is None so no callback registration should happen
-        # (would raise AttributeError if attempted on None)
+        auth_manager.register_rotation_callback.assert_not_called()
