@@ -121,6 +121,26 @@ class OperationsHubWSHandler:
         self._started = False
         logger.info("OperationsHubWSHandler stopped")
 
+    async def close_all_clients(self) -> None:
+        """Close every connected client with POLICY_VIOLATION (e.g., on token rotation).
+
+        Unlike :meth:`stop`, this does NOT unsubscribe from the event bus — the
+        handler keeps running and will accept new connections authenticated with
+        the rotated token.
+        """
+        async with self._clients_lock:
+            stale = list(self._clients)
+            self._clients.clear()
+        for ws in stale:
+            try:
+                await ws.close(
+                    code=aiohttp.WSCloseCode.POLICY_VIOLATION,
+                    message=b"Token rotated -- reconnect required",
+                )
+            except (ConnectionResetError, RuntimeError) as exc:
+                logger.debug("WS close during token rotation: %s", exc)
+        logger.info("Closed %d WS client(s) on token rotation.", len(stale))
+
     # ------------------------------------------------------------------ #
     # Bus → clients                                                       #
     # ------------------------------------------------------------------ #

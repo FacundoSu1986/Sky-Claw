@@ -13,9 +13,9 @@ import contextlib
 import hashlib
 import json
 import logging
-import os
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from sky_claw.antigravity.security.file_permissions import restrict_to_owner
@@ -54,6 +54,7 @@ class AuthTokenManager:
         restrict_to_owner(self._token_dir)
         self._token_path = self._token_dir / "ws_auth_token"
         self._rotation_task: asyncio.Task | None = None
+        self._rotation_callbacks: list[Callable[[], Awaitable[None]]] = []
 
     # ── Server Side ──────────────────────────────────────────────────
 
@@ -105,6 +106,14 @@ class AuthTokenManager:
         self._rotation_task = asyncio.create_task(self._rotation_loop())
         logger.info("Token rotation started (interval=%ds)", _TOKEN_TTL / 2)
 
+    def register_rotation_callback(self, cb: Callable[[], Awaitable[None]]) -> None:
+        """Register an async callable invoked after each successful token rotation.
+
+        Used to notify subscribers (e.g., WebSocket handler) that existing
+        connections should be closed and re-authenticated with the new token.
+        """
+        self._rotation_callbacks.append(cb)
+
     async def _rotation_loop(self) -> None:
         while True:
             await asyncio.sleep(_TOKEN_TTL / 2)
@@ -115,6 +124,10 @@ class AuthTokenManager:
                 # Log and continue — a single rotation failure must not kill
                 # the loop and leave tokens permanently stale.
                 logger.exception("Token rotation failed — will retry at next interval")
+                continue
+            for cb in self._rotation_callbacks:
+                with contextlib.suppress(Exception):
+                    await cb()
 
     async def stop_rotation(self) -> None:
         """Cancel the token rotation task."""
@@ -126,21 +139,21 @@ class AuthTokenManager:
             logger.info("Token rotation stopped")
 
     def revoke(self) -> None:
-        """Revoke the current token atomically — clear memory first, then disk."""
+        """Revoke the current token — clears memory first, then removes disk artifact.
+
+        In-memory state is cleared before the file is removed so concurrent
+        ``validate()`` calls fail immediately.
+
+        Note: overwriting before unlink is NOT guaranteed to erase data on SSDs
+        (wear-leveling/TRIM) or NTFS (journal recovery). Real protection against
+        forensic recovery requires full-disk encryption (BitLocker/LUKS).
+        """
         # Clear in-memory state FIRST to prevent concurrent validate() from succeeding
         self._token = None
         self._token_hash = None
         self._created_at = 0.0
 
-        if self._token_path.exists():
-            # Secure delete: overwrite with random data matching file size,
-            # then zero out, then unlink.
-            with contextlib.suppress(OSError):
-                file_size = self._token_path.stat().st_size
-                if file_size > 0:
-                    self._token_path.write_bytes(os.urandom(file_size))
-                    self._token_path.write_bytes(b"\x00" * file_size)
-            self._token_path.unlink(missing_ok=True)
+        self._token_path.unlink(missing_ok=True)
 
         logger.info("Auth token revoked.")
 
