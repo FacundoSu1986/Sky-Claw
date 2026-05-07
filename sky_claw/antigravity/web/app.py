@@ -140,6 +140,9 @@ class WebApp:
         if self._event_bus is not None:
             self.ops_hub_handler = register_operations_hub_routes(app, self._event_bus, auth_manager=self._auth_manager)
 
+        if self._auth_manager is not None and self.ops_hub_handler is not None:
+            self._auth_manager.register_rotation_callback(self.ops_hub_handler.close_all_clients)
+
         return app
 
     async def _handle_chat(self, request: web.Request) -> web.Response:

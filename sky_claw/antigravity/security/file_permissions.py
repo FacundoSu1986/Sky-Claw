@@ -38,40 +38,115 @@ def restrict_to_owner(path: Path) -> None:
         try:
             os.chmod(path, mode)
         except OSError as exc:
-            logger.warning("chmod(%s, %o) failed: %s", path, mode, exc)
+            logger.error("chmod(%s, %o) failed: %s", path, mode, exc)
+            raise PermissionError(f"Owner-only chmod failed for {path}") from exc
+
+
+def _get_current_user_sid() -> str | None:
+    """Return the current user's SID string via PowerShell, or None on failure.
+
+    Using the SID directly with icacls ``*SID:(F)`` syntax avoids the
+    username→SID lookup that fails with exit 1332 on domain-joined machines
+    and service accounts.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+        sid = result.stdout.strip()
+        return sid if sid else None
+    except Exception as exc:
+        logger.warning("Could not resolve current user SID: %s", exc)
+        return None
 
 
 def _restrict_windows(path: Path) -> None:
-    """Use icacls to set owner-only ACL on Windows."""
+    """Use icacls to set owner-only ACL on Windows.
+
+    Strategy:
+    1. Try username-based ``icacls /grant:r username:(F)`` — works on local accounts.
+    2. On failure (e.g., exit 1332 on domain/service accounts), resolve the SID
+       via PowerShell and retry ``icacls /grant:r *SID:(F)`` — bypasses the
+       username→SID mapping that fails in those environments.
+    3. If both icacls invocations fail, log CRITICAL — there is no meaningful
+       fallback on Windows because os.chmod only sets the read-only attribute
+       and does NOT enforce owner-only access via DACL.
+    """
+    # --- Attempt 1: username-based grant ---
     try:
+        username = getpass.getuser()
+    except Exception:
+        logger.warning("Cannot determine username for ACL on %s — skipping to SID-based grant", path)
+        username = None
+
+    if username is not None:
         try:
-            username = getpass.getuser()
-        except Exception:
-            logger.warning("Cannot determine username for ACL on %s", path)
-            return
-        # Reset inheritance, grant only current user full control
-        subprocess.run(
-            [
-                "icacls",
-                str(path),
-                "/inheritance:r",
-                "/grant:r",
-                f"{username}:(F)",
-                "/remove",
-                "Everyone",
-                "/remove",
-                "Users",
-            ],
-            capture_output=True,
-            check=True,
-            timeout=10,
-        )
-    except (
-        subprocess.CalledProcessError,
-        FileNotFoundError,
-        subprocess.TimeoutExpired,
-    ) as exc:
-        logger.warning("icacls ACL enforcement failed for %s: %s", path, exc)
+            subprocess.run(
+                [
+                    "icacls",
+                    str(path),
+                    "/inheritance:r",
+                    "/grant:r",
+                    f"{username}:(F)",
+                    "/remove",
+                    "Everyone",
+                    "/remove",
+                    "Users",
+                ],
+                capture_output=True,
+                check=True,
+                timeout=10,
+            )
+            return  # success
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            logger.warning("icacls (username) failed for %s: %s — retrying with SID", path, exc)
+
+    # --- Attempt 2: SID-based grant (bypasses exit-1332 SID resolution failure) ---
+    sid = _get_current_user_sid()
+    if sid is not None:
+        try:
+            subprocess.run(
+                [
+                    "icacls",
+                    str(path),
+                    "/inheritance:r",
+                    "/grant:r",
+                    f"*{sid}:(F)",
+                    "/remove",
+                    "Everyone",
+                    "/remove",
+                    "Users",
+                ],
+                capture_output=True,
+                check=True,
+                timeout=10,
+            )
+            return  # success
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            logger.critical(
+                "SECURITY: Both icacls attempts failed for %s — file may be world-readable: %s",
+                path,
+                exc,
+            )
+            raise PermissionError(f"Owner-only ACL enforcement failed for {path}") from exc
+
+    # SID resolution itself failed — no icacls possible
+    logger.critical(
+        "SECURITY: Could not set owner-only ACL on %s — SID resolution failed and "
+        "no icacls fallback is available. File may be world-readable.",
+        path,
+    )
+    raise PermissionError(f"Owner-only ACL enforcement failed for {path}: SID resolution failed")
 
 
 async def restrict_to_owner_async(path: Path) -> None:
