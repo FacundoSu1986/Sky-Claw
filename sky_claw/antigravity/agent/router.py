@@ -22,7 +22,11 @@ from sky_claw.antigravity.agent.providers import LLMProvider, create_provider
 from sky_claw.antigravity.agent.semantic_router import SemanticRouter
 from sky_claw.antigravity.agent.token_budget import TokenBudgetManager
 from sky_claw.antigravity.agent.token_circuit_breaker import TokenCircuitBreaker
-from sky_claw.antigravity.core.errors import AgentOrchestrationError, SecurityViolationError
+from sky_claw.antigravity.core.errors import (
+    AgentOrchestrationError,
+    SecurityViolationError,
+    VaultStorageError,
+)
 from sky_claw.antigravity.core.schemas import RouteClassification
 from sky_claw.antigravity.security.sanitize import sanitize_for_prompt
 
@@ -223,7 +227,14 @@ class LLMRouter:
             return False
 
         # Las llaves deben guardarse en la Bóveda como '{provider}_api_key'
-        api_key = await self._vault.get_secret(f"{new_provider_name}_api_key")
+        try:
+            api_key = await self._vault.get_secret(f"{new_provider_name}_api_key")
+        except VaultStorageError:
+            logger.exception(
+                "RCA: Vault storage failure during Hot-Swap for %s. Transient fault — retry recommended.",
+                new_provider_name,
+            )
+            return False
         if not api_key:
             logger.error(f"RCA: Clave maestra no hallada en SQLite WAL para {new_provider_name}.")
             return False

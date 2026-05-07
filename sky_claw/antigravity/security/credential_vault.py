@@ -9,7 +9,7 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-from sky_claw.antigravity.core.errors import SecurityViolationError
+from sky_claw.antigravity.core.errors import SecurityViolationError, VaultStorageError
 from sky_claw.antigravity.security.file_permissions import restrict_to_owner
 
 logger = logging.getLogger("SkyClaw.CredentialVault")
@@ -184,7 +184,20 @@ class CredentialVault:
             raise
 
     async def get_secret(self, service_name: str) -> str | None:
-        """Recupera y descifra asincrónicamente con aislamiento de transacción."""
+        """Retrieve and decrypt a stored secret.
+
+        Returns:
+            The plaintext secret, or ``None`` ONLY when no row exists for
+            ``service_name`` (secret legitimately not configured).
+
+        Raises:
+            VaultStorageError: The underlying SQLite store failed
+                (disk I/O, lock, schema). Caller should treat as transient
+                operational fault; eligible for retry/alerting.
+            SecurityViolationError: Ciphertext failed integrity check
+                (possible tampering or key/salt mismatch). Caller MUST NOT
+                swallow — this is a security incident.
+        """
         svc_hash = hashlib.sha256(service_name.encode()).hexdigest()[:8]
         try:
             async with aiosqlite.connect(self.db_path) as conn:
@@ -211,9 +224,9 @@ class CredentialVault:
                             ) from decrypt_exc
                         raise
                     return plain_secret
-        except aiosqlite.Error:
+        except aiosqlite.Error as db_exc:
             logger.exception("RCA (Vault): Database error accessing service_hash=%s.", svc_hash)
-            return None
+            raise VaultStorageError(f"Vault storage read failed for service_hash={svc_hash}") from db_exc
 
     async def set_secret(self, service_name: str, plain_secret: str) -> bool:
         """Cifra en memoria y almacena en SQLite safely."""
