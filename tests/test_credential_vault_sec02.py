@@ -1,10 +1,15 @@
-"""Tests for SEC-02: CredentialVault get_secret() tampering detection.
+"""Tests for SEC-02: CredentialVault get_secret() failure mode separation.
 
-Verifies that get_secret() distinguishes three distinct failure modes:
-  1. Secret legitimately missing → returns None.
-  2. Database error (aiosqlite.Error) → returns None with log.
+Verifies that get_secret() distinguishes three distinct failure modes via
+type-discriminated outcomes (no overloaded ``None`` semantics):
+
+  1. Secret legitimately missing → returns ``None``.
+  2. Database error (aiosqlite.Error) → raises ``VaultStorageError`` so
+     callers can apply retry / SRE alerting policies distinct from
+     "secret not configured".
   3. Ciphertext corruption / invalid master key (InvalidToken) → raises
-     SecurityViolationError so callers cannot confuse tampering with absence.
+     ``SecurityViolationError`` so callers cannot confuse tampering with
+     absence.
 """
 
 from __future__ import annotations
@@ -15,7 +20,7 @@ from unittest.mock import patch
 import aiosqlite
 import pytest
 
-from sky_claw.antigravity.core.errors import SecurityViolationError
+from sky_claw.antigravity.core.errors import SecurityViolationError, VaultStorageError
 from sky_claw.antigravity.security.credential_vault import CredentialVault
 
 
@@ -32,24 +37,36 @@ class TestCredentialVaultGetSecret:
 
     @pytest.mark.asyncio
     async def test_get_secret_missing_returns_none(self, vault, caplog):
-        """Row absent from DB → legitimate None, no exception."""
+        """Row absent from initialised DB → legitimate None, no exception.
+
+        ``initialize()`` is required: under the hardened contract a missing
+        table raises ``VaultStorageError`` (operational fault) rather than
+        silently masquerading as "secret not configured".
+        """
+        await vault.initialize()
         with caplog.at_level(logging.DEBUG):
             result = await vault.get_secret("nonexistent_service")
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_secret_db_error_returns_none(self, vault, caplog):
-        """aiosqlite.Error during connection/query → return None, log exception."""
+    async def test_get_secret_db_error_raises_storage_error(self, vault, caplog):
+        """aiosqlite.Error during connection/query → raise VaultStorageError, log exception.
+
+        Distinct from the ``None`` returned for "secret not configured": this
+        path signals a transient operational fault eligible for retry/alerting.
+        """
         with (
             patch(
                 "sky_claw.antigravity.security.credential_vault.aiosqlite.connect",
                 side_effect=aiosqlite.Error("disk I/O error"),
             ),
             caplog.at_level(logging.ERROR, logger="SkyClaw.CredentialVault"),
+            pytest.raises(VaultStorageError) as exc_info,
         ):
-            result = await vault.get_secret("any_service")
+            await vault.get_secret("any_service")
 
-        assert result is None
+        assert "service_hash=" in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, aiosqlite.Error)
         assert any("Database error" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio

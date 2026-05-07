@@ -17,6 +17,19 @@ class FomodParserSecurityError(AppNexusError):
     """
 
 
+class VaultStorageError(AppNexusError):
+    """Operational failure accessing the credential vault's underlying store.
+
+    Raised by ``CredentialVault.get_secret`` when an ``aiosqlite.Error``
+    prevents the read from completing (disk I/O, DB lock, schema mismatch).
+
+    Distinct from ``None`` (secret legitimately not configured) and from
+    ``SecurityViolationError`` (ciphertext tampering). Callers should treat
+    this as a transient operational fault eligible for retry/alerting,
+    NOT as evidence of a security incident.
+    """
+
+
 class SecurityViolationError(AppNexusError):
     """Runtime security constraint violated in the agent pipeline.
 
