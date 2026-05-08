@@ -41,10 +41,7 @@ def _completed(stdout: str = "", returncode: int = 0) -> MagicMock:
 
 
 def _verify_stdout_owner_only(path: Path, identifier: str = "DESKTOP-ABC\\testuser") -> str:
-    return (
-        f"{path} {identifier}:(F)\n\n"
-        "Successfully processed 1 files; Failed processing 0 files\n"
-    )
+    return f"{path} {identifier}:(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\n"
 
 
 @pytest.fixture
@@ -65,8 +62,7 @@ class TestDaclParser:
 
     def test_accepts_owner_only_with_domain(self):
         output = (
-            "C:\\path\\to\\file DESKTOP-ABC\\alice:(F)\n\n"
-            "Successfully processed 1 files; Failed processing 0 files\n"
+            "C:\\path\\to\\file DESKTOP-ABC\\alice:(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\n"
         )
         assert _dacl_is_owner_only(output, ["alice"]) is True
 
@@ -107,10 +103,13 @@ class TestDaclParser:
         assert _dacl_is_owner_only("", ["alice"]) is False
 
     def test_rejects_no_ace_only_summary(self):
-        assert _dacl_is_owner_only(
-            "Successfully processed 1 files; Failed processing 0 files\n",
-            ["alice"],
-        ) is False
+        assert (
+            _dacl_is_owner_only(
+                "Successfully processed 1 files; Failed processing 0 files\n",
+                ["alice"],
+            )
+            is False
+        )
 
     def test_empty_allowed_list_rejects(self):
         output = "C:\\path alice:(F)\n"
@@ -201,12 +200,7 @@ class TestSyncFailClosed:
         target = tmp_path / "inherited.bin"
         target.write_bytes(b"secret")
 
-        bad_verify = _completed(
-            stdout=(
-                f"{target} testuser:(F)\n"
-                "         BUILTIN\\Administrators:(F)\n"
-            )
-        )
+        bad_verify = _completed(stdout=(f"{target} testuser:(F)\n         BUILTIN\\Administrators:(F)\n"))
 
         def fake_run(cmd, **kwargs):
             if "/grant:r" in cmd:
@@ -331,9 +325,7 @@ class TestAsyncFailClosed:
         target = tmp_path / "async_leaky.bin"
         target.write_bytes(b"secret")
 
-        bad_verify = _completed(
-            stdout=f"{target} DESKTOP\\testuser:(F)\n         Everyone:(F)\n"
-        )
+        bad_verify = _completed(stdout=f"{target} DESKTOP\\testuser:(F)\n         Everyone:(F)\n")
 
         def fake_run(cmd, **kwargs):
             if "/grant:r" in cmd:

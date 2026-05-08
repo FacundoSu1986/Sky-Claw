@@ -176,7 +176,7 @@ def _dacl_is_owner_only(icacls_output: str, allowed_identifiers: list[str]) -> b
             last_paren = segment.rfind(")")
             if last_paren != -1:
                 # Case 1: identifier follows the last closing paren
-                candidate = segment[last_paren + 1:].strip()
+                candidate = segment[last_paren + 1 :].strip()
             elif i == 0 and not is_path_line:
                 # Case 2: indented line, full stripped segment is the identifier
                 candidate = segment.strip()
@@ -234,10 +234,7 @@ def _fail_closed(path: Path, reason: str) -> None:
         logger.warning("fail_closed: unlink(%s) failed: %s", path, exc)
 
     outcome = "artifact destroyed" if destroyed else "artifact destruction attempted"
-    raise PermissionError(
-        f"Owner-only ACL enforcement failed for {path}; "
-        f"{outcome} to prevent leak. Reason: {reason}"
-    )
+    raise PermissionError(f"Owner-only ACL enforcement failed for {path}; {outcome} to prevent leak. Reason: {reason}")
 
 
 def _verify_dacl(path: Path, allowed_identifiers: list[str]) -> None:

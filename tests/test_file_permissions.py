@@ -46,10 +46,7 @@ def _make_dir(tmp_path: Path) -> Path:
 def _verify_stdout(path: Path, identifier: str) -> str:
     """Synthesize the kind of `icacls <path>` stdout we get after a clean
     owner-only hardening (single ACE for the current user)."""
-    return (
-        f"{path} {identifier}:(F)\n\n"
-        "Successfully processed 1 files; Failed processing 0 files\n"
-    )
+    return f"{path} {identifier}:(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\n"
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +210,7 @@ class TestRestrictWindows:
         mock_chmod.assert_not_called()
         # No username-based icacls should have been attempted
         username_calls = [
-            c for c in run_calls
-            if "icacls" in c[0] and "/grant:r" in c and not any(f"*{sid}" in str(a) for a in c)
+            c for c in run_calls if "icacls" in c[0] and "/grant:r" in c and not any(f"*{sid}" in str(a) for a in c)
         ]
         assert not username_calls, "Should not have attempted username-based icacls"
 

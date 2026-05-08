@@ -132,8 +132,7 @@ class GovernanceManager:
                 return self._hmac_key_path.read_bytes()
             except PermissionError as exc:
                 logger.warning(
-                    "HMAC key %s could not be hardened (%s); "
-                    "regenerating to fail closed.",
+                    "HMAC key %s could not be hardened (%s); regenerating to fail closed.",
                     self._hmac_key_path,
                     exc,
                 )
