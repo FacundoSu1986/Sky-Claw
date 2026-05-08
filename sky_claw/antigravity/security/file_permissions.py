@@ -307,6 +307,21 @@ def _restrict_windows(path: Path) -> None:
                     "Everyone",
                     "/remove",
                     "Users",
+                    # Strip well-known system principals that icacls leaves in
+                    # place when they hold pre-existing explicit ACEs.  On a
+                    # fresh GitHub Actions runner (and many corporate builds),
+                    # ~/.sky_claw retains NT AUTHORITY\SYSTEM and
+                    # BUILTIN\Administrators ACEs after /inheritance:r because
+                    # those were explicit — not inherited — on the directory.
+                    # Removing them here produces a truly owner-only DACL.
+                    # icacls /remove is a no-op (exit 0) if the principal is
+                    # absent, so this is safe on all environments.
+                    "/remove",
+                    "NT AUTHORITY\\SYSTEM",
+                    "/remove",
+                    "BUILTIN\\Administrators",
+                    "/remove",
+                    "CREATOR OWNER",
                 ],
                 capture_output=True,
                 check=True,
@@ -335,6 +350,12 @@ def _restrict_windows(path: Path) -> None:
                     "Everyone",
                     "/remove",
                     "Users",
+                    "/remove",
+                    "NT AUTHORITY\\SYSTEM",
+                    "/remove",
+                    "BUILTIN\\Administrators",
+                    "/remove",
+                    "CREATOR OWNER",
                 ],
                 capture_output=True,
                 check=True,
