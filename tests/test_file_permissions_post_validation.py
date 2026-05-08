@@ -122,6 +122,26 @@ class TestDaclParser:
         output = "C:\\Users\\alice\\secret.bin DESKTOP\\alice:(F)\n"
         assert _dacl_is_owner_only(output, ["alice"]) is True
 
+    def test_rejects_domain_collision(self):
+        # Same bare name under two distinct domain prefixes → collision → reject.
+        # Protects against a pre-existing OTHERDOMAIN\alice ACE that hardening
+        # didn't remove surviving alongside the legitimate CORP\alice grant.
+        output = "C:\\path CORP\\alice:(F)\n         EVIL\\alice:(F)\n"
+        assert _dacl_is_owner_only(output, ["alice"]) is False
+
+    def test_accepts_same_qualified_form_twice(self):
+        # icacls sometimes emits the same principal for inherited + explicit ACEs.
+        # Two identical qualified forms for the same bare name must not trigger
+        # the domain-collision guard.
+        output = "C:\\path CORP\\alice:(F)\n         CORP\\alice:(OI)(CI)(IO)(F)\n"
+        assert _dacl_is_owner_only(output, ["alice"]) is True
+
+    def test_exact_full_match_bypasses_bare_fallback(self):
+        # When the allowed list contains the fully-qualified name, exact matching
+        # is used and the bare-fallback / collision guard is bypassed entirely.
+        output = "C:\\path CORP\\alice:(F)\n"
+        assert _dacl_is_owner_only(output, ["CORP\\alice"]) is True
+
 
 # ---------------------------------------------------------------------------
 # Sync end-to-end (mocked subprocess) — fail-closed cleanup

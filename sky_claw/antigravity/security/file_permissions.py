@@ -125,6 +125,14 @@ def _dacl_is_owner_only(icacls_output: str, allowed_identifiers: list[str]) -> b
 
     found_any = False
 
+    # Maps bare names → the first full qualified form seen via bare-name match.
+    # When the caller supplies only a bare username (e.g. "alice" from
+    # getpass.getuser()), icacls renders the ACE as "DOMAIN\alice:(F)".
+    # We accept that via the bare fallback, but record the domain so that a
+    # second ACE with the same bare name under a *different* domain
+    # (e.g. "EVIL\alice:(F)" on a domain-joined host) is detected and rejected.
+    bare_domain_map: dict[str, str] = {}
+
     for line in icacls_output.splitlines():
         # Skip lines that have no ACE pattern at all.
         if ":(" not in line:
@@ -182,9 +190,21 @@ def _dacl_is_owner_only(icacls_output: str, allowed_identifiers: list[str]) -> b
             ident = candidate.lstrip("*").lower()
             bare = ident.split("\\")[-1]
 
-            if ident not in allowed_full and bare not in allowed_bare:
+            if ident in allowed_full:
+                # Exact (possibly domain-qualified) match.
+                found_any = True
+            elif bare in allowed_bare:
+                # Bare-name fallback: icacls rendered our grant as DOMAIN\alice.
+                # Guard against domain collisions on domain-joined hosts:
+                # if the same bare name already appeared under a *different*
+                # domain-qualified form, treat it as a non-owner ACE.
+                prev = bare_domain_map.get(bare)
+                if prev is not None and prev != ident:
+                    return False  # CORP\alice already seen, now EVIL\alice
+                bare_domain_map[bare] = ident
+                found_any = True
+            else:
                 return False
-            found_any = True
 
     return found_any
 
@@ -226,11 +246,12 @@ def _verify_dacl(path: Path, allowed_identifiers: list[str]) -> None:
     Calls ``_fail_closed`` (which raises) if the verification call itself
     fails or the parsed DACL contains any non-allowed ACE.
 
-    The ``LANGUAGE=en_US`` override is best-effort — icacls on Windows
-    does not always honor locale env vars, but the parser only inspects
-    the structured ``IDENTIFIER:(PERMS)`` tokens, which are
-    locale-independent. The trailing ``Successfully processed ...``
-    summary may be localized without affecting validation.
+    Decoding uses the platform default (Windows ANSI code page) so that
+    non-ASCII account names — e.g. CJK or Cyrillic usernames — are read
+    losslessly.  Hard-coding UTF-8 + errors=replace would corrupt such names
+    and cause false-fail / spurious file deletion for valid owner-only ACLs.
+    The ``LANGUAGE=en_US`` override is best-effort for the summary line;
+    the structured ``IDENTIFIER:(PERMS)`` tokens are locale-independent.
     """
     try:
         result = subprocess.run(
@@ -238,8 +259,7 @@ def _verify_dacl(path: Path, allowed_identifiers: list[str]) -> None:
             capture_output=True,
             check=True,
             timeout=10,
-            encoding="utf-8",
-            errors="replace",
+            text=True,  # system ANSI code page — handles non-ASCII account names
             env={**os.environ, "LANGUAGE": "en_US"},
         )
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:

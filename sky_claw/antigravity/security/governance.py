@@ -137,7 +137,20 @@ class GovernanceManager:
                     self._hmac_key_path,
                     exc,
                 )
-                # Artifact already destroyed by restrict_to_owner; fall through.
+                # On Windows, restrict_to_owner (fail-closed) unlinks the file
+                # before raising.  On POSIX it raises from os.chmod without
+                # unlinking, so the potentially world-readable key may remain.
+                # Explicitly remove it in both cases so regeneration never
+                # derives a new HMAC from an old, exposed key.
+                try:
+                    self._hmac_key_path.unlink(missing_ok=True)
+                except OSError as del_exc:
+                    logger.warning(
+                        "Could not delete HMAC key %s before regeneration: %s",
+                        self._hmac_key_path,
+                        del_exc,
+                    )
+                # Fall through to regeneration.
         key = os.urandom(32)
         tmp_path = self._hmac_key_path.with_suffix(".tmp")
         tmp_path.write_bytes(key)
