@@ -4,7 +4,6 @@ Gestión de integridad, caché de escaneo y listas blancas (Whitelist).
 Implementación persistente en SQLite y JSON.
 """
 
-import asyncio
 import hashlib
 import hmac
 import json
@@ -36,7 +35,6 @@ class GovernanceManager:
     _instance = None
     _lock = threading.Lock()
     _HMAC_KEY_SERVICE = "sky_claw_whitelist_hmac"
-    _HASH_CONCURRENCY = 4
 
     @classmethod
     def get_instance(cls, base_path: str = ".") -> "GovernanceManager":
@@ -63,12 +61,6 @@ class GovernanceManager:
         self._hmac_sig_path = Path(str(self.whitelist_path) + ".hmac")
         self.cache_db_path = self.base_path / CACHE_DB_PATH
         self.whitelist = self._load_whitelist()
-        self._hash_semaphore: asyncio.Semaphore | None = None
-
-    def _get_hash_semaphore(self) -> asyncio.Semaphore:
-        if self._hash_semaphore is None:
-            self._hash_semaphore = asyncio.Semaphore(self._HASH_CONCURRENCY)
-        return self._hash_semaphore
 
     async def _init_db(self):
         """Inicializa la base de datos de caché de escaneo.
@@ -119,11 +111,23 @@ class GovernanceManager:
         would be world-readable between write and chmod.
         """
         if self._hmac_key_path.exists():
-            # Best-effort hardening: previous installations may have left the
-            # key file world-readable. Tighten ACLs on every load so upgrades
-            # converge to owner-only permissions.
-            restrict_to_owner(self._hmac_key_path)
-            return self._hmac_key_path.read_bytes()
+            # Tighten ACLs on every load so upgrades from older installations
+            # (which may have left the key world-readable) converge to
+            # owner-only permissions. If the hardening cannot be verified,
+            # restrict_to_owner raises PermissionError after destroying the
+            # artifact (M-03 fail-closed) — fall through to regeneration so
+            # the whitelist HMAC chain is preserved with a fresh, secure key.
+            try:
+                restrict_to_owner(self._hmac_key_path)
+                return self._hmac_key_path.read_bytes()
+            except PermissionError as exc:
+                logger.warning(
+                    "HMAC key %s could not be hardened (%s); "
+                    "regenerating to fail closed.",
+                    self._hmac_key_path,
+                    exc,
+                )
+                # Artifact already destroyed by restrict_to_owner; fall through.
         key = os.urandom(32)
         tmp_path = self._hmac_key_path.with_suffix(".tmp")
         tmp_path.write_bytes(key)
@@ -183,8 +187,8 @@ class GovernanceManager:
         except Exception as e:
             logger.error("Error guardando whitelist: %s", e)
 
-    @staticmethod
-    def _hash_file_blocking(file_path: str) -> str | None:
+    def get_file_hash(self, file_path: str) -> str | None:
+        """Calcula el hash SHA-256 de un archivo. Retorna None si falla."""
         sha256_hash = hashlib.sha256()
         try:
             with open(file_path, "rb") as f:
@@ -195,27 +199,9 @@ class GovernanceManager:
             logger.error("Error hasheando archivo %s: %s", file_path, e)
             return None
 
-    def get_file_hash(self, file_path: str) -> str | None:
-        """Calcula el hash SHA-256 de un archivo. Retorna None si falla.
-
-        Variante síncrona — solo para callers fuera de corutinas (HITL UI,
-        approve_file). Desde rutas async, usar :meth:`get_file_hash_async`.
-        """
-        return self._hash_file_blocking(file_path)
-
-    async def get_file_hash_async(self, file_path: str) -> str | None:
-        """Versión async del hash: descarga al thread pool con cap de concurrencia.
-
-        Evita bloquear el event loop al hashear BSAs/BA2s grandes (cientos de
-        MB a varios GB). El semáforo limita el fan-out de hilos cuando se
-        escanea un perfil completo en paralelo.
-        """
-        async with self._get_hash_semaphore():
-            return await asyncio.to_thread(self._hash_file_blocking, file_path)
-
     async def is_scanned_and_clean(self, file_path: str) -> bool:
         """Verifica si el archivo ya fue escaneado y no ha cambiado (incremental)."""
-        file_hash = await self.get_file_hash_async(file_path)
+        file_hash = self.get_file_hash(file_path)
         if file_hash is None:
             return False
 
@@ -236,7 +222,7 @@ class GovernanceManager:
 
     async def update_scan_result(self, file_path: str, results: list[dict], status: str):
         """Actualiza el estado de escaneo en la base de datos."""
-        file_hash = await self.get_file_hash_async(file_path)
+        file_hash = self.get_file_hash(file_path)
         if file_hash is None:
             return
 
