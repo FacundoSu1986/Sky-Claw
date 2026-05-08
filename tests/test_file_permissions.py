@@ -1,13 +1,17 @@
 """Tests for sky_claw/antigravity/security/file_permissions.py.
 
 Covers the Windows ICACLS hardening path and its SID-based retry:
-  1. Username-based icacls succeeds → done.
-  2. Username-based icacls fails → SID resolved → SID-based icacls succeeds.
+  1. Username-based icacls succeeds + post-validation passes → done.
+  2. Username-based icacls fails → SID resolved → SID-based icacls succeeds + verifies.
   3. Username-based icacls fails → SID resolved → SID-based icacls fails → fail closed.
   4. Username-based icacls fails → SID resolution fails → fail closed (no os.chmod).
   5. getpass.getuser() raises → skip to SID-based path.
   6. Non-existent path → returns early without calling icacls.
   7. POSIX path → os.chmod called, icacls NOT called.
+
+The DACL post-validation behavior (parser, verify call, fail-closed cleanup)
+is exercised in tests/test_file_permissions_post_validation.py — these tests
+remain focused on the icacls strategy itself, with verify mocked to pass.
 """
 
 from __future__ import annotations
@@ -39,6 +43,12 @@ def _make_dir(tmp_path: Path) -> Path:
     return d
 
 
+def _verify_stdout(path: Path, identifier: str) -> str:
+    """Synthesize the kind of `icacls <path>` stdout we get after a clean
+    owner-only hardening (single ACE for the current user)."""
+    return f"{path} {identifier}:(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\n"
+
+
 # ---------------------------------------------------------------------------
 # Windows path
 # ---------------------------------------------------------------------------
@@ -54,20 +64,33 @@ class TestRestrictWindows:
             yield
 
     def test_username_icacls_success(self, tmp_path):
-        """Username-based icacls succeeds → no SID lookup, no os.chmod."""
+        """Username-based icacls succeeds + DACL verify passes → no SID lookup, no os.chmod."""
         target = _make_file(tmp_path)
+        verify_ok = MagicMock(returncode=0)
+        verify_ok.stdout = _verify_stdout(target, "DESKTOP-ABC\\testuser")
+
+        def fake_run(cmd, **kwargs):
+            # First call: hardening icacls (with /grant:r flag)
+            if "/grant:r" in cmd:
+                return MagicMock(returncode=0)
+            # Second call: verify icacls (just `icacls <path>`)
+            if cmd[0] == "icacls":
+                return verify_ok
+            raise AssertionError(f"unexpected subprocess call: {cmd}")
+
         with (
-            patch("subprocess.run") as mock_run,
+            patch("getpass.getuser", return_value="testuser"),
+            patch("subprocess.run", side_effect=fake_run) as mock_run,
             patch("os.chmod") as mock_chmod,
         ):
-            mock_run.return_value = MagicMock(returncode=0)
             restrict_to_owner(target)
 
-        mock_run.assert_called_once()
+        # Two icacls calls: one for /grant:r hardening, one for verification.
+        assert mock_run.call_count == 2
         mock_chmod.assert_not_called()
 
     def test_username_fails_sid_icacls_succeeds(self, tmp_path):
-        """Username icacls fails (1332) → SID lookup → SID-based icacls succeeds."""
+        """Username icacls fails (1332) → SID lookup → SID-based icacls succeeds + verifies."""
         target = _make_file(tmp_path)
         sid = "S-1-5-21-123-456-789-1001"
 
@@ -75,30 +98,38 @@ class TestRestrictWindows:
 
         def fake_run(cmd, **kwargs):
             run_calls.append(cmd)
-            # First call is username-based icacls → fail
-            if "icacls" in cmd and not any(arg.startswith("*S-") for arg in cmd):
+            # First call is username-based icacls hardening → fail
+            if "icacls" in cmd[0] and "/grant:r" in cmd and not any(arg.startswith("*S-") for arg in cmd):
                 raise subprocess.CalledProcessError(1332, "icacls")
-            # Second call is powershell SID resolution
+            # PowerShell SID resolution
             if "powershell" in cmd[0].lower():
                 m = MagicMock()
                 m.stdout = sid + "\n"
                 return m
-            # Third call is SID-based icacls → succeed
-            return MagicMock(returncode=0)
+            # SID-based icacls hardening → succeed
+            if "icacls" in cmd[0] and "/grant:r" in cmd and any(f"*{sid}" in str(a) for a in cmd):
+                return MagicMock(returncode=0)
+            # Verify icacls → return a DACL with the SID resolved to bare username
+            if cmd[0] == "icacls":
+                m = MagicMock(returncode=0)
+                m.stdout = _verify_stdout(target, "testuser")
+                return m
+            raise AssertionError(f"unexpected subprocess call: {cmd}")
 
         with (
+            patch("getpass.getuser", return_value="testuser"),
             patch("subprocess.run", side_effect=fake_run),
             patch("os.chmod") as mock_chmod,
         ):
             restrict_to_owner(target)
 
         mock_chmod.assert_not_called()
-        # Verify SID was used in the final icacls call
+        # Verify SID was used in the hardening call
         sid_calls = [c for c in run_calls if any(f"*{sid}" in str(a) for a in c)]
         assert sid_calls, "Expected SID-based icacls call not found"
 
     def test_username_fails_sid_icacls_also_fails_closed(self, tmp_path, caplog):
-        """Both icacls attempts fail → CRITICAL logged, no os.chmod, PermissionError."""
+        """Both icacls attempts fail → CRITICAL logged, no os.chmod, PermissionError, file destroyed."""
         target = _make_file(tmp_path)
         sid = "S-1-5-21-123-456-789-1001"
 
@@ -120,9 +151,11 @@ class TestRestrictWindows:
 
         mock_chmod.assert_not_called()
         assert any("SECURITY" in r.message for r in caplog.records)
+        # M-03: artifact must be destroyed when ACL enforcement fails.
+        assert not target.exists()
 
     def test_sid_resolution_fails_closed(self, tmp_path, caplog):
-        """SID resolution fails → CRITICAL logged, no os.chmod, PermissionError."""
+        """SID resolution fails → CRITICAL logged, no os.chmod, PermissionError, file destroyed."""
         target = _make_file(tmp_path)
 
         def fake_run(cmd, **kwargs):
@@ -141,9 +174,10 @@ class TestRestrictWindows:
 
         mock_chmod.assert_not_called()
         assert any("SECURITY" in r.message for r in caplog.records)
+        assert not target.exists()
 
     def test_getuser_raises_falls_back_to_sid(self, tmp_path):
-        """getpass.getuser() raises → skips username grant, attempts SID-based grant."""
+        """getpass.getuser() raises → skips username grant, attempts SID-based grant + verify."""
         target = _make_file(tmp_path)
         sid = "S-1-5-21-123-456-789-1001"
 
@@ -155,7 +189,16 @@ class TestRestrictWindows:
                 m = MagicMock()
                 m.stdout = sid + "\n"
                 return m
-            return MagicMock(returncode=0)
+            # SID-based hardening
+            if "icacls" in cmd[0] and "/grant:r" in cmd:
+                return MagicMock(returncode=0)
+            # Verify call: icacls reports the SID literally because resolution
+            # is expected to be unavailable in this scenario.
+            if cmd[0] == "icacls":
+                m = MagicMock(returncode=0)
+                m.stdout = _verify_stdout(target, sid)
+                return m
+            raise AssertionError(f"unexpected subprocess call: {cmd}")
 
         with (
             patch("getpass.getuser", side_effect=Exception("no user")),
@@ -166,7 +209,9 @@ class TestRestrictWindows:
 
         mock_chmod.assert_not_called()
         # No username-based icacls should have been attempted
-        username_calls = [c for c in run_calls if "icacls" in c and not any(f"*{sid}" in str(a) for a in c)]
+        username_calls = [
+            c for c in run_calls if "icacls" in c[0] and "/grant:r" in c and not any(f"*{sid}" in str(a) for a in c)
+        ]
         assert not username_calls, "Should not have attempted username-based icacls"
 
     def test_nonexistent_path_skipped(self, tmp_path):
@@ -200,6 +245,7 @@ class TestRestrictWindows:
 
         mock_chmod.assert_not_called()
         assert any("SECURITY" in r.message for r in caplog.records)
+        assert not target.exists()
 
 
 # ---------------------------------------------------------------------------

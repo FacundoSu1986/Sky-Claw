@@ -117,13 +117,39 @@ class GovernanceManager:
         Writes to a sibling temp file first, restricts permissions, then
         renames atomically — eliminates the TOCTOU window where the key
         would be world-readable between write and chmod.
+
+        M-03: if the existing key file cannot be hardened (restrict_to_owner
+        raises PermissionError after destroying the artifact), fall through
+        to regeneration so the whitelist HMAC chain is preserved with a
+        fresh, secure key rather than silently returning a world-readable one.
         """
         if self._hmac_key_path.exists():
-            # Best-effort hardening: previous installations may have left the
-            # key file world-readable. Tighten ACLs on every load so upgrades
-            # converge to owner-only permissions.
-            restrict_to_owner(self._hmac_key_path)
-            return self._hmac_key_path.read_bytes()
+            # Tighten ACLs on every load so upgrades from older installations
+            # (which may have left the key world-readable) converge to
+            # owner-only permissions.
+            try:
+                restrict_to_owner(self._hmac_key_path)
+                return self._hmac_key_path.read_bytes()
+            except PermissionError as exc:
+                logger.warning(
+                    "HMAC key %s could not be hardened (%s); regenerating to fail closed.",
+                    self._hmac_key_path,
+                    exc,
+                )
+                # On Windows, restrict_to_owner (fail-closed) unlinks the file
+                # before raising.  On POSIX it raises from os.chmod without
+                # unlinking, so the potentially world-readable key may remain.
+                # Explicitly remove it in both cases so regeneration never
+                # derives a new HMAC from an old, exposed key.
+                try:
+                    self._hmac_key_path.unlink(missing_ok=True)
+                except OSError as del_exc:
+                    logger.warning(
+                        "Could not delete HMAC key %s before regeneration: %s",
+                        self._hmac_key_path,
+                        del_exc,
+                    )
+                # Fall through to regeneration.
         key = os.urandom(32)
         tmp_path = self._hmac_key_path.with_suffix(".tmp")
         tmp_path.write_bytes(key)
