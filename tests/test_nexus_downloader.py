@@ -7,6 +7,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import aiohttp
 import pytest
@@ -93,6 +94,12 @@ def _md5_of(data: bytes) -> str:
 def _sha256_of(data: bytes) -> str:
     """Helper para calcular SHA256 de bytes."""
     return hashlib.sha256(data).hexdigest()
+
+
+def _assert_download_host(download_url: str, expected_host: str) -> None:
+    parsed = urlparse(download_url)
+    assert parsed.scheme == "https"
+    assert parsed.hostname == expected_host
 
 
 def _make_aiohttp_response(
@@ -343,7 +350,7 @@ class TestGetFileInfo:
         assert info.file_name == "mod.zip"
         assert info.size_bytes == 2048
         assert info.md5 == "deadbeef"
-        assert "premium-files.nexusmods.com" in info.download_url
+        _assert_download_host(info.download_url, "premium-files.nexusmods.com")
 
     @pytest.mark.asyncio
     async def test_size_falls_back_to_kb_field(self, tmp_path: pathlib.Path) -> None:
@@ -1061,12 +1068,12 @@ class TestConfigCDNHosts:
     def test_premium_files_in_allowed_hosts(self) -> None:
         from sky_claw.config import ALLOWED_HOSTS
 
-        assert "premium-files.nexusmods.com" in ALLOWED_HOSTS
+        assert ALLOWED_HOSTS.issuperset({"premium-files.nexusmods.com"})
 
     def test_cf_files_in_allowed_hosts(self) -> None:
         from sky_claw.config import ALLOWED_HOSTS
 
-        assert "cf-files.nexusmods.com" in ALLOWED_HOSTS
+        assert ALLOWED_HOSTS.issuperset({"cf-files.nexusmods.com"})
 
     def test_premium_files_method_get_only(self) -> None:
         from sky_claw.config import ALLOWED_METHODS

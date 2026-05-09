@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import aiohttp
 import pytest
@@ -216,7 +217,8 @@ class TestDeepSeekProvider:
 
         # Verify the request was made correctly
         call_args = mock_gateway.request.call_args
-        assert "api.deepseek.com" in call_args[0][1]
+        request_url = call_args[0][1]
+        assert urlparse(request_url).hostname == "api.deepseek.com"
         body = call_args[1]["json"]
         assert body["model"] == "deepseek-chat"
         assert body["messages"][0]["role"] == "system"

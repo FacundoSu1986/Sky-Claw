@@ -6,6 +6,7 @@ de los esquemas Pydantic y los validadores de seguridad del sistema Sky-Claw.
 """
 
 from datetime import datetime
+from urllib.parse import urlparse
 
 import pytest
 from pydantic import ValidationError
@@ -499,7 +500,7 @@ class TestSSRFValidation:
         # Esta URL debe ser aceptada sin lanzar ValidationError
         query = ScrapingQuery(query="test", url="https://www.nexusmods.com/skyrimspecialedition/mods/1234")
         assert query.url is not None
-        assert "nexusmods.com" in query.url
+        assert urlparse(query.url).hostname == "www.nexusmods.com"
 
     def test_ssrf_accepts_http_public_url(self):
         """Test que URLs HTTP públicas son aceptadas."""
