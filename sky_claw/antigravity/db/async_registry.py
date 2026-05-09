@@ -225,13 +225,18 @@ class AsyncModRegistry:
             self._conn.row_factory = aiosqlite.Row
 
         except Exception as exc:
-            # Limpiar recursos para no dejar conexiones colgadas ni archivos bloqueados
-            if self._conn is not None:
-                with contextlib.suppress(Exception):
-                    self._lifecycle.evict_connection(self._db_path)
-                if self._owns_lifecycle and self._lifecycle is not None:
+            # Limpiar recursos sin importar si _conn fue asignado.
+            # El lifecycle pudo haberse creado internamente antes de que
+            # get_connection() falle, por lo que el check es sobre _lifecycle.
+            if self._lifecycle is not None:
+                if self._conn is not None:
+                    with contextlib.suppress(Exception):
+                        self._lifecycle.evict_connection(self._db_path)
+                if self._owns_lifecycle:
                     with contextlib.suppress(Exception):
                         await self._lifecycle.shutdown_all()
+                    self._lifecycle = None
+                    self._owns_lifecycle = False
             self._conn = None
             logger.error("Failed to open async registry: %s", exc)
             raise
@@ -241,8 +246,12 @@ class AsyncModRegistry:
     async def close(self) -> None:
         if self._conn is not None:
             if self._owns_lifecycle and self._lifecycle is not None:
-                # Lifecycle propio: shutdown completo (checkpoint + close)
+                # Lifecycle propio: shutdown completo (checkpoint + close).
+                # Reseteamos la referencia para que un eventual reopen() cree
+                # un lifecycle nuevo en lugar de tratar el apagado como externo.
                 await self._lifecycle.shutdown_all()
+                self._lifecycle = None
+                self._owns_lifecycle = False
             # Si el lifecycle es externo, no cerramos la conexión aquí;
             # el propietario (LifecycleContext) la cierra en shutdown_all().
             self._conn = None

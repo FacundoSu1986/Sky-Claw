@@ -284,13 +284,18 @@ class OperationJournal:
             await self._db.executescript(self._SCHEMA_SQL)
             logger.info("Journal database opened", extra={"db_path": str(self._db_path)})
         except sqlite3.Error as e:
-            # Limpiar recursos para no dejar conexiones colgadas ni archivos bloqueados
-            if self._db is not None and self._lifecycle is not None:
-                with contextlib.suppress(Exception):
-                    self._lifecycle.evict_connection(self._db_path)
+            # Limpiar recursos sin importar si _db fue asignado.
+            # El lifecycle pudo haberse creado internamente antes de que
+            # get_connection() o executescript() falle.
+            if self._lifecycle is not None:
+                if self._db is not None:
+                    with contextlib.suppress(Exception):
+                        self._lifecycle.evict_connection(self._db_path)
                 if self._owns_lifecycle:
                     with contextlib.suppress(Exception):
                         await self._lifecycle.shutdown_all()
+                    self._lifecycle = None
+                    self._owns_lifecycle = False
             self._db = None
             raise JournalConnectionError(f"Failed to open journal database: {e}") from e
 
@@ -298,8 +303,12 @@ class OperationJournal:
         """Cierra la conexión a la base de datos."""
         if self._db:
             if self._owns_lifecycle and self._lifecycle is not None:
-                # Lifecycle propio: shutdown completo (checkpoint + close)
+                # Lifecycle propio: shutdown completo (checkpoint + close).
+                # Reseteamos la referencia para que un eventual reopen() cree
+                # un lifecycle nuevo en lugar de tratar el apagado como externo.
                 await self._lifecycle.shutdown_all()
+                self._lifecycle = None
+                self._owns_lifecycle = False
             # Si lifecycle es externo, no cerramos la conexión aquí;
             # el propietario (LifecycleContext) la cierra en shutdown_all().
             self._db = None
