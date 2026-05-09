@@ -4,6 +4,7 @@ import pathlib
 
 import pytest
 
+from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
 from sky_claw.antigravity.db.journal import (
     OperationJournal,
     OperationStatus,
@@ -15,12 +16,17 @@ from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 
 @pytest.fixture
 async def journal(tmp_path):
-    """Fixture que provides a fresh journal instance."""
+    """Fixture que provides a fresh journal instance (M-01: lifecycle injected)."""
     db_path = tmp_path / "test_journal.db"
-    journal = OperationJournal(db_path)
+    lifecycle = DatabaseLifecycleManager(
+        db_paths=[],
+        config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+    )
+    journal = OperationJournal(db_path, lifecycle=lifecycle)
     await journal.open()
     yield journal
     await journal.close()
+    await lifecycle.shutdown_all()
 
 
 @pytest.fixture

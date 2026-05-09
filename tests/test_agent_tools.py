@@ -14,6 +14,7 @@ from sky_claw.antigravity.agent.tools import (
     ProfileParams,
     SearchModParams,
 )
+from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
 from sky_claw.antigravity.db.async_registry import AsyncModRegistry
 from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
 from sky_claw.antigravity.scraper.masterlist import MasterlistClient
@@ -39,10 +40,15 @@ def _make_mo2(tmp_path: pathlib.Path, lines: str) -> MO2Controller:
 
 @pytest.fixture()
 async def adb(tmp_path: pathlib.Path) -> AsyncModRegistry:
-    registry = AsyncModRegistry(db_path=tmp_path / "test_tools.db")
+    lifecycle = DatabaseLifecycleManager(
+        db_paths=[],
+        config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+    )
+    registry = AsyncModRegistry(db_path=tmp_path / "test_tools.db", lifecycle=lifecycle)
     await registry.open()
     yield registry  # type: ignore[misc]
     await registry.close()
+    await lifecycle.shutdown_all()
 
 
 @pytest.fixture()

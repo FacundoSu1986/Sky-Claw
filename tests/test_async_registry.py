@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
 from sky_claw.antigravity.db.async_registry import AsyncModRegistry
 
 if TYPE_CHECKING:
@@ -14,11 +15,16 @@ if TYPE_CHECKING:
 
 @pytest.fixture()
 async def adb(tmp_path: pathlib.Path) -> AsyncModRegistry:
-    """Provide an async registry using a temp directory."""
-    registry = AsyncModRegistry(db_path=tmp_path / "test_async.db")
+    """Provide an async registry using a temp directory (M-01: lifecycle injected)."""
+    lifecycle = DatabaseLifecycleManager(
+        db_paths=[],
+        config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+    )
+    registry = AsyncModRegistry(db_path=tmp_path / "test_async.db", lifecycle=lifecycle)
     await registry.open()
     yield registry  # type: ignore[misc]
     await registry.close()
+    await lifecycle.shutdown_all()
 
 
 class TestAsyncSchemaCreation:

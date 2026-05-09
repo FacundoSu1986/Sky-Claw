@@ -53,6 +53,34 @@ SYSTEM_PROMPT = (
 )
 
 
+class LifecycleContext:
+    """Propietario único del DatabaseLifecycleManager para el proceso.
+
+    M-01: Todos los sub-contextos deben pedir conexiones vía
+    ``await self.manager.get_connection(path)`` en lugar de abrir
+    ``aiosqlite.connect`` directamente.
+    """
+
+    def __init__(self) -> None:
+        from sky_claw.antigravity.core.db_lifecycle import (
+            DatabaseLifecycleConfig,
+            DatabaseLifecycleManager,
+        )
+
+        self.manager: DatabaseLifecycleManager = DatabaseLifecycleManager(
+            db_paths=[],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+
+    async def initialize(self) -> None:
+        # init_all es no-op cuando db_paths está vacío;
+        # las DBs se inicializan on-demand vía get_connection.
+        await self.manager.init_all()
+
+    async def close(self) -> None:
+        await self.manager.shutdown_all()
+
+
 class NetworkContext:
     """Administra los recursos de red (sesión HTTP, gateway, downloader)."""
 
@@ -81,14 +109,19 @@ class NetworkContext:
 
 
 class DatabaseContext:
-    """Administra la base de datos principal de mods."""
+    """Administra la base de datos principal de mods.
 
-    def __init__(self, db_path: str | pathlib.Path) -> None:
+    M-01: Recibe el LifecycleContext para que AsyncModRegistry obtenga
+    su conexión del DatabaseLifecycleManager centralizado.
+    """
+
+    def __init__(self, db_path: str | pathlib.Path, lifecycle: LifecycleContext) -> None:
         self.db_path = db_path
+        self._lifecycle = lifecycle
         self.registry: AsyncModRegistry | None = None
 
     async def initialize(self) -> None:
-        self.registry = AsyncModRegistry(self.db_path)
+        self.registry = AsyncModRegistry(self.db_path, lifecycle=self._lifecycle.manager)
         await self.registry.open()
 
     async def close(self) -> None:
@@ -105,8 +138,10 @@ class AppContext:
         self.config_path: pathlib.Path | None = None
 
         # Sub-contextos inyectados dinamicamente
+        # M-01: lifecycle se monta PRIMERO — es la base de todas las conexiones DB
+        self.lifecycle = LifecycleContext()
         self.network = NetworkContext()
-        self.database = DatabaseContext(self._args.db_path)
+        self.database = DatabaseContext(self._args.db_path, lifecycle=self.lifecycle)
 
         self.hitl: HITLGuard | None = None
         self.router: LLMRouter | None = None
@@ -153,6 +188,10 @@ class AppContext:
         """Phase 1: resolve config path, migrate legacy JSON, create HTTP session."""
         self._resolve_config_path()
         self._migrate_legacy_json()
+        # M-01: lifecycle se inicializa ANTES que red y base de datos.
+        # Cierra ÚLTIMO en LIFO order (registrado primero).
+        await self.lifecycle.initialize()
+        self._exit_stack.push_async_callback(self.lifecycle.close)
         await self.network.initialize("", None)  # Init base session
         self._exit_stack.push_async_callback(self.network.close)
         logger.info(
@@ -191,10 +230,10 @@ class AppContext:
         except Exception:
             logger.exception("Teardown previo falló; continuando con fresh init")
 
-        # Reset the exit stack for a fresh initialization cycle, keeping
-        # only the network.close callback registered by start_minimal.
+        # Reset the exit stack for a fresh initialization cycle.
+        # Re-register lifecycle (closes last = registered first) and network.
         self._exit_stack = AsyncExitStack()
-        # Re-register the base network session from start_minimal
+        self._exit_stack.push_async_callback(self.lifecycle.close)
         self._exit_stack.push_async_callback(self.network.close)
 
         try:

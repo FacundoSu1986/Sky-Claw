@@ -50,6 +50,8 @@ def create_rollback_components(
     backup_path = pathlib.Path(backup_dir)
     backup_path.mkdir(parents=True, exist_ok=True)
 
+    # M-01: lifecycle=None → OperationJournal crea su propio lifecycle interno.
+    # Se migrará a DI explícito en M-01.1 cuando rollback_factory reciba AppContext.
     journal = OperationJournal(db_path=backup_path / "journal.db")
     snapshot_manager = FileSnapshotManager(
         snapshot_dir=backup_path / "snapshots",

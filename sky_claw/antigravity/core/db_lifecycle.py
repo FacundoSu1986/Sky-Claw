@@ -515,6 +515,24 @@ class DatabaseLifecycleManager:
             await self._init_single(path_obj)
             return self._connections[path_str]
 
+    def evict_connection(self, db_path: Path | str) -> None:
+        """Remove a connection from the managed pool without closing it.
+
+        Intended for recovery paths where the caller has already closed the
+        connection (e.g. after renaming a corrupt DB file for forensics).
+        After eviction, the next ``get_connection()`` call for the same path
+        will open a fresh connection.
+
+        The path remains registered in ``_db_paths`` so health_check and
+        shutdown verification still track it.
+
+        Args:
+            db_path: Path to the database whose connection should be evicted.
+        """
+        path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
+        path_str = str(path_obj.resolve())
+        self._connections.pop(path_str, None)
+
     @property
     def managed_paths(self) -> list[str]:
         """List of currently managed database path strings."""
