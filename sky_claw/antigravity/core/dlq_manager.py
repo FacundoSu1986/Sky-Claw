@@ -186,12 +186,25 @@ class DLQManager:
     # ------------------------------------------------------------------
 
     async def _ensure_schema(self) -> None:
-        """Crea el directorio y la tabla si no existen."""
+        """Crea el directorio y la tabla si no existen.
+
+        H-05: al arrancar (una sola vez por proceso), recupera filas `in_progress`
+        estancadas de un crash previo. Se ejecuta aquí (startup) y NO en cada poll
+        para evitar resetear filas legítimamente en progreso y causar double-dispatch.
+        """
         if self._schema_ensured:
             return
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         async with self._connect() as db:
             await db.executescript(_DDL)
+            await db.commit()
+            # Startup recovery: filas in_progress + updated_at + 60s < now → pending
+            now = self._clock()
+            await db.execute(
+                "UPDATE dead_letter_events SET status='pending', updated_at=?"
+                " WHERE status='in_progress' AND updated_at + 60000 < ?",
+                (now, now),
+            )
             await db.commit()
         self._schema_ensured = True
 
@@ -239,14 +252,26 @@ class DLQManager:
             raise
 
     async def _process_row(self, row: DLQRow) -> None:
-        """Procesa una sola fila: resuelve handler, reintenta, actualiza estado."""
+        """Procesa una sola fila: resuelve handler, reintenta, actualiza estado.
+
+        H-05 — Atomic claim: el UPDATE incluye AND status='pending' para que sólo
+        un worker (o tick) pueda reclamar la fila. Si rowcount==0, otro worker ya la
+        tomó → retornamos sin ejecutar el handler (evita double-dispatch).
+        """
         now = self._clock()
         async with self._connect() as db:
-            await db.execute(
-                "UPDATE dead_letter_events SET status='in_progress', updated_at=? WHERE id=?",
+            cur = await db.execute(
+                "UPDATE dead_letter_events SET status='in_progress', updated_at=?"
+                " WHERE id=? AND status='pending'",
                 (now, row.id),
             )
             await db.commit()
+            if cur.rowcount == 0:
+                logger.debug(
+                    "DLQ: fila id=%d ya fue tomada por otro worker — omitiendo",
+                    row.id,
+                )
+                return
 
         handler = self._handler_resolver(row.handler_name)
         if handler is None:
@@ -333,18 +358,12 @@ class DLQManager:
     async def _fetch_due_batch(self, limit: int) -> list[DLQRow]:
         """Retorna filas pendientes cuyo next_retry_at ya venció.
 
-        También recupera filas `in_progress` stancadas (crash/cancel) y las marca como `pending`.
+        H-05: la recovery de filas in_progress estancadas se movió a _ensure_schema()
+        (startup one-shot) para evitar resetear filas legítimamente en progreso
+        durante cada poll y provocar double-dispatch.
         """
         now = self._clock()
         await self._ensure_schema()
-
-        # Recuperar filas stancadas: in_progress + updated_at + 60s < now → pending
-        async with self._connect() as db:
-            await db.execute(
-                "UPDATE dead_letter_events SET status='pending' WHERE status='in_progress' AND updated_at + 60000 < ?",
-                (now,),
-            )
-            await db.commit()
 
         async with (
             self._connect() as db,
