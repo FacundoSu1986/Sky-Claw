@@ -332,9 +332,22 @@ class AppContext:
             # para que is_scanned_and_clean / update_scan_result usen el
             # DatabaseLifecycleManager del proceso en lugar de abrir
             # conexiones efímeras propias. Cierra el contrato M-01.
+            #
+            # get_instance() puede lanzar RuntimeError si la whitelist está
+            # corrupta (_load_whitelist). En ese caso loggeamos un warning y
+            # continuamos: los security flows operarán fail-closed
+            # (is_scanned_and_clean → False) en lugar de impedir el arranque
+            # de modos no-seguridad.
             from sky_claw.antigravity.security.governance import GovernanceManager
 
-            GovernanceManager.get_instance().set_lifecycle(self.lifecycle.manager)
+            try:
+                GovernanceManager.get_instance().set_lifecycle(self.lifecycle.manager)
+            except RuntimeError as exc:
+                logger.warning(
+                    "GovernanceManager lifecycle injection skipped (%s). "
+                    "Security scans will operate fail-closed (no incremental cache).",
+                    exc,
+                )
 
             install_dir = getattr(self._args, "install_dir", None)
             if local_cfg.install_dir:

@@ -9,10 +9,11 @@ Verifica que:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from sky_claw.antigravity.core.db_lifecycle import (
     DatabaseLifecycleConfig,
@@ -21,13 +22,19 @@ from sky_claw.antigravity.core.db_lifecycle import (
 from sky_claw.antigravity.security.governance import GovernanceManager
 
 
-@pytest.fixture
-def lifecycle() -> DatabaseLifecycleManager:
-    """DatabaseLifecycleManager vacío con signal handlers desactivados (test-safe)."""
-    return DatabaseLifecycleManager(
+@pytest_asyncio.fixture
+async def lifecycle() -> AsyncIterator[DatabaseLifecycleManager]:
+    """DatabaseLifecycleManager vacío con signal handlers desactivados (test-safe).
+
+    El teardown (shutdown_all) corre siempre — incluso si el test falla —
+    para evitar que conexiones abiertas generen locks/warnings en Windows.
+    """
+    mgr = DatabaseLifecycleManager(
         db_paths=[],
         config=DatabaseLifecycleConfig(enable_signal_handlers=False),
     )
+    yield mgr
+    await mgr.shutdown_all()
 
 
 @pytest.fixture
@@ -52,8 +59,6 @@ async def test_update_then_is_scanned_returns_true(
 
     await governance.update_scan_result(str(f), results=[], status="CLEAN")
     assert await governance.is_scanned_and_clean(str(f)) is True
-
-    await lifecycle.shutdown_all()
 
 
 @pytest.mark.asyncio
@@ -83,5 +88,3 @@ async def test_governance_uses_lifecycle_connection(
 
     await governance.update_scan_result(str(f), results=[], status="CLEAN")
     assert str(governance.cache_db_path) in lifecycle.managed_paths
-
-    await lifecycle.shutdown_all()

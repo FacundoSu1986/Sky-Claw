@@ -92,6 +92,27 @@ class GovernanceManager:
         """
         self._lifecycle = manager
 
+    async def _ensure_schema(self, db: object) -> None:
+        """Bootstrap idempotente del schema ``scan_cache``.
+
+        Se invoca al inicio de cada operación DB para garantizar que la tabla
+        exista. El ``commit()`` posterior al DDL cierra cualquier transacción
+        implícita que aiosqlite haya podido abrir, evitando que un checkpoint
+        WAL en ``shutdown_all()`` encuentre transacciones pendientes.
+        """
+        await db.execute(  # type: ignore[union-attr]
+            """
+            CREATE TABLE IF NOT EXISTS scan_cache (
+                file_hash TEXT PRIMARY KEY,
+                file_path TEXT,
+                last_scan_time TEXT,
+                scan_results TEXT,
+                status TEXT
+            )
+            """
+        )
+        await db.commit()  # type: ignore[union-attr]
+
     def _get_or_create_hmac_key(self) -> bytes:
         """Obtiene la clave HMAC del disco o genera una nueva.
 
@@ -244,19 +265,7 @@ class GovernanceManager:
 
         try:
             db = await self._lifecycle.get_connection(self.cache_db_path)
-            # Bootstrap idempotente del schema (reemplaza al antiguo _init_db).
-            # El costo en SQLite es despreciable cuando la tabla ya existe.
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS scan_cache (
-                    file_hash TEXT PRIMARY KEY,
-                    file_path TEXT,
-                    last_scan_time TEXT,
-                    scan_results TEXT,
-                    status TEXT
-                )
-                """
-            )
+            await self._ensure_schema(db)
             async with db.execute("SELECT status FROM scan_cache WHERE file_hash = ?", (file_hash,)) as cursor:
                 row = await cursor.fetchone()
                 return bool(row and row[0] == "CLEAN")
@@ -283,17 +292,7 @@ class GovernanceManager:
 
         try:
             db = await self._lifecycle.get_connection(self.cache_db_path)
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS scan_cache (
-                    file_hash TEXT PRIMARY KEY,
-                    file_path TEXT,
-                    last_scan_time TEXT,
-                    scan_results TEXT,
-                    status TEXT
-                )
-                """
-            )
+            await self._ensure_schema(db)
             await db.execute(
                 """
                 INSERT OR REPLACE INTO scan_cache
