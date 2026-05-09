@@ -362,9 +362,9 @@ class DLQManager:
     async def _fetch_due_batch(self, limit: int) -> list[DLQRow]:
         """Retorna filas pendientes cuyo next_retry_at ya venció.
 
-        H-05: la recovery de filas in_progress estancadas se movió a _ensure_schema()
-        (startup one-shot) para evitar resetear filas legítimamente en progreso
-        durante cada poll y provocar double-dispatch.
+        H-05: la recovery de filas in_progress estancadas se ejecuta desde
+        _retry_loop() como one-shot por arranque de worker para evitar efectos
+        secundarios en _ensure_schema() y resets durante cada poll.
         """
         now = self._clock()
         await self._ensure_schema()

@@ -79,6 +79,7 @@ class CoreEventBus:
     # Exceeding this limit causes the offending dispatch to be dropped with a
     # WARNING instead of spawning an unbounded number of tasks (backpressure).
     _MAX_PENDING_TASKS: int = 50
+    _MAX_DLQ_TASKS: int = 50
 
     def __init__(self, *, max_queue_size: int = 1024, dlq: DLQManager | None = None) -> None:
         self._subscriptions: list[tuple[str, Subscriber]] = []
@@ -88,7 +89,7 @@ class CoreEventBus:
         self._dispatch_task: asyncio.Task[None] | None = None
         self._pending_tasks: set[asyncio.Task] = set()
         # DLQ fire-and-forget tasks (backpressure enqueues) are tracked separately
-        # so stop() can cancel/await them without counting against _MAX_PENDING_TASKS.
+        # so stop() can await them without counting against _MAX_PENDING_TASKS.
         self._dlq_tasks: set[asyncio.Task] = set()
         self._running: bool = False
         self._dlq = dlq
@@ -128,10 +129,8 @@ class CoreEventBus:
         if self._pending_tasks:
             await asyncio.gather(*self._pending_tasks, return_exceptions=True)
         self._pending_tasks.clear()
-        # Await DLQ backpressure tasks before stopping the DLQ worker so that
-        # enqueues in flight are committed and not silently lost on shutdown.
-        for task in list(self._dlq_tasks):
-            task.cancel()
+        # Await DLQ backpressure tasks before stopping the DLQ worker so enqueues
+        # already accepted by the bus can commit during graceful shutdown.
         if self._dlq_tasks:
             await asyncio.gather(*self._dlq_tasks, return_exceptions=True)
         self._dlq_tasks.clear()
@@ -183,18 +182,30 @@ class CoreEventBus:
                         # H-04: enrutar a DLQ si está configurada; preservar drop
                         # silencioso si no hay DLQ (backward compat).
                         if self._dlq is not None:
-                            t = asyncio.create_task(
-                                self._enqueue_backpressure_drop(event, callback),
-                                name=f"dlq-backpressure-{event.topic}",
-                            )
-                            self._dlq_tasks.add(t)
-                            t.add_done_callback(self._dlq_tasks.discard)
+                            self._schedule_backpressure_drop(event, callback)
                         continue
                     task = asyncio.create_task(self._safe_execute(callback, event))
                     self._pending_tasks.add(task)
                     task.add_done_callback(self._pending_tasks.discard)
 
             self._queue.task_done()
+
+    def _schedule_backpressure_drop(self, event: Event, callback: Subscriber) -> None:
+        """Agenda un enqueue DLQ acotado para un dispatch descartado."""
+        if len(self._dlq_tasks) >= self._MAX_DLQ_TASKS:
+            logger.critical(
+                "DLQ backpressure: %d pending enqueue tasks — evento '%s' handler '%s' perdido",
+                len(self._dlq_tasks),
+                event.topic,
+                self._handler_name(callback),
+            )
+            return
+        task = asyncio.create_task(
+            self._enqueue_backpressure_drop(event, callback),
+            name=f"dlq-backpressure-{event.topic}",
+        )
+        self._dlq_tasks.add(task)
+        task.add_done_callback(self._dlq_tasks.discard)
 
     async def _enqueue_backpressure_drop(self, event: Event, callback: Subscriber) -> None:
         """Encola en DLQ un evento descartado por backpressure (H-04).

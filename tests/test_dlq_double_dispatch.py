@@ -165,3 +165,33 @@ async def test_in_progress_rows_recovered_on_startup(tmp_path: Path) -> None:
         )
     finally:
         await dlq_new.stop()
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_does_not_recover_in_progress_rows(tmp_path: Path) -> None:
+    """_ensure_schema() no debe mutar filas in_progress en flujos no-worker."""
+    db_path = tmp_path / "schema_only.db"
+
+    dlq_setup = _make_dlq(db_path, {})
+    await dlq_setup._ensure_schema()
+
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO dead_letter_events
+                (topic, payload_json, source, event_ts_ms, handler_name,
+                 error_type, error_message, attempts, next_retry_at,
+                 status, enqueued_at, updated_at)
+            VALUES (?, ?, ?, 0, ?, ?, ?, 0, 0, 'in_progress', 0, 0)
+            """,
+            (_TOPIC, "{}", "test", "test_handler", "RuntimeError", "crash_simulated"),
+        )
+        await db.commit()
+
+    dlq_reader = _make_dlq(db_path, {}, clock_value=5_000_000)
+    await dlq_reader._ensure_schema()
+
+    async with aiosqlite.connect(db_path) as db, db.execute("SELECT status FROM dead_letter_events") as cur:
+        row = await cur.fetchone()
+
+    assert row is not None and row[0] == "in_progress"
