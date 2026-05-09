@@ -10,6 +10,7 @@ that is_configured returns False and callers do not use closed/zombie objects.
 from __future__ import annotations
 
 import argparse
+import logging
 import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -142,3 +143,47 @@ class TestAppContextResilience:
         assert ctx.hitl is None
         assert ctx.sender is None
         assert ctx.tools_installer is None
+
+
+class TestAppContextSecretMigrationLogging:
+    def test_secret_migration_failure_does_not_log_secret_material(
+        self,
+        mock_args,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        secret_value = "sk-" + "A" * 32
+        legacy_path = tmp_path / "sky_claw_config.json"
+        legacy_path.write_text("{}", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        class LegacyConfig:
+            first_run = True
+
+            def get_api_key(self) -> str:
+                raise RuntimeError(f"could not decode {secret_value}")
+
+            def get_nexus_api_key(self) -> None:
+                return None
+
+            def get_telegram_bot_token(self) -> None:
+                return None
+
+        toml_cfg = MagicMock()
+        toml_cfg._data = {}
+
+        ctx = AppContext(mock_args)
+        ctx.config_path = tmp_path / "config.toml"
+
+        with (
+            patch("sky_claw.app_context._load_legacy_json", return_value=LegacyConfig()),
+            patch("sky_claw.app_context.Config", return_value=toml_cfg),
+            caplog.at_level(logging.WARNING, logger="sky_claw"),
+        ):
+            ctx._migrate_legacy_json()
+
+        assert "Failed to migrate a legacy credential" in caplog.text
+        assert secret_value not in caplog.text
+        assert "could not decode" not in caplog.text
+        assert "llm_api_key" not in caplog.text

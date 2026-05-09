@@ -612,7 +612,10 @@ class AppContext:
                     if not current:
                         toml_cfg._data[toml_key] = secret_val
             except Exception as exc:
-                logger.warning("CFG-01: Failed to migrate secret '%s': %s", toml_key, exc)
+                logger.warning(
+                    "CFG-01: Failed to migrate a legacy credential (%s).",
+                    type(exc).__name__,
+                )
 
         # Atomic: save TOML first, then delete JSON
         toml_cfg.save()
