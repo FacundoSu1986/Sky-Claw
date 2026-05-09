@@ -80,9 +80,7 @@ async def test_concurrent_process_row_calls_handler_exactly_once(
 
     # Obtener la fila via dlq1
     rows = await dlq1._fetch_due_batch(limit=10)
-    assert len(rows) == 1, (
-        f"Pre-condición: debe haber 1 fila pending. Obtenidas: {len(rows)}"
-    )
+    assert len(rows) == 1, f"Pre-condición: debe haber 1 fila pending. Obtenidas: {len(rows)}"
     row = rows[0]
 
     # Segundo manager que comparte la misma DB (simula multi-worker / race condition)

@@ -83,8 +83,7 @@ async def test_backpressure_routes_dropped_events_to_dlq() -> None:
 
     call_event, call_callback, call_exc = dlq.enqueue.call_args[0]
     assert call_event.topic == event_2.topic, (
-        f"El evento encolado debe ser event_2 ('{event_2.topic}'), "
-        f"no '{call_event.topic}'"
+        f"El evento encolado debe ser event_2 ('{event_2.topic}'), no '{call_event.topic}'"
     )
     assert isinstance(call_exc, BackpressureDroppedError), (
         f"La excepción debe ser BackpressureDroppedError, obtenido {type(call_exc).__name__}"

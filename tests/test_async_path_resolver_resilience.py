@@ -72,12 +72,8 @@ async def test_unexpected_exception_propagates_to_waiters_and_clears_inflight(
             f"{'Cancelled' if task.cancelled() else type(exc).__name__}"
         )
 
-    assert resolver._inflight == {}, (
-        f"_inflight debe estar vacío tras excepción inesperada: {list(resolver._inflight)}"
-    )
-    assert _KEY not in resolver._cache, (
-        "_cache no debe registrar un path cuya resolución falló"
-    )
+    assert resolver._inflight == {}, f"_inflight debe estar vacío tras excepción inesperada: {list(resolver._inflight)}"
+    assert _KEY not in resolver._cache, "_cache no debe registrar un path cuya resolución falló"
 
 
 # ---------------------------------------------------------------------------
@@ -99,9 +95,7 @@ async def test_owner_cancellation_does_not_hang_waiters(
         thread_release.wait(timeout=15.0)
         return pathlib.Path(raw_path)
 
-    with patch.object(
-        AsyncPathResolver, "_resolve_blocking", staticmethod(_blocking_resolver)
-    ):
+    with patch.object(AsyncPathResolver, "_resolve_blocking", staticmethod(_blocking_resolver)):
         # El owner arranca primero para registrarse en _inflight
         owner = asyncio.create_task(resolver.resolve_safe(_PATH), name="c2-owner")
         await asyncio.sleep(0)  # Ceder el loop para que el owner arranque el thread
@@ -125,17 +119,11 @@ async def test_owner_cancellation_does_not_hang_waiters(
         finally:
             thread_release.set()  # Siempre liberar el thread para evitar fuga
 
-    assert not pending, (
-        f"Tasks colgadas tras cancelación del owner: {[t.get_name() for t in pending]}"
-    )
+    assert not pending, f"Tasks colgadas tras cancelación del owner: {[t.get_name() for t in pending]}"
 
     # Todos los tasks deben haber terminado (cancelled o con excepción)
     for task in done:
         assert task.done(), f"Task '{task.get_name()}' no terminó"
 
-    assert resolver._inflight == {}, (
-        f"_inflight debe estar vacío tras cancelación: {list(resolver._inflight)}"
-    )
-    assert _KEY not in resolver._cache, (
-        "_cache no debe contener un path cuya resolución fue cancelada"
-    )
+    assert resolver._inflight == {}, f"_inflight debe estar vacío tras cancelación: {list(resolver._inflight)}"
+    assert _KEY not in resolver._cache, "_cache no debe contener un path cuya resolución fue cancelada"

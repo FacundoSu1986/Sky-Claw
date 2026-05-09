@@ -261,8 +261,7 @@ class DLQManager:
         now = self._clock()
         async with self._connect() as db:
             cur = await db.execute(
-                "UPDATE dead_letter_events SET status='in_progress', updated_at=?"
-                " WHERE id=? AND status='pending'",
+                "UPDATE dead_letter_events SET status='in_progress', updated_at=? WHERE id=? AND status='pending'",
                 (now, row.id),
             )
             await db.commit()
