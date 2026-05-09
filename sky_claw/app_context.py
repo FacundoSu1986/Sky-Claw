@@ -328,6 +328,13 @@ class AppContext:
             await self.database.initialize()
             self._exit_stack.push_async_callback(self.database.close)
 
+            # M-01 PR C: inyectar lifecycle al singleton GovernanceManager
+            # para que is_scanned_and_clean / update_scan_result usen el
+            # DatabaseLifecycleManager del proceso en lugar de abrir
+            # conexiones efímeras propias. Cierra el contrato M-01.
+            from sky_claw.antigravity.security.governance import GovernanceManager
+            GovernanceManager.get_instance().set_lifecycle(self.lifecycle.manager)
+
             install_dir = getattr(self._args, "install_dir", None)
             if local_cfg.install_dir:
                 install_dir = pathlib.Path(local_cfg.install_dir)

@@ -13,11 +13,14 @@ import os
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import aiosqlite
 from pydantic import BaseModel
 
 from sky_claw.antigravity.security.file_permissions import restrict_to_owner
+
+if TYPE_CHECKING:
+    from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleManager
 
 logger = logging.getLogger(__name__)
 
@@ -64,52 +67,28 @@ class GovernanceManager:
         self.cache_db_path = self.base_path / CACHE_DB_PATH
         self.whitelist = self._load_whitelist()
         self._hash_semaphore: asyncio.Semaphore | None = None
+        # M-01 PR C: lifecycle inyectado por AppContext.set_lifecycle().
+        # Antes de que se invoque, is_scanned_and_clean retorna False
+        # (fail-closed) y update_scan_result loggea error sin persistir.
+        self._lifecycle: "DatabaseLifecycleManager | None" = None
 
     def _get_hash_semaphore(self) -> asyncio.Semaphore:
         if self._hash_semaphore is None:
             self._hash_semaphore = asyncio.Semaphore(self._HASH_CONCURRENCY)
         return self._hash_semaphore
 
-    async def _init_db(self):
-        """Inicializa la base de datos de caché de escaneo.
+    def set_lifecycle(self, manager: "DatabaseLifecycleManager") -> None:
+        """Inyecta el DatabaseLifecycleManager del proceso (M-01 PR C).
 
-        FASE 1.5.2: Uses hardened pragmas consistent with DatabaseLifecycleManager.
+        DEBE invocarse antes de la primera llamada a ``is_scanned_and_clean``
+        o ``update_scan_result``. Si no se invoca, ambos métodos fallan-cerrado
+        (warning + return False / log error sin persistir).
+
+        Pensado para ser invocado UNA VEZ por ``AppContext`` después de que
+        el lifecycle esté inicializado. Cierra M-01: governance ya no posee
+        conexiones SQLite propias, las pide al lifecycle del proceso.
         """
-        try:
-            db = await aiosqlite.connect(self.cache_db_path)
-            # FASE 1.5.2: Hardened pragmas (consistent with db_lifecycle.py)
-            await db.execute("PRAGMA journal_mode=WAL")
-            await db.execute("PRAGMA foreign_keys=ON")
-            await db.execute("PRAGMA synchronous=NORMAL")
-            await db.execute("PRAGMA busy_timeout=5000")
-            await db.execute("PRAGMA temp_store=MEMORY")
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS scan_cache (
-                    file_hash TEXT PRIMARY KEY,
-                    file_path TEXT,
-                    last_scan_time TEXT,
-                    scan_results TEXT,
-                    status TEXT
-                )
-            """)
-            await db.commit()
-            # Store connection for later shutdown
-            self._db_conn = db
-        except Exception as e:
-            logger.error("Error inicializando DB de gobernanza: %s", e)
-
-    async def _shutdown_db(self) -> None:
-        """FASE 1.5.2: Graceful shutdown with WAL checkpoint."""
-        conn = getattr(self, "_db_conn", None)
-        if conn is not None:
-            try:
-                await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                await conn.close()
-                logger.info("GovernanceManager: DB shutdown with checkpoint complete")
-            except Exception as e:
-                logger.error("GovernanceManager: error during DB shutdown: %s", e)
-            finally:
-                self._db_conn = None
+        self._lifecycle = manager
 
     def _get_or_create_hmac_key(self) -> bytes:
         """Obtiene la clave HMAC del disco o genera una nueva.
@@ -240,50 +219,97 @@ class GovernanceManager:
             return await asyncio.to_thread(self._hash_file_blocking, file_path)
 
     async def is_scanned_and_clean(self, file_path: str) -> bool:
-        """Verifica si el archivo ya fue escaneado y no ha cambiado (incremental)."""
+        """Verifica si el archivo ya fue escaneado y no ha cambiado (incremental).
+
+        M-01 PR C: usa la conexión del DatabaseLifecycleManager inyectado vía
+        ``set_lifecycle()`` en lugar de abrir una conexión efímera. Si el
+        lifecycle no fue inyectado, falla-cerrado (warning + return False).
+        """
         file_hash = await self.get_file_hash_async(file_path)
         if file_hash is None:
             return False
 
-        # Primero ver si está en la whitelist manual
+        # Primero ver si está en la whitelist manual (no requiere DB)
         if file_hash in self.whitelist:
             return True
 
+        if self._lifecycle is None:
+            logger.warning(
+                "GovernanceManager.is_scanned_and_clean llamado sin lifecycle "
+                "(set_lifecycle() no fue invocado). Retornando False (fail-closed)."
+            )
+            return False
+
         try:
-            async with aiosqlite.connect(self.cache_db_path) as db:
-                await db.execute("PRAGMA journal_mode=WAL")
-                cursor = await db.execute("SELECT status FROM scan_cache WHERE file_hash = ?", (file_hash,))
+            db = await self._lifecycle.get_connection(self.cache_db_path)
+            # Bootstrap idempotente del schema (reemplaza al antiguo _init_db).
+            # El costo en SQLite es despreciable cuando la tabla ya existe.
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scan_cache (
+                    file_hash TEXT PRIMARY KEY,
+                    file_path TEXT,
+                    last_scan_time TEXT,
+                    scan_results TEXT,
+                    status TEXT
+                )
+                """
+            )
+            async with db.execute(
+                "SELECT status FROM scan_cache WHERE file_hash = ?", (file_hash,)
+            ) as cursor:
                 row = await cursor.fetchone()
-                if row and row[0] == "CLEAN":
-                    return True
+                return bool(row and row[0] == "CLEAN")
         except Exception as e:
             logger.error("Error consultando caché de escaneo: %s", e)
-        return False
+            return False
 
-    async def update_scan_result(self, file_path: str, results: list[dict], status: str):
-        """Actualiza el estado de escaneo en la base de datos."""
+    async def update_scan_result(self, file_path: str, results: list[dict], status: str) -> None:
+        """Actualiza el estado de escaneo en la base de datos.
+
+        M-01 PR C: usa la conexión del DatabaseLifecycleManager inyectado vía
+        ``set_lifecycle()``. Si el lifecycle no fue inyectado, loggea error y
+        retorna sin persistir (fail-closed).
+        """
         file_hash = await self.get_file_hash_async(file_path)
         if file_hash is None:
             return
 
+        if self._lifecycle is None:
+            logger.error(
+                "GovernanceManager.update_scan_result llamado sin lifecycle. "
+                "Resultado de escaneo NO persistido."
+            )
+            return
+
         try:
-            async with aiosqlite.connect(self.cache_db_path) as db:
-                await db.execute("PRAGMA journal_mode=WAL")
-                await db.execute(
-                    """
-                    INSERT OR REPLACE INTO scan_cache
-                    (file_hash, file_path, last_scan_time, scan_results, status)
-                    VALUES (?, ?, ?, ?, ?)
-                """,
-                    (
-                        file_hash,
-                        str(file_path),
-                        datetime.now(UTC).isoformat(),
-                        json.dumps(results),
-                        status,
-                    ),
+            db = await self._lifecycle.get_connection(self.cache_db_path)
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scan_cache (
+                    file_hash TEXT PRIMARY KEY,
+                    file_path TEXT,
+                    last_scan_time TEXT,
+                    scan_results TEXT,
+                    status TEXT
                 )
-                await db.commit()
+                """
+            )
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO scan_cache
+                (file_hash, file_path, last_scan_time, scan_results, status)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    file_hash,
+                    str(file_path),
+                    datetime.now(UTC).isoformat(),
+                    json.dumps(results),
+                    status,
+                ),
+            )
+            await db.commit()
         except Exception as e:
             logger.error("Error actualizando caché: %s", e)
 
