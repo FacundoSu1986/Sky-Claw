@@ -4,6 +4,8 @@ Gestión de integridad, caché de escaneo y listas blancas (Whitelist).
 Implementación persistente en SQLite y JSON.
 """
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import hmac
@@ -42,7 +44,7 @@ class GovernanceManager:
     _HASH_CONCURRENCY = 4
 
     @classmethod
-    def get_instance(cls, base_path: str = ".") -> "GovernanceManager":
+    def get_instance(cls, base_path: str = ".") -> GovernanceManager:
         """Método factory con lazy loading thread-safe.
 
         Raises RuntimeError if called with a different base_path than the
@@ -70,14 +72,14 @@ class GovernanceManager:
         # M-01 PR C: lifecycle inyectado por AppContext.set_lifecycle().
         # Antes de que se invoque, is_scanned_and_clean retorna False
         # (fail-closed) y update_scan_result loggea error sin persistir.
-        self._lifecycle: "DatabaseLifecycleManager | None" = None
+        self._lifecycle: DatabaseLifecycleManager | None = None
 
     def _get_hash_semaphore(self) -> asyncio.Semaphore:
         if self._hash_semaphore is None:
             self._hash_semaphore = asyncio.Semaphore(self._HASH_CONCURRENCY)
         return self._hash_semaphore
 
-    def set_lifecycle(self, manager: "DatabaseLifecycleManager") -> None:
+    def set_lifecycle(self, manager: DatabaseLifecycleManager) -> None:
         """Inyecta el DatabaseLifecycleManager del proceso (M-01 PR C).
 
         DEBE invocarse antes de la primera llamada a ``is_scanned_and_clean``
