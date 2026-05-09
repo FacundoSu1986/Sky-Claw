@@ -36,11 +36,9 @@ class DatabaseAgent:
         self._lifecycle = DatabaseLifecycleManager(db_paths=[db_path])
         await self._lifecycle.init_all()
 
-        # Get the managed connection (M-01: get_connection is async + lazy)
+        # Get the managed connection (M-01: get_connection is async + lazy).
+        # get_connection siempre retorna Connection o lanza excepción; no retorna None.
         self._conn = await self._lifecycle.get_connection(self.db_path)
-        if self._conn is None:
-            raise RuntimeError(f"DatabaseLifecycleManager failed to initialize {self.db_path}")
-
         self._conn.row_factory = aiosqlite.Row
 
         # ── Core tables (Scraper / Agent Memory) ──

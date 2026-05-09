@@ -13,6 +13,7 @@ Validates:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sqlite3
 from pathlib import Path
 
@@ -387,6 +388,48 @@ class TestGetConnection:
             assert conn1 is conn2
         finally:
             await lifecycle.shutdown_all()
+
+    @pytest.mark.asyncio
+    async def test_get_connection_returns_singleton_for_equivalent_paths(self, db_path: Path) -> None:
+        """Equivalent paths must map to the same managed connection key."""
+        alias_parent = db_path.parent / "alias_parent"
+        alias_parent.mkdir()
+        equivalent_path = alias_parent / ".." / db_path.name
+        lifecycle = DatabaseLifecycleManager(
+            db_paths=[],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        try:
+            conn1 = await lifecycle.get_connection(db_path)
+            conn2 = await lifecycle.get_connection(equivalent_path)
+            assert conn1 is conn2
+            assert lifecycle.managed_paths == [str(db_path.resolve(strict=False))]
+        finally:
+            await lifecycle.shutdown_all()
+
+    @pytest.mark.asyncio
+    async def test_get_connection_concurrent_calls_share_single_connection(self, db_path: Path) -> None:
+        """Concurrent first access must not create duplicate connections."""
+        lifecycle = DatabaseLifecycleManager(
+            db_paths=[],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        connections: list[aiosqlite.Connection] = []
+        try:
+            connections = await asyncio.gather(
+                *(lifecycle.get_connection(db_path) for _ in range(12)),
+            )
+            assert len({id(conn) for conn in connections}) == 1
+        finally:
+            await lifecycle.shutdown_all()
+            seen: set[int] = set()
+            for conn in connections:
+                conn_id = id(conn)
+                if conn_id in seen:
+                    continue
+                seen.add(conn_id)
+                with contextlib.suppress(Exception):
+                    await conn.close()
 
     @pytest.mark.asyncio
     async def test_get_connection_applies_pragmas(self, db_path: Path) -> None:
