@@ -257,9 +257,7 @@ class GovernanceManager:
                 )
                 """
             )
-            async with db.execute(
-                "SELECT status FROM scan_cache WHERE file_hash = ?", (file_hash,)
-            ) as cursor:
+            async with db.execute("SELECT status FROM scan_cache WHERE file_hash = ?", (file_hash,)) as cursor:
                 row = await cursor.fetchone()
                 return bool(row and row[0] == "CLEAN")
         except Exception as e:
@@ -279,8 +277,7 @@ class GovernanceManager:
 
         if self._lifecycle is None:
             logger.error(
-                "GovernanceManager.update_scan_result llamado sin lifecycle. "
-                "Resultado de escaneo NO persistido."
+                "GovernanceManager.update_scan_result llamado sin lifecycle. Resultado de escaneo NO persistido."
             )
             return
 

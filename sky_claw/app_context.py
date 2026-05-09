@@ -333,6 +333,7 @@ class AppContext:
             # DatabaseLifecycleManager del proceso en lugar de abrir
             # conexiones efímeras propias. Cierra el contrato M-01.
             from sky_claw.antigravity.security.governance import GovernanceManager
+
             GovernanceManager.get_instance().set_lifecycle(self.lifecycle.manager)
 
             install_dir = getattr(self._args, "install_dir", None)

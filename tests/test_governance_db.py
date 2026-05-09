@@ -31,9 +31,7 @@ def lifecycle() -> DatabaseLifecycleManager:
 
 
 @pytest.fixture
-def governance(
-    tmp_path: Path, lifecycle: DatabaseLifecycleManager
-) -> Iterator[GovernanceManager]:
+def governance(tmp_path: Path, lifecycle: DatabaseLifecycleManager) -> Iterator[GovernanceManager]:
     """GovernanceManager con lifecycle inyectado y singleton aislado por test."""
     GovernanceManager._instance = None
     gov = GovernanceManager.get_instance(base_path=str(tmp_path))
