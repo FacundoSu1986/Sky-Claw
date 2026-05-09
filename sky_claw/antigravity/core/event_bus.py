@@ -87,6 +87,9 @@ class CoreEventBus:
         )
         self._dispatch_task: asyncio.Task[None] | None = None
         self._pending_tasks: set[asyncio.Task] = set()
+        # DLQ fire-and-forget tasks (backpressure enqueues) are tracked separately
+        # so stop() can cancel/await them without counting against _MAX_PENDING_TASKS.
+        self._dlq_tasks: set[asyncio.Task] = set()
         self._running: bool = False
         self._dlq = dlq
         self._handler_index: dict[str, Subscriber] = {}
@@ -125,6 +128,13 @@ class CoreEventBus:
         if self._pending_tasks:
             await asyncio.gather(*self._pending_tasks, return_exceptions=True)
         self._pending_tasks.clear()
+        # Await DLQ backpressure tasks before stopping the DLQ worker so that
+        # enqueues in flight are committed and not silently lost on shutdown.
+        for task in list(self._dlq_tasks):
+            task.cancel()
+        if self._dlq_tasks:
+            await asyncio.gather(*self._dlq_tasks, return_exceptions=True)
+        self._dlq_tasks.clear()
         if self._dlq is not None:
             await self._dlq.stop()
         logger.info("CoreEventBus detenido")
@@ -173,10 +183,12 @@ class CoreEventBus:
                         # H-04: enrutar a DLQ si está configurada; preservar drop
                         # silencioso si no hay DLQ (backward compat).
                         if self._dlq is not None:
-                            asyncio.create_task(
+                            t = asyncio.create_task(
                                 self._enqueue_backpressure_drop(event, callback),
                                 name=f"dlq-backpressure-{event.topic}",
                             )
+                            self._dlq_tasks.add(t)
+                            t.add_done_callback(self._dlq_tasks.discard)
                         continue
                     task = asyncio.create_task(self._safe_execute(callback, event))
                     self._pending_tasks.add(task)

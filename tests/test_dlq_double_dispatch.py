@@ -21,6 +21,7 @@ import pytest
 
 from sky_claw.antigravity.core.dlq_manager import DLQManager
 from sky_claw.antigravity.core.event_bus import Event
+from tests.polling_utils import poll_until
 
 _TOPIC = "probe.double"
 
@@ -108,11 +109,12 @@ async def test_concurrent_process_row_calls_handler_exactly_once(
 
 @pytest.mark.asyncio
 async def test_in_progress_rows_recovered_on_startup(tmp_path: Path) -> None:
-    """H-05: una fila 'in_progress' de un crash previo se recupera al arrancar.
+    """H-05: una fila 'in_progress' de un crash previo se recupera al arrancar el worker.
 
-    Tras el fix, la recovery se mueve de _fetch_due_batch() (cada poll)
-    a _ensure_schema() (startup one-shot). Este test verifica que la
-    propiedad de recovery se preserva en el nuevo lugar.
+    Tras el fix, la recovery se mueve de _fetch_due_batch() (cada poll) a
+    _recover_stale_rows(), invocado una vez al inicio de _retry_loop() (por ciclo
+    start/stop). Este test verifica que la propiedad de recovery se preserva y que
+    re-corre correctamente en ciclos stop()/start() de la misma instancia.
     """
     db_path = tmp_path / "recovery.db"
 
@@ -143,15 +145,23 @@ async def test_in_progress_rows_recovered_on_startup(tmp_path: Path) -> None:
     )
 
     # Nuevo arranque del DLQManager con clock_value=5_000_000
-    # La startup recovery debe recuperar la fila: updated_at(0) + 60000 < 5_000_000 → True
+    # La recovery corre en _retry_loop() startup: updated_at(0) + 60000 < 5_000_000 → True
     dlq_new = _make_dlq(db_path, {}, clock_value=5_000_000)
-    await dlq_new._ensure_schema()
+    await dlq_new.start()
 
-    # Verificar que la fila fue recuperada a 'pending'
-    async with aiosqlite.connect(db_path) as db, db.execute("SELECT status FROM dead_letter_events") as cur:
-        row_after = await cur.fetchone()
+    async def _row_is_pending() -> bool:
+        async with (
+            aiosqlite.connect(db_path) as db,
+            db.execute("SELECT status FROM dead_letter_events") as cur,
+        ):
+            row = await cur.fetchone()
+        return row is not None and row[0] == "pending"
 
-    assert row_after is not None and row_after[0] == "pending", (
-        f"H-05: la fila in_progress debe recuperarse a 'pending' en startup. "
-        f"Estado actual: '{row_after[0] if row_after else None}'"
-    )
+    try:
+        await poll_until(
+            _row_is_pending,
+            timeout=3.0,
+            msg="H-05: la fila in_progress debe recuperarse a 'pending' al arrancar el worker",
+        )
+    finally:
+        await dlq_new.stop()

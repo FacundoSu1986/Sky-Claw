@@ -186,27 +186,31 @@ class DLQManager:
     # ------------------------------------------------------------------
 
     async def _ensure_schema(self) -> None:
-        """Crea el directorio y la tabla si no existen.
-
-        H-05: al arrancar (una sola vez por proceso), recupera filas `in_progress`
-        estancadas de un crash previo. Se ejecuta aquí (startup) y NO en cada poll
-        para evitar resetear filas legítimamente en progreso y causar double-dispatch.
-        """
+        """Crea el directorio y la tabla si no existen (idempotente por instancia)."""
         if self._schema_ensured:
             return
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         async with self._connect() as db:
             await db.executescript(_DDL)
             await db.commit()
-            # Startup recovery: filas in_progress + updated_at + 60s < now → pending
-            now = self._clock()
+        self._schema_ensured = True
+
+    async def _recover_stale_rows(self) -> None:
+        """Recupera filas in_progress estancadas de un crash/cancelación previos.
+
+        H-05: se llama al inicio de _retry_loop() (una vez por ciclo start/stop),
+        NO en _ensure_schema() para evitar efectos secundarios en paths no-worker
+        (enqueue, list_pending, etc.) ni interferencias con workers activos en
+        otros procesos que posean filas legítimamente en progreso.
+        """
+        now = self._clock()
+        async with self._connect() as db:
             await db.execute(
                 "UPDATE dead_letter_events SET status='pending', updated_at=?"
                 " WHERE status='in_progress' AND updated_at + 60000 < ?",
                 (now, now),
             )
             await db.commit()
-        self._schema_ensured = True
 
     @contextlib.asynccontextmanager
     async def _connect(self) -> AsyncGenerator[aiosqlite.Connection, None]:
@@ -226,6 +230,7 @@ class DLQManager:
     async def _retry_loop(self) -> None:
         """Loop de reintento que corre como tarea de fondo."""
         await self._ensure_schema()
+        await self._recover_stale_rows()  # H-05: one-shot per worker start
         try:
             while True:
                 try:
