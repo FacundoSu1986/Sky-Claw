@@ -196,8 +196,7 @@ class AsyncModRegistry:
             with contextlib.suppress(Exception):
                 await self._conn.close()
             self._conn = None
-            path_key = str(pathlib.Path(self._db_path).resolve())
-            self._lifecycle._connections.pop(path_key, None)
+            self._lifecycle.evict_connection(self._db_path)
 
             db_file = pathlib.Path(self._db_path)
 
@@ -226,6 +225,13 @@ class AsyncModRegistry:
             self._conn.row_factory = aiosqlite.Row
 
         except Exception as exc:
+            # Limpiar recursos para no dejar conexiones colgadas ni archivos bloqueados
+            if self._conn is not None:
+                with contextlib.suppress(Exception):
+                    self._lifecycle.evict_connection(self._db_path)
+                if self._owns_lifecycle and self._lifecycle is not None:
+                    with contextlib.suppress(Exception):
+                        await self._lifecycle.shutdown_all()
             self._conn = None
             logger.error("Failed to open async registry: %s", exc)
             raise

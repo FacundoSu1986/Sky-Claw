@@ -57,7 +57,7 @@ class LifecycleContext:
     """Propietario único del DatabaseLifecycleManager para el proceso.
 
     M-01: Todos los sub-contextos deben pedir conexiones vía
-    ``self.manager.get_connection(path)`` en lugar de abrir
+    ``await self.manager.get_connection(path)`` en lugar de abrir
     ``aiosqlite.connect`` directamente.
     """
 

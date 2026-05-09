@@ -9,6 +9,7 @@ de archivos realizadas, permitiendo rollback completo de transacciones.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import pathlib
@@ -283,6 +284,14 @@ class OperationJournal:
             await self._db.executescript(self._SCHEMA_SQL)
             logger.info("Journal database opened", extra={"db_path": str(self._db_path)})
         except sqlite3.Error as e:
+            # Limpiar recursos para no dejar conexiones colgadas ni archivos bloqueados
+            if self._db is not None and self._lifecycle is not None:
+                with contextlib.suppress(Exception):
+                    self._lifecycle.evict_connection(self._db_path)
+                if self._owns_lifecycle:
+                    with contextlib.suppress(Exception):
+                        await self._lifecycle.shutdown_all()
+            self._db = None
             raise JournalConnectionError(f"Failed to open journal database: {e}") from e
 
     async def close(self) -> None:
