@@ -157,7 +157,8 @@ class NetworkGateway:
     # Strict pre-validation: prevents scheme smuggling and CRLF injection.
     # Runs BEFORE urlparse, which is historically lenient with malformed inputs.
     # Permitir `[` inicial para autoridades IPv6 literales (RFC 3986).
-    _STRICT_PREFIX_RE = re.compile(r"^https?://(?:[a-zA-Z0-9]|\[)")
+    # Asegurar que brackets IPv6 estén balanceados: [<contenido>]
+    _STRICT_PREFIX_RE = re.compile(r"^https?://(?:[a-zA-Z0-9]|\[[^\]]+\])")
 
     async def authorize(self, method: str, url: str) -> None:
         """Validate *method* + *url* against the egress policy.
@@ -179,7 +180,7 @@ class NetworkGateway:
 
         # Block triple slashes (e.g. https:///evil.com) and ensure it starts with an alphanumeric host.
         if not self._STRICT_PREFIX_RE.match(stripped):
-            raise EgressViolationError(f"URL rejected: Must start with http(s):// followed by alphanumeric: {url!r}")
+            raise EgressViolationError(f"URL rejected: Must start with http(s)// followed by alphanumeric: {url!r}")
 
         parsed = urlparse(stripped)
         hostname = (parsed.hostname or "").lower()

@@ -190,6 +190,9 @@ class AgentCommunicationClient:
                     if self._consecutive_auth_failures >= 5:
                         self._auth_lockout_until = time.time() + 300.0
                         logger.warning("AUTH LOCKOUT: 5 consecutive auth rejections. Pausing 5 min.")
+            except asyncio.CancelledError:
+                # Propagate cancellation immediately to allow clean shutdown
+                raise
             except (RuntimeError, ValueError) as e:
                 logger.error("Unexpected error in agent comm: %s", e)
             finally:
@@ -223,6 +226,9 @@ class AgentCommunicationClient:
 
             except json.JSONDecodeError:
                 logger.error("Received malformed JSON from daemon.")
+            except asyncio.CancelledError:
+                # Propagate cancellation to terminate listener promptly
+                raise
             except asyncio.QueueFull:
                 logger.warning(
                     "Dropping daemon message because callback queue is full (%d).",
@@ -252,6 +258,9 @@ class AgentCommunicationClient:
             try:
                 if self._on_message is not None:
                     await asyncio.to_thread(self._on_message, data)
+            except asyncio.CancelledError:
+                # Propagate cancellation to allow _stop_dispatch_workers to complete
+                raise
             except (RuntimeError, OSError, ValueError, TypeError) as exc:
                 logger.exception("Synchronous on_message callback failed: %s", exc)
             finally:
