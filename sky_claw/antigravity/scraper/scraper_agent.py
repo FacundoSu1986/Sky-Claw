@@ -22,10 +22,12 @@ logger = logging.getLogger("SkyClaw.Scraper")
 
 
 class ScraperAgent:
-    def __init__(self, db: DatabaseAgent, gateway: NetworkGateway | None = None) -> None:
+    def __init__(self, db: DatabaseAgent, gateway: NetworkGateway) -> None:
         self.db = db
         # NetworkGateway enforces the egress allow-list (SSRF protection).
         # All outbound requests in _api_request MUST route through it when provided.
+        if gateway is None:
+            raise ValueError("ScraperAgent requires a NetworkGateway (fail-closed egress).")
         self._gateway = gateway
         self.nexus_api_key: str | None = None  # Loaded via secure config (e.g. keyring)
         self.max_failures: int = 3
