@@ -156,7 +156,8 @@ class NetworkGateway:
 
     # Strict pre-validation: prevents scheme smuggling and CRLF injection.
     # Runs BEFORE urlparse, which is historically lenient with malformed inputs.
-    _STRICT_PREFIX_RE = re.compile(r"^https?://[a-zA-Z0-9]")
+    # Permitir `[` inicial para autoridades IPv6 literales (RFC 3986).
+    _STRICT_PREFIX_RE = re.compile(r"^https?://(?:[a-zA-Z0-9]|\[)")
 
     async def authorize(self, method: str, url: str) -> None:
         """Validate *method* + *url* against the egress policy.
