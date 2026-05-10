@@ -16,6 +16,7 @@ ARCHITECTURE:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -34,7 +35,7 @@ except ImportError:
 
 import contextlib
 
-from sky_claw.antigravity.security.auth_token_manager import AuthTokenManager
+from sky_claw.antigravity.comms._transport import assert_safe_ws_url, authenticated_connect
 
 logger = logging.getLogger("SkyClaw.AgentComm")
 
@@ -50,6 +51,9 @@ class AgentCommunicationClient:
       • Expose send_command() for fire-and-forget UI → Daemon commands
     """
 
+    _DISPATCH_QUEUE_MAX = 16
+    _DISPATCH_WORKERS = 4
+
     def __init__(
         self,
         daemon_url: str = "ws://localhost:8765/ws/ui",
@@ -57,7 +61,7 @@ class AgentCommunicationClient:
         on_connection_change: Callable[[bool], None] | None = None,
         token_dir: str | None = None,
     ):
-        self._daemon_url = daemon_url
+        self._daemon_url = assert_safe_ws_url(daemon_url)
         self._on_message = on_message
         self._on_connection_change = on_connection_change
         self._token_dir = token_dir
@@ -66,6 +70,8 @@ class AgentCommunicationClient:
         self._task: asyncio.Task | None = None
         self._consecutive_auth_failures = 0
         self._auth_lockout_until: float = 0.0
+        self._dispatch_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._DISPATCH_QUEUE_MAX)
+        self._dispatch_workers: list[asyncio.Task[None]] = []
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -75,8 +81,9 @@ class AgentCommunicationClient:
             logger.error("websockets library not installed — agent communication disabled. Run: pip install websockets")
             return
         self._running = True
+        self._start_dispatch_workers()
         self._task = asyncio.create_task(self._connection_loop())
-        logger.info(f"AgentCommunicationClient started → {self._daemon_url}")
+        logger.info("AgentCommunicationClient started -> %s", self._daemon_url)
 
     async def stop(self) -> None:
         """Graceful shutdown."""
@@ -87,6 +94,8 @@ class AgentCommunicationClient:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
+        await self._drain_dispatch_queue()
+        await self._stop_dispatch_workers()
         logger.info("AgentCommunicationClient stopped.")
 
     # ── Outbound (UI → Daemon) ────────────────────────────────────────
@@ -112,10 +121,10 @@ class AgentCommunicationClient:
 
         try:
             await self._ws.send(json.dumps(msg))
-            logger.debug(f"📤 Sent command '{command}' to daemon.")
+            logger.debug("Sent command '%s' to daemon.", command)
             return True
-        except Exception as e:
-            logger.error(f"Failed to send command: {e}")
+        except (ConnectionClosed, ConnectionClosedError, OSError, RuntimeError) as exc:
+            logger.error("Failed to send command: %s", exc)
             return False
 
     async def send_chat_message(self, text: str) -> bool:
@@ -133,20 +142,14 @@ class AgentCommunicationClient:
                 # ── Rate-limiting: lockout after 5 consecutive auth failures ──
                 if self._consecutive_auth_failures >= 5 and time.time() < self._auth_lockout_until:
                     remaining = int(self._auth_lockout_until - time.time())
-                    logger.warning(f"Auth lockout active — {remaining}s remaining")
+                    logger.warning("Auth lockout active — %ds remaining", remaining)
                     await asyncio.sleep(min(remaining, 30))
                     continue
 
-                # Read token for authentication
-                token = AuthTokenManager.read_token_file(self._token_dir)
-                extra_headers = {}
-                if token:
-                    extra_headers["X-Auth-Token"] = token
-
-                async with websockets.connect(
+                async with authenticated_connect(
                     self._daemon_url,
+                    token_dir=self._token_dir,
                     open_timeout=10,
-                    extra_headers=extra_headers,
                 ) as ws:
                     self._ws = ws
                     backoff = 2.0  # Reset on success
@@ -167,13 +170,28 @@ class AgentCommunicationClient:
             ) as e:
                 if not self._running:
                     break
-                logger.warning(f"⚠️ Daemon connection lost ({type(e).__name__}). Reconnecting in {backoff:.1f}s...")
-                self._consecutive_auth_failures += 1
-                if self._consecutive_auth_failures >= 5:
-                    self._auth_lockout_until = time.time() + 300.0
-                    logger.warning("AUTH LOCKOUT: 5 consecutive failures. Pausing 5 min.")
-            except Exception as e:
-                logger.error(f"❌ Unexpected error in agent comm: {e}")
+                logger.warning(
+                    "Daemon connection lost (%s). Reconnecting in %.1fs...",
+                    type(e).__name__,
+                    backoff,
+                )
+
+                # H-04: Only count genuine auth rejections (POLICY_VIOLATION
+                # close code 1008) towards the lockout counter.  Network
+                # errors (ConnectionRefusedError, OSError, generic closures)
+                # must NOT trigger lockout — a daemon restart is routine.
+                _is_auth_rejection = (
+                    isinstance(e, (ConnectionClosed, ConnectionClosedError))
+                    and hasattr(e, "code")
+                    and e.code == 1008  # POLICY_VIOLATION
+                )
+                if _is_auth_rejection:
+                    self._consecutive_auth_failures += 1
+                    if self._consecutive_auth_failures >= 5:
+                        self._auth_lockout_until = time.time() + 300.0
+                        logger.warning("AUTH LOCKOUT: 5 consecutive auth rejections. Pausing 5 min.")
+            except (RuntimeError, ValueError) as e:
+                logger.error("Unexpected error in agent comm: %s", e)
             finally:
                 self._ws = None
                 if self._on_connection_change:
@@ -184,20 +202,79 @@ class AgentCommunicationClient:
                 backoff = min(backoff * 1.5, 30.0)
 
     async def _listen(self, ws) -> None:
-        """Process incoming messages from the daemon."""
+        """Process incoming messages from the daemon.
+
+        M-02: The ``on_message`` callback is dispatched asynchronously.
+        If the callback is a coroutine function, it is awaited directly.
+        If it is a synchronous callable, it is wrapped in a task to avoid
+        blocking the event loop.
+        """
         async for raw in ws:
             try:
                 data = json.loads(raw)
                 msg_type = data.get("type", "unknown")
-                logger.debug(f"📥 Received '{msg_type}' from daemon.")
+                logger.debug("Received '%s' from daemon.", msg_type)
 
                 if self._on_message:
-                    self._on_message(data)
+                    if inspect.iscoroutinefunction(self._on_message):
+                        await self._on_message(data)
+                    else:
+                        await self._enqueue_sync_callback(data)
 
             except json.JSONDecodeError:
                 logger.error("Received malformed JSON from daemon.")
-            except Exception as e:
-                logger.exception(f"Error processing daemon message: {e}")
+            except asyncio.QueueFull:
+                logger.warning(
+                    "Dropping daemon message because callback queue is full (%d).",
+                    self._dispatch_queue.maxsize,
+                )
+            except (RuntimeError, OSError, ValueError, TypeError) as e:
+                logger.exception("Error processing daemon message: %s", e)
+
+    def _start_dispatch_workers(self) -> None:
+        """Start bounded workers for synchronous callback dispatch."""
+        self._dispatch_workers = [worker for worker in self._dispatch_workers if not worker.done()]
+        if self._dispatch_workers:
+            return
+        for idx in range(self._DISPATCH_WORKERS):
+            self._dispatch_workers.append(
+                asyncio.create_task(self._dispatch_worker(), name=f"agent-comm-dispatch-{idx}")
+            )
+
+    async def _enqueue_sync_callback(self, data: dict[str, Any]) -> None:
+        """Queue sync callback work without blocking the websocket reader."""
+        self._dispatch_queue.put_nowait(data)
+
+    async def _dispatch_worker(self) -> None:
+        """Run synchronous callbacks through the loop's bounded worker queue."""
+        while True:
+            data = await self._dispatch_queue.get()
+            try:
+                if self._on_message is not None:
+                    await asyncio.to_thread(self._on_message, data)
+            except (RuntimeError, OSError, ValueError, TypeError) as exc:
+                logger.exception("Synchronous on_message callback failed: %s", exc)
+            finally:
+                self._dispatch_queue.task_done()
+
+    async def _drain_dispatch_queue(self) -> None:
+        """Wait briefly for queued callbacks to finish before shutdown."""
+        try:
+            await asyncio.wait_for(self._dispatch_queue.join(), timeout=5.0)
+        except TimeoutError:
+            logger.warning(
+                "Timed out draining callback queue with %d pending items.",
+                self._dispatch_queue.qsize(),
+            )
+
+    async def _stop_dispatch_workers(self) -> None:
+        """Cancel all callback workers and wait for cancellation."""
+        workers = [worker for worker in self._dispatch_workers if not worker.done()]
+        for worker in workers:
+            worker.cancel()
+        for worker in workers:
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
 
     # ── Properties ────────────────────────────────────────────────────
 

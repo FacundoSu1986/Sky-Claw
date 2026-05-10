@@ -6,6 +6,7 @@ import asyncio
 import json
 import pathlib
 import zipfile
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -59,11 +60,13 @@ def _github_release_json(
             {
                 "name": asset_name,
                 "size": size,
+                "url": "https://api.github.com/repos/loot/loot/releases/assets/1001",
                 "browser_download_url": f"https://github.com/loot/loot/releases/download/{tag}/{asset_name}",
             },
             {
                 "name": "loot_0.22.4-linux.tar.gz",
                 "size": 40_000_000,
+                "url": "https://api.github.com/repos/loot/loot/releases/assets/1002",
                 "browser_download_url": f"https://github.com/loot/loot/releases/download/{tag}/loot_0.22.4-linux.tar.gz",
             },
         ],
@@ -81,6 +84,7 @@ def _xedit_release_json(
             {
                 "name": asset_name,
                 "size": size,
+                "url": "https://api.github.com/repos/TES5Edit/TES5Edit/releases/assets/2001",
                 "browser_download_url": f"https://github.com/TES5Edit/TES5Edit/releases/download/{tag}/{asset_name}",
             },
         ],
@@ -174,7 +178,7 @@ class TestEnsureLoot:
         mock_api_resp.__aexit__ = AsyncMock(return_value=False)
 
         # Simulate streaming download.
-        async def _iter_chunks(size: int):
+        async def _iter_chunks(size: int) -> AsyncIterator[bytes]:
             yield zip_bytes
 
         mock_dl_resp = AsyncMock()
@@ -187,7 +191,7 @@ class TestEnsureLoot:
 
         call_count = 0
 
-        def _mock_get(url, **kwargs):
+        def _mock_get(url: str, **kwargs: Any) -> Any:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -211,6 +215,7 @@ class TestEnsureLoot:
         assert result.version == "0.22.4"
         assert result.exe_path.name == "loot.exe"
         assert result.exe_path.exists()
+        assert session.get.call_args_list[1].args[0] == "https://api.github.com/repos/loot/loot/releases/assets/1001"
 
     @pytest.mark.asyncio
     async def test_hitl_denial_raises(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
@@ -296,7 +301,7 @@ class TestEnsureXedit:
         mock_api_resp.__aenter__ = AsyncMock(return_value=mock_api_resp)
         mock_api_resp.__aexit__ = AsyncMock(return_value=False)
 
-        async def _iter_chunks(size: int):
+        async def _iter_chunks(size: int) -> AsyncIterator[bytes]:
             yield zip_bytes
 
         mock_dl_resp = AsyncMock()
@@ -309,7 +314,7 @@ class TestEnsureXedit:
 
         call_count = 0
 
-        def _mock_get(url, **kwargs):
+        def _mock_get(url: str, **kwargs: Any) -> Any:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -331,6 +336,10 @@ class TestEnsureXedit:
         assert result.tool_name == "SSEEdit"
         assert result.version == "4.1.5"
         assert result.exe_path.name == "SSEEdit.exe"
+        assert (
+            session.get.call_args_list[1].args[0]
+            == "https://api.github.com/repos/TES5Edit/TES5Edit/releases/assets/2001"
+        )
 
     @pytest.mark.asyncio
     async def test_hitl_denial_raises(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
@@ -541,7 +550,7 @@ class TestAppContextToolsInstaller:
     async def test_tools_installer_wired(self, tmp_path: pathlib.Path) -> None:
         import argparse
 
-        from sky_claw.__main__ import AppContext
+        from sky_claw.__main__ import AppContext  # type: ignore[attr-defined]
 
         args = argparse.Namespace(
             db_path=tmp_path / "test.db",

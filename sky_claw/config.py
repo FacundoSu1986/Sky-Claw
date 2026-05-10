@@ -232,7 +232,8 @@ ALLOWED_HOSTS = frozenset(
         "cf-files.nexusmods.com",
         "staticdelivery.nexusmods.com",
         "api.github.com",
-        "github.com",
+        # H-02: "github.com" removed — it was also in OUT_OF_SCOPE_HOSTS,
+        # creating a semantic contradiction.  api.github.com covers API needs.
         "raw.githubusercontent.com",
         "api.anthropic.com",
         "www.reddit.com",
@@ -262,7 +263,7 @@ XEDIT_COMMON_PATHS = [
 # Mapping of host patterns to allowed HTTP methods.
 ALLOWED_METHODS = {
     "api.nexusmods.com": frozenset(["GET", "POST", "HEAD"]),
-    "github.com": frozenset(["GET"]),
+    # F-01: "github.com" entry removed — host is not in ALLOWED_HOSTS (see H-02).
     "raw.githubusercontent.com": frozenset(["GET"]),
     "api.anthropic.com": frozenset(["POST"]),
     "api.deepseek.com": frozenset(["POST"]),
