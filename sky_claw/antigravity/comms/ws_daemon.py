@@ -6,10 +6,15 @@ import logging
 import sys
 import time
 import uuid
+from collections import defaultdict, deque
 from pathlib import Path
 
 import websockets
-from websockets.exceptions import ConnectionClosed, ConnectionClosedError
+from websockets.exceptions import (
+    ConnectionClosed,
+    ConnectionClosedError,
+    InvalidMessage,
+)
 
 from sky_claw.antigravity.comms._transport import (
     AuthError,
@@ -100,7 +105,15 @@ class TelegramDaemon:
             logger.info("🛑 TelegramDaemon detenido de forma segura.")
 
     async def _listen_loop(self):
-        """Main listening loop for incoming Telegram messages."""
+        """Main listening loop for incoming Telegram messages.
+
+        M-01: Exception handling is split into three tiers:
+        1. ``json.JSONDecodeError`` — transient, logged and skipped.
+        2. ``InvalidMessage`` — fatal protocol violation, triggers immediate
+           shutdown to prevent processing corrupted frames.
+        3. Generic ``Exception`` — unexpected, logged with full traceback
+           but does not kill the loop (data-plane resilience).
+        """
         async for message in self.ws:
             try:
                 data = json.loads(message)
@@ -131,6 +144,15 @@ class TelegramDaemon:
 
             except json.JSONDecodeError:
                 logger.error("🚫 Recibido JSON malformado desde el Gateway.")
+            except InvalidMessage as e:
+                # M-01: Fatal protocol violation — the WS frame is structurally
+                # corrupt. Continuing would risk processing garbage data.
+                logger.critical(
+                    "FATAL: Invalid WebSocket message from Gateway — "
+                    "shutting down listen loop to prevent corrupt processing: %s",
+                    e,
+                )
+                break
             except Exception as e:
                 logger.exception(f"⚠️ Error procesando flujo de WebSocket: {e}")
 
@@ -233,7 +255,14 @@ class UIBroadcastServer:
 
     Validates X-Auth-Token on upgrade, then pushes AGENT_RESULT / BROADCAST
     events to all connected UI clients.
+
+    H-03: Per-client rate limiting via sliding-window timestamp tracking.
+    Each client is allowed ``_RATE_LIMIT_MAX`` messages per
+    ``_RATE_LIMIT_WINDOW`` seconds.  Exceeding clients are disconnected.
     """
+
+    _RATE_LIMIT_WINDOW: float = 10.0  # seconds
+    _RATE_LIMIT_MAX: int = 60  # max messages per window
 
     def __init__(self, host: str = "127.0.0.1", port: int = 8765):
         self.host = host
@@ -242,6 +271,20 @@ class UIBroadcastServer:
         self._server = None
         self._auth = AuthTokenManager()
         self._logger = logging.getLogger("SkyClaw.UIBroadcast")
+        # H-03: per-client message timestamps for rate limiting.
+        # DT-01: deque gives O(1) popleft vs list.pop(0) O(n).
+        self._client_timestamps: defaultdict[int, deque[float]] = defaultdict(deque)
+
+    @staticmethod
+    def _request_header(websocket, name: str) -> str:
+        """Read a handshake header across websockets legacy and 16.x APIs."""
+        headers = getattr(websocket, "request_headers", None)
+        if headers is None:
+            request = getattr(websocket, "request", None)
+            headers = getattr(request, "headers", None)
+        if headers is None:
+            return ""
+        return headers.get(name, "")
 
     async def start(self) -> None:
         """Generate auth token and start the WS server."""
@@ -283,20 +326,44 @@ class UIBroadcastServer:
         self._clients -= disconnected
 
     async def _handler(self, websocket, path: str = "") -> None:
-        """Handle incoming UI client connections with token validation."""
+        """Handle incoming UI client connections with token validation.
+
+        H-03: Each inbound message is rate-checked.  If the client exceeds
+        ``_RATE_LIMIT_MAX`` messages within the sliding ``_RATE_LIMIT_WINDOW``,
+        the connection is terminated with code 1008 (POLICY_VIOLATION).
+        """
         # ── Auth gate ──
-        token = websocket.request_headers.get("X-Auth-Token", "")
+        token = self._request_header(websocket, "X-Auth-Token")
         if not self._auth.validate(token):
             self._logger.warning(f"🚫 Rejected UI client — invalid token from {websocket.remote_address}")
             await websocket.close(4001, "Unauthorized")
             return
 
+        client_id = id(websocket)
         self._clients.add(websocket)
         self._logger.info(f"✅ UI client connected ({len(self._clients)} total)")
 
         try:
             # Listen for commands from the UI (chat messages, etc.)
             async for raw in websocket:
+                # ── H-03: Per-client rate limiting (sliding window) ──
+                now = time.monotonic()
+                timestamps = self._client_timestamps[client_id]
+                # Prune entries outside the window
+                cutoff = now - self._RATE_LIMIT_WINDOW
+                while timestamps and timestamps[0] < cutoff:
+                    timestamps.popleft()
+                if len(timestamps) >= self._RATE_LIMIT_MAX:
+                    self._logger.warning(
+                        "🚫 Rate limit exceeded for UI client %s (%d msgs in %.0fs). Disconnecting.",
+                        websocket.remote_address,
+                        len(timestamps),
+                        self._RATE_LIMIT_WINDOW,
+                    )
+                    await websocket.close(1008, "Rate limit exceeded")
+                    return
+                timestamps.append(now)
+
                 try:
                     data = json.loads(raw)
                     msg_type = data.get("type", "")
@@ -323,4 +390,5 @@ class UIBroadcastServer:
             pass
         finally:
             self._clients.discard(websocket)
+            self._client_timestamps.pop(client_id, None)
             self._logger.info(f"UI client disconnected ({len(self._clients)} remaining)")

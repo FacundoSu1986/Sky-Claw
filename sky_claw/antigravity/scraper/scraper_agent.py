@@ -13,6 +13,7 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt,
 from sky_claw.antigravity.core.database import DatabaseAgent
 from sky_claw.antigravity.core.models import CircuitBreakerTrippedError
 from sky_claw.antigravity.core.schemas import ModMetadata, ScrapingQuery
+from sky_claw.antigravity.security.network_gateway import EgressViolationError, GatewayTCPConnector
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.security.network_gateway import NetworkGateway
@@ -100,6 +101,9 @@ class ScraperAgent:
         Returns:
             dict con los datos de respuesta del API.
         """
+        if self._gateway is None:
+            raise EgressViolationError("NetworkGateway is required for ScraperAgent API egress")
+
         nexus_id = query.mod_id or 0
         url = f"https://api.nexusmods.com/v1/games/skyrimspecialedition/mods/{nexus_id}.json"
         headers = {"apikey": self.nexus_api_key or "", "User-Agent": "SkyClaw/1.0"}
@@ -112,23 +116,17 @@ class ScraperAgent:
                 reraise=True,
             ):
                 with attempt:
-                    if self._gateway is not None:
-                        # Route through NetworkGateway to enforce egress allow-list
-                        # and prevent SSRF.  gateway.request() validates the URL
-                        # before forwarding and follows redirects safely.
-                        resp = await self._gateway.request("GET", url, s, headers=headers)
-                        resp.raise_for_status()
-                        data: dict[str, Any] = await resp.json()
-                    else:
-                        async with s.get(url, headers=headers) as resp:
-                            resp.raise_for_status()
-                            data = await resp.json()
+                    # Route through NetworkGateway to enforce egress allow-list,
+                    # redirect validation, and SSRF controls.
+                    resp = await self._gateway.request("GET", url, s, headers=headers)
+                    resp.raise_for_status()
+                    data: dict[str, Any] = await resp.json()
                     return {"status": "success", "source": "API", "data": data}
             return {}  # unreachable: reraise=True propagates on exhaustion
 
         if session is not None:
             return await _fetch(session)
-        async with aiohttp.ClientSession() as own_session:
+        async with aiohttp.ClientSession(connector=GatewayTCPConnector(self._gateway, limit=10)) as own_session:
             return await _fetch(own_session)
 
     async def _stealth_scrape(self, query: ScrapingQuery) -> dict[str, Any]:

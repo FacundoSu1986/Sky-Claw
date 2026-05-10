@@ -64,6 +64,7 @@ class ReleaseAsset:
     name: str
     size: int
     download_url: str
+    browser_download_url: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,7 +240,7 @@ class ToolsInstaller:
         decision = await self._hitl.request_approval(
             request_id=f"install-loot-{version}",
             reason=f"Install LOOT {version}?",
-            url=asset.download_url,
+            url=asset.browser_download_url,
             detail=(
                 f"Asset: {asset.name}\nSize: {asset.size / (1024 * 1024):.1f} MB\nSource: GitHub loot/loot releases"
             ),
@@ -297,7 +298,7 @@ class ToolsInstaller:
         decision = await self._hitl.request_approval(
             request_id=f"install-xedit-{version}",
             reason=f"Install SSEEdit {version}?",
-            url=asset.download_url,
+            url=asset.browser_download_url,
             detail=(
                 f"Asset: {asset.name}\n"
                 f"Size: {asset.size / (1024 * 1024):.1f} MB\n"
@@ -358,7 +359,7 @@ class ToolsInstaller:
         decision = await self._hitl.request_approval(
             request_id=f"install-pandora-{version}",
             reason=f"Install Pandora Behavior Engine {version}?",
-            url=asset.download_url,
+            url=asset.browser_download_url,
             detail=(
                 f"Asset: {asset.name}\n"
                 f"Size: {asset.size / (1024 * 1024):.1f} MB\n"
@@ -493,11 +494,18 @@ class ToolsInstaller:
         for a in assets:
             name: str = a.get("name", "")
             if keyword.lower() in name.lower() and (name.endswith(".zip") or name.endswith(".7z")):
+                api_url = a.get("url")
+                browser_download_url = a.get("browser_download_url")
+                if not isinstance(api_url, str) or not api_url:
+                    raise ToolInstallError(f"Release asset {name!r} is missing its GitHub API URL")
+                if not isinstance(browser_download_url, str) or not browser_download_url:
+                    raise ToolInstallError(f"Release asset {name!r} is missing its browser download URL")
                 return (
                     ReleaseAsset(
                         name=name,
                         size=int(a.get("size", 0)),
-                        download_url=str(a["browser_download_url"]),
+                        download_url=api_url,
+                        browser_download_url=browser_download_url,
                     ),
                     version,
                 )
@@ -511,7 +519,7 @@ class ToolsInstaller:
         asset: ReleaseAsset,
         dest_dir: pathlib.Path,
     ) -> pathlib.Path:
-        """Download a GitHub release asset to *dest_dir*.
+        """Download a GitHub release asset to *dest_dir* via the API endpoint.
 
         Validates file size after download.  Logs progress every 10 MB.
         """
@@ -521,6 +529,7 @@ class ToolsInstaller:
         self._validator.validate(dest)
 
         timeout = aiohttp.ClientTimeout(total=600, sock_read=60)
+        headers = {"Accept": "application/octet-stream"}
         downloaded = 0
         hasher = hashlib.sha256()
 
@@ -531,7 +540,7 @@ class ToolsInstaller:
         )
 
         try:
-            async with session.get(asset.download_url, timeout=timeout) as resp:
+            async with session.get(asset.download_url, headers=headers, timeout=timeout) as resp:
                 resp.raise_for_status()
                 with dest.open("wb") as fh:
                     async for chunk in resp.content.iter_chunked(_DOWNLOAD_CHUNK_SIZE):
@@ -545,7 +554,7 @@ class ToolsInstaller:
                                 asset.size,
                                 (downloaded / asset.size * 100) if asset.size else 0,
                             )
-        except Exception as exc:
+        except (aiohttp.ClientError, OSError, TimeoutError) as exc:
             logger.error("Download failed for %s: %s", asset.name, exc)
             if dest.exists():
                 dest.unlink()

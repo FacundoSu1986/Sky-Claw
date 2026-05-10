@@ -48,18 +48,21 @@ class TestHostAllowList:
             await gw.authorize("GET", "https://evil.example.com/payload")
 
     @pytest.mark.asyncio
-    async def test_github_get_allowed(self, gw: NetworkGateway) -> None:
-        # github.com is in the allow-list for GET (tool auto-install).
-        await gw.authorize("GET", "https://github.com/some/repo")
+    async def test_github_com_blocked_h02(self, gw: NetworkGateway) -> None:
+        # H-02: github.com removed from ALLOWED_HOSTS (was also in OUT_OF_SCOPE_HOSTS).
+        # api.github.com remains allowed.
+        with pytest.raises(EgressViolationError, match="not in the allow-list"):
+            await gw.authorize("GET", "https://github.com/some/repo")
 
     @pytest.mark.asyncio
-    async def test_github_post_blocked(self, gw: NetworkGateway) -> None:
-        with pytest.raises(EgressViolationError, match="not allowed"):
-            await gw.authorize("POST", "https://github.com/some/repo")
+    async def test_github_api_get_allowed(self, gw: NetworkGateway) -> None:
+        # api.github.com is still allowed for API access.
+        await gw.authorize("GET", "https://api.github.com/repos/some/repo")
 
     @pytest.mark.asyncio
     async def test_empty_url_rejected(self, gw: NetworkGateway) -> None:
-        with pytest.raises(EgressViolationError, match="no hostname"):
+        # H-01: Empty URLs are now caught by strict pre-validation.
+        with pytest.raises(EgressViolationError, match="URL rejected"):
             await gw.authorize("GET", "")
 
 
@@ -109,6 +112,21 @@ class TestTelegramPathPrefix:
 
 
 class TestPrivateIPBlocking:
+    @pytest.mark.asyncio
+    async def test_public_http_scheme_rejected_by_authorize(self, gw: NetworkGateway) -> None:
+        with pytest.raises(EgressViolationError, match="Insecure scheme"):
+            await gw.authorize("GET", "http://www.nexusmods.com/mods")
+
+    @pytest.mark.asyncio
+    async def test_loopback_http_scheme_allowed_when_policy_allows_host(self) -> None:
+        policy = EgressPolicy(
+            allowed_hosts=frozenset(["127.0.0.1"]),
+            allowed_methods={"127.0.0.1": frozenset(["GET"])},
+            block_private_ips=False,
+        )
+        gw = NetworkGateway(policy)
+        await gw.authorize("GET", "http://127.0.0.1:8765/health")
+
     @pytest.mark.asyncio
     async def test_loopback_literal_blocked(self, gw_strict: NetworkGateway) -> None:
         with pytest.raises(EgressViolationError, match="private/loopback"):

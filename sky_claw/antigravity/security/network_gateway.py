@@ -15,12 +15,13 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import re
 import socket
 import ssl
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
 
 import aiohttp
 
@@ -153,13 +154,33 @@ class NetworkGateway:
     # Public API
     # ------------------------------------------------------------------
 
+    # Strict pre-validation: prevents scheme smuggling and CRLF injection.
+    # Runs BEFORE urlparse, which is historically lenient with malformed inputs.
+    _STRICT_PREFIX_RE = re.compile(r"^https?://[a-zA-Z0-9]")
+
     async def authorize(self, method: str, url: str) -> None:
         """Validate *method* + *url* against the egress policy.
 
         Raises :class:`EgressViolationError` when the request is not permitted.
+
+        H-01 hardening (Fixed): Rejects embedded control characters (CRLF) and
+        triple-slash scheme smuggling before ``urlparse`` sees them.
         """
         method = method.upper()
-        parsed = urlparse(url)
+
+        stripped = url.strip()
+        if stripped != url:
+            raise EgressViolationError("URL rejected: Leading or trailing whitespace not allowed.")
+
+        # Block any embedded control characters, spaces, or non-ASCII (CRLF smuggling vector).
+        if any(ord(c) <= 32 or ord(c) >= 127 for c in stripped):
+            raise EgressViolationError(f"URL rejected: Contains control characters or whitespace: {url!r}")
+
+        # Block triple slashes (e.g. https:///evil.com) and ensure it starts with an alphanumeric host.
+        if not self._STRICT_PREFIX_RE.match(stripped):
+            raise EgressViolationError(f"URL rejected: Must start with http(s):// followed by alphanumeric: {url!r}")
+
+        parsed = urlparse(stripped)
         hostname = (parsed.hostname or "").lower()
 
         if not hostname:
@@ -173,6 +194,7 @@ class NetworkGateway:
         except ValueError:
             pass
 
+        self._check_scheme_allowed(parsed)
         self._check_host_allowed(hostname)
         self._check_method_allowed(method, hostname)
         self._check_telegram_path(hostname, parsed.path)
@@ -198,9 +220,8 @@ class NetworkGateway:
             await self.authorize(method, current_url)
 
             parsed = urlparse(current_url)
+            self._check_scheme_allowed(parsed)
             is_loopback = self._is_loopback_host(parsed.hostname or "")
-            if parsed.scheme != "https" and not is_loopback:
-                raise EgressViolationError(f"Insecure scheme '{parsed.scheme}' blocked: {current_url}")
 
             hop_kwargs = dict(kwargs)
             safe_timeout = aiohttp.ClientTimeout(total=45, connect=10)
@@ -212,7 +233,7 @@ class NetworkGateway:
             try:
                 response = await session.request(method, current_url, **hop_kwargs)
             except TimeoutError as _exc:
-                logger.error(f"Timeout al contactar {current_url}")
+                logger.error("Timeout al contactar %s", current_url)
                 raise NetworkGatewayTimeoutError(f"La petición a {current_url} excedió el tiempo límite.") from _exc
 
             if response.status in (301, 302, 303, 307, 308):
@@ -254,6 +275,14 @@ class NetworkGateway:
             return addr.is_loopback
         except ValueError:
             return False
+
+    def _check_scheme_allowed(self, parsed: ParseResult) -> None:
+        """Allow HTTPS everywhere, HTTP only for explicit loopback targets."""
+        if parsed.scheme == "https":
+            return
+        if parsed.scheme == "http" and self._is_loopback_host(parsed.hostname or ""):
+            return
+        raise EgressViolationError(f"Insecure scheme '{parsed.scheme}' blocked: {parsed.geturl()}")
 
     def _matching_pattern(self, hostname: str) -> str | None:
         """Return the first allow-list pattern that matches *hostname*, or None.
