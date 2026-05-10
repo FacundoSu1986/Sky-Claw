@@ -231,7 +231,7 @@ class GovernanceManager:
             # Phase 2: Atomic rename (both files exist with valid content)
             wl_tmp.replace(self.whitelist_path)
             sig_tmp.replace(self._hmac_sig_path)
-        except (OSError, RuntimeError, ValueError) as e:
+        except (OSError, TypeError, RuntimeError) as e:
             logger.error("Error guardando whitelist: %s", e)
             # Clean up any leftover temp files
             for tmp in (
