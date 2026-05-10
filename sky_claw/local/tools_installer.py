@@ -540,8 +540,11 @@ class ToolsInstaller:
 
         try:
             resp = await self._gateway.request(
-                "GET", asset.download_url, session,
-                headers=headers, timeout=timeout,
+                "GET",
+                asset.download_url,
+                session,
+                headers=headers,
+                timeout=timeout,
             )
             async with resp:
                 resp.raise_for_status()

@@ -260,13 +260,10 @@ class TestScraperAgentGatewayBoundary:
 
     @pytest.mark.asyncio
     async def test_api_request_without_gateway_fails_closed(self):
-        from sky_claw.antigravity.core.schemas import ScrapingQuery
         from sky_claw.antigravity.scraper.scraper_agent import ScraperAgent
-        from sky_claw.antigravity.security.network_gateway import EgressViolationError
 
         db = MagicMock()
-        scraper = ScraperAgent(db, gateway=None)
-        scraper.nexus_api_key = "nexus-key"
-
-        with pytest.raises(EgressViolationError, match="NetworkGateway"):
-            await scraper._api_request(ScrapingQuery(query="SkyUI", mod_id=1))
+        # PR #118: ScraperAgent now requires gateway in constructor (fail-closed)
+        # and raises ValueError if None is passed
+        with pytest.raises(ValueError, match="requires a NetworkGateway"):
+            ScraperAgent(db, gateway=None)
