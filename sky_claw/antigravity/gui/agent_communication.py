@@ -186,6 +186,8 @@ class AgentCommunicationClient:
                     if self._consecutive_auth_failures >= 5:
                         self._auth_lockout_until = time.time() + 300.0
                         logger.warning("AUTH LOCKOUT: 5 consecutive auth rejections. Pausing 5 min.")
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.error("Unexpected error in agent comm: %s", e)
             finally:
@@ -224,6 +226,8 @@ class AgentCommunicationClient:
                     "Dropping daemon message because callback queue is full (%d).",
                     self._dispatch_queue.maxsize,
                 )
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.exception("Error processing daemon message: %s", e)
 
@@ -252,6 +256,8 @@ class AgentCommunicationClient:
             try:
                 if self._on_message is not None:
                     await asyncio.to_thread(self._on_message, data)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 logger.exception("Synchronous on_message callback failed: %s", exc)
             finally:

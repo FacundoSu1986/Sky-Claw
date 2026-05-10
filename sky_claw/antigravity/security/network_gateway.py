@@ -178,7 +178,7 @@ class NetworkGateway:
 
         # Block triple slashes (e.g. https:///evil.com) before urlparse.
         if not self._STRICT_PREFIX_RE.match(stripped):
-            raise EgressViolationError(f"URL rejected: Must start with http(s)://: {url!r}")
+            raise EgressViolationError(f"URL rejected: Must start with http(s)://, got: {url!r}")
         if stripped.lower().startswith(("http:///", "https:///")):
             raise EgressViolationError(f"URL rejected: Empty authority is not allowed: {url!r}")
 
