@@ -28,7 +28,12 @@ from sky_claw.antigravity.security.credential_vault import CredentialVault
 def vault(tmp_path):
     """Return an initialised CredentialVault backed by a tmp DB."""
     db_path = str(tmp_path / "vault_sec02.db")
-    vault = CredentialVault(db_path=db_path, master_key="test-master-key")
+    with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        vault = CredentialVault(
+            db_path=db_path,
+            master_key="test-master-key",
+            salt_dir=tmp_path / "salt",
+        )
     return vault
 
 

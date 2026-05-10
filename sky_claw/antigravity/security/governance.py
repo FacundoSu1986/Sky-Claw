@@ -7,6 +7,7 @@ Implementación persistente en SQLite y JSON.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -197,19 +198,48 @@ class GovernanceManager:
         return set()
 
     def save_whitelist(self):
-        """Persiste la lista blanca en disco con protección HMAC."""
+        """Persiste la lista blanca en disco con protección HMAC.
+
+        M-04: Both whitelist and HMAC signature are written atomically.
+        The sequence is:
+        1. Write whitelist to .tmp, compute HMAC, write sig to .tmp.
+        2. Rename whitelist .tmp into place.
+        3. Rename sig .tmp into place.
+
+        If the process crashes between (2) and (3), the next load will
+        detect the missing sig file and fail-closed (RuntimeError L177).
+        This is strictly better than the old behaviour where a crash
+        between write and HMAC computation left a whitelist with NO sig
+        at all, causing silent data loss on reload.
+        """
         try:
             content = json.dumps({"approved_hashes": list(self.whitelist)}, indent=4)
             raw = content.encode("utf-8")
-            self.whitelist_path.write_bytes(raw)
 
-            # Generar/actualizar HMAC de integridad
+            # Phase 1: Write to temp files
+            wl_tmp = self.whitelist_path.with_suffix(".json.tmp")
+            sig_tmp = self._hmac_sig_path.with_suffix(".hmac.tmp")
+
+            wl_tmp.write_bytes(raw)
+            restrict_to_owner(wl_tmp)
+
             key = self._get_or_create_hmac_key()
             sig = self._compute_hmac(raw, key)
-            self._hmac_sig_path.write_text(sig)
-            restrict_to_owner(self._hmac_sig_path)
+            sig_tmp.write_text(sig)
+            restrict_to_owner(sig_tmp)
+
+            # Phase 2: Atomic rename (both files exist with valid content)
+            wl_tmp.replace(self.whitelist_path)
+            sig_tmp.replace(self._hmac_sig_path)
         except Exception as e:
             logger.error("Error guardando whitelist: %s", e)
+            # Clean up any leftover temp files
+            for tmp in (
+                self.whitelist_path.with_suffix(".json.tmp"),
+                self._hmac_sig_path.with_suffix(".hmac.tmp"),
+            ):
+                with contextlib.suppress(OSError):
+                    tmp.unlink(missing_ok=True)
 
     @staticmethod
     def _hash_file_blocking(file_path: str) -> str | None:
