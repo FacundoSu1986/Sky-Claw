@@ -540,20 +540,19 @@ class ToolsInstaller:
 
         try:
             resp = await self._gateway.request("GET", asset.download_url, session, headers=headers, timeout=timeout)
-            async with resp:
-                resp.raise_for_status()
-                with dest.open("wb") as fh:
-                    async for chunk in resp.content.iter_chunked(_DOWNLOAD_CHUNK_SIZE):
-                        fh.write(chunk)
-                        hasher.update(chunk)
-                        downloaded += len(chunk)
-                        if downloaded % (10 * _DOWNLOAD_CHUNK_SIZE) == 0:
-                            logger.info(
-                                "  ... %d / %d bytes (%.0f%%)",
-                                downloaded,
-                                asset.size,
-                                (downloaded / asset.size * 100) if asset.size else 0,
-                            )
+            resp.raise_for_status()
+            with dest.open("wb") as fh:
+                async for chunk in resp.content.iter_chunked(_DOWNLOAD_CHUNK_SIZE):
+                    fh.write(chunk)
+                    hasher.update(chunk)
+                    downloaded += len(chunk)
+                    if downloaded % (10 * _DOWNLOAD_CHUNK_SIZE) == 0:
+                        logger.info(
+                            "  ... %d / %d bytes (%.0f%%)",
+                            downloaded,
+                            asset.size,
+                            (downloaded / asset.size * 100) if asset.size else 0,
+                        )
         except (aiohttp.ClientError, OSError, TimeoutError) as exc:
             logger.error("Download failed for %s: %s", asset.name, exc)
             if dest.exists():
