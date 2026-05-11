@@ -70,6 +70,12 @@ class TestMetricsServer:
         assert _resolve_bind_port(None) == _DEFAULT_PORT
         assert any("metrics_port_invalid_fallback" in rec.message for rec in caplog.records)
 
+    def test_resolve_bind_port_allows_ephemeral_port_zero(self, monkeypatch) -> None:
+        from sky_claw.antigravity.core.metrics_server import _resolve_bind_port
+
+        monkeypatch.setenv("SKYCLAW_METRICS_PORT", "0")
+        assert _resolve_bind_port(None) == 0
+
     async def test_returns_401_without_token(self, aiohttp_client) -> None:
         client = await aiohttp_client(_build_app(lambda t: t == "good"))
         resp = await client.get("/metrics")

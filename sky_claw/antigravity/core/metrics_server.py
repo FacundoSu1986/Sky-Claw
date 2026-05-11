@@ -76,7 +76,7 @@ def _resolve_bind_port(port: int | None) -> int:
 
     try:
         parsed = int(env_port)
-        if 1 <= parsed <= 65535:
+        if 0 <= parsed <= 65535:
             return parsed
     except ValueError:
         pass
