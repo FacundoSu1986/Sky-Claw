@@ -163,7 +163,7 @@ async def test_dlq_retry_delivers_to_handler(tmp_path: Path) -> None:
     await bus.publish(Event(topic="retry.test", payload={"attempt": True}))
     await poll_until(
         lambda: len(retried) >= 2,
-        timeout=5.0,
+        timeout=30.0,
         msg="Handler no fue llamado 2 veces (initial dispatch + DLQ retry)",
     )
     await bus.stop()

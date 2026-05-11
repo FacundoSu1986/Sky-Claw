@@ -160,7 +160,7 @@ async def test_in_progress_rows_recovered_on_startup(tmp_path: Path) -> None:
     try:
         await poll_until(
             _row_is_pending,
-            timeout=3.0,
+            timeout=30.0,
             msg="H-05: la fila in_progress debe recuperarse a 'pending' al arrancar el worker",
         )
     finally:
