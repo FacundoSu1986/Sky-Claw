@@ -71,9 +71,7 @@ class TestMicroBatching:
         ]
         await async_registry.insert_deps_batch(deps)
         assert async_registry._conn is not None
-        async with async_registry._conn.execute(
-            "SELECT * FROM dependencies WHERE mod_id = ?", (mod_id,)
-        ) as cur:
+        async with async_registry._conn.execute("SELECT * FROM dependencies WHERE mod_id = ?", (mod_id,)) as cur:
             found = await cur.fetchall()
         assert len(found) == 2
 

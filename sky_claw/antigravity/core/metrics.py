@@ -65,6 +65,4 @@ def record_queue_depth(value: int) -> None:
 
 
 def record_circuit_state(breaker_name: str, state: str) -> None:
-    CIRCUIT_BREAKER_STATE.labels(breaker_name=breaker_name).set(
-        _STATE_INT_MAP.get(state, 0)
-    )
+    CIRCUIT_BREAKER_STATE.labels(breaker_name=breaker_name).set(_STATE_INT_MAP.get(state, 0))
