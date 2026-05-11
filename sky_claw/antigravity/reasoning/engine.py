@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 class CycleDetector:
     """Detector de estados repetidos para evitar ciclos en la búsqueda."""
 
-    def __init__(self, state_hash_func: Callable[[Any], str] | None = None):
+    def __init__(self, state_hash_func: Callable[[Any], str] | None = None) -> None:
         """
         Inicializa el detector de ciclos.
 
@@ -89,7 +89,7 @@ class CycleDetector:
 class PruningPolicy:
     """Política de poda dinámica para filtrar nodos."""
 
-    def __init__(self, config: ToTConfig):
+    def __init__(self, config: ToTConfig) -> None:
         self._config = config
 
     def apply(self, nodes: list[ThoughtNode[T]]) -> list[ThoughtNode[T]]:
@@ -211,7 +211,7 @@ class TreeOfThoughtEngine(Generic[T, S]):
         config: ToTConfig | None = None,
         llm_client: Any | None = None,
         state_hash_func: Callable[[T], str] | None = None,
-    ):
+    ) -> None:
         """
         Inicializa el motor ToT.
 
@@ -504,15 +504,15 @@ def create_tot_engine(
     """
 
     class SimpleThoughtGenerator:
-        async def generate(self, current_state, n, context):
+        async def generate(self, current_state: Any, n: int, context: Any) -> Any:
             return await llm_generate_func(current_state, n, context)
 
     class SimpleThoughtEvaluator:
-        async def evaluate(self, thought, thought_description, context):
+        async def evaluate(self, thought: Any, thought_description: str, context: Any) -> Any:
             return await llm_evaluate_func(thought, thought_description, context)
 
     class SimpleSolutionChecker:
-        def check(self, state):
+        def check(self, state: Any) -> Any:
             return solution_check_func(state)
 
     return TreeOfThoughtEngine(
@@ -537,7 +537,7 @@ class DefaultThoughtGenerator:
     un cliente LLM real, evitando comportamientos aleatorios que ocultan errores.
     """
 
-    def __init__(self, llm_client: Any | None = None):
+    def __init__(self, llm_client: Any | None = None) -> None:
         self._llm = llm_client
 
     async def generate(
@@ -573,7 +573,7 @@ class DefaultThoughtEvaluator:
     un cliente LLM real, evitando comportamientos aleatorios que ocultan errores.
     """
 
-    def __init__(self, llm_client: Any | None = None):
+    def __init__(self, llm_client: Any | None = None) -> None:
         self._llm = llm_client
 
     async def evaluate(

@@ -58,13 +58,13 @@ class Config:
     DEFAULT_CONFIG_DIR = pathlib.Path.home() / ".sky_claw"
     DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.toml"
 
-    def __init__(self, config_path: pathlib.Path | None = None):
+    def __init__(self, config_path: pathlib.Path | None = None) -> None:
         self._config_path = config_path or self.DEFAULT_CONFIG_FILE
         self._data: dict[str, Any] = self._load_defaults()
         self._load_from_file()
         self._load_from_keyring()
 
-    def _load_from_keyring(self):
+    def _load_from_keyring(self) -> None:
         sensitive_keys = [
             "llm_api_key",
             "openai_api_key",
@@ -129,7 +129,7 @@ class Config:
             "first_run": True,
         }
 
-    def _load_from_file(self):
+    def _load_from_file(self) -> None:
         if self._config_path.exists():
             try:
                 with open(self._config_path, "rb") as f:
@@ -166,7 +166,7 @@ class Config:
             return self._data[name]
         raise AttributeError(f"'Config' object has no attribute '{name}'")
 
-    def save(self):
+    def save(self) -> None:
         """Persist current configuration to TOML."""
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         import tomli_w
