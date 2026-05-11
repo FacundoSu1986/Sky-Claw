@@ -746,6 +746,7 @@ class SyncEngine:
     ) -> None:
         mod_rows: list[tuple[int, str, str, str, str, str, bool, bool]] = []
         log_rows: list[tuple[int | None, str, str, str]] = []
+        batch_success_count = 0
 
         for mod_name, enabled in batch:
             nexus_id = _extract_nexus_id(mod_name)
@@ -786,10 +787,12 @@ class SyncEngine:
             )
             log_rows.append((None, "sync", "ok", mod_name))
             result.processed += 1
-            record_sync_success(1)
+            batch_success_count += 1
 
         await self._registry.upsert_mods_batch(mod_rows)
         await self._registry.log_tasks_batch(log_rows)
+        if batch_success_count:
+            record_sync_success(batch_success_count)
 
 
 def _extract_nexus_id(mod_name: str) -> int | None:

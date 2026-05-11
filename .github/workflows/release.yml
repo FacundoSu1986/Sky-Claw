@@ -53,7 +53,9 @@ jobs:
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           artifact-name: sky-claw-${{ github.ref_name }}-sbom.spdx.json
+          output-file: sky-claw-${{ github.ref_name }}-sbom.spdx.json
           path: dist/
+          upload-release-assets: false  # action-gh-release handles the upload below
 
       # ── Signing (cosign keyless via OIDC) ─────────────────
       - name: Install cosign
