@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 import logging
+from importlib import metadata
 
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 
@@ -8,7 +10,6 @@ from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 class TestTracingModule:
     def test_configure_returns_noop_when_no_endpoint(self, monkeypatch) -> None:
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-        import importlib
 
         from sky_claw.antigravity.core import tracing as t
 
@@ -20,7 +21,6 @@ class TestTracingModule:
 
     def test_configure_returns_sdk_provider_when_endpoint_set(self, monkeypatch) -> None:
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
-        import importlib
 
         from sky_claw.antigravity.core import tracing as t
 
@@ -31,7 +31,6 @@ class TestTracingModule:
 
     def test_get_tracer_returns_tracer(self, monkeypatch) -> None:
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-        import importlib
 
         from sky_claw.antigravity.core import tracing as t
 
@@ -42,7 +41,6 @@ class TestTracingModule:
 
     def test_shutdown_is_idempotent(self, monkeypatch) -> None:
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-        import importlib
 
         from sky_claw.antigravity.core import tracing as t
 
@@ -53,7 +51,6 @@ class TestTracingModule:
 
     def test_configure_is_idempotent(self, monkeypatch) -> None:
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-        import importlib
 
         from sky_claw.antigravity.core import tracing as t
 
@@ -63,8 +60,6 @@ class TestTracingModule:
 
     def test_service_version_falls_back_when_distribution_missing(self, monkeypatch) -> None:
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
-        import importlib
-        from importlib import metadata
 
         from sky_claw.antigravity.core import tracing as t
 
