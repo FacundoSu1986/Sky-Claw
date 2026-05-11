@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from prometheus_client import CollectorRegistry
 from prometheus_client.exposition import generate_latest
 
@@ -63,7 +65,7 @@ class TestMetricsServer:
     def test_resolve_bind_port_invalid_env_falls_back_default(self, monkeypatch, caplog) -> None:
         from sky_claw.antigravity.core.metrics_server import _DEFAULT_PORT, _resolve_bind_port
 
-        caplog.set_level("WARNING")
+        caplog.set_level(logging.WARNING)
         monkeypatch.setenv("SKYCLAW_METRICS_PORT", "invalid")
         assert _resolve_bind_port(None) == _DEFAULT_PORT
         assert any("metrics_port_invalid_fallback" in rec.message for rec in caplog.records)

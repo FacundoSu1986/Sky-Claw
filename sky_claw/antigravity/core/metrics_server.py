@@ -76,15 +76,16 @@ def _resolve_bind_port(port: int | None) -> int:
 
     try:
         parsed = int(env_port)
-        if not 1 <= parsed <= 65535:
-            raise ValueError
-        return parsed
+        if 1 <= parsed <= 65535:
+            return parsed
     except ValueError:
-        logger.warning(
-            "metrics_port_invalid_fallback",
-            extra={"value": env_port, "default_port": _DEFAULT_PORT},
-        )
-        return _DEFAULT_PORT
+        pass
+
+    logger.warning(
+        "metrics_port_invalid_fallback",
+        extra={"value": env_port, "default_port": _DEFAULT_PORT},
+    )
+    return _DEFAULT_PORT
 
 
 async def stop_metrics_server(runner: web.AppRunner) -> None:
