@@ -54,6 +54,20 @@ def _build_app(validator):
 
 
 class TestMetricsServer:
+    def test_resolve_bind_port_uses_explicit_port(self, monkeypatch) -> None:
+        from sky_claw.antigravity.core.metrics_server import _resolve_bind_port
+
+        monkeypatch.setenv("SKYCLAW_METRICS_PORT", "not-an-int")
+        assert _resolve_bind_port(9200) == 9200
+
+    def test_resolve_bind_port_invalid_env_falls_back_default(self, monkeypatch, caplog) -> None:
+        from sky_claw.antigravity.core.metrics_server import _DEFAULT_PORT, _resolve_bind_port
+
+        caplog.set_level("WARNING")
+        monkeypatch.setenv("SKYCLAW_METRICS_PORT", "invalid")
+        assert _resolve_bind_port(None) == _DEFAULT_PORT
+        assert any("metrics_port_invalid_fallback" in rec.message for rec in caplog.records)
+
     async def test_returns_401_without_token(self, aiohttp_client) -> None:
         client = await aiohttp_client(_build_app(lambda t: t == "good"))
         resp = await client.get("/metrics")
