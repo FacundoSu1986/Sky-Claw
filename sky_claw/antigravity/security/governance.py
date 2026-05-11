@@ -231,7 +231,7 @@ class GovernanceManager:
             # Phase 2: Atomic rename (both files exist with valid content)
             wl_tmp.replace(self.whitelist_path)
             sig_tmp.replace(self._hmac_sig_path)
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.error("Error guardando whitelist: %s", e)
             # Clean up any leftover temp files
             for tmp in (
@@ -240,6 +240,7 @@ class GovernanceManager:
             ):
                 with contextlib.suppress(OSError):
                     tmp.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def _hash_file_blocking(file_path: str) -> str | None:

@@ -7,6 +7,10 @@ from sky_claw import logging_config
 from sky_claw.logging_config import SecurityRedactionFilter
 
 
+def _token(*parts: str) -> str:
+    return "".join(parts)
+
+
 def test_redacts_modern_llm_and_bearer_tokens() -> None:
     redact_filter = SecurityRedactionFilter()
     text = (
@@ -30,6 +34,46 @@ def test_redacts_long_telegram_bot_ids() -> None:
 
     assert "12345678901:" not in redacted
     assert redacted == "token=[REDACTED]"
+
+
+def test_redacts_common_platform_tokens() -> None:
+    redact_filter = SecurityRedactionFilter()
+    github_classic = _token("gh", "p_", "1234567890abcdefABCDEF1234567890abcdef")
+    github_fine_grained = _token(
+        "github",
+        "_pat_",
+        "1234567890_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi",
+    )
+    aws_key = _token("AK", "IA", "IOSFODNN7EXAMPLE")
+    slack_token = _token("xo", "xb-", "123456789012-", "123456789012-", "abcdefghijklmnopqrstuvwxyz")
+    gitlab_token = _token("gl", "pat-", "abcdefghijklmnopqrst")
+    jwt_token = _token(
+        "eyJhbGciOiJIUzI1NiJ9",
+        ".",
+        "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+        ".",
+        "signaturepart",
+    )
+    text = " ".join(
+        (
+            f"github={github_classic}",
+            f"github_fine_grained={github_fine_grained}",
+            f"aws={aws_key}",
+            f"slack={slack_token}",
+            f"gitlab={gitlab_token}",
+            f"jwt={jwt_token}",
+        )
+    )
+
+    redacted = redact_filter._redact(text)
+
+    assert "ghp_" not in redacted
+    assert "github_pat_" not in redacted
+    assert "AKIA" not in redacted
+    assert "xoxb-" not in redacted
+    assert "glpat-" not in redacted
+    assert "eyJ" not in redacted
+    assert redacted.count("[REDACTED]") == 6
 
 
 def test_filter_redacts_nested_extra_values() -> None:

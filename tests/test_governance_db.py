@@ -88,3 +88,24 @@ async def test_governance_uses_lifecycle_connection(
 
     await governance.update_scan_result(str(f), results=[], status="CLEAN")
     assert str(governance.cache_db_path) in lifecycle.managed_paths
+
+
+def test_save_whitelist_propagates_persistence_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whitelist approval must not report success if persistence fails."""
+    GovernanceManager._instance = None
+    gov = GovernanceManager(base_path=str(tmp_path))
+    gov.whitelist.add("abc123")
+
+    def _deny_owner_restriction(_path: Path) -> None:
+        raise PermissionError("acl hardening failed")
+
+    monkeypatch.setattr(
+        "sky_claw.antigravity.security.governance.restrict_to_owner",
+        _deny_owner_restriction,
+    )
+
+    with pytest.raises(PermissionError, match="acl hardening failed"):
+        gov.save_whitelist()
+
+    assert not gov.whitelist_path.with_suffix(".json.tmp").exists()
+    assert not gov._hmac_sig_path.with_suffix(".hmac.tmp").exists()

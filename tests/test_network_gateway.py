@@ -18,6 +18,7 @@ class _GatewayResponse:
     def __init__(self, status: int, headers: dict[str, str] | None = None) -> None:
         self.status = status
         self.headers = headers or {}
+        self.release = MagicMock()
 
 
 @pytest.fixture()
@@ -106,6 +107,21 @@ class TestRedirectValidation:
         assert [call.args[1] for call in session.request.await_args_list] == [asset_url, cdn_url]
 
     @pytest.mark.asyncio
+    async def test_redirect_hop_response_is_closed_before_following(self, gw: NetworkGateway) -> None:
+        asset_url = "https://api.github.com/repos/loot/loot/releases/assets/1001"
+        cdn_url = "https://objects.githubusercontent.com/github-production-release-asset-2e65be/loot.zip"
+        redirect_response = _GatewayResponse(302, {"Location": cdn_url})
+        final_response = _GatewayResponse(200)
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.request = AsyncMock(side_effect=[redirect_response, final_response])
+
+        response = await gw.request("GET", asset_url, session)
+
+        assert response is final_response
+        redirect_response.release.assert_called_once_with()
+        final_response.release.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_github_release_asset_api_redirect_to_unapproved_host_blocked(self, gw: NetworkGateway) -> None:
         asset_url = "https://api.github.com/repos/loot/loot/releases/assets/1001"
         redirect_response = _GatewayResponse(302, {"Location": "https://github.com/loot/loot/releases/download/x.zip"})
@@ -114,6 +130,7 @@ class TestRedirectValidation:
 
         with pytest.raises(EgressViolationError, match="GitHub release asset redirect host"):
             await gw.request("GET", asset_url, session)
+        redirect_response.release.assert_called_once_with()
 
 
 # ------------------------------------------------------------------

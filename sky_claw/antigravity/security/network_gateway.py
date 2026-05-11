@@ -13,6 +13,7 @@ Every outbound request made by Sky-Claw **must** pass through
 from __future__ import annotations
 
 import asyncio
+import inspect
 import ipaddress
 import logging
 import re
@@ -251,14 +252,17 @@ class NetworkGateway:
                 redirect_url = response.headers.get("Location")
                 if not redirect_url:
                     return response
-                redirect_url = self._resolve_redirect_url(current_url, redirect_url)
-                if github_release_asset_redirect_chain or self._is_github_release_asset_api_request(method, parsed):
-                    await self._authorize_github_release_asset_redirect(method, redirect_url)
-                    github_release_asset_redirect_chain = True
-                else:
-                    await self.authorize(method, redirect_url)
-                current_url = redirect_url
-                logger.debug("Following redirect hop %d: %s", hop + 1, current_url)
+                try:
+                    redirect_url = self._resolve_redirect_url(current_url, redirect_url)
+                    if github_release_asset_redirect_chain or self._is_github_release_asset_api_request(method, parsed):
+                        await self._authorize_github_release_asset_redirect(method, redirect_url)
+                        github_release_asset_redirect_chain = True
+                    else:
+                        await self.authorize(method, redirect_url)
+                    current_url = redirect_url
+                    logger.debug("Following redirect hop %d: %s", hop + 1, current_url)
+                finally:
+                    await self._release_redirect_response(response)
                 continue
 
             return response
@@ -305,6 +309,12 @@ class NetworkGateway:
         resolved_url = urljoin(current_url, redirect_url)
         self._parse_url(resolved_url)
         return resolved_url
+
+    @staticmethod
+    async def _release_redirect_response(response: aiohttp.ClientResponse) -> None:
+        result = response.release()
+        if inspect.isawaitable(result):
+            await result
 
     def _is_github_release_asset_api_request(self, method: str, parsed: ParseResult) -> bool:
         hostname = self._hostname_from_parsed(parsed).lower()
