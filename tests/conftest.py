@@ -42,9 +42,11 @@ async def async_registry(tmp_path: pathlib.Path) -> AsyncGenerator[AsyncModRegis
     )
     registry = AsyncModRegistry(db_path=tmp_path / "test.db", lifecycle=lifecycle)
     await registry.open()
-    yield registry
-    await registry.close()
-    await lifecycle.shutdown_all()
+    try:
+        yield registry
+    finally:
+        await registry.close()
+        await lifecycle.shutdown_all()
 
 
 @pytest.fixture()

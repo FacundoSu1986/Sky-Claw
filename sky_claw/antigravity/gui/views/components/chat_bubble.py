@@ -5,6 +5,8 @@ Burbuja visual para mensajes de chat con estilo diferenciado usuario/agente.
 VIEW PURO - Sin lógica de negocio, solo presentación.
 """
 
+from __future__ import annotations
+
 from nicegui import ui
 
 

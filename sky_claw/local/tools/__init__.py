@@ -6,6 +6,8 @@ Este paquete proporciona integración con:
 - Gestión de pipelines de patchers
 """
 
+from __future__ import annotations
+
 from .dyndolod_runner import (
     DynDOLODConfig,
     DynDOLODExecutionError,

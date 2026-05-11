@@ -5,6 +5,8 @@ Este módulo proporciona validación de rutas de archivos para proteger el siste
 contra ataques de path traversal que podrían permitir acceso a archivos sensibles.
 """
 
+from __future__ import annotations
+
 import logging
 import pathlib
 import re

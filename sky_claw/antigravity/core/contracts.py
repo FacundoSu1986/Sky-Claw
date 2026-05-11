@@ -20,13 +20,13 @@ import functools
 import logging
 import pathlib
 import threading
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ValidationError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    pass
 
 logger = logging.getLogger("SkyClaw.Contracts")
 
@@ -148,7 +148,7 @@ def _resolve_schema(name: str | None) -> type[BaseModel] | None:
 # ============================================================================
 
 
-def validate_input(method_name: str) -> Callable:
+def validate_input(method_name: str) -> Callable[..., Any]:
     """
     Decorador que valida los kwargs de entrada contra el schema Pydantic
     registrado para ``<ClassName>.<method_name>``.
@@ -165,7 +165,7 @@ def validate_input(method_name: str) -> Callable:
                     con contexto legible).
     """
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(func)
         async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
             schema_key = f"{self.__class__.__name__}.{method_name}"
@@ -217,7 +217,7 @@ def validate_input(method_name: str) -> Callable:
     return decorator
 
 
-def validate_output(method_name: str) -> Callable:
+def validate_output(method_name: str) -> Callable[..., Any]:
     """
     Decorador que valida el valor retornado contra el schema Pydantic
     registrado para ``<ClassName>.<method_name>``.
@@ -229,7 +229,7 @@ def validate_output(method_name: str) -> Callable:
         ValueError: Si la salida no cumple con el schema Pydantic.
     """
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(func)
         async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
             result = await func(self, *args, **kwargs)
@@ -278,7 +278,7 @@ def validate_output(method_name: str) -> Callable:
     return decorator
 
 
-def validate_contract(method_name: str) -> Callable:
+def validate_contract(method_name: str) -> Callable[..., Any]:
     """
     Decorador combinado: valida entrada *y* salida en una sola pasada.
 
@@ -289,7 +289,7 @@ def validate_contract(method_name: str) -> Callable:
         method_name: Nombre del método (sin prefijo de clase).
     """
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(func)
         async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
             schema_key = f"{self.__class__.__name__}.{method_name}"

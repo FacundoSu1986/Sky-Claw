@@ -5,6 +5,8 @@ Diseñado para detectar inyección de código sin usar palabras clave literales.
 Extensión Anti-Malware: Soporte para .bat, .ps1, .ini
 """
 
+from __future__ import annotations
+
 import ast
 import logging
 import re
@@ -64,7 +66,7 @@ MALICIOUS_PAYLOAD_PATTERNS = [
 
 
 class PurpleScanner(ast.NodeVisitor):
-    def __init__(self, filename: str = "<unknown>"):
+    def __init__(self, filename: str = "<unknown>") -> None:
         self.filename = filename
         self.findings: list[dict[str, Any]] = []
         self.tainted_vars: set[str] = set()
@@ -77,7 +79,7 @@ class PurpleScanner(ast.NodeVisitor):
         node: ast.AST,
         severity: str = "HIGH",
         confidence: float = 0.9,
-    ):
+    ) -> None:
         self.findings.append(
             {
                 "message": message,
@@ -102,7 +104,7 @@ class PurpleScanner(ast.NodeVisitor):
             return self.const_map[node.id]
         return None
 
-    def visit_Assign(self, node: ast.Assign):  # noqa: N802
+    def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
         """Rastrea asignaciones de constantes y variables 'sucias' (tainted)."""
         value_const = self._resolve_const(node.value)
 
@@ -130,7 +132,7 @@ class PurpleScanner(ast.NodeVisitor):
                 return node.func.attr == "read"
         return False
 
-    def visit_Call(self, node: ast.Call):  # noqa: N802
+    def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
         """Inspecciona llamadas a funciones buscando sinks peligrosos y ofuscación."""
         func_name = self._get_func_name(node.func)
 
@@ -186,7 +188,7 @@ class PurpleScanner(ast.NodeVisitor):
             return f"{base}.{node.attr}" if base else node.attr
         return ""
 
-    def visit_Import(self, node: ast.Import):  # noqa: N802
+    def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
         for name in node.names:
             if name.name in ("os", "subprocess", "builtin", "importlib"):
                 self.report(
@@ -197,7 +199,7 @@ class PurpleScanner(ast.NodeVisitor):
                 )
         self.generic_visit(node)
 
-    def visit_ImportFrom(self, node: ast.ImportFrom):  # noqa: N802
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
         if node.module in ("os", "subprocess", "importlib"):
             self.report(
                 f"Importación parcial de módulo sensible: {node.module}",

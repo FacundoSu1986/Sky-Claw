@@ -6,6 +6,8 @@ para binding reactivo del valor.
 VIEW PURO - Sin lógica de negocio, solo presentación.
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from typing import Any
 

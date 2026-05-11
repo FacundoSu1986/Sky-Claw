@@ -8,6 +8,8 @@ RESTRICCIÓN DE SEGURIDAD: Este módulo es STRICTLY READ-ONLY.
 No debe modificar, mover ni ocultar archivos.
 """
 
+from __future__ import annotations
+
 from .asset_scanner import (
     AssetConflictDetector,
     AssetConflictReport,

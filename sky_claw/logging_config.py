@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import getpass
 import logging
 import logging.handlers
@@ -20,6 +22,12 @@ _GLOBAL_CFG = Config()
 
 
 _USERNAME_LOOKUP_ERRORS = (OSError, KeyError, ImportError)
+_NO_TRACE_ID = "0" * 32
+
+try:
+    from opentelemetry import trace as _otel_trace
+except ImportError:
+    _otel_trace = None
 
 
 def _resolve_current_user() -> str:
@@ -134,10 +142,20 @@ class SecurityRedactionFilter(logging.Filter):
 
 
 class CorrelationFilter(logging.Filter):
-    """Filter that adds correlation_id from ContextVar to each record."""
+    """Filter that adds correlation_id and trace_id from context to each record."""
 
-    def filter(self, record):
-        record.correlation_id = correlation_id_var.get()
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.correlation_id = correlation_id_var.get()  # type: ignore[attr-defined]
+        trace_id = _NO_TRACE_ID
+        if _otel_trace is not None:
+            try:
+                span = _otel_trace.get_current_span()
+                ctx = span.get_span_context()
+                if ctx.is_valid:
+                    trace_id = format(ctx.trace_id, "032x")
+            except AttributeError:
+                pass
+        record.trace_id = trace_id  # type: ignore[attr-defined]
         return True
 
 

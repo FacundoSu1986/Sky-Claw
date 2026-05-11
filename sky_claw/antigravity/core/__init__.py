@@ -1,5 +1,7 @@
 """Core package for Sky-Claw daemon components."""
 
+from __future__ import annotations
+
 from .async_path_resolver import AsyncPathResolutionError, AsyncPathResolver
 from .contracts import (
     get_contract_schema,

@@ -5,6 +5,8 @@ partes coherentes de la interfaz (ej. stats_section, features_section).
 Las secciones son "tontas" - solo componen componentes visuales.
 """
 
+from __future__ import annotations
+
 from .chat_preview import create_chat_preview
 from .cta_section import create_cta_section
 from .features_section import create_features_section

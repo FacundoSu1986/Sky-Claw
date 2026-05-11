@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import logging
 import sqlite3
@@ -19,12 +21,12 @@ class DatabaseAgent:
     Contiene esquemas para: scraper, agent_memory, mods, conflicts, activity_log.
     """
 
-    def __init__(self, db_path: str = "sky_claw_state.db"):
+    def __init__(self, db_path: str = "sky_claw_state.db") -> None:
         self.db_path = db_path
         self._conn: aiosqlite.Connection | None = None
         self._lifecycle: DatabaseLifecycleManager | None = None
 
-    async def init_db(self):
+    async def init_db(self) -> None:
         """Inicializa esquemas con modo WAL y pragmas de concurrencia.
 
         FASE 1.5.2: Uses DatabaseLifecycleManager for WAL recovery and
@@ -100,7 +102,7 @@ class DatabaseAgent:
             "(scraper_state, agent_memory, mods, conflicts, activity_log)."
         )
 
-    async def close(self):
+    async def close(self) -> None:
         """Cierra la conexión persistente con checkpointing de WAL.
 
         FASE 1.5.2: Delegates to DatabaseLifecycleManager.shutdown_all()
@@ -133,7 +135,7 @@ class DatabaseAgent:
             row = await cursor.fetchone()
             return dict(row) if row else {"failures": 0, "locked_until": 0}
 
-    async def update_circuit_breaker(self, domain: str, failures: int, locked_until: float):
+    async def update_circuit_breaker(self, domain: str, failures: int, locked_until: float) -> None:
         conn = await self._get_conn()
         try:
             await conn.execute(
@@ -160,7 +162,7 @@ class DatabaseAgent:
             row = await cursor.fetchone()
             return row[0] if row else None
 
-    async def set_memory(self, key: str, value: str, updated_at: float):
+    async def set_memory(self, key: str, value: str, updated_at: float) -> None:
         conn = await self._get_conn()
         try:
             await conn.execute(

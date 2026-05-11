@@ -3,6 +3,8 @@ Sky-Claw GUI Icons — Component Registry v1.0
 Contains all SVG icon definitions for the NiceGUI interface.
 """
 
+from __future__ import annotations
+
 _ICON_LAYERS = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
     <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
 </svg>"""

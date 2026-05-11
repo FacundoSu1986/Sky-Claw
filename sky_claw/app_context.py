@@ -22,6 +22,7 @@ from sky_claw.antigravity.core.metrics_server import (
     start_metrics_server,
     stop_metrics_server,
 )
+from sky_claw.antigravity.core.tracing import configure_tracing, shutdown_tracing
 from sky_claw.antigravity.db.async_registry import AsyncModRegistry
 from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
 from sky_claw.antigravity.scraper.masterlist import MasterlistClient
@@ -411,6 +412,15 @@ class AppContext:
                     logger.exception("Failed to send HITL notification")
 
             self.hitl = HITLGuard(notify_fn=_hitl_notify)
+
+            # Observability: configure distributed tracing first so spans from the
+            # metrics server startup are captured.  NoOp when no OTLP endpoint is set.
+            configure_tracing()
+
+            async def _shutdown_tracing_async() -> None:
+                shutdown_tracing()
+
+            self._exit_stack.push_async_callback(_shutdown_tracing_async)
 
             # Observability: best-effort Prometheus /metrics endpoint on 127.0.0.1.
             # Wrapped because a port collision must NOT abort the main app.

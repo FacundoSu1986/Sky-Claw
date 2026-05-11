@@ -2,6 +2,8 @@
 Validadores de seguridad para esquemas Pydantic del sistema Sky Claw.
 """
 
+from __future__ import annotations
+
 from .path import (
     PathTraversalValidator,
     PathValidationResult,

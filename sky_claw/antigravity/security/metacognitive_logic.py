@@ -3,6 +3,8 @@ Sky-Claw Metacognitive Reasoning Logic v5.5 (Abril 2026)
 Framework de decisión secuencial de 5 pasos para Auditoría Purple Team.
 """
 
+from __future__ import annotations
+
 import logging
 from datetime import UTC, datetime
 from pathlib import Path

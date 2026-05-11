@@ -5,6 +5,8 @@ Tarjeta visual para mostrar características/funcionalidades con badge opcional.
 VIEW PURO - Sin lógica de negocio, solo presentación.
 """
 
+from __future__ import annotations
+
 from nicegui import ui
 
 # Colores del tema (extraídos del monolito para mantener invariante visual)

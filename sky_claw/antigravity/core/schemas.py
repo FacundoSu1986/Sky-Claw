@@ -2,6 +2,8 @@
 schemas.py - Modelos de validación Pydantic para entrada/salida de agentes del sistema Sky-Claw.
 """
 
+from __future__ import annotations
+
 import logging
 import re
 from datetime import UTC, datetime

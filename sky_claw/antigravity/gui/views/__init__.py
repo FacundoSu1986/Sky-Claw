@@ -17,6 +17,8 @@ Estructura:
 """
 
 # Componentes atómicos
+from __future__ import annotations
+
 from .components.buttons import create_cta_button
 from .components.chat_bubble import create_chat_message
 from .components.feature_card import create_feature_card

@@ -6,6 +6,8 @@ contra ataques SSRF que podrían permitir acceso a redes internas
 o endpoints de metadata de servicios cloud.
 """
 
+from __future__ import annotations
+
 import ipaddress
 import logging
 import re

@@ -9,6 +9,8 @@ Esta página es un "presentador" que:
 3. Compone las secciones visuales
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from typing import Any
 

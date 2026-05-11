@@ -7,6 +7,8 @@ VIEW PURO - Sin lógica de negocio, solo presentación.
 Recibe datos como parámetros, NO accede directamente al estado.
 """
 
+from __future__ import annotations
+
 from typing import Any
 
 from nicegui import ui

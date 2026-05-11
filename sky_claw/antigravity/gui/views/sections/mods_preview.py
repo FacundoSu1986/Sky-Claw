@@ -7,6 +7,8 @@ VIEW PURO - Sin lógica de negocio, solo presentación.
 Separada de la lógica de obtención de datos.
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from typing import Any
 

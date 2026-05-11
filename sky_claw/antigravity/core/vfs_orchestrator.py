@@ -8,6 +8,8 @@ Este módulo proporciona ejecución asíncrona de herramientas externas con
 manejo robusto de timeouts y logging estructurado.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from typing import Final

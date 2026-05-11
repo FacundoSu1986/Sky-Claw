@@ -52,7 +52,7 @@ async def start_metrics_server(
     port: int | None = None,
 ) -> web.AppRunner:
     bind_host = host if host is not None else os.environ.get("SKYCLAW_METRICS_HOST", _DEFAULT_HOST)
-    bind_port = port if port is not None else int(os.environ.get("SKYCLAW_METRICS_PORT", _DEFAULT_PORT))
+    bind_port = _resolve_bind_port(port)
 
     app = build_metrics_app(validator=validator)
     runner = web.AppRunner(app)
@@ -64,6 +64,28 @@ async def start_metrics_server(
         extra={"host": bind_host, "port": bind_port},
     )
     return runner
+
+
+def _resolve_bind_port(port: int | None) -> int:
+    if port is not None:
+        return port
+
+    env_port = os.environ.get("SKYCLAW_METRICS_PORT")
+    if env_port is None:
+        return _DEFAULT_PORT
+
+    try:
+        parsed = int(env_port)
+        if 0 <= parsed <= 65535:
+            return parsed
+    except ValueError:
+        pass
+
+    logger.warning(
+        "metrics_port_invalid_fallback",
+        extra={"value": env_port, "default_port": _DEFAULT_PORT},
+    )
+    return _DEFAULT_PORT
 
 
 async def stop_metrics_server(runner: web.AppRunner) -> None:

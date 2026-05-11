@@ -3,6 +3,8 @@ Sky-Claw PurpleTeamAgent v5.5 (Abril 2026)
 Agente Experto en Ciberseguridad con Razonamiento Metacognitivo.
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Any
 

@@ -22,6 +22,8 @@ Usage:
     result = await runner.run_dynamic_script(script, ["plugin1.esp"])
 """
 
+from __future__ import annotations
+
 from sky_claw.local.xedit.conflict_analyzer import (
     ConflictAnalyzer,
     ConflictReport,

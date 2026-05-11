@@ -7,6 +7,8 @@ VIEW PURO - Sin lógica de negocio, solo presentación.
 Recibe callbacks como parámetros, NO ejecuta lógica directamente.
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
 
 from nicegui import ui

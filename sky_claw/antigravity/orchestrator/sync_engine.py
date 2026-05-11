@@ -41,6 +41,7 @@ from sky_claw.antigravity.core.metrics import (
     record_sync_failure,
     record_sync_success,
 )
+from sky_claw.antigravity.core.tracing import get_tracer as _get_tracer
 from sky_claw.antigravity.scraper.masterlist import (
     CircuitOpenError,
     MasterlistClient,
@@ -48,6 +49,8 @@ from sky_claw.antigravity.scraper.masterlist import (
 )
 from sky_claw.antigravity.security.hitl import Decision, HITLGuard
 from sky_claw.config import SystemPaths
+
+_tracer = _get_tracer("sky_claw.sync_engine")
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -744,50 +747,61 @@ class SyncEngine:
         semaphore: asyncio.Semaphore,
         result: SyncResult,
     ) -> None:
+        with _tracer.start_as_current_span("sync.batch", attributes={"batch_size": len(batch)}):
+            await self._process_batch_inner(batch, session, semaphore, result)
+
+    async def _process_batch_inner(
+        self,
+        batch: list[tuple[str, bool]],
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
+        result: SyncResult,
+    ) -> None:
         mod_rows: list[tuple[int, str, str, str, str, str, bool, bool]] = []
         log_rows: list[tuple[int | None, str, str, str]] = []
         batch_success_count = 0
 
         for mod_name, enabled in batch:
-            nexus_id = _extract_nexus_id(mod_name)
-            if nexus_id is None:
-                result.skipped += 1
-                continue
+            with _tracer.start_as_current_span("sync.mod", attributes={"mod_name": mod_name}):
+                nexus_id = _extract_nexus_id(mod_name)
+                if nexus_id is None:
+                    result.skipped += 1
+                    continue
 
-            try:
-                info = await self._safe_fetch_info(nexus_id, session, semaphore)
-            except (
-                MasterlistFetchError,
-                CircuitOpenError,
-                RetryError,
-                aiohttp.ClientError,
-            ) as exc:
-                logger.warning("Skipping mod %r: %s", mod_name, exc)
-                result.failed += 1
-                record_sync_failure(1)
-                result.errors.append(f"{mod_name}: {exc}")
-                log_rows.append((None, "sync", "error", f"{mod_name}: {exc}"))
-                continue
+                try:
+                    info = await self._safe_fetch_info(nexus_id, session, semaphore)
+                except (
+                    MasterlistFetchError,
+                    CircuitOpenError,
+                    RetryError,
+                    aiohttp.ClientError,
+                ) as exc:
+                    logger.warning("Skipping mod %r: %s", mod_name, exc)
+                    result.failed += 1
+                    record_sync_failure(1)
+                    result.errors.append(f"{mod_name}: {exc}")
+                    log_rows.append((None, "sync", "error", f"{mod_name}: {exc}"))
+                    continue
 
-            if not info or "mod_id" not in info:
-                result.skipped += 1
-                continue
+                if not info or "mod_id" not in info:
+                    result.skipped += 1
+                    continue
 
-            mod_rows.append(
-                (
-                    int(info["mod_id"]),
-                    str(info.get("name", mod_name)),
-                    str(info.get("version", "")),
-                    str(info.get("author", "")),
-                    str(info.get("category_id", "")),
-                    str(info.get("download_url", "")),
-                    True,
-                    bool(enabled),
+                mod_rows.append(
+                    (
+                        int(info["mod_id"]),
+                        str(info.get("name", mod_name)),
+                        str(info.get("version", "")),
+                        str(info.get("author", "")),
+                        str(info.get("category_id", "")),
+                        str(info.get("download_url", "")),
+                        True,
+                        bool(enabled),
+                    )
                 )
-            )
-            log_rows.append((None, "sync", "ok", mod_name))
-            result.processed += 1
-            batch_success_count += 1
+                log_rows.append((None, "sync", "ok", mod_name))
+                result.processed += 1
+                batch_success_count += 1
 
         await self._registry.upsert_mods_batch(mod_rows)
         await self._registry.log_tasks_batch(log_rows)

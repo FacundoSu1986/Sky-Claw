@@ -57,7 +57,7 @@ class DLQRow:
 
     id: int
     topic: str
-    payload: dict
+    payload: dict[str, object]
     source: str
     event_ts_ms: int
     handler_name: str
@@ -436,7 +436,7 @@ class DLQManager:
     @staticmethod
     def _compute_next_retry_at(now_ms: int, attempt: int, base_backoff_s: int = 2) -> int:
         """Calcula el epoch ms para el próximo intento: now + base^attempt * 1000 ms."""
-        return now_ms + (base_backoff_s**attempt) * 1000
+        return now_ms + int(base_backoff_s**attempt) * 1000
 
     @staticmethod
     def _handler_name(cb: Subscriber) -> str:

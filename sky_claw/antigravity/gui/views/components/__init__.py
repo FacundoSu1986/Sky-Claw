@@ -4,6 +4,8 @@ Contiene componentes visuales atómicos y reutilizables.
 Cada componente es "tonto" - solo maneja presentación visual.
 """
 
+from __future__ import annotations
+
 from .buttons import create_cta_button
 from .chat_bubble import create_chat_message
 from .feature_card import create_feature_card

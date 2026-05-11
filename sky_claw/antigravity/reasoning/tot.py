@@ -17,6 +17,8 @@ References:
 
 # Types and Protocols
 # Engine and Components
+from __future__ import annotations
+
 from .engine import (
     CycleDetector,
     DefaultThoughtEvaluator,

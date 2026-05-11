@@ -4,6 +4,8 @@ Analizador de inyección de prompts indirecta (Indirect Prompt Injection).
 Detecta patrones maliciosos en archivos de texto, MD y configuración.
 """
 
+from __future__ import annotations
+
 import logging
 import re
 from typing import Any

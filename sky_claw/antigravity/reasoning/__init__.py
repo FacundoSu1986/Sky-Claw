@@ -11,6 +11,8 @@ Módulos:
 - engine: Motor principal y componentes auxiliares
 """
 
+from __future__ import annotations
+
 from .tot import (
     EvaluationResult,
     SearchStrategyType,

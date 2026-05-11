@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from prometheus_client import CollectorRegistry
 from prometheus_client.exposition import generate_latest
 
@@ -54,6 +56,28 @@ def _build_app(validator):
 
 
 class TestMetricsServer:
+    def test_resolve_bind_port_uses_explicit_port(self, monkeypatch) -> None:
+        from sky_claw.antigravity.core.metrics_server import _resolve_bind_port
+
+        monkeypatch.setenv("SKYCLAW_METRICS_PORT", "not-an-int")
+        assert _resolve_bind_port(9200) == 9200
+
+    def test_resolve_bind_port_invalid_env_falls_back_default(self, monkeypatch, caplog) -> None:
+        from sky_claw.antigravity.core.metrics_server import _DEFAULT_PORT, _resolve_bind_port
+
+        caplog.set_level(logging.WARNING)
+        monkeypatch.setenv("SKYCLAW_METRICS_PORT", "invalid")
+        assert _resolve_bind_port(None) == _DEFAULT_PORT
+        record = next(rec for rec in caplog.records if "metrics_port_invalid_fallback" in rec.message)
+        assert record.value == "invalid"
+        assert record.default_port == _DEFAULT_PORT
+
+    def test_resolve_bind_port_allows_ephemeral_port_zero(self, monkeypatch) -> None:
+        from sky_claw.antigravity.core.metrics_server import _resolve_bind_port
+
+        monkeypatch.setenv("SKYCLAW_METRICS_PORT", "0")
+        assert _resolve_bind_port(None) == 0
+
     async def test_returns_401_without_token(self, aiohttp_client) -> None:
         client = await aiohttp_client(_build_app(lambda t: t == "good"))
         resp = await client.get("/metrics")

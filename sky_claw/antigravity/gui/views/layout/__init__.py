@@ -4,6 +4,8 @@ Contiene componentes estructurales como sidebar, header, footer.
 Cada componente es "tonto" - solo maneja presentación visual.
 """
 
+from __future__ import annotations
+
 from .header import create_header
 from .sidebar import create_sidebar
 

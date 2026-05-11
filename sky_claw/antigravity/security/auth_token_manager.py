@@ -8,6 +8,8 @@ Generates a one-time token at NiceGUI startup.  The Background Daemon
 reads it from a secure temp file to authenticate the WebSocket upgrade.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import hashlib
