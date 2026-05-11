@@ -51,34 +51,44 @@ class _SQLitePool:
             raise VaultStorageError("SQLite connection pool is closed")
 
         # Wait for a slot (bounded concurrency).
-        acquired = False
         try:
             await asyncio.wait_for(self._semaphore.acquire(), timeout=self._timeout)
-            acquired = True
         except TimeoutError as exc:
             raise VaultStorageError(f"SQLite pool timeout ({self._timeout}s) acquiring connection") from exc
 
-        conn: aiosqlite.Connection | None = None
+        # Semaphore is now held unconditionally; release it in every exit path
+        # to avoid permit leaks on CancelledError or close()-race.
         try:
-            # Try to reuse an existing connection first.
+            # Re-check after the await: close() may have flipped _closed while
+            # this coroutine was suspended on the semaphore.
+            if self._closed:
+                raise VaultStorageError("SQLite connection pool is closed")
+
+            conn: aiosqlite.Connection | None = None
             try:
-                conn = self._pool.get_nowait()
-            except asyncio.QueueEmpty:
-                conn = await asyncio.wait_for(self._create_connection(), timeout=self._timeout)
-            yield conn
-        except TimeoutError as exc:
-            raise VaultStorageError(f"SQLite pool timeout ({self._timeout}s) creating connection") from exc
-        finally:
-            if conn is not None:
-                if self._closed:
-                    await conn.close()
-                else:
-                    try:
-                        self._pool.put_nowait(conn)
-                    except asyncio.QueueFull:
+                # Try to reuse an existing connection first.
+                try:
+                    conn = self._pool.get_nowait()
+                except asyncio.QueueEmpty:
+                    conn = await asyncio.wait_for(
+                        self._create_connection(), timeout=self._timeout
+                    )
+                yield conn
+            except TimeoutError as exc:
+                raise VaultStorageError(
+                    f"SQLite pool timeout ({self._timeout}s) creating connection"
+                ) from exc
+            finally:
+                if conn is not None:
+                    if self._closed:
                         await conn.close()
-            if acquired:
-                self._semaphore.release()
+                    else:
+                        try:
+                            self._pool.put_nowait(conn)
+                        except asyncio.QueueFull:
+                            await conn.close()
+        finally:
+            self._semaphore.release()
 
     async def close(self) -> None:
         """Drain the pool and close every connection."""
@@ -86,6 +96,15 @@ class _SQLitePool:
             if self._closed:
                 return
             self._closed = True
+
+        # Unblock any coroutines suspended on the semaphore so they observe
+        # _closed immediately via the post-acquire re-check and raise cleanly,
+        # instead of waiting up to self._timeout seconds for a slot.
+        for _ in range(self._max_size):
+            try:
+                self._semaphore.release()
+            except ValueError:
+                break
 
         while True:
             try:

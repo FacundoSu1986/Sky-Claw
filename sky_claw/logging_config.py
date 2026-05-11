@@ -63,6 +63,8 @@ _LOG_RECORD_RESERVED_ATTRS = frozenset(
 class SecurityRedactionFilter(logging.Filter):
     """Filter that redacts sensitive credentials and PII from log messages."""
 
+    _MAX_DEPTH: int = 64
+
     def _redact(self, text: str) -> str:
         if not isinstance(text, str):
             return text
@@ -81,7 +83,9 @@ class SecurityRedactionFilter(logging.Filter):
 
         return text
 
-    def _redact_value(self, value: Any, seen: set[int] | None = None) -> Any:
+    def _redact_value(self, value: Any, seen: set[int] | None = None, depth: int = 0) -> Any:
+        if depth >= self._MAX_DEPTH:
+            return "[REDACTED:DEPTH]"
         if isinstance(value, str):
             return self._redact(value)
         if not isinstance(value, (Mapping, tuple, list, set)):
@@ -95,22 +99,22 @@ class SecurityRedactionFilter(logging.Filter):
 
         seen.add(value_id)
         try:
-            return self._redact_container(value, seen)
+            return self._redact_container(value, seen, depth + 1)
         finally:
             seen.remove(value_id)
 
-    def _redact_container(self, value: Any, seen: set[int]) -> Any:
+    def _redact_container(self, value: Any, seen: set[int], depth: int) -> Any:
         if isinstance(value, Mapping):
             return {
-                self._redact(key) if isinstance(key, str) else key: self._redact_value(item, seen)
+                self._redact(key) if isinstance(key, str) else key: self._redact_value(item, seen, depth)
                 for key, item in value.items()
             }
         if isinstance(value, tuple):
-            return tuple(self._redact_value(item, seen) for item in value)
+            return tuple(self._redact_value(item, seen, depth) for item in value)
         if isinstance(value, list):
-            return [self._redact_value(item, seen) for item in value]
+            return [self._redact_value(item, seen, depth) for item in value]
         if isinstance(value, set):
-            return {self._redact_value(item, seen) for item in value}
+            return {self._redact_value(item, seen, depth) for item in value}
         return value
 
     def filter(self, record: logging.LogRecord) -> bool:

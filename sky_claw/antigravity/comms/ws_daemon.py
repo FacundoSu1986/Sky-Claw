@@ -336,7 +336,9 @@ class UIBroadcastServer:
         token = self._request_header(websocket, "X-Auth-Token")
         if not self._auth.validate(token):
             self._logger.warning(f"🚫 Rejected UI client — invalid token from {websocket.remote_address}")
-            await websocket.close(4001, "Unauthorized")
+            # 1008 (POLICY_VIOLATION) aligns auth-fail with rate-limit and token-rotation
+            # closes so a single IP-blocking hook can be wired off one close code.
+            await websocket.close(1008, "Unauthorized")
             return
 
         client_id = id(websocket)
