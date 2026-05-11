@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pathlib
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -51,28 +51,25 @@ async def async_registry(tmp_path: pathlib.Path) -> AsyncGenerator[AsyncModRegis
 def mock_network_gateway() -> MagicMock:
     """NetworkGateway stub for tests that should NOT hit the real network.
 
-    Pre-configured with a 200-OK response stub accessible via the async
-    context-manager protocol (``async with gateway.request(...) as resp``).
-    Override `mock_network_gateway.request.return_value.__aenter__` in your
-    test to simulate specific status codes or response bodies.
+    Matches the real API: ``resp = await gateway.request(method, url, session, ...)``.
+    The stub returns a 200-OK mock response with async ``text()``, ``json()``,
+    and ``release()`` methods. Override ``mock_network_gateway.request.return_value``
+    in your test to simulate specific status codes or response bodies.
     """
     mock_resp = MagicMock()
     mock_resp.status = 200
     mock_resp.raise_for_status = MagicMock()
     mock_resp.text = AsyncMock(return_value="")
     mock_resp.json = AsyncMock(return_value={})
-
-    mock_cm = MagicMock()
-    mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
-    mock_cm.__aexit__ = AsyncMock(return_value=False)
+    mock_resp.release = AsyncMock()
 
     gateway = MagicMock(spec=NetworkGateway)
-    gateway.request = MagicMock(return_value=mock_cm)
+    gateway.request = AsyncMock(return_value=mock_resp)
     return gateway
 
 
 @pytest.fixture()
-def correlation_id() -> str:  # type: ignore[return]
+def correlation_id() -> Iterator[str]:
     """Set a UUID4 correlation_id on the logging ContextVar for test duration.
 
     Yields the string ID so tests can assert against it in log records.
@@ -80,5 +77,5 @@ def correlation_id() -> str:  # type: ignore[return]
     """
     cid = str(uuid.uuid4())
     token = correlation_id_var.set(cid)
-    yield cid  # type: ignore[misc]
+    yield cid
     correlation_id_var.reset(token)
