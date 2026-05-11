@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false  # never cancel an in-flight release
+
+permissions:
+  contents: write   # create GitHub Release + upload assets
+  id-token: write   # required by cosign OIDC signing
+
+jobs:
+  release:
+    name: "📦 Release ${{ github.ref_name }}"
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0  # hatch-vcs needs full history to resolve the tag
+
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install build dependencies
+        run: |
+          pip install hatch-vcs hatchling pyinstaller
+          pip install -e .
+
+      - name: Verify version matches tag
+        shell: pwsh
+        run: |
+          $ver = python -c "import importlib.metadata; print(importlib.metadata.version('sky-claw'))"
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          if ($ver -ne $tag) {
+            Write-Error "Version mismatch: package=$ver tag=$tag"
+            exit 1
+          }
+          Write-Host "Version verified: $ver"
+
+      - name: Build executable
+        run: pyinstaller sky_claw.spec --clean
+
+      # ── SBOM (Software Bill of Materials) ────────────────
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          artifact-name: sky-claw-${{ github.ref_name }}-sbom.spdx.json
+          path: dist/
+
+      # ── Signing (cosign keyless via OIDC) ─────────────────
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign executable
+        shell: pwsh
+        run: |
+          cosign sign-blob dist/SkyClawApp.exe `
+            --yes `
+            --bundle dist/SkyClawApp.exe.bundle.json
+
+      # ── GitHub Release ────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/SkyClawApp.exe
+            dist/SkyClawApp.exe.bundle.json
+            sky-claw-${{ github.ref_name }}-sbom.spdx.json
