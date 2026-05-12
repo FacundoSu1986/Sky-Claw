@@ -41,8 +41,8 @@ class TestWatcherDaemonIO:
     async def test_path_exists_runs_off_event_loop_thread(self, tmp_path: Path) -> None:
         """os.path.exists must be called from a worker thread, not the event loop.
 
-        RED path: current code calls os.path.exists directly in the coroutine,
-        so it always runs on the main thread (event loop thread).
+        Without asyncio.to_thread, os.path.exists would run on the event loop
+        thread, blocking all other coroutines during slow FS operations.
         """
         modlist = tmp_path / "modlist.txt"
         modlist.write_text("", encoding="utf-8")

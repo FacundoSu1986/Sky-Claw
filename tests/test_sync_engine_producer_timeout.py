@@ -9,7 +9,7 @@ all workers die before draining the queue:
   4. Queue is full, no consumer → put blocks indefinitely → deadlock.
 
 The fix: wrap each put in asyncio.wait_for(_POISON_DELIVERY_TIMEOUT).
-On timeout log CRITICAL and break — bounded completion guaranteed.
+On timeout log CRITICAL and raise — TaskGroup cancels all remaining workers.
 """
 
 from __future__ import annotations
@@ -37,9 +37,10 @@ def _make_engine(worker_count: int = 2, queue_maxsize: int = 2) -> SyncEngine:
 async def test_poison_delivery_doesnt_deadlock_when_workers_die() -> None:
     """run() must complete even when all workers die without draining the queue.
 
-    RED path: without asyncio.wait_for the finally block hangs forever.
-    This test would time out at ~30s with unfixed code; with the fix it
-    completes in < 1s (poison timeout patched to 0.05s).
+    Without asyncio.wait_for the finally block would hang forever; this test
+    would time out at ~30s without the fix. With the fix it completes in < 1s
+    (poison timeout patched to 0.05s) because TimeoutError propagates and
+    TaskGroup cancels all remaining workers.
     """
     engine = _make_engine(worker_count=2, queue_maxsize=2)
     session = MagicMock()

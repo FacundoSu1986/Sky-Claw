@@ -116,7 +116,7 @@ def run_gui_mode(args) -> None:
         from sky_claw.antigravity.web.app import WebApp
 
         auth_manager = AuthTokenManager()
-        auth_manager.generate()
+        await asyncio.to_thread(auth_manager.generate)
         await auth_manager.start_rotation()
         _runtime["auth_manager"] = auth_manager
 

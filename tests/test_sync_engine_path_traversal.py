@@ -26,17 +26,17 @@ from sky_claw.config import SystemPaths
 
 
 class TestExtractNexusIdPathTraversal:
-    """RED path: current code has no guard, FS branch reachable via traversal."""
+    """Verifies that assert_safe_component blocks out-of-bounds FS access in _extract_nexus_id."""
 
-    def test_traversal_reads_crafted_file_without_guard(self, tmp_path: pathlib.Path, monkeypatch) -> None:
-        """Demonstrate the vulnerability: traversal input reaches the FS.
+    def test_traversal_blocked_even_when_crafted_file_exists(self, tmp_path: pathlib.Path, monkeypatch) -> None:
+        """Guard must return None before touching the FS, even when the target file exists.
 
         Without assert_safe_component, _extract_nexus_id("../../evil")
         constructs <modding_root>/MO2/mods/../../evil/meta.ini, which
         resolves to <modding_root>/evil/meta.ini — an arbitrary read.
 
-        This test FAILS with current code (returns 9999 instead of None),
-        proving the bug is real and not masked by a missing file.
+        This test confirms the guard blocks the traversal; without it the
+        function would return 9999 (read from the crafted meta.ini).
         """
         # Set up a fake modding root so the traversal lands in tmp_path.
         monkeypatch.setattr(SystemPaths, "modding_root", staticmethod(lambda: tmp_path))
@@ -49,8 +49,7 @@ class TestExtractNexusIdPathTraversal:
         evil_dir.mkdir()
         (evil_dir / "meta.ini").write_text("[General]\nmodid=9999\n", encoding="utf-8")
 
-        # Without the guard, this traverses into tmp_path/evil/meta.ini
-        # and returns 9999. The assertion MUST fail with unpatched code.
+        # The guard must reject this before any FS access.
         result = _extract_nexus_id("../../evil")
         assert result is None, (
             f"Path traversal not blocked — _extract_nexus_id('../../evil') "

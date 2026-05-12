@@ -642,11 +642,10 @@ class SyncEngine:
                         await asyncio.wait_for(queue.put(_POISON), timeout=_POISON_DELIVERY_TIMEOUT)
                     except TimeoutError:
                         logger.critical(
-                            "POISON delivery timed out after %.1fs — workers may have died "
-                            "without draining the queue; terminating poison loop",
+                            "POISON delivery timed out after %.1fs — cancelling remaining workers",
                             _POISON_DELIVERY_TIMEOUT,
                         )
-                        break
+                        raise
 
         async with asyncio.TaskGroup() as tg:
             tg.create_task(_produce_then_poison(), name="sync-producer")
