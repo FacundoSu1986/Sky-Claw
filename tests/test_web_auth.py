@@ -4,8 +4,8 @@ When auth_manager is None (not configured):
   - Production (no SKY_CLAW_DEV_NO_AUTH): requests are DENIED — fail-closed.
   - Development (SKY_CLAW_DEV_NO_AUTH=1): bypass allowed with a logged warning.
 
-RED path on both HTTP tests until the _chat_auth_middleware guard is inverted.
-RED path on the WS reject test until _validate_ws_auth guard is inverted.
+Without this fix, both HTTP endpoints and the WS reject path would fall through
+to a permissive return True when auth_manager is None — bypassing auth entirely.
 """
 
 from __future__ import annotations
