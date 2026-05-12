@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -355,6 +356,11 @@ class TestUsageRecording:
     async def test_session_report_available(self, router: LLMRouter) -> None:
         router._provider = MagicMock()
         router._provider.chat = AsyncMock(return_value=_end_turn_response("Hi!"))
+
+        # Anchor session start 0.1s ago so duration is deterministic regardless
+        # of timer resolution on virtualized CI runners (Windows VM clocks can
+        # return the same monotonic value for consecutive calls in fast async loops).
+        router._token_budget._session_start = time.monotonic() - 0.1
 
         session = MagicMock()
         await router.chat("hello", session, chat_id="report1")
