@@ -314,5 +314,5 @@ class TokenBudgetManager:
             estimated_cost_usd=round(self._total_tokens_consumed * self._cost_per_token, 6),
             peak_context_tokens=self._peak_context_tokens,
             summarization_count=self._summarization_count,
-            session_duration_seconds=duration,
+            session_duration_seconds=round(duration, 2),
         )
