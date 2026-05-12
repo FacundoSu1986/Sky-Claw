@@ -40,8 +40,10 @@ async def event_bus() -> CoreEventBus:
 
 
 @pytest.fixture
-async def ws_client_factory(event_bus: CoreEventBus):
+async def ws_client_factory(event_bus: CoreEventBus, monkeypatch):
     """Build an aiohttp test client with the /api/status route mounted."""
+    # These tests cover broadcast/fan-out logic, not auth — bypass via dev flag.
+    monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
     app = web.Application()
     handler = register_operations_hub_routes(app, event_bus)
     await handler.start()

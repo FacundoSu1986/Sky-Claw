@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import pathlib
 import sys
 import uuid
@@ -114,8 +115,14 @@ class WebApp:
         request: web.Request,
         handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
     ) -> web.StreamResponse:
-        """Require a Bearer token on ``/api/chat`` when auth is enabled."""
-        if request.path == "/api/chat" and self._auth_manager is not None:
+        """Require a Bearer token on ``/api/chat`` — fail-closed when no auth_manager."""
+        if request.path == "/api/chat":
+            if self._auth_manager is None:
+                if os.environ.get("SKY_CLAW_DEV_NO_AUTH") == "1":
+                    logger.warning("SKY_CLAW_DEV_NO_AUTH active — /api/chat auth bypassed (dev mode only)")
+                    return await handler(request)
+                logger.error("/api/chat blocked: auth_manager not configured (fail-closed)")
+                return web.Response(status=401, text="Unauthorized")
             auth_header = request.headers.get("Authorization", "")
             if not auth_header.startswith("Bearer "):
                 return web.Response(status=401, text="Unauthorized")

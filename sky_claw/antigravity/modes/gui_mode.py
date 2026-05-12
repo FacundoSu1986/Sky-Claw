@@ -112,9 +112,15 @@ def run_gui_mode(args) -> None:
         # can reach the chat endpoint without conflicting with NiceGUI (8080).
         from aiohttp import web as aiohttp_web
 
+        from sky_claw.antigravity.security.auth_token_manager import AuthTokenManager
         from sky_claw.antigravity.web.app import WebApp
 
-        web_app_inst = WebApp(router=ctx.router, session=ctx.session)
+        auth_manager = AuthTokenManager()
+        auth_manager.generate()
+        await auth_manager.start_rotation()
+        _runtime["auth_manager"] = auth_manager
+
+        web_app_inst = WebApp(router=ctx.router, session=ctx.session, auth_manager=auth_manager)
         aiohttp_app = web_app_inst.create_app()
         runner = aiohttp_web.AppRunner(aiohttp_app)
         await runner.setup()
@@ -129,6 +135,10 @@ def run_gui_mode(args) -> None:
     app.on_startup(_bootstrap)
 
     async def _shutdown() -> None:
+        auth_manager = _runtime.get("auth_manager")
+        if auth_manager is not None:
+            await auth_manager.stop_rotation()
+            auth_manager.revoke()
         runner = _runtime.get("aiohttp_runner")
         if runner is not None:
             await runner.cleanup()

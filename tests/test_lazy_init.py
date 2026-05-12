@@ -152,6 +152,11 @@ class TestApplyConfigToEnv:
 
 
 class TestChatNotConfigured:
+    @pytest.fixture(autouse=True)
+    def _dev_auth_bypass(self, monkeypatch):
+        """These tests exercise 503/200 logic, not auth — bypass via dev flag."""
+        monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
+
     @pytest.mark.asyncio
     async def test_chat_returns_503_without_router(self, aiohttp_client) -> None:
         """POST /api/chat returns 503 when router is None."""

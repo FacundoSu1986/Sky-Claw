@@ -68,6 +68,11 @@ async def _client(web_app: WebApp, aiohttp_client) -> TestClient:
 class TestChat500:
     """Confirm that a router exception is NOT forwarded verbatim to the client."""
 
+    @pytest.fixture(autouse=True)
+    def _dev_auth_bypass(self, monkeypatch):
+        """These tests focus on error handling, not auth — bypass auth via dev flag."""
+        monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
+
     @pytest.mark.asyncio
     async def test_500_does_not_leak_exception_detail(self, aiohttp_client, mock_session):
         secret_detail = "db password=hunter2 at host internal.corp"
@@ -194,16 +199,18 @@ class TestChatBearerAuth:
         assert body.get("response") == "authenticated response"
 
     @pytest.mark.asyncio
-    async def test_no_auth_manager_does_not_require_token(self, aiohttp_client, mock_session):
-        """If auth_manager is None, /api/chat must work without a token."""
-        router = _make_mock_router("open response")
+    async def test_no_auth_manager_rejects_without_dev_flag(self, aiohttp_client, mock_session, monkeypatch):
+        """Without auth_manager and no dev flag, /api/chat must return 401 (fail-closed).
+
+        P0.6: inverted from the old fail-open behaviour where None manager allowed all traffic.
+        """
+        monkeypatch.delenv("SKY_CLAW_DEV_NO_AUTH", raising=False)
+        router = _make_mock_router("should not be reached")
         web_app = _make_web_app(router=router, session=mock_session, auth_manager=None)
         client = await _client(web_app, aiohttp_client)
 
         resp = await client.post("/api/chat", json={"message": "hello"})
-        assert resp.status == 200
-        body = await resp.json()
-        assert body.get("response") == "open response"
+        assert resp.status == 401
 
     @pytest.mark.asyncio
     async def test_validate_called_with_token_value(self, aiohttp_client, mock_session):

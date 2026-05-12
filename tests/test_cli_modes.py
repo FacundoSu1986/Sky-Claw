@@ -68,7 +68,9 @@ def test_argparse_choices_matches_documented_modes() -> None:
     assert valid_choices, "Could not extract choices"
 
     # Extract modes mentioned in the module docstring (``--mode <word>``)
-    docstring_modes = re.findall(r"--mode\s+(\w+)", source.split('"""')[1])
+    tree = ast.parse(source)
+    docstring = ast.get_docstring(tree) or ""
+    docstring_modes = re.findall(r"--mode\s+(\w+)", docstring)
     invalid = [m for m in docstring_modes if m not in valid_choices]
     assert not invalid, f"__main__.py docstring references undeclared modes: {invalid}"
 
@@ -86,7 +88,7 @@ def test_build_bat_exits_on_test_failure() -> None:
     """
     bat_content = (REPO_ROOT / "build.bat").read_text(encoding="utf-8")
 
-    # Isolate the pytest block (between "[3/3] Running tests" and the next step).
+    # Isolate the pytest block (between "[3/4] Running tests" and the next step).
     pytest_block_match = re.search(
         r"Running tests.*?(?=\[\d+/\d+\]|\Z)",
         bat_content,

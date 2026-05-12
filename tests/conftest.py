@@ -17,7 +17,7 @@ import pathlib
 import shutil
 import stat
 import uuid
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -104,12 +104,12 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # n
     if not basetemp.exists():
         return
 
-    def _force_remove(func: object, path: str, _exc: object) -> None:
-        """onerror handler: remove read-only flag then retry."""
+    def _force_remove(func: Callable[[str], None], path: str, _exc: object) -> None:
+        """onerror handler: chmod read-only flag then retry the original operation."""
         try:
             os.chmod(path, stat.S_IWRITE)
-            os.unlink(path) if os.path.isfile(path) else os.rmdir(path)
+            func(path)
         except OSError:
-            pass  # Best-effort — leave orphan rather than crash session teardown
+            pass  # best-effort — leave orphan rather than crash session teardown
 
     shutil.rmtree(basetemp, onerror=_force_remove)

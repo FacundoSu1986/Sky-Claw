@@ -22,7 +22,8 @@ def mock_session() -> MagicMock:
 
 
 @pytest.fixture
-async def client(mock_router, mock_session, aiohttp_client):
+async def client(mock_router, mock_session, aiohttp_client, monkeypatch):
+    monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
     web_app = WebApp(router=mock_router, session=mock_session)
     app = web_app.create_app()
     return await aiohttp_client(app)

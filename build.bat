@@ -12,17 +12,17 @@ cd /d "%~dp0"
 
 :: 1. Check for Virtual Environment
 if not exist "venv\" (
-    echo [1/3] Virtual environment not found. Creating it...
+    echo [1/4] Virtual environment not found. Creating it...
     python -m venv venv
     if errorlevel 1 (
         echo.
-        echo  ERROR: Failed to create virtual environment. 
+        echo  ERROR: Failed to create virtual environment.
         echo  Ensure python is in your PATH.
         if not defined CI pause
         exit /b 1
     )
 ) else (
-    echo [1/3] Using existing virtual environment.
+    echo [1/4] Using existing virtual environment.
 )
 
 if not exist "venv\Scripts\activate.bat" (
@@ -39,7 +39,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [2/3] Installing dependencies...
+echo [2/4] Installing dependencies...
 python -m pip install --upgrade pip
 python -m pip install pyinstaller
 python -m pip install -e ".[dev]"
@@ -51,7 +51,7 @@ if errorlevel 1 (
 )
 echo.
 
-echo [3/3] Running tests...
+echo [3/4] Running tests...
 python -m pytest tests/ -q --tb=short
 if errorlevel 1 (
     echo.

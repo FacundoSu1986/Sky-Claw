@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import TYPE_CHECKING, Final
 
@@ -199,7 +200,11 @@ class OperationsHubWSHandler:
 
     def _validate_ws_auth(self, request: web.Request) -> bool:
         if self._auth_manager is None:
-            return True
+            if os.environ.get("SKY_CLAW_DEV_NO_AUTH") == "1":
+                logger.warning("SKY_CLAW_DEV_NO_AUTH active — WS auth bypassed (dev mode only)")
+                return True
+            logger.error("WS auth rejected: auth_manager not configured (fail-closed)")
+            return False
         token = request.headers.get("X-Auth-Token", "")
         if not token:
             return False
