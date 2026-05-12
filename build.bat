@@ -18,7 +18,7 @@ if not exist "venv\" (
         echo.
         echo  ERROR: Failed to create virtual environment. 
         echo  Ensure python is in your PATH.
-        pause
+        if not defined CI pause
         exit /b 1
     )
 ) else (
@@ -28,14 +28,14 @@ if not exist "venv\" (
 if not exist "venv\Scripts\activate.bat" (
     echo.
     echo  ERROR: venv\Scripts\activate.bat not found.
-    pause
+    if not defined CI pause
     exit /b 1
 )
 call venv\Scripts\activate.bat
 if errorlevel 1 (
     echo.
     echo  ERROR: Failed to activate virtual environment.
-    pause
+    if not defined CI pause
     exit /b 1
 )
 
@@ -46,7 +46,7 @@ python -m pip install -e ".[dev]"
 if errorlevel 1 (
     echo.
     echo  ERROR: Dependency installation failed.
-    pause
+    if not defined CI pause
     exit /b 1
 )
 echo.
@@ -56,7 +56,7 @@ python -m pytest tests/ -q --tb=short
 if errorlevel 1 (
     echo.
     echo  ERROR: Tests failed. Fix failing tests before building.
-    pause
+    if not defined CI pause
     exit /b 1
 )
 echo.
@@ -66,7 +66,7 @@ pyinstaller sky_claw.spec --clean
 if errorlevel 1 (
     echo.
     echo  ERROR: Build failed. Check the output above.
-    pause
+    if not defined CI pause
     exit /b 1
 )
 
@@ -79,4 +79,4 @@ if exist "dist\SkyClawApp.exe" (
     echo  ERROR: SkyClawApp.exe not found in dist/.
 )
 echo.
-pause
+if not defined CI pause
