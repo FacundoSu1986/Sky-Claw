@@ -55,7 +55,9 @@ echo [3/3] Running tests...
 python -m pytest tests/ -q --tb=short
 if errorlevel 1 (
     echo.
-    echo  WARNING: Some tests failed. Proceeding with build anyway.
+    echo  ERROR: Tests failed. Fix failing tests before building.
+    pause
+    exit /b 1
 )
 echo.
 

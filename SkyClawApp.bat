@@ -49,7 +49,7 @@ if defined EXE_PATH (
     )
     
     echo [+] Iniciando con !PY_CMD!
-    !PY_CMD! -m sky_claw --mode web --port 8888
+    !PY_CMD! -m sky_claw --mode gui
     if errorlevel 1 (
         echo.
         echo [!] Error al iniciar con Python. 
