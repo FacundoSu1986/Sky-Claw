@@ -181,7 +181,12 @@ class NetworkGateway:
         if not self._STRICT_PREFIX_RE.match(stripped):
             raise EgressViolationError(f"URL rejected: Must start with http(s):// followed by alphanumeric: {url!r}")
 
-        parsed = urlparse(stripped)
+        try:
+            parsed = urlparse(stripped)
+        except ValueError as exc:
+            # urlparse raises ValueError for malformed IPv6 literals (e.g. http://[bad).
+            # Re-raise as EgressViolationError so callers see a consistent gateway error.
+            raise EgressViolationError(f"URL rejected: Malformed authority (invalid IPv6 literal?): {url!r}") from exc
         hostname = (parsed.hostname or "").lower()
 
         if not hostname:
@@ -206,6 +211,7 @@ class NetworkGateway:
         url: str,
         session: aiohttp.ClientSession,
         max_redirects: int = 5,
+        allowed_redirect_hosts: frozenset[str] | None = None,
         **kwargs: Any,
     ) -> aiohttp.ClientResponse:
         """Authorize and execute an HTTP request with redirect validation.
@@ -213,12 +219,41 @@ class NetworkGateway:
         DNS Pinning is handled automatically by GatewayTCPConnector.
         Redirect validation (H4): ``allow_redirects=False`` is enforced. Each redirect
         Location is re-authorized through the full egress policy before being followed.
+
+        Args:
+            allowed_redirect_hosts: Optional frozenset of hostnames (e.g.
+                GITHUB_RELEASE_ASSET_REDIRECT_HOSTS) that are permitted as
+                redirect *targets* only.  These hosts bypass the ALLOWED_HOSTS
+                check but still undergo scheme and private-IP validation.
+                The *initial* URL is always fully authorized regardless.
         """
         kwargs["allow_redirects"] = False
 
         current_url = url
         for hop in range(max_redirects + 1):
-            await self.authorize(method, current_url)
+            # The initial URL always goes through full authorize().
+            # Redirect hops to pre-approved CDN hosts skip the ALLOWED_HOSTS
+            # check but still enforce scheme and private-IP policy.
+            if hop > 0 and allowed_redirect_hosts is not None:
+                parsed_redir = urlparse(current_url)
+                redir_host = (parsed_redir.hostname or "").lower()
+                if redir_host in allowed_redirect_hosts:
+                    self._check_scheme_allowed(parsed_redir)
+                    try:
+                        addr = ipaddress.ip_address(redir_host)
+                        if self._policy.block_private_ips and (
+                            addr.is_private or addr.is_loopback or addr.is_link_local
+                        ):
+                            raise EgressViolationError(
+                                f"Redirect target {addr} is a private/loopback IP"
+                            )
+                    except ValueError:
+                        pass
+                    logger.debug("Redirect hop %d allowed via redirect-host list: %s", hop, redir_host)
+                else:
+                    await self.authorize(method, current_url)
+            else:
+                await self.authorize(method, current_url)
 
             parsed = urlparse(current_url)
             self._check_scheme_allowed(parsed)

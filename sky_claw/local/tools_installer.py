@@ -17,14 +17,14 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 
 from sky_claw.antigravity.security.hitl import Decision, HITLGuard
-from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
-from sky_claw.config import (
-    SystemPaths,
-)
-
 from sky_claw.antigravity.security.network_gateway import (
     EgressViolationError,
     NetworkGatewayTimeoutError,
+)
+from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+from sky_claw.config import (
+    GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
+    SystemPaths,
 )
 
 if TYPE_CHECKING:
@@ -484,7 +484,11 @@ class ToolsInstaller:
         timeout = aiohttp.ClientTimeout(total=30)
         headers = {"Accept": "application/vnd.github+json"}
 
-        resp = await self._gateway.request("GET", releases_url, session, headers=headers, timeout=timeout)
+        resp = await self._gateway.request(
+            "GET", releases_url, session,
+            headers=headers, timeout=timeout,
+            allowed_redirect_hosts=GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
+        )
         try:
             if resp.status != 200:
                 raise ToolInstallError(f"GitHub API returned {resp.status} for {releases_url}")
@@ -494,7 +498,7 @@ class ToolsInstaller:
             logger.error("GitHub API request failed for %s: %s", releases_url, exc)
             raise
         finally:
-            await resp.release()
+            resp.release()
 
         version: str = data.get("tag_name", "unknown")
         assets: list[dict[str, Any]] = data.get("assets", [])
@@ -548,7 +552,11 @@ class ToolsInstaller:
             asset.size / (1024 * 1024),
         )
 
-        resp = await self._gateway.request("GET", asset.download_url, session, headers=headers, timeout=timeout)
+        resp = await self._gateway.request(
+            "GET", asset.download_url, session,
+            headers=headers, timeout=timeout,
+            allowed_redirect_hosts=GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
+        )
         try:
             resp.raise_for_status()
             with dest.open("wb") as fh:
@@ -570,7 +578,7 @@ class ToolsInstaller:
                 dest.unlink()
             raise
         finally:
-            await resp.release()
+            resp.release()
 
         # Size validation.
         if asset.size > 0 and downloaded != asset.size:
