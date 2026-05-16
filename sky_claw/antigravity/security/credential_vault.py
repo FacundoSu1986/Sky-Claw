@@ -45,8 +45,14 @@ class _SQLitePool:
 
     async def _create_connection(self) -> aiosqlite.Connection:
         conn = await aiosqlite.connect(self._db_path)
-        await conn.execute("PRAGMA journal_mode=WAL;")
-        await conn.execute("PRAGMA synchronous=NORMAL;")
+        try:
+            await conn.execute("PRAGMA journal_mode=WAL;")
+            await conn.execute("PRAGMA synchronous=NORMAL;")
+        except BaseException:
+            # Ensure the raw connection is closed on any error (including
+            # CancelledError) so shutdown/cancellation cannot leak file handles.
+            await conn.close()
+            raise
         return conn
 
     @asynccontextmanager

@@ -25,6 +25,17 @@ from sky_claw.antigravity.core.errors import VaultStorageError
 from sky_claw.antigravity.security.credential_vault import CredentialVault
 
 
+async def _wait_for_semaphore_waiter(sem: asyncio.Semaphore) -> None:
+    """Yield to the event loop until *sem* has at least one blocked waiter.
+
+    Preferred over ``asyncio.sleep(N)`` in tests: it is deterministic (no
+    fixed delay) and fails fast via the caller's ``asyncio.wait_for`` timeout
+    rather than masking bugs with an arbitrary sleep.
+    """
+    while not sem._waiters:
+        await asyncio.sleep(0)
+
+
 @pytest.fixture
 def vault_factory(tmp_path):
     """Return a factory that builds a CredentialVault backed by a tmp DB."""
@@ -258,7 +269,11 @@ class TestCredentialVaultConnectionPool:
         await asyncio.wait_for(holder_in.wait(), timeout=1.0)
 
         w = asyncio.create_task(waiter())
-        await asyncio.sleep(0.05)  # let the waiter block on the semaphore
+        # Wait until the waiter is genuinely blocked on the semaphore (i.e. it
+        # has added itself to _waiters) instead of relying on a fixed sleep.
+        await asyncio.wait_for(
+            _wait_for_semaphore_waiter(pool._semaphore), timeout=1.0
+        )
 
         await pool.close()
         release_holder.set()
@@ -293,7 +308,11 @@ class TestCredentialVaultConnectionPool:
         h = asyncio.create_task(holder())
         await asyncio.wait_for(holder_in.wait(), timeout=1.0)
         w = asyncio.create_task(waiter())
-        await asyncio.sleep(0.05)  # let the waiter block on the semaphore
+        # Wait until the waiter is genuinely blocked on the semaphore before
+        # measuring elapsed time — avoids timing-dependent flakiness on CI.
+        await asyncio.wait_for(
+            _wait_for_semaphore_waiter(pool._semaphore), timeout=1.0
+        )
 
         loop = asyncio.get_running_loop()
         start = loop.time()
