@@ -232,3 +232,75 @@ class TestCredentialVaultConnectionPool:
         val = await vault.get_secret("reuse")
         assert val == "yes"
         await vault.close()
+
+    @pytest.mark.asyncio
+    async def test_acquire_suspended_on_close_fails_closed(self, vault_factory) -> None:
+        """Audit #2: a task suspended on the semaphore when close() runs must
+        raise VaultStorageError, not receive a connection from a closed pool."""
+        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+            vault = vault_factory(pool_size=1)
+        await vault.initialize()
+        pool = vault._pool
+
+        holder_in = asyncio.Event()
+        release_holder = asyncio.Event()
+
+        async def holder() -> None:
+            async with pool.acquire():
+                holder_in.set()
+                await release_holder.wait()
+
+        async def waiter() -> None:
+            async with pool.acquire():
+                pass
+
+        h = asyncio.create_task(holder())
+        await asyncio.wait_for(holder_in.wait(), timeout=1.0)
+
+        w = asyncio.create_task(waiter())
+        await asyncio.sleep(0.05)  # let the waiter block on the semaphore
+
+        await pool.close()
+        release_holder.set()
+        await asyncio.wait_for(h, timeout=1.0)
+
+        with pytest.raises(VaultStorageError, match="closed"):
+            await asyncio.wait_for(w, timeout=1.0)
+
+    @pytest.mark.asyncio
+    async def test_close_wakes_semaphore_waiters_promptly(self, vault_factory) -> None:
+        """Audit #4: close() must wake tasks blocked on the semaphore instead of
+        leaving them stalled until the full pool timeout elapses."""
+        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+            vault = vault_factory(pool_size=1)
+        await vault.initialize()
+        pool = vault._pool
+        pool._timeout = 30.0  # without the wake-up fix the waiter stalls 30s
+
+        holder_in = asyncio.Event()
+        release_holder = asyncio.Event()
+
+        async def holder() -> None:
+            async with pool.acquire():
+                holder_in.set()
+                await release_holder.wait()
+
+        async def waiter() -> None:
+            with pytest.raises(VaultStorageError):
+                async with pool.acquire():
+                    pass
+
+        h = asyncio.create_task(holder())
+        await asyncio.wait_for(holder_in.wait(), timeout=1.0)
+        w = asyncio.create_task(waiter())
+        await asyncio.sleep(0.05)  # let the waiter block on the semaphore
+
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        await pool.close()
+        await asyncio.wait_for(w, timeout=2.0)
+        elapsed = loop.time() - start
+        assert elapsed < 2.0, f"waiter stalled {elapsed:.1f}s — close() did not wake it"
+
+        release_holder.set()
+        await asyncio.wait_for(h, timeout=1.0)

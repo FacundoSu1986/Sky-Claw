@@ -83,15 +83,19 @@ class _SQLitePool:
                 raise VaultStorageError("SQLite connection pool is closed")
 
             conn: aiosqlite.Connection | None = None
+            # Try to reuse an existing connection first.
             try:
-                # Try to reuse an existing connection first.
+                conn = self._pool.get_nowait()
+            except asyncio.QueueEmpty:
                 try:
-                    conn = self._pool.get_nowait()
-                except asyncio.QueueEmpty:
                     conn = await asyncio.wait_for(self._create_connection(), timeout=self._timeout)
+                except TimeoutError as exc:
+                    raise VaultStorageError(
+                        f"SQLite pool timeout ({self._timeout}s) creating connection"
+                    ) from exc
+
+            try:
                 yield conn
-            except TimeoutError as exc:
-                raise VaultStorageError(f"SQLite pool timeout ({self._timeout}s) creating connection") from exc
             finally:
                 if conn is not None:
                     if self._closed:
@@ -102,7 +106,13 @@ class _SQLitePool:
                         except asyncio.QueueFull:
                             await conn.close()
         finally:
-            self._semaphore.release()
+            # suppress(ValueError) handles the close()-race: close() releases
+            # permits to wake waiting tasks, inflating the counter; an active
+            # holder that finishes after that would exceed the bound on release.
+            # Since _closed is set, the pool is dead anyway so the permit count
+            # no longer matters.
+            with suppress(ValueError):
+                self._semaphore.release()
 
     async def close(self) -> None:
         """Drain the pool and close every connection."""
