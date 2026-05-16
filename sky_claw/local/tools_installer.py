@@ -481,15 +481,20 @@ class ToolsInstaller:
         Returns:
             Tuple of (:class:`ReleaseAsset`, version tag).
         """
-        await self._gateway.authorize("GET", releases_url)
-
         timeout = aiohttp.ClientTimeout(total=30)
         headers = {"Accept": "application/vnd.github+json"}
 
-        async with session.get(releases_url, headers=headers, timeout=timeout) as resp:
+        resp = await self._gateway.request("GET", releases_url, session, headers=headers, timeout=timeout)
+        try:
             if resp.status != 200:
                 raise ToolInstallError(f"GitHub API returned {resp.status} for {releases_url}")
             data: dict[str, Any] = await resp.json()
+        except (aiohttp.ClientError, TimeoutError,
+                EgressViolationError, NetworkGatewayTimeoutError) as exc:
+            logger.error("GitHub API request failed for %s: %s", releases_url, exc)
+            raise
+        finally:
+            await resp.release()
 
         version: str = data.get("tag_name", "unknown")
         assets: list[dict[str, Any]] = data.get("assets", [])
