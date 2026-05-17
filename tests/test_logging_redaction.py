@@ -120,6 +120,11 @@ def test_filter_breaks_cycles_in_nested_extra_values() -> None:
 
 
 def test_filter_caps_deeply_nested_values() -> None:
+    # The depth cap only protects against RecursionError if it stays well
+    # below Python's recursion limit. Pin a hard upper bound so that raising
+    # _MAX_DEPTH past a safe value is itself caught as a regression.
+    assert SecurityRedactionFilter._MAX_DEPTH <= 128
+
     redact_filter = SecurityRedactionFilter()
     record = logging.LogRecord(
         name="test",
@@ -131,8 +136,12 @@ def test_filter_caps_deeply_nested_values() -> None:
         exc_info=None,
     )
     deep_secret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    # Fixed nesting depth (not derived from _MAX_DEPTH): comfortably above the
+    # asserted upper bound, so removing or disabling the cap leaves the deep
+    # branch un-collapsed and fails the test.
+    fixed_depth = 256
     nested: dict[str, object] = {"token": deep_secret}
-    for _ in range(SecurityRedactionFilter._MAX_DEPTH + 6):
+    for _ in range(fixed_depth):
         nested = {"child": nested}
     record.context = {"shallow": deep_secret, "deep": nested}
 
