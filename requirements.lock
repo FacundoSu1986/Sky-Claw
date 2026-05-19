@@ -76,7 +76,7 @@ httpx==0.28.1
     #   langgraph-sdk
     #   langsmith
     #   nicegui
-idna==3.11
+idna==3.15
     # via
     #   anyio
     #   httpx
@@ -141,7 +141,7 @@ multidict==6.7.1
     # via
     #   aiohttp
     #   yarl
-nicegui==3.11.1
+nicegui==3.12.0
     # via sky-claw (pyproject.toml)
 opentelemetry-api==1.41.1
     # via
