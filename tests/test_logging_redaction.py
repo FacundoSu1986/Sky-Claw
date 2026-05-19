@@ -119,6 +119,38 @@ def test_filter_breaks_cycles_in_nested_extra_values() -> None:
     assert "sk-proj-" not in str(record.context)
 
 
+def test_filter_caps_deeply_nested_values() -> None:
+    # The depth cap only protects against RecursionError if it stays well
+    # below Python's recursion limit. Pin a hard upper bound so that raising
+    # _MAX_DEPTH past a safe value is itself caught as a regression.
+    assert SecurityRedactionFilter._MAX_DEPTH <= 128
+
+    redact_filter = SecurityRedactionFilter()
+    record = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="event",
+        args=(),
+        exc_info=None,
+    )
+    deep_secret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    # Fixed nesting depth (not derived from _MAX_DEPTH): comfortably above the
+    # asserted upper bound, so removing or disabling the cap leaves the deep
+    # branch un-collapsed and fails the test.
+    fixed_depth = 256
+    nested: dict[str, object] = {"token": deep_secret}
+    for _ in range(fixed_depth):
+        nested = {"child": nested}
+    record.context = {"shallow": deep_secret, "deep": nested}
+
+    assert redact_filter.filter(record)
+
+    assert "[REDACTED:DEPTH]" in str(record.context)
+    assert "sk-proj-" not in str(record.context["shallow"])
+
+
 def test_resolve_current_user_falls_back_for_legacy_getpass_errors() -> None:
     with patch("sky_claw.logging_config.getpass.getuser", side_effect=KeyError("missing passwd entry")):
         assert logging_config._resolve_current_user() == "User"
