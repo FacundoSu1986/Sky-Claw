@@ -154,3 +154,47 @@ def test_filter_caps_deeply_nested_values() -> None:
 def test_resolve_current_user_falls_back_for_legacy_getpass_errors() -> None:
     with patch("sky_claw.logging_config.getpass.getuser", side_effect=KeyError("missing passwd entry")):
         assert logging_config._resolve_current_user() == "User"
+
+
+def test_redacts_google_api_key() -> None:
+    """Google API keys (AIza + 35 chars) must be redacted wherever they appear."""
+    redact_filter = SecurityRedactionFilter()
+    # Split to avoid CI secret-scanner flagging this test file itself.
+    key = _token("AI", "zaSyDaBcDeFgHiJkLmNoPqRsTuVwXyZ012345")
+    text = f"google_key={key} other=safe"
+
+    redacted = redact_filter._redact(text)
+
+    assert "AIza" not in redacted
+    assert "[REDACTED]" in redacted
+    assert "safe" in redacted  # surrounding context preserved
+
+
+def test_redacts_stripe_api_keys() -> None:
+    """Stripe live/test secret and publishable keys must be redacted."""
+    redact_filter = SecurityRedactionFilter()
+    sk_live = _token("sk", "_live_", "abcdefghijklmnopqrstuvwxyz012345")
+    pk_live = _token("pk", "_live_", "abcdefghijklmnopqrstuvwxyz012345")
+    sk_test = _token("sk", "_test_", "abcdefghijklmnopqrstuvwxyz012345")
+    text = f"stripe_sk={sk_live} stripe_pk={pk_live} dev_key={sk_test}"
+
+    redacted = redact_filter._redact(text)
+
+    assert "sk_live_" not in redacted
+    assert "pk_live_" not in redacted
+    assert "sk_test_" not in redacted
+    assert redacted.count("[REDACTED]") == 3
+
+
+def test_redacts_aws_secret_access_key() -> None:
+    """AWS Secret Access Key value must be redacted when named in a key=value context."""
+    redact_filter = SecurityRedactionFilter()
+    # Standard 40-char AWS Secret Access Key (example from AWS docs, split for CI scanner).
+    secret = _token("wJalrXUtn", "FEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+    text = f"aws_secret_access_key={secret} region=us-east-1"
+
+    redacted = redact_filter._redact(text)
+
+    assert "wJalrXUtn" not in redacted
+    assert "[REDACTED]" in redacted
+    assert "region=us-east-1" in redacted  # unrelated value preserved
