@@ -12,6 +12,7 @@ from sky_claw.antigravity.security.network_gateway import (
     EgressViolationError,
     NetworkGateway,
 )
+from sky_claw.config import GITHUB_RELEASE_ASSET_REDIRECT_HOSTS
 
 
 class _GatewayResponse:
@@ -77,7 +78,7 @@ class TestHostAllowList:
 
     @pytest.mark.asyncio
     async def test_malformed_ipv6_url_rejected_as_egress_violation(self, gw: NetworkGateway) -> None:
-        with pytest.raises(EgressViolationError, match="Malformed URL"):
+        with pytest.raises(EgressViolationError, match="Malformed authority"):
             await gw.authorize("GET", "http://[::1")
 
     @pytest.mark.asyncio
@@ -101,7 +102,9 @@ class TestRedirectValidation:
         session = MagicMock(spec=aiohttp.ClientSession)
         session.request = AsyncMock(side_effect=[redirect_response, final_response])
 
-        response = await gw.request("GET", asset_url, session)
+        response = await gw.request(
+            "GET", asset_url, session, allowed_redirect_hosts=GITHUB_RELEASE_ASSET_REDIRECT_HOSTS
+        )
 
         assert response is final_response
         assert [call.args[1] for call in session.request.await_args_list] == [asset_url, cdn_url]
@@ -115,7 +118,9 @@ class TestRedirectValidation:
         session = MagicMock(spec=aiohttp.ClientSession)
         session.request = AsyncMock(side_effect=[redirect_response, final_response])
 
-        response = await gw.request("GET", asset_url, session)
+        response = await gw.request(
+            "GET", asset_url, session, allowed_redirect_hosts=GITHUB_RELEASE_ASSET_REDIRECT_HOSTS
+        )
 
         assert response is final_response
         redirect_response.release.assert_called_once_with()
@@ -128,8 +133,8 @@ class TestRedirectValidation:
         session = MagicMock(spec=aiohttp.ClientSession)
         session.request = AsyncMock(return_value=redirect_response)
 
-        with pytest.raises(EgressViolationError, match="GitHub release asset redirect host"):
-            await gw.request("GET", asset_url, session)
+        with pytest.raises(EgressViolationError, match="not in the allow-list"):
+            await gw.request("GET", asset_url, session, allowed_redirect_hosts=GITHUB_RELEASE_ASSET_REDIRECT_HOSTS)
         redirect_response.release.assert_called_once_with()
 
 

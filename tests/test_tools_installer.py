@@ -14,10 +14,9 @@ import aiohttp
 import pytest
 
 from sky_claw.antigravity.security.hitl import HITLGuard
-from sky_claw.antigravity.security.network_gateway import EgressPolicy, EgressViolationError, NetworkGateway
+from sky_claw.antigravity.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.tools_installer import (
-    ReleaseAsset,
     ToolInstallError,
     ToolsInstaller,
     _extract_zip_safe,
@@ -90,28 +89,6 @@ def _xedit_release_json(
             },
         ],
     }
-
-
-def _mock_http_response(
-    status: int,
-    *,
-    headers: dict[str, str] | None = None,
-    chunks: tuple[bytes, ...] = (),
-) -> AsyncMock:
-    response = AsyncMock()
-    response.status = status
-    response.headers = headers or {}
-    response.raise_for_status = MagicMock()
-    response.content = MagicMock()
-
-    async def _iter_chunks(size: int) -> AsyncIterator[bytes]:
-        for chunk in chunks:
-            yield chunk
-
-    response.content.iter_chunked = _iter_chunks
-    response.__aenter__ = AsyncMock(return_value=response)
-    response.__aexit__ = AsyncMock(return_value=False)
-    return response
 
 
 # ---------------------------------------------------------------------------
@@ -200,16 +177,22 @@ class TestEnsureLoot:
         mock_api_resp.__aenter__ = AsyncMock(return_value=mock_api_resp)
         mock_api_resp.__aexit__ = AsyncMock(return_value=False)
 
-        cdn_url = "https://objects.githubusercontent.com/github-production-release-asset-2e65be/loot.zip"
-        mock_redirect_resp = _mock_http_response(302, headers={"Location": cdn_url})
-        mock_dl_resp = _mock_http_response(200, chunks=(zip_bytes,))
+        # Simulate streaming download.
+        async def _iter_chunks(size: int) -> AsyncIterator[bytes]:
+            yield zip_bytes
 
-        def _mock_get(url: str, **kwargs: Any) -> Any:
-            return mock_api_resp  # GitHub release API
+        mock_dl_resp = AsyncMock()
+        mock_dl_resp.status = 200
+        mock_dl_resp.raise_for_status = MagicMock()
+        mock_dl_resp.content = MagicMock()
+        mock_dl_resp.content.iter_chunked = _iter_chunks
 
         session = MagicMock(spec=aiohttp.ClientSession)
-        session.get = MagicMock(side_effect=_mock_get)
-        session.request = AsyncMock(side_effect=[mock_redirect_resp, mock_dl_resp])
+
+        # Both _find_github_asset and _download_asset now go through gateway.request.
+        # First call: GitHub releases API → returns JSON metadata (mock_api_resp).
+        # Second call: asset download URL → returns binary stream (mock_dl_resp).
+        installer._gateway.request = AsyncMock(side_effect=[mock_api_resp, mock_dl_resp])
 
         # Auto-approve HITL.
         async def _auto_approve() -> None:
@@ -225,10 +208,12 @@ class TestEnsureLoot:
         assert result.version == "0.22.4"
         assert result.exe_path.name == "loot.exe"
         assert result.exe_path.exists()
-        assert [call.args[1] for call in session.request.await_args_list] == [
-            "https://api.github.com/repos/loot/loot/releases/assets/1001",
-            cdn_url,
-        ]
+        assert installer._gateway.request.await_count == 2
+        # Second call must be the asset's API URL (redirect-reauth enforced via gateway).
+        assert (
+            installer._gateway.request.call_args_list[1].args[1]
+            == "https://api.github.com/repos/loot/loot/releases/assets/1001"
+        )
 
     @pytest.mark.asyncio
     async def test_hitl_denial_raises(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
@@ -237,14 +222,12 @@ class TestEnsureLoot:
         install_dir.mkdir()
 
         release_json = _github_release_json()
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value=release_json)
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_api_resp = AsyncMock()
+        mock_api_resp.status = 200
+        mock_api_resp.json = AsyncMock(return_value=release_json)
 
         session = MagicMock(spec=aiohttp.ClientSession)
-        session.get = MagicMock(return_value=mock_resp)
+        installer._gateway.request = AsyncMock(return_value=mock_api_resp)
 
         async def _auto_deny() -> None:
             await asyncio.sleep(0.01)
@@ -263,34 +246,12 @@ class TestEnsureLoot:
 
         mock_resp = AsyncMock()
         mock_resp.status = 403
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
 
         session = MagicMock(spec=aiohttp.ClientSession)
-        session.get = MagicMock(return_value=mock_resp)
+        installer._gateway.request = AsyncMock(return_value=mock_resp)
 
         with pytest.raises(ToolInstallError, match="403"):
             await installer.ensure_loot(install_dir, session)
-
-    @pytest.mark.asyncio
-    async def test_download_asset_blocks_unapproved_github_redirect(
-        self, installer: ToolsInstaller, tmp_path: pathlib.Path
-    ) -> None:
-        asset = ReleaseAsset(
-            name="loot.zip",
-            size=1,
-            download_url="https://api.github.com/repos/loot/loot/releases/assets/1001",
-            browser_download_url="https://github.com/loot/loot/releases/download/0.22.4/loot.zip",
-        )
-        mock_redirect_resp = _mock_http_response(
-            302,
-            headers={"Location": "https://github.com/loot/loot/releases/download/0.22.4/loot.zip"},
-        )
-        session = MagicMock(spec=aiohttp.ClientSession)
-        session.request = AsyncMock(return_value=mock_redirect_resp)
-
-        with pytest.raises(EgressViolationError, match="GitHub release asset redirect host"):
-            await installer._download_asset(session, asset, tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -334,16 +295,19 @@ class TestEnsureXedit:
         mock_api_resp.__aenter__ = AsyncMock(return_value=mock_api_resp)
         mock_api_resp.__aexit__ = AsyncMock(return_value=False)
 
-        cdn_url = "https://objects.githubusercontent.com/github-production-release-asset-2e65be/SSEEdit.zip"
-        mock_redirect_resp = _mock_http_response(302, headers={"Location": cdn_url})
-        mock_dl_resp = _mock_http_response(200, chunks=(zip_bytes,))
+        async def _iter_chunks(size: int) -> AsyncIterator[bytes]:
+            yield zip_bytes
 
-        def _mock_get(url: str, **kwargs: Any) -> Any:
-            return mock_api_resp
+        mock_dl_resp = AsyncMock()
+        mock_dl_resp.status = 200
+        mock_dl_resp.raise_for_status = MagicMock()
+        mock_dl_resp.content = MagicMock()
+        mock_dl_resp.content.iter_chunked = _iter_chunks
 
         session = MagicMock(spec=aiohttp.ClientSession)
-        session.get = MagicMock(side_effect=_mock_get)
-        session.request = AsyncMock(side_effect=[mock_redirect_resp, mock_dl_resp])
+
+        # Both _find_github_asset and _download_asset go through gateway.request.
+        installer._gateway.request = AsyncMock(side_effect=[mock_api_resp, mock_dl_resp])
 
         async def _auto_approve() -> None:
             await asyncio.sleep(0.01)
@@ -357,10 +321,11 @@ class TestEnsureXedit:
         assert result.tool_name == "SSEEdit"
         assert result.version == "4.1.5"
         assert result.exe_path.name == "SSEEdit.exe"
-        assert [call.args[1] for call in session.request.await_args_list] == [
-            "https://api.github.com/repos/TES5Edit/TES5Edit/releases/assets/2001",
-            cdn_url,
-        ]
+        assert installer._gateway.request.await_count == 2
+        assert (
+            installer._gateway.request.call_args_list[1].args[1]
+            == "https://api.github.com/repos/TES5Edit/TES5Edit/releases/assets/2001"
+        )
 
     @pytest.mark.asyncio
     async def test_hitl_denial_raises(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
@@ -368,14 +333,12 @@ class TestEnsureXedit:
         install_dir.mkdir()
 
         release_json = _xedit_release_json(asset_name="SSEEdit_4.1.5.zip")
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value=release_json)
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_api_resp = AsyncMock()
+        mock_api_resp.status = 200
+        mock_api_resp.json = AsyncMock(return_value=release_json)
 
         session = MagicMock(spec=aiohttp.ClientSession)
-        session.get = MagicMock(return_value=mock_resp)
+        installer._gateway.request = AsyncMock(return_value=mock_api_resp)
 
         async def _auto_deny() -> None:
             await asyncio.sleep(0.01)

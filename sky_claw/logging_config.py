@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import getpass
 import logging
 import logging.handlers
@@ -43,11 +41,16 @@ _REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b[0-9]{6,12}:[a-zA-Z0-9_\-]{30,90}\b"), "[REDACTED]"),
     (re.compile(r"\bsk-(?:proj|ant|live|test)?-?[a-zA-Z0-9_\-]{20,}\b"), "[REDACTED]"),
     (re.compile(r"(?i)\b(Bearer\s+)[^\s\"',;}{]{8,}"), r"\1[REDACTED]"),
-    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"), "[REDACTED]"),
+    # GitHub tokens (classic ghp_/gho_/ghu_/ghs_/ghr_ are 36 chars; cap at 255 for future-compat)
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,255}\b"), "[REDACTED]"),
     (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{82}\b"), "[REDACTED]"),
+    # AWS Access Key ID
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[REDACTED]"),
+    # Slack tokens
     (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "[REDACTED]"),
+    # GitLab personal/project/group tokens
     (re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"), "[REDACTED]"),
+    # Raw JWT (3-segment eyJ… header.payload.signature)
     (re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"), "[REDACTED]"),
     (
         re.compile(r"(?i)\b(api[_-]?key|apikey|x-api-key|token|secret|password)([\"'\s:=]+)([^\s\"',;}{]{8,})"),
@@ -71,7 +74,7 @@ _LOG_RECORD_RESERVED_ATTRS = frozenset(
 class SecurityRedactionFilter(logging.Filter):
     """Filter that redacts sensitive credentials and PII from log messages."""
 
-    _MAX_DEPTH: int = 64
+    _MAX_DEPTH: int = 64  # Guard against pathologically deep (non-cyclic) structures.
 
     def _redact(self, text: str) -> str:
         if not isinstance(text, str):

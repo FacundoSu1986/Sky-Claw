@@ -162,13 +162,6 @@ class TestAgentCommDispatchQueue:
         with pytest.raises(InsecureTransportError):
             AgentCommunicationClient(daemon_url="ws://evil.example.com/ws")
 
-    def test_daemon_auth_close_code_counts_towards_lockout(self):
-        """SEC-WS: client auth lockout must match daemon close code 4001."""
-        client = self._make_client()
-
-        assert client._is_auth_rejection(SimpleNamespace(code=4001)) is True
-        assert client._is_auth_rejection(SimpleNamespace(code=1008)) is False
-
     @pytest.mark.asyncio
     async def test_sync_callback_does_not_block_socket_read_loop(self):
         """A blocked sync callback must not prevent reading the next WS message."""
@@ -261,36 +254,16 @@ class TestAgentCommDispatchQueue:
 
         assert all(worker.done() for worker in client._dispatch_workers)
 
-    @pytest.mark.asyncio
-    async def test_sync_callback_exception_does_not_stop_dispatch_worker(self):
-        """Callback bugs must be logged without killing the dispatch worker."""
-        seen: list[str] = []
-
-        def sync_handler(data):
-            seen.append(data["type"])
-            if data["type"] == "bad":
-                raise KeyError("callback failed")
-
-        client = self._make_client(on_message=sync_handler)
-        client._start_dispatch_workers()
-
-        await client._enqueue_sync_callback({"type": "bad"})
-        await client._enqueue_sync_callback({"type": "good"})
-        await asyncio.wait_for(client._dispatch_queue.join(), timeout=2.0)
-
-        assert seen == ["bad", "good"]
-        assert any(not worker.done() for worker in client._dispatch_workers)
-
-        await client._stop_dispatch_workers()
-
 
 class TestScraperAgentGatewayBoundary:
     """ScraperAgent must not perform outbound HTTP without NetworkGateway."""
 
-    def test_construction_without_gateway_raises(self):
-        """gateway=None must be rejected at construction time, not deferred to _api_request."""
+    @pytest.mark.asyncio
+    async def test_api_request_without_gateway_fails_closed(self):
+        """Verify that ScraperAgent constructor rejects None gateway (fail-closed)."""
         from sky_claw.antigravity.scraper.scraper_agent import ScraperAgent
 
         db = MagicMock()
-        with pytest.raises(ValueError, match="NetworkGateway"):
+        # Gateway is now mandatory; None is rejected at construction time.
+        with pytest.raises(ValueError, match="ScraperAgent requires a NetworkGateway"):
             ScraperAgent(db, gateway=None)

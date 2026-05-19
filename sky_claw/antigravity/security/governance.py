@@ -212,6 +212,7 @@ class GovernanceManager:
         between write and HMAC computation left a whitelist with NO sig
         at all, causing silent data loss on reload.
         """
+        _committed = False
         try:
             content = json.dumps({"approved_hashes": list(self.whitelist)}, indent=4)
             raw = content.encode("utf-8")
@@ -231,16 +232,20 @@ class GovernanceManager:
             # Phase 2: Atomic rename (both files exist with valid content)
             wl_tmp.replace(self.whitelist_path)
             sig_tmp.replace(self._hmac_sig_path)
-        except (OSError, RuntimeError, ValueError) as e:
+            _committed = True
+        except (OSError, TypeError, RuntimeError) as e:
             logger.error("Error guardando whitelist: %s", e)
-            # Clean up any leftover temp files
-            for tmp in (
-                self.whitelist_path.with_suffix(".json.tmp"),
-                self._hmac_sig_path.with_suffix(".hmac.tmp"),
-            ):
-                with contextlib.suppress(OSError):
-                    tmp.unlink(missing_ok=True)
             raise
+        finally:
+            # Clean up temp files on any failure, regardless of exception type.
+            # Skipped when _committed=True because the renames already moved them.
+            if not _committed:
+                for tmp in (
+                    self.whitelist_path.with_suffix(".json.tmp"),
+                    self._hmac_sig_path.with_suffix(".hmac.tmp"),
+                ):
+                    with contextlib.suppress(OSError):
+                        tmp.unlink(missing_ok=True)
 
     @staticmethod
     def _hash_file_blocking(file_path: str) -> str | None:

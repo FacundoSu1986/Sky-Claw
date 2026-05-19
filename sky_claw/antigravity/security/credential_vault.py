@@ -128,11 +128,12 @@ class _SQLitePool:
         # Unblock any coroutines suspended on the semaphore so they observe
         # _closed immediately via the post-acquire re-check and raise cleanly,
         # instead of waiting up to self._timeout seconds for a slot.
+        # suppress(ValueError): BoundedSemaphore raises when released above its
+        # bound. This happens if close() is called while no tasks are waiting
+        # (all permits already free). Stop releasing as soon as the bound is hit.
         for _ in range(self._max_size):
-            try:
+            with suppress(ValueError):
                 self._semaphore.release()
-            except ValueError:
-                break
 
         while True:
             try:

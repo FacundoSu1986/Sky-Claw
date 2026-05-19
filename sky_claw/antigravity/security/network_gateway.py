@@ -13,7 +13,6 @@ Every outbound request made by Sky-Claw **must** pass through
 from __future__ import annotations
 
 import asyncio
-import inspect
 import ipaddress
 import logging
 import re
@@ -22,14 +21,13 @@ import ssl
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import ParseResult, urljoin, urlparse
+from urllib.parse import ParseResult, urlparse
 
 import aiohttp
 
 from sky_claw.config import (
     ALLOWED_HOSTS,
     ALLOWED_METHODS,
-    GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
     TELEGRAM_PATH_PREFIX,
 )
 
@@ -50,9 +48,6 @@ class EgressPolicy:
 
     allowed_hosts: frozenset[str] = field(default_factory=lambda: ALLOWED_HOSTS)
     allowed_methods: dict[str, frozenset[str]] = field(default_factory=lambda: dict(ALLOWED_METHODS))
-    github_release_asset_redirect_hosts: frozenset[str] = field(
-        default_factory=lambda: GITHUB_RELEASE_ASSET_REDIRECT_HOSTS
-    )
     telegram_path_prefix: str = TELEGRAM_PATH_PREFIX
     block_private_ips: bool = True
 
@@ -161,8 +156,8 @@ class NetworkGateway:
 
     # Strict pre-validation: prevents scheme smuggling and CRLF injection.
     # Runs BEFORE urlparse, which is historically lenient with malformed inputs.
-    _STRICT_PREFIX_RE = re.compile(r"^https?://", re.IGNORECASE)
-    _GITHUB_RELEASE_ASSET_PATH_RE = re.compile(r"^/repos/[^/]+/[^/]+/releases/assets/\d+$")
+    # Allow `[` as the first authority character for IPv6 literals per RFC 3986.
+    _STRICT_PREFIX_RE = re.compile(r"^https?://(?:[a-zA-Z0-9]|\[)")
 
     async def authorize(self, method: str, url: str) -> None:
         """Validate *method* + *url* against the egress policy.
@@ -182,14 +177,17 @@ class NetworkGateway:
         if any(ord(c) <= 32 or ord(c) >= 127 for c in stripped):
             raise EgressViolationError(f"URL rejected: Contains control characters or whitespace: {url!r}")
 
-        # Block triple slashes (e.g. https:///evil.com) before urlparse.
+        # Block triple slashes (e.g. https:///evil.com) and ensure it starts with an alphanumeric host.
         if not self._STRICT_PREFIX_RE.match(stripped):
-            raise EgressViolationError(f"URL rejected: Scheme must be http or https: {url!r}")
-        if stripped.lower().startswith(("http:///", "https:///")):
-            raise EgressViolationError(f"URL rejected: Empty authority is not allowed: {url!r}")
+            raise EgressViolationError(f"URL rejected: Must start with http(s):// followed by alphanumeric: {url!r}")
 
-        parsed = self._parse_url(stripped)
-        hostname = self._hostname_from_parsed(parsed).lower()
+        try:
+            parsed = urlparse(stripped)
+        except ValueError as exc:
+            # urlparse raises ValueError for malformed IPv6 literals (e.g. http://[bad).
+            # Re-raise as EgressViolationError so callers see a consistent gateway error.
+            raise EgressViolationError(f"URL rejected: Malformed authority (invalid IPv6 literal?): {url!r}") from exc
+        hostname = (parsed.hostname or "").lower()
 
         if not hostname:
             raise EgressViolationError(f"URL has no hostname: {url}")
@@ -213,6 +211,7 @@ class NetworkGateway:
         url: str,
         session: aiohttp.ClientSession,
         max_redirects: int = 5,
+        allowed_redirect_hosts: frozenset[str] | None = None,
         **kwargs: Any,
     ) -> aiohttp.ClientResponse:
         """Authorize and execute an HTTP request with redirect validation.
@@ -220,20 +219,43 @@ class NetworkGateway:
         DNS Pinning is handled automatically by GatewayTCPConnector.
         Redirect validation (H4): ``allow_redirects=False`` is enforced. Each redirect
         Location is re-authorized through the full egress policy before being followed.
+
+        Args:
+            allowed_redirect_hosts: Optional frozenset of hostnames (e.g.
+                GITHUB_RELEASE_ASSET_REDIRECT_HOSTS) that are permitted as
+                redirect *targets* only.  These hosts bypass the ALLOWED_HOSTS
+                check but still undergo scheme and private-IP validation.
+                The *initial* URL is always fully authorized regardless.
         """
         kwargs["allow_redirects"] = False
 
         current_url = url
-        github_release_asset_redirect_chain = False
         for hop in range(max_redirects + 1):
-            if github_release_asset_redirect_chain:
-                await self._authorize_github_release_asset_redirect(method, current_url)
+            # The initial URL always goes through full authorize().
+            # Redirect hops to pre-approved CDN hosts skip the ALLOWED_HOSTS
+            # check but still enforce scheme and private-IP policy.
+            if hop > 0 and allowed_redirect_hosts is not None:
+                parsed_redir = urlparse(current_url)
+                redir_host = (parsed_redir.hostname or "").lower()
+                if redir_host in allowed_redirect_hosts:
+                    self._check_scheme_allowed(parsed_redir)
+                    try:
+                        addr = ipaddress.ip_address(redir_host)
+                        if self._policy.block_private_ips and (
+                            addr.is_private or addr.is_loopback or addr.is_link_local
+                        ):
+                            raise EgressViolationError(f"Redirect target {addr} is a private/loopback IP")
+                    except ValueError:
+                        pass
+                    logger.debug("Redirect hop %d allowed via redirect-host list: %s", hop, redir_host)
+                else:
+                    await self.authorize(method, current_url)
             else:
                 await self.authorize(method, current_url)
 
-            parsed = self._parse_url(current_url)
+            parsed = urlparse(current_url)
             self._check_scheme_allowed(parsed)
-            is_loopback = self._is_loopback_host(self._hostname_from_parsed(parsed))
+            is_loopback = self._is_loopback_host(parsed.hostname or "")
 
             hop_kwargs = dict(kwargs)
             safe_timeout = aiohttp.ClientTimeout(total=45, connect=10)
@@ -252,17 +274,14 @@ class NetworkGateway:
                 redirect_url = response.headers.get("Location")
                 if not redirect_url:
                     return response
-                try:
-                    redirect_url = self._resolve_redirect_url(current_url, redirect_url)
-                    if github_release_asset_redirect_chain or self._is_github_release_asset_api_request(method, parsed):
-                        await self._authorize_github_release_asset_redirect(method, redirect_url)
-                        github_release_asset_redirect_chain = True
-                    else:
-                        await self.authorize(method, redirect_url)
-                    current_url = redirect_url
-                    logger.debug("Following redirect hop %d: %s", hop + 1, current_url)
-                finally:
-                    await self._release_redirect_response(response)
+                # Resolve relative URLs before the next authorize() call
+                if not urlparse(redirect_url).netloc:
+                    base = urlparse(current_url)
+                    redirect_url = f"{base.scheme}://{base.netloc}{redirect_url}"
+                current_url = redirect_url
+                logger.debug("Following redirect hop %d: %s", hop + 1, current_url)
+                # Release the redirect response body before issuing the next request.
+                response.release()
                 continue
 
             return response
@@ -273,7 +292,7 @@ class NetworkGateway:
         """Explicit validation for a chain of URLs (SSRF Protection)."""
         for hop_url in history:
             await self.authorize("GET", hop_url)
-            parsed = self._parse_url(hop_url)
+            parsed = urlparse(hop_url)
             if parsed.scheme != "https":
                 raise EgressViolationError(f"Non-HTTPS hop detected: {hop_url}")
 
@@ -293,54 +312,11 @@ class NetworkGateway:
         except ValueError:
             return False
 
-    def _parse_url(self, url: str) -> ParseResult:
-        try:
-            return urlparse(url)
-        except ValueError as exc:
-            raise EgressViolationError(f"URL rejected: Malformed URL: {url!r}") from exc
-
-    def _hostname_from_parsed(self, parsed: ParseResult) -> str:
-        try:
-            return parsed.hostname or ""
-        except ValueError as exc:
-            raise EgressViolationError(f"URL rejected: Malformed hostname: {parsed.geturl()!r}") from exc
-
-    def _resolve_redirect_url(self, current_url: str, redirect_url: str) -> str:
-        resolved_url = urljoin(current_url, redirect_url)
-        self._parse_url(resolved_url)
-        return resolved_url
-
-    @staticmethod
-    async def _release_redirect_response(response: aiohttp.ClientResponse) -> None:
-        result = response.release()
-        if inspect.isawaitable(result):
-            await result
-
-    def _is_github_release_asset_api_request(self, method: str, parsed: ParseResult) -> bool:
-        hostname = self._hostname_from_parsed(parsed).lower()
-        return (
-            method.upper() == "GET"
-            and parsed.scheme == "https"
-            and hostname == "api.github.com"
-            and self._GITHUB_RELEASE_ASSET_PATH_RE.fullmatch(parsed.path) is not None
-        )
-
-    async def _authorize_github_release_asset_redirect(self, method: str, url: str) -> None:
-        if method.upper() != "GET":
-            raise EgressViolationError("GitHub release asset redirects only allow GET requests")
-
-        parsed = self._parse_url(url)
-        hostname = self._hostname_from_parsed(parsed).lower()
-        if parsed.scheme != "https":
-            raise EgressViolationError(f"GitHub release asset redirect must use HTTPS: {url}")
-        if hostname not in self._policy.github_release_asset_redirect_hosts:
-            raise EgressViolationError(f"GitHub release asset redirect host '{hostname}' is not allowed")
-
     def _check_scheme_allowed(self, parsed: ParseResult) -> None:
         """Allow HTTPS everywhere, HTTP only for explicit loopback targets."""
         if parsed.scheme == "https":
             return
-        if parsed.scheme == "http" and self._is_loopback_host(self._hostname_from_parsed(parsed)):
+        if parsed.scheme == "http" and self._is_loopback_host(parsed.hostname or ""):
             return
         raise EgressViolationError(f"Insecure scheme '{parsed.scheme}' blocked: {parsed.geturl()}")
 

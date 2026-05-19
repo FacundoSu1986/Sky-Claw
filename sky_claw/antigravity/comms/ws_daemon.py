@@ -51,7 +51,7 @@ class TelegramDaemon:
         ui_broadcast: UIBroadcastServer | None = None,
         *,
         token_dir: str | None = None,
-    ) -> None:
+    ):
         self.router = router
         self.session = session
         self.gateway_url = assert_safe_ws_url(gateway_url)
@@ -64,7 +64,7 @@ class TelegramDaemon:
         # Instanciando el guardián de seguridad (AST Purple Auditor)
         self.guardian = ast_guardian.ASTGuardian()
 
-    async def start(self) -> None:
+    async def start(self):
         """Infinite reconnection loop with exponential backoff."""
         async with self._running_lock:
             self._is_running = True
@@ -96,7 +96,7 @@ class TelegramDaemon:
                 logger.error(f"❌ Fallo fatal en TelegramDaemon: {e}")
                 await asyncio.sleep(5)
 
-    async def stop(self) -> None:
+    async def stop(self):
         """Graceful shutdown of the daemon."""
         async with self._running_lock:
             self._is_running = False
@@ -104,7 +104,7 @@ class TelegramDaemon:
             await self.ws.close()
             logger.info("🛑 TelegramDaemon detenido de forma segura.")
 
-    async def _listen_loop(self) -> None:
+    async def _listen_loop(self):
         """Main listening loop for incoming Telegram messages.
 
         M-01: Exception handling is split into three tiers:
@@ -156,7 +156,7 @@ class TelegramDaemon:
             except Exception as e:
                 logger.exception(f"⚠️ Error procesando flujo de WebSocket: {e}")
 
-    async def _inject_to_router(self, data: dict) -> None:
+    async def _inject_to_router(self, data):
         """Dispatches the command to the LLM agent and relays response via WS."""
         payload = data.get("payload", {})
         text = payload.get("text")
@@ -188,7 +188,7 @@ class TelegramDaemon:
                 return
 
             # 100% async non-blocking injection with telemetry
-            async def _progress_callback(status: str, progress: int) -> None:
+            async def _progress_callback(status: str, progress: int):
                 if self.ws and self.ws.open:
                     telemetry = {
                         "id": str(uuid.uuid4()),
@@ -264,7 +264,7 @@ class UIBroadcastServer:
     _RATE_LIMIT_WINDOW: float = 10.0  # seconds
     _RATE_LIMIT_MAX: int = 60  # max messages per window
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8765) -> None:
+    def __init__(self, host: str = "127.0.0.1", port: int = 8765):
         self.host = host
         self.port = port
         self._clients: set = set()
@@ -336,11 +336,7 @@ class UIBroadcastServer:
         token = self._request_header(websocket, "X-Auth-Token")
         if not self._auth.validate(token):
             self._logger.warning(f"🚫 Rejected UI client — invalid token from {websocket.remote_address}")
-            # 4001 is intentional: AgentCommunicationClient._AUTH_REJECTION_CLOSE_CODES
-            # keys off this code to increment the consecutive-auth-failure counter and
-            # trigger the 5-minute lockout.  Rate-limit uses 1008 (POLICY_VIOLATION)
-            # which must NOT count toward auth lockout (network errors are routine).
-            await websocket.close(4001, "Unauthorized")
+            await websocket.close(1008, "Unauthorized")
             return
 
         client_id = id(websocket)

@@ -17,8 +17,13 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 
 from sky_claw.antigravity.security.hitl import Decision, HITLGuard
+from sky_claw.antigravity.security.network_gateway import (
+    EgressViolationError,
+    NetworkGatewayTimeoutError,
+)
 from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
 from sky_claw.config import (
+    GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
     SystemPaths,
 )
 
@@ -476,15 +481,26 @@ class ToolsInstaller:
         Returns:
             Tuple of (:class:`ReleaseAsset`, version tag).
         """
-        await self._gateway.authorize("GET", releases_url)
-
         timeout = aiohttp.ClientTimeout(total=30)
         headers = {"Accept": "application/vnd.github+json"}
 
-        async with session.get(releases_url, headers=headers, timeout=timeout) as resp:
+        resp = await self._gateway.request(
+            "GET",
+            releases_url,
+            session,
+            headers=headers,
+            timeout=timeout,
+            allowed_redirect_hosts=GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
+        )
+        try:
             if resp.status != 200:
                 raise ToolInstallError(f"GitHub API returned {resp.status} for {releases_url}")
             data: dict[str, Any] = await resp.json()
+        except (aiohttp.ClientError, TimeoutError, EgressViolationError, NetworkGatewayTimeoutError) as exc:
+            logger.error("GitHub API request failed for %s: %s", releases_url, exc)
+            raise
+        finally:
+            resp.release()
 
         version: str = data.get("tag_name", "unknown")
         assets: list[dict[str, Any]] = data.get("assets", [])
@@ -538,27 +554,35 @@ class ToolsInstaller:
             asset.size / (1024 * 1024),
         )
 
+        resp = await self._gateway.request(
+            "GET",
+            asset.download_url,
+            session,
+            headers=headers,
+            timeout=timeout,
+            allowed_redirect_hosts=GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
+        )
         try:
-            resp = await self._gateway.request("GET", asset.download_url, session, headers=headers, timeout=timeout)
-            async with resp:
-                resp.raise_for_status()
-                with dest.open("wb") as fh:
-                    async for chunk in resp.content.iter_chunked(_DOWNLOAD_CHUNK_SIZE):
-                        fh.write(chunk)
-                        hasher.update(chunk)
-                        downloaded += len(chunk)
-                        if downloaded % (10 * _DOWNLOAD_CHUNK_SIZE) == 0:
-                            logger.info(
-                                "  ... %d / %d bytes (%.0f%%)",
-                                downloaded,
-                                asset.size,
-                                (downloaded / asset.size * 100) if asset.size else 0,
-                            )
-        except (aiohttp.ClientError, OSError, TimeoutError) as exc:
+            resp.raise_for_status()
+            with dest.open("wb") as fh:
+                async for chunk in resp.content.iter_chunked(_DOWNLOAD_CHUNK_SIZE):
+                    fh.write(chunk)
+                    hasher.update(chunk)
+                    downloaded += len(chunk)
+                    if downloaded % (10 * _DOWNLOAD_CHUNK_SIZE) == 0:
+                        logger.info(
+                            "  ... %d / %d bytes (%.0f%%)",
+                            downloaded,
+                            asset.size,
+                            (downloaded / asset.size * 100) if asset.size else 0,
+                        )
+        except (aiohttp.ClientError, OSError, TimeoutError, EgressViolationError, NetworkGatewayTimeoutError) as exc:
             logger.error("Download failed for %s: %s", asset.name, exc)
             if dest.exists():
                 dest.unlink()
             raise
+        finally:
+            resp.release()
 
         # Size validation.
         if asset.size > 0 and downloaded != asset.size:
