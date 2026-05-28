@@ -15,6 +15,7 @@ dependencies = [
     "cryptography>=41.0.0",
     "defusedxml>=0.7.1,<1",
     "pydantic>=2.0,<3",
+    "py7zr>=0.21,<1",
     "rarfile",
     "tenacity>=9.1,<10",
     "python-json-logger>=2.0,<4",

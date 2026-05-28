@@ -109,8 +109,18 @@ jobs:
           pip install bandit pip-audit setuptools
       - name: Bandit (SAST)
         run: bandit -r sky_claw/ -ll
-      - name: Pip-audit (SCA)
-        run: pip-audit --skip-editable -r requirements.lock
+      - name: Pip-audit (SCA — strict)
+        run: pip-audit --strict --skip-editable -r requirements.lock
+      # P0.5 — Node gateway supply-chain audit
+      - uses: actions/setup-node@1a4442cacd436585916779262731d5b162bc6ec7 # v4.0.4
+        with:
+          node-version: "24"
+      - name: NPM ci (Telegram gateway)
+        working-directory: sky_claw/antigravity/comms/telegram_gateway_node
+        run: npm ci
+      - name: NPM audit (Telegram gateway)
+        working-directory: sky_claw/antigravity/comms/telegram_gateway_node
+        run: npm audit --audit-level=high
 
   # ── Summary jobs: exact names required by branch protection ──────────────
   # Branch protection requires single-name checks; matrix produces /py3.11
