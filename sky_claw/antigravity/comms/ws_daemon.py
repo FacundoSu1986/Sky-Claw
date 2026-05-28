@@ -64,6 +64,13 @@ class TelegramDaemon:
         # Instanciando el guardián de seguridad (AST Purple Auditor)
         self.guardian = ast_guardian.ASTGuardian()
 
+        # T1-01: Tracking de tasks de dispatch para evitar GC silencioso.
+        # asyncio.create_task() no mantiene referencias fuertes, asi que sin
+        # este set el GC puede recolectar la task mientras esta pendiente
+        # ("Task was destroyed but it is pending") y las excepciones del
+        # handler desaparecen sin loggearse.
+        self._pending_dispatch: set[asyncio.Task[None]] = set()
+
     async def start(self):
         """Infinite reconnection loop with exponential backoff."""
         async with self._running_lock:
@@ -97,9 +104,23 @@ class TelegramDaemon:
                 await asyncio.sleep(5)
 
     async def stop(self):
-        """Graceful shutdown of the daemon."""
+        """Graceful shutdown of the daemon.
+
+        T1-01: cancela las tasks de dispatch pendientes y las awaitea para que
+        sus excepciones se loggeen via ``_on_dispatch_done`` antes de cerrar.
+        """
         async with self._running_lock:
             self._is_running = False
+
+        # Cancelar y drenar tasks de dispatch pendientes (T1-01).
+        if self._pending_dispatch:
+            pending = list(self._pending_dispatch)
+            for task in pending:
+                task.cancel()
+            # asyncio.gather con return_exceptions=True garantiza que ninguna
+            # CancelledError aborte el drenaje completo.
+            await asyncio.gather(*pending, return_exceptions=True)
+
         if self.ws:
             await self.ws.close()
             logger.info("🛑 TelegramDaemon detenido de forma segura.")
@@ -130,18 +151,18 @@ class TelegramDaemon:
 
                 # Command injection for asynchronous processing
                 if data.get("type") == "command":
-                    task = asyncio.create_task(self._inject_to_router(data))
-                    task.add_done_callback(
-                        lambda t: (
-                            logger.error(
-                                "Error no manejado en _inject_to_router: %s",
-                                t.exception(),
-                            )
-                            if not t.cancelled() and t.exception() is not None
-                            else None
-                        )
+                    # T1-01: añadir la task al set para mantener una referencia
+                    # fuerte hasta que termine. El callback discard + log errors.
+                    task = asyncio.create_task(
+                        self._inject_to_router(data),
+                        name=f"ws-dispatch-{msg_id}",
                     )
+                    self._pending_dispatch.add(task)
+                    task.add_done_callback(self._on_dispatch_done)
 
+            except asyncio.CancelledError:
+                # T1-07: shutdown ordenado — propagar sin loggear como error.
+                raise
             except json.JSONDecodeError:
                 logger.error("🚫 Recibido JSON malformado desde el Gateway.")
             except InvalidMessage as e:
@@ -155,6 +176,24 @@ class TelegramDaemon:
                 break
             except Exception as e:
                 logger.exception(f"⚠️ Error procesando flujo de WebSocket: {e}")
+
+    def _on_dispatch_done(self, task: asyncio.Task[None]) -> None:
+        """Callback ejecutado cuando una task de dispatch termina.
+
+        T1-01: liberar la referencia en ``_pending_dispatch`` y loggear cualquier
+        excepción no manejada del handler. Sin esto, el task podía ser GC'd
+        mientras estaba pendiente y las excepciones se perderían silenciosamente.
+        """
+        self._pending_dispatch.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "Error no manejado en _inject_to_router: %s",
+                exc,
+                exc_info=exc,
+            )
 
     async def _inject_to_router(self, data):
         """Dispatches the command to the LLM agent and relays response via WS."""

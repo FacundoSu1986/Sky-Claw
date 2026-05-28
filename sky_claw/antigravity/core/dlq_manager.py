@@ -309,9 +309,15 @@ class DLQManager:
         try:
             await handler(event)
         except Exception as exc:
-            new_attempts = row.attempts + 1
-            if new_attempts >= self._max_attempts:
-                await self._mark_dead(row, str(exc), attempts=new_attempts)
+            # T1-05: usar incremento SQL atomico (attempts = attempts + 1) y
+            # releer el valor en lugar de calcular `row.attempts + 1` en Python.
+            # row.attempts viene de un SELECT previo a la claim — defense in
+            # depth contra futuras refactorizaciones donde el valor pueda
+            # quedarse stale entre fetch y update.
+            now2 = self._clock()
+            tentative_attempts = row.attempts + 1
+            if tentative_attempts >= self._max_attempts:
+                await self._mark_dead(row, str(exc), attempts=tentative_attempts)
                 logger.warning(
                     "DLQ: evento '%s' handler '%s' agotó %d intentos → dead",
                     row.topic,
@@ -319,18 +325,19 @@ class DLQManager:
                     self._max_attempts,
                 )
             else:
-                now2 = self._clock()
-                next_retry = self._compute_next_retry_at(now2, new_attempts, self._base_backoff_s)
+                next_retry = self._compute_next_retry_at(now2, tentative_attempts, self._base_backoff_s)
                 async with self._connect() as db:
-                    await db.execute(
+                    # AND status='in_progress' garantiza que sólo actualicemos
+                    # la fila si seguimos siendo el owner de la claim. Si
+                    # recovery reseteó la fila a 'pending', no la corromper.
+                    cur = await db.execute(
                         """
                         UPDATE dead_letter_events
-                        SET status='pending', attempts=?, next_retry_at=?,
+                        SET status='pending', attempts=attempts+1, next_retry_at=?,
                             error_type=?, error_message=?, updated_at=?
-                        WHERE id=?
+                        WHERE id=? AND status='in_progress'
                         """,
                         (
-                            new_attempts,
                             next_retry,
                             type(exc).__name__,
                             str(exc),
@@ -339,6 +346,11 @@ class DLQManager:
                         ),
                     )
                     await db.commit()
+                    if cur.rowcount == 0:
+                        logger.warning(
+                            "DLQ: fila id=%d ya no esta in_progress al hacer retry update — recovery race",
+                            row.id,
+                        )
         else:
             async with self._connect() as db:
                 await db.execute("DELETE FROM dead_letter_events WHERE id=?", (row.id,))

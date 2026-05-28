@@ -162,7 +162,10 @@ class FileSnapshotManager:
 
                 # Calcular checksum antes de copiar
                 checksum = await self._calculate_checksum(file_path)
-                file_size = file_path.stat().st_size
+                # T1-02: stat() sincrono dentro de async with self._lock bloquea
+                # el event loop. En SMB/NFS puede tardar 100ms+. Delegamos al
+                # thread pool para que otras coroutinas avancen.
+                file_size = await asyncio.to_thread(lambda: file_path.stat().st_size)
 
                 # Copiar archivo (copy-on-write cuando es posible)
                 await asyncio.to_thread(shutil.copy2, file_path, snapshot_path)
@@ -360,41 +363,53 @@ class FileSnapshotManager:
         freed_bytes = 0
         errors: list[str] = []
 
+        # T1-02: iterdir() / is_dir() / rglob() / stat() son sincronos. En
+        # directorios con miles de snapshots, mantenerlos dentro de async with
+        # self._lock bloquea el event loop por 100-500ms por iteracion.
+        # Delegamos las operaciones de FS a thread pools fuera y dentro del lock
+        # donde sea posible.
+        def _scan_dir_stats(d: pathlib.Path) -> tuple[int, int]:
+            files = [f for f in d.rglob("*") if f.is_file()]
+            return sum(f.stat().st_size for f in files), len(files)
+
         async with self._lock:
             try:
-                for date_dir in self._snapshot_dir.iterdir():
-                    if not date_dir.is_dir():
+                entries = await asyncio.to_thread(
+                    lambda: list(self._snapshot_dir.iterdir())
+                )
+
+                for date_dir in entries:
+                    if not await asyncio.to_thread(date_dir.is_dir):
                         continue
 
                     # Verificar si el directorio es antiguo
                     try:
                         dir_time = time.strptime(date_dir.name, "%Y-%m-%d")
                         dir_timestamp = time.mktime(dir_time)
-
-                        if dir_timestamp < cutoff_time:
-                            # Eliminar todo el directorio
-                            dir_size = sum(f.stat().st_size for f in date_dir.rglob("*") if f.is_file())
-                            file_count = sum(1 for f in date_dir.rglob("*") if f.is_file())
-
-                            if not dry_run:
-                                await asyncio.to_thread(shutil.rmtree, date_dir)
-
-                            deleted_count += file_count
-                            freed_bytes += dir_size
-
-                            logger.info(
-                                "Cleaned up old snapshot directory",
-                                extra={
-                                    "directory": str(date_dir),
-                                    "files_deleted": file_count,
-                                    "bytes_freed": dir_size,
-                                    "dry_run": dry_run,
-                                },
-                            )
-
                     except ValueError:
                         # Directorio con nombre inválido, ignorar
                         continue
+
+                    if dir_timestamp >= cutoff_time:
+                        continue
+
+                    dir_size, file_count = await asyncio.to_thread(_scan_dir_stats, date_dir)
+
+                    if not dry_run:
+                        await asyncio.to_thread(shutil.rmtree, date_dir)
+
+                    deleted_count += file_count
+                    freed_bytes += dir_size
+
+                    logger.info(
+                        "Cleaned up old snapshot directory",
+                        extra={
+                            "directory": str(date_dir),
+                            "files_deleted": file_count,
+                            "bytes_freed": dir_size,
+                            "dry_run": dry_run,
+                        },
+                    )
 
             except OSError as e:
                 errors.append(f"Error during cleanup: {e}")
