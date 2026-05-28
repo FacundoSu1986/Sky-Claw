@@ -1,0 +1,180 @@
+"""QA-13 — undo_last_operation idempotente ante restore failure (T2-02).
+
+Verifica que cuando ``restore_snapshot`` falla con OSError:
+  (a) ``RollbackResult.success == False`` y ``errors`` contiene el mensaje.
+  (b) La entry queda marcada como ROLLED_BACK en el journal (no en COMPLETED).
+  (c) Un segundo ``undo_last_operation`` para el mismo agente devuelve
+      "No completed or failed operation found" — porque ya fue rolled-back.
+
+Sin este fix, el caller retry vería la entry aún en COMPLETED y reintentaría
+el restore sobre el archivo ya parcialmente restaurado, causando corrupción
+progresiva.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from sky_claw.antigravity.core.db_lifecycle import (
+    DatabaseLifecycleConfig,
+    DatabaseLifecycleManager,
+)
+from sky_claw.antigravity.db.journal import (
+    OperationJournal,
+    OperationStatus,
+    OperationType,
+)
+from sky_claw.antigravity.db.rollback_manager import RollbackManager
+
+
+@pytest.fixture
+async def journal(tmp_path):
+    """Journal sobre SQLite en tmp_path."""
+    db_path = tmp_path / "rollback_idempotent.db"
+    lifecycle = DatabaseLifecycleManager(
+        db_paths=[],
+        config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+    )
+    j = OperationJournal(db_path, lifecycle=lifecycle)
+    await j.open()
+    yield j
+    await j.close()
+    await lifecycle.shutdown_all()
+
+
+@pytest.fixture
+def failing_snapshot_manager():
+    """SnapshotManager mock cuyo restore_snapshot siempre falla con OSError."""
+    mgr = MagicMock()
+    mgr.restore_snapshot = AsyncMock(side_effect=OSError(28, "No space left on device"))
+    return mgr
+
+
+@pytest.mark.asyncio
+async def test_restore_failure_marks_rolled_back_and_returns_failure(
+    journal, failing_snapshot_manager, tmp_path
+):
+    """Restore falla → mark_rolled_back se ejecuta igualmente → result.success=False."""
+    rm = RollbackManager(journal, failing_snapshot_manager)
+
+    # Setup: una operación COMPLETED en el journal con un snapshot path.
+    tx_id = await journal.begin_transaction(description="test", mod_id=None, agent_id="qa-13")
+    entry_id = await journal.begin_operation(
+        agent_id="qa-13",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(tmp_path / "target.esp"),
+        transaction_id=tx_id,
+        snapshot_path=str(tmp_path / "snapshot.bin"),
+    )
+    await journal.complete_operation(entry_id)
+
+    # Ejecutar rollback — el restore va a fallar.
+    result = await rm.undo_last_operation("qa-13")
+
+    assert result.success is False
+    assert len(result.errors) == 1
+    assert "No space left" in result.errors[0]
+    assert result.transaction_id == entry_id
+    # restore intentado una vez.
+    failing_snapshot_manager.restore_snapshot.assert_awaited_once()
+
+    # CRÍTICO: la entry debe estar marcada como ROLLED_BACK aunque restore falló.
+    entry = await journal.get_last_operation(
+        "qa-13",
+        [OperationStatus.COMPLETED, OperationStatus.FAILED, OperationStatus.ROLLED_BACK],
+    )
+    assert entry is not None
+    assert entry.status == OperationStatus.ROLLED_BACK
+
+
+@pytest.mark.asyncio
+async def test_second_undo_returns_no_operation_found(
+    journal, failing_snapshot_manager, tmp_path
+):
+    """Tras un rollback fallido, un retry no debe re-procesar la misma entry."""
+    rm = RollbackManager(journal, failing_snapshot_manager)
+
+    tx_id = await journal.begin_transaction(description="test", mod_id=None, agent_id="qa-13b")
+    entry_id = await journal.begin_operation(
+        agent_id="qa-13b",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(tmp_path / "target.esp"),
+        transaction_id=tx_id,
+        snapshot_path=str(tmp_path / "snapshot.bin"),
+    )
+    await journal.complete_operation(entry_id)
+
+    # Primer rollback (falla en restore, pero marca rolled_back).
+    first = await rm.undo_last_operation("qa-13b")
+    assert first.success is False
+
+    # Segundo rollback — NO debe re-procesar la misma entry.
+    second = await rm.undo_last_operation("qa-13b")
+    assert second.success is False
+    assert second.transaction_id is None
+    assert second.errors == ("No completed or failed operation found for agent",)
+
+    # restore_snapshot fue llamado solo UNA vez, no dos.
+    assert failing_snapshot_manager.restore_snapshot.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_happy_path_still_works(journal, tmp_path):
+    """Si restore funciona, success=True como antes."""
+    successful_mgr = MagicMock()
+    successful_mgr.restore_snapshot = AsyncMock(return_value=True)
+    rm = RollbackManager(journal, successful_mgr)
+
+    tx_id = await journal.begin_transaction(description="test", mod_id=None, agent_id="qa-13c")
+    entry_id = await journal.begin_operation(
+        agent_id="qa-13c",
+        operation_type=OperationType.MOD_INSTALL,
+        target_path=str(tmp_path / "target.esp"),
+        transaction_id=tx_id,
+        snapshot_path=str(tmp_path / "snapshot.bin"),
+    )
+    await journal.complete_operation(entry_id)
+
+    result = await rm.undo_last_operation("qa-13c")
+    assert result.success is True
+    assert result.entries_restored == 1
+    assert result.errors == ()
+
+    entry = await journal.get_last_operation(
+        "qa-13c",
+        [OperationStatus.COMPLETED, OperationStatus.FAILED, OperationStatus.ROLLED_BACK],
+    )
+    assert entry is not None
+    assert entry.status == OperationStatus.ROLLED_BACK
+
+
+@pytest.mark.asyncio
+async def test_no_snapshot_path_marks_rolled_back_without_restore(journal, tmp_path):
+    """Si la entry no tiene snapshot_path, no se llama restore pero igual se marca."""
+    no_op_mgr = MagicMock()
+    no_op_mgr.restore_snapshot = AsyncMock()
+    rm = RollbackManager(journal, no_op_mgr)
+
+    tx_id = await journal.begin_transaction(description="test", mod_id=None, agent_id="qa-13d")
+    entry_id = await journal.begin_operation(
+        agent_id="qa-13d",
+        operation_type=OperationType.FILE_CREATE,
+        target_path=str(tmp_path / "new.esp"),
+        transaction_id=tx_id,
+        snapshot_path=None,
+    )
+    await journal.complete_operation(entry_id)
+
+    result = await rm.undo_last_operation("qa-13d")
+    assert result.success is True
+    assert result.entries_restored == 0
+    no_op_mgr.restore_snapshot.assert_not_called()
+
+    entry = await journal.get_last_operation(
+        "qa-13d",
+        [OperationStatus.COMPLETED, OperationStatus.FAILED, OperationStatus.ROLLED_BACK],
+    )
+    assert entry is not None
+    assert entry.status == OperationStatus.ROLLED_BACK

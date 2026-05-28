@@ -70,6 +70,15 @@ class RollbackManager:
         1. Consultar Journal para obtener última operación 'COMPLETED' o 'FAILED'
         2. Delegar al FileSnapshotManager para restaurar archivo original
         3. Actualizar estado de la entrada en el Journal a 'ROLLED_BACK'
+           (SIEMPRE, incluso si el restore falló — ver T2-02)
+
+        T2-02 — IDEMPOTENCIA: si ``restore_snapshot`` falla con OSError, NO
+        re-lanzamos como antes. En su lugar, marcamos la entry como
+        ROLLED_BACK y devolvemos ``success=False`` con los errores en
+        ``RollbackResult.errors``.  Esto previene que un retry del caller
+        re-fetch la misma entry (aún en COMPLETED) y vuelva a re-intentar el
+        restore sobre un archivo posiblemente ya parcialmente restaurado —
+        causando corrupción progresiva.
         """
         # Obtener última operación
         entry = await self._journal.get_last_operation(agent_id, [OperationStatus.COMPLETED, OperationStatus.FAILED])
@@ -81,25 +90,48 @@ class RollbackManager:
                 errors=("No completed or failed operation found for agent",),
             )
 
-        # Restaurar archivo desde snapshot
+        partial_errors: list[str] = []
+        restored = 0
+
+        # Restaurar archivo desde snapshot (best-effort, sin re-lanzar)
         if entry.snapshot_path:
             try:
                 await self._snapshots.restore_snapshot(
                     pathlib.Path(entry.snapshot_path), pathlib.Path(entry.target_path)
                 )
+                restored = 1
             except OSError as e:
-                logger.critical("Rollback failed for %s: %s", agent_id, str(e), exc_info=True)
-                raise RollbackError(str(e)) from e
+                logger.critical(
+                    "Rollback restore failed for %s (entry=%s): %s",
+                    agent_id,
+                    entry.id,
+                    str(e),
+                    exc_info=True,
+                )
+                partial_errors.append(f"snapshot_restore: {e}")
 
-        # Actualizar estado en journal
-        await self._journal.mark_rolled_back(entry.id)
+        # T2-02: marcar ROLLED_BACK SIEMPRE para garantizar idempotencia.
+        # Sin esto, un retry del caller volvería a procesar la misma entry.
+        try:
+            await self._journal.mark_rolled_back(entry.id)
+        except Exception as mark_exc:
+            # Si no se puede marcar, futuros rollbacks van a re-intentar.
+            # Es CRÍTICO porque cada retry puede empeorar el estado del archivo.
+            logger.critical(
+                "CRÍTICO: no se pudo marcar entry %s como rolled_back; "
+                "rollbacks futuros lo re-intentarán: %s",
+                entry.id,
+                mark_exc,
+                exc_info=True,
+            )
+            partial_errors.append(f"mark_rolled_back: {mark_exc}")
 
         return RollbackResult(
-            success=True,
+            success=not partial_errors,
             transaction_id=entry.id,
-            entries_restored=1 if entry.snapshot_path else 0,
+            entries_restored=restored,
             files_deleted=1 if entry.operation_type in [OperationType.FILE_CREATE, OperationType.MOD_INSTALL] else 0,
-            errors=(),
+            errors=tuple(partial_errors),
         )
 
     # ------------------------------------------------------------------
