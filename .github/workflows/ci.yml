@@ -113,7 +113,7 @@ jobs:
         run: |
           python -m venv .audit-venv
           .\.audit-venv\Scripts\python -m pip install --upgrade pip
-          .\.audit-venv\Scripts\python -m pip install --require-hashes -r requirements.lock
+          .\.audit-venv\Scripts\python -m pip install --no-deps --require-hashes -r requirements.lock
       - name: Pip-audit (SCA — strict)
         run: pip-audit --strict --skip-editable -r requirements.lock
       # P0.5 — Node gateway supply-chain audit
