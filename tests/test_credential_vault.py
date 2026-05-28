@@ -161,7 +161,12 @@ class TestCredentialVaultConnectionPool:
         """Exhausting the pool without releasing must trigger VaultStorageError."""
         db_path = str(tmp_path / "timeout.db")
         with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
-            vault = CredentialVault(db_path=db_path, master_key="key", pool_size=1)
+            vault = CredentialVault(
+                db_path=db_path,
+                master_key="key",
+                pool_size=1,
+                salt_dir=tmp_path / "salt",
+            )
         await vault.initialize()
 
         # Acquire the single connection and hold it.
