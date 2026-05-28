@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - CI Security gate hardened: `pip-audit --strict` (was permissive),
     `npm ci` + `npm audit --audit-level=high` for the Telegram gateway.
 
+### Changed
+- **P0.4 — Quality gates**: coverage gate raised from 55 % → 60 % in CI
+  (`--cov-fail-under=60`). Actual coverage at gate change: ~65 %. Documentation
+  updated in `tests/conftest.py` and `.github/coding_conventions.md`.
+
 ## [0.1.0] - 2026-05-11
 
 ### Added
