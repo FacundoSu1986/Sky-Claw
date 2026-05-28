@@ -33,6 +33,10 @@ dependencies = [
     "opentelemetry-api>=1.25,<2",
     "opentelemetry-sdk>=1.25,<2",
     "opentelemetry-exporter-otlp-proto-grpc>=1.25,<2",
+    # Transitive constraint: fastapi+nicegui pull starlette; pin away from
+    # 1.0.0 which has PYSEC-2026-161. Bump as needed when fastapi/nicegui
+    # accept newer Starlette.
+    "starlette>=1.0.1,<2",
 ]
 
 [project.optional-dependencies]
