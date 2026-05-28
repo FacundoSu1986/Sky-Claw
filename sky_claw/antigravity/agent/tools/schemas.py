@@ -210,12 +210,21 @@ class SetupToolsParams(pydantic.BaseModel):
     )
 
 
+# T2-03 — pattern restrictivo para profiles / mod names elegidos por el LLM.
+# Antes permitíamos `'%()[]` lo que abría chains de injection contextual
+# (directorios con esos caracteres rompen parsers de loadorder.txt o argumentos
+# de subprocess de LOOT/xEdit). Solo permitimos alfanuméricos, guion, punto y
+# espacio.  La UI humana puede usar otro path para profiles con caracteres
+# especiales (esos no son LLM-controlled).
+_SAFE_NAME_PATTERN = r"^[a-zA-Z0-9_.\- ]+$"
+
+
 class AnalyzeConflictsParams(pydantic.BaseModel):
     """Parameters for the ``analyze_esp_conflicts`` tool."""
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    profile: str = pydantic.Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_. \-'%()\[\]]+$")
+    profile: str = pydantic.Field(min_length=1, max_length=128, pattern=_SAFE_NAME_PATTERN)
     plugins: list[str] | None = pydantic.Field(
         default=None,
         description="Specific plugins to analyze. If omitted, uses all enabled plugins from the profile.",
@@ -227,8 +236,8 @@ class ModNameParams(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    mod_name: str = pydantic.Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_. \-'%()\[\]]+$")
-    profile: str = pydantic.Field(default="Default", pattern=r"^[a-zA-Z0-9_. \-'%()\[\]]+$")
+    mod_name: str = pydantic.Field(min_length=1, max_length=128, pattern=_SAFE_NAME_PATTERN)
+    profile: str = pydantic.Field(default="Default", pattern=_SAFE_NAME_PATTERN)
 
 
 class ToggleModParams(pydantic.BaseModel):
@@ -236,9 +245,9 @@ class ToggleModParams(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    mod_name: str = pydantic.Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_. \-'%()\[\]]+$")
+    mod_name: str = pydantic.Field(min_length=1, max_length=128, pattern=_SAFE_NAME_PATTERN)
     enable: bool
-    profile: str = pydantic.Field(default="Default", pattern=r"^[a-zA-Z0-9_. \-]+$")
+    profile: str = pydantic.Field(default="Default", pattern=_SAFE_NAME_PATTERN)
 
 
 class BodySlideBatchParams(pydantic.BaseModel):

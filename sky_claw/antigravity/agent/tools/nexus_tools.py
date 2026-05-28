@@ -19,6 +19,7 @@ import aiohttp
 
 from sky_claw.antigravity.security.hitl import Decision, HITLGuard
 from sky_claw.antigravity.security.network_gateway import GatewayTCPConnector, NetworkGateway
+from sky_claw.antigravity.security.sanitize import sanitize_for_prompt
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.scraper.nexus_downloader import NexusDownloader
@@ -94,15 +95,20 @@ async def download_mod(
         try:
             file_info = await downloader.get_file_info(nexus_id, file_id, session)
         except Exception as exc:
+            # T2-04: sanitize la excepción antes de devolverla al LLM.  Las HTTP
+            # responses adversariales de Nexus podrían embeber payloads de
+            # prompt-injection en el mensaje de error que luego cruzaría al
+            # contexto del LLM como contenido de tool_result.
+            safe_err = sanitize_for_prompt(str(exc), max_length=256)
             logger.error(
                 "Failed to fetch metadata for mod=%d file=%d: %s",
                 nexus_id,
                 file_id,
-                exc,
+                safe_err,
             )
             return json.dumps(
                 {
-                    "error": f"Could not retrieve file metadata: {exc}",
+                    "error": f"Could not retrieve file metadata: {safe_err}",
                     "nexus_id": nexus_id,
                     "file_id": file_id,
                 }

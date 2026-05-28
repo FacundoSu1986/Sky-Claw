@@ -153,12 +153,73 @@ class CredentialVault:
         Mirrors the pattern used in GovernanceManager._get_or_create_hmac_key:
         write to a sibling .tmp file, restrict permissions, then rename into place.
         The temp file is unlinked on any error so no partial artifact is left behind.
+
+        T1-03 — Symlink hardening:
+
+        - If ``target`` already exists as a symbolic link, refuse: an
+          attacker who can write to the directory could swap the existing
+          salt with a symlink pointing to an arbitrary file, and our
+          ``tmp.replace(target)`` would happily overwrite the link target.
+        - If ``tmp`` exists as a symbolic link before we write, remove it
+          (it was placed by an attacker to redirect our write).
+        - The temp file is created with ``O_NOFOLLOW | O_EXCL`` so an
+          attacker cannot race-inject a symlink between our existence check
+          and the actual open.
+        - After hardening permissions and before the final ``replace``, the
+          target is re-checked: if a symlink appeared in the meantime,
+          unlink the tmp and raise.
         """
         target = Path(path)
         tmp = target.with_name(target.name + ".tmp")
+
+        # Pre-checks (TOCTOU window is tiny because we use O_NOFOLLOW on open).
         try:
-            tmp.write_bytes(data)
+            if target.is_symlink():
+                raise PermissionError(
+                    f"Refusing to write through pre-existing symlink: {target}"
+                )
+            if tmp.is_symlink():
+                # Hostile symlink placed by an attacker; remove before write.
+                # If a real concurrent writer were holding the tmp, replace
+                # would have failed downstream anyway.
+                tmp.unlink()
+        except OSError:
+            # If the symlink check itself failed for an IO reason, fall
+            # through and let the write/open attempt produce the real error.
+            pass
+
+        # Build open flags: O_NOFOLLOW prevents following a symlink at the
+        # last moment, O_EXCL ensures we are the creator (no pre-existing
+        # regular file we'd inadvertently truncate-and-poison).
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+
+        try:
+            fd = os.open(tmp, flags, 0o600)
+            try:
+                # Write in a loop because os.write may return fewer bytes
+                # than requested under signal interruption on some platforms.
+                view = memoryview(data)
+                written = 0
+                while written < len(view):
+                    n = os.write(fd, view[written:])
+                    if n <= 0:
+                        raise OSError("os.write returned non-positive count")
+                    written += n
+            finally:
+                os.close(fd)
+
             restrict_to_owner(tmp)
+
+            # Re-validate target right before replace: an attacker may have
+            # raced a symlink into place after our pre-check.
+            if target.exists() and target.is_symlink():
+                tmp.unlink(missing_ok=True)
+                raise PermissionError(
+                    f"Symlink appeared at {target} between pre-check and replace"
+                )
+
             tmp.replace(target)
         except (OSError, RuntimeError):
             tmp.unlink(missing_ok=True)

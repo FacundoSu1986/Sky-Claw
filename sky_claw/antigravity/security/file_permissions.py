@@ -39,14 +39,31 @@ def restrict_to_owner(path: Path) -> None:
     post-validates the effective DACL. On POSIX, uses ``chmod 0o600``
     for files and ``0o700`` for directories.
 
+    T1-04 — Symlink hardening: if *path* is a symbolic link, refuse with
+    ``PermissionError`` instead of following the link.  An attacker who
+    can race-swap *path* to a symlink between ``exists()`` and ``chmod``
+    would otherwise be able to alter the permissions of the link's target
+    (potential 0600 on ``/etc/shadow`` etc.).  Callers must hand us real
+    paths; this is fail-closed by design.
+
     Raises:
-        PermissionError: if the owner-only state cannot be enforced or
-            verified. Files are unlinked before raising so a leaky
-            artifact never persists; directories are preserved (callers
-            are expected to handle higher-level cleanup themselves).
+        PermissionError: if *path* is a symlink, or if the owner-only state
+            cannot be enforced or verified. Files are unlinked before
+            raising so a leaky artifact never persists; directories are
+            preserved (callers are expected to handle higher-level cleanup
+            themselves).
     """
     if not path.exists():
         return
+
+    # T1-04: bloquear symlinks ANTES de cualquier llamada a icacls/chmod.
+    # ``Path.is_symlink()`` no sigue el link (usa lstat internamente), por lo
+    # que un symlink colgante también se detecta correctamente.
+    if path.is_symlink():
+        logger.error("Refusing to harden symlink %s — possible TOCTOU attack", path)
+        raise PermissionError(
+            f"Refusing to harden symlink {path} — possible TOCTOU attack"
+        )
 
     if _IS_WINDOWS:
         _restrict_windows(path)
