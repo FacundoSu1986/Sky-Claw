@@ -14,16 +14,13 @@ Contracts:
 from __future__ import annotations
 
 import asyncio
-import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 
 @pytest.mark.asyncio
-async def test_run_oneshot_times_out_and_exits(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+async def test_run_oneshot_times_out_and_exits() -> None:
     """_run_oneshot must surface a chat timeout as a clean SystemExit, not hang."""
     from sky_claw.antigravity.modes import cli_mode
 
@@ -38,16 +35,23 @@ async def test_run_oneshot_times_out_and_exits(
 
     ctx.router.chat = AsyncMock(side_effect=_hang)
 
+    # Patch the cli_mode logger directly — caplog propagation is unreliable across
+    # OS / Python version combinations on CI.
     with (
         patch.object(cli_mode, "_CHAT_TIMEOUT_SECONDS", 0.05),
-        caplog.at_level(logging.ERROR),
+        patch.object(cli_mode.logger, "error") as mock_error,
         pytest.raises(SystemExit),
     ):
         await asyncio.wait_for(cli_mode._run_oneshot(ctx, "hello"), timeout=5.0)
 
     # The error log should reflect the timeout, not a generic crash.
-    assert any("timeout" in r.message.lower() or "timed out" in r.message.lower() for r in caplog.records), (
-        "Expected the timeout to be logged before SystemExit"
+    assert mock_error.called, "Expected logger.error to be called before SystemExit"
+    assert any(
+        "timeout" in str(call.args[0]).lower() or "timed out" in str(call.args[0]).lower()
+        for call in mock_error.call_args_list
+    ), (
+        f"Expected a timeout-related error log; got: "
+        f"{[call.args[0] for call in mock_error.call_args_list]!r}"
     )
 
 
