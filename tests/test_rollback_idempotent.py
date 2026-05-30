@@ -1,6 +1,6 @@
 """QA-13 — undo_last_operation idempotente ante restore failure (T2-02).
 
-Verifica que cuando ``restore_snapshot`` falla con OSError:
+Verifica que cuando ``restore_snapshot`` falla:
   (a) ``RollbackResult.success == False`` y ``errors`` contiene el mensaje.
   (b) La entry queda marcada como ROLLED_BACK en el journal (no en COMPLETED).
   (c) Un segundo ``undo_last_operation`` para el mismo agente devuelve
@@ -9,6 +9,13 @@ Verifica que cuando ``restore_snapshot`` falla con OSError:
 Sin este fix, el caller retry vería la entry aún en COMPLETED y reintentaría
 el restore sobre el archivo ya parcialmente restaurado, causando corrupción
 progresiva.
+
+**P1 review fix (PR #140)**: el ``FileSnapshotManager`` real envuelve fallos
+de I/O en ``JournalSnapshotError`` (snapshot missing, checksum mismatch,
+``OSError`` capturados internamente). El test original sólo usaba ``OSError``
+directo, lo que NO replicaba el comportamiento de producción. Ahora el fixture
+default usa ``JournalSnapshotError`` y se mantiene un test paramétrico que
+también cubre ``OSError`` para defense-in-depth.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from sky_claw.antigravity.core.db_lifecycle import (
     DatabaseLifecycleManager,
 )
 from sky_claw.antigravity.db.journal import (
+    JournalSnapshotError,
     OperationJournal,
     OperationStatus,
     OperationType,
@@ -46,16 +54,22 @@ async def journal(tmp_path):
 
 @pytest.fixture
 def failing_snapshot_manager():
-    """SnapshotManager mock cuyo restore_snapshot siempre falla con OSError."""
+    """SnapshotManager mock cuyo restore_snapshot falla con JournalSnapshotError.
+
+    P1 fix: esto refleja el comportamiento real del production
+    ``FileSnapshotManager.restore_snapshot``, que envuelve fallos de I/O
+    (OSError de shutil, missing snapshot, checksum mismatch) en
+    ``JournalSnapshotError``. El test original usaba OSError directo y por
+    eso no detectaba que ``except OSError`` del rollback_manager NO capturaba
+    nada en producción.
+    """
     mgr = MagicMock()
-    mgr.restore_snapshot = AsyncMock(side_effect=OSError(28, "No space left on device"))
+    mgr.restore_snapshot = AsyncMock(side_effect=JournalSnapshotError("Snapshot file does not exist: /fake/snap.bin"))
     return mgr
 
 
 @pytest.mark.asyncio
-async def test_restore_failure_marks_rolled_back_and_returns_failure(
-    journal, failing_snapshot_manager, tmp_path
-):
+async def test_restore_failure_marks_rolled_back_and_returns_failure(journal, failing_snapshot_manager, tmp_path):
     """Restore falla → mark_rolled_back se ejecuta igualmente → result.success=False."""
     rm = RollbackManager(journal, failing_snapshot_manager)
 
@@ -75,7 +89,7 @@ async def test_restore_failure_marks_rolled_back_and_returns_failure(
 
     assert result.success is False
     assert len(result.errors) == 1
-    assert "No space left" in result.errors[0]
+    assert "Snapshot file does not exist" in result.errors[0]
     assert result.transaction_id == entry_id
     # restore intentado una vez.
     failing_snapshot_manager.restore_snapshot.assert_awaited_once()
@@ -90,9 +104,7 @@ async def test_restore_failure_marks_rolled_back_and_returns_failure(
 
 
 @pytest.mark.asyncio
-async def test_second_undo_returns_no_operation_found(
-    journal, failing_snapshot_manager, tmp_path
-):
+async def test_second_undo_returns_no_operation_found(journal, failing_snapshot_manager, tmp_path):
     """Tras un rollback fallido, un retry no debe re-procesar la misma entry."""
     rm = RollbackManager(journal, failing_snapshot_manager)
 
@@ -144,6 +156,55 @@ async def test_happy_path_still_works(journal, tmp_path):
 
     entry = await journal.get_last_operation(
         "qa-13c",
+        [OperationStatus.COMPLETED, OperationStatus.FAILED, OperationStatus.ROLLED_BACK],
+    )
+    assert entry is not None
+    assert entry.status == OperationStatus.ROLLED_BACK
+
+
+@pytest.mark.parametrize(
+    "exception",
+    [
+        # Production-realistic: lo que el FileSnapshotManager real lanza.
+        JournalSnapshotError("Snapshot file does not exist: /fake/snap.bin"),
+        JournalSnapshotError("Checksum verification failed for /target.esp."),
+        # Defense-in-depth: si una implementación futura de SnapshotManager
+        # NO envuelve OSError, el rollback_manager debe seguir manejándolo.
+        OSError(28, "No space left on device"),
+        PermissionError("Read-only file system"),
+    ],
+    ids=["snapshot_missing", "checksum_mismatch", "disk_full", "read_only_fs"],
+)
+@pytest.mark.asyncio
+async def test_restore_failure_handled_for_multiple_exception_types(journal, tmp_path, exception):
+    """Cualquier excepcion de restore_snapshot conocida marca rolled_back + retorna success=False.
+
+    P1 review fix: cubre tanto JournalSnapshotError (lo que produccion lanza)
+    como OSError directo (defense-in-depth).
+    """
+    mgr = MagicMock()
+    mgr.restore_snapshot = AsyncMock(side_effect=exception)
+    rm = RollbackManager(journal, mgr)
+
+    agent_id = f"qa-13-{type(exception).__name__}"
+    tx_id = await journal.begin_transaction(description="test", mod_id=None, agent_id=agent_id)
+    entry_id = await journal.begin_operation(
+        agent_id=agent_id,
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(tmp_path / "target.esp"),
+        transaction_id=tx_id,
+        snapshot_path=str(tmp_path / "snapshot.bin"),
+    )
+    await journal.complete_operation(entry_id)
+
+    result = await rm.undo_last_operation(agent_id)
+    assert result.success is False
+    assert len(result.errors) == 1
+    assert "snapshot_restore" in result.errors[0]
+
+    # Entry marcada ROLLED_BACK SIEMPRE — la propiedad clave de idempotencia.
+    entry = await journal.get_last_operation(
+        agent_id,
         [OperationStatus.COMPLETED, OperationStatus.FAILED, OperationStatus.ROLLED_BACK],
     )
     assert entry is not None

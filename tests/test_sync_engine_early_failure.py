@@ -20,9 +20,7 @@ from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
 def _make_engine_with_mock_rm() -> tuple[SyncEngine, MagicMock]:
     mock_rm = MagicMock()
     mock_rm.begin_transaction = AsyncMock(return_value=100)
-    mock_rm.create_snapshot = AsyncMock(
-        return_value=MagicMock(snapshot_path="/fake/snapshot.bin")
-    )
+    mock_rm.create_snapshot = AsyncMock(return_value=MagicMock(snapshot_path="/fake/snapshot.bin"))
     mock_rm.begin_operation = AsyncMock(return_value=200)
     mock_rm.complete_operation = AsyncMock()
     mock_rm.fail_operation = AsyncMock()

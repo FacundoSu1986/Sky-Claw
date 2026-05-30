@@ -72,13 +72,22 @@ class RollbackManager:
         3. Actualizar estado de la entrada en el Journal a 'ROLLED_BACK'
            (SIEMPRE, incluso si el restore falló — ver T2-02)
 
-        T2-02 — IDEMPOTENCIA: si ``restore_snapshot`` falla con OSError, NO
-        re-lanzamos como antes. En su lugar, marcamos la entry como
-        ROLLED_BACK y devolvemos ``success=False`` con los errores en
-        ``RollbackResult.errors``.  Esto previene que un retry del caller
-        re-fetch la misma entry (aún en COMPLETED) y vuelva a re-intentar el
-        restore sobre un archivo posiblemente ya parcialmente restaurado —
-        causando corrupción progresiva.
+        T2-02 — IDEMPOTENCIA: si ``restore_snapshot`` falla, NO re-lanzamos
+        como antes. En su lugar, marcamos la entry como ROLLED_BACK y
+        devolvemos ``success=False`` con los errores en ``RollbackResult.errors``.
+        Esto previene que un retry del caller re-fetch la misma entry (aún en
+        COMPLETED) y vuelva a re-intentar el restore sobre un archivo
+        posiblemente ya parcialmente restaurado — causando corrupción
+        progresiva.
+
+        **P1 review fix (PR #140 review)**: el ``FileSnapshotManager`` real
+        envuelve fallos de I/O en ``JournalSnapshotError`` (snapshot missing,
+        checksum mismatch, OSError de ``shutil.copy2`` capturados internamente).
+        Capturar solo ``OSError`` dejaba ese path sin cobertura — el except
+        nunca se ejecutaba en producción y ``mark_rolled_back`` no se llamaba.
+        Ahora capturamos ambos: ``JournalSnapshotError`` (production-realistic
+        wrapper) y ``OSError`` (defense-in-depth para futuras implementaciones
+        de SnapshotManager que no envuelvan).
         """
         # Obtener última operación
         entry = await self._journal.get_last_operation(agent_id, [OperationStatus.COMPLETED, OperationStatus.FAILED])
@@ -93,14 +102,16 @@ class RollbackManager:
         partial_errors: list[str] = []
         restored = 0
 
-        # Restaurar archivo desde snapshot (best-effort, sin re-lanzar)
+        # Restaurar archivo desde snapshot (best-effort, sin re-lanzar).
+        # P1: incluir JournalSnapshotError porque el production FileSnapshotManager
+        # envuelve OSError + checksum-mismatch en ese tipo.
         if entry.snapshot_path:
             try:
                 await self._snapshots.restore_snapshot(
                     pathlib.Path(entry.snapshot_path), pathlib.Path(entry.target_path)
                 )
                 restored = 1
-            except (JournalSnapshotError, OSError) as e:
+            except (OSError, JournalSnapshotError) as e:
                 logger.critical(
                     "Rollback restore failed for %s (entry=%s): %s",
                     agent_id,
@@ -118,8 +129,7 @@ class RollbackManager:
             # Si no se puede marcar, futuros rollbacks van a re-intentar.
             # Es CRÍTICO porque cada retry puede empeorar el estado del archivo.
             logger.critical(
-                "CRÍTICO: no se pudo marcar entry %s como rolled_back; "
-                "rollbacks futuros lo re-intentarán: %s",
+                "CRÍTICO: no se pudo marcar entry %s como rolled_back; rollbacks futuros lo re-intentarán: %s",
                 entry.id,
                 mark_exc,
                 exc_info=True,

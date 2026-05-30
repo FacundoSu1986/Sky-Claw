@@ -313,6 +313,15 @@ class SyncEngine:
                 if snapshot_info is not None:
                     with contextlib.suppress(OSError):
                         pathlib.Path(snapshot_info.snapshot_path).unlink(missing_ok=True)
+                # P1 review fix (PR #140): el caller pasó ``operation`` como
+                # corrutina ya construida; en este path nunca llegamos al
+                # ``await operation`` de la línea 320, así que sin cerrarla
+                # explícitamente Python emite ``RuntimeWarning: coroutine '...'
+                # was never awaited`` en runtime. ``coroutine.close()`` es
+                # idempotente y no propaga errores.
+                if hasattr(operation, "close"):
+                    with contextlib.suppress(Exception):
+                        operation.close()
                 raise
 
             # 4. Ejecutar la operación
