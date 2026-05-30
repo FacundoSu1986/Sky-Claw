@@ -13,6 +13,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# P1 §3.2 — bounded LLM call. A hung provider must not freeze the CLI;
+# 300 s is the documented ceiling for any single chat turn.
+_CHAT_TIMEOUT_SECONDS: float = 300.0
+
 
 async def _run_cli(ctx: AppContext) -> None:
     assert ctx.router and ctx.session
@@ -29,8 +33,16 @@ async def _run_cli(ctx: AppContext) -> None:
             continue
         correlation_id_var.set(str(uuid.uuid4()))
         try:
-            response = await ctx.router.chat(text, ctx.session, chat_id=chat_id)
+            response = await asyncio.wait_for(
+                ctx.router.chat(text, ctx.session, chat_id=chat_id),
+                timeout=_CHAT_TIMEOUT_SECONDS,
+            )
             logger.info("sky-claw> %s", response)
+        except TimeoutError:
+            logger.error(
+                "[error] chat timed out after %.0fs — provider may be unresponsive",
+                _CHAT_TIMEOUT_SECONDS,
+            )
         except RuntimeError as exc:
             logger.error("[error] %s", exc)
 
@@ -39,8 +51,17 @@ async def _run_oneshot(ctx: AppContext, command: str) -> None:
     assert ctx.router and ctx.session
     correlation_id_var.set(str(uuid.uuid4()))
     try:
-        response = await ctx.router.chat(command, ctx.session, chat_id="oneshot")
+        response = await asyncio.wait_for(
+            ctx.router.chat(command, ctx.session, chat_id="oneshot"),
+            timeout=_CHAT_TIMEOUT_SECONDS,
+        )
         logger.info("%s", response)
+    except TimeoutError:
+        logger.error(
+            "[error] chat timed out after %.0fs — provider may be unresponsive",
+            _CHAT_TIMEOUT_SECONDS,
+        )
+        sys.exit(1)
     except RuntimeError as exc:
         logger.error("[error] %s", exc)
         sys.exit(1)

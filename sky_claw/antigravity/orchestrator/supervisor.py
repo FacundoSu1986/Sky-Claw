@@ -170,11 +170,7 @@ class SupervisorAgent:
             daemon_tg.create_task(self._watcher_daemon.start())
 
         try:
-            async with asyncio.TaskGroup() as tg:
-                tg.create_task(self.interface.connect())
-        except* Exception as eg:
-            for exc in eg.exceptions:
-                logger.error("TaskGroup del Supervisor — sub-error: %s", exc, exc_info=exc)
+            await self._run_interface_isolated()
         finally:
             # ARC-01: Detener demonios extraídos (LIFO)
             await self._watcher_daemon.stop()
@@ -187,6 +183,39 @@ class SupervisorAgent:
             # FASE 1.5: Cerrar journal al terminar
             await self.journal.close()
             await self.db.close()
+
+    async def _run_interface_isolated(self) -> None:
+        """Run ``interface.connect()`` inside a TaskGroup, splitting recoverable
+        network errors from programming bugs.
+
+        P1 §3.1 — the previous blanket ``except* Exception`` absorbed everything
+        and turned bugs (AttributeError, TypeError, ValueError) into silent log
+        lines. Now:
+
+        - Recoverable network-layer errors (ConnectionError, TimeoutError,
+          OSError) are logged WARNING and swallowed so the supervisor's
+          ``finally`` block can drain its daemons cleanly.
+        - Anything else is a programming bug — logged CRITICAL and re-raised
+          so the failure surfaces to the caller instead of being absorbed.
+        """
+        try:
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(self.interface.connect())
+        except* (ConnectionError, TimeoutError, OSError) as eg:
+            for exc in eg.exceptions:
+                logger.warning(
+                    "Supervisor interface — recoverable error: %s",
+                    exc,
+                    exc_info=exc,
+                )
+        except* Exception as eg:
+            for exc in eg.exceptions:
+                logger.critical(
+                    "Supervisor interface — unexpected error (re-raising): %s",
+                    exc,
+                    exc_info=exc,
+                )
+            raise
 
     async def _bridge_telemetry_to_ws(self, event: Event) -> None:
         """Strangler Fig: reenvía eventos del bus al transporte WebSocket legacy."""
