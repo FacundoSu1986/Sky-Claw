@@ -111,8 +111,59 @@ async def test_allowlist_log_includes_attempted_tool_and_session(caplog) -> None
         await r.execute("download_mod", {"nexus_id": 1})
 
     assert any(
-        "download_mod" in rec.message
-        and "audit-123" in rec.message
-        and "search_mod" in rec.message
+        "download_mod" in rec.message and "audit-123" in rec.message and "search_mod" in rec.message
         for rec in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# PR #143 review fix: tool_schemas() y hermes_system_prompt_block() filtran
+# por allowlist tambien, no solo execute(). Evita que el LLM vea capacidades
+# que va a recibir PermissionError al invocar.
+# ---------------------------------------------------------------------------
+
+
+def test_tool_schemas_unfiltered_when_no_allowlist() -> None:
+    """Sin allowlist, tool_schemas() expone todos los tools registrados."""
+    r = _make_registry()
+    names = {s["name"] for s in r.tool_schemas()}
+    # Sanity: al menos search_mod y download_mod estan registrados.
+    assert "search_mod" in names
+    assert "download_mod" in names
+
+
+def test_tool_schemas_filters_by_allowlist() -> None:
+    """Con allowlist {search_mod}, tool_schemas NO expone download_mod."""
+    r = _make_registry(allowed_tools={"search_mod"})
+    names = {s["name"] for s in r.tool_schemas()}
+    assert names == {"search_mod"}
+    assert "download_mod" not in names
+
+
+def test_hermes_system_prompt_block_filters_by_allowlist() -> None:
+    """Hermes <tools> block excluye tools fuera del allowlist."""
+    r = _make_registry(allowed_tools={"search_mod"})
+    block = r.hermes_system_prompt_block()
+    assert "search_mod" in block
+    assert "download_mod" not in block
+
+
+def test_tools_property_filters_by_allowlist() -> None:
+    """``tools`` dict tambien filtra (consumers que iteren ven solo permitidos)."""
+    r = _make_registry(allowed_tools={"search_mod"})
+    tools = r.tools
+    assert "search_mod" in tools
+    assert "download_mod" not in tools
+
+
+def test_empty_allowlist_yields_empty_schemas() -> None:
+    """allowed_tools=set() -> tool_schemas vacio. Util para sesiones read-only."""
+    r = _make_registry(allowed_tools=set())
+    assert r.tool_schemas() == []
+    assert r.tools == {}
+    block = r.hermes_system_prompt_block()
+    # El block sigue siendo valido XML pero sin tools listados.
+    assert "<tools>" in block
+    # Ningun tool conocido aparece.
+    assert "search_mod" not in block
+    assert "download_mod" not in block

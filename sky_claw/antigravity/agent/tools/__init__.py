@@ -129,9 +129,7 @@ class AsyncToolRegistry:
         self._gateway = gateway
         # T2-07: copiar el set para evitar mutaciones externas que cambien
         # silenciosamente la autorizacion de un registry ya construido.
-        self._allowed_tools: frozenset[str] | None = (
-            frozenset(allowed_tools) if allowed_tools is not None else None
-        )
+        self._allowed_tools: frozenset[str] | None = frozenset(allowed_tools) if allowed_tools is not None else None
         self._session_id = session_id
         self._tools: dict[str, ToolDescriptor] = {}
         self._register_builtins()
@@ -163,29 +161,60 @@ class AsyncToolRegistry:
             return self._tools_installer._gateway
         return None
 
+    def _visible_tools(self) -> list[ToolDescriptor]:
+        """Devuelve solo los tools visibles para esta sesion.
+
+        T2-07 (review fix): cuando ``allowed_tools`` esta configurado, las
+        APIs publicas que enumeran tools al LLM (tool_schemas, hermes_*)
+        deben filtrar por el allowlist. Sin esto, el LLM ve TODOS los tools
+        pero ``execute()`` los rechaza con PermissionError — el modelo gasta
+        turnos intentando tools no permitidos y filtramos capabilities a
+        traves del error path. Ahora el LLM solo ve lo que puede invocar.
+
+        Si ``allowed_tools`` es None (default), retorna todos los tools.
+        """
+        if self._allowed_tools is None:
+            return list(self._tools.values())
+        return [td for name, td in self._tools.items() if name in self._allowed_tools]
+
     @property
     def tools(self) -> dict[str, ToolDescriptor]:
-        return dict(self._tools)
+        """Tools dict (filtered by allowlist if configured).
+
+        T2-07 (review fix): respeta `allowed_tools` para que iterators
+        publicos no expongan tools no permitidos.
+        """
+        visible = self._visible_tools()
+        return {td.name: td for td in visible}
 
     def tool_schemas(self) -> list[dict[str, Any]]:
+        """JSON-schema list of advertised tools.
+
+        T2-07 (review fix): filtra por allowlist — el LLM no debe ver
+        ``download_mod`` si la sesion solo permite ``search_mod``.
+        """
         return [
             {
                 "name": td.name,
                 "description": td.description,
                 "input_schema": td.input_schema,
             }
-            for td in self._tools.values()
+            for td in self._visible_tools()
         ]
 
     def hermes_system_prompt_block(self) -> str:
-        """Serialize registered tools as a <tools>…</tools> XML block for Hermes-style prompting."""
+        """Serialize registered tools as a <tools>…</tools> XML block for Hermes-style prompting.
+
+        T2-07 (review fix): igual que tool_schemas — solo expone tools
+        permitidos en esta sesion.
+        """
         schemas = [
             {
                 "name": td.name,
                 "description": td.description,
                 "parameters": td.input_schema,
             }
-            for td in self._tools.values()
+            for td in self._visible_tools()
         ]
         return f"<tools>\n{json.dumps(schemas, indent=2, ensure_ascii=False)}\n</tools>"
 
@@ -269,9 +298,7 @@ class AsyncToolRegistry:
                 self._session_id,
                 sorted(self._allowed_tools),
             )
-            raise PermissionError(
-                f"Tool '{name}' not allowed in session {self._session_id!r}"
-            )
+            raise PermissionError(f"Tool '{name}' not allowed in session {self._session_id!r}")
 
         # Single Source of Truth: centralized validation gate
         if td.params_model is not None:
