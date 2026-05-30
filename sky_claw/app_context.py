@@ -190,6 +190,30 @@ class AppContext:
         task.add_done_callback(self._background_tasks.discard)
         return task
 
+    @staticmethod
+    def _resolve_allowed_tools(local_cfg) -> set[str] | None:
+        """Resolve the session's tool allowlist from config (T2-07).
+
+        Lookup order (first non-None wins):
+          1. ``local_cfg.allowed_tools`` (list[str] in config.toml).
+          2. ``None`` (default — all registered tools allowed).
+
+        Returns:
+            ``None`` (no restriction) or ``set[str]`` of permitted tool names.
+        """
+        candidate = getattr(local_cfg, "allowed_tools", None)
+        if candidate is None:
+            return None
+        if isinstance(candidate, str):
+            # Single-tool string convenience: split on whitespace/comma.
+            parts = [p.strip() for p in candidate.replace(",", " ").split() if p.strip()]
+            return set(parts) if parts else None
+        try:
+            return {str(name) for name in candidate}
+        except TypeError:
+            # Not iterable — treat as no restriction.
+            return None
+
     async def start_minimal(self) -> None:
         """Phase 1: resolve config path, migrate legacy JSON, create HTTP session."""
         self._resolve_config_path()
@@ -478,6 +502,14 @@ class AppContext:
             if config_changed:
                 local_cfg.save()
 
+            # T2-07 (review fix PR #143): wire-through del allowlist desde
+            # config/args al AsyncToolRegistry. Por defecto es None (todos
+            # los tools permitidos) — backwards compat. Para restringir,
+            # pasar `--allowed-tools search_mod download_mod` en CLI o
+            # configurar en config.toml [agent.allowed_tools].
+            allowed_tools = self._resolve_allowed_tools(local_cfg)
+            session_id = getattr(self._args, "session_id", None) or "default"
+
             tool_registry = AsyncToolRegistry(
                 registry=self.database.registry,
                 mo2=mo2,
@@ -500,6 +532,9 @@ class AppContext:
                 # TASK-013 P1: thread the NetworkGateway so all egress tools enforce
                 # Zero-Trust allow-list policy (fixes Copilot review comment on PR #78).
                 gateway=self.network.gateway,
+                # T2-07: per-session tool allowlist (None = all tools permitted).
+                allowed_tools=allowed_tools,
+                session_id=session_id,
             )
 
             history_db = str(self._args.db_path).replace(".db", "_history.db")

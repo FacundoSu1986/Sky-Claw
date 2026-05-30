@@ -101,6 +101,13 @@ class AsyncToolRegistry:
         # TASK-013 P1: Zero-Trust egress — gateway is threaded to every tool
         # that performs outbound HTTP so NetworkGateway.authorize() is always enforced.
         gateway: Any | None = None,
+        # T2-07: opcional allowlist por sesion. None = todos los tools permitidos
+        # (compat con callers existentes). set[str] = solo esos tools pueden
+        # ser invocados por este registry; el resto lanza PermissionError.
+        allowed_tools: set[str] | None = None,
+        # T2-07: identificador opcional de sesion/usuario para enriquecer
+        # logs de auditoria cuando un tool no permitido es invocado.
+        session_id: str | None = None,
     ) -> None:
         self._registry = registry
         self._mo2 = mo2
@@ -120,6 +127,10 @@ class AsyncToolRegistry:
         self._pandora_runner = pandora_runner
         self._bodyslide_runner = bodyslide_runner
         self._gateway = gateway
+        # T2-07: copiar el set para evitar mutaciones externas que cambien
+        # silenciosamente la autorizacion de un registry ya construido.
+        self._allowed_tools: frozenset[str] | None = frozenset(allowed_tools) if allowed_tools is not None else None
+        self._session_id = session_id
         self._tools: dict[str, ToolDescriptor] = {}
         self._register_builtins()
 
@@ -150,29 +161,60 @@ class AsyncToolRegistry:
             return self._tools_installer._gateway
         return None
 
+    def _visible_tools(self) -> list[ToolDescriptor]:
+        """Devuelve solo los tools visibles para esta sesion.
+
+        T2-07 (review fix): cuando ``allowed_tools`` esta configurado, las
+        APIs publicas que enumeran tools al LLM (tool_schemas, hermes_*)
+        deben filtrar por el allowlist. Sin esto, el LLM ve TODOS los tools
+        pero ``execute()`` los rechaza con PermissionError — el modelo gasta
+        turnos intentando tools no permitidos y filtramos capabilities a
+        traves del error path. Ahora el LLM solo ve lo que puede invocar.
+
+        Si ``allowed_tools`` es None (default), retorna todos los tools.
+        """
+        if self._allowed_tools is None:
+            return list(self._tools.values())
+        return [td for name, td in self._tools.items() if name in self._allowed_tools]
+
     @property
     def tools(self) -> dict[str, ToolDescriptor]:
-        return dict(self._tools)
+        """Tools dict (filtered by allowlist if configured).
+
+        T2-07 (review fix): respeta `allowed_tools` para que iterators
+        publicos no expongan tools no permitidos.
+        """
+        visible = self._visible_tools()
+        return {td.name: td for td in visible}
 
     def tool_schemas(self) -> list[dict[str, Any]]:
+        """JSON-schema list of advertised tools.
+
+        T2-07 (review fix): filtra por allowlist — el LLM no debe ver
+        ``download_mod`` si la sesion solo permite ``search_mod``.
+        """
         return [
             {
                 "name": td.name,
                 "description": td.description,
                 "input_schema": td.input_schema,
             }
-            for td in self._tools.values()
+            for td in self._visible_tools()
         ]
 
     def hermes_system_prompt_block(self) -> str:
-        """Serialize registered tools as a <tools>…</tools> XML block for Hermes-style prompting."""
+        """Serialize registered tools as a <tools>…</tools> XML block for Hermes-style prompting.
+
+        T2-07 (review fix): igual que tool_schemas — solo expone tools
+        permitidos en esta sesion.
+        """
         schemas = [
             {
                 "name": td.name,
                 "description": td.description,
                 "parameters": td.input_schema,
             }
-            for td in self._tools.values()
+            for td in self._visible_tools()
         ]
         return f"<tools>\n{json.dumps(schemas, indent=2, ensure_ascii=False)}\n</tools>"
 
@@ -223,6 +265,12 @@ class AsyncToolRegistry:
         ``model_dump()``.  On failure, ``pydantic.ValidationError`` propagates
         to the caller (LLMRouter) for self-healing feedback.
 
+        T2-07 — Allowlist gate: si ``allowed_tools`` fue configurado en
+        ``__init__``, los nombres fuera del set lanzan ``PermissionError``.
+        Esto deja al caller (LLMRouter / session manager) la decision de
+        ofrecer un subset de tools por sesion/usuario sin tener que mantener
+        registries paralelos.
+
         Args:
             name: Registered tool name.
             arguments: Raw parameter dict from the LLM.
@@ -232,11 +280,25 @@ class AsyncToolRegistry:
 
         Raises:
             KeyError: If ``name`` is not a registered tool.
+            PermissionError: If ``name`` is registered but not in the
+                session's ``allowed_tools`` allowlist.
             pydantic.ValidationError: If ``arguments`` fail validation.
         """
         td = self._tools.get(name)
         if td is None:
             raise KeyError(f"Unknown tool: {name!r}")
+
+        # T2-07: gate de allowlist antes de validar/ejecutar. Loggear la
+        # tentativa para auditoria — un LLM que intente herramientas fuera
+        # de su scope es señal de jailbreak o de configuracion erronea.
+        if self._allowed_tools is not None and name not in self._allowed_tools:
+            logger.warning(
+                "Tool '%s' rejected by allowlist (session=%s, allowed=%s)",
+                name,
+                self._session_id,
+                sorted(self._allowed_tools),
+            )
+            raise PermissionError(f"Tool '{name}' not allowed in session {self._session_id!r}")
 
         # Single Source of Truth: centralized validation gate
         if td.params_model is not None:
