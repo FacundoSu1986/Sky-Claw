@@ -167,17 +167,53 @@ class IdempotencyGuard:
         self._active[key] = (task_id, time.monotonic())
         return True
 
-    def release(self, key: str) -> None:
-        """Release the idempotency lock after task completion."""
-        self._active.pop(key, None)
+    def release(self, key: str, task_id: str | None = None) -> None:
+        """Release the idempotency lock after task completion.
+
+        Args:
+            key: The idempotency key to release.
+            task_id: Optional owner check.  When provided, the lock is only
+                released if the current owner's ``task_id`` matches — this
+                prevents a stale long-running task A (whose TTL elapsed and
+                whose key was reclaimed by task B) from clearing B's lock on
+                completion (Codex P2 — see PR #139 review).
+                When ``None`` (legacy callers), pop unconditionally.
+        """
+        if task_id is None:
+            self._active.pop(key, None)
+            return
+        existing = self._active.get(key)
+        if existing is None:
+            return
+        owner, _ts = existing
+        if owner == task_id:
+            self._active.pop(key, None)
+        else:
+            logger.info(
+                "IdempotencyGuard: ignoring stale release (key=%s..., releaser=%s, current_owner=%s)",
+                key[:12],
+                task_id,
+                owner,
+            )
+
+    def _prune_expired(self) -> None:
+        """Drop all entries past their TTL.  No-op when TTL is disabled."""
+        if self._key_ttl_seconds <= 0:
+            return
+        now = time.monotonic()
+        stale = [key for key, (_task, ts) in self._active.items() if (now - ts) > self._key_ttl_seconds]
+        for key in stale:
+            del self._active[key]
 
     @property
     def active_count(self) -> int:
-        """Number of currently active (non-expired) idempotency keys."""
-        if self._key_ttl_seconds <= 0:
-            return len(self._active)
-        now = time.monotonic()
-        return sum(1 for _task, ts in self._active.values() if (now - ts) <= self._key_ttl_seconds)
+        """Number of currently active (non-expired) idempotency keys.
+
+        Side effect: prunes expired entries so the underlying dict stays
+        bounded under high-cardinality workloads (Copilot review on PR #139).
+        """
+        self._prune_expired()
+        return len(self._active)
 
     def is_active(self, key: str) -> bool:
         """Check if a key is currently locked (respects TTL)."""
@@ -282,9 +318,10 @@ class ToolStateMachine:
                 f"Invalid transition: {current.state} → {new_state} (task={task_id}, tool={current.tool_name})"
             )
 
-        # Release idempotency lock on terminal states
+        # Release idempotency lock on terminal states.  Pass the task_id so a
+        # stale long-running task doesn't clear a newer task's lock (Codex P2).
         if new_state in ("COMPLETED", "FAILED"):
-            self._guard.release(current.idempotency_key)
+            self._guard.release(current.idempotency_key, task_id=current.task_id)
 
         updated = TaskRecord(
             task_id=task_id,

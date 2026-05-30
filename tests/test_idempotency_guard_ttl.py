@@ -84,3 +84,60 @@ class TestIdempotencyGuardTtl:
             return_value=future,
         ):
             assert guard.active_count == 0
+
+    def test_active_count_purges_expired_to_bound_dict(self) -> None:
+        """Copilot review on PR #139: active_count must purge expired entries.
+
+        Without purging, a workload that churns through millions of unique
+        keys (e.g. per-request idempotency in a high-traffic service) leaks
+        memory even when ``active_count`` returns 0.
+        """
+        guard = IdempotencyGuard(key_ttl_seconds=0.05)
+        for i in range(100):
+            guard.acquire(f"k{i}", task_id=f"t{i}")
+        assert len(guard._active) == 100  # internal sanity check
+
+        future = time.monotonic() + 1.0
+        with patch(
+            "sky_claw.antigravity.orchestrator.tool_state_machine.time.monotonic",
+            return_value=future,
+        ):
+            assert guard.active_count == 0
+            # Side effect: dict pruned, not just filtered.
+            assert len(guard._active) == 0, "active_count must purge expired entries so _active stays bounded"
+
+    def test_release_with_task_id_only_clears_matching_owner(self) -> None:
+        """Codex P2 on PR #139: stale release must not clear a newer task's lock.
+
+        Scenario:
+          1. Task A acquires "k" at t=0.
+          2. TTL elapses; task B reclaims "k".
+          3. Task A finishes and calls release("k", task_id="A").
+          4. Task B's lock MUST survive — otherwise a third concurrent
+             execution can start while B is still running.
+        """
+        guard = IdempotencyGuard(key_ttl_seconds=0.05)
+        guard.acquire("k", task_id="A")
+
+        future = time.monotonic() + 1.0
+        with patch(
+            "sky_claw.antigravity.orchestrator.tool_state_machine.time.monotonic",
+            return_value=future,
+        ):
+            # B reclaims the stale key.
+            assert guard.acquire("k", task_id="B") is True
+
+            # A finishes — must NOT clear B's lock.
+            guard.release("k", task_id="A")
+            assert guard.is_active("k") is True, "release() called by stale task A must not clear newer owner B's lock"
+
+            # B's own release must work.
+            guard.release("k", task_id="B")
+            assert guard.is_active("k") is False
+
+    def test_release_without_task_id_is_unconditional_for_legacy_callers(self) -> None:
+        """Backward compat: callers that don't pass task_id pop unconditionally."""
+        guard = IdempotencyGuard(key_ttl_seconds=10.0)
+        guard.acquire("k", task_id="A")
+        guard.release("k")  # legacy signature
+        assert guard.is_active("k") is False

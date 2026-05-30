@@ -1,11 +1,11 @@
-"""P1 R-07 — StateGraphIntegration.execute must auto-purge stale thread state.
+"""P1 R-07 — SupervisorStateGraph.execute must auto-purge stale thread state.
 
-``cleanup_old_threads`` already exists (line ~923 of state_graph.py) but is
+``cleanup_old_threads`` already exists on ``SupervisorStateGraph`` but is
 NEVER invoked by ``execute()`` — every workflow run writes a new entry to
 ``_thread_timestamps`` and the dict grows monotonically until process exit.
 
 Fix: maintain a small ``_execution_count`` counter, and every
-``_CLEANUP_INTERVAL`` executions invoke ``cleanup_old_threads`` with a
+``_cleanup_interval`` executions invoke ``cleanup_old_threads`` with a
 generous TTL (default 3600s). Test patches the interval to a low value so
 the contract is reachable in a unit test.
 
