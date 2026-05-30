@@ -36,13 +36,15 @@ async def test_run_oneshot_times_out_and_exits() -> None:
     ctx.router.chat = AsyncMock(side_effect=_hang)
 
     # Patch the cli_mode logger directly — caplog propagation is unreliable across
-    # OS / Python version combinations on CI.
+    # OS / Python version combinations on CI.  The inner asyncio.wait_for inside
+    # _run_oneshot guarantees this call returns within ~50ms so no outer timeout
+    # is needed (an outer wait_for + SystemExit interacts badly on py3.11).
     with (
         patch.object(cli_mode, "_CHAT_TIMEOUT_SECONDS", 0.05),
         patch.object(cli_mode.logger, "error") as mock_error,
         pytest.raises(SystemExit),
     ):
-        await asyncio.wait_for(cli_mode._run_oneshot(ctx, "hello"), timeout=5.0)
+        await cli_mode._run_oneshot(ctx, "hello")
 
     # The error log should reflect the timeout, not a generic crash.
     assert mock_error.called, "Expected logger.error to be called before SystemExit"
@@ -92,7 +94,8 @@ async def test_run_cli_repl_logs_timeout_then_continues() -> None:
         patch.object(cli_mode.logger, "error") as mock_error,
     ):
         # Must NOT raise — the REPL absorbs timeouts and exits on EOF.
-        await asyncio.wait_for(cli_mode._run_cli(ctx), timeout=5.0)
+        # No outer wait_for needed: EOFError on the 2nd input call exits the loop.
+        await cli_mode._run_cli(ctx)
 
     assert mock_error.called, "Expected the timeout to be logged"
     assert any(
