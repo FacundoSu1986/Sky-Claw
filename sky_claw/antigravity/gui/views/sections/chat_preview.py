@@ -9,6 +9,7 @@ Separada de la lógica de procesamiento de mensajes.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -16,11 +17,44 @@ from nicegui import ui
 
 from ..components import create_chat_message
 
+logger = logging.getLogger(__name__)
+
 # Colores del tema (extraídos del monolito para mantener invariante visual)
 COLORS = {
     "accent_violet": "#8b5cf6",
     "accent_cyan": "#06b6d4",
 }
+
+
+def _try_send_with_rollback(
+    msg: str,
+    on_send: Callable[[str], Any],
+    restore_fn: Callable[[str], Any],
+    notify_fn: Callable[[str], Any],
+) -> None:
+    """Optimistic send: the caller has already cleared the input.
+
+    If ``on_send`` raises ``Exception``, restore the original text via
+    ``restore_fn`` and surface a human-readable error via ``notify_fn``.
+    ``BaseException`` (KeyboardInterrupt, SystemExit, CancelledError)
+    is intentionally NOT caught so shutdown signals propagate.
+
+    Both ``restore_fn`` and ``notify_fn`` are best-effort: if they raise
+    we still want at least one to fire, so they are wrapped individually.
+    """
+    try:
+        on_send(msg)
+    except Exception as exc:  # noqa: BLE001 — surfaced via notify_fn for UX
+        logger.warning("chat send failed (rollback engaged): %s", exc)
+        # Best-effort restore — don't let a broken restore_fn mask the user-facing notify.
+        try:
+            restore_fn(msg)
+        except Exception as restore_exc:  # noqa: BLE001
+            logger.error("chat restore_fn raised (input text may be lost): %s", restore_exc)
+        try:
+            notify_fn(f"⚠️ No se pudo enviar el mensaje: {exc}")
+        except Exception as notify_exc:  # noqa: BLE001
+            logger.error("chat notify_fn raised (user got no feedback): %s", notify_exc)
 
 
 def create_chat_preview(
@@ -147,12 +181,21 @@ def create_chat_preview(
                 "px-4 py-3 text-white placeholder-[#6b7280] sky-input-premium"
             )
 
-            # Función interna para manejar el envío
+            # Función interna para manejar el envío.
+            # P1.5 R-06: clear-before-send con rollback — la UI limpia el input
+            # de inmediato (snappy) y si el callback falla restaura el texto y
+            # notifica al usuario con ui.notify.
             def _handle_send():
                 msg = chat_input.value.strip()
-                if msg and on_send_message:
-                    on_send_message(msg)
-                    chat_input.value = ""
+                if not msg or not on_send_message:
+                    return
+                chat_input.value = ""  # optimistic clear
+                _try_send_with_rollback(
+                    msg,
+                    on_send=on_send_message,
+                    restore_fn=lambda text: setattr(chat_input, "value", text),
+                    notify_fn=lambda text: ui.notify(text, type="negative"),
+                )
 
             # Botón de envío
             send_button = (

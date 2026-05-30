@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **P1.5 R-06 — Chat preview clear-before-send with rollback**:
+  `chat_preview._handle_send` now clears the input immediately for a
+  snappy UX, and if `on_send_message` raises, the original text is
+  restored and `ui.notify` surfaces the failure to the user. Extracted
+  into a pure `_try_send_with_rollback` helper that's unit-tested
+  without a NiceGUI runtime (5 cases including BaseException
+  propagation and best-effort restore/notify fallback).
 - **P1 — Reliability bundle (Kimi12 follow-ups)**:
   - **R-05** `SyncEngine._safe_fetch_info` now declares
     `result: dict[str, Any] | None = None` and falls through to an explicit
