@@ -603,7 +603,7 @@ class SyncEngine:
         semaphore: asyncio.Semaphore,
     ) -> dict[str, Any] | None:
         """Envuelve la consulta a Nexus API con un semáforo de concurrencia y backoff."""
-        result: dict[str, Any]
+        result: dict[str, Any] | None = None
         async for attempt in AsyncRetrying(
             retry=retry_if_exception_type((aiohttp.ClientError, MasterlistFetchError)),
             stop=stop_after_attempt(5),
@@ -613,6 +613,8 @@ class SyncEngine:
             with attempt:
                 async with semaphore:
                     result = await self._masterlist.fetch_mod_info(nexus_id, session)
+        # P1 R-05: explicit None on fall-through honors declared dict|None contract
+        # and avoids UnboundLocalError if AsyncRetrying ever yields zero attempts.
         return result
 
     # ------------------------------------------------------------------

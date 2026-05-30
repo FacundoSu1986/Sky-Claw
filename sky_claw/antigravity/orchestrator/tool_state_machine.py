@@ -107,8 +107,19 @@ class IdempotencyGuard:
         guard.release(key)
     """
 
-    def __init__(self) -> None:
-        self._active: dict[str, str] = {}  # idempotency_key → task_id
+    def __init__(self, key_ttl_seconds: float = 3600.0) -> None:
+        """Initialize the guard.
+
+        Args:
+            key_ttl_seconds: After this many seconds without ``release()``,
+                an acquired key is considered stale and reusable.  Defaults
+                to 3600s (1h).  Set to ``0`` to disable expiration entirely
+                (legacy eternal-lock behavior).
+        """
+        # P1 R-03: store (task_id, monotonic_ts) so we can detect stale keys
+        # from crashed tasks that never released. Lazy cleanup on access.
+        self._active: dict[str, tuple[str, float]] = {}
+        self._key_ttl_seconds = key_ttl_seconds
 
     @staticmethod
     def make_key(tool_name: str, payload: dict[str, Any]) -> str:
@@ -121,23 +132,39 @@ class IdempotencyGuard:
         raw = f"{tool_name}:{canonical}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
+    def _is_expired(self, ts: float) -> bool:
+        """Return True if a timestamp is older than the configured TTL."""
+        if self._key_ttl_seconds <= 0:
+            return False
+        return (time.monotonic() - ts) > self._key_ttl_seconds
+
     def acquire(self, key: str, task_id: str) -> bool:
         """Try to acquire the idempotency lock.
 
         Returns:
-            True if the lock was acquired (no active task with this key).
+            True if the lock was acquired (no active task with this key,
+            or the previous task's TTL has expired — treated as released).
             False if a task with this key is already active.
         """
-        if key in self._active:
-            existing = self._active[key]
-            logger.warning(
-                "IdempotencyGuard: rejected duplicate execution (key=%s..., existing_task=%s, new_task=%s)",
+        existing = self._active.get(key)
+        if existing is not None:
+            existing_task, ts = existing
+            if not self._is_expired(ts):
+                logger.warning(
+                    "IdempotencyGuard: rejected duplicate execution (key=%s..., existing_task=%s, new_task=%s)",
+                    key[:12],
+                    existing_task,
+                    task_id,
+                )
+                return False
+            # Stale entry — log and reclaim.
+            logger.info(
+                "IdempotencyGuard: reclaiming stale key (key=%s..., orphan_task=%s, ttl=%.0fs)",
                 key[:12],
-                existing,
-                task_id,
+                existing_task,
+                self._key_ttl_seconds,
             )
-            return False
-        self._active[key] = task_id
+        self._active[key] = (task_id, time.monotonic())
         return True
 
     def release(self, key: str) -> None:
@@ -146,12 +173,19 @@ class IdempotencyGuard:
 
     @property
     def active_count(self) -> int:
-        """Number of currently active (locked) idempotency keys."""
-        return len(self._active)
+        """Number of currently active (non-expired) idempotency keys."""
+        if self._key_ttl_seconds <= 0:
+            return len(self._active)
+        now = time.monotonic()
+        return sum(1 for _task, ts in self._active.values() if (now - ts) <= self._key_ttl_seconds)
 
     def is_active(self, key: str) -> bool:
-        """Check if a key is currently locked."""
-        return key in self._active
+        """Check if a key is currently locked (respects TTL)."""
+        existing = self._active.get(key)
+        if existing is None:
+            return False
+        _task, ts = existing
+        return not self._is_expired(ts)
 
 
 # ---------------------------------------------------------------------------

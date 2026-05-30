@@ -806,6 +806,12 @@ class SupervisorStateGraph:
         # TASK-006 (M-4): TTL tracking for checkpointer thread cleanup.
         # Maps thread_id → monotonic timestamp of last access.
         self._thread_timestamps: dict[str, float] = {}
+        # P1 R-07: auto-cleanup counter. Every _cleanup_interval calls to
+        # execute(), invoke cleanup_old_threads with _cleanup_max_age. Set
+        # _cleanup_interval = 0 to disable the automatic sweep.
+        self._execution_count: int = 0
+        self._cleanup_interval: int = 100
+        self._cleanup_max_age_seconds: int = 3600
 
         if LANGGRAPH_AVAILABLE:
             self._build_graph()
@@ -1020,6 +1026,18 @@ class SupervisorStateGraph:
 
         # TASK-006 (M-4): Track thread access time for TTL-based cleanup
         self._thread_timestamps[thread_id] = time.monotonic()
+
+        # P1 R-07: periodic auto-cleanup of stale thread state so
+        # _thread_timestamps + MemorySaver.storage don't grow unbounded
+        # across long-running supervisor lifetimes.
+        if self._cleanup_interval > 0:
+            self._execution_count += 1
+            if self._execution_count >= self._cleanup_interval:
+                self._execution_count = 0
+                try:
+                    self.cleanup_old_threads(self._cleanup_max_age_seconds)
+                except Exception as exc:  # noqa: BLE001 — cleanup must never crash execute()
+                    logger.warning("[StateGraph] Auto-cleanup failed (non-fatal): %s", exc)
 
         try:
             # Ejecutar el grafo
