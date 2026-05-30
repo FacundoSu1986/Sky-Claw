@@ -108,11 +108,33 @@ class TelegramDaemon:
 
         T1-01: cancela las tasks de dispatch pendientes y las awaitea para que
         sus excepciones se loggeen via ``_on_dispatch_done`` antes de cerrar.
+
+        **PR #142 review fix**: el orden importa. Antes drenabamos pending y
+        DESPUES cerrabamos el ws — pero un comando frame entrante mientras
+        ``ws.close()`` await-eaba podia agregar una task nueva a
+        ``_pending_dispatch`` post-gather, dejandola viva al retornar stop().
+
+        Ahora:
+          1. ``_is_running = False`` (guard para que ``_listen_loop`` no acepte
+             commands nuevos — defense in depth).
+          2. ``ws.close()`` PRIMERO: fuerza la salida del ``_listen_loop``
+             (async for termina al recibir el close frame). Despues de esto
+             es imposible que se creen tasks de dispatch nuevas.
+          3. Drain pending: cancela y await-ea cualquier task que ya estaba
+             en vuelo (incluido lo que se haya creado entre el ultimo yield
+             del loop y el close).
         """
         async with self._running_lock:
             self._is_running = False
 
-        # Cancelar y drenar tasks de dispatch pendientes (T1-01).
+        # Close ws FIRST para forzar salida del _listen_loop y prevenir
+        # creacion de tasks nuevas mientras drenamos.
+        if self.ws:
+            await self.ws.close()
+            logger.info("🛑 TelegramDaemon detenido de forma segura.")
+
+        # Drain pending DESPUES del close — captura cualquier task que se
+        # haya creado durante el ultimo yield del loop antes del close.
         if self._pending_dispatch:
             pending = list(self._pending_dispatch)
             for task in pending:
@@ -120,10 +142,6 @@ class TelegramDaemon:
             # asyncio.gather con return_exceptions=True garantiza que ninguna
             # CancelledError aborte el drenaje completo.
             await asyncio.gather(*pending, return_exceptions=True)
-
-        if self.ws:
-            await self.ws.close()
-            logger.info("🛑 TelegramDaemon detenido de forma segura.")
 
     async def _listen_loop(self):
         """Main listening loop for incoming Telegram messages.
@@ -151,6 +169,14 @@ class TelegramDaemon:
 
                 # Command injection for asynchronous processing
                 if data.get("type") == "command":
+                    # PR #142 review: guard defensivo — si stop() ya inicio
+                    # shutdown, no aceptar tasks nuevas. La race principal la
+                    # resuelve cerrar ws antes del drain en stop(), pero este
+                    # check elimina la ventana entre el ultimo message frame
+                    # y la efectiva propagacion del close.
+                    if not self._is_running:
+                        logger.debug("Comando descartado: daemon en shutdown")
+                        continue
                     # T1-01: añadir la task al set para mantener una referencia
                     # fuerte hasta que termine. El callback discard + log errors.
                     task = asyncio.create_task(

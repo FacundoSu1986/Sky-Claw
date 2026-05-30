@@ -39,9 +39,7 @@ async def test_create_50_snapshots_concurrently_no_blocking(tmp_path: Path, capl
 
     try:
         with caplog.at_level(logging.WARNING, logger="asyncio"):
-            results = await asyncio.gather(
-                *(mgr.create_snapshot(s) for s in sources)
-            )
+            results = await asyncio.gather(*(mgr.create_snapshot(s) for s in sources))
     finally:
         loop.slow_callback_duration = original_slow
 

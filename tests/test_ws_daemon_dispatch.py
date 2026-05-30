@@ -80,8 +80,7 @@ async def test_on_dispatch_done_discards_task_and_logs_exception(caplog) -> None
 
     assert task not in daemon._pending_dispatch
     assert any(
-        "Error no manejado en _inject_to_router" in rec.message
-        and "dispatch handler crashed" in rec.message
+        "Error no manejado en _inject_to_router" in rec.message and "dispatch handler crashed" in rec.message
         for rec in caplog.records
     )
 
@@ -105,9 +104,7 @@ async def test_on_dispatch_done_handles_cancelled_silently(caplog) -> None:
 
     assert task not in daemon._pending_dispatch
     # No debe haber log de error por cancelacion.
-    assert not any(
-        "Error no manejado" in rec.message for rec in caplog.records
-    )
+    assert not any("Error no manejado" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio

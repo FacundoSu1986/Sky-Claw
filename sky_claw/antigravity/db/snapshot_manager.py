@@ -374,9 +374,7 @@ class FileSnapshotManager:
 
         async with self._lock:
             try:
-                entries = await asyncio.to_thread(
-                    lambda: list(self._snapshot_dir.iterdir())
-                )
+                entries = await asyncio.to_thread(lambda: list(self._snapshot_dir.iterdir()))
 
                 for date_dir in entries:
                     if not await asyncio.to_thread(date_dir.is_dir):
