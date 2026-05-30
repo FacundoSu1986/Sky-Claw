@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from .journal import OperationJournal, OperationStatus, OperationType
+from .journal import JournalSnapshotError, OperationJournal, OperationStatus, OperationType
 
 if TYPE_CHECKING:
     from .snapshot_manager import CleanupResult, FileSnapshotManager, SnapshotInfo, SnapshotStats
@@ -100,7 +100,7 @@ class RollbackManager:
                     pathlib.Path(entry.snapshot_path), pathlib.Path(entry.target_path)
                 )
                 restored = 1
-            except OSError as e:
+            except (JournalSnapshotError, OSError) as e:
                 logger.critical(
                     "Rollback restore failed for %s (entry=%s): %s",
                     agent_id,
