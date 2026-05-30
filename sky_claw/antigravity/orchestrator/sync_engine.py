@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import configparser
+import contextlib
 import logging
 import pathlib
 from collections import defaultdict
@@ -269,28 +270,59 @@ class SyncEngine:
             return await operation
 
         rm = self._rollback_manager
+        transaction_id: int | None = None
         entry_id: int | None = None
+        snapshot_info = None
 
         try:
-            # 1. Iniciar transacción
-            transaction_id = await rm.begin_transaction(
-                description=description or f"file_operation: {operation_type.value}",
-                agent_id=self._agent_id,
-            )
+            # T2-01 fix: la setup (begin_transaction + create_snapshot +
+            # begin_operation) puede fallar parcialmente. Si la transaction se
+            # creó pero begin_operation lanzó, debemos cerrar la transaction y
+            # limpiar el snapshot huérfano — sin entry_id no hay nada que undo.
+            try:
+                # 1. Iniciar transacción
+                transaction_id = await rm.begin_transaction(
+                    description=description or f"file_operation: {operation_type.value}",
+                    agent_id=self._agent_id,
+                )
 
-            # 2. Capturar snapshot si el archivo existe
-            snapshot_info = None
-            if target_path.exists() and target_path.is_file():
-                snapshot_info = await rm.create_snapshot(target_path)
+                # 2. Capturar snapshot si el archivo existe
+                if target_path.exists() and target_path.is_file():
+                    snapshot_info = await rm.create_snapshot(target_path)
 
-            # 3. Registrar inicio de operación
-            entry_id = await rm.begin_operation(
-                agent_id=self._agent_id,
-                operation_type=operation_type,
-                target_path=str(target_path),
-                transaction_id=transaction_id,
-                snapshot_path=snapshot_info.snapshot_path if snapshot_info else None,
-            )
+                # 3. Registrar inicio de operación
+                entry_id = await rm.begin_operation(
+                    agent_id=self._agent_id,
+                    operation_type=operation_type,
+                    target_path=str(target_path),
+                    transaction_id=transaction_id,
+                    snapshot_path=snapshot_info.snapshot_path if snapshot_info else None,
+                )
+            except Exception as setup_exc:
+                # Early failure (pre-entry_id). No hay journal entry para undo —
+                # marcamos la transacción como rolled_back manualmente y
+                # limpiamos el snapshot huérfano para no acumular basura en disco.
+                logger.error(
+                    "Setup transaccional falló (pre-entry): %s",
+                    setup_exc,
+                    exc_info=True,
+                )
+                if transaction_id is not None:
+                    with contextlib.suppress(Exception):
+                        await rm.mark_transaction_rolled_back(transaction_id)
+                if snapshot_info is not None:
+                    with contextlib.suppress(OSError):
+                        pathlib.Path(snapshot_info.snapshot_path).unlink(missing_ok=True)
+                # P1 review fix (PR #140): el caller pasó ``operation`` como
+                # corrutina ya construida; en este path nunca llegamos al
+                # ``await operation`` de la línea 320, así que sin cerrarla
+                # explícitamente Python emite ``RuntimeWarning: coroutine '...'
+                # was never awaited`` en runtime. ``coroutine.close()`` es
+                # idempotente y no propaga errores.
+                if hasattr(operation, "close"):
+                    with contextlib.suppress(Exception):
+                        operation.close()
+                raise
 
             # 4. Ejecutar la operación
             try:
