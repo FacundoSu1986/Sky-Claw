@@ -15,6 +15,52 @@ from sky_claw.logging_config import correlation_id_var
 
 logger = logging.getLogger("sky_claw")
 
+# P1 §3.2 — bounded LLM call. The GUI shows a snappy error rather than
+# hanging on an unresponsive provider.
+_GUI_CHAT_TIMEOUT_SECONDS: float = 30.0
+
+
+async def _dispatch_chat_to_router(ctx: AppContext, text: str) -> None:
+    """Send a chat turn through ``ctx.router`` and publish the result as a GUI event.
+
+    Wraps the LLM call in ``asyncio.wait_for`` so a hung provider surfaces a
+    clean error event in the UI within :data:`_GUI_CHAT_TIMEOUT_SECONDS`
+    seconds instead of freezing the logic loop.
+    """
+    try:
+        response = await asyncio.wait_for(
+            ctx.router.chat(text, ctx.session, chat_id="gui-session"),
+            timeout=_GUI_CHAT_TIMEOUT_SECONDS,
+        )
+        gui_event_bus.publish(
+            SkyClawEvent(
+                type=EventType.LLM_RESPONSE,
+                data={"response": response},
+                source="logic_loop",
+            )
+        )
+    except TimeoutError:
+        logger.warning(
+            "GUI chat timed out after %.0fs — provider may be unresponsive",
+            _GUI_CHAT_TIMEOUT_SECONDS,
+        )
+        gui_event_bus.publish(
+            SkyClawEvent(
+                type=EventType.LLM_RESPONSE,
+                data={"response": f"⚠️ Timeout: el proveedor no respondió en {_GUI_CHAT_TIMEOUT_SECONDS:.0f}s."},
+                source="logic_loop",
+            )
+        )
+    except Exception as e:
+        logger.exception("Logic error in chat: %s", e)
+        gui_event_bus.publish(
+            SkyClawEvent(
+                type=EventType.LLM_RESPONSE,
+                data={"response": f"⚠️ Error: {type(e).__name__}: {e}"},
+                source="logic_loop",
+            )
+        )
+
 
 async def _gui_logic_loop(ctx: AppContext) -> None:
     """Process chat messages from the GUI in a background task.
@@ -43,21 +89,9 @@ async def _gui_logic_loop(ctx: AppContext) -> None:
                     )
                     continue
                 correlation_id_var.set(str(uuid.uuid4()))
-                try:
-                    response = await ctx.router.chat(text, ctx.session, chat_id="gui-session")
-                    gui_event_bus.publish(
-                        SkyClawEvent(type=EventType.LLM_RESPONSE, data={"response": response}, source="logic_loop")
-                    )
-                    consecutive_errors = 0
-                except Exception as e:
-                    logger.exception("Logic error in chat: %s", e)
-                    gui_event_bus.publish(
-                        SkyClawEvent(
-                            type=EventType.LLM_RESPONSE,
-                            data={"response": f"⚠️ Error: {type(e).__name__}: {e}"},
-                            source="logic_loop",
-                        )
-                    )
+                # P1 §3.2 — extracted, timeout-bounded, individually testable.
+                await _dispatch_chat_to_router(ctx, text)
+                consecutive_errors = 0
         except asyncio.CancelledError:
             break
         except Exception as e:

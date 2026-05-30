@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **P1 — Reliability bundle (Kimi12 follow-ups)**:
+  - **R-05** `SyncEngine._safe_fetch_info` now declares
+    `result: dict[str, Any] | None = None` and falls through to an explicit
+    `return None`, honoring the declared signature even if `AsyncRetrying`
+    ever yields zero attempts (no more silent `UnboundLocalError` risk).
+  - **§3.1** `SupervisorAgent` interface TaskGroup split: recoverable
+    network errors (`ConnectionError`, `TimeoutError`, `OSError`) are
+    logged WARNING and absorbed; everything else is logged CRITICAL and
+    re-raised so programming bugs (AttributeError, ValueError, …) stop
+    being silently swallowed.
+  - **R-07** `SupervisorStateGraph.execute` now auto-purges stale
+    `_thread_timestamps` entries: every `_cleanup_interval` (default 100)
+    executions it calls `cleanup_old_threads(_cleanup_max_age_seconds)`
+    (default 3600 s). Set `_cleanup_interval = 0` to opt out.
+  - **R-03** `IdempotencyGuard` keys now carry a TTL
+    (`key_ttl_seconds` default 3600 s). A crashed task that never
+    `release()`s no longer blocks its key forever — the next acquire
+    after the TTL reclaims the slot. Set to `0` for legacy eternal-lock.
+  - **§3.2** CLI and GUI chat dispatch are bounded by
+    `asyncio.wait_for`: 300 s for `cli_mode._run_cli` / `_run_oneshot`,
+    30 s for the new `_dispatch_chat_to_router` helper in
+    `gui/_bootloader.py`. A hung LLM provider now surfaces a clean error
+    instead of freezing the loop.
+
 ### Added
 - **P0.5 — Supply-chain reproducibility**:
   - `py7zr>=0.21,<1` declared in `[project.dependencies]` (was a PyInstaller
@@ -18,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Telegram Node gateway. Builds now reproducible across CI runs.
   - CI Security gate hardened: `pip-audit --strict` (was permissive),
     `npm ci` + `npm audit --audit-level=high` for the Telegram gateway.
+
+### Changed
+- **P0.4 — Quality gates**: coverage gate raised from 55 % → 60 % in CI
+  (`--cov-fail-under=60`). Actual coverage at gate change: ~65 %. Documentation
+  updated in `tests/conftest.py` and `.github/coding_conventions.md`.
 
 ## [0.1.0] - 2026-05-11
 

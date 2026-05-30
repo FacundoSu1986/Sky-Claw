@@ -52,11 +52,27 @@ _REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"), "[REDACTED]"),
     # Raw JWT (3-segment eyJ… header.payload.signature)
     (re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"), "[REDACTED]"),
+    # Google API key (AIza prefix + 35 alphanumeric/dash/underscore chars).
+    # Lookahead instead of \b: \b fails when the key ends in '-' (non-word char).
+    (re.compile(r"\bAIza[A-Za-z0-9_\-]{35}(?![A-Za-z0-9_\-])"), "[REDACTED]"),
+    # Stripe secret/publishable keys (live and test environments)
+    (re.compile(r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{20,}\b"), "[REDACTED]"),
+    # AWS Secret Access Key — redact the value in key=value context;
+    # capture the original key token (group 1) to preserve its casing/separators.
+    (
+        re.compile(r"(?i)(\baws[_-]secret[_-]access[_-]key)([\"'\s:=]+)([A-Za-z0-9/+=]{40})"),
+        r"\1\2[REDACTED]",
+    ),
     (
         re.compile(r"(?i)\b(api[_-]?key|apikey|x-api-key|token|secret|password)([\"'\s:=]+)([^\s\"',;}{]{8,})"),
         r"\1\2[REDACTED]",
     ),
 )
+
+# Keys whose *values* must be redacted unconditionally regardless of value shape.
+# Used by _redact_container to handle structured log extras such as
+# {"aws_secret_access_key": "<value>"} where the value has no recognisable prefix.
+_SENSITIVE_KEY_RE: re.Pattern[str] = re.compile(r"(?i)\baws[_-]secret[_-]access[_-]key\b")
 
 _LOG_RECORD_RESERVED_ATTRS = frozenset(
     logging.LogRecord(
@@ -116,10 +132,17 @@ class SecurityRedactionFilter(logging.Filter):
 
     def _redact_container(self, value: Any, seen: set[int], depth: int) -> Any:
         if isinstance(value, Mapping):
-            return {
-                self._redact(key) if isinstance(key, str) else key: self._redact_value(item, seen, depth)
-                for key, item in value.items()
-            }
+            result = {}
+            for key, item in value.items():
+                redacted_key = self._redact(key) if isinstance(key, str) else key
+                # Key-aware redaction: when the key identifies a credential type
+                # whose value has no recognisable prefix (e.g. AWS Secret Access Key),
+                # redact the value directly instead of relying on pattern matching.
+                if isinstance(key, str) and _SENSITIVE_KEY_RE.search(key):
+                    result[redacted_key] = "[REDACTED]"
+                else:
+                    result[redacted_key] = self._redact_value(item, seen, depth)
+            return result
         if isinstance(value, tuple):
             return tuple(self._redact_value(item, seen, depth) for item in value)
         if isinstance(value, list):
