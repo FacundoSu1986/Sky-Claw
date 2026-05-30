@@ -9,6 +9,7 @@ Separada de la lógica de procesamiento de mensajes.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -26,35 +27,79 @@ COLORS = {
 }
 
 
+def _do_rollback(
+    text: str,
+    exc: BaseException,
+    restore_fn: Callable[[str], Any],
+    notify_fn: Callable[[str], Any],
+) -> None:
+    """Best-effort rollback: try restore + notify, swallow either's failure.
+
+    A broken ``restore_fn`` must not block the user-facing notification, and
+    a broken ``notify_fn`` must not crash the caller — at least one of the
+    two will fire so the user gets some signal.
+    """
+    logger.warning("chat send failed (rollback engaged): %s", exc)
+    try:
+        restore_fn(text)
+    except Exception as restore_exc:  # noqa: BLE001
+        logger.error("chat restore_fn raised (input text may be lost): %s", restore_exc)
+    try:
+        notify_fn(f"⚠️ No se pudo enviar el mensaje: {exc}")
+    except Exception as notify_exc:  # noqa: BLE001
+        logger.error("chat notify_fn raised (user got no feedback): %s", notify_exc)
+
+
 def _try_send_with_rollback(
     msg: str,
     on_send: Callable[[str], Any],
     restore_fn: Callable[[str], Any],
     notify_fn: Callable[[str], Any],
+    *,
+    original_text: str | None = None,
 ) -> None:
     """Optimistic send: the caller has already cleared the input.
 
-    If ``on_send`` raises ``Exception``, restore the original text via
-    ``restore_fn`` and surface a human-readable error via ``notify_fn``.
-    ``BaseException`` (KeyboardInterrupt, SystemExit, CancelledError)
-    is intentionally NOT caught so shutdown signals propagate.
+    Rollback triggers for BOTH sync exceptions raised by ``on_send`` AND
+    async failures when ``on_send`` returns an awaitable (e.g. the wiring
+    ``lambda msg: asyncio.create_task(controller.handle_send_message(msg))``).
+    For the async path we attach a ``done_callback`` that inspects the
+    future's exception.
 
-    Both ``restore_fn`` and ``notify_fn`` are best-effort: if they raise
-    we still want at least one to fire, so they are wrapped individually.
+    Cancellation is intentionally re-raised on the sync path (explicit
+    ``except asyncio.CancelledError: raise``) and ignored on the async
+    path so a cancelled task doesn't trigger user-facing notifications.
+
+    ``original_text`` defaults to ``msg`` for legacy callers but should be
+    passed by UI handlers that ``.strip()`` the input — restoring the
+    stripped version would silently drop leading/trailing whitespace the
+    user typed (Copilot review on PR #144).
     """
+    text_for_restore = original_text if original_text is not None else msg
     try:
-        on_send(msg)
+        result = on_send(msg)
+    except asyncio.CancelledError:
+        raise  # never swallow cancellation
     except Exception as exc:  # noqa: BLE001 — surfaced via notify_fn for UX
-        logger.warning("chat send failed (rollback engaged): %s", exc)
-        # Best-effort restore — don't let a broken restore_fn mask the user-facing notify.
-        try:
-            restore_fn(msg)
-        except Exception as restore_exc:  # noqa: BLE001
-            logger.error("chat restore_fn raised (input text may be lost): %s", restore_exc)
-        try:
-            notify_fn(f"⚠️ No se pudo enviar el mensaje: {exc}")
-        except Exception as notify_exc:  # noqa: BLE001
-            logger.error("chat notify_fn raised (user got no feedback): %s", notify_exc)
+        _do_rollback(text_for_restore, exc, restore_fn, notify_fn)
+        return
+
+    # Async path: on_send returned an awaitable (Task / Future / coroutine).
+    # The real GUI wiring uses ``lambda msg: asyncio.create_task(...)`` so
+    # the rollback contract here is what makes daemon/network failures
+    # actually trigger the restore-and-notify cycle.
+    if asyncio.iscoroutine(result):
+        result = asyncio.ensure_future(result)
+    if asyncio.isfuture(result):
+
+        def _on_done(task: asyncio.Future[Any]) -> None:
+            if task.cancelled():
+                return  # cancellation is not a user-facing failure
+            exc = task.exception()
+            if exc is not None:
+                _do_rollback(text_for_restore, exc, restore_fn, notify_fn)
+
+        result.add_done_callback(_on_done)
 
 
 def create_chat_preview(
@@ -184,9 +229,12 @@ def create_chat_preview(
             # Función interna para manejar el envío.
             # P1.5 R-06: clear-before-send con rollback — la UI limpia el input
             # de inmediato (snappy) y si el callback falla restaura el texto y
-            # notifica al usuario con ui.notify.
+            # notifica al usuario con ui.notify. ``original_text`` preserva el
+            # whitespace que el usuario tipeó (el callback recibe ``msg`` ya
+            # stripped) — Copilot review on PR #144.
             def _handle_send():
-                msg = chat_input.value.strip()
+                original_text = chat_input.value
+                msg = original_text.strip()
                 if not msg or not on_send_message:
                     return
                 chat_input.value = ""  # optimistic clear
@@ -195,6 +243,7 @@ def create_chat_preview(
                     on_send=on_send_message,
                     restore_fn=lambda text: setattr(chat_input, "value", text),
                     notify_fn=lambda text: ui.notify(text, type="negative"),
+                    original_text=original_text,
                 )
 
             # Botón de envío
