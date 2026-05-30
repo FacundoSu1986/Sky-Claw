@@ -20,6 +20,9 @@ if TYPE_CHECKING:
 # Campos que pueden contener texto controlado por el mod author (Nexus) y
 # por tanto deben sanitizarse antes de devolverlos al LLM. Cap el length
 # para evitar token-bomb attacks vía descripciones gigantes.
+# PR #141 review fix: añadido `version` (Nexus permite version strings
+# arbitrarios — "1.0 - 'check description'" etc. puede llevar prompt
+# markers) y `homepage` (URL controlada por mod author).
 _SANITIZED_FIELDS: dict[str, int] = {
     "name": 128,
     "description": 512,
@@ -28,6 +31,9 @@ _SANITIZED_FIELDS: dict[str, int] = {
     "author": 64,
     "category": 64,
     "tag": 64,
+    "version": 64,
+    "homepage": 256,
+    "url": 256,
 }
 
 

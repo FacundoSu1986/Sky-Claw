@@ -61,22 +61,23 @@ class TestRestrictToOwnerSymlinkRejection:
             restrict_to_owner(link)
 
     def test_dangling_symlink_raises_permission_error(self, tmp_path: Path) -> None:
-        """Un symlink colgante (sin target) también es rechazado.
+        """Un symlink colgante (sin target) tambien debe ser rechazado.
 
-        ``Path.exists()`` retorna False para un symlink colgante, así que
-        ``restrict_to_owner`` retornaría temprano. Esto es por diseño:
-        si el target no existe, no hay nada que chmod-ear y no hay
-        vulnerabilidad. Verificamos que NO se lance la PermissionError
-        (no es un caso de TOCTOU)."""
+        PR #141 review fix: el comportamiento original retornaba silenciosamente
+        porque ``path.exists()`` era False para un symlink colgante (lo cual
+        contradice el docstring "if path is a symlink, refuse"). Ahora
+        ``is_symlink()`` se chequea ANTES de ``exists()`` para que CUALQUIER
+        symlink (incluso colgante) sea rechazado consistentemente — un
+        atacante que crea un dangling symlink antes de un retry/sync legitimo
+        ya no puede aprovechar el silent-return.
+        """
         link = tmp_path / "dangling.bin"
         # Apuntar a un archivo que no existe.
         if not _try_symlink(tmp_path / "nonexistent.bin", link):
             pytest.skip("symlink creation not supported")
 
-        # Retorna silenciosamente porque .exists() es False — comportamiento
-        # documentado en el docstring de restrict_to_owner.
-        restrict_to_owner(link)
-        # No assertion needed — no exception should have been raised.
+        with pytest.raises(PermissionError, match="symlink"):
+            restrict_to_owner(link)
 
 
 class TestRestrictToOwnerHappyPath:

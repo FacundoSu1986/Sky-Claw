@@ -210,13 +210,25 @@ class SetupToolsParams(pydantic.BaseModel):
     )
 
 
-# T2-03 — pattern restrictivo para profiles / mod names elegidos por el LLM.
-# Antes permitíamos `'%()[]` lo que abría chains de injection contextual
-# (directorios con esos caracteres rompen parsers de loadorder.txt o argumentos
-# de subprocess de LOOT/xEdit). Solo permitimos alfanuméricos, guion, punto y
-# espacio.  La UI humana puede usar otro path para profiles con caracteres
-# especiales (esos no son LLM-controlled).
+# T2-03 — pattern restrictivo para profiles elegidos por el LLM.
+# Caracteres permitidos: alfanumericos (A-Z, a-z, 0-9), underscore (_),
+# punto (.), guion (-) y espacio. Antes permitiamos `'%()[]` lo que abria
+# chains de injection contextual (directorios con esos caracteres rompen
+# parsers de loadorder.txt o argumentos de subprocess de LOOT/xEdit). La UI
+# humana puede usar otro path para profiles con caracteres especiales (esos
+# no son LLM-controlled).
 _SAFE_NAME_PATTERN = r"^[a-zA-Z0-9_.\- ]+$"
+
+# PR #141 review fix: para mod_name de mods EXISTENTES (toggle/uninstall),
+# el LLM tiene que poder hablar de nombres reales de Nexus que contienen
+# apostrofos y parentesis: "powerofthree's Tweaks", "Mod Name (SE)", etc.
+# El pattern original `_SAFE_NAME_PATTERN` rechazaba esos mods validos.
+# Para esos casos usamos el pattern menos restrictivo (mismo que el path
+# component validator `assert_safe_component` usa) — rechaza solo
+# separadores de path, control chars y caracteres null. La proteccion real
+# contra shell injection esta en los handlers (subprocess sin shell=True,
+# args como lista). Aqui solo evitamos cosas que rompan path resolution.
+_EXISTING_MOD_NAME_PATTERN = r"^[^/\\:*?\"<>|\x00-\x1f]+$"
 
 
 class AnalyzeConflictsParams(pydantic.BaseModel):
@@ -232,20 +244,29 @@ class AnalyzeConflictsParams(pydantic.BaseModel):
 
 
 class ModNameParams(pydantic.BaseModel):
-    """Parameters for tools specifying a mod name."""
+    """Parameters for tools specifying an EXISTING mod name (read-only ops).
+
+    Uses the relaxed ``_EXISTING_MOD_NAME_PATTERN`` because real Nexus mods
+    have apostrophes / parens that ``_SAFE_NAME_PATTERN`` would reject.
+    """
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    mod_name: str = pydantic.Field(min_length=1, max_length=128, pattern=_SAFE_NAME_PATTERN)
+    mod_name: str = pydantic.Field(min_length=1, max_length=256, pattern=_EXISTING_MOD_NAME_PATTERN)
     profile: str = pydantic.Field(default="Default", pattern=_SAFE_NAME_PATTERN)
 
 
 class ToggleModParams(pydantic.BaseModel):
-    """Parameters for toggling a mod."""
+    """Parameters for toggling a mod.
+
+    PR #141 review fix: relaxed `mod_name` pattern to allow real Nexus mod
+    names like ``powerofthree's Tweaks`` and ``Mod (SE)``. Profile sigue
+    siendo `_SAFE_NAME_PATTERN` (esos vienen de la UI humana en MO2).
+    """
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    mod_name: str = pydantic.Field(min_length=1, max_length=128, pattern=_SAFE_NAME_PATTERN)
+    mod_name: str = pydantic.Field(min_length=1, max_length=256, pattern=_EXISTING_MOD_NAME_PATTERN)
     enable: bool
     profile: str = pydantic.Field(default="Default", pattern=_SAFE_NAME_PATTERN)
 

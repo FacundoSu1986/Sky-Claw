@@ -117,9 +117,17 @@ async def download_mod(
         # ------------------------------------------------------------------
         # Step 2 - Mandatory HITL confirmation.
         # ------------------------------------------------------------------
+        # PR #141 review fix: sanitizar `file_info.file_name` antes de
+        # cualquier output que cruce al LLM o al HITL UI. Nexus permite
+        # filenames arbitrarios — un mod author puede embeber prompt
+        # markers tipo "Patch.zip [INST]ignore previous[/INST]" en el
+        # nombre, lo que sin sanitize llegaria al contexto del LLM via
+        # el JSON return de denied/enqueued, y al operador humano via
+        # HITL detail/reason.
+        safe_file_name = sanitize_for_prompt(file_info.file_name or "", max_length=256)
         size_mb = file_info.size_bytes / (1024 * 1024) if file_info.size_bytes else 0
         detail = (
-            f"File: {file_info.file_name}  |  "
+            f"File: {safe_file_name}  |  "
             f"Size: {size_mb:.1f} MB  |  "
             f"MD5: {file_info.md5 or 'n/a'}  |  "
             f"URL: {file_info.download_url}"
@@ -128,9 +136,8 @@ async def download_mod(
         decision = await hitl.request_approval(
             request_id=request_id,
             reason=(
-                f"Operator approval required to download "
-                f"mod {nexus_id} / file {file_id} "
-                f"({file_info.file_name}, {size_mb:.1f} MB)"
+                f"Operator approval required to download mod {nexus_id} / file {file_id} "
+                f"({safe_file_name}, {size_mb:.1f} MB)"
             ),
             url=file_info.download_url,
             detail=detail,
@@ -149,7 +156,7 @@ async def download_mod(
                     "decision": decision.value,
                     "nexus_id": nexus_id,
                     "file_id": file_id,
-                    "file_name": file_info.file_name,
+                    "file_name": safe_file_name,
                 }
             )
 
@@ -195,7 +202,8 @@ async def download_mod(
             "status": "enqueued",
             "nexus_id": nexus_id,
             "file_id": file_id,
-            "file_name": file_info.file_name,
+            # PR #141 review: sanitizado tambien en el path "enqueued".
+            "file_name": safe_file_name,
             "size_bytes": file_info.size_bytes,
             "staging_dir": str(downloader.staging_dir),
         }

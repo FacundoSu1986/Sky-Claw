@@ -36,44 +36,93 @@ def restrict_to_owner(path: Path) -> None:
     """Restrict *path* so only the current user can read/write it.
 
     On Windows, uses ``icacls`` to set owner-only permissions and then
-    post-validates the effective DACL. On POSIX, uses ``chmod 0o600``
-    for files and ``0o700`` for directories.
+    post-validates the effective DACL. On POSIX, opens the file with
+    ``O_NOFOLLOW`` and uses ``fchmod`` on the descriptor so the operation
+    is atomic against symlink swap races.
 
-    T1-04 — Symlink hardening: if *path* is a symbolic link, refuse with
-    ``PermissionError`` instead of following the link.  An attacker who
-    can race-swap *path* to a symlink between ``exists()`` and ``chmod``
-    would otherwise be able to alter the permissions of the link's target
-    (potential 0600 on ``/etc/shadow`` etc.).  Callers must hand us real
-    paths; this is fail-closed by design.
+    T1-04 — Symlink hardening (review PR #141): refuse symlinks and use
+    no-follow descriptor-based chmod on POSIX so the TOCTOU window described
+    in the docstring is actually closed.
+
+    **PR #141 review fixes**:
+
+    1. ``is_symlink()`` se chequea ANTES de ``exists()`` — para un dangling
+       symlink ``exists()`` retorna False y antes hubieramos vuelto silenciosamente.
+       Ahora cualquier symlink (incluso colgante) lanza ``PermissionError``.
+    2. POSIX path ahora usa ``os.open(O_NOFOLLOW)`` + ``os.fchmod(fd)``.
+       El kernel rechaza el open si el path es un symlink en el ultimo
+       componente, cerrando la ventana TOCTOU entre el check y el chmod.
 
     Raises:
-        PermissionError: if *path* is a symlink, or if the owner-only state
-            cannot be enforced or verified. Files are unlinked before
-            raising so a leaky artifact never persists; directories are
-            preserved (callers are expected to handle higher-level cleanup
-            themselves).
+        PermissionError: si *path* es un symlink (incluso colgante), o si
+            el estado owner-only no puede ser aplicado o verificado. Files
+            son unlinked antes de raise para que un artefacto leaky nunca
+            persista; directorios se preservan (callers manejan cleanup).
     """
+    # T1-04 (review): is_symlink ANTES de exists. lstat() no sigue el link,
+    # asi que detecta dangling symlinks tambien (para esos exists()==False
+    # y hubieramos retornado silenciosamente — bug del fix original).
+    try:
+        is_link = path.is_symlink()
+    except OSError:
+        is_link = False
+    if is_link:
+        logger.error("Refusing to harden symlink %s — possible TOCTOU attack", path)
+        raise PermissionError(f"Refusing to harden symlink {path} — possible TOCTOU attack")
+
     if not path.exists():
         return
-
-    # T1-04: bloquear symlinks ANTES de cualquier llamada a icacls/chmod.
-    # ``Path.is_symlink()`` no sigue el link (usa lstat internamente), por lo
-    # que un symlink colgante también se detecta correctamente.
-    if path.is_symlink():
-        logger.error("Refusing to harden symlink %s — possible TOCTOU attack", path)
-        raise PermissionError(
-            f"Refusing to harden symlink {path} — possible TOCTOU attack"
-        )
 
     if _IS_WINDOWS:
         _restrict_windows(path)
     else:
-        mode = 0o700 if path.is_dir() else 0o600
+        _restrict_posix_atomic(path)
+
+
+def _restrict_posix_atomic(path: Path) -> None:
+    """Atomic owner-only chmod on POSIX using ``O_NOFOLLOW`` + ``fchmod``.
+
+    Cierra el TOCTOU residual entre ``is_symlink()`` y ``chmod``: si un
+    atacante race-swapea *path* a un symlink despues del check, el
+    ``os.open(..., O_NOFOLLOW)`` falla con ``ELOOP`` y abortamos. Sin esto,
+    ``os.chmod`` por path seguiria el symlink y cambiaria permisos del target.
+
+    En plataformas sin ``O_NOFOLLOW`` (Windows runtime real, aunque
+    `_restrict_windows` se usa alli), cae a ``os.chmod`` con la proteccion
+    de pre-check ``is_symlink()`` ya hecha por el caller.
+    """
+    mode = 0o700 if path.is_dir() else 0o600
+
+    # Si O_NOFOLLOW no esta disponible (Windows runtime), usar chmod no-atomic.
+    # En produccion el path windows ya va por icacls; este branch solo se
+    # ejecuta si un test fuerza _IS_WINDOWS=False en Windows.
+    if not hasattr(os, "O_NOFOLLOW"):
         try:
             os.chmod(path, mode)
         except OSError as exc:
             logger.error("chmod(%s, %o) failed: %s", path, mode, exc)
             raise PermissionError(f"Owner-only chmod failed for {path}") from exc
+        return
+
+    # O_NOFOLLOW: rechaza si el ultimo componente es un symlink (ELOOP).
+    # O_RDONLY + (O_DIRECTORY si es dir): suficiente para fchmod.
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if path.is_dir() and hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        # ELOOP (40): symlink race entre is_symlink() y open. Fail closed.
+        logger.error("open(%s, O_NOFOLLOW) failed: %s", path, exc)
+        raise PermissionError(f"Owner-only open failed for {path} (symlink race?)") from exc
+
+    try:
+        os.fchmod(fd, mode)
+    except OSError as exc:
+        logger.error("fchmod(%s, %o) failed: %s", path, mode, exc)
+        raise PermissionError(f"Owner-only fchmod failed for {path}") from exc
+    finally:
+        os.close(fd)
 
 
 def _get_current_user_sid() -> str | None:

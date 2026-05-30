@@ -172,21 +172,23 @@ class CredentialVault:
         target = Path(path)
         tmp = target.with_name(target.name + ".tmp")
 
-        # Pre-checks (TOCTOU window is tiny because we use O_NOFOLLOW on open).
-        try:
-            if target.is_symlink():
-                raise PermissionError(
-                    f"Refusing to write through pre-existing symlink: {target}"
-                )
-            if tmp.is_symlink():
-                # Hostile symlink placed by an attacker; remove before write.
-                # If a real concurrent writer were holding the tmp, replace
-                # would have failed downstream anyway.
+        # ----- Pre-checks (PR #141 review fix) -----
+        # 1. Target symlink check: NO swallow this PermissionError via the
+        #    OSError catch below (PermissionError es subclase de OSError, asi
+        #    que el try/except OSError de la version anterior la tragaba).
+        #    Hacemos esta validacion FUERA del try.
+        if target.is_symlink():
+            raise PermissionError(f"Refusing to write through pre-existing symlink: {target}")
+
+        # 2. Unlink proactivo de cualquier tmp pre-existente (review fix):
+        #    - Si es symlink: hostil, removerlo.
+        #    - Si es regular: leftover de un crash previo entre el create_temp
+        #      y el replace(). El O_EXCL del open habria fallado y abortado
+        #      la inicializacion del vault para un startup completo.
+        #      Removerlo aqui hace el crash recovery automatico.
+        with suppress(OSError):
+            if tmp.is_symlink() or tmp.exists():
                 tmp.unlink()
-        except OSError:
-            # If the symlink check itself failed for an IO reason, fall
-            # through and let the write/open attempt produce the real error.
-            pass
 
         # Build open flags: O_NOFOLLOW prevents following a symlink at the
         # last moment, O_EXCL ensures we are the creator (no pre-existing
@@ -216,9 +218,7 @@ class CredentialVault:
             # raced a symlink into place after our pre-check.
             if target.exists() and target.is_symlink():
                 tmp.unlink(missing_ok=True)
-                raise PermissionError(
-                    f"Symlink appeared at {target} between pre-check and replace"
-                )
+                raise PermissionError(f"Symlink appeared at {target} between pre-check and replace")
 
             tmp.replace(target)
         except (OSError, RuntimeError):
