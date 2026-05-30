@@ -263,6 +263,12 @@ class UIBroadcastServer:
 
     _RATE_LIMIT_WINDOW: float = 10.0  # seconds
     _RATE_LIMIT_MAX: int = 60  # max messages per window
+    # Close code sent when the X-Auth-Token check fails.  Must stay in sync
+    # with AgentCommunicationClient._AUTH_REJECTION_CLOSE_CODES so the client
+    # recognises the rejection and drives its 5-minute brute-force lockout.
+    # Deliberately distinct from 1008 (POLICY_VIOLATION) — used for rate
+    # limiting — which must NOT count toward the auth lockout.
+    _AUTH_REJECTION_CLOSE_CODE: int = 4001
 
     def __init__(self, host: str = "127.0.0.1", port: int = 8765):
         self.host = host
@@ -336,7 +342,7 @@ class UIBroadcastServer:
         token = self._request_header(websocket, "X-Auth-Token")
         if not self._auth.validate(token):
             self._logger.warning(f"🚫 Rejected UI client — invalid token from {websocket.remote_address}")
-            await websocket.close(1008, "Unauthorized")
+            await websocket.close(self._AUTH_REJECTION_CLOSE_CODE, "Unauthorized")
             return
 
         client_id = id(websocket)

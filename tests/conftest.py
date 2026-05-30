@@ -7,7 +7,7 @@ Naming convention: fixtures are snake_case and describe WHAT they provide,
 not how. Example: `async_registry` (not `make_registry_with_lifecycle`).
 
 Coverage policy: target +5pp per sprint until 80% minimum.
-Current gate: 55% (raised from 49% on 2026-05-11).
+Current gate: 60% (raised from 55% on 2026-05-28, P0.4). Actual: ~65%.
 """
 
 from __future__ import annotations

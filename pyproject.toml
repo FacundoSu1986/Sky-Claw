@@ -15,6 +15,7 @@ dependencies = [
     "cryptography>=41.0.0",
     "defusedxml>=0.7.1,<1",
     "pydantic>=2.0,<3",
+    "py7zr>=0.21,<1",
     "rarfile",
     "tenacity>=9.1,<10",
     "python-json-logger>=2.0,<4",
@@ -32,6 +33,10 @@ dependencies = [
     "opentelemetry-api>=1.25,<2",
     "opentelemetry-sdk>=1.25,<2",
     "opentelemetry-exporter-otlp-proto-grpc>=1.25,<2",
+    # Transitive constraint: fastapi+nicegui pull starlette; pin away from
+    # 1.0.0 which has PYSEC-2026-161. Bump as needed when fastapi/nicegui
+    # accept newer Starlette.
+    "starlette>=1.0.1,<2",
 ]
 
 [project.optional-dependencies]

@@ -23,21 +23,12 @@ import pytest
 
 
 def _import_broadcast_server():
-    """Import UIBroadcastServer, mocking out the ast_guardian side-effect.
+    """Import UIBroadcastServer with the ast_guardian side-effect stubbed.
 
     ws_daemon.py imports ``ast_guardian`` from a local path at module level.
-    This mock injects a stub so tests run without that filesystem dependency.
+    The stub lets the import succeed without that filesystem dependency.
     """
-    ast_stub = MagicMock()
-    auth_stub = MagicMock()
-
-    with (
-        patch.dict(sys.modules, {"ast_guardian": ast_stub}),
-        patch(
-            "sky_claw.antigravity.security.auth_token_manager.AuthTokenManager",
-            return_value=auth_stub,
-        ),
-    ):
+    with patch.dict(sys.modules, {"ast_guardian": MagicMock()}):
         from sky_claw.antigravity.comms.ws_daemon import UIBroadcastServer
 
         return UIBroadcastServer
@@ -48,7 +39,12 @@ class TestUIBroadcastRateLimiter:
 
     def _make_server(self):
         cls = _import_broadcast_server()
-        return cls()
+        # Patch the AuthTokenManager name bound in ws_daemon's namespace so
+        # __init__ never touches real token files.  Patching at instantiation
+        # time (not import time) keeps this robust regardless of whether
+        # another test imported ws_daemon first.
+        with patch("sky_claw.antigravity.comms.ws_daemon.AuthTokenManager", return_value=MagicMock()):
+            return cls()
 
     def test_client_timestamps_uses_deque(self):
         """DT-01: _client_timestamps must produce deque instances, not lists."""

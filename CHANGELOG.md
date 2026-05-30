@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **P0.5 — Supply-chain reproducibility**:
+  - `py7zr>=0.21,<1` declared in `[project.dependencies]` (was a PyInstaller
+    hidden import in `sky_claw.spec:39` but missing from the manifest, breaking
+    `pip install` reproducibility on fresh envs without 7-Zip support).
+  - `requirements.lock` regenerated with `--generate-hashes` (2724 SHA-256
+    hashes pinned for integrity verification at install time).
+  - `package-lock.json` removed from `.gitignore` and committed for the
+    Telegram Node gateway. Builds now reproducible across CI runs.
+  - CI Security gate hardened: `pip-audit --strict` (was permissive),
+    `npm ci` + `npm audit --audit-level=high` for the Telegram gateway.
+
+### Changed
+- **P0.4 — Quality gates**: coverage gate raised from 55 % → 60 % in CI
+  (`--cov-fail-under=60`). Actual coverage at gate change: ~65 %. Documentation
+  updated in `tests/conftest.py` and `.github/coding_conventions.md`.
+
 ## [0.1.0] - 2026-05-11
 
 ### Added
