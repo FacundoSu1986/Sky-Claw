@@ -17,6 +17,7 @@ remain focused on the icacls strategy itself, with verify mocked to pass.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -254,43 +255,103 @@ class TestRestrictWindows:
 
 
 class TestRestrictPosix:
-    """Tests for the POSIX (non-Windows) branch."""
+    """Tests for the POSIX (non-Windows) branch.
+
+    PR #141 review fix: el path POSIX ahora usa ``os.open(O_NOFOLLOW)`` +
+    ``os.fchmod(fd)`` en lugar de ``os.chmod(path, mode)``. Cierra el TOCTOU
+    residual entre is_symlink() y chmod. Estos tests reflejan el nuevo
+    contracto.
+    """
 
     @pytest.fixture(autouse=True)
     def force_posix(self):
         with patch.object(fp_mod, "_IS_WINDOWS", False):
             yield
 
-    def test_posix_file_chmod_600(self, tmp_path):
+    def test_posix_file_uses_atomic_fchmod_600(self, tmp_path):
+        """File POSIX path: open(O_NOFOLLOW) + fchmod(0o600), NO subprocess."""
         target = _make_file(tmp_path)
+        # En Windows local os.O_NOFOLLOW no existe → el código cae al fallback
+        # de os.chmod. En Linux CI sí existe → usa open+fchmod. Patcheamos
+        # AMBOS paths para que el test funcione cross-platform.
         with (
-            patch("os.chmod") as mock_chmod,
+            patch("os.open", return_value=42) as mock_open,
+            patch("os.fchmod") as mock_fchmod,
+            patch("os.close") as mock_close,
+            patch("os.chmod") as mock_chmod_fallback,
             patch("subprocess.run") as mock_run,
         ):
             restrict_to_owner(target)
 
-        mock_chmod.assert_called_once_with(target, 0o600)
+        # Path principal (Linux O_NOFOLLOW): open + fchmod.
+        if hasattr(os, "O_NOFOLLOW"):
+            mock_open.assert_called_once()
+            mock_fchmod.assert_called_once_with(42, 0o600)
+            mock_close.assert_called_once_with(42)
+            mock_chmod_fallback.assert_not_called()
+        else:
+            # Fallback (Windows runtime sin O_NOFOLLOW): chmod directo.
+            mock_chmod_fallback.assert_called_once_with(target, 0o600)
         mock_run.assert_not_called()
 
-    def test_posix_dir_chmod_700(self, tmp_path):
+    def test_posix_dir_uses_atomic_fchmod_700(self, tmp_path):
+        """Dir POSIX path: open(O_NOFOLLOW|O_DIRECTORY) + fchmod(0o700)."""
         target = _make_dir(tmp_path)
         with (
-            patch("os.chmod") as mock_chmod,
+            patch("os.open", return_value=43) as mock_open,
+            patch("os.fchmod") as mock_fchmod,
+            patch("os.close") as mock_close,
+            patch("os.chmod") as mock_chmod_fallback,
             patch("subprocess.run") as mock_run,
         ):
             restrict_to_owner(target)
 
-        mock_chmod.assert_called_once_with(target, 0o700)
+        if hasattr(os, "O_NOFOLLOW"):
+            mock_open.assert_called_once()
+            mock_fchmod.assert_called_once_with(43, 0o700)
+            mock_close.assert_called_once_with(43)
+            mock_chmod_fallback.assert_not_called()
+        else:
+            mock_chmod_fallback.assert_called_once_with(target, 0o700)
         mock_run.assert_not_called()
 
-    def test_posix_chmod_failure_fails_closed(self, tmp_path, caplog):
-        """os.chmod failure on POSIX → ERROR logged, PermissionError raised."""
+    def test_posix_fchmod_failure_fails_closed(self, tmp_path, caplog):
+        """fchmod (o chmod fallback) failure → ERROR log + PermissionError."""
+        target = _make_file(tmp_path)
+        if hasattr(os, "O_NOFOLLOW"):
+            mock_setup = (
+                patch("os.open", return_value=42),
+                patch("os.fchmod", side_effect=OSError("read-only fs")),
+                patch("os.close"),
+            )
+            match_msg = "Owner-only fchmod failed"
+            log_kw = "fchmod"
+        else:
+            mock_setup = (patch("os.chmod", side_effect=OSError("read-only fs")),)
+            match_msg = "Owner-only chmod failed"
+            log_kw = "chmod"
+
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            for cm in mock_setup:
+                stack.enter_context(cm)
+            stack.enter_context(caplog.at_level(logging.ERROR))
+            with pytest.raises(PermissionError, match=match_msg):
+                restrict_to_owner(target)
+
+        assert any(log_kw in r.message for r in caplog.records)
+
+    def test_posix_open_failure_on_symlink_race_fails_closed(self, tmp_path, caplog):
+        """En Linux, si el path cambia a symlink entre is_symlink() y open(),
+        os.open con O_NOFOLLOW falla con ELOOP → PermissionError."""
+        if not hasattr(os, "O_NOFOLLOW"):
+            pytest.skip("O_NOFOLLOW not available on this platform")
         target = _make_file(tmp_path)
         with (
-            patch("os.chmod", side_effect=OSError("read-only fs")),
+            patch("os.open", side_effect=OSError(40, "Too many levels of symbolic links")),
             caplog.at_level(logging.ERROR),
-            pytest.raises(PermissionError, match="Owner-only chmod failed"),
+            pytest.raises(PermissionError, match="symlink race"),
         ):
             restrict_to_owner(target)
-
-        assert any("chmod" in r.message for r in caplog.records)
+        assert any("O_NOFOLLOW" in r.message or "open" in r.message for r in caplog.records)
