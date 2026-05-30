@@ -269,15 +269,16 @@ class TestRestrictPosix:
             yield
 
     def test_posix_file_uses_atomic_fchmod_600(self, tmp_path):
-        """File POSIX path: open(O_NOFOLLOW) + fchmod(0o600), NO subprocess."""
+        """File POSIX path: open(O_NOFOLLOW) + fchmod(0o600), NO subprocess.
+
+        ``create=True`` en los patches porque ``os.fchmod`` NO existe en
+        Windows; mock necesita crearlo para que el test corra cross-platform.
+        """
         target = _make_file(tmp_path)
-        # En Windows local os.O_NOFOLLOW no existe → el código cae al fallback
-        # de os.chmod. En Linux CI sí existe → usa open+fchmod. Patcheamos
-        # AMBOS paths para que el test funcione cross-platform.
         with (
-            patch("os.open", return_value=42) as mock_open,
-            patch("os.fchmod") as mock_fchmod,
-            patch("os.close") as mock_close,
+            patch("os.open", return_value=42, create=True) as mock_open,
+            patch("os.fchmod", create=True) as mock_fchmod,
+            patch("os.close", create=True) as mock_close,
             patch("os.chmod") as mock_chmod_fallback,
             patch("subprocess.run") as mock_run,
         ):
@@ -298,9 +299,9 @@ class TestRestrictPosix:
         """Dir POSIX path: open(O_NOFOLLOW|O_DIRECTORY) + fchmod(0o700)."""
         target = _make_dir(tmp_path)
         with (
-            patch("os.open", return_value=43) as mock_open,
-            patch("os.fchmod") as mock_fchmod,
-            patch("os.close") as mock_close,
+            patch("os.open", return_value=43, create=True) as mock_open,
+            patch("os.fchmod", create=True) as mock_fchmod,
+            patch("os.close", create=True) as mock_close,
             patch("os.chmod") as mock_chmod_fallback,
             patch("subprocess.run") as mock_run,
         ):
@@ -320,9 +321,9 @@ class TestRestrictPosix:
         target = _make_file(tmp_path)
         if hasattr(os, "O_NOFOLLOW"):
             mock_setup = (
-                patch("os.open", return_value=42),
-                patch("os.fchmod", side_effect=OSError("read-only fs")),
-                patch("os.close"),
+                patch("os.open", return_value=42, create=True),
+                patch("os.fchmod", side_effect=OSError("read-only fs"), create=True),
+                patch("os.close", create=True),
             )
             match_msg = "Owner-only fchmod failed"
             log_kw = "fchmod"
@@ -349,7 +350,7 @@ class TestRestrictPosix:
             pytest.skip("O_NOFOLLOW not available on this platform")
         target = _make_file(tmp_path)
         with (
-            patch("os.open", side_effect=OSError(40, "Too many levels of symbolic links")),
+            patch("os.open", side_effect=OSError(40, "Too many levels of symbolic links"), create=True),
             caplog.at_level(logging.ERROR),
             pytest.raises(PermissionError, match="symlink race"),
         ):
