@@ -71,7 +71,7 @@ class InterfaceAgent:
             return
         exc = task.exception()
         if exc is not None:
-            logger.error("Comando EJECUTAR callback fallido: %s", exc, exc_info=exc)
+            logger.error("Comando EJECUTAR callback fallido: %s", exc, exc_info=(type(exc), exc, exc.__traceback__))
 
     async def request_hitl(self, req: HitlApprovalRequest) -> str:
         # Si no hay conexión, aborta por seguridad en lugar de colgar el agente

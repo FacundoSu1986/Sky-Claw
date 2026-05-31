@@ -232,7 +232,7 @@ class LLMRouter:
                 return
             exc = t.exception()
             if exc is not None:
-                logger.error("Telemetry callback failed: %s", exc, exc_info=exc)
+                logger.error("Telemetry callback failed: %s", exc, exc_info=(type(exc), exc, exc.__traceback__))
 
         task.add_done_callback(_on_done)
 
