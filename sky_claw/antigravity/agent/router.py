@@ -199,9 +199,42 @@ class LLMRouter:
         self._token_budget = TokenBudgetManager()
         self._circuit_breaker = TokenCircuitBreaker()
 
+        # PR-F (RUF006): mantener referencias fuertes a las tasks de
+        # progress_callback fire-and-forget. Sin esto, asyncio.create_task
+        # puede ser GC-recolectado mientras esta pendiente ("Task was
+        # destroyed but it is pending") y las excepciones del callback
+        # desaparecen silenciosamente — mismo patron del bug T1-01 en
+        # ws_daemon que arreglamos.
+        self._pending_telemetry: set[asyncio.Task[None]] = set()
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    def _spawn_telemetry_task(self, coro: Any) -> None:
+        """Fire-and-forget helper que mantiene referencia fuerte a la task.
+
+        PR-F (RUF006 enforcement): los progress_callbacks son telemetry
+        async; no queremos await-earlos en el hot path del LLM. Pero
+        ``asyncio.create_task`` sin guardar referencia permite GC silencioso
+        de la task pendiente. Este helper:
+          1. Agrega la task al set ``_pending_telemetry``.
+          2. ``add_done_callback`` la quita del set y loggea excepciones.
+
+        Mismo patron que ``ws_daemon._pending_dispatch`` (T1-01 fix).
+        """
+        task = asyncio.create_task(coro, name="telemetry-progress")
+        self._pending_telemetry.add(task)
+
+        def _on_done(t: asyncio.Task[Any]) -> None:
+            self._pending_telemetry.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.error("Telemetry callback failed: %s", exc, exc_info=(type(exc), exc, exc.__traceback__))
+
+        task.add_done_callback(_on_done)
 
     async def open(self) -> None:
         """Open the history database and ensure schema exists."""
@@ -305,7 +338,7 @@ class LLMRouter:
         injected_context = ""
         if route_classification.intent == "CONSULTA_MODDING":
             if progress_callback:
-                asyncio.create_task(progress_callback("searching_registry", 20))
+                self._spawn_telemetry_task(progress_callback("searching_registry", 20))
             injected_context = await self._context_manager.build_prompt_context(user_message)
             # TASK-013 P0: sanitize RAG context to prevent prompt-injection via
             # poisoned mod metadata scraped from Nexus Mods.
@@ -533,7 +566,7 @@ class LLMRouter:
                         )
                         consecutive_errors = 0
                         if progress_callback:
-                            asyncio.create_task(progress_callback(f"executed_{tool_name}", 100))
+                            self._spawn_telemetry_task(progress_callback(f"executed_{tool_name}", 100))
                     except pydantic.ValidationError as ve:
                         # TASK-012: hallucinated arguments — return structured
                         # feedback so the model can self-correct on the next round.

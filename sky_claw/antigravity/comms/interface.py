@@ -22,6 +22,10 @@ class InterfaceAgent:
         self.ws_connection = None
         self._pending_hitl = {}
         self._command_callbacks = []
+        # PR-F (RUF006): mantener referencias fuertes a tasks de dispatch
+        # de EJECUTAR signal. Sin esto el GC puede recolectar las tasks
+        # pendientes silenciosamente — mismo patron del bug T1-01.
+        self._pending_dispatch: set[asyncio.Task[None]] = set()
 
     async def connect(self):
         """Bucle de reconexión infinita. Garantiza supervivencia del demonio."""
@@ -56,7 +60,18 @@ class InterfaceAgent:
             elif data.get("type") == "EJECUTAR":
                 logger.info("Señal 'EJECUTAR' recibida desde el Gateway.")
                 for callback in self._command_callbacks:
-                    asyncio.create_task(callback(data))
+                    task = asyncio.create_task(callback(data), name="interface-ejecutar")
+                    self._pending_dispatch.add(task)
+                    task.add_done_callback(self._on_dispatch_done)
+
+    def _on_dispatch_done(self, task: asyncio.Task[None]) -> None:
+        """PR-F (RUF006): libera la referencia + loggea excepciones del callback."""
+        self._pending_dispatch.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("Comando EJECUTAR callback fallido: %s", exc, exc_info=(type(exc), exc, exc.__traceback__))
 
     async def request_hitl(self, req: HitlApprovalRequest) -> str:
         # Si no hay conexión, aborta por seguridad en lugar de colgar el agente
