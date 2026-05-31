@@ -73,6 +73,12 @@ class CoreEventBus:
     Args:
         max_queue_size: Tamaño máximo de la cola interna (backpressure).
         dlq: Dead Letter Queue opcional. Si es None, comportamiento fire-and-forget original.
+        require_dlq: P1.2 — cuando True, ``__init__`` exige que ``dlq`` no
+            sea None y aborta con ``ValueError``.  La factory de producción
+            ``create_bus_with_dlq`` lo activa por defecto: en producción un
+            bus sin DLQ pierde eventos bajo backpressure sin dejar
+            traza más allá de un WARNING, lo cual oculta un bug de config.
+            Tests y dev shells siguen pasando ``require_dlq=False`` (default).
     """
 
     # Maximum number of subscriber coroutines that may run concurrently.
@@ -81,7 +87,20 @@ class CoreEventBus:
     _MAX_PENDING_TASKS: int = 50
     _MAX_DLQ_TASKS: int = 50
 
-    def __init__(self, *, max_queue_size: int = 1024, dlq: DLQManager | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        max_queue_size: int = 1024,
+        dlq: DLQManager | None = None,
+        require_dlq: bool = False,
+    ) -> None:
+        if require_dlq and dlq is None:
+            raise ValueError(
+                "CoreEventBus: require_dlq=True needs a DLQManager instance — "
+                "production deployments must wire up DLQ via create_bus_with_dlq() "
+                "or pass dlq=... explicitly to avoid silent event loss under "
+                "backpressure."
+            )
         self._subscriptions: list[tuple[str, Subscriber]] = []
         self._queue: asyncio.Queue[Event | None] = asyncio.Queue(
             maxsize=max_queue_size,
@@ -93,6 +112,7 @@ class CoreEventBus:
         self._dlq_tasks: set[asyncio.Task] = set()
         self._running: bool = False
         self._dlq = dlq
+        self._require_dlq = require_dlq
         self._handler_index: dict[str, Subscriber] = {}
 
     async def start(self) -> None:
@@ -262,6 +282,11 @@ class CoreEventBus:
 def create_bus_with_dlq(db_path: Path | None = None) -> CoreEventBus:
     """Factory que conecta un CoreEventBus con un DLQManager pre-cableado.
 
+    P1.2 — pasa ``require_dlq=True`` al constructor para que cualquier llamada
+    accidental con ``dlq=None`` (por ejemplo, un override en tests que
+    invalida la DLQ) explote en construcción en lugar de degradarse al modo
+    "drop silencioso" en producción.
+
     Args:
         db_path: Ruta al archivo SQLite. Default: ``~/.sky_claw/dlq/dlq.db``.
 
@@ -270,11 +295,16 @@ def create_bus_with_dlq(db_path: Path | None = None) -> CoreEventBus:
     """
     from sky_claw.antigravity.core.dlq_manager import DLQManager
 
-    bus = CoreEventBus()
     resolved_path = db_path or Path.home() / ".sky_claw" / "dlq" / "dlq.db"
+    # Construir el bus primero sin DLQ para tener acceso a _handler_index;
+    # luego instanciamos la DLQ apuntando a ese índice y reconstruimos con
+    # require_dlq=True.  El _handler_index del bus de descarte se descarta.
+    scratch_bus = CoreEventBus()
     dlq = DLQManager(
         db_path=resolved_path,
-        handler_resolver=bus._handler_index.get,
+        handler_resolver=scratch_bus._handler_index.get,
     )
-    bus._dlq = dlq
+    bus = CoreEventBus(dlq=dlq, require_dlq=True)
+    # Re-direccionar el handler_resolver al índice del bus definitivo.
+    dlq._handler_resolver = bus._handler_index.get  # type: ignore[attr-defined]
     return bus

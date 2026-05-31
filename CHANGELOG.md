@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **P1.2 — DLQ obligatoria en producción**: `CoreEventBus.__init__` ahora
+  acepta `require_dlq: bool = False` (default mantiene la compatibilidad).
+  La factory de producción `create_bus_with_dlq()` lo pasa a `True`, así
+  cualquier futuro override que invalida la DLQ (o un constructor manual
+  sin DLQ en código de producción) aborta con `ValueError` al construirse
+  en lugar de degradarse silenciosamente al modo "drop event on
+  backpressure". Tests y dev shells siguen pasando `require_dlq=False`.
+
 ### Fixed
 - **P1.5 R-06 — Chat preview clear-before-send with rollback**:
   The `_handle_send` closure inside `create_chat_preview` now clears the
