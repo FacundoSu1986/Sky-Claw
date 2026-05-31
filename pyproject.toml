@@ -64,22 +64,40 @@ src = ["sky_claw", "tests", "local_scripts"]
 
 [tool.ruff.lint]
 select = [
-    "E",    # pycodestyle errors
-    "W",    # pycodestyle warnings
-    "F",    # pyflakes
-    "I",    # isort
-    "N",    # pep8-naming
-    "UP",   # pyupgrade
-    "B",    # flake8-bugbear
-    "SIM",  # flake8-simplify
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    # PR-F (audit hardening): regresion-prevention rules.
+    # RUF006 (asyncio-dangling-task): previene el bug T1-01 que arreglamos
+    # en ws_daemon (create_task sin referencia → GC silencioso). Cero
+    # tolerance global, with selective # noqa for documented telemetry helpers.
+    "RUF006",
 ]
 ignore = [
     "E501",   # line too long (handled by formatter)
     "UP046",  # PEP 695 type params — conflicts with TypeVar re-exports and @dataclass Generic
 ]
 
+# Reglas evaluadas pero NO habilitadas en PR-F (documentadas para follow-up):
+# - RUF012 (mutable-class-default): 4 violations existentes; requieren design
+#   review (ClassVar vs Field(default_factory)). Follow-up: PR-F2.
+# - RUF022 (unsorted-dunder-all): 4 cosmetics; sin valor de seguridad.
+# - BLE001 (blind-except): 98 violations; requiere refactor amplio per-callsite.
+#   Follow-up: PR-F3 con cleanup gradual de except Exception:.
+# - ASYNC230/240: 52 violations en async asyncio (no trio/anyio); false-positive
+#   ratio alta. Lint actual ya delega a `to_thread()` donde importa.
+# - S603/S607: 22 violations en file_permissions (icacls/powershell por PATH —
+#   tooling Windows estandar). Per-line noqa cuando se evalue contra threat model.
+
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D", "ANN"]
+"tests/**" = ["D", "ANN", "RUF006"]   # RUF006 OK en tests: task lifecycle controlado por pytest.
+"local_scripts/**" = []
+"scripts/**" = []
 
 [tool.ruff.lint.isort]
 known-first-party = ["sky_claw"]
