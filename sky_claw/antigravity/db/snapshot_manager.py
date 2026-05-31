@@ -382,8 +382,10 @@ class FileSnapshotManager:
 
                     # Verificar si el directorio es antiguo
                     try:
-                        dir_time = time.strptime(date_dir.name, "%Y-%m-%d")
-                        dir_timestamp = time.mktime(dir_time)
+                        # SSP-003: UTC consistente con cutoff_time=time.time() (epoch UTC).
+                        # time.mktime asume timezone local -> desfase de horas vs el otro método.
+                        dir_dt = datetime.strptime(date_dir.name, "%Y-%m-%d").replace(tzinfo=UTC)
+                        dir_timestamp = dir_dt.timestamp()
                     except ValueError:
                         # Directorio con nombre inválido, ignorar
                         continue
