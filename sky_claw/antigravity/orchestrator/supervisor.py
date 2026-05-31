@@ -7,7 +7,7 @@ from typing import Any
 
 from sky_claw.antigravity.comms.interface import InterfaceAgent
 from sky_claw.antigravity.core.database import DatabaseAgent
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
+from sky_claw.antigravity.core.event_bus import Event, create_bus_with_dlq
 from sky_claw.antigravity.core.models import HitlApprovalRequest
 from sky_claw.antigravity.core.path_resolver import PathResolutionService
 from sky_claw.antigravity.core.windows_interop import ModdingToolsAgent
@@ -70,8 +70,12 @@ class SupervisorAgent:
         # Resolver ruta de modlist: MO2_PATH env var > auto-detección > fallback WSL2
         self.modlist_path = str(self._path_resolver.resolve_modlist_path(self.profile_name))
 
-        # Sprint-1: Core event bus (instanciable, no singleton)
-        self._event_bus = CoreEventBus()
+        # Sprint-1 + P1.2: production-grade event bus via factory, so the
+        # supervisor always boots with a real DLQ wired up.  The factory
+        # constructs CoreEventBus(require_dlq=True, dlq=DLQManager(...)) — a
+        # misconfiguration that returns dlq=None aborts at construction
+        # instead of silently dropping events under backpressure.
+        self._event_bus = create_bus_with_dlq()
         # ARC-01: Demonios extraídos del Supervisor
         self._maintenance_daemon = MaintenanceDaemon(
             snapshot_manager=self.snapshot_manager,

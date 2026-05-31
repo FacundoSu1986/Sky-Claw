@@ -62,3 +62,32 @@ class TestFactoryEnforcesDlq:
         assert bus._dlq is not None, (
             "create_bus_with_dlq must always wire up a DLQ — production deploys depend on this invariant"
         )
+
+
+class TestSupervisorProductionWiring:
+    """Codex + Copilot PR #146 review: the guard must be reached in
+    production, not just by callers who opt in via create_bus_with_dlq().
+    SupervisorAgent.__init__ is the production entry point.
+
+    Rather than instantiate the full SupervisorAgent (heavy dependencies),
+    we inspect the source of the constructor to confirm it routes through
+    the factory.  A direct ``CoreEventBus()`` call here would defeat the
+    whole P1.2 invariant.
+    """
+
+    def test_supervisor_init_uses_dlq_factory_not_bare_constructor(self) -> None:
+        import inspect
+
+        from sky_claw.antigravity.orchestrator import supervisor as supervisor_module
+
+        source = inspect.getsource(supervisor_module.SupervisorAgent.__init__)
+        assert "create_bus_with_dlq(" in source, (
+            "SupervisorAgent.__init__ must construct the bus via "
+            "create_bus_with_dlq() so production runs are guaranteed to have "
+            "a DLQ. Using ``CoreEventBus()`` directly bypasses the P1.2 guard."
+        )
+        # Belt and suspenders: no bare CoreEventBus() construction left.
+        assert "CoreEventBus()" not in source, (
+            "Found a bare ``CoreEventBus()`` call in SupervisorAgent.__init__ — "
+            "this skips the DLQ requirement and reverts the P1.2 fix."
+        )
