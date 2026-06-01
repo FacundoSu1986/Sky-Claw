@@ -97,8 +97,10 @@ class HITLGuard:
         *request_id* is a caller-supplied identifier (e.g. ``"download-10-20"``).
         If not provided, a unique UUID is generated automatically.
 
-        Returns the :class:`Decision` made by the operator, or
-        ``Decision.TIMEOUT`` if no response arrives in time.
+        Returns the :class:`Decision` made by the operator. Per the fail-secure
+        policy, if no response arrives within the timeout the request is
+        auto-denied and ``Decision.DENIED`` is returned (a failed ``notify_fn``
+        likewise yields ``Decision.TIMEOUT``).
         """
         if request_id is None:
             request_id = str(uuid.uuid4())

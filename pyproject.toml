@@ -87,7 +87,9 @@ ignore = [
 # - RUF012 (mutable-class-default): 4 violations existentes; requieren design
 #   review (ClassVar vs Field(default_factory)). Follow-up: PR-F2.
 # - RUF022 (unsorted-dunder-all): 4 cosmetics; sin valor de seguridad.
-# - BLE001 (blind-except): 98 violations; requiere refactor amplio per-callsite.
+# - BLE001 (blind-except): 177 violations (31 en sky_claw/local/ runners de
+#   herramientas, que pueden tragar fallos de xEdit/DynDOLOD/Synthesis);
+#   requiere refactor amplio per-callsite. Priorizar local/ por riesgo.
 #   Follow-up: PR-F3 con cleanup gradual de except Exception:.
 # - ASYNC230/240: 52 violations en async asyncio (no trio/anyio); false-positive
 #   ratio alta. Lint actual ya delega a `to_thread()` donde importa.
