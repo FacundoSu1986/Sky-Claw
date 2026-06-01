@@ -9,6 +9,18 @@ from sky_claw.config import Config
 from sky_claw.local.auto_detect import AutoDetector
 
 
+def _mask_secret(secret: str) -> str:
+    """Return a masked preview of *secret* so it is never echoed in clear text.
+
+    Shows only the last 4 characters (e.g. ``****abcd``) so the operator can
+    recognise a previously-saved key without exposing it in the terminal
+    prompt or scrollback. Empty/short values render as ``****`` or ``""``.
+    """
+    if not secret:
+        return ""
+    return f"****{secret[-4:]}" if len(secret) > 4 else "****"
+
+
 async def first_run_wizard():
     print("\n" + "=" * 40)
     print("      Sky-Claw: Asistente de Configuracion")
@@ -23,10 +35,15 @@ async def first_run_wizard():
     )
 
     if provider == "openai":
-        api_key = input(f"API Key para OpenAI [{config.openai_api_key}]: ").strip() or config.openai_api_key
+        api_key = (
+            input(f"API Key para OpenAI [{_mask_secret(config.openai_api_key)}]: ").strip() or config.openai_api_key
+        )
         model = input(f"Modelo (ej: gpt-4o) [{config.llm_model}]: ").strip() or config.llm_model or "gpt-4o"
     elif provider == "deepseek":
-        api_key = input(f"API Key para DeepSeek [{config.deepseek_api_key}]: ").strip() or config.deepseek_api_key
+        api_key = (
+            input(f"API Key para DeepSeek [{_mask_secret(config.deepseek_api_key)}]: ").strip()
+            or config.deepseek_api_key
+        )
         model = (
             input(f"Modelo (ej: deepseek-chat) [{config.llm_model}]: ").strip() or config.llm_model or "deepseek-chat"
         )
@@ -34,14 +51,20 @@ async def first_run_wizard():
         api_key = ""
         model = input(f"Modelo (ej: llama3.1) [{config.llm_model}]: ").strip() or config.llm_model or "llama3.1"
     else:  # anthropic default
-        api_key = input(f"API Key para Anthropic [{config.anthropic_api_key}]: ").strip() or config.anthropic_api_key
+        api_key = (
+            input(f"API Key para Anthropic [{_mask_secret(config.anthropic_api_key)}]: ").strip()
+            or config.anthropic_api_key
+        )
         model = (
             input(f"Modelo (ej: claude-3-5-sonnet-20240620) [{config.llm_model}]: ").strip()
             or config.llm_model
             or "claude-3-5-sonnet-20240620"
         )
 
-    nexus_key = input(f"API Key de Nexus Mods (opcional) [{config.nexus_api_key}]: ").strip() or config.nexus_api_key
+    nexus_key = (
+        input(f"API Key de Nexus Mods (opcional) [{_mask_secret(config.nexus_api_key)}]: ").strip()
+        or config.nexus_api_key
+    )
 
     print("\n[2/3] Rutas del Sistema")
     print("Escaneando rutas comunes...")
