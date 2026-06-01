@@ -1,6 +1,6 @@
 # Sky-Claw
 
-![Python 3.14+](https://img.shields.io/badge/Python-3.14%2B-blue)
+![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
 ![Tests](https://img.shields.io/badge/Tests-Passing-brightgreen)
 
@@ -12,9 +12,9 @@ Sky-Claw es un agente autónomo avanzado que gestiona mods de Skyrim SE/AE a tra
 
 **Novedades de la Versión Moderna:**
 - **Soporte Multi-LLM**: Elegí entre Anthropic (Claude), OpenAI (GPT-4), DeepSeek o ejecución local con Ollama.
-- **Interfaz Gráfica (GUI)**: Nueva ventana moderna basada en Tkinter y `sv-ttk` para una gestión visual.
+- **Interfaz Gráfica (GUI)**: Interfaz moderna basada en NiceGUI (web/escritorio) para una gestión visual.
 - **Configuración TOML**: Gestión simplificada en `~/.sky_claw/config.toml`.
-- **Asistente de Inicio**: Configuración guiada automática con `scripts/first_run.py`.
+- **Asistente de Inicio**: Configuración guiada automática con `local_scripts/scripts/first_run.py`.
 - **Seguridad HITL**: Aprobación interactiva vía botones de Telegram para descargas externas.
 
 ---
@@ -59,7 +59,7 @@ Sky-Claw incluye scripts automáticos para facilitar la instalación:
 2. **Configurar**:
    Ejecutá el asistente para configurar tus API Keys y detectar tus rutas de MO2:
    ```bash
-   python scripts/first_run.py
+   python local_scripts/scripts/first_run.py
    ```
 
 ---
@@ -95,7 +95,7 @@ Sky-Claw aplica una política de seguridad estricta:
 ## ✅ Roadmap (Estado Actual)
 
 - [x] Soporte Multi-LLM (OpenAI, Anthropic, DeepSeek, Ollama)
-- [x] Interfaz Gráfica Moderna (sv-ttk)
+- [x] Interfaz Gráfica Moderna (NiceGUI)
 - [x] Configuración centralizada TOML
 - [x] Asistente interactivo de primera ejecución
 - [x] HITL con botones interactivos en Telegram

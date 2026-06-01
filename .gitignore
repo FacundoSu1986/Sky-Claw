@@ -123,3 +123,6 @@ sky_claw/.llm-chat-history/
 
 # Backup files
 *.backup
+
+# Reporte de auditoría — mantener fuera del repo
+AUDIT_PANEL_REPORT.md
