@@ -11,16 +11,24 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import sys
 
 import pytest
 
 # first_run.py lives under local_scripts/scripts (not an importable package),
 # so load it by path the same way the wizard bootstraps itself.
+# NOTE: the script mutates sys.path at import time (first_run.py:6). Snapshot
+# and restore sys.path around exec_module so that side-effect cannot leak into
+# the rest of the test session and make imports order-dependent.
 _FIRST_RUN_PATH = pathlib.Path(__file__).parent.parent / "local_scripts" / "scripts" / "first_run.py"
 _spec = importlib.util.spec_from_file_location("first_run", _FIRST_RUN_PATH)
 assert _spec is not None and _spec.loader is not None
 _first_run = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_first_run)
+_sys_path_snapshot = list(sys.path)
+try:
+    _spec.loader.exec_module(_first_run)
+finally:
+    sys.path[:] = _sys_path_snapshot
 _mask_secret = _first_run._mask_secret
 
 
