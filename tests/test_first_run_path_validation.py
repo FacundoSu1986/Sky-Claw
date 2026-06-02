@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import pathlib
 
+import pytest
+
 
 def _import_helper():
     """Helper kept lazy so the RED state of this test is missing-attribute,
@@ -86,3 +88,39 @@ def test_validate_path_exists_as_module_attribute() -> None:
         "first_run.py must expose ``_validate_path`` at module level so the "
         "validation contract is unit-testable without driving the input loop"
     )
+
+
+class TestPromptDoesNotAllowEmptyBypass:
+    """Copilot review on PR #157: empty input must never be persisted via
+    the "continue anyway" escape hatch. Re-prompting is the only acceptable
+    response to an empty value, so the validate-then-confirm dance does not
+    accidentally turn into a silent skip.
+    """
+
+    def test_empty_default_and_empty_input_re_prompts_no_bypass(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from local_scripts.scripts import first_run
+
+        # Build a real directory inside tmp_path so _validate_path accepts it
+        # without touching any OS root (which would leak teardown problems).
+        valid = tmp_path / "real-skyrim"
+        valid.mkdir()
+
+        # Feed the helper a sequence of empty inputs, then the valid path.
+        # If the bypass were reachable for empty values, the test would exit
+        # on the first iteration via the confirmation branch instead of
+        # looping until a real value arrives.
+        inputs = iter(["", "", "", str(valid)])
+
+        def fake_input(_prompt: str) -> str:
+            return next(inputs)
+
+        monkeypatch.setattr("builtins.input", fake_input)
+
+        result = first_run._prompt_for_validated_path("Skyrim", default="")
+
+        assert result == str(valid), (
+            "Empty input must trigger re-prompt — never the bypass branch. "
+            "The wizard must keep asking until the user enters a valid path."
+        )

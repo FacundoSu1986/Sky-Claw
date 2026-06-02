@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -62,15 +63,25 @@ class TestResolveStrictFalseAsync:
         assert isinstance(result, pathlib.Path)
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason=(
+        "The Windows-absolute path-jail branch (executor.py:75-89) is only "
+        "reached when pathlib.Path(arg).is_absolute() is True for a Windows "
+        "drive-letter path. On POSIX CI the earlier WSL-translate branch "
+        "(arg.startswith('/')) catches the arg first, so this test would "
+        "return -1 for unrelated reasons without exercising the new async "
+        "resolve helper. Codex + Copilot review on PR #157."
+    ),
+)
 class TestPathJailRegressionViaAsyncResolve:
-    """Security regression: the path-jail rejection still fires when the
-    ``.resolve()`` call is offloaded.
+    """Security regression — Windows only.
 
     We invoke ``execute()`` with a Windows-absolute arg that resolves
     OUTSIDE the modding root.  The expected behavior is unchanged from
-    before the fix: return -1 and never reach the subprocess.  Because
-    rejection happens before ``create_subprocess_exec`` is invoked, we
-    do not need to mock it.
+    before the fix: ``execute()`` returns ``-1`` and never reaches the
+    subprocess. Because rejection happens before ``create_subprocess_exec``
+    we do not need to mock it.
     """
 
     @pytest.mark.asyncio
@@ -92,12 +103,13 @@ class TestPathJailRegressionViaAsyncResolve:
         validator = PathValidator([jail])
         executor = ManagedToolExecutor(timeout=1.0, path_validator=validator)
 
+        # Windows-style path so ``pathlib.Path(arg).is_absolute()`` is True
+        # AND the leading "/" check does not route us into the WSL branch.
         rc = await executor.execute(
-            binary_path="/bin/true",
+            binary_path="C:\\Windows\\System32\\cmd.exe",
             args=[str(attacker_target)],
         )
 
         assert rc == -1, (
-            "Absolute path outside modding_root must be rejected by the jail "
-            "regardless of whether resolve() is sync or async."
+            "Absolute Windows path outside modding_root must be rejected by the async path-jail (executor.py:75-89)."
         )

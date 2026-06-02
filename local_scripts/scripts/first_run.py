@@ -61,9 +61,15 @@ def _prompt_for_validated_path(
 ) -> str:
     """Interactive wrapper around ``_validate_path`` that re-prompts on failure.
 
-    If the user keeps a missing default, they are asked once whether to
-    confirm continuing anyway — useful for first-time installs where the
+    For a *missing-but-otherwise-shaped* path (directory doesn't exist yet,
+    or expected ``require_file`` is absent), the user is asked once whether
+    to confirm continuing anyway — useful for first-time installs where the
     folder will be created later.
+
+    Empty input is **never** bypassable: an empty value cannot represent a
+    valid first-install target, so the helper re-prompts unconditionally.
+    This honors the audit L-1 contract that an unset path must not be
+    silently persisted (Copilot review on PR #157).
     """
     while True:
         raw = input(f"Ruta de {label} [{default}]: ").strip() or default
@@ -71,6 +77,9 @@ def _prompt_for_validated_path(
         if ok:
             return raw
         print(f"  ⚠️  {reason}")
+        if not raw:
+            # Empty input is non-bypassable: there is nothing to confirm.
+            continue
         if input(f"  ¿Continuar igualmente con {raw!r}? [s/N]: ").strip().lower() == "s":
             return raw
 
