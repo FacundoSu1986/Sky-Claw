@@ -241,7 +241,7 @@ class VFSOrchestrator:
             if stderr:
                 logger.debug("Stderr de %s: %s", tool_path, stderr[:500])
 
-            return (exit_code, stdout, stderr)
+            return exit_code, stdout, stderr
 
         except VFSTimeoutError:
             # Re-lanzar VFSTimeoutError sin modificar

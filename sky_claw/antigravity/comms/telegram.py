@@ -36,10 +36,10 @@ def _parse_hitl_command(text: str) -> tuple[bool, str] | None:
     stripped = text.strip()
     if stripped.startswith(_APPROVE_PREFIX):
         req_id = stripped[len(_APPROVE_PREFIX) :].strip()
-        return (True, req_id) if req_id else None
+        return True, req_id if req_id else None
     if stripped.startswith(_DENY_PREFIX):
         req_id = stripped[len(_DENY_PREFIX) :].strip()
-        return (False, req_id) if req_id else None
+        return False, req_id if req_id else None
     return None
 
 

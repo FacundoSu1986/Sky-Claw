@@ -543,12 +543,12 @@ class DynDOLODRunner:
             duration,
         )
 
-        return (
+        return 
             stdout_text,
             stderr_text,
             proc.returncode if proc.returncode is not None else -1,
             duration,
-        )
+        
 
     async def _package_output_as_mod(
         self,

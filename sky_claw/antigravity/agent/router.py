@@ -350,9 +350,9 @@ class LLMRouter:
                 user_message = await self._guardrail.before_model_callback(user_message)
             except SecurityViolationError as exc:
                 logger.warning("Guardrail blocked input: %s", exc)
-                return (
+                return 
                     "\u26a0\ufe0f Tu mensaje fue bloqueado por una pol\u00edtica de seguridad. Por favor reformulalo."
-                )
+                
             except AgentOrchestrationError as exc:
                 logger.error("Orchestration error on input: %s", exc)
                 return "\u26a0\ufe0f Error de orquestaci\u00f3n en la entrada."
@@ -382,10 +382,10 @@ class LLMRouter:
                         budget_verdict.current_tokens,
                         budget_verdict.max_tokens,
                     )
-                    return (
+                    return 
                         "\u26a0\ufe0f El contexto de la conversaci\u00f3n excede el presupuesto de tokens. "
                         "Inicia una nueva conversaci\u00f3n."
-                    )
+                    
                 if budget_verdict.action == "truncate":
                     messages = self._token_budget.truncate_older_messages(messages)
                     logger.info("TokenBudget: truncated context to fit budget")
@@ -408,9 +408,9 @@ class LLMRouter:
                         self._circuit_breaker.state,
                         pre_call_tokens,
                     )
-                    return (
+                    return 
                         "\u26a0\ufe0f Circuit breaker activado \u2014 consumo de tokens excesivo. Espera y reintenta."
-                    )
+                    
                 effective_tools = tool_schemas
                 if self._hermes_mode and self._tools:
                     effective_system = (
