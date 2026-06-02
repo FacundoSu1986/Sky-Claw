@@ -37,6 +37,21 @@ class ManagedToolExecutor:
                 logger.exception("PathValidator initialization failed")
                 self._validator = None
 
+    @staticmethod
+    async def _resolve_strict_false(path_str: str) -> pathlib.Path:
+        """Audit A-1: ``pathlib.Path(path_str).resolve(strict=False)`` off the event loop.
+
+        ``resolve()`` touches the filesystem (Windows reparse points / network
+        mounts) and can stall the event loop for hundreds of milliseconds on a
+        slow disk.  By dispatching through ``asyncio.to_thread`` we let other
+        coroutines (telemetry, IPC, etc.) keep running while we wait for the
+        FS.  Behavior is identical to the sync call — same Path object out.
+
+        Kept as a ``@staticmethod`` so it can be unit-tested directly without
+        constructing a full ``ManagedToolExecutor``.
+        """
+        return await asyncio.to_thread(pathlib.Path(path_str).resolve, strict=False)
+
     async def execute(
         self,
         binary_path: str,
@@ -73,10 +88,14 @@ class ManagedToolExecutor:
                     return -1
                 win_args.append(translated_path)
             elif pathlib.Path(arg).is_absolute():
-                # Windows absolute path — apply base-directory jailing via pathlib
+                # Windows absolute path — apply base-directory jailing via pathlib.
+                # Audit A-1: the two ``resolve(strict=False)`` calls below touch
+                # the filesystem (Windows reparse points / mounted network
+                # drives) and used to block the event loop. They are now
+                # offloaded through ``asyncio.to_thread`` via the helper.
                 try:
-                    resolved = pathlib.Path(arg).resolve(strict=False)
-                    modding_root = pathlib.Path(SystemPaths.modding_root()).resolve(strict=False)
+                    resolved = await self._resolve_strict_false(arg)
+                    modding_root = await self._resolve_strict_false(str(SystemPaths.modding_root()))
                     if not resolved.is_relative_to(modding_root):
                         logger.error(
                             "🚨 ABORT: Base-dir jail violation — '%s' is outside '%s'",

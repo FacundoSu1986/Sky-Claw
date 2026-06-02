@@ -1,10 +1,14 @@
-"""Nexus Mods headless scraper (stub).
+"""Nexus Mods scraper placeholder.
 
-This module will use Playwright for headless browsing of Nexus Mods:
-dependency reading, DOM parsing, and download triggering.
+Audit PM-2: this module was originally scoped to a Playwright-based
+headless browsing path. That direction has been **permanently dropped**
+because evasive scraping violates the Nexus Mods Terms of Service. All
+production Nexus access goes through the official API surface
+(see :mod:`sky_claw.antigravity.scraper.scraper_agent` and its
+``_api_request`` path).
 
-Implementation is deferred until the security egress control layer
-is fully defined and tested.
+The class below is kept only as a typed placeholder so legacy imports
+that referenced it do not break; it has no runtime behavior.
 """
 
 from __future__ import annotations

@@ -155,8 +155,16 @@ class Config:
                         if "skyrim_path" in p:
                             self._data["skyrim_path"] = p["skyrim_path"]
 
-                    # Also update flatly for any remaining top-level keys
-                    # This might overwrite what we just set if both formats exist, but that's okay.
+                    # Audit S-3: drop the nested sections we already extracted
+                    # to flat keys so update() doesn't re-introduce them as raw
+                    # dicts (which would shadow the canonical flat form and
+                    # confuse downstream precedence).  The remaining update()
+                    # only carries genuinely top-level keys; if a top-level
+                    # explicit override is present (e.g. ``telegram_bot_token =
+                    # "Y"``) it wins over the nested-extracted value, which is
+                    # the documented precedence for the dual-format support.
+                    for nested_key in ("telegram", "nexus", "paths"):
+                        file_data.pop(nested_key, None)
                     self._data.update(file_data)
             except (tomllib.TOMLDecodeError, OSError, ValueError) as exc:
                 logger.warning("Failed to load config.toml: %s", exc)
