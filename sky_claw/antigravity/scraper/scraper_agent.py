@@ -35,8 +35,12 @@ class ScraperAgent:
     async def query_nexus(self, query: ScrapingQuery) -> ModMetadata:
         """Consulta Nexus Mods usando el esquema ScrapingQuery validado.
 
-        Enrutador Híbrido: Intenta API, si falla o fuerza stealth, usa Playwright.
-        Pasa por el Circuit Breaker.
+        Audit PM-2: el único camino productivo es la API oficial de Nexus
+        (``_api_request``). El path ``_stealth_scrape`` existe como stub que
+        retorna ``ToS_Blocked`` por decisión de compliance — el scraping
+        evasivo (incluso con Playwright) viola el ToS de Nexus Mods y queda
+        permanentemente deshabilitado. El router pasa por el Circuit Breaker
+        para proteger la IP frente a rate limits de la API.
 
         Args:
             query: ScrapingQuery con los parámetros validados de la consulta.

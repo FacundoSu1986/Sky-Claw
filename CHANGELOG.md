@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Audit follow-up (#152, #153, #154, #155)** — cuatro hallazgos de la
+  auditoría multidisciplinaria, agrupados en un único bundle TDD:
+  - **#153 S-3 — `config.py` nested merge**: `Config._load_from_file`
+    extraía `[telegram]/[nexus]/[paths]` a claves flat y luego hacía
+    `_data.update(file_data)` con el dict crudo, re-inyectando las
+    secciones como dicts paralelos. Ahora se hace `pop()` selectivo
+    antes del `update()` para que sobreviva sólo la forma canónica
+    flat y la precedencia top-level > nested quede explícita.
+  - **#154 PM-2 — scraper doc-drift**: docstrings de
+    `scraper_agent.query_nexus` y `scraper/nexus.py` prometían un
+    fallback Playwright que en realidad es un stub permanentemente
+    deshabilitado por compliance con el ToS de Nexus Mods.
+    Reescritos para reflejar la realidad (sólo API oficial).
+  - **#155 L-1 — `first_run.py` path validation**: el wizard
+    guardaba `mo2_root` / `skyrim_path` sin verificar existencia.
+    Nuevo helper `_validate_path` (pure, unit-tested) + wrapper
+    `_prompt_for_validated_path` que re-pide al usuario; opción de
+    confirmar continuar con una ruta inexistente para instalaciones
+    nuevas donde la carpeta se crea después.
+  - **#152 A-1 — `executor.py` async resolve**: las dos llamadas a
+    `pathlib.Path(...).resolve(strict=False)` del path-jail en
+    `ManagedToolExecutor.execute()` ahora pasan por
+    `asyncio.to_thread` via el nuevo helper estático
+    `_resolve_strict_false`. Reduce el bloqueo del event loop en
+    mounts SMB/NFS lentos; test de regresión confirma que la
+    rejection de traversals fuera del `modding_root` sigue intacta.
+
 ### Changed
 - **P1.2 — DLQ obligatoria en producción**: `CoreEventBus.__init__` ahora
   acepta `require_dlq: bool = False` (default mantiene la compatibilidad).

@@ -21,6 +21,60 @@ def _mask_secret(secret: str) -> str:
     return f"****{secret[-4:]}" if len(secret) > 4 else "****"
 
 
+def _validate_path(value: str, *, label: str, require_file: str | None = None) -> tuple[bool, str]:
+    """Audit L-1 validation helper for filesystem paths in the wizard.
+
+    Returns ``(True, "")`` when the path is acceptable, ``(False, reason)``
+    when it is not.  ``reason`` is a one-line message safe to print on the
+    terminal — it names ``label`` and (where relevant) the expected file so
+    the user knows what to fix.
+
+    Args:
+        value: The path string the user entered.
+        label: Human-readable name (e.g. ``"MO2 Root"``) used in error
+            messages so the prompt that failed is unambiguous.
+        require_file: Optional filename that must exist directly under the
+            path (e.g. ``"ModOrganizer.exe"``).  When the directory exists
+            but the file is missing, returns ``(False, ...)`` mentioning the
+            filename so the operator can recognise the mistake immediately.
+    """
+    if not value:
+        return False, f"La ruta de {label} está vacía."
+    candidate = pathlib.Path(value)
+    if not candidate.exists():
+        return False, f"La ruta de {label} no existe: {value}"
+    if not candidate.is_dir():
+        return False, f"La ruta de {label} no es un directorio: {value}"
+    if require_file is not None and not (candidate / require_file).exists():
+        return (
+            False,
+            f"En {label} no se encontró {require_file} bajo {value}.",
+        )
+    return True, ""
+
+
+def _prompt_for_validated_path(
+    label: str,
+    default: str,
+    *,
+    require_file: str | None = None,
+) -> str:
+    """Interactive wrapper around ``_validate_path`` that re-prompts on failure.
+
+    If the user keeps a missing default, they are asked once whether to
+    confirm continuing anyway — useful for first-time installs where the
+    folder will be created later.
+    """
+    while True:
+        raw = input(f"Ruta de {label} [{default}]: ").strip() or default
+        ok, reason = _validate_path(raw, label=label, require_file=require_file)
+        if ok:
+            return raw
+        print(f"  ⚠️  {reason}")
+        if input(f"  ¿Continuar igualmente con {raw!r}? [s/N]: ").strip().lower() == "s":
+            return raw
+
+
 async def first_run_wizard():
     print("\n" + "=" * 40)
     print("      Sky-Claw: Asistente de Configuracion")
@@ -70,12 +124,12 @@ async def first_run_wizard():
     print("Escaneando rutas comunes...")
     detected = await AutoDetector.detect_all()
 
-    mo2_root = input(f"Ruta de MO2 Root [{detected.get('mo2_root', config.mo2_root)}]: ").strip() or detected.get(
-        "mo2_root", config.mo2_root
-    )
-    skyrim_path = input(
-        f"Ruta de Skyrim [{detected.get('skyrim_path', config.skyrim_path)}]: "
-    ).strip() or detected.get("skyrim_path", config.skyrim_path)
+    mo2_default = detected.get("mo2_root", config.mo2_root)
+    skyrim_default = detected.get("skyrim_path", config.skyrim_path)
+    # Audit L-1: validate user-entered paths before saving so a typo
+    # surfaces here rather than during the first real tool run.
+    mo2_root = _prompt_for_validated_path("MO2 Root", mo2_default, require_file="ModOrganizer.exe")
+    skyrim_path = _prompt_for_validated_path("Skyrim", skyrim_default)
 
     print("\n[3/3] Telegram (Opcional)")
     bot_token = input(f"Telegram Bot Token [{config.telegram_bot_token}]: ").strip() or config.telegram_bot_token
