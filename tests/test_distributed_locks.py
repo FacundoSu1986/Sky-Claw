@@ -416,6 +416,110 @@ async def test_snapshot_transaction_lock_releases_on_snapshot_failure(
 
 
 # =============================================================================
+# SnapshotTransactionLock — force_rollback (dry-run / preview)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_snapshot_transaction_lock_force_rollback_on_clean_exit(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """force_rollback=True restores files even on a CLEAN (no-exception) exit.
+
+    This is the primitive that powers dry-run/preview: the chain runs for real
+    inside the lock, then every target file is reverted on the way out.
+    """
+    target = tmp_path / "preview.esp"
+    target.write_text("original content")
+
+    await snapshot_manager.initialize()
+
+    async with SnapshotTransactionLock(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        resource_id="preview.esp",
+        agent_id="preview-agent",
+        target_files=[target],
+        force_rollback=True,
+    ) as ctx:
+        assert len(ctx.snapshots) == 1
+        # Simulate a real run mutating the file inside the transaction.
+        target.write_text("mutated by dry-run chain")
+
+    # Clean exit, but force_rollback reverted the file to its original bytes.
+    assert target.read_text() == "original content"
+    # Lock released as usual.
+    assert await lock_manager.get_lock_info("preview.esp") is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_transaction_lock_force_rollback_false_keeps_mutation(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Default force_rollback=False preserves a clean-exit mutation (backward-compat)."""
+    target = tmp_path / "real_run.esp"
+    target.write_text("before")
+
+    await snapshot_manager.initialize()
+
+    async with SnapshotTransactionLock(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        resource_id="real_run.esp",
+        agent_id="real-agent",
+        target_files=[target],
+    ):
+        target.write_text("after")
+
+    # No force_rollback → the mutation survives (existing production behavior).
+    assert target.read_text() == "after"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_transaction_lock_cancellation_releases_lock(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Cancellation mid-preview leaves no orphan lock and reverts the file.
+
+    Invariant: ``asyncio.CancelledError`` must still release the lock via the
+    ``finally`` block, and (because the error is non-None) trigger rollback.
+    """
+    target = tmp_path / "cancel.esp"
+    target.write_text("pristine")
+
+    await snapshot_manager.initialize()
+
+    async def _run() -> None:
+        async with SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id="cancel.esp",
+            agent_id="agent-cancel",
+            target_files=[target],
+            force_rollback=True,
+        ):
+            target.write_text("mid-flight")
+            await asyncio.sleep(10)  # cancelled here
+
+    task = asyncio.create_task(_run())
+    await asyncio.sleep(0.05)  # let the task enter the context
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # No orphaned lock despite cancellation.
+    assert await lock_manager.get_lock_info("cancel.esp") is None
+    # File reverted to its pre-transaction bytes.
+    assert target.read_text() == "pristine"
+
+
+# =============================================================================
 # Concurrency test
 # =============================================================================
 
