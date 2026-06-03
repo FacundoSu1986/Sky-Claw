@@ -94,7 +94,8 @@ plans/
 .mypy_cache/
 .ruff_cache/
 
-# Local-only worktrees (live on disk only; not part of project history)
+# Claude Code agent config (lock files, worktrees, local state)
+.claude/
 .claude/worktrees/
 
 # Local agent artifacts (skills/cache/state — keep on disk, untrack from git)
