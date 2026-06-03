@@ -457,6 +457,11 @@ class SnapshotTransactionLock:
         Lock TTL override in seconds.
     metadata:
         Extra metadata for the snapshot entries.
+    force_rollback:
+        If True, restore every target file on exit even when no exception
+        occurred.  Powers dry-run / preview: run the chain for real inside the
+        lock, capture the diff, then revert SIEMPRE.  Default False (production
+        behavior — a clean exit keeps its mutations).
     """
 
     def __init__(
@@ -469,6 +474,7 @@ class SnapshotTransactionLock:
         target_files: list[pathlib.Path] | None = None,
         ttl: float | None = None,
         metadata: dict[str, Any] | None = None,
+        force_rollback: bool = False,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -477,6 +483,7 @@ class SnapshotTransactionLock:
         self._target_files = target_files or []
         self._ttl = ttl
         self._metadata = metadata
+        self._force_rollback = force_rollback
 
         # Populated during __aenter__
         self.lock_info: LockInfo | None = None
@@ -508,8 +515,10 @@ class SnapshotTransactionLock:
                             "snapshot_id": snap.snapshot_id,
                         },
                     )
-        except Exception:
-            # Snapshot creation failed — release the lock before propagating
+        except BaseException:
+            # Includes asyncio.CancelledError: never leak the lock if snapshot
+            # creation fails OR the task is cancelled before the context is
+            # fully entered (in which case __aexit__ never runs to release it).
             await self._safe_release()
             raise
 
@@ -521,43 +530,64 @@ class SnapshotTransactionLock:
         exc_val: BaseException | None,
         exc_tb: object,
     ) -> None:
-        """On exception: rollback all snapshots.  Always release the lock."""
+        """Rollback snapshots on exception OR when ``force_rollback`` is set.
+
+        ``force_rollback=True`` (dry-run / preview) reverts every target file
+        even on a CLEAN exit, reusing the same restore path as the exception
+        case — no exceptions are raised for control flow.  The lock is ALWAYS
+        released in ``finally``.
+        """
         try:
-            if exc_type is not None:
-                # Rollback: restore all snapshots in reverse order
-                logger.warning(
-                    "Exception detected — rolling back %d snapshot(s)",
-                    len(self.snapshots),
-                    extra={
-                        "resource_id": self._resource_id,
-                        "agent_id": self._agent_id,
-                        "exception": str(exc_val),
-                    },
-                )
-                for snap in reversed(self.snapshots):
-                    try:
-                        await self._snapshot_manager.restore_snapshot(
-                            snap.snapshot_path,
-                            pathlib.Path(snap.original_path),
-                            verify_checksum=False,
-                        )
-                        logger.info(
-                            "Rolled back file to snapshot",
-                            extra={
-                                "original_path": snap.original_path,
-                                "snapshot_id": snap.snapshot_id,
-                            },
-                        )
-                    except Exception as rollback_exc:
-                        logger.critical(
-                            "ROLLBACK FAILED for %s: %s — manual recovery required",
-                            snap.original_path,
-                            rollback_exc,
-                            exc_info=True,
-                        )
+            if exc_type is not None or self._force_rollback:
+                await self._rollback_snapshots(exc_val=exc_val)
         finally:
             # Always release the lock, even if rollback fails
             await self._safe_release()
+
+    async def _rollback_snapshots(self, *, exc_val: BaseException | None = None) -> None:
+        """Restore every snapshot in reverse creation order.
+
+        Never raises: a failed restore is logged as CRITICAL (manual recovery)
+        so it cannot mask the triggering exception nor break dry-run cleanup.
+
+        Parameters
+        ----------
+        exc_val:
+            The exception that triggered rollback, if any.  ``None`` means the
+            rollback was forced on a clean exit (``force_rollback=True``).
+        """
+        reason = "Exception detected" if exc_val is not None else "force_rollback (dry-run)"
+        logger.warning(
+            "%s — rolling back %d snapshot(s)",
+            reason,
+            len(self.snapshots),
+            extra={
+                "resource_id": self._resource_id,
+                "agent_id": self._agent_id,
+                "exception": str(exc_val) if exc_val is not None else None,
+            },
+        )
+        for snap in reversed(self.snapshots):
+            try:
+                await self._snapshot_manager.restore_snapshot(
+                    snap.snapshot_path,
+                    pathlib.Path(snap.original_path),
+                    verify_checksum=False,
+                )
+                logger.info(
+                    "Rolled back file to snapshot",
+                    extra={
+                        "original_path": snap.original_path,
+                        "snapshot_id": snap.snapshot_id,
+                    },
+                )
+            except Exception as rollback_exc:
+                logger.critical(
+                    "ROLLBACK FAILED for %s: %s — manual recovery required",
+                    snap.original_path,
+                    rollback_exc,
+                    exc_info=True,
+                )
 
     async def _safe_release(self) -> None:
         """Release lock, swallowing errors to avoid masking the original exception."""

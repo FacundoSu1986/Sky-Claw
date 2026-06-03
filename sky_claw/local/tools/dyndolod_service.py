@@ -141,6 +141,7 @@ class DynDOLODPipelineService:
         create_snapshot: bool = True,
         texgen_args: list[str] | None = None,
         dyndolod_args: list[str] | None = None,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         """Ejecuta el pipeline completo de generación de LODs.
 
@@ -158,10 +159,18 @@ class DynDOLODPipelineService:
             create_snapshot: Si True, crea snapshot para rollback.
             texgen_args: Argumentos adicionales para TexGen.
             dyndolod_args: Argumentos adicionales para DynDOLOD.
+            dry_run: Si True, NO ejecuta TexGen/DynDOLOD; devuelve una estimación
+                plan-only (``status="dry_run_preview"`` + ``change_set``) sin
+                lock, journal ni eventos. DynDOLOD es la etapa más cara (GBs,
+                30+ min), por eso el preview nunca la ejecuta.
 
         Returns:
-            Diccionario con resultado del pipeline.
+            Diccionario con resultado del pipeline, o el preview plan-only
+            cuando ``dry_run=True``.
         """
+        if dry_run:
+            return await self._preview(preset=preset, run_texgen=run_texgen)
+
         start_time = time.monotonic()
         rolled_back = False
         tx_id: int | None = None
@@ -403,6 +412,55 @@ class DynDOLODPipelineService:
                 "duration_seconds": duration,
                 "rolled_back": rolled_back,
             }
+
+    # ------------------------------------------------------------------
+    # Dry-run / preview (plan-only estimate)
+    # ------------------------------------------------------------------
+
+    async def _preview(self, *, preset: str, run_texgen: bool) -> dict[str, Any]:
+        """Plan-only dry-run: estimate the LODs DynDOLOD WOULD generate.
+
+        The TexGen/DynDOLOD executables are never launched (matrix: DynDOLOD is
+        plan-only — it is the most expensive stage), so nothing is locked,
+        journaled, or written.  Output directories are derived from the path
+        resolver alone, so no DynDOLOD binary is required to preview.
+        """
+        # Local import to avoid an import-time cycle (local.tools -> orchestrator).
+        from sky_claw.antigravity.orchestrator.preview.manifest import LODPlan, StageChangeSet
+
+        mo2_mods_path = self._path_resolver.get_mo2_mods_path()
+        dyndolod_dir = str(mo2_mods_path / "DynDOLOD Output") if mo2_mods_path else "DynDOLOD Output"
+
+        would_generate = ["DynDOLOD.esp"]
+        output_dirs = [dyndolod_dir]
+        if run_texgen:
+            texgen_dir = str(mo2_mods_path / "TexGen Output") if mo2_mods_path else "TexGen Output"
+            would_generate.append("TexGen textures")
+            output_dirs.append(texgen_dir)
+
+        lod_plan = LODPlan(
+            preset=preset,
+            would_generate=would_generate,
+            # The exact asset count is unknowable without running DynDOLOD; the
+            # estimate is intentionally 0 and flagged as such in the warnings.
+            estimated_assets=0,
+            output_dirs=output_dirs,
+        )
+        change_set = StageChangeSet(
+            stage="dyndolod",
+            executed_for_real=False,
+            files_touched=output_dirs,
+            lod_plan=lod_plan,
+            warnings=["LOD asset count is an estimate; TexGen/DynDOLOD are not run in preview."],
+            summary=(
+                f"Would generate LODs (preset={preset}, texgen={run_texgen}) into {dyndolod_dir} — DynDOLOD not run."
+            ),
+        )
+        logger.info("DynDOLOD dry-run preview: %s", change_set.summary)
+        return {
+            "status": "dry_run_preview",
+            "change_set": change_set.model_dump(mode="json"),
+        }
 
     # ------------------------------------------------------------------
     # Eventos

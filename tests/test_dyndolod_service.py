@@ -455,3 +455,58 @@ async def test_validation_failure_triggers_rollback(
     assert result["success"] is False
     assert result["rolled_back"] is True
     mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+
+
+# =============================================================================
+# Tests: DynDOLODPipelineService — dry_run / preview (plan-only estimate)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_execute_dry_run_estimates_lods_without_running(
+    service: DynDOLODPipelineService,
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    mock_journal: AsyncMock,
+    mock_lock_manager: AsyncMock,
+) -> None:
+    """dry_run=True returns a plan-only LOD estimate; runs no exe, touches nothing.
+
+    DynDOLOD is the most expensive stage (GBs, 30+ min) so the preview must NOT
+    run it: no runner, no lock, no journal transaction, no events.  The estimate
+    is derived from the resolver paths alone (no DynDOLOD binary required).
+    """
+    mods = pathlib.Path("/mods")
+    mock_path_resolver.get_mo2_mods_path = MagicMock(return_value=mods)
+
+    result = await service.execute(preset="High", run_texgen=True, dry_run=True)
+
+    assert result["status"] == "dry_run_preview"
+    change_set = result["change_set"]
+    assert change_set["stage"] == "dyndolod"
+    assert change_set["executed_for_real"] is False
+
+    plan = change_set["lod_plan"]
+    assert plan["preset"] == "High"
+    assert "DynDOLOD.esp" in plan["would_generate"]
+    assert any("DynDOLOD Output" in d for d in plan["output_dirs"])
+
+    # The whole expensive path is skipped: nothing locked, journaled, or emitted.
+    mock_lock_manager.acquire_lock.assert_not_awaited()
+    mock_journal.begin_transaction.assert_not_awaited()
+    mock_event_bus.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_dry_run_without_texgen_omits_texgen(
+    service: DynDOLODPipelineService,
+    mock_path_resolver: MagicMock,
+) -> None:
+    """run_texgen=False keeps TexGen out of the estimated outputs."""
+    mock_path_resolver.get_mo2_mods_path = MagicMock(return_value=pathlib.Path("/mods"))
+
+    result = await service.execute(preset="Medium", run_texgen=False, dry_run=True)
+
+    plan = result["change_set"]["lod_plan"]
+    assert plan["preset"] == "Medium"
+    assert not any("TexGen" in item for item in plan["would_generate"])

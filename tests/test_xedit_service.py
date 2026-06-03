@@ -22,7 +22,11 @@ from sky_claw.antigravity.core.event_payloads import (
 from sky_claw.antigravity.db.locks import DistributedLockManager
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools.xedit_service import XEditPipelineService
-from sky_claw.local.xedit.conflict_analyzer import ConflictReport
+from sky_claw.local.xedit.conflict_analyzer import (
+    ConflictReport,
+    PluginConflictPair,
+    RecordConflict,
+)
 from sky_claw.local.xedit.patch_orchestrator import PatchingError, PatchResult
 
 if TYPE_CHECKING:
@@ -493,3 +497,154 @@ async def test_journal_transaction_lifecycle_failure(
     )
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
     mock_journal.commit_transaction.assert_not_called()
+
+
+# =============================================================================
+# Tests: XEditPipelineService — dry_run / preview (plan-only)
+# =============================================================================
+
+
+def _resolver_without_tool_paths() -> MagicMock:
+    """A path resolver with no configured tool paths (preview must still work)."""
+    resolver = MagicMock()
+    resolver.get_xedit_path = MagicMock(return_value=None)
+    resolver.get_skyrim_path = MagicMock(return_value=None)
+    return resolver
+
+
+@pytest.mark.asyncio
+async def test_execute_patch_dry_run_previews_without_running_xedit(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_event_bus: AsyncMock,
+    target_plugin: pathlib.Path,
+) -> None:
+    """dry_run=True returns a plan-only preview and never runs xEdit (no mutation).
+
+    The xEdit patch stage is plan-only (matrix): the mutating script is NOT
+    executed, so the target plugin must stay byte-identical and no journal
+    transaction is opened.  Crucially the preview must work even with the
+    xEdit binary absent — a real patch would error there.
+    """
+    report = ConflictReport(
+        total_conflicts=3,
+        critical_conflicts=1,
+        plugin_pairs=[
+            PluginConflictPair(
+                plugin_a="A.esm",
+                plugin_b="B.esp",
+                conflicts=[
+                    RecordConflict(
+                        form_id="00001234",
+                        editor_id="WeapX",
+                        record_type="WEAP",
+                        winner="A.esm",
+                        losers=["B.esp"],
+                        severity="warning",
+                    ),
+                    RecordConflict(
+                        form_id="0000ABCD",
+                        editor_id="NpcY",
+                        record_type="NPC_",
+                        winner="A.esm",
+                        losers=["B.esp"],
+                        severity="critical",
+                    ),
+                ],
+            ),
+            PluginConflictPair(
+                plugin_a="A.esm",
+                plugin_b="C.esp",
+                conflicts=[
+                    RecordConflict(
+                        form_id="00005678",
+                        editor_id="ArmZ",
+                        record_type="ARMO",
+                        winner="A.esm",
+                        losers=["C.esp"],
+                        severity="warning",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    original_bytes = target_plugin.read_bytes()
+
+    service = XEditPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        journal=mock_journal,
+        path_resolver=_resolver_without_tool_paths(),
+        event_bus=mock_event_bus,
+    )
+
+    result = await service.execute_patch(report, target_plugin, dry_run=True)
+
+    assert result["status"] == "dry_run_preview"
+    change_set = result["change_set"]
+    assert change_set["stage"] == "xedit"
+    assert change_set["executed_for_real"] is False
+
+    conflicts = change_set["conflicts"]
+    assert conflicts["target_plugin"] == target_plugin.name
+    assert conflicts["total_conflicts"] == 3
+    assert conflicts["critical"] == 1
+    assert conflicts["minor"] == 2
+    assert conflicts["proposed_resolution"] == "execute_xedit_script"
+    # Only the single critical conflict is surfaced as a pair.
+    assert len(conflicts["pairs"]) == 1
+    assert conflicts["pairs"][0]["record_type"] == "NPC_"
+    assert conflicts["pairs"][0]["winner"] == "A.esm"
+
+    # No-mutation invariants.
+    assert target_plugin.read_bytes() == original_bytes
+    mock_journal.begin_transaction.assert_not_called()
+    mock_event_bus.publish.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_execute_patch_dry_run_merged_patch_when_no_critical(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_event_bus: AsyncMock,
+    target_plugin: pathlib.Path,
+) -> None:
+    """With no critical conflicts the proposed resolution is a merged patch."""
+    report = ConflictReport(
+        total_conflicts=1,
+        critical_conflicts=0,
+        plugin_pairs=[
+            PluginConflictPair(
+                plugin_a="A.esm",
+                plugin_b="B.esp",
+                conflicts=[
+                    RecordConflict(
+                        form_id="00000001",
+                        editor_id="LvlA",
+                        record_type="LVLI",
+                        winner="A.esm",
+                        losers=["B.esp"],
+                        severity="warning",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    service = XEditPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        journal=mock_journal,
+        path_resolver=_resolver_without_tool_paths(),
+        event_bus=mock_event_bus,
+    )
+
+    result = await service.execute_patch(report, target_plugin, dry_run=True)
+
+    conflicts = result["change_set"]["conflicts"]
+    assert conflicts["proposed_resolution"] == "create_merged_patch"
+    assert conflicts["pairs"] == []  # no critical conflicts to surface
+    mock_event_bus.publish.assert_not_called()

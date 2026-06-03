@@ -36,6 +36,9 @@ from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
     ErrorWrappingMiddleware,
     HitlGateMiddleware,
 )
+from sky_claw.antigravity.orchestrator.tool_strategies.preview_chain import (
+    PreviewChainStrategy,
+)
 from sky_claw.antigravity.orchestrator.tool_strategies.query_mod_metadata import (
     QueryModMetadataStrategy,
 )
@@ -51,6 +54,7 @@ from sky_claw.antigravity.orchestrator.tool_strategies.validate_plugin_limit imp
 )
 
 if TYPE_CHECKING:
+    from sky_claw.antigravity.orchestrator.preview.chain_preview_service import ChainPreviewService
     from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
 
 logger = logging.getLogger(__name__)
@@ -128,6 +132,51 @@ def _make_thunk(
         return await middleware(strategy, payload_dict, next_call)
 
     return thunk
+
+
+def _build_chain_preview_service(supervisor: SupervisorAgent) -> ChainPreviewService:
+    """Lazily build a :class:`ChainPreviewService` from the supervisor's collaborators.
+
+    Invoked only when ``preview_chain`` is dispatched (not at registration time),
+    so wiring the dispatcher never requires the LOOT/xEdit binaries to be present.
+    Raises ``RuntimeError`` when the tool paths are not configured; the strategy's
+    ErrorWrappingMiddleware converts that into a serializable error dict.
+    """
+    # Local imports keep dispatcher construction cheap and avoid import cycles.
+    import pathlib
+
+    from sky_claw.antigravity.orchestrator.preview.chain_preview_service import ChainPreviewService
+    from sky_claw.local.loot.cli import LOOTConfig, LOOTRunner
+    from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer
+    from sky_claw.local.xedit.runner import XEditRunner
+
+    path_resolver = supervisor._path_resolver
+    game_path = path_resolver.get_skyrim_path()
+    xedit_path = path_resolver.get_xedit_path()
+    if game_path is None or xedit_path is None:
+        raise RuntimeError("Cannot preview the chain: SKYRIM_PATH and XEDIT_PATH must be configured.")
+
+    loot_runner = LOOTRunner(
+        LOOTConfig(loot_exe=pathlib.Path("loot.exe"), game_path=game_path),
+        path_validator=supervisor._path_validator,
+    )
+    xedit_runner = XEditRunner(
+        xedit_path=xedit_path,
+        game_path=game_path,
+        output_dir=pathlib.Path(".skyclaw_backups/patches"),
+    )
+
+    return ChainPreviewService(
+        lock_manager=supervisor._lock_manager,
+        snapshot_manager=supervisor.snapshot_manager,
+        journal=supervisor.journal,
+        path_resolver=path_resolver,
+        path_validator=supervisor._path_validator,
+        event_bus=supervisor._event_bus,
+        loot_runner=loot_runner,
+        xedit_runner=xedit_runner,
+        conflict_analyzer=ConflictAnalyzer(),
+    )
 
 
 def build_orchestration_dispatcher(
@@ -217,6 +266,18 @@ def build_orchestration_dispatcher(
             plugin_limit_guard=lambda profile: supervisor._run_plugin_limit_guard(profile),
             default_profile_getter=lambda: supervisor.profile_name,
         ),
+    )
+
+    # preview_chain is READ-ONLY (reverts everything) → no HITL gate. The
+    # ChainPreviewService is built lazily so registration never needs binaries.
+    dispatcher.register(
+        PreviewChainStrategy(
+            service_provider=lambda: _build_chain_preview_service(supervisor),
+        ),
+        middleware=[
+            ErrorWrappingMiddleware("ChainPreviewFailed"),
+            DictResultGuardMiddleware("InvalidChainPreviewResult"),
+        ],
     )
 
     return dispatcher
