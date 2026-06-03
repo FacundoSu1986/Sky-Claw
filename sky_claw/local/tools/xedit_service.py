@@ -138,6 +138,7 @@ class XEditPipelineService:
         self,
         report: ConflictReport,
         target_plugin: pathlib.Path,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         """Ejecuta un parche xEdit con protección transaccional completa.
 
@@ -148,10 +149,16 @@ class XEditPipelineService:
         Args:
             report: ConflictReport con los conflictos detectados.
             target_plugin: Path al plugin objetivo del parcheo.
+            dry_run: Si True, NO ejecuta xEdit; devuelve un preview plan-only
+                (``status="dry_run_preview"`` + ``change_set``) sin tocar disco.
 
         Returns:
-            Diccionario serializable con los campos de ``PatchResult``.
+            Diccionario serializable con los campos de ``PatchResult``, o el
+            preview plan-only cuando ``dry_run=True``.
         """
+        if dry_run:
+            return await self._preview_patch(report, target_plugin)
+
         t0 = time.monotonic()
 
         # --- Early init ---
@@ -323,6 +330,70 @@ class XEditPipelineService:
             )
 
         return self._result_to_dict(result)
+
+    # ------------------------------------------------------------------
+    # Dry-run / preview (plan-only)
+    # ------------------------------------------------------------------
+
+    async def _preview_patch(
+        self,
+        report: ConflictReport,
+        target_plugin: pathlib.Path,
+    ) -> dict[str, Any]:
+        """Plan-only dry-run: describe the patch that WOULD be generated.
+
+        The mutating xEdit script is never executed (matrix: xEdit patch is
+        plan-only), so nothing is touched on disk and no journal transaction is
+        opened.  The preview is built purely from the already-computed,
+        read-only ``ConflictReport`` and therefore does NOT require the xEdit
+        binary — a real patch would fail when the executable is missing, a
+        preview must not.
+        """
+        # Local import to avoid an import-time cycle (local.tools -> orchestrator).
+        from sky_claw.antigravity.orchestrator.preview.manifest import (
+            ConflictPair,
+            ConflictPreview,
+            StageChangeSet,
+        )
+
+        critical_pairs = [
+            ConflictPair(
+                winner=conflict.winner,
+                losers=list(conflict.losers),
+                record_type=conflict.record_type,
+                form_id=conflict.form_id,
+            )
+            for pair in report.plugin_pairs
+            for conflict in pair.conflicts
+            if conflict.severity == "critical"
+        ]
+        has_critical = report.critical_conflicts > 0
+        proposed = "execute_xedit_script" if has_critical else "create_merged_patch"
+        would_output = "SkyClaw_CriticalPatch.esp" if has_critical else "SkyClaw_MergedPatch.esp"
+
+        conflicts = ConflictPreview(
+            target_plugin=target_plugin.name,
+            total_conflicts=report.total_conflicts,
+            critical=report.critical_conflicts,
+            minor=max(0, report.total_conflicts - report.critical_conflicts),
+            pairs=critical_pairs,
+            proposed_resolution=proposed,
+        )
+        change_set = StageChangeSet(
+            stage="xedit",
+            executed_for_real=False,
+            files_touched=[would_output],
+            conflicts=conflicts,
+            summary=(
+                f"Would generate {would_output} resolving {report.total_conflicts} "
+                f"conflict(s) ({report.critical_conflicts} critical) — xEdit not run."
+            ),
+        )
+        logger.info("xEdit dry-run preview: %s", change_set.summary)
+        return {
+            "status": "dry_run_preview",
+            "change_set": change_set.model_dump(mode="json"),
+        }
 
     # ------------------------------------------------------------------
     # Helpers
