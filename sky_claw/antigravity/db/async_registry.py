@@ -146,6 +146,11 @@ class AsyncModRegistry:
         self._lifecycle = lifecycle  # DatabaseLifecycleManager | None
         self._owns_conn: bool = False  # True when we opened the connection directly (no lifecycle)
         self._conn: aiosqlite.Connection | None = None
+        # P1: all coroutines share ONE aiosqlite connection, so execute+commit
+        # (and executemany+rollback) must be serialized — otherwise one writer's
+        # commit/rollback lands mid-transaction of another, committing partial
+        # state or discarding uncommitted rows (silent data loss).
+        self._write_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -314,10 +319,13 @@ class AsyncModRegistry:
         """Insert or update a mod record.  Returns the ``mod_id``."""
         if self._conn is None:
             raise RuntimeError("Database is not open")
-        async with self._conn.execute(
-            _UPSERT_MOD_SQL,
-            (nexus_id, name, version, author, category, download_url),
-        ) as cur:
+        async with (
+            self._write_lock,
+            self._conn.execute(
+                _UPSERT_MOD_SQL,
+                (nexus_id, name, version, author, category, download_url),
+            ) as cur,
+        ):
             row = await cur.fetchone()
             if row is None:
                 raise RuntimeError(f"Failed to retrieve mod_id for nexus_id={nexus_id}")
@@ -328,9 +336,12 @@ class AsyncModRegistry:
         """Update the VFS installation and activation status for a mod."""
         if self._conn is None:
             raise RuntimeError("Database is not open")
-        async with self._conn.execute(
-            "UPDATE mods SET installed = ?, enabled_in_vfs = ?, updated_at = datetime('now') WHERE nexus_id = ?",
-            (int(installed), int(enabled), nexus_id),
+        async with (
+            self._write_lock,
+            self._conn.execute(
+                "UPDATE mods SET installed = ?, enabled_in_vfs = ?, updated_at = datetime('now') WHERE nexus_id = ?",
+                (int(installed), int(enabled), nexus_id),
+            ),
         ):
             await self._conn.commit()
 
@@ -453,13 +464,14 @@ class AsyncModRegistry:
             return
         if self._conn is None:
             raise RuntimeError("Database is not open")
-        try:
-            await self._conn.executemany(_UPSERT_MOD_SQL_BATCH, rows)
-            await self._conn.commit()
-        except sqlite3.Error as exc:
-            await self._conn.rollback()
-            logger.error("Batch upsert failed, rolled back: %s", exc)
-            raise DatabaseError(f"upsert_mods_batch failed: {exc}") from exc
+        async with self._write_lock:
+            try:
+                await self._conn.executemany(_UPSERT_MOD_SQL_BATCH, rows)
+                await self._conn.commit()
+            except sqlite3.Error as exc:
+                await self._conn.rollback()
+                logger.error("Batch upsert failed, rolled back: %s", exc)
+                raise DatabaseError(f"upsert_mods_batch failed: {exc}") from exc
         logger.debug("Batch-upserted %d mod rows", len(rows))
 
     async def insert_deps_batch(
@@ -474,13 +486,14 @@ class AsyncModRegistry:
             return
         if self._conn is None:
             raise RuntimeError("Database is not open")
-        try:
-            await self._conn.executemany(_INSERT_DEP_SQL, rows)
-            await self._conn.commit()
-        except sqlite3.Error as exc:
-            await self._conn.rollback()
-            logger.error("Batch insert deps failed, rolled back: %s", exc)
-            raise DatabaseError(f"insert_deps_batch failed: {exc}") from exc
+        async with self._write_lock:
+            try:
+                await self._conn.executemany(_INSERT_DEP_SQL, rows)
+                await self._conn.commit()
+            except sqlite3.Error as exc:
+                await self._conn.rollback()
+                logger.error("Batch insert deps failed, rolled back: %s", exc)
+                raise DatabaseError(f"insert_deps_batch failed: {exc}") from exc
         logger.debug("Batch-inserted %d dependency rows", len(rows))
 
     async def log_tasks_batch(
@@ -495,11 +508,12 @@ class AsyncModRegistry:
             return
         if self._conn is None:
             raise RuntimeError("Database is not open")
-        try:
-            await self._conn.executemany(_LOG_TASK_SQL, rows)
-            await self._conn.commit()
-        except sqlite3.Error as exc:
-            await self._conn.rollback()
-            logger.error("Batch log tasks failed, rolled back: %s", exc)
-            raise DatabaseError(f"log_tasks_batch failed: {exc}") from exc
+        async with self._write_lock:
+            try:
+                await self._conn.executemany(_LOG_TASK_SQL, rows)
+                await self._conn.commit()
+            except sqlite3.Error as exc:
+                await self._conn.rollback()
+                logger.error("Batch log tasks failed, rolled back: %s", exc)
+                raise DatabaseError(f"log_tasks_batch failed: {exc}") from exc
         logger.debug("Batch-logged %d task rows", len(rows))
