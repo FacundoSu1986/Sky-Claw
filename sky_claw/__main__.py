@@ -177,6 +177,12 @@ def main(argv: list[str] | None = None) -> None:
     """Unified entry point controller."""
     args = _parse_args(argv)
 
+    # P0: SIGTERM (Unix/WSL2) must trigger graceful shutdown in EVERY mode so
+    # in-flight external processes are killed, not orphaned. In GUI mode NiceGUI/
+    # uvicorn install their own handlers once running; this covers the startup
+    # window plus the non-GUI asyncio.run loop.
+    _install_sigterm_handler()
+
     if args.mode == "gui":
         log_level = logging.DEBUG if args.verbose else logging.INFO
         setup_logging(level=log_level)
@@ -184,9 +190,6 @@ def main(argv: list[str] | None = None) -> None:
 
         run_gui_mode(args)
     else:
-        # P0: SIGTERM (Unix/WSL2) must trigger the same graceful shutdown as
-        # Ctrl+C so in-flight external processes are killed, not orphaned.
-        _install_sigterm_handler()
         with contextlib.suppress(KeyboardInterrupt):
             asyncio.run(_main(args))
 

@@ -29,7 +29,10 @@ async def _kill_and_reap(process: asyncio.subprocess.Process | None) -> None:
         return
     with contextlib.suppress(ProcessLookupError):
         process.kill()
-    with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+    # Suppress only the reap timeout — never cancellation. If shutdown cancels us
+    # mid-reap, the CancelledError must propagate (matches the canonical
+    # windows_interop._kill_and_reap); the process was already killed above.
+    with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(process.wait(), timeout=3.0)
 
 
