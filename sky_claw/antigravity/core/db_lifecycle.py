@@ -122,6 +122,9 @@ class DatabaseLifecycleManager:
         self._config = config or DatabaseLifecycleConfig()
         self._db_paths: list[Path] = list(db_paths) if db_paths else []
         self._connections: dict[str, aiosqlite.Connection] = {}
+        # Per-path write lock shared by every wrapper reusing the same managed
+        # connection (see get_write_lock) — closes the shared-connection write race.
+        self._write_locks: dict[str, asyncio.Lock] = {}
         self._registered_signals: bool = False
         # Lock para garantizar singleton por path ante llamadas concurrentes
         self._init_lock = asyncio.Lock()
@@ -514,6 +517,23 @@ class DatabaseLifecycleManager:
 
             await self._init_single(path_obj)
             return self._connections[path_str]
+
+    def get_write_lock(self, db_path: Path | str) -> asyncio.Lock:
+        """Return the write lock bound to the connection for *db_path*.
+
+        Connections are singletons per resolved path (see get_connection), so
+        every ``AsyncModRegistry`` wrapper reusing the same connection must
+        serialize writes through the SAME lock; a per-wrapper lock would leave
+        the transaction-interleaving race open. Created lazily and cached under
+        the same resolved-path key as the connection. No ``await`` between lookup
+        and insert keeps this atomic on the single-threaded event loop.
+        """
+        path_str = str((db_path if isinstance(db_path, Path) else Path(db_path)).resolve())
+        lock = self._write_locks.get(path_str)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._write_locks[path_str] = lock
+        return lock
 
     def evict_connection(self, db_path: Path | str) -> None:
         """Remove a connection from the managed pool without closing it.

@@ -181,6 +181,11 @@ class AsyncModRegistry:
             try:
                 self._conn = await self._lifecycle.get_connection(self._db_path)
                 self._conn.row_factory = aiosqlite.Row
+                # Bind the per-connection write lock (shared across wrappers that
+                # reuse this managed connection), not the per-instance default —
+                # otherwise concurrent wrappers on the same connection would not
+                # serialize and the transaction-interleaving race would remain.
+                self._write_lock = self._lifecycle.get_write_lock(self._db_path)
 
                 async with self._conn.execute("PRAGMA quick_check") as cur:
                     row = await cur.fetchone()

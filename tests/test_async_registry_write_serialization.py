@@ -41,3 +41,22 @@ async def test_concurrent_writes_are_serialized(async_registry, monkeypatch):
     assert ids == set(range(12))
     # The shared connection must never have two writers committing at once.
     assert max_in_flight == 1, f"writes overlapped on the shared connection (max={max_in_flight})"
+
+
+async def test_write_lock_is_shared_per_connection_path(tmp_path):
+    """Wrappers reusing the same managed connection must serialize through the
+    SAME lock. The lifecycle keys connections by resolved path, so its write
+    lock must be keyed identically (a per-wrapper lock would leave the race open).
+    """
+    from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleManager
+
+    mgr = DatabaseLifecycleManager()
+    db_a = tmp_path / "mods.db"
+
+    # Same path (even via a non-normalized spelling) -> same lock instance.
+    lock_a1 = mgr.get_write_lock(db_a)
+    lock_a2 = mgr.get_write_lock(tmp_path / "." / "mods.db")
+    lock_b = mgr.get_write_lock(tmp_path / "other.db")
+
+    assert lock_a1 is lock_a2
+    assert lock_a1 is not lock_b
