@@ -6,6 +6,7 @@ Implements M-03 BodySlide Runner specifications.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sys
 import time
@@ -16,6 +17,20 @@ if TYPE_CHECKING:
     import pathlib
 
 logger = logging.getLogger(__name__)
+
+
+async def _kill_and_reap(process: asyncio.subprocess.Process | None) -> None:
+    """Kill *process* and reap it so no orphaned OS process survives.
+
+    Safe with ``None`` (process never spawned) and tolerant of an already-exited
+    process. Used on timeout, cancellation, and unexpected errors.
+    """
+    if process is None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        process.kill()
+    with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+        await asyncio.wait_for(process.wait(), timeout=3.0)
 
 
 class BodySlideExecutionError(Exception):
@@ -58,6 +73,7 @@ class BodySlideRunner:
         if sys.platform == "win32":
             kwargs["creationflags"] = 0x08000000
 
+        process: asyncio.subprocess.Process | None = None
         try:
             process = await asyncio.create_subprocess_exec(
                 str(self.config.bodyslide_exe),
@@ -83,6 +99,7 @@ class BodySlideRunner:
 
         except TimeoutError:
             logger.error("BodySlide execution timed out.")
+            await _kill_and_reap(process)
             return BodySlideResult(
                 success=False,
                 return_code=-1,
@@ -90,6 +107,11 @@ class BodySlideRunner:
                 stderr="Timeout during BodySlide execution",
                 duration_seconds=time.monotonic() - start_time,
             )
+        except asyncio.CancelledError:
+            # Graceful shutdown: never leave the GUI tool running after cancel.
+            await _kill_and_reap(process)
+            raise
         except Exception as e:
             logger.error(f"BodySlide execution failed: {e}")
+            await _kill_and_reap(process)
             raise BodySlideExecutionError(f"Failed to execute BodySlide: {e}") from e

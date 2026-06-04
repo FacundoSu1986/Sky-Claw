@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import logging
 import pathlib
+import signal
 import sys
 
 # Apply Python 3.14+ polyfills before importing sky_claw submodules that could
@@ -154,6 +155,24 @@ async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> N
         await ctx.stop()
 
 
+def _install_sigterm_handler() -> None:
+    """Translate SIGTERM into ``KeyboardInterrupt`` so ``asyncio.run`` unwinds
+    gracefully — running ``AppContext.stop()`` and the runners' ``CancelledError``
+    cleanup — instead of the process being killed outright and orphaning heavy
+    external tools (DynDOLOD/xEdit/BodySlide) that hold VFS/Data handles.
+
+    Best-effort: no-ops where signals are unavailable (e.g. non-main thread).
+    On Windows this covers ``os.kill(pid, SIGTERM)``; the console-close event
+    (CTRL_CLOSE_EVENT) is not delivered as a Python signal and is out of scope.
+    """
+
+    def _raise_keyboard_interrupt(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    with contextlib.suppress(ValueError, OSError, AttributeError):
+        signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+
+
 def main(argv: list[str] | None = None) -> None:
     """Unified entry point controller."""
     args = _parse_args(argv)
@@ -165,6 +184,9 @@ def main(argv: list[str] | None = None) -> None:
 
         run_gui_mode(args)
     else:
+        # P0: SIGTERM (Unix/WSL2) must trigger the same graceful shutdown as
+        # Ctrl+C so in-flight external processes are killed, not orphaned.
+        _install_sigterm_handler()
         with contextlib.suppress(KeyboardInterrupt):
             asyncio.run(_main(args))
 

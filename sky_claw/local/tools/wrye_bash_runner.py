@@ -6,6 +6,7 @@ Implements M-01 Wrye Bash Runner specifications.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sys
 import time
@@ -16,6 +17,20 @@ if TYPE_CHECKING:
     import pathlib
 
 logger = logging.getLogger(__name__)
+
+
+async def _kill_and_reap(process: asyncio.subprocess.Process | None) -> None:
+    """Kill *process* and reap it so no orphaned OS process survives.
+
+    Safe with ``None`` (process never spawned) and tolerant of an already-exited
+    process. Used on timeout, cancellation, and unexpected errors.
+    """
+    if process is None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        process.kill()
+    with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+        await asyncio.wait_for(process.wait(), timeout=3.0)
 
 
 class WryeBashExecutionError(Exception):
@@ -62,6 +77,7 @@ class WryeBashRunner:
         if sys.platform == "win32":
             kwargs["creationflags"] = 0x08000000
 
+        process: asyncio.subprocess.Process | None = None
         try:
             process = await asyncio.create_subprocess_exec(
                 executable,
@@ -87,6 +103,7 @@ class WryeBashRunner:
 
         except TimeoutError:
             logger.error("Wrye Bash generation timed out.")
+            await _kill_and_reap(process)
             return WryeBashResult(
                 success=False,
                 return_code=-1,
@@ -94,6 +111,11 @@ class WryeBashRunner:
                 stderr="Timeout during Bashed Patch generation",
                 duration_seconds=time.monotonic() - start_time,
             )
+        except asyncio.CancelledError:
+            # Graceful shutdown: never leave the GUI tool running after cancel.
+            await _kill_and_reap(process)
+            raise
         except Exception as e:
             logger.error(f"Wrye Bash execution failed: {e}")
+            await _kill_and_reap(process)
             raise WryeBashExecutionError(f"Failed to execute Wrye Bash: {e}") from e
