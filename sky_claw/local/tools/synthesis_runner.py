@@ -12,6 +12,7 @@ Reference:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import sys
@@ -129,6 +130,21 @@ class SynthesisResult:
 # =============================================================================
 # SYNTHESIS RUNNER
 # =============================================================================
+
+
+async def _kill_and_reap(proc: asyncio.subprocess.Process | None) -> None:
+    """Kill *proc* and reap it with a bounded wait.
+
+    Reaping via ``proc.wait()`` (instead of a second unbounded ``communicate()``)
+    ensures a grandchild that inherited the pipe can never hang the orchestrator.
+    Safe with ``None`` and tolerant of an already-exited process.
+    """
+    if proc is None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+        await asyncio.wait_for(proc.wait(), timeout=3.0)
 
 
 class SynthesisRunner:
@@ -332,6 +348,7 @@ class SynthesisRunner:
         if sys.platform == "win32":
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
 
+        proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *args,
@@ -346,9 +363,12 @@ class SynthesisRunner:
         except FileNotFoundError:
             raise SynthesisNotFoundError(self._config.synthesis_exe) from None
         except TimeoutError:
-            proc.kill()
-            await proc.communicate()
+            await _kill_and_reap(proc)
             raise SynthesisTimeoutError(self._config.timeout_seconds) from None
+        except asyncio.CancelledError:
+            # Graceful shutdown: never leave Synthesis running after cancellation.
+            await _kill_and_reap(proc)
+            raise
 
         stdout_text = stdout.decode(errors="replace")
         stderr_text = stderr.decode(errors="replace")
