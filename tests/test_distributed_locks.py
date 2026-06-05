@@ -519,6 +519,73 @@ async def test_snapshot_transaction_lock_cancellation_releases_lock(
     assert target.read_text() == "pristine"
 
 
+@pytest.mark.asyncio
+async def test_force_rollback_raises_when_restore_fails(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """A failed restore during a FORCED (dry-run) rollback must surface loudly.
+
+    Otherwise a preview could leave a file mutated while reporting success —
+    silently violating the no-mutation guarantee. The lock must still release.
+    """
+    from sky_claw.antigravity.db.locks import SnapshotRollbackError
+
+    target = tmp_path / "preview.esp"
+    target.write_text("original")
+    await snapshot_manager.initialize()
+
+    async def _failing_restore(*_a: object, **_k: object) -> bool:
+        raise OSError("disk gone")
+
+    snapshot_manager.restore_snapshot = _failing_restore  # type: ignore[assignment]
+
+    with pytest.raises(SnapshotRollbackError):
+        async with SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id="preview.esp",
+            agent_id="preview-agent",
+            target_files=[target],
+            force_rollback=True,
+        ):
+            target.write_text("mutated by dry-run")
+
+    # Lock released despite the rollback failure (no orphan).
+    assert await lock_manager.get_lock_info("preview.esp") is None
+
+
+@pytest.mark.asyncio
+async def test_exception_path_restore_failure_does_not_mask_original(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """On the EXCEPTION path a failed restore is logged but must not shadow the
+    original exception (no SnapshotRollbackError masking)."""
+    target = tmp_path / "x.esp"
+    target.write_text("original")
+    await snapshot_manager.initialize()
+
+    async def _failing_restore(*_a: object, **_k: object) -> bool:
+        raise OSError("disk gone")
+
+    snapshot_manager.restore_snapshot = _failing_restore  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async with SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id="x.esp",
+            agent_id="agent",
+            target_files=[target],
+        ):
+            raise RuntimeError("boom")
+
+    assert await lock_manager.get_lock_info("x.esp") is None
+
+
 # =============================================================================
 # Concurrency test
 # =============================================================================

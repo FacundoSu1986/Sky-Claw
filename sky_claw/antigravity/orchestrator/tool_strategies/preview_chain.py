@@ -23,6 +23,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _as_bool(value: Any) -> bool:
+    """Parse a payload value into a bool, tolerating JSON/LLM-ish strings.
+
+    The dispatcher can receive string payloads without Pydantic coercion, where a
+    naive ``bool("false")`` is ``True`` — which would silently include TexGen.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return bool(value)
+
+
 class PreviewChainStrategy:
     """Dispatchable wrapper around ``ChainPreviewService.preview_chain``."""
 
@@ -43,7 +54,7 @@ class PreviewChainStrategy:
             "workflow_id": str(payload_dict.get("workflow_id", "preview")),
             "load_order_file": pathlib.Path(load_order_file),
             "dyndolod_preset": payload_dict.get("dyndolod_preset", "Medium"),
-            "run_texgen": bool(payload_dict.get("run_texgen", True)),
+            "run_texgen": _as_bool(payload_dict.get("run_texgen", True)),
         }
         target_plugin = payload_dict.get("target_plugin")
         if target_plugin:

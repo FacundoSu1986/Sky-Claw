@@ -80,3 +80,32 @@ async def test_provider_is_lazy_not_called_until_execute() -> None:
 
     await strategy.execute({"load_order_file": "/sandbox/plugins.txt"})
     assert calls["n"] == 1  # built only on dispatch
+
+
+@pytest.mark.asyncio
+async def test_execute_parses_run_texgen_falsey_strings() -> None:
+    """String payloads like "false"/"0" must parse to False, not stay truthy.
+
+    The dispatcher path can receive LLM/JSON-ish payloads without Pydantic
+    coercion, so a naive bool() would turn "false" into True.
+    """
+    for falsey in ("false", "False", "0", "no"):
+        fake_service = MagicMock()
+        fake_service.preview_chain = AsyncMock(return_value=_manifest())
+        strategy = PreviewChainStrategy(service_provider=lambda s=fake_service: s)
+        await strategy.execute({"load_order_file": "/sandbox/p.txt", "run_texgen": falsey})
+        assert fake_service.preview_chain.await_args.kwargs["run_texgen"] is False, falsey
+
+
+@pytest.mark.asyncio
+async def test_execute_run_texgen_truthy_and_default() -> None:
+    fake_service = MagicMock()
+    fake_service.preview_chain = AsyncMock(return_value=_manifest())
+    strategy = PreviewChainStrategy(service_provider=lambda: fake_service)
+
+    await strategy.execute({"load_order_file": "/sandbox/p.txt", "run_texgen": "true"})
+    assert fake_service.preview_chain.await_args.kwargs["run_texgen"] is True
+
+    # Absent → default True.
+    await strategy.execute({"load_order_file": "/sandbox/p.txt"})
+    assert fake_service.preview_chain.await_args.kwargs["run_texgen"] is True

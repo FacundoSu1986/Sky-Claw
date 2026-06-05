@@ -31,11 +31,11 @@ def build_preview_view_model(manifest: dict[str, Any]) -> dict[str, Any]:
     diff = (by_stage.get("loot") or {}).get("load_order_diff") or {}
     moves = [
         {
-            "plugin": move["plugin"],
-            "from_index": move["from_index"],
-            "to_index": move["to_index"],
+            "plugin": move.get("plugin", "?"),
+            "from_index": move.get("from_index", 0),
+            "to_index": move.get("to_index", 0),
             # 1-based positions read naturally for a human.
-            "text": f"{move['plugin']}: {move['from_index'] + 1} → {move['to_index'] + 1}",
+            "text": f"{move.get('plugin', '?')}: {move.get('from_index', 0) + 1} → {move.get('to_index', 0) + 1}",
         }
         for move in diff.get("moves", [])
     ]
