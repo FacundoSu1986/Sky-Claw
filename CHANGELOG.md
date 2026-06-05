@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Unix/WSL2 dispare la misma limpieza grácil que Ctrl+C. Cubierto por
   `test_subprocess_orphan_prevention.py` y `test_graceful_shutdown_signal.py`
   (TDD red→green).
+- **P1 — Concurrencia y resiliencia (auditoría de producción)**:
+  - **P1-1 `async_registry` race de escritura**: `AsyncModRegistry` comparte una
+    única conexión `aiosqlite` entre todas las corrutinas mientras `SyncEngine`
+    reparte writes en un `TaskGroup` (hasta 15 tareas). Como la transacción no
+    es atómica entre `await`s, el `commit`/`rollback` de un escritor podía caer
+    en mitad de la transacción de otro (commit parcial o descarte de filas no
+    committeadas = pérdida silenciosa; WAL no protege de la pérdida lógica).
+    `upsert_mod`, `set_vfs_status` y los tres writers `executemany` ahora están
+    serializados con un `asyncio.Lock`. Test: `test_async_registry_write_serialization.py`.
+  - **P1-2 deadlock latente en xEdit/Synthesis**: en timeout hacían
+    `proc.kill()` y luego `await proc.communicate()` **sin timeout**; un proceso
+    nieto que heredó el pipe lo colgaba para siempre. Ahora reapean con
+    `wait_for(proc.wait(), 3.0)` acotado y añaden handler de `CancelledError`.
+    Test: `test_runner_communicate_timeout.py`.
 - **Audit follow-up (#152, #153, #154, #155)** — cuatro hallazgos de la
   auditoría multidisciplinaria, agrupados en un único bundle TDD:
   - **#153 S-3 — `config.py` nested merge**: `Config._load_from_file`
