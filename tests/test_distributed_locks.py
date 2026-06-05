@@ -495,6 +495,8 @@ async def test_snapshot_transaction_lock_cancellation_releases_lock(
 
     await snapshot_manager.initialize()
 
+    entered = asyncio.Event()
+
     async def _run() -> None:
         async with SnapshotTransactionLock(
             lock_manager=lock_manager,
@@ -505,10 +507,13 @@ async def test_snapshot_transaction_lock_cancellation_releases_lock(
             force_rollback=True,
         ):
             target.write_text("mid-flight")
+            entered.set()  # lock held + snapshot taken + file mutated
             await asyncio.sleep(10)  # cancelled here
 
     task = asyncio.create_task(_run())
-    await asyncio.sleep(0.05)  # let the task enter the context
+    # Deterministic hand-off: wait until the task is *inside* the context instead
+    # of racing a fixed sleep(0.05), which flaked under full-suite CPU load.
+    await entered.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
