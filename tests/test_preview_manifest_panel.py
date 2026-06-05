@@ -109,4 +109,7 @@ def test_view_model_tolerates_partial_move_entry() -> None:
 
     vm = build_preview_view_model(manifest)  # must not raise KeyError
 
-    assert vm["load_order"]["moves"][0]["plugin"] == "A.esp"
+    move = vm["load_order"]["moves"][0]
+    assert move["plugin"] == "A.esp"
+    # Unknown positions render as placeholders, NOT a misleading "1 → 1".
+    assert move["text"] == "A.esp: ? → ?"
