@@ -19,6 +19,11 @@ from nicegui import ui
 from ..components import create_cta_button
 
 
+def _pos(index: int | None) -> str:
+    """1-based position string, or ``"?"`` when the index is unknown (partial payload)."""
+    return str(index + 1) if isinstance(index, int) else "?"
+
+
 def build_preview_view_model(manifest: dict[str, Any]) -> dict[str, Any]:
     """Transform a serialized :class:`PreviewManifest` into a display-ready model.
 
@@ -31,11 +36,12 @@ def build_preview_view_model(manifest: dict[str, Any]) -> dict[str, Any]:
     diff = (by_stage.get("loot") or {}).get("load_order_diff") or {}
     moves = [
         {
-            "plugin": move["plugin"],
-            "from_index": move["from_index"],
-            "to_index": move["to_index"],
-            # 1-based positions read naturally for a human.
-            "text": f"{move['plugin']}: {move['from_index'] + 1} → {move['to_index'] + 1}",
+            "plugin": move.get("plugin", "?"),
+            "from_index": move.get("from_index"),
+            "to_index": move.get("to_index"),
+            # 1-based positions; "?" when an index is unknown (partial payload), so
+            # a partial move never looks like a real "1 → 1" no-op.
+            "text": f"{move.get('plugin', '?')}: {_pos(move.get('from_index'))} → {_pos(move.get('to_index'))}",
         }
         for move in diff.get("moves", [])
     ]

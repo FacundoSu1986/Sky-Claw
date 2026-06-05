@@ -87,3 +87,29 @@ def test_view_model_handles_empty_manifest() -> None:
     assert vm["conflicts"]["total"] == 0
     assert vm["lod"] is None
     assert vm["warnings"] == []
+
+
+def test_view_model_tolerates_partial_move_entry() -> None:
+    """A move dict missing index keys must not raise (defensive .get())."""
+    manifest = {
+        "workflow_id": "x",
+        "stages": [
+            {
+                "stage": "loot",
+                "executed_for_real": True,
+                "load_order_diff": {
+                    "before": ["A.esp"],
+                    "after": ["B.esp"],
+                    "moves": [{"plugin": "A.esp"}],  # missing from_index / to_index
+                },
+            }
+        ],
+        "warnings": [],
+    }
+
+    vm = build_preview_view_model(manifest)  # must not raise KeyError
+
+    move = vm["load_order"]["moves"][0]
+    assert move["plugin"] == "A.esp"
+    # Unknown positions render as placeholders, NOT a misleading "1 → 1".
+    assert move["text"] == "A.esp: ? → ?"

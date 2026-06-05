@@ -77,6 +77,17 @@ class LockReleaseError(LockError):
     """Raised when a lock release fails (non-fatal, logged as warning)."""
 
 
+class SnapshotRollbackError(LockError):
+    """Raised when a FORCED (dry-run) rollback fails to restore a target file.
+
+    A failed restore on the ``force_rollback`` path means a file may have been
+    left mutated while the caller believes the preview was side-effect free, so
+    the no-mutation guarantee is surfaced loudly instead of being swallowed.
+    On the exception path (a real error inside the context) a failed restore is
+    only logged — it must never mask the original exception.
+    """
+
+
 # =============================================================================
 # CONSTANTS
 # =============================================================================
@@ -547,8 +558,11 @@ class SnapshotTransactionLock:
     async def _rollback_snapshots(self, *, exc_val: BaseException | None = None) -> None:
         """Restore every snapshot in reverse creation order.
 
-        Never raises: a failed restore is logged as CRITICAL (manual recovery)
-        so it cannot mask the triggering exception nor break dry-run cleanup.
+        On the EXCEPTION path (``exc_val is not None``) a failed restore is only
+        logged as CRITICAL so it cannot mask the original exception.  On a FORCED
+        (dry-run) rollback (``exc_val is None``) a failed restore raises
+        :class:`SnapshotRollbackError` — a preview must never report success
+        while leaving a file mutated.
 
         Parameters
         ----------
@@ -567,6 +581,7 @@ class SnapshotTransactionLock:
                 "exception": str(exc_val) if exc_val is not None else None,
             },
         )
+        failures: list[str] = []
         for snap in reversed(self.snapshots):
             try:
                 await self._snapshot_manager.restore_snapshot(
@@ -588,6 +603,15 @@ class SnapshotTransactionLock:
                     rollback_exc,
                     exc_info=True,
                 )
+                failures.append(snap.original_path)
+
+        # A forced (dry-run) rollback that could not restore a file means we may
+        # have left it mutated while the caller believes the preview was
+        # side-effect free — surface it instead of silently breaking the
+        # no-mutation guarantee.  On the exception path we stay silent so the
+        # original exception is never masked.
+        if failures and exc_val is None:
+            raise SnapshotRollbackError(f"force_rollback failed to restore {len(failures)} file(s): {failures}")
 
     async def _safe_release(self) -> None:
         """Release lock, swallowing errors to avoid masking the original exception."""

@@ -132,6 +132,14 @@ class ChainPreviewService:
         """
         # Zero-trust: every path must resolve inside the sandbox before use.
         safe_load_order = self._path_validator.validate(load_order_file)
+        # Fail fast if the load-order file does not pre-exist: the transaction can
+        # only snapshot existing files, so if LOOT created it during the preview we
+        # could not revert it and the no-mutation guarantee would break.
+        if not safe_load_order.is_file():
+            raise FileNotFoundError(
+                f"Load-order file does not exist: {safe_load_order}. "
+                "Preview requires it to pre-exist so it can be snapshotted and reverted."
+            )
         target = target_plugin or pathlib.Path("SkyClaw_Patch.esp")
 
         manifest_warnings: list[str] = []
@@ -235,10 +243,14 @@ class ChainPreviewService:
 
     async def _publish_preview(self, manifest: PreviewManifest) -> None:
         """Fan the manifest out to the Operations Hub via the event bus."""
+        # The Operations Hub router only enqueues ops.hitl.* events whose payload
+        # carries an `id` (or `conflict_id`); include the workflow id so the
+        # preview manifest actually reaches the HITL queue in the UI.
+        payload = {"id": manifest.workflow_id, **manifest.model_dump(mode="json")}
         await self._event_bus.publish(
             Event(
                 topic=PREVIEW_TOPIC,
-                payload=manifest.model_dump(mode="json"),
+                payload=payload,
                 source=self.AGENT_ID,
             )
         )

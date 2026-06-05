@@ -237,3 +237,62 @@ async def test_preview_chain_cancellation_leaves_no_orphan(tmp_path: pathlib.Pat
         assert await lock_mgr.get_lock_info("chain-preview") is None
     finally:
         await lock_mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_preview_chain_fails_fast_when_load_order_missing(tmp_path: pathlib.Path) -> None:
+    """If the load-order file does not exist, preview must fail fast.
+
+    Otherwise the transaction can't snapshot it, LOOT could create it, and
+    force_rollback would not remove the new file → no-mutation violated.
+    """
+    missing = tmp_path / "does_not_exist.txt"
+
+    async def loot_sort() -> LOOTResult:
+        return LOOTResult(return_code=0, sorted_plugins=[])
+
+    async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
+        return _critical_report()
+
+    event_bus = AsyncMock(spec=CoreEventBus)
+    event_bus.publish = AsyncMock()
+
+    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    try:
+        with pytest.raises(FileNotFoundError):
+            await service.preview_chain(workflow_id="wf-missing", load_order_file=missing)
+
+        # Nothing ran: no LOOT, no event, no orphan lock.
+        service._loot_runner.sort.assert_not_awaited()
+        event_bus.publish.assert_not_awaited()
+        assert await lock_mgr.get_lock_info("chain-preview") is None
+    finally:
+        await lock_mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_preview_chain_event_payload_has_id(tmp_path: pathlib.Path) -> None:
+    """The published ops.hitl.preview event must carry an `id` so the Operations
+    Hub router enqueues it (it drops HITL events lacking id/conflict_id)."""
+    plugins_txt = tmp_path / "plugins.txt"
+    plugins_txt.write_text("*A.esm\n", encoding="utf-8")
+
+    async def loot_sort() -> LOOTResult:
+        return LOOTResult(return_code=0, sorted_plugins=["A.esm"])
+
+    async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
+        return _critical_report()
+
+    event_bus = AsyncMock(spec=CoreEventBus)
+    event_bus.publish = AsyncMock()
+
+    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    try:
+        await service.preview_chain(workflow_id="wf-id", load_order_file=plugins_txt)
+
+        event_bus.publish.assert_awaited()
+        published = event_bus.publish.await_args.args[0]
+        assert published.payload.get("id") == "wf-id"
+        assert published.payload.get("workflow_id") == "wf-id"
+    finally:
+        await lock_mgr.close()
