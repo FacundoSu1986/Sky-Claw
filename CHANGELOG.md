@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **P0 — Procesos externos huérfanos (auditoría de producción)**: los runners
+  `bodyslide_runner.py`, `pandora_runner.py` y `wrye_bash_runner.py` capturaban
+  `TimeoutError` y retornaban sin matar el proceso del SO, dejando BodySlide /
+  Pandora / Wrye Bash vivos reteniendo handles sobre el VFS de MO2 y el
+  directorio `Data` de Skyrim. Ahora cada runner hace `kill()` + reap en timeout
+  y añade un handler de `asyncio.CancelledError` (mata y re-lanza) para que el
+  apagado/cancelación no filtre binarios. Además, `__main__.py` traduce SIGTERM
+  a `KeyboardInterrupt` (`_install_sigterm_handler`) para que un `kill <pid>` en
+  Unix/WSL2 dispare la misma limpieza grácil que Ctrl+C. Cubierto por
+  `test_subprocess_orphan_prevention.py` y `test_graceful_shutdown_signal.py`
+  (TDD red→green).
 - **Audit follow-up (#152, #153, #154, #155)** — cuatro hallazgos de la
   auditoría multidisciplinaria, agrupados en un único bundle TDD:
   - **#153 S-3 — `config.py` nested merge**: `Config._load_from_file`
