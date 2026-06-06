@@ -90,6 +90,7 @@ async def run_capture(
         kwargs["cwd"] = cwd
 
     proc: asyncio.subprocess.Process | None = None
+    completed = False
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -98,10 +99,11 @@ async def run_capture(
             **kwargs,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        await kill_and_reap(proc)
-        raise
-    except asyncio.CancelledError:
-        await kill_and_reap(proc)
-        raise
-    return stdout, stderr, proc.returncode if proc.returncode is not None else 0
+        completed = True
+        return stdout, stderr, proc.returncode if proc.returncode is not None else 0
+    finally:
+        # Any non-normal exit — timeout, cancellation, or an I/O/pipe error after
+        # spawn — must not leave the child running. The original exception (if
+        # any) propagates unchanged; the caller maps it to a domain error.
+        if not completed:
+            await kill_and_reap(proc)

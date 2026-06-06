@@ -13,6 +13,7 @@ from sky_claw.local.xedit.runner import (
     ScriptGenerator,
     XEditNotFoundError,
     XEditRunner,
+    XEditTimeoutError,
     XEditValidationError,
 )
 
@@ -176,7 +177,7 @@ class TestXEditRunnerExecution:
 
         with (
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            pytest.raises(RuntimeError, match="timed out"),
+            pytest.raises(XEditTimeoutError, match="timed out"),
         ):
             await runner.run_script("list_conflicts.pas", ["Skyrim.esm"])
 

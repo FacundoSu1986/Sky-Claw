@@ -82,11 +82,22 @@ async def test_run_capture_kills_and_raises_on_timeout():
     with patch("asyncio.create_subprocess_exec", return_value=proc), pytest.raises(TimeoutError):
         await asyncio.wait_for(run_capture(["tool.exe"], timeout=0.05), timeout=2.0)
     proc.kill.assert_called_once()
+    proc.wait.assert_awaited()  # killed AND reaped
 
 
 async def test_run_capture_propagates_file_not_found():
     with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError), pytest.raises(FileNotFoundError):
         await run_capture(["missing.exe"], timeout=5.0)
+
+
+async def test_run_capture_kills_on_unexpected_error():
+    # A non-timeout/non-cancel failure after spawn (e.g. a pipe/I-O error) must
+    # still kill+reap the child — otherwise runners that delegate cleanup here
+    # would orphan the external tool.
+    proc = _proc(communicate=AsyncMock(side_effect=OSError("pipe broke")))
+    with patch("asyncio.create_subprocess_exec", return_value=proc), pytest.raises(OSError, match="pipe broke"):
+        await run_capture(["tool.exe"], timeout=5.0)
+    proc.kill.assert_called_once()
 
 
 async def test_run_capture_kills_and_reraises_on_cancel():
