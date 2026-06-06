@@ -126,6 +126,25 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _install_loop_exception_handler() -> None:
+    """Route otherwise-unhandled event-loop exceptions (e.g. from fire-and-forget
+    tasks) to the structured logger instead of asyncio's default stderr handler,
+    so they flow through the JSON log + secret-redaction pipeline for root-cause
+    analysis. Best-effort: no-ops when no loop is running.
+    """
+
+    def _handler(_loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
+        exc = context.get("exception")
+        logger.error(
+            "Unhandled event-loop exception: %s",
+            context.get("message", ""),
+            exc_info=exc if isinstance(exc, BaseException) else None,
+        )
+
+    with contextlib.suppress(RuntimeError):
+        asyncio.get_running_loop().set_exception_handler(_handler)
+
+
 async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> None:
     """Asynchronous runner for CLI, Telegram, oneshot and security modes.
 
@@ -134,6 +153,7 @@ async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> N
     args = argv_or_args if isinstance(argv_or_args, argparse.Namespace) else _parse_args(argv_or_args)
     log_level = logging.DEBUG if args.verbose else logging.INFO
     setup_logging(level=log_level)
+    _install_loop_exception_handler()
 
     logger.info("Sky-Claw starting in %s mode", args.mode)
     if args.mode == "oneshot" and not args.command:

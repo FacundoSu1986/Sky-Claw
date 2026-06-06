@@ -18,6 +18,8 @@ import contextlib
 import logging
 import os
 import pathlib
+import shutil
+import stat
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +34,32 @@ if TYPE_CHECKING:
 from sky_claw.antigravity.security.path_validator import assert_safe_component
 
 logger = logging.getLogger(__name__)
+
+
+def _rmtree_force(path: pathlib.Path) -> None:
+    """Recursively delete *path*, clearing Windows read-only attributes that make
+    ``shutil.rmtree`` fail (read-only files are common in extracted mods / ``.git``).
+
+    Unlike ``rmtree(ignore_errors=True)`` this never leaves a partially-deleted
+    directory silently: it retries once after clearing read-only bits and lets a
+    still-failing delete raise.
+    """
+
+    def _clear_readonly() -> None:
+        for root, dirs, files in os.walk(path):
+            for name in (*dirs, *files):
+                p = os.path.join(root, name)
+                with contextlib.suppress(OSError):
+                    # Add the write bit, preserving existing mode (don't clobber
+                    # read/execute — clobbering a dir's mode breaks rmtree on POSIX).
+                    os.chmod(p, os.stat(p).st_mode | stat.S_IWRITE)
+
+    try:
+        shutil.rmtree(path)
+    except OSError:
+        _clear_readonly()
+        shutil.rmtree(path)
+
 
 # TASK-011: Default timeout for game-launch *spawn* verification (seconds).
 # ModOrganizer.exe is a long-running GUI process; we only verify that the
@@ -264,9 +292,7 @@ class MO2Controller:
         validated = self._validator.validate(mod_dir)
 
         if validated.exists() and validated.is_dir():
-            import shutil
-
-            await asyncio.to_thread(shutil.rmtree, validated, ignore_errors=True)
+            await asyncio.to_thread(_rmtree_force, validated)
             logger.info("Deleted mod directory: %s", validated)
 
     async def launch_game(self, profile: str = "Default") -> dict[str, Any]:

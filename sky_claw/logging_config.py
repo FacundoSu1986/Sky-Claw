@@ -164,6 +164,15 @@ class SecurityRedactionFilter(logging.Filter):
             if key not in _LOG_RECORD_RESERVED_ATTRS:
                 setattr(record, key, self._redact_value(value))
 
+        # Redact secrets that may surface in exception tracebacks. Render the
+        # traceback to text once and scrub it, so each handler's formatter reuses
+        # the redacted ``exc_text`` instead of re-rendering the raw frames (which
+        # would bypass redaction and leak tokens/passwords from exception text).
+        if record.exc_info:
+            if not record.exc_text:
+                record.exc_text = logging.Formatter().formatException(record.exc_info)
+            record.exc_text = self._redact(record.exc_text)
+
         return True
 
 
