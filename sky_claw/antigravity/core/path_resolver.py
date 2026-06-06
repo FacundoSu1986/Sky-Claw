@@ -445,3 +445,7 @@ class PathResolutionService:
     def get_wrye_bash_path(self) -> pathlib.Path | None:
         """Resuelve WRYE_BASH_PATH desde entorno validado."""
         return self.validate_env_path(os.environ.get("WRYE_BASH_PATH", ""), "WRYE_BASH_PATH")
+
+    def get_loot_exe(self) -> pathlib.Path | None:
+        """Resuelve LOOT_EXE desde entorno validado."""
+        return self.validate_env_path(os.environ.get("LOOT_EXE", ""), "LOOT_EXE")

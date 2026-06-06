@@ -208,7 +208,7 @@ def build_orchestration_dispatcher(
     # FASE 1.5.1: execute_loot_sorting is destructive → HITL gate
     dispatcher.register(
         ExecuteLootSortingStrategy(
-            tools=supervisor.tools,
+            service=supervisor._loot_service,
             interface=supervisor.interface,
         ),
         middleware=[gate],

@@ -21,6 +21,7 @@ from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 from sky_claw.antigravity.orchestrator.preview.chain_preview_service import ChainPreviewService
 from sky_claw.antigravity.security.path_validator import PathValidator
 from sky_claw.local.loot.parser import LOOTResult
+from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.xedit.conflict_analyzer import (
     ConflictReport,
     PluginConflictPair,
@@ -172,7 +173,7 @@ async def test_preview_chain_no_mutation_and_full_manifest(tmp_path: pathlib.Pat
         assert dyndolod_stage.lod_plan.preset == "High"
 
         # Lock released, manifest published for the Operations Hub.
-        assert await lock_mgr.get_lock_info("chain-preview") is None
+        assert await lock_mgr.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
         event_bus.publish.assert_awaited()
     finally:
         await lock_mgr.close()
@@ -202,7 +203,7 @@ async def test_preview_chain_reverts_when_a_stage_crashes(tmp_path: pathlib.Path
 
         # Load order restored despite LOOT having rewritten it before the crash.
         assert plugins_txt.read_bytes() == original_bytes
-        assert await lock_mgr.get_lock_info("chain-preview") is None
+        assert await lock_mgr.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
     finally:
         await lock_mgr.close()
 
@@ -234,7 +235,7 @@ async def test_preview_chain_cancellation_leaves_no_orphan(tmp_path: pathlib.Pat
             await task
 
         assert plugins_txt.read_bytes() == original_bytes
-        assert await lock_mgr.get_lock_info("chain-preview") is None
+        assert await lock_mgr.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
     finally:
         await lock_mgr.close()
 
@@ -265,7 +266,7 @@ async def test_preview_chain_fails_fast_when_load_order_missing(tmp_path: pathli
         # Nothing ran: no LOOT, no event, no orphan lock.
         service._loot_runner.sort.assert_not_awaited()
         event_bus.publish.assert_not_awaited()
-        assert await lock_mgr.get_lock_info("chain-preview") is None
+        assert await lock_mgr.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
     finally:
         await lock_mgr.close()
 
