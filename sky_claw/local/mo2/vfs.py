@@ -48,8 +48,11 @@ def _rmtree_force(path: pathlib.Path) -> None:
     def _clear_readonly() -> None:
         for root, dirs, files in os.walk(path):
             for name in (*dirs, *files):
+                p = os.path.join(root, name)
                 with contextlib.suppress(OSError):
-                    os.chmod(os.path.join(root, name), stat.S_IWRITE)
+                    # Add the write bit, preserving existing mode (don't clobber
+                    # read/execute — clobbering a dir's mode breaks rmtree on POSIX).
+                    os.chmod(p, os.stat(p).st_mode | stat.S_IWRITE)
 
     try:
         shutil.rmtree(path)
