@@ -76,8 +76,14 @@ class LOOTRunner:
         self._config = config
         self._validator = path_validator
 
-    async def sort(self) -> LOOTResult:
+    async def sort(self, *, update_masterlist: bool = False) -> LOOTResult:
         """Run LOOT CLI to sort the load order.
+
+        Args:
+            update_masterlist: When True, append ``--update-masterlist`` so LOOT
+                downloads the latest masterlist before sorting. Defaults to False
+                so read-only callers (e.g. the dry-run preview) never hit the
+                network; the real-execution service passes the user's preference.
 
         Returns:
             Parsed LOOT result with warnings, errors, and suggested order.
@@ -107,6 +113,9 @@ class LOOTRunner:
             game_path_win,
             "--sort",
         ]
+
+        if update_masterlist:
+            args.append("--update-masterlist")
 
         logger.info("Running LOOT: %s", " ".join(args))
 

@@ -1,0 +1,176 @@
+"""Tests for LootSortingService — LOOT lock coverage (audit #190).
+
+Anchors the contract that LOOT load-order sorting runs under the shared
+distributed lock (``SnapshotTransactionLock``), serializing it against
+concurrent sorts and the dry-run preview chain (which snapshots/reverts the
+same load order). Mirrors the fixture style of ``test_synthesis_service.py``.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from sky_claw.antigravity.db.locks import DistributedLockManager
+from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.local.loot.cli import LOOTTimeoutError
+from sky_claw.local.loot.parser import LOOTResult
+from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID, LootSortingService
+
+if TYPE_CHECKING:
+    import pathlib
+
+# =============================================================================
+# Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def tmp_lock_db(tmp_path: pathlib.Path) -> pathlib.Path:
+    return tmp_path / "test_locks.db"
+
+
+@pytest.fixture
+async def lock_manager(tmp_lock_db: pathlib.Path) -> DistributedLockManager:
+    mgr = DistributedLockManager(
+        tmp_lock_db,
+        default_ttl=5.0,
+        max_retries=2,
+        backoff_base=0.05,
+        backoff_max=0.2,
+    )
+    await mgr.initialize()
+    yield mgr  # type: ignore[misc]
+    await mgr.close()
+
+
+@pytest.fixture
+def snapshot_dir(tmp_path: pathlib.Path) -> pathlib.Path:
+    d = tmp_path / "snapshots"
+    d.mkdir()
+    return d
+
+
+@pytest.fixture
+async def snapshot_manager(snapshot_dir: pathlib.Path) -> FileSnapshotManager:
+    mgr = FileSnapshotManager(snapshot_dir=snapshot_dir)
+    await mgr.initialize()
+    return mgr
+
+
+def _runner_returning(result: LOOTResult | None = None) -> MagicMock:
+    runner = MagicMock()
+    runner.sort = AsyncMock(
+        return_value=result or LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm", "Update.esm"])
+    )
+    return runner
+
+
+def _make_service(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    runner: MagicMock,
+) -> LootSortingService:
+    return LootSortingService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=MagicMock(),
+        loot_runner=runner,
+    )
+
+
+# =============================================================================
+# Tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_sort_runs_and_returns_success(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    runner = _runner_returning()
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    assert result["sorted_plugins"] == ["Skyrim.esm", "Update.esm"]
+    runner.sort.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_holds_load_order_lock_during_sort(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """While LOOT sorts, the shared load-order lock is held by this service."""
+    seen: dict[str, object] = {}
+
+    async def on_sort(**_kwargs: object) -> LOOTResult:
+        seen["info"] = await lock_manager.get_lock_info(LOAD_ORDER_RESOURCE_ID)
+        return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=on_sort)
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    await svc.sort_load_order()
+
+    info = seen["info"]
+    assert info is not None
+    assert info.agent_id == LootSortingService.AGENT_ID  # type: ignore[attr-defined]
+    # Lock released once the transaction context exits.
+    assert await lock_manager.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_serializes_when_load_order_lock_already_held(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """A competing holder of the load-order lock blocks the sort (serialization)."""
+    await lock_manager.acquire_lock(LOAD_ORDER_RESOURCE_ID, "other-runner", ttl=30.0)
+    runner = _runner_returning()
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert "lock" in result["logs"].lower()
+    runner.sort.assert_not_awaited()  # never ran — lock could not be acquired
+
+
+@pytest.mark.asyncio
+async def test_releases_lock_on_runner_failure(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """If LOOT raises mid-run, the lock is still released (no leak)."""
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=LOOTTimeoutError(60))
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert await lock_manager.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_forwards_update_masterlist_flag(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    runner = _runner_returning()
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+    params = MagicMock(update_masterlist=True)
+
+    await svc.sort_load_order(params)
+
+    runner.sort.assert_awaited_once_with(update_masterlist=True)
+
+
+def test_preview_chain_shares_load_order_resource_id() -> None:
+    """The dry-run preview must lock the SAME resource id so a real sort and a
+    preview serialize (preview's force-rollback can't clobber a concurrent sort)."""
+    from sky_claw.antigravity.orchestrator.preview import chain_preview_service
+
+    assert chain_preview_service._RESOURCE_ID == LOAD_ORDER_RESOURCE_ID

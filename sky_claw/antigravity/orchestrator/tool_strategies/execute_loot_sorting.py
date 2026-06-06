@@ -20,14 +20,14 @@ from sky_claw.antigravity.core.models import HitlApprovalRequest, LootExecutionP
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.comms.interface import InterfaceAgent
-    from sky_claw.antigravity.core.windows_interop import ModdingToolsAgent
+    from sky_claw.local.tools.loot_service import LootSortingService
 
 
 class ExecuteLootSortingStrategy:
     name = "execute_loot_sorting"
 
-    def __init__(self, tools: ModdingToolsAgent, interface: InterfaceAgent) -> None:
-        self.tools = tools
+    def __init__(self, service: LootSortingService, interface: InterfaceAgent) -> None:
+        self.service = service
         self.interface = interface
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
@@ -40,7 +40,10 @@ class ExecuteLootSortingStrategy:
         decision = await self.interface.request_hitl(hitl_req)
 
         if decision == "approved":
-            return await self.tools.run_loot(params)
+            # LootSortingService acquires the load-order lock (audit #190) before
+            # delegating to LOOTRunner, serializing the real sort against
+            # concurrent sorts and the dry-run preview chain.
+            return await self.service.sort_load_order(params)
         return {
             "status": "aborted",
             "reason": "Usuario denegó la operación.",

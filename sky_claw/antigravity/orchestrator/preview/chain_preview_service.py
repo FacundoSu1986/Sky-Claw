@@ -31,6 +31,7 @@ from sky_claw.antigravity.orchestrator.preview.manifest import (
     StageChangeSet,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.tools.xedit_service import XEditPipelineService
 
 if TYPE_CHECKING:
@@ -46,8 +47,11 @@ logger = logging.getLogger("SkyClaw.ChainPreviewService")
 #: Topic the Operations Hub WebSocket fan-out forwards to the browser.
 PREVIEW_TOPIC = "ops.hitl.preview"
 
-#: Resource id for the chain-wide transaction lock.
-_RESOURCE_ID = "chain-preview"
+#: Resource id for the chain-wide transaction lock. Shared with the real LOOT
+#: sort (LootSortingService) so a dry-run preview and a real sort serialize on
+#: the load order instead of racing — the preview's force-rollback can no longer
+#: clobber a concurrent real sort (audit #190).
+_RESOURCE_ID = LOAD_ORDER_RESOURCE_ID
 
 
 class ChainPreviewService:

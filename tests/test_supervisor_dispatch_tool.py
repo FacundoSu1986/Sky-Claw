@@ -32,6 +32,8 @@ def supervisor() -> SupervisorAgent:
     sup.scraper.query_nexus = AsyncMock()
     sup.tools = MagicMock()
     sup.tools.run_loot = AsyncMock()
+    sup._loot_service = MagicMock()
+    sup._loot_service.sort_load_order = AsyncMock()
     sup.interface = MagicMock()
     sup.interface.request_hitl = AsyncMock()
     sup._synthesis_service = MagicMock()
@@ -79,9 +81,10 @@ async def test_query_mod_metadata_invalid_payload_raises(supervisor):
 
 
 async def test_execute_loot_sorting_hitl_approved(supervisor):
-    """When interface.request_hitl returns 'approved', tools.run_loot is called with LootExecutionParams."""
+    """When request_hitl returns 'approved', the lock-protected LootSortingService
+    is invoked with the validated LootExecutionParams (audit #190: LOOT lock coverage)."""
     supervisor.interface.request_hitl.return_value = "approved"
-    supervisor.tools.run_loot.return_value = {"status": "ok"}
+    supervisor._loot_service.sort_load_order.return_value = {"status": "ok"}
 
     result = await supervisor.dispatch_tool(
         "execute_loot_sorting",
@@ -93,11 +96,13 @@ async def test_execute_loot_sorting_hitl_approved(supervisor):
     assert isinstance(hitl_req, HitlApprovalRequest)
     assert hitl_req.context_data == {"profile": "MyProfile"}
 
-    supervisor.tools.run_loot.assert_awaited_once()
-    loot_params = supervisor.tools.run_loot.await_args.args[0]
+    supervisor._loot_service.sort_load_order.assert_awaited_once()
+    loot_params = supervisor._loot_service.sort_load_order.await_args.args[0]
     assert isinstance(loot_params, LootExecutionParams)
     assert loot_params.profile_name == "MyProfile"
     assert loot_params.update_masterlist is False
+    # The deprecated, lock-free path must no longer be used.
+    supervisor.tools.run_loot.assert_not_awaited()
     assert result == {"status": "ok"}
 
 
@@ -111,7 +116,7 @@ async def test_execute_loot_sorting_hitl_denied(supervisor):
     )
 
     assert result == {"status": "aborted", "reason": "Usuario denegó la operación."}
-    supervisor.tools.run_loot.assert_not_awaited()
+    supervisor._loot_service.sort_load_order.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

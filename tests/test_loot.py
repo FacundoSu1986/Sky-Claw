@@ -206,6 +206,52 @@ class TestLOOTRunner:
         assert result.success is False
         assert len(result.errors) == 1
 
+    @pytest.mark.asyncio
+    async def test_sort_appends_update_masterlist_flag(self, tmp_path: pathlib.Path) -> None:
+        """update_masterlist=True appends --update-masterlist to the LOOT args."""
+        config = self._make_config(tmp_path)
+        runner = LOOTRunner(config)
+        captured: dict[str, list[str]] = {}
+
+        async def fake_exec(*args: str, **_kwargs: object) -> AsyncMock:
+            captured["args"] = list(args)
+            proc = AsyncMock()
+            proc.communicate = AsyncMock(return_value=(b"  1. Skyrim.esm\n", b""))
+            proc.returncode = 0
+            proc.kill = MagicMock()
+            return proc
+
+        with (
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", side_effect=fake_exec),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+        ):
+            await runner.sort(update_masterlist=True)
+
+        assert "--update-masterlist" in captured["args"]
+
+    @pytest.mark.asyncio
+    async def test_sort_omits_update_masterlist_by_default(self, tmp_path: pathlib.Path) -> None:
+        """By default (e.g. dry-run preview) the masterlist flag is NOT passed."""
+        config = self._make_config(tmp_path)
+        runner = LOOTRunner(config)
+        captured: dict[str, list[str]] = {}
+
+        async def fake_exec(*args: str, **_kwargs: object) -> AsyncMock:
+            captured["args"] = list(args)
+            proc = AsyncMock()
+            proc.communicate = AsyncMock(return_value=(b"  1. Skyrim.esm\n", b""))
+            proc.returncode = 0
+            proc.kill = MagicMock()
+            return proc
+
+        with (
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", side_effect=fake_exec),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+        ):
+            await runner.sort()
+
+        assert "--update-masterlist" not in captured["args"]
+
 
 # ------------------------------------------------------------------
 # MasterlistDownloader
