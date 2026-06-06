@@ -50,6 +50,11 @@ logger = logging.getLogger(__name__)
 #: real sort and a preview serialize on the load order instead of racing.
 LOAD_ORDER_RESOURCE_ID = "load-order"
 
+#: Default LOOT timeout in seconds. Preserves the prior ``run_loot`` allowance
+#: (120s) rather than ``LOOTRunner``'s 60s default, so a slow masterlist update
+#: or a large load order completing between 60 and 120s is not falsely timed out.
+_DEFAULT_LOOT_TIMEOUT_SECONDS = 120
+
 
 class LootSortingService:
     """Run LOOT's load-order sort under the shared distributed lock.
@@ -71,17 +76,25 @@ class LootSortingService:
         path_resolver: PathResolutionService,
         path_validator: PathValidator | None = None,
         loot_exe: pathlib.Path | None = None,
+        timeout: int = _DEFAULT_LOOT_TIMEOUT_SECONDS,
         loot_runner: LOOTRunner | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
         self._path_resolver = path_resolver
         self._path_validator = path_validator
-        self._loot_exe = loot_exe or pathlib.Path("loot.exe")
+        self._loot_exe = loot_exe
+        self._timeout = timeout
         self._loot_runner = loot_runner
 
     def _ensure_loot_runner(self) -> LOOTRunner:
-        """Lazily build the LOOTRunner, resolving the game path on first use."""
+        """Lazily build the LOOTRunner, resolving the LOOT exe + game path on first use.
+
+        The LOOT executable is taken from (in order) the injected ``loot_exe``,
+        the path resolver (``LOOT_EXE``), then a bare ``loot.exe`` last resort —
+        so a configured/discovered install is honored instead of always assuming
+        ``loot.exe`` is on the cwd/PATH.
+        """
         if self._loot_runner is not None:
             return self._loot_runner
 
@@ -89,8 +102,10 @@ class LootSortingService:
         if game_path is None:
             raise LOOTNotFoundError("Cannot run LOOT: SKYRIM_PATH is not configured.")
 
+        loot_exe = self._loot_exe or self._path_resolver.get_loot_exe() or pathlib.Path("loot.exe")
+
         self._loot_runner = LOOTRunner(
-            LOOTConfig(loot_exe=self._loot_exe, game_path=game_path),
+            LOOTConfig(loot_exe=loot_exe, game_path=game_path, timeout=self._timeout),
             path_validator=self._path_validator,
         )
         return self._loot_runner

@@ -9,7 +9,7 @@ same load order). Mirrors the fixture style of ``test_synthesis_service.py``.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -166,6 +166,47 @@ async def test_forwards_update_masterlist_flag(
     await svc.sort_load_order(params)
 
     runner.sort.assert_awaited_once_with(update_masterlist=True)
+
+
+@pytest.mark.asyncio
+async def test_builds_runner_from_resolver_with_preserved_timeout(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """With no injected runner, the service resolves the LOOT exe via the path
+    resolver and preserves the prior 120s timeout (not LOOTRunner's 60s default)."""
+    loot_exe = tmp_path / "loot.exe"
+    loot_exe.touch()
+    game_path = tmp_path / "Skyrim"
+    game_path.mkdir()
+
+    resolver = MagicMock()
+    resolver.get_loot_exe = MagicMock(return_value=loot_exe)
+    resolver.get_skyrim_path = MagicMock(return_value=game_path)
+
+    captured: dict[str, object] = {}
+
+    class _FakeRunner:
+        def __init__(self, config: object, path_validator: object = None) -> None:
+            captured["config"] = config
+
+        async def sort(self, *, update_masterlist: bool = False) -> LOOTResult:
+            return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+
+    svc = LootSortingService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=resolver,
+    )
+    with patch("sky_claw.local.tools.loot_service.LOOTRunner", _FakeRunner):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    cfg = captured["config"]
+    assert cfg.loot_exe == loot_exe  # type: ignore[attr-defined]
+    assert cfg.game_path == game_path  # type: ignore[attr-defined]
+    assert cfg.timeout == 120  # type: ignore[attr-defined]
 
 
 def test_preview_chain_shares_load_order_resource_id() -> None:
