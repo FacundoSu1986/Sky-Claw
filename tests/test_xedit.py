@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -115,10 +114,7 @@ class TestXEditRunnerValidation:
         mock_proc.returncode = 0
         mock_proc.kill = MagicMock()
 
-        with patch(
-            "sky_claw.local.xedit.runner.asyncio.create_subprocess_exec",
-            return_value=mock_proc,
-        ):
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             result = await runner.run_script(
                 "list_conflicts.pas",
                 ["Skyrim.esm", "Unofficial Skyrim Special Edition Patch.esp"],
@@ -161,10 +157,7 @@ class TestXEditRunnerExecution:
         mock_proc.returncode = 0
         mock_proc.kill = MagicMock()
 
-        with patch(
-            "sky_claw.local.xedit.runner.asyncio.create_subprocess_exec",
-            return_value=mock_proc,
-        ):
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             result = await runner.run_script("list_conflicts.pas", ["Skyrim.esm"])
 
         assert result.success is True
@@ -175,21 +168,19 @@ class TestXEditRunnerExecution:
     async def test_timeout(self, tmp_path: pathlib.Path) -> None:
         runner = self._make_runner(tmp_path)
         mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        # Simulate the process exceeding its timeout; run_capture must kill+reap
+        # and surface a timeout the runner maps to XEditTimeoutError.
+        mock_proc.communicate = AsyncMock(side_effect=TimeoutError)
+        mock_proc.wait = AsyncMock(return_value=-1)
         mock_proc.kill = MagicMock()
 
         with (
-            patch(
-                "sky_claw.local.xedit.runner.asyncio.create_subprocess_exec",
-                return_value=mock_proc,
-            ),
-            patch(
-                "sky_claw.local.xedit.runner.asyncio.wait_for",
-                side_effect=asyncio.TimeoutError,
-            ),
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
             pytest.raises(RuntimeError, match="timed out"),
         ):
             await runner.run_script("list_conflicts.pas", ["Skyrim.esm"])
+
+        mock_proc.kill.assert_called_once()
 
 
 # ------------------------------------------------------------------
