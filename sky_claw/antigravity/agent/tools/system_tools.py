@@ -47,10 +47,25 @@ async def detect_conflicts(registry: Any, mo2: Any, profile: str) -> str:
     return json.dumps({"profile": profile, "conflicts": conflicts})
 
 
-async def run_loot_sort(mo2: Any, loot_runner: Any, loot_exe: pathlib.Path | None, profile: str) -> str:
+async def run_loot_sort(
+    mo2: Any,
+    loot_runner: Any,
+    loot_exe: pathlib.Path | None,
+    profile: str,
+    *,
+    lock_manager: Any | None = None,
+    snapshot_manager: Any | None = None,
+) -> str:
     """Invoke the LOOT CLI to sort the load order.
 
     Args are pre-validated by AsyncToolRegistry.execute() via ProfileParams.
+
+    Audit #190: LOOT ``--sort`` mutates the shared load order. When the
+    distributed lock is wired (production via ``app_context``), delegate to
+    :class:`LootSortingService` so this live agent path serializes on the same
+    ``load-order`` lock as the GUI orchestrator / dry-run preview — the
+    cross-process lock only protects if every mutator participates. Without a
+    lock manager (legacy callers / tests) the sort runs directly.
     """
     if loot_runner is None and loot_exe is not None:
         try:
@@ -62,6 +77,37 @@ async def run_loot_sort(mo2: Any, loot_runner: Any, loot_exe: pathlib.Path | Non
             return json.dumps({"error": str(exc)})
     if loot_runner is None:
         return json.dumps({"error": "LOOT runner is not configured"})
+
+    if lock_manager is not None and snapshot_manager is not None:
+        from sky_claw.local.tools.loot_service import LootSortingService
+
+        service = LootSortingService(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            loot_runner=loot_runner,
+        )
+        # update_masterlist=False preserves the agent tool's prior no-network
+        # behavior (ProfileParams has no masterlist flag).
+        # LootSortingService converts lock contention / LOOTNotFound / timeout to
+        # dicts; catch anything else (e.g. OSError on an unexecutable binary) so
+        # the tool keeps its "always return JSON" contract (the lock is still
+        # released by SnapshotTransactionLock.__aexit__ before the exception).
+        try:
+            res = await service.sort_load_order(update_masterlist=False)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+        out: dict[str, Any] = {
+            "profile": profile,
+            "success": res.get("success", False),
+            "return_code": res.get("return_code", -1),
+            "sorted_plugins": res.get("sorted_plugins", []),
+            "warnings": res.get("warnings", []),
+            "errors": res.get("errors", []),
+        }
+        if not out["success"] and res.get("logs"):
+            out["error"] = res["logs"]
+        return json.dumps(out)
+
     try:
         result = await loot_runner.sort()
     except Exception as exc:

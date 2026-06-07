@@ -98,6 +98,11 @@ class AsyncToolRegistry:
         wrye_bash_runner: Any | None = None,
         pandora_runner: Any | None = None,
         bodyslide_runner: Any | None = None,
+        # Audit #190: shared distributed lock so the live run_loot_sort path
+        # serializes on the same "load-order" lock as the GUI orchestrator.
+        # Both must point at the same locks.db file (.skyclaw_backups/locks.db).
+        lock_manager: Any | None = None,
+        snapshot_manager: Any | None = None,
         # TASK-013 P1: Zero-Trust egress — gateway is threaded to every tool
         # that performs outbound HTTP so NetworkGateway.authorize() is always enforced.
         gateway: Any | None = None,
@@ -126,6 +131,8 @@ class AsyncToolRegistry:
         self._wrye_bash_runner = wrye_bash_runner
         self._pandora_runner = pandora_runner
         self._bodyslide_runner = bodyslide_runner
+        self._lock_manager = lock_manager
+        self._snapshot_manager = snapshot_manager
         self._gateway = gateway
         # T2-07: copiar el set para evitar mutaciones externas que cambien
         # silenciosamente la autorizacion de un registry ya construido.
@@ -353,7 +360,14 @@ class AsyncToolRegistry:
             name="run_loot_sort",
             description="Invoke LOOT to sort load order.",
             params_model=ProfileParams,
-            fn=lambda profile: run_loot_sort(self._mo2, self._loot_runner, self._loot_exe, profile),
+            fn=lambda profile: run_loot_sort(
+                self._mo2,
+                self._loot_runner,
+                self._loot_exe,
+                profile,
+                lock_manager=self._lock_manager,
+                snapshot_manager=self._snapshot_manager,
+            ),
         )
         self._tools["run_xedit_script"] = ToolDescriptor(
             name="run_xedit_script",
