@@ -88,7 +88,14 @@ async def run_loot_sort(
         )
         # update_masterlist=False preserves the agent tool's prior no-network
         # behavior (ProfileParams has no masterlist flag).
-        res = await service.sort_load_order(update_masterlist=False)
+        # LootSortingService converts lock contention / LOOTNotFound / timeout to
+        # dicts; catch anything else (e.g. OSError on an unexecutable binary) so
+        # the tool keeps its "always return JSON" contract (the lock is still
+        # released by SnapshotTransactionLock.__aexit__ before the exception).
+        try:
+            res = await service.sort_load_order(update_masterlist=False)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
         out: dict[str, Any] = {
             "profile": profile,
             "success": res.get("success", False),

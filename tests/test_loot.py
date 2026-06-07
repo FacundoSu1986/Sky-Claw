@@ -498,3 +498,23 @@ class TestRunLootSortLock:
         result = json.loads(await run_loot_sort(MagicMock(), runner, None, "Default"))
         assert result["success"] is True
         runner.sort.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_locked_path_returns_json_on_unexpected_error(self, tmp_path: pathlib.Path) -> None:
+        """An unexpected subprocess error (e.g. OSError) is returned as JSON, not raised.
+
+        Preserves the AsyncToolRegistry.execute() contract on the locked live path
+        (matches the legacy direct path's catch-all behavior).
+        """
+        lm, sm = await self._managers(tmp_path)
+        try:
+            runner = MagicMock()
+            runner.sort = AsyncMock(side_effect=OSError("loot.exe is not executable"))
+            result = json.loads(
+                await run_loot_sort(MagicMock(), runner, None, "Default", lock_manager=lm, snapshot_manager=sm)
+            )
+            assert "error" in result
+            # Lock must still be released after the failure.
+            assert await lm.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
+        finally:
+            await lm.close()
