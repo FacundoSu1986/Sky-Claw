@@ -24,6 +24,8 @@ from sky_claw.antigravity.core.metrics_server import (
 )
 from sky_claw.antigravity.core.tracing import configure_tracing, shutdown_tracing
 from sky_claw.antigravity.db.async_registry import AsyncModRegistry
+from sky_claw.antigravity.db.locks import DistributedLockManager
+from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
 from sky_claw.antigravity.scraper.masterlist import MasterlistClient
 from sky_claw.antigravity.scraper.nexus_downloader import NexusDownloader
@@ -37,6 +39,12 @@ from sky_claw.local.auto_detect import AutoDetector
 from sky_claw.local.local_config import load as _load_legacy_json
 from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
+
+# Audit #190: shared lock-DB staging dir. MUST match the orchestrator's
+# BACKUP_STAGING_DIR (sky_claw.antigravity.orchestrator.supervisor) so the
+# agent-tools world (LLMRouter / Telegram / /api/chat) and the GUI
+# SupervisorAgent serialize LOOT load-order sorts on the SAME locks.db.
+_LOCK_STAGING_DIR = pathlib.Path(".skyclaw_backups")
 
 logger = logging.getLogger("sky_claw")
 
@@ -510,6 +518,19 @@ class AppContext:
             allowed_tools = self._resolve_allowed_tools(local_cfg)
             session_id = getattr(self._args, "session_id", None) or "default"
 
+            # Audit #190: shared distributed lock so the live run_loot_sort path
+            # serializes on the same "load-order" lock as the GUI orchestrator /
+            # dry-run preview (same locks.db file). target_files=[] in
+            # LootSortingService means the snapshot manager is never exercised
+            # here, but SnapshotTransactionLock requires the instance.
+            _LOCK_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+            (_LOCK_STAGING_DIR / "snapshots").mkdir(parents=True, exist_ok=True)
+            lock_manager = DistributedLockManager(db_path=_LOCK_STAGING_DIR / "locks.db")
+            await lock_manager.initialize()
+            self._exit_stack.push_async_callback(lock_manager.close)
+            snapshot_manager = FileSnapshotManager(snapshot_dir=_LOCK_STAGING_DIR / "snapshots")
+            await snapshot_manager.initialize()
+
             tool_registry = AsyncToolRegistry(
                 registry=self.database.registry,
                 mo2=mo2,
@@ -529,6 +550,9 @@ class AppContext:
                 ),
                 local_cfg=local_cfg,
                 config_path=config_path,
+                # Audit #190: shared lock so run_loot_sort serializes with the orchestrator.
+                lock_manager=lock_manager,
+                snapshot_manager=snapshot_manager,
                 # TASK-013 P1: thread the NetworkGateway so all egress tools enforce
                 # Zero-Trust allow-list policy (fixes Copilot review comment on PR #78).
                 gateway=self.network.gateway,

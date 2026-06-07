@@ -73,7 +73,7 @@ class LootSortingService:
         *,
         lock_manager: DistributedLockManager,
         snapshot_manager: FileSnapshotManager,
-        path_resolver: PathResolutionService,
+        path_resolver: PathResolutionService | None = None,
         path_validator: PathValidator | None = None,
         loot_exe: pathlib.Path | None = None,
         timeout: int = _DEFAULT_LOOT_TIMEOUT_SECONDS,
@@ -98,6 +98,9 @@ class LootSortingService:
         if self._loot_runner is not None:
             return self._loot_runner
 
+        if self._path_resolver is None:
+            raise LOOTNotFoundError("Cannot run LOOT: no loot_runner injected and no path_resolver configured.")
+
         game_path = self._path_resolver.get_skyrim_path()
         if game_path is None:
             raise LOOTNotFoundError("Cannot run LOOT: SKYRIM_PATH is not configured.")
@@ -110,14 +113,24 @@ class LootSortingService:
         )
         return self._loot_runner
 
-    async def sort_load_order(self, params: LootExecutionParams | None = None) -> dict[str, Any]:
+    async def sort_load_order(
+        self,
+        params: LootExecutionParams | None = None,
+        *,
+        update_masterlist: bool | None = None,
+    ) -> dict[str, Any]:
         """Sort the load order under the load-order lock.
 
         Always returns a serializable ``dict`` for known failure modes (lock
-        contention, missing LOOT, timeout) so the tool strategy can forward it
-        verbatim instead of propagating an exception.
+        contention, missing LOOT, timeout) so the caller can forward it verbatim
+        instead of propagating an exception.
+
+        ``update_masterlist`` takes precedence when given (the agent tool passes
+        ``False`` to preserve its no-network behavior); otherwise it falls back
+        to ``params.update_masterlist`` (LootExecutionParams default is True).
         """
-        update_masterlist = bool(getattr(params, "update_masterlist", True))
+        if update_masterlist is None:
+            update_masterlist = bool(getattr(params, "update_masterlist", True))
 
         try:
             runner = self._ensure_loot_runner()

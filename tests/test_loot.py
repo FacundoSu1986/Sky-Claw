@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from typing import TYPE_CHECKING
@@ -10,6 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sky_claw.antigravity.agent.tools.system_tools import run_loot_sort
+from sky_claw.antigravity.db.locks import DistributedLockManager
+from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.loot.cli import (
     LOOTConfig,
     LOOTNotFoundError,
@@ -18,6 +22,7 @@ from sky_claw.local.loot.cli import (
 )
 from sky_claw.local.loot.masterlist import MasterlistDownloader
 from sky_claw.local.loot.parser import LOOTOutputParser, LOOTResult
+from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 
 if TYPE_CHECKING:
     import pathlib
@@ -422,3 +427,74 @@ class TestLootSortTool:
             mock_runner.sort.assert_awaited_once()
         finally:
             await registry.close()
+
+
+# ------------------------------------------------------------------
+# run_loot_sort distributed-lock coverage (audit #190 — live agent path)
+# ------------------------------------------------------------------
+
+
+class TestRunLootSortLock:
+    """The agent tool serializes on the shared load-order lock when wired.
+
+    Closes the gap where the live Telegram / /api/chat LOOT path bypassed the
+    cross-process SnapshotTransactionLock that the GUI orchestrator uses.
+    """
+
+    async def _managers(self, tmp_path: pathlib.Path) -> tuple[DistributedLockManager, FileSnapshotManager]:
+        lm = DistributedLockManager(
+            tmp_path / "locks.db",
+            default_ttl=5.0,
+            max_retries=2,
+            backoff_base=0.05,
+            backoff_max=0.2,
+        )
+        await lm.initialize()
+        snap_dir = tmp_path / "snapshots"
+        snap_dir.mkdir()
+        sm = FileSnapshotManager(snapshot_dir=snap_dir)
+        await sm.initialize()
+        return lm, sm
+
+    @pytest.mark.asyncio
+    async def test_acquires_and_releases_load_order_lock(self, tmp_path: pathlib.Path) -> None:
+        lm, sm = await self._managers(tmp_path)
+        try:
+            runner = MagicMock()
+            runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+            result = json.loads(
+                await run_loot_sort(MagicMock(), runner, None, "Default", lock_manager=lm, snapshot_manager=sm)
+            )
+            assert result["success"] is True
+            assert result["sorted_plugins"] == ["Skyrim.esm"]
+            runner.sort.assert_awaited_once()
+            # Lock released after the sort completes.
+            assert await lm.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
+        finally:
+            await lm.close()
+
+    @pytest.mark.asyncio
+    async def test_serializes_when_load_order_lock_held(self, tmp_path: pathlib.Path) -> None:
+        """A LOOT sort held elsewhere (e.g. the orchestrator/preview) blocks this one."""
+        lm, sm = await self._managers(tmp_path)
+        try:
+            await lm.acquire_lock(LOAD_ORDER_RESOURCE_ID, "orchestrator", ttl=30.0)
+            runner = MagicMock()
+            runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["x.esp"]))
+            result = json.loads(
+                await run_loot_sort(MagicMock(), runner, None, "Default", lock_manager=lm, snapshot_manager=sm)
+            )
+            assert result["success"] is False
+            assert "error" in result
+            runner.sort.assert_not_awaited()  # serialized — never ran under contention
+        finally:
+            await lm.close()
+
+    @pytest.mark.asyncio
+    async def test_legacy_path_without_lock_manager(self, tmp_path: pathlib.Path) -> None:
+        """Back-compat: with no lock manager wired, the tool sorts directly (no lock)."""
+        runner = MagicMock()
+        runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+        result = json.loads(await run_loot_sort(MagicMock(), runner, None, "Default"))
+        assert result["success"] is True
+        runner.sort.assert_awaited_once()
