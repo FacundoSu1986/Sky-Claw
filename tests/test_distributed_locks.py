@@ -530,7 +530,12 @@ async def test_snapshot_transaction_lock_cancellation_releases_lock(
             await task
             raise AssertionError("task exited before entering the lock context")
         if not done:
+            # Timed out without entry: drain the cancelled task with a *bounded*
+            # await so the context manager can unwind (release the lock) and no
+            # dangling task is left for fixture teardown to trip over.
             task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(task, timeout=5.0)
             raise AssertionError("task did not enter the lock context within 5s")
     finally:
         entered_wait.cancel()
