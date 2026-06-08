@@ -7,6 +7,7 @@ exponential backoff, rollback-on-failure, and lock release safety.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import TYPE_CHECKING
 
@@ -513,7 +514,35 @@ async def test_snapshot_transaction_lock_cancellation_releases_lock(
     task = asyncio.create_task(_run())
     # Deterministic hand-off: wait until the task is *inside* the context instead
     # of racing a fixed sleep(0.05), which flaked under full-suite CPU load.
-    await entered.wait()
+    # Bounded + task-aware: if _run() fails before entered.set() (e.g. lock
+    # acquisition or snapshot creation raises), surface that failure immediately
+    # instead of hanging the suite forever on an unbounded entered.wait().
+    entered_wait = asyncio.ensure_future(entered.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {task, entered_wait},
+            timeout=5.0,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if task in done:
+            # _run() exited before signalling entry → re-raise its real failure
+            # (or fail clearly if it somehow returned without entering).
+            await task
+            raise AssertionError("task exited before entering the lock context")
+        if not done:
+            # Timed out without entry: drain the cancelled task with a *bounded*
+            # await so the context manager can unwind (release the lock) and no
+            # dangling task is left for fixture teardown to trip over.
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(task, timeout=5.0)
+            raise AssertionError("task did not enter the lock context within 5s")
+    finally:
+        entered_wait.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await entered_wait
+
+    # entered fired → the task is parked at sleep(10) inside the lock context.
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
