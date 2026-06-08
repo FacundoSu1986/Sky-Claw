@@ -182,14 +182,19 @@ class MO2Controller:
         validated = self._validator.validate(modlist_path)
 
         async with self._modlist_lock:
-            # Check if already present.
+            # Read the existing entries (and their order) so the atomic rewrite
+            # keeps them; build existing_names in the same pass. The rewrite
+            # normalizes line endings and always writes a UTF-8 BOM (not a
+            # byte-for-byte copy of the original).
+            lines: list[str] = []
             existing_names: set[str] = set()
             try:
                 async with aiofiles.open(validated, encoding="utf-8-sig") as fh:
                     async for raw_line in fh:
-                        line = raw_line.strip()
-                        if line and line[0] in ("+", "-"):
-                            existing_names.add(line[1:].strip())
+                        lines.append(raw_line)
+                        stripped = raw_line.strip()
+                        if stripped and stripped[0] in ("+", "-"):
+                            existing_names.add(stripped[1:].strip())
             except FileNotFoundError:
                 pass
 
@@ -197,8 +202,11 @@ class MO2Controller:
                 logger.info("Mod %r already in modlist for profile %r", mod_name, profile)
                 return
 
-            async with aiofiles.open(validated, mode="a", encoding="utf-8") as fh:
-                await fh.write(f"+{mod_name}\n")
+            # Atomic tmp->rename rewrite (with BOM), consistent with
+            # remove/toggle — a non-atomic append could expose a partial line to
+            # an external reader (watcher / MO2.exe) and omit the BOM (obs #192).
+            lines.append(f"+{mod_name}\n")
+            await _write_modlist_atomic(validated, lines)
 
             logger.info("Added +%s to modlist for profile %r", mod_name, profile)
 
