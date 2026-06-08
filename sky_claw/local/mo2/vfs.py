@@ -182,8 +182,10 @@ class MO2Controller:
         validated = self._validator.validate(modlist_path)
 
         async with self._modlist_lock:
-            # Read the modlist verbatim so the rewrite preserves existing content
-            # and the UTF-8 BOM; build existing_names in the same pass.
+            # Read the existing entries (and their order) so the atomic rewrite
+            # keeps them; build existing_names in the same pass. The rewrite
+            # normalizes line endings and always writes a UTF-8 BOM (not a
+            # byte-for-byte copy of the original).
             lines: list[str] = []
             existing_names: set[str] = set()
             try:
