@@ -160,6 +160,32 @@ class TestBomPreservation:
         raw = bom_controller.modlist.read_bytes()
         assert raw[:3] == b"\xef\xbb\xbf", "UTF-8 BOM must be present after toggle_mod_in_modlist rewrite"
 
+    @pytest.mark.asyncio
+    async def test_add_mod_preserves_bom(self, bom_controller: BomFixture) -> None:
+        """add_mod must rewrite atomically (BOM-preserving), like remove/toggle (obs #192)."""
+        await bom_controller.controller.add_mod_to_modlist("AddedMod-3")
+        raw = bom_controller.modlist.read_bytes()
+        assert raw[:3] == b"\xef\xbb\xbf", "UTF-8 BOM must be present after add_mod_to_modlist rewrite"
+        text = raw.decode("utf-8-sig")
+        # Existing entries preserved and the new one appended.
+        assert "+RealMod-1" in text
+        assert "-DisabledMod-2" in text
+        assert "+AddedMod-3" in text
+
+    @pytest.mark.asyncio
+    async def test_add_mod_creates_file_with_bom(self, tmp_path: pathlib.Path) -> None:
+        """A freshly created modlist must carry the UTF-8 BOM (append mode would omit it)."""
+        profile_dir = tmp_path / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        validator = PathValidator(roots=[tmp_path])
+        controller = MO2Controller(tmp_path, path_validator=validator)
+
+        await controller.add_mod_to_modlist("NewMod-1")
+
+        raw = (profile_dir / "modlist.txt").read_bytes()
+        assert raw[:3] == b"\xef\xbb\xbf", "add_mod must write the UTF-8 BOM like its siblings"
+        assert b"+NewMod-1" in raw
+
 
 class TestGameControl:
     @pytest.mark.asyncio
