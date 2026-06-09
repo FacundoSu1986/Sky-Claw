@@ -11,7 +11,6 @@ from contextlib import AsyncExitStack
 import aiohttp
 import keyring
 
-from sky_claw.antigravity.agent.animation_hub import AnimationHub, EngineConfig
 from sky_claw.antigravity.agent.providers import ProviderConfigError, create_provider
 from sky_claw.antigravity.agent.router import LLMRouter
 from sky_claw.antigravity.agent.tools_facade import AsyncToolRegistry
@@ -540,14 +539,9 @@ class AppContext:
                 downloader=self.network.downloader,
                 tools_installer=self.tools_installer,
                 install_dir=install_dir,
-                animation_hub=AnimationHub(
-                    mo2=mo2,
-                    config=EngineConfig(
-                        pandora_exe=pathlib.Path(local_cfg.pandora_exe) if local_cfg.pandora_exe else None,
-                        bodyslide_exe=pathlib.Path(local_cfg.bodyslide_exe) if local_cfg.bodyslide_exe else None,
-                    ),
-                    path_validator=validator,
-                ),
+                # Consolidation (obs #187): AnimationHub was removed. run_pandora /
+                # run_bodyslide resolve their M-02/M-03 runners lazily from
+                # local_cfg.pandora_exe / bodyslide_exe at call time.
                 local_cfg=local_cfg,
                 config_path=config_path,
                 # Audit #190: shared lock so run_loot_sort serializes with the orchestrator.

@@ -302,22 +302,6 @@ async def analyze_esp_conflicts(
     return json.dumps(result)
 
 
-async def run_pandora(animation_hub: Any) -> str:
-    """Run Pandora Behavior Engine."""
-    if animation_hub is None:
-        return json.dumps({"error": "AnimationHub is not configured."})
-    result = await animation_hub.run_pandora()
-    return json.dumps(result)
-
-
-async def run_bodyslide_batch(animation_hub: Any) -> str:
-    """Run Bodyslide in batch mode."""
-    if animation_hub is None:
-        return json.dumps({"error": "AnimationHub is not configured."})
-    result = await animation_hub.run_bodyslide_batch()
-    return json.dumps(result)
-
-
 async def uninstall_mod(mo2: Any, mod_name: str, profile: str = "Default") -> str:
     """Uninstall a mod completely by deleting its files from MO2.
 
@@ -406,10 +390,16 @@ async def generate_bashed_patch(wrye_bash_runner: Any) -> str:
     )
 
 
-async def run_pandora_behavior(pandora_runner: Any) -> str:
-    """Execute Pandora Behavior Engine in auto mode (Skyrim SE) via PandoraRunner."""
+async def run_pandora(pandora_runner: Any) -> str:
+    """Execute Pandora Behavior Engine in auto mode (Skyrim SE) via PandoraRunner.
+
+    Consolidation (obs #187): replaces the legacy AnimationHub-backed handler.
+    The runner uses the unified ``_process`` helpers (timeout + kill-tree).
+    """
     if pandora_runner is None:
-        return json.dumps({"error": "PandoraRunner is not configured. Set PANDORA_EXE."})
+        return json.dumps(
+            {"error": ("PandoraRunner is not configured. Set pandora_exe in config or install it via setup_tools.")}
+        )
     try:
         result = await pandora_runner.run_pandora()
     except Exception as exc:
@@ -425,7 +415,7 @@ async def run_pandora_behavior(pandora_runner: Any) -> str:
     )
 
 
-async def run_bodyslide_batch_direct(
+async def run_bodyslide_batch(
     bodyslide_runner: Any,
     group: str = "CBBE",
     output_path: str = "meshes",
@@ -433,9 +423,14 @@ async def run_bodyslide_batch_direct(
     """Execute BodySlide in batch mode via BodySlideRunner.
 
     Args are pre-validated by AsyncToolRegistry.execute() via BodySlideBatchParams.
+
+    Consolidation (obs #187): replaces the legacy AnimationHub-backed handler
+    that hardcoded the "CBBE Body Physics" preset; ``group`` is configurable.
     """
     if bodyslide_runner is None:
-        return json.dumps({"error": "BodySlideRunner is not configured. Set BODYSLIDE_EXE."})
+        return json.dumps(
+            {"error": ("BodySlideRunner is not configured. Set bodyslide_exe in config or install it via setup_tools.")}
+        )
     try:
         result = await bodyslide_runner.run_batch(group, output_path)
     except Exception as exc:

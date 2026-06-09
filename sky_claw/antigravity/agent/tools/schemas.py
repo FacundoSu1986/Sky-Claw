@@ -272,7 +272,7 @@ class ToggleModParams(pydantic.BaseModel):
 
 
 class BodySlideBatchParams(pydantic.BaseModel):
-    """Parameters for the ``run_bodyslide_batch`` tool (direct runner)."""
+    """Parameters for the ``run_bodyslide`` tool (M-03 BodySlideRunner)."""
 
     model_config = pydantic.ConfigDict(strict=True)
 
