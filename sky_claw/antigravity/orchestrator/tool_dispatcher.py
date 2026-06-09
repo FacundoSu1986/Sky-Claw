@@ -193,15 +193,16 @@ def build_orchestration_dispatcher(
     SupervisorAgent.dispatch_tool delegates to this dispatcher only for
     tool names that have been moved over.
 
-    FASE 1.5.1: Destructive tools are wrapped with HitlGateMiddleware
-    when a ``hitl_gate`` instance is provided. Without it, the gate
-    operates in fail-open mode (logs a warning, proceeds without approval).
+    FASE 1.5.1: Destructive tools are wrapped with HitlGateMiddleware.
+    Without a ``hitl_gate`` instance the default gate is FAIL-CLOSED:
+    destructive tools are denied (``HITLGateUnavailable``) until a
+    HITLGuard-backed gate is injected.
     """
     dispatcher = OrchestrationToolDispatcher()
 
     # FASE 1.5.1: Shared HITL gate for destructive tools.
-    # When hitl_gate is None, a default fail-open gate is created that
-    # logs warnings but proceeds — safe for migration / testing.
+    # When hitl_gate is None, the default gate denies destructive tools
+    # (fail-closed). Tests opt out explicitly via allow_unattended=True.
     gate = hitl_gate or HitlGateMiddleware()
 
     dispatcher.register(QueryModMetadataStrategy(scraper=supervisor.scraper))
@@ -223,7 +224,7 @@ def build_orchestration_dispatcher(
         ],
     )
 
-    # FASE 1.5.1: resolve_conflict_patch is destructive → HITL gate outermost
+    # FASE 1.5.1: resolve_conflict_with_patch is destructive → HITL gate outermost
     dispatcher.register(
         ResolveConflictWithPatchStrategy(service=supervisor._xedit_service),
         middleware=[

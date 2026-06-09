@@ -41,6 +41,7 @@ class HITLRequest:
     reason: str
     url: str | None = None
     detail: str = ""
+    category: str = "scope"
     _event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     decision: Decision = Decision.TIMEOUT
 
@@ -91,6 +92,7 @@ class HITLGuard:
         reason: str = "",
         url: str | None = None,
         detail: str = "",
+        category: str = "scope",
     ) -> Decision:
         """Pause execution and wait for operator authorisation.
 
@@ -109,6 +111,7 @@ class HITLGuard:
             reason=reason,
             url=url,
             detail=detail,
+            category=category,
         )
         async with self._lock:
             if request_id in self._pending:

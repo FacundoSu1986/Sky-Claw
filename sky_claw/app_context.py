@@ -415,6 +415,18 @@ class AppContext:
 
             async def _hitl_notify(req: HITLRequest) -> None:
                 if self.sender is None or operator_chat_id is None:
+                    if req.category == "tool_execution":
+                        # Fail-closed: destructive tool executions are NEVER
+                        # auto-approved without an operator channel.
+                        logger.critical(
+                            "HITL: no operator channel configured — DENYING tool "
+                            "execution %s (%s). Configure the Telegram bot and "
+                            "operator chat id to approve destructive tools.",
+                            req.request_id,
+                            req.reason,
+                        )
+                        await self.hitl.respond(req.request_id, False)
+                        return
                     logger.info("HITL auto-approving: %s", req.request_id)
                     await self.hitl.respond(req.request_id, True)
                     return

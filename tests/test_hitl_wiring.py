@@ -570,6 +570,84 @@ class TestAppContextWiring:
 
 
 # ---------------------------------------------------------------------------
+# AppContext _hitl_notify — category routing (fail-closed for tool execution)
+# ---------------------------------------------------------------------------
+
+
+class TestHITLToolExecutionCategory:
+    """The production ``_hitl_notify`` closure must never auto-approve
+    destructive tool executions when there is no operator channel.
+
+    Without sender/operator_chat_id:
+    - ``category="tool_execution"`` → DENIED (fail-closed)
+    - default category → APPROVED (legacy auto-approve for downloads preserved)
+    """
+
+    @staticmethod
+    def _make_args(tmp_path: pathlib.Path) -> Any:
+        import argparse
+
+        return argparse.Namespace(
+            db_path=tmp_path / "test.db",
+            mo2_root=tmp_path,
+            loot_exe=pathlib.Path("loot.exe"),
+            operator_chat_id=None,
+            staging_dir=tmp_path / "staging",
+            provider=None,
+            xedit_exe=None,
+            install_dir=tmp_path / "tools",
+        )
+
+    async def _boot_ctx_without_operator_channel(self, tmp_path: pathlib.Path) -> Any:
+        from sky_claw.__main__ import AppContext
+
+        clean_config = tmp_path / "config.toml"
+        clean_config.write_text("")
+
+        with (
+            patch("keyring.get_password", return_value=None),
+            patch("keyring.set_password"),
+        ):
+            ctx = AppContext(self._make_args(tmp_path))
+            await ctx.start_minimal()
+            ctx.config_path = clean_config
+            await ctx.start_full()
+        return ctx
+
+    @pytest.mark.asyncio
+    async def test_tool_execution_denied_without_operator_channel(self, tmp_path: pathlib.Path) -> None:
+        ctx = await self._boot_ctx_without_operator_channel(tmp_path)
+        try:
+            decision = await asyncio.wait_for(
+                ctx.hitl.request_approval(
+                    request_id="tool-generate_lods-abc123",
+                    reason="Tool 'generate_lods' requires human approval before execution.",
+                    category="tool_execution",
+                ),
+                timeout=5.0,
+            )
+            assert decision is Decision.DENIED
+        finally:
+            await ctx.stop()
+
+    @pytest.mark.asyncio
+    async def test_default_category_auto_approved_without_operator_channel(self, tmp_path: pathlib.Path) -> None:
+        """Pins the legacy behavior: non-tool requests keep auto-approving."""
+        ctx = await self._boot_ctx_without_operator_channel(tmp_path)
+        try:
+            decision = await asyncio.wait_for(
+                ctx.hitl.request_approval(
+                    request_id="download-42-7",
+                    reason="Download mod X",
+                ),
+                timeout=5.0,
+            )
+            assert decision is Decision.APPROVED
+        finally:
+            await ctx.stop()
+
+
+# ---------------------------------------------------------------------------
 # Argparse — new flags
 # ---------------------------------------------------------------------------
 
