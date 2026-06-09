@@ -28,6 +28,7 @@ def _make_registry(
     local_cfg: object | None = None,
     pandora_runner: object | None = None,
     bodyslide_runner: object | None = None,
+    path_validator: object | None = None,
 ) -> AsyncToolRegistry:
     mo2 = MagicMock()
     mo2.root = tmp_path
@@ -39,6 +40,7 @@ def _make_registry(
         local_cfg=local_cfg,
         pandora_runner=pandora_runner,
         bodyslide_runner=bodyslide_runner,
+        path_validator=path_validator,
     )
 
 
@@ -113,6 +115,95 @@ def test_resolver_builds_runner_from_local_cfg(tmp_path: pathlib.Path) -> None:
     assert runner.config.game_path == tmp_path  # mo2.root
 
 
+# ---------------------------------------------------------------------------
+# Sandbox validation of config-supplied exe paths (PR #171 review: Codex P1)
+# ---------------------------------------------------------------------------
+
+
+def test_resolver_validates_exe_against_sandbox(tmp_path: pathlib.Path) -> None:
+    """The config-derived exe must pass PathValidator before a runner is built."""
+    exe = tmp_path / "Pandora.exe"
+    exe.touch()
+    cfg = SimpleNamespace(pandora_exe=str(exe), bodyslide_exe=None)
+    validator = MagicMock()
+    validator.validate = MagicMock(return_value=exe)
+    reg = _make_registry(tmp_path=tmp_path, local_cfg=cfg, path_validator=validator)
+
+    runner = reg._resolve_pandora_runner()
+
+    assert isinstance(runner, PandoraRunner)
+    validator.validate.assert_called_once_with(exe)
+
+
+def test_resolver_rejects_exe_outside_sandbox(tmp_path: pathlib.Path) -> None:
+    """A validator rejection (e.g. symlink escape) must block the launch."""
+    exe = tmp_path / "evil.exe"
+    exe.touch()
+    cfg = SimpleNamespace(pandora_exe=str(exe), bodyslide_exe=str(exe))
+    validator = MagicMock()
+    validator.validate = MagicMock(side_effect=ValueError("outside sandbox"))
+    reg = _make_registry(tmp_path=tmp_path, local_cfg=cfg, path_validator=validator)
+
+    assert reg._resolve_pandora_runner() is None
+    assert reg._resolve_bodyslide_runner() is None
+
+
+@pytest.mark.asyncio
+async def test_rejected_exe_surfaces_as_not_configured(tmp_path: pathlib.Path) -> None:
+    """End-to-end: a sandbox-rejected exe yields the structured error JSON."""
+    exe = tmp_path / "evil.exe"
+    exe.touch()
+    cfg = SimpleNamespace(pandora_exe=str(exe), bodyslide_exe=None)
+    validator = MagicMock()
+    validator.validate = MagicMock(side_effect=ValueError("outside sandbox"))
+    reg = _make_registry(tmp_path=tmp_path, local_cfg=cfg, path_validator=validator)
+
+    result = json.loads(await reg.tools["run_pandora"].fn())
+
+    assert "not configured" in result["error"]
+
+
+def test_injected_runner_skips_config_validation(tmp_path: pathlib.Path) -> None:
+    """Constructor-injected runners are code-controlled DI — trusted as-is."""
+    injected = MagicMock(spec=PandoraRunner)
+    validator = MagicMock()
+    reg = _make_registry(tmp_path=tmp_path, pandora_runner=injected, path_validator=validator)
+
+    assert reg._resolve_pandora_runner() is injected
+    validator.validate.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# game_path resolution (PR #171 review: Codex P2)
+# ---------------------------------------------------------------------------
+
+
+def test_game_path_prefers_skyrim_path(tmp_path: pathlib.Path) -> None:
+    """Portable-MO2 setups: cwd must be the game dir, not mo2.root."""
+    skyrim = tmp_path / "skyrim"
+    skyrim.mkdir()
+    exe = tmp_path / "BodySlide.exe"
+    exe.touch()
+    cfg = SimpleNamespace(pandora_exe=None, bodyslide_exe=str(exe), skyrim_path=str(skyrim))
+    reg = _make_registry(tmp_path=tmp_path, local_cfg=cfg)
+
+    runner = reg._resolve_bodyslide_runner()
+
+    assert isinstance(runner, BodySlideRunner)
+    assert runner.config.game_path == skyrim
+
+
+def test_game_path_falls_back_to_mo2_root(tmp_path: pathlib.Path) -> None:
+    exe = tmp_path / "BodySlide.exe"
+    exe.touch()
+    cfg = SimpleNamespace(pandora_exe=None, bodyslide_exe=str(exe), skyrim_path=None)
+    reg = _make_registry(tmp_path=tmp_path, local_cfg=cfg)
+
+    runner = reg._resolve_bodyslide_runner()
+
+    assert runner.config.game_path == tmp_path  # mo2.root
+
+
 def test_resolver_picks_up_same_session_install(tmp_path: pathlib.Path) -> None:
     """setup_tools persists the exe path into local_cfg; because resolution
     happens at call time, the very next run_bodyslide call must see it."""
@@ -167,3 +258,38 @@ async def test_unconfigured_tools_return_structured_error(tmp_path: pathlib.Path
 
     assert "not configured" in pandora["error"]
     assert "not configured" in bodyslide["error"]
+
+
+# ---------------------------------------------------------------------------
+# output_path sandboxing in the schema (PR #171 review: Codex P1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "../outside",
+        "..\\outside",
+        "out/../../outside",
+        "C:\\evil",
+        "C:evil",  # drive-relative
+        "\\\\srv\\share",  # UNC
+        "/abs/posix",
+        "\\abs\\rootless",
+    ],
+)
+def test_bodyslide_output_path_rejects_escapes(bad_path: str) -> None:
+    """output_path feeds BodySlide.exe -o; absolute/traversal forms must fail
+    central validation (TASK-011: execute() validates via params_model)."""
+    from sky_claw.antigravity.agent.tools.schemas import BodySlideBatchParams
+
+    with pytest.raises(ValueError):
+        BodySlideBatchParams(output_path=bad_path)
+
+
+@pytest.mark.parametrize("good_path", ["meshes", "out/meshes", "calientetools\\output"])
+def test_bodyslide_output_path_accepts_relative(good_path: str) -> None:
+    from sky_claw.antigravity.agent.tools.schemas import BodySlideBatchParams
+
+    params = BodySlideBatchParams(output_path=good_path)
+    assert params.output_path == good_path

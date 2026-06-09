@@ -541,7 +541,9 @@ class AppContext:
                 install_dir=install_dir,
                 # Consolidation (obs #187): AnimationHub was removed. run_pandora /
                 # run_bodyslide resolve their M-02/M-03 runners lazily from
-                # local_cfg.pandora_exe / bodyslide_exe at call time.
+                # local_cfg.pandora_exe / bodyslide_exe at call time. The
+                # validator sandboxes those config-supplied exe paths (PR #171).
+                path_validator=validator,
                 local_cfg=local_cfg,
                 config_path=config_path,
                 # Audit #190: shared lock so run_loot_sort serializes with the orchestrator.
