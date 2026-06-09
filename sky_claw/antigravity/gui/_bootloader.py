@@ -135,7 +135,7 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
         ctx = await start_full(args)
         _runtime["ctx"] = ctx
 
-        supervisor = SupervisorAgent()
+        supervisor = SupervisorAgent(hitl_guard=ctx.hitl)
         _runtime["supervisor"] = supervisor
         ctx._track_task(supervisor.start(), name="supervisor-daemon")
         ctx._track_task(_gui_logic_loop(ctx), name="gui-logic-loop")

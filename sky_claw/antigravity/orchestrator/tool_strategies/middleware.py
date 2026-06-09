@@ -19,12 +19,12 @@ consistent approval layer regardless of the strategy's internal logic.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from typing import Any
 
 from sky_claw.antigravity.orchestrator.tool_strategies.base import NextCall, ToolStrategy
+from sky_claw.antigravity.security.hitl import Decision, HITLGuard
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,10 @@ DESTRUCTIVE_TOOL_PATTERNS: frozenset[str] = frozenset(
         "execute_loot_sorting",
         "generate_bashed_patch",
         "generate_lods",
-        "resolve_conflict_patch",
+        # Nombre real de la strategy (resolve_conflict_patch.py define
+        # name="resolve_conflict_with_patch"); el alias viejo sin "_with"
+        # nunca matcheó y dejaba la tool de xEdit SIN gate HITL.
+        "resolve_conflict_with_patch",
     }
 )
 
@@ -111,31 +114,37 @@ class DictResultGuardMiddleware:
 class HitlGateMiddleware:
     """Requires human approval before executing destructive tools.
 
-    This middleware intercepts tool execution and emits an approval request
-    via the provided ``notify_fn`` (typically a WebSocket event to the
-    frontend). Execution is blocked until the human approves, denies, or
-    the timeout expires.
+    Backed by :class:`~sky_claw.antigravity.security.hitl.HITLGuard` — the
+    project's single approval backbone. The guard delivers the prompt to
+    the operator (Telegram inline buttons / ``/approve <id>`` commands)
+    and this middleware blocks until the human approves, denies, or the
+    guard's timeout expires (fail-secure auto-deny).
+
+    Fail-closed: without a guard, destructive tools are DENIED with
+    ``HITLGateUnavailable``. The only bypass is ``allow_unattended=True``
+    (explicit opt-in for tests / headless automation; CRITICAL-logged).
 
     Args:
-        notify_fn: Async callable that sends the approval request to the
-            operator. Receives a dict with ``tool_name``, ``reason``, and
-            ``timeout`` keys.
-        timeout: Seconds to wait for operator response before auto-denying.
+        hitl_guard: Shared ``HITLGuard`` used to request operator approval.
+            Requests are tagged ``category="tool_execution"`` so notify
+            closures can distinguish them from download/scope approvals.
         destructive_tools: Set of tool names that require approval. Defaults
             to ``DESTRUCTIVE_TOOL_PATTERNS``.
+        allow_unattended: When True and no guard is configured, destructive
+            tools proceed without approval (CRITICAL-logged). Never enable
+            in production.
     """
 
     def __init__(
         self,
-        notify_fn: Any | None = None,
-        timeout: float = 120.0,
+        hitl_guard: HITLGuard | None = None,
+        *,
         destructive_tools: frozenset[str] | None = None,
+        allow_unattended: bool = False,
     ) -> None:
-        self._notify_fn = notify_fn
-        self._timeout = timeout
+        self._guard = hitl_guard
         self._destructive_tools = destructive_tools or DESTRUCTIVE_TOOL_PATTERNS
-        self._pending: dict[str, asyncio.Event] = {}
-        self._decisions: dict[str, bool] = {}
+        self._allow_unattended = allow_unattended
 
     async def __call__(
         self,
@@ -143,70 +152,62 @@ class HitlGateMiddleware:
         payload_dict: dict[str, Any],
         next_call: NextCall,
     ) -> dict[str, Any]:
-        """Check if tool requires approval; if so, wait for human decision."""
+        """Check if tool requires approval; if so, wait for the human decision."""
         if strategy.name not in self._destructive_tools:
             return await next_call()
 
-        logger.info(
-            "HitlGateMiddleware: tool '%s' requires human approval.",
-            strategy.name,
-        )
-
-        # If no notify_fn is configured, log warning and proceed (fail-open
-        # for backward compatibility during migration).
-        if self._notify_fn is None:
-            logger.warning(
-                "HitlGateMiddleware: no notify_fn configured — "
-                "proceeding without human approval for '%s'. "
-                "Configure notify_fn for production use.",
+        if self._guard is None:
+            if self._allow_unattended:
+                logger.critical(
+                    "HitlGateMiddleware: allow_unattended=True — executing "
+                    "destructive tool '%s' WITHOUT human approval.",
+                    strategy.name,
+                )
+                return await next_call()
+            logger.critical(
+                "HitlGateMiddleware: no HITLGuard configured — DENYING "
+                "destructive tool '%s' (fail-closed). Inject AppContext.hitl "
+                "to enable operator approval.",
                 strategy.name,
             )
-            return await next_call()
-
-        # Send approval request — usar request_id único para evitar colisiones cuando
-        # dos invocaciones concurrentes de la MISMA tool destructiva con payloads
-        # distintos llegan al gate (FASE 1.5.4 hardening: HITL key collision fix).
-        request_id = uuid.uuid4().hex
-        request_event = asyncio.Event()
-        self._pending[request_id] = request_event
-
-        await self._notify_fn(
-            {
-                "request_id": request_id,
-                "tool_name": strategy.name,
-                "reason": f"Tool '{strategy.name}' requires human approval before execution.",
-                "timeout": self._timeout,
+            return {
+                "status": "error",
+                "reason": "HITLGateUnavailable",
+                "details": (
+                    f"No HITL guard configured; destructive tool '{strategy.name}' denied by fail-closed policy."
+                ),
             }
+
+        # request_id único para evitar colisiones cuando dos invocaciones
+        # concurrentes de la MISMA tool destructiva con payloads distintos
+        # llegan al gate (FASE 1.5.4 hardening: HITL key collision fix).
+        request_id = f"tool-{strategy.name}-{uuid.uuid4().hex[:12]}"
+        logger.info(
+            "HitlGateMiddleware: tool '%s' requires human approval (request_id=%s).",
+            strategy.name,
+            request_id,
         )
 
-        # Wait for decision or timeout
-        try:
-            await asyncio.wait_for(request_event.wait(), timeout=self._timeout)
-        except TimeoutError:
+        decision = await self._guard.request_approval(
+            request_id=request_id,
+            reason=f"Tool '{strategy.name}' requires human approval before execution.",
+            detail=f"payload keys: {sorted(payload_dict)}",
+            category="tool_execution",
+        )
+
+        if decision is not Decision.APPROVED:
             logger.warning(
-                "HitlGateMiddleware: approval timed out for '%s' (request_id=%s) — auto-denying.",
+                "HitlGateMiddleware: tool '%s' NOT approved (decision=%s, request_id=%s).",
                 strategy.name,
+                decision.value,
                 request_id,
             )
             return {
                 "status": "error",
-                "reason": "HITLApprovalTimeout",
-                "details": f"Human approval timed out for '{strategy.name}' after {self._timeout}s.",
-            }
-        finally:
-            self._pending.pop(request_id, None)
-
-        # Check decision
-        approved = self._decisions.pop(request_id, False)
-        if not approved:
-            logger.info(
-                "HitlGateMiddleware: tool '%s' DENIED by human operator.",
-                strategy.name,
-            )
-            return {
-                "status": "error",
                 "reason": "HITLApprovalDenied",
-                "details": f"Human operator denied execution of '{strategy.name}'.",
+                "details": (
+                    f"Human approval for '{strategy.name}' resolved as '{decision.value}' (request_id={request_id})."
+                ),
             }
 
         logger.info(
@@ -214,20 +215,6 @@ class HitlGateMiddleware:
             strategy.name,
         )
         return await next_call()
-
-    def resolve(self, request_id: str, approved: bool) -> None:
-        """Called by the HITL handler when the human makes a decision.
-
-        Args:
-            request_id: Unique ID of the pending request (received in
-                ``notify_fn`` payload as ``"request_id"``). Distinguishes
-                concurrent invocations of the same destructive tool.
-            approved: True if the human approved, False if denied.
-        """
-        self._decisions[request_id] = approved
-        event = self._pending.get(request_id)
-        if event:
-            event.set()
 
 
 # ---------------------------------------------------------------------------

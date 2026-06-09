@@ -25,9 +25,11 @@ from sky_claw.antigravity.orchestrator.state_graph import (
 )
 from sky_claw.antigravity.orchestrator.telemetry_daemon import TelemetryDaemon
 from sky_claw.antigravity.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+from sky_claw.antigravity.orchestrator.tool_strategies.middleware import HitlGateMiddleware
 from sky_claw.antigravity.orchestrator.watcher_daemon import WatcherDaemon
 from sky_claw.antigravity.orchestrator.ws_event_streamer import LangGraphEventStreamer
 from sky_claw.antigravity.scraper.scraper_agent import ScraperAgent
+from sky_claw.antigravity.security.hitl import HITLGuard
 from sky_claw.antigravity.security.network_gateway import NetworkGateway
 from sky_claw.local.assets import AssetConflictDetector, AssetConflictReport
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
@@ -49,7 +51,12 @@ BACKUP_STAGING_DIR = ".skyclaw_backups/"
 
 
 class SupervisorAgent:
-    def __init__(self, profile_name: str = "Default"):
+    def __init__(
+        self,
+        profile_name: str = "Default",
+        *,
+        hitl_guard: HITLGuard | None = None,
+    ):
         self.db = DatabaseAgent()
         self.gateway = NetworkGateway()
         self.scraper = ScraperAgent(self.db, gateway=self.gateway)
@@ -133,7 +140,16 @@ class SupervisorAgent:
         # Strangler Fig: dispatcher para herramientas migradas. Las branches del match/case
         # delegan progresivamente a este dispatcher. Se construye al final del __init__
         # para garantizar que todos los services y agents ya están listos.
-        self._tool_dispatcher = build_orchestration_dispatcher(self)
+        # Fail-closed: sin hitl_guard, las tools destructivas se DENIEGAN.
+        if hitl_guard is None:
+            logger.warning(
+                "SupervisorAgent sin hitl_guard — las tools destructivas serán "
+                "DENEGADAS (fail-closed). Inyectar AppContext.hitl para habilitar HITL."
+            )
+        self._tool_dispatcher = build_orchestration_dispatcher(
+            self,
+            hitl_gate=HitlGateMiddleware(hitl_guard=hitl_guard),
+        )
 
         # M-1 FIX: Wire StateGraphIntegration para activar cortacircuitos cognitivo y HITL.
         # Los callbacks se registran en el grafo y los nodos los invocan vía wrapper.

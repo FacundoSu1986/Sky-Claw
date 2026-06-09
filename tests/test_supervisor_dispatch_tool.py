@@ -21,6 +21,7 @@ from sky_claw.antigravity.core.models import HitlApprovalRequest, LootExecutionP
 from sky_claw.antigravity.core.schemas import ScrapingQuery
 from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
 from sky_claw.antigravity.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+from sky_claw.antigravity.orchestrator.tool_strategies.middleware import HitlGateMiddleware
 from sky_claw.local.xedit.conflict_analyzer import ConflictReport
 
 
@@ -43,7 +44,12 @@ def supervisor() -> SupervisorAgent:
     sup._dyndolod_service = MagicMock()
     sup._dyndolod_service.execute = AsyncMock()
     sup.profile_name = "TestProfile"
-    sup._tool_dispatcher = build_orchestration_dispatcher(sup)
+    # allow_unattended: estos tests caracterizan el routing del dispatcher,
+    # no la gate HITL (cubierta en test_hitl_destructive_gate.py).
+    sup._tool_dispatcher = build_orchestration_dispatcher(
+        sup,
+        hitl_gate=HitlGateMiddleware(allow_unattended=True),
+    )
     return sup
 
 
