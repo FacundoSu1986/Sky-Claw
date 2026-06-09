@@ -21,6 +21,8 @@ from typing import Any
 
 from sky_claw.config import SystemPaths
 from sky_claw.local.loot.cli import LOOTConfig, LOOTRunner
+from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunner
+from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
 
 from .db_tools import install_mod, search_mod
 from .descriptor import ToolDescriptor
@@ -54,10 +56,8 @@ from .system_tools import (
     preview_mod_installer,
     resolve_fomod,
     run_bodyslide_batch,
-    run_bodyslide_batch_direct,
     run_loot_sort,
     run_pandora,
-    run_pandora_behavior,
     run_xedit_script,
     toggle_mod,
     uninstall_mod,
@@ -92,12 +92,14 @@ class AsyncToolRegistry:
         fomod_installer: Any | None = None,
         tools_installer: Any | None = None,
         install_dir: pathlib.Path | None = None,
-        animation_hub: Any | None = None,
         local_cfg: Any | None = None,
         config_path: pathlib.Path | None = None,
         wrye_bash_runner: Any | None = None,
         pandora_runner: Any | None = None,
         bodyslide_runner: Any | None = None,
+        # PR #171 review (Codex P1 / Copilot): sandbox guard for tool exe paths
+        # read from user-editable local_cfg by the lazy runner resolvers.
+        path_validator: Any | None = None,
         # Audit #190: shared distributed lock so the live run_loot_sort path
         # serializes on the same "load-order" lock as the GUI orchestrator.
         # Both must point at the same locks.db file (.skyclaw_backups/locks.db).
@@ -125,12 +127,12 @@ class AsyncToolRegistry:
         self._fomod_installer = fomod_installer
         self._tools_installer = tools_installer
         self._install_dir = install_dir or SystemPaths.modding_root()
-        self._animation_hub = animation_hub
         self._local_cfg = local_cfg
         self._config_path = config_path
         self._wrye_bash_runner = wrye_bash_runner
         self._pandora_runner = pandora_runner
         self._bodyslide_runner = bodyslide_runner
+        self._path_validator = path_validator
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
         self._gateway = gateway
@@ -235,6 +237,78 @@ class AsyncToolRegistry:
             file_id,
             gateway=self._resolve_gateway(),
         )
+
+    def _validated_tool_exe(self, exe_str: str, tool: str) -> pathlib.Path | None:
+        """Validate a config-supplied tool executable against the sandbox.
+
+        PR #171 review (Codex P1 / Copilot): ``local_cfg`` is user-editable
+        JSON, so a configured exe path must pass PathValidator (including
+        strict symlink checks) before the agent will launch it — the same
+        guard the removed AnimationHub enforced. Returns None (the tool then
+        reports "not configured") when the path is missing or rejected.
+        """
+        exe = pathlib.Path(exe_str)
+        if not exe.exists():
+            return None
+        if self._path_validator is not None:
+            try:
+                exe = self._path_validator.validate(exe)
+            except Exception as exc:
+                logger.warning("%s exe rejected by sandbox validation: %s (%s)", tool, exe, exc)
+                return None
+        return exe
+
+    def _runner_game_path(self) -> pathlib.Path:
+        """Working directory for the M-02/M-03 runners.
+
+        PR #171 review (Codex P2): in portable-MO2 setups ``mo2.root`` is NOT
+        the game directory; prefer ``local_cfg.skyrim_path`` (already resolved
+        by AppContext) so relative outputs land in the game context the
+        runners are spec'd for. Falls back to ``mo2.root``.
+        """
+        skyrim_str = getattr(self._local_cfg, "skyrim_path", None) if self._local_cfg else None
+        if skyrim_str:
+            skyrim = pathlib.Path(skyrim_str)
+            if skyrim.exists():
+                return skyrim
+        return self._mo2.root
+
+    def _resolve_pandora_runner(self) -> Any:
+        """Resolve the PandoraRunner: DI instance first, else lazy from local_cfg.
+
+        Consolidation (obs #187): mirrors the ``_run_loot_sort`` lazy-init
+        pattern. Reading ``local_cfg`` at call time (instead of caching at
+        construction) means a ``setup_tools`` install in the same session is
+        picked up by the next ``run_pandora`` call — no mutable-ref plumbing.
+
+        A constructor-injected runner is trusted (code-controlled DI, used by
+        tests); only the config-derived path goes through sandbox validation.
+        """
+        if self._pandora_runner is not None:
+            return self._pandora_runner
+        exe_str = getattr(self._local_cfg, "pandora_exe", None) if self._local_cfg else None
+        if not exe_str:
+            return None
+        exe = self._validated_tool_exe(exe_str, "pandora")
+        if exe is None:
+            return None
+        return PandoraRunner(PandoraConfig(pandora_exe=exe, game_path=self._runner_game_path()))
+
+    def _resolve_bodyslide_runner(self) -> Any:
+        """Resolve the BodySlideRunner: DI instance first, else lazy from local_cfg.
+
+        Same call-time resolution and trust rationale as
+        :meth:`_resolve_pandora_runner`.
+        """
+        if self._bodyslide_runner is not None:
+            return self._bodyslide_runner
+        exe_str = getattr(self._local_cfg, "bodyslide_exe", None) if self._local_cfg else None
+        if not exe_str:
+            return None
+        exe = self._validated_tool_exe(exe_str, "bodyslide")
+        if exe is None:
+            return None
+        return BodySlideRunner(BodySlideConfig(bodyslide_exe=exe, game_path=self._runner_game_path()))
 
     async def _run_loot_sort(self, profile: str) -> str:
         """Run LOOT sort, auto-initializing LOOTRunner from loot_exe if needed."""
@@ -401,19 +475,25 @@ class AsyncToolRegistry:
             params_model=AnalyzeConflictsParams,
             fn=lambda profile, plugins=None: analyze_esp_conflicts(self._mo2, self._xedit_runner, profile, plugins),
         )
+        # Consolidation (obs #187): run_pandora / run_bodyslide are backed by the
+        # M-02/M-03 runners (unified _process subprocess handling). The duplicate
+        # run_pandora_behavior / run_bodyslide_batch tool names were removed —
+        # they were never wired in production and always returned "not configured".
         self._tools["run_pandora"] = ToolDescriptor(
             name="run_pandora",
-            description="Execute Pandora Behavior Engine.",
+            description="Execute Pandora Behavior Engine (animation patcher) in auto mode for Skyrim SE.",
             params_model=None,
-            fn=lambda: run_pandora(self._animation_hub),
+            fn=lambda: run_pandora(self._resolve_pandora_runner()),
         )
         self._tools["run_bodyslide"] = ToolDescriptor(
             name="run_bodyslide",
-            description="Execute BodySlide in batch mode.",
-            params_model=None,
-            fn=lambda: run_bodyslide_batch(self._animation_hub),
+            description="Execute BodySlide in batch mode for a preset group.",
+            params_model=BodySlideBatchParams,
+            fn=lambda group="CBBE", output_path="meshes": run_bodyslide_batch(
+                self._resolve_bodyslide_runner(), group, output_path
+            ),
         )
-        # FASE 6: Direct runner tools (bypass animation_hub)
+        # FASE 6: Direct runner tools
         self._tools["generate_bashed_patch"] = ToolDescriptor(
             name="generate_bashed_patch",
             description=(
@@ -422,20 +502,6 @@ class AsyncToolRegistry:
             ),
             params_model=None,
             fn=lambda: generate_bashed_patch(self._wrye_bash_runner),
-        )
-        self._tools["run_pandora_behavior"] = ToolDescriptor(
-            name="run_pandora_behavior",
-            description="Execute Pandora Behavior Engine (animation patcher) in auto mode for Skyrim SE.",
-            params_model=None,
-            fn=lambda: run_pandora_behavior(self._pandora_runner),
-        )
-        self._tools["run_bodyslide_batch"] = ToolDescriptor(
-            name="run_bodyslide_batch",
-            description="Execute BodySlide in batch mode for a preset group.",
-            params_model=BodySlideBatchParams,
-            fn=lambda group="CBBE", output_path="meshes": run_bodyslide_batch_direct(
-                self._bodyslide_runner, group, output_path
-            ),
         )
         self._tools["uninstall_mod"] = ToolDescriptor(
             name="uninstall_mod",
@@ -471,7 +537,6 @@ class AsyncToolRegistry:
                 self._install_dir,
                 self._local_cfg,
                 self._config_path,
-                self._animation_hub,
                 self._downloader,
                 [self._loot_exe],
                 tools,
@@ -513,10 +578,8 @@ __all__ = [
     "preview_mod_installer",
     "resolve_fomod",
     "run_bodyslide_batch",
-    "run_bodyslide_batch_direct",
     "run_loot_sort",
     "run_pandora",
-    "run_pandora_behavior",
     "run_xedit_script",
     "search_mod",
     "setup_tools",

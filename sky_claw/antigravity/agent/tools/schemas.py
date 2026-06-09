@@ -272,7 +272,7 @@ class ToggleModParams(pydantic.BaseModel):
 
 
 class BodySlideBatchParams(pydantic.BaseModel):
-    """Parameters for the ``run_bodyslide_batch`` tool (direct runner)."""
+    """Parameters for the ``run_bodyslide`` tool (M-03 BodySlideRunner)."""
 
     model_config = pydantic.ConfigDict(strict=True)
 
@@ -286,8 +286,25 @@ class BodySlideBatchParams(pydantic.BaseModel):
         default="meshes",
         min_length=1,
         max_length=256,
-        description="Output directory for generated meshes.",
+        description="Output directory for generated meshes, relative to the game directory.",
     )
+
+    @field_validator("output_path")
+    @classmethod
+    def _output_path_stays_relative(cls, v: str) -> str:
+        """Reject absolute / drive-anchored / traversal output paths.
+
+        PR #171 review (Codex P1): ``output_path`` is forwarded to
+        ``BodySlide.exe -o`` with the game directory as cwd. An absolute
+        path, a drive-relative path (``C:evil``), a UNC share, or ``..``
+        segments would direct generated meshes outside the sandbox.
+        """
+        candidate = pathlib.PureWindowsPath(v)
+        if candidate.is_absolute() or candidate.drive or v.startswith(("/", "\\")):
+            raise ValueError("output_path must be a relative path (no absolute paths, drive letters, or UNC shares)")
+        if ".." in candidate.parts:
+            raise ValueError("output_path must not contain '..' traversal segments")
+        return v
 
 
 class UninstallModParams(pydantic.BaseModel):

@@ -29,7 +29,6 @@ async def setup_tools(
     install_dir: pathlib.Path,
     local_cfg: Any | None,
     config_path: pathlib.Path | None,
-    animation_hub: Any | None,
     downloader: Any | None,
     loot_exe_ref: list | None = None,
     tools: list[str] | None = None,
@@ -41,12 +40,16 @@ async def setup_tools(
 
     Args are pre-validated by AsyncToolRegistry.execute() via SetupToolsParams.
 
+    Consolidation (obs #187): the ``animation_hub`` parameter was removed.
+    Installed pandora/bodyslide paths are persisted in ``local_cfg``, which the
+    AsyncToolRegistry runner resolvers read at call time — updating an attribute
+    on a hub instance was a no-op (the hub read from a frozen config).
+
     Args:
         tools_installer: ToolsInstaller instance.
         install_dir: Installation directory for tools.
         local_cfg: LocalConfig instance (may be None).
         config_path: Path to local config file.
-        animation_hub: AnimationHub instance (may be None).
         downloader: NexusDownloader instance (may be None).
         loot_exe_ref: Optional list to store loot_exe path reference.
         tools: List of tools to install. Defaults to all.
@@ -107,8 +110,6 @@ async def setup_tools(
                     }
                 elif tool_name_lower == "pandora":
                     result = await tools_installer.ensure_pandora(install_dir, session)
-                    if animation_hub:
-                        animation_hub.pandora_exe = result.exe_path
                     if local_cfg:
                         local_cfg.pandora_exe = str(result.exe_path)
                     results["pandora"] = {
@@ -118,8 +119,6 @@ async def setup_tools(
                     }
                 elif tool_name_lower == "bodyslide":
                     result = await tools_installer.ensure_bodyslide(install_dir, session, downloader)
-                    if animation_hub:
-                        animation_hub.bodyslide_exe = result.exe_path
                     if local_cfg:
                         local_cfg.bodyslide_exe = str(result.exe_path)
                     results["bodyslide"] = {

@@ -804,8 +804,11 @@ class TestDownloadModSchema:
         # search_mod, check_load_order, detect_conflicts, run_loot_sort,
         # install_mod, run_xedit_analysis, download_mod,
         # preview_mod_installer, install_mod_from_archive, setup_tools,
-        # analyze_esp_conflicts = 11 + newly added tools
-        assert len(tool_registry.tools) == 21
+        # analyze_esp_conflicts = 11 + newly added tools.
+        # Consolidation (obs #187): run_pandora_behavior / run_bodyslide_batch
+        # duplicates removed (21 -> 19); run_pandora / run_bodyslide remain,
+        # now backed by the M-02/M-03 runners.
+        assert len(tool_registry.tools) == 19
 
 
 # ---------------------------------------------------------------------------
