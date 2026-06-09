@@ -310,31 +310,23 @@ class AsyncToolRegistry:
             return None
         return BodySlideRunner(BodySlideConfig(bodyslide_exe=exe, game_path=self._runner_game_path()))
 
-    async def _run_loot_sort(self, profile: str) -> str:
-        """Run LOOT sort, auto-initializing LOOTRunner from loot_exe if needed."""
-        runner = self._loot_runner
-        if runner is None and self._loot_exe is not None:
-            try:
-                config = LOOTConfig(loot_exe=self._loot_exe, game_path=self._mo2.root)
-                runner = LOOTRunner(config)
-            except Exception as exc:
-                return json.dumps({"error": str(exc)})
-        if runner is None:
-            return json.dumps({"error": "LOOT runner is not configured"})
-        try:
-            result = await runner.sort()
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
-        return json.dumps(
-            {
-                "profile": profile,
-                "success": result.success,
-                "return_code": result.return_code,
-                "sorted_plugins": result.sorted_plugins,
-                "warnings": result.warnings,
-                "errors": result.errors,
-            }
-        )
+    def _resolve_loot_exe(self) -> pathlib.Path | None:
+        """Call-time LOOT exe: prefer ``local_cfg.loot_exe``, else the constructor path.
+
+        PR #171 follow-up: same call-time rationale as the pandora/bodyslide
+        resolvers — a same-session ``setup_tools`` install persists the path
+        into ``local_cfg``, so reading it here means the next ``run_loot_sort``
+        picks it up. This also replaces the dead ``loot_exe_ref`` plumbing
+        (the descriptor passed a fresh ``[self._loot_exe]`` list per call, so
+        the post-install mutation never propagated). Sandbox validation happens
+        inside ``LOOTRunner.sort()`` via the threaded ``path_validator``.
+        """
+        exe_str = getattr(self._local_cfg, "loot_exe", None) if self._local_cfg else None
+        if exe_str:
+            exe = pathlib.Path(exe_str)
+            if exe.exists():
+                return exe
+        return self._loot_exe
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> str:
         """Execute a registered tool with centralized Pydantic validation.
@@ -437,10 +429,12 @@ class AsyncToolRegistry:
             fn=lambda profile: run_loot_sort(
                 self._mo2,
                 self._loot_runner,
-                self._loot_exe,
+                self._resolve_loot_exe(),
                 profile,
                 lock_manager=self._lock_manager,
                 snapshot_manager=self._snapshot_manager,
+                # PR #171 follow-up: sandbox the config-controlled exe path.
+                path_validator=self._path_validator,
             ),
         )
         self._tools["run_xedit_script"] = ToolDescriptor(
@@ -538,7 +532,6 @@ class AsyncToolRegistry:
                 self._local_cfg,
                 self._config_path,
                 self._downloader,
-                [self._loot_exe],
                 tools,
                 gateway=self._resolve_gateway(),
             ),
