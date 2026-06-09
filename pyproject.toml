@@ -142,7 +142,6 @@ module = [
     "sky_claw.antigravity.agent.*",
     "sky_claw.antigravity.modes.*",
     "sky_claw.antigravity.orchestrator.*",
-    "sky_claw.antigravity.reasoning.*",
     "sky_claw.antigravity.scraper.*",
     "sky_claw.antigravity.web.*",
     "sky_claw.antigravity.db.*",
