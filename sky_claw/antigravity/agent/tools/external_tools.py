@@ -30,7 +30,6 @@ async def setup_tools(
     local_cfg: Any | None,
     config_path: pathlib.Path | None,
     downloader: Any | None,
-    loot_exe_ref: list | None = None,
     tools: list[str] | None = None,
     *,
     gateway: NetworkGateway | None = None,
@@ -41,9 +40,12 @@ async def setup_tools(
     Args are pre-validated by AsyncToolRegistry.execute() via SetupToolsParams.
 
     Consolidation (obs #187): the ``animation_hub`` parameter was removed.
-    Installed pandora/bodyslide paths are persisted in ``local_cfg``, which the
-    AsyncToolRegistry runner resolvers read at call time — updating an attribute
-    on a hub instance was a no-op (the hub read from a frozen config).
+    Installed tool paths are persisted in ``local_cfg``, which the
+    AsyncToolRegistry resolvers read at call time — updating an attribute
+    on a hub instance was a no-op (the hub read from a frozen config). The
+    ``loot_exe_ref`` list parameter was removed for the same reason: callers
+    passed a fresh list per invocation, so the post-install mutation never
+    propagated; LOOT now follows the same call-time ``local_cfg`` resolution.
 
     Args:
         tools_installer: ToolsInstaller instance.
@@ -51,7 +53,6 @@ async def setup_tools(
         local_cfg: LocalConfig instance (may be None).
         config_path: Path to local config file.
         downloader: NexusDownloader instance (may be None).
-        loot_exe_ref: Optional list to store loot_exe path reference.
         tools: List of tools to install. Defaults to all.
 
     Returns:
@@ -90,8 +91,6 @@ async def setup_tools(
             try:
                 if tool_name_lower == "loot":
                     result = await tools_installer.ensure_loot(install_dir, session)
-                    if not result.already_existed and loot_exe_ref is not None:
-                        loot_exe_ref[0] = result.exe_path
                     if local_cfg:
                         local_cfg.loot_exe = str(result.exe_path)
                     results["loot"] = {

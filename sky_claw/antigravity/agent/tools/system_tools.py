@@ -55,6 +55,7 @@ async def run_loot_sort(
     *,
     lock_manager: Any | None = None,
     snapshot_manager: Any | None = None,
+    path_validator: Any | None = None,
 ) -> str:
     """Invoke the LOOT CLI to sort the load order.
 
@@ -66,13 +67,20 @@ async def run_loot_sort(
     ``load-order`` lock as the GUI orchestrator / dry-run preview — the
     cross-process lock only protects if every mutator participates. Without a
     lock manager (legacy callers / tests) the sort runs directly.
+
+    PR #171 follow-up (same Codex P1 vector as pandora/bodyslide): ``loot_exe``
+    is config-controlled (local_cfg / CLI args), so the lazily built runner
+    gets ``path_validator`` — ``LOOTRunner.sort()`` validates the executable
+    against the sandbox before any subprocess launch, exactly like the
+    dry-run preview path already does (tool_dispatcher wires the same
+    validator). A rejection surfaces through the existing error-JSON contract.
     """
     if loot_runner is None and loot_exe is not None:
         try:
             from sky_claw.local.loot.cli import LOOTConfig, LOOTRunner
 
             config = LOOTConfig(loot_exe=loot_exe, game_path=mo2.root)
-            loot_runner = LOOTRunner(config)
+            loot_runner = LOOTRunner(config, path_validator=path_validator)
         except Exception as exc:
             return json.dumps({"error": str(exc)})
     if loot_runner is None:

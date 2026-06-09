@@ -62,7 +62,12 @@ class TestLootAutoInit:
 
     @pytest.mark.asyncio
     async def test_p0_3_creates_loot_runner_on_first_sort(self, mock_registry, mock_mo2, mock_sync_engine, tmp_path):
-        """P0-3 FIX: Should create LOOTRunner on first sort attempt."""
+        """P0-3 FIX: Should create LOOTRunner on first sort attempt.
+
+        Migrated from the removed ``_run_loot_sort`` registry method (dead
+        duplicate of the production path) to the real dispatch seam:
+        ``execute()`` -> descriptor -> ``system_tools.run_loot_sort``.
+        """
         # Create mock loot.exe
         loot_exe = tmp_path / "loot.exe"
         loot_exe.touch()
@@ -81,8 +86,9 @@ class TestLootAutoInit:
             loot_runner=None,
         )
 
-        # Mock LOOTRunner to avoid actual execution
-        with patch("sky_claw.antigravity.agent.tools.LOOTRunner") as mock_loot_runner_cls:
+        # Mock LOOTRunner to avoid actual execution (run_loot_sort imports it
+        # locally from sky_claw.local.loot.cli at call time).
+        with patch("sky_claw.local.loot.cli.LOOTRunner") as mock_loot_runner_cls:
             mock_runner = MagicMock()
             mock_runner.sort = AsyncMock(
                 return_value=MagicMock(
@@ -95,8 +101,8 @@ class TestLootAutoInit:
             )
             mock_loot_runner_cls.return_value = mock_runner
 
-            # Call _run_loot_sort - should auto-initialize
-            result = await registry._run_loot_sort("Test Profile")
+            # Dispatch through the production seam - should auto-initialize
+            result = await registry.execute("run_loot_sort", {"profile": "Test Profile"})
 
             # Should have been called
             mock_loot_runner_cls.assert_called_once()
