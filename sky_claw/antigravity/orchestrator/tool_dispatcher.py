@@ -156,8 +156,9 @@ def _build_chain_preview_service(supervisor: SupervisorAgent) -> ChainPreviewSer
     if game_path is None or xedit_path is None:
         raise RuntimeError("Cannot preview the chain: SKYRIM_PATH and XEDIT_PATH must be configured.")
 
+    loot_exe = path_resolver.get_loot_exe() or pathlib.Path("loot.exe")
     loot_runner = LOOTRunner(
-        LOOTConfig(loot_exe=pathlib.Path("loot.exe"), game_path=game_path),
+        LOOTConfig(loot_exe=loot_exe, game_path=game_path),
         path_validator=supervisor._path_validator,
     )
     xedit_runner = XEditRunner(
