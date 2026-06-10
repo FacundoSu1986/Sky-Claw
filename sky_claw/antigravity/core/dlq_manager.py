@@ -81,6 +81,10 @@ class DLQManager:
         poll_interval_s: Segundos entre polls cuando la DLQ está vacía.
         batch_size: Máximo de filas procesadas por tick.
         clock: Función que retorna epoch en ms (inyectable para tests).
+        lifecycle: ``DatabaseLifecycleManager`` opcional (M-01.1 DI). Si se
+            provee, las operaciones usan su conexión compartida administrada
+            (pragmas + WAL recovery + shutdown coordinado); con ``None`` se
+            conserva la conexión-por-operación pre-M-01.
     """
 
     def __init__(
@@ -232,7 +236,17 @@ class DLQManager:
         if self._lifecycle is not None:
             conn = await self._lifecycle.get_connection(self._db_path)
             conn.row_factory = aiosqlite.Row
-            yield conn
+            try:
+                yield conn
+            except BaseException:
+                # Cancellation/error between a DML and its commit() must not
+                # leave a dangling transaction on the SHARED connection — the
+                # next operation would inherit it (and the lifecycle checkpoint
+                # fails with "database table is locked"). The per-op fallback
+                # below gets this for free: closing the connection rolls back.
+                with contextlib.suppress(Exception):
+                    await conn.rollback()
+                raise
             return
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("PRAGMA busy_timeout=5000")  # must be first: protects WAL mode switch

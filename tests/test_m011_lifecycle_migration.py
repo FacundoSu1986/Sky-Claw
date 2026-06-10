@@ -95,3 +95,38 @@ def test_create_bus_with_dlq_threads_lifecycle(tmp_path):
     mgr = DatabaseLifecycleManager()
     bus = create_bus_with_dlq(db_path=tmp_path / "dlq.db", lifecycle=mgr)
     assert bus._dlq._lifecycle is mgr
+
+
+async def test_dlq_rolls_back_dangling_transaction_on_shared_connection(tmp_path, monkeypatch):
+    """A DLQ write interrupted between its DML and ``commit()`` (e.g. the task
+    cancelled during shutdown) must not leave an open transaction on the SHARED
+    lifecycle connection — the next operation would inherit and commit/discard
+    it. The per-op fallback got this for free (closing the connection rolls
+    back); the lifecycle path must roll back explicitly.
+    """
+    import asyncio
+
+    import pytest
+
+    from sky_claw.antigravity.core.event_bus import Event
+
+    mgr = DatabaseLifecycleManager()
+    try:
+        db = tmp_path / "dlq.db"
+        dlq = DLQManager(db_path=db, handler_resolver=lambda _n: None, lifecycle=mgr)
+        await dlq.list_pending()  # ensure schema + register the shared connection
+        shared = mgr._connections[str(db.resolve())]
+
+        async def _cancelled_commit():
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(shared, "commit", _cancelled_commit)
+        with pytest.raises(asyncio.CancelledError):
+            await dlq.enqueue(Event(topic="t.fail", payload={"k": "v"}), lambda _e: None, RuntimeError("x"))
+        monkeypatch.undo()
+
+        assert shared.in_transaction is False, "dangling transaction left on the shared connection"
+        # The discarded row must not resurface in a later (healthy) operation.
+        assert await dlq.list_pending() == []
+    finally:
+        await mgr.shutdown_all()
