@@ -21,7 +21,7 @@ import aiosqlite
 from sky_claw.antigravity.core.event_bus import Event, Subscriber
 
 if TYPE_CHECKING:
-    pass
+    from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleManager
 
 logger = logging.getLogger("SkyClaw.DLQ")
 
@@ -81,6 +81,10 @@ class DLQManager:
         poll_interval_s: Segundos entre polls cuando la DLQ está vacía.
         batch_size: Máximo de filas procesadas por tick.
         clock: Función que retorna epoch en ms (inyectable para tests).
+        lifecycle: ``DatabaseLifecycleManager`` opcional (M-01.1 DI). Si se
+            provee, las operaciones usan su conexión compartida administrada
+            (pragmas + WAL recovery + shutdown coordinado); con ``None`` se
+            conserva la conexión-por-operación pre-M-01.
     """
 
     def __init__(
@@ -93,6 +97,7 @@ class DLQManager:
         poll_interval_s: float = 1.0,
         batch_size: int = 50,
         clock: Callable[[], int] = _default_now_ms,
+        lifecycle: DatabaseLifecycleManager | None = None,  # M-01.1 DI (import solo TYPE_CHECKING)
     ) -> None:
         self._db_path = db_path
         self._handler_resolver = handler_resolver
@@ -101,6 +106,7 @@ class DLQManager:
         self._poll_interval_s = poll_interval_s
         self._batch_size = batch_size
         self._clock = clock
+        self._lifecycle = lifecycle  # DatabaseLifecycleManager | None (M-01.1 DI)
         self._retry_task: asyncio.Task[None] | None = None
         self._schema_ensured: bool = False
 
@@ -220,7 +226,28 @@ class DLQManager:
 
     @contextlib.asynccontextmanager
     async def _connect(self) -> AsyncGenerator[aiosqlite.Connection, None]:
-        """Abre conexión con pragmas de producción."""
+        """Yield a connection with production pragmas.
+
+        M-01.1: with an injected DatabaseLifecycleManager, the SHARED managed
+        connection is yielded (hardened pragmas + WAL recovery already applied)
+        and NOT closed on exit — the lifecycle owns it until ``shutdown_all()``.
+        Without one, falls back to the pre-M-01 per-operation connection.
+        """
+        if self._lifecycle is not None:
+            conn = await self._lifecycle.get_connection(self._db_path)
+            conn.row_factory = aiosqlite.Row
+            try:
+                yield conn
+            except BaseException:
+                # Cancellation/error between a DML and its commit() must not
+                # leave a dangling transaction on the SHARED connection — the
+                # next operation would inherit it (and the lifecycle checkpoint
+                # fails with "database table is locked"). The per-op fallback
+                # below gets this for free: closing the connection rolls back.
+                with contextlib.suppress(Exception):
+                    await conn.rollback()
+                raise
+            return
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("PRAGMA busy_timeout=5000")  # must be first: protects WAL mode switch
             await db.execute("PRAGMA journal_mode=WAL")

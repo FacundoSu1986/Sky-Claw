@@ -56,6 +56,7 @@ class SupervisorAgent:
         profile_name: str = "Default",
         *,
         hitl_guard: HITLGuard | None = None,
+        lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
     ):
         self.db = DatabaseAgent()
         self.gateway = NetworkGateway()
@@ -63,6 +64,9 @@ class SupervisorAgent:
         self.tools = ModdingToolsAgent()
         self.interface = InterfaceAgent()
         self.profile_name = profile_name
+        # M-01.1: lifecycle compartido para journal/locks/DLQ (DI opcional;
+        # None conserva los fallbacks directos pre-M-01 en tests/standalone).
+        self._db_lifecycle = lifecycle
         self.state_graph = create_supervisor_state_graph(profile_name=self.profile_name)
         self.event_streamer = LangGraphEventStreamer(self.state_graph, self.interface)
 
@@ -83,7 +87,7 @@ class SupervisorAgent:
         # constructs CoreEventBus(require_dlq=True, dlq=DLQManager(...)) — a
         # misconfiguration that returns dlq=None aborts at construction
         # instead of silently dropping events under backpressure.
-        self._event_bus = create_bus_with_dlq()
+        self._event_bus = create_bus_with_dlq(lifecycle=self._db_lifecycle)
         # ARC-01: Demonios extraídos del Supervisor
         self._maintenance_daemon = MaintenanceDaemon(
             snapshot_manager=self.snapshot_manager,
@@ -162,7 +166,10 @@ class SupervisorAgent:
         Delega la construcción al factory method ``create_rollback_components``
         para desacoplar ``SupervisorAgent`` de la creación concreta de dependencias.
         """
-        components: RollbackComponents = create_rollback_components(BACKUP_STAGING_DIR)
+        components: RollbackComponents = create_rollback_components(
+            BACKUP_STAGING_DIR,
+            lifecycle=self._db_lifecycle,
+        )
         self.journal = components.journal
         self.snapshot_manager = components.snapshot_manager
         self.rollback_manager = components.rollback_manager

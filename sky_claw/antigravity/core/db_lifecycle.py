@@ -91,14 +91,19 @@ class DatabaseLifecycleManager:
     - Shutdown coordinado vía ``shutdown_all()`` que ejecuta TRUNCATE
       checkpoint y elimina los ``-wal``/``-shm``.
 
-    Módulos cubiertos por M-01: ``core/database.py``, ``db/async_registry.py``,
-    ``db/journal.py``, ``security/governance.py``.
+    Módulos cubiertos por M-01/M-01.1: ``core/database.py``,
+    ``db/async_registry.py``, ``db/journal.py``, ``security/governance.py``,
+    ``db/locks.py``, ``agent/router.py``, ``core/dlq_manager.py`` (los tres
+    últimos migrados en M-01.1 con DI opcional ``lifecycle=``; sin él
+    conservan su fallback directo pre-M-01 para tests/standalone).
 
-    Módulos pendientes (M-01.1, fuera de este alcance): ``db/locks.py``,
-    ``agent/router.py``, ``agent/context_manager.py``,
-    ``security/credential_vault.py``, ``core/dlq_manager.py``,
-    ``db/registry.py`` (legacy). Estos aún llaman ``aiosqlite.connect``
-    directamente; se migrarán en un ticket separado.
+    Exenciones deliberadas (triage M-01.1 — NO migrar sin nueva razón):
+    - ``security/credential_vault.py``: pool propio acotado
+      (BoundedSemaphore + timeout) sobre un archivo con ACL owner-only;
+      es un boundary de seguridad con su propio modelo de concurrencia.
+    - ``agent/context_manager.py``: lecturas read-only por-operación
+      contra el registry (WAL: los lectores no bloquean escritores).
+    - ``db/registry.py``: legacy sin usos en producción.
 
     Usage::
 

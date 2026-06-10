@@ -44,6 +44,11 @@ class _SQLitePool:
         self._close_lock = asyncio.Lock()
 
     async def _create_connection(self) -> aiosqlite.Connection:
+        # M-01.1 triage: exención deliberada del contrato M-01. El vault es un
+        # boundary de seguridad con pool propio acotado (BoundedSemaphore +
+        # timeout) sobre un archivo con ACL owner-only; compartir la conexión
+        # singleton del lifecycle rompería su modelo de concurrencia y mezclaría
+        # conexiones sensibles con las generales (ver db_lifecycle.py).
         conn = await aiosqlite.connect(self._db_path)
         try:
             await conn.execute("PRAGMA journal_mode=WAL;")

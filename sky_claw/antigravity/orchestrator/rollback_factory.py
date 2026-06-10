@@ -38,11 +38,17 @@ class RollbackComponents:
 
 def create_rollback_components(
     backup_dir: str | pathlib.Path,
+    *,
+    lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
 ) -> RollbackComponents:
     """Factory que crea y retorna todos los componentes de rollback.
 
     Args:
         backup_dir: Directorio base para backups y snapshots.
+        lifecycle: ``DatabaseLifecycleManager`` opcional (M-01.1 DI). Cuando se
+            provee, journal y lock manager piden su conexión al lifecycle
+            (WAL recovery + pragmas hardenizadas + shutdown coordinado).
+            Con ``None`` conservan el fallback directo pre-M-01.
 
     Returns:
         ``RollbackComponents`` con todas las instancias inicializadas.
@@ -50,9 +56,7 @@ def create_rollback_components(
     backup_path = pathlib.Path(backup_dir)
     backup_path.mkdir(parents=True, exist_ok=True)
 
-    # M-01: lifecycle=None → OperationJournal crea su propio lifecycle interno.
-    # Se migrará a DI explícito en M-01.1 cuando rollback_factory reciba AppContext.
-    journal = OperationJournal(db_path=backup_path / "journal.db")
+    journal = OperationJournal(db_path=backup_path / "journal.db", lifecycle=lifecycle)
     snapshot_manager = FileSnapshotManager(
         snapshot_dir=backup_path / "snapshots",
         max_size_mb=get_max_backup_size_mb(),
@@ -63,6 +67,7 @@ def create_rollback_components(
     )
     lock_manager = DistributedLockManager(
         db_path=backup_path / "locks.db",
+        lifecycle=lifecycle,
     )
     path_validator = PathValidator(roots=[backup_path])
 
