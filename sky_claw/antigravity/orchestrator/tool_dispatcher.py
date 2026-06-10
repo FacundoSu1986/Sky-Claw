@@ -211,7 +211,6 @@ def build_orchestration_dispatcher(
     dispatcher.register(
         ExecuteLootSortingStrategy(
             service=supervisor._loot_service,
-            interface=supervisor.interface,
         ),
         middleware=[gate],
     )
@@ -228,9 +227,9 @@ def build_orchestration_dispatcher(
     dispatcher.register(
         ResolveConflictWithPatchStrategy(service=supervisor._xedit_service),
         middleware=[
-            gate,
             ErrorWrappingMiddleware("XEditPatchExecutionFailed"),
             DictResultGuardMiddleware("InvalidXEditPatchResult"),
+            gate,
         ],
     )
 

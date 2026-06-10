@@ -11,10 +11,11 @@ Today there are FIVE middlewares:
 5. **ProgressMiddleware** (FASE 1.5.4) — publishes granular tool lifecycle
    events (started/completed/failed) to CoreEventBus.
 
-Note on HITL: only ONE branch (execute_loot_sorting) currently uses HITL
-internally. HitlGateMiddleware is a *generic* gate that can be applied to
-ANY destructive tool strategy at the dispatcher level, providing a
-consistent approval layer regardless of the strategy's internal logic.
+Note on HITL: HitlGateMiddleware is the SINGLE approval point for
+destructive tools (PR #173 review: the strategy-internal gateway HITL was
+removed to avoid double-gating). Strategies may opt into pre-prompt payload
+validation (``validate_for_approval``) and operator-facing summaries
+(``describe_for_approval``) via the optional protocols in ``base.py``.
 """
 
 from __future__ import annotations
@@ -23,10 +24,19 @@ import logging
 import uuid
 from typing import Any
 
-from sky_claw.antigravity.orchestrator.tool_strategies.base import NextCall, ToolStrategy
+from sky_claw.antigravity.orchestrator.tool_strategies.base import (
+    ApprovalPayloadDescriber,
+    ApprovalPayloadValidator,
+    NextCall,
+    ToolStrategy,
+)
 from sky_claw.antigravity.security.hitl import Decision, HITLGuard
 
 logger = logging.getLogger(__name__)
+
+_MAX_APPROVAL_DETAIL_LENGTH = 800
+_MAX_APPROVAL_VALUE_LENGTH = 120
+_SENSITIVE_KEY_PARTS = frozenset({"api_key", "auth", "credential", "password", "secret", "token"})
 
 # ---------------------------------------------------------------------------
 # FASE 1.5.1: Tools that require mandatory human approval before execution.
@@ -124,6 +134,11 @@ class HitlGateMiddleware:
     ``HITLGateUnavailable``. The only bypass is ``allow_unattended=True``
     (explicit opt-in for tests / headless automation; CRITICAL-logged).
 
+    Before prompting, the gate runs the strategy's ``validate_for_approval``
+    (if implemented) so malformed payloads fail without bothering the
+    operator, and builds the prompt detail from ``describe_for_approval``
+    or a redacted/truncated key=value dump of the payload.
+
     Args:
         hitl_guard: Shared ``HITLGuard`` used to request operator approval.
             Requests are tagged ``category="tool_execution"`` so notify
@@ -143,7 +158,7 @@ class HitlGateMiddleware:
         allow_unattended: bool = False,
     ) -> None:
         self._guard = hitl_guard
-        self._destructive_tools = destructive_tools or DESTRUCTIVE_TOOL_PATTERNS
+        self._destructive_tools = DESTRUCTIVE_TOOL_PATTERNS if destructive_tools is None else destructive_tools
         self._allow_unattended = allow_unattended
 
     async def __call__(
@@ -181,6 +196,9 @@ class HitlGateMiddleware:
         # request_id único para evitar colisiones cuando dos invocaciones
         # concurrentes de la MISMA tool destructiva con payloads distintos
         # llegan al gate (FASE 1.5.4 hardening: HITL key collision fix).
+        _validate_for_approval(strategy, payload_dict)
+        detail = _describe_for_approval(strategy, payload_dict)
+
         request_id = f"tool-{strategy.name}-{uuid.uuid4().hex[:12]}"
         logger.info(
             "HitlGateMiddleware: tool '%s' requires human approval (request_id=%s).",
@@ -191,7 +209,7 @@ class HitlGateMiddleware:
         decision = await self._guard.request_approval(
             request_id=request_id,
             reason=f"Tool '{strategy.name}' requires human approval before execution.",
-            detail=f"payload keys: {sorted(payload_dict)}",
+            detail=detail,
             category="tool_execution",
         )
 
@@ -215,6 +233,57 @@ class HitlGateMiddleware:
             strategy.name,
         )
         return await next_call()
+
+
+def _validate_for_approval(strategy: ToolStrategy, payload_dict: dict[str, Any]) -> None:
+    if isinstance(strategy, ApprovalPayloadValidator):
+        strategy.validate_for_approval(payload_dict)
+
+
+def _describe_for_approval(strategy: ToolStrategy, payload_dict: dict[str, Any]) -> str:
+    if isinstance(strategy, ApprovalPayloadDescriber):
+        return _truncate_approval_detail(strategy.describe_for_approval(payload_dict))
+    return _format_payload_values(payload_dict)
+
+
+def _format_payload_values(payload_dict: dict[str, Any]) -> str:
+    if not payload_dict:
+        return "payload: <empty>"
+    parts = [f"{key}={_format_payload_value(key, value)}" for key, value in sorted(payload_dict.items())]
+    return _truncate_approval_detail("payload: " + ", ".join(parts))
+
+
+def _format_payload_value(key: str, value: Any) -> str:
+    if _is_sensitive_key(key):
+        return "<redacted>"
+    if isinstance(value, str):
+        return repr(_truncate_value(value))
+    if isinstance(value, bool | int | float | type(None)):
+        return repr(value)
+    if isinstance(value, dict):
+        visible_keys = ", ".join(sorted(str(item) for item in value)[:5])
+        suffix = ", ..." if len(value) > 5 else ""
+        return f"{{{len(value)} keys: {visible_keys}{suffix}}}"
+    if isinstance(value, list | tuple | set | frozenset):
+        return f"{type(value).__name__}({len(value)} items)"
+    return repr(_truncate_value(str(value)))
+
+
+def _is_sensitive_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(part in lowered for part in _SENSITIVE_KEY_PARTS)
+
+
+def _truncate_value(value: str) -> str:
+    if len(value) <= _MAX_APPROVAL_VALUE_LENGTH:
+        return value
+    return value[: _MAX_APPROVAL_VALUE_LENGTH - 3] + "..."
+
+
+def _truncate_approval_detail(detail: str) -> str:
+    if len(detail) <= _MAX_APPROVAL_DETAIL_LENGTH:
+        return detail
+    return detail[: _MAX_APPROVAL_DETAIL_LENGTH - 3] + "..."
 
 
 # ---------------------------------------------------------------------------

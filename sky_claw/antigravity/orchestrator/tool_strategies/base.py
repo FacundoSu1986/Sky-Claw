@@ -23,6 +23,20 @@ class ToolStrategy(Protocol):
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]: ...
 
 
+@runtime_checkable
+class ApprovalPayloadValidator(Protocol):
+    """Optional strategy capability used by HITL gates before prompting."""
+
+    def validate_for_approval(self, payload_dict: dict[str, Any]) -> None: ...
+
+
+@runtime_checkable
+class ApprovalPayloadDescriber(Protocol):
+    """Optional strategy capability for concise operator-facing HITL detail."""
+
+    def describe_for_approval(self, payload_dict: dict[str, Any]) -> str: ...
+
+
 NextCall = Callable[[], Awaitable[dict[str, Any]]]
 
 

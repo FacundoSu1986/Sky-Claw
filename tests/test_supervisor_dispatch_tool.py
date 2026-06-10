@@ -87,9 +87,8 @@ async def test_query_mod_metadata_invalid_payload_raises(supervisor):
 
 
 async def test_execute_loot_sorting_hitl_approved(supervisor):
-    """When request_hitl returns 'approved', the lock-protected LootSortingService
-    is invoked with the validated LootExecutionParams (audit #190: LOOT lock coverage)."""
-    supervisor.interface.request_hitl.return_value = "approved"
+    """The shared dispatcher gate owns HITL; the strategy only validates and sorts."""
+    supervisor.interface.request_hitl.return_value = "denied"
     supervisor._loot_service.sort_load_order.return_value = {"status": "ok"}
 
     result = await supervisor.dispatch_tool(
@@ -97,11 +96,7 @@ async def test_execute_loot_sorting_hitl_approved(supervisor):
         {"profile_name": "MyProfile", "update_masterlist": False},
     )
 
-    supervisor.interface.request_hitl.assert_awaited_once()
-    hitl_req = supervisor.interface.request_hitl.await_args.args[0]
-    assert isinstance(hitl_req, HitlApprovalRequest)
-    assert hitl_req.context_data == {"profile": "MyProfile"}
-
+    supervisor.interface.request_hitl.assert_not_awaited()
     supervisor._loot_service.sort_load_order.assert_awaited_once()
     loot_params = supervisor._loot_service.sort_load_order.await_args.args[0]
     assert isinstance(loot_params, LootExecutionParams)
@@ -112,17 +107,19 @@ async def test_execute_loot_sorting_hitl_approved(supervisor):
     assert result == {"status": "ok"}
 
 
-async def test_execute_loot_sorting_hitl_denied(supervisor):
-    """When HITL is denied, returns the exact aborted dict (Spanish string preserved)."""
+async def test_execute_loot_sorting_does_not_use_legacy_gateway_hitl(supervisor):
+    """A disconnected gateway must not veto an already-approved shared HITL gate."""
     supervisor.interface.request_hitl.return_value = "denied"
+    supervisor._loot_service.sort_load_order.return_value = {"status": "ok"}
 
     result = await supervisor.dispatch_tool(
         "execute_loot_sorting",
         {"profile_name": "Default", "update_masterlist": True},
     )
 
-    assert result == {"status": "aborted", "reason": "Usuario denegó la operación."}
-    supervisor._loot_service.sort_load_order.assert_not_awaited()
+    assert result == {"status": "ok"}
+    supervisor.interface.request_hitl.assert_not_awaited()
+    supervisor._loot_service.sort_load_order.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +337,7 @@ async def test_validate_plugin_limit_explicit_profile(supervisor):
 
 
 async def test_unknown_tool_returns_tool_not_found(supervisor):
-    """LLM hallucinated tool name → exact legacy error dict."""
+    """LLM hallucinated tool name -> exact legacy error dict."""
     result = await supervisor.dispatch_tool("nonexistent_tool", {"anything": 1})
 
     assert result == {"status": "error", "reason": "ToolNotFound"}
