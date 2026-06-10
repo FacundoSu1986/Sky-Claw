@@ -23,10 +23,26 @@ class ResolveConflictWithPatchStrategy:
     def __init__(self, service: XEditPipelineService) -> None:
         self.service = service
 
+    def validate_for_approval(self, payload_dict: dict[str, Any]) -> None:
+        self._parse_payload(payload_dict)
+
+    def describe_for_approval(self, payload_dict: dict[str, Any]) -> str:
+        target_plugin, report = self._parse_payload(payload_dict)
+        return (
+            f"target_plugin={str(target_plugin)!r}, "
+            f"total_conflicts={report.total_conflicts!r}, "
+            f"critical_conflicts={report.critical_conflicts!r}"
+        )
+
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
-        target_plugin = pathlib.Path(payload_dict["target_plugin"])
-        report = ConflictReport(**payload_dict["report"])
+        target_plugin, report = self._parse_payload(payload_dict)
         return await self.service.execute_patch(
             target_plugin=target_plugin,
             report=report,
         )
+
+    @staticmethod
+    def _parse_payload(payload_dict: dict[str, Any]) -> tuple[pathlib.Path, ConflictReport]:
+        target_plugin = pathlib.Path(payload_dict["target_plugin"])
+        report = ConflictReport(**payload_dict["report"])
+        return target_plugin, report

@@ -1,50 +1,36 @@
 """Strategy for the `execute_loot_sorting` tool.
 
-Replaces supervisor.py:253-269 (case "execute_loot_sorting"). HITL gate
-lives INSIDE the strategy on purpose: Pydantic validation of
-`LootExecutionParams` must run BEFORE the human is prompted, so the
-context dict shown in Telegram contains the validated profile name.
-Wrapping HITL in a middleware would invert that ordering. See the header
-note in `middleware.py` for the YAGNI rationale.
-
-Option B (Spec §13): action_type is now `"reorder_load_order"` (was
-`"destructive_xedit"` re-used). The Literal in `core/models.py` was
-extended additively, so existing HITL consumers keep working.
+The shared dispatcher HITL gate owns operator approval. This strategy owns
+payload validation and the lock-protected LOOT service call.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sky_claw.antigravity.core.models import HitlApprovalRequest, LootExecutionParams
+from sky_claw.antigravity.core.models import LootExecutionParams
 
 if TYPE_CHECKING:
-    from sky_claw.antigravity.comms.interface import InterfaceAgent
     from sky_claw.local.tools.loot_service import LootSortingService
 
 
 class ExecuteLootSortingStrategy:
     name = "execute_loot_sorting"
 
-    def __init__(self, service: LootSortingService, interface: InterfaceAgent) -> None:
+    def __init__(self, service: LootSortingService) -> None:
         self.service = service
-        self.interface = interface
+
+    def validate_for_approval(self, payload_dict: dict[str, Any]) -> None:
+        self._parse_params(payload_dict)
+
+    def describe_for_approval(self, payload_dict: dict[str, Any]) -> str:
+        params = self._parse_params(payload_dict)
+        return f"profile_name={params.profile_name!r}, update_masterlist={params.update_masterlist!r}"
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
-        params = LootExecutionParams(**payload_dict)
-        hitl_req = HitlApprovalRequest(
-            action_type="reorder_load_order",
-            reason="Se va a reordenar el Load Order, lo que podría afectar partidas guardadas.",
-            context_data={"profile": params.profile_name},
-        )
-        decision = await self.interface.request_hitl(hitl_req)
+        params = self._parse_params(payload_dict)
+        return await self.service.sort_load_order(params)
 
-        if decision == "approved":
-            # LootSortingService acquires the load-order lock (audit #190) before
-            # delegating to LOOTRunner, serializing the real sort against
-            # concurrent sorts and the dry-run preview chain.
-            return await self.service.sort_load_order(params)
-        return {
-            "status": "aborted",
-            "reason": "Usuario denegó la operación.",
-        }
+    @staticmethod
+    def _parse_params(payload_dict: dict[str, Any]) -> LootExecutionParams:
+        return LootExecutionParams(**payload_dict)

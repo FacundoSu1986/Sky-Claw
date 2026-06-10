@@ -211,7 +211,6 @@ def build_orchestration_dispatcher(
     dispatcher.register(
         ExecuteLootSortingStrategy(
             service=supervisor._loot_service,
-            interface=supervisor.interface,
         ),
         middleware=[gate],
     )
@@ -224,13 +223,15 @@ def build_orchestration_dispatcher(
         ],
     )
 
-    # FASE 1.5.1: resolve_conflict_with_patch is destructive → HITL gate outermost
+    # FASE 1.5.1: resolve_conflict_with_patch is destructive → HITL gate runs
+    # INNERMOST so its pre-prompt validation failures are converted to the
+    # legacy {"status": "error", ...} dict by ErrorWrapping/DictResultGuard.
     dispatcher.register(
         ResolveConflictWithPatchStrategy(service=supervisor._xedit_service),
         middleware=[
-            gate,
             ErrorWrappingMiddleware("XEditPatchExecutionFailed"),
             DictResultGuardMiddleware("InvalidXEditPatchResult"),
+            gate,
         ],
     )
 

@@ -40,6 +40,15 @@ class _FakeStrategy:
         self.name = name
 
 
+class _InvalidApprovalStrategy:
+    """Strategy whose approval validation rejects the payload before prompting."""
+
+    name = "resolve_conflict_with_patch"
+
+    def validate_for_approval(self, payload_dict: dict[str, Any]) -> None:
+        raise KeyError("target_plugin")
+
+
 def _make_next() -> tuple[Any, list[bool]]:
     """Inner-chain stub that records whether it was executed."""
     calls: list[bool] = []
@@ -121,6 +130,17 @@ class TestFailClosedDefault:
         assert result2["reason"] == "HITLGateUnavailable"
         assert calls_b == []
 
+    @pytest.mark.asyncio
+    async def test_empty_destructive_tools_set_disables_gate(self) -> None:
+        """An explicit empty set is a valid opt-out and must not fall back to defaults."""
+        gate = HitlGateMiddleware(destructive_tools=frozenset())
+        next_call, calls = _make_next()
+
+        result = await gate(_FakeStrategy("execute_loot_sorting"), {}, next_call)
+
+        assert result["status"] == "ok"
+        assert calls == [True]
+
 
 # ---------------------------------------------------------------------------
 # Guard-backed approval flow
@@ -165,6 +185,43 @@ class TestGuardBackedGate:
         assert "generate_bashed_patch" in req.reason
 
     @pytest.mark.asyncio
+    async def test_request_detail_includes_payload_values(self) -> None:
+        """Operators must see concrete values, not only argument names."""
+        guard, captured, registered = _make_guard()
+        gate = HitlGateMiddleware(hitl_guard=guard)
+        next_call, _calls = _make_next()
+
+        async def _approve() -> None:
+            await asyncio.wait_for(registered.wait(), timeout=2.0)
+            await guard.respond(captured[0].request_id, approved=True)
+
+        approve_task = asyncio.create_task(_approve())
+        await gate(
+            _FakeStrategy("generate_lods"),
+            {"preset": "High", "run_texgen": False},
+            next_call,
+        )
+        await approve_task
+
+        detail = captured[0].detail
+        assert "payload keys" not in detail
+        assert "preset='High'" in detail
+        assert "run_texgen=False" in detail
+
+    @pytest.mark.asyncio
+    async def test_approval_validation_runs_before_operator_prompt(self) -> None:
+        """Malformed destructive payloads must fail before HITL asks a human."""
+        guard, captured, _registered = _make_guard(timeout=0)
+        gate = HitlGateMiddleware(hitl_guard=guard)
+        next_call, calls = _make_next()
+
+        with pytest.raises(KeyError, match="target_plugin"):
+            await gate(_InvalidApprovalStrategy(), {"report": {}}, next_call)
+
+        assert captured == []
+        assert calls == []
+
+    @pytest.mark.asyncio
     async def test_destructive_tool_denied_blocks(self) -> None:
         guard, captured, registered = _make_guard()
         gate = HitlGateMiddleware(hitl_guard=guard)
@@ -194,6 +251,101 @@ class TestGuardBackedGate:
         assert result["status"] == "error"
         assert result["reason"] == "HITLApprovalDenied"
         assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Payload handling — review fixes PR #173
+# ---------------------------------------------------------------------------
+
+
+class TestPayloadHandling:
+    @pytest.mark.asyncio
+    async def test_long_payload_values_truncated_in_detail(self) -> None:
+        """Oversized values must not flood the Telegram prompt (caps: 120/value, 800 total)."""
+        guard, captured, registered = _make_guard()
+        gate = HitlGateMiddleware(hitl_guard=guard)
+        next_call, _calls = _make_next()
+
+        async def _approve() -> None:
+            await asyncio.wait_for(registered.wait(), timeout=2.0)
+            await guard.respond(captured[0].request_id, approved=True)
+
+        approve_task = asyncio.create_task(_approve())
+        await gate(_FakeStrategy("generate_lods"), {"preset": "x" * 2000}, next_call)
+        await approve_task
+
+        detail = captured[0].detail
+        assert len(detail) <= 800
+        assert "..." in detail, "the oversized value must be visibly truncated"
+
+    @pytest.mark.asyncio
+    async def test_sensitive_payload_keys_redacted_in_detail(self) -> None:
+        """Values under credential-looking keys never reach the operator prompt."""
+        guard, captured, registered = _make_guard()
+        gate = HitlGateMiddleware(hitl_guard=guard)
+        next_call, _calls = _make_next()
+
+        async def _approve() -> None:
+            await asyncio.wait_for(registered.wait(), timeout=2.0)
+            await guard.respond(captured[0].request_id, approved=True)
+
+        approve_task = asyncio.create_task(_approve())
+        await gate(
+            _FakeStrategy("generate_lods"),
+            {"preset": "High", "nexus_api_key": "super-secret-value"},
+            next_call,
+        )
+        await approve_task
+
+        detail = captured[0].detail
+        assert "super-secret-value" not in detail
+        assert "<redacted>" in detail
+        assert "preset='High'" in detail
+
+    def test_describe_for_approval_does_not_warn_on_unexpected_keys(self, caplog) -> None:
+        """Prompt-time description must not duplicate the unexpected-key warning
+        that execute() already emits (Copilot review, PR #175)."""
+        from sky_claw.antigravity.orchestrator.tool_strategies.generate_bashed_patch import (
+            GenerateBashedPatchStrategy,
+        )
+        from sky_claw.antigravity.orchestrator.tool_strategies.generate_lods import (
+            GenerateLodsStrategy,
+        )
+
+        lods = GenerateLodsStrategy(service=MagicMock())
+        bashed = GenerateBashedPatchStrategy(wrye_bash_pipeline=MagicMock())
+
+        with caplog.at_level(logging.WARNING):
+            lods.describe_for_approval({"preset": "High", "tool_name": "noise"})
+            bashed.describe_for_approval({"profile": "Default", "tool_name": "noise"})
+
+        assert caplog.records == [], "describe_for_approval must not log unexpected-key warnings"
+
+    @pytest.mark.asyncio
+    async def test_passing_validation_prompts_normally(self) -> None:
+        """validate_for_approval passing → the normal HITL prompt flow runs."""
+        guard, captured, registered = _make_guard()
+        gate = HitlGateMiddleware(hitl_guard=guard)
+
+        class _ValidatingStrategy:
+            name = "generate_lods"
+
+            def validate_for_approval(self, payload_dict: dict[str, Any]) -> None:
+                return None
+
+        next_call, calls = _make_next()
+
+        async def _approve() -> None:
+            await asyncio.wait_for(registered.wait(), timeout=2.0)
+            await guard.respond(captured[0].request_id, approved=True)
+
+        approve_task = asyncio.create_task(_approve())
+        result = await gate(_ValidatingStrategy(), {"preset": "Low"}, next_call)
+        await approve_task
+
+        assert len(captured) == 1
+        assert result["status"] == "ok"
+        assert calls == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +427,40 @@ class TestDispatcherGateWiring:
 
         gated = {name for name, chain in dispatcher._middleware.items() if any(mw is gate for mw in chain)}
         assert gated == set(DESTRUCTIVE_TOOL_PATTERNS)
+
+    @pytest.mark.asyncio
+    async def test_execute_loot_sorting_uses_shared_gate_without_legacy_gateway_hitl(self) -> None:
+        from sky_claw.antigravity.core.models import LootExecutionParams
+        from sky_claw.antigravity.orchestrator.tool_dispatcher import (
+            build_orchestration_dispatcher,
+        )
+
+        sup = self._make_supervisor()
+        sup.interface.request_hitl = AsyncMock(return_value="denied")
+        sup._loot_service.sort_load_order = AsyncMock(return_value={"status": "ok"})
+        guard, captured, registered = _make_guard()
+        dispatcher = build_orchestration_dispatcher(
+            sup,
+            hitl_gate=HitlGateMiddleware(hitl_guard=guard),
+        )
+
+        async def _approve() -> None:
+            await asyncio.wait_for(registered.wait(), timeout=2.0)
+            await guard.respond(captured[0].request_id, approved=True)
+
+        approve_task = asyncio.create_task(_approve())
+        result = await dispatcher.dispatch(
+            "execute_loot_sorting",
+            {"profile_name": "MyProfile", "update_masterlist": False},
+        )
+        await approve_task
+
+        assert result == {"status": "ok"}
+        sup.interface.request_hitl.assert_not_awaited()
+        sup._loot_service.sort_load_order.assert_awaited_once()
+        loot_params = sup._loot_service.sort_load_order.await_args.args[0]
+        assert isinstance(loot_params, LootExecutionParams)
+        assert loot_params.profile_name == "MyProfile"
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,4 @@
-"""Strategy for the `generate_lods` tool.
-
-Replaces supervisor.py:325-326. Thin pass-through to
-DynDOLODPipelineService.execute(**payload_dict).
-"""
+"""Strategy for the `generate_lods` tool."""
 
 from __future__ import annotations
 
@@ -14,6 +10,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_VALID_LOD_KEYS = {"preset", "run_texgen", "create_snapshot", "texgen_args", "dyndolod_args"}
+
 
 class GenerateLodsStrategy:
     name = "generate_lods"
@@ -21,12 +19,22 @@ class GenerateLodsStrategy:
     def __init__(self, service: DynDOLODPipelineService) -> None:
         self.service = service
 
+    def describe_for_approval(self, payload_dict: dict[str, Any]) -> str:
+        # warn=False: execute() filters (and warns) again for the same payload —
+        # warning here too would duplicate the log line per invocation.
+        filtered = self._filter_payload(payload_dict, warn=False)
+        if not filtered:
+            return "payload: <empty>"
+        parts = [f"{key}={value!r}" for key, value in sorted(filtered.items())]
+        return "payload: " + ", ".join(parts)
+
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
-        # Filter to only valid parameters — the LLM may inject extra keys
-        # (e.g. "tool_name") that would cause TypeError on the service.
-        valid_keys = {"preset", "run_texgen", "create_snapshot", "texgen_args", "dyndolod_args"}
-        filtered = {k: v for k, v in payload_dict.items() if k in valid_keys}
-        unexpected = payload_dict.keys() - valid_keys
-        if unexpected:
-            logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
+        filtered = self._filter_payload(payload_dict)
         return await self.service.execute(**filtered)
+
+    def _filter_payload(self, payload_dict: dict[str, Any], *, warn: bool = True) -> dict[str, Any]:
+        filtered = {key: value for key, value in payload_dict.items() if key in _VALID_LOD_KEYS}
+        unexpected = payload_dict.keys() - _VALID_LOD_KEYS
+        if unexpected and warn:
+            logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
+        return filtered

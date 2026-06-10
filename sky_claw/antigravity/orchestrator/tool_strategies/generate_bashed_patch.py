@@ -1,13 +1,4 @@
-"""Strategy for the `generate_bashed_patch` tool.
-
-Thin adapter onto `supervisor.execute_wrye_bash_pipeline(**payload_dict)`.
-That method (~100 lines including M-04 plugin-limit guard + runner init)
-stays on the supervisor — extracting it is a separate refactor (Spec §9).
-
-Receives a **callable** so the test fixture can reassign
-`supervisor.execute_wrye_bash_pipeline = AsyncMock(...)` after the
-dispatcher is built.
-"""
+"""Strategy for the `generate_bashed_patch` tool."""
 
 from __future__ import annotations
 
@@ -16,6 +7,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_VALID_BASHED_PATCH_KEYS = {"profile", "validate_limit"}
 
 
 class GenerateBashedPatchStrategy:
@@ -27,12 +20,22 @@ class GenerateBashedPatchStrategy:
     ) -> None:
         self.wrye_bash_pipeline = wrye_bash_pipeline
 
+    def describe_for_approval(self, payload_dict: dict[str, Any]) -> str:
+        # warn=False: execute() filters (and warns) again for the same payload —
+        # warning here too would duplicate the log line per invocation.
+        filtered = self._filter_payload(payload_dict, warn=False)
+        if not filtered:
+            return "payload: <empty>"
+        parts = [f"{key}={value!r}" for key, value in sorted(filtered.items())]
+        return "payload: " + ", ".join(parts)
+
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
-        # Filter to only valid parameters — the LLM may inject extra keys
-        # (e.g. "tool_name") that would cause TypeError on the pipeline.
-        valid_keys = {"profile", "validate_limit"}
-        filtered = {k: v for k, v in payload_dict.items() if k in valid_keys}
-        unexpected = payload_dict.keys() - valid_keys
-        if unexpected:
-            logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
+        filtered = self._filter_payload(payload_dict)
         return await self.wrye_bash_pipeline(**filtered)
+
+    def _filter_payload(self, payload_dict: dict[str, Any], *, warn: bool = True) -> dict[str, Any]:
+        filtered = {key: value for key, value in payload_dict.items() if key in _VALID_BASHED_PATCH_KEYS}
+        unexpected = payload_dict.keys() - _VALID_BASHED_PATCH_KEYS
+        if unexpected and warn:
+            logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
+        return filtered
