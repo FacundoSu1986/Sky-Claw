@@ -302,6 +302,25 @@ class TestPayloadHandling:
         assert "<redacted>" in detail
         assert "preset='High'" in detail
 
+    def test_describe_for_approval_does_not_warn_on_unexpected_keys(self, caplog) -> None:
+        """Prompt-time description must not duplicate the unexpected-key warning
+        that execute() already emits (Copilot review, PR #175)."""
+        from sky_claw.antigravity.orchestrator.tool_strategies.generate_bashed_patch import (
+            GenerateBashedPatchStrategy,
+        )
+        from sky_claw.antigravity.orchestrator.tool_strategies.generate_lods import (
+            GenerateLodsStrategy,
+        )
+
+        lods = GenerateLodsStrategy(service=MagicMock())
+        bashed = GenerateBashedPatchStrategy(wrye_bash_pipeline=MagicMock())
+
+        with caplog.at_level(logging.WARNING):
+            lods.describe_for_approval({"preset": "High", "tool_name": "noise"})
+            bashed.describe_for_approval({"profile": "Default", "tool_name": "noise"})
+
+        assert caplog.records == [], "describe_for_approval must not log unexpected-key warnings"
+
     @pytest.mark.asyncio
     async def test_passing_validation_prompts_normally(self) -> None:
         """validate_for_approval passing → the normal HITL prompt flow runs."""
