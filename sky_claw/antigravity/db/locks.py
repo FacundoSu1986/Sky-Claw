@@ -193,12 +193,15 @@ class DistributedLockManager:
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base: float = DEFAULT_BACKOFF_BASE,
         backoff_max: float = DEFAULT_BACKOFF_MAX,
+        lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
     ) -> None:
         self._db_path = str(db_path)
         self._default_ttl = default_ttl
         self._max_retries = max_retries
         self._backoff_base = backoff_base
         self._backoff_max = backoff_max
+        self._lifecycle = lifecycle  # DatabaseLifecycleManager | None (M-01.1 DI)
+        self._owns_conn: bool = False  # True when we opened the connection directly (no lifecycle)
         self._conn: aiosqlite.Connection | None = None
 
     # ------------------------------------------------------------------
@@ -206,13 +209,25 @@ class DistributedLockManager:
     # ------------------------------------------------------------------
 
     async def initialize(self) -> None:
-        """Open DB, set WAL mode, create the ``resource_locks`` table."""
+        """Open DB, set WAL mode, create the ``resource_locks`` table.
+
+        M-01.1: If a DatabaseLifecycleManager was injected, the connection is
+        requested from it (WAL recovery + hardened pragmas already applied).
+        Otherwise falls back to a direct ``aiosqlite.connect`` with manual
+        pragmas (pre-M-01 behaviour) — same contract as ``journal.py`` /
+        ``async_registry.py``.
+        """
         if self._conn is not None:
             return
 
-        self._conn = await aiosqlite.connect(self._db_path)
-        await self._conn.execute("PRAGMA journal_mode=WAL")
-        await self._conn.execute("PRAGMA busy_timeout=5000")
+        if self._lifecycle is not None:
+            self._owns_conn = False
+            self._conn = await self._lifecycle.get_connection(self._db_path)
+        else:
+            self._owns_conn = True
+            self._conn = await aiosqlite.connect(self._db_path)
+            await self._conn.execute("PRAGMA journal_mode=WAL")
+            await self._conn.execute("PRAGMA busy_timeout=5000")
         await self._conn.executescript(_LOCKS_SCHEMA_SQL)
         logger.info(
             "DistributedLockManager initialized",
@@ -220,9 +235,13 @@ class DistributedLockManager:
         )
 
     async def close(self) -> None:
-        """Close the DB connection."""
+        """Close the DB connection (lifecycle-owned connections stay open)."""
         if self._conn is not None:
-            await self._conn.close()
+            if self._owns_conn:
+                await self._conn.close()
+                self._owns_conn = False
+            # Si el lifecycle es externo, no cerramos la conexión aquí;
+            # el propietario la cierra en shutdown_all().
             self._conn = None
             logger.info("DistributedLockManager closed")
 

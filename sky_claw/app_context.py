@@ -581,6 +581,9 @@ class AppContext:
                 registry_db=str(self._args.db_path),
                 mo2_profile=mo2_profile,
                 gateway=self.network.gateway,
+                # M-01.1: history DB via DatabaseLifecycleManager (WAL recovery,
+                # hardened pragmas, coordinated shutdown_all checkpoint).
+                lifecycle=self.lifecycle.manager,
             )
             await self.router.open()
             self._exit_stack.push_async_callback(self._close_router)

@@ -161,6 +161,7 @@ class LLMRouter:
         gateway: Any | None = None,
         guardrail: AgentGuardrail | None = None,
         hermes_mode: bool = False,
+        lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
     ) -> None:
         if provider is None and not vault:
             # BUG-002 FIX: Validar API key antes de instanciar provider
@@ -184,6 +185,8 @@ class LLMRouter:
         self._model = model
         self._system_prompt = system_prompt
         self._max_context = max_context
+        self._lifecycle = lifecycle  # DatabaseLifecycleManager | None (M-01.1 DI)
+        self._owns_conn: bool = False  # True when we opened the connection directly (no lifecycle)
         self._conn: aiosqlite.Connection | None = None
 
         # Standard 2026 Orchestration Layers
@@ -237,15 +240,30 @@ class LLMRouter:
         task.add_done_callback(_on_done)
 
     async def open(self) -> None:
-        """Open the history database and ensure schema exists."""
-        self._conn = await aiosqlite.connect(self._db_path)
-        await self._conn.execute("PRAGMA journal_mode=WAL")
+        """Open the history database and ensure schema exists.
+
+        M-01.1: If a DatabaseLifecycleManager was injected, the connection is
+        requested from it (WAL recovery + hardened pragmas already applied).
+        Otherwise falls back to a direct ``aiosqlite.connect`` (pre-M-01).
+        """
+        if self._conn is not None:
+            return
+        if self._lifecycle is not None:
+            self._owns_conn = False
+            self._conn = await self._lifecycle.get_connection(self._db_path)
+        else:
+            self._owns_conn = True
+            self._conn = await aiosqlite.connect(self._db_path)
+            await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.executescript(_HISTORY_SCHEMA)
 
     async def close(self) -> None:
-        """Close the history database."""
+        """Close the history database (lifecycle-owned connections stay open)."""
         if self._conn is not None:
-            await self._conn.close()
+            if self._owns_conn:
+                await self._conn.close()
+                self._owns_conn = False
+            # Si el lifecycle es externo, el propietario cierra en shutdown_all().
             self._conn = None
 
     # ------------------------------------------------------------------

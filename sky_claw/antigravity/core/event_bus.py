@@ -279,7 +279,7 @@ class CoreEventBus:
         return f"{mod}.{qn}" if qn else repr(cb)
 
 
-def create_bus_with_dlq(db_path: Path | None = None) -> CoreEventBus:
+def create_bus_with_dlq(db_path: Path | None = None, *, lifecycle=None) -> CoreEventBus:
     """Factory que conecta un CoreEventBus con un DLQManager pre-cableado.
 
     P1.2 — pasa ``require_dlq=True`` al constructor para que cualquier llamada
@@ -289,6 +289,9 @@ def create_bus_with_dlq(db_path: Path | None = None) -> CoreEventBus:
 
     Args:
         db_path: Ruta al archivo SQLite. Default: ``~/.sky_claw/dlq/dlq.db``.
+        lifecycle: ``DatabaseLifecycleManager`` opcional (M-01.1 DI) que el
+            DLQManager usa para obtener su conexión compartida. ``None``
+            conserva el fallback de conexión-por-operación pre-M-01.
 
     Returns:
         CoreEventBus con DLQManager inyectado, listo para ``start()``.
@@ -303,6 +306,7 @@ def create_bus_with_dlq(db_path: Path | None = None) -> CoreEventBus:
     dlq = DLQManager(
         db_path=resolved_path,
         handler_resolver=scratch_bus._handler_index.get,
+        lifecycle=lifecycle,
     )
     bus = CoreEventBus(dlq=dlq, require_dlq=True)
     # Re-direccionar el handler_resolver al índice del bus definitivo.

@@ -94,6 +94,10 @@ class ContextManager:
 
         results: list[dict[str, Any]] = []
         try:
+            # M-01.1 triage: exención deliberada del contrato M-01. Conexión
+            # read-only por-operación; bajo WAL los lectores no bloquean a los
+            # escritores del lifecycle, y enhebrar el manager hasta acá
+            # acoplaría la capa agent sin beneficio (ver db_lifecycle.py).
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
                 async with db.execute(query, params) as cursor:
