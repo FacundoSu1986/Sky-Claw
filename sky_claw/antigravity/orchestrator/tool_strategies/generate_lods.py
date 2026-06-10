@@ -20,7 +20,9 @@ class GenerateLodsStrategy:
         self.service = service
 
     def describe_for_approval(self, payload_dict: dict[str, Any]) -> str:
-        filtered = self._filter_payload(payload_dict)
+        # warn=False: execute() filters (and warns) again for the same payload —
+        # warning here too would duplicate the log line per invocation.
+        filtered = self._filter_payload(payload_dict, warn=False)
         if not filtered:
             return "payload: <empty>"
         parts = [f"{key}={value!r}" for key, value in sorted(filtered.items())]
@@ -30,9 +32,9 @@ class GenerateLodsStrategy:
         filtered = self._filter_payload(payload_dict)
         return await self.service.execute(**filtered)
 
-    def _filter_payload(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
+    def _filter_payload(self, payload_dict: dict[str, Any], *, warn: bool = True) -> dict[str, Any]:
         filtered = {key: value for key, value in payload_dict.items() if key in _VALID_LOD_KEYS}
         unexpected = payload_dict.keys() - _VALID_LOD_KEYS
-        if unexpected:
+        if unexpected and warn:
             logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
         return filtered
