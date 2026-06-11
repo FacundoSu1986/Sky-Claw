@@ -75,10 +75,19 @@ def render_dashboard(
             - on_cta_primary: Callable - Acción principal CTA
             - on_cta_secondary: Callable - Acción secundaria CTA (opcional)
             - on_feature_click: Callable[[str], None] - Clic en feature (opcional)
+            - on_mod_toggle: Callable[[str, bool], Awaitable] - Toggle de mod en
+              la sección Mods (opcional; sin él los switches se muestran
+              deshabilitados)
+        active_section: Sección activa de ``NAV_SECTIONS`` (Parte 5). Decide el
+            highlight del sidebar Y el contenido del área principal:
+            "Dashboard" → home, "Mods" → lista completa, resto → placeholder.
+            En producción la provee el store (``store.get("active_section")``).
 
     Example:
-        >>> from sky_claw.antigravity.gui.models.app_state import get_app_state
-        >>> state = get_app_state()
+        Los ``stats`` son los proxies reactivos del viewmodel (``ReactiveState``,
+        vía ``get_state()`` en ``sky_claw_gui``), no el ``AppState`` puro:
+
+        >>> state = get_state()  # ReactiveState (sky_claw_gui)
         >>> render_dashboard(
         ...     stats={
         ...         'active_mods': state.active_mods,
@@ -97,6 +106,7 @@ def render_dashboard(
         ...         'on_cta_primary': lambda: print("Start!"),
         ...         'on_cta_secondary': lambda: print("Demo!"),
         ...     },
+        ...     active_section="Dashboard",
         ... )
     """
     # Layout principal: Sidebar + Content
