@@ -6,11 +6,12 @@ and visual status indicators. Designed for novice users.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
 from nicegui import ui
+
+from sky_claw.antigravity.gui.task_tracking import create_tracked_task
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -89,7 +90,7 @@ def _build_mod_row(
         if on_toggle:
             switch.on(
                 "update:model-value",
-                lambda e, name=mod_name: asyncio.create_task(on_toggle(name, e.value)),
+                lambda e, name=mod_name: create_tracked_task(on_toggle(name, e.value), name=f"gui-toggle-{name}"),
             )
 
         # Name + version

@@ -12,11 +12,12 @@ stone borders.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
 from nicegui import ui
+
+from sky_claw.antigravity.gui.task_tracking import create_tracked_task
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -105,7 +106,7 @@ def build_actions_panel(
             .props("unelevated no-caps")
         )
         if on_prepare_game:
-            btn.on("click", lambda: asyncio.create_task(on_prepare_game()))
+            btn.on("click", lambda: create_tracked_task(on_prepare_game(), name="gui-prepare-game"))
 
         ui.label("Ejecuta toda la secuencia de optimización en orden").classes("sky-action-master-desc")
 
@@ -153,7 +154,7 @@ def _build_single_action(
                 ui.badge("Disponible", color="positive").props("outline")
                 btn = ui.button("Ejecutar").classes("sky-action-btn").props("unelevated dense no-caps")
                 if on_action:
-                    btn.on("click", lambda k=key: asyncio.create_task(on_action(k)))
+                    btn.on("click", lambda k=key: create_tracked_task(on_action(k), name=f"gui-action-{k}"))
             else:
                 ui.badge("No instalado", color="warning").props("outline")
                 btn = (
@@ -162,7 +163,7 @@ def _build_single_action(
                     .props("unelevated dense no-caps")
                 )
                 if on_install_tool:
-                    btn.on("click", lambda k=key: asyncio.create_task(on_install_tool(k)))
+                    btn.on("click", lambda k=key: create_tracked_task(on_install_tool(k), name=f"gui-install-{k}"))
 
         # Technical name (subtle)
         ui.label(action_def["technical_name"]).classes("sky-action-tech-name")

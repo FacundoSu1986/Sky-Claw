@@ -21,7 +21,6 @@ path).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +44,7 @@ from sky_claw.antigravity.gui.gui_event_adapter import (
 from sky_claw.antigravity.gui.models.app_state import AppState, get_app_state
 from sky_claw.antigravity.gui.setup_wizard import SetupWizardModal
 from sky_claw.antigravity.gui.state import ReactiveStore, get_store
+from sky_claw.antigravity.gui.task_tracking import create_tracked_task
 from sky_claw.antigravity.gui.views import render_dashboard
 from sky_claw.config import Config
 
@@ -374,7 +374,9 @@ def main_page() -> None:
 
     callbacks: dict[str, Any] = {}
     if _chat_controller is not None:
-        callbacks["on_send_message"] = lambda msg: asyncio.create_task(_chat_controller.handle_send_message(msg))
+        callbacks["on_send_message"] = lambda msg: create_tracked_task(
+            _chat_controller.handle_send_message(msg), name="gui-send-message"
+        )
     if _mod_controller is not None:
         callbacks["on_view_all_mods"] = _mod_controller.handle_view_all_mods
         callbacks["on_mod_click"] = _mod_controller.handle_mod_click
