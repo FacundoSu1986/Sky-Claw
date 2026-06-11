@@ -70,7 +70,10 @@ async def test_tracked_task_cancellation_is_silent(caplog):
             await task
         await asyncio.sleep(0)
 
-    assert caplog.text == ""  # cancellation is normal shutdown, not an error
+    # Cancellation is normal shutdown, not an error — assert on THIS module's
+    # logger only (caplog.text could capture unrelated loggers' records).
+    module_records = [r for r in caplog.records if r.name == "sky_claw.antigravity.gui.task_tracking"]
+    assert module_records == []
     assert task not in _BACKGROUND_TASKS
 
 

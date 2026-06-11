@@ -52,9 +52,11 @@ def _on_task_done(task: asyncio.Task[Any]) -> None:
         return  # normal shutdown path, not an error
     exc = task.exception()
     if exc is not None:
+        # Repo convention for done callbacks (router.py / comms/interface.py):
+        # explicit (type, exc, tb) tuple so the full traceback always renders.
         logger.error(
             "GUI background task %r failed: %s",
             task.get_name(),
             exc,
-            exc_info=exc,
+            exc_info=(type(exc), exc, exc.__traceback__),
         )
