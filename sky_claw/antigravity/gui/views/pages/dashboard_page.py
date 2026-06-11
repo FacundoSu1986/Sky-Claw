@@ -16,6 +16,8 @@ from typing import Any
 
 from nicegui import ui
 
+from sky_claw.antigravity.gui.models.app_state import NAV_SECTIONS
+
 from ..layout.header import create_header
 from ..layout.sidebar import create_sidebar
 from ..sections.chat_preview import create_chat_preview
@@ -37,6 +39,7 @@ def render_dashboard(
     chat_messages: list[dict[str, Any]],
     is_thinking: bool,
     callbacks: dict[str, Callable],
+    active_section: str = "Dashboard",
 ) -> None:
     """Renderiza la página completa del dashboard.
 
@@ -97,9 +100,11 @@ def render_dashboard(
     """
     # Layout principal: Sidebar + Content
     with ui.element("div").classes("flex min-h-screen sky-stone-bg"):
-        # Sidebar de navegación
+        # Sidebar de navegación — la sección activa la decide el store
+        # (Parte 5: NAVIGATION_REQUESTED → ReactiveState → re-render).
         create_sidebar(
             on_navigate=callbacks.get("on_navigate"),
+            nav_items=[(section, section == active_section) for section in NAV_SECTIONS],
         )
 
         # Área de contenido principal

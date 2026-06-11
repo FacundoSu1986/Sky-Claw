@@ -150,12 +150,17 @@ class ReactiveState:
         self.storage_used = _StoreProxy(self._store, "storage_used", 0.0)
         self.is_agent_connected = _StoreProxy(self._store, "is_agent_connected", False)
         self.is_loading = _StoreProxy(self._store, "is_loading", False)
+        # Parte 5: navegación y selección (escritos por los handlers de eventos)
+        self.active_section = _StoreProxy(self._store, "active_section", "Dashboard")
+        self.selected_mod = _StoreProxy(self._store, "selected_mod", None)
 
         if event_bus_instance:
             event_bus_instance.subscribe(EventType.MOD_ADDED, self.handle_mod_added)
             event_bus_instance.subscribe(EventType.CONFLICT_DETECTED, self.handle_conflict_detected)
             event_bus_instance.subscribe(EventType.LLM_RESPONSE, self._handle_llm_notification)
             event_bus_instance.subscribe(EventType.AGENT_STATUS_CHANGE, self._handle_agent_status)
+            event_bus_instance.subscribe(EventType.NAVIGATION_REQUESTED, self._handle_navigation_requested)
+            event_bus_instance.subscribe(EventType.MOD_SELECTED, self._handle_mod_selected)
 
     @property
     def is_thinking(self) -> bool:
@@ -216,6 +221,19 @@ class ReactiveState:
 
     def _handle_agent_status(self, event: SkyClawEvent) -> None:
         self.is_loading.set(event.data.get("is_thinking", False))
+
+    def _handle_navigation_requested(self, event: SkyClawEvent) -> None:
+        """Parte 5: el store re-renderiza main_page (sidebar activo incluido)."""
+        section = event.data.get("section")
+        if section:
+            self.active_section.set(section)
+
+    def _handle_mod_selected(self, event: SkyClawEvent) -> None:
+        """Parte 5: refleja la selección para la futura vista de detalle."""
+        name = event.data.get("name")
+        if name:
+            self.selected_mod.set(name)
+            self.notify(f"Mod seleccionado: {name}", type="info")
 
 
 # ── Singletons ────────────────────────────────────────────────────────────────
@@ -392,6 +410,7 @@ def main_page() -> None:
         chat_messages=chat_messages,
         is_thinking=state.is_thinking,
         callbacks=callbacks,
+        active_section=get_store().get("active_section") or "Dashboard",
     )
 
 
@@ -443,6 +462,8 @@ def setup_app() -> None:
     store.subscribe(_RUNTIME_KEY, main_page.refresh)
     store.subscribe("is_loading", main_page.refresh)
     store.subscribe("mods_list", main_page.refresh)
+    # Parte 5: re-render al navegar (el sidebar pinta la sección activa).
+    store.subscribe("active_section", main_page.refresh)
 
     app.on_startup(lambda: get_agent_client().start())
 

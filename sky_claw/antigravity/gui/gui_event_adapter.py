@@ -27,6 +27,9 @@ class EventType(Enum):
     AGENT_STATUS_CHANGE = "agent_status_change"
     CONFIG_CHANGED = "config_changed"
     EVENT_BROADCAST = "event_broadcast"
+    # Parte 5: navegación y selección de mods (controllers → viewmodel/store)
+    NAVIGATION_REQUESTED = "navigation_requested"
+    MOD_SELECTED = "mod_selected"
 
 
 @dataclass

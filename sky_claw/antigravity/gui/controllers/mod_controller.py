@@ -35,14 +35,37 @@ class ModController:
     # ── Public callbacks — wired to views via DI ───────────────────────────────
 
     def handle_view_all_mods(self) -> None:
-        """Callback de la vista para navegar a la lista completa de mods."""
-        _logger.info("Navegación solicitada: página de mods")
-        # TODO: Implementar navegación a página de mods (Parte 5)
+        """Navega a la sección de mods (mismo contrato que NavigationController).
+
+        Publica el evento en lugar de depender de NavigationController: la
+        fuente de verdad es ``NAVIGATION_REQUESTED``, no quién lo emite.
+        """
+        _logger.info("Navegación solicitada: sección Mods")
+        self.app_state.active_section = "Mods"
+        self.event_bus.publish(
+            SkyClawEvent(
+                type=EventType.NAVIGATION_REQUESTED,
+                data={"section": "Mods"},
+                source="mod_controller",
+            )
+        )
 
     def handle_mod_click(self, mod_name: str) -> None:
-        """Callback de la vista cuando se selecciona un mod."""
+        """Registra la selección de un mod (sin navegar — la vista decide).
+
+        Muta ``AppState.selected_mod`` y publica ``MOD_SELECTED``;
+        ``ReactiveState`` lo refleja en el store para la futura vista de
+        detalle y notifica al usuario.
+        """
         _logger.info("Mod seleccionado: %s", mod_name)
-        # TODO: Implementar vista de detalle del mod (Parte 5)
+        self.app_state.selected_mod = mod_name
+        self.event_bus.publish(
+            SkyClawEvent(
+                type=EventType.MOD_SELECTED,
+                data={"name": mod_name},
+                source="mod_controller",
+            )
+        )
 
     # ── EventBus subscribers ───────────────────────────────────────────────────
 
