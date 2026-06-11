@@ -92,6 +92,11 @@ def _build_mod_row(
                 "update:model-value",
                 lambda e, name=mod_name: create_tracked_task(on_toggle(name, e.value), name=f"gui-toggle-{name}"),
             )
+        else:
+            # Sin handler el switch sería un control engañoso (NiceGUI lo
+            # togglearía client-side sin persistir nada) — se muestra el
+            # estado pero deshabilitado hasta que el caller cablee on_toggle.
+            switch.props("disable")
 
         # Name + version
         with ui.element("div").classes("sky-mod-info"):

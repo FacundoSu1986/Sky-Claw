@@ -114,6 +114,31 @@ def test_view_all_mods_navigates_to_mods_section():
     assert bus.published[0].data["section"] == "Mods"
 
 
+def test_dashboard_section_dispatch_data_is_consistent():
+    """The content dispatcher's placeholder set and the mods adapter must stay
+    aligned with the canonical sections / build_mod_list contract."""
+    from sky_claw.antigravity.gui.views.pages.dashboard_page import (
+        _PLACEHOLDER_SECTIONS,
+        mods_for_list,
+    )
+
+    # Every placeholder is a real sidebar section; Dashboard/Mods render content.
+    assert set(_PLACEHOLDER_SECTIONS) <= set(NAV_SECTIONS)
+    assert set(NAV_SECTIONS) - set(_PLACEHOLDER_SECTIONS) == {"Dashboard", "Mods"}
+
+    # Dashboard mods (status-based) map to build_mod_list's enabled-based rows.
+    rows = mods_for_list(
+        [
+            {"name": "Ordinator", "status": "conflict", "size_mb": 45},
+            {"name": "Lux Via", "status": "inactive", "version": "1.5"},
+            {},
+        ]
+    )
+    assert rows[0] == {"name": "Ordinator", "enabled": True, "version": ""}
+    assert rows[1] == {"name": "Lux Via", "enabled": False, "version": "1.5"}
+    assert rows[2]["name"] == "Mod desconocido"
+
+
 def test_mod_click_selects_mod_without_navigating():
     mod, state, bus = _make_mod()
     mod.handle_mod_click("Ordinator")
