@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import dataclasses
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sky_claw.antigravity.orchestrator.tool_strategies.scan_asset_conflicts import (
@@ -29,7 +29,7 @@ _HEARTBEAT_INTERVAL = 0.01
 _MIN_TICKS = 10
 
 
-async def _count_heartbeats_during(coro_factory: Callable[[], Any]) -> tuple[Any, int]:
+async def _count_heartbeats_during(coro_factory: Callable[[], Awaitable[Any]]) -> tuple[Any, int]:
     """Run the strategy while a heartbeat task counts event-loop turns."""
     ticks = 0
 
