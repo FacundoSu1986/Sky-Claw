@@ -7,6 +7,11 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+#: Secciones canónicas de navegación (Parte 5). Fuente única para controllers
+#: y para el sidebar — vive acá (modelo puro) para que los controllers no
+#: importen vistas NiceGUI ni viceversa.
+NAV_SECTIONS: tuple[str, ...] = ("Dashboard", "Mods", "Conflicts", "Downloads", "Settings")
+
 
 @dataclass
 class AppState:
@@ -20,6 +25,9 @@ class AppState:
     is_running: bool = True
     is_thinking: bool = False
     wizard_step: int = 1
+    # Parte 5: navegación y selección (datos puros, las vistas deciden el render)
+    active_section: str = "Dashboard"
+    selected_mod: str | None = None
 
     # Datos puros de los mensajes (diccionarios o strings, NO widgets gráficos)
     _chat_messages: list[dict[str, str]] = field(default_factory=list)
