@@ -45,6 +45,7 @@ dev = [
     "pytest-asyncio>=1.0",
     "pytest-aiohttp>=1.0,<2",
     "pytest-cov",
+    "pytest-timeout>=2.3,<3",
     "ruff>=0.4",
     "pre-commit>=3.7,<5",
     "mypy>=1.10",
@@ -55,7 +56,10 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "--basetemp=.pytest-tmp"
+# --timeout: un test colgado (hilos aiosqlite non-daemon, deadlock async) falla
+# en 2 min en vez de consumir el timeout del job de CI (20 min). method=thread
+# es el único soportado en Windows y funciona con pytest-asyncio.
+addopts = "--basetemp=.pytest-tmp --timeout=120 --timeout-method=thread"
 
 [tool.ruff]
 target-version = "py311"
