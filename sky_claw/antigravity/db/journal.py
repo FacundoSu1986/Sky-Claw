@@ -14,6 +14,7 @@ import json
 import logging
 import pathlib
 import sqlite3
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -304,6 +305,16 @@ class OperationJournal:
             self._owns_conn = False
             raise JournalConnectionError(f"Failed to open journal database: {e}") from e
 
+        # Mantenimiento best-effort: transacciones PENDING huérfanas de sesiones
+        # anteriores (crash / excepción sin rollback) se barren al arrancar.
+        try:
+            await self.sweep_stale_pending()
+        except (JournalError, sqlite3.Error):
+            logger.warning(
+                "Journal: startup sweep of stale PENDING transactions failed",
+                exc_info=True,
+            )
+
     async def close(self) -> None:
         """Cierra la conexión a la base de datos."""
         if self._db:
@@ -427,6 +438,120 @@ class OperationJournal:
                 raise JournalTransactionError(
                     f"Failed to commit transaction: {e}", transaction_id=transaction_id
                 ) from e
+
+    async def rollback_transaction(self, transaction_id: int) -> None:
+        """
+        Marca una transacción como rolled_back.
+
+        Args:
+            transaction_id: ID de la transacción a revertir.
+
+        Raises:
+            JournalTransactionError: Si la transacción no existe o ya fue procesada.
+        """
+        db = await self._ensure_connected()
+
+        async with self._lock:
+            try:
+                cursor = await db.execute(
+                    """
+                    UPDATE transactions
+                    SET status = ?, rolled_back_at = datetime('now')
+                    WHERE transaction_id = ? AND status = ?
+                    """,
+                    (
+                        TransactionStatus.ROLLED_BACK.value,
+                        transaction_id,
+                        TransactionStatus.PENDING.value,
+                    ),
+                )
+                await db.commit()
+
+                if cursor.rowcount == 0:
+                    raise JournalTransactionError(
+                        f"Transaction {transaction_id} not found or not pending",
+                        transaction_id=transaction_id,
+                    )
+
+                if self._current_transaction == transaction_id:
+                    self._current_transaction = None
+
+                logger.info("Transaction rolled back", extra={"transaction_id": transaction_id})
+
+            except sqlite3.Error as e:
+                raise JournalTransactionError(
+                    f"Failed to roll back transaction: {e}", transaction_id=transaction_id
+                ) from e
+
+    @contextlib.asynccontextmanager
+    async def transaction(
+        self,
+        description: str,
+        mod_id: int | None = None,
+        agent_id: str = "system",
+    ) -> AsyncIterator[int]:
+        """Context manager transaccional: commit en salida limpia, rollback si no.
+
+        Garantiza que ninguna fila quede PENDING para siempre cuando una
+        excepción escapa entre begin y commit (hardening jun-2026).
+        """
+        transaction_id = await self.begin_transaction(description, mod_id=mod_id, agent_id=agent_id)
+        try:
+            yield transaction_id
+        except BaseException:
+            try:
+                await self.rollback_transaction(transaction_id)
+            except JournalError:
+                # Nunca enmascarar la excepción original del cuerpo.
+                logger.error(
+                    "Rollback of transaction %d failed during exception handling",
+                    transaction_id,
+                    exc_info=True,
+                )
+            raise
+        else:
+            await self.commit_transaction(transaction_id)
+
+    async def sweep_stale_pending(self, max_age_hours: float = 24.0) -> int:
+        """Marca ROLLED_BACK las transacciones PENDING más viejas que el umbral.
+
+        Una fila PENDING que sobrevive de una sesión anterior es una transacción
+        huérfana (crash o excepción sin rollback): nunca va a confirmarse.
+
+        Args:
+            max_age_hours: Antigüedad mínima (horas) para considerar huérfana.
+
+        Returns:
+            Cantidad de transacciones barridas.
+        """
+        db = await self._ensure_connected()
+
+        async with self._lock:
+            try:
+                cursor = await db.execute(
+                    """
+                    UPDATE transactions
+                    SET status = ?, rolled_back_at = datetime('now')
+                    WHERE status = ? AND created_at < datetime('now', ?)
+                    """,
+                    (
+                        TransactionStatus.ROLLED_BACK.value,
+                        TransactionStatus.PENDING.value,
+                        f"-{max_age_hours} hours",
+                    ),
+                )
+                await db.commit()
+            except sqlite3.Error as e:
+                raise JournalTransactionError(f"Failed to sweep stale transactions: {e}") from e
+
+        count = cursor.rowcount
+        if count > 0:
+            logger.warning(
+                "Journal: %d stale PENDING transaction(s) swept to ROLLED_BACK (older than %.1fh)",
+                count,
+                max_age_hours,
+            )
+        return count
 
     async def get_transaction(self, transaction_id: int) -> Transaction | None:
         """

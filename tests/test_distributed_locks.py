@@ -18,6 +18,7 @@ from sky_claw.antigravity.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
     LockInfo,
+    LockLeaseLostError,
     SnapshotTransactionLock,
 )
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
@@ -697,3 +698,99 @@ def test_lock_info_remaining_ttl_positive_when_active() -> None:
     )
     assert not info.is_expired
     assert info.remaining_ttl > 0
+
+
+# =============================================================================
+# DistributedLockManager — renew_lock (hardening jun-2026)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_renew_lock_extends_live_lease(lock_manager: DistributedLockManager) -> None:
+    """renew_lock extiende expires_at de un lease vivo del mismo agente."""
+    await lock_manager.acquire_lock("res-renew", "agent-1", ttl=2.0)
+    before = await lock_manager.get_lock_info("res-renew")
+    assert before is not None
+
+    renewed = await lock_manager.renew_lock("res-renew", "agent-1", ttl=10.0)
+
+    assert renewed is True
+    after = await lock_manager.get_lock_info("res-renew")
+    assert after is not None
+    assert after.expires_at > before.expires_at
+
+
+@pytest.mark.asyncio
+async def test_renew_lock_returns_false_for_expired_lease(
+    lock_manager: DistributedLockManager,
+) -> None:
+    """Un lease ya expirado no puede renovarse — el holder perdió la exclusividad."""
+    await lock_manager.acquire_lock("res-expired", "agent-1", ttl=0.05)
+    await asyncio.sleep(0.15)
+
+    assert await lock_manager.renew_lock("res-expired", "agent-1") is False
+
+
+@pytest.mark.asyncio
+async def test_renew_lock_returns_false_for_other_agent(
+    lock_manager: DistributedLockManager,
+) -> None:
+    """Solo el agente dueño del lease puede renovarlo."""
+    await lock_manager.acquire_lock("res-owned", "agent-1", ttl=5.0)
+
+    assert await lock_manager.renew_lock("res-owned", "agent-2") is False
+
+
+# =============================================================================
+# SnapshotTransactionLock — heartbeat auto-renew (hardening jun-2026)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_snapshot_lock_heartbeat_keeps_lease_alive(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+) -> None:
+    """Una operación más larga que el TTL no pierde el lease: el heartbeat renueva.
+
+    Sin heartbeat, dormir 2.5x TTL dentro del contexto dejaría el lease expirado
+    y un segundo agente podría adquirir el mismo recurso (dos escritores).
+    """
+    async with SnapshotTransactionLock(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        resource_id="res-hb",
+        agent_id="holder",
+        ttl=0.4,
+    ):
+        await asyncio.sleep(1.0)  # 2.5x TTL — el heartbeat debe haber renovado
+        with pytest.raises(LockAcquisitionError):
+            await lock_manager.acquire_lock("res-hb", "intruder", ttl=0.4)
+
+    # Tras la salida limpia el lock se libera y otro agente puede adquirirlo.
+    info = await lock_manager.acquire_lock("res-hb", "intruder", ttl=0.4)
+    assert info.agent_id == "intruder"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_lock_lease_lost_raises_on_clean_exit(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+) -> None:
+    """Si el renew falla (lease perdido), la salida limpia debe avisar al caller.
+
+    El holder pudo haber competido con otro escritor — reportar éxito sería
+    mentir sobre la exclusividad de la operación.
+    """
+    with pytest.raises(LockLeaseLostError):
+        async with SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id="res-lost",
+            agent_id="holder",
+            ttl=0.45,
+        ) as ctx:
+            # Simula que otro proceso limpió/robó el lock (force_release admin).
+            await lock_manager.force_release("res-lost")
+            await asyncio.sleep(0.6)  # el heartbeat detecta el renew fallido
+            assert ctx.lease_lost is True
