@@ -10,6 +10,7 @@ the cached detector) so that:
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from collections.abc import Callable
 from typing import Any
@@ -22,7 +23,9 @@ class ScanAssetConflictsStrategy:
         self.scan_callable = scan_callable
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
-        conflicts = self.scan_callable()
+        # The scan walks the whole MO2 VFS with synchronous I/O (rglob + MD5);
+        # run it off-loop or it starves the event loop for the entire scan.
+        conflicts = await asyncio.to_thread(self.scan_callable)
         return {
             "status": "success",
             "conflicts": [dataclasses.asdict(c) for c in conflicts],
@@ -36,7 +39,9 @@ class ScanAssetConflictsJsonStrategy:
         self.scan_json_callable = scan_json_callable
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
+        # Same blocking profile as ScanAssetConflictsStrategy.
+        json_report = await asyncio.to_thread(self.scan_json_callable)
         return {
             "status": "success",
-            "json_report": self.scan_json_callable(),
+            "json_report": json_report,
         }
