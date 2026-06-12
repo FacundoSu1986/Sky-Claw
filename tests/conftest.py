@@ -82,12 +82,16 @@ def _reset_governance_singleton() -> Iterator[None]:
 
     Tests that call ``GovernanceManager.get_instance()`` would otherwise leak
     a base_path-bound instance into unrelated tests (order-dependent failures).
+    Mutates under the same class lock ``get_instance()`` uses, so a background
+    thread mid-``get_instance()`` never observes a torn singleton.
     """
     from sky_claw.antigravity.security.governance import GovernanceManager
 
-    GovernanceManager._instance = None
+    with GovernanceManager._lock:
+        GovernanceManager._instance = None
     yield
-    GovernanceManager._instance = None
+    with GovernanceManager._lock:
+        GovernanceManager._instance = None
 
 
 @pytest.fixture()

@@ -86,3 +86,33 @@ async def test_lifecycle_shutdown_runs_even_if_registry_close_raises(
         await close_registry_then_lifecycle(_ExplodingRegistry(), lifecycle)
 
     assert lifecycle._connections == {}, "shutdown_all() must have closed all connections"
+
+
+class _ExplodingLifecycle:
+    """Lifecycle stub whose shutdown_all() fails, simulating a double teardown error."""
+
+    async def shutdown_all(self) -> None:
+        raise OSError("shutdown failed")
+
+
+class _OkRegistry:
+    """Registry stub whose close() succeeds."""
+
+    async def close(self) -> None:
+        pass
+
+
+async def test_close_error_propagates_even_if_shutdown_also_fails() -> None:
+    """A shutdown_all() failure must not mask the original close() error.
+
+    The close() exception is the root cause of the teardown failure; the
+    shutdown error is secondary and gets logged instead of propagated.
+    """
+    with pytest.raises(RuntimeError, match="close failed"):
+        await close_registry_then_lifecycle(_ExplodingRegistry(), _ExplodingLifecycle())
+
+
+async def test_shutdown_error_propagates_when_close_succeeds() -> None:
+    """With a clean close(), a shutdown_all() failure is the primary error."""
+    with pytest.raises(OSError, match="shutdown failed"):
+        await close_registry_then_lifecycle(_OkRegistry(), _ExplodingLifecycle())

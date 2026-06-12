@@ -8,12 +8,15 @@ failure immediate and attributable instead of a silent hang.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleManager
+
+logger = logging.getLogger(__name__)
 
 
 class _SupportsAsyncClose(Protocol):
@@ -44,10 +47,19 @@ async def close_registry_then_lifecycle(
 
     A sequential ``await registry.close(); await lifecycle.shutdown_all()``
     skips the lifecycle shutdown when ``close()`` raises, leaving non-daemon
-    aiosqlite worker threads alive. The nested ``finally`` closes them no
-    matter what; the original exception still propagates.
+    aiosqlite worker threads alive. Here shutdown always runs, and if BOTH
+    steps fail the ``close()`` exception propagates (root cause) while the
+    secondary shutdown failure is logged instead of masking it.
     """
     try:
         await registry.close()
-    finally:
+    except BaseException:
+        try:
+            await lifecycle.shutdown_all()
+        except Exception:
+            logger.exception(
+                "lifecycle.shutdown_all() also failed during teardown — the original close() error takes precedence"
+            )
+        raise
+    else:
         await lifecycle.shutdown_all()
