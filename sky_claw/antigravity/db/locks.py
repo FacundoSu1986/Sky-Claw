@@ -438,7 +438,7 @@ class DistributedLockManager:
             ) as cursor:
                 renewed = cursor.rowcount > 0
             await conn.commit()
-        except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
+        except sqlite3.Error as exc:
             logger.warning(
                 "Lock renewal DB error for '%s': %s",
                 resource_id,
@@ -678,9 +678,11 @@ class SnapshotTransactionLock:
 
         A lost lease (heartbeat renewal failed) raises
         :class:`LockLeaseLostError` on a CLEAN exit only — a body exception
-        always takes precedence and is never masked.  Snapshots are NOT rolled
-        back on lease loss: another agent may already have mutated the files,
-        and restoring ours would clobber theirs.
+        always takes precedence and is never masked.  On a CLEAN exit without
+        ``force_rollback``, snapshots are NOT rolled back when the lease was
+        lost: another agent may already have mutated the files, and restoring
+        ours would clobber theirs.  If the body raised or ``force_rollback``
+        is set, snapshots are still rolled back regardless of lease loss.
         """
         await self._stop_heartbeat()
         try:
