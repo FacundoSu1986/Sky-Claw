@@ -129,7 +129,8 @@ no_implicit_optional = true
 # Probed clean — 0 violations across the 196 checked files — so it's a free
 # regression guard. NOTE: warn_unreachable is deliberately NOT enabled: it
 # false-positives on the correct double-checked-locking idiom in
-# core/contracts.py (mypy can't model cross-thread mutation of the flag).
+# sky_claw/antigravity/core/contracts.py (mypy can't model cross-thread
+# mutation of the flag).
 strict_equality = true
 ignore_missing_imports = true
 show_error_codes = true
