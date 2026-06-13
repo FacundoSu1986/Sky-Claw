@@ -188,3 +188,99 @@ async def test_stop_waits_for_backpressure_dlq_enqueue() -> None:
             release_enqueue.set()
             hold_handler.set()
             await bus.stop()
+
+
+# ---------------------------------------------------------------------------
+# Hardening jun-2026: cap de DLQ elevado + contadores de drops observables
+# ---------------------------------------------------------------------------
+
+
+def test_max_dlq_tasks_cap_is_200() -> None:
+    """El cap de enqueues DLQ pendientes sube de 50 a 200 (auditoría jun-2026)."""
+    assert CoreEventBus._MAX_DLQ_TASKS == 200
+
+
+@pytest.mark.asyncio
+async def test_backpressure_drop_increments_counter() -> None:
+    """Cada dispatch descartado por backpressure incrementa bus.backpressure_drops."""
+    dlq = _make_dlq_mock()
+    bus = CoreEventBus(dlq=dlq)
+    hold = asyncio.Event()
+
+    async def slow_handler(event: Event) -> None:  # noqa: ARG001
+        await hold.wait()
+
+    bus.subscribe("probe.*", slow_handler)
+
+    original_cap = CoreEventBus._MAX_PENDING_TASKS
+    CoreEventBus._MAX_PENDING_TASKS = 1
+
+    await bus.start()
+    try:
+        await bus.publish(Event(topic="probe.fill", payload={"seq": 1}))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert bus.backpressure_drops == 0
+
+        await bus.publish(Event(topic="probe.drop", payload={"seq": 2}))
+        await poll_until(
+            lambda: bus.backpressure_drops >= 1,
+            timeout=3.0,
+            msg="backpressure_drops debe incrementarse al descartar un dispatch",
+        )
+    finally:
+        CoreEventBus._MAX_PENDING_TASKS = original_cap
+        hold.set()
+        await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_dlq_overflow_increments_events_lost() -> None:
+    """Un evento perdido por saturación de la ruta DLQ incrementa bus.events_lost."""
+    dlq = _make_dlq_mock()
+    bus = CoreEventBus(dlq=dlq)
+    hold_handler = asyncio.Event()
+    enqueue_started = asyncio.Event()
+    release_enqueue = asyncio.Event()
+
+    async def slow_handler(event: Event) -> None:  # noqa: ARG001
+        await hold_handler.wait()
+
+    async def slow_enqueue(*args: object) -> None:
+        enqueue_started.set()
+        await release_enqueue.wait()
+
+    dlq.enqueue.side_effect = slow_enqueue
+    bus.subscribe("probe.*", slow_handler)
+
+    original_pending_cap = CoreEventBus._MAX_PENDING_TASKS
+    original_dlq_cap = CoreEventBus._MAX_DLQ_TASKS
+    CoreEventBus._MAX_PENDING_TASKS = 1
+    CoreEventBus._MAX_DLQ_TASKS = 1
+
+    await bus.start()
+    try:
+        await bus.publish(Event(topic="probe.fill", payload={"seq": 1}))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        await bus.publish(Event(topic="probe.drop.1", payload={"seq": 2}))
+        await poll_until(
+            lambda: enqueue_started.is_set(),
+            timeout=3.0,
+            msg="DLQ.enqueue debe quedar en curso para saturar la ruta DLQ",
+        )
+
+        assert bus.events_lost == 0
+
+        await bus.publish(Event(topic="probe.drop.2", payload={"seq": 3}))
+        await bus._queue.join()
+
+        assert bus.events_lost >= 1
+    finally:
+        CoreEventBus._MAX_PENDING_TASKS = original_pending_cap
+        CoreEventBus._MAX_DLQ_TASKS = original_dlq_cap
+        release_enqueue.set()
+        hold_handler.set()
+        await bus.stop()

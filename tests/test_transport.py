@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from sky_claw.antigravity.comms._transport import (
+    DEFAULT_MAX_MESSAGE_BYTES,
     AuthError,
     InsecureTransportError,
     assert_safe_ws_url,
@@ -222,3 +223,36 @@ class TestAuthenticatedConnect:
         assert issubclass(AuthError, ConnectionRefusedError)
         err = AuthError("test")
         assert isinstance(err, ConnectionRefusedError)
+
+
+# ---------------------------------------------------------------------------
+# authenticated_connect — default max_size (DoS hardening jun-2026)
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultMaxMessageSize:
+    """authenticated_connect debe acotar el tamaño de frame por defecto.
+
+    Sin límite explícito quedaba el default implícito de la librería; el
+    contrato del transporte ahora fija 10 MiB salvo override del caller.
+    """
+
+    def _make_connect_mock(self):
+        mock = MagicMock(name="websockets.connect")
+        mock.return_value = MagicMock(name="connection_ctx")
+        return mock
+
+    def test_default_max_size_applied(self):
+        mock_connect = self._make_connect_mock()
+        with patch("sky_claw.antigravity.comms._transport.websockets.connect", mock_connect):
+            authenticated_connect("ws://localhost:9000", auth_token="tok-abc")
+        _, kwargs = mock_connect.call_args
+        assert kwargs["max_size"] == DEFAULT_MAX_MESSAGE_BYTES
+        assert DEFAULT_MAX_MESSAGE_BYTES == 10 * 1024 * 1024
+
+    def test_caller_can_override_max_size(self):
+        mock_connect = self._make_connect_mock()
+        with patch("sky_claw.antigravity.comms._transport.websockets.connect", mock_connect):
+            authenticated_connect("ws://localhost:9000", auth_token="tok-abc", max_size=1024)
+        _, kwargs = mock_connect.call_args
+        assert kwargs["max_size"] == 1024

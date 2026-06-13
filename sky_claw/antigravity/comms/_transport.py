@@ -36,11 +36,18 @@ import websockets
 from sky_claw.antigravity.security.auth_token_manager import AuthTokenManager
 
 __all__ = [
+    "DEFAULT_MAX_MESSAGE_BYTES",
     "AuthError",
     "InsecureTransportError",
     "assert_safe_ws_url",
     "authenticated_connect",
 ]
+
+#: Cap for a single inbound WS frame (DoS hardening). The websockets library
+#: default is an implicit 1 MiB; tool reports (conflictos, dry-run diffs) can
+#: legitimately exceed it, so the transport contract pins an explicit 10 MiB.
+#: Callers may override via the ``max_size`` kwarg.
+DEFAULT_MAX_MESSAGE_BYTES: int = 10 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +220,9 @@ def authenticated_connect(
     headers: dict[str, str] = dict(connect_kwargs.pop("additional_headers", None) or {})
     if token:
         headers["X-Auth-Token"] = token
+
+    # DoS hardening: bound inbound frames unless the caller overrides.
+    connect_kwargs.setdefault("max_size", DEFAULT_MAX_MESSAGE_BYTES)
 
     return websockets.connect(
         safe_url,

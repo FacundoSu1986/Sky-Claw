@@ -85,7 +85,11 @@ class CoreEventBus:
     # Exceeding this limit causes the offending dispatch to be dropped with a
     # WARNING instead of spawning an unbounded number of tasks (backpressure).
     _MAX_PENDING_TASKS: int = 50
-    _MAX_DLQ_TASKS: int = 50
+    # DLQ enqueue tasks are tiny (one INSERT each); a cap 4x the dispatch cap
+    # absorbs bursts where every dropped dispatch needs a DLQ reroute without
+    # losing events (auditoría jun-2026: con 50/50 una ráfaga perdía eventos
+    # con solo un log CRITICAL).
+    _MAX_DLQ_TASKS: int = 200
 
     def __init__(
         self,
@@ -114,6 +118,19 @@ class CoreEventBus:
         self._dlq = dlq
         self._require_dlq = require_dlq
         self._handler_index: dict[str, Subscriber] = {}
+        # Contadores observables de degradación (auditoría jun-2026).
+        self._backpressure_drops: int = 0
+        self._events_lost: int = 0
+
+    @property
+    def backpressure_drops(self) -> int:
+        """Dispatches descartados por el cap de tasks pendientes (reruteados a DLQ o perdidos)."""
+        return self._backpressure_drops
+
+    @property
+    def events_lost(self) -> int:
+        """Eventos perdidos definitivamente: sin DLQ, ruta DLQ saturada o enqueue fallido."""
+        return self._events_lost
 
     async def start(self) -> None:
         """Inicia el loop de dispatch y el worker DLQ (si hay DLQ) como tareas de fondo."""
@@ -193,6 +210,7 @@ class CoreEventBus:
                 if fnmatch.fnmatch(event.topic, pattern):
                     if len(self._pending_tasks) >= self._MAX_PENDING_TASKS:
                         cb_name = getattr(callback, "__name__", repr(callback))
+                        self._backpressure_drops += 1
                         logger.warning(
                             "Event bus backpressure: %d pending tasks — dropping dispatch for '%s' handler '%s'",
                             len(self._pending_tasks),
@@ -203,6 +221,8 @@ class CoreEventBus:
                         # silencioso si no hay DLQ (backward compat).
                         if self._dlq is not None:
                             self._schedule_backpressure_drop(event, callback)
+                        else:
+                            self._events_lost += 1
                         continue
                     task = asyncio.create_task(self._safe_execute(callback, event))
                     self._pending_tasks.add(task)
@@ -213,6 +233,7 @@ class CoreEventBus:
     def _schedule_backpressure_drop(self, event: Event, callback: Subscriber) -> None:
         """Agenda un enqueue DLQ acotado para un dispatch descartado."""
         if len(self._dlq_tasks) >= self._MAX_DLQ_TASKS:
+            self._events_lost += 1
             logger.critical(
                 "DLQ backpressure: %d pending enqueue tasks — evento '%s' handler '%s' perdido",
                 len(self._dlq_tasks),
@@ -240,6 +261,7 @@ class CoreEventBus:
         try:
             await self._dlq.enqueue(event, callback, exc)  # type: ignore[union-attr]
         except Exception:
+            self._events_lost += 1
             logger.critical(
                 "DLQ enqueue falló bajo backpressure para evento '%s' handler '%s' — evento perdido",
                 event.topic,
@@ -264,6 +286,7 @@ class CoreEventBus:
                 try:
                     await self._dlq.enqueue(event, callback, exc)
                 except Exception:
+                    self._events_lost += 1
                     logger.critical(
                         "DLQ enqueue falló para evento '%s' handler '%s' — evento perdido",
                         event.topic,

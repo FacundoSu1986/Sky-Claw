@@ -9,6 +9,7 @@ from sky_claw.antigravity.db.journal import (
     OperationJournal,
     OperationStatus,
     OperationType,
+    TransactionStatus,
 )
 from sky_claw.antigravity.db.rollback_manager import RollbackManager
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
@@ -158,3 +159,87 @@ class TestRollbackManager:
         result = await rollback_manager.undo_last_operation("test_agent")
         assert result.success
         assert test_file.read_text() == "original content"
+
+
+class TestTransactionContextManager:
+    """transaction() — commit/rollback garantizado (hardening jun-2026).
+
+    Sin context manager, una excepción entre begin_transaction() y
+    commit_transaction() deja la fila PENDING para siempre.
+    """
+
+    @pytest.mark.asyncio
+    async def test_transaction_commits_on_clean_exit(self, journal):
+        async with journal.transaction("ctx tx ok") as tx_id:
+            assert tx_id > 0
+
+        tx = await journal.get_transaction(tx_id)
+        assert tx is not None
+        assert tx.status is TransactionStatus.COMMITTED
+
+    @pytest.mark.asyncio
+    async def test_transaction_rolls_back_on_exception(self, journal):
+        with pytest.raises(RuntimeError, match="boom"):
+            async with journal.transaction("ctx tx fail") as tx_id:
+                raise RuntimeError("boom")
+
+        tx = await journal.get_transaction(tx_id)
+        assert tx is not None
+        assert tx.status is TransactionStatus.ROLLED_BACK
+        assert tx.rolled_back_at is not None
+
+    @pytest.mark.asyncio
+    async def test_rollback_transaction_marks_pending_tx(self, journal):
+        tx_id = await journal.begin_transaction("manual rollback")
+
+        await journal.rollback_transaction(tx_id)
+
+        tx = await journal.get_transaction(tx_id)
+        assert tx is not None
+        assert tx.status is TransactionStatus.ROLLED_BACK
+        assert tx.rolled_back_at is not None
+
+    @pytest.mark.asyncio
+    async def test_sweep_stale_pending_rolls_back_old_transactions(self, journal):
+        """El sweeper marca ROLLED_BACK solo las PENDING más viejas que el umbral."""
+        tx_old = await journal.begin_transaction("stale orphan")
+        await journal._db.execute(
+            "UPDATE transactions SET created_at = datetime('now', '-48 hours') WHERE transaction_id = ?",
+            (tx_old,),
+        )
+        await journal._db.commit()
+        tx_new = await journal.begin_transaction("fresh")
+
+        swept = await journal.sweep_stale_pending(max_age_hours=24.0)
+
+        assert swept == 1
+        assert (await journal.get_transaction(tx_old)).status is TransactionStatus.ROLLED_BACK
+        assert (await journal.get_transaction(tx_new)).status is TransactionStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_open_sweeps_stale_pending(self, tmp_path):
+        """Las PENDING huérfanas de una sesión anterior se barren al abrir."""
+        db_path = tmp_path / "sweep_on_open.db"
+        lifecycle = DatabaseLifecycleManager(
+            db_paths=[],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        try:
+            j1 = OperationJournal(db_path, lifecycle=lifecycle)
+            await j1.open()
+            tx_id = await j1.begin_transaction("orphan from previous session")
+            await j1._db.execute(
+                "UPDATE transactions SET created_at = datetime('now', '-48 hours') WHERE transaction_id = ?",
+                (tx_id,),
+            )
+            await j1._db.commit()
+            await j1.close()
+
+            j2 = OperationJournal(db_path, lifecycle=lifecycle)
+            await j2.open()
+            tx = await j2.get_transaction(tx_id)
+            assert tx is not None
+            assert tx.status is TransactionStatus.ROLLED_BACK
+            await j2.close()
+        finally:
+            await lifecycle.shutdown_all()

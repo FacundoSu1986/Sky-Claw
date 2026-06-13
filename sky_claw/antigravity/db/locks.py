@@ -88,6 +88,17 @@ class SnapshotRollbackError(LockError):
     """
 
 
+class LockLeaseLostError(LockError):
+    """Raised on clean exit when the heartbeat could not renew the lease.
+
+    A lost lease means another agent may have acquired the resource while this
+    holder was still working — the operation may have raced with a concurrent
+    writer, so reporting success would lie about its exclusivity.  Raised only
+    when the context body itself did not raise (a body exception always takes
+    precedence and is never masked).
+    """
+
+
 # =============================================================================
 # CONSTANTS
 # =============================================================================
@@ -121,6 +132,12 @@ ON CONFLICT(resource_id) DO UPDATE SET
     acquired_at = excluded.acquired_at,
     expires_at  = excluded.expires_at
 WHERE resource_locks.expires_at < excluded.acquired_at
+"""
+
+_RENEW_SQL = """\
+UPDATE resource_locks
+SET expires_at = ?
+WHERE resource_id = ? AND agent_id = ? AND expires_at > ?
 """
 
 _RELEASE_SQL = """\
@@ -393,6 +410,55 @@ class DistributedLockManager:
             )
             raise LockReleaseError(f"Failed to release lock '{resource_id}': {exc}") from exc
 
+    async def renew_lock(
+        self,
+        resource_id: str,
+        agent_id: str,
+        ttl: float | None = None,
+    ) -> bool:
+        """Extend the lease of a lock still held by *agent_id*.
+
+        Atomic single UPDATE: the ``AND expires_at > now`` clause guarantees an
+        already-expired lease is never resurrected (another agent may have
+        legitimately reclaimed the resource in the meantime).
+
+        Returns
+        -------
+        bool
+            ``True`` if the lease was extended; ``False`` if the lock no longer
+            belongs to *agent_id* or already expired (lease lost).
+        """
+        conn = self._ensure_conn()
+        ttl_seconds = ttl if ttl is not None else self._default_ttl
+        now = time.time()
+        try:
+            async with conn.execute(
+                _RENEW_SQL,
+                (now + ttl_seconds, resource_id, agent_id, now),
+            ) as cursor:
+                renewed = cursor.rowcount > 0
+            await conn.commit()
+        except sqlite3.Error as exc:
+            # Best-effort renewal: ANY sqlite failure (not just Operational/
+            # Integrity) degrades to "lease lost" (False) rather than
+            # propagating. The heartbeat task calls this on a timer; an
+            # uncaught exception there would kill it silently and let the lease
+            # expire without flipping lease_lost. PR #181 review (Copilot).
+            logger.warning(
+                "Lock renewal DB error for '%s': %s",
+                resource_id,
+                exc,
+                extra={"resource_id": resource_id, "agent_id": agent_id},
+            )
+            return False
+
+        if not renewed:
+            logger.warning(
+                "Lock renewal failed — lease expired or owned by another agent",
+                extra={"resource_id": resource_id, "agent_id": agent_id},
+            )
+        return renewed
+
     async def force_release(self, resource_id: str) -> bool:
         """Force-release a lock regardless of agent ownership.
 
@@ -492,6 +558,11 @@ class SnapshotTransactionLock:
         occurred.  Powers dry-run / preview: run the chain for real inside the
         lock, capture the diff, then revert SIEMPRE.  Default False (production
         behavior — a clean exit keeps its mutations).
+    auto_renew:
+        If True (default), a background heartbeat renews the lease at TTL/3
+        intervals so operations longer than the TTL never lose exclusivity.
+        If a renewal fails (lease lost), ``lease_lost`` flips to True and a
+        clean exit raises :class:`LockLeaseLostError`.
     """
 
     def __init__(
@@ -505,6 +576,7 @@ class SnapshotTransactionLock:
         ttl: float | None = None,
         metadata: dict[str, Any] | None = None,
         force_rollback: bool = False,
+        auto_renew: bool = True,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -514,10 +586,18 @@ class SnapshotTransactionLock:
         self._ttl = ttl
         self._metadata = metadata
         self._force_rollback = force_rollback
+        self._auto_renew = auto_renew
 
         # Populated during __aenter__
         self.lock_info: LockInfo | None = None
         self.snapshots: list[SnapshotInfo] = []
+        self._heartbeat_task: asyncio.Task[None] | None = None
+        self._lease_lost = False
+
+    @property
+    def lease_lost(self) -> bool:
+        """True if the heartbeat could not renew the lease (exclusivity gone)."""
+        return self._lease_lost
 
     async def __aenter__(self) -> SnapshotTransactionLock:
         """Acquire the distributed lock, then create snapshots."""
@@ -552,7 +632,54 @@ class SnapshotTransactionLock:
             await self._safe_release()
             raise
 
+        if self._auto_renew:
+            self._heartbeat_task = asyncio.create_task(
+                self._heartbeat_loop(),
+                name=f"lock-heartbeat-{self._resource_id}",
+            )
+
         return self
+
+    async def _heartbeat_loop(self) -> None:
+        """Renew the lease at TTL/3 intervals until cancelled or lost.
+
+        A failed renewal (``False``) means the lease expired or was reclaimed:
+        the loop stops and ``lease_lost`` flips so the holder can abort instead
+        of racing a concurrent writer.  DB errors inside ``renew_lock`` are
+        already swallowed there (returning False), so a transient outage close
+        to expiry degrades to lease-lost rather than crashing the heartbeat.
+        """
+        assert self.lock_info is not None  # set by __aenter__ before the task starts
+        ttl_seconds = max(self.lock_info.expires_at - self.lock_info.acquired_at, 0.15)
+        interval = ttl_seconds / 3.0
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                renewed = await self._lock_manager.renew_lock(
+                    self._resource_id,
+                    self._agent_id,
+                    ttl=ttl_seconds,
+                )
+            except Exception:
+                # renew_lock() catches the full sqlite3.Error family and
+                # returns False, so this is a last-resort guard for a
+                # NON-sqlite escape (e.g. the connection being torn down
+                # mid-renewal during shutdown): degrade to lease-lost instead
+                # of letting this background task die silently.
+                logger.critical(
+                    "Lock heartbeat for '%s' crashed during renewal — treating lease as lost",
+                    self._resource_id,
+                    exc_info=True,
+                )
+                renewed = False
+            if not renewed:
+                self._lease_lost = True
+                logger.critical(
+                    "Lock lease LOST mid-operation — another agent may hold '%s' now",
+                    self._resource_id,
+                    extra={"resource_id": self._resource_id, "agent_id": self._agent_id},
+                )
+                return
 
     async def __aexit__(
         self,
@@ -566,13 +693,41 @@ class SnapshotTransactionLock:
         even on a CLEAN exit, reusing the same restore path as the exception
         case — no exceptions are raised for control flow.  The lock is ALWAYS
         released in ``finally``.
+
+        A lost lease (heartbeat renewal failed) raises
+        :class:`LockLeaseLostError` on a CLEAN exit only — a body exception
+        always takes precedence and is never masked.  Lease loss by itself
+        does NOT trigger the exception-path rollback (another agent may
+        already have mutated the files; restoring ours would clobber theirs),
+        but ``force_rollback=True`` (dry-run) still restores: the preview
+        no-mutation contract takes precedence, and the conflict is surfaced
+        via :class:`LockLeaseLostError` anyway.
         """
+        await self._stop_heartbeat()
         try:
             if exc_type is not None or self._force_rollback:
                 await self._rollback_snapshots(exc_val=exc_val)
         finally:
             # Always release the lock, even if rollback fails
             await self._safe_release()
+
+        if exc_type is None and self._lease_lost:
+            raise LockLeaseLostError(
+                f"Lease for '{self._resource_id}' (agent '{self._agent_id}') was lost "
+                "mid-operation — exclusivity cannot be guaranteed for this result"
+            )
+
+    async def _stop_heartbeat(self) -> None:
+        """Cancel the renewal heartbeat and wait for it to finish."""
+        if self._heartbeat_task is None:
+            return
+        self._heartbeat_task.cancel()
+        try:
+            await self._heartbeat_task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._heartbeat_task = None
 
     async def _rollback_snapshots(self, *, exc_val: BaseException | None = None) -> None:
         """Restore every snapshot in reverse creation order.

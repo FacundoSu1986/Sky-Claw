@@ -251,3 +251,27 @@ def test_redacts_aws_secret_in_structured_extra() -> None:
 
     assert "wJalrXUtn" not in str(record.context)
     assert record.context["region"] == "us-east-1"  # unrelated key untouched
+
+
+def test_redacts_credentials_in_url_query_strings() -> None:
+    """Gap jun-2026: credenciales en query strings que el patrón genérico no cubre.
+
+    El patrón key=value genérico exige \b antes del nombre (access_token no
+    matchea por el guion bajo) y no conoce key/sig/session. En URLs el valor
+    debe cortarse en '&' para no comerse parámetros vecinos no sensibles.
+    """
+    redact_filter = SecurityRedactionFilter()
+    text = (
+        "cb https://example.com/cb?access_token=abc123def456&state=ok "
+        "dl https://cdn.example.com/f.bsa?key=supersecretvalue&v=2 "
+        "signed https://files.example.com/a.bsa?sig=0123456789abcdef"
+    )
+
+    redacted = redact_filter._redact(text)
+
+    assert "abc123def456" not in redacted
+    assert "supersecretvalue" not in redacted
+    assert "0123456789abcdef" not in redacted
+    # Los parámetros no sensibles deben permanecer intactos.
+    assert "&state=ok" in redacted
+    assert "&v=2" in redacted

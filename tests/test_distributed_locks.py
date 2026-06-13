@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sqlite3
 import time
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,7 @@ from sky_claw.antigravity.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
     LockInfo,
+    LockLeaseLostError,
     SnapshotTransactionLock,
 )
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
@@ -697,3 +699,155 @@ def test_lock_info_remaining_ttl_positive_when_active() -> None:
     )
     assert not info.is_expired
     assert info.remaining_ttl > 0
+
+
+# =============================================================================
+# DistributedLockManager — renew_lock (hardening jun-2026)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_renew_lock_extends_live_lease(lock_manager: DistributedLockManager) -> None:
+    """renew_lock extiende expires_at de un lease vivo del mismo agente."""
+    await lock_manager.acquire_lock("res-renew", "agent-1", ttl=2.0)
+    before = await lock_manager.get_lock_info("res-renew")
+    assert before is not None
+
+    renewed = await lock_manager.renew_lock("res-renew", "agent-1", ttl=10.0)
+
+    assert renewed is True
+    after = await lock_manager.get_lock_info("res-renew")
+    assert after is not None
+    assert after.expires_at > before.expires_at
+
+
+@pytest.mark.asyncio
+async def test_renew_lock_returns_false_for_expired_lease(
+    lock_manager: DistributedLockManager,
+) -> None:
+    """Un lease ya expirado no puede renovarse — el holder perdió la exclusividad."""
+    await lock_manager.acquire_lock("res-expired", "agent-1", ttl=0.05)
+    await asyncio.sleep(0.15)
+
+    assert await lock_manager.renew_lock("res-expired", "agent-1") is False
+
+
+@pytest.mark.asyncio
+async def test_renew_lock_returns_false_for_other_agent(
+    lock_manager: DistributedLockManager,
+) -> None:
+    """Solo el agente dueño del lease puede renovarlo."""
+    await lock_manager.acquire_lock("res-owned", "agent-1", ttl=5.0)
+
+    assert await lock_manager.renew_lock("res-owned", "agent-2") is False
+
+
+@pytest.mark.asyncio
+async def test_renew_lock_swallows_unexpected_sqlite_error(
+    lock_manager: DistributedLockManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """renew_lock es best-effort: CUALQUIER sqlite3.Error (no solo
+    Operational/Integrity) degrada a False en vez de propagarse.
+
+    PR #181 review (Copilot): si una subclase fuera del tuple legacy
+    (p.ej. ProgrammingError por conexión cerrada) escapara, mataría el
+    heartbeat sin marcar lease_lost. Acá se ejercita el layer de renew_lock
+    directamente (el test del heartbeat parchea renew_lock entero).
+    """
+    await lock_manager.acquire_lock("res-dberr", "agent-1", ttl=5.0)
+
+    class _BoomConn:
+        def execute(self, *args: object, **kwargs: object) -> object:
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+
+    # _ensure_conn() devuelve la conn aiosqlite viva; la cambiamos por una cuyo
+    # execute() tira un sqlite3.Error que el catch viejo no cubría.
+    monkeypatch.setattr(lock_manager, "_ensure_conn", lambda: _BoomConn())
+
+    assert await lock_manager.renew_lock("res-dberr", "agent-1") is False
+
+
+# =============================================================================
+# SnapshotTransactionLock — heartbeat auto-renew (hardening jun-2026)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_snapshot_lock_heartbeat_keeps_lease_alive(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+) -> None:
+    """Una operación más larga que el TTL no pierde el lease: el heartbeat renueva.
+
+    Sin heartbeat, dormir 2.5x TTL dentro del contexto dejaría el lease expirado
+    y un segundo agente podría adquirir el mismo recurso (dos escritores).
+    """
+    async with SnapshotTransactionLock(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        resource_id="res-hb",
+        agent_id="holder",
+        ttl=0.4,
+    ):
+        await asyncio.sleep(1.0)  # 2.5x TTL — el heartbeat debe haber renovado
+        with pytest.raises(LockAcquisitionError):
+            await lock_manager.acquire_lock("res-hb", "intruder", ttl=0.4)
+
+    # Tras la salida limpia el lock se libera y otro agente puede adquirirlo.
+    info = await lock_manager.acquire_lock("res-hb", "intruder", ttl=0.4)
+    assert info.agent_id == "intruder"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_lock_lease_lost_raises_on_clean_exit(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+) -> None:
+    """Si el renew falla (lease perdido), la salida limpia debe avisar al caller.
+
+    El holder pudo haber competido con otro escritor — reportar éxito sería
+    mentir sobre la exclusividad de la operación.
+    """
+    with pytest.raises(LockLeaseLostError):
+        async with SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id="res-lost",
+            agent_id="holder",
+            ttl=0.45,
+        ) as ctx:
+            # Simula que otro proceso limpió/robó el lock (force_release admin).
+            await lock_manager.force_release("res-lost")
+            await asyncio.sleep(0.6)  # el heartbeat detecta el renew fallido
+            assert ctx.lease_lost is True
+
+
+@pytest.mark.asyncio
+async def test_snapshot_lock_heartbeat_survives_renew_crash(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Una excepción inesperada en renew_lock no mata el heartbeat en silencio.
+
+    Si la renovación crashea (p.ej. conexión cerrada), el lease va a expirar
+    igual: debe tratarse como lease perdido y reportarse en la salida limpia,
+    no morir como task exception nunca recuperada.
+    """
+
+    async def exploding_renew(*args: object, **kwargs: object) -> bool:
+        raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+
+    monkeypatch.setattr(lock_manager, "renew_lock", exploding_renew)
+
+    with pytest.raises(LockLeaseLostError):
+        async with SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id="res-crash",
+            agent_id="holder",
+            ttl=0.3,
+        ) as ctx:
+            await asyncio.sleep(0.4)  # al menos un beat (intervalo 0.1s)
+            assert ctx.lease_lost is True

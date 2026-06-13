@@ -63,6 +63,17 @@ _REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"(?i)(\baws[_-]secret[_-]access[_-]key)([\"'\s:=]+)([A-Za-z0-9/+=]{40})"),
         r"\1\2[REDACTED]",
     ),
+    # Credentials in URL query strings (access_token=, key=, sig=, …) — names
+    # the generic key=value pattern below misses: \b fails after '_'
+    # (access_token), and key/sig/session/auth are not in its alternation.
+    # The value class excludes '&' so neighbouring query params survive.
+    (
+        re.compile(
+            r"(?i)([?&](?:access[_-]?token|refresh[_-]?token|id[_-]?token"
+            r"|client[_-]?secret|signature|session|auth|key|sig)=)[^\s&\"',;}{]+"
+        ),
+        r"\1[REDACTED]",
+    ),
     (
         re.compile(r"(?i)\b(api[_-]?key|apikey|x-api-key|token|secret|password)([\"'\s:=]+)([^\s\"',;}{]{8,})"),
         r"\1\2[REDACTED]",

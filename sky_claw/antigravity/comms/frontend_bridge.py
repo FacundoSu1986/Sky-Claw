@@ -37,7 +37,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from sky_claw.antigravity.agent.providers import ProviderConfigError, create_provider
-from sky_claw.antigravity.comms._transport import assert_safe_ws_url
+from sky_claw.antigravity.comms._transport import DEFAULT_MAX_MESSAGE_BYTES, assert_safe_ws_url
 from sky_claw.config import Config
 
 if TYPE_CHECKING:
@@ -189,7 +189,11 @@ class FrontendBridge:
 
         while self._is_running:
             try:
-                async with websockets.connect(self.gateway_url, open_timeout=10) as ws:
+                async with websockets.connect(
+                    self.gateway_url,
+                    open_timeout=10,
+                    max_size=DEFAULT_MAX_MESSAGE_BYTES,
+                ) as ws:
                     self.ws = ws
                     await self._authenticate(ws)
                     logger.info("✅ Enlace establecido con Gateway (Frontend Bridge).")
