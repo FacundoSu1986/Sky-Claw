@@ -439,6 +439,11 @@ class DistributedLockManager:
                 renewed = cursor.rowcount > 0
             await conn.commit()
         except sqlite3.Error as exc:
+            # Best-effort renewal: ANY sqlite failure (not just Operational/
+            # Integrity) degrades to "lease lost" (False) rather than
+            # propagating. The heartbeat task calls this on a timer; an
+            # uncaught exception there would kill it silently and let the lease
+            # expire without flipping lease_lost. PR #181 review (Copilot).
             logger.warning(
                 "Lock renewal DB error for '%s': %s",
                 resource_id,
@@ -649,11 +654,24 @@ class SnapshotTransactionLock:
         interval = ttl_seconds / 3.0
         while True:
             await asyncio.sleep(interval)
-            renewed = await self._lock_manager.renew_lock(
-                self._resource_id,
-                self._agent_id,
-                ttl=ttl_seconds,
-            )
+            try:
+                renewed = await self._lock_manager.renew_lock(
+                    self._resource_id,
+                    self._agent_id,
+                    ttl=ttl_seconds,
+                )
+            except Exception:
+                # renew_lock() catches the full sqlite3.Error family and
+                # returns False, so this is a last-resort guard for a
+                # NON-sqlite escape (e.g. the connection being torn down
+                # mid-renewal during shutdown): degrade to lease-lost instead
+                # of letting this background task die silently.
+                logger.critical(
+                    "Lock heartbeat for '%s' crashed during renewal — treating lease as lost",
+                    self._resource_id,
+                    exc_info=True,
+                )
+                renewed = False
             if not renewed:
                 self._lease_lost = True
                 logger.critical(
@@ -678,11 +696,12 @@ class SnapshotTransactionLock:
 
         A lost lease (heartbeat renewal failed) raises
         :class:`LockLeaseLostError` on a CLEAN exit only — a body exception
-        always takes precedence and is never masked.  On a CLEAN exit without
-        ``force_rollback``, snapshots are NOT rolled back when the lease was
-        lost: another agent may already have mutated the files, and restoring
-        ours would clobber theirs.  If the body raised or ``force_rollback``
-        is set, snapshots are still rolled back regardless of lease loss.
+        always takes precedence and is never masked.  Lease loss by itself
+        does NOT trigger the exception-path rollback (another agent may
+        already have mutated the files; restoring ours would clobber theirs),
+        but ``force_rollback=True`` (dry-run) still restores: the preview
+        no-mutation contract takes precedence, and the conflict is surfaced
+        via :class:`LockLeaseLostError` anyway.
         """
         await self._stop_heartbeat()
         try:
