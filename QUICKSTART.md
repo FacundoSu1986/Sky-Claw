@@ -3,7 +3,7 @@
 ¡Bienvenido a la versión moderna de Sky-Claw! Esta guía te ayudará a configurar el agente en pocos minutos.
 
 ## 1. Requisitos
-- **Python 3.14+** (recomendado).
+- **Python 3.11 o 3.12** (lo que valida CI; `pyproject.toml` exige `>=3.11`).
 - **MO2 (Mod Organizer 2)** instalado y configurado para Skyrim Special Edition.
 - **Conexión a Internet** para descargar mods y contactar con la IA.
 
@@ -18,9 +18,9 @@ Sky-Claw ahora usa un asistente interactivo para que no tengas que editar archiv
 
 Corré el siguiente comando y seguí las instrucciones:
 ```bash
-python scripts/first_run.py
+python local_scripts/scripts/first_run.py
 ```
-*Aquí podrás elegir tu proveedor de IA (Claude, GPT, DeepSeek u Ollama) e ingresar tus API Keys.*
+*Aquí podrás elegir tu proveedor de IA (Claude/Anthropic, DeepSeek u Ollama) e ingresar tus API Keys.*
 
 ## 4. Modos de Ejecución
 
