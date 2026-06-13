@@ -16,6 +16,7 @@ import os
 import pathlib
 import shutil
 import stat
+import sys
 import uuid
 from collections.abc import AsyncGenerator, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock
@@ -29,6 +30,7 @@ from sky_claw.antigravity.core.db_lifecycle import (
 from sky_claw.antigravity.db.async_registry import AsyncModRegistry
 from sky_claw.antigravity.security.network_gateway import NetworkGateway
 from sky_claw.logging_config import correlation_id_var
+from tests._lifecycle_guard import close_registry_then_lifecycle, find_leaked_threads
 
 
 @pytest.fixture()
@@ -48,8 +50,9 @@ async def async_registry(tmp_path: pathlib.Path) -> AsyncGenerator[AsyncModRegis
     try:
         yield registry
     finally:
-        await registry.close()
-        await lifecycle.shutdown_all()
+        # Nested finally: shutdown_all() must run even if close() raises,
+        # otherwise non-daemon aiosqlite threads hang the session (CI 20-min timeout).
+        await close_registry_then_lifecycle(registry, lifecycle)
 
 
 @pytest.fixture()
@@ -71,6 +74,24 @@ def mock_network_gateway() -> MagicMock:
     gateway = MagicMock(spec=NetworkGateway)
     gateway.request = AsyncMock(return_value=mock_resp)
     return gateway
+
+
+@pytest.fixture(autouse=True)
+def _reset_governance_singleton() -> Iterator[None]:
+    """Reset the GovernanceManager singleton around every test.
+
+    Tests that call ``GovernanceManager.get_instance()`` would otherwise leak
+    a base_path-bound instance into unrelated tests (order-dependent failures).
+    Mutates under the same class lock ``get_instance()`` uses, so a background
+    thread mid-``get_instance()`` never observes a torn singleton.
+    """
+    from sky_claw.antigravity.security.governance import GovernanceManager
+
+    with GovernanceManager._lock:
+        GovernanceManager._instance = None
+    yield
+    with GovernanceManager._lock:
+        GovernanceManager._instance = None
 
 
 @pytest.fixture()
@@ -113,3 +134,28 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # n
             pass  # best-effort — leave orphan rather than crash session teardown
 
     shutil.rmtree(basetemp, onerror=_force_remove)
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Fail fast when non-daemon threads survive the session.
+
+    Leaked aiosqlite worker threads (non-daemon) block interpreter exit, so a
+    single missed ``close()`` turns into a silent hang that burns the full CI
+    job timeout (20 min). ``os._exit(3)`` converts that hang into an immediate,
+    attributable failure. Runs after the terminal summary, controller only.
+    """
+    if hasattr(config, "workerinput"):
+        return  # xdist worker — controller owns the verdict
+
+    leaked = find_leaked_threads(grace_seconds=2.0)
+    if leaked:
+        names = ", ".join(f"{t.name!r} (ident={t.ident})" for t in leaked)
+        print(
+            f"\n[LIFECYCLE FAIL-FAST] {len(leaked)} hilo(s) non-daemon sin cerrar "
+            f"al final de la sesion: {names}. Saliendo con codigo 3 para evitar "
+            "el cuelgue del proceso (timeout CI de 20 min).",
+            file=sys.stderr,
+        )
+        sys.stderr.flush()
+        sys.stdout.flush()
+        os._exit(3)
