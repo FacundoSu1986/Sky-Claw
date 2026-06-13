@@ -7,7 +7,7 @@ failure handling and the pre-flight checklist for a real end-to-end run.
 
 > **Estado:** release-candidate, no GA. Los cimientos (locks, rollback, redacción,
 > SSRF, HITL) son de grado producción; lo que sigue abierto está en
-> [Limitaciones conocidas](#limitaciones-conocidas).
+> [Limitaciones conocidas](#9-limitaciones-conocidas).
 
 ---
 
@@ -38,7 +38,7 @@ arranca en **modo GUI por defecto** (`__main__.py` fija `mode=gui` cuando
 `sys.frozen`).
 
 > ⚠️ **Pendiente de release:** no hay tag de versión (CHANGELOG está en
-> `[Unreleased]`) ni binario firmado/validado. Ver [Limitaciones](#limitaciones-conocidas).
+> `[Unreleased]`) ni binario firmado/validado. Ver [Limitaciones](#9-limitaciones-conocidas).
 
 ---
 
@@ -48,53 +48,86 @@ La config se carga desde **`~/.sky_claw/config.toml`** (`config.py:58-59`,
 `DEFAULT_CONFIG_DIR = Path.home() / ".sky_claw"`). Se permite override por
 variables de entorno.
 
-> ⚠️ `QUICKSTART.md` indica correr `python scripts/first_run.py` (asistente
-> interactivo) — **ese archivo no existe en el repo**. Hasta que se reponga,
-> configurar `~/.sky_claw/config.toml` a mano (o por las env vars de abajo).
+> El asistente interactivo existe en **`local_scripts/scripts/first_run.py`**
+> (no en `scripts/first_run.py`, que es la ruta equivocada que indica
+> `QUICKSTART.md`). Corré `python local_scripts/scripts/first_run.py`, o editá
+> `~/.sky_claw/config.toml` a mano / usá las env vars de abajo.
 
 ### Paths de herramientas (excepción Zero-Trust documentada)
 `path_resolver.py` es el **único** punto que lee estas variables de entorno
-(ver `ZERO_TRUST_TODO.md`); ningún otro módulo debe leerlas directo:
+(ver `ZERO_TRUST_TODO.md`); ningún otro módulo debe leerlas directo. Nombres
+reales según `sky_claw/antigravity/core/path_resolver.py`:
 
-| Variable | Uso |
+| Variable de entorno | Uso |
 |---|---|
-| `SKYRIM_PATH` | Raíz de Skyrim SE |
+| `SKYRIM_PATH` | Raíz de Skyrim SE (**requerida** para el chain de herramientas) |
 | `MO2_PATH` | Instalación de Mod Organizer 2 |
-| `DYNDLOD_EXE`, `--xedit-exe`, `--install-dir` | Ejecutables de herramientas (también por CLI) |
+| `MO2_MODS_PATH` / `MO2_PROFILE` | Carpeta de mods / perfil activo de MO2 |
+| `XEDIT_PATH` | Ejecutable de xEdit/SSEEdit (**requerida** para dry-run/preview) |
+| `LOOT_EXE` | Ejecutable de LOOT |
+| `DYNDLOD_EXE` / `TEXGEN_EXE` | DynDOLOD / TexGen |
+| `SYNTHESIS_EXE` / `WRYE_BASH_PATH` | Synthesis / Wrye Bash |
 
-Estos paths pasan por `PathValidator` (sandbox anti-traversal) antes de cualquier
-subprocess.
+Algunos paths también se pueden pasar por **flags de CLI** (distintos de las env
+vars, resueltos por argparse, no por `path_resolver`): `--xedit-exe`,
+`--install-dir`, `--mo2-root`, `--staging-dir`. Todos los paths pasan por
+`PathValidator` (sandbox anti-traversal) antes de cualquier subprocess.
 
 ---
 
 ## 4. Secretos
 
-**Nunca** en `config.toml` ni en código. Sky-Claw usa dos mecanismos:
+**Nunca** en código ni en `config.toml` plano (si aparecen ahí, `Config` los
+migra a keyring y los borra del TOML — `config.py:96-102`).
 
-- **`CredentialVault`** (`security/credential_vault.py`): secretos cifrados en
-  SQLite vía `get_secret(name)` / `set_secret(name, value)`. Backend keyring del
-  SO (Windows Credential Manager).
-- **Keyring directo** para el token WS del puente NiceGUI↔Daemon
-  (`auth_token_manager`, servicio `sky_claw` / clave `ws_auth_token`), con
-  rotación a media-vida (TTL 3600 s).
+### Secretos de runtime (LLM / Nexus / Telegram) → OS keyring
+El path de arranque real: `Config._load_from_keyring()` (`config.py:67-81`) lee
+del **keyring del SO** bajo el servicio **`sky_claw`**. `AppContext` construye el
+`LLMRouter` con estas claves; **`CredentialVault` NO interviene en este flujo.**
 
-Secretos requeridos según modo: API key del proveedor LLM (Claude/GPT/DeepSeek/
-Ollama), API key de Nexus, y —para Telegram— `telegram_bot_token` + el
-`ws_auth_token` del gateway.
+| Clave keyring (`service="sky_claw"`) | Uso |
+|---|---|
+| `llm_api_key` | API key del proveedor LLM (genérica) |
+| `<provider>_api_key` (`anthropic_api_key`, `deepseek_api_key`) | API key específica por proveedor (tiene precedencia) |
+| `nexus_api_key` | API de Nexus Mods |
+| `telegram_bot_token` | Bot de Telegram |
+
+Cargá cada uno con el wizard (`first_run.py`) o `keyring.set_password("sky_claw", "<clave>", "<valor>")`.
+
+**Proveedores LLM soportados** (`agent/providers.py:create_provider` y
+`--provider`): **`anthropic`, `deepseek`, `ollama`**. No hay provider OpenAI/GPT
+cableado — configurarlo cae al fallback (Ollama / error de config).
+
+### Token WS — dos flujos distintos
+1. **Gateway Node ↔ bridge Python**: el server Node lee `WS_AUTH_TOKEN` de
+   `process.env` (`telegram_gateway_node/server.js:98`); el bridge Python lo lee
+   de `WS_AUTH_TOKEN` y, si no está, cae a keyring (`frontend_bridge.py:301`).
+2. **WS Daemon ↔ NiceGUI (interno)**: `AuthTokenManager` lee/escribe un
+   **token-file rotativo** en `~/.sky_claw/tokens/` (`read_token_file(token_dir)`),
+   con TTL/rotación. La rotación es del archivo, no del keyring.
+
+### CredentialVault (almacén cifrado, separado)
+`sky_claw/antigravity/security/credential_vault.py` es un almacén **cifrado con
+Fernet** (clave derivada por PBKDF2 desde un salt por máquina en
+`~/.sky_claw/vault_salt.bin` + backup), ciphertext en SQLite. API
+`get_secret(name)` / `set_secret(name, value)`. Es una facilidad aparte — **no es
+el mecanismo que alimenta LLM/Nexus/Telegram al arranque** (eso es keyring, arriba).
 
 ---
 
 ## 5. Modos de ejecución
 
 ```bash
-python -m sky_claw --mode gui        # interfaz NiceGUI (default del binario)
-python -m sky_claw --mode telegram   # bot HITL desde el celular
-python -m sky_claw --mode cli        # terminal interactiva
-python -m sky_claw --mode oneshot --command "<cmd>"   # ejecución única
-python -m sky_claw --mode security --command "<cmd>"  # utilidades de seguridad
-python -m sky_claw --mode cli -v     # -v / --verbose → logging DEBUG
+python -m sky_claw --mode gui                 # interfaz NiceGUI (default del binario)
+python -m sky_claw --mode telegram            # bot HITL desde el celular
+python -m sky_claw --mode cli                 # terminal interactiva
+python -m sky_claw --mode oneshot "<comando>" # ejecución única (command es POSICIONAL)
+python -m sky_claw --mode security "<comando>"# utilidades de seguridad
+python -m sky_claw --mode cli -v              # -v / --verbose → logging DEBUG
+python -m sky_claw --provider anthropic       # anthropic | deepseek | ollama
 ```
-El modo Telegram requiere el gateway Node corriendo
+`command` es un argumento **posicional** (`__main__.py:58-62`, `nargs="?"`) — **no
+existe `--command`**. El modo Telegram requiere el gateway Node corriendo
 (`telegram_gateway_node/`, `npm install` + arranque del server).
 
 ---
@@ -103,8 +136,8 @@ El modo Telegram requiere el gateway Node corriendo
 
 `setup_logging()` (`logging_config.py:208`) se invoca en todos los modos al
 arranque. Produce **logs JSON rotativos (10 MB × 5 backups)** en `logs/`, con
-`correlation_id` + `trace_id` por línea y **redacción de secretos** (API keys,
-tokens, Bearer, PII, query-strings) ya aplicada en disco:
+`correlation_id` por línea y **redacción de secretos** (API keys, tokens, Bearer,
+PII, query-strings) ya aplicada en disco:
 
 | Archivo | Contenido |
 |---|---|
@@ -112,14 +145,24 @@ tokens, Bearer, PII, query-strings) ya aplicada en disco:
 | `logs/watcher.log` | Subsistema watcher (`SkyClaw.Watcher`, `propagate=False`). |
 | `logs/watcher_security.log` | Eventos de seguridad. |
 
+> Nota: `CorrelationFilter` calcula un `trace_id` de OTEL en el record, pero el
+> formatter JSON actual solo emite `correlation_id` (no `trace_id`). Para
+> correlacionar con un trace de OTEL hay que agregar `trace_id` al formatter.
+
 Garantías relevantes para un run real:
-- **Las excepciones no manejadas del event loop no se pierden**:
-  `_install_loop_exception_handler()` (`__main__.py:129`) las enruta a
-  `logger.error` con `exc_info`, así que las tareas fire-and-forget que fallen
-  quedan en `logs/sky_claw.log` con stack y `correlation_id`.
-- **Audit trail en SQLite** (aparte de los logs de texto): tabla `transactions`
-  del journal (`db/journal.py`) + `log_tasks_batch` del registry registran
-  cada operación con su estado (started/completed/failed/rolled_back).
+- **Excepciones no manejadas del event loop (modos no-GUI)**:
+  `_install_loop_exception_handler()` (`__main__.py:129`) se instala en la rama
+  `asyncio.run` de `_main()` — es decir **cli / oneshot / telegram / security**.
+  Enruta a `logger.error(..., exc_info=exc)`; pasar la **instancia** de excepción
+  sí adjunta el traceback (logging la convierte a `(type, exc, exc.__traceback__)`),
+  así que la tarea fire-and-forget que falle queda en `logs/sky_claw.log` con
+  stack y `correlation_id`. **En modo GUI este handler NO se instala** — NiceGUI/
+  uvicorn manejan su propio loop; ahí confiá en el log + el handler de uvicorn.
+- **Audit trail en SQLite** (aparte de los logs de texto), en
+  `sky_claw/antigravity/db/journal.py`: la tabla `journal_entries` registra cada
+  operación con estado `started/completed/failed/rolled_back`; la tabla
+  `transactions` agrupa con estado `pending/committed/rolled_back`. El registry
+  además anota tareas vía `log_tasks_batch`.
 - **Métricas/tracing** (opcional): Prometheus (`prometheus-client`) y OpenTelemetry
   (`OTEL_EXPORTER_OTLP_ENDPOINT`) si se configura un collector.
 
@@ -128,7 +171,7 @@ Garantías relevantes para un run real:
 # correr con DEBUG
 python -m sky_claw --mode cli -v
 # filtrar errores del log JSON
-grep '"levelname": "ERROR"' logs/sky_claw.log        # bash/WSL
+grep '"levelname": "ERROR"' logs/sky_claw.log            # bash/WSL
 Select-String '"levelname": "ERROR"' logs\sky_claw.log   # PowerShell
 # seguir el hilo de una operación por su correlation_id
 grep '<correlation_id>' logs/sky_claw.log
@@ -155,8 +198,9 @@ grep '<correlation_id>' logs/sky_claw.log
 Antes de soltar el agente sobre un Skyrim+MO2 real (idealmente en VM o perfil de
 MO2 descartable la primera vez):
 
-- [ ] `~/.sky_claw/config.toml` creado; `SKYRIM_PATH` / `MO2_PATH` válidos y dentro del sandbox.
-- [ ] Secretos cargados en el vault (LLM key; Nexus key; Telegram token si aplica).
+- [ ] `~/.sky_claw/config.toml` creado; `SKYRIM_PATH` y `XEDIT_PATH` válidos (los exige el chequeo de paths en runtime), `MO2_PATH` dentro del sandbox.
+- [ ] Secretos en **keyring** (`service="sky_claw"`): `llm_api_key` o `<provider>_api_key`; `nexus_api_key`; `telegram_bot_token` si usás Telegram. (Cargar en `CredentialVault` NO los expone al arranque.)
+- [ ] Proveedor LLM elegido entre los soportados: `anthropic` / `deepseek` / `ollama`.
 - [ ] Suite local en verde: `pytest -q`.
 - [ ] Gates: `ruff check sky_claw/ tests/` y `python -m mypy sky_claw/ --ignore-missing-imports`.
 - [ ] `logs/` escribible; correr con `-v` la primera vez.
@@ -172,7 +216,8 @@ Honestidad operativa — esto sigue abierto y conviene saberlo antes de producci
 
 - **Sin validación end-to-end en rig real documentada** — la cobertura es unit/integration (~2050 tests, ~65%).
 - **Sin tag de release ni binario firmado/validado** (CHANGELOG `[Unreleased]`).
-- **Frontera de tipos parcial** — mypy `ignore_errors=true` en gui/comms/agent/web/security/db (~1.7k errores suprimidos); el core fundacional y `sync_engine` sí están chequeados.
+- **Frontera de tipos parcial** — el override de mypy con `ignore_errors=true` cubre **prácticamente todo `sky_claw.*` / `sky_claw.antigravity.*`**, con re-habilitación puntual de checks en un subconjunto de `core.*` y en `orchestrator.sync_engine`. El grueso del código no está type-checked aún.
+- **Loop-exception handler solo en modos no-GUI** — en GUI la captura de excepciones del loop depende de NiceGUI/uvicorn, no del handler de `__main__`.
 - **Features incompletas** (roadmap PR-6..PR-10): respond del ops-hub web es stub, wiring de `event_bus` en GUI incompleto, masterlist del scraper stub, `path_resolver` aún lee `os.environ` (excepción documentada, pendiente migrar a `config.toml`).
-- **Docs**: `QUICKSTART.md` referencia `scripts/first_run.py` (ausente) y versión Python "3.14+" (real: 3.11/3.12) — pendientes de corregir.
+- **Docs**: `QUICKSTART.md` apunta a `scripts/first_run.py` (la ruta real es `local_scripts/scripts/first_run.py`) y dice Python "3.14+" (real: 3.11/3.12) — pendientes de corregir.
 - **`os._exit(3)` del fail-fast de tests** (PR #179): vigilar las primeras corridas de CI por un posible hard-kill ante un hilo non-daemon lento de dependencia.
