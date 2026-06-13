@@ -93,6 +93,8 @@ plans/
 # Python tooling caches (must never be tracked — bloat the IDE file-watcher)
 .mypy_cache/
 .ruff_cache/
+# uv package cache (project-local, e.g. .uv-cache / .uv-cache-prNNN; 200MB+ each)
+.uv-cache*/
 
 # Claude Code agent config (lock files, worktrees, local state)
 .claude/
