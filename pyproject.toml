@@ -125,6 +125,13 @@ strict = false
 warn_redundant_casts = true
 warn_unused_configs = true
 no_implicit_optional = true
+# strict_equality: flags comparisons between non-overlapping types (e.g. str == bytes).
+# Probed clean — 0 violations across the 196 checked files — so it's a free
+# regression guard. NOTE: warn_unreachable is deliberately NOT enabled: it
+# false-positives on the correct double-checked-locking idiom in
+# sky_claw/antigravity/core/contracts.py (mypy can't model cross-thread
+# mutation of the flag).
+strict_equality = true
 ignore_missing_imports = true
 show_error_codes = true
 show_column_numbers = true
