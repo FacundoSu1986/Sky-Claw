@@ -1,6 +1,6 @@
 """LLM provider abstraction – multi-backend support.
 
-Supports Anthropic Claude, DeepSeek, and Ollama as interchangeable
+Supports Anthropic Claude, DeepSeek, OpenAI, and Ollama as interchangeable
 LLM backends.  Each provider normalises its API response into a
 common internal format consumed by :class:`LLMRouter`.
 
@@ -282,6 +282,67 @@ class DeepSeekProvider(LLMProvider):
         return _parse_openai_response(data)
 
 
+class OpenAIProvider(LLMProvider):
+    """OpenAI API provider (the reference OpenAI-compatible Chat Completions API).
+
+    Mirrors :class:`DeepSeekProvider` — same request/response shape via the
+    shared ``_convert_*`` / ``_parse_openai_response`` helpers, Bearer auth,
+    and routed through the ``NetworkGateway`` (``api.openai.com`` is already on
+    the egress allowlist).
+
+    ``DEFAULT_MODEL`` is ``gpt-5``. The effective model resolves as
+    ``per-call model=`` → ``self.model`` (injected at construction from the
+    wizard / ``config.llm_model``) → ``DEFAULT_MODEL``. If the model is
+    unavailable on the caller's account the API returns a 4xx that is logged
+    and raised — switch models then.
+    """
+
+    API_URL = "https://api.openai.com/v1/chat/completions"
+    DEFAULT_MODEL = "gpt-5"
+
+    def __init__(self, api_key: str, model: str = "") -> None:
+        self._api_key = api_key
+        #: Effective default model for this instance (config-driven, public so
+        #: AppContext can surface it via ``getattr(provider, "model", ...)``).
+        self.model = model or self.DEFAULT_MODEL
+
+    @retry(
+        wait=wait_exponential(multiplier=1.5, min=2, max=60),
+        stop=stop_after_attempt(5),
+        retry=retry_if_exception(_should_retry),
+    )
+    async def chat(self, messages, tools, session, gateway, *, system_prompt="", model=""):
+        model = model or self.model
+        oai_messages = _convert_messages_to_openai(messages)
+        if system_prompt:
+            oai_messages.insert(0, {"role": "system", "content": system_prompt})
+        body = {"model": model, "messages": oai_messages, "max_tokens": 4096}
+        oai_tools = _convert_tools_to_openai(tools)
+        if oai_tools:
+            body["tools"] = oai_tools
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        async with await gateway.request("POST", self.API_URL, session, json=body, headers=headers) as resp:
+            if resp.status >= 400:
+                text = await resp.text()
+                # Log metadata only — NOT the request body (prompt/tool content
+                # is not credential-grade but is sensitive and verbose; the
+                # redaction filter targets secrets, not arbitrary prompts).
+                logger.error(
+                    "OpenAI error %d: %s (model=%s, %d msgs, %d tools)",
+                    resp.status,
+                    text,
+                    model,
+                    len(oai_messages),
+                    len(oai_tools),
+                )
+            resp.raise_for_status()
+            data = await resp.json()
+        return _parse_openai_response(data)
+
+
 class OllamaProvider(LLMProvider):
     DEFAULT_MODEL = "llama3.1"
 
@@ -334,6 +395,11 @@ def create_provider(*, provider_name=None, api_key=None, model=None):
                 raise ProviderConfigError("DEEPSEEK_API_KEY is required. Provide it via setup wizard or config.toml.")
             logger.info("Using DeepSeek provider")
             return DeepSeekProvider(api_key)
+        if name == "openai":
+            if not api_key:
+                raise ProviderConfigError("OPENAI_API_KEY is required. Provide it via setup wizard or config.toml.")
+            logger.info("Using OpenAI provider")
+            return OpenAIProvider(api_key, model=model or "")
         if name == "ollama":
             logger.info("Using Ollama provider (local)")
             return OllamaProvider()

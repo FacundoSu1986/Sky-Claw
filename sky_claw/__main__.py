@@ -51,7 +51,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--provider",
-        choices=["anthropic", "deepseek", "ollama"],
+        choices=["anthropic", "deepseek", "openai", "ollama"],
         default=config.llm_provider or "deepseek",
         help="LLM provider (default: deepseek)",
     )

@@ -51,7 +51,7 @@ class AuthError(ConnectionRefusedError):
 
 
 # ── Constants ──────────────────────────────────────────────────────────
-VALID_PROVIDERS = {"deepseek", "anthropic", "ollama"}
+VALID_PROVIDERS = {"deepseek", "anthropic", "openai", "ollama"}
 MAX_RECONNECT_ATTEMPTS = 5
 RECONNECT_PAUSE_DURATION = 300  # 5 minutes in seconds
 
@@ -59,6 +59,7 @@ RECONNECT_PAUSE_DURATION = 300  # 5 minutes in seconds
 PROVIDER_KEY_MAP = {
     "deepseek": "deepseek_api_key",
     "anthropic": "anthropic_api_key",
+    "openai": "openai_api_key",
 }
 
 SENSITIVE_KEYS = {

@@ -35,7 +35,7 @@ class SetupWizardModal:
     - Solo se cierra al guardar exitosamente.
     """
 
-    VALID_PROVIDERS = {"anthropic", "deepseek", "ollama"}
+    VALID_PROVIDERS = {"anthropic", "deepseek", "openai", "ollama"}
 
     def __init__(self, config_path: Path, on_complete: Callable) -> None:
         self._config_path = config_path
@@ -154,7 +154,7 @@ class SetupWizardModal:
                         ui.label("PROVEEDOR IA").classes("sky-wizard-label")
                         self._provider_toggle = (
                             ui.toggle(
-                                ["anthropic", "deepseek", "ollama"],
+                                ["anthropic", "deepseek", "openai", "ollama"],
                                 value="deepseek",
                             )
                             .classes("w-full")
@@ -290,7 +290,7 @@ class SetupWizardModal:
             ui.notify("Proveedor no válido", type="negative")
             return
 
-        if provider in ("anthropic", "deepseek") and not api_key:
+        if provider in ("anthropic", "deepseek", "openai") and not api_key:
             ui.notify("API Key requerida para este proveedor", type="negative")
             return
 
@@ -382,7 +382,7 @@ class SetupWizardModal:
 class SetupPage:
     """Legacy: redirige internamente al wizard modal. Mantenido para compat."""
 
-    VALID_PROVIDERS = {"anthropic", "deepseek", "ollama"}
+    VALID_PROVIDERS = {"anthropic", "deepseek", "openai", "ollama"}
 
     def __init__(self, config_path: Path, on_complete: Callable) -> None:
         self._config_path = config_path

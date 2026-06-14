@@ -13,6 +13,7 @@ from sky_claw.antigravity.agent.providers import (
     AnthropicProvider,
     DeepSeekProvider,
     OllamaProvider,
+    OpenAIProvider,
     ProviderConfigError,
     _convert_messages_to_openai,
     _convert_tools_to_openai,
@@ -276,6 +277,118 @@ class TestDeepSeekProvider:
 
 
 # ------------------------------------------------------------------
+# OpenAI provider (OpenAI-compatible, mirrors DeepSeek)
+# ------------------------------------------------------------------
+
+
+class TestOpenAIProvider:
+    @pytest.mark.asyncio
+    async def test_chat_sends_correct_request(self) -> None:
+        provider = OpenAIProvider(api_key="test-key")
+
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = AsyncMock(
+            return_value={
+                "choices": [
+                    {
+                        "message": {"content": "Hi!"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+
+        mock_gateway = MagicMock()
+        mock_gateway.request = AsyncMock(return_value=mock_response)
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        result = await provider.chat(
+            [{"role": "user", "content": "Hi"}],
+            [
+                {
+                    "name": "search_mod",
+                    "description": "Search",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ],
+            session,
+            gateway=mock_gateway,
+            system_prompt="You are helpful",
+        )
+
+        assert result["stop_reason"] == "end_turn"
+        assert result["content"][0]["text"] == "Hi!"
+
+        call_args = mock_gateway.request.call_args
+        request_url = call_args[0][1]
+        assert urlparse(request_url).hostname == "api.openai.com"
+        body = call_args[1]["json"]
+        assert body["model"] == "gpt-5"  # default, overridable via model=
+        assert body["messages"][0]["role"] == "system"
+        assert "tools" in body
+        headers = call_args[1]["headers"]
+        assert headers["Authorization"] == "Bearer test-key"
+
+    @pytest.mark.asyncio
+    async def test_chat_respects_model_override(self) -> None:
+        provider = OpenAIProvider(api_key="k")
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = AsyncMock(
+            return_value={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+        mock_gateway = MagicMock()
+        mock_gateway.request = AsyncMock(return_value=mock_response)
+
+        await provider.chat(
+            [{"role": "user", "content": "x"}],
+            [],
+            MagicMock(spec=aiohttp.ClientSession),
+            gateway=mock_gateway,
+            model="gpt-4o",
+        )
+
+        assert mock_gateway.request.call_args[1]["json"]["model"] == "gpt-4o"
+
+    @pytest.mark.asyncio
+    async def test_uses_configured_instance_model(self) -> None:
+        """A model passed at construction (from config) is used when chat() omits one."""
+        provider = OpenAIProvider(api_key="k", model="gpt-4o")
+        assert provider.model == "gpt-4o"
+
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = AsyncMock(
+            return_value={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+        mock_gateway = MagicMock()
+        mock_gateway.request = AsyncMock(return_value=mock_response)
+
+        await provider.chat(
+            [{"role": "user", "content": "x"}],
+            [],
+            MagicMock(spec=aiohttp.ClientSession),
+            gateway=mock_gateway,
+        )
+
+        assert mock_gateway.request.call_args[1]["json"]["model"] == "gpt-4o"
+
+    def test_defaults_to_gpt5_when_no_model_configured(self) -> None:
+        assert OpenAIProvider(api_key="k").model == "gpt-5"
+
+
+# ------------------------------------------------------------------
 # Ollama provider
 # ------------------------------------------------------------------
 
@@ -398,6 +511,19 @@ class TestCreateProvider:
     def test_explicit_ollama(self) -> None:
         provider = create_provider(provider_name="ollama")
         assert isinstance(provider, OllamaProvider)
+
+    def test_explicit_openai(self) -> None:
+        provider = create_provider(provider_name="openai", api_key="oai-1")
+        assert isinstance(provider, OpenAIProvider)
+
+    def test_openai_without_key_raises(self) -> None:
+        with pytest.raises(ProviderConfigError, match="OPENAI_API_KEY"):
+            create_provider(provider_name="openai")
+
+    def test_openai_honors_configured_model(self) -> None:
+        provider = create_provider(provider_name="openai", api_key="oai-1", model="gpt-4o")
+        assert isinstance(provider, OpenAIProvider)
+        assert provider.model == "gpt-4o"
 
     def test_explicit_unknown_raises(self) -> None:
         with pytest.raises(ProviderConfigError, match="Unknown provider"):
