@@ -8,10 +8,19 @@
 - **Conexión a Internet** para descargar mods y contactar con la IA.
 
 ## 2. Instalación
-Ejecutá el script de construcción para crear el entorno virtual e instalar las dependencias necesarias:
+Ejecutá el script de construcción para crear el entorno virtual (`venv\`) e instalar las dependencias necesarias:
 ```batch
 build.bat
 ```
+
+**Activá el entorno virtual** antes de los comandos siguientes — `build.bat` lo
+activa solo para sí mismo (`setlocal`), así que en tu terminal hay que activarlo
+a mano. Si no, `python` usa el intérprete del sistema (sin `sky_claw` instalado)
+y los comandos fallan con `ModuleNotFoundError`:
+```batch
+venv\Scripts\activate
+```
+*(Alternativa sin activar: prefijá cada comando con `venv\Scripts\python` en vez de `python`.)*
 
 ## 3. Configuración Inicial
 Sky-Claw ahora usa un asistente interactivo para que no tengas que editar archivos a mano. La configuración se guarda automáticamente en `~/.sky_claw/config.toml`.
