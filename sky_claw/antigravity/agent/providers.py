@@ -290,16 +290,21 @@ class OpenAIProvider(LLMProvider):
     and routed through the ``NetworkGateway`` (``api.openai.com`` is already on
     the egress allowlist).
 
-    ``DEFAULT_MODEL`` is ``gpt-5``; override per-call with ``model=`` (or via
-    ``--model`` / config). If the model is unavailable on the caller's account
-    the API returns a 4xx that is logged and raised — switch models then.
+    ``DEFAULT_MODEL`` is ``gpt-5``. The effective model resolves as
+    ``per-call model=`` → ``self.model`` (injected at construction from the
+    wizard / ``config.llm_model``) → ``DEFAULT_MODEL``. If the model is
+    unavailable on the caller's account the API returns a 4xx that is logged
+    and raised — switch models then.
     """
 
     API_URL = "https://api.openai.com/v1/chat/completions"
     DEFAULT_MODEL = "gpt-5"
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, model: str = "") -> None:
         self._api_key = api_key
+        #: Effective default model for this instance (config-driven, public so
+        #: AppContext can surface it via ``getattr(provider, "model", ...)``).
+        self.model = model or self.DEFAULT_MODEL
 
     @retry(
         wait=wait_exponential(multiplier=1.5, min=2, max=60),
@@ -307,7 +312,7 @@ class OpenAIProvider(LLMProvider):
         retry=retry_if_exception(_should_retry),
     )
     async def chat(self, messages, tools, session, gateway, *, system_prompt="", model=""):
-        model = model or self.DEFAULT_MODEL
+        model = model or self.model
         oai_messages = _convert_messages_to_openai(messages)
         if system_prompt:
             oai_messages.insert(0, {"role": "system", "content": system_prompt})
@@ -322,11 +327,16 @@ class OpenAIProvider(LLMProvider):
         async with await gateway.request("POST", self.API_URL, session, json=body, headers=headers) as resp:
             if resp.status >= 400:
                 text = await resp.text()
+                # Log metadata only — NOT the request body (prompt/tool content
+                # is not credential-grade but is sensitive and verbose; the
+                # redaction filter targets secrets, not arbitrary prompts).
                 logger.error(
-                    "OpenAI error %d: %s. Body: %s",
+                    "OpenAI error %d: %s (model=%s, %d msgs, %d tools)",
                     resp.status,
                     text,
-                    json.dumps(body)[:500],
+                    model,
+                    len(oai_messages),
+                    len(oai_tools),
                 )
             resp.raise_for_status()
             data = await resp.json()
@@ -389,7 +399,7 @@ def create_provider(*, provider_name=None, api_key=None, model=None):
             if not api_key:
                 raise ProviderConfigError("OPENAI_API_KEY is required. Provide it via setup wizard or config.toml.")
             logger.info("Using OpenAI provider")
-            return OpenAIProvider(api_key)
+            return OpenAIProvider(api_key, model=model or "")
         if name == "ollama":
             logger.info("Using Ollama provider (local)")
             return OllamaProvider()

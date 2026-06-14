@@ -358,6 +358,35 @@ class TestOpenAIProvider:
 
         assert mock_gateway.request.call_args[1]["json"]["model"] == "gpt-4o"
 
+    @pytest.mark.asyncio
+    async def test_uses_configured_instance_model(self) -> None:
+        """A model passed at construction (from config) is used when chat() omits one."""
+        provider = OpenAIProvider(api_key="k", model="gpt-4o")
+        assert provider.model == "gpt-4o"
+
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = AsyncMock(
+            return_value={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+        mock_gateway = MagicMock()
+        mock_gateway.request = AsyncMock(return_value=mock_response)
+
+        await provider.chat(
+            [{"role": "user", "content": "x"}],
+            [],
+            MagicMock(spec=aiohttp.ClientSession),
+            gateway=mock_gateway,
+        )
+
+        assert mock_gateway.request.call_args[1]["json"]["model"] == "gpt-4o"
+
+    def test_defaults_to_gpt5_when_no_model_configured(self) -> None:
+        assert OpenAIProvider(api_key="k").model == "gpt-5"
+
 
 # ------------------------------------------------------------------
 # Ollama provider
@@ -490,6 +519,11 @@ class TestCreateProvider:
     def test_openai_without_key_raises(self) -> None:
         with pytest.raises(ProviderConfigError, match="OPENAI_API_KEY"):
             create_provider(provider_name="openai")
+
+    def test_openai_honors_configured_model(self) -> None:
+        provider = create_provider(provider_name="openai", api_key="oai-1", model="gpt-4o")
+        assert isinstance(provider, OpenAIProvider)
+        assert provider.model == "gpt-4o"
 
     def test_explicit_unknown_raises(self) -> None:
         with pytest.raises(ProviderConfigError, match="Unknown provider"):

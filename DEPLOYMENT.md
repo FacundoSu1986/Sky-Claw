@@ -94,11 +94,12 @@ del **keyring del SO** bajo el servicio **`sky_claw`**. `AppContext` construye e
 
 Cargá cada uno con el wizard (`first_run.py`) o `keyring.set_password("sky_claw", "<clave>", "<valor>")`.
 
-**Proveedores LLM soportados** (`agent/providers.py:create_provider` y
-`--provider`): **`anthropic`, `deepseek`, `openai`, `ollama`**. El default de
-`OpenAIProvider` es `gpt-5`, overridable con `--model` / config; si el modelo no
-está disponible en tu cuenta, la API devuelve un 4xx claro (se loguea) y elegís
-otro.
+**Proveedores LLM soportados** (`agent/providers.py:create_provider`,
+`--provider`, el wizard y el ops-hub web): **`anthropic`, `deepseek`, `openai`,
+`ollama`**. El default de `OpenAIProvider` es `gpt-5`; se configura con el campo
+`llm_model` (wizard / `config.toml`), que `create_provider` inyecta al provider.
+No existe un flag `--model` en la CLI. Si el modelo no está disponible en tu
+cuenta, la API devuelve un 4xx claro (se loguea) y elegís otro.
 
 ### Token WS — dos flujos distintos
 1. **Gateway Node ↔ bridge Python**: el server Node lee `WS_AUTH_TOKEN` de
