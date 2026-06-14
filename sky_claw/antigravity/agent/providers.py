@@ -1,6 +1,6 @@
 """LLM provider abstraction – multi-backend support.
 
-Supports Anthropic Claude, DeepSeek, and Ollama as interchangeable
+Supports Anthropic Claude, DeepSeek, OpenAI, and Ollama as interchangeable
 LLM backends.  Each provider normalises its API response into a
 common internal format consumed by :class:`LLMRouter`.
 
