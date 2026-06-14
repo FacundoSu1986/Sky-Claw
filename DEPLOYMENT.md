@@ -95,8 +95,10 @@ del **keyring del SO** bajo el servicio **`sky_claw`**. `AppContext` construye e
 Cargá cada uno con el wizard (`first_run.py`) o `keyring.set_password("sky_claw", "<clave>", "<valor>")`.
 
 **Proveedores LLM soportados** (`agent/providers.py:create_provider` y
-`--provider`): **`anthropic`, `deepseek`, `ollama`**. No hay provider OpenAI/GPT
-cableado — configurarlo cae al fallback (Ollama / error de config).
+`--provider`): **`anthropic`, `deepseek`, `openai`, `ollama`**. El default de
+`OpenAIProvider` es `gpt-5`, overridable con `--model` / config; si el modelo no
+está disponible en tu cuenta, la API devuelve un 4xx claro (se loguea) y elegís
+otro.
 
 ### Token WS — dos flujos distintos
 1. **Gateway Node ↔ bridge Python**: el server Node lee `WS_AUTH_TOKEN` de
@@ -124,7 +126,7 @@ python -m sky_claw --mode cli                 # terminal interactiva
 python -m sky_claw --mode oneshot "<comando>" # ejecución única (command es POSICIONAL)
 python -m sky_claw --mode security "<comando>"# utilidades de seguridad
 python -m sky_claw --mode cli -v              # -v / --verbose → logging DEBUG
-python -m sky_claw --provider anthropic       # anthropic | deepseek | ollama
+python -m sky_claw --provider anthropic       # anthropic | deepseek | openai | ollama
 ```
 `command` es un argumento **posicional** (`__main__.py:58-62`, `nargs="?"`) — **no
 existe `--command`**. El modo Telegram requiere el gateway Node corriendo
@@ -200,7 +202,7 @@ MO2 descartable la primera vez):
 
 - [ ] `~/.sky_claw/config.toml` creado; `SKYRIM_PATH` y `XEDIT_PATH` válidos (los exige el chequeo de paths en runtime), `MO2_PATH` dentro del sandbox.
 - [ ] Secretos en **keyring** (`service="sky_claw"`): `llm_api_key` o `<provider>_api_key`; `nexus_api_key`; `telegram_bot_token` si usás Telegram. (Cargar en `CredentialVault` NO los expone al arranque.)
-- [ ] Proveedor LLM elegido entre los soportados: `anthropic` / `deepseek` / `ollama`.
+- [ ] Proveedor LLM elegido entre los soportados: `anthropic` / `deepseek` / `openai` / `ollama`.
 - [ ] Suite local en verde: `pytest -q`.
 - [ ] Gates: `ruff check sky_claw/ tests/` y `python -m mypy sky_claw/ --ignore-missing-imports`.
 - [ ] `logs/` escribible; correr con `-v` la primera vez.
