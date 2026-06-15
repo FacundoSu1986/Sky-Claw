@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-15
+
+### Added
+- **OpenAI como proveedor LLM de primera clase** (#185): `OpenAIProvider`
+  (OpenAI-compatible, `api.openai.com`), cableado en `create_provider`,
+  `--provider`, el wizard GUI, el bridge web y el ops-hub.
+- **Modelo LLM provider-scoped** (#186): campos `{provider}_model` en config;
+  `app_context` resuelve el modelo del provider activo sin fallback global, así
+  cambiar de provider nunca arrastra un modelo incompatible. El `llm_model`
+  global legacy se migra al slot del provider activo al cargar.
+
 ### Fixed
 - **P0 — Procesos externos huérfanos (auditoría de producción)**: los runners
   `bodyslide_runner.py`, `pandora_runner.py` y `wrye_bash_runner.py` capturaban
@@ -150,5 +161,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Externalize context quarantine and redact modern secrets.
 - Harden WebSocket auth and outbound egress.
 
-[Unreleased]: https://github.com/FacundoSu1986/Sky-Claw/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/FacundoSu1986/Sky-Claw/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/FacundoSu1986/Sky-Claw/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/FacundoSu1986/Sky-Claw/releases/tag/v0.1.0
