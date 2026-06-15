@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-15
+
 ### Fixed
 - **P0 — Procesos externos huérfanos (auditoría de producción)**: los runners
   `bodyslide_runner.py`, `pandora_runner.py` y `wrye_bash_runner.py` capturaban
