@@ -96,10 +96,14 @@ Cargá cada uno con el wizard (`first_run.py`) o `keyring.set_password("sky_claw
 
 **Proveedores LLM soportados** (`agent/providers.py:create_provider`,
 `--provider`, el wizard y el ops-hub web): **`anthropic`, `deepseek`, `openai`,
-`ollama`**. El default de `OpenAIProvider` es `gpt-5`; se configura con el campo
-`llm_model` (wizard / `config.toml`), que `create_provider` inyecta al provider.
-No existe un flag `--model` en la CLI. Si el modelo no está disponible en tu
-cuenta, la API devuelve un 4xx claro (se loguea) y elegís otro.
+`ollama`**. El modelo es **provider-scoped**: cada provider tiene su campo
+`{provider}_model` en `config.toml` (`anthropic_model`, `deepseek_model`,
+`openai_model`, `ollama_model`), seteado por el wizard CLi; vacío → el
+`DEFAULT_MODEL` del provider (p.ej. `gpt-5` para OpenAI). Así cambiar de
+provider nunca arrastra un modelo incompatible. El `llm_model` global es legacy
+(se migra al `{provider}_model` activo al cargar). No existe flag `--model` en
+la CLI. Si el modelo no está disponible en tu cuenta, la API devuelve un 4xx
+claro (se loguea) y elegís otro.
 
 ### Token WS — dos flujos distintos
 1. **Gateway Node ↔ bridge Python**: el server Node lee `WS_AUTH_TOKEN` de

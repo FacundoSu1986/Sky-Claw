@@ -296,8 +296,8 @@ class OpenAIProvider(LLMProvider):
 
     ``DEFAULT_MODEL`` is ``gpt-5``. The effective model resolves as
     ``per-call model=`` → ``self.model`` (injected at construction from the
-    wizard / ``config.llm_model``) → ``DEFAULT_MODEL``. If the model is
-    unavailable on the caller's account the API returns a 4xx that is logged
+    provider-scoped ``config.openai_model``) → ``DEFAULT_MODEL``. If the model
+    is unavailable on the caller's account the API returns a 4xx that is logged
     and raised — switch models then.
     """
 

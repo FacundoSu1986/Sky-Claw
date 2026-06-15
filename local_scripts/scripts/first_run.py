@@ -101,26 +101,28 @@ async def first_run_wizard():
         api_key = (
             input(f"API Key para OpenAI [{_mask_secret(config.openai_api_key)}]: ").strip() or config.openai_api_key
         )
-        model = input(f"Modelo (ej: gpt-4o) [{config.llm_model}]: ").strip() or config.llm_model or "gpt-4o"
+        model = input(f"Modelo (ej: gpt-4o) [{config.openai_model}]: ").strip() or config.openai_model or "gpt-4o"
     elif provider == "deepseek":
         api_key = (
             input(f"API Key para DeepSeek [{_mask_secret(config.deepseek_api_key)}]: ").strip()
             or config.deepseek_api_key
         )
         model = (
-            input(f"Modelo (ej: deepseek-chat) [{config.llm_model}]: ").strip() or config.llm_model or "deepseek-chat"
+            input(f"Modelo (ej: deepseek-chat) [{config.deepseek_model}]: ").strip()
+            or config.deepseek_model
+            or "deepseek-chat"
         )
     elif provider == "ollama":
         api_key = ""
-        model = input(f"Modelo (ej: llama3.1) [{config.llm_model}]: ").strip() or config.llm_model or "llama3.1"
+        model = input(f"Modelo (ej: llama3.1) [{config.ollama_model}]: ").strip() or config.ollama_model or "llama3.1"
     else:  # anthropic default
         api_key = (
             input(f"API Key para Anthropic [{_mask_secret(config.anthropic_api_key)}]: ").strip()
             or config.anthropic_api_key
         )
         model = (
-            input(f"Modelo (ej: claude-3-5-sonnet-20240620) [{config.llm_model}]: ").strip()
-            or config.llm_model
+            input(f"Modelo (ej: claude-3-5-sonnet-20240620) [{config.anthropic_model}]: ").strip()
+            or config.anthropic_model
             or "claude-3-5-sonnet-20240620"
         )
 
@@ -146,7 +148,9 @@ async def first_run_wizard():
 
     # Update config data
     config._data["llm_provider"] = provider
-    config._data["llm_model"] = model
+    # Provider-scoped: store the model under the active provider's slot, not the
+    # legacy global llm_model (which would leak across provider switches).
+    config._data[f"{provider}_model"] = model
 
     if provider == "openai":
         config._data["openai_api_key"] = api_key
