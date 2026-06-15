@@ -29,11 +29,7 @@ Corré el siguiente comando y seguí las instrucciones:
 ```bash
 python local_scripts/scripts/first_run.py
 ```
-*Aquí podrás elegir tu proveedor de IA (Claude/Anthropic, DeepSeek u Ollama) e ingresar tus API Keys.*
-
-> ⚠️ El asistente puede listar además `openai`, pero el runtime **no** lo soporta
-> todavía — elegí uno de los tres de arriba. (Quitar/cablear esa opción es un fix
-> de código pendiente.)
+*Aquí podrás elegir tu proveedor de IA (Claude/Anthropic, DeepSeek, OpenAI u Ollama) e ingresar tus API Keys.*
 
 ## 4. Modos de Ejecución
 
