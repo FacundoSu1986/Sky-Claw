@@ -79,9 +79,11 @@ class AnthropicProvider(LLMProvider):
     API_URL = "https://api.anthropic.com/v1/messages"
     DEFAULT_MODEL = "claude-3-5-sonnet-20240620"
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, model: str = "") -> None:
         # Eliminamos la dependencia del entorno. Guardamos la llave inyectada.
         self._api_key = api_key
+        #: Effective default model (config-driven; public for AppContext logging).
+        self.model = model or self.DEFAULT_MODEL
 
     @retry(
         wait=wait_exponential(multiplier=1.5, min=2, max=60),
@@ -98,7 +100,7 @@ class AnthropicProvider(LLMProvider):
         system_prompt: str = "",
         model: str = "",
     ) -> dict[str, Any]:
-        model = model or self.DEFAULT_MODEL
+        model = model or self.model
         body: dict[str, Any] = {
             "model": model,
             "max_tokens": 4096,
@@ -246,9 +248,11 @@ class DeepSeekProvider(LLMProvider):
     API_URL = "https://api.deepseek.com/v1/chat/completions"
     DEFAULT_MODEL = "deepseek-chat"
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, model: str = "") -> None:
         # Eliminamos la dependencia del entorno. Guardamos la llave inyectada.
         self._api_key = api_key
+        #: Effective default model (config-driven; public for AppContext logging).
+        self.model = model or self.DEFAULT_MODEL
 
     @retry(
         wait=wait_exponential(multiplier=1.5, min=2, max=60),
@@ -256,7 +260,7 @@ class DeepSeekProvider(LLMProvider):
         retry=retry_if_exception(_should_retry),
     )
     async def chat(self, messages, tools, session, gateway, *, system_prompt="", model=""):
-        model = model or self.DEFAULT_MODEL
+        model = model or self.model
         oai_messages = _convert_messages_to_openai(messages)
         if system_prompt:
             oai_messages.insert(0, {"role": "system", "content": system_prompt})
@@ -292,8 +296,8 @@ class OpenAIProvider(LLMProvider):
 
     ``DEFAULT_MODEL`` is ``gpt-5``. The effective model resolves as
     ``per-call model=`` → ``self.model`` (injected at construction from the
-    wizard / ``config.llm_model``) → ``DEFAULT_MODEL``. If the model is
-    unavailable on the caller's account the API returns a 4xx that is logged
+    provider-scoped ``config.openai_model``) → ``DEFAULT_MODEL``. If the model
+    is unavailable on the caller's account the API returns a 4xx that is logged
     and raised — switch models then.
     """
 
@@ -346,8 +350,10 @@ class OpenAIProvider(LLMProvider):
 class OllamaProvider(LLMProvider):
     DEFAULT_MODEL = "llama3.1"
 
-    def __init__(self, base_url="http://localhost:11434"):
+    def __init__(self, base_url="http://localhost:11434", model: str = ""):
         self._base_url = base_url.rstrip("/")
+        #: Effective default model (config-driven; public for AppContext logging).
+        self.model = model or self.DEFAULT_MODEL
 
     @retry(
         wait=wait_exponential(multiplier=1.5, min=2, max=60),
@@ -355,7 +361,7 @@ class OllamaProvider(LLMProvider):
         retry=retry_if_exception(_should_retry),
     )
     async def chat(self, messages, tools, session, gateway, *, system_prompt="", model=""):
-        model = model or self.DEFAULT_MODEL
+        model = model or self.model
         oai_messages = _convert_messages_to_openai(messages)
         if system_prompt:
             oai_messages.insert(0, {"role": "system", "content": system_prompt})
@@ -389,12 +395,12 @@ def create_provider(*, provider_name=None, api_key=None, model=None):
             if not api_key:
                 raise ProviderConfigError("ANTHROPIC_API_KEY is required. Provide it via setup wizard or config.toml.")
             logger.info("Using Anthropic provider")
-            return AnthropicProvider(api_key)
+            return AnthropicProvider(api_key, model=model or "")
         if name == "deepseek":
             if not api_key:
                 raise ProviderConfigError("DEEPSEEK_API_KEY is required. Provide it via setup wizard or config.toml.")
             logger.info("Using DeepSeek provider")
-            return DeepSeekProvider(api_key)
+            return DeepSeekProvider(api_key, model=model or "")
         if name == "openai":
             if not api_key:
                 raise ProviderConfigError("OPENAI_API_KEY is required. Provide it via setup wizard or config.toml.")
@@ -402,15 +408,15 @@ def create_provider(*, provider_name=None, api_key=None, model=None):
             return OpenAIProvider(api_key, model=model or "")
         if name == "ollama":
             logger.info("Using Ollama provider (local)")
-            return OllamaProvider()
+            return OllamaProvider(model=model or "")
         raise ProviderConfigError(f"Unknown provider: {name}")
 
     # Zero-Trust: explicit api_key takes precedence. No os.environ fallback.
     if api_key:
         logger.info("Explicit api_key provided — using Anthropic provider")
-        return AnthropicProvider(api_key)
+        return AnthropicProvider(api_key, model=model or "")
 
     # Zero-Trust: DeepSeek key must be injected explicitly via CredentialVault or caller.
 
     logger.info("No API keys found — falling back to Ollama")
-    return OllamaProvider()
+    return OllamaProvider(model=model or "")

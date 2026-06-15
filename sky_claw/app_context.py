@@ -334,12 +334,16 @@ class AppContext:
                         f"Checked keyring keys: '{provider_key_name}' and 'llm_api_key'."
                     )
 
+                # Provider-scoped model: read THIS provider's configured model
+                # (never the global llm_model), so switching providers never
+                # carries a stale, incompatible model. Empty → provider DEFAULT.
+                provider_model = getattr(local_cfg, f"{provider_name}_model", "") or ""
                 provider = create_provider(
                     provider_name=provider_name,
-                    model=local_cfg.llm_model,
+                    model=provider_model,
                     api_key=api_key,
                 )
-                actual_model = getattr(provider, "model", local_cfg.llm_model) or "default"
+                actual_model = getattr(provider, "model", provider_model) or "default"
                 logger.info(
                     "Provider created: %s (model: %s)",
                     type(provider).__name__,
@@ -349,7 +353,8 @@ class AppContext:
                 logger.warning("LLM provider config error: %s — falling back to Ollama", exc)
                 from sky_claw.antigravity.agent.providers import OllamaProvider
 
-                provider = OllamaProvider()
+                # Honor the configured Ollama model even on the fallback path.
+                provider = OllamaProvider(model=getattr(local_cfg, "ollama_model", "") or "")
 
             nexus_key = local_cfg.nexus_api_key or ""
             bot_token = local_cfg.telegram_bot_token or ""

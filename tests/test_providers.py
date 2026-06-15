@@ -552,6 +552,62 @@ class TestCreateProvider:
 
 
 # ------------------------------------------------------------------
+# Uniform model honoring (config.llm_model) across all providers
+# ------------------------------------------------------------------
+
+
+class TestModelHonoring:
+    """Every provider must store the configured model and fall back to its
+    DEFAULT_MODEL when none is given, so config.llm_model is honored uniformly.
+    """
+
+    def test_each_provider_stores_configured_model(self) -> None:
+        assert AnthropicProvider("k", model="claude-x").model == "claude-x"
+        assert DeepSeekProvider("k", model="ds-x").model == "ds-x"
+        assert OllamaProvider(model="llama-x").model == "llama-x"
+        assert OpenAIProvider("k", model="gpt-x").model == "gpt-x"
+
+    def test_each_provider_defaults_when_no_model(self) -> None:
+        assert AnthropicProvider("k").model == AnthropicProvider.DEFAULT_MODEL
+        assert DeepSeekProvider("k").model == DeepSeekProvider.DEFAULT_MODEL
+        assert OllamaProvider().model == OllamaProvider.DEFAULT_MODEL
+        assert OpenAIProvider("k").model == OpenAIProvider.DEFAULT_MODEL
+
+    def test_create_provider_threads_model_to_each(self) -> None:
+        assert create_provider(provider_name="anthropic", api_key="k", model="claude-y").model == "claude-y"
+        assert create_provider(provider_name="deepseek", api_key="k", model="ds-y").model == "ds-y"
+        assert create_provider(provider_name="ollama", model="llama-y").model == "llama-y"
+        assert create_provider(provider_name="openai", api_key="k", model="gpt-y").model == "gpt-y"
+
+    def test_implicit_fallback_paths_thread_model(self) -> None:
+        # No provider_name: explicit api_key → Anthropic fallback must honor model.
+        assert create_provider(api_key="k", model="claude-z").model == "claude-z"
+        # No provider_name, no api_key → Ollama fallback must honor model too.
+        assert create_provider(model="llama-z").model == "llama-z"
+
+    @pytest.mark.asyncio
+    async def test_anthropic_uses_instance_model_in_request(self) -> None:
+        provider = AnthropicProvider("k", model="claude-custom")
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = AsyncMock(return_value={"stop_reason": "end_turn", "content": []})
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+        mock_gateway = MagicMock()
+        mock_gateway.request = AsyncMock(return_value=mock_response)
+
+        await provider.chat(
+            [{"role": "user", "content": "x"}],
+            [],
+            MagicMock(spec=aiohttp.ClientSession),
+            gateway=mock_gateway,
+        )
+
+        assert mock_gateway.request.call_args[1]["json"]["model"] == "claude-custom"
+
+
+# ------------------------------------------------------------------
 # _should_retry – fix verification (audit finding #1: syntax guard)
 # ------------------------------------------------------------------
 

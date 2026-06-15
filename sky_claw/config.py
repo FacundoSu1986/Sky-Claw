@@ -62,7 +62,25 @@ class Config:
         self._config_path = config_path or self.DEFAULT_CONFIG_FILE
         self._data: dict[str, Any] = self._load_defaults()
         self._load_from_file()
+        self._migrate_llm_model()
         self._load_from_keyring()
+
+    def _migrate_llm_model(self) -> None:
+        """One-time, in-memory migration of the legacy global ``llm_model``.
+
+        Models are now provider-scoped (``{provider}_model``) so switching
+        providers never carries a stale, incompatible model. If a legacy global
+        ``llm_model`` is set and the active provider has no model of its own
+        yet, copy it into that provider's slot. Non-destructive (the TOML is not
+        rewritten) and idempotent across repeated ``Config`` construction.
+        """
+        legacy = self._data.get("llm_model")
+        if not legacy:
+            return
+        provider = str(self._data.get("llm_provider") or "").lower()
+        slot = f"{provider}_model"
+        if slot in self._data and not self._data.get(slot):
+            self._data[slot] = legacy
 
     def _load_from_keyring(self) -> None:
         sensitive_keys = [
@@ -118,7 +136,11 @@ class Config:
             "bodyslide_exe": "",
             "skyrim_path": "",
             "llm_provider": "deepseek",
-            "llm_model": "",
+            "llm_model": "",  # legacy global model — migrated to {provider}_model on load
+            "anthropic_model": "",
+            "deepseek_model": "",
+            "openai_model": "",
+            "ollama_model": "",
             "llm_api_key": "",
             "openai_api_key": "",
             "anthropic_api_key": "",
