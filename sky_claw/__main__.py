@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import os
 import pathlib
 import signal
 import sys
@@ -193,8 +194,33 @@ def _install_sigterm_handler() -> None:
         signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
 
 
+def _ensure_std_streams() -> None:
+    """A PyInstaller ``--windowed`` build starts with ``sys.stdout`` and
+    ``sys.stderr`` set to ``None`` (there is no console). Code that writes to
+    them with a bare ``print`` — notably NiceGUI/uvicorn's startup banner —
+    then raises ``AttributeError: 'NoneType' object has no attribute 'write'``
+    and tears the GUI process down before the server can bind its port.
+
+    Point the missing streams at a startup log next to the executable so the
+    app survives (structured logs still go to ``logs/`` via ``setup_logging``).
+    Best-effort: falls back to ``os.devnull`` if the log file can't be opened.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        log_path = pathlib.Path(sys.executable).parent / "sky_claw_startup.log"
+        stream = open(log_path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+    except OSError:
+        stream = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
 def main(argv: list[str] | None = None) -> None:
     """Unified entry point controller."""
+    _ensure_std_streams()
     args = _parse_args(argv)
 
     # P0: SIGTERM (Unix/WSL2) must trigger graceful shutdown in EVERY mode so

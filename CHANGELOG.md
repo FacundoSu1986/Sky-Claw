@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-17
+
+### Fixed
+- **El ejecutable empaquetado no arrancaba (crash al abrir)** — dos bugs de
+  empaquetado:
+  - Los assets de la GUI (`styles.css`, `assets/`) no se incluían en el bundle
+    de PyInstaller y las rutas no eran *frozen-aware*, así que
+    `add_static_files` recibía un directorio inexistente bajo `sys._MEIPASS` y
+    el exe crasheaba antes de iniciar (`sky_claw.spec`, `sky_claw_gui.py`).
+  - En el build `--windowed`, `sys.stdout`/`sys.stderr` son `None`; el banner de
+    arranque de NiceGUI escribía sobre ellos y tiraba el proceso antes de
+    bindear el puerto. Nuevo guard `_ensure_std_streams` en `__main__.py`.
+- **El agente GUI no bootstrapeaba (`SupervisorAgent.__init__`)**:
+  - La resolución de rutas de MO2 validaba contra el `PathValidator` de backups
+    (solo `.skyclaw_backups`) en vez del sandbox de modding, rechazando toda
+    ruta de MO2 (`RuntimeError` de modlist). Ahora `AppContext` inyecta el
+    sandbox validator correcto vía DI (`supervisor.py`, `app_context.py`,
+    `_bootloader.py`), sin debilitar el sandbox de rollback.
+  - `XEditPipelineService` se construía sin el kwarg requerido `journal`.
+  - Nueva cobertura de construcción del `SupervisorAgent` (`__init__` no tenía
+    ningún test — el agujero por el que pasaron estos bugs hasta el runtime).
+- **`build.bat`** apuntaba a `venv\` en vez del `.venv\` real del repo.
+
+### Known issues
+- El runtime de `SupervisorAgent.start()` (event bus / DLQ) puede fallar en
+  máquinas donde `icacls` no resuelve el SID de la cuenta (error 1332), lo que
+  cascadea a `unable to open database file` en el DLQ. En investigación;
+  no afecta el arranque de la GUI ni la construcción del agente.
+
 ## [0.2.0] - 2026-06-16
 
 ### Added

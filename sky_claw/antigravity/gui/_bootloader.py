@@ -137,7 +137,11 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
 
         # M-01.1: el supervisor comparte el DatabaseLifecycleManager del
         # AppContext para journal/locks/DLQ (shutdown coordinado + pragmas).
-        supervisor = SupervisorAgent(hitl_guard=ctx.hitl, lifecycle=ctx.lifecycle.manager)
+        supervisor = SupervisorAgent(
+            hitl_guard=ctx.hitl,
+            lifecycle=ctx.lifecycle.manager,
+            path_validator=ctx.sandbox_validator,
+        )
         _runtime["supervisor"] = supervisor
         ctx._track_task(supervisor.start(), name="supervisor-daemon")
         ctx._track_task(_gui_logic_loop(ctx), name="gui-logic-loop")

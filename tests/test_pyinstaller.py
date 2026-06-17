@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -38,6 +40,16 @@ class TestSpec:
         # Should compile without SyntaxError (PyInstaller specs are Python).
         compile(source, str(spec), "exec")
 
+    def test_spec_bundles_gui_static_assets(self) -> None:
+        """Regression: the GUI css + image assets MUST be declared in the
+        spec ``datas`` or the frozen onefile exe crashes at startup in
+        ``sky_claw_gui.setup_app`` — ``add_static_files`` is handed a
+        directory that does not exist inside ``sys._MEIPASS``.
+        (This is the bug that broke the 0.2.0 release exe.)"""
+        source = pathlib.Path("sky_claw.spec").read_text(encoding="utf-8")
+        assert "sky_claw/antigravity/gui/styles.css" in source, "gui/styles.css not bundled in spec datas"
+        assert "sky_claw/antigravity/gui/assets" in source, "gui/assets not bundled in spec datas"
+
 
 # ---------------------------------------------------------------------------
 # build.bat exists
@@ -54,6 +66,16 @@ class TestBuildBat:
         content = bat.read_text(encoding="utf-8")
         assert "pyinstaller" in content.lower()
         assert "sky_claw.spec" in content
+
+    def test_build_bat_uses_dot_venv(self) -> None:
+        """Regression: build.bat must target the repo's ``.venv``, not a
+        bare ``venv\\`` dir, or it dies with 'activate.bat not found'."""
+        content = pathlib.Path("build.bat").read_text(encoding="utf-8")
+        assert ".venv" in content
+        # No bare ``venv\`` path references (must always be ``.venv\``).
+        assert not re.search(r"(?<!\.)\bvenv\\", content), (
+            "build.bat references a bare 'venv\\' path instead of '.venv\\'"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +133,73 @@ class TestFrozenPaths:
             mock_sys.executable = "/tmp/dist/SkyClawApp.exe"
             result = _get_exe_dir()
             assert str(result).endswith("dist")
+
+    # -- GUI module frozen-path resolution (regression for 0.2.0 crash) --
+
+    def test_gui_dir_normal(self) -> None:
+        from sky_claw.antigravity.gui.sky_claw_gui import _gui_dir
+
+        with patch("sky_claw.antigravity.gui.sky_claw_gui.sys") as mock_sys:
+            mock_sys.frozen = False
+            result = _gui_dir()
+            assert result.name == "gui"
+            assert (result / "styles.css").exists()
+
+    def test_gui_dir_frozen(self) -> None:
+        from sky_claw.antigravity.gui.sky_claw_gui import _gui_dir
+
+        with patch("sky_claw.antigravity.gui.sky_claw_gui.sys") as mock_sys:
+            mock_sys.frozen = True
+            mock_sys._MEIPASS = "/tmp/fake_meipass"
+            result = _gui_dir()
+            assert "fake_meipass" in str(result)
+            assert str(result).replace("\\", "/").endswith("sky_claw/antigravity/gui")
+
+    def test_web_static_dir_frozen(self) -> None:
+        from sky_claw.antigravity.gui.sky_claw_gui import _web_static_dir
+
+        with patch("sky_claw.antigravity.gui.sky_claw_gui.sys") as mock_sys:
+            mock_sys.frozen = True
+            mock_sys._MEIPASS = "/tmp/fake_meipass"
+            result = _web_static_dir()
+            assert "fake_meipass" in str(result)
+            assert str(result).replace("\\", "/").endswith("sky_claw/antigravity/web/static")
+
+
+# ---------------------------------------------------------------------------
+# Windowed (--windowed) builds start with sys.stdout/stderr == None
+# ---------------------------------------------------------------------------
+
+
+class TestWindowedStdStreams:
+    """Regression: a ``--windowed`` exe starts with ``sys.stdout``/``sys.stderr``
+    set to ``None``; NiceGUI/uvicorn's startup banner writes to them and the GUI
+    process dies before it can bind its port. ``_ensure_std_streams`` repairs
+    that. (Second bug behind the broken 0.2.0 release exe.)"""
+
+    def test_noop_when_streams_present(self) -> None:
+        from sky_claw.__main__ import _ensure_std_streams
+
+        before_out, before_err = sys.stdout, sys.stderr
+        _ensure_std_streams()
+        assert sys.stdout is before_out
+        assert sys.stderr is before_err
+
+    def test_replaces_none_streams(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+        from sky_claw.__main__ import _ensure_std_streams
+
+        monkeypatch.setattr(sys, "stdout", None)
+        monkeypatch.setattr(sys, "stderr", None)
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "SkyClawApp.exe"))
+
+        _ensure_std_streams()
+
+        assert sys.stdout is not None
+        assert sys.stderr is not None
+        # The repaired streams must be writable without raising (this is the
+        # bare-print path that killed the windowed exe).
+        print("startup-banner-probe")  # noqa: T201
+        sys.stderr.write("err-probe\n")
 
 
 # ---------------------------------------------------------------------------

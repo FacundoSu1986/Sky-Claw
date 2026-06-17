@@ -22,6 +22,7 @@ path).
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -50,9 +51,37 @@ from sky_claw.config import Config
 
 logger = logging.getLogger(__name__)
 
-_CSS_PATH = Path(__file__).resolve().parent / "styles.css"
-_ASSETS_PATH = Path(__file__).resolve().parent / "assets"
-_WEB_STATIC_PATH = Path(__file__).resolve().parent.parent / "web" / "static"
+
+def _gui_dir() -> Path:
+    """Resolve the GUI asset directory, handling PyInstaller onefile bundles.
+
+    In a frozen exe the Python modules live inside the PYZ archive (no real
+    directory on disk), so ``Path(__file__).parent`` points at a path that
+    does not exist and ``add_static_files`` raises. Mirror the resolver in
+    :mod:`sky_claw.antigravity.web.app` and read the bundled assets from
+    ``sys._MEIPASS`` instead (these are declared in ``sky_claw.spec`` datas).
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "sky_claw" / "antigravity" / "gui"  # type: ignore[attr-defined]
+    return Path(__file__).resolve().parent
+
+
+def _web_static_dir() -> Path:
+    """Resolve the web static directory, handling PyInstaller onefile bundles."""
+    if getattr(sys, "frozen", False):
+        return (
+            Path(sys._MEIPASS)  # type: ignore[attr-defined]
+            / "sky_claw"
+            / "antigravity"
+            / "web"
+            / "static"
+        )
+    return Path(__file__).resolve().parent.parent / "web" / "static"
+
+
+_CSS_PATH = _gui_dir() / "styles.css"
+_ASSETS_PATH = _gui_dir() / "assets"
+_WEB_STATIC_PATH = _web_static_dir()
 
 
 # ── Runtime context ───────────────────────────────────────────────────────────

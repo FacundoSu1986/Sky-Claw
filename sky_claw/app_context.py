@@ -155,6 +155,10 @@ class AppContext:
         self.lifecycle = LifecycleContext()
         self.network = NetworkContext()
         self.database = DatabaseContext(self._args.db_path, lifecycle=self.lifecycle)
+        # Sandbox PathValidator (modding roots) is built in start(); it is
+        # injected into SupervisorAgent so MO2 path resolution validates
+        # against the right roots instead of the backup-only rollback validator.
+        self.sandbox_validator: PathValidator | None = None
 
         self.hitl: HITLGuard | None = None
         self.router: LLMRouter | None = None
@@ -405,6 +409,7 @@ class AppContext:
             # Solo definir las carpetas estrictamente necesarias
             # Se elimina explícitamente mo2_parent para evitar Path Traversal encubierto
             validator = PathValidator(roots=sandbox_roots)
+            self.sandbox_validator = validator
             mo2 = MO2Controller(mo2_root, validator)
 
             await self.network.initialize(nexus_key, self._args.staging_dir)
