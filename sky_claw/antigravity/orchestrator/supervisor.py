@@ -6,6 +6,7 @@ import pathlib
 from typing import Any
 
 from sky_claw.antigravity.comms.interface import InterfaceAgent
+from sky_claw.antigravity.core.contracts import PathValidatorProtocol
 from sky_claw.antigravity.core.database import DatabaseAgent
 from sky_claw.antigravity.core.event_bus import Event, create_bus_with_dlq
 from sky_claw.antigravity.core.models import HitlApprovalRequest
@@ -57,6 +58,7 @@ class SupervisorAgent:
         *,
         hitl_guard: HITLGuard | None = None,
         lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
+        path_validator: PathValidatorProtocol | None = None,
     ):
         self.db = DatabaseAgent()
         self.gateway = NetworkGateway()
@@ -73,11 +75,12 @@ class SupervisorAgent:
         # FASE 1.5: Inicializar componentes de rollback (también inicializa _path_validator)
         self._init_rollback_components()
 
-        # Sprint-1.5: PathResolutionService — resolución stateless de rutas
-        self._path_resolver = PathResolutionService(
-            path_validator=self._path_validator,
-            profile_name=self.profile_name,
-        )
+        # Sprint-1.5: PathResolutionService — resolución stateless de rutas.
+        # Blocker 3: MO2 path resolution must validate against the *modding*
+        # sandbox (mo2_root/install_dir — the validator AppContext injects),
+        # NOT the backup-only rollback validator above, which would reject
+        # every real MO2 path and abort the GUI agent bootstrap.
+        self._path_resolver = self._make_path_resolver(path_validator)
 
         # Resolver ruta de modlist: MO2_PATH env var > auto-detección > fallback WSL2
         self.modlist_path = str(self._path_resolver.resolve_modlist_path(self.profile_name))
@@ -123,6 +126,7 @@ class SupervisorAgent:
         self._xedit_service = XEditPipelineService(
             lock_manager=self._lock_manager,
             snapshot_manager=self.snapshot_manager,
+            journal=self.journal,
             path_resolver=self._path_resolver,
             event_bus=self._event_bus,
         )
@@ -159,6 +163,27 @@ class SupervisorAgent:
         # Los callbacks se registran en el grafo y los nodos los invocan vía wrapper.
         self._graph_integration = StateGraphIntegration(self.state_graph)
         self._graph_integration.connect_supervisor(self)
+
+    def _make_path_resolver(
+        self, sandbox_validator: PathValidatorProtocol | None
+    ) -> PathResolutionService:
+        """Build the MO2 path resolver.
+
+        MO2 path resolution must validate against the *modding* sandbox roots
+        (``mo2_root``, ``install_dir``, …) — the broad validator that
+        ``AppContext`` constructs and injects. The rollback ``_path_validator``
+        is intentionally scoped to the backup directory only and would reject
+        every real MO2 path (Blocker 3: the GUI supervisor never bootstrapped).
+        Prefer the injected sandbox validator; fall back to the rollback
+        validator only when none is provided (standalone / tests).
+        """
+        resolution_validator = (
+            sandbox_validator if sandbox_validator is not None else self._path_validator
+        )
+        return PathResolutionService(
+            path_validator=resolution_validator,
+            profile_name=self.profile_name,
+        )
 
     def _init_rollback_components(self) -> None:
         """FASE 1.5 + SUP-04: Inicializa los componentes de resiliencia para rollback.

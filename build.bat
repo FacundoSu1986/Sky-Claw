@@ -11,9 +11,9 @@ echo.
 cd /d "%~dp0"
 
 :: 1. Check for Virtual Environment
-if not exist "venv\" (
+if not exist ".venv\" (
     echo [1/4] Virtual environment not found. Creating it...
-    python -m venv venv
+    python -m venv .venv
     if errorlevel 1 (
         echo.
         echo  ERROR: Failed to create virtual environment.
@@ -25,13 +25,13 @@ if not exist "venv\" (
     echo [1/4] Using existing virtual environment.
 )
 
-if not exist "venv\Scripts\activate.bat" (
+if not exist ".venv\Scripts\activate.bat" (
     echo.
-    echo  ERROR: venv\Scripts\activate.bat not found.
+    echo  ERROR: .venv\Scripts\activate.bat not found.
     if not defined CI pause
     exit /b 1
 )
-call venv\Scripts\activate.bat
+call .venv\Scripts\activate.bat
 if errorlevel 1 (
     echo.
     echo  ERROR: Failed to activate virtual environment.

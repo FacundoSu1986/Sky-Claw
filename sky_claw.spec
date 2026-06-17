@@ -11,10 +11,15 @@ import sys
 
 block_cipher = None
 
-# Collect data files: web UI static assets, xEdit scripts, and
-# fail-closed security policy data required at import time.
+# Collect data files: web UI static assets, GUI css + image assets, xEdit
+# scripts, and fail-closed security policy data required at import time.
 datas = [
     ("sky_claw/antigravity/web/static", "sky_claw/antigravity/web/static"),
+    # GUI assets served via add_static_files in sky_claw_gui.setup_app.
+    # Without these the frozen exe crashes at startup (the directory does
+    # not exist inside sys._MEIPASS).
+    ("sky_claw/antigravity/gui/styles.css", "sky_claw/antigravity/gui"),
+    ("sky_claw/antigravity/gui/assets", "sky_claw/antigravity/gui/assets"),
     ("sky_claw/local/xedit/scripts", "sky_claw/local/xedit/scripts"),
     ("sky_claw/antigravity/security/security_policy.yaml", "sky_claw/antigravity/security"),
 ]
@@ -133,8 +138,8 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version_info={
-        "FileVersion": (0, 2, 0, 0),
-        "ProductVersion": (0, 2, 0, 0),
+        "FileVersion": (0, 2, 1, 0),
+        "ProductVersion": (0, 2, 1, 0),
         "FileDescription": "Agente autónomo de modding para Skyrim",
         "ProductName": "Sky-Claw",
         "CompanyName": "FacundoSu1986",
