@@ -51,6 +51,7 @@ from sky_claw.config import Config
 
 logger = logging.getLogger(__name__)
 
+
 def _gui_dir() -> Path:
     """Resolve the GUI asset directory, handling PyInstaller onefile bundles.
 

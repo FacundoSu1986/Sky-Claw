@@ -57,9 +57,7 @@ def test_sandbox_validator_resolves_mo2_modlist(tmp_path, monkeypatch) -> None:
     (mo2 / "profiles" / "Default").mkdir(parents=True)
     monkeypatch.setenv("MO2_PATH", str(mo2))
 
-    resolver = PathResolutionService(
-        path_validator=PathValidator(roots=[mo2]), profile_name="Default"
-    )
+    resolver = PathResolutionService(path_validator=PathValidator(roots=[mo2]), profile_name="Default")
 
     assert resolver.resolve_modlist_path("Default") == mo2 / "profiles" / "Default" / "modlist.txt"
 

@@ -164,9 +164,7 @@ class SupervisorAgent:
         self._graph_integration = StateGraphIntegration(self.state_graph)
         self._graph_integration.connect_supervisor(self)
 
-    def _make_path_resolver(
-        self, sandbox_validator: PathValidatorProtocol | None
-    ) -> PathResolutionService:
+    def _make_path_resolver(self, sandbox_validator: PathValidatorProtocol | None) -> PathResolutionService:
         """Build the MO2 path resolver.
 
         MO2 path resolution must validate against the *modding* sandbox roots
@@ -177,9 +175,7 @@ class SupervisorAgent:
         Prefer the injected sandbox validator; fall back to the rollback
         validator only when none is provided (standalone / tests).
         """
-        resolution_validator = (
-            sandbox_validator if sandbox_validator is not None else self._path_validator
-        )
+        resolution_validator = sandbox_validator if sandbox_validator is not None else self._path_validator
         return PathResolutionService(
             path_validator=resolution_validator,
             profile_name=self.profile_name,

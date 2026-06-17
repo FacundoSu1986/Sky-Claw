@@ -47,12 +47,8 @@ class TestSpec:
         directory that does not exist inside ``sys._MEIPASS``.
         (This is the bug that broke the 0.2.0 release exe.)"""
         source = pathlib.Path("sky_claw.spec").read_text(encoding="utf-8")
-        assert "sky_claw/antigravity/gui/styles.css" in source, (
-            "gui/styles.css not bundled in spec datas"
-        )
-        assert "sky_claw/antigravity/gui/assets" in source, (
-            "gui/assets not bundled in spec datas"
-        )
+        assert "sky_claw/antigravity/gui/styles.css" in source, "gui/styles.css not bundled in spec datas"
+        assert "sky_claw/antigravity/gui/assets" in source, "gui/assets not bundled in spec datas"
 
 
 # ---------------------------------------------------------------------------
@@ -157,9 +153,7 @@ class TestFrozenPaths:
             mock_sys._MEIPASS = "/tmp/fake_meipass"
             result = _gui_dir()
             assert "fake_meipass" in str(result)
-            assert str(result).replace("\\", "/").endswith(
-                "sky_claw/antigravity/gui"
-            )
+            assert str(result).replace("\\", "/").endswith("sky_claw/antigravity/gui")
 
     def test_web_static_dir_frozen(self) -> None:
         from sky_claw.antigravity.gui.sky_claw_gui import _web_static_dir
@@ -169,9 +163,7 @@ class TestFrozenPaths:
             mock_sys._MEIPASS = "/tmp/fake_meipass"
             result = _web_static_dir()
             assert "fake_meipass" in str(result)
-            assert str(result).replace("\\", "/").endswith(
-                "sky_claw/antigravity/web/static"
-            )
+            assert str(result).replace("\\", "/").endswith("sky_claw/antigravity/web/static")
 
 
 # ---------------------------------------------------------------------------
@@ -193,9 +185,7 @@ class TestWindowedStdStreams:
         assert sys.stdout is before_out
         assert sys.stderr is before_err
 
-    def test_replaces_none_streams(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-    ) -> None:
+    def test_replaces_none_streams(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
         from sky_claw.__main__ import _ensure_std_streams
 
         monkeypatch.setattr(sys, "stdout", None)
