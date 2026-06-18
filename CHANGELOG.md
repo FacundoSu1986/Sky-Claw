@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-06-18
+
 ### Fixed
 - **El runtime de `SupervisorAgent.start()` crasheaba en Windows localizado**
   (no-inglés, p. ej. es-ES) con `unable to open database file` en el DLQ —

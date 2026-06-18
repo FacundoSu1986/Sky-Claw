@@ -138,8 +138,8 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version_info={
-        "FileVersion": (0, 2, 1, 0),
-        "ProductVersion": (0, 2, 1, 0),
+        "FileVersion": (0, 2, 2, 0),
+        "ProductVersion": (0, 2, 2, 0),
         "FileDescription": "Agente autónomo de modding para Skyrim",
         "ProductName": "Sky-Claw",
         "CompanyName": "FacundoSu1986",
