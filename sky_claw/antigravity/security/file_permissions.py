@@ -153,6 +153,76 @@ def _get_current_user_sid() -> str | None:
         return None
 
 
+# Well-known SIDs are locale-independent.  The English display names
+# "Everyone"/"Users"/"BUILTIN\\Administrators"/"CREATOR OWNER" are localized on
+# non-English Windows ("Usuarios"/"Administradores"/…) and do NOT resolve there,
+# so passing them to ``icacls /remove`` makes the whole command exit 1332
+# ("No mapping between account names and SIDs") — destroying secrets via the
+# fail-closed path even though the owner ``/grant`` actually succeeded.  Removing
+# by SID never depends on the OS display language.
+_STRIP_SIDS: tuple[str, ...] = (
+    "*S-1-1-0",  # Everyone
+    "*S-1-5-32-545",  # BUILTIN\Users
+    "*S-1-5-18",  # NT AUTHORITY\SYSTEM
+    "*S-1-5-32-544",  # BUILTIN\Administrators
+    "*S-1-3-0",  # CREATOR OWNER
+)
+
+
+def _owner_grant_spec(path: Path, principal: str) -> str:
+    """Return the ``icacls /grant:r`` spec for *principal*, inheritable on dirs.
+
+    A bare ``principal:(F)`` grant on a DIRECTORY applies to that object only,
+    so artifacts created inside it afterwards do NOT inherit the owner-only ACL
+    — they inherit whatever the parent still propagates (e.g. a group's read
+    ACE).  That is exactly why ``~/.sky_claw/dlq/dlq.db`` could not be created
+    after ``restrict_to_owner(~/.sky_claw)`` (the salt dir) ran: the ``dlq``
+    child inherited only a non-writable group ACE → ``aiosqlite.connect`` →
+    ``OperationalError: unable to open database file``.
+
+    Adding ``(OI)(CI)`` makes the owner grant propagate to children, keeping the
+    whole subtree owner-only *and* writable by the owner.  On a FILE the
+    inheritance flags are meaningless, so a plain ``(F)`` is used.
+    """
+    try:
+        is_dir = path.is_dir()
+    except OSError:
+        is_dir = False
+    return f"{principal}:(OI)(CI)(F)" if is_dir else f"{principal}:(F)"
+
+
+def _build_harden_command(path: Path, principal: str) -> list[str]:
+    """Build the owner-only ``icacls`` hardening command for *principal*.
+
+    *principal* is an account name (``alice`` / ``DOMAIN\\alice``) or a SID
+    grant token (``*S-1-5-…``).  Inheritance is reset and the owner is granted
+    full control; the well-known principals are stripped **by SID** so the
+    command is locale-independent.
+    """
+    cmd = ["icacls", str(path), "/inheritance:r", "/grant:r", _owner_grant_spec(path, principal)]
+    for sid in _STRIP_SIDS:
+        cmd += ["/remove", sid]
+    return cmd
+
+
+def _is_transient_session_principal(ident: str) -> bool:
+    """True for a transient *logon-session* pseudo-principal.
+
+    Windows tags artifacts created under a restricted/derived token with a
+    logon-session SID — ``S-1-5-5-X-Y`` — rendered by icacls as
+    ``NT AUTHORITY\\LogonSessionId_0_<n>``.  It is session-local and transient
+    (it dies with the logon session) and never grants access to another user or
+    to the world, so an owner-only check must not treat it as a leak and destroy
+    the artifact over it.  Seen in restricted-token environments (Windows
+    Sandbox, app containers, some CI agents).
+
+    *ident* is the already-normalised (``*`` stripped, lower-cased) identifier.
+    The synthetic ``LogonSessionId_`` name is locale-independent, and the
+    ``S-1-5-5-`` SID prefix is locale-independent by construction.
+    """
+    return ident.startswith("s-1-5-5-") or "logonsessionid_" in ident
+
+
 def _dacl_is_owner_only(icacls_output: str, allowed_identifiers: list[str]) -> bool:
     """Parse ``icacls <path>`` stdout and assert every ACE belongs to an allowed identifier.
 
@@ -256,6 +326,11 @@ def _dacl_is_owner_only(icacls_output: str, allowed_identifiers: list[str]) -> b
             ident = candidate.lstrip("*").lower()
             bare = ident.split("\\")[-1]
 
+            if _is_transient_session_principal(ident):
+                # Session-local logon SID — not a cross-user/world leak.  Ignore
+                # it: it neither satisfies the owner requirement nor rejects.
+                continue
+
             if ident in allowed_full:
                 # Exact (possibly domain-qualified) match.
                 found_any = True
@@ -335,6 +410,30 @@ def _verify_dacl(path: Path, allowed_identifiers: list[str]) -> None:
         )
 
 
+def _effective_dacl_is_owner_only(path: Path, allowed_identifiers: list[str]) -> bool:
+    """Non-raising counterpart of :func:`_verify_dacl`.
+
+    Runs ``icacls <path>`` and returns whether the effective DACL is owner-only,
+    returning ``False`` on any subprocess error instead of destroying the
+    artifact.  Used to decide whether a non-zero icacls *exit code* reflects a
+    genuine ACL failure or a benign one — e.g. an unresolvable ``/remove`` that
+    ran AFTER the owner ``/grant`` already applied (icacls processes operations
+    left-to-right and does not roll back earlier successful ones).
+    """
+    try:
+        result = subprocess.run(
+            ["icacls", str(path)],
+            capture_output=True,
+            check=True,
+            timeout=10,
+            text=True,  # system ANSI code page — handles non-ASCII account names
+            env={**os.environ, "LANGUAGE": "en_US"},
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return _dacl_is_owner_only(result.stdout, allowed_identifiers)
+
+
 def _restrict_windows(path: Path) -> None:
     """Use icacls to set owner-only ACL on Windows, then post-validate.
 
@@ -363,32 +462,7 @@ def _restrict_windows(path: Path) -> None:
     if username is not None:
         try:
             subprocess.run(
-                [
-                    "icacls",
-                    str(path),
-                    "/inheritance:r",
-                    "/grant:r",
-                    f"{username}:(F)",
-                    "/remove",
-                    "Everyone",
-                    "/remove",
-                    "Users",
-                    # Strip well-known system principals that icacls leaves in
-                    # place when they hold pre-existing explicit ACEs.  On a
-                    # fresh GitHub Actions runner (and many corporate builds),
-                    # ~/.sky_claw retains NT AUTHORITY\SYSTEM and
-                    # BUILTIN\Administrators ACEs after /inheritance:r because
-                    # those were explicit — not inherited — on the directory.
-                    # Removing them here produces a truly owner-only DACL.
-                    # icacls /remove is a no-op (exit 0) if the principal is
-                    # absent, so this is safe on all environments.
-                    "/remove",
-                    "NT AUTHORITY\\SYSTEM",
-                    "/remove",
-                    "BUILTIN\\Administrators",
-                    "/remove",
-                    "CREATOR OWNER",
-                ],
+                _build_harden_command(path, username),
                 capture_output=True,
                 check=True,
                 timeout=10,
@@ -404,30 +478,29 @@ def _restrict_windows(path: Path) -> None:
     # --- Attempt 2: SID-based grant + verify ---
     sid = _get_current_user_sid()
     if sid is not None:
+        allowed = [username, sid] if username else [sid]
         try:
             subprocess.run(
-                [
-                    "icacls",
-                    str(path),
-                    "/inheritance:r",
-                    "/grant:r",
-                    f"*{sid}:(F)",
-                    "/remove",
-                    "Everyone",
-                    "/remove",
-                    "Users",
-                    "/remove",
-                    "NT AUTHORITY\\SYSTEM",
-                    "/remove",
-                    "BUILTIN\\Administrators",
-                    "/remove",
-                    "CREATOR OWNER",
-                ],
+                _build_harden_command(path, f"*{sid}"),
                 capture_output=True,
                 check=True,
                 timeout=10,
             )
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            # Degrade safely: a non-zero icacls exit is NOT proof the owner grant
+            # failed.  icacls applies operations left-to-right and does not roll
+            # back, so an unresolvable /remove (a principal absent from the DACL,
+            # or localized on this OS) can fail AFTER the owner /grant already
+            # took effect.  The *effective DACL* — not the exit code — is the
+            # source of truth, so re-read it before destroying the artifact.
+            if _effective_dacl_is_owner_only(path, allowed):
+                logger.warning(
+                    "icacls (SID) exited non-zero for %s but the effective DACL is "
+                    "owner-only — accepting (icacls error: %s)",
+                    path,
+                    exc,
+                )
+                return
             logger.critical(
                 "SECURITY: Both icacls attempts failed for %s — file may be world-readable: %s",
                 path,
@@ -435,7 +508,6 @@ def _restrict_windows(path: Path) -> None:
             )
             _fail_closed(path, f"both icacls attempts failed: {exc}")
         else:
-            allowed = [username, sid] if username else [sid]
             _verify_dacl(path, allowed)
             return
 

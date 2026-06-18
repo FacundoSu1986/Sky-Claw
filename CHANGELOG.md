@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **El runtime de `SupervisorAgent.start()` crasheaba en Windows localizado**
+  (no-inglés, p. ej. es-ES) con `unable to open database file` en el DLQ —
+  resuelve el *Known Issue* de 0.2.1. Dos causas en
+  `security/file_permissions.py::_restrict_windows`:
+  - El hardening pasaba **nombres en inglés** (`Users`,
+    `BUILTIN\Administrators`, …) a `icacls /remove`; en Windows localizado no
+    mapean a SID → exit `1332` → el fail-closed destruía el secreto aunque el
+    `/grant` hubiera funcionado. Ahora se quitan por **SID well-known**
+    (`*S-1-1-0`, `*S-1-5-32-545`, …), independiente del idioma del SO.
+  - El grant owner-only en directorios no llevaba `(OI)(CI)`, así que los hijos
+    (`~/.sky_claw/dlq/`) no heredaban acceso de escritura → el DLQ no podía
+    crear/abrir su SQLite. Ahora los directorios se otorgan `(OI)(CI)(F)`
+    (heredable); los archivos siguen con `(F)`.
+  - La decisión de fail-closed ahora la dicta el **DACL efectivo**
+    (`_verify_dacl`), no el exit code de icacls — un `/remove` que falla tras un
+    `/grant` exitoso ya no destruye un artefacto correctamente endurecido. La
+    garantía owner-only se mantiene (un DACL con ACE no-owner sigue fallando
+    closed).
+
 ## [0.2.1] - 2026-06-17
 
 ### Fixed
@@ -29,12 +49,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Nueva cobertura de construcción del `SupervisorAgent` (`__init__` no tenía
     ningún test — el agujero por el que pasaron estos bugs hasta el runtime).
 - **`build.bat`** apuntaba a `venv\` en vez del `.venv\` real del repo.
-
-### Known issues
-- El runtime de `SupervisorAgent.start()` (event bus / DLQ) puede fallar en
-  máquinas donde `icacls` no resuelve el SID de la cuenta (error 1332), lo que
-  cascadea a `unable to open database file` en el DLQ. En investigación;
-  no afecta el arranque de la GUI ni la construcción del agente.
 
 ## [0.2.0] - 2026-06-16
 
