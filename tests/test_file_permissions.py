@@ -74,6 +74,12 @@ class TestRestrictWindows:
             # First call: hardening icacls (with /grant:r flag)
             if "/grant:r" in cmd:
                 return MagicMock(returncode=0)
+            # Verify path resolves the current logon SID (whoami) before reading
+            # the DACL — no logon-session ACE in this scenario.
+            if cmd[0] == "whoami":
+                m = MagicMock(returncode=0)
+                m.stdout = ""
+                return m
             # Second call: verify icacls (just `icacls <path>`)
             if cmd[0] == "icacls":
                 return verify_ok
@@ -86,8 +92,10 @@ class TestRestrictWindows:
         ):
             restrict_to_owner(target)
 
-        # Two icacls calls: one for /grant:r hardening, one for verification.
-        assert mock_run.call_count == 2
+        # Two icacls calls: one for /grant:r hardening, one for verification;
+        # no SID retry (no second grant), no os.chmod.
+        icacls_calls = [c.args[0] for c in mock_run.call_args_list if c.args[0] and c.args[0][0] == "icacls"]
+        assert len(icacls_calls) == 2
         mock_chmod.assert_not_called()
 
     def test_username_fails_sid_icacls_succeeds(self, tmp_path):
@@ -97,10 +105,18 @@ class TestRestrictWindows:
 
         run_calls = []
 
+        def _grant_principal(cmd: list[str]) -> str:
+            # The hardening grant principal is the argument right after /grant:r,
+            # e.g. "testuser:(F)" or "*S-1-...:(OI)(CI)(F)". Well-known SIDs now
+            # also appear as /remove targets, so a plain "*S-" scan is ambiguous;
+            # the grant principal is the unambiguous discriminator.
+            return cmd[cmd.index("/grant:r") + 1] if "/grant:r" in cmd else ""
+
         def fake_run(cmd, **kwargs):
             run_calls.append(cmd)
-            # First call is username-based icacls hardening → fail
-            if "icacls" in cmd[0] and "/grant:r" in cmd and not any(arg.startswith("*S-") for arg in cmd):
+            principal = _grant_principal(cmd)
+            # First call is username-based icacls hardening → fail with 1332
+            if principal.startswith("testuser"):
                 raise subprocess.CalledProcessError(1332, "icacls")
             # PowerShell SID resolution
             if "powershell" in cmd[0].lower():
@@ -108,7 +124,7 @@ class TestRestrictWindows:
                 m.stdout = sid + "\n"
                 return m
             # SID-based icacls hardening → succeed
-            if "icacls" in cmd[0] and "/grant:r" in cmd and any(f"*{sid}" in str(a) for a in cmd):
+            if principal.startswith(f"*{sid}"):
                 return MagicMock(returncode=0)
             # Verify icacls → return a DACL with the SID resolved to bare username
             if cmd[0] == "icacls":
@@ -125,9 +141,9 @@ class TestRestrictWindows:
             restrict_to_owner(target)
 
         mock_chmod.assert_not_called()
-        # Verify SID was used in the hardening call
-        sid_calls = [c for c in run_calls if any(f"*{sid}" in str(a) for a in c)]
-        assert sid_calls, "Expected SID-based icacls call not found"
+        # Verify the SID-based hardening grant was used
+        sid_calls = [c for c in run_calls if _grant_principal(c).startswith(f"*{sid}")]
+        assert sid_calls, "Expected SID-based icacls hardening call not found"
 
     def test_username_fails_sid_icacls_also_fails_closed(self, tmp_path, caplog):
         """Both icacls attempts fail → CRITICAL logged, no os.chmod, PermissionError, file destroyed."""

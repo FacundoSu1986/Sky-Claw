@@ -13,7 +13,7 @@ try:
 except PackageNotFoundError:
     # Fallback when dist metadata is unavailable (e.g. the PyInstaller frozen
     # exe, which does not bundle .dist-info). Bump to match the release.
-    __version__ = "0.2.1"
+    __version__ = "0.2.2"
 
 # FASE 5: Asset Conflict Detection Module
 from sky_claw.local.assets import (
