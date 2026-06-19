@@ -102,9 +102,17 @@ class TestDegradeSafe:
         sid = "S-1-5-21-1-2-3-1001"
 
         def fake_run(cmd, **kwargs):
+            joined = " ".join(cmd)
             if "powershell" in cmd[0].lower():
                 m = MagicMock()
-                m.stdout = sid + "\n"
+                # Two PowerShell lookups: the user SID and the qualified name.
+                # The strict degrade verifier matches the DACL's exact
+                # DESKTOP-ABC\User against the qualified name (no bare-name).
+                m.stdout = (sid + "\n") if "User.Value" in joined else "DESKTOP-ABC\\User\n"
+                return m
+            if cmd[0] == "whoami":  # logon-session SID probe — none here
+                m = MagicMock(returncode=0)
+                m.stdout = ""
                 return m
             # Any hardening icacls (carries /grant:r) "fails" like a localized
             # /remove would — non-zero exit, but the grant already took effect.
@@ -159,6 +167,44 @@ class TestDegradeSafe:
 
         assert not target.exists(), "leaky artifact must be destroyed (fail closed)"
 
+    def test_log_reflects_sid_only_attempt_when_username_unavailable(self, tmp_path, caplog):
+        """Copilot finding: when ``getpass.getuser()`` fails, only the SID-based
+        attempt runs — the failure log/reason must not claim 'both' attempts."""
+        target = tmp_path / "secret.bin"
+        target.write_bytes(b"x")
+        sid = "S-1-5-21-1-2-3-1001"
+
+        def fake_run(cmd, **kwargs):
+            joined = " ".join(cmd)
+            if "powershell" in cmd[0].lower():
+                m = MagicMock()
+                m.stdout = (sid + "\n") if "User.Value" in joined else "DESKTOP-ABC\\User\n"
+                return m
+            if cmd[0] == "whoami":
+                m = MagicMock(returncode=0)
+                m.stdout = ""
+                return m
+            if "/grant:r" in cmd:
+                raise subprocess.CalledProcessError(1332, "icacls")
+            if cmd[0] == "icacls":
+                m = MagicMock(returncode=0)
+                m.stdout = f"{target} Everyone:(F)\n"  # leaky → fail closed
+                return m
+            raise AssertionError(f"unexpected call: {cmd}")
+
+        with (
+            patch("getpass.getuser", side_effect=OSError("no username")),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("os.chmod"),
+            caplog.at_level(logging.CRITICAL),
+            pytest.raises(PermissionError) as ei,
+        ):
+            restrict_to_owner(target)
+
+        combined = (str(ei.value) + " " + " ".join(r.message for r in caplog.records)).lower()
+        assert "sid-based" in combined
+        assert "both icacls attempts" not in combined
+
 
 # ---------------------------------------------------------------------------
 # Real-Windows integration — exercises actual icacls on the live OS language
@@ -166,26 +212,40 @@ class TestDegradeSafe:
 
 
 class TestTransientLogonSessionSid:
-    """A logon-session SID (``S-1-5-5-X-Y``) must not be treated as a leak.
+    """A logon-session SID (``S-1-5-5-X-Y``) is tolerated ONLY when it is the
+    *current* process's logon session.
 
     In restricted-token environments (Windows Sandbox, app containers, some CI
     agents) freshly-written files carry a transient logon-session ACE rendered
     by icacls as ``NT AUTHORITY\\LogonSessionId_0_<n>:(RX)`` which survives
-    ``/inheritance:r``.  It is session-local and transient — never a cross-user
-    or world leak — so the owner-only check must tolerate it instead of
-    fail-closed-destroying the secret over it.
+    ``/inheritance:r``.  The current session's ACE is session-local and never a
+    cross-user/world leak, so it must not fail-closed-destroy the secret.  A
+    *different* session's ACE (stale, or planted by another sign-in) is NOT the
+    owner and must be rejected (Codex P1).
     """
 
-    def test_owner_only_with_logon_session_name_form(self):
+    _CUR = "S-1-5-5-0-3207687"  # current logon session
+
+    def test_current_logon_session_name_form_tolerated(self):
         out = (
             "C:\\f\\ws_auth_token DESKTOP-ABC\\User:(F)\n"
             "                    NT AUTHORITY\\LogonSessionId_0_3207687:(RX)\n"
         )
-        assert fp_mod._dacl_is_owner_only(out, ["User"]) is True
+        assert fp_mod._dacl_is_owner_only(out, ["User"], current_logon_sid=self._CUR) is True
 
-    def test_owner_only_with_logon_session_sid_form(self):
+    def test_current_logon_session_sid_form_tolerated(self):
         out = "C:\\f\\ws_auth_token DESKTOP-ABC\\User:(F) *S-1-5-5-0-3207687:(RX)\n"
-        assert fp_mod._dacl_is_owner_only(out, ["User"]) is True
+        assert fp_mod._dacl_is_owner_only(out, ["User"], current_logon_sid=self._CUR) is True
+
+    def test_foreign_logon_session_rejected(self):
+        """A different logon session's ACE is not the owner → reject (P1)."""
+        out = "C:\\f\\ws_auth_token DESKTOP-ABC\\User:(F) *S-1-5-5-0-9999999:(RX)\n"
+        assert fp_mod._dacl_is_owner_only(out, ["User"], current_logon_sid=self._CUR) is False
+
+    def test_logon_session_rejected_when_current_unknown(self):
+        """If the current logon SID can't be determined, fail safe → reject."""
+        out = "C:\\f\\ws_auth_token DESKTOP-ABC\\User:(F) *S-1-5-5-0-3207687:(RX)\n"
+        assert fp_mod._dacl_is_owner_only(out, ["User"], current_logon_sid=None) is False
 
     def test_real_leak_still_rejected_even_with_logon_session_present(self):
         out = (
@@ -193,12 +253,81 @@ class TestTransientLogonSessionSid:
             "                    NT AUTHORITY\\LogonSessionId_0_3207687:(RX)\n"
             "                    Everyone:(F)\n"
         )
-        assert fp_mod._dacl_is_owner_only(out, ["User"]) is False
+        assert fp_mod._dacl_is_owner_only(out, ["User"], current_logon_sid=self._CUR) is False
 
     def test_logon_session_alone_is_not_owner_only(self):
         # No owner ACE at all → not successfully hardened → reject.
         out = "C:\\f\\ws_auth_token NT AUTHORITY\\LogonSessionId_0_3207687:(RX)\n"
-        assert fp_mod._dacl_is_owner_only(out, ["User"]) is False
+        assert fp_mod._dacl_is_owner_only(out, ["User"], current_logon_sid=self._CUR) is False
+
+
+class TestStrictOwnerFullControl:
+    """``_dacl_owner_has_inherited_full_control`` (degrade-path verifier).
+
+    The icacls-exception branch may NOT accept an artifact just because every
+    ACE belongs to an *allowed* principal (Codex P1 x2): on a domain host a
+    pre-existing ``OTHERDOMAIN\\alice`` collides with a bare ``alice``, and a
+    leftover ``alice:(R)`` or non-inheritable ``alice:(F)`` directory grant
+    does not actually make children writable. The strict verifier therefore
+    requires the *exact* owner identifier to hold Full Control — and, on a
+    directory, the ``(OI)(CI)`` inheritance flags — and rejects everything else.
+    """
+
+    _SID = "S-1-5-21-1-2-3-1001"
+    _NAME = "DESKTOP-ABC\\User"
+    _ALLOWED = [_NAME, _SID]
+
+    def test_file_owner_full_control_accepted(self):
+        out = f"C:\\f\\token {self._NAME}:(F)\n"
+        assert fp_mod._dacl_owner_has_inherited_full_control(out, self._ALLOWED, require_inheritance=False) is True
+
+    def test_dir_owner_inherited_full_control_accepted(self):
+        out = f"C:\\d {self._NAME}:(OI)(CI)(F)\n"
+        assert fp_mod._dacl_owner_has_inherited_full_control(out, self._ALLOWED, require_inheritance=True) is True
+
+    def test_dir_owner_without_inheritance_rejected(self):
+        """(F) but no (OI)(CI) on a dir → children won't inherit → reject (P1 #4)."""
+        out = f"C:\\d {self._NAME}:(F)\n"
+        assert fp_mod._dacl_owner_has_inherited_full_control(out, self._ALLOWED, require_inheritance=True) is False
+
+    def test_owner_without_full_control_rejected(self):
+        """Read-only owner ACE is not a successful hardening → reject (P1 #4)."""
+        out = f"C:\\f\\token {self._NAME}:(R)\n"
+        assert fp_mod._dacl_owner_has_inherited_full_control(out, self._ALLOWED, require_inheritance=False) is False
+
+    def test_foreign_domain_same_bare_name_rejected(self):
+        """OTHERDOMAIN\\User must NOT satisfy an allowed DESKTOP-ABC\\User (P1 #3)."""
+        out = "C:\\f\\token OTHERDOMAIN\\User:(F)\n"
+        assert fp_mod._dacl_owner_has_inherited_full_control(out, self._ALLOWED, require_inheritance=False) is False
+
+    def test_non_owner_ace_rejected(self):
+        out = f"C:\\f\\token {self._NAME}:(F) Everyone:(F)\n"
+        assert fp_mod._dacl_owner_has_inherited_full_control(out, self._ALLOWED, require_inheritance=False) is False
+
+    def test_sid_form_owner_accepted(self):
+        """When icacls can't resolve the name it prints the raw SID — accept it."""
+        out = f"C:\\f\\token *{self._SID}:(F)\n"
+        assert fp_mod._dacl_owner_has_inherited_full_control(out, self._ALLOWED, require_inheritance=False) is True
+
+    def test_current_logon_session_tolerated_in_strict(self):
+        cur = "S-1-5-5-0-3207687"
+        out = f"C:\\f\\token {self._NAME}:(F) *S-1-5-5-0-3207687:(RX)\n"
+        assert (
+            fp_mod._dacl_owner_has_inherited_full_control(
+                out, self._ALLOWED, require_inheritance=False, current_logon_sid=cur
+            )
+            is True
+        )
+
+    def test_foreign_logon_session_rejected_in_strict(self):
+        cur = "S-1-5-5-0-3207687"
+        out = f"C:\\f\\token {self._NAME}:(F) *S-1-5-5-0-9999999:(RX)\n"
+        assert (
+            fp_mod._dacl_owner_has_inherited_full_control(
+                out, self._ALLOWED, require_inheritance=False, current_logon_sid=cur
+            )
+            is False
+        )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="icacls is Windows-only")

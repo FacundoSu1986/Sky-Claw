@@ -74,6 +74,12 @@ class TestRestrictWindows:
             # First call: hardening icacls (with /grant:r flag)
             if "/grant:r" in cmd:
                 return MagicMock(returncode=0)
+            # Verify path resolves the current logon SID (whoami) before reading
+            # the DACL — no logon-session ACE in this scenario.
+            if cmd[0] == "whoami":
+                m = MagicMock(returncode=0)
+                m.stdout = ""
+                return m
             # Second call: verify icacls (just `icacls <path>`)
             if cmd[0] == "icacls":
                 return verify_ok
@@ -86,8 +92,10 @@ class TestRestrictWindows:
         ):
             restrict_to_owner(target)
 
-        # Two icacls calls: one for /grant:r hardening, one for verification.
-        assert mock_run.call_count == 2
+        # Two icacls calls: one for /grant:r hardening, one for verification;
+        # no SID retry (no second grant), no os.chmod.
+        icacls_calls = [c.args[0] for c in mock_run.call_args_list if c.args[0] and c.args[0][0] == "icacls"]
+        assert len(icacls_calls) == 2
         mock_chmod.assert_not_called()
 
     def test_username_fails_sid_icacls_succeeds(self, tmp_path):
