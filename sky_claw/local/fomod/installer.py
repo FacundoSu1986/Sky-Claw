@@ -104,9 +104,11 @@ def _extract_7z(archive: pathlib.Path, dest: pathlib.Path) -> None:
             if not target_path.is_relative_to(dest_resolved):
                 raise PathViolationError(f"Path traversal detected in 7z: {name!r} escapes sandbox")
 
-        # Validated strictly. We extract one by one avoiding extractall.
-        for name in szf.getnames():
-            szf.extract(path=dest_resolved, targets=[name])
+        # All entries are validated above; extract them in a single pass.
+        # py7zr's SevenZipFile is a sequential reader — calling extract() once
+        # per name re-reads the compressed stream and raises CrcError on
+        # py7zr >= 1.0 (the version the CVE-2026-23879 fix forces us onto).
+        szf.extractall(path=dest_resolved)
 
 
 def _extract_rar(archive: pathlib.Path, dest: pathlib.Path) -> None:
