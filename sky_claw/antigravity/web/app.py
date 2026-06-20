@@ -141,6 +141,7 @@ class WebApp:
             ]
         )
         app.router.add_post("/api/chat", self._handle_chat)
+        app.router.add_get("/ws/ui", self._handle_ws_ui)
         if _STATIC_DIR.exists():
             app.router.add_static("/static", _STATIC_DIR, name="static")
 
@@ -151,6 +152,63 @@ class WebApp:
             self._auth_manager.register_rotation_callback(self.ops_hub_handler.close_all_clients)
 
         return app
+
+    def _validate_ws_auth(self, request: web.Request) -> bool:
+        """X-Auth-Token check for /ws/ui (mirrors OperationsHubWSHandler)."""
+        if self._auth_manager is None:
+            if os.environ.get("SKY_CLAW_DEV_NO_AUTH") == "1":
+                logger.warning("SKY_CLAW_DEV_NO_AUTH active — /ws/ui auth bypassed (dev mode only)")
+                return True
+            logger.error("/ws/ui auth rejected: auth_manager not configured (fail-closed)")
+            return False
+        token = request.headers.get("X-Auth-Token", "")
+        if not token:
+            return False
+        return self._auth_manager.validate(token)
+
+    async def _handle_ws_ui(self, request: web.Request) -> web.WebSocketResponse:
+        """GUI↔daemon chat WebSocket at /ws/ui (Q&A: command/chat -> LLMRouter)."""
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        if not self._validate_ws_auth(request):
+            logger.warning("/ws/ui auth rejected (remote=%s)", request.remote)
+            await ws.close(code=4001, message=b"Authentication required")
+            return ws
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                await self._handle_ws_ui_message(ws, msg.data)
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                logger.warning("/ws/ui socket error: %s", ws.exception())
+        return ws
+
+    async def _handle_ws_ui_message(self, ws: web.WebSocketResponse, raw: str) -> None:
+        """Handle one text frame: route command/chat to the LLM router."""
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            await ws.send_json({"type": "response", "payload": {"response": "⚠️ Invalid chat frame."}})
+            return
+        if not (isinstance(data, dict) and data.get("type") == "command" and data.get("command") == "chat"):
+            return  # YAGNI: non-chat commands ignored gracefully (future agentic phase)
+        text = str((data.get("payload") or {}).get("text", "")).strip()
+        if not text:
+            await ws.send_json({"type": "response", "payload": {"response": "⚠️ Empty message."}})
+            return
+        if self._router is None:
+            await ws.send_json(
+                {
+                    "type": "response",
+                    "payload": {"response": "⚠️ Sky-Claw no está configurado todavía. Completá el setup wizard."},
+                }
+            )
+            return
+        try:
+            response = await self._router.chat(text, self._session, chat_id=self._chat_id)
+        except Exception as exc:  # never crash the socket on a chat error
+            logger.error("/ws/ui chat failed: %s", exc, exc_info=True)
+            await ws.send_json({"type": "response", "payload": {"response": f"⚠️ {exc}"}})
+            return
+        await ws.send_json({"type": "response", "payload": {"response": response}})
 
     async def _handle_chat(self, request: web.Request) -> web.Response:
         """Process a chat message and return the assistant's response.
