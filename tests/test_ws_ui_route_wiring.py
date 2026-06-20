@@ -56,6 +56,7 @@ async def test_webapp_mounts_ws_at_ws_ui_when_configured(bus, http_session, monk
     monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")  # this test covers routing, not auth
     web_app = WebApp(router=None, session=http_session, event_bus=bus, ws_route_path="/ws/ui")
     app = web_app.create_app()
+    assert web_app.ops_hub_handler is not None  # route registered when event_bus is provided
     await web_app.ops_hub_handler.start()
     client = await _start_client(app)
     try:
@@ -77,6 +78,7 @@ async def test_webapp_default_ws_route_path_unchanged(bus, http_session, monkeyp
     monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
     web_app = WebApp(router=None, session=http_session, event_bus=bus)
     app = web_app.create_app()
+    assert web_app.ops_hub_handler is not None  # route registered when event_bus is provided
     await web_app.ops_hub_handler.start()
     client = await _start_client(app)
     try:
@@ -86,6 +88,13 @@ async def test_webapp_default_ws_route_path_unchanged(bus, http_session, monkeyp
     finally:
         await web_app.ops_hub_handler.stop()
         await client.close()
+
+
+@pytest.mark.parametrize("bad_path", ["", "ws/ui", "api/status"])
+def test_webapp_rejects_non_absolute_ws_route_path(bad_path):
+    """A misconfigured ws_route_path fails fast at construction, not deep in aiohttp."""
+    with pytest.raises(ValueError, match="absolute path"):
+        WebApp(router=None, session=None, ws_route_path=bad_path)  # type: ignore[arg-type]
 
 
 @pytest.fixture

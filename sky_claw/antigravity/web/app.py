@@ -73,6 +73,13 @@ class WebApp:
             Bearer token issued by the manager.
         event_bus: When provided, mounts the Operations Hub WebSocket
             routes against this bus.
+        ws_route_path: URL where the Operations Hub WebSocket is mounted
+            (default ``/api/status``).  The GUI bootloader passes ``/ws/ui``
+            so the ``AgentCommunicationClient`` handshake hits a real route.
+            Must be an absolute path (leading ``/``).
+
+    Raises:
+        ValueError: if ``ws_route_path`` is empty or not absolute.
     """
 
     def __init__(
@@ -93,7 +100,11 @@ class WebApp:
         # URL where the Operations Hub WebSocket is mounted. Default keeps the
         # historical /api/status contract (standalone usage + tests); the GUI
         # bootloader overrides it to /ws/ui so the AgentCommunicationClient
-        # handshake hits a real route instead of 404.
+        # handshake hits a real route instead of 404. Validate early: aiohttp's
+        # add_get() would otherwise raise deep in create_app() (or silently
+        # mount an unintended route) on a misconfigured path.
+        if not ws_route_path.startswith("/"):
+            raise ValueError(f"ws_route_path must be an absolute path starting with '/', got {ws_route_path!r}")
         self._ws_route_path = ws_route_path
         self.ops_hub_handler: OperationsHubWSHandler | None = None
 
