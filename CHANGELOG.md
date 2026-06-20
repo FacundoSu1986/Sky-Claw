@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **`langsmith` 0.8.3 → 0.8.18** (GHSA-f4xh-w4cj-qxq8). Dependencia transitiva
   (vía `langchain-core`); se fija un *floor* directo `>=0.8.18` en
-  `pyproject.toml` —siguiendo el patrón ya usado para `starlette`/
-  `python-multipart`— y se regenera `requirements.lock`. Único hallazgo del
+  `pyproject.toml` (siguiendo el patrón ya usado para `starlette` y
+  `python-multipart`) y se regenera `requirements.lock`. Único hallazgo del
   `pip-audit --strict` tras avanzar su base de advisories; sin cambios de API.
 
 ## [0.2.2] - 2026-06-20
