@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.2] - 2026-06-18
+## [0.2.2] - 2026-06-20
 
 ### Fixed
 - **El runtime de `SupervisorAgent.start()` crasheaba en Windows localizado**
@@ -28,6 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `/grant` exitoso ya no destruye un artefacto correctamente endurecido. La
     garantía owner-only se mantiene (un DACL con ACE no-owner sigue fallando
     closed).
+  - **Endurecimiento del review (P1):** la aceptación en el camino *degrade*
+    (excepción de icacls) ahora exige el **SID/nombre calificado exacto** del
+    owner con Full Control (`(OI)(CI)` en directorios), sin fallback por nombre
+    pelado; y los ACE de logon-session sólo se toleran si son de la **sesión
+    actual**. La garantía owner-only queda más estricta, nunca más laxa.
+- **`py7zr` 0.22.0 → 1.1.3** (CVE-2026-23879). El bump *major* destapó un bug
+  latente en `fomod/installer.py::_extract_7z`, que extraía target-por-target en
+  un loop — en py7zr ≥ 1.0 eso re-lee el stream y lanza `CrcError`. Ahora extrae
+  en una sola pasada (`extractall`) tras validar todos los nombres (anti
+  zip-slip), con el test de extracción real multi-archivo que faltaba.
 
 ## [0.2.1] - 2026-06-17
 
