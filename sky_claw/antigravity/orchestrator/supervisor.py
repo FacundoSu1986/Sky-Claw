@@ -8,7 +8,7 @@ from typing import Any
 from sky_claw.antigravity.comms.interface import InterfaceAgent
 from sky_claw.antigravity.core.contracts import PathValidatorProtocol
 from sky_claw.antigravity.core.database import DatabaseAgent
-from sky_claw.antigravity.core.event_bus import Event, create_bus_with_dlq
+from sky_claw.antigravity.core.event_bus import CoreEventBus, Event, create_bus_with_dlq
 from sky_claw.antigravity.core.models import HitlApprovalRequest
 from sky_claw.antigravity.core.path_resolver import PathResolutionService
 from sky_claw.antigravity.core.windows_interop import ModdingToolsAgent
@@ -593,6 +593,17 @@ class SupervisorAgent:
     # =========================================================================
     # FASE 5: Asset Conflict Detection Integration
     # =========================================================================
+
+    @property
+    def event_bus(self) -> CoreEventBus:
+        """The supervisor's CoreEventBus (DLQ-backed).
+
+        Exposed so the GUI bootloader can mount the Operations Hub WebSocket
+        (``/ws/ui``) on the *same* bus the supervisor publishes to — otherwise
+        the daemon's aiohttp app has no bus and the WS route is never
+        registered (the GUI client's ``/ws/ui`` handshake 404s).
+        """
+        return self._event_bus
 
     @property
     def asset_detector(self) -> AssetConflictDetector:

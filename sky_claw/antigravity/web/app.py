@@ -82,6 +82,7 @@ class WebApp:
         config_path: pathlib.Path | None = None,
         auth_manager: AuthTokenManager | None = None,
         event_bus: CoreEventBus | None = None,
+        ws_route_path: str = "/api/status",
     ) -> None:
         self._router = router
         self._session = session
@@ -89,6 +90,11 @@ class WebApp:
         self._config_path = config_path or _CONFIG_PATH
         self._auth_manager = auth_manager
         self._event_bus = event_bus
+        # URL where the Operations Hub WebSocket is mounted. Default keeps the
+        # historical /api/status contract (standalone usage + tests); the GUI
+        # bootloader overrides it to /ws/ui so the AgentCommunicationClient
+        # handshake hits a real route instead of 404.
+        self._ws_route_path = ws_route_path
         self.ops_hub_handler: OperationsHubWSHandler | None = None
 
     @web.middleware
@@ -145,7 +151,9 @@ class WebApp:
             app.router.add_static("/static", _STATIC_DIR, name="static")
 
         if self._event_bus is not None:
-            self.ops_hub_handler = register_operations_hub_routes(app, self._event_bus, auth_manager=self._auth_manager)
+            self.ops_hub_handler = register_operations_hub_routes(
+                app, self._event_bus, auth_manager=self._auth_manager, route_path=self._ws_route_path
+            )
 
         if self._auth_manager is not None and self.ops_hub_handler is not None:
             self._auth_manager.register_rotation_callback(self.ops_hub_handler.close_all_clients)

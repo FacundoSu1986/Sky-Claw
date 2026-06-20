@@ -160,14 +160,26 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
         await auth_manager.start_rotation()
         _runtime["auth_manager"] = auth_manager
 
-        web_app_inst = WebApp(router=ctx.router, session=ctx.session, auth_manager=auth_manager)
+        # Wire the Operations Hub WS onto the supervisor's bus and mount it at
+        # /ws/ui (the path AgentCommunicationClient connects to). Without the
+        # event_bus the route was never registered → the GUI handshake 404'd.
+        web_app_inst = WebApp(
+            router=ctx.router,
+            session=ctx.session,
+            auth_manager=auth_manager,
+            event_bus=supervisor.event_bus,
+            ws_route_path="/ws/ui",
+        )
         aiohttp_app = web_app_inst.create_app()
+        if web_app_inst.ops_hub_handler is not None:
+            await web_app_inst.ops_hub_handler.start()
+            _runtime["ops_hub_handler"] = web_app_inst.ops_hub_handler
         runner = aiohttp_web.AppRunner(aiohttp_app)
         await runner.setup()
         site = aiohttp_web.TCPSite(runner, "127.0.0.1", 8765)
         await site.start()
         _runtime["aiohttp_runner"] = runner
-        logger.info("aiohttp API server started on 127.0.0.1:8765 (/api/chat)")
+        logger.info("aiohttp API server started on 127.0.0.1:8765 (/api/chat, /ws/ui)")
 
         set_runtime_context(app_context=ctx, config_path=config_path, supervisor=supervisor)
         logger.info("Sky-Claw Daemon Core initialised; runtime context published.")
@@ -179,6 +191,9 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
         if auth_manager is not None:
             await auth_manager.stop_rotation()
             auth_manager.revoke()
+        ops_hub_handler = _runtime.get("ops_hub_handler")
+        if ops_hub_handler is not None:
+            await ops_hub_handler.stop()
         runner = _runtime.get("aiohttp_runner")
         if runner is not None:
             await runner.cleanup()
