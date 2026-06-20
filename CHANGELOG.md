@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`langsmith` 0.8.3 → 0.8.18** (GHSA-f4xh-w4cj-qxq8). Dependencia transitiva
+  (vía `langchain-core`); se fija un *floor* directo `>=0.8.18` en
+  `pyproject.toml` (siguiendo el patrón ya usado para `starlette` y
+  `python-multipart`) y se regeneran **ambos** lockfiles (`requirements.lock`
+  y `uv.lock`), de modo que tanto la instalación vía pip como la vía uv
+  documentada (`uv sync --frozen`/`--locked` en `setup_env.ps1` y
+  `DEPLOYMENT.md`) quedan remediadas. Único hallazgo del `pip-audit --strict`
+  tras avanzar su base de advisories; sin cambios de API. Al resincronizar
+  `uv.lock` (stale desde #190) también se cierran en la vía uv los pines ya
+  corregidos en `requirements.lock` (p. ej. `py7zr` 0.22.0 → 1.1.3).
+
 ## [0.2.2] - 2026-06-20
 
 ### Fixed

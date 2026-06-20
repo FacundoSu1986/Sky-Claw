@@ -27,6 +27,9 @@ dependencies = [
     "langchain-core>=1.0,<2",
     "langgraph>=1.0.10,<3",
     "langgraph-checkpoint>=4.0.0,<5",
+    # Transitive (via langchain-core); floor at >=0.8.18 to fix
+    # GHSA-f4xh-w4cj-qxq8.
+    "langsmith>=0.8.18",
     "nicegui>=3.9,<4",
     "pyyaml>=6.0,<7",
     "prometheus-client>=0.20,<1",
