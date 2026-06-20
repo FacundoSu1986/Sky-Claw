@@ -1074,10 +1074,12 @@ langgraph-sdk==0.3.14 \
     --hash=sha256:68935bf6f4924eda92617a9e5dfb4f4281197508c648cb9d62ff083907607f9d \
     --hash=sha256:acd1674c538e97f3cdaa610f6dd7e34bc9bad30167f0ccc482dcd563325e81f5
     # via langgraph
-langsmith==0.8.3 \
-    --hash=sha256:767ff7a8d136ed42926bf99059ac631dc6883542d6e3104b32e71c7625e1fa05 \
-    --hash=sha256:b2e40e308222fa0beb2dccee3b4b30bfee9062d7a4f20a3e3e93df3c51a08ab4
-    # via langchain-core
+langsmith==0.8.18 \
+    --hash=sha256:32dde9c0e67e053e0fb738921fc8ced768af7b8fa83d7a0e3fd63597cf8776dd \
+    --hash=sha256:3940183349993faef48e6c7d08e4822ee9cefd906b362d0e3c2d650314d2f282
+    # via
+    #   sky-claw (pyproject.toml)
+    #   langchain-core
 lxml==6.1.0 \
     --hash=sha256:00750d63ef0031a05331b9223463b1c7c02b9004cef2346a5b2877f0f9494dd2 \
     --hash=sha256:022981127642fe19866d2907d76241bb07ed21749601f727d5d5dd1ce5d1b773 \
@@ -2618,6 +2620,7 @@ websockets==16.0 \
     --hash=sha256:fd3cb4adb94a2a6e2b7c0d8d05cb94e6f1c81a0cf9dc2694fb65c7e8d94c42e4
     # via
     #   sky-claw (pyproject.toml)
+    #   langsmith
     #   uvicorn
 wsproto==1.3.2 \
     --hash=sha256:61eea322cdf56e8cc904bd3ad7573359a242ba65688716b0710a5eb12beab584 \
