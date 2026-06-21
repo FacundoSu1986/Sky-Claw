@@ -851,3 +851,155 @@ async def test_snapshot_lock_heartbeat_survives_renew_crash(
         ) as ctx:
             await asyncio.sleep(0.4)  # al menos un beat (intervalo 0.1s)
             assert ctx.lease_lost is True
+
+
+# =============================================================================
+# SnapshotTransactionLock — assert_owned() + renew_divisor (hardening jun-2026)
+# =============================================================================
+# Cierra la ventana entre la pérdida real del lease y su detección por el
+# heartbeat (acotada solo por TTL/divisor). assert_owned() se llama justo antes
+# de cada mutación crítica para re-verificar exclusividad; renew_divisor permite
+# acortar el intervalo de renovación sin tocar el TTL.
+
+
+@pytest.mark.asyncio
+async def test_assert_owned_passes_while_lease_held(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+) -> None:
+    """Con el lease vivo y propio, assert_owned() no levanta (camino feliz)."""
+    await snapshot_manager.initialize()
+    async with SnapshotTransactionLock(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        resource_id="res-owned-ok",
+        agent_id="holder",
+        ttl=5.0,
+        auto_renew=False,
+    ) as ctx:
+        await ctx.assert_owned()  # verify_db=True por defecto — no debe levantar
+
+
+@pytest.mark.asyncio
+async def test_assert_owned_fast_path_short_circuits_db(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Si el heartbeat ya marcó lease_lost, el fast-path levanta SIN tocar la DB.
+
+    Parcheamos get_lock_info para que explote: si assert_owned lo consultara,
+    veríamos ese error; al levantar LockLeaseLostError probamos el corto-circuito.
+    """
+    await snapshot_manager.initialize()
+
+    async def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("get_lock_info no debería consultarse en el fast-path")
+
+    with pytest.raises(LockLeaseLostError):
+        async with SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id="res-fastpath",
+            agent_id="holder",
+            ttl=5.0,
+            auto_renew=False,
+        ) as ctx:
+            ctx._lease_lost = True  # simula la detección previa del heartbeat
+            monkeypatch.setattr(lock_manager, "get_lock_info", _boom)
+            await ctx.assert_owned()
+
+
+@pytest.mark.asyncio
+async def test_assert_owned_verify_db_detects_stolen_lease(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+) -> None:
+    """assert_owned(verify_db=True) detecta que otro agente robó el recurso.
+
+    Sin heartbeat (auto_renew=False) la pérdida solo se descubre con el chequeo
+    fresco contra la DB justo antes de mutar; debe levantar y dejar lease_lost.
+    """
+    await snapshot_manager.initialize()
+    captured: dict[str, SnapshotTransactionLock] = {}
+
+    with pytest.raises(LockLeaseLostError):
+        async with SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id="res-steal",
+            agent_id="holder",
+            ttl=5.0,
+            auto_renew=False,
+        ) as ctx:
+            captured["ctx"] = ctx
+            # Otro proceso reclama el recurso (admin force_release + reacquire).
+            await lock_manager.force_release("res-steal")
+            await lock_manager.acquire_lock("res-steal", "thief", ttl=5.0)
+            await ctx.assert_owned()  # propiedad perdida → levanta
+
+    assert captured["ctx"].lease_lost is True
+
+
+@pytest.mark.asyncio
+async def test_assert_owned_verify_db_false_is_pure_fast_path(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """verify_db=False nunca consulta la DB: solo mira el flag del heartbeat."""
+    await snapshot_manager.initialize()
+
+    async def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("verify_db=False no debe tocar la DB")
+
+    async with SnapshotTransactionLock(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        resource_id="res-nodb",
+        agent_id="holder",
+        ttl=5.0,
+        auto_renew=False,
+    ) as ctx:
+        monkeypatch.setattr(lock_manager, "get_lock_info", _boom)
+        await ctx.assert_owned(verify_db=False)  # lease_lost=False → no levanta
+
+
+@pytest.mark.asyncio
+async def test_renew_divisor_below_one_rejected(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+) -> None:
+    """renew_divisor < 1.0 renovaría DESPUÉS de expirar → se rechaza en construcción."""
+    with pytest.raises(ValueError):
+        SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id="res-bad-div",
+            agent_id="holder",
+            renew_divisor=0.5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_renew_divisor_shrinks_detection_window(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+) -> None:
+    """Un divisor mayor renueva más seguido y mantiene vivo un lease de TTL corto.
+
+    Con renew_divisor=6 sobre TTL=0.6 el intervalo es ~0.1s; dormir 1.4x TTL
+    dentro del contexto no debe perder la exclusividad.
+    """
+    await snapshot_manager.initialize()
+    async with SnapshotTransactionLock(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        resource_id="res-div-hb",
+        agent_id="holder",
+        ttl=0.6,
+        renew_divisor=6.0,
+    ):
+        await asyncio.sleep(0.85)  # > TTL — solo sobrevive si renovó varias veces
+        with pytest.raises(LockAcquisitionError):
+            await lock_manager.acquire_lock("res-div-hb", "intruder", ttl=0.6)
