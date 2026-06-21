@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Chat GUI↔daemon (`/ws/ui`)** — la GUI ahora **conecta** al daemon y el chat
+  responde con el LLM en vez de quedar en "⚠️ Daemon offline". Nuevo handler
+  command-aware en `web/app.py` (`:8765`, junto a `/api/chat` y `/api/status`)
+  que rutea `command/chat` → `LLMRouter.chat` y responde
+  `{"type":"response",...}`, con auth `X-Auth-Token` (cierra con `4001` en
+  rechazo) y el **test de round-trip GUI↔daemon que faltaba** (la causa de que
+  el remap erróneo de #195 pasara verde). El remap `/ws/ui`→Operations-Hub se
+  mantiene descartado (cuelga la UI). Alcance Q&A; el chat *agentic* (ejecutar
+  herramientas desde el chat) queda para una feature futura con su propio diseño.
+
 ### Fixed
 - **`langsmith` 0.8.3 → 0.8.18** (GHSA-f4xh-w4cj-qxq8). Dependencia transitiva
   (vía `langchain-core`); se fija un *floor* directo `>=0.8.18` en
