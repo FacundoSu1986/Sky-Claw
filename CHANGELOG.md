@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Hardening del lease en `SnapshotTransactionLock`** (`db/locks.py`) — defensa
+  en profundidad para cerrar la ventana entre la pérdida real de un lease y su
+  detección por el heartbeat (acotada hasta `TTL/renew_divisor`, ~200s con el
+  default 600s/3). Nuevo `assert_owned(verify_db=True)`: API *opt-in* que los
+  callers invocan justo antes de una mutación crítica para re-verificar
+  exclusividad (fast-path por flag + chequeo fresco de propiedad contra la DB),
+  achicando la ventana a ~0. Nueva perilla `renew_divisor` (default 3.0, `>= 1.0`)
+  para acortar el intervalo de renovación sin tocar el TTL. Ambos **aditivos y
+  backward-compatible**; aún **no** cableados en call sites (se evita el
+  cargo-cult: es una API opt-in que cada runner adopta solo donde haya una
+  mutación cross-process real).
+
 ## [0.2.3] - 2026-06-20
 
 ### Added
