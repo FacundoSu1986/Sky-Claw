@@ -36,9 +36,11 @@ existing `self._router` (LLMRouter), `self._session`, `self._chat_id`, and
 `self._auth_manager`. The ops-hub handler and `/api/status` are left untouched —
 the chat protocol stays cleanly separate (the #195 conflation is avoided).
 
-**Route registration:** in `WebApp._build_app`, add
-`app.router.add_get("/ws/ui", self._handle_ws_ui)` (only when an auth manager /
-router are available, mirroring how `/api/chat` is wired).
+**Route registration:** in `WebApp.create_app`, add
+`app.router.add_get("/ws/ui", self._handle_ws_ui)` **unconditionally** — exactly
+like `/api/chat`, which is always registered and returns a graceful error when
+the router is not yet configured (GUI wizard incomplete). Auth/router presence is
+handled inside the handler, not at registration time.
 
 **`_handle_ws_ui(request)` flow:**
 1. **Prepare** the `WebSocketResponse` (`ws = web.WebSocketResponse()`; `await

@@ -24,6 +24,21 @@ class _StubRouter:
         return self._reply
 
 
+class _StubAuth:
+    """Minimal AuthTokenManager stub: validates exactly one known token."""
+
+    def __init__(self, valid_token: str = "good-token") -> None:
+        self._valid = valid_token
+        self.calls: list[str] = []
+
+    def validate(self, token: str) -> bool:
+        self.calls.append(token)
+        return token == self._valid
+
+    def register_rotation_callback(self, _cb) -> None:  # create_app may call this
+        pass
+
+
 @pytest.fixture
 async def client_router(monkeypatch):
     monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")  # bypass auth for round-trip
@@ -61,6 +76,25 @@ async def test_ws_ui_rejects_unauthed_with_4001(monkeypatch):
             msg = await ws.receive(timeout=5)
             assert msg.type == aiohttp.WSMsgType.CLOSE
             assert msg.data == 4001
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_ui_rejects_invalid_token_with_4001(monkeypatch):
+    """Production auth path: auth_manager present + invalid X-Auth-Token -> 4001."""
+    monkeypatch.delenv("SKY_CLAW_DEV_NO_AUTH", raising=False)
+    auth = _StubAuth(valid_token="good-token")
+    app = WebApp(router=_StubRouter(), session=None, auth_manager=auth).create_app()
+    server = TestServer(app)
+    client = TestClient(server)
+    await client.start_server()
+    try:
+        async with client.ws_connect("/ws/ui", headers={"X-Auth-Token": "WRONG"}) as ws:
+            msg = await ws.receive(timeout=5)
+            assert msg.type == aiohttp.WSMsgType.CLOSE
+            assert msg.data == 4001
+        assert "WRONG" in auth.calls  # validate() was actually exercised
     finally:
         await client.close()
 

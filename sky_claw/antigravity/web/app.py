@@ -168,12 +168,17 @@ class WebApp:
 
     async def _handle_ws_ui(self, request: web.Request) -> web.WebSocketResponse:
         """GUI↔daemon chat WebSocket at /ws/ui (Q&A: command/chat -> LLMRouter)."""
-        ws = web.WebSocketResponse()
-        await ws.prepare(request)
         if not self._validate_ws_auth(request):
             logger.warning("/ws/ui auth rejected (remote=%s)", request.remote)
-            await ws.close(code=4001, message=b"Authentication required")
-            return ws
+            # The upgrade is still required: the GUI client only recognises an
+            # auth rejection via the WS close code 4001 (mirrors the ops-hub
+            # handler, which likewise upgrades then closes with a WS code).
+            ws_reject = web.WebSocketResponse()
+            await ws_reject.prepare(request)
+            await ws_reject.close(code=4001, message=b"Authentication required")
+            return ws_reject
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 await self._handle_ws_ui_message(ws, msg.data)
@@ -204,9 +209,16 @@ class WebApp:
             return
         try:
             response = await self._router.chat(text, self._session, chat_id=self._chat_id)
-        except Exception as exc:  # never crash the socket on a chat error
-            logger.error("/ws/ui chat failed: %s", exc, exc_info=True)
-            await ws.send_json({"type": "response", "payload": {"response": f"⚠️ {exc}"}})
+        except Exception as exc:  # never crash the socket; don't leak internals to the client
+            logger.exception("/ws/ui chat failed: %s", exc)
+            await ws.send_json(
+                {
+                    "type": "response",
+                    "payload": {
+                        "response": "⚠️ Error del Agente. Revisa tu API Key en la config inicial y consulta los logs del servidor."
+                    },
+                }
+            )
             return
         await ws.send_json({"type": "response", "payload": {"response": response}})
 
