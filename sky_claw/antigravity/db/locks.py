@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import pathlib
 import sqlite3
 import time
@@ -105,6 +106,15 @@ class LockLeaseLostError(LockError):
 
 #: Default TTL in seconds — 10 minutes, tuned for long-running xEdit sessions.
 DEFAULT_LOCK_TTL_SECONDS: float = 600.0
+
+#: Lowest accepted ``renew_divisor``. A divisor of 1.0 schedules the first
+#: renewal at exactly the TTL, racing expiry (``renew_lock`` requires
+#: ``expires_at > now``); 2.0 keeps at least half the TTL of margin.
+_MIN_RENEW_DIVISOR: float = 2.0
+
+#: Floor for the heartbeat renewal interval so a very large ``renew_divisor``
+#: cannot collapse the cadence to ~0 and busy-loop the lock database.
+_MIN_HEARTBEAT_INTERVAL_SECONDS: float = 0.05
 
 #: Maximum number of acquisition retry attempts.
 DEFAULT_MAX_RETRIES: int = 5
@@ -559,10 +569,17 @@ class SnapshotTransactionLock:
         lock, capture the diff, then revert SIEMPRE.  Default False (production
         behavior — a clean exit keeps its mutations).
     auto_renew:
-        If True (default), a background heartbeat renews the lease at TTL/3
-        intervals so operations longer than the TTL never lose exclusivity.
-        If a renewal fails (lease lost), ``lease_lost`` flips to True and a
-        clean exit raises :class:`LockLeaseLostError`.
+        If True (default), a background heartbeat renews the lease at
+        TTL/``renew_divisor`` intervals so operations longer than the TTL never
+        lose exclusivity.  If a renewal fails (lease lost), ``lease_lost`` flips
+        to True and a clean exit raises :class:`LockLeaseLostError`.
+    renew_divisor:
+        Heartbeat renews every ``TTL/renew_divisor`` seconds (default 3.0). A
+        higher value renews more often, shrinking the window between a lost lease
+        and its detection, at the cost of more renewal queries. Must be a finite
+        number >= 2.0 (a divisor of 1.0 would renew at exactly the TTL, racing
+        expiry); the interval is floored so very large values cannot busy-loop
+        the DB. Pair with :meth:`assert_owned` before critical writes for ~0 window.
     """
 
     def __init__(
@@ -577,7 +594,18 @@ class SnapshotTransactionLock:
         metadata: dict[str, Any] | None = None,
         force_rollback: bool = False,
         auto_renew: bool = True,
+        renew_divisor: float = 3.0,
     ) -> None:
+        # Reject non-finite (NaN/inf would make the heartbeat interval non-finite:
+        # asyncio.sleep(nan) crashes the task, sleep(inf) never renews) and any
+        # divisor below the floor (renews too close to / after expiry, racing a
+        # concurrent writer). See _MIN_RENEW_DIVISOR.
+        if not math.isfinite(renew_divisor) or renew_divisor < _MIN_RENEW_DIVISOR:
+            raise ValueError(
+                f"renew_divisor must be a finite number >= {_MIN_RENEW_DIVISOR} "
+                f"(got {renew_divisor!r}); lower values renew too close to (or "
+                "after) lease expiry, racing a concurrent writer"
+            )
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
         self._resource_id = resource_id
@@ -587,6 +615,7 @@ class SnapshotTransactionLock:
         self._metadata = metadata
         self._force_rollback = force_rollback
         self._auto_renew = auto_renew
+        self._renew_divisor = renew_divisor
 
         # Populated during __aenter__
         self.lock_info: LockInfo | None = None
@@ -598,6 +627,47 @@ class SnapshotTransactionLock:
     def lease_lost(self) -> bool:
         """True if the heartbeat could not renew the lease (exclusivity gone)."""
         return self._lease_lost
+
+    async def assert_owned(self, *, verify_db: bool = True) -> None:
+        """Raise :class:`LockLeaseLostError` if exclusivity can no longer be guaranteed.
+
+        Call this immediately before each critical mutation to shrink the window
+        between a silently lost lease and its detection — otherwise bounded only
+        by the heartbeat interval (``TTL/renew_divisor``), during which the holder
+        still believes it owns the lock.
+
+        ``verify_db=False`` is a pure fast-path: it only checks the heartbeat flag
+        (no DB round-trip). The default ``verify_db=True`` adds a fresh ownership
+        check against the lock table, narrowing the window to ~0 right before the
+        write. A failed check flips ``lease_lost`` so the rest of the transaction
+        (and the clean-exit guard in ``__aexit__``) sees the loss too.
+
+        The DB check matches the row's ``acquired_at`` against THIS context's
+        acquisition token, not just ``agent_id``: two instances of the same
+        service share a constant ``agent_id``, so an expire-then-reacquire by a
+        sibling would otherwise pass an ``agent_id``-only check even though this
+        context's original lease is gone.
+        """
+        if self._lease_lost:
+            raise LockLeaseLostError(
+                f"Lease for '{self._resource_id}' (agent '{self._agent_id}') "
+                "already lost — exclusivity cannot be guaranteed"
+            )
+        if not verify_db:
+            return
+        info = await self._lock_manager.get_lock_info(self._resource_id)
+        if (
+            info is None
+            or self.lock_info is None
+            or info.agent_id != self._agent_id
+            or info.acquired_at != self.lock_info.acquired_at
+            or info.is_expired
+        ):
+            self._lease_lost = True
+            raise LockLeaseLostError(
+                f"Lease for '{self._resource_id}' (agent '{self._agent_id}') "
+                "lost — ownership check failed before mutation"
+            )
 
     async def __aenter__(self) -> SnapshotTransactionLock:
         """Acquire the distributed lock, then create snapshots."""
@@ -640,8 +710,14 @@ class SnapshotTransactionLock:
 
         return self
 
+    @staticmethod
+    def _heartbeat_interval(ttl_seconds: float, divisor: float) -> float:
+        """Renewal cadence (``TTL/divisor``), floored so a large divisor cannot
+        collapse it to ~0 and busy-loop the lock database."""
+        return max(ttl_seconds / divisor, _MIN_HEARTBEAT_INTERVAL_SECONDS)
+
     async def _heartbeat_loop(self) -> None:
-        """Renew the lease at TTL/3 intervals until cancelled or lost.
+        """Renew the lease at TTL/divisor intervals until cancelled or lost.
 
         A failed renewal (``False``) means the lease expired or was reclaimed:
         the loop stops and ``lease_lost`` flips so the holder can abort instead
@@ -651,7 +727,7 @@ class SnapshotTransactionLock:
         """
         assert self.lock_info is not None  # set by __aenter__ before the task starts
         ttl_seconds = max(self.lock_info.expires_at - self.lock_info.acquired_at, 0.15)
-        interval = ttl_seconds / 3.0
+        interval = self._heartbeat_interval(ttl_seconds, self._renew_divisor)
         while True:
             await asyncio.sleep(interval)
             try:
@@ -694,18 +770,24 @@ class SnapshotTransactionLock:
         case — no exceptions are raised for control flow.  The lock is ALWAYS
         released in ``finally``.
 
-        A lost lease (heartbeat renewal failed) raises
-        :class:`LockLeaseLostError` on a CLEAN exit only — a body exception
-        always takes precedence and is never masked.  Lease loss by itself
-        does NOT trigger the exception-path rollback (another agent may
-        already have mutated the files; restoring ours would clobber theirs),
-        but ``force_rollback=True`` (dry-run) still restores: the preview
-        no-mutation contract takes precedence, and the conflict is surfaced
-        via :class:`LockLeaseLostError` anyway.
+        A lost lease raises :class:`LockLeaseLostError` — on a CLEAN exit (the
+        heartbeat flagged it) or from the body itself (``assert_owned`` raised).
+        Either way lease loss does NOT trigger the exception-path rollback
+        (another agent may already have mutated the files; restoring ours would
+        clobber theirs), but ``force_rollback=True`` (dry-run) still restores:
+        the preview no-mutation contract takes precedence, and the conflict is
+        surfaced via :class:`LockLeaseLostError` anyway.  A non-lease body
+        exception always takes precedence and is never masked.
         """
         await self._stop_heartbeat()
+        # A lost lease — flagged by the heartbeat OR raised by assert_owned() from
+        # the body as LockLeaseLostError — must skip the exception-path rollback so
+        # we never clobber a concurrent owner's mutations. force_rollback still
+        # restores (its no-mutation contract wins).
+        lease_loss = self._lease_lost or (exc_type is not None and issubclass(exc_type, LockLeaseLostError))
+        should_rollback = self._force_rollback or (exc_type is not None and not lease_loss)
         try:
-            if exc_type is not None or self._force_rollback:
+            if should_rollback:
                 await self._rollback_snapshots(exc_val=exc_val)
         finally:
             # Always release the lock, even if rollback fails
