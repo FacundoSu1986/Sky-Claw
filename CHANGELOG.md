@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-06-20
+
 ### Added
 - **Chat GUI↔daemon (`/ws/ui`)** — la GUI ahora **conecta** al daemon y el chat
   responde con el LLM en vez de quedar en "⚠️ Daemon offline". Nuevo handler
