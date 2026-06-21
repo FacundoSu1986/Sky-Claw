@@ -14,8 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default 600s/3). Nuevo `assert_owned(verify_db=True)`: API *opt-in* que los
   callers invocan justo antes de una mutación crítica para re-verificar
   exclusividad (fast-path por flag + chequeo fresco de propiedad contra la DB),
-  achicando la ventana a ~0. Nueva perilla `renew_divisor` (default 3.0, `>= 1.0`)
-  para acortar el intervalo de renovación sin tocar el TTL. Ambos **aditivos y
+  achicando la ventana a ~0 (compara el token de adquisición `acquired_at`, no
+  solo `agent_id`, para detectar readquisiciones de un mismo servicio). Nueva
+  perilla `renew_divisor` (default 3.0, finito y `>= 2.0`; el intervalo tiene piso
+  para no martillar la DB) para acortar el intervalo de renovación sin tocar el
+  TTL; un lease perdido detectado por `assert_owned` toma el mismo camino
+  sin-rollback que el del heartbeat. Ambos **aditivos y
   backward-compatible**; aún **no** cableados en call sites (se evita el
   cargo-cult: es una API opt-in que cada runner adopta solo donde haya una
   mutación cross-process real).
