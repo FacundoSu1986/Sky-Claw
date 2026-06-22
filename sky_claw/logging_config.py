@@ -83,7 +83,12 @@ _REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # Keys whose *values* must be redacted unconditionally regardless of value shape.
 # Used by _redact_container to handle structured log extras such as
 # {"aws_secret_access_key": "<value>"} where the value has no recognisable prefix.
-_SENSITIVE_KEY_RE: re.Pattern[str] = re.compile(r"(?i)\baws[_-]secret[_-]access[_-]key\b")
+# Each alternative is a WHOLE secret key name (anchored by \b on both sides): a
+# bare 'token' is deliberately excluded so token-budget telemetry keys
+# (token_count, max_tokens, prompt_tokens, token_budget) keep their values.
+_SENSITIVE_KEY_RE: re.Pattern[str] = re.compile(
+    r"(?i)\b(?:aws[_-]secret[_-]access[_-]key|client[_-]secret|(?:bot|access|refresh)[_-]token)\b"
+)
 
 _LOG_RECORD_RESERVED_ATTRS = frozenset(
     logging.LogRecord(
@@ -172,7 +177,14 @@ class SecurityRedactionFilter(logging.Filter):
             record.args = self._redact_value(record.args)
 
         for key, value in list(record.__dict__.items()):
-            if key not in _LOG_RECORD_RESERVED_ATTRS:
+            if key in _LOG_RECORD_RESERVED_ATTRS:
+                continue
+            # `extra={"client_secret": v}` lands here as a top-level attribute,
+            # not inside a Mapping — so apply the same key-aware redaction that
+            # _redact_container does, otherwise shapeless secrets leak.
+            if isinstance(key, str) and _SENSITIVE_KEY_RE.search(key):
+                setattr(record, key, "[REDACTED]")
+            else:
                 setattr(record, key, self._redact_value(value))
 
         # Redact secrets that may surface in exception tracebacks. Render the
