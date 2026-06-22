@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cargo-cult: es una API opt-in que cada runner adopta solo donde haya una
   mutación cross-process real).
 
+### Security
+- **Redacción key-aware de secretos sin forma** (`logging_config.py`) — la capa
+  `_SENSITIVE_KEY_RE` (que redacta el *valor* de un extra estructurado según el
+  nombre de su clave, para secretos sin prefijo reconocible) cubría solo
+  `aws_secret_access_key`. Se extiende a `client_secret` y
+  `(?:bot|access|refresh)_token`, de modo que un `{"client_secret": "<valor>"}`
+  en un log extra se redacta aunque el valor no tenga forma detectable por los
+  patrones de texto. Cada alternativa es un **nombre de clave completo** anclado
+  con `\b`: se excluye `token` suelto a propósito para no clobberear la
+  telemetría de token-budget (`token_count`/`max_tokens`/`prompt_tokens`), con
+  test de regresión que lo fija.
+
 ## [0.2.3] - 2026-06-20
 
 ### Added

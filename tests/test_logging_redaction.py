@@ -253,6 +253,79 @@ def test_redacts_aws_secret_in_structured_extra() -> None:
     assert record.context["region"] == "us-east-1"  # unrelated key untouched
 
 
+def test_redacts_shapeless_secrets_by_key_name() -> None:
+    """Shapeless secret values under sensitive dict keys must redact by key name.
+
+    Values like an OAuth client_secret or a refresh_token have no recognisable
+    prefix/shape, so the text patterns never fire on the bare value in a Mapping
+    extra (the key is not concatenated with the value). The key-aware layer
+    (_SENSITIVE_KEY_RE) must catch them the same way it does aws_secret_access_key.
+    """
+    redact_filter = SecurityRedactionFilter()
+    shapeless = "a1b2c3d4e5f6g7h8"  # no prefix/shape any _REDACTION_PATTERNS matches
+    record = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="auth",
+        args=(),
+        exc_info=None,
+    )
+    record.context = {
+        "client_secret": shapeless,
+        "refresh_token": shapeless,
+        "access_token": shapeless,
+        "bot_token": shapeless,
+        "region": "us-east-1",
+    }
+
+    assert redact_filter.filter(record)
+
+    ctx = record.context
+    assert ctx["client_secret"] == "[REDACTED]"
+    assert ctx["refresh_token"] == "[REDACTED]"
+    assert ctx["access_token"] == "[REDACTED]"
+    assert ctx["bot_token"] == "[REDACTED]"
+    assert ctx["region"] == "us-east-1"  # unrelated key untouched
+
+
+def test_token_count_keys_are_not_redacted() -> None:
+    """Regression guard: token-budget telemetry keys must survive verbatim.
+
+    The naive 'add token to the key allow-list' fix would clobber Sky-Claw's
+    pervasive token-usage logging (token_count, max_tokens, prompt_tokens),
+    destroying observability. _SENSITIVE_KEY_RE must only match real secret
+    key names, never bare '*token*' substrings.
+    """
+    redact_filter = SecurityRedactionFilter()
+    record = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="usage",
+        args=(),
+        exc_info=None,
+    )
+    record.context = {
+        "token_count": 1500,
+        "max_tokens": 4096,
+        "prompt_tokens": 200,
+        "completion_tokens": 300,
+        "token_budget": 8000,
+    }
+
+    assert redact_filter.filter(record)
+
+    ctx = record.context
+    assert ctx["token_count"] == 1500
+    assert ctx["max_tokens"] == 4096
+    assert ctx["prompt_tokens"] == 200
+    assert ctx["completion_tokens"] == 300
+    assert ctx["token_budget"] == 8000
+
+
 def test_redacts_credentials_in_url_query_strings() -> None:
     """Gap jun-2026: credenciales en query strings que el patrón genérico no cubre.
 

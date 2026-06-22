@@ -83,7 +83,12 @@ _REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # Keys whose *values* must be redacted unconditionally regardless of value shape.
 # Used by _redact_container to handle structured log extras such as
 # {"aws_secret_access_key": "<value>"} where the value has no recognisable prefix.
-_SENSITIVE_KEY_RE: re.Pattern[str] = re.compile(r"(?i)\baws[_-]secret[_-]access[_-]key\b")
+# Each alternative is a WHOLE secret key name (anchored by \b on both sides): a
+# bare 'token' is deliberately excluded so token-budget telemetry keys
+# (token_count, max_tokens, prompt_tokens, token_budget) keep their values.
+_SENSITIVE_KEY_RE: re.Pattern[str] = re.compile(
+    r"(?i)\b(?:aws[_-]secret[_-]access[_-]key|client[_-]secret|(?:bot|access|refresh)[_-]token)\b"
+)
 
 _LOG_RECORD_RESERVED_ATTRS = frozenset(
     logging.LogRecord(
