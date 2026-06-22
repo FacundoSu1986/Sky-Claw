@@ -177,7 +177,14 @@ class SecurityRedactionFilter(logging.Filter):
             record.args = self._redact_value(record.args)
 
         for key, value in list(record.__dict__.items()):
-            if key not in _LOG_RECORD_RESERVED_ATTRS:
+            if key in _LOG_RECORD_RESERVED_ATTRS:
+                continue
+            # `extra={"client_secret": v}` lands here as a top-level attribute,
+            # not inside a Mapping — so apply the same key-aware redaction that
+            # _redact_container does, otherwise shapeless secrets leak.
+            if isinstance(key, str) and _SENSITIVE_KEY_RE.search(key):
+                setattr(record, key, "[REDACTED]")
+            else:
                 setattr(record, key, self._redact_value(value))
 
         # Redact secrets that may surface in exception tracebacks. Render the

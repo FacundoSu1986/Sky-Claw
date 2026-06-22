@@ -326,6 +326,38 @@ def test_token_count_keys_are_not_redacted() -> None:
     assert ctx["token_budget"] == 8000
 
 
+def test_redacts_shapeless_secret_in_top_level_extra() -> None:
+    """Standard logging form: logger.info(..., extra={"client_secret": v}).
+
+    `extra` keys become TOP-LEVEL LogRecord attributes (record.__dict__), not
+    entries inside a nested Mapping — so filter() must apply the key-aware layer
+    to attribute names too, not only inside _redact_container. This is the more
+    common structured-extra path; the nested-Mapping test above does not exercise
+    it.
+    """
+    redact_filter = SecurityRedactionFilter()
+    shapeless = "a1b2c3d4e5f6g7h8"  # no shape any _REDACTION_PATTERNS matches
+    record = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="auth",
+        args=(),
+        exc_info=None,
+    )
+    # logging copies `extra={...}` straight into record.__dict__.
+    record.client_secret = shapeless  # type: ignore[attr-defined]
+    record.access_token = shapeless  # type: ignore[attr-defined]
+    record.token_count = 1500  # type: ignore[attr-defined]  # telemetry must survive
+
+    assert redact_filter.filter(record)
+
+    assert record.client_secret == "[REDACTED]"  # type: ignore[attr-defined]
+    assert record.access_token == "[REDACTED]"  # type: ignore[attr-defined]
+    assert record.token_count == 1500  # type: ignore[attr-defined]
+
+
 def test_redacts_credentials_in_url_query_strings() -> None:
     """Gap jun-2026: credenciales en query strings que el patrón genérico no cubre.
 
