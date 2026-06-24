@@ -104,6 +104,7 @@ plans/
 .agents/
 
 # Auditoría y extracción
+extract_audit.py
 skyscraping/
 project_scrape/
 Auditorias/
