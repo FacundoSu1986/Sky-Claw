@@ -7,9 +7,95 @@ Build with::
 """
 
 import os
+import re
 import sys
 
 block_cipher = None
+
+
+def _resolve_version_tuple():
+    """Derive the Windows VERSIONINFO tuple ``(major, minor, patch, 0)`` at build time.
+
+    The single source of truth is the installed package version (``hatch-vcs`` /
+    the git tag), so the exe's embedded properties never drift from the release.
+    Falls back to ``sky_claw.__version__`` (the frozen-exe literal in
+    ``sky_claw/__init__.py``) when dist metadata is unavailable, and to
+    ``(0, 0, 0, 0)`` if neither can be parsed. ``hatch-vcs`` dev/dirty suffixes
+    such as ``0.2.4.dev3+g1234567`` are tolerated -- only the first three
+    integers are used.
+    """
+    version_str = ""
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        version_str = _pkg_version("sky-claw")
+    except Exception:
+        try:
+            from sky_claw import __version__ as version_str
+        except Exception:
+            version_str = ""
+
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)", version_str or "")
+    if match is None:
+        return (0, 0, 0, 0)
+    major, minor, patch = (int(part) for part in match.groups())
+    return (major, minor, patch, 0)
+
+
+_VERSION_TUPLE = _resolve_version_tuple()
+
+
+def _build_version_info():
+    """Construct the Windows VS_VERSION_INFO resource PyInstaller embeds in the exe.
+
+    PyInstaller's ``EXE`` only honours the ``version=`` argument (a
+    ``VSVersionInfo`` object or a path to a version text file); a bare ``dict``
+    is silently ignored. We build the structure programmatically so the embedded
+    FileVersion/ProductVersion always track ``_VERSION_TUPLE`` -- no manual bump.
+    """
+    from PyInstaller.utils.win32.versioninfo import (
+        FixedFileInfo,
+        StringFileInfo,
+        StringStruct,
+        StringTable,
+        VarFileInfo,
+        VarStruct,
+        VSVersionInfo,
+    )
+
+    version_display = ".".join(str(part) for part in _VERSION_TUPLE)
+    return VSVersionInfo(
+        ffi=FixedFileInfo(
+            filevers=_VERSION_TUPLE,
+            prodvers=_VERSION_TUPLE,
+            mask=0x3F,
+            flags=0x0,
+            OS=0x40004,  # VOS_NT_WINDOWS32
+            fileType=0x1,  # VFT_APP
+            subtype=0x0,
+            date=(0, 0),
+        ),
+        kids=[
+            StringFileInfo(
+                [
+                    StringTable(
+                        "040904B0",  # U.S. English (0x0409), Unicode codepage (0x04B0)
+                        [
+                            StringStruct("CompanyName", "FacundoSu1986"),
+                            StringStruct("FileDescription", "Agente autónomo de modding para Skyrim"),
+                            StringStruct("FileVersion", version_display),
+                            StringStruct("InternalName", "SkyClawApp"),
+                            StringStruct("LegalCopyright", "MIT License"),
+                            StringStruct("OriginalFilename", "SkyClawApp.exe"),
+                            StringStruct("ProductName", "Sky-Claw"),
+                            StringStruct("ProductVersion", version_display),
+                        ],
+                    )
+                ]
+            ),
+            VarFileInfo([VarStruct("Translation", [0x0409, 0x04B0])]),
+        ],
+    )
 
 # Collect data files: web UI static assets, GUI css + image assets, xEdit
 # scripts, and fail-closed security policy data required at import time.
@@ -137,16 +223,9 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version_info={
-        "FileVersion": (0, 2, 4, 0),
-        "ProductVersion": (0, 2, 4, 0),
-        "FileDescription": "Agente autónomo de modding para Skyrim",
-        "ProductName": "Sky-Claw",
-        "CompanyName": "FacundoSu1986",
-        "InternalName": "SkyClawApp",
-        "OriginalFilename": "SkyClawApp.exe",
-        "LegalCopyright": "MIT License",
-    }
-    if sys.platform == "win32"
-    else None,
+    # Embedded VS_VERSION_INFO resource. PyInstaller reads the ``version=``
+    # kwarg only (a bare ``version_info`` dict is silently dropped), so the
+    # version tuple is derived at build time from the package/git-tag version --
+    # see ``_resolve_version_tuple``/``_build_version_info`` above.
+    version=_build_version_info() if sys.platform == "win32" else None,
 )

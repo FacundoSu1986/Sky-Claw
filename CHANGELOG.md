@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **VERSIONINFO del `.exe` ahora se embebe y se deriva solo** (`sky_claw.spec`).
+  El spec pasaba un dict `version_info={...}` a `EXE(...)`, pero PyInstaller solo
+  honra el kwarg `version=` (un `VSVersionInfo` o un path a archivo); el dict se
+  descartaba en silencio, así que el binario se publicaba **sin recurso de
+  versión** (Propiedades → Detalles vacío) y el "bump manual" de
+  `(0, 2, 4, 0)` no tenía efecto. Ahora la tupla `(major, minor, patch, 0)` se
+  deriva en build time de `importlib.metadata.version("sky-claw")` (el tag de
+  `hatch-vcs`), con fallback a `sky_claw.__version__` y a `(0, 0, 0, 0)` si no
+  parsea; los sufijos dev/dirty (`0.2.4.devN+g…`) se toleran vía regex. Se
+  elimina el footgun del bump manual: `sky_claw/__init__.py:__version__` queda
+  como **único punto manual** de versión.
+
 ## [0.2.4] - 2026-06-24
 
 ### Added
