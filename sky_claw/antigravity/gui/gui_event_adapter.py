@@ -62,6 +62,8 @@ class EventBus:
         self._subscribers_lock = threading.Lock()
         self._event_queue: queue.Queue = queue.Queue()
         self._running = False
+        # Bound at start() to the running loop; None means events are dropped.
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._logger = logging.getLogger("SkyClaw.EventBus")
 
     def subscribe(self, event_type: EventType, callback: Callable) -> None:
@@ -116,7 +118,15 @@ class EventBus:
             try:
                 self._loop = asyncio.get_running_loop()
             except RuntimeError:
+                # No running loop → every event will be dropped. This must be
+                # loud: start() has to run inside the event loop (e.g. via
+                # app.on_startup), never eagerly during synchronous setup.
                 self._loop = None
+                self._logger.error(
+                    "EventBus.start() called without a running event loop — "
+                    "_loop is None, ALL events will be dropped. Start it from an "
+                    "async context (app.on_startup)."
+                )
             self._processor = threading.Thread(target=self._process_events, daemon=True, name="EventBus-processor")
             self._processor.start()
 

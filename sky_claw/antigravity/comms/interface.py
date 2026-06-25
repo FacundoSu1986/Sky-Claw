@@ -30,11 +30,13 @@ class InterfaceAgent:
     async def connect(self):
         """Bucle de reconexión infinita. Garantiza supervivencia del demonio."""
         backoff = 2.0
+        disconnected_logged = False
         while True:
             try:
                 self.ws_connection = await authenticated_connect(self.gateway_url, token_dir=self._token_dir)
                 logger.info(f"Conectado al Gateway Node.js en {self.gateway_url}")
                 backoff = 2.0  # Reset backoff tras conexión exitosa
+                disconnected_logged = False  # re-arm WARNING for the next drop
                 await self._listen_to_gateway()
             except (
                 ConnectionClosed,
@@ -42,9 +44,19 @@ class InterfaceAgent:
                 ConnectionRefusedError,
                 OSError,
             ) as e:
-                logger.warning(
-                    f"RCA: Enlace con Gateway perdido ({type(e).__name__}: {e!s}). Reconectando silenciosamente en {backoff}s..."
+                # Log on state change: WARNING on the first drop, DEBUG on the
+                # subsequent retries while still down. Without this, a Gateway
+                # that is simply not deployed floods the log with a WARNING
+                # every ≤30s forever. Re-armed to WARNING after a reconnect.
+                level = logging.DEBUG if disconnected_logged else logging.WARNING
+                logger.log(
+                    level,
+                    "RCA: Enlace con Gateway perdido (%s: %s). Reconectando silenciosamente en %ss...",
+                    type(e).__name__,
+                    e,
+                    backoff,
                 )
+                disconnected_logged = True
                 self.ws_connection = None
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 1.5, 30.0)  # Backoff exponencial truncado a 30s

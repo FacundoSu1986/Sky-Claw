@@ -471,7 +471,11 @@ def setup_app() -> None:
 
     app.on_startup(_seed_db)
 
-    event_bus.start()
+    # Defer EventBus.start() into the running NiceGUI loop. Calling it eagerly
+    # here (before ui.run()) leaves _loop=None, so the processor thread silently
+    # drops every event — navigation, chat rendering and the thinking spinner
+    # all go dead. Subscriptions below are loop-independent and stay eager.
+    app.on_startup(event_bus.start)
 
     app_state = get_app_state_instance()
     _chat_controller = ChatController(
