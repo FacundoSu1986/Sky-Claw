@@ -1059,9 +1059,9 @@ langgraph==1.1.10 \
     --hash=sha256:3115beb58203283c98d8752a90c034f3432177d2979a1fe205f76e5f1b744500 \
     --hash=sha256:8a4f163f72f4401648d0c11b48ee906947d938ba8cf1f474540fe591534f0d17
     # via sky-claw (pyproject.toml)
-langgraph-checkpoint==4.0.3 \
-    --hash=sha256:a7b5e2ca18fb79b55edf19396d4ee446f8a53dcb7a4ec62ce6f1c7e00bb5af7f \
-    --hash=sha256:b91b765712a2311a5b198760f714b7ab9b376d01c047ed78d9b9a3e80df802a3
+langgraph-checkpoint==4.1.1 \
+    --hash=sha256:25d29144b082827218e7bc3f1e9b0566a4bb007895cd6cc26f66a8428739f56e \
+    --hash=sha256:6c2bdb530c91f91d7d9c1bd100925d0fc4f498d418c17f3587d1526279482a25
     # via
     #   sky-claw (pyproject.toml)
     #   langgraph
@@ -1070,10 +1070,12 @@ langgraph-prebuilt==1.0.13 \
     --hash=sha256:7055e9fad41fbd3593800aed0aea0a6e974b17f33ed51b80d3d3a031212dd7c0 \
     --hash=sha256:ad219782a80e1718e7e7794de49e0ae307111d45cbcffab9a52725a66a609456
     # via langgraph
-langgraph-sdk==0.3.14 \
-    --hash=sha256:68935bf6f4924eda92617a9e5dfb4f4281197508c648cb9d62ff083907607f9d \
-    --hash=sha256:acd1674c538e97f3cdaa610f6dd7e34bc9bad30167f0ccc482dcd563325e81f5
-    # via langgraph
+langgraph-sdk==0.3.15 \
+    --hash=sha256:29e805003d2c6e296823dd71992610976fd0428cefaa8b3304fd91f2247037de \
+    --hash=sha256:3838773acf7456d158165385d49f48f1e856f28b56ccd99ea139a8f27004815d
+    # via
+    #   sky-claw (pyproject.toml)
+    #   langgraph
 langsmith==0.8.18 \
     --hash=sha256:32dde9c0e67e053e0fb738921fc8ced768af7b8fa83d7a0e3fd63597cf8776dd \
     --hash=sha256:3940183349993faef48e6c7d08e4822ee9cefd906b362d0e3c2d650314d2f282
