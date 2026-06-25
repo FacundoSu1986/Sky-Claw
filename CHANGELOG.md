@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Familia `langgraph`: `langgraph-checkpoint` 4.0.3 → 4.1.1
+  (CVE-2026-48775) y `langgraph-sdk` 0.3.14 → 0.3.15 (CVE-2026-48776)** —
+  divulgación coordinada que `pip-audit --strict` marcó en `requirements.lock`,
+  poniendo rojo el gate "Security Scan". Se suben los floors en `pyproject.toml`
+  (`langgraph-checkpoint>=4.1.1,<5`; `langgraph-sdk>=0.3.15`, transitiva vía
+  `langgraph`) y se regeneran `requirements.lock` **y** `uv.lock`. Solo cambian
+  esos dos pins (el grafo transitivo no varía), así que no requiere re-bundlear
+  el exe.
+
 ### Fixed
 - **VERSIONINFO del `.exe` ahora se embebe y se deriva solo** (`sky_claw.spec`).
   El spec pasaba un dict `version_info={...}` a `EXE(...)`, pero PyInstaller solo
