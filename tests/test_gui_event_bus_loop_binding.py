@@ -73,7 +73,42 @@ def test_start_without_loop_logs_error_and_leaves_loop_none(fresh_bus, caplog):
         fresh_bus.start()  # plain sync context — no running loop
 
     assert fresh_bus._loop is None
+    # _running must stay False so a later start() (with a loop) can still bind —
+    # otherwise an early/eager call would permanently wedge the bus.
+    assert fresh_bus._running is False
     assert any("loop" in r.message.lower() for r in caplog.records), "start() without a loop must log an ERROR"
+
+
+async def test_start_recovers_after_a_loopless_start(fresh_bus):
+    """A failed (loopless) start() must not wedge the bus: a later start() binds.
+
+    Guards the defense-in-depth gap — if start() marked itself running before
+    capturing the loop, the correct on_startup call would early-return and the
+    bus would drop events forever.
+    """
+    # First call happens via a thread with no running loop → must be a no-op.
+    import threading
+
+    def _loopless_start() -> None:
+        fresh_bus.start()
+
+    t = threading.Thread(target=_loopless_start)
+    t.start()
+    t.join()
+    assert fresh_bus._loop is None and fresh_bus._running is False
+
+    # Now start() from inside the live loop must succeed and dispatch.
+    received: list[SkyClawEvent] = []
+    fresh_bus.subscribe(EventType.NAVIGATION_REQUESTED, received.append)
+    fresh_bus.start()
+    assert fresh_bus._loop is not None and fresh_bus._running is True
+
+    fresh_bus.publish(SkyClawEvent(type=EventType.NAVIGATION_REQUESTED, data={"section": "Conflicts"}))
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if received:
+            break
+    assert len(received) == 1
 
 
 def test_setup_app_defers_event_bus_start_to_on_startup(monkeypatch):
@@ -90,7 +125,9 @@ def test_setup_app_defers_event_bus_start_to_on_startup(monkeypatch):
     monkeypatch.setattr(gui, "get_store", lambda: MagicMock(name="ReactiveStore"))
 
     # Keep the process-wide singleton's subscriber list clean across the suite.
-    saved_subs = dict(gui.event_bus._subscribers)
+    # Deep-copy the inner lists: setup_app appends to them, and a shallow dict
+    # copy would share those list objects, so the restore below would be a no-op.
+    saved_subs = {key: list(callbacks) for key, callbacks in gui.event_bus._subscribers.items()}
     try:
         gui.setup_app()
 

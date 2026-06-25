@@ -113,22 +113,24 @@ class EventBus:
                     self._logger.error("Error en callback: %s", exc)
 
     def start(self) -> None:
-        if not self._running:
-            self._running = True
-            try:
-                self._loop = asyncio.get_running_loop()
-            except RuntimeError:
-                # No running loop → every event will be dropped. This must be
-                # loud: start() has to run inside the event loop (e.g. via
-                # app.on_startup), never eagerly during synchronous setup.
-                self._loop = None
-                self._logger.error(
-                    "EventBus.start() called without a running event loop — "
-                    "_loop is None, ALL events will be dropped. Start it from an "
-                    "async context (app.on_startup)."
-                )
-            self._processor = threading.Thread(target=self._process_events, daemon=True, name="EventBus-processor")
-            self._processor.start()
+        if self._running:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop → every event would be dropped. Fail loud AND
+            # leave _running False so a later start() (from app.on_startup, with
+            # the loop live) can still bind successfully. start() must run inside
+            # the event loop, never eagerly during synchronous setup.
+            self._logger.error(
+                "EventBus.start() called without a running event loop — not started. "
+                "Start it from an async context (app.on_startup) or every event is dropped."
+            )
+            return
+        self._loop = loop
+        self._running = True
+        self._processor = threading.Thread(target=self._process_events, daemon=True, name="EventBus-processor")
+        self._processor.start()
 
     def stop(self) -> None:
         self._running = False

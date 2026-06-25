@@ -28,6 +28,21 @@ class _EmptyWS:
         raise StopAsyncIteration
 
 
+class _AsyncioProxy:
+    """Proxy to the real ``asyncio`` that overrides only ``sleep``.
+
+    Swapping ``interface_mod.asyncio`` for this keeps the sleep patch local to
+    the module under test, instead of mutating ``asyncio.sleep`` globally (which
+    would affect every other coroutine on the loop during the test).
+    """
+
+    def __init__(self, sleep) -> None:
+        self.sleep = sleep  # instance attr shadows the real asyncio.sleep
+
+    def __getattr__(self, name):
+        return getattr(asyncio, name)
+
+
 def _gateway_records(caplog) -> list[logging.LogRecord]:
     return [r for r in caplog.records if "Gateway perdido" in r.getMessage()]
 
@@ -47,7 +62,7 @@ async def test_reconnect_logs_warning_once_then_debug(monkeypatch, caplog):
             raise asyncio.CancelledError  # break the infinite loop after 2 drops
 
     monkeypatch.setattr(interface_mod, "authenticated_connect", fake_connect)
-    monkeypatch.setattr(interface_mod.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(interface_mod, "asyncio", _AsyncioProxy(fake_sleep))
 
     with caplog.at_level(logging.DEBUG, logger="SkyClaw.Interface"), pytest.raises(asyncio.CancelledError):
         await agent.connect()
@@ -78,7 +93,7 @@ async def test_reconnect_rewarns_after_successful_connect(monkeypatch, caplog):
             raise asyncio.CancelledError
 
     monkeypatch.setattr(interface_mod, "authenticated_connect", fake_connect)
-    monkeypatch.setattr(interface_mod.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(interface_mod, "asyncio", _AsyncioProxy(fake_sleep))
 
     with caplog.at_level(logging.DEBUG, logger="SkyClaw.Interface"), pytest.raises(asyncio.CancelledError):
         await agent.connect()
