@@ -12,7 +12,9 @@ try:
     __version__ = _pkg_version("sky-claw")
 except PackageNotFoundError:
     # Fallback when dist metadata is unavailable (e.g. the PyInstaller frozen
-    # exe, which does not bundle .dist-info). Bump to match the release.
+    # exe, which does not bundle .dist-info). This literal is the single
+    # manual version point: sky_claw.spec also falls back to it when building
+    # the exe's VERSIONINFO resource. Bump it to match the release.
     __version__ = "0.2.4"
 
 # FASE 5: Asset Conflict Detection Module
