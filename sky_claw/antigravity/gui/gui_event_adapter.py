@@ -62,6 +62,8 @@ class EventBus:
         self._subscribers_lock = threading.Lock()
         self._event_queue: queue.Queue = queue.Queue()
         self._running = False
+        # Bound at start() to the running loop; None means events are dropped.
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._logger = logging.getLogger("SkyClaw.EventBus")
 
     def subscribe(self, event_type: EventType, callback: Callable) -> None:
@@ -111,14 +113,24 @@ class EventBus:
                     self._logger.error("Error en callback: %s", exc)
 
     def start(self) -> None:
-        if not self._running:
-            self._running = True
-            try:
-                self._loop = asyncio.get_running_loop()
-            except RuntimeError:
-                self._loop = None
-            self._processor = threading.Thread(target=self._process_events, daemon=True, name="EventBus-processor")
-            self._processor.start()
+        if self._running:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop → every event would be dropped. Fail loud AND
+            # leave _running False so a later start() (from app.on_startup, with
+            # the loop live) can still bind successfully. start() must run inside
+            # the event loop, never eagerly during synchronous setup.
+            self._logger.error(
+                "EventBus.start() called without a running event loop — not started. "
+                "Start it from an async context (app.on_startup) or every event is dropped."
+            )
+            return
+        self._loop = loop
+        self._running = True
+        self._processor = threading.Thread(target=self._process_events, daemon=True, name="EventBus-processor")
+        self._processor.start()
 
     def stop(self) -> None:
         self._running = False
