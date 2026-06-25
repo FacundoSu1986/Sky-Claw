@@ -31,7 +31,14 @@ def _resolve_version_tuple():
         version_str = _pkg_version("sky-claw")
     except Exception:
         try:
-            from sky_claw import __version__ as version_str
+            # Read the literal directly from source to avoid importing the
+            # full package (which executes sky_claw/__init__.py and its
+            # transitive imports) during PyInstaller spec evaluation.
+            import pathlib
+
+            _src = (pathlib.Path(__file__).parent / "sky_claw" / "__init__.py").read_text(encoding="utf-8")
+            _m = re.search(r'__version__\s*=\s*["\'](\d[^"\']*)["\']', _src)
+            version_str = _m.group(1) if _m else ""
         except Exception:
             version_str = ""
 
