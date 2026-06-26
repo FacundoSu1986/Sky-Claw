@@ -422,6 +422,7 @@ function populateSettingsForm(config) {
     // Update key status indicators
     updateKeyStatus('status-llm-key', config.has_llm_key);
     updateKeyStatus('status-nexus-key', config.has_nexus_key);
+    updateKeyStatus('status-search-key', config.has_search_key);
     updateKeyStatus('status-tg-token', config.has_telegram_token);
 }
 
@@ -458,6 +459,9 @@ if (settingsForm) {
 
         const nexusKey = document.getElementById('cfg-nexus-key').value.trim();
         if (nexusKey) content.nexus_api_key = nexusKey;
+
+        const searchKey = document.getElementById('cfg-search-key').value.trim();
+        if (searchKey) content.search_api_key = searchKey;
 
         const tgToken = document.getElementById('cfg-tg-token').value.trim();
         if (tgToken) content.telegram_bot_token = tgToken;
