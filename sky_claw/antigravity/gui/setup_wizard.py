@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import secrets
@@ -337,6 +338,15 @@ class SetupWizardModal:
             for k, v in key_map.items():
                 if v:
                     keyring.set_password("sky_claw", k, v)
+
+            # The Brave search key is optional: an explicitly blank field means
+            # "disable/rotate", so clear any previously stored value instead of
+            # silently keeping the old one (Copilot review). Scoped to this key —
+            # the other fields keep the "blank = leave unchanged" convention.
+            if not search_key:
+                # nothing stored, or no keyring backend — both are fine here
+                with contextlib.suppress(keyring.errors.KeyringError):
+                    keyring.delete_password("sky_claw", "search_api_key")
 
             existing_ws = keyring.get_password("sky_claw", "ws_auth_token")
             if not existing_ws:
