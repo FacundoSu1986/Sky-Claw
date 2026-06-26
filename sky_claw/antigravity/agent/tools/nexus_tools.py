@@ -216,19 +216,31 @@ async def download_mod(
 # search_nexus — read-only natural-language Nexus discovery
 # ---------------------------------------------------------------------------
 
-_MOD_URL_RE = re.compile(r"nexusmods\.com/[a-z0-9]+/mods/(\d+)", re.IGNORECASE)
+# Restricted to skyrimspecialedition on purpose: the tool only enriches via the
+# SE API, so a URL for another game (e.g. /fallout4/mods/42) must NOT resolve to
+# an SE mod with the same numeric id (Codex P2). Other-game URLs return None and
+# fall through to the SE-scoped Brave search.
+_MOD_URL_RE = re.compile(r"nexusmods\.com/skyrimspecialedition/mods/(\d+)", re.IGNORECASE)
 _BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 _SE_SITE = "site:nexusmods.com/skyrimspecialedition"
 _NEXUS_MOD_URL = "https://api.nexusmods.com/v1/games/skyrimspecialedition/mods/{mod_id}.json"
 
 
 def _extract_mod_id(text: str) -> int | None:
-    """Extract a Nexus mod id from a mods URL or a bare integer string."""
+    """Extract a Skyrim SE Nexus mod id from a mods URL or a bare positive integer.
+
+    Returns None for non-SE game URLs and for non-positive ids (mod ids are
+    > 0; download_mod enforces gt=0).
+    """
     stripped = text.strip()
     if stripped.isdigit():
-        return int(stripped)
+        value = int(stripped)
+        return value if value > 0 else None
     match = _MOD_URL_RE.search(stripped)
-    return int(match.group(1)) if match else None
+    if match is None:
+        return None
+    value = int(match.group(1))
+    return value if value > 0 else None
 
 
 async def _brave_search(

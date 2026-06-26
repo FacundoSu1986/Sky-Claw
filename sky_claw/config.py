@@ -209,6 +209,7 @@ class Config:
             "anthropic_api_key",
             "deepseek_api_key",
             "nexus_api_key",
+            "search_api_key",
             "telegram_bot_token",
         ]
 

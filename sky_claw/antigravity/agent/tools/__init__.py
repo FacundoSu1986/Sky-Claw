@@ -69,6 +69,21 @@ from .system_tools import (
 logger = logging.getLogger(__name__)
 
 
+def _safe_keyring_get(name: str) -> str | None:
+    """Read a secret from the keyring, tolerating a missing/broken backend.
+
+    Headless/Linux installs may have no keyring backend, where
+    ``keyring.get_password`` raises. Returning None lets the tool reach its
+    graceful "key not configured" JSON instead of surfacing an internal failure
+    to the router (Codex P2). Mirrors the fallible keyring handling in config.py.
+    """
+    try:
+        return keyring.get_password("sky_claw", name)
+    except Exception:  # noqa: BLE001 — any keyring/backend error means "unset"
+        logger.warning("keyring read failed for %r; treating as unset", name)
+        return None
+
+
 class AsyncToolRegistry:
     """Registry and executor for async agent tools.
 
@@ -425,8 +440,8 @@ class AsyncToolRegistry:
                 query,
                 min_downloads,
                 limit,
-                search_api_key=keyring.get_password("sky_claw", "search_api_key"),
-                nexus_api_key=keyring.get_password("sky_claw", "nexus_api_key"),
+                search_api_key=_safe_keyring_get("search_api_key"),
+                nexus_api_key=_safe_keyring_get("nexus_api_key"),
             ),
         )
         # System
