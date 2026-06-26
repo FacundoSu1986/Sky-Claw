@@ -19,6 +19,8 @@ import logging
 import pathlib
 from typing import Any
 
+import keyring
+
 from sky_claw.config import SystemPaths
 from sky_claw.local.loot.cli import LOOTConfig, LOOTRunner
 from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunner
@@ -27,7 +29,7 @@ from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
 from .db_tools import install_mod, search_mod
 from .descriptor import ToolDescriptor
 from .external_tools import setup_tools
-from .nexus_tools import download_mod
+from .nexus_tools import download_mod, search_nexus
 from .schemas import (
     AnalyzeConflictsParams,
     BodySlideBatchParams,
@@ -40,6 +42,7 @@ from .schemas import (
     ProfileParams,
     ResolveFomodParams,
     SearchModParams,
+    SearchNexusParams,
     SetupToolsParams,
     ToggleModParams,
     UninstallModParams,
@@ -409,6 +412,23 @@ class AsyncToolRegistry:
                 gateway=self._resolve_gateway(),
             ),
         )
+        self._tools["search_nexus"] = ToolDescriptor(
+            name="search_nexus",
+            description=(
+                "Search Nexus Mods by natural language (e.g. 'armor mod with over 500 downloads') "
+                "and return candidate mods with their download counts and ids. Read-only — to "
+                "download a result, call download_mod with its nexus_id."
+            ),
+            params_model=SearchNexusParams,
+            fn=lambda query, min_downloads=None, limit=5: search_nexus(
+                self._resolve_gateway(),
+                query,
+                min_downloads,
+                limit,
+                search_api_key=keyring.get_password("sky_claw", "search_api_key"),
+                nexus_api_key=keyring.get_password("sky_claw", "nexus_api_key"),
+            ),
+        )
         # System
         self._tools["check_load_order"] = ToolDescriptor(
             name="check_load_order",
@@ -554,6 +574,7 @@ __all__ = [
     "ResolveFomodParams",
     # re-exports
     "SearchModParams",
+    "SearchNexusParams",
     "SetupToolsParams",
     "ToggleModParams",
     "ToolDescriptor",
