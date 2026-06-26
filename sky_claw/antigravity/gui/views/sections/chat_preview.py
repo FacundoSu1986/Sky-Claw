@@ -246,6 +246,10 @@ def create_chat_preview(
                     original_text=original_text,
                 )
 
+            # Enter envía el mensaje (además del botón). Sin este binding el
+            # usuario tenía que clickear el botón con el mouse sí o sí.
+            chat_input.on("keydown.enter", _handle_send)
+
             # Botón de envío
             send_button = (
                 ui.button()
