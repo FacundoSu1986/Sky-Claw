@@ -400,6 +400,7 @@ class FrontendBridge:
                     "telegram_chat_id": "123456" | "",
                     "has_llm_key": bool,
                     "has_nexus_key": bool,
+                    "has_search_key": bool,
                     "has_telegram_token": bool
                 }
             }
@@ -420,6 +421,7 @@ class FrontendBridge:
 
         has_llm_key = bool(getattr(fresh_cfg, provider_key_name, "") or getattr(fresh_cfg, "llm_api_key", ""))
         has_nexus_key = bool(getattr(fresh_cfg, "nexus_api_key", ""))
+        has_search_key = bool(getattr(fresh_cfg, "search_api_key", ""))
         has_telegram_token = bool(getattr(fresh_cfg, "telegram_bot_token", ""))
 
         response = {
@@ -430,6 +432,7 @@ class FrontendBridge:
                 "telegram_chat_id": str(getattr(fresh_cfg, "telegram_chat_id", "")),
                 "has_llm_key": has_llm_key,
                 "has_nexus_key": has_nexus_key,
+                "has_search_key": has_search_key,
                 "has_telegram_token": has_telegram_token,
             },
         }
@@ -485,7 +488,7 @@ class FrontendBridge:
                 return
 
             # Length validation for sensitive keys
-            for field in ("llm_api_key", "nexus_api_key", "telegram_bot_token"):
+            for field in ("llm_api_key", "nexus_api_key", "search_api_key", "telegram_bot_token"):
                 val = content.get(field, "")
                 if val and len(val) > self._max_key_len:
                     await self._send_config_result(
@@ -524,6 +527,7 @@ class FrontendBridge:
             # ── Persistence Phase ────────────────────────────────────────
             llm_api_key = content.get("llm_api_key", "").strip()
             nexus_api_key = content.get("nexus_api_key", "").strip()
+            search_api_key = content.get("search_api_key", "").strip()
 
             if llm_api_key:
                 # Store as generic llm_api_key
@@ -536,6 +540,9 @@ class FrontendBridge:
 
             if nexus_api_key:
                 self._set_keyring("nexus_api_key", nexus_api_key)
+
+            if search_api_key:
+                self._set_keyring("search_api_key", search_api_key)
 
             if telegram_token:
                 self._set_keyring("telegram_bot_token", telegram_token)
@@ -552,6 +559,8 @@ class FrontendBridge:
                 self.config._data["llm_api_key"] = llm_api_key
             if nexus_api_key:
                 self.config._data["nexus_api_key"] = nexus_api_key
+            if search_api_key:
+                self.config._data["search_api_key"] = search_api_key
             if telegram_token:
                 self.config._data["telegram_bot_token"] = telegram_token
 

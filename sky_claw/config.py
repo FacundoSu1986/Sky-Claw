@@ -89,6 +89,7 @@ class Config:
             "anthropic_api_key",
             "deepseek_api_key",
             "nexus_api_key",
+            "search_api_key",
             "telegram_bot_token",
             "ws_auth_token",
         ]
@@ -146,6 +147,7 @@ class Config:
             "anthropic_api_key": "",
             "deepseek_api_key": "",
             "nexus_api_key": "",
+            "search_api_key": "",
             "telegram_bot_token": "",
             "telegram_chat_id": "",
             "first_run": True,
@@ -207,6 +209,7 @@ class Config:
             "anthropic_api_key",
             "deepseek_api_key",
             "nexus_api_key",
+            "search_api_key",
             "telegram_bot_token",
         ]
 
@@ -267,6 +270,10 @@ ALLOWED_HOSTS = frozenset(
         # H-02: "github.com" removed — it was also in OUT_OF_SCOPE_HOSTS,
         # creating a semantic contradiction.  api.github.com covers API needs.
         "raw.githubusercontent.com",
+        # Brave Search API — powers the search_nexus tool's web discovery
+        # (scoped to nexusmods.com via the query, enriched via the official
+        # Nexus API). GET only; see ALLOWED_METHODS below.
+        "api.search.brave.com",
         "api.anthropic.com",
         "www.reddit.com",
     ]
@@ -317,6 +324,7 @@ ALLOWED_METHODS = {
     "cf-files.nexusmods.com": frozenset(["GET"]),
     "staticdelivery.nexusmods.com": frozenset(["GET"]),
     "www.reddit.com": frozenset(["GET"]),
+    "api.search.brave.com": frozenset(["GET"]),
 }
 TELEGRAM_PATH_PREFIX = "/bot"
 NEXUS_DOWNLOAD_CHUNK_SIZE = 1024 * 1024

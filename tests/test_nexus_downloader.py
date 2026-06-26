@@ -808,7 +808,8 @@ class TestDownloadModSchema:
         # Consolidation (obs #187): run_pandora_behavior / run_bodyslide_batch
         # duplicates removed (21 -> 19); run_pandora / run_bodyslide remain,
         # now backed by the M-02/M-03 runners.
-        assert len(tool_registry.tools) == 19
+        # search_nexus added (read-only NL Nexus discovery): 19 -> 20.
+        assert len(tool_registry.tools) == 20
 
 
 # ---------------------------------------------------------------------------
