@@ -47,6 +47,12 @@ dependencies = [
     # Transitive (via starlette/fastapi); floor at >=0.0.31 to fix
     # CVE-2026-53538/53539/53540.
     "python-multipart>=0.0.31",
+    # Transitive (via nicegui → python-socketio); floor at >=4.13.2 to fix
+    # CVE-2026-48802 and CVE-2026-48809 (4.13.1 flagged by pip-audit).
+    "python-engineio>=4.13.2",
+    # Transitive (via nicegui); floor at >=5.16.2 to fix CVE-2026-48804
+    # (5.16.1 flagged by pip-audit, same advisory wave as python-engineio).
+    "python-socketio>=5.16.2",
 ]
 
 [project.optional-dependencies]
