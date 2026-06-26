@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- **`python-engineio` 4.13.1 → 4.13.3 (CVE-2026-48802, CVE-2026-48809) y
+  `python-socketio` 5.16.1 → 5.16.3 (CVE-2026-48804)** — misma ola de avisos
+  que `pip-audit --strict --skip-editable -r requirements.lock` empezó a marcar
+  tras avanzar su base de advisories, poniendo rojo el gate "Security Scan"
+  (pre-existente en `main`, ajeno al feature work). Ambas son transitivas vía
+  `nicegui → python-socketio`; se suben floors directos en `pyproject.toml`
+  (`python-engineio>=4.13.2`, `python-socketio>=5.16.2`, mismo patrón de pin
+  transitivo que `starlette`/`python-multipart`) y se regeneran
+  `requirements.lock` **y** `uv.lock`. Solo cambian esos dos pins (el grafo
+  transitivo no varía), así que no requiere re-bundlear el exe.
 - **Familia `langgraph`: `langgraph-checkpoint` 4.0.3 → 4.1.1
   (CVE-2026-48775) y `langgraph-sdk` 0.3.14 → 0.3.15 (CVE-2026-48776)** —
   divulgación coordinada que `pip-audit --strict` marcó en `requirements.lock`,
