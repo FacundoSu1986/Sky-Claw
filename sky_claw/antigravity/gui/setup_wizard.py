@@ -51,6 +51,7 @@ class SetupWizardModal:
         self._frequency_input: ui.input | None = None
         self._provider_toggle = None
         self._nexus_input: ui.input | None = None
+        self._search_input: ui.input | None = None
         self._telegram_token_input: ui.input | None = None
         # Draft fields (non-sensitive) for localStorage
         self._draft_fields: dict[str, ui.input] = {}
@@ -175,6 +176,20 @@ class SetupWizardModal:
                             )
                         )
 
+                    # Brave Search Key (enables natural-language mod search)
+                    with ui.column().classes("w-full gap-1"):
+                        ui.label("BRAVE SEARCH API KEY").classes("sky-wizard-label")
+                        self._search_input = (
+                            ui.input(
+                                placeholder="Opcional — para buscar mods por descripción",
+                            )
+                            .classes("w-full")
+                            .props(
+                                'type=password dark standout="bg-transparent" '
+                                'input-class="sky-wizard-input" color=amber maxlength=512'
+                            )
+                        )
+
                     # Telegram Token
                     with ui.column().classes("w-full gap-1"):
                         ui.label("TELEGRAM BOT TOKEN").classes("sky-wizard-label")
@@ -267,6 +282,7 @@ class SetupWizardModal:
         provider = self._provider_toggle.value if self._provider_toggle else "deepseek"
         api_key = self._api_key_input.value.strip() if self._api_key_input else ""
         nexus_key = self._nexus_input.value.strip() if self._nexus_input else ""
+        search_key = self._search_input.value.strip() if self._search_input else ""
         telegram_token = self._telegram_token_input.value.strip() if self._telegram_token_input else ""
         telegram_chatid = self._telegram_id_input.value.strip() if self._telegram_id_input else ""
 
@@ -274,6 +290,7 @@ class SetupWizardModal:
             provider=provider,
             api_key=api_key,
             nexus_key=nexus_key,
+            search_key=search_key,
             telegram_token=telegram_token,
             telegram_chatid=telegram_chatid,
         )
@@ -283,6 +300,7 @@ class SetupWizardModal:
         provider: str,
         api_key: str,
         nexus_key: str,
+        search_key: str,
         telegram_token: str,
         telegram_chatid: str,
     ) -> None:
@@ -310,6 +328,7 @@ class SetupWizardModal:
             key_map = {
                 f"{provider}_api_key": api_key,
                 "nexus_api_key": nexus_key,
+                "search_api_key": search_key,
                 "telegram_bot_token": telegram_token,
             }
             if api_key:
