@@ -6,11 +6,20 @@ from sky_claw.config import ALLOWED_HOSTS, ALLOWED_METHODS, Config
 
 
 def test_brave_host_is_allowlisted():
-    assert "api.search.brave.com" in ALLOWED_HOSTS
+    # Exact host equality (not substring/`in` on a URL) so CodeQL's
+    # incomplete-url-sanitization query stays quiet; membership in the frozenset
+    # is already exact.
+    assert any(host == "api.search.brave.com" for host in ALLOWED_HOSTS)
     assert ALLOWED_METHODS["api.search.brave.com"] == frozenset(["GET"])
 
 
-def test_search_api_key_is_a_known_secret(tmp_path):
+def test_search_api_key_is_a_known_secret(tmp_path, monkeypatch):
+    # Isolate from the developer's real OS keyring: Config() overlays stored
+    # secrets at init, so a real "search_api_key" would break the default-empty
+    # assertion. Force every keyring read to miss.
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda service, name: None)
     cfg = Config(tmp_path / "config.toml")
     # Default present (so the wizard/keyring path recognises it) and empty.
     assert cfg._data.get("search_api_key") == ""
@@ -47,6 +56,7 @@ def test_search_params_limit_capped_and_query_required():
 
 import json  # noqa: E402
 from unittest.mock import AsyncMock, MagicMock  # noqa: E402
+from urllib.parse import urlsplit  # noqa: E402
 
 
 class _Resp:
@@ -71,7 +81,7 @@ def _gw_for_search(brave_payload, mod_payloads):
     gw = MagicMock()
 
     async def _request(method, url, session, **kwargs):
-        if url.startswith("https://api.search.brave.com"):
+        if urlsplit(url).hostname == "api.search.brave.com":
             return _Resp(brave_payload)
         mid = int(url.rsplit("/", 1)[1].split(".")[0])
         return _Resp(mod_payloads[mid])
@@ -223,7 +233,7 @@ async def test_search_nexus_url_shortcut_skips_brave():
         )
     )
     assert out["results"][0]["nexus_id"] == 42
-    assert all(not c.args[1].startswith("https://api.search.brave.com") for c in gw.request.call_args_list)
+    assert all(urlsplit(c.args[1]).hostname != "api.search.brave.com" for c in gw.request.call_args_list)
 
 
 async def test_search_nexus_no_key_returns_guidance():
