@@ -147,6 +147,19 @@ class DownloadModParams(pydantic.BaseModel):
     file_id: int | None = pydantic.Field(None, gt=0)
 
 
+class SearchNexusParams(pydantic.BaseModel):
+    """Parameters for the ``search_nexus`` tool (read-only Nexus discovery)."""
+
+    model_config = pydantic.ConfigDict(strict=True)
+
+    # Free-text query OR a Nexus mod URL/ID. Relaxed charset so the LLM can
+    # pass real mod names and full URLs; this value is never used as a shell
+    # arg or a path — it is URL-encoded into a Brave query and sanitized.
+    query: str = pydantic.Field(min_length=1, max_length=256, pattern=r"^[^\x00-\x1f]+$")
+    min_downloads: int | None = pydantic.Field(default=None, ge=0)
+    limit: int = pydantic.Field(default=5, ge=1, le=10)
+
+
 class PreviewInstallerParams(pydantic.BaseModel):
     """Parameters for the ``preview_mod_installer`` tool.
 
@@ -331,6 +344,7 @@ __all__ = [
     "ProfileParams",
     "ResolveFomodParams",
     "SearchModParams",
+    "SearchNexusParams",
     "SetupToolsParams",
     "ToggleModParams",
     "UninstallModParams",
