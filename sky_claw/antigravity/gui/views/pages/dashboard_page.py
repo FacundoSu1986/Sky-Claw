@@ -256,8 +256,9 @@ def _render_home_sections(
     callbacks: dict[str, Callable],
 ) -> None:
     """Secciones del home del dashboard (compartidas por ambos renderers)."""
-    # Encabezado rúnico (set-piece): runas grabadas sobre la sección.
-    ui.html('<div class="sky-rune-divider">ᚦᚢ&nbsp;&nbsp;ᛞᚱᚪᚷᚩᚾᛒᚩᚱᚾ&nbsp;&nbsp;ᚷᚱᛖᛖᛏᛁᚾᚷᛋ</div>')
+    # Encabezado rúnico (set-piece): runas grabadas sobre la sección. Decorativo
+    # — aria-hidden para que los lectores de pantalla no anuncien los glifos.
+    ui.html('<div class="sky-rune-divider" aria-hidden="true">ᚦᚢ&nbsp;&nbsp;ᛞᚱᚪᚷᚩᚾᛒᚩᚱᚾ&nbsp;&nbsp;ᚷᚱᛖᛖᛏᛁᚾᚷᛋ</div>')
 
     # Sección de estadísticas
     create_stats_section(stats)

@@ -73,8 +73,9 @@ def create_sidebar(
                     ui.html(f'<span class="sky-connection-dot {status_dot_class}"></span>')
                     ui.label(status_text).classes("text-[#6b7280] text-xs")
 
-        # Runic divider (set-piece): carved runes under the brand.
-        ui.html('<div class="sky-rune-divider">ᚠ&nbsp;ᚱ&nbsp;ᚷ</div>')
+        # Runic divider (set-piece): carved runes under the brand. Purely
+        # decorative — aria-hidden so screen readers don't announce the glyphs.
+        ui.html('<div class="sky-rune-divider" aria-hidden="true">ᚠ&nbsp;ᚱ&nbsp;ᚷ</div>')
 
         # Navigation
         with ui.element("div").classes("flex-1 p-4"):
