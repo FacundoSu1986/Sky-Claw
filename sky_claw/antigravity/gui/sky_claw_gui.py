@@ -42,6 +42,7 @@ from sky_claw.antigravity.gui.gui_event_adapter import (
     SkyClawEvent,
     event_bus,
 )
+from sky_claw.antigravity.gui.gui_helpers import _load_css
 from sky_claw.antigravity.gui.models.app_state import AppState, get_app_state
 from sky_claw.antigravity.gui.setup_wizard import SetupWizardModal
 from sky_claw.antigravity.gui.state import ReactiveStore, get_store
@@ -382,6 +383,11 @@ async def _on_wizard_complete() -> None:
 def main_page() -> None:
     """Single page that gates between Wizard and Dashboard via the store."""
     ui.dark_mode().enable()
+    # Wire the Nordic theme on BOTH the wizard and the dashboard. Previously only
+    # the wizard called _load_css(), so the dashboard rendered with the bare
+    # Quasar defaults — the entire Skyrim stylesheet was absent. Idempotent, so
+    # the @ui.refreshable re-runs don't stack duplicate <style> tags.
+    _load_css()
 
     runtime = get_runtime_context()
     if runtime is None:

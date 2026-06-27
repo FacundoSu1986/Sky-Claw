@@ -11,10 +11,10 @@ from collections.abc import Callable
 
 from nicegui import ui
 
-# Colores del tema (extraídos del monolito para mantener invariante visual)
+# Paleta Nordic (pergamino/madera/oro) — reemplaza el violeta/cyan/rosa SaaS.
 COLORS = {
-    "accent_violet": "#8b5cf6",
-    "accent_pink": "#ec4899",
+    "accent_violet": "#ffb300",  # oro (antes violeta)
+    "accent_pink": "#ff9d00",  # ámbar (antes rosa)
 }
 
 
@@ -40,7 +40,7 @@ def create_header(
         ui.element: El elemento contenedor del header
     """
     with ui.element("div").classes(
-        "h-16 bg-[#0a0a0a] border-b border-[#1f2937] flex items-center justify-between px-6"
+        "h-16 bg-[#0a0a0a] border-b border-[#1f2937] flex items-center justify-between px-6 sky-header"
     ) as header:
         with ui.column():
             ui.label(title).classes("text-white font-bold text-xl")

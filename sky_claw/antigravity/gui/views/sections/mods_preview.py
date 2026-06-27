@@ -51,7 +51,7 @@ def create_mods_preview(
         ...     on_mod_click=lambda name: print(f"Clicked: {name}"),
         ... )
     """
-    with ui.element("div").classes("bg-[#0f0f0f] border border-[#1f2937] rounded-2xl p-6"):
+    with ui.element("div").classes("bg-[#0f0f0f] border border-[#1f2937] rounded-2xl p-6 sky-mods-panel"):
         # Header con título y botón "View All"
         with ui.row().classes("items-center justify-between mb-6"):
             ui.label(title).classes("text-white font-bold text-lg")

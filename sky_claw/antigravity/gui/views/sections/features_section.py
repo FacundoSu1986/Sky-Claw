@@ -14,10 +14,10 @@ from nicegui import ui
 
 from ..components import create_feature_card
 
-# Colores del tema (extraídos del monolito para mantener invariante visual)
+# Paleta Nordic (oro/ámbar) — strokes sobre cartucho de madera del feature-card.
 COLORS = {
-    "accent_violet": "#8b5cf6",
-    "accent_cyan": "#06b6d4",
+    "accent_violet": "#ffb300",  # oro (antes violeta)
+    "accent_cyan": "#ff9d00",  # ámbar (antes cyan)
 }
 
 
@@ -53,7 +53,7 @@ def create_features_section(
                     </svg>
                 ''',
                 badge="NEW",
-                badge_type="violet",
+                badge_type="rune",
                 on_click=lambda: on_feature_click("Smart Search") if on_feature_click else None,
             )
 

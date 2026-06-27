@@ -38,14 +38,16 @@ def create_mod_list_item(
     status_color, status_label = status_config.get(status, ("bg-gray-500", status))
 
     with ui.element("div").classes(
-        "flex items-center justify-between py-3 border-b border-[#1f2937] "
-        "hover:bg-[#1f2937]/30 transition-colors cursor-pointer"
+        "flex items-center justify-between py-3 border-b border-[#3e2723] "
+        "hover:bg-[#ffb300]/5 transition-colors cursor-pointer"
     ) as item:
         with ui.row().classes("items-center gap-3 flex-1"):
             ui.html("""
-                <div class="w-10 h-10 rounded-lg bg-[#1f2937] flex items-center justify-center">
+                <div class="w-10 h-10 rounded-lg flex items-center justify-center"
+                     style="background: linear-gradient(135deg, #3e2723, #5d4037);
+                            border: 1px solid rgba(255,157,0,0.4);">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-                         stroke="#9ca3af" stroke-width="2">
+                         stroke="#ff9d00" stroke-width="2">
                         <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0
                                  0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0
                                  1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0

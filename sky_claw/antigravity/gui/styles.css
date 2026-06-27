@@ -27,9 +27,11 @@
     --sky-text-secondary: #cbd5e1;
     --sky-text-muted: #94a3b8;
     
-    /* Typography */
-    --sky-font-family: 'Inter', -apple-system, system-ui, sans-serif;
-    --sky-font-display: 'Futura', 'Trajan Pro', serif;
+    /* Typography — bundled medieval webfonts (see assets/fonts/fonts.css) with
+       serif fallbacks so an unstyled boot still reads "old tome", not sans. */
+    --sky-font-family: 'Cinzel', 'Trajan Pro', Georgia, serif;
+    --sky-font-display: 'MedievalSharp', 'Trajan Pro', 'Cinzel', serif;
+    --sky-font-runic: 'Noto Sans Runic', 'Segoe UI Historic', 'Cinzel', serif;
     
     /* Transiciones */
     --sky-transition: 350ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -43,7 +45,7 @@ body {
     background: var(--sky-bg-primary) url('assets/stone_bg.png') repeat fixed !important;
     background-size: 500px !important;
     color: #f8fafc;
-    font-family: 'Futura', 'Trajan Pro', serif;
+    font-family: var(--sky-font-family);
 }
 
 /* Forzar transparencia en los contenedores de NiceGUI para dejar ver el fondo de piedra */
@@ -442,3 +444,189 @@ body {
 .sky-health-banner--warning { border-left-color: #ff9800; }
 .sky-health-banner--critical { border-left-color: #f44336; }
 .sky-health-text { font-size: 0.9rem; color: var(--sky-text-primary); line-height: 1.6; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   9. NORDIC CONSOLIDATION — wiring the classes the views already reference
+   ───────────────────────────────────────────────────────────────────────────────────
+   The dashboard components attach these classes but the theme never defined them, so
+   they did nothing and the violet/cyan Tailwind literals showed through. Defining them
+   here (with !important where it must beat a `bg-[#0a0a0a]` utility) flips the live UI
+   onto the parchment/stone/amber system without rewriting the Python views.
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/* Display headings everywhere pick up the medieval face. */
+h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
+    font-family: var(--sky-font-display);
+    letter-spacing: 0.03em;
+}
+
+/* ── App shell: stone background + carved-stone frame (set-piece) ────────────────── */
+.sky-stone-bg {
+    background: transparent !important; /* let the body's stone texture show through */
+    position: relative;
+}
+
+/* Carved stone wall framing the working area — the "pared de roca". */
+.sky-main-content {
+    position: relative;
+    border-left: 3px solid var(--sky-border);
+    box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.55);
+}
+.sky-main-content::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    /* faint chiselled-rock vignette around the edges */
+    box-shadow:
+        inset 0 0 0 2px rgba(0, 0, 0, 0.4),
+        inset 0 0 60px rgba(0, 0, 0, 0.5);
+    border-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120" fill="none"><rect x="3" y="3" width="114" height="114" stroke="%235C4A2A" stroke-width="2"/><path d="M0 0 L24 24 M120 0 L96 24 M0 120 L24 96 M120 120 L96 96" stroke="%238b6d23" stroke-width="2"/></svg>') 24 stretch;
+}
+
+/* ── Sidebar — wood + stone with a gold edge (overrides bg-[#0a0a0a]) ───────────── */
+.sky-sidebar {
+    background: linear-gradient(180deg, #2a1a10 0%, #3e2723 42%, #1a1008 100%) !important;
+    border-right: 3px solid #5d4037 !important;
+    position: relative;
+}
+.sky-sidebar::after {
+    content: '';
+    position: absolute;
+    top: 0; right: 0; bottom: 0;
+    width: 1px;
+    background: linear-gradient(180deg, transparent, var(--sky-amber), transparent);
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+/* ── Amber "magicka" glow (logo, chat avatar, focal chips) ──────────────────────── */
+.sky-glow-static {
+    box-shadow: 0 0 18px var(--sky-amber-glow), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    border: 1px solid var(--sky-amber) !important;
+}
+
+/* ── Connection dot ─────────────────────────────────────────────────────────────── */
+.sky-connection-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    display: inline-block; background: var(--sky-text-muted);
+}
+.sky-connection-dot--connected {
+    background: #4caf50;
+    box-shadow: 0 0 8px rgba(76, 175, 80, 0.6);
+}
+
+/* ── Header bar — carved wood lintel ────────────────────────────────────────────── */
+.sky-header {
+    background: linear-gradient(180deg, #2a1a10, var(--sky-bg-primary)) !important;
+    border-bottom: 3px solid #3e2723 !important;
+    position: relative;
+}
+.sky-header::after {
+    content: '';
+    position: absolute; left: 0; right: 0; bottom: -3px; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--sky-amber-glow), transparent);
+}
+
+/* ── Inputs — leather field with a gold focus rune ──────────────────────────────── */
+.sky-input-premium,
+.sky-input-premium .q-field__control {
+    background: rgba(62, 39, 35, 0.55) !important;
+    border: 1px solid rgba(200, 168, 78, 0.35) !important;
+    border-radius: 6px !important;
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+.sky-input-premium input,
+.sky-input-premium .q-field__native,
+.sky-input-premium textarea {
+    color: var(--sky-parchment) !important;
+    font-family: var(--sky-font-family);
+}
+.sky-input-premium input::placeholder,
+.sky-input-premium .q-field__native::placeholder {
+    color: rgba(219, 196, 161, 0.45) !important;
+}
+.sky-input-premium:focus-within,
+.sky-input-premium .q-field__control:focus-within {
+    border-color: var(--sky-amber) !important;
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4), 0 0 12px var(--sky-amber-glow);
+}
+
+/* ── Hover-lift cards (avatar, etc.) ────────────────────────────────────────────── */
+.sky-card-hover { transition: all var(--sky-transition); cursor: pointer; }
+.sky-card-hover:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 0 18px var(--sky-amber-glow);
+}
+
+/* ── Primary CTA button ─────────────────────────────────────────────────────────────
+   The solid fill comes from Quasar's `bg-primary` (recoloured to dark gold via
+   ui.colors), which keeps the default white button text legible. Here we only add
+   the forged-bronze trim: gold rim, amber glow, medieval display face, uppercase. */
+.q-btn.sky-btn-cta {
+    border: 1px solid var(--sky-amber) !important;
+    font-family: var(--sky-font-display) !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase;
+    box-shadow: 0 0 14px var(--sky-amber-glow), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    transition: all var(--sky-transition);
+}
+.q-btn.sky-btn-cta:hover {
+    box-shadow: 0 0 26px rgba(255, 157, 0, 0.55);
+    transform: translateY(-1px);
+}
+
+/* ── Secondary button — gold rim, lighter weight than the primary CTA ────────────── */
+.q-btn.sky-btn-secondary {
+    border: 1px solid var(--sky-gold-dim) !important;
+    font-family: var(--sky-font-display) !important;
+    letter-spacing: 0.06em !important;
+    transition: all var(--sky-transition);
+}
+.q-btn.sky-btn-secondary:hover {
+    border-color: var(--sky-amber) !important;
+    box-shadow: 0 0 16px var(--sky-amber-glow);
+}
+
+/* ── Feature-card inner glow overlay ────────────────────────────────────────────── */
+.sky-glow-overlay {
+    position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at top right, var(--sky-amber-glow), transparent 60%);
+    opacity: 0.35;
+}
+
+/* ── Dark stone panels (chat / mods preview) — override bg-[#0f0f0f] ─────────────── */
+.sky-chat-panel,
+.sky-mods-panel {
+    background: linear-gradient(180deg, rgba(62, 39, 35, 0.25), rgba(11, 14, 20, 0.85)) !important;
+    border: 2px solid #3e2723 !important;
+    box-shadow: inset 0 0 24px rgba(0, 0, 0, 0.45), 0 0 14px rgba(0, 0, 0, 0.4);
+}
+
+/* ── Rune badge (renamed from the stray --violet) ───────────────────────────────── */
+.sky-badge--rune,
+.sky-badge--violet {
+    background: rgba(255, 157, 0, 0.15);
+    color: var(--sky-amber);
+    border: 1px solid var(--sky-amber);
+    letter-spacing: 0.08em;
+}
+
+/* ── Runic section divider (set-piece) ──────────────────────────────────────────── */
+.sky-rune-divider {
+    display: flex; align-items: center; justify-content: center;
+    gap: 0.75rem; margin: 0.25rem 0 1.25rem;
+    color: var(--sky-amber); opacity: 0.8;
+    font-family: var(--sky-font-runic);
+    font-size: 1rem; letter-spacing: 0.3em;
+    text-shadow: 0 0 10px var(--sky-amber-glow);
+}
+.sky-rune-divider::before,
+.sky-rune-divider::after {
+    content: ''; flex: 1; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--sky-gold-dim), transparent);
+}
+
+/* ── Advanced panel section spacing ─────────────────────────────────────────────── */
+.sky-advanced-section { margin: 0.6rem 0; }

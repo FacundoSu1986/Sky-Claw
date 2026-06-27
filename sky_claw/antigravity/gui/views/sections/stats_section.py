@@ -15,10 +15,11 @@ from nicegui import ui
 
 from ..components import create_stat_card
 
-# Colores del tema (extraídos del monolito para mantener invariante visual)
+# Paleta Nordic (oro/ámbar) — reemplaza el violeta/cyan SaaS. El amarillo
+# (#eab308) y rojo (#ef4444) de Pending/Conflicts se conservan: son semánticos.
 COLORS = {
-    "accent_violet": "#8b5cf6",
-    "accent_cyan": "#06b6d4",
+    "accent_violet": "#ffb300",  # oro (antes violeta)
+    "accent_cyan": "#ff9d00",  # ámbar (antes cyan)
 }
 
 

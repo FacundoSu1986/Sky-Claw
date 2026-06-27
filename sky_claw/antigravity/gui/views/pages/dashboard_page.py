@@ -27,10 +27,11 @@ from ..sections.features_section import create_features_section
 from ..sections.mods_preview import create_mods_preview
 from ..sections.stats_section import create_stats_section
 
-# Colores del tema (extraídos del monolito para mantener invariante visual)
+# Paleta Nordic — el área de trabajo recibe un resplandor de antorcha (ámbar
+# arriba, oro al fondo) sobre la textura de piedra del body.
 COLORS = {
-    "glow_violet": "#8b5cf6",
-    "glow_cyan": "#06b6d4",
+    "glow_violet": "#ff9d00",  # ámbar de antorcha (antes violeta)
+    "glow_cyan": "#ffb300",  # oro (antes cyan)
 }
 
 
@@ -201,7 +202,7 @@ def _render_placeholder_section(section: str, callbacks: dict[str, Callable]) ->
     (el usuario sabría que navegó pero vería el mismo contenido).
     """
     with ui.element("div").classes("flex flex-col items-center justify-center py-24 gap-4"):
-        ui.icon("construction", size="3rem").classes("text-[#8b5cf6]")
+        ui.icon("construction", size="3rem").classes("text-[#ff9d00]")
         ui.label(section).classes("text-white text-3xl font-bold")
         ui.label("Esta sección llega en una próxima iteración.").classes("text-[#9ca3af]")
         on_navigate = callbacks.get("on_navigate")
@@ -255,6 +256,9 @@ def _render_home_sections(
     callbacks: dict[str, Callable],
 ) -> None:
     """Secciones del home del dashboard (compartidas por ambos renderers)."""
+    # Encabezado rúnico (set-piece): runas grabadas sobre la sección.
+    ui.html('<div class="sky-rune-divider">ᚦᚢ&nbsp;&nbsp;ᛞᚱᚪᚷᚩᚾᛒᚩᚱᚾ&nbsp;&nbsp;ᚷᚱᛖᛖᛏᛁᚾᚷᛋ</div>')
+
     # Sección de estadísticas
     create_stats_section(stats)
 
