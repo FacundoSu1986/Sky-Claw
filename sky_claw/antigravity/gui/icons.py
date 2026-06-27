@@ -22,7 +22,7 @@ _ICON_CONFLICT = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" 
     <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
 </svg>"""
 
-_ICON_STORAGE = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06b6d4" stroke-width="2">
+_ICON_STORAGE = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C8A84E" stroke-width="2">
     <rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/>
 </svg>"""
 
@@ -59,7 +59,7 @@ _ICON_ANVIL = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" str
     <path d="M5 16h14l-2-4H7l-2 4z"/><path d="M8 12V8c0-2 2-4 4-4s4 2 4 4v4"/>
 </svg>"""
 
-_ICON_CART = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06b6d4" stroke-width="2">
+_ICON_CART = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C8A84E" stroke-width="2">
     <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
     <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
 </svg>"""

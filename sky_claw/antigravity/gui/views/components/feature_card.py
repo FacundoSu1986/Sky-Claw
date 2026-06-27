@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from nicegui import ui
 
-# Colores del tema (extraídos del monolito para mantener invariante visual)
+# Paleta Nordic — tarjeta de pergamino: tinta oscura + cartucho de madera/ámbar.
 COLORS = {
-    "accent_violet": "#8b5cf6",
+    "accent_wood_dark": "#3e2723",
+    "accent_wood": "#5d4037",
+    "accent_amber": "#ff9d00",
 }
 
 
@@ -48,16 +50,16 @@ def create_feature_card(
             with ui.row().classes("items-center gap-3 mb-4"):
                 ui.html(f"""
                     <div class="w-14 h-14 rounded-2xl flex items-center justify-center border"
-                         style="background: linear-gradient(135deg, {COLORS["accent_violet"]}20, {COLORS["accent_violet"]}05);
-                                border-color: {COLORS["accent_violet"]}30;">
+                         style="background: linear-gradient(135deg, {COLORS["accent_wood_dark"]}, {COLORS["accent_wood"]});
+                                border-color: {COLORS["accent_amber"]};">
                         {icon_svg}
                     </div>
                 """)
                 with ui.column():
-                    ui.label(title).classes("text-white font-bold text-lg")
+                    ui.label(title).classes("text-[#2c2016] font-bold text-lg")
                     if badge:
                         ui.label(badge).classes(badge_class)
-            ui.label(description).classes("text-[#9ca3af] text-sm leading-relaxed")
+            ui.label(description).classes("text-[#5a4a38] text-sm leading-relaxed")
 
         if on_click:
             card.on("click", on_click)

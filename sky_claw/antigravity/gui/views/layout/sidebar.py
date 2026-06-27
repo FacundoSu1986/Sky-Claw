@@ -11,10 +11,10 @@ from collections.abc import Callable
 
 from nicegui import ui
 
-# Colores del tema (extraídos del monolito para mantener invariante visual)
+# Paleta Nordic (pergamino/madera/oro) — reemplaza el violeta/cyan SaaS.
 COLORS = {
-    "accent_violet": "#8b5cf6",
-    "accent_cyan": "#06b6d4",
+    "accent_violet": "#ffb300",  # oro (antes violeta)
+    "accent_cyan": "#ff9d00",  # ámbar (antes cyan)
 }
 
 
@@ -73,11 +73,15 @@ def create_sidebar(
                     ui.html(f'<span class="sky-connection-dot {status_dot_class}"></span>')
                     ui.label(status_text).classes("text-[#6b7280] text-xs")
 
+        # Runic divider (set-piece): carved runes under the brand. Purely
+        # decorative — aria-hidden so screen readers don't announce the glyphs.
+        ui.html('<div class="sky-rune-divider" aria-hidden="true">ᚠ&nbsp;ᚱ&nbsp;ᚷ</div>')
+
         # Navigation
         with ui.element("div").classes("flex-1 p-4"):
             ui.label("NAVIGATION").classes("text-[#6b7280] text-xs font-semibold tracking-wider mb-4 px-4")
             for text, active in nav_items:
-                active_class = "bg-[#8b5cf6]/10 border-l-2 border-[#8b5cf6]" if active else ""
+                active_class = "bg-[#ffb300]/10 border-l-2 border-[#ffb300]" if active else ""
                 text_class = "text-white" if active else "text-[#9ca3af] hover:text-white"
                 with (
                     ui.button()

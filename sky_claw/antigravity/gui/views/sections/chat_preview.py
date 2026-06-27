@@ -20,10 +20,10 @@ from ..components import create_chat_message
 
 logger = logging.getLogger(__name__)
 
-# Colores del tema (extraídos del monolito para mantener invariante visual)
+# Paleta Nordic (oro/ámbar) — el panel es piedra (sky-chat-panel) con acento dorado.
 COLORS = {
-    "accent_violet": "#8b5cf6",
-    "accent_cyan": "#06b6d4",
+    "accent_violet": "#ffb300",  # oro (antes violeta)
+    "accent_cyan": "#ff9d00",  # ámbar (antes cyan)
 }
 
 
@@ -147,7 +147,7 @@ def create_chat_preview(
         ... )
     """
     with ui.element("div").classes(
-        "bg-[#0f0f0f] border border-[#1f2937] rounded-2xl overflow-hidden"
+        "bg-[#0f0f0f] border border-[#1f2937] rounded-2xl overflow-hidden sky-chat-panel"
     ) as chat_container:
         # ═══════════════════════════════════════════════════════════════
         # HEADER

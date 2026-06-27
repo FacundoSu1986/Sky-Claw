@@ -15,10 +15,10 @@ from nicegui import ui
 
 from ..components import create_cta_button
 
-# Colores del tema (extraídos del monolito para mantener invariante visual)
+# Paleta Nordic (oro/ámbar) — el panel CTA irradia un aura "magicka" dorada.
 COLORS = {
-    "accent_violet": "#8b5cf6",
-    "accent_cyan": "#06b6d4",
+    "accent_violet": "#ffb300",  # oro (antes violeta)
+    "accent_cyan": "#ff9d00",  # ámbar (antes cyan)
 }
 
 
@@ -66,23 +66,21 @@ def create_cta_section(
             f"border: 1px solid {COLORS['accent_violet']}30;"
         )
     ):
-        # Efectos de blur decorativos (background)
+        # Aura "magicka" dorada de fondo (antes blobs violeta/cyan).
         ui.html("""
             <div style="position:absolute;top:0;left:25%;width:384px;
-                 height:384px;background:rgba(139,92,246,0.2);
+                 height:384px;background:rgba(255,179,0,0.18);
                  border-radius:50%;filter:blur(128px);
                  pointer-events:none;"></div>
             <div style="position:absolute;bottom:0;right:25%;width:384px;
-                 height:384px;background:rgba(6,182,212,0.1);
+                 height:384px;background:rgba(255,157,0,0.12);
                  border-radius:50%;filter:blur(128px);
                  pointer-events:none;"></div>
         """)
 
         with ui.column().classes("relative z-10 items-center text-center"):
             # Badge de versión
-            ui.label(badge_text).classes(
-                "px-4 py-1 rounded-full text-sm font-semibold mb-6 sky-badge sky-badge--violet"
-            )
+            ui.label(badge_text).classes("px-4 py-1 rounded-full text-sm font-semibold mb-6 sky-badge sky-badge--rune")
 
             # Título principal
             ui.label(title).classes("text-white text-5xl font-bold leading-tight mb-6")

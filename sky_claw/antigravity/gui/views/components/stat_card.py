@@ -13,10 +13,12 @@ from typing import Any
 
 from nicegui import ui
 
-# Colores del tema (extraídos del monolito para mantener invariante visual)
+# Paleta Nordic — la tarjeta es pergamino (claro), así que el texto va en tinta
+# oscura y el ícono en un cartucho de madera para que el oro/ámbar resalte.
 COLORS = {
-    "accent_violet": "#8b5cf6",
-    "accent_cyan": "#06b6d4",
+    "accent_wood_dark": "#3e2723",
+    "accent_wood": "#5d4037",
+    "accent_amber": "#ff9d00",
 }
 
 
@@ -43,7 +45,8 @@ def create_stat_card(
     Returns:
         ui.element: El elemento contenedor de la tarjeta
     """
-    trend_color = "text-green-400" if trend_positive else "text-red-400"
+    # Tinta legible sobre pergamino (verde/rojo claros desaparecían en el crema).
+    trend_color = "text-green-700" if trend_positive else "text-red-700"
 
     with (
         ui.element("div")
@@ -54,14 +57,14 @@ def create_stat_card(
             if icon_svg:
                 ui.html(f"""
                     <div class="w-12 h-12 rounded-xl flex items-center justify-center border"
-                         style="background: linear-gradient(135deg, {COLORS["accent_violet"]}20, {COLORS["accent_cyan"]}20);
-                                border-color: {COLORS["accent_violet"]}30;">
+                         style="background: linear-gradient(135deg, {COLORS["accent_wood_dark"]}, {COLORS["accent_wood"]});
+                                border-color: {COLORS["accent_amber"]};">
                         {icon_svg}
                     </div>
                 """)
-            ui.label(title).classes("text-[#9ca3af] text-sm")
+            ui.label(title).classes("text-[#5a4a38] text-sm")
 
-        value_label = ui.label().classes("text-white text-4xl font-bold mb-2")
+        value_label = ui.label().classes("text-[#2c2016] text-4xl font-bold mb-2")
         value_label.bind_text_from(
             value_var,
             "_value",
@@ -71,7 +74,7 @@ def create_stat_card(
         if subtitle or trend:
             with ui.row().classes("items-center justify-between"):
                 if subtitle:
-                    ui.label(subtitle).classes("text-[#6b7280] text-xs")
+                    ui.label(subtitle).classes("text-[#5a4a38] text-xs")
                 if trend:
                     ui.label(trend).classes(f"text-xs font-semibold {trend_color}")
 
