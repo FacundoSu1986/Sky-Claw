@@ -20,6 +20,8 @@ from typing import Any
 
 from nicegui import ui
 
+from sky_claw.antigravity.gui.state import get_store
+
 ACCENT = "#c8a86a"
 ACCENT_BRIGHT = "#ecd9a8"
 GLOW = "rgba(200,168,106,.45)"
@@ -101,6 +103,23 @@ def _cb(callbacks: dict[str, Callable], name: str) -> Callable | None:
     return fn if callable(fn) else None
 
 
+def _derive_status(m: dict[str, Any]) -> str:
+    """Map a mod row to a display status.
+
+    Live registry rows (from ``ctx.registry.search_mods``) carry
+    ``installed``/``enabled_in_vfs`` rather than ``status``, so defaulting to
+    "active" would paint disabled/uninstalled mods as enabled (Codex review on
+    #208). Honour an explicit ``status`` first, then the registry flags, and fall
+    back to the safe "inactive".
+    """
+    raw = m.get("status")
+    if raw:
+        return str(raw)
+    if "enabled_in_vfs" in m or "installed" in m:
+        return "active" if m.get("enabled_in_vfs") else "inactive"
+    return "inactive"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 def render_forge_dashboard(
     stats: dict[str, Any],
@@ -115,6 +134,7 @@ def render_forge_dashboard(
     pending = int(_safe(stats, "pending_updates"))
     conflicts = int(_safe(stats, "conflicts_count"))
     storage = _safe(stats, "storage_used")
+    connected = bool(get_store().get("is_agent_connected"))
 
     root = (
         "--sky-accent:#c8a86a; position:relative; display:flex; min-height:100vh; width:100%;"
@@ -129,7 +149,7 @@ def render_forge_dashboard(
             " box-shadow:inset 0 0 220px 50px rgba(0,0,0,.72);"
             ' background:radial-gradient(135% 95% at 50% -5%, transparent 58%, rgba(0,0,0,.4));"></div>'
         )
-        _sidebar(active, conflicts, pending, active_section, callbacks)
+        _sidebar(active, conflicts, pending, active_section, callbacks, connected)
         with ui.element("div").style(
             "position:relative; z-index:2; flex:1; min-width:0; display:flex; flex-direction:column;"
         ):
@@ -145,6 +165,8 @@ def render_forge_dashboard(
                         _orden_carga(mods, callbacks)
                         _asistente(chat_messages, is_thinking, callbacks)
                     _footer_rune()
+                elif active_section == "Mods":
+                    _mods_screen(mods, callbacks)
                 else:
                     _placeholder(active_section, callbacks)
 
@@ -158,7 +180,9 @@ def _safe(stats: dict[str, Any], key: str) -> float:
 
 
 # ── SIDEBAR ────────────────────────────────────────────────────────────────────
-def _sidebar(active: int, conflicts: int, pending: int, section: str, callbacks: dict[str, Callable]) -> None:
+def _sidebar(
+    active: int, conflicts: int, pending: int, section: str, callbacks: dict[str, Callable], connected: bool
+) -> None:
     aside = (
         "position:relative; z-index:3; width:266px; flex-shrink:0; display:flex; flex-direction:column;"
         "background:linear-gradient(176deg,#241710 0%,#1a120c 46%,#0d0907 100%);"
@@ -187,12 +211,19 @@ def _sidebar(active: int, conflicts: int, pending: int, section: str, callbacks:
             "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12.5px; color:#9a7f4f; margin-top:3px;\">Forja del Dovahkiin</div>"
             "</div></div>"
         )
-        # Connection
+        # Connection — driven by the real websocket state (Codex review on #208);
+        # a hardcoded green pulse would give a false health signal when offline.
+        if connected:
+            dot = "background:#5f9c6b; box-shadow:0 0 9px #5f9c6b; animation:scPulse 2.6s ease-in-out infinite;"
+            border, label, label_color = "rgba(95,156,107,.28)", "DAEMON CONECTADO", "#bfcfb6"
+        else:
+            dot = "background:#857c69;"
+            border, label, label_color = "rgba(200,168,106,.18)", "DAEMON DESCONECTADO", "#a39a85"
         ui.html(
-            '<div style="margin:14px 18px 4px; padding:9px 12px; display:flex; align-items:center; gap:10px; background:rgba(0,0,0,.28); border:1px solid rgba(95,156,107,.28); border-radius:3px;">'
-            '<span style="width:9px; height:9px; border-radius:50%; background:#5f9c6b; box-shadow:0 0 9px #5f9c6b; animation:scPulse 2.6s ease-in-out infinite;"></span>'
+            f'<div style="margin:14px 18px 4px; padding:9px 12px; display:flex; align-items:center; gap:10px; background:rgba(0,0,0,.28); border:1px solid {border}; border-radius:3px;">'
+            f'<span style="width:9px; height:9px; border-radius:50%; {dot}"></span>'
             '<div style="flex:1; min-width:0;">'
-            "<div style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.12em; color:#bfcfb6;\">DAEMON CONECTADO</div>"
+            f"<div style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.12em; color:{label_color};\">{label}</div>"
             "<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#6f7a68; margin-top:1px;\">ws://localhost:8765</div>"
             "</div></div>"
         )
@@ -424,15 +455,14 @@ def _rituales(callbacks: dict[str, Callable]) -> None:
         '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
         "<p style=\"margin:0 0 18px; font-family:'EB Garamond',serif; font-style:italic; font-size:14px; color:#8a8068;\">El Motor Invisible — cinco herramientas legendarias, un solo gesto.</p>"
     )
-    on_feature = _cb(callbacks, "on_feature_click")
     with ui.element("div").style(
         "display:grid; grid-template-columns:repeat(auto-fit,minmax(186px,1fr)); gap:14px; margin-bottom:30px;"
     ):
         for r in _RITUALS:
-            _ritual_card(r, on_feature)
+            _ritual_card(r)
 
 
-def _ritual_card(r: dict[str, str], on_feature: Callable | None) -> None:
+def _ritual_card(r: dict[str, str]) -> None:
     missing = r.get("missing")
     tone = r["tone"]
     opacity = "0.62" if missing else "1"
@@ -463,8 +493,15 @@ def _ritual_card(r: dict[str, str], on_feature: Callable | None) -> None:
             f"margin-top:2px; padding:8px 10px; cursor:pointer; font-family:'Cinzel',serif; font-size:11.5px; font-weight:600;"
             f"letter-spacing:.1em; background:rgba(0,0,0,.3); border:1px solid; border-radius:4px; {btn_style}"
         )
-        if on_feature:
-            b.on("click", lambda _=None, lbl=r["label"]: on_feature(lbl))
+        # Honest interim: the real tool runner (LOOT/SSEEdit/…) isn't plumbed into
+        # render_dashboard yet, so notify instead of calling an unmapped feature
+        # handler that would log "unknown feature" and do nothing (Codex on #208).
+        b.on(
+            "click",
+            lambda _=None, lbl=r["label"], tech=r["tech"]: ui.notify(
+                f"{lbl} ({tech}): el motor de la forja se cablea en la próxima iteración.", type="info"
+            ),
+        )
         with b:
             ui.html(btn_label)
         ui.html(
@@ -508,7 +545,7 @@ def _orden_carga(mods: list[dict[str, Any]], callbacks: dict[str, Callable]) -> 
 
 
 def _mod_row(idx: int, m: dict[str, Any], on_mod: Callable | None) -> None:
-    status = str(m.get("status", "active"))
+    status = _derive_status(m)
     name = str(m.get("name", "Mod desconocido"))
     size_mb = float(m.get("size_mb", 0) or 0)
     size = f"{size_mb / 1024:.1f} GB" if size_mb > 1024 else f"{size_mb:.0f} MB"
@@ -594,10 +631,23 @@ def _asistente(chat_messages: list[dict[str, Any]], is_thinking: bool, callbacks
             )
 
             def _send(_=None) -> None:
-                msg = (chat_input.value or "").strip()
-                if msg and on_send:
-                    chat_input.value = ""
-                    on_send(msg)
+                # Preserve the optimistic-clear + rollback contract from
+                # create_chat_preview: on a daemon/network failure the text is
+                # restored and the user is notified, not silently erased (Codex #208).
+                from .sections.chat_preview import _try_send_with_rollback
+
+                original = chat_input.value or ""
+                msg = original.strip()
+                if not msg or not on_send:
+                    return
+                chat_input.value = ""
+                _try_send_with_rollback(
+                    msg,
+                    on_send=on_send,
+                    restore_fn=lambda text: setattr(chat_input, "value", text),
+                    notify_fn=lambda text: ui.notify(text, type="negative"),
+                    original_text=original,
+                )
 
             chat_input.on("keydown.enter", _send)
             sb = ui.element("button").style(
@@ -635,6 +685,31 @@ def _footer_rune() -> None:
         '<span style="height:1px; width:90px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
         "<div style=\"text-align:center; margin-top:10px; font-family:'EB Garamond',serif; font-style:italic; font-size:12.5px; color:#5f5849;\">«Que tu orden de carga sea estable y tu juego, eterno.»</div>"
     )
+
+
+def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable]) -> None:
+    """Full mod-management screen (search + toggles).
+
+    Reuses ``build_mod_list`` so the existing ``on_mod_toggle`` controls stay
+    reachable from the Forge shell instead of the "próxima iteración" placeholder
+    (Codex P1 on #208).
+    """
+    from .mod_list import build_mod_list
+
+    ui.html(
+        '<div style="display:flex; align-items:center; gap:16px; margin-bottom:14px;">'
+        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">ARSENAL DE LA FORJA</h2>"
+        '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
+    )
+    adapted = [
+        {
+            "name": m.get("name", "Mod desconocido"),
+            "enabled": _derive_status(m) != "inactive",
+            "version": str(m.get("version", "") or ""),
+        }
+        for m in mods
+    ]
+    build_mod_list(mods=adapted, on_toggle=callbacks.get("on_mod_toggle"))
 
 
 def _placeholder(section: str, callbacks: dict[str, Callable]) -> None:
