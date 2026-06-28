@@ -24,13 +24,49 @@ logger = logging.getLogger("SkyClaw.Telemetry")
 TELEMETRY_TOPIC: Final[str] = "system.telemetry.metrics"
 
 
+def _read_gpu_percent() -> float | None:
+    """Return NVIDIA GPU utilization (0-100) or ``None`` when unavailable.
+
+    Honest reporting: ``pynvml`` is an *optional* dependency (no NVIDIA GPU,
+    or simply not installed → most dev machines and CI). Rather than fabricate
+    a number, every failure path returns ``None`` so the GUI can render "N/D".
+    """
+    try:
+        import pynvml  # type: ignore[import-untyped]
+
+        pynvml.nvmlInit()
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+            return float(util.gpu)
+        finally:
+            pynvml.nvmlShutdown()
+    except Exception:
+        # ImportError (not installed), NVMLError (no GPU/driver), anything else.
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class TelemetryMetrics:
-    """Payload tipado para métricas de sistema."""
+    """Payload tipado para métricas de sistema.
+
+    ``gpu`` es ``None`` cuando no hay GPU NVIDIA / pynvml disponible — la GUI
+    lo muestra como "N/D" en lugar de inventar un porcentaje.
+    """
 
     cpu: float
     ram_mb: float
     ram_percent: float
+    gpu: float | None = None
+
+    def as_payload(self) -> dict:
+        """Serializa las métricas al dict publicado en el CoreEventBus."""
+        return {
+            "cpu": self.cpu,
+            "ram_mb": self.ram_mb,
+            "ram_percent": self.ram_percent,
+            "gpu": self.gpu,
+        }
 
 
 class TelemetryDaemon:
@@ -68,6 +104,23 @@ class TelemetryDaemon:
         self._task = None
         logger.info("TelemetryDaemon detenido")
 
+    def _sample(self, proc: psutil.Process) -> TelemetryMetrics:
+        """Recolecta una muestra puntual de CPU/RAM/GPU.
+
+        Aislado del loop para ser testeable sin event bus ni asyncio. ``proc``
+        debe haber sido cebado con ``proc.cpu_percent(interval=None)`` para que
+        la primera lectura de CPU no devuelva 0.0.
+        """
+        cpu_usage = proc.cpu_percent(interval=None)
+        mem = proc.memory_info()
+        vmem = psutil.virtual_memory()
+        return TelemetryMetrics(
+            cpu=round(cpu_usage, 1),
+            ram_mb=round(mem.rss / (1024 * 1024), 1),
+            ram_percent=round(vmem.percent, 1),
+            gpu=_read_gpu_percent(),
+        )
+
     async def _telemetry_loop(self) -> None:
         """Loop estricto de 1 Hz — emite métricas psutil al CoreEventBus."""
         proc = psutil.Process()
@@ -75,22 +128,11 @@ class TelemetryDaemon:
         proc.cpu_percent(interval=None)
         while True:
             try:
-                cpu_usage = proc.cpu_percent(interval=None)
-                mem = proc.memory_info()
-                vmem = psutil.virtual_memory()
-                metrics = TelemetryMetrics(
-                    cpu=round(cpu_usage, 1),
-                    ram_mb=round(mem.rss / (1024 * 1024), 1),
-                    ram_percent=round(vmem.percent, 1),
-                )
+                metrics = self._sample(proc)
                 await self._event_bus.publish(
                     Event(
                         topic=TELEMETRY_TOPIC,
-                        payload={
-                            "cpu": metrics.cpu,
-                            "ram_mb": metrics.ram_mb,
-                            "ram_percent": metrics.ram_percent,
-                        },
+                        payload=metrics.as_payload(),
                         source="telemetry-daemon",
                     )
                 )

@@ -48,6 +48,7 @@ from sky_claw.antigravity.gui.setup_wizard import SetupWizardModal
 from sky_claw.antigravity.gui.state import ReactiveStore, get_store
 from sky_claw.antigravity.gui.task_tracking import create_tracked_task
 from sky_claw.antigravity.gui.views import render_dashboard
+from sky_claw.antigravity.gui.views.forge_dashboard import STORE_KEY_ENV
 from sky_claw.config import Config
 
 logger = logging.getLogger(__name__)
@@ -505,6 +506,12 @@ def setup_app() -> None:
     store.subscribe("active_section", main_page.refresh)
     # Re-render el indicador "DAEMON CONECTADO" del sidebar cuando el WS conecta/cae.
     store.subscribe("is_agent_connected", main_page.refresh)
+    # Phase 1: re-render los Rituales cuando el escaneo de entorno publica el
+    # snapshot (Disponible / No instalado). NB: las claves de telemetría
+    # (sys_cpu/gpu/ram) NO se suscriben a propósito — refrescar la página entera
+    # a 1 Hz reiniciaría el input del chat; las vitals se releen del store en
+    # cada re-render natural (navegación, refresco de modlist).
+    store.subscribe(STORE_KEY_ENV, main_page.refresh)
 
     app.on_startup(lambda: get_agent_client().start())
 

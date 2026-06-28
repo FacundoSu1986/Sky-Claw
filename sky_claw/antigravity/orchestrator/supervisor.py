@@ -8,7 +8,7 @@ from typing import Any
 from sky_claw.antigravity.comms.interface import InterfaceAgent
 from sky_claw.antigravity.core.contracts import PathValidatorProtocol
 from sky_claw.antigravity.core.database import DatabaseAgent
-from sky_claw.antigravity.core.event_bus import Event, create_bus_with_dlq
+from sky_claw.antigravity.core.event_bus import CoreEventBus, Event, create_bus_with_dlq
 from sky_claw.antigravity.core.models import HitlApprovalRequest
 from sky_claw.antigravity.core.path_resolver import PathResolutionService
 from sky_claw.antigravity.core.windows_interop import ModdingToolsAgent
@@ -593,6 +593,16 @@ class SupervisorAgent:
     # =========================================================================
     # FASE 5: Asset Conflict Detection Integration
     # =========================================================================
+
+    @property
+    def event_bus(self) -> CoreEventBus:
+        """Acceso de solo lectura al CoreEventBus interno.
+
+        Permite que consumidores externos (p. ej. el bridge de telemetría de la
+        GUI) se suscriban a tópicos publicados por los demonios sin acoplarse al
+        campo privado ``_event_bus``.
+        """
+        return self._event_bus
 
     @property
     def asset_detector(self) -> AssetConflictDetector:
