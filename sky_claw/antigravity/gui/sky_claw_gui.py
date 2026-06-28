@@ -503,6 +503,8 @@ def setup_app() -> None:
     store.subscribe("mods_list", main_page.refresh)
     # Parte 5: re-render al navegar (el sidebar pinta la sección activa).
     store.subscribe("active_section", main_page.refresh)
+    # Re-render el indicador "DAEMON CONECTADO" del sidebar cuando el WS conecta/cae.
+    store.subscribe("is_agent_connected", main_page.refresh)
 
     app.on_startup(lambda: get_agent_client().start())
 
