@@ -30,6 +30,15 @@ RED_SOFT = "#e88a82"
 FROST = "#86b9d4"
 GREEN = "#5f9c6b"
 
+# ── Reactive-store keys for live system data (written by the bootloader) ────────
+# Telemetry percentages (0-100) sampled by TelemetryDaemon → CoreEventBus →
+# the GUI store. ``sys_gpu`` is ``None`` when no NVIDIA GPU/pynvml is present.
+STORE_KEY_CPU = "sys_cpu"
+STORE_KEY_GPU = "sys_gpu"
+STORE_KEY_RAM = "sys_ram"
+# EnvironmentSnapshot produced by EnvironmentScanner.scan() at startup.
+STORE_KEY_ENV = "environment_snapshot"
+
 # ── Navigation (label, section key, lucide path, tone) ─────────────────────────
 _NAV: list[dict[str, str]] = [
     {"label": "Panel", "key": "Dashboard", "d": "M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"},
@@ -52,12 +61,15 @@ _NAV: list[dict[str, str]] = [
 ]
 
 # ── Rituales de la Forja (rune · label · desc · técnico · tono) ─────────────────
+#: ``tool`` maps each ritual to its EnvironmentScanner key (scanner.py tool_defs)
+#: so availability is derived from a real disk scan, not hardcoded.
 _RITUALS: list[dict[str, str]] = [
     {
         "rune": "ᚠ",
         "label": "Ordenar Mods",
         "desc": "Organiza el orden de carga para evitar conflictos.",
         "tech": "LOOT",
+        "tool": "loot",
         "tone": ACCENT,
     },
     {
@@ -65,6 +77,7 @@ _RITUALS: list[dict[str, str]] = [
         "label": "Limpiar Archivos",
         "desc": "Elimina registros sucios de los plugins oficiales.",
         "tech": "SSEEdit",
+        "tool": "xedit",
         "tone": ACCENT,
     },
     {
@@ -72,6 +85,7 @@ _RITUALS: list[dict[str, str]] = [
         "label": "Crear Parche",
         "desc": "Genera un parche de compatibilidad entre tus mods.",
         "tech": "Wrye Bash",
+        "tool": "wrye_bash",
         "tone": ACCENT,
     },
     {
@@ -79,14 +93,15 @@ _RITUALS: list[dict[str, str]] = [
         "label": "Generar Animaciones",
         "desc": "Actualiza los grafos de comportamiento del juego.",
         "tech": "Pandora",
+        "tool": "pandora",
         "tone": "#9c7a40",
-        "missing": "1",
     },
     {
         "rune": "ᛗ",
         "label": "Optimizar Gráficos",
         "desc": "Genera LODs para el rendimiento visual a distancia.",
         "tech": "DynDOLOD",
+        "tool": "dyndolod",
         "tone": ACCENT,
     },
 ]
@@ -101,6 +116,35 @@ def _e(s: Any) -> str:
 def _cb(callbacks: dict[str, Callable], name: str) -> Callable | None:
     fn = callbacks.get(name)
     return fn if callable(fn) else None
+
+
+def _fmt_pct(value: float | None) -> str:
+    """Format a 0-100 metric as ``"NN%"``, or ``"N/D"`` when unknown (None)."""
+    if value is None:
+        return "N/D"
+    return f"{int(round(value))}%"
+
+
+def _vital_bar_width(value: float | None) -> int:
+    """Clamp a metric to a 0-100 bar width; unknown metrics render empty."""
+    if value is None:
+        return 0
+    return max(0, min(100, int(round(value))))
+
+
+def _ritual_status(snapshot: Any, tool_key: str) -> str:
+    """Derive a ritual's tool state from the environment snapshot.
+
+    Returns ``"available"`` / ``"missing"`` when a scan has run, or
+    ``"unknown"`` before the first :class:`EnvironmentScanner` snapshot lands
+    in the store — so the UI never claims a tool is installed without proof.
+    """
+    if snapshot is None:
+        return "unknown"
+    has_tool = getattr(snapshot, "has_tool", None)
+    if not callable(has_tool):
+        return "unknown"
+    return "available" if has_tool(tool_key) else "missing"
 
 
 def _derive_status(m: dict[str, Any]) -> str:
@@ -270,19 +314,23 @@ def _nav_item(item: dict[str, str], is_active: bool, count: int | None, on_nav: 
 
 
 def _vitals() -> None:
+    # Live telemetry from the store (TelemetryDaemon → CoreEventBus → bootloader
+    # bridge). Values refresh on each natural page re-render; GPU is None ("N/D")
+    # when no NVIDIA GPU/pynvml is present instead of a fabricated "18%".
+    store = get_store()
     rows = [
-        ("Procesador", 3, "#5f9c6b", "#2f5036"),
-        ("Gráficos", 18, "#c8a86a", "#6a5026"),
-        ("Memoria", 41, "#86b9d4", "#3a5a6a"),
+        ("Procesador", store.get(STORE_KEY_CPU), "#5f9c6b", "#2f5036"),
+        ("Gráficos", store.get(STORE_KEY_GPU), "#c8a86a", "#6a5026"),
+        ("Memoria", store.get(STORE_KEY_RAM), "#86b9d4", "#3a5a6a"),
     ]
     bars = "".join(
         f'<div style="margin-bottom:11px;">'
         f'<div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">'
         f"<span style=\"font-family:'EB Garamond',serif; font-size:12.5px; color:#b8b1a0;\">{lbl}</span>"
-        f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:{col};\">{pct}%</span></div>"
+        f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:{col};\">{_fmt_pct(val)}</span></div>"
         f'<div style="height:5px; border-radius:3px; background:rgba(255,255,255,.06); overflow:hidden; box-shadow:inset 0 1px 2px rgba(0,0,0,.5);">'
-        f'<div style="height:100%; width:{pct}%; border-radius:3px; background:linear-gradient(90deg,{dim},{col}); box-shadow:0 0 8px {col};"></div></div></div>'
-        for lbl, pct, col, dim in rows
+        f'<div style="height:100%; width:{_vital_bar_width(val)}%; border-radius:3px; background:linear-gradient(90deg,{dim},{col}); box-shadow:0 0 8px {col};"></div></div></div>'
+        for lbl, val, col, dim in rows
     )
     ui.html(
         '<div style="padding:16px 20px 18px; border-top:1px solid rgba(200,168,106,.16);">'
@@ -321,10 +369,13 @@ def _header(section: str, callbacks: dict[str, Callable]) -> None:
             '<input placeholder="Busca en los archivos arcanos…" style="width:100%; padding:11px 14px 11px 40px; font-family:\'EB Garamond\',serif; font-size:14px; color:#e8e2d4; background:rgba(62,39,35,.45); border:1px solid rgba(200,168,106,.28); border-radius:5px; outline:none; box-shadow:inset 0 2px 6px rgba(0,0,0,.45);"></div>'
         )
         # right cluster (telemetry HUD + settings + bell + user)
+        store = get_store()
+        gpu_hud = _fmt_pct(store.get(STORE_KEY_GPU))
+        cpu_hud = _fmt_pct(store.get(STORE_KEY_CPU))
         ui.html(
             '<div style="display:flex; align-items:center; gap:14px;">'
             "<div style=\"display:flex; gap:14px; font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#857c69;\">"
-            '<span>GPU <b style="color:#c8a86a;">18%</b></span><span>CPU <b style="color:#c8a86a;">3%</b></span></div>'
+            f'<span>GPU <b style="color:#c8a86a;">{_e(gpu_hud)}</b></span><span>CPU <b style="color:#c8a86a;">{_e(cpu_hud)}</b></span></div>'
             '<button title="Asistente de Configuración" style="width:40px; height:40px; display:flex; align-items:center; justify-content:center; background:rgba(62,39,35,.4); border:1px solid rgba(200,168,106,.22); border-radius:5px; cursor:pointer;">'
             '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#c2b48f" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>'
             '<div style="display:flex; align-items:center; gap:11px; padding-left:16px; border-left:1px solid rgba(200,168,106,.16);">'
@@ -409,23 +460,17 @@ def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
 
 # ── STAT PLAQUES ───────────────────────────────────────────────────────────────
 def _stats(active: int, pending: int, conflicts: int, storage: float) -> None:
+    # No fabricated trend badges ("↑ 5%", "nuevo", "↓ 2"): there's no historical
+    # series to compute deltas from, so the plaques show only the real current
+    # value plus a static descriptor.
     defs = [
-        (_STAT_RUNES["mods"], ACCENT, "MODS ACTIVOS", f"{active}", "", "guardando Tamriel", "↑ 5%", "#7fc08c"),
-        (_STAT_RUNES["pending"], ACCENT, "PENDIENTES", f"{pending}", "", "esperan renovación", "nuevo", "#c8a86a"),
-        (_STAT_RUNES["conflicts"], RED, "CONFLICTOS", f"{conflicts}", "", "requieren tu juicio", "↓ 2", "#7fc08c"),
-        (
-            _STAT_RUNES["space"],
-            FROST,
-            "ESPACIO",
-            f"{storage:.1f}",
-            "GB",
-            "de 200 GB en disco",
-            f"{min(100, int(storage / 2)):d}%",
-            "#86b9d4",
-        ),
+        (_STAT_RUNES["mods"], ACCENT, "MODS ACTIVOS", f"{active}", "", "guardando Tamriel"),
+        (_STAT_RUNES["pending"], ACCENT, "PENDIENTES", f"{pending}", "", "esperan renovación"),
+        (_STAT_RUNES["conflicts"], RED, "CONFLICTOS", f"{conflicts}", "", "requieren tu juicio"),
+        (_STAT_RUNES["space"], FROST, "ESPACIO", f"{storage:.1f}", "GB", "de 200 GB en disco"),
     ]
     cards = ""
-    for rune, tone, label, value, unit, sub, trend, trend_c in defs:
+    for rune, tone, label, value, unit, sub in defs:
         cards += (
             '<div style="position:relative; overflow:hidden; padding:20px; border-radius:4px;'
             " background:linear-gradient(162deg, rgba(26,32,40,.82), rgba(11,14,19,.9)); border:1px solid rgba(200,168,106,.2);"
@@ -438,9 +483,8 @@ def _stats(active: int, pending: int, conflicts: int, storage: float) -> None:
             '<div style="display:flex; align-items:flex-end; gap:6px;">'
             f"<span style=\"font-family:'Spline Sans Mono',monospace; font-weight:600; font-size:38px; line-height:1; color:#f1ead8;\">{_e(value)}</span>"
             f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:13px; color:#8a8270; margin-bottom:5px;\">{_e(unit)}</span></div>"
-            '<div style="display:flex; align-items:center; justify-content:space-between; margin-top:11px;">'
-            f"<span style=\"font-family:'EB Garamond',serif; font-size:12.5px; color:#857c69;\">{_e(sub)}</span>"
-            f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:{trend_c};\">{_e(trend)}</span></div></div>"
+            '<div style="margin-top:11px;">'
+            f"<span style=\"font-family:'EB Garamond',serif; font-size:12.5px; color:#857c69;\">{_e(sub)}</span></div></div>"
         )
     ui.html(
         f'<div style="display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; margin-bottom:30px;">{cards}</div>'
@@ -455,26 +499,53 @@ def _rituales(callbacks: dict[str, Callable]) -> None:
         '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
         "<p style=\"margin:0 0 18px; font-family:'EB Garamond',serif; font-style:italic; font-size:14px; color:#8a8068;\">El Motor Invisible — cinco herramientas legendarias, un solo gesto.</p>"
     )
+    snapshot = get_store().get(STORE_KEY_ENV)
     with ui.element("div").style(
         "display:grid; grid-template-columns:repeat(auto-fit,minmax(186px,1fr)); gap:14px; margin-bottom:30px;"
     ):
         for r in _RITUALS:
-            _ritual_card(r)
+            _ritual_card(r, _ritual_status(snapshot, r["tool"]))
 
 
-def _ritual_card(r: dict[str, str]) -> None:
-    missing = r.get("missing")
+# Per-state chrome for a ritual card. "unknown" = scan hasn't landed yet, so we
+# stay honest (neutral, no Ejecutar/Instalar claim) until the snapshot arrives.
+_RITUAL_STATE_STYLE: dict[str, dict[str, str]] = {
+    "available": {
+        "opacity": "1",
+        "dot": GREEN,
+        "label": "Disponible",
+        "color": "#9bbf8e",
+        "btn_label": "Ejecutar",
+        "btn_style": "color:#d8c69a; border-color:rgba(156,122,64,.5);",
+    },
+    "missing": {
+        "opacity": "0.62",
+        "dot": "#9c7a40",
+        "label": "No instalado",
+        "color": "#b8946a",
+        "btn_label": "Instalar",
+        "btn_style": "color:#ffb05a; border-color:rgba(200,100,20,.5);",
+    },
+    "unknown": {
+        "opacity": "0.78",
+        "dot": "#857c69",
+        "label": "Verificando…",
+        "color": "#a39a85",
+        "btn_label": "Ejecutar",
+        "btn_style": "color:#a39a85; border-color:rgba(120,120,120,.4);",
+    },
+}
+
+
+def _ritual_card(r: dict[str, str], state: str = "unknown") -> None:
     tone = r["tone"]
-    opacity = "0.62" if missing else "1"
-    status_dot = "#9c7a40" if missing else GREEN
-    status_label = "No instalado" if missing else "Disponible"
-    status_color = "#b8946a" if missing else "#9bbf8e"
-    btn_label = "Instalar" if missing else "Ejecutar"
-    btn_style = (
-        "color:#ffb05a; border-color:rgba(200,100,20,.5);"
-        if missing
-        else "color:#d8c69a; border-color:rgba(156,122,64,.5);"
-    )
+    style = _RITUAL_STATE_STYLE.get(state, _RITUAL_STATE_STYLE["unknown"])
+    opacity = style["opacity"]
+    status_dot = style["dot"]
+    status_label = style["label"]
+    status_color = style["color"]
+    btn_label = style["btn_label"]
+    btn_style = style["btn_style"]
     card = (
         f"position:relative; display:flex; flex-direction:column; gap:9px; padding:18px 16px; border-radius:4px; opacity:{opacity};"
         "background:linear-gradient(168deg, rgba(30,22,14,.9), rgba(14,10,7,.92)); border:1px solid rgba(200,168,106,.22);"

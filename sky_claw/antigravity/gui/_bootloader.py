@@ -9,6 +9,13 @@ import uuid
 from sky_claw.antigravity.gui.gui_event_adapter import EventType, SkyClawEvent
 from sky_claw.antigravity.gui.gui_event_adapter import event_bus as gui_event_bus
 from sky_claw.antigravity.gui.sky_claw_gui import get_state, set_runtime_context, setup_app
+from sky_claw.antigravity.gui.state import ReactiveStore, get_store
+from sky_claw.antigravity.gui.views.forge_dashboard import (
+    STORE_KEY_CPU,
+    STORE_KEY_ENV,
+    STORE_KEY_GPU,
+    STORE_KEY_RAM,
+)
 from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
 from sky_claw.app_context import AppContext, _resolve_config_path_static, start_full
 from sky_claw.logging_config import correlation_id_var
@@ -18,6 +25,47 @@ logger = logging.getLogger("sky_claw")
 # P1 §3.2 — bounded LLM call. The GUI shows a snappy error rather than
 # hanging on an unresponsive provider.
 _GUI_CHAT_TIMEOUT_SECONDS: float = 30.0
+
+
+def _make_telemetry_store_bridge(store: ReactiveStore):
+    """Build a CoreEventBus subscriber that mirrors telemetry into the GUI store.
+
+    Phase 1 ("Panel con datos reales"): ``TelemetryDaemon`` publishes
+    ``system.telemetry.*`` Events on the supervisor's CoreEventBus. The GUI,
+    however, reads its live vitals/HUD from the reactive store. This bridge
+    closes that gap so the panel shows real CPU/RAM/GPU instead of hardcoded
+    placeholders. GPU stays ``None`` ("N/D") when unavailable.
+    """
+
+    async def _bridge(event) -> None:
+        payload = event.payload or {}
+        store.set(STORE_KEY_CPU, payload.get("cpu"))
+        store.set(STORE_KEY_RAM, payload.get("ram_percent"))
+        store.set(STORE_KEY_GPU, payload.get("gpu"))
+
+    return _bridge
+
+
+async def _run_environment_scan(scanner, store: ReactiveStore) -> None:
+    """Run a one-shot environment scan and publish the snapshot to the store.
+
+    Drives the Ritual cards' real Available/No instalado state. A scan failure
+    must never crash GUI startup — it is logged and the store key is left unset
+    (the cards then show the honest "Verificando…" state).
+
+    The scanner's probes are synchronous filesystem I/O (``Path.exists``,
+    ``iterdir``, ``shutil.which``, ``_find_tool``), so awaiting ``scan()`` on the
+    NiceGUI loop would block the page + ``/ws/ui`` startup on a slow/unavailable
+    drive — and its internal ``wait_for`` timeout can't fire while sync calls
+    run. We offload the whole scan onto a worker thread (its own event loop) so
+    the UI loop stays responsive (Codex review on #209).
+    """
+    try:
+        snapshot = await asyncio.to_thread(lambda: asyncio.run(scanner.scan()))
+    except Exception:
+        logger.exception("Environment scan failed; ritual availability stays unknown")
+        return
+    store.set(STORE_KEY_ENV, snapshot)
 
 
 async def _dispatch_chat_to_router(ctx: AppContext, text: str) -> None:
@@ -143,9 +191,22 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
             path_validator=ctx.sandbox_validator,
         )
         _runtime["supervisor"] = supervisor
+
+        # Phase 1: bridge the supervisor's telemetry onto the GUI store so the
+        # Vitalidad bars + header HUD render real CPU/RAM/GPU. subscribe() only
+        # appends to the bus' subscription list, so it is safe to register before
+        # supervisor.start() boots the bus.
+        store = get_store()
+        supervisor.event_bus.subscribe("system.telemetry.*", _make_telemetry_store_bridge(store))
+
         ctx._track_task(supervisor.start(), name="supervisor-daemon")
         ctx._track_task(_gui_logic_loop(ctx), name="gui-logic-loop")
         ctx._track_task(_gui_mod_update_loop(ctx), name="gui-mod-update")
+
+        # Phase 1: one-shot environment scan → Ritual availability (LOOT/SSEEdit/…).
+        from sky_claw.local.discovery.scanner import EnvironmentScanner
+
+        ctx._track_task(_run_environment_scan(EnvironmentScanner(), store), name="gui-env-scan")
 
         # aiohttp sub-server for /api/chat + Operations Hub WS.
         # Runs on 8765 so external scripts and AgentCommunicationClient
