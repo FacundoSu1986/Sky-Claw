@@ -214,7 +214,9 @@ class SetupWizardModal:
                         )
                         .classes("px-5 py-3 rounded-xl font-semibold")
                         .props("ripple flat no-caps")
-                        .style("color: var(--sky-parchment-text); display: none;")
+                        # gold, not parchment-ink: the v4.0 wizard modal is dark,
+                        # so #2c2016 would render the Back control near-invisible.
+                        .style("color: var(--sky-gold); display: none;")
                     )
 
                     self._next_btn = (
@@ -264,7 +266,7 @@ class SetupWizardModal:
         self._step1_container.style("display: none;")
         self._step2_container.style("display: flex;")
         self._next_btn.style("display: none;")
-        self._back_btn.style("display: block; color: var(--sky-parchment-text);")
+        self._back_btn.style("display: block; color: var(--sky-gold);")
         self._submit_btn.style("display: flex;")
 
     def _go_step1(self) -> None:
