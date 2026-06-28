@@ -259,6 +259,10 @@ def create_chat_preview(
             )
 
             with send_button:
+                # stroke=white: at runtime the CTA renders as solid dark gold
+                # (#8b6d23, NiceGUI ui.colors primary wins over the CSS gradient),
+                # so the white plane is 4.9:1 — higher contrast than dark ink would
+                # be and consistent with the button's white label.
                 ui.html("""
                         <svg width="20" height="20" viewBox="0 0 24 24"
                              fill="none" stroke="white" stroke-width="2">
