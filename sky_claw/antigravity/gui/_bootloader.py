@@ -52,9 +52,16 @@ async def _run_environment_scan(scanner, store: ReactiveStore) -> None:
     Drives the Ritual cards' real Available/No instalado state. A scan failure
     must never crash GUI startup — it is logged and the store key is left unset
     (the cards then show the honest "Verificando…" state).
+
+    The scanner's probes are synchronous filesystem I/O (``Path.exists``,
+    ``iterdir``, ``shutil.which``, ``_find_tool``), so awaiting ``scan()`` on the
+    NiceGUI loop would block the page + ``/ws/ui`` startup on a slow/unavailable
+    drive — and its internal ``wait_for`` timeout can't fire while sync calls
+    run. We offload the whole scan onto a worker thread (its own event loop) so
+    the UI loop stays responsive (Codex review on #209).
     """
     try:
-        snapshot = await scanner.scan()
+        snapshot = await asyncio.to_thread(lambda: asyncio.run(scanner.scan()))
     except Exception:
         logger.exception("Environment scan failed; ritual availability stays unknown")
         return

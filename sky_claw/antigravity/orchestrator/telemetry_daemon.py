@@ -107,11 +107,16 @@ class TelemetryDaemon:
     def _sample(self, proc: psutil.Process) -> TelemetryMetrics:
         """Recolecta una muestra puntual de CPU/RAM/GPU.
 
-        Aislado del loop para ser testeable sin event bus ni asyncio. ``proc``
-        debe haber sido cebado con ``proc.cpu_percent(interval=None)`` para que
-        la primera lectura de CPU no devuelva 0.0.
+        Aislado del loop para ser testeable sin event bus ni asyncio.
+
+        ``cpu`` es CPU **del host** (``psutil.cpu_percent``), no del proceso: la
+        GUI lo muestra bajo "Vitalidad del sistema", así que reportar solo el
+        consumo de Sky-Claw mostraría un procesador ocioso mientras el equipo
+        está saturado. Requiere haber cebado ``psutil.cpu_percent(interval=None)``
+        para que la primera lectura no devuelva 0.0. ``ram_mb`` sí es del proceso
+        (RSS) y ``ram_percent`` es del host (memoria virtual).
         """
-        cpu_usage = proc.cpu_percent(interval=None)
+        cpu_usage = psutil.cpu_percent(interval=None)
         mem = proc.memory_info()
         vmem = psutil.virtual_memory()
         return TelemetryMetrics(
@@ -124,8 +129,9 @@ class TelemetryDaemon:
     async def _telemetry_loop(self) -> None:
         """Loop estricto de 1 Hz — emite métricas psutil al CoreEventBus."""
         proc = psutil.Process()
-        # Primer call de cpu_percent devuelve 0.0 (requiere baseline)
-        proc.cpu_percent(interval=None)
+        # Primer call de cpu_percent devuelve 0.0 (requiere baseline). Cebamos el
+        # contador host-wide que usa _sample.
+        psutil.cpu_percent(interval=None)
         while True:
             try:
                 metrics = self._sample(proc)

@@ -507,10 +507,16 @@ def setup_app() -> None:
     # Re-render el indicador "DAEMON CONECTADO" del sidebar cuando el WS conecta/cae.
     store.subscribe("is_agent_connected", main_page.refresh)
     # Phase 1: re-render los Rituales cuando el escaneo de entorno publica el
-    # snapshot (Disponible / No instalado). NB: las claves de telemetría
-    # (sys_cpu/gpu/ram) NO se suscriben a propósito — refrescar la página entera
-    # a 1 Hz reiniciaría el input del chat; las vitals se releen del store en
-    # cada re-render natural (navegación, refresco de modlist).
+    # snapshot (Disponible / No instalado).
+    #
+    # Las claves de telemetría (sys_cpu/gpu/ram) NO se suscriben a main_page.refresh
+    # a propósito: refrescar la página entera a 1 Hz reiniciaría el input del chat.
+    # Las vitals se releen del store en cada re-render natural — de forma fiable al
+    # navegar entre secciones (active_section dispara refresh). Esto significa que
+    # entre navegaciones el HUD puede quedar con la última muestra (o "N/D" si el
+    # escaneo de GPU no aplica); un refresh en vivo a nivel de componente
+    # (@ui.refreshable + ui.timer sobre Vitalidad/HUD) queda para un follow-up
+    # (Codex review #3 en #209).
     store.subscribe(STORE_KEY_ENV, main_page.refresh)
 
     app.on_startup(lambda: get_agent_client().start())
