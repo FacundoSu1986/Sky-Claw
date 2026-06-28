@@ -539,4 +539,16 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 @keyframes sky-fade-up     { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
 .sky-active-rune { font-family: var(--sky-font-runic); animation: sky-pulse-amber 3s infinite; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   14. FORGE PANEL — keyframes del rediseño HiFi (hero/embers/shimmer/pulse)
+   Usadas por los inline-styles del Panel del Draconato (views/forge_dashboard.py).
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+@keyframes scAurora  { 0% { transform: translateX(-7%) skewX(-5deg); opacity: 0.6; } 50% { transform: translateX(7%) skewX(5deg); opacity: 1; } 100% { transform: translateX(-7%) skewX(-5deg); opacity: 0.6; } }
+@keyframes scEmber   { 0% { transform: translateY(8px) scale(1); opacity: 0; } 12% { opacity: 0.95; } 100% { transform: translateY(-150px) scale(0.35); opacity: 0; } }
+@keyframes scPulse   { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+@keyframes scShimmer { 0% { background-position: -180% 0; } 100% { background-position: 180% 0; } }
+@keyframes scBlink   { 0%, 75%, 100% { opacity: 0.25; } 38% { opacity: 1; } }
+@keyframes scSpin    { to { transform: rotate(360deg); } }
+@keyframes scFade    { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 .sky-animate-in  { animation: sky-fade-up 0.5s ease-out forwards; }

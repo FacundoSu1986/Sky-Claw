@@ -1,0 +1,657 @@
+"""Forge Panel — faithful port of the HiFi "Panel del Draconato" mockup.
+
+Ports the standalone design (Sky-Claw Forge.dc.html) to the live NiceGUI shell.
+The mockup is inline-styled (not class-based), so we replicate the exact inline
+styles here for pixel fidelity. Decorative chrome (hero veils, embers, brackets,
+SVGs, runic lines) is emitted via ``ui.html``; interactive controls (nav, Preparar
+Juego, Ver Todo, chat) are real elements wired to the existing callbacks.
+
+Keyframes used by the inline styles (scAurora/scEmber/scPulse/scShimmer/scBlink)
+live in styles.css §14. Entry point :func:`render_forge_dashboard` keeps the same
+signature as the old ``render_dashboard`` so the wiring in ``sky_claw_gui`` is
+untouched.
+"""
+
+from __future__ import annotations
+
+import html as _html
+from collections.abc import Callable
+from typing import Any
+
+from nicegui import ui
+
+ACCENT = "#c8a86a"
+ACCENT_BRIGHT = "#ecd9a8"
+GLOW = "rgba(200,168,106,.45)"
+RED = "#d8584e"
+RED_SOFT = "#e88a82"
+FROST = "#86b9d4"
+GREEN = "#5f9c6b"
+
+# ── Navigation (label, section key, lucide path, tone) ─────────────────────────
+_NAV: list[dict[str, str]] = [
+    {"label": "Panel", "key": "Dashboard", "d": "M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"},
+    {
+        "label": "Mods",
+        "key": "Mods",
+        "d": "M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z",
+    },
+    {
+        "label": "Conflictos",
+        "key": "Conflicts",
+        "d": "M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01",
+    },
+    {"label": "Descargas", "key": "Downloads", "d": "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"},
+    {
+        "label": "Ajustes",
+        "key": "Settings",
+        "d": "M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6",
+    },
+]
+
+# ── Rituales de la Forja (rune · label · desc · técnico · tono) ─────────────────
+_RITUALS: list[dict[str, str]] = [
+    {
+        "rune": "ᚠ",
+        "label": "Ordenar Mods",
+        "desc": "Organiza el orden de carga para evitar conflictos.",
+        "tech": "LOOT",
+        "tone": ACCENT,
+    },
+    {
+        "rune": "ᚱ",
+        "label": "Limpiar Archivos",
+        "desc": "Elimina registros sucios de los plugins oficiales.",
+        "tech": "SSEEdit",
+        "tone": ACCENT,
+    },
+    {
+        "rune": "ᛞ",
+        "label": "Crear Parche",
+        "desc": "Genera un parche de compatibilidad entre tus mods.",
+        "tech": "Wrye Bash",
+        "tone": ACCENT,
+    },
+    {
+        "rune": "ᛏ",
+        "label": "Generar Animaciones",
+        "desc": "Actualiza los grafos de comportamiento del juego.",
+        "tech": "Pandora",
+        "tone": "#9c7a40",
+        "missing": "1",
+    },
+    {
+        "rune": "ᛗ",
+        "label": "Optimizar Gráficos",
+        "desc": "Genera LODs para el rendimiento visual a distancia.",
+        "tech": "DynDOLOD",
+        "tone": ACCENT,
+    },
+]
+
+_STAT_RUNES = {"mods": "ᛗ", "pending": "ᛒ", "conflicts": "ᚤ", "space": "ᛜ"}
+
+
+def _e(s: Any) -> str:
+    return _html.escape(str(s))
+
+
+def _cb(callbacks: dict[str, Callable], name: str) -> Callable | None:
+    fn = callbacks.get(name)
+    return fn if callable(fn) else None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+def render_forge_dashboard(
+    stats: dict[str, Any],
+    mods: list[dict[str, Any]],
+    chat_messages: list[dict[str, Any]],
+    is_thinking: bool,
+    callbacks: dict[str, Callable],
+    active_section: str = "Dashboard",
+) -> None:
+    """Render the full Forge shell (sidebar + header + scroll content)."""
+    active = int(_safe(stats, "active_mods"))
+    pending = int(_safe(stats, "pending_updates"))
+    conflicts = int(_safe(stats, "conflicts_count"))
+    storage = _safe(stats, "storage_used")
+
+    root = (
+        "--sky-accent:#c8a86a; position:relative; display:flex; min-height:100vh; width:100%;"
+        "font-family:'EB Garamond',Georgia,serif; color:#e8e2d4;"
+        "background:radial-gradient(130% 62% at 50% -12%, rgba(64,156,131,.18), transparent 56%),"
+        "linear-gradient(180deg, rgba(8,11,15,.93), rgba(7,9,12,.975)), url('/assets/stone_bg.png');"
+        "background-size:auto,auto,440px; background-attachment:fixed; -webkit-font-smoothing:antialiased;"
+    )
+    with ui.element("div").style(root):
+        ui.html(
+            '<div style="position:absolute; inset:0; pointer-events:none; z-index:0;'
+            " box-shadow:inset 0 0 220px 50px rgba(0,0,0,.72);"
+            ' background:radial-gradient(135% 95% at 50% -5%, transparent 58%, rgba(0,0,0,.4));"></div>'
+        )
+        _sidebar(active, conflicts, pending, active_section, callbacks)
+        with ui.element("div").style(
+            "position:relative; z-index:2; flex:1; min-width:0; display:flex; flex-direction:column;"
+        ):
+            _header(active_section, callbacks)
+            with ui.element("div").classes("sc-scroll").style("flex:1; overflow-y:auto; padding:26px 30px 40px;"):
+                if active_section in ("Dashboard", "Panel"):
+                    _hero(active, conflicts, callbacks)
+                    _stats(active, pending, conflicts, storage)
+                    _rituales(callbacks)
+                    with ui.element("div").style(
+                        "display:grid; grid-template-columns:repeat(auto-fit,minmax(440px,1fr)); gap:22px;"
+                    ):
+                        _orden_carga(mods, callbacks)
+                        _asistente(chat_messages, is_thinking, callbacks)
+                    _footer_rune()
+                else:
+                    _placeholder(active_section, callbacks)
+
+
+def _safe(stats: dict[str, Any], key: str) -> float:
+    v = stats.get(key)
+    try:
+        return float(v.get()) if hasattr(v, "get") else float(v or 0)
+    except Exception:
+        return 0.0
+
+
+# ── SIDEBAR ────────────────────────────────────────────────────────────────────
+def _sidebar(active: int, conflicts: int, pending: int, section: str, callbacks: dict[str, Callable]) -> None:
+    aside = (
+        "position:relative; z-index:3; width:266px; flex-shrink:0; display:flex; flex-direction:column;"
+        "background:linear-gradient(176deg,#241710 0%,#1a120c 46%,#0d0907 100%);"
+        "border-right:1px solid rgba(200,168,106,.32); box-shadow:inset -1px 0 0 rgba(255,255,255,.03), 14px 0 40px -20px rgba(0,0,0,.9);"
+    )
+    counts = {"Mods": active, "Conflicts": conflicts, "Downloads": pending}
+    with ui.element("aside").style(aside):
+        ui.html(
+            '<div style="position:absolute; top:0; right:0; bottom:0; width:1px;'
+            ' background:linear-gradient(180deg,transparent,#c8a86a,transparent); opacity:.55;"></div>'
+        )
+        # Brand
+        ui.html(
+            '<div style="padding:22px 20px 18px; border-bottom:1px solid rgba(200,168,106,.16); display:flex; align-items:center; gap:13px;">'
+            '<div style="position:relative; width:46px; height:46px; flex-shrink:0; border-radius:50%; display:flex; align-items:center; justify-content:center;'
+            " background:radial-gradient(circle at 50% 38%, #2a1d12, #0c0805); border:1.5px solid #c8a86a;"
+            ' box-shadow:0 0 18px rgba(200,168,106,.45), inset 0 0 12px rgba(0,0,0,.7);">'
+            '<svg width="30" height="30" viewBox="0 0 48 48" fill="none">'
+            '<path d="M5 24C13 14 35 14 43 24C35 34 13 34 5 24Z" fill="#0a0705" stroke="#c8a86a" stroke-width="1.5"/>'
+            '<ellipse cx="24" cy="24" rx="9" ry="9" fill="url(#scIris)"/>'
+            '<path d="M24 15C26.6 18.2 26.6 29.8 24 33C21.4 29.8 21.4 18.2 24 15Z" fill="#120a06"/>'
+            '<defs><radialGradient id="scIris" cx="50%" cy="42%" r="60%"><stop offset="0%" stop-color="#ffd071"/>'
+            '<stop offset="55%" stop-color="#d49a36"/><stop offset="100%" stop-color="#7a531f"/></radialGradient></defs></svg></div>'
+            '<div style="min-width:0;">'
+            '<div style="font-family:\'Cinzel\',serif; font-weight:800; font-size:19px; letter-spacing:.16em; color:#f1e6cf; line-height:1;">SKY<span style="color:#c8a86a;">·</span>CLAW</div>'
+            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12.5px; color:#9a7f4f; margin-top:3px;\">Forja del Dovahkiin</div>"
+            "</div></div>"
+        )
+        # Connection
+        ui.html(
+            '<div style="margin:14px 18px 4px; padding:9px 12px; display:flex; align-items:center; gap:10px; background:rgba(0,0,0,.28); border:1px solid rgba(95,156,107,.28); border-radius:3px;">'
+            '<span style="width:9px; height:9px; border-radius:50%; background:#5f9c6b; box-shadow:0 0 9px #5f9c6b; animation:scPulse 2.6s ease-in-out infinite;"></span>'
+            '<div style="flex:1; min-width:0;">'
+            "<div style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.12em; color:#bfcfb6;\">DAEMON CONECTADO</div>"
+            "<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#6f7a68; margin-top:1px;\">ws://localhost:8765</div>"
+            "</div></div>"
+        )
+        ui.html(
+            '<div style="display:flex; align-items:center; justify-content:center; gap:.7em; margin:14px 18px 6px; color:#c8a86a; opacity:.85;'
+            ' font-family:\'Noto Sans Runic\',serif; font-size:13px; letter-spacing:.5em; text-shadow:0 0 10px rgba(200,168,106,.45);" aria-hidden="true">ᚠ&nbsp;ᚱ&nbsp;ᚷ</div>'
+        )
+        # Nav
+        with ui.element("nav").style("flex:1; padding:6px 14px; overflow-y:auto;"):
+            ui.html(
+                "<div style=\"font-family:'Cinzel',serif; font-size:10px; font-weight:600; letter-spacing:.28em; color:#6b6151; padding:6px 12px 12px;\">NAVEGACIÓN</div>"
+            )
+            on_nav = _cb(callbacks, "on_navigate")
+            for item in _NAV:
+                _nav_item(item, item["key"] == section, counts.get(item["key"]), on_nav)
+        # Vitality
+        _vitals()
+
+
+def _nav_item(item: dict[str, str], is_active: bool, count: int | None, on_nav: Callable | None) -> None:
+    row_bg = "rgba(200,168,106,.1)" if is_active else "transparent"
+    icon_color = ACCENT_BRIGHT if is_active else "#9a917d"
+    label_color = "#f1e6cf" if is_active else "#c4bca8"
+    marker = "1" if is_active else "0"
+    btn = ui.element("button").style(
+        f"position:relative; width:100%; display:flex; align-items:center; gap:13px; padding:11px 14px; margin-bottom:3px;"
+        f"border:none; border-radius:4px; cursor:pointer; text-align:left; background:{row_bg}; transition:background .25s;"
+    )
+    if on_nav:
+        btn.on("click", lambda _=None, k=item["key"]: on_nav(k))
+    count_html = (
+        f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#9a917d; opacity:.85;\">{_e(count)}</span>"
+        if count
+        else ""
+    )
+    with btn:
+        ui.html(
+            f'<span style="position:absolute; left:0; top:18%; bottom:18%; width:2.5px; border-radius:2px;'
+            f' background:linear-gradient(180deg,transparent,#ecd9a8,transparent); opacity:{marker}; box-shadow:0 0 10px rgba(200,168,106,.45);"></span>'
+            f'<svg viewBox="0 0 24 24" fill="none" stroke="{icon_color}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" width="18" height="18" style="flex-shrink:0;"><path d="{item["d"]}"></path></svg>'
+            f"<span style=\"flex:1; font-family:'Cinzel',serif; font-size:14px; font-weight:500; letter-spacing:.06em; color:{label_color};\">{_e(item['label'])}</span>"
+            f"{count_html}"
+        )
+
+
+def _vitals() -> None:
+    rows = [
+        ("Procesador", 3, "#5f9c6b", "#2f5036"),
+        ("Gráficos", 18, "#c8a86a", "#6a5026"),
+        ("Memoria", 41, "#86b9d4", "#3a5a6a"),
+    ]
+    bars = "".join(
+        f'<div style="margin-bottom:11px;">'
+        f'<div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">'
+        f"<span style=\"font-family:'EB Garamond',serif; font-size:12.5px; color:#b8b1a0;\">{lbl}</span>"
+        f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:{col};\">{pct}%</span></div>"
+        f'<div style="height:5px; border-radius:3px; background:rgba(255,255,255,.06); overflow:hidden; box-shadow:inset 0 1px 2px rgba(0,0,0,.5);">'
+        f'<div style="height:100%; width:{pct}%; border-radius:3px; background:linear-gradient(90deg,{dim},{col}); box-shadow:0 0 8px {col};"></div></div></div>'
+        for lbl, pct, col, dim in rows
+    )
+    ui.html(
+        '<div style="padding:16px 20px 18px; border-top:1px solid rgba(200,168,106,.16);">'
+        "<div style=\"font-family:'Cinzel',serif; font-size:10px; font-weight:600; letter-spacing:.22em; color:#6b6151; margin-bottom:12px;\">VITALIDAD DEL SISTEMA</div>"
+        f"{bars}"
+        '<div style="margin-top:14px; display:flex; align-items:center; justify-content:space-between;">'
+        "<span style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#5f5849;\">v2.0 · NORDIC</span>"
+        '<span style="font-family:\'Noto Sans Runic\',serif; font-size:12px; color:#c8a86a; opacity:.85;" aria-hidden="true">ᛞᚱᚪᚷᚩᚾ</span></div></div>'
+    )
+
+
+# ── HEADER ─────────────────────────────────────────────────────────────────────
+def _header(section: str, callbacks: dict[str, Callable]) -> None:
+    titles = {
+        "Dashboard": ("PANEL DEL DRACONATO", "Tu salón, Dovahkiin — todo en su sitio."),
+        "Mods": ("ARSENAL DE LA FORJA", "Cada mod, montando guardia."),
+        "Conflicts": ("DISPUTAS EN LA FORJA", "Juzga cada conflicto."),
+        "Downloads": ("PUERTA DE APROBACIÓN", "El guardián aguarda."),
+        "Settings": ("CÁMARA DE AJUSTES", "Afina la forja."),
+    }
+    title, sub = titles.get(section, titles["Dashboard"])
+    hdr = (
+        "position:sticky; top:0; z-index:20; height:74px; flex-shrink:0; display:flex; align-items:center; gap:16px; padding:0 22px;"
+        "background:linear-gradient(180deg, rgba(26,18,12,.96), rgba(11,14,20,.92)); border-bottom:1px solid rgba(62,39,35,.9);"
+        "box-shadow:0 8px 26px -14px rgba(0,0,0,.9); backdrop-filter:blur(8px);"
+    )
+    with ui.element("header").style(hdr):
+        ui.html(
+            '<div style="position:absolute; left:0; right:0; bottom:-1px; height:1px; background:linear-gradient(90deg,transparent,rgba(200,168,106,.45),transparent);"></div>'
+            f'<div style="min-width:0; flex-shrink:1;"><div style="font-family:\'Cinzel\',serif; font-weight:700; font-size:16px; letter-spacing:.1em; color:#f1e6cf; line-height:1.15; white-space:nowrap;">{_e(title)}</div>'
+            f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#897f6a; margin-top:2px;\">{_e(sub)}</div></div>"
+        )
+        ui.html(
+            '<div style="flex:1 1 160px; min-width:140px; max-width:400px; margin:0 16px; position:relative;">'
+            '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#7a7159" stroke-width="2" stroke-linecap="round" style="position:absolute; left:14px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'
+            '<input placeholder="Busca en los archivos arcanos…" style="width:100%; padding:11px 14px 11px 40px; font-family:\'EB Garamond\',serif; font-size:14px; color:#e8e2d4; background:rgba(62,39,35,.45); border:1px solid rgba(200,168,106,.28); border-radius:5px; outline:none; box-shadow:inset 0 2px 6px rgba(0,0,0,.45);"></div>'
+        )
+        # right cluster (telemetry HUD + settings + bell + user)
+        ui.html(
+            '<div style="display:flex; align-items:center; gap:14px;">'
+            "<div style=\"display:flex; gap:14px; font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#857c69;\">"
+            '<span>GPU <b style="color:#c8a86a;">18%</b></span><span>CPU <b style="color:#c8a86a;">3%</b></span></div>'
+            '<button title="Asistente de Configuración" style="width:40px; height:40px; display:flex; align-items:center; justify-content:center; background:rgba(62,39,35,.4); border:1px solid rgba(200,168,106,.22); border-radius:5px; cursor:pointer;">'
+            '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#c2b48f" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>'
+            '<div style="display:flex; align-items:center; gap:11px; padding-left:16px; border-left:1px solid rgba(200,168,106,.16);">'
+            '<div style="text-align:right;"><div style="font-family:\'Cinzel\',serif; font-size:13px; color:#e6dcc4; letter-spacing:.04em;">Dovahkiin</div>'
+            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#8a7f6a;\">Maestro de la Forja</div></div>"
+            "<div style=\"width:42px; height:42px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Cinzel',serif; font-weight:700; font-size:15px; color:#1a120c; background:radial-gradient(circle at 38% 32%, #f0d79a, #c8a86a 62%, #8a6c38); border:1.5px solid #f0d79a; box-shadow:0 0 16px rgba(200,168,106,.45);\">DS</div>"
+            "</div></div>"
+        )
+
+
+# ── HERO ───────────────────────────────────────────────────────────────────────
+def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
+    integrity = max(60, 100 - conflicts * 5)
+    estado = "ESTABLE" if conflicts == 0 else ("VIGILANTE" if conflicts < 5 else "EN DISPUTA")
+    estado_color = "#7fc08c" if conflicts < 5 else RED_SOFT
+    sec = (
+        "position:relative; overflow:hidden; border-radius:5px; min-height:354px; display:flex; align-items:flex-end;"
+        "padding:38px 40px; margin-bottom:26px; border:1px solid rgba(200,168,106,.3);"
+        "box-shadow:0 26px 60px -24px rgba(0,0,0,.85), inset 0 0 90px rgba(0,0,0,.45);"
+    )
+    with ui.element("section").style(sec):
+        ui.html(
+            "<div style=\"position:absolute; inset:0; background:url('/assets/alduin_menace_bg.jpg') center 32%/cover; transform:scale(1.04);\"></div>"
+            '<div style="position:absolute; inset:0; background:linear-gradient(92deg, rgba(8,10,14,.85) 0%, rgba(8,10,14,.8) 34%, rgba(8,10,14,.32) 62%, rgba(10,12,16,.6) 100%);"></div>'
+            '<div style="position:absolute; inset:0; background:linear-gradient(0deg, rgba(7,9,12,.96) 2%, transparent 42%);"></div>'
+            '<div style="position:absolute; left:-10%; right:-10%; top:-46%; height:80%; pointer-events:none; background:radial-gradient(60% 100% at 50% 100%, rgba(70,180,150,.3), transparent 70%); filter:blur(26px); animation:scAurora 13s ease-in-out infinite;"></div>'
+            + "".join(
+                f'<span style="position:absolute; left:{lx}%; bottom:{by}px; width:3px; height:3px; border-radius:50%; background:#ffb347; box-shadow:0 0 7px #ff9d00; animation:scEmber {du}s linear {dly}s infinite;"></span>'
+                for lx, by, du, dly in [
+                    (64, 30, 6.5, 0.2),
+                    (72, 20, 7.8, 1.4),
+                    (80, 40, 5.6, 2.6),
+                    (58, 18, 8.4, 3.3),
+                    (88, 26, 7.0, 4.1),
+                ]
+            )
+            + "".join(
+                f'<span style="position:absolute; {pos} width:22px; height:22px; {brd} opacity:.7;"></span>'
+                for pos, brd in [
+                    ("left:14px; top:14px;", "border-top:1.5px solid #c8a86a; border-left:1.5px solid #c8a86a;"),
+                    ("right:14px; top:14px;", "border-top:1.5px solid #c8a86a; border-right:1.5px solid #c8a86a;"),
+                    ("left:14px; bottom:14px;", "border-bottom:1.5px solid #c8a86a; border-left:1.5px solid #c8a86a;"),
+                    (
+                        "right:14px; bottom:14px;",
+                        "border-bottom:1.5px solid #c8a86a; border-right:1.5px solid #c8a86a;",
+                    ),
+                ]
+            )
+        )
+        with ui.element("div").style("position:relative; z-index:2; max-width:680px;"):
+            ui.html(
+                '<div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">'
+                '<span style="height:1px; width:34px; background:linear-gradient(90deg,transparent,#c8a86a);"></span>'
+                '<span style="font-family:\'Noto Sans Runic\',serif; font-size:14px; letter-spacing:.42em; color:#ecd9a8; opacity:.85; text-shadow:0 0 12px rgba(200,168,106,.45);" aria-hidden="true">ᛞᚱᚪᚷᚩᚾᛒᚩᚱᚾ</span></div>'
+                '<div style="filter:drop-shadow(0 3px 14px rgba(0,0,0,.7));"><h1 style="margin:0; font-family:\'Cinzel\',serif; font-weight:900; font-size:52px; line-height:1.0; letter-spacing:.03em; background:linear-gradient(178deg,#f7ecce 8%,#e3c98f 48%,#a47f48 100%); -webkit-background-clip:text; background-clip:text; color:transparent;">SALVE,<br>DOVAHKIIN</h1></div>'
+                f'<p style="margin:16px 0 26px; max-width:520px; font-family:\'EB Garamond\',serif; font-size:17px; line-height:1.55; color:#d8cfba;">Tu forja está despierta. <span style="color:#ecd9a8; font-weight:600;">{_e(active)} mods</span> montan guardia sobre Tamriel y el orden de carga aguarda tu palabra.</p>'
+            )
+            with ui.element("div").style("display:flex; flex-wrap:wrap; align-items:center; gap:18px;"):
+                ui.html(
+                    '<div style="flex:1; min-width:240px; padding:13px 16px; background:rgba(8,11,15,.6); border:1px solid rgba(200,168,106,.28); border-radius:4px; backdrop-filter:blur(4px);">'
+                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">'
+                    "<span style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.16em; color:#b6ab90;\">ESTADO DE LA FORJA</span>"
+                    f"<span style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.1em; color:{estado_color};\">◆ {_e(estado)}</span></div>"
+                    '<div style="height:7px; border-radius:4px; background:rgba(255,255,255,.07); overflow:hidden; box-shadow:inset 0 1px 2px rgba(0,0,0,.6);">'
+                    f'<div style="height:100%; width:{integrity}%; border-radius:4px; background:linear-gradient(90deg,#8a6c38,#ecd9a8); box-shadow:0 0 10px rgba(200,168,106,.45); background-size:200% 100%; animation:scShimmer 3.5s linear infinite;"></div></div>'
+                    f"<div style=\"display:flex; justify-content:space-between; margin-top:7px; font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#8a8270;\"><span>Integridad {integrity}%</span><span>{_e(conflicts)} conflictos</span></div></div>"
+                )
+                prepare = _cb(callbacks, "on_cta_primary")
+                btn = ui.element("button").style(
+                    "display:flex; align-items:center; gap:11px; padding:15px 26px; cursor:pointer; font-family:'Cinzel',serif;"
+                    "font-weight:700; font-size:15px; letter-spacing:.12em; color:#1c130a;"
+                    "background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1.5px solid #f6e6bd; border-radius:4px;"
+                    "box-shadow:0 0 24px rgba(200,168,106,.45), inset 0 1px 0 rgba(255,255,255,.5); transition:transform .2s, box-shadow .2s;"
+                )
+                if prepare:
+                    btn.on("click", lambda _=None: prepare())
+                with btn:
+                    ui.html(
+                        '<span style="font-family:\'Noto Sans Runic\',serif; font-size:18px;" aria-hidden="true">ᚦ</span> PREPARAR JUEGO'
+                    )
+
+
+# ── STAT PLAQUES ───────────────────────────────────────────────────────────────
+def _stats(active: int, pending: int, conflicts: int, storage: float) -> None:
+    defs = [
+        (_STAT_RUNES["mods"], ACCENT, "MODS ACTIVOS", f"{active}", "", "guardando Tamriel", "↑ 5%", "#7fc08c"),
+        (_STAT_RUNES["pending"], ACCENT, "PENDIENTES", f"{pending}", "", "esperan renovación", "nuevo", "#c8a86a"),
+        (_STAT_RUNES["conflicts"], RED, "CONFLICTOS", f"{conflicts}", "", "requieren tu juicio", "↓ 2", "#7fc08c"),
+        (
+            _STAT_RUNES["space"],
+            FROST,
+            "ESPACIO",
+            f"{storage:.1f}",
+            "GB",
+            "de 200 GB en disco",
+            f"{min(100, int(storage / 2)):d}%",
+            "#86b9d4",
+        ),
+    ]
+    cards = ""
+    for rune, tone, label, value, unit, sub, trend, trend_c in defs:
+        cards += (
+            '<div style="position:relative; overflow:hidden; padding:20px; border-radius:4px;'
+            " background:linear-gradient(162deg, rgba(26,32,40,.82), rgba(11,14,19,.9)); border:1px solid rgba(200,168,106,.2);"
+            ' box-shadow:0 16px 34px -18px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.04);">'
+            f'<div style="position:absolute; right:-14px; top:-18px; font-family:\'Noto Sans Runic\',serif; font-size:78px; color:{tone}; opacity:.08;" aria-hidden="true">{rune}</div>'
+            '<div style="display:flex; align-items:center; gap:11px; margin-bottom:16px;">'
+            f'<div style="width:42px; height:42px; flex-shrink:0; display:flex; align-items:center; justify-content:center; border-radius:7px; background:linear-gradient(140deg,#3a2c1c,#221913); border:1px solid {tone}; box-shadow:0 0 12px {tone}55;">'
+            f'<span style="font-family:\'Noto Sans Runic\',serif; font-size:20px; color:{tone}; text-shadow:0 0 8px {tone}88;" aria-hidden="true">{rune}</span></div>'
+            f"<span style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.05em; line-height:1.2; color:#a39a85;\">{_e(label)}</span></div>"
+            '<div style="display:flex; align-items:flex-end; gap:6px;">'
+            f"<span style=\"font-family:'Spline Sans Mono',monospace; font-weight:600; font-size:38px; line-height:1; color:#f1ead8;\">{_e(value)}</span>"
+            f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:13px; color:#8a8270; margin-bottom:5px;\">{_e(unit)}</span></div>"
+            '<div style="display:flex; align-items:center; justify-content:space-between; margin-top:11px;">'
+            f"<span style=\"font-family:'EB Garamond',serif; font-size:12.5px; color:#857c69;\">{_e(sub)}</span>"
+            f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:{trend_c};\">{_e(trend)}</span></div></div>"
+        )
+    ui.html(
+        f'<div style="display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; margin-bottom:30px;">{cards}</div>'
+    )
+
+
+# ── RITUALES DE LA FORJA ───────────────────────────────────────────────────────
+def _rituales(callbacks: dict[str, Callable]) -> None:
+    ui.html(
+        '<div style="display:flex; align-items:center; gap:16px; margin-bottom:6px;">'
+        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">RITUALES DE LA FORJA</h2>"
+        '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
+        "<p style=\"margin:0 0 18px; font-family:'EB Garamond',serif; font-style:italic; font-size:14px; color:#8a8068;\">El Motor Invisible — cinco herramientas legendarias, un solo gesto.</p>"
+    )
+    on_feature = _cb(callbacks, "on_feature_click")
+    with ui.element("div").style(
+        "display:grid; grid-template-columns:repeat(auto-fit,minmax(186px,1fr)); gap:14px; margin-bottom:30px;"
+    ):
+        for r in _RITUALS:
+            _ritual_card(r, on_feature)
+
+
+def _ritual_card(r: dict[str, str], on_feature: Callable | None) -> None:
+    missing = r.get("missing")
+    tone = r["tone"]
+    opacity = "0.62" if missing else "1"
+    status_dot = "#9c7a40" if missing else GREEN
+    status_label = "No instalado" if missing else "Disponible"
+    status_color = "#b8946a" if missing else "#9bbf8e"
+    btn_label = "Instalar" if missing else "Ejecutar"
+    btn_style = (
+        "color:#ffb05a; border-color:rgba(200,100,20,.5);"
+        if missing
+        else "color:#d8c69a; border-color:rgba(156,122,64,.5);"
+    )
+    card = (
+        f"position:relative; display:flex; flex-direction:column; gap:9px; padding:18px 16px; border-radius:4px; opacity:{opacity};"
+        "background:linear-gradient(168deg, rgba(30,22,14,.9), rgba(14,10,7,.92)); border:1px solid rgba(200,168,106,.22);"
+        "box-shadow:0 14px 30px -16px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.04); transition:transform .25s, border-color .25s;"
+    )
+    with ui.element("div").style(card):
+        ui.html(
+            f'<div style="display:flex; align-items:center; justify-content:center; width:48px; height:48px; border-radius:50%; background:radial-gradient(circle at 50% 38%, #2c1f13, #0d0805); border:1.5px solid {tone}; box-shadow:inset 0 0 10px rgba(0,0,0,.7), 0 0 12px {tone}55;">'
+            f'<span style="font-family:\'Noto Sans Runic\',serif; font-size:23px; color:{tone}; text-shadow:0 0 9px {tone}88;" aria-hidden="true">{r["rune"]}</span></div>'
+            f"<div style=\"font-family:'Cinzel',serif; font-weight:600; font-size:14.5px; letter-spacing:.03em; color:#ecdfc2; line-height:1.2;\">{_e(r['label'])}</div>"
+            f"<div style=\"flex:1; font-family:'EB Garamond',serif; font-size:13px; line-height:1.42; color:#9b927e;\">{_e(r['desc'])}</div>"
+            f'<div style="display:flex; align-items:center; gap:7px; padding-top:2px;"><span style="width:7px; height:7px; border-radius:50%; background:{status_dot}; box-shadow:0 0 6px {status_dot};"></span>'
+            f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:12px; color:{status_color};\">{status_label}</span></div>"
+        )
+        b = ui.element("button").style(
+            f"margin-top:2px; padding:8px 10px; cursor:pointer; font-family:'Cinzel',serif; font-size:11.5px; font-weight:600;"
+            f"letter-spacing:.1em; background:rgba(0,0,0,.3); border:1px solid; border-radius:4px; {btn_style}"
+        )
+        if on_feature:
+            b.on("click", lambda _=None, lbl=r["label"]: on_feature(lbl))
+        with b:
+            ui.html(btn_label)
+        ui.html(
+            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#6e6655; text-align:right;\">{_e(r['tech'])}</div>"
+        )
+
+
+# ── ORDEN DE CARGA ─────────────────────────────────────────────────────────────
+def _orden_carga(mods: list[dict[str, Any]], callbacks: dict[str, Callable]) -> None:
+    sec = (
+        "position:relative; border-radius:5px; background:linear-gradient(180deg, rgba(30,22,16,.5), rgba(11,14,19,.86));"
+        "border:1px solid rgba(62,39,35,.95); box-shadow:0 20px 44px -22px rgba(0,0,0,.85), inset 0 0 40px rgba(0,0,0,.4); overflow:hidden;"
+    )
+    with ui.element("section").style(sec):
+        head = (
+            "display:flex; align-items:center; gap:12px; padding:17px 20px; border-bottom:1px solid rgba(200,168,106,.16);"
+            "background:linear-gradient(180deg, rgba(62,39,35,.34), transparent);"
+        )
+        with ui.element("div").style(head):
+            ui.html(
+                "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:15px; letter-spacing:.14em; color:#ecdfc2;\">ORDEN DE CARGA</h2>"
+                f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:#c8a86a; padding:2px 9px; border:1px solid #c8a86a; border-radius:99px; background:rgba(200,168,106,.15); box-shadow:0 0 10px rgba(200,168,106,.45);\">{_e(len(mods))}</span>"
+                '<span style="flex:1;"></span>'
+            )
+            view_all = _cb(callbacks, "on_view_all_mods")
+            vb = ui.element("button").style(
+                "font-family:'Cinzel',serif; font-size:12px; letter-spacing:.08em; color:#ecd9a8; background:none; border:none; cursor:pointer; text-decoration:underline; text-underline-offset:3px;"
+            )
+            with vb:
+                ui.html("Ver Todo")
+            if view_all:
+                vb.on("click", lambda _=None: view_all())
+        with (
+            ui.element("div")
+            .classes("sc-scroll")
+            .style("max-height:392px; overflow-y:auto; overflow-x:hidden; padding:6px 10px;")
+        ):
+            on_mod = _cb(callbacks, "on_mod_click")
+            for idx, m in enumerate(mods[:30], 1):
+                _mod_row(idx, m, on_mod)
+
+
+def _mod_row(idx: int, m: dict[str, Any], on_mod: Callable | None) -> None:
+    status = str(m.get("status", "active"))
+    name = str(m.get("name", "Mod desconocido"))
+    size_mb = float(m.get("size_mb", 0) or 0)
+    size = f"{size_mb / 1024:.1f} GB" if size_mb > 1024 else f"{size_mb:.0f} MB"
+    ver = str(m.get("version", "") or "—")
+    dot, status_label, name_color = {
+        "active": (GREEN, "Activo", "#d9cfb6"),
+        "update": ("#e0b341", "Update", "#e7d6ad"),
+        "conflict": (RED, "Conflicto", "#e7d6ad"),
+        "inactive": ("#6e6655", "Inactivo", "#8a8270"),
+    }.get(status, (GREEN, "Activo", "#d9cfb6"))
+    is_conflict = status == "conflict"
+    conflict_badge = (
+        "<span style=\"font-family:'Cinzel',serif; font-size:9.5px; letter-spacing:.08em; color:#e88a82; padding:1px 7px; border:1px solid rgba(197,82,74,.6); border-radius:99px; background:rgba(197,82,74,.14); flex-shrink:0;\">CONFLICTO</span>"
+        if is_conflict
+        else ""
+    )
+    row = ui.element("div").style(
+        "display:flex; align-items:center; gap:13px; padding:11px 12px; border-radius:4px; border-bottom:1px solid rgba(200,168,106,.07); transition:background .2s; cursor:pointer;"
+    )
+    if on_mod:
+        row.on("click", lambda _=None, n=name: on_mod(n))
+    with row:
+        ui.html(
+            f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:#6e6655; width:18px; flex-shrink:0;\">{idx}</span>"
+            f'<span style="width:9px; height:9px; flex-shrink:0; border-radius:50%; background:{dot}; box-shadow:0 0 7px {dot};"></span>'
+            '<div style="flex:1; min-width:0;"><div style="display:flex; align-items:center; gap:9px;">'
+            f"<span style=\"font-family:'Cinzel',serif; font-size:14px; color:{name_color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;\">{_e(name)}</span>{conflict_badge}</div>"
+            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#7d7563; margin-top:2px;\">{_e(ver)} · {_e(size)}</div></div>"
+            f"<span style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:{dot}; width:74px; text-align:right; flex-shrink:0;\">{status_label}</span>"
+        )
+
+
+# ── ASISTENTE ARCANO ───────────────────────────────────────────────────────────
+def _asistente(chat_messages: list[dict[str, Any]], is_thinking: bool, callbacks: dict[str, Callable]) -> None:
+    sec = (
+        "position:relative; border-radius:5px; overflow:hidden; display:flex; flex-direction:column;"
+        "background:#d8bf98 url('/assets/parchment.png') center/cover; border:2px solid #5c4a2a;"
+        "box-shadow:0 20px 44px -20px rgba(0,0,0,.85), inset 0 0 60px rgba(70,48,20,.35);"
+    )
+    with ui.element("section").style(sec):
+        ui.html(
+            '<div style="position:absolute; inset:5px; border:1px solid rgba(92,74,42,.35); pointer-events:none; border-radius:3px;"></div>'
+            '<div style="position:relative; display:flex; align-items:center; gap:12px; padding:15px 18px; border-bottom:1px solid rgba(92,74,42,.45); background:linear-gradient(180deg, rgba(92,74,42,.22), transparent);">'
+            '<div style="width:40px; height:40px; flex-shrink:0; border-radius:50%; display:flex; align-items:center; justify-content:center; background:radial-gradient(circle at 50% 35%, #3a2c1a, #16100a); border:1.5px solid #c8a86a; box-shadow:0 0 12px rgba(200,168,106,.45);">'
+            '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#ecd9a8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 0 1 10 10c0 5.5-4.5 10-10 10S2 17.5 2 12"/><path d="M12 7v5"/><path d="M12 16h.01"/></svg></div>'
+            '<div style="flex:1;"><div style="font-family:\'Cinzel\',serif; font-weight:700; font-size:15px; letter-spacing:.06em; color:#2c2016;">Asistente Arcano</div>'
+            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#6b5536;\">Forjado con DeepSeek</div></div>"
+            '<span style="font-family:\'Noto Sans Runic\',serif; font-size:15px; color:#5c4a2a; opacity:.85;" aria-hidden="true">ᚺᚢᛗ</span></div>'
+        )
+        # Messages
+        with (
+            ui.element("div")
+            .classes("sc-scroll")
+            .style(
+                "position:relative; flex:1; min-height:212px; max-height:300px; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:13px;"
+            )
+        ):
+            if not chat_messages:
+                _chat_bubble("¡Salve, Dovahkiin! Soy tu Asistente Arcano. ¿Qué deseas forjar hoy?", is_user=False)
+            for c in chat_messages:
+                _chat_bubble(str(c.get("content", "")), is_user=bool(c.get("is_user", False)))
+            if is_thinking:
+                ui.html(
+                    "<div style=\"display:flex; align-items:center; gap:8px; color:#6b5536; font-family:'EB Garamond',serif; font-style:italic; font-size:13px;\">"
+                    '<span style="display:inline-flex; gap:3px;">'
+                    '<span style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s infinite;"></span>'
+                    '<span style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s .2s infinite;"></span>'
+                    '<span style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s .4s infinite;"></span></span>'
+                    "Consultando los pergaminos…</div>"
+                )
+        # Input row
+        with ui.element("div").style(
+            "position:relative; display:flex; gap:9px; padding:13px 16px; border-top:1px solid rgba(92,74,42,.45);"
+        ):
+            on_send = _cb(callbacks, "on_send_message")
+            chat_input = (
+                ui.input(placeholder="Habla, y escucharé…")
+                .props("dense borderless")
+                .style(
+                    "flex:1; padding:4px 13px; font-family:'EB Garamond',serif; font-size:14px; color:#2c2016;"
+                    "background:rgba(255,255,255,.32); border:1px solid rgba(92,74,42,.5); border-radius:5px;"
+                )
+            )
+
+            def _send(_=None) -> None:
+                msg = (chat_input.value or "").strip()
+                if msg and on_send:
+                    chat_input.value = ""
+                    on_send(msg)
+
+            chat_input.on("keydown.enter", _send)
+            sb = ui.element("button").style(
+                "width:44px; flex-shrink:0; display:flex; align-items:center; justify-content:center; cursor:pointer;"
+                "background:linear-gradient(180deg,#5c4a2a,#3e321d); border:1px solid #2a2012; border-radius:5px; box-shadow:inset 0 1px 0 rgba(255,255,255,.12);"
+            )
+            sb.on("click", _send)
+            with sb:
+                ui.html(
+                    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#f0e4cc" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
+                )
+
+
+def _chat_bubble(text: str, is_user: bool) -> None:
+    if is_user:
+        wrap = "display:flex; justify-content:flex-end;"
+        who, who_color, who_align = "TÚ", "#6b5536", "text-align:right;"
+        bubble = "background:rgba(92,74,42,.92); color:#f3ead4; border-radius:9px 9px 2px 9px;"
+    else:
+        wrap = "display:flex; justify-content:flex-start;"
+        who, who_color, who_align = "ASISTENTE", "#7a5f30", ""
+        bubble = "background:rgba(255,250,240,.5); color:#2c2016; border:1px solid rgba(92,74,42,.3); border-radius:9px 9px 9px 2px;"
+    ui.html(
+        f'<div style="{wrap}"><div style="max-width:82%;">'
+        f"<div style=\"font-family:'Cinzel',serif; font-size:9.5px; letter-spacing:.12em; color:{who_color}; margin-bottom:4px; {who_align}\">{who}</div>"
+        f"<div style=\"padding:9px 13px; font-family:'EB Garamond',serif; font-size:14px; line-height:1.45; {bubble}\">{_e(text)}</div></div></div>"
+    )
+
+
+def _footer_rune() -> None:
+    ui.html(
+        '<div style="display:flex; align-items:center; justify-content:center; gap:18px; margin-top:34px; opacity:.85;">'
+        '<span style="height:1px; width:90px; background:linear-gradient(90deg,transparent,rgba(200,168,106,.4));"></span>'
+        '<span style="font-family:\'Noto Sans Runic\',serif; font-size:13px; letter-spacing:.45em; color:#c8a86a; text-shadow:0 0 10px rgba(200,168,106,.45);" aria-hidden="true">ᚦᚢ&nbsp;&nbsp;ᚠᚢᛋ&nbsp;&nbsp;ᚱᚩ&nbsp;&nbsp;ᛞᚪ</span>'
+        '<span style="height:1px; width:90px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
+        "<div style=\"text-align:center; margin-top:10px; font-family:'EB Garamond',serif; font-style:italic; font-size:12.5px; color:#5f5849;\">«Que tu orden de carga sea estable y tu juego, eterno.»</div>"
+    )
+
+
+def _placeholder(section: str, callbacks: dict[str, Callable]) -> None:
+    with ui.element("div").style(
+        "display:flex; flex-direction:column; align-items:center; justify-content:center; padding:90px 0; gap:14px;"
+    ):
+        ui.html(
+            f"<div style=\"font-family:'Noto Sans Runic',serif; font-size:54px; color:#c8a86a; opacity:.5;\">ᛟ</div>"
+            f"<div style=\"font-family:'Cinzel',serif; font-size:24px; letter-spacing:.1em; color:#e7d6ad;\">{_e(section)}</div>"
+            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; color:#8a8068;\">Esta cámara de la forja llega en la próxima iteración.</div>"
+        )
+        on_nav = _cb(callbacks, "on_navigate")
+        if on_nav:
+            b = ui.element("button").style(
+                "margin-top:8px; padding:11px 22px; cursor:pointer; font-family:'Cinzel',serif; letter-spacing:.08em; color:#1c130a;"
+                "background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1.5px solid #f6e6bd; border-radius:4px;"
+            )
+            with b:
+                ui.html("Volver al Panel")
+            b.on("click", lambda _=None: on_nav("Dashboard"))

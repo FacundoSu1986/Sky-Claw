@@ -16,10 +16,6 @@ from typing import Any
 
 from nicegui import ui
 
-from sky_claw.antigravity.gui.models.app_state import NAV_SECTIONS
-
-from ..layout.header import create_header
-from ..layout.sidebar import create_sidebar
 from ..mod_list import build_mod_list
 from ..sections.chat_preview import create_chat_preview
 from ..sections.cta_section import create_cta_section
@@ -110,41 +106,19 @@ def render_dashboard(
         ...     active_section="Dashboard",
         ... )
     """
-    # Layout principal: Sidebar + Content
-    with ui.element("div").classes("flex min-h-screen sky-stone-bg"):
-        # Sidebar de navegación — la sección activa la decide el store
-        # (Parte 5: NAVIGATION_REQUESTED → ReactiveState → re-render).
-        create_sidebar(
-            on_navigate=callbacks.get("on_navigate"),
-            nav_items=[(section, section == active_section) for section in NAV_SECTIONS],
-        )
+    # v4.0 "Forja del Dovahkiin": el shell completo (sidebar + header Draconato +
+    # hero "Salve Dovahkiin" + plaquetas + Rituales + Orden de Carga + Asistente)
+    # lo arma el port fiel del mockup HiFi. Mantiene esta firma intacta.
+    from ..forge_dashboard import render_forge_dashboard
 
-        # Área de contenido principal
-        with ui.element("div").classes("flex-1 flex flex-col sky-main-content"):
-            # Header
-            create_header()
-
-            # Contenido scrolleable con fondo gradiente — la sección activa
-            # decide QUÉ se renderiza (Parte 5: navegar cambia el contenido,
-            # no solo el highlight del sidebar).
-            with (
-                ui.element("div")
-                .classes("flex-1 p-8 overflow-y-auto sky-scrollbar")
-                .style(
-                    f"background: radial-gradient(ellipse at top, "
-                    f"{COLORS['glow_violet']}12, transparent 50%), "
-                    f"radial-gradient(ellipse at bottom right, "
-                    f"{COLORS['glow_cyan']}8, transparent 50%);"
-                )
-            ):
-                _render_active_section(
-                    active_section,
-                    stats=stats,
-                    mods=mods,
-                    chat_messages=chat_messages,
-                    is_thinking=is_thinking,
-                    callbacks=callbacks,
-                )
+    render_forge_dashboard(
+        stats=stats,
+        mods=mods,
+        chat_messages=chat_messages,
+        is_thinking=is_thinking,
+        callbacks=callbacks,
+        active_section=active_section,
+    )
 
 
 # ── Parte 5: contenido por sección ─────────────────────────────────────────────
