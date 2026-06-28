@@ -1,635 +1,542 @@
+/* Webfonts (Cinzel · EB Garamond · Noto Sans Runic · Spline Sans Mono) are
+   bundled offline in assets/fonts/ and loaded via assets/fonts/fonts.css, which
+   gui_helpers._load_css() links into the head. No @import to Google Fonts: the
+   .exe must render the theme with zero network calls at boot. */
+
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   SKY-CLAW - NORDIC TOTAL CONVERSION v3.0 (2026)
-   ESTILO: The Elder Scrolls V: Skyrim Inspired
+   SKY-CLAW — FORJA DEL DOVAHKIIN · v4.0 (2026)
+   ESTILO: The Elder Scrolls V: Skyrim — "aged gold, stone & ember"
+   Port fiel del rediseño HiFi al stylesheet vivo de NiceGUI.
+   No cambia ningún view de Python: sólo re-define las clases que ya referencian.
    ═══════════════════════════════════════════════════════════════════════════════════ */
 
 :root {
-    /* ── Skyrim Color Palette (OKLCH Perception) ── */
-    --sky-stone-bg: #0C0F12;
-    --sky-parchment: #dbc4a1; /* Pergamino base */
-    --sky-parchment-text: #2c2016; /* Texto sobre pergamino */
-    
-    /* Acentos de Altar / Magia */
-    --sky-gold-glow: oklch(0.85 0.15 85 / 0.8);
-    --sky-gold-dim: oklch(0.7 0.1 85 / 0.4);
-    --sky-amber: #ff9d00;
-    --sky-amber-glow: rgba(255, 157, 0, 0.4);
-    
-    /* System Colors (WCAG 2.2 AAA Focused) */
-    --sky-bg-primary: #0B0E14;
-    --sky-bg-secondary: #12161F;
-    --sky-bg-elevated: #1A212E;
-    --sky-border: rgba(200, 168, 78, 0.2);
+    /* ── Oro envejecido (acento primario) — reemplaza al ámbar saturado ── */
+    --sky-gold:        #c8a86a;
+    --sky-gold-bright: #ecd9a8;
+    --sky-gold-deep:   #9c7a40;
+    --sky-glow:        rgba(200, 168, 106, 0.45);
+
+    /* Compat: vars heredadas que el CSS/Python ya usan → repuntadas al oro nuevo */
+    --sky-gold-glow:   rgba(200, 168, 106, 0.55);
+    --sky-gold-dim:    rgba(200, 168, 106, 0.30);
+
+    /* Brasa / calor de la forja (reservado para glows y embers) */
+    --sky-amber:       #ff9d00;
+    --sky-amber-glow:  rgba(255, 157, 0, 0.40);
+
+    /* Acentos semánticos */
+    --sky-aurora:      rgba(64, 156, 131, 0.18);
+    --sky-green:       #5f9c6b;
+    --sky-frost:       #86b9d4;
+    --sky-crimson:     #d8584e;
+
+    /* Pergamino */
+    --sky-parchment:      #d8bf98;
+    --sky-parchment-text: #2c2016;
+    --sky-parchment-edge: #5c4a2a;
+
+    /* Piedra / tinta (fondos) */
+    --sky-stone-bg:    #0c0f12;
+    --sky-bg-primary:   #0b0e14;
+    --sky-bg-secondary: #12161f;
+    --sky-bg-elevated:  #1a212e;
+    --sky-panel-glass: linear-gradient(162deg, rgba(26, 32, 40, 0.82), rgba(11, 14, 19, 0.92));
+    --sky-border:         rgba(200, 168, 106, 0.22);
     --sky-surface-border: rgba(255, 255, 255, 0.05);
 
-    /* Text */
-    --sky-text-primary: #f8fafc;
-    --sky-text-secondary: #cbd5e1;
-    --sky-text-muted: #94a3b8;
-    
-    /* Typography — bundled medieval webfonts (see assets/fonts/fonts.css) with
-       serif fallbacks so an unstyled boot still reads "old tome", not sans. */
-    --sky-font-family: 'Cinzel', 'Trajan Pro', Georgia, serif;
-    --sky-font-display: 'MedievalSharp', 'Trajan Pro', 'Cinzel', serif;
-    --sky-font-runic: 'Noto Sans Runic', 'Segoe UI Historic', 'Cinzel', serif;
-    
-    /* Transiciones */
+    /* Texto */
+    --sky-text-primary:   #e8e2d4;
+    --sky-text-secondary: #b8b1a0;
+    --sky-text-muted:     #857c69;
+
+    /* Tipografía — Cinzel (display) + EB Garamond (cuerpo) + runas + mono */
+    --sky-font-family:  'EB Garamond', 'Garamond', Georgia, serif;
+    --sky-font-display: 'Cinzel', 'Trajan Pro', Georgia, serif;
+    --sky-font-runic:   'Noto Sans Runic', 'Segoe UI Historic', 'Cinzel', serif;
+    --sky-font-mono:    'Spline Sans Mono', 'Roboto Mono', monospace;
+
     --sky-transition: 350ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   1. GLOBAL SYSTEM - STONE & PARCHMENT
+   1. SISTEMA GLOBAL — PIEDRA, AURORA Y NIEBLA
    ═══════════════════════════════════════════════════════════════════════════════════ */
 
 body {
-    background: var(--sky-bg-primary) url('assets/stone_bg.png') repeat fixed !important;
-    background-size: 500px !important;
-    color: #f8fafc;
+    background:
+        radial-gradient(130% 60% at 50% -12%, var(--sky-aurora), transparent 56%),
+        linear-gradient(180deg, rgba(8, 11, 15, 0.92), rgba(7, 9, 12, 0.97)),
+        url('/assets/stone_bg.png') repeat fixed !important;
+    background-size: auto, auto, 440px !important;
+    color: var(--sky-text-primary);
     font-family: var(--sky-font-family);
+    -webkit-font-smoothing: antialiased;
 }
 
-/* Forzar transparencia en los contenedores de NiceGUI para dejar ver el fondo de piedra */
+::selection { background: rgba(200, 168, 106, 0.32); color: #fff; }
+
+/* Dejar ver el fondo de piedra a través de los contenedores de NiceGUI */
 #q-app, .q-layout, .q-page-container, .q-page, .sky-main-content {
     background: transparent !important;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   2. NORDIC COMPONENT SYSTEM
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-/* Tarjeta de Pergamino (Scrolling Texture) */
-.sky-parchment-card {
-    background-image: url('assets/parchment.png');
-    background-size: cover;
-    background-position: center;
-    border: 2px solid #5C4A2A;
-    border-radius: 4px;
-    box-shadow: 
-        0 10px 25px rgba(0, 0, 0, 0.6),
-        inset 0 0 40px rgba(0,0,0,0.1);
-    position: relative;
-    overflow: hidden;
-    color: var(--sky-parchment-text);
-}
-
-/* Efecto de borde rúnico sutil */
-.sky-parchment-card::before {
-    content: '';
-    position: absolute;
-    top: 5px; left: 5px; right: 5px; bottom: 5px;
-    border: 1px solid rgba(92, 74, 42, 0.2);
-    pointer-events: none;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   3. AMBER GLOW & RUNIC INDICATORS
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-glow-amber {
-    box-shadow: 0 0 20px var(--sky-amber-glow);
-    border-color: var(--sky-amber);
-}
-
-.sky-rune-glow {
-    color: var(--sky-amber);
-    text-shadow: 0 0 8px var(--sky-amber-glow);
-    font-weight: bold;
-}
-
-/* Chat Messages - Skyrim Dialog Style */
-.sky-dialog-box {
-    background: rgba(11, 14, 20, 0.85);
-    backdrop-filter: blur(12px);
-    border: 1px solid var(--sky-gold-dim);
-    border-radius: 2px;
-    padding: 1.25rem;
-    margin-bottom: 2rem;
-    position: relative;
-}
-
-.sky-dialog-box--user {
-    border-right: 4px solid var(--sky-gold-glow);
-}
-
-.sky-dialog-box--agent {
-    border-left: 4px solid var(--sky-gold-glow);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   4. MODAL WIZARD (EL PERGAMINO CENTRAL)
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-wizard-nordic {
-    background: url('assets/parchment.png');
-    background-size: 100% 100%;
-    border: 8px solid transparent;
-    border-image: url('data:image/svg+xml;utf8,<svg width="100" height="100" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="5" width="90" height="90" stroke="%235C4A2A" stroke-width="2"/><path d="M0 0 L20 20 M80 20 L100 0 M20 80 L0 100 M100 100 L80 80" stroke="%235C4A2A" stroke-width="2"/></svg>') 20 stretch;
-    padding: 3rem;
-    color: #1a1a1a;
-    box-shadow: 0 0 100px rgba(0,0,0,0.8);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   5. BOTONES Y ACCIONES
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-btn-nordic {
-    background: #1C1714;
-    color: var(--sky-parchment);
-    border: 1px solid #5C4A2A;
-    text-transform: uppercase;
-    letter-spacing: 0.15em;
-    padding: 0.75rem 1.5rem;
-    transition: all 0.2s;
-    cursor: pointer;
-}
-
-.sky-btn-nordic:hover {
-    background: #2D2520;
-    color: #fff;
-    box-shadow: 
-        0 0 20px rgba(200, 168, 78, 0.3),
-        0 4px 12px rgba(0, 0, 0, 0.4);
-    transform: translateY(-2px) scale(1.02);
-}
-
-.sky-btn-nordic:active {
-    transform: translateY(0);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   6. LEGIBILIDAD TÉCNICA (Dashboard)
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-technical-stat {
-    font-family: 'Inter', 'Roboto Mono', monospace;
-    font-weight: 700;
-    color: #fff;
-}
-
-/* Graph Bars - Skyrim Gold/Amber Gradient */
-.sky-bar-amber {
-    background: linear-gradient(180deg, var(--sky-amber), #8B5A00);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   7. ANIMACIONES Y EFECTOS
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-@keyframes sky-pulse-amber {
-    0%, 100% { opacity: 0.8; }
-    50% { opacity: 1; text-shadow: 0 0 15px var(--sky-amber); }
-}
-
-.sky-active-rune {
-    animation: sky-pulse-amber 3s infinite;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   8. SETUP WIZARD & MODALS (EXTENDED)
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-wizard-overlay {
-    background: rgba(0, 0, 0, 0.85);
-    backdrop-filter: blur(8px);
-}
-
-.sky-wizard-modal {
-    background: url('assets/parchment.png');
-    background-size: cover;
-    border: 2px solid #5C4A2A;
-    border-radius: 8px;
-    box-shadow: 0 20px 50px rgba(0,0,0,0.9);
-    color: var(--sky-parchment-text);
-    padding: 2.5rem !important;
-}
-
-.sky-wizard-title {
-    font-family: var(--sky-font-display);
-    font-size: 1.75rem;
-    color: #1a1a1a;
-    letter-spacing: 0.1em;
-    text-align: center;
-    margin-bottom: 2rem;
-    border-bottom: 1px solid rgba(92, 74, 42, 0.3);
-    padding-bottom: 1rem;
-}
-
-.sky-wizard-label {
-    font-family: var(--sky-font-family);
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    color: #5C4A2A;
-    letter-spacing: 0.05em;
-    margin-top: 1rem;
-}
-
-.sky-wizard-input {
-    background: rgba(255, 255, 255, 0.2) !important;
-    border: 1px solid rgba(92, 74, 42, 0.4) !important;
-    border-radius: 4px !important;
-    color: #1a1a1a !important;
-}
-
-.sky-wizard-cta {
-    background: linear-gradient(180deg, #5C4A2A, #3e321d) !important;
-    color: var(--sky-parchment) !important;
-    font-family: var(--sky-font-display);
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    border: 1px solid #1a1a1a !important;
-}
-
-.sky-wizard-description {
-    font-family: var(--sky-font-family);
-    font-size: 0.95rem;
-    color: #2c2016;
-    line-height: 1.6;
-    text-align: center;
-    max-width: 90%;
-    margin: 0 auto;
-}
-
-.sky-wizard-hint {
-    font-family: var(--sky-font-family);
-    font-size: 0.7rem;
-    color: #5C4A2A;
-    font-style: italic;
-    opacity: 0.8;
-}
-
-.sky-widget-panel {
-    background: rgba(18, 22, 31, 0.7);
-    backdrop-filter: blur(10px);
-    border: 1px solid var(--sky-surface-border);
-    border-radius: 12px;
-}
-
-.sky-badge {
-    padding: 0.25rem 0.75rem;
-    border-radius: 99px;
-    font-size: 0.7rem;
-    font-weight: 700;
-    text-transform: uppercase;
-}
-
-.sky-badge--success {
-    background: rgba(22, 163, 74, 0.2);
-    color: #4ade80;
-    border: 1px solid rgba(74, 222, 128, 0.3);
-}
-
-.sky-badge--error {
-    background: rgba(220, 38, 38, 0.2);
-    color: #f87171;
-    border: 1px solid rgba(248, 113, 113, 0.3);
-}
-
-.sky-scrollbar::-webkit-scrollbar {
-    width: 6px;
-}
-.sky-scrollbar::-webkit-scrollbar-track {
-    background: transparent;
-}
-.sky-scrollbar::-webkit-scrollbar-thumb {
-    background: var(--sky-gold-dim);
-    border-radius: 10px;
-}
-
-.sky-animate-in {
-    animation: sky-fade-up 0.5s ease-out forwards;
-}
-
-@keyframes sky-fade-up {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   5. ACTION BUTTONS — "The Invisible Engine" v4.0
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-action-master {
-    display: flex; flex-direction: column; align-items: center;
-    gap: 0.5rem; padding: 1.2rem; margin-bottom: 1rem;
-}
-
-.sky-action-master-btn {
-    width: 100%; padding: 1rem 2rem !important;
-    font-family: var(--sky-font-display) !important;
-    font-size: 1.3rem !important; letter-spacing: 0.15em !important;
-    color: var(--sky-parchment) !important;
-    background: linear-gradient(135deg, rgba(200,168,78,0.3), rgba(139,109,35,0.5)) !important;
-    border: 2px solid var(--sky-amber) !important; border-radius: 4px !important;
-    text-shadow: 0 0 12px var(--sky-amber-glow);
-    box-shadow: 0 0 15px rgba(255,157,0,0.2), inset 0 1px 0 rgba(255,255,255,0.1);
-    transition: all var(--sky-transition);
-}
-.sky-action-master-btn:hover {
-    background: linear-gradient(135deg, rgba(200,168,78,0.5), rgba(139,109,35,0.7)) !important;
-    box-shadow: 0 0 25px rgba(255,157,0,0.4); transform: translateY(-1px);
-}
-.sky-action-master-desc { font-size: 0.8rem; color: var(--sky-text-muted); text-align: center; }
-
-.sky-actions-grid {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 0.8rem; padding: 0.5rem 0;
-}
-
-.sky-action-card {
-    background-image: url('assets/parchment.png'); background-size: cover;
-    background-color: var(--sky-parchment);
-    border: 2px solid rgba(80,65,40,0.6); border-radius: 6px;
-    padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem;
-    transition: all var(--sky-transition);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.15);
-}
-.sky-action-card:hover {
-    border-color: var(--sky-amber);
-    box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 10px var(--sky-amber-glow);
-    transform: translateY(-2px);
-}
-.sky-action-card--disabled { opacity: 0.6; filter: grayscale(40%); }
-.sky-action-card--disabled:hover { transform: none; }
-
-.sky-action-header { gap: 0.5rem; }
-.sky-action-rune {
-    font-size: 1.8rem; color: #8b6d23;
-    text-shadow: 0 0 8px rgba(139,109,35,0.5); line-height: 1;
-}
-.sky-action-label {
-    font-family: var(--sky-font-display); font-size: 1rem; font-weight: 700;
-    color: var(--sky-parchment-text); letter-spacing: 0.05em; text-transform: uppercase;
-}
-.sky-action-desc { font-size: 0.78rem; color: #5a4a38; line-height: 1.3; }
-.sky-action-footer { margin-top: auto; padding-top: 0.5rem; }
-
-.sky-action-btn {
-    font-family: var(--sky-font-display) !important; font-size: 0.75rem !important;
-    background: rgba(80,65,40,0.8) !important; color: var(--sky-parchment) !important;
-    border: 1px solid rgba(139,109,35,0.5) !important; letter-spacing: 0.08em !important;
-}
-.sky-action-btn:hover { background: rgba(139,109,35,0.9) !important; }
-.sky-action-btn--install { background: rgba(200,100,20,0.7) !important; }
-.sky-action-btn--install:hover { background: rgba(255,157,0,0.8) !important; }
-.sky-action-tech-name { font-size: 0.65rem; color: #8a7a68; font-style: italic; text-align: right; }
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   6. MOD LIST
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-modlist-header { padding: 0.8rem 0; }
-.sky-section-title {
-    font-family: var(--sky-font-display); font-size: 1.1rem; font-weight: 700;
-    color: var(--sky-amber); letter-spacing: 0.12em; text-transform: uppercase;
-    text-shadow: 0 0 10px var(--sky-amber-glow);
-}
-.sky-badge-count {
-    background: rgba(255,157,0,0.2) !important; color: var(--sky-amber) !important;
-    border: 1px solid var(--sky-amber) !important;
-}
-.sky-modlist-search .q-field__control {
-    background: var(--sky-bg-elevated) !important; border-color: var(--sky-border) !important;
-}
-.sky-modlist-container { max-height: 50vh; overflow-y: auto; padding: 0.3rem 0; }
-.sky-modlist-empty { color: var(--sky-text-muted); font-style: italic; padding: 2rem; text-align: center; }
-.sky-mod-row {
-    display: flex; align-items: center; gap: 0.8rem;
-    padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--sky-surface-border);
-    transition: background var(--sky-transition);
-}
-.sky-mod-row:hover { background: rgba(200,168,78,0.05); }
-.sky-mod-row--disabled { opacity: 0.5; }
-.sky-mod-info { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.sky-mod-name { font-size: 0.9rem; color: var(--sky-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sky-mod-version { font-size: 0.7rem; color: var(--sky-text-muted); }
-.sky-mod-status-ok { color: #4caf50 !important; }
-.sky-mod-status-off { color: var(--sky-text-muted) !important; }
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   7. ADVANCED PANEL
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-advanced-panel {
-    background: var(--sky-bg-secondary) !important; border: 1px solid var(--sky-border) !important;
-    border-radius: 6px !important; margin-top: 1rem;
-}
-.sky-advanced-title {
-    font-family: var(--sky-font-display); font-size: 0.85rem; font-weight: 700;
-    color: var(--sky-amber); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 0.4rem;
-}
-.sky-advanced-tool-row { gap: 0.5rem; align-items: center; padding: 0.2rem 0; }
-.sky-advanced-tool-name { font-weight: 600; color: var(--sky-text-primary); font-size: 0.85rem; }
-.sky-advanced-tool-path { font-size: 0.7rem; color: var(--sky-text-muted); word-break: break-all; }
-.sky-advanced-link { font-size: 0.8rem; color: var(--sky-amber) !important; text-decoration: underline !important; }
-.sky-info-row { gap: 0.5rem; padding: 0.15rem 0; }
-.sky-info-label { font-size: 0.8rem; color: var(--sky-text-muted); min-width: 80px; font-weight: 600; }
-.sky-info-value { font-size: 0.8rem; color: var(--sky-text-primary); word-break: break-all; }
-.sky-log-entry { font-size: 0.8rem; color: var(--sky-text-secondary); padding: 0.15rem 0; }
-.sky-text-warning { color: #ff9800; font-size: 0.85rem; }
-.sky-text-muted { color: var(--sky-text-muted); }
-.sky-separator { background: var(--sky-border) !important; margin: 0.5rem 0 !important; }
-.sky-separator-subtle { background: rgba(255,255,255,0.05) !important; margin: 0.3rem 0 !important; }
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   8. HEALTH BANNER
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-health-banner {
-    background: var(--sky-bg-secondary); border: 1px solid var(--sky-border);
-    border-left: 4px solid var(--sky-amber); border-radius: 4px; padding: 0.8rem 1rem; margin-bottom: 1rem;
-}
-.sky-health-banner--ready { border-left-color: #4caf50; }
-.sky-health-banner--warning { border-left-color: #ff9800; }
-.sky-health-banner--critical { border-left-color: #f44336; }
-.sky-health-text { font-size: 0.9rem; color: var(--sky-text-primary); line-height: 1.6; }
-
-/* ═══════════════════════════════════════════════════════════════════════════════════
-   9. NORDIC CONSOLIDATION — wiring the classes the views already reference
-   ───────────────────────────────────────────────────────────────────────────────────
-   The dashboard components attach these classes but the theme never defined them, so
-   they did nothing and the violet/cyan Tailwind literals showed through. Defining them
-   here (with !important where it must beat a `bg-[#0a0a0a]` utility) flips the live UI
-   onto the parchment/stone/amber system without rewriting the Python views.
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-/* Display headings everywhere pick up the medieval face. */
+/* Encabezados → tipografía display medieval */
 h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
     font-family: var(--sky-font-display);
     letter-spacing: 0.03em;
 }
 
-/* ── App shell: stone background + carved-stone frame (set-piece) ────────────────── */
-.sky-stone-bg {
-    background: transparent !important; /* let the body's stone texture show through */
-    position: relative;
-}
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   2. SHELL — MURO DE PIEDRA TALLADA
+   ═══════════════════════════════════════════════════════════════════════════════════ */
 
-/* Carved stone wall framing the working area — the "pared de roca". */
+.sky-stone-bg { background: transparent !important; position: relative; }
+
 .sky-main-content {
     position: relative;
-    border-left: 3px solid var(--sky-border);
-    box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.55);
+    border-left: 1px solid var(--sky-border);
+    box-shadow: inset 0 0 140px rgba(0, 0, 0, 0.6);
 }
 .sky-main-content::before {
     content: '';
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    /* faint chiselled-rock vignette around the edges */
-    box-shadow:
-        inset 0 0 0 2px rgba(0, 0, 0, 0.4),
-        inset 0 0 60px rgba(0, 0, 0, 0.5);
-    /* border-image only paints over a real border, so declare a transparent
-       one matching the SVG slice for the carved-stone corner runes to render. */
-    border: 18px solid transparent;
-    border-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120" fill="none"><rect x="3" y="3" width="114" height="114" stroke="%235C4A2A" stroke-width="2"/><path d="M0 0 L24 24 M120 0 L96 24 M0 120 L24 96 M120 120 L96 96" stroke="%238b6d23" stroke-width="2"/></svg>') 24 stretch;
+    position: absolute; inset: 0; pointer-events: none; z-index: 0;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35), inset 0 0 70px rgba(0, 0, 0, 0.45);
+    background: radial-gradient(135% 95% at 50% -5%, transparent 60%, rgba(0, 0, 0, 0.42));
 }
 
-/* ── Sidebar — wood + stone with a gold edge (overrides bg-[#0a0a0a]) ───────────── */
+/* Scrollbars talladas */
+.sky-scrollbar::-webkit-scrollbar { width: 10px; height: 10px; }
+.sky-scrollbar::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.28); }
+.sky-scrollbar::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #6a5a38, #352b1a);
+    border-radius: 10px; border: 2px solid transparent; background-clip: padding-box;
+}
+.sky-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #8a7444, #4a3c24); background-clip: padding-box;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   3. SIDEBAR — MADERA Y PIEDRA CON FILO DE ORO
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
 .sky-sidebar {
-    background: linear-gradient(180deg, #2a1a10 0%, #3e2723 42%, #1a1008 100%) !important;
-    border-right: 3px solid #5d4037 !important;
+    background: linear-gradient(176deg, #241710 0%, #1a120c 46%, #0d0907 100%) !important;
+    border-right: 1px solid rgba(200, 168, 106, 0.32) !important;
     position: relative;
+    box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.03), 14px 0 40px -20px rgba(0, 0, 0, 0.9);
 }
 .sky-sidebar::after {
     content: '';
-    position: absolute;
-    top: 0; right: 0; bottom: 0;
-    width: 1px;
-    background: linear-gradient(180deg, transparent, var(--sky-amber), transparent);
-    opacity: 0.5;
-    pointer-events: none;
+    position: absolute; top: 0; right: 0; bottom: 0; width: 1px;
+    background: linear-gradient(180deg, transparent, var(--sky-gold), transparent);
+    opacity: 0.55; pointer-events: none;
 }
 
-/* ── Amber "magicka" glow (logo, chat avatar, focal chips) ──────────────────────── */
-.sky-glow-static {
-    box-shadow: 0 0 18px var(--sky-amber-glow), inset 0 1px 0 rgba(255, 255, 255, 0.12);
-    border: 1px solid var(--sky-amber) !important;
-}
-
-/* ── Connection dot ─────────────────────────────────────────────────────────────── */
 .sky-connection-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    display: inline-block; background: var(--sky-text-muted);
+    width: 9px; height: 9px; border-radius: 50%; display: inline-block;
+    background: var(--sky-text-muted);
 }
 .sky-connection-dot--connected {
-    background: #4caf50;
-    box-shadow: 0 0 8px rgba(76, 175, 80, 0.6);
+    background: var(--sky-green);
+    box-shadow: 0 0 9px rgba(95, 156, 107, 0.7);
+    animation: sky-pulse-soft 2.6s ease-in-out infinite;
 }
 
-/* ── Header bar — carved wood lintel ────────────────────────────────────────────── */
+/* Resplandor "magicka" estático (logo, avatar, chips focales) */
+.sky-glow-static {
+    box-shadow: 0 0 18px var(--sky-glow), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    border: 1px solid var(--sky-gold) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   4. HEADER — DINTEL DE MADERA TALLADA
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
 .sky-header {
-    background: linear-gradient(180deg, #2a1a10, var(--sky-bg-primary)) !important;
-    border-bottom: 3px solid #3e2723 !important;
+    background: linear-gradient(180deg, rgba(26, 18, 12, 0.96), rgba(11, 14, 20, 0.92)) !important;
+    border-bottom: 1px solid rgba(62, 39, 35, 0.9) !important;
     position: relative;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 8px 26px -14px rgba(0, 0, 0, 0.9);
 }
 .sky-header::after {
     content: '';
-    position: absolute; left: 0; right: 0; bottom: -3px; height: 1px;
-    background: linear-gradient(90deg, transparent, var(--sky-amber-glow), transparent);
+    position: absolute; left: 0; right: 0; bottom: -1px; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--sky-glow), transparent);
 }
 
-/* ── Inputs — leather field with a gold focus rune ──────────────────────────────── */
+/* Inputs — campo de cuero con runa de foco dorada */
 .sky-input-premium,
 .sky-input-premium .q-field__control {
     background: rgba(62, 39, 35, 0.55) !important;
-    border: 1px solid rgba(200, 168, 78, 0.35) !important;
+    border: 1px solid rgba(200, 168, 106, 0.30) !important;
     border-radius: 6px !important;
-    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4);
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45);
 }
 .sky-input-premium input,
 .sky-input-premium .q-field__native,
 .sky-input-premium textarea {
-    color: var(--sky-parchment) !important;
+    color: var(--sky-text-primary) !important;
     font-family: var(--sky-font-family);
 }
 .sky-input-premium input::placeholder,
-.sky-input-premium .q-field__native::placeholder {
-    color: rgba(219, 196, 161, 0.45) !important;
-}
+.sky-input-premium .q-field__native::placeholder { color: rgba(219, 196, 161, 0.45) !important; }
 .sky-input-premium:focus-within,
 .sky-input-premium .q-field__control:focus-within {
-    border-color: var(--sky-amber) !important;
-    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4), 0 0 12px var(--sky-amber-glow);
+    border-color: var(--sky-gold) !important;
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45), 0 0 14px var(--sky-glow);
 }
 
-/* ── Hover-lift cards (avatar, etc.) ────────────────────────────────────────────── */
 .sky-card-hover { transition: all var(--sky-transition); cursor: pointer; }
-.sky-card-hover:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 0 18px var(--sky-amber-glow);
+.sky-card-hover:hover { transform: translateY(-2px); box-shadow: 0 0 18px var(--sky-glow); }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   5. TARJETA DE PERGAMINO (stat cards / feature cards)
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+.sky-parchment-card {
+    background-image: linear-gradient(168deg, rgba(255, 250, 235, 0.10), rgba(60, 40, 16, 0.10)), url('/assets/parchment.png');
+    background-size: cover; background-position: center;
+    border: 2px solid var(--sky-parchment-edge);
+    border-radius: 5px;
+    box-shadow: 0 16px 34px -18px rgba(0, 0, 0, 0.8), inset 0 0 40px rgba(0, 0, 0, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    position: relative; overflow: hidden;
+    color: var(--sky-parchment-text);
+    transition: transform var(--sky-transition), border-color var(--sky-transition), box-shadow var(--sky-transition);
+}
+.sky-parchment-card::before {
+    content: '';
+    position: absolute; top: 5px; left: 5px; right: 5px; bottom: 5px;
+    border: 1px solid rgba(92, 74, 42, 0.28); border-radius: 3px; pointer-events: none;
+}
+.sky-parchment-card:hover {
+    transform: translateY(-3px);
+    border-color: var(--sky-gold-deep);
+    box-shadow: 0 22px 44px -18px rgba(0, 0, 0, 0.9), 0 0 18px var(--sky-glow), inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
-/* ── Primary CTA button ─────────────────────────────────────────────────────────────
-   The solid fill comes from Quasar's `bg-primary` (recoloured to dark gold via
-   ui.colors), which keeps the default white button text legible. Here we only add
-   the forged-bronze trim: gold rim, amber glow, medieval display face, uppercase. */
+.sky-technical-stat { font-family: var(--sky-font-mono); font-weight: 600; color: var(--sky-parchment-text); }
+
+.sky-glow-overlay {
+    position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at top right, var(--sky-glow), transparent 60%);
+    opacity: 0.32;
+}
+
+.sky-widget-panel {
+    background: var(--sky-panel-glass);
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--sky-border);
+    border-radius: 8px;
+    box-shadow: 0 16px 34px -18px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   6. BOTONES FORJADOS
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/* CTA primario — oro fundido, tinta oscura */
 .q-btn.sky-btn-cta {
-    border: 1px solid var(--sky-amber) !important;
+    background: linear-gradient(180deg, #f3dca0, var(--sky-gold) 58%, var(--sky-gold-deep)) !important;
+    color: #1c130a !important;
+    border: 1.5px solid #f6e6bd !important;
     font-family: var(--sky-font-display) !important;
-    letter-spacing: 0.08em !important;
-    text-transform: uppercase;
-    box-shadow: 0 0 14px var(--sky-amber-glow), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    letter-spacing: 0.08em !important; text-transform: uppercase;
+    box-shadow: 0 0 18px var(--sky-glow), inset 0 1px 0 rgba(255, 255, 255, 0.45);
     transition: all var(--sky-transition);
 }
-.q-btn.sky-btn-cta:hover {
-    box-shadow: 0 0 26px rgba(255, 157, 0, 0.55);
-    transform: translateY(-1px);
-}
+.q-btn.sky-btn-cta .q-btn__content { color: #1c130a !important; }
+.q-btn.sky-btn-cta:hover { box-shadow: 0 0 30px var(--sky-glow); transform: translateY(-2px); }
 
-/* ── Secondary button — gold rim, lighter weight than the primary CTA ────────────── */
+/* Secundario — filo de oro, peso ligero */
 .q-btn.sky-btn-secondary {
     border: 1px solid var(--sky-gold-dim) !important;
+    color: var(--sky-text-primary) !important;
+    background: rgba(62, 39, 35, 0.4) !important;
     font-family: var(--sky-font-display) !important;
     letter-spacing: 0.06em !important;
     transition: all var(--sky-transition);
 }
-.q-btn.sky-btn-secondary:hover {
-    border-color: var(--sky-amber) !important;
-    box-shadow: 0 0 16px var(--sky-amber-glow);
-}
+.q-btn.sky-btn-secondary:hover { border-color: var(--sky-gold) !important; box-shadow: 0 0 16px var(--sky-glow); }
 
-/* ── Feature-card inner glow overlay ────────────────────────────────────────────── */
-.sky-glow-overlay {
-    position: absolute; inset: 0; pointer-events: none;
-    background: radial-gradient(ellipse at top right, var(--sky-amber-glow), transparent 60%);
-    opacity: 0.35;
+/* Botón nórdico genérico */
+.sky-btn-nordic {
+    background: #1c1714; color: var(--sky-parchment);
+    border: 1px solid var(--sky-parchment-edge);
+    text-transform: uppercase; letter-spacing: 0.15em;
+    padding: 0.75rem 1.5rem; transition: all 0.2s; cursor: pointer;
 }
+.sky-btn-nordic:hover {
+    background: #2d2520; color: #fff;
+    box-shadow: 0 0 20px var(--sky-glow), 0 4px 12px rgba(0, 0, 0, 0.4);
+    transform: translateY(-2px) scale(1.02);
+}
+.sky-btn-nordic:active { transform: translateY(0); }
 
-/* ── Dark stone panels (chat / mods preview) — override bg-[#0f0f0f] ─────────────── */
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   7. EL MOTOR INVISIBLE — RITUALES DE LA FORJA
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+.sky-action-master { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 1.2rem; margin-bottom: 1rem; }
+
+.sky-action-master-btn {
+    width: 100%; padding: 1rem 2rem !important;
+    font-family: var(--sky-font-display) !important;
+    font-size: 1.3rem !important; letter-spacing: 0.14em !important;
+    color: #1c130a !important;
+    background: linear-gradient(180deg, #f3dca0, var(--sky-gold) 58%, var(--sky-gold-deep)) !important;
+    border: 1.5px solid #f6e6bd !important; border-radius: 4px !important;
+    box-shadow: 0 0 24px var(--sky-glow), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    transition: all var(--sky-transition);
+}
+.sky-action-master-btn .q-btn__content { color: #1c130a !important; }
+.sky-action-master-btn:hover { box-shadow: 0 0 38px var(--sky-glow); transform: translateY(-2px); }
+.sky-action-master-desc { font-size: 0.85rem; font-style: italic; color: var(--sky-text-muted); text-align: center; }
+
+.sky-actions-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.85rem; padding: 0.5rem 0; }
+
+.sky-action-card {
+    background-image: linear-gradient(168deg, rgba(255, 250, 235, 0.08), rgba(60, 40, 16, 0.12)), url('/assets/parchment.png');
+    background-size: cover; background-color: var(--sky-parchment);
+    border: 2px solid rgba(80, 65, 40, 0.6); border-radius: 6px;
+    padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem;
+    transition: all var(--sky-transition);
+    box-shadow: 0 14px 30px -16px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+.sky-action-card:hover {
+    border-color: var(--sky-gold);
+    box-shadow: 0 18px 36px -16px rgba(0, 0, 0, 0.8), 0 0 16px var(--sky-glow);
+    transform: translateY(-3px);
+}
+.sky-action-card--disabled { opacity: 0.62; filter: grayscale(40%); }
+.sky-action-card--disabled:hover { transform: none; box-shadow: 0 14px 30px -16px rgba(0, 0, 0, 0.7); }
+
+.sky-action-header { gap: 0.5rem; }
+.sky-action-rune { font-family: var(--sky-font-runic); font-size: 1.8rem; color: var(--sky-gold-deep); text-shadow: 0 0 8px rgba(156, 122, 64, 0.5); line-height: 1; }
+.sky-action-label { font-family: var(--sky-font-display); font-size: 1rem; font-weight: 700; color: var(--sky-parchment-text); letter-spacing: 0.04em; text-transform: uppercase; }
+.sky-action-desc { font-size: 0.82rem; color: #5a4a38; line-height: 1.4; }
+.sky-action-footer { margin-top: auto; padding-top: 0.5rem; }
+
+.sky-action-btn {
+    font-family: var(--sky-font-display) !important; font-size: 0.75rem !important;
+    background: rgba(80, 65, 40, 0.85) !important; color: var(--sky-parchment) !important;
+    border: 1px solid rgba(156, 122, 64, 0.6) !important; letter-spacing: 0.08em !important;
+}
+.sky-action-btn:hover { background: var(--sky-gold-deep) !important; }
+.sky-action-btn--install { background: rgba(200, 100, 20, 0.72) !important; }
+.sky-action-btn--install:hover { background: rgba(255, 157, 0, 0.8) !important; }
+.sky-action-tech-name { font-family: var(--sky-font-mono); font-size: 0.66rem; color: #8a7a68; font-style: italic; text-align: right; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   8. LISTA DE MODS — ORDEN DE CARGA
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+.sky-modlist-header { padding: 0.8rem 0; }
+.sky-section-title {
+    font-family: var(--sky-font-display); font-size: 1.1rem; font-weight: 700;
+    color: var(--sky-gold-bright); letter-spacing: 0.16em; text-transform: uppercase;
+    text-shadow: 0 0 10px var(--sky-glow);
+}
+.sky-badge-count {
+    background: var(--sky-glow) !important; color: #1c130a !important;
+    border: 1px solid var(--sky-gold) !important; font-family: var(--sky-font-mono);
+    box-shadow: 0 0 10px var(--sky-glow);
+}
+.sky-modlist-search .q-field__control {
+    background: rgba(62, 39, 35, 0.5) !important; border-color: var(--sky-border) !important;
+}
+.sky-modlist-container { max-height: 50vh; overflow-y: auto; padding: 0.3rem 0; }
+.sky-modlist-empty { color: var(--sky-text-muted); font-style: italic; padding: 2rem; text-align: center; }
+
+.sky-mod-row {
+    display: flex; align-items: center; gap: 0.8rem;
+    padding: 0.6rem 0.8rem; border-bottom: 1px solid rgba(200, 168, 106, 0.07);
+    transition: background var(--sky-transition);
+}
+.sky-mod-row:hover { background: rgba(200, 168, 106, 0.06); }
+.sky-mod-row--disabled { opacity: 0.5; }
+.sky-mod-info { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.sky-mod-name { font-family: var(--sky-font-display); font-size: 0.92rem; color: var(--sky-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sky-mod-version { font-family: var(--sky-font-mono); font-size: 0.7rem; color: var(--sky-text-muted); }
+.sky-mod-status-ok { color: var(--sky-green) !important; }
+.sky-mod-status-off { color: var(--sky-text-muted) !important; }
+
+/* Toggle de mod → riel de oro */
+.sky-mod-toggle .q-toggle__track { background: rgba(255, 255, 255, 0.10) !important; }
+.sky-mod-toggle .q-toggle__inner--active .q-toggle__track { background: var(--sky-glow) !important; }
+.sky-mod-toggle .q-toggle__inner--active .q-toggle__thumb { color: var(--sky-gold-bright) !important; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   9. PANEL AVANZADO + REGISTRO
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+.sky-advanced-panel {
+    background: var(--sky-panel-glass) !important;
+    border: 1px solid var(--sky-border) !important; border-radius: 8px !important; margin-top: 1rem;
+    box-shadow: 0 16px 34px -18px rgba(0, 0, 0, 0.8);
+}
+.sky-advanced-title { font-family: var(--sky-font-display); font-size: 0.85rem; font-weight: 700; color: var(--sky-gold-bright); letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 0.4rem; }
+.sky-advanced-section { margin: 0.6rem 0; }
+.sky-advanced-tool-row { gap: 0.5rem; align-items: center; padding: 0.2rem 0; }
+.sky-advanced-tool-name { font-weight: 600; color: var(--sky-text-primary); font-size: 0.85rem; }
+.sky-advanced-tool-path { font-family: var(--sky-font-mono); font-size: 0.7rem; color: var(--sky-text-muted); word-break: break-all; }
+.sky-advanced-link { font-size: 0.8rem; color: var(--sky-gold-bright) !important; text-decoration: underline !important; text-underline-offset: 3px; }
+.sky-info-row { gap: 0.5rem; padding: 0.15rem 0; }
+.sky-info-label { font-size: 0.8rem; color: var(--sky-text-muted); min-width: 80px; font-weight: 600; }
+.sky-info-value { font-family: var(--sky-font-mono); font-size: 0.8rem; color: var(--sky-text-primary); word-break: break-all; }
+.sky-log-entry { font-family: var(--sky-font-mono); font-size: 0.78rem; color: var(--sky-text-secondary); padding: 0.15rem 0; }
+.sky-text-warning { color: #e0b341; font-size: 0.85rem; }
+.sky-text-muted { color: var(--sky-text-muted); }
+.sky-separator { background: var(--sky-border) !important; margin: 0.5rem 0 !important; }
+.sky-separator-subtle { background: rgba(255, 255, 255, 0.05) !important; margin: 0.3rem 0 !important; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   10. BANNER DE SALUD (Estado de la Forja)
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+.sky-health-banner {
+    background: var(--sky-panel-glass);
+    border: 1px solid var(--sky-border);
+    border-left: 4px solid var(--sky-gold);
+    border-radius: 4px; padding: 0.85rem 1.1rem; margin-bottom: 1rem;
+    box-shadow: 0 12px 28px -18px rgba(0, 0, 0, 0.8);
+}
+.sky-health-banner--ready    { border-left-color: var(--sky-green); }
+.sky-health-banner--warning  { border-left-color: #e0b341; }
+.sky-health-banner--critical { border-left-color: var(--sky-crimson); }
+.sky-health-text { font-size: 0.92rem; color: var(--sky-text-primary); line-height: 1.6; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   11. BADGES, PANELES OSCUROS Y DIÁLOGO
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+.sky-badge { padding: 0.25rem 0.75rem; border-radius: 99px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+.sky-badge--success { background: rgba(95, 156, 107, 0.18); color: #9bbf8e; border: 1px solid rgba(95, 156, 107, 0.4); }
+.sky-badge--error   { background: rgba(216, 88, 78, 0.16); color: #e88a82; border: 1px solid rgba(216, 88, 78, 0.45); }
+.sky-badge--rune,
+.sky-badge--violet  { background: var(--sky-glow); color: var(--sky-gold-bright); border: 1px solid var(--sky-gold); letter-spacing: 0.08em; }
+
+/* Paneles oscuros (chat / mods preview) — vidrio forjado */
 .sky-chat-panel,
 .sky-mods-panel {
-    background: linear-gradient(180deg, rgba(62, 39, 35, 0.25), rgba(11, 14, 20, 0.85)) !important;
-    border: 2px solid #3e2723 !important;
-    box-shadow: inset 0 0 24px rgba(0, 0, 0, 0.45), 0 0 14px rgba(0, 0, 0, 0.4);
+    background: linear-gradient(180deg, rgba(30, 22, 16, 0.5), rgba(11, 14, 19, 0.86)) !important;
+    border: 1px solid rgba(62, 39, 35, 0.95) !important;
+    border-radius: 12px;
+    box-shadow: 0 20px 44px -22px rgba(0, 0, 0, 0.85), inset 0 0 40px rgba(0, 0, 0, 0.4) !important;
 }
 
-/* ── Rune badge (renamed from the stray --violet) ───────────────────────────────── */
-.sky-badge--rune,
-.sky-badge--violet {
-    background: rgba(255, 157, 0, 0.15);
-    color: var(--sky-amber);
-    border: 1px solid var(--sky-amber);
-    letter-spacing: 0.08em;
+/* Diálogo estilo Skyrim (chat) */
+.sky-dialog-box {
+    background: rgba(11, 14, 20, 0.85); backdrop-filter: blur(12px);
+    border: 1px solid var(--sky-gold-dim); border-radius: 3px;
+    padding: 1.25rem; margin-bottom: 2rem; position: relative;
 }
+.sky-dialog-box--user  { border-right: 4px solid var(--sky-gold); }
+.sky-dialog-box--agent { border-left: 4px solid var(--sky-gold); }
 
-/* ── Runic section divider (set-piece) ──────────────────────────────────────────── */
+/* Divisor rúnico (set-piece) */
 .sky-rune-divider {
-    display: flex; align-items: center; justify-content: center;
-    gap: 0.75rem; margin: 0.25rem 0 1.25rem;
-    color: var(--sky-amber); opacity: 0.8;
-    font-family: var(--sky-font-runic);
-    font-size: 1rem; letter-spacing: 0.3em;
-    text-shadow: 0 0 10px var(--sky-amber-glow);
+    display: flex; align-items: center; justify-content: center; gap: 0.75rem;
+    margin: 0.25rem 0 1.25rem; color: var(--sky-gold); opacity: 0.85;
+    font-family: var(--sky-font-runic); font-size: 1rem; letter-spacing: 0.3em;
+    text-shadow: 0 0 10px var(--sky-glow);
 }
-.sky-rune-divider::before,
-.sky-rune-divider::after {
+.sky-rune-divider::before, .sky-rune-divider::after {
     content: ''; flex: 1; height: 1px;
     background: linear-gradient(90deg, transparent, var(--sky-gold-dim), transparent);
 }
 
-/* ── Advanced panel section spacing ─────────────────────────────────────────────── */
-.sky-advanced-section { margin: 0.6rem 0; }
+.sky-glow-amber { box-shadow: 0 0 20px var(--sky-glow); border-color: var(--sky-gold); }
+.sky-rune-glow  { font-family: var(--sky-font-runic); color: var(--sky-gold); text-shadow: 0 0 8px var(--sky-glow); }
+.sky-bar-amber  { background: linear-gradient(180deg, var(--sky-gold-bright), var(--sky-gold-deep)); }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   12. ASISTENTE DE CONFIGURACIÓN — CÁMARA FORJADA (modal oscuro)
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+.sky-wizard-overlay {
+    position: fixed; inset: 0; z-index: 90;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+    background: rgba(4, 6, 9, 0.78); backdrop-filter: blur(7px);
+}
+
+.sky-wizard-modal {
+    position: relative; width: 100%; max-width: 580px; max-height: 92vh; overflow-y: auto;
+    background: linear-gradient(180deg, #241a12, #110c08) !important;
+    border: 1px solid rgba(200, 168, 106, 0.42); border-radius: 7px;
+    box-shadow: 0 50px 120px -30px #000, 0 0 70px var(--sky-glow), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    color: var(--sky-text-primary);
+    padding: 2rem 1.75rem !important;
+}
+/* Banda rúnica superior + marco grabado */
+.sky-wizard-modal::before {
+    content: ''; position: absolute; left: 0; right: 0; top: 0; height: 3px;
+    background: linear-gradient(90deg, transparent, var(--sky-gold), transparent);
+}
+.sky-wizard-modal::after {
+    content: ''; position: absolute; left: 10px; top: 14px; width: 20px; height: 20px;
+    border-top: 1.5px solid var(--sky-gold); border-left: 1.5px solid var(--sky-gold);
+    opacity: 0.6; pointer-events: none;
+}
+
+.sky-wizard-title {
+    font-family: var(--sky-font-display); font-size: 1.4rem; font-weight: 700;
+    color: #f1e6cf; letter-spacing: 0.08em;
+}
+.sky-wizard-step { font-family: var(--sky-font-mono); font-size: 0.75rem; color: var(--sky-gold); letter-spacing: 0.08em; }
+.sky-wizard-description { font-family: var(--sky-font-family); font-size: 0.98rem; color: var(--sky-text-secondary); line-height: 1.6; }
+.sky-wizard-label { font-family: var(--sky-font-display); font-size: 0.72rem; font-weight: 600; text-transform: uppercase; color: #a39a85; letter-spacing: 0.14em; margin-top: 0.5rem; }
+.sky-wizard-hint  { font-family: var(--sky-font-family); font-size: 0.72rem; color: #7d745f; font-style: italic; }
+
+/* Campos oscuros con foco dorado (Quasar dark standout) */
+.sky-wizard-modal .q-field__control {
+    background: rgba(0, 0, 0, 0.34) !important;
+    border: 1px solid rgba(200, 168, 106, 0.26) !important; border-radius: 5px !important;
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45);
+}
+.sky-wizard-modal .q-field--focused .q-field__control {
+    border-color: var(--sky-gold) !important; box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45), 0 0 14px var(--sky-glow);
+}
+.sky-wizard-input,
+.sky-wizard-modal .q-field__native,
+.sky-wizard-modal input {
+    color: var(--sky-text-primary) !important; font-family: var(--sky-font-mono) !important;
+}
+.sky-wizard-modal .q-field__native::placeholder { color: rgba(219, 196, 161, 0.4) !important; }
+
+/* Toggle de proveedor IA → grupo de chips de oro */
+.sky-wizard-modal .q-btn-toggle {
+    border: 1px solid rgba(200, 168, 106, 0.26) !important; border-radius: 6px !important; overflow: hidden;
+}
+.sky-wizard-modal .q-btn-toggle .q-btn { font-family: var(--sky-font-display); letter-spacing: 0.04em; color: #c2b48f; }
+.sky-wizard-modal .q-btn-toggle .q-btn--active {
+    background: linear-gradient(180deg, #f3dca0, var(--sky-gold) 60%, var(--sky-gold-deep)) !important;
+    color: #1c130a !important; box-shadow: 0 0 14px var(--sky-glow);
+}
+
+/* CTA del asistente */
+.sky-wizard-cta {
+    background: linear-gradient(180deg, #f3dca0, var(--sky-gold) 58%, var(--sky-gold-deep)) !important;
+    color: #1c130a !important; font-family: var(--sky-font-display);
+    text-transform: uppercase; letter-spacing: 0.1em;
+    border: 1.5px solid #f6e6bd !important;
+    box-shadow: 0 0 22px var(--sky-glow), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+    transition: all var(--sky-transition);
+}
+.sky-wizard-cta .q-btn__content { color: #1c130a !important; }
+.sky-wizard-cta:hover { transform: translateY(-2px); box-shadow: 0 0 32px var(--sky-glow); }
+
+/* Legacy: pergamino del wizard (compat, por si algún flujo lo usa) */
+.sky-wizard-nordic { background: linear-gradient(180deg, #241a12, #110c08); border: 1px solid rgba(200, 168, 106, 0.42); padding: 3rem; color: var(--sky-text-primary); box-shadow: 0 0 100px rgba(0, 0, 0, 0.8); }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+   13. ANIMACIONES
+   ═══════════════════════════════════════════════════════════════════════════════════ */
+
+@keyframes sky-pulse-amber { 0%, 100% { opacity: 0.85; } 50% { opacity: 1; text-shadow: 0 0 15px var(--sky-glow); } }
+@keyframes sky-pulse-soft  { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@keyframes sky-fade-up     { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+.sky-active-rune { font-family: var(--sky-font-runic); animation: sky-pulse-amber 3s infinite; }
+.sky-animate-in  { animation: sky-fade-up 0.5s ease-out forwards; }
