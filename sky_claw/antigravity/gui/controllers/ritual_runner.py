@@ -29,6 +29,8 @@ STORE_KEY_PENDING_HITL = "pending_hitl"
 STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
 #: Toggle: when truthy, GUI tool_execution approvals are auto-granted ("Modo local").
 STORE_KEY_AUTO_APPROVE = "gui_auto_approve"
+#: Single-flight guard: a ritual is dispatching or awaiting approval right now.
+STORE_KEY_RITUAL_IN_FLIGHT = "ritual_in_flight"
 
 # Scoped for this PR: only the three rituals with an existing HITL-gated strategy.
 # Pandora and SSEEdit-clean have no dispatcher strategy yet → left as interim.
@@ -51,8 +53,12 @@ def summarize_ritual_result(tool_key: str, result: dict[str, Any]) -> tuple[str,
     Denied/timed-out HITL approvals get a friendly Spanish hint instead of the
     raw reason code.
     """
+    # Dispatcher results are inconsistent: execute_loot_sorting returns both
+    # ``status`` and ``success``, while generate_bashed_patch / generate_lods
+    # return only ``success=True`` (no ``status``). Treat either signal as
+    # completion so a real success never shows a failure toast (Codex on #211).
     status = str(result.get("status", "")).lower()
-    if status == "success":
+    if status == "success" or result.get("success") is True:
         return (f"Ritual «{tool_key}» completado.", "positive")
 
     reason = str(result.get("reason", "") or "")
@@ -61,7 +67,7 @@ def summarize_ritual_result(tool_key: str, result: dict[str, Any]) -> tuple[str,
             "Ejecución no aprobada. Activá «Modo local» o aprobá la acción para continuar.",
             "negative",
         )
-    detail = str(result.get("details", "") or reason or "error desconocido")
+    detail = str(result.get("details") or result.get("error") or reason or "error desconocido")
     return (f"El ritual «{tool_key}» falló: {detail}", "negative")
 
 
@@ -122,6 +128,16 @@ async def run_ritual(tool_key: str, *, supervisor: Any, store: ReactiveStore) ->
             {"text": "El daemon todavía no está listo. Probá de nuevo en un momento.", "type": "negative"},
         )
         return
+    # Single-flight: refuse a second launch while one is dispatching or awaiting
+    # approval. Otherwise a second request would overwrite the single pending_hitl
+    # entry and orphan the first prompt until its fail-closed timeout (Codex #211).
+    if store.get(STORE_KEY_RITUAL_IN_FLIGHT):
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": "Ya hay un ritual en curso o esperando aprobación. Esperá a que termine.", "type": "warning"},
+        )
+        return
+    store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
     try:
         result = await supervisor.dispatch_tool(tool_name, {})
     except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
@@ -131,5 +147,10 @@ async def run_ritual(tool_key: str, *, supervisor: Any, store: ReactiveStore) ->
             {"text": f"El ritual «{tool_key}» falló: {type(exc).__name__}", "type": "negative"},
         )
         return
+    finally:
+        store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
+        # Drop the approval prompt tied to this run so no stale modal lingers on
+        # the timeout/denied path where the operator never clicked (Codex #211).
+        store.set(STORE_KEY_PENDING_HITL, None)
     text, kind = summarize_ritual_result(tool_key, result if isinstance(result, dict) else {})
     store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": text, "type": kind})

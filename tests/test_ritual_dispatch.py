@@ -78,6 +78,18 @@ def test_summarize_generic_error_is_negative() -> None:
     assert "Boom" in msg
 
 
+def test_summarize_success_key_without_status_is_positive() -> None:
+    # generate_bashed_patch / generate_lods return success=True with no status.
+    _, kind = summarize_ritual_result("dyndolod", {"success": True})
+    assert kind == "positive"
+
+
+def test_summarize_success_false_with_error_is_negative() -> None:
+    msg, kind = summarize_ritual_result("wrye_bash", {"success": False, "error": "no path"})
+    assert kind == "negative"
+    assert "no path" in msg
+
+
 # ── HITL GUI bridge decision ─────────────────────────────────────────────────────
 async def test_bridge_auto_approves_tool_execution_when_toggle_on() -> None:
     responded: list[tuple[str, bool]] = []
@@ -169,3 +181,24 @@ async def test_run_ritual_surfaces_denied_as_negative_feedback() -> None:
     assert sup.calls == [("generate_lods", {})]
     fb = store.get("ritual_feedback")
     assert fb is not None and fb["type"] == "negative"
+
+
+async def test_run_ritual_single_flight_refuses_while_one_is_in_flight() -> None:
+    store = ReactiveStore()
+    store.set("ritual_in_flight", True)  # simulate an outstanding ritual
+    sup = _FakeSupervisor()
+    await run_ritual("loot", supervisor=sup, store=store)
+    assert sup.calls == []  # second launch must not dispatch
+    fb = store.get("ritual_feedback")
+    assert fb is not None and fb["type"] == "warning"
+
+
+async def test_run_ritual_clears_pending_prompt_and_inflight_on_finish() -> None:
+    store = ReactiveStore()
+    store.set("pending_hitl", {"request_id": "tool-x-1"})  # a stale prompt for this run
+    sup = _FakeSupervisor({"success": True})
+    await run_ritual("dyndolod", supervisor=sup, store=store)
+    assert store.get("pending_hitl") is None
+    assert not store.get("ritual_in_flight")
+    fb = store.get("ritual_feedback")
+    assert fb is not None and fb["type"] == "positive"
