@@ -164,7 +164,29 @@ class EnvironmentScanner:
         scanner = EnvironmentScanner()
         snapshot = await scanner.scan()
         print(snapshot.health_status, snapshot.health_messages)
+
+    Optionally seeded with the user's configured paths so setups with manual
+    ``skyrim_path`` / ``loot_exe`` / ``xedit_exe`` (etc.) are honoured instead of
+    relying purely on auto-detection:
+
+    * ``skyrim_path`` — preferred over auto-detection when it holds a Skyrim exe.
+    * ``tool_paths`` — maps a scanner tool key (``loot``, ``xedit``, ``pandora``,
+      ``wrye_bash``, ``dyndolod``) to its executable path; each existing file
+      seeds ``snap.tools`` directly, falling back to auto-detection otherwise.
     """
+
+    def __init__(
+        self,
+        *,
+        skyrim_path: str | pathlib.Path | None = None,
+        tool_paths: dict[str, str] | None = None,
+    ) -> None:
+        self._configured_skyrim_path = pathlib.Path(skyrim_path) if skyrim_path else None
+        # Drop empty/whitespace entries (Config defaults the keys to "") so a blank
+        # value never masks auto-detection.
+        self._configured_tool_paths: dict[str, pathlib.Path] = {
+            key: pathlib.Path(raw) for key, raw in (tool_paths or {}).items() if raw and str(raw).strip()
+        }
 
     async def scan(self) -> EnvironmentSnapshot:
         """Run all detectors concurrently and build an EnvironmentSnapshot."""
@@ -182,6 +204,7 @@ class EnvironmentScanner:
 
         # ── 1. Detect Skyrim ──────────────────────────────────────────
         skyrim_path = await self._find_skyrim()
+        skyrim_found = skyrim_path is not None
         if skyrim_path:
             exe_name = "SkyrimSE.exe" if (skyrim_path / "SkyrimSE.exe").exists() else "Skyrim.exe"
             version, edition = _detect_skyrim_version(skyrim_path / exe_name)
@@ -196,7 +219,12 @@ class EnvironmentScanner:
         else:
             snap.health_status = HealthStatus.CRITICAL
             snap.health_messages.append("❌ No se encontró Skyrim. Selecciona la carpeta del juego manualmente.")
-            return snap
+            # Without Skyrim AND without any configured tool paths there is nothing
+            # left to seed, so keep the original fast exit. But when the user pinned
+            # tool executables in config, keep scanning so those tools are reported
+            # as installed instead of all landing in `missing` (follow-up #2 / #209).
+            if not self._configured_tool_paths:
+                return snap
 
         # ── 2. Detect MO2 ─────────────────────────────────────────────
         mo2_path = await self._find_mo2()
@@ -252,7 +280,7 @@ class EnvironmentScanner:
         search_roots = self._build_search_roots(mo2_root, skyrim_path)
 
         for key, exe_names, friendly, url, is_critical in tool_defs:
-            found = self._find_tool(exe_names, search_roots)
+            found = self._resolve_tool_path(key, exe_names, search_roots)
             if found:
                 human_name = key.upper().replace("_", " ")
                 snap.tools[key] = ToolInfo(
@@ -276,8 +304,11 @@ class EnvironmentScanner:
                 snap.health_messages.append(f"{emoji} {human_name} no encontrado")
 
         # ── 4. Compute Health ─────────────────────────────────────────
-        critical_missing = [m for m in snap.missing if m.is_critical]
-        if critical_missing or snap.missing:
+        # A missing game is fatal regardless of which tools were seeded from
+        # config, so don't let the tool tally downgrade CRITICAL → NEEDS_SETUP.
+        if not skyrim_found:
+            snap.health_status = HealthStatus.CRITICAL
+        elif snap.missing:
             snap.health_status = HealthStatus.NEEDS_SETUP
         else:
             snap.health_status = HealthStatus.READY
@@ -292,7 +323,12 @@ class EnvironmentScanner:
     # ── Skyrim Detection ──────────────────────────────────────────────
 
     async def _find_skyrim(self) -> pathlib.Path | None:
-        """Locate Skyrim (SE/AE/LE) via registry, Steam, GOG, Epic, common paths."""
+        """Locate Skyrim (SE/AE/LE) via config, registry, Steam, GOG, Epic, common paths."""
+
+        # 0. Configured path wins (the user pinned skyrim_path in config).
+        configured = self._configured_skyrim_path
+        if configured and ((configured / "SkyrimSE.exe").exists() or (configured / "Skyrim.exe").exists()):
+            return configured
 
         # 1. Registry — Steam
         for reg_key in (
@@ -369,6 +405,23 @@ class EnvironmentScanner:
         return None
 
     # ── Tool Detection ────────────────────────────────────────────────
+
+    def _resolve_tool_path(
+        self,
+        key: str,
+        exe_names: tuple[str, ...],
+        search_roots: list[pathlib.Path],
+    ) -> pathlib.Path | None:
+        """Resolve a tool's executable, preferring the user's configured path.
+
+        A configured exe that exists on disk wins; otherwise fall back to the
+        auto-detection scan over ``search_roots`` (and PATH). A configured path
+        that no longer exists is ignored, never claimed as installed.
+        """
+        configured = self._configured_tool_paths.get(key)
+        if configured is not None and configured.is_file():
+            return configured
+        return self._find_tool(exe_names, search_roots)
 
     def _find_tool(
         self,

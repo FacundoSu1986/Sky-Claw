@@ -39,6 +39,13 @@ STORE_KEY_RAM = "sys_ram"
 # EnvironmentSnapshot produced by EnvironmentScanner.scan() at startup.
 STORE_KEY_ENV = "environment_snapshot"
 
+# Heartbeat (seconds) for the component-level live refresh of the Vitalidad bars
+# and the header HUD. A ``ui.timer`` re-renders ONLY those two containers at this
+# cadence so CPU/GPU/RAM visibly pulse without a full page refresh (which would
+# reset the chat input). Telemetry itself is sampled at ~1 Hz upstream; 2.5s keeps
+# the bars lively while staying cheap (Codex review #3 on #209).
+LIVE_REFRESH_SECONDS = 2.5
+
 # ── Navigation (label, section key, lucide path, tone) ─────────────────────────
 _NAV: list[dict[str, str]] = [
     {"label": "Panel", "key": "Dashboard", "d": "M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"},
@@ -188,6 +195,11 @@ def render_forge_dashboard(
         "background-size:auto,auto,440px; background-attachment:fixed; -webkit-font-smoothing:antialiased;"
     )
     with ui.element("div").style(root):
+        # Live heartbeat for the vitals bars + header HUD. Refresh ONLY those two
+        # @ui.refreshable containers (never the whole page), so CPU/GPU/RAM pulse
+        # while the chat input keeps its text. Created inside the page slot so it is
+        # torn down on navigation / full refresh — timers never pile up (Codex #3).
+        ui.timer(LIVE_REFRESH_SECONDS, lambda: (_vitals_panel.refresh(), _hud_panel.refresh()))
         ui.html(
             '<div style="position:absolute; inset:0; pointer-events:none; z-index:0;'
             " box-shadow:inset 0 0 220px 50px rgba(0,0,0,.72);"
@@ -313,10 +325,15 @@ def _nav_item(item: dict[str, str], is_active: bool, count: int | None, on_nav: 
         )
 
 
-def _vitals() -> None:
-    # Live telemetry from the store (TelemetryDaemon → CoreEventBus → bootloader
-    # bridge). Values refresh on each natural page re-render; GPU is None ("N/D")
-    # when no NVIDIA GPU/pynvml is present instead of a fabricated "18%".
+def _vitals_html() -> str:
+    """Build the inner HTML for the Vitalidad panel from live store telemetry.
+
+    Pure seam (no ``ui.*`` calls, fully testable): reads ``sys_cpu/gpu/ram`` and
+    renders the bars, painting "N/D" when a metric is ``None`` (e.g. GPU on a box
+    with no NVIDIA GPU/pynvml) instead of a fabricated number. The live timer in
+    :func:`render_forge_dashboard` re-runs this via :func:`_vitals_panel` so the
+    bars visibly pulse without resetting the chat input.
+    """
     store = get_store()
     rows = [
         ("Procesador", store.get(STORE_KEY_CPU), "#5f9c6b", "#2f5036"),
@@ -332,7 +349,7 @@ def _vitals() -> None:
         f'<div style="height:100%; width:{_vital_bar_width(val)}%; border-radius:3px; background:linear-gradient(90deg,{dim},{col}); box-shadow:0 0 8px {col};"></div></div></div>'
         for lbl, val, col, dim in rows
     )
-    ui.html(
+    return (
         '<div style="padding:16px 20px 18px; border-top:1px solid rgba(200,168,106,.16);">'
         "<div style=\"font-family:'Cinzel',serif; font-size:10px; font-weight:600; letter-spacing:.22em; color:#6b6151; margin-bottom:12px;\">VITALIDAD DEL SISTEMA</div>"
         f"{bars}"
@@ -340,6 +357,38 @@ def _vitals() -> None:
         "<span style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#5f5849;\">v2.0 · NORDIC</span>"
         '<span style="font-family:\'Noto Sans Runic\',serif; font-size:12px; color:#c8a86a; opacity:.85;" aria-hidden="true">ᛞᚱᚪᚷᚩᚾ</span></div></div>'
     )
+
+
+@ui.refreshable
+def _vitals_panel() -> None:
+    """Refreshable wrapper around :func:`_vitals_html` (refreshed by the timer)."""
+    ui.html(_vitals_html())
+
+
+def _vitals() -> None:
+    _vitals_panel()
+
+
+def _hud_html() -> str:
+    """Build the header's GPU·CPU telemetry HUD from the live store.
+
+    Pure seam (testable): mirrors ``sys_gpu``/``sys_cpu`` as ``"NN%"`` / ``"N/D"``.
+    Re-rendered by the live timer via :func:`_hud_panel` so the HUD pulses in step
+    with the Vitalidad bars, independent of full page refreshes.
+    """
+    store = get_store()
+    gpu_hud = _fmt_pct(store.get(STORE_KEY_GPU))
+    cpu_hud = _fmt_pct(store.get(STORE_KEY_CPU))
+    return (
+        "<div style=\"display:flex; gap:14px; font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#857c69;\">"
+        f'<span>GPU <b style="color:#c8a86a;">{_e(gpu_hud)}</b></span><span>CPU <b style="color:#c8a86a;">{_e(cpu_hud)}</b></span></div>'
+    )
+
+
+@ui.refreshable
+def _hud_panel() -> None:
+    """Refreshable wrapper around :func:`_hud_html` (refreshed by the timer)."""
+    ui.html(_hud_html())
 
 
 # ── HEADER ─────────────────────────────────────────────────────────────────────
@@ -368,22 +417,20 @@ def _header(section: str, callbacks: dict[str, Callable]) -> None:
             '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#7a7159" stroke-width="2" stroke-linecap="round" style="position:absolute; left:14px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'
             '<input placeholder="Busca en los archivos arcanos…" style="width:100%; padding:11px 14px 11px 40px; font-family:\'EB Garamond\',serif; font-size:14px; color:#e8e2d4; background:rgba(62,39,35,.45); border:1px solid rgba(200,168,106,.28); border-radius:5px; outline:none; box-shadow:inset 0 2px 6px rgba(0,0,0,.45);"></div>'
         )
-        # right cluster (telemetry HUD + settings + bell + user)
-        store = get_store()
-        gpu_hud = _fmt_pct(store.get(STORE_KEY_GPU))
-        cpu_hud = _fmt_pct(store.get(STORE_KEY_CPU))
-        ui.html(
-            '<div style="display:flex; align-items:center; gap:14px;">'
-            "<div style=\"display:flex; gap:14px; font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#857c69;\">"
-            f'<span>GPU <b style="color:#c8a86a;">{_e(gpu_hud)}</b></span><span>CPU <b style="color:#c8a86a;">{_e(cpu_hud)}</b></span></div>'
-            '<button title="Asistente de Configuración" style="width:40px; height:40px; display:flex; align-items:center; justify-content:center; background:rgba(62,39,35,.4); border:1px solid rgba(200,168,106,.22); border-radius:5px; cursor:pointer;">'
-            '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#c2b48f" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>'
-            '<div style="display:flex; align-items:center; gap:11px; padding-left:16px; border-left:1px solid rgba(200,168,106,.16);">'
-            '<div style="text-align:right;"><div style="font-family:\'Cinzel\',serif; font-size:13px; color:#e6dcc4; letter-spacing:.04em;">Dovahkiin</div>'
-            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#8a7f6a;\">Maestro de la Forja</div></div>"
-            "<div style=\"width:42px; height:42px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Cinzel',serif; font-weight:700; font-size:15px; color:#1a120c; background:radial-gradient(circle at 38% 32%, #f0d79a, #c8a86a 62%, #8a6c38); border:1.5px solid #f0d79a; box-shadow:0 0 16px rgba(200,168,106,.45);\">DS</div>"
-            "</div></div>"
-        )
+        # right cluster (telemetry HUD + settings + bell + user). The HUD is split
+        # into its own @ui.refreshable so the live timer can pulse GPU/CPU without
+        # re-rendering the (static) settings button + user avatar.
+        with ui.element("div").style("display:flex; align-items:center; gap:14px;"):
+            _hud_panel()
+            ui.html(
+                '<button title="Asistente de Configuración" style="width:40px; height:40px; display:flex; align-items:center; justify-content:center; background:rgba(62,39,35,.4); border:1px solid rgba(200,168,106,.22); border-radius:5px; cursor:pointer;">'
+                '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#c2b48f" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>'
+                '<div style="display:flex; align-items:center; gap:11px; padding-left:16px; border-left:1px solid rgba(200,168,106,.16);">'
+                '<div style="text-align:right;"><div style="font-family:\'Cinzel\',serif; font-size:13px; color:#e6dcc4; letter-spacing:.04em;">Dovahkiin</div>'
+                "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#8a7f6a;\">Maestro de la Forja</div></div>"
+                "<div style=\"width:42px; height:42px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Cinzel',serif; font-weight:700; font-size:15px; color:#1a120c; background:radial-gradient(circle at 38% 32%, #f0d79a, #c8a86a 62%, #8a6c38); border:1.5px solid #f0d79a; box-shadow:0 0 16px rgba(200,168,106,.45);\">DS</div>"
+                "</div>"
+            )
 
 
 # ── HERO ───────────────────────────────────────────────────────────────────────

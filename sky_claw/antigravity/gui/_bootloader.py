@@ -46,6 +46,34 @@ def _make_telemetry_store_bridge(store: ReactiveStore):
     return _bridge
 
 
+def _build_environment_scanner(ctx: AppContext):
+    """Build an :class:`EnvironmentScanner` seeded from the user's configured paths.
+
+    Reads ``skyrim_path`` plus the tool executables (``loot_exe``/``xedit_exe``/
+    ``pandora_exe``) from the on-disk config so setups with manual paths report
+    those tools as installed in the Rituales — instead of every tool falling to
+    "No instalado" when Skyrim isn't auto-detected (follow-up #2 / #209).
+
+    A config-read failure degrades gracefully to a bare (auto-detect-only)
+    scanner; the scan must never block GUI startup.
+    """
+    from sky_claw.config import Config
+    from sky_claw.local.discovery.scanner import EnvironmentScanner
+
+    try:
+        cfg = Config(ctx.config_path)
+    except Exception:
+        logger.exception("Could not load config for environment scan; using auto-detect only")
+        return EnvironmentScanner()
+
+    skyrim_path = (getattr(cfg, "skyrim_path", "") or "").strip() or None
+    # Map scanner tool keys (scanner.py tool_defs) → configured exe keys. Blank
+    # config values are dropped by the scanner, so pass them through untouched.
+    tool_path_cfg_keys = {"loot": "loot_exe", "xedit": "xedit_exe", "pandora": "pandora_exe"}
+    tool_paths = {key: getattr(cfg, cfg_key, "") for key, cfg_key in tool_path_cfg_keys.items()}
+    return EnvironmentScanner(skyrim_path=skyrim_path, tool_paths=tool_paths)
+
+
 async def _run_environment_scan(scanner, store: ReactiveStore) -> None:
     """Run a one-shot environment scan and publish the snapshot to the store.
 
@@ -204,9 +232,9 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
         ctx._track_task(_gui_mod_update_loop(ctx), name="gui-mod-update")
 
         # Phase 1: one-shot environment scan → Ritual availability (LOOT/SSEEdit/…).
-        from sky_claw.local.discovery.scanner import EnvironmentScanner
-
-        ctx._track_task(_run_environment_scan(EnvironmentScanner(), store), name="gui-env-scan")
+        # Seeded from the user's configured paths so manual setups report tools as
+        # installed (follow-up #2 / #209) rather than relying on auto-detection.
+        ctx._track_task(_run_environment_scan(_build_environment_scanner(ctx), store), name="gui-env-scan")
 
         # aiohttp sub-server for /api/chat + Operations Hub WS.
         # Runs on 8765 so external scripts and AgentCommunicationClient

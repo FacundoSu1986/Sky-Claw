@@ -10,11 +10,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sky_claw.antigravity.gui.state import get_store, reset_store_for_tests
 from sky_claw.antigravity.gui.views.forge_dashboard import (
     _RITUALS,
+    STORE_KEY_CPU,
+    STORE_KEY_GPU,
+    STORE_KEY_RAM,
     _fmt_pct,
+    _hud_html,
     _ritual_status,
     _vital_bar_width,
+    _vitals_html,
 )
 from sky_claw.local.discovery.environment import (
     EnvironmentSnapshot,
@@ -64,3 +70,53 @@ def test_every_ritual_maps_to_a_scanner_tool_key() -> None:
     valid = {"loot", "xedit", "pandora", "wrye_bash", "dyndolod"}
     for ritual in _RITUALS:
         assert ritual["tool"] in valid
+
+
+# ── Live vitals/HUD HTML builders (pure seam for the @ui.refreshable timer) ──────
+def test_vitals_html_reflects_store_values() -> None:
+    # The Vitalidad bars are redrawn ~every LIVE_REFRESH_SECONDS from these store
+    # keys; the builder must echo the live percentages so the bars actually pulse.
+    reset_store_for_tests()
+    store = get_store()
+    store.set(STORE_KEY_CPU, 41)
+    store.set(STORE_KEY_GPU, 18)
+    store.set(STORE_KEY_RAM, 72)
+    html = _vitals_html()
+    assert "41%" in html
+    assert "18%" in html
+    assert "72%" in html
+
+
+def test_vitals_html_paints_nd_for_unknown_metrics() -> None:
+    # GPU stays None on a box with no NVIDIA GPU/pynvml; the bars must read "N/D"
+    # instead of a fabricated number.
+    reset_store_for_tests()
+    store = get_store()
+    store.set(STORE_KEY_CPU, None)
+    store.set(STORE_KEY_GPU, None)
+    store.set(STORE_KEY_RAM, None)
+    html = _vitals_html()
+    # Three vitals rows (Procesador / Gráficos / Memoria) → three "N/D".
+    assert html.count("N/D") == 3
+
+
+def test_hud_html_reflects_store_values() -> None:
+    reset_store_for_tests()
+    store = get_store()
+    store.set(STORE_KEY_GPU, 55)
+    store.set(STORE_KEY_CPU, 12)
+    html = _hud_html()
+    assert "GPU" in html
+    assert "55%" in html
+    assert "CPU" in html
+    assert "12%" in html
+
+
+def test_hud_html_paints_nd_for_unknown_metrics() -> None:
+    reset_store_for_tests()
+    store = get_store()
+    store.set(STORE_KEY_GPU, None)
+    store.set(STORE_KEY_CPU, None)
+    html = _hud_html()
+    # GPU + CPU both unknown → two "N/D".
+    assert html.count("N/D") == 2

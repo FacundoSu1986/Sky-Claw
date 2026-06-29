@@ -509,14 +509,12 @@ def setup_app() -> None:
     # Phase 1: re-render los Rituales cuando el escaneo de entorno publica el
     # snapshot (Disponible / No instalado).
     #
-    # Las claves de telemetría (sys_cpu/gpu/ram) NO se suscriben a main_page.refresh
-    # a propósito: refrescar la página entera a 1 Hz reiniciaría el input del chat.
-    # Las vitals se releen del store en cada re-render natural — de forma fiable al
-    # navegar entre secciones (active_section dispara refresh). Esto significa que
-    # entre navegaciones el HUD puede quedar con la última muestra (o "N/D" si el
-    # escaneo de GPU no aplica); un refresh en vivo a nivel de componente
-    # (@ui.refreshable + ui.timer sobre Vitalidad/HUD) queda para un follow-up
-    # (Codex review #3 en #209).
+    # Las claves de telemetría (sys_cpu/gpu/ram) siguen SIN suscribirse a
+    # main_page.refresh a propósito: refrescar la página entera a 1 Hz reiniciaría
+    # el input del chat. El latido en vivo de las vitals/HUD se resuelve a nivel de
+    # componente — un ``ui.timer`` en render_forge_dashboard refresca solo los
+    # @ui.refreshable de Vitalidad y del HUD cada LIVE_REFRESH_SECONDS, sin tocar el
+    # chat (cierra el follow-up de Codex #3 en #209).
     store.subscribe(STORE_KEY_ENV, main_page.refresh)
 
     app.on_startup(lambda: get_agent_client().start())
