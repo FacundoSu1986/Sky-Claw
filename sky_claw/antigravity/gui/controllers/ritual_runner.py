@@ -1,0 +1,135 @@
+"""Fase 2 — wire the Panel's Rituales to the real destructive-tool dispatcher.
+
+The Ritual cards (Ordenar Mods / Crear Parche / Optimizar Gráficos) dispatch the
+matching tool through :meth:`SupervisorAgent.dispatch_tool`, reusing the existing
+HITL gate, load-order locks and sandbox. Approval is routed to the GUI via
+:func:`make_gui_hitl_notify`: a "Modo local" toggle auto-approves
+``tool_execution`` requests when the operator is at the PC, otherwise the bridge
+parks the request in the store so the page can show an Aprobar/Denegar modal.
+
+This module deliberately imports no NiceGUI so the logic stays unit-testable; the
+view/bootloader own the actual element wiring and the store keys.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sky_claw.antigravity.gui.state.reactive_store import ReactiveStore
+
+logger = logging.getLogger(__name__)
+
+# Store key the bridge parks a pending tool_execution approval under, and the key
+# the run flow publishes its result feedback under (both consumed by refreshable
+# panels in forge_dashboard so the chat input is never reset).
+STORE_KEY_PENDING_HITL = "pending_hitl"
+STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
+#: Toggle: when truthy, GUI tool_execution approvals are auto-granted ("Modo local").
+STORE_KEY_AUTO_APPROVE = "gui_auto_approve"
+
+# Scoped for this PR: only the three rituals with an existing HITL-gated strategy.
+# Pandora and SSEEdit-clean have no dispatcher strategy yet → left as interim.
+RITUAL_TOOL_MAP: dict[str, str] = {
+    "loot": "execute_loot_sorting",
+    "wrye_bash": "generate_bashed_patch",
+    "dyndolod": "generate_lods",
+}
+
+
+def ritual_tool_name(tool_key: str) -> str | None:
+    """Map a Ritual's scanner tool key to its dispatcher tool name, or ``None``."""
+    return RITUAL_TOOL_MAP.get(tool_key)
+
+
+def summarize_ritual_result(tool_key: str, result: dict[str, Any]) -> tuple[str, str]:
+    """Build a (message, kind) pair from a dispatcher result dict.
+
+    ``kind`` is one of NiceGUI's notify types ("positive"/"negative"/"warning").
+    Denied/timed-out HITL approvals get a friendly Spanish hint instead of the
+    raw reason code.
+    """
+    status = str(result.get("status", "")).lower()
+    if status == "success":
+        return (f"Ritual «{tool_key}» completado.", "positive")
+
+    reason = str(result.get("reason", "") or "")
+    if reason in {"HITLApprovalDenied", "HITLGateUnavailable"}:
+        return (
+            "Ejecución no aprobada. Activá «Modo local» o aprobá la acción para continuar.",
+            "negative",
+        )
+    detail = str(result.get("details", "") or reason or "error desconocido")
+    return (f"El ritual «{tool_key}» falló: {detail}", "negative")
+
+
+def make_gui_hitl_notify(
+    *,
+    respond: Callable[[str, bool], Awaitable[None]],
+    set_pending: Callable[[dict[str, Any]], None],
+    auto_approve_getter: Callable[[], bool],
+    delegate: Callable[[Any], Awaitable[None]] | None,
+) -> Callable[[Any], Awaitable[None]]:
+    """Build the GUI's HITL ``notify_fn`` (composes over the original closure).
+
+    For ``category == "tool_execution"`` the GUI owns the decision:
+    auto-approve when the toggle is on, otherwise park the request via
+    ``set_pending`` so the page renders an Aprobar/Denegar modal. Every other
+    category falls through to ``delegate`` (the original Telegram closure), so
+    download/scope approvals keep their existing behaviour.
+    """
+
+    async def _notify(req: Any) -> None:
+        if getattr(req, "category", "") == "tool_execution":
+            if auto_approve_getter():
+                logger.info("HITL(GUI): auto-approving %s (Modo local ON)", req.request_id)
+                await respond(req.request_id, True)
+            else:
+                set_pending(
+                    {
+                        "request_id": req.request_id,
+                        "reason": getattr(req, "reason", ""),
+                        "detail": getattr(req, "detail", ""),
+                    }
+                )
+            return
+        if delegate is not None:
+            await delegate(req)
+
+    return _notify
+
+
+async def run_ritual(tool_key: str, *, supervisor: Any, store: ReactiveStore) -> None:
+    """Dispatch a Ritual's tool and publish a feedback message to the store.
+
+    Never raises: dispatch failures and a missing supervisor are converted into
+    a ``ritual_feedback`` entry so the click handler (a fire-and-forget task)
+    cannot crash the loop. The HITL gate inside ``dispatch_tool`` is what asks
+    for approval — see :func:`make_gui_hitl_notify`.
+    """
+    tool_name = ritual_tool_name(tool_key)
+    if tool_name is None:
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": f"El ritual «{tool_key}» aún no está cableado.", "type": "info"},
+        )
+        return
+    if supervisor is None:
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": "El daemon todavía no está listo. Probá de nuevo en un momento.", "type": "negative"},
+        )
+        return
+    try:
+        result = await supervisor.dispatch_tool(tool_name, {})
+    except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
+        logger.exception("Ritual %s (%s) dispatch failed", tool_key, tool_name)
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": f"El ritual «{tool_key}» falló: {type(exc).__name__}", "type": "negative"},
+        )
+        return
+    text, kind = summarize_ritual_result(tool_key, result if isinstance(result, dict) else {})
+    store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": text, "type": kind})

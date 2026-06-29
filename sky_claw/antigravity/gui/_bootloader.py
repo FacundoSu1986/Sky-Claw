@@ -46,6 +46,36 @@ def _make_telemetry_store_bridge(store: ReactiveStore):
     return _bridge
 
 
+def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
+    """Route ``tool_execution`` HITL approvals to the GUI (modal / "Modo local").
+
+    Composes over the AppContext's existing notify closure: ``tool_execution``
+    prompts are handled by the GUI — auto-approved when the "Modo local" toggle is
+    on, otherwise parked in the store so the page shows an Aprobar/Denegar modal.
+    Every other category still flows to the original (Telegram) closure, and the
+    guard's timeout keeps the fail-closed auto-deny when nobody answers.
+    """
+    from sky_claw.antigravity.gui.controllers.ritual_runner import (
+        STORE_KEY_AUTO_APPROVE,
+        STORE_KEY_PENDING_HITL,
+        make_gui_hitl_notify,
+    )
+
+    guard = ctx.hitl
+    if guard is None:
+        logger.warning("No HITLGuard on AppContext — GUI ritual approval unavailable")
+        return
+    # Wrap (not replace) the original closure so Telegram download/scope approvals
+    # keep working; only tool_execution is intercepted for the GUI.
+    original_notify = guard._notify
+    guard._notify = make_gui_hitl_notify(
+        respond=guard.respond,
+        set_pending=lambda payload: store.set(STORE_KEY_PENDING_HITL, payload),
+        auto_approve_getter=lambda: bool(store.get(STORE_KEY_AUTO_APPROVE)),
+        delegate=original_notify,
+    )
+
+
 def _build_environment_scanner(ctx: AppContext):
     """Build an :class:`EnvironmentScanner` seeded from the user's configured paths.
 
@@ -226,6 +256,10 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
         # supervisor.start() boots the bus.
         store = get_store()
         supervisor.event_bus.subscribe("system.telemetry.*", _make_telemetry_store_bridge(store))
+
+        # Fase 2: route destructive-tool (Ritual) approvals to the GUI so the
+        # "Modo local" toggle / Aprobar-Denegar modal can satisfy the HITL gate.
+        _install_gui_hitl_bridge(ctx, store)
 
         ctx._track_task(supervisor.start(), name="supervisor-daemon")
         ctx._track_task(_gui_logic_loop(ctx), name="gui-logic-loop")

@@ -36,6 +36,12 @@ from sky_claw.antigravity.gui.controllers import (
     ModController,
     NavigationController,
 )
+from sky_claw.antigravity.gui.controllers.ritual_runner import (
+    STORE_KEY_AUTO_APPROVE,
+    STORE_KEY_PENDING_HITL,
+    STORE_KEY_RITUAL_FEEDBACK,
+    run_ritual,
+)
 from sky_claw.antigravity.gui.gui_event_adapter import (
     EventBus,
     EventType,
@@ -48,7 +54,12 @@ from sky_claw.antigravity.gui.setup_wizard import SetupWizardModal
 from sky_claw.antigravity.gui.state import ReactiveStore, get_store
 from sky_claw.antigravity.gui.task_tracking import create_tracked_task
 from sky_claw.antigravity.gui.views import render_dashboard
-from sky_claw.antigravity.gui.views.forge_dashboard import STORE_KEY_ENV
+from sky_claw.antigravity.gui.views.forge_dashboard import (
+    STORE_KEY_ENV,
+    _hitl_modal_panel,
+    _modo_local_panel,
+    _ritual_feedback_panel,
+)
 from sky_claw.config import Config
 
 logger = logging.getLogger(__name__)
@@ -440,6 +451,20 @@ def main_page() -> None:
         callbacks["on_cta_secondary"] = _nav_controller.handle_cta_secondary
         callbacks["on_feature_click"] = _nav_controller.handle_feature_click
 
+    # Fase 2: Rituales dispatch through the supervisor (HITL-gated); approvals are
+    # answered from the GUI modal. Both are fire-and-forget tracked tasks.
+    callbacks["on_ritual_run"] = lambda tool_key: create_tracked_task(
+        run_ritual(tool_key, supervisor=runtime.supervisor, store=get_store()),
+        name="gui-ritual-run",
+    )
+
+    def _on_hitl_respond(request_id: str, approved: bool) -> None:
+        guard = getattr(runtime.app_context, "hitl", None)
+        if guard is not None:
+            create_tracked_task(guard.respond(request_id, approved), name="gui-hitl-respond")
+
+    callbacks["on_hitl_respond"] = _on_hitl_respond
+
     render_dashboard(
         stats=stats,
         mods=mods,
@@ -516,6 +541,13 @@ def setup_app() -> None:
     # @ui.refreshable de Vitalidad y del HUD cada LIVE_REFRESH_SECONDS, sin tocar el
     # chat (cierra el follow-up de Codex #3 en #209).
     store.subscribe(STORE_KEY_ENV, main_page.refresh)
+
+    # Fase 2: refresh the HITL modal, the result toast, and the "Modo local" toggle
+    # through their own @ui.refreshable panels — NOT main_page.refresh — so opening
+    # a prompt or showing a result never resets the chat input.
+    store.subscribe(STORE_KEY_PENDING_HITL, _hitl_modal_panel.refresh)
+    store.subscribe(STORE_KEY_RITUAL_FEEDBACK, _ritual_feedback_panel.refresh)
+    store.subscribe(STORE_KEY_AUTO_APPROVE, _modo_local_panel.refresh)
 
     app.on_startup(lambda: get_agent_client().start())
 
