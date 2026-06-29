@@ -37,7 +37,6 @@ from sky_claw.antigravity.gui.controllers import (
     NavigationController,
 )
 from sky_claw.antigravity.gui.controllers.ritual_runner import (
-    STORE_KEY_AUTO_APPROVE,
     STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
     run_ritual,
@@ -57,8 +56,8 @@ from sky_claw.antigravity.gui.views import render_dashboard
 from sky_claw.antigravity.gui.views.forge_dashboard import (
     STORE_KEY_ENV,
     _hitl_modal_panel,
-    _modo_local_panel,
     _ritual_feedback_panel,
+    modo_local_enabled,
 )
 from sky_claw.config import Config
 
@@ -453,8 +452,15 @@ def main_page() -> None:
 
     # Fase 2: Rituales dispatch through the supervisor (HITL-gated); approvals are
     # answered from the GUI modal. Both are fire-and-forget tracked tasks.
+    # Read THIS client's Modo local toggle at click time (the click handler has
+    # client context); run_ritual arms it for just this dispatch.
     callbacks["on_ritual_run"] = lambda tool_key: create_tracked_task(
-        run_ritual(tool_key, supervisor=runtime.supervisor, store=get_store()),
+        run_ritual(
+            tool_key,
+            supervisor=runtime.supervisor,
+            store=get_store(),
+            auto_approve=modo_local_enabled(),
+        ),
         name="gui-ritual-run",
     )
 
@@ -547,7 +553,8 @@ def setup_app() -> None:
     # a prompt or showing a result never resets the chat input.
     store.subscribe(STORE_KEY_PENDING_HITL, _hitl_modal_panel.refresh)
     store.subscribe(STORE_KEY_RITUAL_FEEDBACK, _ritual_feedback_panel.refresh)
-    store.subscribe(STORE_KEY_AUTO_APPROVE, _modo_local_panel.refresh)
+    # The "Modo local" toggle now lives in per-client app.storage.client, so it
+    # refreshes from its own click/F8 handlers (client context) — no store key.
 
     app.on_startup(lambda: get_agent_client().start())
 

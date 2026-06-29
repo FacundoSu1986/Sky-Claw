@@ -202,3 +202,33 @@ async def test_run_ritual_clears_pending_prompt_and_inflight_on_finish() -> None
     assert not store.get("ritual_in_flight")
     fb = store.get("ritual_feedback")
     assert fb is not None and fb["type"] == "positive"
+
+
+class _ArmCapturingSupervisor:
+    """Records the armed auto-approve flag visible during dispatch."""
+
+    def __init__(self, store: ReactiveStore) -> None:
+        self._store = store
+        self.armed_during_dispatch: object = "unset"
+
+    async def dispatch_tool(self, tool_name: str, payload: dict) -> dict:
+        self.armed_during_dispatch = self._store.get("pending_auto_approve")
+        return {"status": "success"}
+
+
+async def test_run_ritual_arms_auto_approve_for_this_dispatch_only() -> None:
+    # The launching client's Modo local choice must be armed for THIS dispatch
+    # (so the HITL bridge auto-grants it) and disarmed right after.
+    store = ReactiveStore()
+    sup = _ArmCapturingSupervisor(store)
+    await run_ritual("loot", supervisor=sup, store=store, auto_approve=True)
+    assert sup.armed_during_dispatch is True
+    assert store.get("pending_auto_approve") is False  # disarmed on finish
+
+
+async def test_run_ritual_does_not_arm_when_auto_approve_off() -> None:
+    store = ReactiveStore()
+    sup = _ArmCapturingSupervisor(store)
+    await run_ritual("dyndolod", supervisor=sup, store=store)  # default False
+    assert sup.armed_during_dispatch is False
+    assert store.get("pending_auto_approve") is False

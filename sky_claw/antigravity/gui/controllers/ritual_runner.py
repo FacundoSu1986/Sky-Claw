@@ -27,14 +27,17 @@ logger = logging.getLogger(__name__)
 # panels in forge_dashboard so the chat input is never reset).
 STORE_KEY_PENDING_HITL = "pending_hitl"
 STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
-#: Toggle: when truthy, GUI tool_execution approvals are auto-granted ("Modo local").
-#: Scoping: lives in the process-wide in-memory ReactiveStore, so it defaults OFF
-#: and resets to OFF on every restart (never persisted). Sky-Claw's GUI is a
-#: single-client desktop app (NiceGUI on 127.0.0.1, one window), so process-wide ==
-#: this operator's session. A truly per-tab/per-client scope (NiceGUI
-#: ``app.storage.tab``) would matter only in a multi-client/web deployment and is a
-#: follow-up — flagged in the Codex review on #211.
-STORE_KEY_AUTO_APPROVE = "gui_auto_approve"
+#: Per-client "Modo local" toggle, stored in ``app.storage.client`` (server-side,
+#: one entry per browser connection, auto-cleared on disconnect) — NOT the global
+#: store. So one window's choice never enables auto-approval for another client
+#: (Codex review on #211).
+CLIENT_KEY_AUTO_APPROVE = "modo_local"
+#: Auto-approve armed for the CURRENT in-flight ritual only. ``run_ritual`` sets
+#: this from the launching client's toggle right before dispatch and disarms it
+#: after; the HITL bridge reads it instead of any global flag. Combined with the
+#: single-flight guard this scopes auto-approval to exactly the ritual the operator
+#: launched — never another client's, never an agent-initiated tool_execution.
+STORE_KEY_PENDING_AUTO_APPROVE = "pending_auto_approve"
 #: Single-flight guard: a ritual is dispatching or awaiting approval right now.
 STORE_KEY_RITUAL_IN_FLIGHT = "ritual_in_flight"
 
@@ -113,8 +116,20 @@ def make_gui_hitl_notify(
     return _notify
 
 
-async def run_ritual(tool_key: str, *, supervisor: Any, store: ReactiveStore) -> None:
+async def run_ritual(
+    tool_key: str,
+    *,
+    supervisor: Any,
+    store: ReactiveStore,
+    auto_approve: bool = False,
+) -> None:
     """Dispatch a Ritual's tool and publish a feedback message to the store.
+
+    ``auto_approve`` is the launching client's "Modo local" preference, read in
+    the click handler (the only place with client context). It is armed in the
+    store for this single dispatch so the HITL bridge can auto-grant *this*
+    request — and disarmed afterwards — instead of consulting a process-global
+    flag that would also affect other clients/agent calls.
 
     Never raises: dispatch failures and a missing supervisor are converted into
     a ``ritual_feedback`` entry so the click handler (a fire-and-forget task)
@@ -144,6 +159,8 @@ async def run_ritual(tool_key: str, *, supervisor: Any, store: ReactiveStore) ->
         )
         return
     store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
+    # Arm auto-approve for THIS dispatch only (the launching client's choice).
+    store.set(STORE_KEY_PENDING_AUTO_APPROVE, bool(auto_approve))
     try:
         result = await supervisor.dispatch_tool(tool_name, {})
     except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
@@ -155,6 +172,7 @@ async def run_ritual(tool_key: str, *, supervisor: Any, store: ReactiveStore) ->
         return
     finally:
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
+        store.set(STORE_KEY_PENDING_AUTO_APPROVE, False)  # disarm
         # Drop the approval prompt tied to this run so no stale modal lingers on
         # the timeout/denied path where the operator never clicked (Codex #211).
         store.set(STORE_KEY_PENDING_HITL, None)

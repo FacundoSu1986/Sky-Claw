@@ -14,14 +14,15 @@ untouched.
 
 from __future__ import annotations
 
+import contextlib
 import html as _html
 from collections.abc import Callable
 from typing import Any
 
-from nicegui import ui
+from nicegui import app, ui
 
 from sky_claw.antigravity.gui.controllers.ritual_runner import (
-    STORE_KEY_AUTO_APPROVE,
+    CLIENT_KEY_AUTO_APPROVE,
     STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
 )
@@ -409,10 +410,29 @@ def _hud_panel() -> None:
 
 
 # ── MODO LOCAL (HITL auto-approve toggle) ────────────────────────────────────────
+def modo_local_enabled() -> bool:
+    """Read THIS client's "Modo local" toggle from per-connection storage.
+
+    Lives in ``app.storage.client`` (server-side, one entry per browser
+    connection, auto-cleared on disconnect) so one window's choice never affects
+    another client. Falls back to ``False`` (fail-closed) when there is no client
+    context — e.g. unit tests or a background task (Codex review on #211).
+    """
+    try:
+        return bool(app.storage.client.get(CLIENT_KEY_AUTO_APPROVE, False))
+    except Exception:
+        return False
+
+
+def _set_modo_local(value: bool) -> None:
+    # Suppress: no client context (unit tests / background) — nothing to persist.
+    with contextlib.suppress(Exception):
+        app.storage.client[CLIENT_KEY_AUTO_APPROVE] = bool(value)
+
+
 def _toggle_auto_approve() -> None:
-    """Flip the "Modo local" auto-approve flag in the store (session-scoped)."""
-    store = get_store()
-    store.set(STORE_KEY_AUTO_APPROVE, not bool(store.get(STORE_KEY_AUTO_APPROVE)))
+    """Flip this client's "Modo local" auto-approve flag (per-connection)."""
+    _set_modo_local(not modo_local_enabled())
 
 
 def _on_modo_local_key(e: Any) -> None:
@@ -431,9 +451,9 @@ def _modo_local_panel() -> None:
 
     When ON, destructive Ritual approvals are auto-granted so the operator at the
     PC isn't prompted each time; OFF shows the Aprobar/Denegar modal. Default OFF
-    (fail-closed). Atajo: F8.
+    (fail-closed), per-client, resets on disconnect. Atajo: F8.
     """
-    on = bool(get_store().get(STORE_KEY_AUTO_APPROVE))
+    on = modo_local_enabled()
     if on:
         icon, label, color, border, title = (
             "🔓",
