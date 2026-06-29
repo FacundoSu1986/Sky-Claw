@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 STORE_KEY_PENDING_HITL = "pending_hitl"
 STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
 #: Toggle: when truthy, GUI tool_execution approvals are auto-granted ("Modo local").
+#: Scoping: lives in the process-wide in-memory ReactiveStore, so it defaults OFF
+#: and resets to OFF on every restart (never persisted). Sky-Claw's GUI is a
+#: single-client desktop app (NiceGUI on 127.0.0.1, one window), so process-wide ==
+#: this operator's session. A truly per-tab/per-client scope (NiceGUI
+#: ``app.storage.tab``) would matter only in a multi-client/web deployment and is a
+#: follow-up — flagged in the Codex review on #211.
 STORE_KEY_AUTO_APPROVE = "gui_auto_approve"
 #: Single-flight guard: a ritual is dispatching or awaiting approval right now.
 STORE_KEY_RITUAL_IN_FLIGHT = "ritual_in_flight"

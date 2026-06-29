@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 
 from sky_claw.antigravity.gui.gui_event_adapter import EventType, SkyClawEvent
@@ -104,6 +105,44 @@ def _build_environment_scanner(ctx: AppContext):
     return EnvironmentScanner(skyrim_path=skyrim_path, tool_paths=tool_paths)
 
 
+# Map EnvironmentScanner snapshot fields → the env vars the supervisor's
+# PathResolutionService reads (it is env-only by design). Mirrors the resolver's
+# exact names, including the existing ``DYNDLOD_EXE`` spelling.
+_SNAPSHOT_TOOL_ENV: dict[str, str] = {
+    "loot": "LOOT_EXE",
+    "wrye_bash": "WRYE_BASH_PATH",
+    "dyndolod": "DYNDLOD_EXE",
+}
+
+
+def _hydrate_tool_env_from_snapshot(snapshot) -> None:
+    """Export the scan's resolved tool paths into ``os.environ`` for the dispatcher.
+
+    The Rituales dispatch through the supervisor, whose ``PathResolutionService``
+    resolves Skyrim/LOOT/Wrye Bash/DynDOLOD **only** from ``os.environ`` — nothing
+    hydrates those from the wizard/TOML config. Without this bridge a Ritual marked
+    "Disponible" (from a config/auto-detected path) would dispatch and then fail
+    with a missing-path error (Codex P1 on #211). The ``EnvironmentScanner`` already
+    resolved these exes, so seed the env from the same source of truth.
+
+    Uses ``setdefault`` so an explicit operator-set env var always wins, and only
+    non-secret tool paths are written (H-04 removed ``os.environ`` mutation for
+    *secrets*, not for tool locations).
+    """
+    if snapshot is None:
+        return
+    skyrim = getattr(snapshot, "skyrim", None)
+    skyrim_path = getattr(skyrim, "path", None) if skyrim is not None else None
+    if skyrim_path:
+        os.environ.setdefault("SKYRIM_PATH", str(skyrim_path))
+    tools = getattr(snapshot, "tools", None) or {}
+    for tool_key, env_name in _SNAPSHOT_TOOL_ENV.items():
+        info = tools.get(tool_key)
+        exe_path = getattr(info, "exe_path", None) if info is not None else None
+        if exe_path:
+            os.environ.setdefault(env_name, str(exe_path))
+
+
 async def _run_environment_scan(scanner, store: ReactiveStore) -> None:
     """Run a one-shot environment scan and publish the snapshot to the store.
 
@@ -124,6 +163,9 @@ async def _run_environment_scan(scanner, store: ReactiveStore) -> None:
         logger.exception("Environment scan failed; ritual availability stays unknown")
         return
     store.set(STORE_KEY_ENV, snapshot)
+    # Bridge the resolved tool paths to the env the dispatcher's resolver reads,
+    # so an "available" Ritual can actually run (Codex P1 on #211).
+    _hydrate_tool_env_from_snapshot(snapshot)
 
 
 async def _dispatch_chat_to_router(ctx: AppContext, text: str) -> None:
