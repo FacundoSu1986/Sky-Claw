@@ -41,12 +41,13 @@ STORE_KEY_PENDING_AUTO_APPROVE = "pending_auto_approve"
 #: Single-flight guard: a ritual is dispatching or awaiting approval right now.
 STORE_KEY_RITUAL_IN_FLIGHT = "ritual_in_flight"
 
-# Scoped for this PR: only the three rituals with an existing HITL-gated strategy.
-# Pandora and SSEEdit-clean have no dispatcher strategy yet → left as interim.
+# Rituales con estrategia HITL-gated en el dispatcher. SSEEdit-clean (xedit) sigue sin
+# estrategia → queda como interino hasta el follow-up B.
 RITUAL_TOOL_MAP: dict[str, str] = {
     "loot": "execute_loot_sorting",
     "wrye_bash": "generate_bashed_patch",
     "dyndolod": "generate_lods",
+    "pandora": "generate_animations",
 }
 
 

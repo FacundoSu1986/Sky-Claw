@@ -46,6 +46,8 @@ DESTRUCTIVE_TOOL_PATTERNS: frozenset[str] = frozenset(
         "execute_loot_sorting",
         "generate_bashed_patch",
         "generate_lods",
+        # Follow-up A: Pandora reescribe los grafos de comportamiento del juego.
+        "generate_animations",
         # Nombre real de la strategy (resolve_conflict_patch.py define
         # name="resolve_conflict_with_patch"); el alias viejo sin "_with"
         # nunca matcheó y dejaba la tool de xEdit SIN gate HITL.

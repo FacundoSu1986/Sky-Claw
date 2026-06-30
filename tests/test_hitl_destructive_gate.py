@@ -413,6 +413,7 @@ class TestDispatcherGateWiring:
         sup._synthesis_service = MagicMock()
         sup._xedit_service = MagicMock()
         sup._dyndolod_service = MagicMock()
+        sup._pandora_service = MagicMock()
         sup.profile_name = "TestProfile"
         return sup
 
@@ -474,6 +475,7 @@ class TestDestructiveToolPatterns:
             "execute_loot_sorting",
             "generate_bashed_patch",
             "generate_lods",
+            "generate_animations",
             "resolve_conflict_with_patch",
         }
         assert expected == DESTRUCTIVE_TOOL_PATTERNS

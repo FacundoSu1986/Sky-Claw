@@ -449,3 +449,7 @@ class PathResolutionService:
     def get_loot_exe(self) -> pathlib.Path | None:
         """Resuelve LOOT_EXE desde entorno validado."""
         return self.validate_env_path(os.environ.get("LOOT_EXE", ""), "LOOT_EXE")
+
+    def get_pandora_exe(self) -> pathlib.Path | None:
+        """Resuelve PANDORA_EXE desde entorno validado."""
+        return self.validate_env_path(os.environ.get("PANDORA_EXE", ""), "PANDORA_EXE")
