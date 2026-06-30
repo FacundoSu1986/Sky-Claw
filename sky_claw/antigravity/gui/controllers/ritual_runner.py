@@ -103,14 +103,19 @@ def summarize_ritual_result(tool_key: str, result: dict[str, Any]) -> tuple[str,
             "Ejecución no aprobada. Activá «Modo local» o aprobá la acción para continuar.",
             "negative",
         )
-    # LOOT / Pandora / quick_auto_clean reportan el detalle bajo ``logs`` (y el
-    # runner a veces bajo ``stderr``); incluirlos evita el opaco "error desconocido"
-    # cuando falta un exe o el path (Codex on #213).
+    # Los servicios reportan el detalle del error bajo claves distintas: ``logs``
+    # (LOOT/Pandora/quick_auto_clean), ``errors`` lista (DynDOLOD/LOOT), ``stderr``
+    # (runner) o ``details``/``error`` (xEdit-patch). Consultarlas todas evita el
+    # opaco "error desconocido" (Codex on #213). [Causa raíz pendiente: contrato de
+    # resultado compartido — ver follow-up #5.]
+    errors = result.get("errors")
+    errors_str = "; ".join(str(e) for e in errors) if isinstance(errors, list) and errors else ""
     detail = str(
         result.get("details")
         or result.get("error")
         or result.get("logs")
         or result.get("stderr")
+        or errors_str
         or reason
         or "error desconocido"
     )

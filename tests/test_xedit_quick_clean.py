@@ -116,9 +116,14 @@ async def test_runner_quick_auto_clean_builds_quickclean_command(
     assert res.exit_code == 0
     args = captured["args"]
     assert args[0] == str(xedit)
-    assert "-quickclean" in args
+    # El flag real de QuickAutoClean es -quickautoclean (no el inexistente -quickclean),
+    # y -autoexit es obligatorio para que el proceso headless cierre y no cuelgue.
+    assert "-quickautoclean" in args
+    assert "-autoexit" in args
     assert "-autoload" in args
-    assert f"-D:{game}" in args
+    assert "-quickclean" not in args
+    # -D: apunta al directorio Data real (donde viven los masters oficiales).
+    assert f"-D:{game / 'Data'}" in args
     assert args[-1] == "Update.esm"
 
 
