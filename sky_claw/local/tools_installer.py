@@ -249,6 +249,7 @@ class ToolsInstaller:
             detail=(
                 f"Asset: {asset.name}\nSize: {asset.size / (1024 * 1024):.1f} MB\nSource: GitHub loot/loot releases"
             ),
+            category="download",
         )
         if decision is not Decision.APPROVED:
             raise ToolInstallError(f"LOOT installation denied by operator (decision={decision.value})")
@@ -309,6 +310,7 @@ class ToolsInstaller:
                 f"Size: {asset.size / (1024 * 1024):.1f} MB\n"
                 f"Source: GitHub TES5Edit/TES5Edit releases"
             ),
+            category="download",
         )
         if decision is not Decision.APPROVED:
             raise ToolInstallError(f"SSEEdit installation denied by operator (decision={decision.value})")
@@ -370,6 +372,7 @@ class ToolsInstaller:
                 f"Size: {asset.size / (1024 * 1024):.1f} MB\n"
                 f"Source: GitHub Monitor221hz/Pandora-Behaviour-Engine-Plus"
             ),
+            category="download",
         )
         if decision is not Decision.APPROVED:
             raise ToolInstallError(f"Pandora installation denied by operator (decision={decision.value})")
@@ -436,6 +439,7 @@ class ToolsInstaller:
             detail=(
                 f"File: {file_info.file_name}\nSize: {file_info.size_bytes / (1024 * 1024):.1f} MB\nSource: Nexus Mods"
             ),
+            category="download",
         )
         if decision is not Decision.APPROVED:
             raise ToolInstallError(f"BodySlide installation denied by operator (decision={decision.value})")

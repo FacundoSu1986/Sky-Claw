@@ -40,6 +40,7 @@ from sky_claw.antigravity.gui.controllers.ritual_runner import (
     STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
     run_ritual,
+    run_ritual_install,
 )
 from sky_claw.antigravity.gui.gui_event_adapter import (
     EventBus,
@@ -462,6 +463,18 @@ def main_page() -> None:
             auto_approve=modo_local_enabled(),
         ),
         name="gui-ritual-run",
+    )
+
+    # Follow-up C: the "Instalar" button (Ritual in "No instalado" state) downloads
+    # the tool via ToolsInstaller. Download approval is parked in the GUI modal
+    # (category="download") and never auto-approved by Modo local.
+    callbacks["on_ritual_install"] = lambda tool_key: create_tracked_task(
+        run_ritual_install(
+            tool_key,
+            app_context=runtime.app_context,
+            store=get_store(),
+        ),
+        name="gui-ritual-install",
     )
 
     def _on_hitl_respond(request_id: str, approved: bool) -> None:

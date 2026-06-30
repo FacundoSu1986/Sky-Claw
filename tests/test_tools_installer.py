@@ -140,6 +140,33 @@ class TestScanCommonPaths:
 
 class TestEnsureLoot:
     @pytest.mark.asyncio
+    async def test_approval_uses_download_category(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
+        """The download approval is tagged category='download' so the GUI HITL bridge
+        can park it in the modal (Follow-up C) instead of falling through to Telegram."""
+        from unittest.mock import AsyncMock
+
+        from sky_claw.antigravity.security.hitl import Decision
+        from sky_claw.local.tools_installer import ReleaseAsset
+
+        install_dir = tmp_path / "install"
+        install_dir.mkdir()
+
+        asset = ReleaseAsset(
+            name="loot_0.22.4-win64.zip",
+            size=1,
+            download_url="https://api.github.com/x",
+            browser_download_url="https://github.com/loot/loot/releases/download/0.22.4/loot.zip",
+        )
+        installer._find_github_asset = AsyncMock(return_value=(asset, "0.22.4"))  # type: ignore[method-assign]
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.DENIED)  # type: ignore[method-assign]
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        with pytest.raises(ToolInstallError):
+            await installer.ensure_loot(install_dir, session)
+
+        assert installer._hitl.request_approval.call_args.kwargs["category"] == "download"
+
+    @pytest.mark.asyncio
     async def test_returns_existing_without_download(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
         """When loot.exe already exists, return it immediately."""
         exe = tmp_path / "loot.exe"
