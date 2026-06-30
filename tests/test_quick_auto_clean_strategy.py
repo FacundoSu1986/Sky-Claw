@@ -35,6 +35,25 @@ async def test_strategy_delegates_to_service() -> None:
     assert result["success"] is True
 
 
+# ── Aprobación HITL: payload sin parámetros (Codex #3) ───────────────────────────
+def test_validate_for_approval_accepts_empty_payload() -> None:
+    QuickAutoCleanStrategy(service=MagicMock()).validate_for_approval({})  # no raise
+
+
+def test_validate_for_approval_rejects_unexpected_keys() -> None:
+    # quick_auto_clean no acepta parámetros: aprobar un payload con claves que no se
+    # honran (p.ej. dry_run) sería engañoso → se rechaza ANTES de pedir aprobación.
+    strat = QuickAutoCleanStrategy(service=MagicMock())
+    with pytest.raises(ValueError) as exc:
+        strat.validate_for_approval({"dry_run": True})
+    assert "dry_run" in str(exc.value)
+
+
+def test_describe_for_approval_mentions_no_params() -> None:
+    desc = QuickAutoCleanStrategy(service=MagicMock()).describe_for_approval({})
+    assert isinstance(desc, str) and desc
+
+
 # ── Gate HITL ────────────────────────────────────────────────────────────────────
 def test_quick_auto_clean_is_destructive() -> None:
     # QuickAutoClean reescribe los plugins oficiales en disco → requiere aprobación HITL.

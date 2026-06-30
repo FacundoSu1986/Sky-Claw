@@ -82,6 +82,22 @@ def test_summarize_generic_error_is_negative() -> None:
     assert "Boom" in msg
 
 
+def test_summarize_surfaces_logs_field() -> None:
+    # Codex #1: LOOT/Pandora/quick_auto_clean devuelven el detalle bajo "logs" —
+    # el summarizer debe mostrarlo en vez de "error desconocido".
+    result = {"status": "error", "success": False, "logs": "PANDORA_EXE no configurado"}
+    msg, kind = summarize_ritual_result("pandora", result)
+    assert kind == "negative"
+    assert "PANDORA_EXE no configurado" in msg
+    assert "desconocido" not in msg
+
+
+def test_summarize_surfaces_stderr_field() -> None:
+    msg, kind = summarize_ritual_result("xedit", {"status": "error", "success": False, "stderr": "xEdit crashed"})
+    assert kind == "negative"
+    assert "xEdit crashed" in msg
+
+
 def test_summarize_success_key_without_status_is_positive() -> None:
     # generate_bashed_patch / generate_lods return success=True with no status.
     _, kind = summarize_ritual_result("dyndolod", {"success": True})

@@ -103,7 +103,17 @@ def summarize_ritual_result(tool_key: str, result: dict[str, Any]) -> tuple[str,
             "Ejecución no aprobada. Activá «Modo local» o aprobá la acción para continuar.",
             "negative",
         )
-    detail = str(result.get("details") or result.get("error") or reason or "error desconocido")
+    # LOOT / Pandora / quick_auto_clean reportan el detalle bajo ``logs`` (y el
+    # runner a veces bajo ``stderr``); incluirlos evita el opaco "error desconocido"
+    # cuando falta un exe o el path (Codex on #213).
+    detail = str(
+        result.get("details")
+        or result.get("error")
+        or result.get("logs")
+        or result.get("stderr")
+        or reason
+        or "error desconocido"
+    )
     return (f"El ritual «{tool_key}» falló: {detail}", "negative")
 
 
