@@ -512,7 +512,13 @@ class AsyncToolRegistry:
             name="run_pandora",
             description="Execute Pandora Behavior Engine (animation patcher) in auto mode for Skyrim SE.",
             params_model=None,
-            fn=lambda: run_pandora(self._resolve_pandora_runner()),
+            # Codex #213 P1: serialize on the shared behavior-graphs lock (like
+            # run_loot_sort / Audit #190) so the agent path can't race a GUI Ritual.
+            fn=lambda: run_pandora(
+                self._resolve_pandora_runner(),
+                lock_manager=self._lock_manager,
+                snapshot_manager=self._snapshot_manager,
+            ),
         )
         self._tools["run_bodyslide"] = ToolDescriptor(
             name="run_bodyslide",

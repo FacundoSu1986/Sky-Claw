@@ -19,5 +19,16 @@ class GenerateAnimationsStrategy:
     def __init__(self, service: PandoraPipelineService) -> None:
         self.service = service
 
+    def validate_for_approval(self, payload_dict: dict[str, Any]) -> None:
+        # generate_animations no toma parámetros. Rechazar un payload con claves que
+        # NO se honran evita una aprobación engañosa (p.ej. un ``dry_run=True`` que el
+        # operador aprueba pero la estrategia ignora y corre la mutación real igual) —
+        # Codex on #213.
+        if payload_dict:
+            raise ValueError(f"{self.name} no acepta parámetros; claves inesperadas: {sorted(payload_dict)}")
+
+    def describe_for_approval(self, payload_dict: dict[str, Any]) -> str:
+        return "Generación de animaciones con Pandora (sin parámetros)."
+
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         return await self.service.generate_animations()
