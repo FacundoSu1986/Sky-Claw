@@ -14,13 +14,24 @@ untouched.
 
 from __future__ import annotations
 
+import contextlib
 import html as _html
 from collections.abc import Callable
 from typing import Any
 
-from nicegui import ui
+from nicegui import app, ui
 
+from sky_claw.antigravity.gui.controllers.ritual_runner import (
+    CLIENT_KEY_AUTO_APPROVE,
+    STORE_KEY_PENDING_HITL,
+    STORE_KEY_RITUAL_FEEDBACK,
+)
 from sky_claw.antigravity.gui.state import get_store
+
+# Stash for the HITL respond callback so the module-level modal refreshable can
+# reach it (set per render in render_forge_dashboard, like the live panels read
+# the global store). Keyed to keep the indirection explicit.
+_HITL_CALLBACKS: dict[str, Callable] = {}
 
 ACCENT = "#c8a86a"
 ACCENT_BRIGHT = "#ecd9a8"
@@ -194,17 +205,24 @@ def render_forge_dashboard(
         "linear-gradient(180deg, rgba(8,11,15,.93), rgba(7,9,12,.975)), url('/assets/stone_bg.png');"
         "background-size:auto,auto,440px; background-attachment:fixed; -webkit-font-smoothing:antialiased;"
     )
+    # Fase 2: expose the HITL respond callback to the module-level modal panel.
+    _HITL_CALLBACKS["respond"] = _cb(callbacks, "on_hitl_respond")
     with ui.element("div").style(root):
         # Live heartbeat for the vitals bars + header HUD. Refresh ONLY those two
         # @ui.refreshable containers (never the whole page), so CPU/GPU/RAM pulse
         # while the chat input keeps its text. Created inside the page slot so it is
         # torn down on navigation / full refresh — timers never pile up (Codex #3).
         ui.timer(LIVE_REFRESH_SECONDS, lambda: (_vitals_panel.refresh(), _hud_panel.refresh()))
+        # Keyboard shortcut (F8) to flip "Modo local" without reaching for the mouse.
+        ui.keyboard(on_key=_on_modo_local_key)
         ui.html(
             '<div style="position:absolute; inset:0; pointer-events:none; z-index:0;'
             " box-shadow:inset 0 0 220px 50px rgba(0,0,0,.72);"
             ' background:radial-gradient(135% 95% at 50% -5%, transparent 58%, rgba(0,0,0,.4));"></div>'
         )
+        # Overlays driven by the store (own refreshables → never reset the chat).
+        _hitl_modal_panel()
+        _ritual_feedback_panel()
         _sidebar(active, conflicts, pending, active_section, callbacks, connected)
         with ui.element("div").style(
             "position:relative; z-index:2; flex:1; min-width:0; display:flex; flex-direction:column;"
@@ -391,6 +409,171 @@ def _hud_panel() -> None:
     ui.html(_hud_html())
 
 
+# ── MODO LOCAL (HITL auto-approve toggle) ────────────────────────────────────────
+def modo_local_enabled() -> bool:
+    """Read THIS client's "Modo local" toggle from per-connection storage.
+
+    Lives in ``app.storage.client`` (server-side, one entry per browser
+    connection, auto-cleared on disconnect) so one window's choice never affects
+    another client. Falls back to ``False`` (fail-closed) when there is no client
+    context — e.g. unit tests or a background task (Codex review on #211).
+    """
+    try:
+        return bool(app.storage.client.get(CLIENT_KEY_AUTO_APPROVE, False))
+    except Exception:
+        return False
+
+
+def _set_modo_local(value: bool) -> None:
+    # Suppress: no client context (unit tests / background) — nothing to persist.
+    with contextlib.suppress(Exception):
+        app.storage.client[CLIENT_KEY_AUTO_APPROVE] = bool(value)
+
+
+def _toggle_auto_approve() -> None:
+    """Flip this client's "Modo local" auto-approve flag (per-connection)."""
+    _set_modo_local(not modo_local_enabled())
+
+
+def _on_modo_local_key(e: Any) -> None:
+    """F8 toggles Modo local. Guarded so non-F8 keys and key-ups are ignored."""
+    action = getattr(e, "action", None)
+    if action is None or not getattr(action, "keydown", False) or getattr(action, "repeat", False):
+        return
+    if str(getattr(e, "key", "")) == "F8":
+        _toggle_auto_approve()
+        _modo_local_panel.refresh()
+
+
+@ui.refreshable
+def _modo_local_panel() -> None:
+    """Header toggle: 🔓 Modo local (auto-aprobar) / 🔒 Confirmar (default).
+
+    When ON, destructive Ritual approvals are auto-granted so the operator at the
+    PC isn't prompted each time; OFF shows the Aprobar/Denegar modal. Default OFF
+    (fail-closed), per-client, resets on disconnect. Atajo: F8.
+    """
+    on = modo_local_enabled()
+    if on:
+        icon, label, color, border, title = (
+            "🔓",
+            "Modo local",
+            "#9bbf8e",
+            "rgba(95,156,107,.5)",
+            "Auto-aprobando acciones (estás en la PC). F8 para alternar.",
+        )
+    else:
+        icon, label, color, border, title = (
+            "🔒",
+            "Confirmar",
+            "#a39a85",
+            "rgba(200,168,106,.28)",
+            "Pide confirmación antes de cada acción. F8 para alternar.",
+        )
+    btn = ui.element("button").style(
+        f"display:flex; align-items:center; gap:6px; padding:7px 11px; cursor:pointer; border-radius:5px;"
+        f"font-family:'Cinzel',serif; font-size:10.5px; letter-spacing:.06em; color:{color};"
+        f"background:rgba(62,39,35,.4); border:1px solid {border};"
+    )
+    btn.props(f'title="{_e(title)}"')
+    btn.on("click", lambda _=None: (_toggle_auto_approve(), _modo_local_panel.refresh()))
+    with btn:
+        ui.html(f'<span aria-hidden="true">{icon}</span><span>{_e(label)}</span>')
+
+
+# ── HITL APPROVAL MODAL + RITUAL FEEDBACK (store-driven overlays) ─────────────────
+def _respond_hitl(request_id: str, approved: bool) -> None:
+    """Clear the pending prompt and forward the decision to the HITL guard."""
+    get_store().set(STORE_KEY_PENDING_HITL, None)
+    fn = _HITL_CALLBACKS.get("respond")
+    if callable(fn):
+        fn(request_id, approved)
+
+
+@ui.refreshable
+def _hitl_modal_panel() -> None:
+    """Overlay asking the operator to approve/deny a destructive Ritual.
+
+    Rendered only while ``pending_hitl`` is set (the GUI HITL bridge parks it
+    there when Modo local is off). Buttons forward the decision through the
+    ``on_hitl_respond`` callback; the guard's timeout still auto-denies.
+    """
+    pending = get_store().get(STORE_KEY_PENDING_HITL)
+    if not pending:
+        return
+    request_id = str(pending.get("request_id", ""))
+    reason = str(pending.get("reason", "") or "Esta acción requiere tu aprobación.")
+    detail = str(pending.get("detail", "") or "")
+    overlay = (
+        "position:fixed; inset:0; z-index:1000; display:flex; align-items:center; justify-content:center;"
+        "background:rgba(7,9,12,.72); backdrop-filter:blur(3px);"
+    )
+    card = (
+        "max-width:460px; width:90%; padding:24px 26px; border-radius:6px; color:#e8e2d4;"
+        "background:linear-gradient(168deg, rgba(30,22,14,.98), rgba(14,10,7,.99)); border:1px solid rgba(200,168,106,.4);"
+        "box-shadow:0 30px 70px -20px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.05);"
+    )
+    detail_html = (
+        f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:#8a8270; margin-bottom:16px; word-break:break-word;\">{_e(detail)}</div>"
+        if detail
+        else '<div style="margin-bottom:16px;"></div>'
+    )
+    with ui.element("div").style(overlay), ui.element("div").style(card):
+        ui.html(
+            '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">'
+            '<span style="font-size:20px;" aria-hidden="true">🛡️</span>'
+            "<span style=\"font-family:'Cinzel',serif; font-weight:700; font-size:15px; letter-spacing:.1em; color:#f1e6cf;\">APROBACIÓN REQUERIDA</span></div>"
+            f"<div style=\"font-family:'EB Garamond',serif; font-size:14px; line-height:1.5; color:#d8cfba; margin-bottom:8px;\">{_e(reason)}</div>"
+            f"{detail_html}"
+            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#857c69; margin-bottom:14px;\">Tip: activá «Modo local» (F8) para no aprobar cada acción mientras estés en la PC.</div>"
+        )
+        with ui.element("div").style("display:flex; gap:11px; justify-content:flex-end;"):
+            deny = ui.element("button").style(
+                "padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px; letter-spacing:.08em;"
+                "color:#e88a82; background:rgba(0,0,0,.3); border:1px solid rgba(197,82,74,.5); border-radius:4px;"
+            )
+            deny.on("click", lambda _=None, rid=request_id: _respond_hitl(rid, False))
+            with deny:
+                ui.html("Denegar")
+            ok = ui.element("button").style(
+                "padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-weight:700; font-size:12px; letter-spacing:.08em;"
+                "color:#1c130a; background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1.5px solid #f6e6bd; border-radius:4px;"
+            )
+            ok.on("click", lambda _=None, rid=request_id: _respond_hitl(rid, True))
+            with ok:
+                ui.html("Aprobar")
+
+
+@ui.refreshable
+def _ritual_feedback_panel() -> None:
+    """Dismissible toast (bottom-right) showing the last Ritual's result."""
+    fb = get_store().get(STORE_KEY_RITUAL_FEEDBACK)
+    if not fb:
+        return
+    text = str(fb.get("text", ""))
+    kind = str(fb.get("type", "info"))
+    accent = {"positive": GREEN, "negative": RED, "warning": "#e0b341"}.get(kind, ACCENT)
+    wrap = (
+        "position:fixed; right:22px; bottom:22px; z-index:1000; max-width:380px; display:flex; align-items:flex-start; gap:10px;"
+        "padding:13px 15px; border-radius:5px; color:#e8e2d4;"
+        f"background:linear-gradient(168deg, rgba(30,22,14,.97), rgba(14,10,7,.98)); border:1px solid {accent};"
+        "box-shadow:0 18px 40px -18px rgba(0,0,0,.85);"
+    )
+    with ui.element("div").style(wrap):
+        ui.html(
+            f'<span style="width:8px; height:8px; margin-top:5px; flex-shrink:0; border-radius:50%; background:{accent}; box-shadow:0 0 7px {accent};"></span>'
+            f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:13px; line-height:1.4;\">{_e(text)}</span>"
+        )
+        x = ui.element("button").style(
+            "cursor:pointer; background:none; border:none; color:#8a8270; font-size:15px; line-height:1; padding:0 2px;"
+        )
+        x.on(
+            "click", lambda _=None: (get_store().set(STORE_KEY_RITUAL_FEEDBACK, None), _ritual_feedback_panel.refresh())
+        )
+        with x:
+            ui.html("&times;")
+
+
 # ── HEADER ─────────────────────────────────────────────────────────────────────
 def _header(section: str, callbacks: dict[str, Callable]) -> None:
     titles = {
@@ -422,6 +605,7 @@ def _header(section: str, callbacks: dict[str, Callable]) -> None:
         # re-rendering the (static) settings button + user avatar.
         with ui.element("div").style("display:flex; align-items:center; gap:14px;"):
             _hud_panel()
+            _modo_local_panel()
             ui.html(
                 '<button title="Asistente de Configuración" style="width:40px; height:40px; display:flex; align-items:center; justify-content:center; background:rgba(62,39,35,.4); border:1px solid rgba(200,168,106,.22); border-radius:5px; cursor:pointer;">'
                 '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#c2b48f" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>'
@@ -547,11 +731,12 @@ def _rituales(callbacks: dict[str, Callable]) -> None:
         "<p style=\"margin:0 0 18px; font-family:'EB Garamond',serif; font-style:italic; font-size:14px; color:#8a8068;\">El Motor Invisible — cinco herramientas legendarias, un solo gesto.</p>"
     )
     snapshot = get_store().get(STORE_KEY_ENV)
+    on_ritual_run = _cb(callbacks, "on_ritual_run")
     with ui.element("div").style(
         "display:grid; grid-template-columns:repeat(auto-fit,minmax(186px,1fr)); gap:14px; margin-bottom:30px;"
     ):
         for r in _RITUALS:
-            _ritual_card(r, _ritual_status(snapshot, r["tool"]))
+            _ritual_card(r, _ritual_status(snapshot, r["tool"]), on_ritual_run)
 
 
 # Per-state chrome for a ritual card. "unknown" = scan hasn't landed yet, so we
@@ -584,7 +769,7 @@ _RITUAL_STATE_STYLE: dict[str, dict[str, str]] = {
 }
 
 
-def _ritual_card(r: dict[str, str], state: str = "unknown") -> None:
+def _ritual_card(r: dict[str, str], state: str = "unknown", on_ritual_run: Callable | None = None) -> None:
     tone = r["tone"]
     style = _RITUAL_STATE_STYLE.get(state, _RITUAL_STATE_STYLE["unknown"])
     opacity = style["opacity"]
@@ -611,15 +796,18 @@ def _ritual_card(r: dict[str, str], state: str = "unknown") -> None:
             f"margin-top:2px; padding:8px 10px; cursor:pointer; font-family:'Cinzel',serif; font-size:11.5px; font-weight:600;"
             f"letter-spacing:.1em; background:rgba(0,0,0,.3); border:1px solid; border-radius:4px; {btn_style}"
         )
-        # Honest interim: the real tool runner (LOOT/SSEEdit/…) isn't plumbed into
-        # render_dashboard yet, so notify instead of calling an unmapped feature
-        # handler that would log "unknown feature" and do nothing (Codex on #208).
-        b.on(
-            "click",
-            lambda _=None, lbl=r["label"], tech=r["tech"]: ui.notify(
-                f"{lbl} ({tech}): el motor de la forja se cablea en la próxima iteración.", type="info"
-            ),
-        )
+        # Fase 2: an available tool runs for real through the supervisor dispatcher
+        # (HITL-gated). "missing"/"unknown" keep the honest interim notice — the
+        # Instalar flow + Pandora/SSEEdit-clean strategies land in a follow-up.
+        if state == "available" and on_ritual_run is not None:
+            b.on("click", lambda _=None, tool=r["tool"]: on_ritual_run(tool))
+        else:
+            b.on(
+                "click",
+                lambda _=None, lbl=r["label"], tech=r["tech"]: ui.notify(
+                    f"{lbl} ({tech}): disponible en la próxima iteración.", type="info"
+                ),
+            )
         with b:
             ui.html(btn_label)
         ui.html(
