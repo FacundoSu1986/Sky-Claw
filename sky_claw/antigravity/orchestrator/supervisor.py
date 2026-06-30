@@ -35,6 +35,7 @@ from sky_claw.antigravity.security.network_gateway import NetworkGateway
 from sky_claw.local.assets import AssetConflictDetector, AssetConflictReport
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.loot_service import LootSortingService
+from sky_claw.local.tools.pandora_service import PandoraPipelineService
 from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
 from sky_claw.local.tools.wrye_bash_runner import (
     WryeBashConfig,
@@ -139,6 +140,15 @@ class SupervisorAgent:
             snapshot_manager=self.snapshot_manager,
             path_resolver=self._path_resolver,
             path_validator=self._path_validator,
+        )
+
+        # Follow-up A: Pandora regenera behavior graphs, así que la corrida real va
+        # bajo el lock de behavior-graphs (runner construido perezosamente desde el
+        # resolver, igual que los otros servicios de tools).
+        self._pandora_service = PandoraPipelineService(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self.snapshot_manager,
+            path_resolver=self._path_resolver,
         )
 
         # Lazy init para runners legacy que aún no son servicios puros (WryeBash, AssetDetector)

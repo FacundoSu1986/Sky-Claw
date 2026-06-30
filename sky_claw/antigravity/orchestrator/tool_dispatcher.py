@@ -27,6 +27,9 @@ from sky_claw.antigravity.orchestrator.tool_strategies.execute_loot_sorting impo
 from sky_claw.antigravity.orchestrator.tool_strategies.execute_synthesis import (
     ExecuteSynthesisPipelineStrategy,
 )
+from sky_claw.antigravity.orchestrator.tool_strategies.generate_animations import (
+    GenerateAnimationsStrategy,
+)
 from sky_claw.antigravity.orchestrator.tool_strategies.generate_bashed_patch import (
     GenerateBashedPatchStrategy,
 )
@@ -238,6 +241,12 @@ def build_orchestration_dispatcher(
     # FASE 1.5.1: generate_lods is destructive → HITL gate
     dispatcher.register(
         GenerateLodsStrategy(service=supervisor._dyndolod_service),
+        middleware=[gate],
+    )
+
+    # Follow-up A: generate_animations (Pandora) is destructive → HITL gate
+    dispatcher.register(
+        GenerateAnimationsStrategy(service=supervisor._pandora_service),
         middleware=[gate],
     )
 

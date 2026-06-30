@@ -43,6 +43,8 @@ def supervisor() -> SupervisorAgent:
     sup._xedit_service.execute_patch = AsyncMock()
     sup._dyndolod_service = MagicMock()
     sup._dyndolod_service.execute = AsyncMock()
+    sup._pandora_service = MagicMock()
+    sup._pandora_service.generate_animations = AsyncMock()
     sup.profile_name = "TestProfile"
     # allow_unattended: estos tests caracterizan el routing del dispatcher,
     # no la gate HITL (cubierta en test_hitl_destructive_gate.py).
@@ -243,6 +245,20 @@ async def test_generate_lods_filters_extra_llm_keys(supervisor):
     # Only valid keys should be forwarded
     supervisor._dyndolod_service.execute.assert_awaited_once_with(preset="Medium")
     assert result == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# generate_animations (Pandora) — Follow-up A
+# ---------------------------------------------------------------------------
+
+
+async def test_generate_animations_delegates(supervisor):
+    supervisor._pandora_service.generate_animations.return_value = {"status": "success", "success": True}
+
+    result = await supervisor.dispatch_tool("generate_animations", {})
+
+    supervisor._pandora_service.generate_animations.assert_awaited_once_with()
+    assert result == {"status": "success", "success": True}
 
 
 async def test_execute_synthesis_pipeline_filters_extra_llm_keys(supervisor):

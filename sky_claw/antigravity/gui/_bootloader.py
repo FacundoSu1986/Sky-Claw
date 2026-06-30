@@ -117,6 +117,7 @@ _SNAPSHOT_TOOL_ENV: dict[str, str] = {
     "loot": "LOOT_EXE",
     "wrye_bash": "WRYE_BASH_PATH",
     "dyndolod": "DYNDLOD_EXE",
+    "pandora": "PANDORA_EXE",
 }
 
 
