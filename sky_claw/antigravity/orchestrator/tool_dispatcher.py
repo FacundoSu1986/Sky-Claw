@@ -45,6 +45,9 @@ from sky_claw.antigravity.orchestrator.tool_strategies.preview_chain import (
 from sky_claw.antigravity.orchestrator.tool_strategies.query_mod_metadata import (
     QueryModMetadataStrategy,
 )
+from sky_claw.antigravity.orchestrator.tool_strategies.quick_auto_clean import (
+    QuickAutoCleanStrategy,
+)
 from sky_claw.antigravity.orchestrator.tool_strategies.resolve_conflict_patch import (
     ResolveConflictWithPatchStrategy,
 )
@@ -247,6 +250,12 @@ def build_orchestration_dispatcher(
     # Follow-up A: generate_animations (Pandora) is destructive → HITL gate
     dispatcher.register(
         GenerateAnimationsStrategy(service=supervisor._pandora_service),
+        middleware=[gate],
+    )
+
+    # Follow-up B: quick_auto_clean (SSEEdit QuickAutoClean) is destructive → HITL gate
+    dispatcher.register(
+        QuickAutoCleanStrategy(service=supervisor._xedit_service),
         middleware=[gate],
     )
 

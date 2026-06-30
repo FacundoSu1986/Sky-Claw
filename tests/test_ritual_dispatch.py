@@ -43,13 +43,13 @@ class _FakeSupervisor:
 
 # ── Ritual → dispatcher tool mapping ─────────────────────────────────────────────
 def test_ritual_tool_map_covers_the_wired_rituals() -> None:
-    # Follow-up A añade Pandora (generate_animations). SSEEdit-clean (xedit) sigue
-    # sin estrategia → fuera del mapa hasta el follow-up B.
+    # Los 5 Rituales del Panel ya tienen estrategia HITL-gated en el dispatcher.
     assert RITUAL_TOOL_MAP == {
         "loot": "execute_loot_sorting",
         "wrye_bash": "generate_bashed_patch",
         "dyndolod": "generate_lods",
         "pandora": "generate_animations",
+        "xedit": "quick_auto_clean",
     }
 
 
@@ -58,8 +58,9 @@ def test_ritual_tool_name_known_and_unmapped() -> None:
     assert ritual_tool_name("wrye_bash") == "generate_bashed_patch"
     assert ritual_tool_name("dyndolod") == "generate_lods"
     assert ritual_tool_name("pandora") == "generate_animations"
-    # SSEEdit-clean sigue sin destino de dispatch (follow-up B).
-    assert ritual_tool_name("xedit") is None
+    assert ritual_tool_name("xedit") == "quick_auto_clean"
+    # Una clave desconocida no tiene destino de dispatch.
+    assert ritual_tool_name("bodyslide") is None
 
 
 # ── Result summary ───────────────────────────────────────────────────────────────
@@ -79,6 +80,22 @@ def test_summarize_generic_error_is_negative() -> None:
     msg, kind = summarize_ritual_result("dyndolod", {"status": "error", "reason": "Boom"})
     assert kind == "negative"
     assert "Boom" in msg
+
+
+def test_summarize_surfaces_logs_field() -> None:
+    # Codex #1: LOOT/Pandora/quick_auto_clean devuelven el detalle bajo "logs" —
+    # el summarizer debe mostrarlo en vez de "error desconocido".
+    result = {"status": "error", "success": False, "logs": "PANDORA_EXE no configurado"}
+    msg, kind = summarize_ritual_result("pandora", result)
+    assert kind == "negative"
+    assert "PANDORA_EXE no configurado" in msg
+    assert "desconocido" not in msg
+
+
+def test_summarize_surfaces_stderr_field() -> None:
+    msg, kind = summarize_ritual_result("xedit", {"status": "error", "success": False, "stderr": "xEdit crashed"})
+    assert kind == "negative"
+    assert "xEdit crashed" in msg
 
 
 def test_summarize_success_key_without_status_is_positive() -> None:
@@ -164,7 +181,7 @@ async def test_run_ritual_dispatches_mapped_tool_and_publishes_feedback() -> Non
 async def test_run_ritual_unmapped_ritual_does_not_dispatch() -> None:
     store = ReactiveStore()
     sup = _FakeSupervisor()
-    await run_ritual("xedit", supervisor=sup, store=store)  # SSEEdit-clean sigue sin cablear (follow-up B)
+    await run_ritual("bodyslide", supervisor=sup, store=store)  # clave sin estrategia en el dispatcher
     assert sup.calls == []
     fb = store.get("ritual_feedback")
     assert fb is not None and fb["type"] in {"info", "warning"}

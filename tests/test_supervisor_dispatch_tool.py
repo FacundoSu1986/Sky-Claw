@@ -45,6 +45,7 @@ def supervisor() -> SupervisorAgent:
     sup._dyndolod_service.execute = AsyncMock()
     sup._pandora_service = MagicMock()
     sup._pandora_service.generate_animations = AsyncMock()
+    sup._xedit_service.quick_auto_clean = AsyncMock()
     sup.profile_name = "TestProfile"
     # allow_unattended: estos tests caracterizan el routing del dispatcher,
     # no la gate HITL (cubierta en test_hitl_destructive_gate.py).
@@ -259,6 +260,24 @@ async def test_generate_animations_delegates(supervisor):
 
     supervisor._pandora_service.generate_animations.assert_awaited_once_with()
     assert result == {"status": "success", "success": True}
+
+
+# ---------------------------------------------------------------------------
+# quick_auto_clean (SSEEdit QuickAutoClean) — Follow-up B
+# ---------------------------------------------------------------------------
+
+
+async def test_quick_auto_clean_delegates(supervisor):
+    supervisor._xedit_service.quick_auto_clean.return_value = {
+        "status": "success",
+        "success": True,
+        "cleaned": ["Update.esm"],
+    }
+
+    result = await supervisor.dispatch_tool("quick_auto_clean", {})
+
+    supervisor._xedit_service.quick_auto_clean.assert_awaited_once_with()
+    assert result["success"] is True
 
 
 async def test_execute_synthesis_pipeline_filters_extra_llm_keys(supervisor):

@@ -698,6 +698,66 @@ class XEditRunner:
             return_code=return_code or 0,
         )
 
+    async def quick_auto_clean(self, plugin: str) -> ScriptExecutionResult:
+        """Run SSEEdit QuickAutoClean (``-quickclean``) on a single plugin.
+
+        QuickAutoClean removes identical-to-master (ITM) records and deleted
+        references from one plugin per invocation, rewriting it in place. The
+        official dirty DLC masters (Update/Dawnguard/HearthFires/Dragonborn) are
+        the canonical targets; the caller decides which plugins to clean.
+
+        Args:
+            plugin: Plugin filename to clean (e.g. ``"Update.esm"``). Must match
+                ``_SAFE_PLUGIN_NAME`` — the only untrusted input, validated against
+                command injection before reaching the subprocess.
+
+        Returns:
+            ScriptExecutionResult with ``success`` (exit code 0) and parsed output.
+
+        Raises:
+            XEditValidationError: If the plugin name fails validation.
+            XEditNotFoundError: If the xEdit executable doesn't exist.
+            XEditTimeoutError: If xEdit times out.
+        """
+        import time
+
+        if not _SAFE_PLUGIN_NAME.match(plugin):
+            raise XEditValidationError(f"Invalid plugin name: {plugin!r}. Must match {_SAFE_PLUGIN_NAME.pattern}")
+
+        if self._validator is not None:
+            self._validator.validate(self._xedit_path)
+
+        if not self._xedit_path.exists():
+            raise XEditNotFoundError(f"xEdit executable not found at {self._xedit_path}")
+
+        args = [
+            str(self._xedit_path),
+            "-SSE",
+            "-quickclean",
+            "-autoload",
+            f"-D:{self._game_path}",
+            plugin,
+        ]
+        logger.info("Running xEdit QuickAutoClean: %s", " ".join(args))
+
+        start_time = time.monotonic()
+        stdout_text, stderr_text, return_code = await self._execute_process(args)
+        records, errors, warnings = self._parse_script_output(stdout_text, stderr_text)
+
+        if return_code != 0:
+            logger.warning("QuickAutoClean for %s exited with code %d: %s", plugin, return_code, stderr_text)
+
+        return ScriptExecutionResult(
+            success=return_code == 0,
+            exit_code=return_code,
+            stdout=stdout_text,
+            stderr=stderr_text,
+            records_processed=records,
+            errors=errors,
+            warnings=warnings,
+            execution_time=time.monotonic() - start_time,
+        )
+
     async def run_dynamic_script(
         self,
         script_content: str,

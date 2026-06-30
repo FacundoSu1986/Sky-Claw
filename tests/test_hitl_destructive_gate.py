@@ -476,6 +476,7 @@ class TestDestructiveToolPatterns:
             "generate_bashed_patch",
             "generate_lods",
             "generate_animations",
+            "quick_auto_clean",
             "resolve_conflict_with_patch",
         }
         assert expected == DESTRUCTIVE_TOOL_PATTERNS
