@@ -50,8 +50,9 @@ _ALLOWED_XEDIT_FLAGS: frozenset[str] = frozenset(
     {
         "-IKnowWhatImDoing",
         "-autoload",
+        "-autoexit",
         "-SSE",
-        "-quickclean",
+        "-quickautoclean",
         "-noaliases",
         "-nocrc",
     }
@@ -699,12 +700,18 @@ class XEditRunner:
         )
 
     async def quick_auto_clean(self, plugin: str) -> ScriptExecutionResult:
-        """Run SSEEdit QuickAutoClean (``-quickclean``) on a single plugin.
+        """Run SSEEdit QuickAutoClean (``-quickautoclean``) on a single plugin.
 
         QuickAutoClean removes identical-to-master (ITM) records and deleted
         references from one plugin per invocation, rewriting it in place. The
         official dirty DLC masters (Update/Dawnguard/HearthFires/Dragonborn) are
         the canonical targets; the caller decides which plugins to clean.
+
+        The argument list mirrors the canonical auto-cleaner (PACT):
+        ``-quickautoclean -autoexit -autoload "<plugin>"``. ``-autoexit`` is
+        mandatory in headless mode — without it xEdit opens its GUI and the
+        subprocess blocks until the timeout. ``-D:`` points at the game's real
+        ``Data`` folder (where the official masters live).
 
         Args:
             plugin: Plugin filename to clean (e.g. ``"Update.esm"``). Must match
@@ -733,9 +740,10 @@ class XEditRunner:
         args = [
             str(self._xedit_path),
             "-SSE",
-            "-quickclean",
+            "-quickautoclean",
+            "-autoexit",
             "-autoload",
-            f"-D:{self._game_path}",
+            f"-D:{self._game_path / 'Data'}",
             plugin,
         ]
         logger.info("Running xEdit QuickAutoClean: %s", " ".join(args))

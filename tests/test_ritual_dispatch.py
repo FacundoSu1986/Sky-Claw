@@ -98,6 +98,16 @@ def test_summarize_surfaces_stderr_field() -> None:
     assert "xEdit crashed" in msg
 
 
+def test_summarize_surfaces_errors_list_field() -> None:
+    # DynDOLOD reporta el detalle bajo "errors" (lista) — debe surfacearse,
+    # no caer en "error desconocido".
+    result = {"success": False, "errors": ["DynDOLOD output validation failed"]}
+    msg, kind = summarize_ritual_result("dyndolod", result)
+    assert kind == "negative"
+    assert "DynDOLOD output validation failed" in msg
+    assert "desconocido" not in msg
+
+
 def test_summarize_success_key_without_status_is_positive() -> None:
     # generate_bashed_patch / generate_lods return success=True with no status.
     _, kind = summarize_ritual_result("dyndolod", {"success": True})
