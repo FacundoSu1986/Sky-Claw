@@ -398,16 +398,56 @@ async def generate_bashed_patch(wrye_bash_runner: Any) -> str:
     )
 
 
-async def run_pandora(pandora_runner: Any) -> str:
+async def run_pandora(
+    pandora_runner: Any,
+    *,
+    lock_manager: Any | None = None,
+    snapshot_manager: Any | None = None,
+) -> str:
     """Execute Pandora Behavior Engine in auto mode (Skyrim SE) via PandoraRunner.
 
     Consolidation (obs #187): replaces the legacy AnimationHub-backed handler.
     The runner uses the unified ``_process`` helpers (timeout + kill-tree).
+
+    Codex #213 (same P1 vector as ``run_loot_sort``/Audit #190): Pandora rewrites
+    the shared behavior graphs, so when the distributed lock is wired (production
+    via ``app_context``) this live agent path delegates to
+    :class:`PandoraPipelineService` and serializes on the same ``behavior-graphs``
+    lock as the GUI Ritual — the cross-process lock only protects if every mutator
+    participates. Without a lock manager (legacy callers / tests) Pandora runs
+    directly, preserving prior behavior.
     """
     if pandora_runner is None:
         return json.dumps(
             {"error": ("PandoraRunner is not configured. Set pandora_exe in config or install it via setup_tools.")}
         )
+
+    if lock_manager is not None and snapshot_manager is not None:
+        from sky_claw.local.tools.pandora_service import PandoraPipelineService
+
+        service = PandoraPipelineService(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            pandora_runner=pandora_runner,
+        )
+        # The service serializes on the behavior-graphs lock and converts lock
+        # contention / execution failures to a dict; map it to the tool's JSON
+        # contract. A non-success carries the detail under ``logs``.
+        try:
+            res = await service.generate_animations()
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+        out: dict[str, Any] = {
+            "success": res.get("success", False),
+            "return_code": res.get("return_code", -1),
+            "stdout": sanitize_for_prompt(str(res.get("stdout", ""))) if res.get("stdout") else "",
+            "stderr": sanitize_for_prompt(str(res.get("stderr", ""))) if res.get("stderr") else "",
+            "duration_seconds": res.get("duration_seconds", 0.0),
+        }
+        if not out["success"] and res.get("logs"):
+            out["error"] = res["logs"]
+        return json.dumps(out)
+
     try:
         result = await pandora_runner.run_pandora()
     except Exception as exc:
