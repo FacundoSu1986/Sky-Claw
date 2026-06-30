@@ -20,6 +20,10 @@ from sky_claw.antigravity.security.sanitize import sanitize_for_prompt
 
 logger = logging.getLogger(__name__)
 
+#: Lock resource id para BodySlide (genera meshes en el overwrite/output). Serializa el
+#: tool del agente contra otros mutadores, igual que LOAD_ORDER / BEHAVIOR_GRAPHS.
+BODYSLIDE_MESHES_RESOURCE_ID = "bodyslide-meshes"
+
 
 async def check_load_order(mo2: Any, profile: str) -> str:
     """Read the MO2 modlist for a profile.
@@ -467,6 +471,9 @@ async def run_bodyslide_batch(
     bodyslide_runner: Any,
     group: str = "CBBE",
     output_path: str = "meshes",
+    *,
+    lock_manager: Any | None = None,
+    snapshot_manager: Any | None = None,
 ) -> str:
     """Execute BodySlide in batch mode via BodySlideRunner.
 
@@ -474,15 +481,43 @@ async def run_bodyslide_batch(
 
     Consolidation (obs #187): replaces the legacy AnimationHub-backed handler
     that hardcoded the "CBBE Body Physics" preset; ``group`` is configurable.
+
+    Codex #213 (same P1 vector as ``run_loot_sort``/``run_pandora``): BodySlide
+    batch-builds meshes into the overwrite/output, so when the distributed lock is
+    wired (production via ``app_context``) this agent path runs under the shared
+    ``bodyslide-meshes`` lock — the cross-process lock only protects if every mutator
+    participates. ``target_files=[]`` (serialize only): the output path is
+    environment-dependent, so a blind snapshot would be a false safety net. Without a
+    lock manager (legacy callers / tests) BodySlide runs directly, preserving prior behavior.
     """
     if bodyslide_runner is None:
         return json.dumps(
             {"error": ("BodySlideRunner is not configured. Set bodyslide_exe in config or install it via setup_tools.")}
         )
-    try:
-        result = await bodyslide_runner.run_batch(group, output_path)
-    except Exception as exc:
-        return json.dumps({"error": str(exc)})
+
+    if lock_manager is not None and snapshot_manager is not None:
+        from sky_claw.antigravity.db.locks import LockAcquisitionError, SnapshotTransactionLock
+
+        try:
+            async with SnapshotTransactionLock(
+                lock_manager=lock_manager,
+                snapshot_manager=snapshot_manager,
+                resource_id=BODYSLIDE_MESHES_RESOURCE_ID,
+                agent_id="bodyslide-tool",
+                target_files=[],
+                metadata={"source": "bodyslide_batch", "group": group},
+            ):
+                result = await bodyslide_runner.run_batch(group, output_path)
+        except LockAcquisitionError as exc:
+            return json.dumps({"error": f"Could not acquire '{BODYSLIDE_MESHES_RESOURCE_ID}' lock: {exc}"})
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+    else:
+        try:
+            result = await bodyslide_runner.run_batch(group, output_path)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
     return json.dumps(
         {
             "success": result.success,

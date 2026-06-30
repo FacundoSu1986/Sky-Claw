@@ -508,6 +508,14 @@ class AsyncToolRegistry:
         # M-02/M-03 runners (unified _process subprocess handling). The duplicate
         # run_pandora_behavior / run_bodyslide_batch tool names were removed —
         # they were never wired in production and always returned "not configured".
+        #
+        # HITL policy of the agent layer (decisión, no olvido): los tools destructivos
+        # de este registry LLM (run_loot_sort / run_xedit_script / run_pandora /
+        # run_bodyslide / generate_bashed_patch) NO piden aprobación HITL — solo el
+        # lock distribuido los serializa contra otros mutadores (GUI / preview).
+        # El gate HITL vive en el dispatcher de la GUI (Rituales); acá el operador de
+        # Telegram es el humano de confianza. Si esto cambia, agregar el gate de
+        # aprobación es un cambio transversal aparte (no parchear tool por tool).
         self._tools["run_pandora"] = ToolDescriptor(
             name="run_pandora",
             description="Execute Pandora Behavior Engine (animation patcher) in auto mode for Skyrim SE.",
@@ -524,8 +532,15 @@ class AsyncToolRegistry:
             name="run_bodyslide",
             description="Execute BodySlide in batch mode for a preset group.",
             params_model=BodySlideBatchParams,
+            # Codex #213 P1: serialize on the shared bodyslide-meshes lock (like
+            # run_loot_sort / run_pandora) so the agent path participates in the
+            # cross-process lock instead of building meshes unsynchronized.
             fn=lambda group="CBBE", output_path="meshes": run_bodyslide_batch(
-                self._resolve_bodyslide_runner(), group, output_path
+                self._resolve_bodyslide_runner(),
+                group,
+                output_path,
+                lock_manager=self._lock_manager,
+                snapshot_manager=self._snapshot_manager,
             ),
         )
         # FASE 6: Direct runner tools
