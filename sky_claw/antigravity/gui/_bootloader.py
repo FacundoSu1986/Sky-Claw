@@ -138,6 +138,13 @@ def _hydrate_tool_env_from_snapshot(snapshot) -> None:
     skyrim_path = getattr(skyrim, "path", None) if skyrim is not None else None
     if skyrim_path:
         os.environ.setdefault("SKYRIM_PATH", str(skyrim_path))
+    # MO2_PATH too: Wrye Bash and DynDOLOD also resolve MO2_PATH (and derive
+    # MO2_MODS_PATH = MO2_PATH/mods) from the env, so without this they'd still
+    # hit a missing-path error even with the tool exe set.
+    mo2 = getattr(snapshot, "mo2", None)
+    mo2_path = getattr(mo2, "path", None) if mo2 is not None else None
+    if mo2_path:
+        os.environ.setdefault("MO2_PATH", str(mo2_path))
     tools = getattr(snapshot, "tools", None) or {}
     for tool_key, env_name in _SNAPSHOT_TOOL_ENV.items():
         info = tools.get(tool_key)

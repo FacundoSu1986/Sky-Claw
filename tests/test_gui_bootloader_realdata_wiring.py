@@ -25,7 +25,7 @@ from sky_claw.antigravity.gui.views.forge_dashboard import (
     STORE_KEY_GPU,
     STORE_KEY_RAM,
 )
-from sky_claw.local.discovery.environment import EnvironmentSnapshot, SkyrimInfo, ToolInfo
+from sky_claw.local.discovery.environment import EnvironmentSnapshot, MO2Info, SkyrimInfo, ToolInfo
 
 
 async def test_telemetry_bridge_writes_cpu_gpu_ram_to_store() -> None:
@@ -90,10 +90,11 @@ async def test_environment_scan_swallows_errors() -> None:
 def test_hydrate_tool_env_from_snapshot_seeds_resolver_env(monkeypatch) -> None:
     # The dispatcher's PathResolutionService reads tool paths only from os.environ,
     # so the scan's resolved exes must be bridged there or "available" rituals fail.
-    for var in ("SKYRIM_PATH", "LOOT_EXE", "WRYE_BASH_PATH", "DYNDLOD_EXE"):
+    for var in ("SKYRIM_PATH", "MO2_PATH", "LOOT_EXE", "WRYE_BASH_PATH", "DYNDLOD_EXE"):
         monkeypatch.delenv(var, raising=False)
     snap = EnvironmentSnapshot()
     snap.skyrim = SkyrimInfo(path=Path("/games/Skyrim"), exe_name="SkyrimSE.exe")
+    snap.mo2 = MO2Info(path=Path("/modding/MO2"))
     snap.tools["loot"] = ToolInfo(name="LOOT", exe_path=Path("/tools/LOOT/loot.exe"))
     snap.tools["wrye_bash"] = ToolInfo(name="WRYE BASH", exe_path=Path("/tools/WB/Wrye Bash.exe"))
     snap.tools["dyndolod"] = ToolInfo(name="DYNDOLOD", exe_path=Path("/tools/DynDOLOD/DynDOLOD64.exe"))
@@ -103,6 +104,7 @@ def test_hydrate_tool_env_from_snapshot_seeds_resolver_env(monkeypatch) -> None:
     import os
 
     assert os.environ["SKYRIM_PATH"] == str(Path("/games/Skyrim"))
+    assert os.environ["MO2_PATH"] == str(Path("/modding/MO2"))
     assert os.environ["LOOT_EXE"] == str(Path("/tools/LOOT/loot.exe"))
     assert os.environ["WRYE_BASH_PATH"] == str(Path("/tools/WB/Wrye Bash.exe"))
     assert os.environ["DYNDLOD_EXE"] == str(Path("/tools/DynDOLOD/DynDOLOD64.exe"))
