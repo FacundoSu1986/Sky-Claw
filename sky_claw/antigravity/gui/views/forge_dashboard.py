@@ -23,6 +23,7 @@ from nicegui import app, ui
 
 from sky_claw.antigravity.gui.controllers.ritual_runner import (
     CLIENT_KEY_AUTO_APPROVE,
+    RITUAL_INSTALLER_MAP,
     STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
 )
@@ -732,11 +733,12 @@ def _rituales(callbacks: dict[str, Callable]) -> None:
     )
     snapshot = get_store().get(STORE_KEY_ENV)
     on_ritual_run = _cb(callbacks, "on_ritual_run")
+    on_ritual_install = _cb(callbacks, "on_ritual_install")
     with ui.element("div").style(
         "display:grid; grid-template-columns:repeat(auto-fit,minmax(186px,1fr)); gap:14px; margin-bottom:30px;"
     ):
         for r in _RITUALS:
-            _ritual_card(r, _ritual_status(snapshot, r["tool"]), on_ritual_run)
+            _ritual_card(r, _ritual_status(snapshot, r["tool"]), on_ritual_run, on_ritual_install)
 
 
 # Per-state chrome for a ritual card. "unknown" = scan hasn't landed yet, so we
@@ -769,7 +771,12 @@ _RITUAL_STATE_STYLE: dict[str, dict[str, str]] = {
 }
 
 
-def _ritual_card(r: dict[str, str], state: str = "unknown", on_ritual_run: Callable | None = None) -> None:
+def _ritual_card(
+    r: dict[str, str],
+    state: str = "unknown",
+    on_ritual_run: Callable | None = None,
+    on_ritual_install: Callable | None = None,
+) -> None:
     tone = r["tone"]
     style = _RITUAL_STATE_STYLE.get(state, _RITUAL_STATE_STYLE["unknown"])
     opacity = style["opacity"]
@@ -797,10 +804,13 @@ def _ritual_card(r: dict[str, str], state: str = "unknown", on_ritual_run: Calla
             f"letter-spacing:.1em; background:rgba(0,0,0,.3); border:1px solid; border-radius:4px; {btn_style}"
         )
         # Fase 2: an available tool runs for real through the supervisor dispatcher
-        # (HITL-gated). "missing"/"unknown" keep the honest interim notice — the
-        # Instalar flow + Pandora/SSEEdit-clean strategies land in a follow-up.
+        # (HITL-gated). Follow-up C: a "missing" tool with an auto-installer downloads
+        # it through ToolsInstaller (download approval parks the GUI modal). Tools with
+        # no installer (Wrye Bash / DynDOLOD) keep the honest interim notice.
         if state == "available" and on_ritual_run is not None:
             b.on("click", lambda _=None, tool=r["tool"]: on_ritual_run(tool))
+        elif state == "missing" and on_ritual_install is not None and r["tool"] in RITUAL_INSTALLER_MAP:
+            b.on("click", lambda _=None, tool=r["tool"]: on_ritual_install(tool))
         else:
             b.on(
                 "click",

@@ -165,6 +165,9 @@ class AppContext:
         self.sender: TelegramSender | None = None
         self.polling: TelegramPolling | None = None
         self.tools_installer: ToolsInstaller | None = None
+        # Resolved tools install dir, populated in start() — read by the GUI
+        # "Instalar" button (Follow-up C). None until the full start path runs.
+        self.install_dir: pathlib.Path | None = None
 
         # ARC-02: AsyncExitStack para compensación atómica ante fallos
         self._exit_stack = AsyncExitStack()
@@ -398,6 +401,9 @@ class AppContext:
             install_dir = getattr(self._args, "install_dir", None)
             if local_cfg.install_dir:
                 install_dir = pathlib.Path(local_cfg.install_dir)
+            # Expose the resolved tools install dir so the GUI "Instalar" button can
+            # reach it without re-resolving config (Follow-up C).
+            self.install_dir = install_dir
 
             sandbox_roots: list[pathlib.Path] = [
                 mo2_root,

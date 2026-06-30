@@ -48,13 +48,15 @@ def _make_telemetry_store_bridge(store: ReactiveStore):
 
 
 def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
-    """Route ``tool_execution`` HITL approvals to the GUI (modal / "Modo local").
+    """Route ``tool_execution`` + ``download`` HITL approvals to the GUI.
 
     Composes over the AppContext's existing notify closure: ``tool_execution``
     prompts are handled by the GUI — auto-approved when the "Modo local" toggle is
     on, otherwise parked in the store so the page shows an Aprobar/Denegar modal.
-    Every other category still flows to the original (Telegram) closure, and the
-    guard's timeout keeps the fail-closed auto-deny when nobody answers.
+    ``download`` prompts (the "Instalar" button — Follow-up C) are also parked in the
+    modal but are **never** auto-approved (network egress is always confirmed by
+    hand). Every other category still flows to the original (Telegram) closure, and
+    the guard's timeout keeps the fail-closed auto-deny when nobody answers.
     """
     from sky_claw.antigravity.gui.controllers.ritual_runner import (
         STORE_KEY_PENDING_AUTO_APPROVE,
@@ -66,8 +68,8 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
     if guard is None:
         logger.warning("No HITLGuard on AppContext — GUI ritual approval unavailable")
         return
-    # Wrap (not replace) the original closure so Telegram download/scope approvals
-    # keep working; only tool_execution is intercepted for the GUI. The getter
+    # Wrap (not replace) the original closure so Telegram scope approvals keep
+    # working; tool_execution + download are intercepted for the GUI. The getter
     # reads the per-launch armed flag (set by run_ritual from the launching
     # client's toggle) — not a global flag — so auto-approval is scoped to exactly
     # the ritual the operator launched (Codex review on #211).
