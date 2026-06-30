@@ -48,6 +48,8 @@ DESTRUCTIVE_TOOL_PATTERNS: frozenset[str] = frozenset(
         "generate_lods",
         # Follow-up A: Pandora reescribe los grafos de comportamiento del juego.
         "generate_animations",
+        # Follow-up B: QuickAutoClean reescribe los plugins oficiales en disco.
+        "quick_auto_clean",
         # Nombre real de la strategy (resolve_conflict_patch.py define
         # name="resolve_conflict_with_patch"); el alias viejo sin "_with"
         # nunca matcheó y dejaba la tool de xEdit SIN gate HITL.

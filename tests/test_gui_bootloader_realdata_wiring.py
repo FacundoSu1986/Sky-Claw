@@ -90,7 +90,7 @@ async def test_environment_scan_swallows_errors() -> None:
 def test_hydrate_tool_env_from_snapshot_seeds_resolver_env(monkeypatch) -> None:
     # The dispatcher's PathResolutionService reads tool paths only from os.environ,
     # so the scan's resolved exes must be bridged there or "available" rituals fail.
-    for var in ("SKYRIM_PATH", "MO2_PATH", "LOOT_EXE", "WRYE_BASH_PATH", "DYNDLOD_EXE", "PANDORA_EXE"):
+    for var in ("SKYRIM_PATH", "MO2_PATH", "LOOT_EXE", "WRYE_BASH_PATH", "DYNDLOD_EXE", "PANDORA_EXE", "XEDIT_PATH"):
         monkeypatch.delenv(var, raising=False)
     snap = EnvironmentSnapshot()
     snap.skyrim = SkyrimInfo(path=Path("/games/Skyrim"), exe_name="SkyrimSE.exe")
@@ -99,6 +99,7 @@ def test_hydrate_tool_env_from_snapshot_seeds_resolver_env(monkeypatch) -> None:
     snap.tools["wrye_bash"] = ToolInfo(name="WRYE BASH", exe_path=Path("/tools/WB/Wrye Bash.exe"))
     snap.tools["dyndolod"] = ToolInfo(name="DYNDOLOD", exe_path=Path("/tools/DynDOLOD/DynDOLOD64.exe"))
     snap.tools["pandora"] = ToolInfo(name="PANDORA", exe_path=Path("/tools/Pandora/Pandora.exe"))
+    snap.tools["xedit"] = ToolInfo(name="SSEEDIT", exe_path=Path("/tools/SSEEdit/SSEEdit.exe"))
 
     _hydrate_tool_env_from_snapshot(snap)
 
@@ -110,6 +111,7 @@ def test_hydrate_tool_env_from_snapshot_seeds_resolver_env(monkeypatch) -> None:
     assert os.environ["WRYE_BASH_PATH"] == str(Path("/tools/WB/Wrye Bash.exe"))
     assert os.environ["DYNDLOD_EXE"] == str(Path("/tools/DynDOLOD/DynDOLOD64.exe"))
     assert os.environ["PANDORA_EXE"] == str(Path("/tools/Pandora/Pandora.exe"))
+    assert os.environ["XEDIT_PATH"] == str(Path("/tools/SSEEdit/SSEEdit.exe"))
 
 
 def test_hydrate_tool_env_does_not_clobber_explicit_env(monkeypatch) -> None:

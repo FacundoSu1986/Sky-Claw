@@ -35,7 +35,7 @@ from sky_claw.local.xedit.patch_orchestrator import (
     PatchResult,
     PatchStrategyType,
 )
-from sky_claw.local.xedit.runner import ScriptExecutionResult, XEditRunner
+from sky_claw.local.xedit.runner import ScriptExecutionResult, XEditError, XEditRunner
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.core.path_resolver import PathResolutionService
@@ -45,6 +45,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _BACKUP_STAGING_DIR = ".skyclaw_backups/"
+
+#: Lock resource id para la limpieza QuickAutoClean (serializa contra otras corridas).
+XEDIT_CLEAN_RESOURCE_ID = "xedit-quickclean"
+
+#: DLC oficiales sucios de Skyrim SE/AE que QuickAutoClean limpia (ITM/deleted refs).
+#: Skyrim.esm NO se limpia. Viven en el directorio Data del juego (no son mods MO2).
+_OFFICIAL_DIRTY_MASTERS: tuple[str, ...] = (
+    "Update.esm",
+    "Dawnguard.esm",
+    "HearthFires.esm",
+    "Dragonborn.esm",
+)
 
 
 class XEditPipelineService:
@@ -80,6 +92,37 @@ class XEditPipelineService:
     # Lazy initialization (migrado de SupervisorAgent._ensure_patch_orchestrator)
     # ------------------------------------------------------------------
 
+    def _ensure_xedit_runner(self) -> XEditRunner:
+        """Inicializa lazily el :class:`XEditRunner` validando paths del entorno.
+
+        CRIT-003: Valida XEDIT_PATH y SKYRIM_PATH antes de usar. Compartido por
+        el parcheo (``_ensure_patch_orchestrator``) y la limpieza
+        (``quick_auto_clean``).
+
+        Raises:
+            PatchingError: Si las variables de entorno son inválidas.
+        """
+        if self._xedit_runner is not None:
+            return self._xedit_runner
+
+        xedit_path = self._path_resolver.get_xedit_path()
+        game_path = self._path_resolver.get_skyrim_path()
+
+        if not xedit_path or not game_path:
+            raise PatchingError(
+                "Cannot initialize XEditRunner: XEDIT_PATH and SKYRIM_PATH environment variables must be valid paths"
+            )
+
+        if not xedit_path.exists():
+            raise PatchingError(f"xEdit executable not found: {xedit_path}")
+
+        self._xedit_runner = XEditRunner(
+            xedit_path=xedit_path,
+            game_path=game_path,
+            output_dir=pathlib.Path(_BACKUP_STAGING_DIR) / "patches",
+        )
+        return self._xedit_runner
+
     def _ensure_patch_orchestrator(self) -> PatchOrchestrator:
         """Inicializa lazily el PatchOrchestrator validando paths del entorno.
 
@@ -94,23 +137,7 @@ class XEditPipelineService:
         if self._patch_orchestrator is not None:
             return self._patch_orchestrator
 
-        xedit_path = self._path_resolver.get_xedit_path()
-        game_path = self._path_resolver.get_skyrim_path()
-
-        if not xedit_path or not game_path:
-            raise PatchingError(
-                "Cannot initialize PatchOrchestrator: "
-                "XEDIT_PATH and SKYRIM_PATH environment variables must be valid paths"
-            )
-
-        if not xedit_path.exists():
-            raise PatchingError(f"xEdit executable not found: {xedit_path}")
-
-        self._xedit_runner = XEditRunner(
-            xedit_path=xedit_path,
-            game_path=game_path,
-            output_dir=pathlib.Path(_BACKUP_STAGING_DIR) / "patches",
-        )
+        self._ensure_xedit_runner()
 
         from sky_claw.antigravity.db.rollback_manager import RollbackManager
 
@@ -123,11 +150,7 @@ class XEditPipelineService:
             ),
         )
 
-        logger.info(
-            "PatchOrchestrator inicializado: xedit=%s, game=%s",
-            xedit_path,
-            game_path,
-        )
+        logger.info("PatchOrchestrator inicializado: runner=%s", self._xedit_runner)
         return self._patch_orchestrator
 
     # ------------------------------------------------------------------
@@ -330,6 +353,77 @@ class XEditPipelineService:
             )
 
         return self._result_to_dict(result)
+
+    # ------------------------------------------------------------------
+    # QuickAutoClean (Follow-up B) — limpieza de los DLC oficiales sucios
+    # ------------------------------------------------------------------
+
+    async def quick_auto_clean(self) -> dict[str, Any]:
+        """Limpia los DLC oficiales sucios con SSEEdit QuickAutoClean.
+
+        Corre ``-quickclean`` sobre los masters oficiales presentes en el directorio
+        ``Data`` del juego (Update/Dawnguard/HearthFires/Dragonborn) en secuencia,
+        bajo un único :class:`SnapshotTransactionLock`: snapshotea los masters para
+        rollback automático y serializa contra otras corridas. Si la limpieza de
+        cualquiera falla, el ``__aexit__`` del lock restaura **todos** los masters
+        (operación atómica).
+
+        Nunca propaga: los modos de fallo conocidos (paths faltantes, contención de
+        lock, fallo de xEdit) se devuelven como un ``dict`` serializable para que el
+        dispatcher lo reenvíe verbatim. La aprobación HITL la dueña el gate del
+        dispatcher (``quick_auto_clean`` ∈ ``DESTRUCTIVE_TOOL_PATTERNS``).
+        """
+        game_path = self._path_resolver.get_skyrim_path()
+        if game_path is None:
+            return {"status": "error", "success": False, "logs": "SKYRIM_PATH no está configurado."}
+
+        try:
+            runner = self._ensure_xedit_runner()
+        except PatchingError as exc:
+            logger.error("XEditRunner no disponible para QuickAutoClean: %s", exc)
+            return {"status": "error", "success": False, "logs": str(exc)}
+
+        data_dir = game_path / "Data"
+        targets = [data_dir / master for master in _OFFICIAL_DIRTY_MASTERS if (data_dir / master).is_file()]
+        if not targets:
+            logger.info("QuickAutoClean: no se encontraron DLC oficiales en %s", data_dir)
+            return {
+                "status": "success",
+                "success": True,
+                "cleaned": [],
+                "logs": "No se encontraron DLC oficiales para limpiar.",
+            }
+
+        cleaned: list[str] = []
+        try:
+            async with SnapshotTransactionLock(
+                lock_manager=self._lock_manager,
+                snapshot_manager=self._snapshot_manager,
+                resource_id=XEDIT_CLEAN_RESOURCE_ID,
+                agent_id=self.AGENT_ID,
+                target_files=targets,
+                metadata={"source": "xedit_quickclean", "masters": [p.name for p in targets]},
+            ):
+                for path in targets:
+                    result = await runner.quick_auto_clean(path.name)
+                    if not result.success:
+                        # Lanzar DENTRO del context activa el rollback automático.
+                        raise PatchingError(f"QuickAutoClean falló para {path.name} (exit {result.exit_code}).")
+                    cleaned.append(path.name)
+        except LockAcquisitionError as exc:
+            logger.warning("Lock contention on '%s': %s", XEDIT_CLEAN_RESOURCE_ID, exc)
+            return {
+                "status": "error",
+                "success": False,
+                "logs": f"No se pudo adquirir el lock '{XEDIT_CLEAN_RESOURCE_ID}': {exc}",
+            }
+        except (PatchingError, XEditError) as exc:
+            # __aexit__ ya restauró los snapshots (rollback de todos los masters).
+            logger.error("QuickAutoClean falló; rollback aplicado: %s", exc)
+            return {"status": "error", "success": False, "cleaned": [], "rolled_back": True, "logs": str(exc)}
+
+        logger.info("QuickAutoClean exitoso: %s", cleaned)
+        return {"status": "success", "success": True, "cleaned": cleaned}
 
     # ------------------------------------------------------------------
     # Dry-run / preview (plan-only)
