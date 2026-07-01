@@ -229,20 +229,25 @@ class DatabaseAgent:
                 return [dict(row) for row in await cursor.fetchall()]
 
     async def add_conflict(self, mod_id_1: int, mod_id_2: int, conflict_type: str | None = None) -> int:
-        """Registra un conflicto entre dos mods y devuelve su ID."""
+        """Registra un conflicto entre dos mods y devuelve su ID.
+
+        El id sale de ``cursor.lastrowid`` del propio INSERT (atómico al
+        statement): un ``SELECT last_insert_rowid()`` posterior podría devolver
+        el id de otra corrutina que insertó entre awaits en la conexión
+        compartida (review de Copilot en #220).
+        """
         conn = await self._get_conn()
         try:
-            await conn.execute(
+            cursor = await conn.execute(
                 "INSERT INTO conflicts (mod_id_1, mod_id_2, conflict_type) VALUES (?, ?, ?)",
                 (mod_id_1, mod_id_2, conflict_type),
             )
+            row_id = cursor.lastrowid or 0
             await conn.commit()
         except sqlite3.Error:
             await conn.rollback()
             raise
-        async with conn.execute("SELECT last_insert_rowid()") as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else 0
+        return row_id
 
     async def resolve_conflict(self, conflict_id: int, resolution: str | None = None) -> None:
         """Marca un conflicto como resuelto (opcionalmente con una nota)."""
