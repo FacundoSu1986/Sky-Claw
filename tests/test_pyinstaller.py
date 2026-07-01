@@ -97,26 +97,6 @@ class TestSkyClawAppBat:
 
 
 class TestFrozenPaths:
-    def test_static_dir_normal(self) -> None:
-        from sky_claw.antigravity.web.app import _get_static_dir
-
-        with patch("sky_claw.antigravity.web.app.sys") as mock_sys:
-            mock_sys.frozen = False
-            # Re-import won't help; call the function directly.
-            # In non-frozen mode it uses __file__.
-            result = _get_static_dir()
-            assert "static" in str(result)
-
-    def test_static_dir_frozen(self) -> None:
-        from sky_claw.antigravity.web.app import _get_static_dir
-
-        with patch("sky_claw.antigravity.web.app.sys") as mock_sys:
-            mock_sys.frozen = True
-            mock_sys._MEIPASS = "/tmp/fake_meipass"
-            result = _get_static_dir()
-            assert "fake_meipass" in str(result)
-            assert "static" in str(result)
-
     def test_exe_dir_normal(self) -> None:
         from sky_claw.antigravity.web.app import _get_exe_dir
 
@@ -154,16 +134,6 @@ class TestFrozenPaths:
             result = _gui_dir()
             assert "fake_meipass" in str(result)
             assert str(result).replace("\\", "/").endswith("sky_claw/antigravity/gui")
-
-    def test_web_static_dir_frozen(self) -> None:
-        from sky_claw.antigravity.gui.sky_claw_gui import _web_static_dir
-
-        with patch("sky_claw.antigravity.gui.sky_claw_gui.sys") as mock_sys:
-            mock_sys.frozen = True
-            mock_sys._MEIPASS = "/tmp/fake_meipass"
-            result = _web_static_dir()
-            assert "fake_meipass" in str(result)
-            assert str(result).replace("\\", "/").endswith("sky_claw/antigravity/web/static")
 
 
 # ---------------------------------------------------------------------------

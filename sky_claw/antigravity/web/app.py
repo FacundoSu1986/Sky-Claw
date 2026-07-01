@@ -1,12 +1,11 @@
-"""Sky-Claw aiohttp service: chat API + Operations Hub WebSocket bridge.
+"""Sky-Claw aiohttp service: chat API for the NiceGUI Forge interface.
 
 After the GUI refactor (purge of legacy dual-state), this module no
 longer serves the setup wizard or the legacy SPA — those flows are
 handled exclusively by the NiceGUI Forge interface.  What remains:
 
 * ``POST /api/chat`` — text chat against the LLM router.
-* WebSocket routes mounted by :func:`register_operations_hub_routes`
-  when an event bus is provided.
+* ``GET /ws/ui`` — GUI↔daemon chat WebSocket.
 
 The module supports lazy initialisation: ``router`` may be ``None``
 during boot and is populated once the GUI wizard completes the user's
@@ -27,26 +26,13 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from aiohttp import web
 
-from sky_claw.antigravity.web.operations_hub_ws import (
-    OperationsHubWSHandler,
-    register_operations_hub_routes,
-)
 from sky_claw.logging_config import correlation_id_var
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.agent.router import LLMRouter
-    from sky_claw.antigravity.core.event_bus import CoreEventBus
     from sky_claw.antigravity.security.auth_token_manager import AuthTokenManager
 
 logger = logging.getLogger(__name__)
-
-
-def _get_static_dir() -> pathlib.Path:
-    """Resolve the static assets directory, handling PyInstaller bundles."""
-    if getattr(sys, "frozen", False):
-        base = pathlib.Path(sys._MEIPASS)  # type: ignore[attr-defined]
-        return base / "sky_claw" / "web" / "static"
-    return pathlib.Path(__file__).parent / "static"
 
 
 def _get_exe_dir() -> pathlib.Path:
@@ -56,12 +42,11 @@ def _get_exe_dir() -> pathlib.Path:
     return pathlib.Path.cwd()
 
 
-_STATIC_DIR = _get_static_dir()
 _CONFIG_PATH = _get_exe_dir() / "sky_claw_config.json"
 
 
 class WebApp:
-    """Lightweight chat + Operations Hub aiohttp service.
+    """Lightweight chat aiohttp service for the NiceGUI Forge interface.
 
     Args:
         router: The LLM router to delegate chat messages to.  May be
@@ -71,8 +56,6 @@ class WebApp:
             construction (kept for backward compatibility with tests).
         auth_manager: When provided, ``/api/chat`` requires a valid
             Bearer token issued by the manager.
-        event_bus: When provided, mounts the Operations Hub WebSocket
-            routes against this bus.
     """
 
     def __init__(
@@ -81,15 +64,12 @@ class WebApp:
         session: aiohttp.ClientSession,
         config_path: pathlib.Path | None = None,
         auth_manager: AuthTokenManager | None = None,
-        event_bus: CoreEventBus | None = None,
     ) -> None:
         self._router = router
         self._session = session
         self._chat_id = "web-session"
         self._config_path = config_path or _CONFIG_PATH
         self._auth_manager = auth_manager
-        self._event_bus = event_bus
-        self.ops_hub_handler: OperationsHubWSHandler | None = None
 
     @web.middleware
     async def _correlation_middleware(
@@ -142,19 +122,11 @@ class WebApp:
         )
         app.router.add_post("/api/chat", self._handle_chat)
         app.router.add_get("/ws/ui", self._handle_ws_ui)
-        if _STATIC_DIR.exists():
-            app.router.add_static("/static", _STATIC_DIR, name="static")
-
-        if self._event_bus is not None:
-            self.ops_hub_handler = register_operations_hub_routes(app, self._event_bus, auth_manager=self._auth_manager)
-
-        if self._auth_manager is not None and self.ops_hub_handler is not None:
-            self._auth_manager.register_rotation_callback(self.ops_hub_handler.close_all_clients)
 
         return app
 
     def _validate_ws_auth(self, request: web.Request) -> bool:
-        """X-Auth-Token check for /ws/ui (mirrors OperationsHubWSHandler)."""
+        """X-Auth-Token check for /ws/ui (fail-closed when no auth_manager)."""
         if self._auth_manager is None:
             if os.environ.get("SKY_CLAW_DEV_NO_AUTH") == "1":
                 logger.warning("SKY_CLAW_DEV_NO_AUTH active — /ws/ui auth bypassed (dev mode only)")

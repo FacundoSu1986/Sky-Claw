@@ -79,22 +79,8 @@ def _gui_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def _web_static_dir() -> Path:
-    """Resolve the web static directory, handling PyInstaller onefile bundles."""
-    if getattr(sys, "frozen", False):
-        return (
-            Path(sys._MEIPASS)  # type: ignore[attr-defined]
-            / "sky_claw"
-            / "antigravity"
-            / "web"
-            / "static"
-        )
-    return Path(__file__).resolve().parent.parent / "web" / "static"
-
-
 _CSS_PATH = _gui_dir() / "styles.css"
 _ASSETS_PATH = _gui_dir() / "assets"
-_WEB_STATIC_PATH = _web_static_dir()
 
 
 # ── Runtime context ───────────────────────────────────────────────────────────
@@ -451,6 +437,14 @@ def main_page() -> None:
         callbacks["on_cta_secondary"] = _nav_controller.handle_cta_secondary
         callbacks["on_feature_click"] = _nav_controller.handle_feature_click
 
+        # A1: buscar desde el header guarda el término y navega a "Mods"; la
+        # pantalla lo lee del store y pre-filtra la lista (reusa _filter_mods).
+        def _on_search(query: str) -> None:
+            get_store().set("mods_search_query", query)
+            _nav_controller.handle_navigation("Mods")
+
+        callbacks["on_search"] = _on_search
+
     # Fase 2: Rituales dispatch through the supervisor (HITL-gated); approvals are
     # answered from the GUI modal. Both are fire-and-forget tracked tasks.
     # Read THIS client's Modo local toggle at click time (the click handler has
@@ -484,6 +478,10 @@ def main_page() -> None:
 
     callbacks["on_hitl_respond"] = _on_hitl_respond
 
+    # A3: identidad del header data-driven desde el estado (no literales en la vista).
+    app_state = get_app_state_instance()
+    identity = {"name": app_state.user_display_name, "role": app_state.user_role}
+
     render_dashboard(
         stats=stats,
         mods=mods,
@@ -491,6 +489,8 @@ def main_page() -> None:
         is_thinking=state.is_thinking,
         callbacks=callbacks,
         active_section=get_store().get("active_section") or "Dashboard",
+        identity=identity,
+        search_query=get_store().get("mods_search_query") or "",
     )
 
 
@@ -508,8 +508,6 @@ def setup_app() -> None:
 
     app.add_static_files("/static", str(_CSS_PATH.parent))
     app.add_static_files("/assets", str(_ASSETS_PATH))
-    if _WEB_STATIC_PATH.exists():
-        app.add_static_files("/web", str(_WEB_STATIC_PATH))
 
     async def _seed_db() -> None:
         await get_db_agent().init_db()
@@ -548,6 +546,9 @@ def setup_app() -> None:
     store.subscribe("mods_list", main_page.refresh)
     # Parte 5: re-render al navegar (el sidebar pinta la sección activa).
     store.subscribe("active_section", main_page.refresh)
+    # A1: re-render cuando cambia el término de búsqueda del header, aun si la
+    # sección activa no cambia (buscar estando ya en "Mods").
+    store.subscribe("mods_search_query", main_page.refresh)
     # Re-render el indicador "DAEMON CONECTADO" del sidebar cuando el WS conecta/cae.
     store.subscribe("is_agent_connected", main_page.refresh)
     # Phase 1: re-render los Rituales cuando el escaneo de entorno publica el

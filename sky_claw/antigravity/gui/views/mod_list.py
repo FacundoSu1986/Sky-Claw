@@ -21,10 +21,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _filter_mods(mods: list[dict[str, Any]], term: str) -> list[dict[str, Any]]:
+    """Filtra mods por coincidencia parcial (case-insensitive) en el nombre.
+
+    Seam puro (sin NiceGUI) reutilizado por el buscador del header (A1) y por el
+    input de la propia lista, para que ambos apliquen exactamente la misma
+    semántica de filtrado. Término vacío ⇒ devuelve la lista intacta.
+    """
+    needle = (term or "").strip().lower()
+    if not needle:
+        return mods
+    return [m for m in mods if needle in m.get("name", "").lower()]
+
+
 def build_mod_list(
     mods: list[dict[str, Any]],
     on_toggle: Callable[[str, bool], Awaitable[None]] | None = None,
     on_search: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
+    initial_query: str = "",
 ) -> None:
     """Build the mod list panel with toggles and search.
 
@@ -32,6 +46,8 @@ def build_mod_list(
         mods: List of mod dicts with keys: name, enabled, version, nexus_id (optional).
         on_toggle: Callback(mod_name, new_enabled_state).
         on_search: Callback(search_term) -> filtered mods.
+        initial_query: Término de búsqueda inicial (p. ej. tecleado en el buscador
+            del header, A1). Pre-rellena el input y pre-filtra la lista.
     """
     # ── Header ────────────────────────────────────────────────────────
     with (
@@ -43,7 +59,9 @@ def build_mod_list(
 
     # ── Search Bar ────────────────────────────────────────────────────
     search_input = (
-        ui.input(placeholder="🔍 Buscar mod...").classes("sky-modlist-search w-full").props("dense outlined dark")
+        ui.input(placeholder="🔍 Buscar mod...", value=initial_query)
+        .classes("sky-modlist-search w-full")
+        .props("dense outlined dark")
     )
 
     # ── Mod List Container ────────────────────────────────────────────
@@ -61,16 +79,12 @@ def build_mod_list(
             for mod in mod_list:
                 _build_mod_row(mod, on_toggle)
 
-    _render_mods(mods)
+    # Render inicial ya filtrado por el término que llega del header (A1).
+    _render_mods(_filter_mods(mods, initial_query))
 
     # ── Search filtering ──────────────────────────────────────────────
     def _on_search_change(e: Any) -> None:
-        term = e.value.strip().lower() if e.value else ""
-        if not term:
-            _render_mods(mods)
-        else:
-            filtered = [m for m in mods if term in m.get("name", "").lower()]
-            _render_mods(filtered)
+        _render_mods(_filter_mods(mods, e.value or ""))
 
     search_input.on("update:model-value", _on_search_change)
 
