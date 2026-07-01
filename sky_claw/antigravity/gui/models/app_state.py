@@ -13,6 +13,33 @@ from typing import Any
 NAV_SECTIONS: tuple[str, ...] = ("Dashboard", "Mods", "Conflicts", "Downloads", "Settings")
 
 
+def enrich_conflicts(
+    conflicts: list[dict[str, Any]] | None,
+    mods: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Enriquece los conflictos de la DB con los nombres de los mods.
+
+    Seam puro (sin NiceGUI, sin I/O) que consume la pantalla de Conflictos: la
+    tabla ``conflicts`` guarda ``mod_id_1/2`` (FKs), así que acá se mapean a
+    nombres legibles usando la lista de mods. Ids no encontrados caen a
+    "Mod desconocido" y un ``conflict_type`` ausente a "Conflicto", para no
+    mostrar campos vacíos.
+    """
+    names = {m.get("id"): m.get("name", "?") for m in (mods or [])}
+    out: list[dict[str, Any]] = []
+    for c in conflicts or []:
+        out.append(
+            {
+                "id": c.get("id"),
+                "type": c.get("conflict_type") or "Conflicto",
+                "mod_a": names.get(c.get("mod_id_1"), "Mod desconocido"),
+                "mod_b": names.get(c.get("mod_id_2"), "Mod desconocido"),
+                "detected_at": c.get("detected_at"),
+            }
+        )
+    return out
+
+
 @dataclass
 class AppState:
     """

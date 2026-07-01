@@ -200,18 +200,35 @@ class DatabaseAgent:
         size_mb: float = 0,
         source: str | None = None,
     ) -> int:
-        """Añade o actualiza un mod y devuelve su ID."""
+        """Añade o actualiza un mod y devuelve su ID.
+
+        UPSERT (``ON CONFLICT(name) DO UPDATE``) en vez de ``INSERT OR
+        REPLACE``: REPLACE borra+reinserta la fila con un id nuevo, lo que con
+        ``foreign_keys=ON`` rompe las FKs de ``conflicts`` y bloquearía
+        actualizar un mod con conflicto registrado (review Codex en #220).
+        El id se lee por nombre (determinista, sin carrera de
+        ``last_insert_rowid()`` en la conexión compartida).
+        """
         conn = await self._get_conn()
         try:
             await conn.execute(
-                "INSERT OR REPLACE INTO mods (name, version, size_mb, source, status) VALUES (?, ?, ?, ?, 'active')",
+                """
+                INSERT INTO mods (name, version, size_mb, source, status)
+                VALUES (?, ?, ?, ?, 'active')
+                ON CONFLICT(name) DO UPDATE SET
+                    version = excluded.version,
+                    size_mb = excluded.size_mb,
+                    source = excluded.source,
+                    status = 'active',
+                    updated_at = CURRENT_TIMESTAMP
+                """,
                 (name, version, size_mb, source),
             )
             await conn.commit()
         except sqlite3.Error:
             await conn.rollback()
             raise
-        async with conn.execute("SELECT last_insert_rowid()") as cursor:
+        async with conn.execute("SELECT id FROM mods WHERE name = ?", (name,)) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
 
@@ -227,6 +244,40 @@ class DatabaseAgent:
         else:
             async with conn.execute("SELECT * FROM conflicts ORDER BY detected_at DESC") as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
+
+    async def add_conflict(self, mod_id_1: int, mod_id_2: int, conflict_type: str | None = None) -> int:
+        """Registra un conflicto entre dos mods y devuelve su ID.
+
+        El id sale de ``cursor.lastrowid`` del propio INSERT (atómico al
+        statement): un ``SELECT last_insert_rowid()`` posterior podría devolver
+        el id de otra corrutina que insertó entre awaits en la conexión
+        compartida (review de Copilot en #220).
+        """
+        conn = await self._get_conn()
+        try:
+            cursor = await conn.execute(
+                "INSERT INTO conflicts (mod_id_1, mod_id_2, conflict_type) VALUES (?, ?, ?)",
+                (mod_id_1, mod_id_2, conflict_type),
+            )
+            row_id = cursor.lastrowid or 0
+            await conn.commit()
+        except sqlite3.Error:
+            await conn.rollback()
+            raise
+        return row_id
+
+    async def resolve_conflict(self, conflict_id: int, resolution: str | None = None) -> None:
+        """Marca un conflicto como resuelto (opcionalmente con una nota)."""
+        conn = await self._get_conn()
+        try:
+            await conn.execute(
+                "UPDATE conflicts SET resolved = 1, resolution = ? WHERE id = ?",
+                (resolution, conflict_id),
+            )
+            await conn.commit()
+        except sqlite3.Error:
+            await conn.rollback()
+            raise
 
     async def log_activity(self, event_type: str, message: str, details: dict | None = None) -> None:
         """Registra actividad en el log."""

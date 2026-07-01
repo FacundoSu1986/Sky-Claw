@@ -49,7 +49,7 @@ from sky_claw.antigravity.gui.gui_event_adapter import (
     event_bus,
 )
 from sky_claw.antigravity.gui.gui_helpers import _load_css
-from sky_claw.antigravity.gui.models.app_state import AppState, get_app_state
+from sky_claw.antigravity.gui.models.app_state import AppState, enrich_conflicts, get_app_state
 from sky_claw.antigravity.gui.setup_wizard import SetupWizardModal
 from sky_claw.antigravity.gui.state import ReactiveStore, get_store
 from sky_claw.antigravity.gui.task_tracking import create_tracked_task
@@ -216,15 +216,32 @@ class ReactiveState:
 
     async def update_from_db(self) -> None:
         try:
-            mods = await get_db_agent().get_mods(status="active")
-            conflicts = await get_db_agent().get_conflicts(resolved=False)
-            self.active_mods.set(len(mods))
-            self.conflicts_count.set(len(conflicts))
-            self.pending_updates.set(sum(1 for m in mods if m.get("needs_update", False)))
-            total_size = sum(m.get("size_mb", 0) for m in mods)
+            all_mods = await get_db_agent().get_mods()
+            active = [m for m in all_mods if m.get("status") == "active"]
+            self.active_mods.set(len(active))
+            self.pending_updates.set(sum(1 for m in active if m.get("needs_update", False)))
+            total_size = sum(m.get("size_mb", 0) for m in active)
             self.storage_used.set(round(total_size / 1024, 1))
         except Exception as exc:
             logger.error("Error actualizando estado desde DB: %s", exc)
+        await self.refresh_conflicts()
+
+    async def refresh_conflicts(self) -> None:
+        """Refresca SOLO los datos de conflictos (contador + lista enriquecida).
+
+        No toca ``active_mods``/``pending_updates``/``storage_used``: con un
+        registry MO2 vivo esos los escribe ``_gui_mod_update_loop``, y pisarlos
+        desde la DB GUI haría saltar las stats a valores viejos al resolver un
+        conflicto (review Codex en #220). Los mods se leen solo para mapear
+        nombres en ``enrich_conflicts``.
+        """
+        try:
+            all_mods = await get_db_agent().get_mods()
+            conflicts = await get_db_agent().get_conflicts(resolved=False)
+            self.conflicts_count.set(len(conflicts))
+            self._store.set("conflicts_list", enrich_conflicts(conflicts, all_mods))
+        except Exception as exc:
+            logger.error("Error refrescando conflictos desde DB: %s", exc)
 
     def notify(self, message: str, type: str = "info") -> None:
         ui.notify(message, type=type)
@@ -234,7 +251,11 @@ class ReactiveState:
         self.notify(f"Mod '{event.data.get('name')}' added!", type="positive")
 
     def handle_conflict_detected(self, event: SkyClawEvent) -> None:
-        self.conflicts_count.set(self.conflicts_count.get() + 1)
+        # Refresca contador Y lista desde la DB (misma fuente) para que el badge
+        # y la pantalla de Conflictos no diverjan (review Codex en #220). Es
+        # seguro crear la tarea acá: el EventBus despacha los callbacks con
+        # loop.call_soon_threadsafe, así que corren dentro del loop de NiceGUI.
+        create_tracked_task(self.refresh_conflicts(), name="gui-conflicts-refresh")
         self.notify(
             f"Conflict: {event.data.get('description', 'Unknown')}",
             type="warning",
@@ -478,6 +499,18 @@ def main_page() -> None:
 
     callbacks["on_hitl_respond"] = _on_hitl_respond
 
+    # Sección Conflictos: "Resolver" marca el conflicto como resuelto en la DB y
+    # refresca SOLO los datos de conflictos (refresh_conflicts) — no las stats de
+    # mods, que con registry vivo las escribe _gui_mod_update_loop (Codex #220).
+    def _on_conflict_resolve(conflict_id: int) -> None:
+        async def _resolve() -> None:
+            await get_db_agent().resolve_conflict(conflict_id)
+            await get_state().refresh_conflicts()
+
+        create_tracked_task(_resolve(), name="gui-conflict-resolve")
+
+    callbacks["on_conflict_resolve"] = _on_conflict_resolve
+
     # A3: identidad del header data-driven desde el estado (no literales en la vista).
     app_state = get_app_state_instance()
     identity = {"name": app_state.user_display_name, "role": app_state.user_role}
@@ -491,6 +524,7 @@ def main_page() -> None:
         active_section=get_store().get("active_section") or "Dashboard",
         identity=identity,
         search_query=get_store().get("mods_search_query") or "",
+        conflicts_list=get_store().get("conflicts_list") or [],
     )
 
 
@@ -549,6 +583,8 @@ def setup_app() -> None:
     # A1: re-render cuando cambia el término de búsqueda del header, aun si la
     # sección activa no cambia (buscar estando ya en "Mods").
     store.subscribe("mods_search_query", main_page.refresh)
+    # Conflictos: re-render de la pantalla al refrescar la lista (alta/resolución).
+    store.subscribe("conflicts_list", main_page.refresh)
     # Re-render el indicador "DAEMON CONECTADO" del sidebar cuando el WS conecta/cae.
     store.subscribe("is_agent_connected", main_page.refresh)
     # Phase 1: re-render los Rituales cuando el escaneo de entorno publica el
