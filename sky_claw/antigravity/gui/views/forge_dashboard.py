@@ -624,7 +624,7 @@ def _header(
     name = identity.get("name") or "Dovahkiin"
     role = identity.get("role") or "Maestro de la Forja"
     titles = {
-        "Dashboard": ("PANEL DEL DRACONATO", "Tu salón, Dovahkiin — todo en su sitio."),
+        "Dashboard": ("PANEL DEL DRACONATO", f"Tu salón, {name} — todo en su sitio."),
         "Mods": ("ARSENAL DE LA FORJA", "Cada mod, montando guardia."),
         "Conflicts": ("DISPUTAS EN LA FORJA", "Juzga cada conflicto."),
         "Downloads": ("PUERTA DE APROBACIÓN", "El guardián aguarda."),
