@@ -326,7 +326,7 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
         # installed (follow-up #2 / #209) rather than relying on auto-detection.
         ctx._track_task(_run_environment_scan(_build_environment_scanner(ctx), store), name="gui-env-scan")
 
-        # aiohttp sub-server for /api/chat + Operations Hub WS.
+        # aiohttp sub-server for /api/chat + /ws/ui (GUI↔daemon chat).
         # Runs on 8765 so external scripts and AgentCommunicationClient
         # can reach the chat endpoint without conflicting with NiceGUI.
         from aiohttp import web as aiohttp_web

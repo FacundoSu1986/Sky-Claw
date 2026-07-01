@@ -144,6 +144,38 @@ def _fmt_pct(value: float | None) -> str:
     return f"{int(round(value))}%"
 
 
+def _initials(name: str) -> str:
+    """Deriva hasta 2 letras de iniciales del nombre visible (A3).
+
+    Con una sola palabra toma sus dos primeras letras; con varias, la inicial de
+    las dos primeras. Cae a ``"?"`` cuando no hay nombre — así el avatar deja de
+    ser el literal "DS" hardcodeado y pasa a derivarse del estado.
+    """
+    words = str(name or "").split()
+    if not words:
+        return "?"
+    if len(words) == 1:
+        return words[0][:2].upper()
+    return (words[0][0] + words[1][0]).upper()
+
+
+def _identity_html(name: str, role: str) -> str:
+    """Construye el bloque de identidad del header (A3), data-driven.
+
+    Seam puro (sin ``ui.*``): reemplaza los literales "Dovahkiin" / "Maestro de
+    la Forja" / "DS" por ``name`` / ``role`` y las iniciales calculadas. Escapa
+    todo el contenido para no inyectar HTML.
+    """
+    return (
+        '<div style="display:flex; align-items:center; gap:11px; padding-left:16px; border-left:1px solid rgba(200,168,106,.16);">'
+        '<div style="text-align:right;">'
+        f"<div style=\"font-family:'Cinzel',serif; font-size:13px; color:#e6dcc4; letter-spacing:.04em;\">{_e(name)}</div>"
+        f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#8a7f6a;\">{_e(role)}</div></div>"
+        "<div style=\"width:42px; height:42px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Cinzel',serif; font-weight:700; font-size:15px; color:#1a120c; background:radial-gradient(circle at 38% 32%, #f0d79a, #c8a86a 62%, #8a6c38); border:1.5px solid #f0d79a; box-shadow:0 0 16px rgba(200,168,106,.45);\">"
+        f"{_e(_initials(name))}</div></div>"
+    )
+
+
 def _vital_bar_width(value: float | None) -> int:
     """Clamp a metric to a 0-100 bar width; unknown metrics render empty."""
     if value is None:
@@ -191,8 +223,14 @@ def render_forge_dashboard(
     is_thinking: bool,
     callbacks: dict[str, Callable],
     active_section: str = "Dashboard",
+    identity: dict[str, str] | None = None,
+    search_query: str = "",
 ) -> None:
-    """Render the full Forge shell (sidebar + header + scroll content)."""
+    """Render the full Forge shell (sidebar + header + scroll content).
+
+    ``identity`` alimenta el bloque de usuario del header (A3) y ``search_query``
+    pre-filtra la pantalla de Mods cuando el usuario busca desde el header (A1).
+    """
     active = int(_safe(stats, "active_mods"))
     pending = int(_safe(stats, "pending_updates"))
     conflicts = int(_safe(stats, "conflicts_count"))
@@ -228,7 +266,7 @@ def render_forge_dashboard(
         with ui.element("div").style(
             "position:relative; z-index:2; flex:1; min-width:0; display:flex; flex-direction:column;"
         ):
-            _header(active_section, callbacks)
+            _header(active_section, callbacks, identity, search_query)
             with ui.element("div").classes("sc-scroll").style("flex:1; overflow-y:auto; padding:26px 30px 40px;"):
                 if active_section in ("Dashboard", "Panel"):
                     _hero(active, conflicts, callbacks)
@@ -241,7 +279,7 @@ def render_forge_dashboard(
                         _asistente(chat_messages, is_thinking, callbacks)
                     _footer_rune()
                 elif active_section == "Mods":
-                    _mods_screen(mods, callbacks)
+                    _mods_screen(mods, callbacks, search_query)
                 else:
                     _placeholder(active_section, callbacks)
 
@@ -576,9 +614,17 @@ def _ritual_feedback_panel() -> None:
 
 
 # ── HEADER ─────────────────────────────────────────────────────────────────────
-def _header(section: str, callbacks: dict[str, Callable]) -> None:
+def _header(
+    section: str,
+    callbacks: dict[str, Callable],
+    identity: dict[str, str] | None = None,
+    initial_query: str = "",
+) -> None:
+    identity = identity or {}
+    name = identity.get("name") or "Dovahkiin"
+    role = identity.get("role") or "Maestro de la Forja"
     titles = {
-        "Dashboard": ("PANEL DEL DRACONATO", "Tu salón, Dovahkiin — todo en su sitio."),
+        "Dashboard": ("PANEL DEL DRACONATO", f"Tu salón, {name} — todo en su sitio."),
         "Mods": ("ARSENAL DE LA FORJA", "Cada mod, montando guardia."),
         "Conflicts": ("DISPUTAS EN LA FORJA", "Juzga cada conflicto."),
         "Downloads": ("PUERTA DE APROBACIÓN", "El guardián aguarda."),
@@ -596,26 +642,53 @@ def _header(section: str, callbacks: dict[str, Callable]) -> None:
             f'<div style="min-width:0; flex-shrink:1;"><div style="font-family:\'Cinzel\',serif; font-weight:700; font-size:16px; letter-spacing:.1em; color:#f1e6cf; line-height:1.15; white-space:nowrap;">{_e(title)}</div>'
             f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#897f6a; margin-top:2px;\">{_e(sub)}</div></div>"
         )
-        ui.html(
-            '<div style="flex:1 1 160px; min-width:140px; max-width:400px; margin:0 16px; position:relative;">'
-            '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#7a7159" stroke-width="2" stroke-linecap="round" style="position:absolute; left:14px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'
-            '<input placeholder="Busca en los archivos arcanos…" style="width:100%; padding:11px 14px 11px 40px; font-family:\'EB Garamond\',serif; font-size:14px; color:#e8e2d4; background:rgba(62,39,35,.45); border:1px solid rgba(200,168,106,.28); border-radius:5px; outline:none; box-shadow:inset 0 2px 6px rgba(0,0,0,.45);"></div>'
-        )
-        # right cluster (telemetry HUD + settings + bell + user). The HUD is split
-        # into its own @ui.refreshable so the live timer can pulse GPU/CPU without
-        # re-rendering the (static) settings button + user avatar.
+        # Buscador real (A1): al presionar Enter dispara ``on_search`` — el
+        # cableado en sky_claw_gui guarda el término y navega a "Mods", donde
+        # ``build_mod_list`` lo consume para pre-filtrar (reusa ``_filter_mods``).
+        with ui.element("div").style(
+            "flex:1 1 160px; min-width:140px; max-width:400px; margin:0 16px; position:relative;"
+        ):
+            ui.html(
+                '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#7a7159" stroke-width="2" stroke-linecap="round" style="position:absolute; left:14px; top:50%; transform:translateY(-50%); z-index:1; pointer-events:none;"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'
+            )
+            search = (
+                ui.input(placeholder="Busca en los archivos arcanos…", value=initial_query)
+                .props('borderless dense dark input-style="color:#e8e2d4; font-family:EB Garamond,serif"')
+                .style(
+                    "width:100%; padding:0 14px 0 36px; background:rgba(62,39,35,.45);"
+                    " border:1px solid rgba(200,168,106,.28); border-radius:5px;"
+                    " box-shadow:inset 0 2px 6px rgba(0,0,0,.45);"
+                )
+            )
+            on_search = _cb(callbacks, "on_search")
+            if on_search:
+                search.on("keydown.enter", lambda _=None: on_search((search.value or "").strip()))
+        # right cluster (telemetry HUD + settings + user). The HUD is split into
+        # its own @ui.refreshable so the live timer can pulse GPU/CPU without
+        # re-rendering the settings button + user avatar.
         with ui.element("div").style("display:flex; align-items:center; gap:14px;"):
             _hud_panel()
             _modo_local_panel()
-            ui.html(
-                '<button title="Asistente de Configuración" style="width:40px; height:40px; display:flex; align-items:center; justify-content:center; background:rgba(62,39,35,.4); border:1px solid rgba(200,168,106,.22); border-radius:5px; cursor:pointer;">'
-                '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#c2b48f" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>'
-                '<div style="display:flex; align-items:center; gap:11px; padding-left:16px; border-left:1px solid rgba(200,168,106,.16);">'
-                '<div style="text-align:right;"><div style="font-family:\'Cinzel\',serif; font-size:13px; color:#e6dcc4; letter-spacing:.04em;">Dovahkiin</div>'
-                "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#8a7f6a;\">Maestro de la Forja</div></div>"
-                "<div style=\"width:42px; height:42px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Cinzel',serif; font-weight:700; font-size:15px; color:#1a120c; background:radial-gradient(circle at 38% 32%, #f0d79a, #c8a86a 62%, #8a6c38); border:1.5px solid #f0d79a; box-shadow:0 0 16px rgba(200,168,106,.45);\">DS</div>"
-                "</div>"
+            # Botón de Ajustes (A2): antes era un <button> decorativo sin handler.
+            # Ahora navega a la sección "Settings" vía el callback de navegación.
+            gear = (
+                ui.element("button")
+                .props('title="Ajustes"')
+                .style(
+                    "width:40px; height:40px; display:flex; align-items:center; justify-content:center;"
+                    " background:rgba(62,39,35,.4); border:1px solid rgba(200,168,106,.22); border-radius:5px; cursor:pointer;"
+                )
             )
+            on_navigate = _cb(callbacks, "on_navigate")
+            if on_navigate:
+                gear.on("click", lambda _=None: on_navigate("Settings"))
+            with gear:
+                ui.html(
+                    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#c2b48f" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>'
+                )
+            # Identidad (A3): data-driven desde el estado (nombre/rol + iniciales
+            # calculadas), en vez de los literales "Dovahkiin"/"DS" hardcodeados.
+            ui.html(_identity_html(name, role))
 
 
 # ── HERO ───────────────────────────────────────────────────────────────────────
@@ -1003,12 +1076,13 @@ def _footer_rune() -> None:
     )
 
 
-def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable]) -> None:
+def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable], search_query: str = "") -> None:
     """Full mod-management screen (search + toggles).
 
     Reuses ``build_mod_list`` so the existing ``on_mod_toggle`` controls stay
     reachable from the Forge shell instead of the "próxima iteración" placeholder
-    (Codex P1 on #208).
+    (Codex P1 on #208). ``search_query`` pre-filtra la lista cuando el usuario
+    llega desde el buscador del header (A1).
     """
     from .mod_list import build_mod_list
 
@@ -1025,7 +1099,7 @@ def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable]) -> 
         }
         for m in mods
     ]
-    build_mod_list(mods=adapted, on_toggle=callbacks.get("on_mod_toggle"))
+    build_mod_list(mods=adapted, on_toggle=callbacks.get("on_mod_toggle"), initial_query=search_query)
 
 
 def _placeholder(section: str, callbacks: dict[str, Callable]) -> None:

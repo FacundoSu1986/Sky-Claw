@@ -1,4 +1,4 @@
-"""P0.6 contract tests: Zero-Trust fail-closed for /api/chat and /api/status WS.
+"""P0.6 contract tests: Zero-Trust fail-closed for /api/chat and /ws/ui WS.
 
 When auth_manager is None (not configured):
   - Production (no SKY_CLAW_DEV_NO_AUTH): requests are DENIED — fail-closed.
@@ -16,7 +16,6 @@ import pytest
 from aiohttp import web
 
 from sky_claw.antigravity.web.app import WebApp
-from sky_claw.antigravity.web.operations_hub_ws import OperationsHubWSHandler
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -72,23 +71,20 @@ class TestZeroTrustHTTP:
 
 
 class TestZeroTrustWS:
-    """_validate_ws_auth must deny when auth_manager is None (fail-closed)."""
+    """/ws/ui _validate_ws_auth must deny when auth_manager is None (fail-closed)."""
 
     def test_no_auth_manager_rejects(self, monkeypatch):
-        """Without auth_manager and no dev flag, _validate_ws_auth must return False.
-
-        RED path: current code returns True when auth_manager is None.
-        """
+        """Without auth_manager and no dev flag, _validate_ws_auth must return False."""
         monkeypatch.delenv("SKY_CLAW_DEV_NO_AUTH", raising=False)
-        handler = OperationsHubWSHandler(MagicMock(), auth_manager=None)
+        web_app = _make_web_app()
         request = MagicMock(spec=web.Request)
         request.headers = {}
-        assert handler._validate_ws_auth(request) is False
+        assert web_app._validate_ws_auth(request) is False
 
     def test_dev_flag_allows_bypass(self, monkeypatch):
         """SKY_CLAW_DEV_NO_AUTH=1 with no auth_manager must let WS auth pass."""
         monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
-        handler = OperationsHubWSHandler(MagicMock(), auth_manager=None)
+        web_app = _make_web_app()
         request = MagicMock(spec=web.Request)
         request.headers = {}
-        assert handler._validate_ws_auth(request) is True
+        assert web_app._validate_ws_auth(request) is True

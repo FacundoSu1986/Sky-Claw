@@ -104,10 +104,9 @@ def _build_version_info():
         ],
     )
 
-# Collect data files: web UI static assets, GUI css + image assets, xEdit
-# scripts, and fail-closed security policy data required at import time.
+# Collect data files: GUI css + image assets, xEdit scripts, and
+# fail-closed security policy data required at import time.
 datas = [
-    ("sky_claw/antigravity/web/static", "sky_claw/antigravity/web/static"),
     # GUI assets served via add_static_files in sky_claw_gui.setup_app.
     # Without these the frozen exe crashes at startup (the directory does
     # not exist inside sys._MEIPASS).

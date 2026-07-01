@@ -29,6 +29,13 @@ class AppState:
     active_section: str = "Dashboard"
     selected_mod: str | None = None
 
+    # GUI estática → funcional: término de búsqueda del header (lo consume la
+    # pantalla de Mods para pre-filtrar) e identidad mostrada en el header
+    # (data-driven; reemplaza los literales hardcodeados de la vista).
+    search_query: str = ""
+    user_display_name: str = "Dovahkiin"
+    user_role: str = "Maestro de la Forja"
+
     # Datos puros de los mensajes (diccionarios o strings, NO widgets gráficos)
     _chat_messages: list[dict[str, str]] = field(default_factory=list)
 

@@ -38,6 +38,8 @@ def render_dashboard(
     is_thinking: bool,
     callbacks: dict[str, Callable],
     active_section: str = "Dashboard",
+    identity: dict[str, str] | None = None,
+    search_query: str = "",
 ) -> None:
     """Renderiza la página completa del dashboard.
 
@@ -118,6 +120,8 @@ def render_dashboard(
         is_thinking=is_thinking,
         callbacks=callbacks,
         active_section=active_section,
+        identity=identity,
+        search_query=search_query,
     )
 
 
