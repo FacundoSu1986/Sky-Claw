@@ -49,7 +49,7 @@ from sky_claw.antigravity.gui.gui_event_adapter import (
     event_bus,
 )
 from sky_claw.antigravity.gui.gui_helpers import _load_css
-from sky_claw.antigravity.gui.models.app_state import AppState, get_app_state
+from sky_claw.antigravity.gui.models.app_state import AppState, enrich_conflicts, get_app_state
 from sky_claw.antigravity.gui.setup_wizard import SetupWizardModal
 from sky_claw.antigravity.gui.state import ReactiveStore, get_store
 from sky_claw.antigravity.gui.task_tracking import create_tracked_task
@@ -216,13 +216,16 @@ class ReactiveState:
 
     async def update_from_db(self) -> None:
         try:
-            mods = await get_db_agent().get_mods(status="active")
+            all_mods = await get_db_agent().get_mods()
+            active = [m for m in all_mods if m.get("status") == "active"]
             conflicts = await get_db_agent().get_conflicts(resolved=False)
-            self.active_mods.set(len(mods))
+            self.active_mods.set(len(active))
             self.conflicts_count.set(len(conflicts))
-            self.pending_updates.set(sum(1 for m in mods if m.get("needs_update", False)))
-            total_size = sum(m.get("size_mb", 0) for m in mods)
+            self.pending_updates.set(sum(1 for m in active if m.get("needs_update", False)))
+            total_size = sum(m.get("size_mb", 0) for m in active)
             self.storage_used.set(round(total_size / 1024, 1))
+            # Lista enriquecida (nombres de mods) para la pantalla de Conflictos.
+            self._store.set("conflicts_list", enrich_conflicts(conflicts, all_mods))
         except Exception as exc:
             logger.error("Error actualizando estado desde DB: %s", exc)
 
@@ -478,6 +481,17 @@ def main_page() -> None:
 
     callbacks["on_hitl_respond"] = _on_hitl_respond
 
+    # Sección Conflictos: "Resolver" marca el conflicto como resuelto en la DB y
+    # refresca el estado (update_from_db reescribe conflicts_list → re-render).
+    def _on_conflict_resolve(conflict_id: int) -> None:
+        async def _resolve() -> None:
+            await get_db_agent().resolve_conflict(conflict_id)
+            await get_state().update_from_db()
+
+        create_tracked_task(_resolve(), name="gui-conflict-resolve")
+
+    callbacks["on_conflict_resolve"] = _on_conflict_resolve
+
     # A3: identidad del header data-driven desde el estado (no literales en la vista).
     app_state = get_app_state_instance()
     identity = {"name": app_state.user_display_name, "role": app_state.user_role}
@@ -491,6 +505,7 @@ def main_page() -> None:
         active_section=get_store().get("active_section") or "Dashboard",
         identity=identity,
         search_query=get_store().get("mods_search_query") or "",
+        conflicts_list=get_store().get("conflicts_list") or [],
     )
 
 
@@ -549,6 +564,8 @@ def setup_app() -> None:
     # A1: re-render cuando cambia el término de búsqueda del header, aun si la
     # sección activa no cambia (buscar estando ya en "Mods").
     store.subscribe("mods_search_query", main_page.refresh)
+    # Conflictos: re-render de la pantalla al refrescar la lista (alta/resolución).
+    store.subscribe("conflicts_list", main_page.refresh)
     # Re-render el indicador "DAEMON CONECTADO" del sidebar cuando el WS conecta/cae.
     store.subscribe("is_agent_connected", main_page.refresh)
     # Phase 1: re-render los Rituales cuando el escaneo de entorno publica el

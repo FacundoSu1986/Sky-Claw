@@ -225,6 +225,7 @@ def render_forge_dashboard(
     active_section: str = "Dashboard",
     identity: dict[str, str] | None = None,
     search_query: str = "",
+    conflicts_list: list[dict[str, Any]] | None = None,
 ) -> None:
     """Render the full Forge shell (sidebar + header + scroll content).
 
@@ -280,6 +281,8 @@ def render_forge_dashboard(
                     _footer_rune()
                 elif active_section == "Mods":
                     _mods_screen(mods, callbacks, search_query)
+                elif active_section == "Conflicts":
+                    _conflicts_screen(conflicts_list or [], callbacks)
                 else:
                     _placeholder(active_section, callbacks)
 
@@ -1100,6 +1103,64 @@ def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable], sea
         for m in mods
     ]
     build_mod_list(mods=adapted, on_toggle=callbacks.get("on_mod_toggle"), initial_query=search_query)
+
+
+def _conflicts_screen(conflicts: list[dict[str, Any]], callbacks: dict[str, Callable]) -> None:
+    """Pantalla de Conflictos: lista real de disputas + acción de resolver.
+
+    Reemplaza el placeholder "próxima iteración" por los conflictos sin resolver
+    (``conflicts_list`` del store, ya enriquecido con nombres de mods vía
+    ``enrich_conflicts``). "Resolver" dispara ``on_conflict_resolve(id)``, que
+    marca el conflicto como resuelto en la DB y refresca.
+    """
+    ui.html(
+        '<div style="display:flex; align-items:center; gap:16px; margin-bottom:14px;">'
+        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">DISPUTAS EN LA FORJA</h2>"
+        f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:12px; color:{RED_SOFT};\">{len(conflicts)}</span>"
+        '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
+    )
+    if not conflicts:
+        with ui.element("div").style(
+            "display:flex; flex-direction:column; align-items:center; justify-content:center; padding:70px 0; gap:12px;"
+        ):
+            ui.html(
+                f"<div style=\"font-family:'Noto Sans Runic',serif; font-size:48px; color:{GREEN}; opacity:.55;\">ᚦ</div>"
+                "<div style=\"font-family:'EB Garamond',serif; font-style:italic; color:#8a8068;\">No hay disputas — tu orden de carga está en paz.</div>"
+            )
+        return
+    on_resolve = _cb(callbacks, "on_conflict_resolve")
+    with ui.element("div").style("display:flex; flex-direction:column; gap:10px;"):
+        for c in conflicts:
+            _conflict_row(c, on_resolve)
+
+
+def _conflict_row(c: dict[str, Any], on_resolve: Callable | None) -> None:
+    subtitle = str(c.get("type") or "Conflicto")
+    if c.get("detected_at"):
+        subtitle += f" · {c.get('detected_at')}"
+    row = (
+        "display:flex; align-items:center; gap:16px; padding:14px 18px; border-radius:5px;"
+        "background:rgba(62,39,35,.35); border:1px solid rgba(216,88,78,.35); box-shadow:inset 0 1px 0 rgba(255,255,255,.03);"
+    )
+    with ui.element("div").style(row):
+        ui.html(
+            f'<span style="width:9px; height:9px; border-radius:50%; background:{RED}; box-shadow:0 0 9px {RED}; flex-shrink:0;"></span>'
+            '<div style="flex:1; min-width:0;">'
+            f"<div style=\"font-family:'Cinzel',serif; font-size:14px; color:#f1e6cf;\">{_e(c.get('mod_a', '?'))}"
+            f' <span style="color:{RED_SOFT};">⚔</span> '
+            f"{_e(c.get('mod_b', '?'))}</div>"
+            f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#8a7f6a; margin-top:2px;\">{_e(subtitle)}</div>"
+            "</div>"
+        )
+        if on_resolve is not None:
+            btn = ui.element("button").style(
+                "flex-shrink:0; padding:8px 16px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px; letter-spacing:.06em; color:#1c130a;"
+                "background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1.5px solid #f6e6bd; border-radius:4px;"
+            )
+            with btn:
+                ui.html("Resolver")
+            cid = c.get("id")
+            btn.on("click", lambda _=None, i=cid: on_resolve(i))
 
 
 def _placeholder(section: str, callbacks: dict[str, Callable]) -> None:

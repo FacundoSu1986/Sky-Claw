@@ -228,6 +228,35 @@ class DatabaseAgent:
             async with conn.execute("SELECT * FROM conflicts ORDER BY detected_at DESC") as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
 
+    async def add_conflict(self, mod_id_1: int, mod_id_2: int, conflict_type: str | None = None) -> int:
+        """Registra un conflicto entre dos mods y devuelve su ID."""
+        conn = await self._get_conn()
+        try:
+            await conn.execute(
+                "INSERT INTO conflicts (mod_id_1, mod_id_2, conflict_type) VALUES (?, ?, ?)",
+                (mod_id_1, mod_id_2, conflict_type),
+            )
+            await conn.commit()
+        except sqlite3.Error:
+            await conn.rollback()
+            raise
+        async with conn.execute("SELECT last_insert_rowid()") as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    async def resolve_conflict(self, conflict_id: int, resolution: str | None = None) -> None:
+        """Marca un conflicto como resuelto (opcionalmente con una nota)."""
+        conn = await self._get_conn()
+        try:
+            await conn.execute(
+                "UPDATE conflicts SET resolved = 1, resolution = ? WHERE id = ?",
+                (resolution, conflict_id),
+            )
+            await conn.commit()
+        except sqlite3.Error:
+            await conn.rollback()
+            raise
+
     async def log_activity(self, event_type: str, message: str, details: dict | None = None) -> None:
         """Registra actividad en el log."""
         conn = await self._get_conn()

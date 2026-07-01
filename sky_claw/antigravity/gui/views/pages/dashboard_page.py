@@ -40,6 +40,7 @@ def render_dashboard(
     active_section: str = "Dashboard",
     identity: dict[str, str] | None = None,
     search_query: str = "",
+    conflicts_list: list[dict[str, Any]] | None = None,
 ) -> None:
     """Renderiza la página completa del dashboard.
 
@@ -122,6 +123,7 @@ def render_dashboard(
         active_section=active_section,
         identity=identity,
         search_query=search_query,
+        conflicts_list=conflicts_list,
     )
 
 
