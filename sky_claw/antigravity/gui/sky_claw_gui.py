@@ -218,16 +218,30 @@ class ReactiveState:
         try:
             all_mods = await get_db_agent().get_mods()
             active = [m for m in all_mods if m.get("status") == "active"]
-            conflicts = await get_db_agent().get_conflicts(resolved=False)
             self.active_mods.set(len(active))
-            self.conflicts_count.set(len(conflicts))
             self.pending_updates.set(sum(1 for m in active if m.get("needs_update", False)))
             total_size = sum(m.get("size_mb", 0) for m in active)
             self.storage_used.set(round(total_size / 1024, 1))
-            # Lista enriquecida (nombres de mods) para la pantalla de Conflictos.
-            self._store.set("conflicts_list", enrich_conflicts(conflicts, all_mods))
         except Exception as exc:
             logger.error("Error actualizando estado desde DB: %s", exc)
+        await self.refresh_conflicts()
+
+    async def refresh_conflicts(self) -> None:
+        """Refresca SOLO los datos de conflictos (contador + lista enriquecida).
+
+        No toca ``active_mods``/``pending_updates``/``storage_used``: con un
+        registry MO2 vivo esos los escribe ``_gui_mod_update_loop``, y pisarlos
+        desde la DB GUI haría saltar las stats a valores viejos al resolver un
+        conflicto (review Codex en #220). Los mods se leen solo para mapear
+        nombres en ``enrich_conflicts``.
+        """
+        try:
+            all_mods = await get_db_agent().get_mods()
+            conflicts = await get_db_agent().get_conflicts(resolved=False)
+            self.conflicts_count.set(len(conflicts))
+            self._store.set("conflicts_list", enrich_conflicts(conflicts, all_mods))
+        except Exception as exc:
+            logger.error("Error refrescando conflictos desde DB: %s", exc)
 
     def notify(self, message: str, type: str = "info") -> None:
         ui.notify(message, type=type)
@@ -237,7 +251,11 @@ class ReactiveState:
         self.notify(f"Mod '{event.data.get('name')}' added!", type="positive")
 
     def handle_conflict_detected(self, event: SkyClawEvent) -> None:
-        self.conflicts_count.set(self.conflicts_count.get() + 1)
+        # Refresca contador Y lista desde la DB (misma fuente) para que el badge
+        # y la pantalla de Conflictos no diverjan (review Codex en #220). Es
+        # seguro crear la tarea acá: el EventBus despacha los callbacks con
+        # loop.call_soon_threadsafe, así que corren dentro del loop de NiceGUI.
+        create_tracked_task(self.refresh_conflicts(), name="gui-conflicts-refresh")
         self.notify(
             f"Conflict: {event.data.get('description', 'Unknown')}",
             type="warning",
@@ -482,11 +500,12 @@ def main_page() -> None:
     callbacks["on_hitl_respond"] = _on_hitl_respond
 
     # Sección Conflictos: "Resolver" marca el conflicto como resuelto en la DB y
-    # refresca el estado (update_from_db reescribe conflicts_list → re-render).
+    # refresca SOLO los datos de conflictos (refresh_conflicts) — no las stats de
+    # mods, que con registry vivo las escribe _gui_mod_update_loop (Codex #220).
     def _on_conflict_resolve(conflict_id: int) -> None:
         async def _resolve() -> None:
             await get_db_agent().resolve_conflict(conflict_id)
-            await get_state().update_from_db()
+            await get_state().refresh_conflicts()
 
         create_tracked_task(_resolve(), name="gui-conflict-resolve")
 
