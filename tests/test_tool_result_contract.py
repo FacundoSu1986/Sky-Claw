@@ -34,6 +34,27 @@ async def test_loot_service_runner_no_disponible_cumple_contrato() -> None:
     _assert_contract_error(result, "LOOT.exe no encontrado")
 
 
+async def test_loot_fallo_con_solo_raw_stderr_no_es_error_desconocido() -> None:
+    """LOOT non-zero con el error solo en stderr no estructurado (errors=[] y
+    stdout vacío) debe surfear el stderr en message (review Codex #222)."""
+    from sky_claw.local.loot.parser import LOOTResult
+    from sky_claw.local.tools.loot_service import LootSortingService
+
+    service = LootSortingService(lock_manager=MagicMock(), snapshot_manager=MagicMock())
+    failed = LOOTResult(return_code=1, sorted_plugins=[], errors=[], raw_stdout="", raw_stderr="boost::bad_alloc")
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=failed)
+    with (
+        patch.object(service, "_ensure_loot_runner", return_value=runner),
+        patch("sky_claw.local.tools.loot_service.SnapshotTransactionLock") as lock_cls,
+    ):
+        lock_cls.return_value.__aenter__ = AsyncMock()
+        lock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        result = await service.sort_load_order()
+
+    _assert_contract_error(result, "boost::bad_alloc")
+
+
 async def test_pandora_service_runner_no_disponible_cumple_contrato() -> None:
     from sky_claw.local.tools.pandora_runner import PandoraExecutionError
     from sky_claw.local.tools.pandora_service import PandoraPipelineService
@@ -62,6 +83,29 @@ async def test_dyndolod_service_runner_no_disponible_cumple_contrato() -> None:
         result = await service.execute()
 
     _assert_contract_error(result, "DYNDLOD_EXE no configurado")
+
+
+async def test_xedit_quick_auto_clean_sin_masters_es_exito_con_message_vacio(tmp_path) -> None:
+    """Éxito sin DLC para limpiar: message vacío (contrato); el detalle va en logs."""
+    from sky_claw.local.tools.xedit_service import XEditPipelineService
+
+    game_path = tmp_path / "Skyrim"
+    (game_path / "Data").mkdir(parents=True)  # sin masters presentes
+    resolver = MagicMock()
+    resolver.get_skyrim_path.return_value = game_path
+    service = XEditPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=MagicMock(),
+        path_resolver=resolver,
+        event_bus=MagicMock(),
+    )
+    result = await service.quick_auto_clean()
+
+    assert result["success"] is True
+    assert result["message"] == ""
+    assert "No se encontraron DLC oficiales" in result["logs"]
+    assert normalize_tool_result(result)["message"] == ""
 
 
 async def test_xedit_quick_auto_clean_sin_skyrim_path_cumple_contrato() -> None:

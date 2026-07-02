@@ -37,17 +37,22 @@ def normalize_tool_result(raw: dict[str, Any]) -> ToolResult:
     """Normaliza el dict crudo de un servicio/tool al contrato :class:`ToolResult`.
 
     Reglas:
-    - ``success``: prioriza el booleano explícito ``raw["success"]``; si falta,
-      ``raw["status"] == "success"``.
-    - ``message``: prioriza el canónico ``raw["message"]``; si falta, cae en
-      orden determinista a ``details → error → logs → stderr → errors (lista
-      unida) → reason``. En fallo sin dato alguno: ``"error desconocido"``
-      (único sitio del sistema donde puede originarse ese texto). En éxito sin
-      message: cadena vacía — el consumidor arma su propio copy.
+    - ``success``: solo un ``bool`` real en ``raw["success"]`` cuenta como señal
+      (un ``"False"`` serializado como string es truthy — review Copilot #222);
+      si no lo es, decide ``raw["status"] == "success"``.
+    - ``message``: prioriza el canónico ``raw["message"]``. En ÉXITO, un
+      ``message`` presente se respeta aunque sea vacío (no se cae al ``stderr``
+      de warnings); en FALLO, un ``message`` vacío sí cae a las claves legacy
+      (``details → error → logs → stderr → errors (lista unida) → reason``) —
+      mejor un detalle real que nada. En fallo sin dato alguno:
+      ``"error desconocido"`` (único sitio del sistema donde puede originarse
+      ese texto). En éxito sin message: cadena vacía — el consumidor arma su
+      propio copy.
     """
-    success = bool(raw["success"]) if "success" in raw else str(raw.get("status", "")).lower() == "success"
+    raw_success = raw.get("success")
+    success = raw_success if isinstance(raw_success, bool) else str(raw.get("status", "")).lower() == "success"
 
-    message = _extract_message(raw)
+    message = str(raw["message"] or "") if success and "message" in raw else _extract_message(raw)
     if not message and not success:
         message = "error desconocido"
 

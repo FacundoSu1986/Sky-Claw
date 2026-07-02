@@ -157,8 +157,14 @@ class LootSortingService:
             return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
 
         # Contrato compartido (deuda #5): ``message`` canónico junto a los campos
-        # estructurados; en éxito queda vacío (el consumidor arma su copy).
-        message = "" if result.success else ("; ".join(str(e) for e in result.errors) or result.raw_stdout or "")
+        # estructurados; en éxito queda vacío (el consumidor arma su copy). En
+        # fallo, incluir raw_stderr: LOOT puede salir non-zero con el error solo
+        # en stderr no estructurado (errors=[] del parser) — review Codex #222.
+        message = (
+            ""
+            if result.success
+            else ("; ".join(str(e) for e in result.errors) or result.raw_stderr or result.raw_stdout or "")
+        )
         return {
             "status": "success" if result.success else "error",
             "success": result.success,

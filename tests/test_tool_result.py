@@ -121,3 +121,29 @@ def test_valores_no_string_se_convierten() -> None:
     # Robustez: un error no-string no debe romper el toast.
     raw = {"success": False, "error": ValueError("kaput")}
     assert "kaput" in normalize_tool_result(raw)["message"]
+
+
+# ── Review Copilot #222: success estricto y message vacío en éxito ──────────────
+def test_success_no_booleano_no_cuenta_como_exito() -> None:
+    # Un "False" serializado como string es truthy: solo un bool real vale como
+    # señal de éxito; si no lo es, decide el status.
+    out = normalize_tool_result({"status": "error", "success": "False", "logs": "x"})
+    assert out["success"] is False
+
+
+def test_success_entero_cae_al_status() -> None:
+    out = normalize_tool_result({"status": "success", "success": 1})
+    assert out["success"] is True  # decide status, no el truthy no-bool
+
+
+def test_exito_con_message_vacio_explicito_no_cae_a_legacy() -> None:
+    # Un éxito con message="" canónico no debe mostrar el stderr de warnings.
+    out = normalize_tool_result({"success": True, "message": "", "stderr": "warnings del runner"})
+    assert out["message"] == ""
+
+
+def test_fallo_con_message_vacio_si_cae_a_legacy() -> None:
+    # Asimetría deliberada: en FALLO, un message vacío no debe ocultar el
+    # detalle legacy disponible (mejor un stderr real que nada).
+    out = normalize_tool_result({"success": False, "message": "", "stderr": "crash real"})
+    assert out["message"] == "crash real"

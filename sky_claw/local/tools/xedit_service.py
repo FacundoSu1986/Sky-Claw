@@ -388,13 +388,13 @@ class XEditPipelineService:
         targets = [data_dir / master for master in _OFFICIAL_DIRTY_MASTERS if (data_dir / master).is_file()]
         if not targets:
             logger.info("QuickAutoClean: no se encontraron DLC oficiales en %s", data_dir)
-            detail = "No se encontraron DLC oficiales para limpiar."
+            # Contrato: message vacío en éxito; el detalle informativo va en logs.
             return {
                 "status": "success",
                 "success": True,
-                "message": detail,
+                "message": "",
                 "cleaned": [],
-                "logs": detail,
+                "logs": "No se encontraron DLC oficiales para limpiar.",
             }
 
         cleaned: list[str] = []
