@@ -12,28 +12,19 @@ Notas operativas y deuda técnica conocida para quien retome el trabajo (humano 
 
 ## Pendientes conocidos / deuda técnica
 
-### #5 — Contrato de resultado compartido de los tools (causa raíz del "error desconocido")
-**Problema.** Cada servicio/tool reporta los errores bajo claves distintas:
-- LOOT / Pandora / QuickAutoClean → `logs`
-- DynDOLOD / LOOT → `errors` (lista)
-- xEdit-patch → `error` / `details`
-- runners → a veces `stderr`
+### #5 — Contrato de resultado compartido de los tools — ✅ RESUELTO
+**Contrato vigente.** Los servicios de tools emiten `success: bool` + `message: str` (canónico,
+vacío en éxito) además de sus campos estructurados. `normalize_tool_result`
+(`sky_claw/local/tools/tool_result.py`) es la única pieza que conoce las claves legacy
+(`details`/`error`/`logs`/`stderr`/`errors`/`reason`) y el summarizer
+(`summarize_ritual_result`) la usa en vez de adivinar — "error desconocido" solo puede
+originarse en el fallback del normalizador. **Tools nuevos: emitir `success` + `message`.**
+Contrato anclado por tests: `tests/test_tool_result.py` (shapes legacy reales) y
+`tests/test_tool_result_contract.py` (retorno de error por servicio).
 
-Por eso `summarize_ritual_result` (`sky_claw/antigravity/gui/controllers/ritual_runner.py`) tiene
-que **adivinar** leyendo todas esas claves en cadena; cada vez que aparece una forma nueva,
-reaparece el toast opaco **"El ritual «X» falló: error desconocido"**. Ya se parchó dos veces
-(PR #214 agregó `logs`/`stderr`; PR #216 agregó la lista `errors`) — son parches, no la solución.
-
-**Propuesta.** Introducir un **contrato de resultado compartido** (`ToolResult` TypedDict o
-dataclass: `success: bool`, `message: str`, + campos estructurados como `return_code`, `details`),
-o un normalizador único, y que los servicios lo devuelvan / pasen por él. Así el summarizer deja
-de adivinar y el bug no vuelve a aparecer.
-
-**Alcance (transversal).** Toca los servicios de tools y sus tests:
-`sky_claw/local/tools/{loot_service,pandora_service,dyndolod_service,synthesis_service}.py`,
-`sky_claw/local/tools/xedit_service.py` (`quick_auto_clean` / `execute_patch`), y el consumidor
-`summarize_ritual_result`. PR dedicado, con tests por servicio. No urgente: los síntomas ya
-están parchados.
+**Historia.** Cada servicio reportaba errores bajo claves distintas (LOOT/Pandora/QuickAutoClean
+→ `logs`; DynDOLOD/LOOT → `errors` lista; xEdit-patch → `error`/`details`; runners → `stderr`) y
+el summarizer encadenaba todas — parcheado dos veces (#214, #216) antes de esta solución de raíz.
 
 **Contexto.** Surgió del code-review propio post-Fase 2 (Panel del Draconato). Los otros 4
 hallazgos de esa revisión ya están en `main`: flag real de QuickAutoClean `-quickautoclean`

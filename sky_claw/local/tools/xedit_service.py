@@ -375,23 +375,26 @@ class XEditPipelineService:
         """
         game_path = self._path_resolver.get_skyrim_path()
         if game_path is None:
-            return {"status": "error", "success": False, "logs": "SKYRIM_PATH no está configurado."}
+            detail = "SKYRIM_PATH no está configurado."
+            return {"status": "error", "success": False, "message": detail, "logs": detail}
 
         try:
             runner = self._ensure_xedit_runner()
         except PatchingError as exc:
             logger.error("XEditRunner no disponible para QuickAutoClean: %s", exc)
-            return {"status": "error", "success": False, "logs": str(exc)}
+            return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
 
         data_dir = game_path / "Data"
         targets = [data_dir / master for master in _OFFICIAL_DIRTY_MASTERS if (data_dir / master).is_file()]
         if not targets:
             logger.info("QuickAutoClean: no se encontraron DLC oficiales en %s", data_dir)
+            detail = "No se encontraron DLC oficiales para limpiar."
             return {
                 "status": "success",
                 "success": True,
+                "message": detail,
                 "cleaned": [],
-                "logs": "No se encontraron DLC oficiales para limpiar.",
+                "logs": detail,
             }
 
         cleaned: list[str] = []
@@ -412,18 +415,22 @@ class XEditPipelineService:
                     cleaned.append(path.name)
         except LockAcquisitionError as exc:
             logger.warning("Lock contention on '%s': %s", XEDIT_CLEAN_RESOURCE_ID, exc)
-            return {
-                "status": "error",
-                "success": False,
-                "logs": f"No se pudo adquirir el lock '{XEDIT_CLEAN_RESOURCE_ID}': {exc}",
-            }
+            detail = f"No se pudo adquirir el lock '{XEDIT_CLEAN_RESOURCE_ID}': {exc}"
+            return {"status": "error", "success": False, "message": detail, "logs": detail}
         except (PatchingError, XEditError) as exc:
             # __aexit__ ya restauró los snapshots (rollback de todos los masters).
             logger.error("QuickAutoClean falló; rollback aplicado: %s", exc)
-            return {"status": "error", "success": False, "cleaned": [], "rolled_back": True, "logs": str(exc)}
+            return {
+                "status": "error",
+                "success": False,
+                "message": str(exc),
+                "cleaned": [],
+                "rolled_back": True,
+                "logs": str(exc),
+            }
 
         logger.info("QuickAutoClean exitoso: %s", cleaned)
-        return {"status": "success", "success": True, "cleaned": cleaned}
+        return {"status": "success", "success": True, "message": "", "cleaned": cleaned}
 
     # ------------------------------------------------------------------
     # Dry-run / preview (plan-only)
@@ -486,6 +493,7 @@ class XEditPipelineService:
         logger.info("xEdit dry-run preview: %s", change_set.summary)
         return {
             "status": "dry_run_preview",
+            "message": change_set.summary,
             "change_set": change_set.model_dump(mode="json"),
         }
 
@@ -495,10 +503,15 @@ class XEditPipelineService:
 
     @staticmethod
     def _result_to_dict(result: PatchResult) -> dict[str, Any]:
-        """Convierte PatchResult a dict serializable."""
+        """Convierte PatchResult a dict serializable.
+
+        Añade el ``message`` canónico del contrato compartido (deuda #5): vacío
+        en éxito, y el detalle de ``error`` en fallo.
+        """
         raw = dataclasses.asdict(result)
         if raw.get("output_path") is not None:
             raw["output_path"] = str(raw["output_path"])
+        raw["message"] = "" if raw.get("success") else str(raw.get("error") or "")
         return raw
 
     @staticmethod
@@ -506,6 +519,7 @@ class XEditPipelineService:
         """Construye un dict de error para retornos tempranos."""
         return {
             "success": False,
+            "message": message,
             "output_path": None,
             "records_patched": 0,
             "conflicts_resolved": 0,

@@ -378,11 +378,20 @@ class SynthesisPipelineService:
 
     @staticmethod
     def _result_to_dict(result: SynthesisResult) -> dict[str, Any]:
-        """Convierte SynthesisResult a dict serializable."""
+        """Convierte SynthesisResult a dict serializable.
+
+        Añade el ``message`` canónico del contrato compartido (deuda #5): vacío
+        en éxito, y el detalle de stderr/errors en fallo.
+        """
         raw = dataclasses.asdict(result)
         # Path → str para serialización
         if raw.get("output_esp") is not None:
             raw["output_esp"] = str(raw["output_esp"])
+        if raw.get("success"):
+            raw["message"] = ""
+        else:
+            errors = raw.get("errors") or []
+            raw["message"] = str(raw.get("stderr") or "; ".join(str(e) for e in errors) or "")
         return raw
 
     @staticmethod
@@ -390,6 +399,7 @@ class SynthesisPipelineService:
         """Construye un dict de error para retornos tempranos."""
         return {
             "success": False,
+            "message": message,
             "output_esp": None,
             "return_code": -1,
             "stdout": "",
