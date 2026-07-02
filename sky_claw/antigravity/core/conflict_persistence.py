@@ -27,6 +27,28 @@ if TYPE_CHECKING:
 #: Par de conflicto listo para persistir: (mod ganador, mod pisado, tipo).
 ConflictPair = tuple[str, str, str]
 
+#: Clave del store GUI para el single-flight del escaneo (guard de doble click).
+SCAN_IN_FLIGHT_KEY = "conflict_scan_in_flight"
+
+
+def claim_scan_slot(store: object) -> bool:
+    """Reclama el slot de escaneo; ``False`` si ya hay uno en curso.
+
+    Dos escaneos concurrentes verían el mismo snapshot de disputas pendientes e
+    insertarían duplicados (la tabla no tiene constraint única) — review
+    Copilot #223. ``store`` es duck-typed (``get``/``set``) para no acoplar
+    core → GUI; en producción es el ``ReactiveStore``.
+    """
+    if store.get(SCAN_IN_FLIGHT_KEY):  # type: ignore[attr-defined]
+        return False
+    store.set(SCAN_IN_FLIGHT_KEY, True)  # type: ignore[attr-defined]
+    return True
+
+
+def release_scan_slot(store: object) -> None:
+    """Libera el slot de escaneo (llamar siempre en ``finally``)."""
+    store.set(SCAN_IN_FLIGHT_KEY, False)  # type: ignore[attr-defined]
+
 
 def pair_asset_conflicts(reports: list[AssetConflictReport]) -> list[ConflictPair]:
     """Convierte reportes de assets en pares únicos de mods en disputa."""
@@ -53,11 +75,16 @@ async def persist_asset_conflicts(reports: list[AssetConflictReport], db: Databa
     if not pairs:
         return 0
 
+    # Resolver nombres → ids SIN pisar metadatos: add_mod con defaults haría
+    # UPSERT de version/size/source a NULL/0 sobre mods ya registrados (review
+    # Copilot #223); solo se crea el mod si no existe.
+    existing_ids = {str(m.get("name")): int(m["id"]) for m in await db.get_mods() if m.get("id") is not None}
     mod_ids: dict[str, int] = {}
     for winner, loser, _ in pairs:
         for name in (winner, loser):
             if name not in mod_ids:
-                mod_ids[name] = await db.add_mod(name)
+                known = existing_ids.get(name)
+                mod_ids[name] = known if known is not None else await db.add_mod(name)
 
     pending = await db.get_conflicts(resolved=False)
     existing: set[tuple[frozenset[int], str]] = {

@@ -661,11 +661,18 @@ def main_page() -> None:
         async def _scan() -> None:
             import asyncio
 
-            from sky_claw.antigravity.core.conflict_persistence import persist_asset_conflicts
+            from sky_claw.antigravity.core.conflict_persistence import (
+                persist_asset_conflicts,
+                release_scan_slot,
+            )
 
             store = get_store()
             try:
                 detector = runtime.supervisor.asset_detector  # lazy; valida paths de MO2
+                # El detector traga FileNotFoundError del modlist y devuelve []
+                # (misma cara que "sin conflictos") — chequear antes para que un
+                # perfil mal configurado sea un fallo visible (Codex #223).
+                await asyncio.to_thread(detector.parse_modlist)
                 reports = await asyncio.to_thread(detector.detect_conflicts)
                 nuevos = await persist_asset_conflicts(reports, get_db_agent())
                 await get_state().refresh_conflicts()
@@ -676,6 +683,8 @@ def main_page() -> None:
                     {"text": f"La detección de disputas falló: {exc}", "type": "negative"},
                 )
                 return
+            finally:
+                release_scan_slot(store)
             texto = (
                 f"{nuevos} disputa(s) nueva(s) detectada(s)."
                 if nuevos
@@ -683,8 +692,15 @@ def main_page() -> None:
             )
             store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": texto, "type": "positive" if not nuevos else "warning"})
 
+        from sky_claw.antigravity.core.conflict_persistence import claim_scan_slot
+
         if runtime.supervisor is None:
             ui.notify("El daemon no está inicializado todavía.", type="warning")
+            return
+        # Single-flight: dos escaneos concurrentes verían el mismo snapshot de
+        # pendientes e insertarían duplicados (Copilot/Codex #223).
+        if not claim_scan_slot(get_store()):
+            ui.notify("Ya hay una detección de disputas en curso.", type="warning")
             return
         create_tracked_task(_scan(), name="gui-conflict-scan")
 

@@ -79,6 +79,43 @@ async def test_es_idempotente_sobre_pendientes(tmp_path: pathlib.Path) -> None:
     assert len(await db.get_conflicts(resolved=False)) == 1
 
 
+async def test_no_pisa_metadatos_de_mods_existentes(tmp_path: pathlib.Path) -> None:
+    """El scan no debe degradar version/size/source de mods ya registrados
+    (add_mod con defaults haría UPSERT a NULL/0 — review Copilot #223)."""
+    db = DatabaseAgent(str(tmp_path / "state.db"))
+    await db.init_db()
+    await db.add_mod("SMIM", "2.08", 1200, "Nexusmods")
+
+    await persist_asset_conflicts([_report("SMIM", ("Skyrim 202X",))], db)
+
+    smim = next(m for m in await db.get_mods() if m["name"] == "SMIM")
+    assert smim["version"] == "2.08"
+    assert smim["size_mb"] == 1200
+    assert smim["source"] == "Nexusmods"
+
+
+# ── Single-flight del escaneo (guard de doble click) ────────────────────────────
+class _StoreFalso:
+    def __init__(self) -> None:
+        self._d: dict = {}
+
+    def get(self, key, default=None):
+        return self._d.get(key, default)
+
+    def set(self, key, value) -> None:
+        self._d[key] = value
+
+
+def test_claim_scan_slot_es_single_flight() -> None:
+    from sky_claw.antigravity.core.conflict_persistence import claim_scan_slot, release_scan_slot
+
+    store = _StoreFalso()
+    assert claim_scan_slot(store) is True
+    assert claim_scan_slot(store) is False  # segundo click: rechazado
+    release_scan_slot(store)
+    assert claim_scan_slot(store) is True  # liberado: se puede volver a escanear
+
+
 async def test_conflicto_resuelto_puede_reaparecer(tmp_path: pathlib.Path) -> None:
     # Si el usuario resolvió la disputa pero la detección la vuelve a encontrar,
     # se registra de nuevo (el estado real manda sobre el historial).
