@@ -59,7 +59,7 @@ def test_validate_todo_valido() -> None:
 
 # ── save_settings (persistencia de Ajustes) ─────────────────────────────────────
 class _FakeKeyring:
-    """Backend keyring falso: registra escrituras, devuelve None en lecturas."""
+    """Backend keyring falso: registra escrituras y las sirve en lecturas."""
 
     def __init__(self) -> None:
         self.saved: dict[str, str] = {}
@@ -67,8 +67,8 @@ class _FakeKeyring:
     def set_password(self, service: str, key: str, value: str) -> None:
         self.saved[key] = value
 
-    def get_password(self, service: str, key: str) -> None:
-        return None
+    def get_password(self, service: str, key: str) -> str | None:
+        return self.saved.get(key)
 
     def delete_password(self, service: str, key: str) -> None:
         self.saved.pop(key, None)
@@ -161,3 +161,24 @@ def test_save_settings_devuelve_error_de_validacion_sin_persistir(tmp_path: path
     assert err == "Proveedor no válido"
     assert fake.saved == {}
     assert not cfg_path.exists()  # no se escribió config
+
+
+# ── _build_settings_data: badge del proveedor mira también su slot ──────────────
+def test_badge_llm_reconoce_el_slot_del_provider(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """El resto del sistema considera configurado {provider}_api_key: si solo
+    existe ese slot (sin llm_api_key genérica), el badge debe decir Configurada.
+    """
+    from sky_claw.antigravity.gui.sky_claw_gui import _build_settings_data
+    from sky_claw.config import Config
+
+    fake = _patch_keyring(monkeypatch)
+    cfg_path = tmp_path / "sky_claw_config.json"
+    cfg = Config(cfg_path)
+    cfg._data["llm_provider"] = "deepseek"
+    cfg.save()
+
+    fake.saved["deepseek_api_key"] = "sk-slot"  # solo el slot del provider
+
+    data = _build_settings_data(cfg_path)
+    assert data["provider"] == "deepseek"
+    assert data["key_status"]["llm_api_key"] is True

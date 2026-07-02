@@ -505,12 +505,20 @@ def _build_settings_data(config_path: Path) -> dict[str, Any]:
         chat_id = str(cfg._data.get("telegram_chat_id") or "")
     except Exception:
         logger.exception("No se pudo leer la config para Ajustes; se muestran defaults")
-    key_status: dict[str, bool] = {}
-    for key in ("llm_api_key", "nexus_api_key", "search_api_key", "telegram_bot_token"):
+
+    def _configured(key: str) -> bool:
         try:
-            key_status[key] = bool(keyring.get_password("sky_claw", key))
+            return bool(keyring.get_password("sky_claw", key))
         except Exception:
-            key_status[key] = False
+            return False
+
+    key_status: dict[str, bool] = {
+        key: _configured(key) for key in ("nexus_api_key", "search_api_key", "telegram_bot_token")
+    }
+    # El resto del sistema considera configurado el slot {provider}_api_key
+    # (p. ej. app_context._is_configured), así que el badge también lo mira —
+    # no solo la clave genérica llm_api_key (review Copilot en #221).
+    key_status["llm_api_key"] = _configured("llm_api_key") or _configured(f"{provider}_api_key")
     return {
         "identity": {"name": app_state.user_display_name, "role": app_state.user_role},
         "provider": provider,

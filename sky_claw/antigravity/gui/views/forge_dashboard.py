@@ -1224,8 +1224,12 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
     # ── Identidad (cierra A3: el header pinta estos valores) ──
     with ui.element("section").style(panel):
         ui.html(f'<span style="{_LBL}">IDENTIDAD DEL DOVAHKIIN</span>')
-        _text_field("user_display_name", "NOMBRE VISIBLE", str(identity.get("name") or ""))
-        _text_field("user_role", "TÍTULO / ROL", str(identity.get("role") or ""))
+        # Misma semántica que los secretos: save_settings ignora los vacíos,
+        # así que el hint lo hace explícito (review Copilot en #221).
+        _text_field(
+            "user_display_name", "NOMBRE VISIBLE", str(identity.get("name") or ""), hint="Dejar vacío para no cambiar"
+        )
+        _text_field("user_role", "TÍTULO / ROL", str(identity.get("role") or ""), hint="Dejar vacío para no cambiar")
 
     # ── Proveedor IA + claves ──
     with ui.element("section").style(panel):
@@ -1236,7 +1240,12 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
         ).props("color=amber")
         for key, label, hint in _SETTINGS_SECRET_FIELDS:
             _text_field(key, label, hint=hint, password=True)
-        _text_field("telegram_chat_id", "TELEGRAM CHAT ID", str(settings.get("telegram_chat_id") or ""))
+        _text_field(
+            "telegram_chat_id",
+            "TELEGRAM CHAT ID",
+            str(settings.get("telegram_chat_id") or ""),
+            hint="Dejar vacío para no cambiar",
+        )
 
     # ── Guardar ──
     if on_save is not None:
