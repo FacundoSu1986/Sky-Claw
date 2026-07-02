@@ -21,6 +21,36 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Proveedores LLM aceptados (fuente única para wizard y panel de Ajustes).
+VALID_PROVIDERS = {"anthropic", "deepseek", "openai", "ollama"}
+
+
+def validate_credentials(
+    provider: str,
+    api_key: str,
+    telegram_token: str = "",
+    telegram_chatid: str = "",
+    *,
+    require_api_key: bool = True,
+) -> str | None:
+    """Valida las credenciales; devuelve el mensaje de error o ``None`` si ok.
+
+    Seam puro compartido entre el wizard first-run (``require_api_key=True``:
+    los proveedores cloud exigen clave) y el panel de Ajustes
+    (``require_api_key=False``: clave vacía significa "no cambiar").
+    """
+    if provider not in VALID_PROVIDERS:
+        return "Proveedor no válido"
+    if require_api_key and provider in ("anthropic", "deepseek", "openai") and not api_key:
+        return "API Key requerida para este proveedor"
+    if len(api_key) > 512:
+        return "Máximo 512 caracteres en API Key"
+    if telegram_token and ":" not in telegram_token:
+        return "Token Telegram inválido — debe contener ':'"
+    if telegram_chatid and not telegram_chatid.replace("@", "").replace("-", "").isdigit():
+        return "Chat ID debe ser numérico"
+    return None
+
 
 # =============================================================================
 # SETUP WIZARD MODAL — Overlay sobre el Dashboard (Nordic / Parchment)
@@ -35,8 +65,6 @@ class SetupWizardModal:
     - Autoguarda borradores no sensibles en localStorage.
     - Solo se cierra al guardar exitosamente.
     """
-
-    VALID_PROVIDERS = {"anthropic", "deepseek", "openai", "ollama"}
 
     def __init__(self, config_path: Path, on_complete: Callable) -> None:
         self._config_path = config_path
@@ -307,24 +335,9 @@ class SetupWizardModal:
         telegram_token: str,
         telegram_chatid: str,
     ) -> None:
-        if provider not in self.VALID_PROVIDERS:
-            ui.notify("Proveedor no válido", type="negative")
-            return
-
-        if provider in ("anthropic", "deepseek", "openai") and not api_key:
-            ui.notify("API Key requerida para este proveedor", type="negative")
-            return
-
-        if len(api_key) > 512:
-            ui.notify("Máximo 512 caracteres en API Key", type="negative")
-            return
-
-        if telegram_token and ":" not in telegram_token:
-            ui.notify("Token Telegram inválido — debe contener ':'", type="negative")
-            return
-
-        if telegram_chatid and not telegram_chatid.replace("@", "").replace("-", "").isdigit():
-            ui.notify("Chat ID debe ser numérico", type="negative")
+        error = validate_credentials(provider, api_key, telegram_token, telegram_chatid, require_api_key=True)
+        if error is not None:
+            ui.notify(error, type="negative")
             return
 
         try:
@@ -412,8 +425,6 @@ class SetupWizardModal:
 
 class SetupPage:
     """Legacy: redirige internamente al wizard modal. Mantenido para compat."""
-
-    VALID_PROVIDERS = {"anthropic", "deepseek", "openai", "ollama"}
 
     def __init__(self, config_path: Path, on_complete: Callable) -> None:
         self._config_path = config_path
