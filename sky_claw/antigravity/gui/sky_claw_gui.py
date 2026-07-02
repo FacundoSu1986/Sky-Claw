@@ -448,6 +448,18 @@ def save_settings(
     if error is not None:
         return error
 
+    # Cambiar a un provider cloud requiere su clave: la tipeada ahora o el slot
+    # {provider}_api_key ya guardado. Sin esto, AppContext caería a la
+    # llm_api_key genérica — la del provider ANTERIOR — y el arranque fallaría
+    # (review Codex en #221).
+    if provider in ("anthropic", "deepseek", "openai") and not api_key:
+        try:
+            has_slot = bool(keyring.get_password("sky_claw", f"{provider}_api_key"))
+        except Exception:
+            has_slot = False
+        if not has_slot:
+            return f"Ingresá la API Key de {provider}: no hay una clave guardada para ese proveedor"
+
     # Secretos → keyring, solo si el usuario tipeó algo (vacío = conservar).
     secrets_map = {
         "llm_api_key": api_key,
@@ -470,8 +482,9 @@ def save_settings(
     try:
         cfg = Config(config_path)
         cfg._data["llm_provider"] = provider
-        if telegram_chatid:
-            cfg._data["telegram_chat_id"] = telegram_chatid.replace("@", "")
+        # El chat id NO es secreto: se persiste siempre, vacío incluido, para
+        # poder quitar el destino de notificaciones desde Ajustes (Codex #221).
+        cfg._data["telegram_chat_id"] = telegram_chatid.replace("@", "")
         if name:
             cfg._data["user_display_name"] = name
         if role:
@@ -647,7 +660,13 @@ def main_page() -> None:
         if error is not None:
             ui.notify(error, type="negative")
         else:
-            ui.notify("Ajustes guardados", type="positive")
+            # Honesto con el estado real: el router LLM vivo no se recarga en
+            # caliente desde acá (eso vive en frontend_bridge._do_llm_reload);
+            # provider/clave aplican al reiniciar (review Codex en #221).
+            ui.notify(
+                "Ajustes guardados — los cambios de proveedor/clave aplican al reiniciar Sky-Claw",
+                type="positive",
+            )
             main_page.refresh()
 
     callbacks["on_settings_save"] = _on_settings_save

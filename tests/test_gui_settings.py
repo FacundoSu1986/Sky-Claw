@@ -59,13 +59,19 @@ def test_validate_todo_valido() -> None:
 
 # ── save_settings (persistencia de Ajustes) ─────────────────────────────────────
 class _FakeKeyring:
-    """Backend keyring falso: registra escrituras y las sirve en lecturas."""
+    """Backend keyring falso: registra escrituras y las sirve en lecturas.
+
+    ``writes`` acumula solo las escrituras nuevas (para afirmar "no se escribió
+    nada" aun cuando ``saved`` venga sembrado con claves preexistentes).
+    """
 
     def __init__(self) -> None:
         self.saved: dict[str, str] = {}
+        self.writes: list[tuple[str, str]] = []
 
     def set_password(self, service: str, key: str, value: str) -> None:
         self.saved[key] = value
+        self.writes.append((key, value))
 
     def get_password(self, service: str, key: str) -> str | None:
         return self.saved.get(key)
@@ -117,6 +123,7 @@ def test_save_settings_persiste_provider_identidad_y_chat_id(tmp_path: pathlib.P
 
 def test_save_settings_secretos_vacios_no_tocan_keyring(tmp_path: pathlib.Path, monkeypatch) -> None:
     fake = _patch_keyring(monkeypatch)
+    fake.saved["deepseek_api_key"] = "sk-existente"  # el provider ya tiene su slot
     cfg_path = tmp_path / "sky_claw_config.json"
 
     err = save_settings(
@@ -125,7 +132,10 @@ def test_save_settings_secretos_vacios_no_tocan_keyring(tmp_path: pathlib.Path, 
         app_state=AppState(config_path=cfg_path),
     )
     assert err is None
-    assert fake.saved == {}  # "" = no cambiar: nada escrito
+    # "" = no cambiar: la clave existente sigue intacta y no aparecieron nuevas.
+    # (Config.save() re-persiste el mismo valor cargado del keyring — round-trip
+    # preexistente — así que se afirma sobre el contenido, no sobre las llamadas.)
+    assert fake.saved == {"deepseek_api_key": "sk-existente"}
 
 
 def test_save_settings_secretos_no_vacios_van_a_keyring(tmp_path: pathlib.Path, monkeypatch) -> None:
@@ -161,6 +171,50 @@ def test_save_settings_devuelve_error_de_validacion_sin_persistir(tmp_path: path
     assert err == "Proveedor no válido"
     assert fake.saved == {}
     assert not cfg_path.exists()  # no se escribió config
+
+
+# ── Review Codex #221: cambio de provider cloud y limpieza del chat id ──────────
+def test_save_settings_exige_clave_al_cambiar_a_provider_sin_slot(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Cambiar a un provider cloud sin clave tipeada NI slot guardado debe fallar:
+    AppContext caería a la llm_api_key genérica (la del provider anterior).
+    """
+    fake = _patch_keyring(monkeypatch)  # keyring sin claves
+    cfg_path = tmp_path / "sky_claw_config.json"
+
+    err = save_settings(cfg_path, {"llm_provider": "openai"}, app_state=AppState(config_path=cfg_path))
+    assert err is not None
+    assert fake.writes == []
+    assert not cfg_path.exists()  # el provider nuevo no quedó persistido
+
+
+def test_save_settings_permite_provider_cloud_con_slot_guardado(tmp_path: pathlib.Path, monkeypatch) -> None:
+    fake = _patch_keyring(monkeypatch)
+    fake.saved["openai_api_key"] = "sk-previa"  # el usuario ya configuró openai antes
+    cfg_path = tmp_path / "sky_claw_config.json"
+
+    err = save_settings(cfg_path, {"llm_provider": "openai"}, app_state=AppState(config_path=cfg_path))
+    assert err is None
+
+
+def test_save_settings_chat_id_vacio_limpia_el_valor(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """El chat id NO es secreto: vaciarlo en Ajustes debe persistir el borrado
+    (si no, app_context seguiría notificando al chat viejo para siempre).
+    """
+    _patch_keyring(monkeypatch)
+    cfg_path = tmp_path / "sky_claw_config.json"
+    from sky_claw.config import Config
+
+    cfg = Config(cfg_path)
+    cfg._data["telegram_chat_id"] = "999888"
+    cfg.save()
+
+    err = save_settings(
+        cfg_path,
+        {"llm_provider": "ollama", "telegram_chat_id": ""},
+        app_state=AppState(config_path=cfg_path),
+    )
+    assert err is None
+    assert Config(cfg_path)._data.get("telegram_chat_id", "") == ""
 
 
 # ── _build_settings_data: badge del proveedor mira también su slot ──────────────

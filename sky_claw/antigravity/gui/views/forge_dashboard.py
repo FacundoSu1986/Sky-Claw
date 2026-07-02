@@ -1240,11 +1240,13 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
         ).props("color=amber")
         for key, label, hint in _SETTINGS_SECRET_FIELDS:
             _text_field(key, label, hint=hint, password=True)
+        # A diferencia de los secretos, el chat id se persiste tal cual (vaciar
+        # el campo quita el destino de notificaciones).
         _text_field(
             "telegram_chat_id",
             "TELEGRAM CHAT ID",
             str(settings.get("telegram_chat_id") or ""),
-            hint="Dejar vacío para no cambiar",
+            hint="Vaciar para quitar el destino de notificaciones",
         )
 
     # ── Guardar ──
