@@ -226,6 +226,7 @@ def render_forge_dashboard(
     identity: dict[str, str] | None = None,
     search_query: str = "",
     conflicts_list: list[dict[str, Any]] | None = None,
+    settings: dict[str, Any] | None = None,
 ) -> None:
     """Render the full Forge shell (sidebar + header + scroll content).
 
@@ -283,6 +284,8 @@ def render_forge_dashboard(
                     _mods_screen(mods, callbacks, search_query)
                 elif active_section == "Conflicts":
                     _conflicts_screen(conflicts_list or [], callbacks)
+                elif active_section == "Settings":
+                    _settings_screen(settings or {}, callbacks)
                 else:
                     _placeholder(active_section, callbacks)
 
@@ -1161,6 +1164,96 @@ def _conflict_row(c: dict[str, Any], on_resolve: Callable | None) -> None:
                 ui.html("Resolver")
             cid = c.get("id")
             btn.on("click", lambda _=None, i=cid: on_resolve(i))
+
+
+_SETTINGS_SECRET_FIELDS: list[tuple[str, str, str]] = [
+    ("llm_api_key", "CLAVE API DEL PROVEEDOR", "Dejar vacío para no cambiar"),
+    ("nexus_api_key", "NEXUS MODS API KEY", "Opcional — descargas automáticas"),
+    ("search_api_key", "BRAVE SEARCH API KEY", "Opcional — búsqueda por descripción"),
+    ("telegram_bot_token", "TELEGRAM BOT TOKEN", "Opcional — notificaciones HITL"),
+]
+
+_LBL = "font-family:'Cinzel',serif; font-size:11px; font-weight:600; letter-spacing:.18em; color:#b8a87e;"
+_HINT = "font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#8a7f6a;"
+
+
+def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -> None:
+    """Pantalla de Ajustes: identidad + proveedor IA + claves (persistidas).
+
+    Reemplaza el placeholder "próxima iteración" al que navegaba el engranaje
+    (A2). Reutiliza la semántica del wizard: secretos con "vacío = no cambiar"
+    (badge Configurada/Sin clave desde keyring), provider/chat id/identidad al
+    TOML vía ``on_settings_save`` → ``save_settings``.
+    """
+    identity = settings.get("identity") or {}
+    key_status: dict[str, bool] = settings.get("key_status") or {}
+    on_save = _cb(callbacks, "on_settings_save")
+    inputs: dict[str, Any] = {}
+
+    ui.html(
+        '<div style="display:flex; align-items:center; gap:16px; margin-bottom:18px;">'
+        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">CÁMARA DE AJUSTES</h2>"
+        '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
+    )
+
+    panel = (
+        "display:flex; flex-direction:column; gap:14px; padding:20px 22px; margin-bottom:18px; border-radius:5px;"
+        "background:rgba(62,39,35,.3); border:1px solid rgba(200,168,106,.25);"
+    )
+
+    def _text_field(key: str, label: str, value: str = "", hint: str = "", password: bool = False) -> None:
+        with ui.element("div").style("display:flex; flex-direction:column; gap:3px;"):
+            badge = ""
+            if password:
+                configured = key_status.get(key, False)
+                color, txt = ("#7fc08c", "Configurada") if configured else ("#a39a85", "Sin clave")
+                badge = (
+                    f" <span style=\"font-family:'Spline Sans Mono',monospace; font-size:10px;"
+                    f' color:{color};">[{txt}]</span>'
+                )
+            ui.html(f'<span style="{_LBL}">{_e(label)}{badge}</span>')
+            inp = (
+                ui.input(value=value)
+                .classes("w-full")
+                .props("dense outlined dark" + (" type=password" if password else ""))
+            )
+            if hint:
+                ui.html(f'<span style="{_HINT}">{_e(hint)}</span>')
+            inputs[key] = inp
+
+    # ── Identidad (cierra A3: el header pinta estos valores) ──
+    with ui.element("section").style(panel):
+        ui.html(f'<span style="{_LBL}">IDENTIDAD DEL DOVAHKIIN</span>')
+        _text_field("user_display_name", "NOMBRE VISIBLE", str(identity.get("name") or ""))
+        _text_field("user_role", "TÍTULO / ROL", str(identity.get("role") or ""))
+
+    # ── Proveedor IA + claves ──
+    with ui.element("section").style(panel):
+        ui.html(f'<span style="{_LBL}">PROVEEDOR DE IA</span>')
+        provider_toggle = ui.toggle(
+            ["anthropic", "deepseek", "openai", "ollama"],
+            value=str(settings.get("provider") or "deepseek"),
+        ).props("color=amber")
+        for key, label, hint in _SETTINGS_SECRET_FIELDS:
+            _text_field(key, label, hint=hint, password=True)
+        _text_field("telegram_chat_id", "TELEGRAM CHAT ID", str(settings.get("telegram_chat_id") or ""))
+
+    # ── Guardar ──
+    if on_save is not None:
+
+        def _collect_and_save(_: Any = None) -> None:
+            payload = {key: str(inp.value or "") for key, inp in inputs.items()}
+            payload["llm_provider"] = str(provider_toggle.value or "")
+            on_save(payload)
+
+        btn = ui.element("button").style(
+            "align-self:flex-start; padding:11px 24px; cursor:pointer; font-family:'Cinzel',serif;"
+            " letter-spacing:.08em; color:#1c130a; background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40);"
+            " border:1.5px solid #f6e6bd; border-radius:4px;"
+        )
+        with btn:
+            ui.html("Guardar Ajustes")
+        btn.on("click", _collect_and_save)
 
 
 def _placeholder(section: str, callbacks: dict[str, Callable]) -> None:

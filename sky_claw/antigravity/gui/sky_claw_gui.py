@@ -398,6 +398,127 @@ async def _on_wizard_complete() -> None:
     ui.notify("Configuración guardada — bienvenido a Sky-Claw", type="positive")
 
 
+# ── Sección Ajustes ───────────────────────────────────────────────────────────
+
+_IDENTITY_LOADED_KEY = "identity_loaded"
+
+
+def _ensure_identity_loaded(config_path: Path) -> None:
+    """Carga nombre/rol del usuario desde el TOML a AppState (una sola vez).
+
+    Cierra A3 de punta a punta: el header es data-driven desde AppState y acá
+    AppState se puebla desde la config persistida (editable en Ajustes).
+    """
+    store = get_store()
+    if store.get(_IDENTITY_LOADED_KEY):
+        return
+    try:
+        cfg = Config(config_path)
+        state = get_app_state_instance()
+        state.user_display_name = str(cfg._data.get("user_display_name") or state.user_display_name)
+        state.user_role = str(cfg._data.get("user_role") or state.user_role)
+    except Exception:
+        logger.exception("No se pudo cargar la identidad desde %s; se usan los defaults", config_path)
+    store.set(_IDENTITY_LOADED_KEY, True)
+
+
+def save_settings(
+    config_path: Path,
+    payload: dict[str, str],
+    app_state: AppState | None = None,
+) -> str | None:
+    """Valida y persiste los Ajustes; devuelve el mensaje de error o ``None``.
+
+    Convenciones (mismas del hub de configuración clásico y el wizard):
+    - Secretos ("" = no cambiar): solo los valores no vacíos van a keyring.
+    - Provider / chat id / identidad van al TOML vía ``Config.save()``.
+    - La identidad se refleja en ``AppState`` para que el header (A3) la pinte
+      en el próximo render sin reiniciar.
+    """
+    import keyring
+
+    from sky_claw.antigravity.gui.setup_wizard import validate_credentials
+
+    provider = (payload.get("llm_provider") or "").strip()
+    api_key = (payload.get("llm_api_key") or "").strip()
+    telegram_token = (payload.get("telegram_bot_token") or "").strip()
+    telegram_chatid = (payload.get("telegram_chat_id") or "").strip()
+
+    error = validate_credentials(provider, api_key, telegram_token, telegram_chatid, require_api_key=False)
+    if error is not None:
+        return error
+
+    # Secretos → keyring, solo si el usuario tipeó algo (vacío = conservar).
+    secrets_map = {
+        "llm_api_key": api_key,
+        f"{provider}_api_key": api_key,
+        "nexus_api_key": (payload.get("nexus_api_key") or "").strip(),
+        "search_api_key": (payload.get("search_api_key") or "").strip(),
+        "telegram_bot_token": telegram_token,
+    }
+    try:
+        for key, value in secrets_map.items():
+            if value:
+                keyring.set_password("sky_claw", key, value)
+    except Exception as exc:
+        logger.exception("Error guardando secretos en keyring")
+        return f"Error guardando claves: {exc}"
+
+    # Config (TOML): provider + chat id + identidad.
+    name = (payload.get("user_display_name") or "").strip()
+    role = (payload.get("user_role") or "").strip()
+    try:
+        cfg = Config(config_path)
+        cfg._data["llm_provider"] = provider
+        if telegram_chatid:
+            cfg._data["telegram_chat_id"] = telegram_chatid.replace("@", "")
+        if name:
+            cfg._data["user_display_name"] = name
+        if role:
+            cfg._data["user_role"] = role
+        cfg.save()
+    except Exception as exc:
+        logger.exception("Error guardando configuración de Ajustes")
+        return f"Error guardando configuración: {exc}"
+
+    state = app_state or get_app_state_instance()
+    if name:
+        state.user_display_name = name
+    if role:
+        state.user_role = role
+    return None
+
+
+def _build_settings_data(config_path: Path) -> dict[str, Any]:
+    """Arma los datos que la pantalla de Ajustes muestra (view pura).
+
+    Provider/chat id salen del TOML; el estado de cada secreto (badge
+    Configurada/Sin clave) se consulta en keyring sin exponer el valor.
+    """
+    import keyring
+
+    app_state = get_app_state_instance()
+    provider, chat_id = "deepseek", ""
+    try:
+        cfg = Config(config_path)
+        provider = str(cfg._data.get("llm_provider") or "deepseek")
+        chat_id = str(cfg._data.get("telegram_chat_id") or "")
+    except Exception:
+        logger.exception("No se pudo leer la config para Ajustes; se muestran defaults")
+    key_status: dict[str, bool] = {}
+    for key in ("llm_api_key", "nexus_api_key", "search_api_key", "telegram_bot_token"):
+        try:
+            key_status[key] = bool(keyring.get_password("sky_claw", key))
+        except Exception:
+            key_status[key] = False
+    return {
+        "identity": {"name": app_state.user_display_name, "role": app_state.user_role},
+        "provider": provider,
+        "telegram_chat_id": chat_id,
+        "key_status": key_status,
+    }
+
+
 @ui.refreshable
 def main_page() -> None:
     """Single page that gates between Wizard and Dashboard via the store."""
@@ -511,20 +632,36 @@ def main_page() -> None:
 
     callbacks["on_conflict_resolve"] = _on_conflict_resolve
 
-    # A3: identidad del header data-driven desde el estado (no literales en la vista).
+    # Sección Ajustes: guardar valida + persiste (keyring/TOML) y re-renderiza
+    # para que el header refleje la identidad nueva al instante.
+    def _on_settings_save(payload: dict[str, str]) -> None:
+        error = save_settings(runtime.config_path, payload)
+        if error is not None:
+            ui.notify(error, type="negative")
+        else:
+            ui.notify("Ajustes guardados", type="positive")
+            main_page.refresh()
+
+    callbacks["on_settings_save"] = _on_settings_save
+
+    # A3: identidad del header data-driven desde el estado, sembrado desde el
+    # TOML la primera vez (editable en Ajustes).
+    _ensure_identity_loaded(runtime.config_path)
     app_state = get_app_state_instance()
     identity = {"name": app_state.user_display_name, "role": app_state.user_role}
 
+    active_section = get_store().get("active_section") or "Dashboard"
     render_dashboard(
         stats=stats,
         mods=mods,
         chat_messages=chat_messages,
         is_thinking=state.is_thinking,
         callbacks=callbacks,
-        active_section=get_store().get("active_section") or "Dashboard",
+        active_section=active_section,
         identity=identity,
         search_query=get_store().get("mods_search_query") or "",
         conflicts_list=get_store().get("conflicts_list") or [],
+        settings=_build_settings_data(runtime.config_path) if active_section == "Settings" else None,
     )
 
 
