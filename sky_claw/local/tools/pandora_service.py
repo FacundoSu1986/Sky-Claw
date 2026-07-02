@@ -107,7 +107,7 @@ class PandoraPipelineService:
             runner = self._ensure_runner()
         except PandoraExecutionError as exc:
             logger.error("Pandora runner unavailable: %s", exc)
-            return {"status": "error", "success": False, "logs": str(exc)}
+            return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
 
         try:
             async with SnapshotTransactionLock(
@@ -121,18 +121,19 @@ class PandoraPipelineService:
                 result = await runner.run_pandora()
         except LockAcquisitionError as exc:
             logger.warning("Lock contention on '%s': %s", self.RESOURCE_ID, exc)
-            return {
-                "status": "error",
-                "success": False,
-                "logs": f"Could not acquire behavior-graphs lock '{self.RESOURCE_ID}': {exc}",
-            }
+            detail = f"Could not acquire behavior-graphs lock '{self.RESOURCE_ID}': {exc}"
+            return {"status": "error", "success": False, "message": detail, "logs": detail}
         except PandoraExecutionError as exc:
             logger.error("Pandora execution failed: %s", exc)
-            return {"status": "error", "success": False, "logs": str(exc)}
+            return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
 
+        # Contrato compartido (deuda #5): ``message`` canónico junto a los campos
+        # estructurados; en éxito queda vacío (el consumidor arma su copy).
+        message = "" if result.success else (result.stderr or result.stdout or "")
         return {
             "status": "success" if result.success else "error",
             "success": result.success,
+            "message": message,
             "return_code": result.return_code,
             "stdout": result.stdout,
             "stderr": result.stderr,

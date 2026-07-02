@@ -136,7 +136,7 @@ class LootSortingService:
             runner = self._ensure_loot_runner()
         except LOOTNotFoundError as exc:
             logger.error("LOOT runner unavailable: %s", exc)
-            return {"status": "error", "success": False, "logs": str(exc)}
+            return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
 
         try:
             async with SnapshotTransactionLock(
@@ -150,18 +150,25 @@ class LootSortingService:
                 result = await runner.sort(update_masterlist=update_masterlist)
         except LockAcquisitionError as exc:
             logger.warning("Lock contention on '%s': %s", self.RESOURCE_ID, exc)
-            return {
-                "status": "error",
-                "success": False,
-                "logs": f"Could not acquire load-order lock '{self.RESOURCE_ID}': {exc}",
-            }
+            detail = f"Could not acquire load-order lock '{self.RESOURCE_ID}': {exc}"
+            return {"status": "error", "success": False, "message": detail, "logs": detail}
         except (LOOTNotFoundError, LOOTTimeoutError) as exc:
             logger.error("LOOT sort failed: %s", exc)
-            return {"status": "error", "success": False, "logs": str(exc)}
+            return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
 
+        # Contrato compartido (deuda #5): ``message`` canónico junto a los campos
+        # estructurados; en éxito queda vacío (el consumidor arma su copy). En
+        # fallo, incluir raw_stderr: LOOT puede salir non-zero con el error solo
+        # en stderr no estructurado (errors=[] del parser) — review Codex #222.
+        message = (
+            ""
+            if result.success
+            else ("; ".join(str(e) for e in result.errors) or result.raw_stderr or result.raw_stdout or "")
+        )
         return {
             "status": "success" if result.success else "error",
             "success": result.success,
+            "message": message,
             "return_code": result.return_code,
             "sorted_plugins": result.sorted_plugins,
             "warnings": result.warnings,

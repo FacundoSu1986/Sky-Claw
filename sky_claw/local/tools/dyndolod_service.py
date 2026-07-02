@@ -203,6 +203,7 @@ class DynDOLODPipelineService:
             )
             return {
                 "success": False,
+                "message": str(exc),
                 "errors": [str(exc)],
                 "duration_seconds": duration,
             }
@@ -302,6 +303,7 @@ class DynDOLODPipelineService:
 
                 return {
                     "success": True,
+                    "message": "",
                     **result_dict,
                     "duration_seconds": duration,
                 }
@@ -321,6 +323,7 @@ class DynDOLODPipelineService:
             )
             return {
                 "success": False,
+                "message": f"Lock acquisition failed: {exc}",
                 "errors": [f"Lock acquisition failed: {exc}"],
                 "duration_seconds": duration,
             }
@@ -354,6 +357,7 @@ class DynDOLODPipelineService:
             )
             return {
                 "success": False,
+                "message": str(exc),
                 "errors": [str(exc)],
                 "duration_seconds": duration,
                 "rolled_back": rolled_back,
@@ -408,6 +412,7 @@ class DynDOLODPipelineService:
             )
             return {
                 "success": False,
+                "message": str(exc),
                 "errors": [str(exc)],
                 "duration_seconds": duration,
                 "rolled_back": rolled_back,
@@ -459,6 +464,7 @@ class DynDOLODPipelineService:
         logger.info("DynDOLOD dry-run preview: %s", change_set.summary)
         return {
             "status": "dry_run_preview",
+            "message": change_set.summary,
             "change_set": change_set.model_dump(mode="json"),
         }
 

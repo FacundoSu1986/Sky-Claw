@@ -18,6 +18,8 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from sky_claw.local.tools.tool_result import normalize_tool_result
+
 if TYPE_CHECKING:
     from sky_claw.antigravity.gui.state.reactive_store import ReactiveStore
 
@@ -88,13 +90,14 @@ def summarize_ritual_result(tool_key: str, result: dict[str, Any]) -> tuple[str,
     ``kind`` is one of NiceGUI's notify types ("positive"/"negative"/"warning").
     Denied/timed-out HITL approvals get a friendly Spanish hint instead of the
     raw reason code.
+
+    Contrato compartido (deuda #5 cerrada): los servicios emiten ``success`` +
+    ``message``; :func:`normalize_tool_result` absorbe las shapes legacy
+    (``logs``/``errors``/``error``/``stderr``/``details``), así que acá ya no se
+    adivina inspeccionando claves.
     """
-    # Dispatcher results are inconsistent: execute_loot_sorting returns both
-    # ``status`` and ``success``, while generate_bashed_patch / generate_lods
-    # return only ``success=True`` (no ``status``). Treat either signal as
-    # completion so a real success never shows a failure toast (Codex on #211).
-    status = str(result.get("status", "")).lower()
-    if status == "success" or result.get("success") is True:
+    normalized = normalize_tool_result(result)
+    if normalized["success"]:
         return (f"Ritual «{tool_key}» completado.", "positive")
 
     reason = str(result.get("reason", "") or "")
@@ -103,23 +106,7 @@ def summarize_ritual_result(tool_key: str, result: dict[str, Any]) -> tuple[str,
             "Ejecución no aprobada. Activá «Modo local» o aprobá la acción para continuar.",
             "negative",
         )
-    # Los servicios reportan el detalle del error bajo claves distintas: ``logs``
-    # (LOOT/Pandora/quick_auto_clean), ``errors`` lista (DynDOLOD/LOOT), ``stderr``
-    # (runner) o ``details``/``error`` (xEdit-patch). Consultarlas todas evita el
-    # opaco "error desconocido" (Codex on #213). [Causa raíz pendiente: contrato de
-    # resultado compartido — ver follow-up #5.]
-    errors = result.get("errors")
-    errors_str = "; ".join(str(e) for e in errors) if isinstance(errors, list) and errors else ""
-    detail = str(
-        result.get("details")
-        or result.get("error")
-        or result.get("logs")
-        or result.get("stderr")
-        or errors_str
-        or reason
-        or "error desconocido"
-    )
-    return (f"El ritual «{tool_key}» falló: {detail}", "negative")
+    return (f"El ritual «{tool_key}» falló: {normalized['message']}", "negative")
 
 
 def make_gui_hitl_notify(
