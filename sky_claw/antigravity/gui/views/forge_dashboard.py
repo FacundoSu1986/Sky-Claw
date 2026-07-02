@@ -1109,19 +1109,31 @@ def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable], sea
 
 
 def _conflicts_screen(conflicts: list[dict[str, Any]], callbacks: dict[str, Callable]) -> None:
-    """Pantalla de Conflictos: lista real de disputas + acción de resolver.
+    """Pantalla de Conflictos: lista real de disputas + detección + resolver.
 
     Reemplaza el placeholder "próxima iteración" por los conflictos sin resolver
     (``conflicts_list`` del store, ya enriquecido con nombres de mods vía
-    ``enrich_conflicts``). "Resolver" dispara ``on_conflict_resolve(id)``, que
-    marca el conflicto como resuelto en la DB y refresca.
+    ``enrich_conflicts``). "Detectar disputas" (F5) corre el escaneo de assets
+    del VFS y persiste los pares nuevos; "Resolver" dispara
+    ``on_conflict_resolve(id)``, que marca el conflicto como resuelto en la DB
+    y refresca.
     """
-    ui.html(
-        '<div style="display:flex; align-items:center; gap:16px; margin-bottom:14px;">'
-        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">DISPUTAS EN LA FORJA</h2>"
-        f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:12px; color:{RED_SOFT};\">{len(conflicts)}</span>"
-        '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
-    )
+    with ui.element("div").style("display:flex; align-items:center; gap:16px; margin-bottom:14px;"):
+        ui.html(
+            "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">DISPUTAS EN LA FORJA</h2>"
+            f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:12px; color:{RED_SOFT};\">{len(conflicts)}</span>"
+            '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span>'
+        )
+        on_scan = _cb(callbacks, "on_conflict_scan")
+        if on_scan is not None:
+            scan_btn = ui.element("button").style(
+                "flex-shrink:0; padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px;"
+                " letter-spacing:.06em; color:#1c130a; background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40);"
+                " border:1.5px solid #f6e6bd; border-radius:4px;"
+            )
+            with scan_btn:
+                ui.html("Detectar disputas")
+            scan_btn.on("click", lambda _=None: on_scan())
     if not conflicts:
         with ui.element("div").style(
             "display:flex; flex-direction:column; align-items:center; justify-content:center; padding:70px 0; gap:12px;"
