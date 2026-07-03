@@ -51,19 +51,31 @@ security_logger = logging.getLogger(f"{__name__}.security")
 # FASE 1.5: Constante para directorio de staging de backups
 BACKUP_STAGING_DIR = ".skyclaw_backups/"
 
+#: Timeout (s) del análisis profundo de xEdit: el default de 120s mata escaneos
+#: de load orders grandes que legítimamente tardan varios minutos (review Codex
+#: #226). 15 min cubre perfiles pesados sin colgar la UI indefinidamente.
+DEEP_SCAN_TIMEOUT_SECONDS = 900
 
-def parse_active_plugins(modlist_text: str) -> list[str]:
-    """Extrae los plugins habilitados (``+``) de un modlist de MO2.
 
-    Seam puro (testeable sin supervisor): filtra ``.esp/.esm/.esl`` activos —
-    ``.esl`` incluido porque el análisis profundo de xEdit también reporta
-    conflictos entre plugins ligeros. Conserva el orden de carga.
+def parse_active_plugins(load_order_text: str) -> list[str]:
+    """Extrae los plugins del load order (``loadorder.txt`` / ``plugins.txt``).
+
+    Seam puro (testeable sin supervisor). Formato de esos archivos de MO2/Skyrim
+    SE: un plugin por línea, en orden de carga; se ignoran vacíos y comentarios
+    (``#``); el prefijo ``*`` de ``plugins.txt`` (marca de habilitado) se
+    descarta. NO confundir con ``modlist.txt``, que lista *mods* con prefijos
+    ``+/-`` (review Copilot #226). Se conservan solo ``.esp/.esm/.esl`` —
+    ``.esl`` incluido porque xEdit también reporta conflictos entre plugins
+    ligeros.
     """
     plugins: list[str] = []
-    for raw in modlist_text.splitlines():
+    for raw in load_order_text.splitlines():
         line = raw.strip()
-        if line.startswith("+") and line.lower().endswith((".esp", ".esm", ".esl")):
-            plugins.append(line[1:])
+        if not line or line.startswith("#"):
+            continue
+        name = line.lstrip("*").strip()
+        if name.lower().endswith((".esp", ".esm", ".esl")):
+            plugins.append(name)
     return plugins
 
 
@@ -700,8 +712,17 @@ class SupervisorAgent:
 
         profile = profile or self._path_resolver.get_active_profile()
         if plugins is None:
-            modlist_path = self._path_resolver.resolve_modlist_path(profile)
-            plugins = parse_active_plugins(modlist_path.read_text(encoding="utf-8")) if modlist_path.exists() else []
+            # El load order de plugins vive en loadorder.txt (fallback plugins.txt),
+            # siblings de modlist.txt en el dir del perfil — NO en modlist.txt, que
+            # lista mods (review Copilot #226). utf-8-sig tolera BOM.
+            profile_dir = self._path_resolver.resolve_modlist_path(profile).parent
+            plugins = []
+            for candidate in ("loadorder.txt", "plugins.txt"):
+                lo_path = profile_dir / candidate
+                if lo_path.exists():
+                    plugins = parse_active_plugins(lo_path.read_text(encoding="utf-8-sig"))
+                    if plugins:
+                        break
         if not plugins:
             logger.info("Análisis profundo: sin plugins activos en perfil '%s'.", profile)
             return ConflictReport(total_conflicts=0, critical_conflicts=0)
@@ -715,6 +736,7 @@ class SupervisorAgent:
             xedit_path=xedit_path,
             game_path=game_path,
             output_dir=pathlib.Path(BACKUP_STAGING_DIR) / "patches",
+            timeout=DEEP_SCAN_TIMEOUT_SECONDS,
         )
         logger.info("Análisis profundo de conflictos: %d plugins, perfil '%s'.", len(plugins), profile)
         return await ConflictAnalyzer().analyze(plugins, xedit_runner)
