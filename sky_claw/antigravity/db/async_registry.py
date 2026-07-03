@@ -522,3 +522,31 @@ class AsyncModRegistry:
                 logger.error("Batch log tasks failed, rolled back: %s", exc)
                 raise DatabaseError(f"log_tasks_batch failed: {exc}") from exc
         logger.debug("Batch-logged %d task rows", len(rows))
+
+    async def get_task_log(self, limit: int = 50) -> list[dict[str, object]]:
+        """Lee el registro de actividad (``task_log``), lo más reciente primero.
+
+        Hasta ahora la tabla era write-only (la escriben sync_engine, el tool
+        install_mod y las descargas fallidas); esta lectura alimenta el
+        "Registro de la Puerta" de la sección Descargas del Forge. El nombre
+        del mod se resuelve con LEFT JOIN (``mod_name`` es ``None`` para
+        eventos sin mod asociado, p. ej. syncs).
+        """
+        if self._conn is None:
+            raise RuntimeError("Database is not open")
+        # En SQLite un LIMIT negativo significa "sin límite": un -1 accidental
+        # volcaría el historial completo. Clampear a >= 0 (0 → lista vacía).
+        limit = max(int(limit), 0)
+        async with self._conn.execute(
+            """
+            SELECT t.action, t.status, t.detail, t.created_at, m.name AS mod_name
+            FROM task_log t
+            LEFT JOIN mods m ON m.mod_id = t.mod_id
+            ORDER BY t.log_id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ) as cur:
+            rows = await cur.fetchall()
+            columns = [d[0] for d in cur.description]
+        return [dict(zip(columns, row, strict=True)) for row in rows]
