@@ -43,13 +43,28 @@ from sky_claw.local.tools.wrye_bash_runner import (
     WryeBashRunner,
 )
 from sky_claw.local.tools.xedit_service import XEditPipelineService
-from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer
+from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport
 
 logger = logging.getLogger(__name__)
 security_logger = logging.getLogger(f"{__name__}.security")
 
 # FASE 1.5: Constante para directorio de staging de backups
 BACKUP_STAGING_DIR = ".skyclaw_backups/"
+
+
+def parse_active_plugins(modlist_text: str) -> list[str]:
+    """Extrae los plugins habilitados (``+``) de un modlist de MO2.
+
+    Seam puro (testeable sin supervisor): filtra ``.esp/.esm/.esl`` activos —
+    ``.esl`` incluido porque el análisis profundo de xEdit también reporta
+    conflictos entre plugins ligeros. Conserva el orden de carga.
+    """
+    plugins: list[str] = []
+    for raw in modlist_text.splitlines():
+        line = raw.strip()
+        if line.startswith("+") and line.lower().endswith((".esp", ".esm", ".esl")):
+            plugins.append(line[1:])
+    return plugins
 
 
 class SupervisorAgent:
@@ -654,6 +669,55 @@ class SupervisorAgent:
         except (OSError, RuntimeError) as e:
             logger.error(f"Error durante escaneo de conflictos: {e}", exc_info=True)
             raise
+
+    async def scan_record_conflicts(
+        self,
+        profile: str | None = None,
+        plugins: list[str] | None = None,
+    ) -> ConflictReport:
+        """FASE 6: análisis PROFUNDO de conflictos a nivel record vía xEdit (read-only).
+
+        A diferencia de ``scan_asset_conflicts`` (escaneo liviano del VFS), corre
+        xEdit como subproceso — es lento y requiere SSEEdit instalado — y detecta
+        los conflictos de records que causan CTDs. El puente
+        ``persist_record_conflicts`` lleva el reporte a la tabla ``conflicts``.
+
+        Args:
+            profile: perfil MO2 a inspeccionar (por defecto, el activo).
+            plugins: lista explícita de plugins; si es ``None`` se leen los
+                habilitados del modlist del perfil.
+
+        Returns:
+            ``ConflictReport`` con los pares de plugins en disputa (vacío si no
+            hay plugins activos).
+
+        Raises:
+            RuntimeError: si faltan SKYRIM_PATH o XEDIT_PATH, o si xEdit falla.
+        """
+        import pathlib
+
+        from sky_claw.local.xedit.runner import XEditRunner
+
+        profile = profile or self._path_resolver.get_active_profile()
+        if plugins is None:
+            modlist_path = self._path_resolver.resolve_modlist_path(profile)
+            plugins = parse_active_plugins(modlist_path.read_text(encoding="utf-8")) if modlist_path.exists() else []
+        if not plugins:
+            logger.info("Análisis profundo: sin plugins activos en perfil '%s'.", profile)
+            return ConflictReport(total_conflicts=0, critical_conflicts=0)
+
+        game_path = self._path_resolver.get_skyrim_path()
+        xedit_path = self._path_resolver.get_xedit_path()
+        if game_path is None or xedit_path is None:
+            raise RuntimeError("El análisis profundo requiere SKYRIM_PATH y XEDIT_PATH configurados.")
+
+        xedit_runner = XEditRunner(
+            xedit_path=xedit_path,
+            game_path=game_path,
+            output_dir=pathlib.Path(BACKUP_STAGING_DIR) / "patches",
+        )
+        logger.info("Análisis profundo de conflictos: %d plugins, perfil '%s'.", len(plugins), profile)
+        return await ConflictAnalyzer().analyze(plugins, xedit_runner)
 
     def scan_asset_conflicts_json(self) -> str:
         """FASE 5: Herramienta READ-ONLY que devuelve el reporte en formato JSON.

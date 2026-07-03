@@ -1148,6 +1148,18 @@ def _conflicts_screen(conflicts: list[dict[str, Any]], callbacks: dict[str, Call
             with scan_btn:
                 ui.html("Detectar disputas")
             scan_btn.on("click", lambda _=None: on_scan())
+        # F6: análisis profundo de records vía xEdit (lento, requiere SSEEdit).
+        # Estilo secundario para distinguirlo del escaneo liviano de arriba.
+        on_deep = _cb(callbacks, "on_deep_conflict_scan")
+        if on_deep is not None:
+            deep_btn = ui.element("button").style(
+                "flex-shrink:0; padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px;"
+                " letter-spacing:.06em; color:#e7d6ad; background:rgba(62,39,35,.5);"
+                " border:1.5px solid rgba(200,168,106,.5); border-radius:4px;"
+            )
+            with deep_btn:
+                ui.html("Análisis profundo (xEdit)")
+            deep_btn.on("click", lambda _=None: on_deep())
     if not conflicts:
         with ui.element("div").style(
             "display:flex; flex-direction:column; align-items:center; justify-content:center; padding:70px 0; gap:12px;"

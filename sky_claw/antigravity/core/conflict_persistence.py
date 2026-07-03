@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sky_claw.antigravity.core.database import DatabaseAgent
     from sky_claw.local.assets.asset_scanner import AssetConflictReport
+    from sky_claw.local.xedit.conflict_analyzer import ConflictReport
 
 #: Par de conflicto listo para persistir: (mod ganador, mod pisado, tipo).
 ConflictPair = tuple[str, str, str]
@@ -64,20 +65,52 @@ def pair_asset_conflicts(reports: list[AssetConflictReport]) -> list[ConflictPai
     return pairs
 
 
-async def persist_asset_conflicts(reports: list[AssetConflictReport], db: DatabaseAgent) -> int:
-    """Persiste los conflictos de assets en la DB GUI; devuelve cuántos son nuevos.
+#: Severidad de conflicto de record, de peor a menos grave (para el tipo del par).
+_SEVERITY_ORDER = ("critical", "warning", "info")
 
-    Los nombres de mod se resuelven a ids con ``add_mod`` (UPSERT por nombre,
-    preserva ids — ver #220), y la deduplicación compara contra las disputas
-    PENDIENTES sin importar el orden del par.
+
+def pair_record_conflicts(report: ConflictReport) -> list[ConflictPair]:
+    """Convierte el análisis profundo de xEdit en pares de plugins en disputa.
+
+    Un par por cada ``PluginConflictPair`` con conflictos, tipado con la
+    severidad PEOR del par (``record:critical`` > ``record:warning`` >
+    ``record:info``) — al usuario le importa "estos dos plugins chocan a nivel
+    record, lo peor es crítico", no cada FormID. Los pares sin conflictos se
+    ignoran.
     """
-    pairs = pair_asset_conflicts(reports)
+    pairs: list[ConflictPair] = []
+    for pp in report.plugin_pairs:
+        if not pp.conflicts:
+            continue
+        severities = {c.severity for c in pp.conflicts}
+        worst = next((s for s in _SEVERITY_ORDER if s in severities), "info")
+        pairs.append((pp.plugin_a, pp.plugin_b, f"record:{worst}"))
+    return pairs
+
+
+async def persist_asset_conflicts(reports: list[AssetConflictReport], db: DatabaseAgent) -> int:
+    """Persiste los conflictos de assets en la DB GUI; devuelve cuántos son nuevos."""
+    return await _persist_pairs(pair_asset_conflicts(reports), db)
+
+
+async def persist_record_conflicts(report: ConflictReport, db: DatabaseAgent) -> int:
+    """Persiste los conflictos de records (xEdit) en la DB GUI; devuelve cuántos son nuevos."""
+    return await _persist_pairs(pair_record_conflicts(report), db)
+
+
+async def _persist_pairs(pairs: list[ConflictPair], db: DatabaseAgent) -> int:
+    """Persiste pares de disputa en la tabla ``conflicts``; devuelve cuántos son nuevos.
+
+    Núcleo compartido por los productores de conflictos (assets y records):
+    los nombres de mod se resuelven a ids SIN pisar metadatos (``add_mod`` con
+    defaults haría UPSERT de version/size/source a NULL/0 sobre mods ya
+    registrados — review Copilot #223; solo se crea el mod si no existe), y la
+    deduplicación compara contra las disputas PENDIENTES sin importar el orden
+    del par (una disputa resuelta que reaparece se registra de nuevo).
+    """
     if not pairs:
         return 0
 
-    # Resolver nombres → ids SIN pisar metadatos: add_mod con defaults haría
-    # UPSERT de version/size/source a NULL/0 sobre mods ya registrados (review
-    # Copilot #223); solo se crea el mod si no existe.
     existing_ids = {str(m.get("name")): int(m["id"]) for m in await db.get_mods() if m.get("id") is not None}
     mod_ids: dict[str, int] = {}
     for winner, loser, _ in pairs:
