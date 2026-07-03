@@ -538,16 +538,27 @@ def _respond_hitl(request_id: str, approved: bool) -> None:
         fn(request_id, approved)
 
 
+def _hitl_modal_visible(pending: dict[str, Any] | None, active_section: str) -> bool:
+    """Seam puro: si corresponde mostrar el modal HITL global.
+
+    En Descargas se suprime: el overlay full-screen taparía la Puerta de
+    Aprobación inline, que muestra la misma solicitud con más contexto (la
+    URL de la descarga, que el modal no tiene) — review Codex #224.
+    """
+    return bool(pending) and active_section != "Downloads"
+
+
 @ui.refreshable
 def _hitl_modal_panel() -> None:
     """Overlay asking the operator to approve/deny a destructive Ritual.
 
     Rendered only while ``pending_hitl`` is set (the GUI HITL bridge parks it
-    there when Modo local is off). Buttons forward the decision through the
+    there when Modo local is off) and the active section is not Downloads —
+    there the inline gate takes over. Buttons forward the decision through the
     ``on_hitl_respond`` callback; the guard's timeout still auto-denies.
     """
     pending = get_store().get(STORE_KEY_PENDING_HITL)
-    if not pending:
+    if not _hitl_modal_visible(pending, str(get_store().get("active_section") or "")):
         return
     request_id = str(pending.get("request_id", ""))
     reason = str(pending.get("reason", "") or "Esta acción requiere tu aprobación.")

@@ -540,6 +540,26 @@ def _build_settings_data(config_path: Path) -> dict[str, Any]:
     }
 
 
+def _load_downloads_history() -> None:
+    """Carga el ``task_log`` del registry en el store de la sección Descargas.
+
+    Se dispara desde suscriptores del store (navegar a "Downloads" o mover la
+    puerta HITL estando ahí), NUNCA desde el render: cargar en ``main_page``
+    repetía la query en cada refresh y duplicaba la carga al entrar (review
+    Copilot #224). El set del store re-renderiza vía la suscripción condicional
+    de ``downloads_history``; el dedupe por igualdad corta el ciclo.
+    """
+    runtime = get_runtime_context()
+    registry = getattr(runtime.app_context, "registry", None) if runtime is not None else None
+    if registry is None:
+        return
+
+    async def _load() -> None:
+        get_store().set("downloads_history", await registry.get_task_log(50))
+
+    create_tracked_task(_load(), name="gui-downloads-history")
+
+
 @ui.refreshable
 def main_page() -> None:
     """Single page that gates between Wizard and Dashboard via the store."""
@@ -734,24 +754,16 @@ def main_page() -> None:
 
     # Sección Descargas: la Puerta de Aprobación muestra la solicitud HITL
     # parkeada (única fuente viva) y el Registro lista el task_log real del
-    # registry. La carga es perezosa (solo al entrar a la sección) y el store
-    # dedupea por igualdad, así que el ciclo render→carga→set se corta solo
-    # cuando el historial no cambió.
+    # registry. El render solo LEE el store: cargar acá repetiría la query en
+    # cada refresh de la página y duplicaría la carga al entrar (review Copilot
+    # #224). La carga la disparan los suscriptores de setup_app (navegar a la
+    # sección / mover la puerta HITL) vía _load_downloads_history.
     downloads: dict[str, Any] | None = None
     if active_section == "Downloads":
         downloads = {
             "pending": get_store().get(STORE_KEY_PENDING_HITL),
             "history": get_store().get("downloads_history") or [],
         }
-
-        async def _load_downloads_history() -> None:
-            registry = getattr(runtime.app_context, "registry", None)
-            if registry is None:
-                return
-            rows = await registry.get_task_log(50)
-            get_store().set("downloads_history", rows)
-
-        create_tracked_task(_load_downloads_history(), name="gui-downloads-history")
 
     render_dashboard(
         stats=stats,
@@ -843,17 +855,30 @@ def setup_app() -> None:
     # a prompt or showing a result never resets the chat input.
     store.subscribe(STORE_KEY_PENDING_HITL, _hitl_modal_panel.refresh)
     store.subscribe(STORE_KEY_RITUAL_FEEDBACK, _ritual_feedback_panel.refresh)
-    # Descargas: el historial se carga en un task al renderizar la sección; el
-    # primer set (o cualquier cambio real) re-renderiza. Y la Puerta de
-    # Aprobación inline debe reflejar llegadas/resoluciones HITL, pero SOLO
-    # mientras el usuario está en Descargas — suscribir pending_hitl a
-    # main_page.refresh sin condición reiniciaría el input del chat del home
-    # cada vez que un ritual pide aprobación (mismo motivo por el que el modal
-    # tiene su propio panel refreshable).
-    store.subscribe("downloads_history", main_page.refresh)
+
+    # Descargas: la carga del historial se dispara al navegar a la sección (no
+    # en el render — review Copilot #224), y todos los refresh de esta pantalla
+    # son condicionales a que la sección activa sea "Downloads": refrescar sin
+    # condición reiniciaría el input del chat del home cada vez que un ritual
+    # pide aprobación o cuando la carga termina tarde (mismo motivo por el que
+    # el modal HITL tiene su propio panel refreshable).
+    def _refresh_if_on_downloads() -> None:
+        if store.get("active_section") == "Downloads":
+            main_page.refresh()
+
+    store.subscribe("downloads_history", _refresh_if_on_downloads)
+
+    def _load_downloads_on_enter() -> None:
+        if store.get("active_section") == "Downloads":
+            _load_downloads_history()
+
+    store.subscribe("active_section", _load_downloads_on_enter)
 
     def _refresh_downloads_gate() -> None:
         if store.get("active_section") == "Downloads":
+            # Aprobar/denegar puede escribir en el task_log; recargar el
+            # historial junto con el re-render de la puerta.
+            _load_downloads_history()
             main_page.refresh()
 
     store.subscribe(STORE_KEY_PENDING_HITL, _refresh_downloads_gate)

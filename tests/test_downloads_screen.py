@@ -9,7 +9,12 @@ from __future__ import annotations
 import pytest
 
 from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-from sky_claw.antigravity.gui.views.forge_dashboard import GREEN, RED, _task_log_row_html
+from sky_claw.antigravity.gui.views.forge_dashboard import (
+    GREEN,
+    RED,
+    _hitl_modal_visible,
+    _task_log_row_html,
+)
 
 
 class TestGetTaskLog:
@@ -52,6 +57,81 @@ class TestGetTaskLog:
     @pytest.mark.asyncio
     async def test_vacio_devuelve_lista_vacia(self, async_registry: AsyncModRegistry) -> None:
         assert await async_registry.get_task_log() == []
+
+    @pytest.mark.asyncio
+    async def test_limite_no_positivo_no_vuelca_todo(self, async_registry: AsyncModRegistry) -> None:
+        """En SQLite ``LIMIT -1`` significa "sin límite"; el límite debe clampearse (review Copilot #224)."""
+        await async_registry.log_tasks_batch([(None, "sync", "ok", f"fila {i}") for i in range(5)])
+        assert await async_registry.get_task_log(limit=-1) == []
+        assert await async_registry.get_task_log(limit=0) == []
+
+
+class TestHitlModalVisible:
+    """El modal global se suprime en Descargas (review Codex #224).
+
+    El overlay full-screen taparía la Puerta de Aprobación inline — que es la
+    UI más rica: muestra la URL de la descarga, dato que el modal no tiene.
+    """
+
+    def test_se_suprime_en_downloads(self) -> None:
+        assert _hitl_modal_visible({"request_id": "r1"}, "Downloads") is False
+
+    def test_visible_en_cualquier_otra_seccion(self) -> None:
+        assert _hitl_modal_visible({"request_id": "r1"}, "Dashboard") is True
+        assert _hitl_modal_visible({"request_id": "r1"}, "Mods") is True
+
+    def test_sin_solicitud_pendiente_nunca_se_muestra(self) -> None:
+        assert _hitl_modal_visible(None, "Dashboard") is False
+        assert _hitl_modal_visible({}, "Downloads") is False
+
+
+class TestLoadDownloadsHistory:
+    """Disparador de carga del historial (suscripción, no render — review Copilot #224).
+
+    Cargar dentro de ``main_page`` repetía la query en cada refresh de la página
+    y duplicaba la carga al entrar (render→set→refresh→render). El trigger vive
+    en los suscriptores del store: navegar a Descargas o mover la puerta HITL.
+    """
+
+    @pytest.mark.asyncio
+    async def test_puebla_el_store_desde_el_registry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+        from types import SimpleNamespace
+
+        from sky_claw.antigravity.gui import sky_claw_gui as gui
+        from sky_claw.antigravity.gui import task_tracking
+        from sky_claw.antigravity.gui.state import get_store, reset_store_for_tests
+
+        reset_store_for_tests()
+        filas = [{"action": "sync", "status": "ok", "detail": "x", "mod_name": None, "created_at": "hoy"}]
+
+        class _StubRegistry:
+            async def get_task_log(self, limit: int = 50) -> list[dict[str, object]]:
+                assert limit == 50
+                return filas
+
+        runtime = SimpleNamespace(app_context=SimpleNamespace(registry=_StubRegistry()))
+        monkeypatch.setattr(gui, "get_runtime_context", lambda: runtime)
+
+        gui._load_downloads_history()
+        await asyncio.gather(*list(task_tracking._BACKGROUND_TASKS))
+
+        assert get_store().get("downloads_history") == filas
+
+    @pytest.mark.asyncio
+    async def test_sin_registry_no_rompe_ni_toca_el_store(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from types import SimpleNamespace
+
+        from sky_claw.antigravity.gui import sky_claw_gui as gui
+        from sky_claw.antigravity.gui.state import get_store, reset_store_for_tests
+
+        reset_store_for_tests()
+        runtime = SimpleNamespace(app_context=SimpleNamespace(registry=None))
+        monkeypatch.setattr(gui, "get_runtime_context", lambda: runtime)
+
+        gui._load_downloads_history()  # no debe lanzar ni crear tasks
+
+        assert get_store().get("downloads_history") is None
 
 
 class TestTaskLogRowHtml:

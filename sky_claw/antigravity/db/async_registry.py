@@ -534,6 +534,9 @@ class AsyncModRegistry:
         """
         if self._conn is None:
             raise RuntimeError("Database is not open")
+        # En SQLite un LIMIT negativo significa "sin límite": un -1 accidental
+        # volcaría el historial completo. Clampear a >= 0 (0 → lista vacía).
+        limit = max(int(limit), 0)
         async with self._conn.execute(
             """
             SELECT t.action, t.status, t.detail, t.created_at, m.name AS mod_name
@@ -542,7 +545,7 @@ class AsyncModRegistry:
             ORDER BY t.log_id DESC
             LIMIT ?
             """,
-            (int(limit),),
+            (limit,),
         ) as cur:
             rows = await cur.fetchall()
             columns = [d[0] for d in cur.description]
