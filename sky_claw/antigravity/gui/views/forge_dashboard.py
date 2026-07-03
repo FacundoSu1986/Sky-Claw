@@ -227,6 +227,7 @@ def render_forge_dashboard(
     search_query: str = "",
     conflicts_list: list[dict[str, Any]] | None = None,
     settings: dict[str, Any] | None = None,
+    downloads: dict[str, Any] | None = None,
 ) -> None:
     """Render the full Forge shell (sidebar + header + scroll content).
 
@@ -286,6 +287,8 @@ def render_forge_dashboard(
                     _conflicts_screen(conflicts_list or [], callbacks)
                 elif active_section == "Settings":
                     _settings_screen(settings or {}, callbacks)
+                elif active_section == "Downloads":
+                    _downloads_screen(downloads or {}, callbacks)
                 else:
                     _placeholder(active_section, callbacks)
 
@@ -1277,6 +1280,111 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
         with btn:
             ui.html("Guardar Ajustes")
         btn.on("click", _collect_and_save)
+
+
+_STATUS_COLORS = {"ok": GREEN, "success": GREEN, "registered": GREEN, "failed": RED, "error": RED}
+
+
+def _downloads_screen(downloads: dict[str, Any], callbacks: dict[str, Callable]) -> None:
+    """Pantalla de Descargas: aprobación HITL pendiente + registro de actividad.
+
+    Reemplaza el último placeholder "próxima iteración". La "Puerta de
+    Aprobación" muestra inline la solicitud de descarga parkeada en
+    ``STORE_KEY_PENDING_HITL`` (incluida la URL, que el modal global no
+    muestra) con Aprobar/Denegar vía ``on_hitl_respond``; el "Registro de la
+    Puerta" lista el ``task_log`` real del registry (instalaciones, updates,
+    syncs y descargas fallidas).
+    """
+    pending = downloads.get("pending") or None
+    history: list[dict[str, Any]] = downloads.get("history") or []
+    on_respond = _cb(callbacks, "on_hitl_respond")
+
+    # ── Puerta de aprobación ──
+    ui.html(
+        '<div style="display:flex; align-items:center; gap:16px; margin-bottom:14px;">'
+        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">PUERTA DE APROBACIÓN</h2>"
+        '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
+    )
+    if pending:
+        card = (
+            "display:flex; flex-direction:column; gap:10px; padding:18px 20px; margin-bottom:22px; border-radius:5px;"
+            "background:rgba(62,39,35,.4); border:1px solid rgba(200,168,106,.45); box-shadow:0 0 18px rgba(200,168,106,.18);"
+        )
+        with ui.element("div").style(card):
+            url = str(pending.get("url") or "")
+            url_html = (
+                f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:11.5px; color:#86b9d4;"
+                f' word-break:break-all;">{_e(url)}</div>'
+                if url
+                else ""
+            )
+            ui.html(
+                f"<div style=\"font-family:'Cinzel',serif; font-size:14px; color:#f1e6cf;\">{_e(pending.get('reason', 'Descarga pendiente'))}</div>"
+                f"<div style=\"font-family:'EB Garamond',serif; font-size:12.5px; color:#b8b1a0;\">{_e(pending.get('detail', ''))}</div>"
+                f"{url_html}"
+            )
+            if on_respond is not None:
+                rid = str(pending.get("request_id") or "")
+                with ui.element("div").style("display:flex; gap:12px; margin-top:4px;"):
+                    deny = ui.element("button").style(
+                        "padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px;"
+                        f" letter-spacing:.06em; color:{RED_SOFT}; background:rgba(216,88,78,.12);"
+                        f" border:1.5px solid rgba(216,88,78,.5); border-radius:4px;"
+                    )
+                    with deny:
+                        ui.html("Denegar")
+                    deny.on("click", lambda _=None, r=rid: on_respond(r, False))
+                    approve = ui.element("button").style(
+                        "padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px;"
+                        " letter-spacing:.06em; color:#1c130a; background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40);"
+                        " border:1.5px solid #f6e6bd; border-radius:4px;"
+                    )
+                    with approve:
+                        ui.html("Aprobar")
+                    approve.on("click", lambda _=None, r=rid: on_respond(r, True))
+    else:
+        ui.html(
+            '<div style="padding:26px 0 34px; text-align:center;">'
+            f"<div style=\"font-family:'Noto Sans Runic',serif; font-size:40px; color:{GREEN}; opacity:.5;\">ᛒ</div>"
+            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; color:#8a8068;\">El guardián descansa — no hay descargas esperando aprobación.</div></div>"
+        )
+
+    # ── Registro de la Puerta ──
+    ui.html(
+        '<div style="display:flex; align-items:center; gap:16px; margin:8px 0 14px;">'
+        "<h3 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:14px; letter-spacing:.18em; color:#c9b998;\">REGISTRO DE LA PUERTA</h3>"
+        f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:#857c69;\">{len(history)}</span>"
+        '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.25),transparent);"></span></div>'
+    )
+    if not history:
+        ui.html(
+            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; color:#8a8068; padding:8px 0 20px;\">"
+            "Aún no hay actividad registrada — instalaciones, actualizaciones y sincronizaciones aparecerán acá.</div>"
+        )
+        return
+    with ui.element("div").style("display:flex; flex-direction:column; gap:7px;"):
+        for row in history:
+            ui.html(_task_log_row_html(row))
+
+
+def _task_log_row_html(row: dict[str, Any]) -> str:
+    """Seam puro: fila del Registro de la Puerta como HTML (testeable sin UI)."""
+    status = str(row.get("status") or "")
+    color = _STATUS_COLORS.get(status.lower(), "#c2b48f")
+    subject = str(row.get("mod_name") or row.get("detail") or "")
+    line = (
+        "display:flex; align-items:center; gap:14px; padding:10px 16px; border-radius:4px;"
+        "background:rgba(62,39,35,.28); border:1px solid rgba(200,168,106,.16);"
+    )
+    return (
+        f'<div style="{line}">'
+        f'<span style="width:8px; height:8px; border-radius:50%; background:{color}; flex-shrink:0;"></span>'
+        f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:{color}; min-width:88px;\">{_e(row.get('action', ''))}</span>"
+        f"<span style=\"flex:1; min-width:0; font-family:'EB Garamond',serif; font-size:13px; color:#d9d2c0;"
+        f' overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_e(subject)}</span>'
+        f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#857c69;\">{_e(row.get('created_at', ''))}</span>"
+        "</div>"
+    )
 
 
 def _placeholder(section: str, callbacks: dict[str, Callable]) -> None:

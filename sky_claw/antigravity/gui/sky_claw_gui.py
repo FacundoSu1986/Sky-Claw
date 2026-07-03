@@ -731,6 +731,28 @@ def main_page() -> None:
     identity = {"name": app_state.user_display_name, "role": app_state.user_role}
 
     active_section = get_store().get("active_section") or "Dashboard"
+
+    # Sección Descargas: la Puerta de Aprobación muestra la solicitud HITL
+    # parkeada (única fuente viva) y el Registro lista el task_log real del
+    # registry. La carga es perezosa (solo al entrar a la sección) y el store
+    # dedupea por igualdad, así que el ciclo render→carga→set se corta solo
+    # cuando el historial no cambió.
+    downloads: dict[str, Any] | None = None
+    if active_section == "Downloads":
+        downloads = {
+            "pending": get_store().get(STORE_KEY_PENDING_HITL),
+            "history": get_store().get("downloads_history") or [],
+        }
+
+        async def _load_downloads_history() -> None:
+            registry = getattr(runtime.app_context, "registry", None)
+            if registry is None:
+                return
+            rows = await registry.get_task_log(50)
+            get_store().set("downloads_history", rows)
+
+        create_tracked_task(_load_downloads_history(), name="gui-downloads-history")
+
     render_dashboard(
         stats=stats,
         mods=mods,
@@ -742,6 +764,7 @@ def main_page() -> None:
         search_query=get_store().get("mods_search_query") or "",
         conflicts_list=get_store().get("conflicts_list") or [],
         settings=_build_settings_data(runtime.config_path) if active_section == "Settings" else None,
+        downloads=downloads,
     )
 
 
@@ -820,6 +843,20 @@ def setup_app() -> None:
     # a prompt or showing a result never resets the chat input.
     store.subscribe(STORE_KEY_PENDING_HITL, _hitl_modal_panel.refresh)
     store.subscribe(STORE_KEY_RITUAL_FEEDBACK, _ritual_feedback_panel.refresh)
+    # Descargas: el historial se carga en un task al renderizar la sección; el
+    # primer set (o cualquier cambio real) re-renderiza. Y la Puerta de
+    # Aprobación inline debe reflejar llegadas/resoluciones HITL, pero SOLO
+    # mientras el usuario está en Descargas — suscribir pending_hitl a
+    # main_page.refresh sin condición reiniciaría el input del chat del home
+    # cada vez que un ritual pide aprobación (mismo motivo por el que el modal
+    # tiene su propio panel refreshable).
+    store.subscribe("downloads_history", main_page.refresh)
+
+    def _refresh_downloads_gate() -> None:
+        if store.get("active_section") == "Downloads":
+            main_page.refresh()
+
+    store.subscribe(STORE_KEY_PENDING_HITL, _refresh_downloads_gate)
     # The "Modo local" toggle now lives in per-client app.storage.client, so it
     # refreshes from its own click/F8 handlers (client context) — no store key.
 
