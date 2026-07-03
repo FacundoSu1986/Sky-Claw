@@ -502,6 +502,17 @@ def save_settings(
     return None
 
 
+def _llm_reload_feedback(ok: bool, provider: str) -> dict[str, str]:
+    """Seam puro: texto/tipo del toast según el resultado del hot-reload del LLM."""
+    nombre = provider.capitalize() or "el proveedor"
+    if ok:
+        return {"text": f"Proveedor LLM cambiado a {nombre} en caliente.", "type": "positive"}
+    return {
+        "text": f"Ajustes guardados, pero no se pudo recargar {nombre} en caliente — aplicará al reiniciar Sky-Claw.",
+        "type": "warning",
+    }
+
+
 def _build_settings_data(config_path: Path) -> dict[str, Any]:
     """Arma los datos que la pantalla de Ajustes muestra (view pura).
 
@@ -732,15 +743,29 @@ def main_page() -> None:
         error = save_settings(runtime.config_path, payload)
         if error is not None:
             ui.notify(error, type="negative")
+            return
+        main_page.refresh()
+
+        # Hot-reload del proveedor LLM: si el daemon ya tiene router vivo, se
+        # aplica en caliente (sin reiniciar); si no (stack lock-only o booteo en
+        # curso), el toast lo dice honestamente. El resultado es async, así que
+        # va por el panel de feedback (refreshable) — no reinicia el input del chat.
+        provider = (payload.get("llm_provider") or "").strip()
+        ctx = getattr(runtime, "app_context", None)
+        if ctx is not None and getattr(ctx, "router", None) is not None:
+            api_key = (payload.get("llm_api_key") or "").strip()
+
+            async def _reload() -> None:
+                ok = await ctx.reload_llm_provider(provider, api_key)
+                get_store().set(STORE_KEY_RITUAL_FEEDBACK, _llm_reload_feedback(ok, provider))
+
+            ui.notify("Ajustes guardados — recargando el proveedor LLM…", type="positive")
+            create_tracked_task(_reload(), name="gui-llm-reload")
         else:
-            # Honesto con el estado real: el router LLM vivo no se recarga en
-            # caliente desde acá (eso vive en frontend_bridge._do_llm_reload);
-            # provider/clave aplican al reiniciar (review Codex en #221).
             ui.notify(
                 "Ajustes guardados — los cambios de proveedor/clave aplican al reiniciar Sky-Claw",
                 type="positive",
             )
-            main_page.refresh()
 
     callbacks["on_settings_save"] = _on_settings_save
 

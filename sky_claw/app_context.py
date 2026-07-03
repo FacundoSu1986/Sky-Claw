@@ -187,6 +187,70 @@ class AppContext:
         """True when the full stack (provider + router) is ready."""
         return self.router is not None
 
+    async def reload_llm_provider(self, provider_name: str, api_key: str = "") -> bool:
+        """Hot-swap del proveedor LLM del router vivo. Devuelve True si se aplicó.
+
+        Hogar único del swap (antes duplicado en ``frontend_bridge._do_llm_reload``,
+        que además metía mano en ``router._provider``): resuelve la clave desde
+        keyring (la específica del provider, con fallback a la genérica
+        ``llm_api_key``; Ollama no necesita) y el modelo por-provider desde el
+        TOML, arma el provider y lo intercambia bajo el lock del router vía
+        ``LLMRouter.set_provider``.
+
+        Devuelve ``False`` si el router no está vivo (stack lock-only, p. ej. el
+        GUI antes de que el daemon termine de bootear) o si la config del
+        provider es inválida — el llamador informa "aplica al reiniciar".
+        """
+        if self.router is None:
+            return False
+        provider = provider_name.strip().lower()
+
+        # Algunos backends de keyring lanzan al leer (igual que en Config y
+        # save_settings); tragamos la excepción para caer a False/feedback
+        # consistente en vez de reventar la task de hot-reload (review Copilot #225).
+        def _read_key(name: str) -> str:
+            try:
+                return keyring.get_password("sky_claw", name) or ""
+            except Exception:
+                logger.exception("Hot-reload LLM: fallo leyendo keyring '%s'", name)
+                return ""
+
+        # Ollama no usa secreto: ni siquiera sondeamos keyring (que puede lanzar
+        # en headless/Linux sin backend) — Codex #225. Para los cloud probamos
+        # la clave específica del provider y caemos a la genérica (mismo criterio
+        # que el arranque y el bridge): un provider recién elegido puede no tener
+        # slot propio aún.
+        key = api_key
+        if not key and provider != "ollama":
+            key = _read_key(f"{provider}_api_key") or _read_key("llm_api_key")
+            if not key:
+                logger.error("Hot-reload LLM: sin API key para el proveedor '%s'.", provider)
+                return False
+
+        # Modelo scoped al provider (nunca el llm_model global): al arrancar el
+        # provider se crea CON su modelo; el hot-swap debe respetarlo o
+        # degradaría al default (bug latente del bridge, que no pasaba modelo).
+        model = ""
+        if self.config_path is not None:
+            try:
+                cfg = Config(self.config_path)
+                model = getattr(cfg, f"{provider}_model", "") or ""
+            except Exception:
+                logger.exception("Hot-reload LLM: no se pudo leer el modelo de la config")
+
+        try:
+            new_provider = create_provider(provider_name=provider, api_key=key, model=model)
+        except ProviderConfigError as exc:
+            logger.error("Hot-reload LLM: config de provider inválida: %s", exc)
+            return False
+        except Exception:
+            logger.exception("Hot-reload LLM: fallo inesperado creando el provider")
+            return False
+
+        await self.router.set_provider(new_provider)
+        logger.info("🚀 Hot-reload LLM: el router ahora usa %s", type(new_provider).__name__)
+        return True
+
     @property
     def registry(self):
         """Shortcut to the database registry."""

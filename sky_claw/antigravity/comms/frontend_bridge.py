@@ -36,7 +36,6 @@ import keyring
 import websockets
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
-from sky_claw.antigravity.agent.providers import ProviderConfigError, create_provider
 from sky_claw.antigravity.comms._transport import DEFAULT_MAX_MESSAGE_BYTES, assert_safe_ws_url
 from sky_claw.config import Config
 
@@ -674,48 +673,21 @@ class FrontendBridge:
     async def _do_llm_reload(self, provider_name: str, api_key: str = "") -> bool:
         """Hot-swap the LLM provider at runtime.
 
-        Creates a new provider instance and assigns it under the router's
-        provider lock to ensure thread-safety.
+        Delega en ``AppContext.reload_llm_provider`` — hogar único del swap: la
+        resolución de clave (keyring, con fallback a la genérica), el modelo
+        por-provider y el intercambio atómico bajo el lock del router viven
+        ahí, para no duplicar la lógica ni meter mano en ``router._provider``
+        desde el bridge.
 
         Args:
-            provider_name: "deepseek", "anthropic", or "ollama"
-            api_key: Optional API key (skipped for ollama)
+            provider_name: "deepseek", "anthropic", "openai" u "ollama".
+            api_key: clave opcional (no necesaria para ollama).
 
         Returns:
-            True if swap succeeded, False if provider config invalid
-
-        Invariant: Provider swap happens atomically under lock.
-                   No queries are interrupted during the swap.
+            True si el swap tuvo éxito, False si la config del provider es
+            inválida o el router no está vivo.
         """
-        try:
-            key = api_key or self._get_keyring(PROVIDER_KEY_MAP.get(provider_name, "llm_api_key"))
-
-            # Ollama doesn't require an API key
-            if not key and provider_name != "ollama":
-                # Try the generic llm_api_key as fallback
-                key = self._get_keyring("llm_api_key")
-                if not key:
-                    logger.error("No API key found for provider '%s'.", provider_name)
-                    return False
-
-            new_provider = create_provider(provider_name=provider_name, api_key=key)
-
-            # ── Atomic swap under lock (C3 fix: proper lock usage) ──
-            async with self.ctx.router._provider_lock:
-                self.ctx.router._provider = new_provider
-
-            logger.info(
-                "🚀 Hot-Swap LLM completado: ahora usando %s",
-                type(new_provider).__name__,
-            )
-            return True
-
-        except ProviderConfigError as exc:
-            logger.error("Provider config error during hot-swap: %s", exc)
-            return False
-        except Exception as exc:
-            logger.exception("Hot-swap failed: %s", exc)
-            return False
+        return await self.ctx.reload_llm_provider(provider_name, api_key)
 
     async def _reload_telegram(self, token: str, chat_id: str = "") -> bool:
         """Stop existing Telegram polling and restart with new token.
@@ -832,19 +804,3 @@ class FrontendBridge:
                 key,
                 exc,
             )
-
-    def _get_keyring(self, key: str) -> str:
-        """Retrieve a secret from the OS keyring.
-
-        Args:
-            key: Keyring service key
-
-        Returns:
-            Secret value if found, empty string if not found or error
-
-        Note: Not async because keyring is synchronous.
-        """
-        try:
-            return self._keyring_client.get_password("sky_claw", key) or ""
-        except Exception:
-            return ""
