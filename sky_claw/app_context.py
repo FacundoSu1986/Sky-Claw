@@ -205,11 +205,24 @@ class AppContext:
             return False
         provider = provider_name.strip().lower()
 
-        key = api_key or keyring.get_password("sky_claw", f"{provider}_api_key") or ""
+        # Algunos backends de keyring lanzan al leer (igual que en Config y
+        # save_settings); tragamos la excepción para caer a False/feedback
+        # consistente en vez de reventar la task de hot-reload (review Copilot #225).
+        def _read_key(name: str) -> str:
+            try:
+                return keyring.get_password("sky_claw", name) or ""
+            except Exception:
+                logger.exception("Hot-reload LLM: fallo leyendo keyring '%s'", name)
+                return ""
+
+        # Ollama no usa secreto: ni siquiera sondeamos keyring (que puede lanzar
+        # en headless/Linux sin backend) — Codex #225. Para los cloud probamos
+        # la clave específica del provider y caemos a la genérica (mismo criterio
+        # que el arranque y el bridge): un provider recién elegido puede no tener
+        # slot propio aún.
+        key = api_key
         if not key and provider != "ollama":
-            # Fallback a la clave genérica (mismo criterio que el arranque y el
-            # bridge): un provider recién elegido puede no tener slot propio aún.
-            key = keyring.get_password("sky_claw", "llm_api_key") or ""
+            key = _read_key(f"{provider}_api_key") or _read_key("llm_api_key")
             if not key:
                 logger.error("Hot-reload LLM: sin API key para el proveedor '%s'.", provider)
                 return False

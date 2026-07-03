@@ -101,6 +101,23 @@ async def test_reload_ollama_no_requiere_clave(monkeypatch: pytest.MonkeyPatch) 
     assert created["provider_name"] == "ollama"
 
 
+async def test_reload_ollama_no_sondea_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ollama no necesita secreto: no debe tocar keyring (que puede lanzar en headless) — Codex #225."""
+    import sky_claw.app_context as ac
+
+    router = _make_router()
+    ctx = ac.AppContext.__new__(ac.AppContext)
+    ctx.router = router
+    ctx.config_path = None
+
+    def _boom(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("no debería llamarse para ollama")
+
+    monkeypatch.setattr(ac.keyring, "get_password", _boom)
+    monkeypatch.setattr(ac, "create_provider", lambda **_: _FakeProvider("ollama"))
+    assert await ctx.reload_llm_provider("ollama") is True
+
+
 async def test_reload_sin_clave_para_cloud_devuelve_false(monkeypatch: pytest.MonkeyPatch) -> None:
     router = _make_router()
     viejo = router._provider
@@ -126,6 +143,25 @@ async def test_reload_provider_defectuoso_devuelve_false(monkeypatch: pytest.Mon
         raise ac.ProviderConfigError("clave inválida")
 
     monkeypatch.setattr(ac, "create_provider", _boom)
+    ok = await ctx.reload_llm_provider("anthropic")
+    assert ok is False
+    assert router._provider is viejo
+
+
+async def test_reload_keyring_que_lanza_no_rompe_devuelve_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Algunos backends de keyring lanzan; el hot-reload debe caer a False, no explotar."""
+    import sky_claw.app_context as ac
+
+    router = _make_router()
+    viejo = router._provider
+    ctx = ac.AppContext.__new__(ac.AppContext)
+    ctx.router = router
+    ctx.config_path = None
+
+    def _boom(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("keyring backend caído")
+
+    monkeypatch.setattr(ac.keyring, "get_password", _boom)
     ok = await ctx.reload_llm_provider("anthropic")
     assert ok is False
     assert router._provider is viejo
