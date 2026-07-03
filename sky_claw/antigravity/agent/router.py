@@ -270,6 +270,17 @@ class LLMRouter:
     # LLM Hot-Swapping Factory Pattern (SRE Phase 1)
     # ------------------------------------------------------------------
 
+    async def set_provider(self, provider: Any) -> None:
+        """Intercambia el provider ya construido en caliente, bajo lock.
+
+        Seam público del hot-swap: quien arma el provider (``AppContext``,
+        vault, tests) hace el intercambio atómico sin tocar ``_provider``
+        directamente. ``chat`` lee ``_provider`` bajo el mismo lock, así que
+        ninguna query en vuelo se corta durante el swap.
+        """
+        async with self._provider_lock:
+            self._provider = provider
+
     async def reload_provider(self, new_provider_name: str) -> bool:
         """Cambia el LLM subyacente en caliente extrayendo llaves Zero-Trust del Vault."""
         logger.info(f"🔄 Iniciando secuencia de Hot-Swap hacia [{new_provider_name}]...")
