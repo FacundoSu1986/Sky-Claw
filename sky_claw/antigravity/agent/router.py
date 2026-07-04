@@ -275,8 +275,10 @@ class LLMRouter:
 
         Seam público del hot-swap: quien arma el provider (``AppContext``,
         vault, tests) hace el intercambio atómico sin tocar ``_provider``
-        directamente. ``chat`` lee ``_provider`` bajo el mismo lock, así que
-        ninguna query en vuelo se corta durante el swap.
+        directamente. ``chat`` toma un *snapshot* de ``_provider`` bajo el mismo
+        lock y hace la llamada HTTP fuera de él: una query en vuelo termina
+        contra su snapshot (el provider anterior no se cierra) y el swap solo
+        afecta a las consultas siguientes — sin serializar las llamadas LLM.
         """
         async with self._provider_lock:
             self._provider = provider
@@ -457,17 +459,22 @@ class LLMRouter:
                 if self._model:
                     chat_kwargs["model"] = self._model
 
-                # Lock transaccional SRE para Hot-Swapping seguro sin caída de Event Loop
-                # RND-01: Timeout de 120s para evitar que un provider colgado bloquee el lock indefinidamente
+                # C1: snapshot del provider bajo lock (hot-swap seguro) + llamada
+                # HTTP FUERA del lock. Retener el lock durante los 120s de la
+                # llamada serializaba TODAS las consultas LLM concurrentes y
+                # bloqueaba cualquier hot-swap en vuelo. Como ni set_provider ni
+                # reload_provider cierran el provider anterior, una query en vuelo
+                # termina de forma segura contra su snapshot aunque ocurra un swap
+                # en paralelo (el swap solo afecta a las consultas siguientes).
+                # RND-01: Timeout de 120s para no colgar ante un provider mudo.
                 async with self._provider_lock:
-                    if not self._provider:
-                        raise RuntimeError(
-                            "SISTEMA: LLM Provider nulo. Iniciar Hot-Swap o configurar API Key primaria."
-                        )
-                    response_data = await asyncio.wait_for(
-                        self._provider.chat(**chat_kwargs),
-                        timeout=120.0,
-                    )
+                    provider_snapshot = self._provider
+                if provider_snapshot is None:
+                    raise RuntimeError("SISTEMA: LLM Provider nulo. Iniciar Hot-Swap o configurar API Key primaria.")
+                response_data = await asyncio.wait_for(
+                    provider_snapshot.chat(**chat_kwargs),
+                    timeout=120.0,
+                )
 
                 if response_data is None or not isinstance(response_data, dict):
                     return "Error: El proveedor de IA no devolvió datos."

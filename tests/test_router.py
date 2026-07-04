@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -371,3 +372,41 @@ class TestRetry429:
         result = await router.chat("retry test", mock_session, chat_id="test-429")
         assert result == "OK after retry"
         assert call_count == 2
+
+
+# ------------------------------------------------------------------
+# C1: provider lock — snapshot pattern (no serializar las llamadas LLM)
+# ------------------------------------------------------------------
+
+
+class TestProviderLockSnapshot:
+    """El ``_provider_lock`` debe cubrir solo el snapshot de la referencia, no
+    la llamada HTTP de 120s. De lo contrario todas las consultas LLM se
+    serializan y un hot-swap concurrente queda bloqueado hasta que termine la
+    query en vuelo."""
+
+    @pytest.mark.asyncio
+    async def test_hotswap_no_espera_a_chat_en_vuelo(self, router: LLMRouter) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class _BlockingProvider:
+            async def chat(self, **_kwargs: Any) -> dict[str, Any]:
+                started.set()
+                await release.wait()  # cuelga la llamada hasta que la liberemos
+                return {"stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}
+
+        await router.set_provider(_BlockingProvider())
+
+        chat_task = asyncio.create_task(router.chat("hola", MagicMock(), chat_id="c-lock"))
+        try:
+            # La chat en vuelo llegó a provider.chat y está colgada.
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+
+            # Con el lock retenido durante toda la llamada, este set_provider
+            # colgaría hasta que la chat termine. Con el snapshot, el lock ya se
+            # liberó y set_provider debe completar de inmediato.
+            await asyncio.wait_for(router.set_provider(_BlockingProvider()), timeout=1.0)
+        finally:
+            release.set()
+            await asyncio.wait_for(chat_task, timeout=2.0)
