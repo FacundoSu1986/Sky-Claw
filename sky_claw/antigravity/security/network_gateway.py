@@ -65,6 +65,30 @@ class GatewayTCPConnector(aiohttp.TCPConnector):
 _MAX_PINNED_ENTRIES = 1024
 
 
+def _is_blocked_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Devuelve ``True`` si *addr* debe bloquearse por seguridad SSRF.
+
+    Normaliza direcciones IPv6 que envuelven una IPv4 (``::ffff:127.0.0.1``)
+    antes de clasificar: ``IPv6Address.is_loopback`` devuelve ``False`` para la
+    forma mapeada aunque la IPv4 subyacente sea loopback — un bypass clásico de
+    SSRF en Python < 3.13. Cubre además ``is_multicast``, ``is_reserved`` y
+    ``is_unspecified`` (``0.0.0.0`` / ``::``), que enrutan a interfaces locales y
+    que el filtro anterior (solo ``is_private``/``is_loopback``/``is_link_local``)
+    dejaba pasar.
+    """
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    )
+
+
 class SafeResolver(aiohttp.abc.AbstractResolver):
     """DNS resolver with IP validation and pinning against TOCTOU/rebinding.
 
@@ -110,8 +134,11 @@ class SafeResolver(aiohttp.abc.AbstractResolver):
         for info in infos:
             ip_str = info[4][0]
             addr = ipaddress.ip_address(ip_str)  # ValueError → reject unparseable IPs
-            if self._policy.block_private_ips and (addr.is_private or addr.is_loopback or addr.is_link_local):
-                raise EgressViolationError(f"Resolved address {addr} for '{host}' is private/loopback (SSRF block)")
+            if self._policy.block_private_ips and _is_blocked_ip(addr):
+                raise EgressViolationError(
+                    f"Resolved address {addr} for '{host}' is private/loopback or non-routable "
+                    "(multicast/reserved/unspecified/IPv4-mapped) — SSRF block"
+                )
 
             result.append(
                 {
@@ -195,8 +222,11 @@ class NetworkGateway:
         # Check raw literal IPs just in case
         try:
             addr = ipaddress.ip_address(hostname)
-            if self._policy.block_private_ips and (addr.is_private or addr.is_loopback or addr.is_link_local):
-                raise EgressViolationError(f"Literal address {addr} is a private/loopback IP")
+            if self._policy.block_private_ips and _is_blocked_ip(addr):
+                raise EgressViolationError(
+                    f"Literal address {addr} is a private/loopback or non-routable IP "
+                    "(multicast/reserved/unspecified/IPv4-mapped)"
+                )
         except ValueError:
             pass
 
@@ -241,10 +271,11 @@ class NetworkGateway:
                     self._check_scheme_allowed(parsed_redir)
                     try:
                         addr = ipaddress.ip_address(redir_host)
-                        if self._policy.block_private_ips and (
-                            addr.is_private or addr.is_loopback or addr.is_link_local
-                        ):
-                            raise EgressViolationError(f"Redirect target {addr} is a private/loopback IP")
+                        if self._policy.block_private_ips and _is_blocked_ip(addr):
+                            raise EgressViolationError(
+                                f"Redirect target {addr} is a private/loopback or non-routable IP "
+                                "(multicast/reserved/unspecified/IPv4-mapped)"
+                            )
                     except ValueError:
                         pass
                     logger.debug("Redirect hop %d allowed via redirect-host list: %s", hop, redir_host)

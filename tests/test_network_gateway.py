@@ -229,6 +229,114 @@ class TestPrivateIPBlocking:
         with pytest.raises(EgressViolationError, match="private/loopback"):
             await gw_strict.authorize("GET", "http://169.254.0.1/x")
 
+    # --- Hardening SSRF (P0.1): categorías que el filtro previo omitía ---
+
+    @pytest.mark.asyncio
+    async def test_ipv4_mapped_ipv6_loopback_blocked(self, gw_strict: NetworkGateway) -> None:
+        """El bypass clásico: ``::ffff:127.0.0.1`` tiene ``is_loopback == False``
+        en su forma IPv6, pero enruta a loopback. Debe normalizarse y bloquearse."""
+        with pytest.raises(EgressViolationError, match="private/loopback"):
+            await gw_strict.authorize("GET", "https://[::ffff:127.0.0.1]/data")
+
+    @pytest.mark.asyncio
+    async def test_ipv4_mapped_ipv6_link_local_blocked(self, gw_strict: NetworkGateway) -> None:
+        """``::ffff:169.254.169.254`` (metadata endpoint envuelto en IPv6)."""
+        with pytest.raises(EgressViolationError, match="private/loopback"):
+            await gw_strict.authorize("GET", "https://[::ffff:169.254.169.254]/latest/meta-data")
+
+    @pytest.mark.asyncio
+    async def test_multicast_blocked(self, gw_strict: NetworkGateway) -> None:
+        with pytest.raises(EgressViolationError, match="private/loopback"):
+            await gw_strict.authorize("GET", "https://224.0.0.1/x")
+
+    @pytest.mark.asyncio
+    async def test_reserved_blocked(self, gw_strict: NetworkGateway) -> None:
+        with pytest.raises(EgressViolationError, match="private/loopback"):
+            await gw_strict.authorize("GET", "https://240.0.0.1/x")
+
+    @pytest.mark.asyncio
+    async def test_unspecified_blocked(self, gw_strict: NetworkGateway) -> None:
+        """``0.0.0.0`` enruta a interfaces locales; debe bloquearse."""
+        with pytest.raises(EgressViolationError, match="private/loopback"):
+            await gw_strict.authorize("GET", "https://0.0.0.0/x")
+
+
+class TestIsBlockedIP:
+    """Unidad del helper de clasificación de IP (guarda de regresión SSRF)."""
+
+    @pytest.mark.parametrize(
+        "ip",
+        [
+            "127.0.0.1",  # loopback IPv4
+            "::1",  # loopback IPv6
+            "10.0.0.1",  # privada
+            "192.168.1.1",  # privada
+            "169.254.0.1",  # link-local
+            "::ffff:127.0.0.1",  # IPv4-mapped loopback (bypass)
+            "::ffff:169.254.169.254",  # IPv4-mapped link-local (metadata)
+            "::ffff:10.0.0.1",  # IPv4-mapped privada
+            "224.0.0.1",  # multicast IPv4
+            "ff02::1",  # multicast IPv6
+            "240.0.0.1",  # reserved
+            "0.0.0.0",  # unspecified IPv4
+            "::",  # unspecified IPv6
+        ],
+    )
+    def test_direcciones_peligrosas_bloqueadas(self, ip: str) -> None:
+        import ipaddress
+
+        from sky_claw.antigravity.security.network_gateway import _is_blocked_ip
+
+        assert _is_blocked_ip(ipaddress.ip_address(ip)) is True
+
+    @pytest.mark.parametrize(
+        "ip",
+        [
+            "8.8.8.8",  # público
+            "1.1.1.1",  # público
+            "9.9.9.9",  # público (Quad9)
+            "2606:4700:4700::1111",  # IPv6 público (Cloudflare)
+        ],
+    )
+    def test_direcciones_publicas_permitidas(self, ip: str) -> None:
+        import ipaddress
+
+        from sky_claw.antigravity.security.network_gateway import _is_blocked_ip
+
+        assert _is_blocked_ip(ipaddress.ip_address(ip)) is False
+
+
+class TestSafeResolverSSRF:
+    """El bloqueo a nivel DNS (``SafeResolver.resolve``) es la barrera crítica:
+    un hostname público que resuelve a una IP interna debe rechazarse."""
+
+    @pytest.mark.asyncio
+    async def test_resolver_bloquea_ipv4_mapped_loopback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import socket
+
+        from sky_claw.antigravity.security.network_gateway import SafeResolver
+
+        resolver = SafeResolver(EgressPolicy())
+
+        async def _fake_getaddrinfo(*_args, **_kwargs):
+            # Simula un DNS que devuelve la IPv4 loopback envuelta en IPv6.
+            return [
+                (
+                    socket.AF_INET6,
+                    socket.SOCK_STREAM,
+                    0,
+                    "",
+                    ("::ffff:127.0.0.1", 443, 0, 0),
+                )
+            ]
+
+        import asyncio
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", _fake_getaddrinfo)
+
+        with pytest.raises(EgressViolationError, match="private/loopback"):
+            await resolver.resolve("rebind.evil.example", 443, socket.AF_INET6)
+
 
 # ------------------------------------------------------------------
 # Dot-based domain matcher (_matching_pattern semantics)
