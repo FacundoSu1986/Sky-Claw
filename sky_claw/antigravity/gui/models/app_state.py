@@ -35,6 +35,9 @@ def enrich_conflicts(
                 "mod_a": names.get(c.get("mod_id_1"), "Mod desconocido"),
                 "mod_b": names.get(c.get("mod_id_2"), "Mod desconocido"),
                 "detected_at": c.get("detected_at"),
+                # La nota de resolución (F3) alimenta la sección "Resueltas";
+                # None cuando el conflicto sigue pendiente o se resolvió sin nota.
+                "resolution": c.get("resolution"),
             }
         )
     return out

@@ -240,6 +240,9 @@ class ReactiveState:
             conflicts = await get_db_agent().get_conflicts(resolved=False)
             self.conflicts_count.set(len(conflicts))
             self._store.set("conflicts_list", enrich_conflicts(conflicts, all_mods))
+            # F3: historial de resueltas con su nota, para la sección "Resueltas".
+            resolved = await get_db_agent().get_conflicts(resolved=True)
+            self._store.set("resolved_conflicts_list", enrich_conflicts(resolved, all_mods))
         except Exception as exc:
             logger.error("Error refrescando conflictos desde DB: %s", exc)
 
@@ -675,9 +678,10 @@ def main_page() -> None:
     # Sección Conflictos: "Resolver" marca el conflicto como resuelto en la DB y
     # refresca SOLO los datos de conflictos (refresh_conflicts) — no las stats de
     # mods, que con registry vivo las escribe _gui_mod_update_loop (Codex #220).
-    def _on_conflict_resolve(conflict_id: int) -> None:
+    def _on_conflict_resolve(conflict_id: int, resolution: str = "") -> None:
         async def _resolve() -> None:
-            await get_db_agent().resolve_conflict(conflict_id)
+            # La nota (F3) es opcional: "" → NULL en la DB (resuelto sin nota).
+            await get_db_agent().resolve_conflict(conflict_id, resolution or None)
             await get_state().refresh_conflicts()
 
         create_tracked_task(_resolve(), name="gui-conflict-resolve")
@@ -846,6 +850,7 @@ def main_page() -> None:
         identity=identity,
         search_query=get_store().get("mods_search_query") or "",
         conflicts_list=get_store().get("conflicts_list") or [],
+        resolved_conflicts=get_store().get("resolved_conflicts_list") or [],
         settings=_build_settings_data(runtime.config_path) if active_section == "Settings" else None,
         downloads=downloads,
     )
@@ -908,6 +913,8 @@ def setup_app() -> None:
     store.subscribe("mods_search_query", main_page.refresh)
     # Conflictos: re-render de la pantalla al refrescar la lista (alta/resolución).
     store.subscribe("conflicts_list", main_page.refresh)
+    # F3: re-render al cambiar el historial de resueltas (sección "Resueltas").
+    store.subscribe("resolved_conflicts_list", main_page.refresh)
     # Re-render el indicador "DAEMON CONECTADO" del sidebar cuando el WS conecta/cae.
     store.subscribe("is_agent_connected", main_page.refresh)
     # Phase 1: re-render los Rituales cuando el escaneo de entorno publica el

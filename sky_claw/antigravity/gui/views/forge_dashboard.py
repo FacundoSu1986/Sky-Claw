@@ -228,6 +228,7 @@ def render_forge_dashboard(
     conflicts_list: list[dict[str, Any]] | None = None,
     settings: dict[str, Any] | None = None,
     downloads: dict[str, Any] | None = None,
+    resolved_conflicts: list[dict[str, Any]] | None = None,
 ) -> None:
     """Render the full Forge shell (sidebar + header + scroll content).
 
@@ -284,7 +285,7 @@ def render_forge_dashboard(
                 elif active_section == "Mods":
                     _mods_screen(mods, callbacks, search_query)
                 elif active_section == "Conflicts":
-                    _conflicts_screen(conflicts_list or [], callbacks)
+                    _conflicts_screen(conflicts_list or [], callbacks, resolved_conflicts or [])
                 elif active_section == "Settings":
                     _settings_screen(settings or {}, callbacks)
                 elif active_section == "Downloads":
@@ -1122,16 +1123,21 @@ def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable], sea
     build_mod_list(mods=adapted, on_toggle=callbacks.get("on_mod_toggle"), initial_query=search_query)
 
 
-def _conflicts_screen(conflicts: list[dict[str, Any]], callbacks: dict[str, Callable]) -> None:
+def _conflicts_screen(
+    conflicts: list[dict[str, Any]],
+    callbacks: dict[str, Callable],
+    resolved: list[dict[str, Any]] | None = None,
+) -> None:
     """Pantalla de Conflictos: lista real de disputas + detección + resolver.
 
     Reemplaza el placeholder "próxima iteración" por los conflictos sin resolver
     (``conflicts_list`` del store, ya enriquecido con nombres de mods vía
     ``enrich_conflicts``). "Detectar disputas" (F5) corre el escaneo de assets
-    del VFS y persiste los pares nuevos; "Resolver" dispara
-    ``on_conflict_resolve(id)``, que marca el conflicto como resuelto en la DB
-    y refresca.
+    del VFS y persiste los pares nuevos; "Resolver" abre un modal para anotar
+    cómo se zanjó y dispara ``on_conflict_resolve(id, resolution)`` (F3). Las
+    disputas ya resueltas se listan abajo con su nota (``resolved``).
     """
+    resolved = resolved or []
     with ui.element("div").style("display:flex; align-items:center; gap:16px; margin-bottom:14px;"):
         ui.html(
             "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">DISPUTAS EN LA FORJA</h2>"
@@ -1168,11 +1174,49 @@ def _conflicts_screen(conflicts: list[dict[str, Any]], callbacks: dict[str, Call
                 f"<div style=\"font-family:'Noto Sans Runic',serif; font-size:48px; color:{GREEN}; opacity:.55;\">ᚦ</div>"
                 "<div style=\"font-family:'EB Garamond',serif; font-style:italic; color:#8a8068;\">No hay disputas — tu orden de carga está en paz.</div>"
             )
+    else:
+        on_resolve = _cb(callbacks, "on_conflict_resolve")
+        with ui.element("div").style("display:flex; flex-direction:column; gap:10px;"):
+            for c in conflicts:
+                _conflict_row(c, on_resolve)
+
+    # Las resueltas se muestran aunque no queden disputas activas (historial).
+    _resolved_section(resolved)
+
+
+def _resolved_section(resolved: list[dict[str, Any]]) -> None:
+    """Historial de disputas ya resueltas, con la nota de cómo se zanjaron (F3)."""
+    if not resolved:
         return
-    on_resolve = _cb(callbacks, "on_conflict_resolve")
-    with ui.element("div").style("display:flex; flex-direction:column; gap:10px;"):
-        for c in conflicts:
-            _conflict_row(c, on_resolve)
+    with ui.element("div").style("display:flex; align-items:center; gap:16px; margin:26px 0 12px;"):
+        ui.html(
+            "<h3 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:14px; letter-spacing:.18em; color:#8fae86;\">RESUELTAS</h3>"
+            f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:{GREEN};\">{len(resolved)}</span>"
+            '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(95,156,107,.35),transparent);"></span>'
+        )
+    with ui.element("div").style("display:flex; flex-direction:column; gap:7px;"):
+        for c in resolved:
+            ui.html(_resolved_row_html(c))
+
+
+def _resolved_row_html(c: dict[str, Any]) -> str:
+    """Seam puro: fila de una disputa resuelta (mods + tipo + nota) como HTML."""
+    nota = c.get("resolution")
+    nota_html = _e(nota) if nota else '<span style="font-style:italic; color:#6f7a67;">Sin nota</span>'
+    line = (
+        "display:flex; align-items:center; gap:14px; padding:11px 16px; border-radius:4px;"
+        "background:rgba(38,50,40,.32); border:1px solid rgba(95,156,107,.24);"
+    )
+    return (
+        f'<div style="{line}">'
+        f'<span style="width:8px; height:8px; border-radius:50%; background:{GREEN}; flex-shrink:0;"></span>'
+        '<div style="flex:1; min-width:0;">'
+        f"<div style=\"font-family:'Cinzel',serif; font-size:13px; color:#d9d2c0;\">{_e(c.get('mod_a', '?'))}"
+        f' <span style="color:#8fae86;">✓</span> {_e(c.get("mod_b", "?"))}'
+        f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#7d8a75; margin-left:8px;\">{_e(c.get('type', ''))}</span></div>"
+        f"<div style=\"font-family:'EB Garamond',serif; font-size:12.5px; color:#a7b0a0; margin-top:2px;\">{nota_html}</div>"
+        "</div></div>"
+    )
 
 
 def _conflict_row(c: dict[str, Any], on_resolve: Callable | None) -> None:
@@ -1200,8 +1244,53 @@ def _conflict_row(c: dict[str, Any], on_resolve: Callable | None) -> None:
             )
             with btn:
                 ui.html("Resolver")
-            cid = c.get("id")
-            btn.on("click", lambda _=None, i=cid: on_resolve(i))
+            btn.on("click", lambda _=None, cc=c: _open_resolve_dialog(cc, on_resolve))
+
+
+def _open_resolve_dialog(c: dict[str, Any], on_resolve: Callable) -> None:
+    """Modal para anotar CÓMO se resolvió la disputa antes de confirmar (F3).
+
+    La nota es opcional (Enter/Confirmar con el campo vacío resuelve sin nota),
+    y se persiste vía ``on_conflict_resolve(id, resolution)``.
+    """
+    cid = c.get("id")
+    card = (
+        "min-width:420px; max-width:92vw; padding:22px 24px; border-radius:6px; color:#e8e2d4;"
+        "background:linear-gradient(168deg, rgba(30,22,14,.98), rgba(14,10,7,.99)); border:1px solid rgba(200,168,106,.4);"
+    )
+    with ui.dialog() as dialog, ui.element("div").style(card):
+        ui.html(
+            "<div style=\"font-family:'Cinzel',serif; font-weight:700; font-size:15px; letter-spacing:.1em; color:#f1e6cf; margin-bottom:6px;\">RESOLVER DISPUTA</div>"
+            f"<div style=\"font-family:'EB Garamond',serif; font-size:13px; color:#c9c0aa; margin-bottom:14px;\">{_e(c.get('mod_a', '?'))} ⚔ {_e(c.get('mod_b', '?'))}</div>"
+        )
+        note = (
+            ui.textarea(
+                placeholder="¿Cómo se resolvió? (opcional — p. ej. «parche en xEdit», «orden ajustado con LOOT»)"
+            )
+            .props("outlined autogrow dense")
+            .style("width:100%; margin-bottom:16px;")
+        )
+        with ui.element("div").style("display:flex; gap:11px; justify-content:flex-end;"):
+            cancel = ui.element("button").style(
+                "padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px; letter-spacing:.08em;"
+                "color:#c9c0aa; background:rgba(0,0,0,.3); border:1px solid rgba(200,168,106,.35); border-radius:4px;"
+            )
+            with cancel:
+                ui.html("Cancelar")
+            cancel.on("click", lambda _=None: dialog.close())
+            ok = ui.element("button").style(
+                "padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-weight:700; font-size:12px; letter-spacing:.08em;"
+                "color:#1c130a; background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1.5px solid #f6e6bd; border-radius:4px;"
+            )
+            with ok:
+                ui.html("Resolver")
+
+            def _confirm(_: Any = None) -> None:
+                on_resolve(cid, str(note.value or "").strip())
+                dialog.close()
+
+            ok.on("click", _confirm)
+    dialog.open()
 
 
 _SETTINGS_SECRET_FIELDS: list[tuple[str, str, str]] = [

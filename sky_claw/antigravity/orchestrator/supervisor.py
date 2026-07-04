@@ -696,8 +696,8 @@ class SupervisorAgent:
 
         Args:
             profile: perfil MO2 a inspeccionar (por defecto, el activo).
-            plugins: lista explícita de plugins; si es ``None`` se leen los
-                habilitados del modlist del perfil.
+            plugins: lista explícita de plugins; si es ``None`` se lee el load
+                order del perfil (``loadorder.txt``, fallback ``plugins.txt``).
 
         Returns:
             ``ConflictReport`` con los pares de plugins en disputa (vacío si no
