@@ -19,6 +19,7 @@ from sky_claw.antigravity.db.locks import (
 )
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
 from sky_claw.local.tools.dyndolod_runner import (
+    DynDOLODExecutionError,
     DynDOLODPipelineResult,
     DynDOLODRunner,
     DynDOLODTimeoutError,
@@ -510,3 +511,88 @@ async def test_execute_dry_run_without_texgen_omits_texgen(
     plan = result["change_set"]["lod_plan"]
     assert plan["preset"] == "Medium"
     assert not any("TexGen" in item for item in plan["would_generate"])
+
+
+# =============================================================================
+# DD-1: rollback move-aside del directorio DynDOLOD Output/
+# =============================================================================
+
+
+def _mock_runner_with_output(mods: pathlib.Path) -> AsyncMock:
+    """Runner mock con _config real y los nombres de mod expuestos."""
+    mock_runner = AsyncMock(spec=DynDOLODRunner)
+    mock_config = MagicMock()
+    mock_config.mo2_mods_path = mods
+    mock_runner._config = mock_config
+    # spec=DynDOLODRunner deja los class attrs como Mock; fijarlos a los strings reales.
+    mock_runner.DYNDOLLOD_MOD_NAME = "DynDOLOD Output"
+    mock_runner.TEXGEN_MOD_NAME = "TexGen Output"
+    return mock_runner
+
+
+@pytest.mark.asyncio
+async def test_directory_rollback_restores_output_on_failure(
+    service: DynDOLODPipelineService,
+    mock_snapshot_manager: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """create_snapshot=True: un fallo del pipeline restaura DynDOLOD Output/ intacto."""
+    mods = tmp_path / "mods"
+    output_dir = mods / "DynDOLOD Output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "sentinel.esp").write_text("ORIGINAL", encoding="utf-8")
+    (output_dir / "textures").mkdir()
+    (output_dir / "textures" / "a.dds").write_bytes(b"\xde\xad")
+
+    runner = _mock_runner_with_output(mods)
+
+    async def _fake_pipeline(**_kwargs: object) -> DynDOLODPipelineResult:
+        # El move-aside dejó el dir movido; el runner "regenera" un parcial y falla.
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "partial.esp").write_text("PARTIAL", encoding="utf-8")
+        raise DynDOLODExecutionError("boom durante la generación")
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_fake_pipeline)
+    service._runner = runner
+
+    result = await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert result["success"] is False
+    assert result["rolled_back"] is True
+    # Directorio original restaurado byte-a-byte; el parcial se descartó.
+    assert (output_dir / "sentinel.esp").read_text(encoding="utf-8") == "ORIGINAL"
+    assert (output_dir / "textures" / "a.dds").read_bytes() == b"\xde\xad"
+    assert not (output_dir / "partial.esp").exists()
+    assert not list(mods.glob("DynDOLOD Output.rollback-*"))  # sin backups huérfanos
+    # El .esp ya NO se snapshotea vía FileSnapshotManager (target_files=[]).
+    mock_snapshot_manager.create_snapshot.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_directory_rollback_discards_backup_on_success(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """create_snapshot=True: en éxito queda el output nuevo y el backup se descarta."""
+    mods = tmp_path / "mods"
+    output_dir = mods / "DynDOLOD Output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "old.esp").write_text("OLD", encoding="utf-8")
+
+    runner = _mock_runner_with_output(mods)
+
+    async def _fake_pipeline(**_kwargs: object) -> DynDOLODPipelineResult:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "new.esp").write_text("NEW", encoding="utf-8")
+        return _make_success_result(run_texgen=False)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_fake_pipeline)
+    runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    service._runner = runner
+
+    result = await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert result["success"] is True
+    assert (output_dir / "new.esp").read_text(encoding="utf-8") == "NEW"
+    assert not (output_dir / "old.esp").exists()  # el output previo se descartó (regenerado)
+    assert not list(mods.glob("DynDOLOD Output.rollback-*"))
