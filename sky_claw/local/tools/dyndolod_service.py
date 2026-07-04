@@ -10,6 +10,7 @@ Sprint 2, Fase 3: Strangler Fig — desacoplamiento de ``supervisor.py``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
 import pathlib
@@ -29,6 +30,7 @@ from sky_claw.antigravity.db.locks import (
     SnapshotTransactionLock,
 )
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.local.tools._dir_rollback import DirectoryRollback
 from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODConfig,
     DynDOLODExecutionError,
@@ -208,36 +210,37 @@ class DynDOLODPipelineService:
                 "duration_seconds": duration,
             }
 
-        # Determinar archivos a proteger con snapshot.
-        # El backend actual de snapshots sólo soporta archivos regulares; no
-        # directorios. Por lo tanto, ``create_snapshot=True`` protege únicamente
-        # ``DynDOLOD.esp`` si existe en el momento de adquirir el lock.
-        dyndolod_output_path = runner._config.mo2_mods_path / "DynDOLOD Output"
-        dyndolod_esp = dyndolod_output_path / "DynDOLOD.esp"
-
-        target_files: list[pathlib.Path] = []
+        # DD-1: Directorios regenerados a proteger con rollback move-aside.
+        # El backend de snapshots es copy-based/solo-archivos y ``Output/`` puede
+        # pesar varios GB; renombrar el dir aparte es O(1) y da rollback real
+        # byte-a-byte (evita que un fallo deje texturas/meshes parciales). El
+        # move-aside del dir subsume el ``.esp``, así que el lock transaccional ya
+        # no snapshotea archivos (``target_files=[]``).
+        mods_path = runner._config.mo2_mods_path
+        rollback_dirs: list[pathlib.Path] = []
         if create_snapshot:
-            if dyndolod_esp.exists() and dyndolod_esp.is_file():
-                target_files.append(dyndolod_esp)
-            else:
-                logger.warning(
-                    "create_snapshot=True solicitado, pero no existe un archivo "
-                    "snapshotteable en %s; el rollback no restaurará assets "
-                    "generados dentro de '%s'.",
-                    dyndolod_esp,
-                    dyndolod_output_path,
-                )
+            rollback_dirs.append(mods_path / runner.DYNDOLLOD_MOD_NAME)
+            if run_texgen:
+                rollback_dirs.append(mods_path / runner.TEXGEN_MOD_NAME)
 
-        # 3. Ejecutar bajo lock transaccional
+        # 3. Ejecutar bajo lock transaccional + rollback de directorios.
+        # AsyncExitStack: el lock se adquiere primero y se libera último; los
+        # DirectoryRollback se restauran ANTES de soltar el lock.
         try:
-            async with SnapshotTransactionLock(
-                lock_manager=self._lock_manager,
-                snapshot_manager=self._snapshot_manager,
-                resource_id="dyndolod-pipeline",
-                agent_id="dyndolod-pipeline-service",
-                target_files=target_files,
-                metadata={"preset": preset, "run_texgen": run_texgen},
-            ):
+            async with contextlib.AsyncExitStack() as tx_stack:
+                await tx_stack.enter_async_context(
+                    SnapshotTransactionLock(
+                        lock_manager=self._lock_manager,
+                        snapshot_manager=self._snapshot_manager,
+                        resource_id="dyndolod-pipeline",
+                        agent_id="dyndolod-pipeline-service",
+                        target_files=[],
+                        metadata={"preset": preset, "run_texgen": run_texgen},
+                    )
+                )
+                for output_dir in rollback_dirs:
+                    await tx_stack.enter_async_context(DirectoryRollback(output_dir))
+
                 # Comenzar transacción en journal DENTRO del lock
                 tx_id = await self._journal.begin_transaction(
                     description=f"DynDOLOD pipeline (preset={preset}, texgen={run_texgen})",
