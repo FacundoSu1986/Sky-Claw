@@ -338,6 +338,74 @@ class TestSafeResolverSSRF:
             await resolver.resolve("rebind.evil.example", 443, socket.AF_INET6)
 
 
+class TestSharedDNSPinCache:
+    """El pin cache DNS compartido a nivel gateway cierra el gap de rebinding
+    app-wide: todos los SafeResolver del mismo gateway comparten una caché, así
+    que el primer host validado queda pineado para TODAS las conexiones."""
+
+    @pytest.mark.asyncio
+    async def test_shared_pin_cache_defeats_rebinding(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+        import socket
+        from collections import OrderedDict
+
+        from sky_claw.antigravity.security.network_gateway import SafeResolver
+
+        shared: OrderedDict = OrderedDict()
+        policy = EgressPolicy(block_private_ips=False)
+        resolver_a = SafeResolver(policy, shared)
+        resolver_b = SafeResolver(policy, shared)
+
+        calls = {"n": 0}
+
+        async def _fake_getaddrinfo(*_args, **_kwargs):
+            calls["n"] += 1
+            # 1ª resolución: IP buena. Un "rebind" posterior devolvería otra IP.
+            ip = "93.184.216.34" if calls["n"] == 1 else "203.0.113.99"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (ip, 443))]
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", _fake_getaddrinfo)
+
+        res_a = await resolver_a.resolve("cdn.example.test", 443)
+        res_b = await resolver_b.resolve("cdn.example.test", 443)  # otro resolver, MISMA caché
+
+        assert calls["n"] == 1  # getaddrinfo NO se volvió a llamar → rebinding derrotado
+        assert res_a == res_b
+        assert res_a[0]["host"] == "93.184.216.34"  # ambos ven la IP pineada
+
+    def test_gateway_exposes_shared_dns_pins(self) -> None:
+        from collections import OrderedDict
+
+        from sky_claw.antigravity.security.network_gateway import SafeResolver
+
+        gw = NetworkGateway()
+        assert isinstance(gw._dns_pins, OrderedDict)
+        r1 = SafeResolver(gw._policy, gw._dns_pins)
+        r2 = SafeResolver(gw._policy, gw._dns_pins)
+        assert r1._pinned is r2._pinned is gw._dns_pins
+
+    @pytest.mark.asyncio
+    async def test_standalone_resolver_owns_and_clears_cache(self) -> None:
+        from sky_claw.antigravity.security.network_gateway import SafeResolver
+
+        resolver = SafeResolver(EgressPolicy())
+        resolver._pinned[("h", 1)] = [{"host": "1.2.3.4"}]
+        await resolver.close()
+        assert len(resolver._pinned) == 0  # caché propia → close() la limpia
+
+    @pytest.mark.asyncio
+    async def test_close_does_not_clear_shared_cache(self) -> None:
+        from collections import OrderedDict
+
+        from sky_claw.antigravity.security.network_gateway import SafeResolver
+
+        shared: OrderedDict = OrderedDict()
+        shared[("h", 1)] = [{"host": "1.2.3.4"}]
+        resolver = SafeResolver(EgressPolicy(), shared)
+        await resolver.close()
+        assert ("h", 1) in shared  # caché compartida → NO se limpia al cerrar un connector
+
+
 # ------------------------------------------------------------------
 # Dot-based domain matcher (_matching_pattern semantics)
 # ------------------------------------------------------------------
