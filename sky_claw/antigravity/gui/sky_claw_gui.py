@@ -219,7 +219,10 @@ class ReactiveState:
             all_mods = await get_db_agent().get_mods()
             active = [m for m in all_mods if m.get("status") == "active"]
             self.active_mods.set(len(active))
-            self.pending_updates.set(sum(1 for m in active if m.get("needs_update", False)))
+            # `pending_updates` NO se calcula acá: no hay señal de "update
+            # disponible" en la DB GUI (la clave needs_update nunca existió → 0
+            # permanente). Su único escritor es el botón "Buscar actualizaciones"
+            # (detect_pending_updates vía Nexus). Ver _on_check_updates.
             total_size = sum(m.get("size_mb", 0) for m in active)
             self.storage_used.set(round(total_size / 1024, 1))
         except Exception as exc:
@@ -787,6 +790,66 @@ def main_page() -> None:
 
     callbacks["on_deep_conflict_scan"] = _on_deep_conflict_scan
 
+    # "Buscar actualizaciones": chequeo on-demand de updates en Nexus (read-only,
+    # sin descargar) vía SyncEngine.detect_pending_updates; setea el badge
+    # pending_updates del sidebar. Single-flight con clave propia; el resultado
+    # va por el panel de feedback (refreshable), que no reinicia el chat.
+    _updates_in_flight = "updates_scan_in_flight"
+
+    def _on_check_updates() -> None:
+        ctx = getattr(runtime, "app_context", None)
+        engine = getattr(ctx, "sync_engine", None) if ctx is not None else None
+        if engine is None:
+            ui.notify("El daemon no está inicializado todavía.", type="warning")
+            return
+        store = get_store()
+        if store.get(_updates_in_flight):
+            ui.notify("Ya hay una búsqueda de actualizaciones en curso.", type="warning")
+            return
+        store.set(_updates_in_flight, True)
+
+        # Refrescar la Nexus key desde keyring por si el usuario la cambió en
+        # Ajustes en esta misma sesión: el MasterlistClient se creó en start_full
+        # con la key vieja y seguiría fallando hasta reiniciar (review Codex #228).
+        try:
+            import keyring
+
+            nexus_key = keyring.get_password("sky_claw", "nexus_api_key") or ""
+            if nexus_key:
+                engine.set_nexus_api_key(nexus_key)
+        except Exception:
+            logger.exception("No se pudo refrescar la Nexus API key desde keyring")
+
+        async def _scan() -> None:
+            try:
+                result = await engine.detect_pending_updates(ctx.network.session)
+                get_state().pending_updates.set(len(result.updates))
+            except Exception as exc:
+                logger.exception("Fallo la búsqueda de actualizaciones")
+                store.set(
+                    STORE_KEY_RITUAL_FEEDBACK,
+                    {"text": f"La búsqueda de actualizaciones falló: {exc}", "type": "negative"},
+                )
+                return
+            finally:
+                store.set(_updates_in_flight, False)
+            n = len(result.updates)
+            if n:
+                texto, tipo = f"{n} mod(s) con actualización disponible.", "warning"
+            elif result.failed:
+                # Distingue "todo al día" de "no pude consultar" (típicamente falta
+                # la Nexus API key o Nexus está caído).
+                texto = f"No se pudieron consultar {len(result.failed)} mod(s) — revisá la Nexus API key en Ajustes."
+                tipo = "warning"
+            else:
+                texto, tipo = f"Todos los mods están al día ({result.checked} consultados).", "positive"
+            store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": texto, "type": tipo})
+
+        ui.notify("Buscando actualizaciones en Nexus…", type="info")
+        create_tracked_task(_scan(), name="gui-check-updates")
+
+    callbacks["on_check_updates"] = _on_check_updates
+
     # Sección Ajustes: guardar valida + persiste (keyring/TOML) y re-renderiza
     # para que el header refleje la identidad nueva al instante.
     def _on_settings_save(payload: dict[str, str]) -> None:
@@ -913,6 +976,11 @@ def setup_app() -> None:
     store.subscribe("mods_search_query", main_page.refresh)
     # Conflictos: re-render de la pantalla al refrescar la lista (alta/resolución).
     store.subscribe("conflicts_list", main_page.refresh)
+    # "Buscar actualizaciones": re-render del sidebar/stats cuando el chequeo
+    # actualiza el conteo, si no el badge quedaría con el valor viejo hasta una
+    # navegación (review Codex #228). Cambia rara vez (solo al apretar el botón),
+    # así que un refresh completo es seguro — mismo criterio que conflicts_list.
+    store.subscribe("pending_updates", main_page.refresh)
     # F3: re-render al cambiar el historial de resueltas (sección "Resueltas").
     store.subscribe("resolved_conflicts_list", main_page.refresh)
     # Re-render el indicador "DAEMON CONECTADO" del sidebar cuando el WS conecta/cae.

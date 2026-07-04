@@ -18,6 +18,7 @@ from sky_claw.antigravity.orchestrator.sync_engine import (
     SyncMetrics,
     SyncResult,
     _extract_nexus_id,
+    _update_available,
 )
 from sky_claw.antigravity.scraper.masterlist import MasterlistClient, MasterlistFetchError
 from sky_claw.antigravity.security.hitl import Decision
@@ -929,3 +930,139 @@ class TestSyncConfig:
         c = SyncConfig()
         with pytest.raises((ValidationError, TypeError, AttributeError)):
             c.worker_count = 99  # type: ignore[misc]
+
+
+# ------------------------------------------------------------------
+# _update_available (seam puro) + detect_pending_updates (read-only)
+# ------------------------------------------------------------------
+
+
+class TestUpdateAvailable:
+    """Seam puro de comparación de versiones para el badge pending_updates."""
+
+    def test_version_nueva_es_update(self) -> None:
+        assert _update_available("1.0", "2.0") is True
+
+    def test_misma_version_no_es_update(self) -> None:
+        assert _update_available("1.0", "1.0") is False
+
+    def test_nexus_vacio_no_es_update(self) -> None:
+        # Metadata sin versión: no inventar un update.
+        assert _update_available("1.0", "") is False
+
+    def test_nexus_none_no_es_update(self) -> None:
+        assert _update_available("1.0", None) is False
+
+
+class TestDetectPendingUpdates:
+    """Detección read-only de updates disponibles (sin descargar), para el badge."""
+
+    def _engine(self, mods: list[dict[str, Any]], fetch: Any, downloader: Any = None) -> SyncEngine:
+        mock_registry = AsyncMock()
+        mock_registry.search_mods.return_value = mods
+        mock_masterlist = AsyncMock()
+        mock_masterlist.fetch_mod_info = fetch
+        return SyncEngine(
+            mo2=AsyncMock(),
+            masterlist=mock_masterlist,
+            registry=mock_registry,
+            downloader=downloader,
+            fetch_retry_wait=wait_none(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_sin_mods_trackeados_devuelve_vacio(self) -> None:
+        engine = self._engine([], AsyncMock())
+        result = await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
+        assert result.checked == 0
+        assert result.updates == []
+        assert result.failed == []
+
+    @pytest.mark.asyncio
+    async def test_mod_con_version_nueva_aparece_en_updates(self) -> None:
+        engine = self._engine(
+            [{"name": "SkyUI", "nexus_id": 12021, "version": "5.1", "installed": True}],
+            AsyncMock(return_value=_fake_mod_info(12021, "SkyUI") | {"version": "5.2"}),
+        )
+        result = await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
+        assert result.checked == 1
+        assert len(result.updates) == 1
+        assert result.updates[0]["name"] == "SkyUI"
+        assert result.updates[0]["local_version"] == "5.1"
+        assert result.updates[0]["nexus_version"] == "5.2"
+        assert result.failed == []
+
+    @pytest.mark.asyncio
+    async def test_mod_al_dia_no_aparece(self) -> None:
+        engine = self._engine(
+            [{"name": "SkyUI", "nexus_id": 12021, "version": "5.2", "installed": True}],
+            AsyncMock(return_value=_fake_mod_info(12021, "SkyUI") | {"version": "5.2"}),
+        )
+        result = await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
+        assert result.checked == 1
+        assert result.updates == []
+
+    @pytest.mark.asyncio
+    async def test_solo_cuenta_installed(self) -> None:
+        engine = self._engine(
+            [
+                {"name": "Activo", "nexus_id": 1, "version": "1.0", "installed": True},
+                {"name": "Desinstalado", "nexus_id": 2, "version": "1.0", "installed": False},
+            ],
+            AsyncMock(return_value=_fake_mod_info(1, "Activo") | {"version": "2.0"}),
+        )
+        result = await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
+        assert result.checked == 1
+        assert [u["name"] for u in result.updates] == ["Activo"]
+
+    @pytest.mark.asyncio
+    async def test_nexus_version_null_no_es_update(self) -> None:
+        """Si Nexus devuelve version: null, no inventar un update (str(None) sería truthy)."""
+        engine = self._engine(
+            [{"name": "SkyUI", "nexus_id": 12021, "version": "5.1", "installed": True}],
+            AsyncMock(return_value={"mod_id": 12021, "name": "SkyUI", "version": None}),
+        )
+        result = await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
+        assert result.checked == 1
+        assert result.updates == []
+
+    @pytest.mark.asyncio
+    async def test_fallo_de_fetch_se_aisla_en_failed(self) -> None:
+        """Un mod que falla en Nexus va a `failed` sin abortar el resto."""
+
+        async def _selective(nexus_id: int, session: Any) -> dict[str, Any]:
+            if nexus_id == 1:
+                raise MasterlistFetchError("Nexus caído")
+            return _fake_mod_info(nexus_id, "Bueno") | {"version": "9.9"}
+
+        engine = self._engine(
+            [
+                {"name": "Roto", "nexus_id": 1, "version": "1.0", "installed": True},
+                {"name": "Bueno", "nexus_id": 2, "version": "1.0", "installed": True},
+            ],
+            AsyncMock(side_effect=_selective),
+        )
+        result = await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
+        assert result.checked == 2
+        assert [u["name"] for u in result.updates] == ["Bueno"]
+        assert len(result.failed) == 1
+        assert result.failed[0]["nexus_id"] == 1
+
+    def test_set_nexus_api_key_propaga_al_masterlist(self) -> None:
+        """Refrescar la key la delega al MasterlistClient (review Codex #228)."""
+        ml = MagicMock()
+        engine = SyncEngine(mo2=AsyncMock(), masterlist=ml, registry=AsyncMock())
+        engine.set_nexus_api_key("clave-fresca")
+        ml.set_api_key.assert_called_once_with("clave-fresca")
+
+    @pytest.mark.asyncio
+    async def test_nunca_descarga(self) -> None:
+        """La detección es read-only: el downloader jamás se toca."""
+        downloader = MagicMock()
+        engine = self._engine(
+            [{"name": "SkyUI", "nexus_id": 12021, "version": "5.1", "installed": True}],
+            AsyncMock(return_value=_fake_mod_info(12021, "SkyUI") | {"version": "5.2"}),
+            downloader=downloader,
+        )
+        await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
+        assert downloader.method_calls == []

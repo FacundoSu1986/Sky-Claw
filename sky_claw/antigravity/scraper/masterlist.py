@@ -129,6 +129,15 @@ class MasterlistClient:
         """Expose the current circuit-breaker state for observability."""
         return self._cb.state
 
+    def set_api_key(self, api_key: str) -> None:
+        """Refresca la Nexus API key en caliente (se envía en cada request).
+
+        La key se lee por request desde ``self._api_key``, así que un cambio en
+        Ajustes puede aplicarse sin recrear el cliente ni reiniciar (paralelo al
+        hot-reload del LLM de #225) — review Codex #228.
+        """
+        self._api_key = api_key
+
     async def fetch_mod_info(
         self,
         mod_id: int,

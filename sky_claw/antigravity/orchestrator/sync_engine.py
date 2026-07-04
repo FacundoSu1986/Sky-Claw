@@ -130,6 +130,31 @@ class UpdatePayload(BaseModel):
     rollback_transaction_id: int | None = None
 
 
+class UpdateScanResult(BaseModel):
+    """Resultado de un chequeo READ-ONLY de actualizaciones (badge pending_updates).
+
+    A diferencia de :class:`UpdatePayload` (ciclo completo que descarga+aplica),
+    esto solo detecta: cuántos mods se consultaron, cuáles tienen una versión más
+    nueva en Nexus (``updates``) y cuáles no se pudieron consultar (``failed``).
+    """
+
+    model_config = ConfigDict(strict=True)
+
+    checked: int = 0
+    updates: list[dict[str, Any]] = Field(default_factory=list)
+    failed: list[dict[str, Any]] = Field(default_factory=list)
+
+
+def _update_available(local_version: str | None, nexus_version: str | None) -> bool:
+    """Seam puro: ¿hay update? La versión de Nexus existe y difiere de la local.
+
+    Misma regla que ``_check_and_update_mod`` (no inventar updates cuando Nexus no
+    devuelve versión). Comparación por string exacto — la fuente de verdad es que
+    Nexus publicó una etiqueta distinta a la instalada.
+    """
+    return bool(nexus_version) and nexus_version != local_version
+
+
 # BUG-001 FIX: SyncMetrics refactorizado como dataclass con asyncio.Lock
 @dataclass
 class SyncMetrics:
@@ -397,6 +422,74 @@ class SyncEngine:
     # ------------------------------------------------------------------
     # Automated Update Cycle
     # ------------------------------------------------------------------
+
+    def set_nexus_api_key(self, api_key: str) -> None:
+        """Refresca la Nexus API key del cliente (delega en el MasterlistClient).
+
+        Permite que el botón "Buscar actualizaciones" use una key recién guardada
+        en Ajustes sin reiniciar (review Codex #228).
+        """
+        self._masterlist.set_api_key(api_key)
+
+    async def detect_pending_updates(self, session: aiohttp.ClientSession) -> UpdateScanResult:
+        """Chequeo READ-ONLY: cuántos mods trackeados tienen update en Nexus.
+
+        Hermano de :meth:`check_for_updates` pero **solo detecta** — no descarga,
+        no toca journal/rollback ni escribe DB. Alimenta el badge
+        ``pending_updates`` del Forge (botón "Buscar actualizaciones"). Compara la
+        versión instalada contra la de Nexus vía :meth:`_safe_fetch_info` (mismo
+        circuit breaker + backoff), aislando fallos por-mod para no abortar el
+        escaneo completo.
+        """
+        tracked = [m for m in await self._registry.search_mods("") if m.get("installed")]
+        result = UpdateScanResult(checked=len(tracked))
+        if not tracked:
+            return result
+
+        api_semaphore = asyncio.Semaphore(self._cfg.api_semaphore_limit)
+        outcomes: list[Any] = [None] * len(tracked)
+
+        async def _detect(idx: int, mod: dict[str, Any]) -> None:
+            try:
+                info = await self._safe_fetch_info(mod["nexus_id"], session, api_semaphore)
+            except (MasterlistFetchError, CircuitOpenError, RetryError, aiohttp.ClientError, OSError) as exc:
+                outcomes[idx] = exc
+                return
+            outcomes[idx] = info
+
+        async with asyncio.TaskGroup() as tg:
+            for idx, mod in enumerate(tracked):
+                tg.create_task(_detect(idx, mod))
+
+        for mod, outcome in zip(tracked, outcomes, strict=True):
+            if isinstance(outcome, Exception) or not outcome:
+                result.failed.append(
+                    {
+                        "name": mod["name"],
+                        "nexus_id": mod["nexus_id"],
+                        "error": str(outcome) if isinstance(outcome, Exception) else "No metadata returned",
+                    }
+                )
+                continue
+            # `or ""` normaliza version: null / ausente → sin versión (str(None)
+            # sería "None", truthy, y marcaría un falso update — review Copilot #228).
+            nexus_version = str(outcome.get("version") or "")
+            if _update_available(mod.get("version"), nexus_version):
+                result.updates.append(
+                    {
+                        "name": mod["name"],
+                        "nexus_id": mod["nexus_id"],
+                        "local_version": mod.get("version"),
+                        "nexus_version": nexus_version,
+                    }
+                )
+        logger.info(
+            "Chequeo de updates: %d consultados, %d con update, %d fallidos.",
+            result.checked,
+            len(result.updates),
+            len(result.failed),
+        )
+        return result
 
     async def check_for_updates(self, session: aiohttp.ClientSession) -> UpdatePayload:
         """Automated update cycle for all tracked mods.
