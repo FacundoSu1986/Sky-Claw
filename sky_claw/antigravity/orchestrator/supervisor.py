@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
-from typing import Any
+from typing import Any, Literal
 
 from sky_claw.antigravity.comms.interface import InterfaceAgent
 from sky_claw.antigravity.core.contracts import PathValidatorProtocol
@@ -56,24 +56,32 @@ BACKUP_STAGING_DIR = ".skyclaw_backups/"
 #: #226). 15 min cubre perfiles pesados sin colgar la UI indefinidamente.
 DEEP_SCAN_TIMEOUT_SECONDS = 900
 
+PluginListSource = Literal["loadorder", "plugins_txt"]
 
-def parse_active_plugins(load_order_text: str) -> list[str]:
+
+def parse_active_plugins(load_order_text: str, *, source: PluginListSource = "loadorder") -> list[str]:
     """Extrae los plugins del load order (``loadorder.txt`` / ``plugins.txt``).
 
     Seam puro (testeable sin supervisor). Formato de esos archivos de MO2/Skyrim
     SE: un plugin por línea, en orden de carga; se ignoran vacíos y comentarios
-    (``#``); el prefijo ``*`` de ``plugins.txt`` (marca de habilitado) se
-    descarta. NO confundir con ``modlist.txt``, que lista *mods* con prefijos
-    ``+/-`` (review Copilot #226). Se conservan solo ``.esp/.esm/.esl`` —
-    ``.esl`` incluido porque xEdit también reporta conflictos entre plugins
-    ligeros.
+    (``#``). ``loadorder.txt`` no marca habilitados: sus plugins válidos se
+    conservan tal cual. ``plugins.txt`` sí usa ``*`` como marca de habilitado,
+    por lo que las líneas sin ``*`` se descartan. NO confundir con
+    ``modlist.txt``, que lista *mods* con prefijos ``+/-`` (review Copilot
+    #226). Se conservan solo ``.esp/.esm/.esl`` — ``.esl`` incluido porque
+    xEdit también reporta conflictos entre plugins ligeros.
     """
     plugins: list[str] = []
     for raw in load_order_text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        name = line.lstrip("*").strip()
+        if source == "plugins_txt":
+            if not line.startswith("*"):
+                continue
+            name = line[1:].strip()
+        else:
+            name = line
         if name.lower().endswith((".esp", ".esm", ".esl")):
             plugins.append(name)
     return plugins
@@ -720,7 +728,10 @@ class SupervisorAgent:
             for candidate in ("loadorder.txt", "plugins.txt"):
                 lo_path = profile_dir / candidate
                 if lo_path.exists():
-                    plugins = parse_active_plugins(lo_path.read_text(encoding="utf-8-sig"))
+                    plugins = parse_active_plugins(
+                        lo_path.read_text(encoding="utf-8-sig"),
+                        source="plugins_txt" if candidate == "plugins.txt" else "loadorder",
+                    )
                     if plugins:
                         break
         if not plugins:

@@ -1,0 +1,165 @@
+He revisado el repositorio empaquetado (~104K líneas, ~300 archivos Python). Te dejo el análisis OODA con errores y mejoras priorizados.
+
+Análisis OODA — Sky-Claw
+🔭 OBSERVAR
+Sky-Claw es un agente autónomo zero-trust para modding de Skyrim SE/AE vía MO2, con:
+
+Multi-LLM (Anthropic/OpenAI/DeepSeek/Ollama), bloqueo de con con hot-swap
+NetworkGateway + SafeResolver con DNS pinning LRU
+PromptArmor (XML CDATA), AgentGuardrail (PII/inyección/ruta), Sanitize con homoglifos
+CredentialVault Fernet + PBKDF2HMAC + recuperación de sal dual con
+HITLGuard para hosts fuera de alcance, máquina de estados LangGraph + DLQ
+Integraciones xEdit/LOOT/Pandora/DynDOLOD/Synthesis/WryeBash/BodySlide + FOMOD
+Modos GUI (NiceGUI) / CLI / Telegram / Web (aiohttp + WS)
+AUDIT_REPORT.md ya documentaba 3 bugs corregidos (C-2 fuga futura, H-04 contrapresión, H-05 DLQ doble despacho) y 5 retraso medio/bajo.
+
+🧭 ORIENTAR — Hallazgos
+A. Seguridad
+T1 [CRÍTICO] — OpenAIProvider.DEFAULT_MODEL = "gpt-5" (providers.py:68449)
+gpt-5 no existe en OpenAI. Toda llamada al provider fallará con 404/400. Debe ser o . El fallback automático a Ollama oculta el bug.gpt-4ogpt-4-turbo
+
+S2 [ALTO] — Bypass de auth por env var (web/app.py:74852)
+if os.environ.get("SKY_CLAW_DEV_NO_AUTH") == "1" permite eludir auth en y en cualquier entorno (incluido el empaquetado). No hay guardia de construcción tipo build. Migrar a flag en con default ./api/chat/ws/ui.execonfig.tomlfalse
+
+S3 [ALTO] — SafeResolver no valida IPv4-mapped IPv6 ni multicast/reserved (network_gateway.py:13483) Solo cubre . Faltan , , y el bypass crítico: (IPv4-mapped IPv6) — devuelve en Python pero enruta a loopback.is_private/loopback/link_localis_multicastis_reservedis_unspecified::ffff:127.0.0.1ipaddress.ip_address("::ffff:127.0.0.1").is_loopbackFalse
+
+S4 [ALTO] — Regex DoS en hermes_parser (hermes_parser.py:3962)
+<tool_call>\s*(.*?)\s*</tool_call> contra. Si el LLM emite muchos sin cerrar, backtracking potencial. Mejor: o usar .re.DOTALL<tool_call>re.compile(r"<tool_call>(?:(?!</tool_call>).)*</tool_call>", re.DOTALL)defusedxml
+
+S5 [MEDIO] — Historial de chat no se sanitiza al cargar (router.py:82467-82476)
+_load_context parsea JSON y reinyecta al LLM sin . Si la SQLite fue alterada (mod maliciosa con acceso al sandbox), inyección indirecta entra limpia. Aplicar al cargar.sanitize_for_promptsanitize_for_prompt
+
+S6 [MEDIO] — CDATA escape permite reconstrucción (prompt_armor.py:14207) El patrón es estándar pero fragmentable. Solución robusta: partir contenido en y emitir múltiples CDATA sections separadas.]]]]><![CDATA[>]]>
+
+S7 [MEDIO] — PII regex no cubre formatos modernos (agent_guardrail.py:12232) Faltan: Anthropic (), AWS (), Google (), PATs de GitHub (), Slack ().sk-ant-...AKIA[0-9A-Z]{16}AIza...ghp_...xoxb-...
+
+B. Arquitectura y consistencia
+A1 [ALTO] — Versión Python inconsistente
+
+.python-version: 3.11
+README.md: "Python 3.11+"
+coding_conventions.md: "Python 3.14+" (menciona , match/caseTaskGroup)
+TaskGroup/except*/StrEnum requieren 3.11+. Lo declarado en convenciones es aspiracional. Documentos alineales.
+
+A2 [ALTO] — Convenciones siguen diciendo Tkinter
+coding_conventions.md lista "Tkinter, sv-ttk" pero el README y confirman migración a NiceGUI. Las convenciones no se actualizaron.refactor_plan.md
+
+A3 [MEDIO] — sigue con path_resolver.pyos.environ (ZERO_TRUST_TODO.md) El TODO documenta la excepción pero persiste. , se leen del entorno. En , un atacante con acceso al FS del usuario puede redirigir operaciones. Migrar a .SKYRIM_PATHMO2_PATH.execonfig.toml
+
+A4 [MEDIO] — Duplicación (Pydantic) vs (TypedDict)WorkflowStateStateGraphState
+LangGraph solo usa el TypedDict. El fallback sin Pydantic (línea 46591) es dead code si pydantic siempre está disponible. Eliminar y unificar.
+
+A5 [BAJO] — suelto en raíz del repo (línea 1690)script.py
+Archivo único sin propósito claro. Mover o eliminar.
+
+A6 [BAJO] — es template defaultSECURITY.md
+Lista versiones 5.1.x/5.0.x/4.0.x — no coincide con "v5.5 Titan". Reescribir.
+
+C. Concurrencia y estado
+C1 [ALTO] — Provider lock serializa todas las llamadas LLM (router.py:82232)
+
+python
+
+async with self._provider_lock:
+    response_data = await asyncio.wait_for(self._provider.chat(**chat_kwargs), timeout=120.0)
+Contradice el principio del guardrail ("No asyncio.Lock wrapping provider I/O"). El lock es para hot-swap seguro, pero debería ser solo durante el swap, no durante 120s de HTTP. Snapshot bajo lock, llamada fuera:
+
+python
+
+async with self._provider_lock:
+    provider_snapshot = self._provider
+response_data = await asyncio.wait_for(provider_snapshot.chat(**chat_kwargs), timeout=120.0)
+C2 [ALTO] — SupervisorAgent crea NetworkGateway propio (supervisor.py:100718)
+AppContext ya construye uno y lo inyecta en el router, pero el supervisor crea otra instancia → dos caches DNS pinning separados, dos sets de reglas egress. Inyectar el gateway del AppContext.
+
+C3 [MEDIO] — TaskGroup fail-fast para daemons (supervisor.py:100889)
+Si un daemon cae, cancela todos. Los daemons deberían ser tolerantes a fallos transitorios. Patrón supervisor con reinicio individual y backoff.
+
+C4 [MEDIO] — Truncado silencioso del contexto (router.py:82429)
+messages = messages[-self._max_context:] descarta sin avisar al LLM. Para tool rounds con resultados críticos, causa "amnesia" del objetivo. Ya existe — usar siempre summarize.TokenBudgetManager.summarize_older_messages
+
+C5 [MEDIO] — WAL pragma sin foreign_keys=ON (router.py:82027)
+Las convenciones piden ambos. Si crece con FKs en el futuro, se romperá silenciosamente.chat_history
+
+C6 [BAJO] — ContextManager abre conexión SQLite directa (context_manager.py:42254)
+El comentario justifica la exención al M-01, pero acopla la capa agent con SQLite. Si el cambia, este código no se beneficia.DatabaseLifecycleManager
+
+D. Manejo de errores
+D1 [MEDIO] — desnudo en múltiples sitiosexcept Exception
+Prohibido por convenciones. Hallados en , , , , . Reemplazar por excepciones específicas.router.py:82435executor.py:42434context_manager.py:42259nexus_downloader.py:11599app_context.py:99796
+
+D2 [BAJO] — rechaza claves con ≤2 chars únicos (_is_valid_api_keyrouter.py:81885)
+if len(set(stripped)) <= 2: return False — heurística razonable pero documentar.
+
+E. Dominio Skyrim
+E1 [MEDIO] — incompleto (CreateMergedPatch.HANDLED_TYPESpatch_orchestrator.py:19779)
+Solo . Faltan (leveled character), , (references), (navmesh). Requiem/EnaiRim los usan extensivamente.LVLI, LVLN, LVSPLVLCLVEFREFRNAVM
+
+E2 [BAJO] — Sin validación en .esm > .esl > .espparse_active_plugins (supervisor.py:100689)
+Solo filtra extensiones. Si no pasó por LOOT, el agente no detecta orden incorrecto.loadorder.txt
+
+E3 [BAJO] — Sin detección de missing masters
+Si un referencia un master ausente, Skyrim CTD. Falta en el supervisor..espvalidate_masters()
+
+F. Testing y observabilidad
+F1 [ALTO] — excluidos del CItest_credential_vault*.py
+AUDIT_REPORT.md documenta: fallo pre-existente por . Sin tests en CI para el boundary crítico de secretos. Mockear o skip condicional en Windows.icacls → error 1332icacls
+
+F2 [MEDIO] — Sin test de round-trip /ws/ui
+El spec lo menciona como gap que dejó pasar PR #195.2026-06-20-gui-ws-ui-chat-design.md
+
+F3 [MEDIO] — Sin test LRU eviction en SafeResolver
+_MAX_PINNED_ENTRIES = 1024 sin verificar. Fuga de memoria silenciosa en sesiones largas si se rompe.
+
+F4 [BAJO] — Sin correlación de logs fuera de web/app.py
+correlation_id_var solo se setea en el middleware web. Router/supervisor/executor no propagan. Imposible seguir un request end-to-end.
+
+🎯 DECIDIR — Priorización
+#
+Hallazgo
+Sev
+Esfuerzo
+Sprint
+S1	gpt-5 inválido	CRÍT	5 min	P0
+S2	Bypass auth env var	ALTO	30 min	P0
+S3	SafeResolver IPv6/multicast	ALTO	1h	P0
+C1	Provider lock en LLM call	ALTO	1h	P0
+C2	NetworkGateway duplicado	ALTO	30 min	P0
+F1	Tests credential_vault excluidos	ALTO	2h	P0
+A1, A2	Docs Python/GUI inconsistentes	ALTO	30 min	P1
+S4, S5, S6, S7	Seguridad media	MED	1h c/u	P1
+C3, C4, D1, E1, F2	Concurrencia/testing	MED	2h c/u	P1
+A3, A4, C5, C6, F3	Deuda técnica	MED	1-4h	P2
+Resto (A5, A6, E2, E3, F4, S8, D2)	Bajos	BAJ	15 min c/u	P3
+
+⚡ ACTUAR — Acciones concretas
+Sprint P0 (esta semana)
+providers.py: . Test de smoke contra OpenAI staging.DEFAULT_MODEL = "gpt-4o"
+web/app.py: Reemplazar por flag en con default .SKY_CLAW_DEV_NO_AUTHconfig.tomlfalse
+network_gateway.py: Añadir + validación . Tests con y .is_multicast/is_reserved/is_unspecifiedipv4_mapped::ffff:127.0.0.1224.0.0.1
+router.py: Mover fuera del (snapshot pattern). Test de concurrencia con 10 requests paralelos durante hot-swap.provider.chat()_provider_lock
+supervisor.py: Inyectar en desde AppContext. Test de singleton.gateway__init__
+tests/test_credential_vault*.py: Mockear con . Habilitar en CI.icaclsunittest.mock.patch
+Sprint P1 (próximas 2 semanas)
+.github/coding_conventions.md: Tkinter → NiceGUI, Python 3.14+ → 3.11+ (o migrar runtime).
+hermes_parser.py: Regex con negative lookahead. Fuzz test con ."<tool_call>" * 10000
+router.py:_load_context: Aplicar al cargar.sanitize_for_prompt
+prompt_armor.py:_escape_cdata: Partir en y emitir múltiples CDATA.]]>
+agent_guardrail.py: Ampliar con AWS/Google/GitHub/Slack/Anthropic._COMBINED_PII_RE
+supervisor.py:start: Supervisor pattern con reinicio individual + backoff.
+router.py: Reemplazar por .messages[-self._max_context:]summarize_older_messages
+patch_orchestrator.py: Añadir a .LVLC, LVEF, REFR, NAVMHANDLED_TYPES
+Reemplazar todos los desnudos por capturas específicas (justificar en comentario si es boundary).except Exception
+Implementar tests según spec./ws/ui
+Sprint P2 (próximo mes)
+Migrar a exclusivo.path_resolver.pyconfig.toml
+Eliminar duplicación /.WorkflowStateStateGraphState
+PRAGMA foreign_keys=ON en .router.py:open()
+Inyectar en .DatabaseLifecycleManagerContextManager
+Test LRU eviction en .SafeResolver
+Validación en ..esm > .esl > .espparse_active_plugins
+validate_masters() en supervisor.
+Propaga un router/supervisor/ejecutor.correlation_id_var
+Sprint P3 (deuda técnica)
+Eliminar suelto. Reescribir . Documentar. Verificar en .script.pySECURITY.mdlen(set(stripped)) <= 2RotatingFileHandlerlogging_config.py
+Resumen: El proyecto tiene una arquitectura de seguridad notablemente madura para un agente de modding (zero-trust real, no theater), pero arrastra bugs críticos de configuración (S1: modelo inexistente), gaps de bypass (S2, S3) y un cuello de botella de concurrencia (C1) que el README y el fallback a Ollama enmascaran. Los P0 son fixes de bajo costo y alto impacto — deberían entrar antes del próximo release.

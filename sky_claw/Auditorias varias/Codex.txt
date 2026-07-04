@@ -1,0 +1,275 @@
+[Módulo: Testing, DevOps, SRE, Seguridad | Rol: Estratega de QA, Ingeniero CI/CD, Experto en Observabilidad, Ingeniero SRE, Auditor de Seguridad]
+Análisis de contexto
+La solicitud encaja en los módulos Testing, DevOps, SRE y Seguridad. Realicé una revisión teórica apoyada en la documentación y configuración del repositorio, sin modificar archivos. Por tanto, no he creado commit ni Pull Request, porque no hubo cambios en el códigobase.
+<razonamiento>
+
+OODA — Resumen ejecutivo sin cadena interna
+Fase	Conclusión operativa
+Observar	Sky-Claw es un agente autónomo Python 3.11+ para gestión de mods Skyrim vía MO2, con modos GUI/CLI/Telegram, proveedores LLM múltiples, SQLite async, NiceGUI, WebSocket/Telegram gateway, wrappers LOOT/xEdit/DynDOLOD/Synthesis y controles HITL/Zero-Trust. La arquitectura principal está descrita como Usuario → LLMRouter → LLMProvider → AsyncToolRegistry → MO2/Skyrim. README.md (líneas 11-18)README.md (líneas 22-43)
+Orientar	Las superficies críticas son: mutación de filesystem MO2/Skyrim, ejecución de binarios externos, dependencias de red/LLM/Nexus/Telegram, SQLite/journal/locks, WebSocket auth, secretos en keyring, observabilidad parcial, typing incompleto y ausencia de validación E2E real documentada. DEPLOYMENT.md (líneas 189-199)DEPLOYMENT.md (líneas 220-230)
+Decidir	Antes de producción son obligatorias pruebas E2E en rig real/VM descartable, pruebas de rollback con snapshots, stress tests de concurrencia sobre SQLite/locks/WS, pruebas de fallo de red/LLM/Nexus, pruebas de secreto/log-redaction, pruebas de empaquetado .exe firmado y gates CI con pytest/ruff/mypy/pip-audit/SBOM. DEPLOYMENT.md (líneas 203-216)pyproject.toml (líneas 72-78)
+
+</razonamiento>
+
+Aplicación de reglas
+Regla 1 — SRE primero: priorizo SLOs, rollback, observabilidad, control de error budget y recuperación sobre velocidad de entrega.
+Regla 2 — Seguridad antes que DevOps/QA: no se considera production-ready si secretos, sandboxing, SSRF, path traversal o ejecución de herramientas externas no están validados.
+Regla 3 — Testing shift-left: los escenarios de fallo deben automatizarse antes del despliegue; no basta con pruebas manuales.
+Regla 4 — Observabilidad obligatoria: logs JSON, correlation IDs, métricas, trazas y alertas deben ser accionables antes del go-live.
+Excepciones / Trade-offs: no ejecuté una batería completa porque el entorno local no tiene dependencias instaladas; el comando de pytest falló por ausencia de pydantic, lo que documento como limitación ambiental y como bloqueo de readiness si se reproduce en CI.
+Informe de Production Readiness — Sky-Claw
+1. Veredicto ejecutivo
+Estado recomendado: NO-GO para producción general / GO limitado solo como release-candidate controlado en VM o perfil MO2 descartable.
+Sky-Claw muestra buenos fundamentos de diseño operacional: rollback automático, snapshots, journal de transacciones, locks con TTL/heartbeat, kill/reap de procesos externos, HITL y redacción de logs. DEPLOYMENT.md (líneas 189-199) Sin embargo, el propio runbook declara limitaciones relevantes: no hay validación end-to-end documentada en un rig real, no existe tag de release ni binario firmado/validado, la frontera de tipos es parcial, el handler de excepciones del event loop no cubre GUI, y hay features incompletas. DEPLOYMENT.md (líneas 220-230)
+Decisión SRE
+Área	Estado	Motivo
+Funcionalidad base	🟡 Parcial	CLI/GUI/Telegram existen, pero falta validación E2E real documentada.
+Seguridad	🟡 Parcial	Hay keyring, redacción, HITL y sandboxing, pero se deben validar flujos reales y path traversal en entorno Windows/MO2.
+Observabilidad	🟡 Parcial	Hay logs JSON rotativos y correlation ID, pero trace_id no se emite en JSON y GUI depende de NiceGUI/uvicorn para excepciones async. DEPLOYMENT.md (líneas 142-174)
+Resiliencia	🟡 Parcial	Hay rollback/snapshots/locks, pero deben probarse con fallos reales de herramientas externas y concurrencia. DEPLOYMENT.md (líneas 189-199)
+Release engineering	🔴 Bloqueado	No hay tag ni binario firmado/validado según el runbook. DEPLOYMENT.md (líneas 224-225)
+Quality gates	🔴 Bloqueado en este entorno	La ejecución local de pytest falló por dependencia faltante pydantic.
+
+2. Checklist de Production Readiness
+2.1 Requisitos funcionales críticos
+Check	Estado recomendado	Evidencia / acción
+Modo GUI arranca y opera flujo completo	🔴 Obligatorio	El binario empaquetado debe arrancar en modo GUI por defecto cuando sys.frozen está activo. DEPLOYMENT.md (líneas 35-38)__main__.py (líneas 124-127)
+Modo CLI ejecuta comandos interactivos y oneshot	🔴 Obligatorio	El modo oneshot exige comando posicional; no existe --command. DEPLOYMENT.md (líneas 125-138)__main__.py (líneas 59-63)
+Modo Telegram con HITL	🔴 Obligatorio si se habilita	Requiere gateway Node y token WS correcto. DEPLOYMENT.md (líneas 108-114)DEPLOYMENT.md (líneas 136-138)
+Proveedores LLM validados	🔴 Obligatorio	Soporte esperado: anthropic, deepseek, openai, ollama. DEPLOYMENT.md (líneas 97-106)__main__.py (líneas 53-58)
+Chain LOOT → xEdit → DynDOLOD/Synthesis en dry-run	🔴 Obligatorio	El runbook exige validar preview/dry-run antes de mutaciones reales. DEPLOYMENT.md (líneas 214-215)
+Instalación/rollback de mod FOMOD	🔴 Obligatorio	La arquitectura declara parser y resolución FOMOD como componente disponible. README.md (líneas 101-104)
+Gestión de conflictos y load order	🔴 Obligatorio	El flujo incluye check_load_order, detect_conflicts, run_loot_sort y run_xedit_script. README.md (líneas 35-41)
+Descargas Nexus + hosts externos con HITL	🔴 Obligatorio	Descargas externas deben pausar y pedir aprobación humana. README.md (líneas 86-91)
+
+2.2 Requisitos no funcionales críticos
+Observabilidad
+Check	Estado	Acción obligatoria
+Logs JSON rotativos	🟢 Base existente	setup_logging() crea logs rotativos de 10 MB × 5 backups. logging_config.py (líneas 220-233)
+Correlation ID por log	🟢 Base existente	CorrelationFilter añade correlation_id y trace_id al record. logging_config.py (líneas 202-217)
+trace_id emitido en JSON	🟡 Gap	El runbook indica que se calcula trace_id, pero el formatter JSON solo emite correlation_id; agregar trace_id al formatter. DEPLOYMENT.md (líneas 155-157)logging_config.py (líneas 247-248)
+Redacción de secretos	🟢 Base existente	Hay patrones para API keys, Bearer, GitHub tokens, JWT, AWS, Slack, Stripe y query strings. logging_config.py (líneas 40-81)
+Excepciones async no manejadas	🟡 Parcial	Handler instalado en _main, pero el runbook indica que GUI no usa ese handler. __main__.py (líneas 130-147)DEPLOYMENT.md (líneas 159-167)
+Métricas Prometheus/OTEL	🟡 Opcional actual	Dependencias existen; debe definirse dashboard y alertas obligatorias. pyproject.toml (líneas 39-42)DEPLOYMENT.md (líneas 173-174)
+
+Resiliencia
+Check	Estado	Acción obligatoria
+Rollback automático	🟢 Diseñado	sync_engine invoca rollback y restaura snapshots según runbook. DEPLOYMENT.md (líneas 191-194)
+Snapshots antes de mutación	🟢 Diseñado	SnapshotTransactionLock crea snapshots antes de mutar VFS. DEPLOYMENT.md (líneas 193-194)
+Journal transaccional	🟢 Diseñado	journal_entries y transactions registran estados operativos. DEPLOYMENT.md (líneas 168-172)
+Locks con lease/heartbeat	🟢 Diseñado	TTL con renovación a TTL/3 y aborto limpio al perder lease. DEPLOYMENT.md (líneas 195-196)
+Procesos externos con timeout + reap	🟢 Diseñado	Runners hacen kill() + reap para evitar procesos huérfanos. DEPLOYMENT.md (líneas 197-198)
+Rollback ≤30s	🔴 No demostrado	Debe medirse; si no cumple, plan manual explícito.
+
+Seguridad
+Check	Estado	Acción obligatoria
+Secretos fuera de TOML plano	🟢 Base existente	Config migra secretos a keyring y los borra del TOML si puede. DEPLOYMENT.md (líneas 78-95)config.py (líneas 83-107)
+Allowlist de red / Zero Trust	🟡 Verificar	README declara NetworkGateway con dominios autorizados; validar pruebas SSRF y egress. README.md (líneas 86-91)
+Path traversal / sandboxing	🟡 Verificar	Runbook exige que paths pasen por PathValidator antes de subprocess. DEPLOYMENT.md (líneas 71-74)
+HITL fail-closed	🟡 Verificar	Operaciones destructivas y descargas externas deben requerir aprobación. DEPLOYMENT.md (líneas 198-199)
+Escaneo de dependencias	🔴 Obligatorio en CI	Hay dependencias con floors por CVEs recientes, pero debe ejecutarse pip-audit/SBOM en CI. pyproject.toml (líneas 12-18)pyproject.toml (líneas 29-55)
+
+Release engineering
+Check	Estado	Acción obligatoria
+Lockfiles reproducibles	🟢 Base existente	Runbook menciona requirements.lock y uv.lock. DEPLOYMENT.md (líneas 32-33)
+Build .exe validado	🔴 Pendiente	El runbook indica que no hay binario firmado/validado. DEPLOYMENT.md (líneas 40-41)DEPLOYMENT.md (líneas 224-225)
+Tag release + changelog	🔴 Pendiente	Debe existir tag semántico y changelog cerrado antes del go-live. DEPLOYMENT.md (líneas 224-225)
+Gates CI completos	🔴 Obligatorio	Runbook pide pytest -q, ruff check, mypy. DEPLOYMENT.md (líneas 211-212)
+
+3. Plan de Pruebas de Funcionamiento
+3.1 Gates mínimos de CI/CD
+Estos gates deben ser bloqueantes en PR y release:
+Gate	Comando recomendado	Criterio
+Unit + integration	python -m pytest -q	100% pass, sin flaky tests.
+Lint	python -m ruff check sky_claw tests local_scripts	0 errores.
+Format	python -m ruff format --check sky_claw tests local_scripts	0 cambios pendientes.
+Types	python -m mypy sky_claw --ignore-missing-imports	0 errores en módulos habilitados; plan para reducir overrides.
+Security deps	python -m pip_audit o equivalente con uv	0 vulnerabilidades críticas/altas sin waiver.
+Secrets scan	gitleaks detect / detect-secrets scan	0 secretos reales.
+SBOM	cyclonedx-py o equivalente	SBOM publicada como artefacto.
+Build	pyinstaller sky_claw.spec o script oficial	Artefacto reproducible.
+Smoke binary	Ejecutar .exe --mode cli -v y GUI	Arranque limpio + logs.
+
+El proyecto ya configura pytest con asyncio_mode = "auto" y timeout de 120 segundos para evitar deadlocks o tests colgados. pyproject.toml (líneas 72-78)
+3.2 Pruebas funcionales obligatorias
+A. Configuración y arranque
+Caso	Pasos	Resultado esperado
+Primera ejecución limpia	Borrar ~/.sky_claw, ejecutar wizard	Config creado, secretos no quedan en TOML plano.
+Config TOML inválido	Introducir TOML corrupto	Warning controlado, defaults seguros, no crash no controlado.
+Keyring no disponible	Simular error de keyring	El sistema no filtra secretos; emite warning/critical si no puede scrub.
+CLI sin comando en oneshot	python -m sky_claw --mode oneshot	Exit code != 0 y log claro. El código valida este caso. __main__.py (líneas 159-162)
+Provider inválido	--provider invalid	argparse rechaza input. __main__.py (líneas 53-58)
+
+B. Flujos principales de usuario
+Caso	Flujo	Resultado esperado
+Búsqueda de mod	Prompt natural → search_mod → SQLite	Resultados determinísticos o error recuperable.
+Validación load order	check_load_order sobre perfil MO2	Reporte consistente, sin mutar archivos.
+Ordenamiento LOOT dry-run	run_loot_sort con fixtures	No modifica perfil real sin aprobación.
+xEdit script dry-run	Ejecutar script sobre copia	Timeout, logs y cleanup garantizados.
+Descarga Nexus	Nexus API key válida	Descarga a staging, checksum/metadata y journal.
+Host externo	GitHub/Mega/Patreon	HITL obligatorio, fail-closed si no hay aprobación.
+FOMOD complejo	Instalar fixture FOMOD	Selección/condicionales correctos, rollback si falla.
+Conflicto de assets	Scan + resolución preview	No hay mutación sin aprobación explícita.
+
+C. Pruebas E2E en rig real/VM
+Entorno recomendado: VM Windows 10/11, MO2 portable, Skyrim SE dummy o copia descartable, perfil MO2 de prueba, red controlada por proxy.
+E2E	Objetivo	Criterio de aceptación
+E2E-01 GUI boot	Validar arranque NiceGUI/.exe	GUI disponible, logs JSON generados, no excepciones startup.
+E2E-02 CLI oneshot	Comando simple sin mutación	Respuesta correcta, journal sin pending.
+E2E-03 Telegram HITL	Bot → aprobación → operación	Botones funcionan, token WS válido, audit trail.
+E2E-04 Download + install + rollback	Descargar mod pequeño, forzar fallo post-snapshot	Archivos restaurados exactamente.
+E2E-05 LOOT/xEdit chain	Ejecutar dry-run completo	No procesos huérfanos, timeout/reap funcional.
+E2E-06 Network outage	Cortar red en LLM/Nexus	Circuit breaker/retry controlado, sin corrupción.
+E2E-07 Shutdown	SIGTERM durante operación externa	AppContext.stop() corre cleanup; sin procesos huérfanos. El código traduce SIGTERM a KeyboardInterrupt. __main__.py (líneas 179-194)
+
+3.3 Pruebas de estrés y carga
+Concurrencia / SQLite / locks
+Prueba	Diseño	Métrica
+100 operaciones concurrentes read-only	Buscar mods / leer registry	p95 latency, 0 deadlocks.
+20 operaciones concurrentes write	Mutaciones simuladas con locks	0 corrupción, lease correcto.
+Lease perdido	Matar heartbeat durante operación	LockLeaseLostError o aborto limpio.
+Pending journal recovery	Crash tras started, antes de commit	Sweep limpia o rollback marca estado.
+
+WebSocket / Telegram
+Prueba	Diseño	Métrica
+1k mensajes WS	Flood controlado con token válido	Sin memory leak, p99 estable.
+Token WS expirado/rotado	Rotación mientras hay cliente conectado	Rechazo seguro, reconexión explícita.
+Timing attack auth	Comparación token	Validar timing-safe comparison en gateway Node.
+
+Procesos externos
+Prueba	Diseño	Métrica
+xEdit cuelga	Proceso que no termina	Timeout + kill + reap.
+LOOT devuelve error	Exit code != 0	Error propagado, journal failed, rollback si aplica.
+DynDOLOD consume memoria	Límite memoria/tiempo	Abort controlado antes de degradar host.
+
+Red / proveedores externos
+Prueba	Diseño	Métrica
+LLM 429	Simular rate limit	Backoff, circuit breaker, no loop infinito.
+Nexus 5xx	Simular retries fallidos	Mensaje operador + rollback/no-op.
+DNS hijack/SSRF	Intentar host fuera allowlist	Bloqueo antes de request.
+Payload malicioso LLM	Prompt injection sobre herramientas	Guardrail bloquea comandos destructivos no aprobados.
+
+4. Matriz de Errores Potenciales
+Riesgo	Impacto	Mitigación
+Sin validación E2E real documentada	Go-live con fallos no descubiertos en Windows/MO2 real.	Bloquear release hasta ejecutar E2E en VM Windows con MO2 portable y perfil descartable. El runbook reconoce esta limitación. DEPLOYMENT.md (línea 224)
+Binario no firmado/validado	Riesgo de distribución insegura, falsos positivos antivirus, falta de trazabilidad.	Crear pipeline de release con tag, hash SHA256, firma Authenticode y smoke test del .exe. DEPLOYMENT.md (líneas 224-225)
+Handler async no cubre GUI	Excepciones fire-and-forget en GUI pueden depender de uvicorn/NiceGUI y perder contexto.	Instalar handler equivalente en bootstrap GUI o middleware NiceGUI; test con tarea async que falla. DEPLOYMENT.md (líneas 166-167)DEPLOYMENT.md (línea 227)
+trace_id no se emite en formatter JSON	Correlación incompleta entre logs y trazas OTEL.	Añadir %(trace_id)s al JsonFormatter y crear test de log estructurado. DEPLOYMENT.md (líneas 155-157)logging_config.py (líneas 247-248)
+Dependencias no instaladas en entorno de ejecución	Arranque/test falla antes de validar funcionalidad.	Release debe usar uv sync --locked --extra dev en CI y smoke test del artefacto final. En esta auditoría pytest falló por ausencia de pydantic.
+Secretos quedan en TOML si keyring falla	Exposición de API keys/tokens.	Tratar logger.critical de scrub fallido como alerta P1; testear keyring unavailable; bloquear producción si hay secretos planos. config.py (líneas 83-107)
+LLM provider/model incompatible	Errores 4xx, indisponibilidad funcional.	Preflight por provider: request mínimo, validación modelo provider-scoped, fallback manual documentado. DEPLOYMENT.md (líneas 97-106)
+Nexus/LLM/Telegram caídos	Funciones core no disponibles; operaciones quedan a medias.	Circuit breaker, backoff con jitter, timeouts estrictos, journal idempotente, alertas por tasa de error.
+SQLite como SPOF local	Corrupción o lock contention rompe registry/journal.	Backups antes de mutación, WAL, integrity check, test de concurrencia, recovery desde journal/snapshots.
+Locks con TTL mal calibrado	Dos escritores pueden mutar el mismo perfil o abortos falsos.	Medir duración real p99 de operaciones; TTL > p99 con heartbeat TTL/3; chaos test de lease perdido. DEPLOYMENT.md (líneas 195-196)
+Rollback incompleto en operaciones externas	Perfil MO2/Skyrim queda inconsistente.	Snapshot antes de toda mutación; pruebas de fallo inyectado en cada etapa; checksum antes/después. DEPLOYMENT.md (líneas 191-194)
+Procesos xEdit/LOOT/DynDOLOD huérfanos	Handles bloqueados, corrupción de archivos, consumo CPU/RAM.	Timeout + kill + reap ya está declarado; validarlo con procesos colgados reales. DEPLOYMENT.md (líneas 197-198)
+Path traversal / symlink escape	Escritura fuera del sandbox MO2/Skyrim.	Fuzzing de paths, symlinks, junctions Windows, rutas UNC; PathValidator obligatorio antes de subprocess. DEPLOYMENT.md (líneas 71-74)
+SSRF / egress no autorizado	Exfiltración o interacción con redes internas.	Tests contra localhost, RFC1918, metadata IP, DNS rebinding; enforce deny-by-default en NetworkGateway. README declara allowlist. README.md (líneas 86-91)
+HITL no fail-closed	Descargas o acciones destructivas sin aprobación humana.	Pruebas donde Telegram/WS falla: operación debe abortar, no continuar. DEPLOYMENT.md (líneas 198-199)
+Redacción de logs incompleta	Filtración de tokens/API keys en disco.	Fuzz tests con patrones reales/sintéticos; revisar excepciones y extra; la base de redacción existe. logging_config.py (líneas 40-81)logging_config.py (líneas 170-199)
+Typing parcial / mypy ignore amplio	Bugs estructurales no detectados por CI.	Roadmap de reducción de ignore_errors=true; bloquear módulos críticos: security, db, orchestrator, comms. pyproject.toml (líneas 164-216)
+Reglas lint de seguridad no habilitadas	except Exception amplio y subprocess por PATH pueden ocultar fallos.	Activar reglas gradualmente, al menos en runners externos y security; pyproject documenta deuda BLE001/S603/S607. pyproject.toml (líneas 106-117)
+Docs inconsistentes	Operadores ejecutan versión Python/ruta de wizard incorrecta.	Corregir QUICKSTART antes de release; runbook ya documenta discrepancia. DEPLOYMENT.md (línea 18)DEPLOYMENT.md (líneas 51-54)
+Modo Telegram gateway Node como componente adicional	SPOF fuera del runtime Python.	Healthcheck Node, supervisión, restart policy, contrato WS, test con caída/reinicio. DEPLOYMENT.md (líneas 21-22)DEPLOYMENT.md (líneas 136-138)
+Sin SLOs cuantitativos definidos	No hay criterio objetivo de go/no-go.	Definir SLOs abajo y alertas vinculadas a error budget.
+
+5. SLOs y alertas recomendadas
+5.1 SLOs iniciales
+Servicio / flujo	SLO	Error budget
+Arranque CLI	99% de arranques < 5s	1%
+Arranque GUI	95% de arranques < 15s	5%
+Comando oneshot sin mutación	99% éxito	1%
+Operación con rollback	99.5% rollback exitoso	0.5%
+Descarga Nexus	98% éxito excluyendo 4xx del proveedor	2%
+HITL approval path	99% entrega de solicitud al operador	1%
+Journal integrity	100% sin transacciones pending tras recovery	0%
+Secret leakage logs	0 secretos reales en logs	0%
+Proceso externo huérfano	0 procesos huérfanos tras timeout/shutdown	0%
+
+5.2 Alertas mínimas
+Alerta	Severidad	Condición
+Secret scrub failed	P0	Log critical de scrub TOML/keyring.
+Rollback failed	P0	Cualquier rollback no exitoso.
+Journal pending > 0 tras startup	P1	Recovery incompleto.
+External process timeout	P1	xEdit/LOOT/DynDOLOD timeout.
+Error rate LLM/Nexus > 10% en 15m	P2	Degradación proveedor.
+GUI unhandled exception	P1	Excepción async no capturada.
+WS auth failures spike	P2/P1	Posible ataque o token rotado mal.
+Disk free < 15%	P1	Riesgo en snapshots/downloads.
+Log redaction test failed	P0	Bloqueo inmediato de release.
+
+6. Estrategia de Rollback
+6.1 Rollback técnico de una operación
+Sky-Claw ya declara mecanismos de rollback automático, snapshots, journal, locks y cleanup de procesos externos. DEPLOYMENT.md (líneas 189-199) Para producción, el runbook operativo debe formalizar:
+Antes de cada mutación
+Crear snapshot de archivos afectados.
+Registrar transaction_id en journal.
+Adquirir lock con TTL y heartbeat.
+Validar espacio en disco.
+Validar que no haya procesos MO2/xEdit/LOOT conflictivos abiertos.
+
+Durante la operación
+Asociar todos los logs al mismo correlation_id.
+Registrar started/completed/failed.
+Aplicar timeout por herramienta externa.
+Mantener heartbeat del lock.
+
+Si falla
+Detener subprocess.
+Ejecutar rollback desde snapshots en orden inverso.
+Marcar transacción rolled_back.
+Emitir alerta P0/P1 si el rollback falla o tarda más del SLO.
+
+Después
+Verificar checksums/rutas.
+Verificar journal sin pending.
+Revisar logs por ERROR.
+Generar reporte para post-mortem blameless.
+
+6.2 Rollback de release
+Escenario A — Falla durante despliegue del .exe
+Detener distribución del artefacto.
+Revocar release/tag si aún no fue publicado públicamente.
+Marcar build como fallido en CI/CD.
+Conservar artefactos/logs/SBOM para análisis.
+Restaurar versión anterior firmada.
+Publicar nota interna de incidente.
+Escenario B — Falla en ejecución local de usuario
+Pedir al operador no cerrar por kill -9 salvo último recurso; el runbook indica que SIGTERM debe permitir cleanup. DEPLOYMENT.md (líneas 197-198)
+Exportar:logs/sky_claw.log
+logs/watcher.log
+logs/watcher_security.log
+journal SQLite
+correlation_id
+
+Ejecutar recuperación:rollback automático si aplica;
+restore snapshot manual vía API si el rollback automático no corrió;
+restaurar backup externo del perfil MO2 si los snapshots no bastan.
+
+Deshabilitar temporalmente herramientas externas afectadas.
+Crear post-mortem con causa raíz, blast radius, fix y prueba de regresión.
+Escenario C — Fuga de secreto
+Rotar inmediatamente token LLM/Nexus/Telegram/WS.
+Invalidar sesiones o token files WS.
+Revisar logs históricos.
+Ejecutar secret scanning.
+Abrir incidente P0.
+Añadir patrón de redacción faltante y prueba de regresión.
+7. Recomendación final de Go/No-Go
+No-Go hasta cumplir estos bloqueantes
+E2E real documentado en VM Windows/MO2 descartable.
+Pipeline de release con tag, .exe firmado y smoke test.
+CI verde con dependencias bloqueadas.
+Pruebas de rollback con fallo inyectado en cada etapa crítica.
+Pruebas de redacción de secretos en mensajes, args, extra y tracebacks.
+trace_id emitido en JSON o decisión explícita de no usar tracing distribuido.
+Cobertura del handler de excepciones async en GUI o prueba equivalente bajo NiceGUI/uvicorn.
+Alertas mínimas para rollback failed, journal pending, secret leakage y subprocess timeout.
+Go limitado aceptable
+Puede autorizarse un pilot controlado si:
+corre en VM o perfil MO2 descartable;
+no se opera sobre instalación Skyrim principal;
+se ejecuta solo con backup externo previo;
+el operador revisa logs y journal tras cada operación;
+todas las mutaciones requieren HITL;
+hay plan manual de restauración.

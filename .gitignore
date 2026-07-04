@@ -117,6 +117,7 @@ SYNC_PROTOCOL_REPORT.md
 REFACTOR-VALIDATION.md
 IMPLEMENTATION-SUMMARY.txt
 "plan KIMI fase2.txt"
+repomix-output.*
 
 # Kimi agent config
 .kimi/

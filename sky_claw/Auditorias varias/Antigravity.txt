@@ -1,0 +1,60 @@
+**1. Observar (Análisis de la Pila Tecnológica y Componentes):** * **Core:** Python 3.11+, fuertemente basado en flujos asíncronos (`asyncio`). * **IA/LLM:** Arquitectura modular multi-proveedor (`LLMProvider`) soportando Anthropic, OpenAI, DeepSeek y Ollama. * **Bases de Datos:** SQLite para registros de mods (`mod_registry.db`) y estado (`sky_claw_state.db`). * **Interfaces:** Tres vías de entrada: CLI, GUI (basado en NiceGUI/FastAPI) y Telegram Bot. * **Integraciones Externas:** Mod Organizer 2 (manejo de archivos de texto como `modlist.txt`), ejecutables de terceros (LOOT, xEdit) y APIs web (NexusMods, Telegram). * **Seguridad:** Componentes `NetworkGateway`, `HITLGuard` y `Sandboxing` implementados teóricamente para Zero-Trust.
+2. Orientar (Identificación de Superficies de Riesgo):
+
+Concurrencia de Estado (Cuello de Botella): SQLite y MO2 no son intrínsecamente amigables con escrituras concurrentes intensivas. Si un usuario envía un comando vía Telegram mientras la GUI está ordenando la lista de carga, podría ocurrir corrupción o database is locked.
+Fallas de Red / Rate Limits (Resiliencia): NexusMods tiene límites de descarga estrictos. Las APIs de LLM pueden fallar (errores 502/429). Telegram requiere polling o webhooks estables.
+Fugas de Memoria / Bloqueo del Event Loop: Procesar una lista de carga masiva (ej. 2000 mods) o ejecutar scripts pesados de xEdit podría bloquear el event loop asíncrono si no se delega a ThreadPoolExecutors.
+Alucinaciones Destructivas (Seguridad): Un LLM alucinando comandos podría intentar borrar carpetas críticas del sistema si el Sandboxing no es hermético, o inyectar código malicioso en comandos del wrapper de LOOT/xEdit.
+Desincronización de Estado: Si una descarga falla a la mitad, el estado entre SQLite (registro interno de Skyclaw) y MO2 (modlist.txt) podría quedar huérfano.
+3. Decidir (Pruebas y Mitigaciones Obligatorias):
+
+Pruebas Funcionales E2E: Flujo completo de "Intención -> LLM -> HITL Telegram -> Descarga Nexus -> MO2 -> LOOT".
+Pruebas de Carga/Estrés: Parseo de listas de +1500 mods y simulación de latencia alta en APIs externas.
+Pruebas de Inyección y Seguridad: Intentos de Path Traversal (ej. ../../Windows/System32) y Zip Slip (al descomprimir mods).
+Gestión de Transacciones: Asegurar mecanismos de rollback si un paso falla (ej. si falla xEdit, revertir los cambios en el directorio virtual de MO2).
+Informe de SRE & QA: Evaluación "Production Ready" para Skyclaw
+Como Arquitecto Senior de DevOps y QA, he analizado la arquitectura y el modelo operativo del proyecto Skyclaw. Aplicando la metodología Shift-Left Testing y el ciclo OODA, a continuación presento el informe de auditoría para asegurar que el despliegue a producción sea robusto, seguro y resiliente.
+
+1. Checklist de "Production Readiness"
+Para declarar Skyclaw como 100% listo para producción, se deben cumplir los siguientes requisitos críticos:
+
+Requisitos Funcionales y de Resiliencia
+ Circuit Breakers en APIs Externas: Implementar resiliencia (retry con backoff exponencial) para conexiones a NexusMods, Telegram y proveedores LLM. Evitar colgar el sistema si OpenAI o Nexus se caen.
+ Gestión de Concurrencia: Implementar Locks asíncronos (asyncio.Lock) para operaciones críticas compartidas. MO2 (modlist.txt) y SQLite no deben ser escritos simultáneamente por la GUI y un webhook de Telegram.
+ Offloading del Event Loop: Operaciones intensivas (parseo de XMLs de FOMOD, ejecuciones masivas de xEdit o lectura de modlists grandes) deben delegarse a hilos dedicados (run_in_executor) para no congelar la interfaz NiceGUI.
+ Transaccionalidad de Modificaciones: Todo cambio en MO2/SQLite debe tratarse como una transacción. Si la instalación de un mod falla en el paso 3 de 4, debe haber una limpieza automática (rollback local).
+Observabilidad, Logs y Alertas
+ Logging Estructurado (JSON): Migrar a logs estructurados (ej. usando la librería structlog) que incluyan el trace_id, origen (CLI/GUI/Telegram) y el proveedor LLM utilizado.
+ Métricas de Rendimiento: Monitorear tiempos de respuesta del LLM (llm_latency), tamaño de la base de datos SQLite y uso de memoria del proceso de Python (crítico para NiceGUI).
+ Alertas Críticas: Configurar notificaciones inmediatas si la tasa de errores de red supera el 5% o si se detectan bloqueos prolongados en SQLite (database is locked).
+2. Plan de Pruebas de Funcionamiento
+Para garantizar la estabilidad del sistema, las siguientes pruebas deben estar integradas en el pipeline de CI/CD (o ejecutarse antes del Go-Live):
+
+Pruebas de Integración y Seguridad (Shift-Left)
+Fallback de LLM: Forzar una desconexión simulada (mock) de OpenAI/Anthropic y verificar que el LLMRouter cambie sin fricción a la alternativa local (Ollama).
+Path Traversal y Sandboxing: Enviar instrucciones maliciosas al LLM solicitando leer o escribir en C:\Windows o ~/.ssh. Verificar que el componente Sandboxing intercepte y rechace la acción.
+Validación de HITLGuard: Intentar descargar un archivo desde github.com a través del sistema interno. Verificar que el proceso se pause obligatoriamente esperando el callback del bot de Telegram.
+Pruebas End-to-End (E2E)
+Flujo de Resolución de Conflictos (Full Cycle):
+Input: "El mod X está sobreescribiendo las texturas del mod Y".
+Validación: Verificar que Skyclaw consulte SQLite -> invoque a MO2Controller -> reordene la lista -> invoque xEdit (headless) -> registre el parche -> actualice el UI.
+Pruebas de Carga y Estrés
+Stress de Lista Masiva: Cargar un perfil de MO2 con 2,000+ mods activos. Evaluar el consumo de memoria RAM de Python y el tiempo que tarda check_load_order en responder.
+Mutación Concurrente: Simular clics rápidos en la GUI para descargar e instalar mods múltiples mientras, en paralelo, se envía un comando complejo por Telegram.
+3. Matriz de Errores Potenciales (Single Points of Failure)
+Riesgo / SPOF	Impacto	Mitigación Exacta
+Corrupción de SQLite (database is locked o cierres bruscos).	CRÍTICO. Pérdida del registro de estado, requiriendo re-escanear todo MO2.	Habilitar modo WAL (PRAGMA journal_mode=WAL;) en SQLite. Implementar backups automáticos rotativos (diarios/semanales) en .skyclaw_backups.
+API Limit de NexusMods o Bloqueo de IP.	ALTO. Imposibilidad total de descargar mods nuevos.	Implementar caché local agresivo para metadatos. Encolar descargas con delay rate-limited. Usar prompts al usuario si se requiere cuenta Premium.
+Bloqueo del Event Loop por xEdit / FOMODs masivos.	ALTO. La GUI y el bot de Telegram dejan de responder, dando sensación de cuelgue.	Todo proceso bloqueante (subprocess.run para xEdit/LOOT, I/O intensivo) debe ejecutarse estrictamente usando asyncio.to_thread o un ThreadPool/ProcessPool.
+Inconsistencia de Estado (Orfandad).	MEDIO-ALTO. Un mod se descarga pero falla su registro en MO2 o viceversa.	Implementar patrón Saga o Two-Phase Commit ligero. Escribir un archivo temporal .pending_install hasta que SQLite y modlist.txt validen el éxito.
+Exposición del Token de Telegram / OpenAI.	CRÍTICO. Secuestro del bot o gastos masivos en facturación de la API.	Evitar escribir secretos en logs. Usar bóveda de variables de entorno estricta. Alertar si el archivo config.toml cambia de permisos inesperadamente.
+4. Estrategia de Rollback
+Si durante o inmediatamente después del pase a producción detectamos fallos críticos (ej. corrupción generalizada de load orders de los usuarios), debemos ejecutar el siguiente procedimiento:
+
+Feature Toggles (Kill Switches):
+Tener habilitado un kill switch remoto o de configuración local que permita deshabilitar las integraciones destructivas (xEdit / Modificación directa de MO2) para pasar a un Modo de Solo Lectura (Consultoría pasiva).
+Restauración Automatizada (MO2 State):
+Skyclaw DEBE crear un backup zip de modlist.txt, plugins.txt y loadorder.txt antes de aplicar cualquier sugerencia del LLM.
+Proveer un comando en CLI y un botón en Telegram/GUI: /restore_mo2_backup que revierta al estado previo exacto en menos de 5 segundos.
+Degradación de Base de Datos:
+Si se introdujeron cambios de schema en mod_registry.db que fallan en producción, incluir scripts de migraciones bidireccionales (down-migrations) para revertir la base de datos a su versión anterior sin pérdida de datos del usuario pre-despliegue.

@@ -14,29 +14,28 @@ from typing import Any
 
 import pytest
 
-from sky_claw.antigravity.orchestrator import supervisor as sup_mod
 from sky_claw.antigravity.orchestrator.supervisor import (
     DEEP_SCAN_TIMEOUT_SECONDS,
     SupervisorAgent,
     parse_active_plugins,
 )
-from sky_claw.local.xedit.conflict_analyzer import ConflictReport
+from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport
 
 
 # ── parse_active_plugins (seam puro) ────────────────────────────────────────────
 # Formato loadorder.txt (líneas simples) / plugins.txt (prefijo '*' = habilitado).
 def test_toma_esp_esm_esl_en_orden() -> None:
-    loadorder = "A.esp\nBase.esm\nLight.esl\n"
-    assert parse_active_plugins(loadorder) == ["A.esp", "Base.esm", "Light.esl"]
+    loadorder = "A.esp\nBase.esm\nDeshabilitado.esp\nLight.esl\n"
+    assert parse_active_plugins(loadorder) == ["A.esp", "Base.esm", "Deshabilitado.esp", "Light.esl"]
 
 
-def test_descarta_prefijo_asterisco_de_plugins_txt() -> None:
-    plugins_txt = "*Activo.esp\nBase.esm\n*Otro.esp\n"
-    assert parse_active_plugins(plugins_txt) == ["Activo.esp", "Base.esm", "Otro.esp"]
+def test_plugins_txt_conserva_solo_plugins_habilitados_con_asterisco() -> None:
+    plugins_txt = "*Activo.esp\nBase.esm\n* Otro.esp\nDeshabilitado.esl\n"
+    assert parse_active_plugins(plugins_txt, source="plugins_txt") == ["Activo.esp", "Otro.esp"]
 
 
 def test_ignora_comentarios_y_no_plugins_y_hace_strip() -> None:
-    text = "# comentario\nUn Mod Cualquiera\n*Foo.esp \n\n  Bar.esm\n"
+    text = "# comentario\nUn Mod Cualquiera\n Foo.esp \n\n  Bar.esm\n"
     assert parse_active_plugins(text) == ["Foo.esp", "Bar.esm"]
 
 
@@ -47,7 +46,7 @@ def test_archivo_vacio_devuelve_vacio() -> None:
 # ── scan_record_conflicts (guardas + delegación) ────────────────────────────────
 def _bare_supervisor(path_resolver: Any) -> SupervisorAgent:
     sup = SupervisorAgent.__new__(SupervisorAgent)
-    sup._path_resolver = path_resolver  # type: ignore[attr-defined]
+    sup._path_resolver = path_resolver
     return sup
 
 
@@ -58,7 +57,7 @@ async def test_sin_plugins_devuelve_reporte_vacio_sin_correr_xedit(monkeypatch: 
         llamado["analyze"] = True
         return ConflictReport(total_conflicts=99, critical_conflicts=9)
 
-    monkeypatch.setattr(sup_mod.ConflictAnalyzer, "analyze", _stub_analyze)
+    monkeypatch.setattr(ConflictAnalyzer, "analyze", _stub_analyze)
     sup = _bare_supervisor(SimpleNamespace(get_active_profile=lambda: "Default"))
 
     report = await sup.scan_record_conflicts(plugins=[])
@@ -87,7 +86,7 @@ async def test_delega_en_el_analyzer_con_los_plugins(monkeypatch: pytest.MonkeyP
         capturado["plugins"] = plugins
         return esperado
 
-    monkeypatch.setattr(sup_mod.ConflictAnalyzer, "analyze", _stub_analyze)
+    monkeypatch.setattr(ConflictAnalyzer, "analyze", _stub_analyze)
     sup = _bare_supervisor(
         SimpleNamespace(
             get_active_profile=lambda: "Default",
@@ -110,7 +109,7 @@ async def test_construye_el_runner_con_timeout_largo(monkeypatch: pytest.MonkeyP
         capturado["timeout"] = runner._timeout
         return ConflictReport(total_conflicts=0, critical_conflicts=0)
 
-    monkeypatch.setattr(sup_mod.ConflictAnalyzer, "analyze", _stub_analyze)
+    monkeypatch.setattr(ConflictAnalyzer, "analyze", _stub_analyze)
     sup = _bare_supervisor(
         SimpleNamespace(
             get_active_profile=lambda: "Default",
@@ -139,7 +138,7 @@ async def test_lee_plugins_del_loadorder_cuando_no_se_pasan(
         capturado["plugins"] = plugins
         return ConflictReport(total_conflicts=0, critical_conflicts=0)
 
-    monkeypatch.setattr(sup_mod.ConflictAnalyzer, "analyze", _stub_analyze)
+    monkeypatch.setattr(ConflictAnalyzer, "analyze", _stub_analyze)
     sup = _bare_supervisor(
         SimpleNamespace(
             get_active_profile=lambda: "Default",
@@ -159,14 +158,17 @@ async def test_fallback_a_plugins_txt_si_no_hay_loadorder(
     monkeypatch.chdir(tmp_path)
     profile_dir = tmp_path / "profiles" / "Default"
     profile_dir.mkdir(parents=True)
-    (profile_dir / "plugins.txt").write_text("*A.esp\n*Base.esm\n", encoding="utf-8")
+    (profile_dir / "plugins.txt").write_text(
+        "*A.esp\nBase.esm\n*Base.esm\nDeshabilitado.esl\n* Light.esl\n",
+        encoding="utf-8",
+    )
     capturado: dict[str, Any] = {}
 
     async def _stub_analyze(self: Any, plugins: Any, runner: Any) -> ConflictReport:
         capturado["plugins"] = plugins
         return ConflictReport(total_conflicts=0, critical_conflicts=0)
 
-    monkeypatch.setattr(sup_mod.ConflictAnalyzer, "analyze", _stub_analyze)
+    monkeypatch.setattr(ConflictAnalyzer, "analyze", _stub_analyze)
     sup = _bare_supervisor(
         SimpleNamespace(
             get_active_profile=lambda: "Default",
@@ -177,4 +179,4 @@ async def test_fallback_a_plugins_txt_si_no_hay_loadorder(
     )
 
     await sup.scan_record_conflicts()
-    assert capturado["plugins"] == ["A.esp", "Base.esm"]
+    assert capturado["plugins"] == ["A.esp", "Base.esm", "Light.esl"]
