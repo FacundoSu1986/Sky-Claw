@@ -100,8 +100,10 @@ class SupervisorAgent:
         self.db = DatabaseAgent()
         # C2: reutilizar el NetworkGateway del AppContext cuando se inyecta, para
         # NO duplicar caché DNS pinning ni reglas de egress (dos políticas que
-        # podrían divergir). None crea el propio (tests/standalone — backward compat).
-        self.gateway = gateway or NetworkGateway()
+        # podrían divergir). ``is not None`` explícito (no ``or``): un gateway
+        # inyectado nunca debe descartarse por ser "falsy". None crea el propio
+        # (tests/standalone — backward compat).
+        self.gateway = gateway if gateway is not None else NetworkGateway()
         self.scraper = ScraperAgent(self.db, gateway=self.gateway)
         self.tools = ModdingToolsAgent()
         self.interface = InterfaceAgent()
