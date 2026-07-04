@@ -43,6 +43,7 @@ def render_dashboard(
     conflicts_list: list[dict[str, Any]] | None = None,
     settings: dict[str, Any] | None = None,
     downloads: dict[str, Any] | None = None,
+    resolved_conflicts: list[dict[str, Any]] | None = None,
 ) -> None:
     """Renderiza la página completa del dashboard.
 
@@ -128,6 +129,7 @@ def render_dashboard(
         conflicts_list=conflicts_list,
         settings=settings,
         downloads=downloads,
+        resolved_conflicts=resolved_conflicts,
     )
 
 

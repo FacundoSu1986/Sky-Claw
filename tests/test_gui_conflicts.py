@@ -23,11 +23,32 @@ _MODS = [
 
 
 def test_enrich_conflicts_mapea_ids_a_nombres() -> None:
-    conflicts = [{"id": 10, "mod_id_1": 1, "mod_id_2": 2, "conflict_type": "record", "detected_at": "2026-07-01"}]
+    conflicts = [
+        {
+            "id": 10,
+            "mod_id_1": 1,
+            "mod_id_2": 2,
+            "conflict_type": "record",
+            "detected_at": "2026-07-01",
+            "resolution": "parcheado con xEdit",
+        }
+    ]
     out = enrich_conflicts(conflicts, _MODS)
     assert out == [
-        {"id": 10, "type": "record", "mod_a": "Immersive Armors", "mod_b": "Ordinator", "detected_at": "2026-07-01"}
+        {
+            "id": 10,
+            "type": "record",
+            "mod_a": "Immersive Armors",
+            "mod_b": "Ordinator",
+            "detected_at": "2026-07-01",
+            "resolution": "parcheado con xEdit",
+        }
     ]
+
+
+def test_enrich_conflicts_resolution_ausente_es_none() -> None:
+    out = enrich_conflicts([{"id": 13, "mod_id_1": 1, "mod_id_2": 2}], _MODS)
+    assert out[0]["resolution"] is None
 
 
 def test_enrich_conflicts_id_desconocido_cae_a_placeholder() -> None:
@@ -45,6 +66,34 @@ def test_enrich_conflicts_tipo_ausente_usa_default() -> None:
 def test_enrich_conflicts_listas_vacias() -> None:
     assert enrich_conflicts([], _MODS) == []
     assert enrich_conflicts(None, None) == []
+
+
+# ── _resolved_row_html (seam puro de la sección "Resueltas") ─────────────────────
+def test_resolved_row_html_muestra_mods_y_nota() -> None:
+    from sky_claw.antigravity.gui.views.forge_dashboard import _resolved_row_html
+
+    html = _resolved_row_html(
+        {"mod_a": "Immersive Armors", "mod_b": "Ordinator", "type": "record", "resolution": "orden ajustado con LOOT"}
+    )
+    assert "Immersive Armors" in html
+    assert "Ordinator" in html
+    assert "orden ajustado con LOOT" in html
+
+
+def test_resolved_row_html_sin_nota_usa_placeholder() -> None:
+    from sky_claw.antigravity.gui.views.forge_dashboard import _resolved_row_html
+
+    html = _resolved_row_html({"mod_a": "A", "mod_b": "B", "type": "asset", "resolution": None})
+    assert "Sin nota" in html
+
+
+def test_resolved_row_html_escapa_contenido() -> None:
+    from sky_claw.antigravity.gui.views.forge_dashboard import _resolved_row_html
+
+    html = _resolved_row_html({"mod_a": "<script>", "mod_b": "B", "type": "x", "resolution": "a & b"})
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+    assert "a &amp; b" in html
 
 
 # ── DatabaseAgent: alta y resolución de conflictos ──────────────────────────────
