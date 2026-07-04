@@ -166,3 +166,59 @@ class TestAgenticLoopGuardrail:
         assert exc_info.value.occurrences == 3
         # Verify history was cleared after trip
         assert guardrail.snapshot() == ()
+
+
+class TestAgenticLoopGuardrailCycles:
+    """SC-1: detección de ciclos oscilantes (A,B,A,B / A,B,C,A,B,C), no solo A,A,A."""
+
+    def test_period2_cycle_trips(self) -> None:
+        """A,B,A,B — oscilación de dos herramientas — debe cortarse en la 4ª acción."""
+        guardrail = AgenticLoopGuardrail(max_repeats=3, window_size=5)
+        guardrail.register_and_check("tool_a", {"x": 1})
+        guardrail.register_and_check("tool_b", {"y": 2})
+        guardrail.register_and_check("tool_a", {"x": 1})
+        with pytest.raises(CircuitBreakerTrippedError) as exc_info:
+            guardrail.register_and_check("tool_b", {"y": 2})
+        assert exc_info.value.tool_name == "tool_b"
+        assert exc_info.value.occurrences == 4  # 2 repeticiones del ciclo de período 2
+        assert guardrail.snapshot() == ()  # historial limpio → permite reintento HITL
+
+    def test_period3_cycle_trips(self) -> None:
+        """A,B,C,A,B,C — oscilación de tres herramientas — corta en la 6ª acción."""
+        guardrail = AgenticLoopGuardrail(max_repeats=3, window_size=6)
+        for _ in range(1):
+            guardrail.register_and_check("a", {"n": 1})
+            guardrail.register_and_check("b", {"n": 2})
+            guardrail.register_and_check("c", {"n": 3})
+            guardrail.register_and_check("a", {"n": 1})
+            guardrail.register_and_check("b", {"n": 2})
+        with pytest.raises(CircuitBreakerTrippedError) as exc_info:
+            guardrail.register_and_check("c", {"n": 3})
+        assert exc_info.value.occurrences == 6  # 2 repeticiones del ciclo de período 3
+        assert guardrail.snapshot() == ()
+
+    def test_partial_cycle_no_trip(self) -> None:
+        """A,B,A (ciclo incompleto) NO debe disparar."""
+        guardrail = AgenticLoopGuardrail(max_repeats=3, window_size=6)
+        guardrail.register_and_check("tool_a", {"x": 1})
+        guardrail.register_and_check("tool_b", {"y": 2})
+        guardrail.register_and_check("tool_a", {"x": 1})  # sin repetir el ciclo completo
+        assert len(guardrail.snapshot()) == 3
+
+    def test_identical_still_trips_as_identical(self) -> None:
+        """A,A,A debe reportarse como repetición idéntica (occurrences=3), no ciclo."""
+        guardrail = AgenticLoopGuardrail(max_repeats=3, window_size=6)
+        guardrail.register_and_check("tool_a", {"x": 1})
+        guardrail.register_and_check("tool_a", {"x": 1})
+        with pytest.raises(CircuitBreakerTrippedError) as exc_info:
+            guardrail.register_and_check("tool_a", {"x": 1})
+        assert exc_info.value.occurrences == 3
+
+    def test_period2_cycle_of_identical_is_not_double_counted(self) -> None:
+        """A,A,A,A no debe clasificarse como ciclo período-2 — lo corta la rama idéntica antes."""
+        guardrail = AgenticLoopGuardrail(max_repeats=3, window_size=6)
+        guardrail.register_and_check("a", {"x": 1})
+        guardrail.register_and_check("a", {"x": 1})
+        with pytest.raises(CircuitBreakerTrippedError) as exc_info:
+            guardrail.register_and_check("a", {"x": 1})  # corta en la 3ª como idéntico
+        assert exc_info.value.occurrences == 3

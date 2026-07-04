@@ -802,7 +802,8 @@ class SupervisorStateGraph:
         self._state: WorkflowState | None = None
         self._callbacks: dict[str, Callable[..., Any]] = {}
         # Cortacircuitos cognitivo: per-graph singleton (el grafo es serial por perfil).
-        self.loop_guardrail = AgenticLoopGuardrail(max_repeats=3, window_size=5)
+        # window_size=6 permite detectar ciclos oscilantes de período 2 (A,B,A,B) y 3 (A,B,C,A,B,C).
+        self.loop_guardrail = AgenticLoopGuardrail(max_repeats=3, window_size=6)
         # TASK-006 (M-4): TTL tracking for checkpointer thread cleanup.
         # Maps thread_id → monotonic timestamp of last access.
         self._thread_timestamps: dict[str, float] = {}
