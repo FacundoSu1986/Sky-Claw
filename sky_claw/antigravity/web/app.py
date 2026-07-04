@@ -45,6 +45,21 @@ def _get_exe_dir() -> pathlib.Path:
 _CONFIG_PATH = _get_exe_dir() / "sky_claw_config.json"
 
 
+def _dev_no_auth_enabled() -> bool:
+    """El bypass de auth de desarrollo (``SKY_CLAW_DEV_NO_AUTH``) SOLO aplica al
+    ejecutar desde fuente.
+
+    En un binario empaquetado (``sys.frozen``) se ignora incondicionalmente: un
+    .exe distribuido nunca debe poder desactivar la autenticación vía variable
+    de entorno, aunque el usuario —o un atacante con acceso al entorno— la fije.
+    Sin este guard, ``SKY_CLAW_DEV_NO_AUTH=1`` abría /api/chat y /ws/ui en el
+    release público (ZAi S2 [ALTO]).
+    """
+    if getattr(sys, "frozen", False):
+        return False
+    return os.environ.get("SKY_CLAW_DEV_NO_AUTH") == "1"
+
+
 class WebApp:
     """Lightweight chat aiohttp service for the NiceGUI Forge interface.
 
@@ -98,7 +113,7 @@ class WebApp:
         """Require a Bearer token on ``/api/chat`` — fail-closed when no auth_manager."""
         if request.path == "/api/chat":
             if self._auth_manager is None:
-                if os.environ.get("SKY_CLAW_DEV_NO_AUTH") == "1":
+                if _dev_no_auth_enabled():
                     logger.warning("SKY_CLAW_DEV_NO_AUTH active — /api/chat auth bypassed (dev mode only)")
                     return await handler(request)
                 logger.error("/api/chat blocked: auth_manager not configured (fail-closed)")
@@ -128,7 +143,7 @@ class WebApp:
     def _validate_ws_auth(self, request: web.Request) -> bool:
         """X-Auth-Token check for /ws/ui (fail-closed when no auth_manager)."""
         if self._auth_manager is None:
-            if os.environ.get("SKY_CLAW_DEV_NO_AUTH") == "1":
+            if _dev_no_auth_enabled():
                 logger.warning("SKY_CLAW_DEV_NO_AUTH active — /ws/ui auth bypassed (dev mode only)")
                 return True
             logger.error("/ws/ui auth rejected: auth_manager not configured (fail-closed)")
