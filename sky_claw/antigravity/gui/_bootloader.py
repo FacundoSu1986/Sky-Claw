@@ -303,6 +303,9 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
             hitl_guard=ctx.hitl,
             lifecycle=ctx.lifecycle.manager,
             path_validator=ctx.sandbox_validator,
+            # C2: compartir el único NetworkGateway del AppContext (misma caché DNS
+            # pinning + reglas de egress que el router/tools), sin duplicar política.
+            gateway=ctx.network.gateway,
         )
         _runtime["supervisor"] = supervisor
 

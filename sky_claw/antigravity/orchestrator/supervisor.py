@@ -95,9 +95,13 @@ class SupervisorAgent:
         hitl_guard: HITLGuard | None = None,
         lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
         path_validator: PathValidatorProtocol | None = None,
+        gateway: NetworkGateway | None = None,
     ):
         self.db = DatabaseAgent()
-        self.gateway = NetworkGateway()
+        # C2: reutilizar el NetworkGateway del AppContext cuando se inyecta, para
+        # NO duplicar caché DNS pinning ni reglas de egress (dos políticas que
+        # podrían divergir). None crea el propio (tests/standalone — backward compat).
+        self.gateway = gateway or NetworkGateway()
         self.scraper = ScraperAgent(self.db, gateway=self.gateway)
         self.tools = ModdingToolsAgent()
         self.interface = InterfaceAgent()
