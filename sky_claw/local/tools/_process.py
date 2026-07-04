@@ -21,8 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
+import subprocess
 import sys
 from typing import Any
+
+logger = logging.getLogger("SkyClaw.Process")
 
 #: Windows ``CREATE_NO_WINDOW`` — suppress console popups for GUI tools.
 _CREATE_NO_WINDOW = 0x08000000
@@ -30,20 +34,54 @@ _CREATE_NO_WINDOW = 0x08000000
 #: Default grace period (seconds) to reap a killed process before giving up.
 _REAP_TIMEOUT = 3.0
 
+#: Timeout corto para ``taskkill`` — best-effort, no debe bloquear el cleanup.
+_TASKKILL_TIMEOUT = 5.0
+
+
+def _kill_tree_windows(pid: int) -> None:
+    """Best-effort: mata el ÁRBOL de procesos en Windows vía ``taskkill /T``.
+
+    ``proc.kill()`` solo termina el hijo directo, dejando huérfanos a los nietos
+    (DynDOLOD lanza TexGen; xEdit puede lanzar procesos auxiliares). ``taskkill
+    /F /T /PID`` termina el árbol completo a partir del PID raíz.
+
+    Best-effort por diseño: cualquier fallo (proceso ya muerto, ``taskkill``
+    ausente) se ignora — la garantía dura sigue siendo ``proc.kill()`` + reap.
+    El ``timeout`` acotado evita que un ``taskkill`` colgado (AV, PID en estado
+    raro) bloquee indefinidamente el flujo de cleanup, aun corriendo en thread.
+    """
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            check=False,
+            capture_output=True,
+            creationflags=_CREATE_NO_WINDOW,
+            timeout=_TASKKILL_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # subprocess.TimeoutExpired es subclase de SubprocessError → cubierto:
+        # si taskkill se cuelga, se aborta y seguimos con proc.kill() + reap.
+        logger.debug("taskkill best-effort falló/timeout para PID %s: %s", pid, exc)
+
 
 async def kill_and_reap(
     proc: asyncio.subprocess.Process | None,
     timeout: float = _REAP_TIMEOUT,
 ) -> None:
-    """Kill *proc* and reap it so no orphaned OS process survives.
+    """Kill *proc* (y su árbol en Windows) y reap para no dejar procesos huérfanos.
 
     Safe with ``None`` (process never spawned) and tolerant of an already-exited
     process. Suppresses only the reap ``TimeoutError`` — a ``CancelledError``
     raised while reaping propagates (the process is already killed), so shutdown
     cancellation is never swallowed.
+
+    En Windows mata el árbol completo (``taskkill /T``) ANTES del ``proc.kill()``,
+    mientras la relación padre-hijo sigue intacta, para no orfanar nietos.
     """
     if proc is None:
         return
+    if sys.platform == "win32" and isinstance(getattr(proc, "pid", None), int):
+        await asyncio.to_thread(_kill_tree_windows, proc.pid)
     with contextlib.suppress(ProcessLookupError):
         proc.kill()
     with contextlib.suppress(TimeoutError):

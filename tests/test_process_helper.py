@@ -64,6 +64,91 @@ async def test_kill_and_reap_propagates_cancellation():
     proc.kill.assert_called_once()  # killed before the cancel propagated
 
 
+async def test_kill_and_reap_mata_arbol_en_windows(monkeypatch):
+    """En Windows debe matar el ÁRBOL (taskkill /T), no solo el hijo directo.
+
+    ``proc.kill()`` deja huérfanos a los nietos: DynDOLOD lanza TexGen, xEdit
+    puede lanzar procesos auxiliares. ``taskkill /F /T /PID`` termina el árbol.
+    """
+    import sky_claw.local.tools._process as _process
+
+    monkeypatch.setattr(_process.sys, "platform", "win32")
+    recorded: list[list[str]] = []
+
+    def _fake_run(args, **_kwargs):
+        recorded.append(list(args))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(_process.subprocess, "run", _fake_run)
+
+    proc = _proc()
+    proc.pid = 4321  # PID real (int) → dispara el tree-kill
+    await kill_and_reap(proc)
+
+    assert recorded, "taskkill no fue invocado"
+    args = recorded[0]
+    assert "/T" in args and "4321" in args  # árbol completo por PID
+    proc.kill.assert_called_once()  # el reap del hijo directo sigue ocurriendo
+    proc.wait.assert_awaited()
+
+
+async def test_kill_and_reap_taskkill_usa_timeout(monkeypatch):
+    """taskkill se invoca con ``timeout`` acotado — si se cuelga (AV, PID raro)
+    no debe bloquear indefinidamente el flujo de cleanup."""
+    import sky_claw.local.tools._process as _process
+
+    monkeypatch.setattr(_process.sys, "platform", "win32")
+    captured: dict = {}
+
+    def _fake_run(args, **kwargs):
+        captured["kwargs"] = kwargs
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(_process.subprocess, "run", _fake_run)
+
+    proc = _proc()
+    proc.pid = 4321
+    await kill_and_reap(proc)
+
+    assert captured["kwargs"].get("timeout") == _process._TASKKILL_TIMEOUT
+
+
+async def test_kill_and_reap_no_usa_taskkill_fuera_de_windows(monkeypatch):
+    """En POSIX (dev/CI) no hay taskkill; se conserva el comportamiento previo."""
+    import sky_claw.local.tools._process as _process
+
+    monkeypatch.setattr(_process.sys, "platform", "linux")
+    called: list = []
+    monkeypatch.setattr(_process.subprocess, "run", lambda *a, **k: called.append(a))
+
+    proc = _proc()
+    proc.pid = 4321
+    await kill_and_reap(proc)
+
+    assert not called
+    proc.kill.assert_called_once()
+
+
+async def test_kill_and_reap_taskkill_best_effort_no_propaga(monkeypatch):
+    """Si taskkill falla (proceso ya muerto, binario ausente), no debe romper
+    el reap — la garantía dura es proc.kill()+wait()."""
+    import sky_claw.local.tools._process as _process
+
+    monkeypatch.setattr(_process.sys, "platform", "win32")
+
+    def _boom(*_a, **_k):
+        raise OSError("taskkill no disponible")
+
+    monkeypatch.setattr(_process.subprocess, "run", _boom)
+
+    proc = _proc()
+    proc.pid = 4321
+    await kill_and_reap(proc)  # no debe propagar
+
+    proc.kill.assert_called_once()
+    proc.wait.assert_awaited()
+
+
 # --- run_capture ------------------------------------------------------------
 
 

@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from sky_claw.local.tools._process import kill_and_reap
+
 logger = logging.getLogger(__name__)
 
 
@@ -494,10 +496,9 @@ class DynDOLODRunner:
         try:
             await asyncio.wait_for(proc.wait(), timeout=effective_timeout)
         except TimeoutError:
-            # Global timeout exceeded — kill process and cancel tasks.
-            proc.kill()
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(proc.wait(), timeout=3.0)
+            # Global timeout exceeded — kill process tree (evita nietos como
+            # TexGen huérfanos) y cancela las tasks de monitoreo.
+            await kill_and_reap(proc)
             heartbeat.cancel()
             drain_out.cancel()
             drain_err.cancel()
@@ -505,9 +506,7 @@ class DynDOLODRunner:
                 await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
             raise DynDOLODTimeoutError(effective_timeout, tool_name) from None
         except Exception as e:
-            proc.kill()
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(proc.wait(), timeout=3.0)
+            await kill_and_reap(proc)
             heartbeat.cancel()
             drain_out.cancel()
             drain_err.cancel()
