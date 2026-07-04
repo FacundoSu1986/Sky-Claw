@@ -261,3 +261,55 @@ class TestChatBearerAuth:
 
         handler.assert_called_once()
         assert response.status == 200
+
+
+class TestDevNoAuthFrozenGuard:
+    """El bypass de auth de desarrollo (``SKY_CLAW_DEV_NO_AUTH``) NUNCA debe
+    activarse en un binario empaquetado (``sys.frozen``), aunque la variable de
+    entorno esté a ``"1"`` — un .exe distribuido no puede desactivar auth."""
+
+    def test_helper_activo_desde_fuente(self, monkeypatch):
+        import sky_claw.antigravity.web.app as app_mod
+
+        monkeypatch.setattr(app_mod.sys, "frozen", False, raising=False)
+        monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
+        assert app_mod._dev_no_auth_enabled() is True
+
+    def test_helper_ignorado_en_exe(self, monkeypatch):
+        import sky_claw.antigravity.web.app as app_mod
+
+        monkeypatch.setattr(app_mod.sys, "frozen", True, raising=False)
+        monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
+        assert app_mod._dev_no_auth_enabled() is False
+
+    def test_helper_falso_sin_env(self, monkeypatch):
+        import sky_claw.antigravity.web.app as app_mod
+
+        monkeypatch.setattr(app_mod.sys, "frozen", False, raising=False)
+        monkeypatch.delenv("SKY_CLAW_DEV_NO_AUTH", raising=False)
+        assert app_mod._dev_no_auth_enabled() is False
+
+    @pytest.mark.asyncio
+    async def test_chat_bypass_ignorado_en_exe(self, aiohttp_client, mock_session, monkeypatch):
+        """En .exe, /api/chat sin auth_manager devuelve 401 aunque el flag esté a 1."""
+        import sky_claw.antigravity.web.app as app_mod
+
+        monkeypatch.setattr(app_mod.sys, "frozen", True, raising=False)
+        monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
+        web_app = _make_web_app(router=_make_mock_router(), session=mock_session, auth_manager=None)
+        client = await _client(web_app, aiohttp_client)
+
+        resp = await client.post("/api/chat", json={"message": "hola"})
+        assert resp.status == 401
+
+    def test_ws_bypass_ignorado_en_exe(self, monkeypatch, mock_session):
+        """En .exe, la validación WS también rechaza aunque el flag esté a 1."""
+        import sky_claw.antigravity.web.app as app_mod
+
+        monkeypatch.setattr(app_mod.sys, "frozen", True, raising=False)
+        monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
+        web_app = _make_web_app(session=mock_session, auth_manager=None)
+
+        request = MagicMock(spec=web.Request)
+        request.headers = {}
+        assert web_app._validate_ws_auth(request) is False
