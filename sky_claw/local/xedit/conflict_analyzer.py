@@ -263,6 +263,14 @@ class ConflictAnalyzer:
         """
         result = await xedit_runner.run_script(_SCRIPT_NAME, plugins)
 
+        # xEdit puede salir con código != 0 (script/master/load fallido) y
+        # run_script solo loguea un warning; construir el reporte del stdout
+        # parcial lo haría pasar por "sin conflictos" y ocultaría disputas
+        # reales (review Codex #226). Surfacear el fallo en vez de mentir.
+        if not result.success:
+            detalle = "; ".join(result.errors) or result.raw_stderr.strip() or f"exit code {result.return_code}"
+            raise RuntimeError(f"El análisis de xEdit falló ({detalle}).")
+
         raw_conflicts = parse_conflict_lines(result.raw_stdout)
 
         # Classify severity.

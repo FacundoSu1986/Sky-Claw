@@ -195,6 +195,39 @@ class TestAnalyze:
         assert report.plugin_pairs == []
         assert "no record-level conflicts" in report.summary.lower()
 
+    @pytest.mark.asyncio
+    async def test_falla_de_xedit_lanza_en_vez_de_reporte_vacio(self) -> None:
+        """Exit != 0 no debe parecer "sin conflictos": ocultaría disputas reales (Codex #226)."""
+        mock_runner = MagicMock()
+        mock_runner.run_script = AsyncMock(
+            return_value=XEditResult(
+                return_code=1,
+                raw_stdout="",
+                raw_stderr="Fatal: could not load master",
+            )
+        )
+
+        analyzer = ConflictAnalyzer()
+        with pytest.raises(RuntimeError, match="xEdit falló"):
+            await analyzer.analyze(["Skyrim.esm"], mock_runner)
+
+    @pytest.mark.asyncio
+    async def test_errores_parseados_tambien_lanzan(self) -> None:
+        # success es False también si hay errors, aunque el exit code sea 0.
+        mock_runner = MagicMock()
+        mock_runner.run_script = AsyncMock(
+            return_value=XEditResult(
+                return_code=0,
+                errors=["Error: record malformado"],
+                raw_stdout="",
+                raw_stderr="",
+            )
+        )
+
+        analyzer = ConflictAnalyzer()
+        with pytest.raises(RuntimeError, match="record malformado"):
+            await analyzer.analyze(["Skyrim.esm"], mock_runner)
+
 
 # ---------------------------------------------------------------------------
 # Plugin pair grouping

@@ -737,6 +737,52 @@ def main_page() -> None:
 
     callbacks["on_conflict_scan"] = _on_conflict_scan
 
+    # F6: "Análisis profundo (xEdit)" corre el análisis de records vía xEdit
+    # (subproceso lento, requiere SSEEdit) en el supervisor, persiste los pares
+    # nuevos con persist_record_conflicts y refresca. Comparte el slot
+    # single-flight con el escaneo liviano: ambos escriben la tabla conflicts,
+    # así que nunca deben correr en paralelo (verían el mismo snapshot pendiente).
+    def _on_deep_conflict_scan() -> None:
+        async def _scan() -> None:
+            from sky_claw.antigravity.core.conflict_persistence import (
+                persist_record_conflicts,
+                release_scan_slot,
+            )
+
+            store = get_store()
+            try:
+                report = await runtime.supervisor.scan_record_conflicts()
+                nuevos = await persist_record_conflicts(report, get_db_agent())
+                await get_state().refresh_conflicts()
+            except Exception as exc:
+                logger.exception("Fallo el análisis profundo de conflictos")
+                store.set(
+                    STORE_KEY_RITUAL_FEEDBACK,
+                    {"text": f"El análisis profundo falló: {exc}", "type": "negative"},
+                )
+                return
+            finally:
+                release_scan_slot(store)
+            texto = (
+                f"{nuevos} disputa(s) de records nueva(s) detectada(s)."
+                if nuevos
+                else f"Sin disputas de records nuevas ({report.total_conflicts} conflicto(s) analizados)."
+            )
+            store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": texto, "type": "warning" if nuevos else "positive"})
+
+        from sky_claw.antigravity.core.conflict_persistence import claim_scan_slot
+
+        if runtime.supervisor is None:
+            ui.notify("El daemon no está inicializado todavía.", type="warning")
+            return
+        if not claim_scan_slot(get_store()):
+            ui.notify("Ya hay una detección de disputas en curso.", type="warning")
+            return
+        ui.notify("Análisis profundo en curso — xEdit puede tardar varios minutos…", type="info")
+        create_tracked_task(_scan(), name="gui-deep-conflict-scan")
+
+    callbacks["on_deep_conflict_scan"] = _on_deep_conflict_scan
+
     # Sección Ajustes: guardar valida + persiste (keyring/TOML) y re-renderiza
     # para que el header refleje la identidad nueva al instante.
     def _on_settings_save(payload: dict[str, str]) -> None:
