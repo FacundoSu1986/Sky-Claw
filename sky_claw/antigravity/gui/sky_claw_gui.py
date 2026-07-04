@@ -219,7 +219,10 @@ class ReactiveState:
             all_mods = await get_db_agent().get_mods()
             active = [m for m in all_mods if m.get("status") == "active"]
             self.active_mods.set(len(active))
-            self.pending_updates.set(sum(1 for m in active if m.get("needs_update", False)))
+            # `pending_updates` NO se calcula acá: no hay señal de "update
+            # disponible" en la DB GUI (la clave needs_update nunca existió → 0
+            # permanente). Su único escritor es el botón "Buscar actualizaciones"
+            # (detect_pending_updates vía Nexus). Ver _on_check_updates.
             total_size = sum(m.get("size_mb", 0) for m in active)
             self.storage_used.set(round(total_size / 1024, 1))
         except Exception as exc:
@@ -786,6 +789,54 @@ def main_page() -> None:
         create_tracked_task(_scan(), name="gui-deep-conflict-scan")
 
     callbacks["on_deep_conflict_scan"] = _on_deep_conflict_scan
+
+    # "Buscar actualizaciones": chequeo on-demand de updates en Nexus (read-only,
+    # sin descargar) vía SyncEngine.detect_pending_updates; setea el badge
+    # pending_updates del sidebar. Single-flight con clave propia; el resultado
+    # va por el panel de feedback (refreshable), que no reinicia el chat.
+    _updates_in_flight = "updates_scan_in_flight"
+
+    def _on_check_updates() -> None:
+        ctx = getattr(runtime, "app_context", None)
+        engine = getattr(ctx, "sync_engine", None) if ctx is not None else None
+        if engine is None:
+            ui.notify("El daemon no está inicializado todavía.", type="warning")
+            return
+        store = get_store()
+        if store.get(_updates_in_flight):
+            ui.notify("Ya hay una búsqueda de actualizaciones en curso.", type="warning")
+            return
+        store.set(_updates_in_flight, True)
+
+        async def _scan() -> None:
+            try:
+                result = await engine.detect_pending_updates(ctx.network.session)
+                get_state().pending_updates.set(len(result.updates))
+            except Exception as exc:
+                logger.exception("Fallo la búsqueda de actualizaciones")
+                store.set(
+                    STORE_KEY_RITUAL_FEEDBACK,
+                    {"text": f"La búsqueda de actualizaciones falló: {exc}", "type": "negative"},
+                )
+                return
+            finally:
+                store.set(_updates_in_flight, False)
+            n = len(result.updates)
+            if n:
+                texto, tipo = f"{n} mod(s) con actualización disponible.", "warning"
+            elif result.failed:
+                # Distingue "todo al día" de "no pude consultar" (típicamente falta
+                # la Nexus API key o Nexus está caído).
+                texto = f"No se pudieron consultar {len(result.failed)} mod(s) — revisá la Nexus API key en Ajustes."
+                tipo = "warning"
+            else:
+                texto, tipo = f"Todos los mods están al día ({result.checked} consultados).", "positive"
+            store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": texto, "type": tipo})
+
+        ui.notify("Buscando actualizaciones en Nexus…", type="info")
+        create_tracked_task(_scan(), name="gui-check-updates")
+
+    callbacks["on_check_updates"] = _on_check_updates
 
     # Sección Ajustes: guardar valida + persiste (keyring/TOML) y re-renderiza
     # para que el header refleje la identidad nueva al instante.

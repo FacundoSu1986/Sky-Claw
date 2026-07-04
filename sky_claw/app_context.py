@@ -164,6 +164,9 @@ class AppContext:
         self.router: LLMRouter | None = None
         self.sender: TelegramSender | None = None
         self.polling: TelegramPolling | None = None
+        # Motor de sincronización — lo consume el botón "Buscar actualizaciones"
+        # de la GUI (detect_pending_updates). None hasta que corra start_full.
+        self.sync_engine: SyncEngine | None = None
         self.tools_installer: ToolsInstaller | None = None
         # Resolved tools install dir, populated in start() — read by the GUI
         # "Instalar" button (Follow-up C). None until the full start path runs.
@@ -559,12 +562,15 @@ class AppContext:
             except Exception:
                 logger.warning("metrics_endpoint_disabled", exc_info=True)
 
-            sync_engine = SyncEngine(mo2, masterlist, self.database.registry, hitl=self.hitl)
+            # Guardado en self para que la GUI lo alcance (botón "Buscar
+            # actualizaciones" → runtime.app_context.sync_engine), sin el
+            # reach-around privado que usa Telegram (_router._tools._sync_engine).
+            self.sync_engine = SyncEngine(mo2, masterlist, self.database.registry, hitl=self.hitl)
 
             if await self.database.registry.is_empty():
                 logger.info("Database empty, initial Sync from MO2...")
                 try:
-                    await sync_engine.run(self.network.session, profile="Default")
+                    await self.sync_engine.run(self.network.session, profile="Default")
                 except Exception as exc:
                     logger.exception("Initial synchronization failed: %s", exc)
 
@@ -625,7 +631,7 @@ class AppContext:
             tool_registry = AsyncToolRegistry(
                 registry=self.database.registry,
                 mo2=mo2,
-                sync_engine=sync_engine,
+                sync_engine=self.sync_engine,
                 loot_exe=loot_exe,
                 hitl=self.hitl,
                 downloader=self.network.downloader,

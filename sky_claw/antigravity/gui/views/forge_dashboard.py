@@ -1107,11 +1107,23 @@ def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable], sea
     """
     from .mod_list import build_mod_list
 
-    ui.html(
-        '<div style="display:flex; align-items:center; gap:16px; margin-bottom:14px;">'
-        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">ARSENAL DE LA FORJA</h2>"
-        '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
-    )
+    with ui.element("div").style("display:flex; align-items:center; gap:16px; margin-bottom:14px;"):
+        ui.html(
+            "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">ARSENAL DE LA FORJA</h2>"
+            '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span>'
+        )
+        # Chequeo on-demand de actualizaciones en Nexus → reactiva el badge del
+        # sidebar (pending_updates). Espejo de "Detectar disputas" de Conflictos.
+        on_check = _cb(callbacks, "on_check_updates")
+        if on_check is not None:
+            upd_btn = ui.element("button").style(
+                "flex-shrink:0; padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px;"
+                " letter-spacing:.06em; color:#1c130a; background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40);"
+                " border:1.5px solid #f6e6bd; border-radius:4px;"
+            )
+            with upd_btn:
+                ui.html("Buscar actualizaciones")
+            upd_btn.on("click", lambda _=None: on_check())
     adapted = [
         {
             "name": m.get("name", "Mod desconocido"),
