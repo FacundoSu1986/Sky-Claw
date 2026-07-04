@@ -71,7 +71,7 @@ class DirectoryRollback:
     async def __aenter__(self) -> DirectoryRollback:
         if not self._enabled:
             return self
-        if not self._target.exists():
+        if not await asyncio.to_thread(self._target.exists):
             # Primer run: no hay estado previo que preservar.
             return self
         backup = self._target.with_name(f"{self._target.name}.rollback-{time.time_ns()}")
