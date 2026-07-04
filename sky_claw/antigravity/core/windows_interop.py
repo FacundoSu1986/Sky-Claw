@@ -13,10 +13,14 @@ import contextlib
 import logging
 import os
 import pathlib
+import subprocess
 import sys
 from typing import TYPE_CHECKING
 
 from sky_claw.antigravity.core.models import LootExecutionParams, WSLInteropError
+
+#: Windows ``CREATE_NO_WINDOW`` — evita popups de consola al invocar taskkill.
+_CREATE_NO_WINDOW = 0x08000000
 
 if TYPE_CHECKING:
     import pathlib as _pathlib
@@ -142,11 +146,31 @@ async def _translate_wsl_to_win(wsl_path: str, timeout: float = 10.0) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _kill_tree_windows(pid: int) -> None:
+    """Best-effort: mata el ÁRBOL de procesos en Windows vía ``taskkill /T``.
+
+    ``proc.kill()`` solo termina el hijo directo; herramientas externas pueden
+    dejar nietos huérfanos. ``taskkill /F /T /PID`` termina el árbol completo.
+    Cualquier fallo se ignora — la garantía dura sigue siendo ``proc.kill()`` + reap.
+    """
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            check=False,
+            capture_output=True,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("taskkill best-effort falló para PID %s: %s", pid, exc)
+
+
 async def _kill_and_reap(proc: asyncio.subprocess.Process, timeout: float = 3.0) -> None:
-    """Kill *proc* and wait for it to exit.
+    """Kill *proc* (y su árbol en Windows) and wait for it to exit.
 
     Logs a critical message if the process could not be reaped.
     """
+    if sys.platform == "win32" and isinstance(getattr(proc, "pid", None), int):
+        await asyncio.to_thread(_kill_tree_windows, proc.pid)
     try:
         proc.kill()
     except ProcessLookupError:
