@@ -1016,6 +1016,17 @@ class TestDetectPendingUpdates:
         assert [u["name"] for u in result.updates] == ["Activo"]
 
     @pytest.mark.asyncio
+    async def test_nexus_version_null_no_es_update(self) -> None:
+        """Si Nexus devuelve version: null, no inventar un update (str(None) sería truthy)."""
+        engine = self._engine(
+            [{"name": "SkyUI", "nexus_id": 12021, "version": "5.1", "installed": True}],
+            AsyncMock(return_value={"mod_id": 12021, "name": "SkyUI", "version": None}),
+        )
+        result = await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
+        assert result.checked == 1
+        assert result.updates == []
+
+    @pytest.mark.asyncio
     async def test_fallo_de_fetch_se_aisla_en_failed(self) -> None:
         """Un mod que falla en Nexus va a `failed` sin abortar el resto."""
 
@@ -1036,6 +1047,13 @@ class TestDetectPendingUpdates:
         assert [u["name"] for u in result.updates] == ["Bueno"]
         assert len(result.failed) == 1
         assert result.failed[0]["nexus_id"] == 1
+
+    def test_set_nexus_api_key_propaga_al_masterlist(self) -> None:
+        """Refrescar la key la delega al MasterlistClient (review Codex #228)."""
+        ml = MagicMock()
+        engine = SyncEngine(mo2=AsyncMock(), masterlist=ml, registry=AsyncMock())
+        engine.set_nexus_api_key("clave-fresca")
+        ml.set_api_key.assert_called_once_with("clave-fresca")
 
     @pytest.mark.asyncio
     async def test_nunca_descarga(self) -> None:

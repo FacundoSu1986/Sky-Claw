@@ -1110,7 +1110,12 @@ def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable], sea
     with ui.element("div").style("display:flex; align-items:center; gap:16px; margin-bottom:14px;"):
         ui.html(
             "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">ARSENAL DE LA FORJA</h2>"
-            '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span>'
+        )
+        # El separador es un hijo DIRECTO del flex (ui.element, no dentro del
+        # ui.html) para que flex:1 lo estire y empuje el botón a la derecha
+        # (review Copilot #228: un <span flex:1> embebido en ui.html no aplica).
+        ui.element("div").style(
+            "flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"
         )
         # Chequeo on-demand de actualizaciones en Nexus → reactiva el badge del
         # sidebar (pending_updates). Espejo de "Detectar disputas" de Conflictos.

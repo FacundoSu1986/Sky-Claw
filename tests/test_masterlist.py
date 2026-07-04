@@ -58,6 +58,24 @@ class TestMasterlistClient:
         with pytest.raises(MasterlistFetchError, match="HTTP 404"):
             await client.fetch_mod_info(999, mock_session)
 
+    @pytest.mark.asyncio
+    async def test_set_api_key_usa_la_nueva_en_el_header(self, client: MasterlistClient) -> None:
+        """set_api_key permite refrescar la Nexus key sin recrear el cliente (review Codex #228)."""
+        client.set_api_key("clave-nueva")
+        captured: dict[str, dict[str, str] | None] = {}
+
+        async def _fake_request(method: str, url: str, session: object, headers: dict[str, str] | None = None):
+            captured["headers"] = headers
+            resp = AsyncMock()
+            resp.status = 200
+            resp.json = AsyncMock(return_value={"mod_id": 1})
+            resp.release = AsyncMock()
+            return resp
+
+        client._gw.request = _fake_request  # type: ignore[method-assign]
+        await client.fetch_mod_info(1, AsyncMock(spec=aiohttp.ClientSession))
+        assert captured["headers"] == {"apikey": "clave-nueva"}
+
 
 class TestNetworkGatewayRequest:
     @pytest.mark.asyncio

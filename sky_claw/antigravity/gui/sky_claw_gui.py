@@ -808,6 +808,18 @@ def main_page() -> None:
             return
         store.set(_updates_in_flight, True)
 
+        # Refrescar la Nexus key desde keyring por si el usuario la cambió en
+        # Ajustes en esta misma sesión: el MasterlistClient se creó en start_full
+        # con la key vieja y seguiría fallando hasta reiniciar (review Codex #228).
+        try:
+            import keyring
+
+            nexus_key = keyring.get_password("sky_claw", "nexus_api_key") or ""
+            if nexus_key:
+                engine.set_nexus_api_key(nexus_key)
+        except Exception:
+            logger.exception("No se pudo refrescar la Nexus API key desde keyring")
+
         async def _scan() -> None:
             try:
                 result = await engine.detect_pending_updates(ctx.network.session)
@@ -964,6 +976,11 @@ def setup_app() -> None:
     store.subscribe("mods_search_query", main_page.refresh)
     # Conflictos: re-render de la pantalla al refrescar la lista (alta/resolución).
     store.subscribe("conflicts_list", main_page.refresh)
+    # "Buscar actualizaciones": re-render del sidebar/stats cuando el chequeo
+    # actualiza el conteo, si no el badge quedaría con el valor viejo hasta una
+    # navegación (review Codex #228). Cambia rara vez (solo al apretar el botón),
+    # así que un refresh completo es seguro — mismo criterio que conflicts_list.
+    store.subscribe("pending_updates", main_page.refresh)
     # F3: re-render al cambiar el historial de resueltas (sección "Resueltas").
     store.subscribe("resolved_conflicts_list", main_page.refresh)
     # Re-render el indicador "DAEMON CONECTADO" del sidebar cuando el WS conecta/cae.

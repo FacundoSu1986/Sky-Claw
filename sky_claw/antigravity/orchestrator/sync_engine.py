@@ -423,6 +423,14 @@ class SyncEngine:
     # Automated Update Cycle
     # ------------------------------------------------------------------
 
+    def set_nexus_api_key(self, api_key: str) -> None:
+        """Refresca la Nexus API key del cliente (delega en el MasterlistClient).
+
+        Permite que el botón "Buscar actualizaciones" use una key recién guardada
+        en Ajustes sin reiniciar (review Codex #228).
+        """
+        self._masterlist.set_api_key(api_key)
+
     async def detect_pending_updates(self, session: aiohttp.ClientSession) -> UpdateScanResult:
         """Chequeo READ-ONLY: cuántos mods trackeados tienen update en Nexus.
 
@@ -463,7 +471,9 @@ class SyncEngine:
                     }
                 )
                 continue
-            nexus_version = str(outcome.get("version", ""))
+            # `or ""` normaliza version: null / ausente → sin versión (str(None)
+            # sería "None", truthy, y marcaría un falso update — review Copilot #228).
+            nexus_version = str(outcome.get("version") or "")
             if _update_available(mod.get("version"), nexus_version):
                 result.updates.append(
                     {
