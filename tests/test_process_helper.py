@@ -92,6 +92,27 @@ async def test_kill_and_reap_mata_arbol_en_windows(monkeypatch):
     proc.wait.assert_awaited()
 
 
+async def test_kill_and_reap_taskkill_usa_timeout(monkeypatch):
+    """taskkill se invoca con ``timeout`` acotado — si se cuelga (AV, PID raro)
+    no debe bloquear indefinidamente el flujo de cleanup."""
+    import sky_claw.local.tools._process as _process
+
+    monkeypatch.setattr(_process.sys, "platform", "win32")
+    captured: dict = {}
+
+    def _fake_run(args, **kwargs):
+        captured["kwargs"] = kwargs
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(_process.subprocess, "run", _fake_run)
+
+    proc = _proc()
+    proc.pid = 4321
+    await kill_and_reap(proc)
+
+    assert captured["kwargs"].get("timeout") == _process._TASKKILL_TIMEOUT
+
+
 async def test_kill_and_reap_no_usa_taskkill_fuera_de_windows(monkeypatch):
     """En POSIX (dev/CI) no hay taskkill; se conserva el comportamiento previo."""
     import sky_claw.local.tools._process as _process

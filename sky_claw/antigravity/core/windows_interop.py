@@ -22,6 +22,9 @@ from sky_claw.antigravity.core.models import LootExecutionParams, WSLInteropErro
 #: Windows ``CREATE_NO_WINDOW`` — evita popups de consola al invocar taskkill.
 _CREATE_NO_WINDOW = 0x08000000
 
+#: Timeout corto para ``taskkill`` — best-effort, no debe bloquear el cleanup.
+_TASKKILL_TIMEOUT = 5.0
+
 if TYPE_CHECKING:
     import pathlib as _pathlib
 
@@ -152,6 +155,7 @@ def _kill_tree_windows(pid: int) -> None:
     ``proc.kill()`` solo termina el hijo directo; herramientas externas pueden
     dejar nietos huérfanos. ``taskkill /F /T /PID`` termina el árbol completo.
     Cualquier fallo se ignora — la garantía dura sigue siendo ``proc.kill()`` + reap.
+    El ``timeout`` acotado evita que un ``taskkill`` colgado bloquee el cleanup.
     """
     try:
         subprocess.run(
@@ -159,9 +163,11 @@ def _kill_tree_windows(pid: int) -> None:
             check=False,
             capture_output=True,
             creationflags=_CREATE_NO_WINDOW,
+            timeout=_TASKKILL_TIMEOUT,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        logger.debug("taskkill best-effort falló para PID %s: %s", pid, exc)
+        # subprocess.TimeoutExpired es subclase de SubprocessError → cubierto.
+        logger.debug("taskkill best-effort falló/timeout para PID %s: %s", pid, exc)
 
 
 async def _kill_and_reap(proc: asyncio.subprocess.Process, timeout: float = 3.0) -> None:

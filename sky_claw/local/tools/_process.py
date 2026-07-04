@@ -34,6 +34,9 @@ _CREATE_NO_WINDOW = 0x08000000
 #: Default grace period (seconds) to reap a killed process before giving up.
 _REAP_TIMEOUT = 3.0
 
+#: Timeout corto para ``taskkill`` — best-effort, no debe bloquear el cleanup.
+_TASKKILL_TIMEOUT = 5.0
+
 
 def _kill_tree_windows(pid: int) -> None:
     """Best-effort: mata el ÁRBOL de procesos en Windows vía ``taskkill /T``.
@@ -44,6 +47,8 @@ def _kill_tree_windows(pid: int) -> None:
 
     Best-effort por diseño: cualquier fallo (proceso ya muerto, ``taskkill``
     ausente) se ignora — la garantía dura sigue siendo ``proc.kill()`` + reap.
+    El ``timeout`` acotado evita que un ``taskkill`` colgado (AV, PID en estado
+    raro) bloquee indefinidamente el flujo de cleanup, aun corriendo en thread.
     """
     try:
         subprocess.run(
@@ -51,9 +56,12 @@ def _kill_tree_windows(pid: int) -> None:
             check=False,
             capture_output=True,
             creationflags=_CREATE_NO_WINDOW,
+            timeout=_TASKKILL_TIMEOUT,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        logger.debug("taskkill best-effort falló para PID %s: %s", pid, exc)
+        # subprocess.TimeoutExpired es subclase de SubprocessError → cubierto:
+        # si taskkill se cuelga, se aborta y seguimos con proc.kill() + reap.
+        logger.debug("taskkill best-effort falló/timeout para PID %s: %s", pid, exc)
 
 
 async def kill_and_reap(
