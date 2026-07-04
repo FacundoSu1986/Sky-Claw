@@ -135,7 +135,10 @@ class SafeResolver(aiohttp.abc.AbstractResolver):
             ip_str = info[4][0]
             addr = ipaddress.ip_address(ip_str)  # ValueError → reject unparseable IPs
             if self._policy.block_private_ips and _is_blocked_ip(addr):
-                raise EgressViolationError(f"Resolved address {addr} for '{host}' is private/loopback (SSRF block)")
+                raise EgressViolationError(
+                    f"Resolved address {addr} for '{host}' is private/loopback or non-routable "
+                    "(multicast/reserved/unspecified/IPv4-mapped) — SSRF block"
+                )
 
             result.append(
                 {
@@ -220,7 +223,10 @@ class NetworkGateway:
         try:
             addr = ipaddress.ip_address(hostname)
             if self._policy.block_private_ips and _is_blocked_ip(addr):
-                raise EgressViolationError(f"Literal address {addr} is a private/loopback IP")
+                raise EgressViolationError(
+                    f"Literal address {addr} is a private/loopback or non-routable IP "
+                    "(multicast/reserved/unspecified/IPv4-mapped)"
+                )
         except ValueError:
             pass
 
@@ -266,7 +272,10 @@ class NetworkGateway:
                     try:
                         addr = ipaddress.ip_address(redir_host)
                         if self._policy.block_private_ips and _is_blocked_ip(addr):
-                            raise EgressViolationError(f"Redirect target {addr} is a private/loopback IP")
+                            raise EgressViolationError(
+                                f"Redirect target {addr} is a private/loopback or non-routable IP "
+                                "(multicast/reserved/unspecified/IPv4-mapped)"
+                            )
                     except ValueError:
                         pass
                     logger.debug("Redirect hop %d allowed via redirect-host list: %s", hop, redir_host)
