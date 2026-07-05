@@ -56,7 +56,9 @@ class GatewayTCPConnector(aiohttp.TCPConnector):
     """Custom TCPConnector that enforces strict SSL and uses a safe resolver to prevent SSRF."""
 
     def __init__(self, gateway: NetworkGateway, **kwargs):
-        resolver = SafeResolver(gateway._policy)
+        # Comparte el pin cache DNS del gateway → todos los connectors del mismo
+        # gateway pinean juntos (cierra el rebinding app-wide, no per-connector).
+        resolver = SafeResolver(gateway._policy, gateway._dns_pins)
         if "ssl" not in kwargs:
             kwargs["ssl"] = ssl.create_default_context()
         super().__init__(resolver=resolver, **kwargs)
@@ -98,16 +100,33 @@ class SafeResolver(aiohttp.abc.AbstractResolver):
     swapping DNS records between the check and the use (DNS rebinding).
 
     The pin cache is an LRU OrderedDict capped at ``_MAX_PINNED_ENTRIES`` entries
-    to prevent unbounded memory growth when many distinct hostnames are resolved
-    within a single session.
+    to prevent unbounded memory growth when many distinct hostnames are resolved.
+
+    Cuando se inyecta ``dns_pins`` (la caché del :class:`NetworkGateway`), TODOS
+    los resolvers de ese gateway comparten UNA caché: el primer host validado
+    queda pineado para todas las conexiones del gateway, cerrando el gap de
+    DNS-rebinding app-wide (sin ella, cada connector re-resolvía desde cero). Sin
+    inyección (``dns_pins=None``), el resolver es standalone con su propia caché.
     """
 
-    def __init__(self, policy: EgressPolicy) -> None:
+    def __init__(
+        self,
+        policy: EgressPolicy,
+        dns_pins: OrderedDict[tuple[str, int, int], list[dict[str, Any]]] | None = None,
+    ) -> None:
         self._policy = policy
-        self._pinned: OrderedDict[tuple[str, int], list[dict[str, Any]]] = OrderedDict()
+        # Caché compartida (del gateway) cuando se inyecta; propia si no. ``_owns_pins``
+        # decide si ``close()`` puede limpiarla (nunca wipear la del gateway).
+        self._owns_pins = dns_pins is None
+        self._pinned: OrderedDict[tuple[str, int, int], list[dict[str, Any]]] = (
+            dns_pins if dns_pins is not None else OrderedDict()
+        )
 
     async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET) -> list[dict[str, Any]]:
-        pin_key = (host, port)
+        # ``family`` es parte de la clave: con la caché compartida entre connectors,
+        # un pin IPv4 no debe servirse a un connector que pidió AF_INET6 (rompería a
+        # callers IPv6-only y enrutaría por una familia que el caller deshabilitó).
+        pin_key = (host, port, family)
 
         # DNS Pinning: return the previously validated result if available.
         pinned = self._pinned.get(pin_key)
@@ -162,7 +181,10 @@ class SafeResolver(aiohttp.abc.AbstractResolver):
         return result
 
     async def close(self) -> None:
-        self._pinned.clear()
+        # Solo limpiar la caché propia; la caché compartida del gateway persiste
+        # entre connectors (su lifecycle lo maneja el gateway, no un connector suelto).
+        if self._owns_pins:
+            self._pinned.clear()
 
 
 class NetworkGateway:
@@ -176,6 +198,10 @@ class NetworkGateway:
 
     def __init__(self, policy: EgressPolicy | None = None) -> None:
         self._policy = policy or EgressPolicy()
+        # Pin cache DNS ÚNICO por gateway: todos los SafeResolver de sus connectors
+        # lo comparten (vía GatewayTCPConnector) → el rebinding queda cerrado para
+        # todo el egress que use este gateway, no solo dentro de un connector.
+        self._dns_pins: OrderedDict[tuple[str, int, int], list[dict[str, Any]]] = OrderedDict()
 
     # ------------------------------------------------------------------
     # Public API
