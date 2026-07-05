@@ -103,7 +103,13 @@ class NetworkContext:
         self.downloader: NexusDownloader | None = None
 
     async def initialize(self, nexus_key: str, staging_dir: pathlib.Path | None) -> None:
-        self.gateway = NetworkGateway()
+        # Un ÚNICO gateway por NetworkContext: ``initialize`` se llama dos veces
+        # (minimal → full). Crear uno nuevo en el 2º llamado partía el pin cache DNS
+        # (la session de larga vida seguía atada al connector/caché del gateway #1
+        # mientras los componentes nuevos usaban el #2). Reusar el existente mantiene
+        # una sola caché compartida app-wide.
+        if self.gateway is None:
+            self.gateway = NetworkGateway()
         if self.session is None:
             self.session = aiohttp.ClientSession(
                 connector=GatewayTCPConnector(self.gateway, limit=20),

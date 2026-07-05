@@ -386,24 +386,74 @@ class TestSharedDNSPinCache:
 
     @pytest.mark.asyncio
     async def test_standalone_resolver_owns_and_clears_cache(self) -> None:
+        import socket
+
         from sky_claw.antigravity.security.network_gateway import SafeResolver
 
         resolver = SafeResolver(EgressPolicy())
-        resolver._pinned[("h", 1)] = [{"host": "1.2.3.4"}]
+        resolver._pinned[("h", 1, socket.AF_INET)] = [{"host": "1.2.3.4"}]
         await resolver.close()
         assert len(resolver._pinned) == 0  # caché propia → close() la limpia
 
     @pytest.mark.asyncio
     async def test_close_does_not_clear_shared_cache(self) -> None:
+        import socket
         from collections import OrderedDict
 
         from sky_claw.antigravity.security.network_gateway import SafeResolver
 
         shared: OrderedDict = OrderedDict()
-        shared[("h", 1)] = [{"host": "1.2.3.4"}]
+        key = ("h", 1, socket.AF_INET)
+        shared[key] = [{"host": "1.2.3.4"}]
         resolver = SafeResolver(EgressPolicy(), shared)
         await resolver.close()
-        assert ("h", 1) in shared  # caché compartida → NO se limpia al cerrar un connector
+        assert key in shared  # caché compartida → NO se limpia al cerrar un connector
+
+    @pytest.mark.asyncio
+    async def test_pin_cache_scoped_by_address_family(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Con caché compartida, el pin key incluye ``family``: un pin IPv4 NO se
+        sirve a un resolve que pidió AF_INET6 (Codex P2)."""
+        import asyncio
+        import socket
+        from collections import OrderedDict
+
+        from sky_claw.antigravity.security.network_gateway import SafeResolver
+
+        shared: OrderedDict = OrderedDict()
+        resolver = SafeResolver(EgressPolicy(block_private_ips=False), shared)
+
+        families: list[int] = []
+
+        async def _fake_getaddrinfo(host, port, *, family, type):
+            families.append(family)
+            if family == socket.AF_INET6:
+                return [(socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("2606:4700:4700::1111", port, 0, 0))]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", port))]
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", _fake_getaddrinfo)
+
+        v4 = await resolver.resolve("dual.example.test", 443, socket.AF_INET)
+        v6 = await resolver.resolve("dual.example.test", 443, socket.AF_INET6)  # otra familia → NO usa el pin v4
+
+        assert families == [socket.AF_INET, socket.AF_INET6]  # getaddrinfo llamado por cada familia
+        assert v4[0]["host"] == "93.184.216.34"
+        assert v6[0]["host"] == "2606:4700:4700::1111"
+
+    @pytest.mark.asyncio
+    async def test_network_context_reuses_gateway_across_initialize(self) -> None:
+        """El pin cache app-wide no debe partirse en el arranque minimal→full:
+        ``NetworkContext.initialize`` reusa el mismo gateway (Codex P1)."""
+        from sky_claw.app_context import NetworkContext
+
+        ctx = NetworkContext()
+        try:
+            await ctx.initialize("", None)  # minimal
+            gw1, session1 = ctx.gateway, ctx.session
+            await ctx.initialize("", None)  # full (2º llamado)
+            assert ctx.gateway is gw1  # mismo gateway → una sola caché _dns_pins
+            assert ctx.session is session1  # misma session de larga vida
+        finally:
+            await ctx.close()
 
 
 # ------------------------------------------------------------------
