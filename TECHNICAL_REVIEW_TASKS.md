@@ -2,6 +2,11 @@
 
 **Fecha:** 2026-07-06
 **Metodología:** OODA (Observar/Orientar = `TECHNICAL_REVIEW.md`; este documento = Decidir; cada PR = Actuar) + TDD estricto (rojo → verde → refactor).
+
+**Estado de ejecución (2026-07-06):** Sprint 1 completado en `claude/skyclaw-technical-review-k6lqub` —
+✅ T-01 (`5dab680`) · ✅ T-02 (`74811b2`) · ✅ T-05 (`0ab6c1e`) · ✅ T-06 (`1662bec`) ·
+✅ T-07 (`0f004e4`) · ✅ T-08 (`6405c9f`) · ✅ T-09 (`e37ab69`). Suite completa verde (2.466 passed).
+Siguiente: Sprint 2 — T-03 (ADR leveled lists) → T-04, T-10/T-11 (BLE001), T-13/T-14 → T-15 (preflight).
 **Reglas de atomicidad:** una tarea = una rama = un PR = una preocupación. Cada tarea nombra su test rojo y su criterio de aceptación. Tamaños: **S** (<½ día), **M** (½–1 día), **L** (1–3 días).
 
 ## Grafo de dependencias (resumen)
