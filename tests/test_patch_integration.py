@@ -82,9 +82,8 @@ class TestPatchOrchestratorIntegration:
     def test_orchestrator_initialization(self, orchestrator):
         """Verifica que el orquestador se inicializa correctamente."""
         assert orchestrator is not None
-        # Solo ExecuteXEditScript: CreateMergedPatch está deshabilitada por el
-        # P0 de leveled lists (TECHNICAL_REVIEW.md §4.1) hasta T-04.
-        assert len(orchestrator._strategies) == 1
+        # ExecuteXEditScript + DelegateToBashedPatch (ADR 0001).
+        assert len(orchestrator._strategies) == 2
 
         # Verificar que las estrategias están ordenadas por prioridad
         priorities = [s.get_priority() for s in orchestrator._strategies]
@@ -94,7 +93,8 @@ class TestPatchOrchestratorIntegration:
         """Verifica que las estrategias por defecto están registradas."""
         strategy_names = {s.__class__.__name__ for s in orchestrator._strategies}
         assert "ExecuteXEditScript" in strategy_names
-        # Excluida por el P0 de leveled lists (revierte overrides).
+        assert "DelegateToBashedPatch" in strategy_names
+        # Excluida por ADR 0001: no implementa merge real de entradas.
         assert "CreateMergedPatch" not in strategy_names
 
     @pytest.mark.asyncio
@@ -115,10 +115,10 @@ class TestPatchOrchestratorIntegration:
 
     @pytest.mark.asyncio
     async def test_resolve_leveled_list_conflict(self, orchestrator):
-        """Los conflictos de leveled lists fallan explícito recomendando Bashed Patch.
+        """Los conflictos de leveled lists se delegan al Bashed Patch (ADR 0001).
 
-        El merge propio está deshabilitado por el P0 (revierte overrides,
-        TECHNICAL_REVIEW.md §4.1); el error debe apuntar a la herramienta correcta.
+        El merge propio no implementa un merge real de entradas (Relev/Delev);
+        el plan resultante debe enrutar a Wrye Bash, sin script xEdit propio.
         """
         # Crear conflicto de leveled list
         conflict = RecordConflict(
@@ -145,9 +145,9 @@ class TestPatchOrchestratorIntegration:
 
         result = await orchestrator.resolve(report)
 
-        assert result.success is False
-        assert result.error is not None
-        assert "Bashed Patch" in result.error
+        assert result.success is True
+        assert result.strategy_type is PatchStrategyType.DELEGATE_BASHED_PATCH
+        assert any("Bashed Patch" in w for w in result.warnings)
 
     @pytest.mark.asyncio
     async def test_resolve_critical_conflict(self, orchestrator):

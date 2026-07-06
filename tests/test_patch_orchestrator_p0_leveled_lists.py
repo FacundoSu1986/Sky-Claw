@@ -1,15 +1,16 @@
-"""Tests de contención del P0 de leveled lists (T-01 de TECHNICAL_REVIEW_TASKS.md).
+"""Tests de contención del P0 de leveled lists (T-01/T-04, ADR 0001).
 
-El script de merge de leveled lists (estático y template generado) copia la
-PRIMERA versión de cada FormID que itera y descarta los overrides posteriores,
-por lo que el "merged patch" puede revertir los cambios de la modlist
-(TECHNICAL_REVIEW.md §4.1). Hasta que T-04 implemente la semántica correcta:
+Historia: el merge propio copiaba la primera versión de cada FormID (revertía
+overrides — el P0 original). El hotfix T-02 lo convirtió en forward del
+ganador, pero sigue sin implementar un merge real de entradas (Relev/Delev),
+así que queda deshabilitado permanentemente y las leveled lists se delegan al
+Bashed Patch de Wrye Bash (ADR 0001, implementado en T-04). Estos tests anclan:
 
-1. ``CreateMergedPatch`` no debe estar en las estrategias por defecto.
-2. Un reporte de solo leveled lists debe fallar explícitamente recomendando
-   el Bashed Patch de Wrye Bash (la herramienta correcta ya integrada).
-3. La generación de scripts debe rechazar planes ``CREATE_MERGED_PATCH``
-   aunque alguien registre la estrategia manualmente (defensa en profundidad).
+1. ``CreateMergedPatch`` no está en las estrategias por defecto.
+2. Sin la estrategia de delegación registrada, un reporte de solo leveled
+   lists falla explícito recomendando el Bashed Patch (mensaje accionable).
+3. La generación de scripts rechaza planes ``CREATE_MERGED_PATCH`` aunque
+   alguien registre la estrategia manualmente (defensa en profundidad).
 """
 
 from unittest.mock import MagicMock
@@ -22,6 +23,7 @@ from sky_claw.local.xedit.conflict_analyzer import (
     RecordConflict,
 )
 from sky_claw.local.xedit.patch_orchestrator import (
+    ExecuteXEditScript,
     PatchOrchestrator,
     PatchPlan,
     PatchStrategyType,
@@ -73,15 +75,20 @@ class TestContencionP0LeveledLists:
         assert "CreateMergedPatch" not in nombres
         assert "ExecuteXEditScript" in nombres
 
-    async def test_reporte_solo_lvli_falla_recomendando_bashed_patch(
-        self, orquestador_por_defecto: PatchOrchestrator
-    ) -> None:
-        """Un reporte de solo leveled lists falla explícito, sin plan silencioso.
+    async def test_sin_delegacion_lvli_falla_recomendando_bashed_patch(self) -> None:
+        """Sin DelegateToBashedPatch registrada, el error sigue siendo accionable.
 
-        El error debe ser accionable: apuntar al Bashed Patch (Wrye Bash),
-        no un genérico "no strategy found".
+        Cubre listas de estrategias custom: debe apuntar al Bashed Patch
+        (Wrye Bash), no un genérico "no strategy found".
         """
-        resultado = await orquestador_por_defecto.resolve(_reporte_solo_leveled_lists())
+        orquestador = PatchOrchestrator(
+            xedit_runner=MagicMock(),
+            snapshot_manager=MagicMock(),
+            rollback_manager=MagicMock(),
+            strategies=[ExecuteXEditScript()],
+        )
+
+        resultado = await orquestador.resolve(_reporte_solo_leveled_lists())
 
         assert resultado.success is False
         assert resultado.error is not None

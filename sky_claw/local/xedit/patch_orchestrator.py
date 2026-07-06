@@ -79,6 +79,11 @@ class PatchStrategyType(Enum):
     CREATE_MERGED_PATCH = "create_merged_patch"  # Para combinación general de records
     EXECUTE_XEDIT_SCRIPT = "execute_xedit_script"  # Para correcciones específicas de FormID
     FORWARD_DECLARATION = "forward_declaration"  # Para forward de records
+    DELEGATE_BASHED_PATCH = "delegate_bashed_patch"  # Leveled lists → Wrye Bash (ADR 0001)
+
+
+#: Tipos de leveled lists (única fuente para las estrategias que los manejan).
+LEVELED_LIST_TYPES: frozenset[str] = frozenset({"LVLI", "LVLN", "LVSP"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +134,10 @@ class PatchResult:
     xedit_exit_code: int
     warnings: tuple[str, ...] = field(default_factory=tuple)
     error: str | None = None
+    #: Tipo de estrategia del plan seleccionado. El consumidor enruta por este
+    #: campo — antes adivinaba mirando ``orchestrator._strategies[0]``, que no
+    #: es la estrategia seleccionada (bug latente de enrutado).
+    strategy_type: PatchStrategyType | None = None
 
     @classmethod
     def create(
@@ -140,6 +149,7 @@ class PatchResult:
         xedit_exit_code: int,
         warnings: list[str] | None = None,
         error: str | None = None,
+        strategy_type: PatchStrategyType | None = None,
     ) -> PatchResult:
         """Factory method para crear PatchResult con lista de warnings mutable.
 
@@ -151,6 +161,7 @@ class PatchResult:
             xedit_exit_code: Código de salida de xEdit.
             warnings: Lista de advertencias (se convierte a tuple).
             error: Mensaje de error si aplica.
+            strategy_type: Tipo de estrategia del plan seleccionado.
 
         Returns:
             PatchResult inmutable.
@@ -163,6 +174,7 @@ class PatchResult:
             xedit_exit_code=xedit_exit_code,
             warnings=tuple(warnings) if warnings else tuple(),
             error=error,
+            strategy_type=strategy_type,
         )
 
 
@@ -236,7 +248,7 @@ class CreateMergedPatch(PatchStrategy):
     """
 
     #: Record types que esta estrategia puede manejar
-    HANDLED_TYPES: frozenset[str] = frozenset({"LVLI", "LVLN", "LVSP"})
+    HANDLED_TYPES: frozenset[str] = LEVELED_LIST_TYPES
 
     def __init__(self, output_dir: pathlib.Path | None = None) -> None:
         """Inicializa la estrategia.
@@ -322,6 +334,68 @@ class CreateMergedPatch(PatchStrategy):
 
         Returns:
             10 (baja prioridad - fallback para leveled lists).
+        """
+        return 10
+
+
+class DelegateToBashedPatch(PatchStrategy):
+    """Delegación de leveled lists al Bashed Patch de Wrye Bash (ADR 0001).
+
+    El merge de entradas LVLI/LVLN/LVSP (unión + Relev/Delev) es la
+    especialidad histórica del Bashed Patch; Sky-Claw no lo reimplementa.
+    Esta estrategia produce un plan ``DELEGATE_BASHED_PATCH`` que la capa de
+    servicio enruta hacia el flujo de Wrye Bash en vez de ejecutar xEdit.
+
+    Priority: 10 (baja - solo aplica a leveled lists)
+    """
+
+    #: Record types que esta estrategia puede manejar
+    HANDLED_TYPES: frozenset[str] = LEVELED_LIST_TYPES
+
+    #: Nombre canónico del plugin que genera Wrye Bash.
+    BASHED_PATCH_NAME = "Bashed Patch, 0.esp"
+
+    async def can_handle(self, conflict: RecordConflict) -> bool:
+        """True si el conflicto es de leveled lists (LVLI/LVLN/LVSP)."""
+        return conflict.record_type.upper() in self.HANDLED_TYPES
+
+    async def create_plan(self, conflicts: list[RecordConflict]) -> PatchPlan:
+        """Crea un plan de delegación (no genera script xEdit propio).
+
+        Raises:
+            ScriptGenerationError: Si no hay conflictos de leveled lists.
+        """
+        valid_conflicts = [c for c in conflicts if c.record_type.upper() in self.HANDLED_TYPES]
+        if not valid_conflicts:
+            raise ScriptGenerationError("No leveled list conflicts found in provided list")
+
+        target_plugins: set[str] = set()
+        form_ids: list[str] = []
+        for conflict in valid_conflicts:
+            target_plugins.add(conflict.winner)
+            target_plugins.update(conflict.losers)
+            form_ids.append(conflict.form_id)
+
+        logger.info(
+            "DelegateToBashedPatch: %d conflictos de leveled lists → Wrye Bash",
+            len(valid_conflicts),
+        )
+
+        return PatchPlan(
+            strategy_type=PatchStrategyType.DELEGATE_BASHED_PATCH,
+            target_plugins=sorted(target_plugins),
+            output_plugin=self.BASHED_PATCH_NAME,
+            form_ids=form_ids,
+            estimated_records=len(valid_conflicts),
+            requires_hitl=False,
+            script_path=None,  # La ejecución es de Wrye Bash, no de xEdit
+        )
+
+    def get_priority(self) -> int:
+        """Retorna prioridad de la estrategia.
+
+        Returns:
+            10 (baja prioridad - solo leveled lists).
         """
         return 10
 
@@ -576,6 +650,15 @@ class PatchOrchestrator:
                 plan.requires_hitl,
             )
 
+            warnings: list[str] = []
+            if plan.requires_hitl:
+                warnings.append("Requires Human-in-the-Loop review")
+            if plan.strategy_type is PatchStrategyType.DELEGATE_BASHED_PATCH:
+                warnings.append(
+                    "Leveled lists delegadas al Bashed Patch (Wrye Bash): "
+                    "ejecutá el ritual de Wrye Bash para materializar el merge (ADR 0001)."
+                )
+
             # Retornar resultado exitoso con el plan
             # (La ejecución real se hace en supervisor.py)
             return PatchResult(
@@ -584,7 +667,8 @@ class PatchOrchestrator:
                 records_patched=plan.estimated_records,
                 conflicts_resolved=len(all_conflicts),
                 xedit_exit_code=0,
-                warnings=(("Requires Human-in-the-Loop review",) if plan.requires_hitl else ()),
+                warnings=tuple(warnings),
+                strategy_type=plan.strategy_type,
             )
 
         except StrategySelectionError as e:
@@ -699,13 +783,13 @@ class PatchOrchestrator:
                 best_strategy = strategy
 
         if best_strategy is None or best_score == 0:
-            leveled_list_types = CreateMergedPatch.HANDLED_TYPES
-            if any(c.record_type.upper() in leveled_list_types for c in conflicts):
+            if any(c.record_type.upper() in LEVELED_LIST_TYPES for c in conflicts):
                 raise StrategySelectionError(
                     "Los conflictos de leveled lists (LVLI/LVLN/LVSP) no tienen "
-                    "estrategia automática: el merge propio está deshabilitado "
-                    "porque revierte overrides (P0). Usá un Bashed Patch "
-                    "(Wrye Bash) para fusionar leveled lists."
+                    "estrategia registrada: el merge propio está deshabilitado "
+                    "porque no implementa un merge real de entradas (Relev/Delev). "
+                    "Usá un Bashed Patch (Wrye Bash) para fusionar leveled lists "
+                    "(ADR 0001)."
                 )
             raise StrategySelectionError(f"No strategy can handle any of the {len(conflicts)} conflicts")
 
@@ -715,13 +799,13 @@ class PatchOrchestrator:
         """Retorna la lista de estrategias por defecto.
 
         Returns:
-            Lista con ExecuteXEditScript.
+            Lista con ExecuteXEditScript y DelegateToBashedPatch.
         """
-        # CreateMergedPatch excluida deliberadamente: su script de merge copia la
-        # primera versión de cada FormID y descarta los overrides posteriores, por
-        # lo que puede REVERTIR leveled lists de la modlist (P0, TECHNICAL_REVIEW.md
-        # §4.1). Reincorporar solo cuando T-04 implemente la semántica correcta.
-        return [ExecuteXEditScript()]
+        # CreateMergedPatch excluida deliberadamente: tras el hotfix T-02 hace un
+        # forward del ganador (ya no revierte overrides como en el P0 original),
+        # pero sigue sin implementar un merge real de entradas (Relev/Delev).
+        # Las leveled lists se delegan al Bashed Patch de Wrye Bash — ADR 0001.
+        return [ExecuteXEditScript(), DelegateToBashedPatch()]
 
     @property
     def strategies(self) -> list[PatchStrategy]:

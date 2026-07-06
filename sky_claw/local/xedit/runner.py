@@ -593,13 +593,20 @@ end.
             )
 
         elif strategy == PatchStrategyType.CREATE_MERGED_PATCH:
-            # El template de merge copia la primera versión de cada FormID y
-            # descarta los overrides posteriores — puede revertir leveled lists
-            # de la modlist (P0, TECHNICAL_REVIEW.md §4.1). Re-habilitar en T-04.
+            # Deshabilitada por ADR 0001: tras el hotfix T-02 el template hace
+            # forward del ganador, pero sigue sin implementar un merge real de
+            # entradas (Relev/Delev). Leveled lists → Bashed Patch.
             raise XEditScriptError(
-                "La estrategia CREATE_MERGED_PATCH está deshabilitada: su script "
-                "de merge revierte overrides de leveled lists (P0). Usá un "
-                "Bashed Patch (Wrye Bash) para fusionar leveled lists."
+                "La estrategia CREATE_MERGED_PATCH está deshabilitada: no "
+                "implementa un merge real de entradas de leveled lists "
+                "(Relev/Delev). Usá un Bashed Patch (Wrye Bash) — ADR 0001."
+            )
+
+        elif strategy == PatchStrategyType.DELEGATE_BASHED_PATCH:
+            # Los planes delegados los ejecuta Wrye Bash, no xEdit: si uno llega
+            # hasta acá hay un bug de enrutado en la capa de servicio.
+            raise XEditScriptError(
+                "Un plan DELEGATE_BASHED_PATCH no genera script xEdit: debe enrutarse al flujo de Wrye Bash (ADR 0001)."
             )
 
         elif strategy == PatchStrategyType.EXECUTE_XEDIT_SCRIPT:
@@ -665,7 +672,9 @@ class XEditRunner:
             XEditScriptError: Con mensaje accionable (ruta esperada + link de
                 descarga) si falta ``Edit Scripts/mteFunctions.pas``.
         """
-        if "mteFunctions" not in script_content:
+        # Pascal es case-insensitive: 'uses mtefunctions' también compila contra
+        # la librería, así que la detección no puede ser sensible a mayúsculas.
+        if "mtefunctions" not in script_content.lower():
             return
 
         mte_path = self._xedit_path.parent / "Edit Scripts" / "mteFunctions.pas"

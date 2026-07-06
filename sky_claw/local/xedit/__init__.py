@@ -33,6 +33,7 @@ from sky_claw.local.xedit.conflict_analyzer import (
 from sky_claw.local.xedit.output_parser import XEditOutputParser, XEditResult
 from sky_claw.local.xedit.patch_orchestrator import (
     CreateMergedPatch,
+    DelegateToBashedPatch,
     ExecuteXEditScript,
     PatchExecutionError,
     PatchingError,
@@ -61,6 +62,7 @@ __all__ = [
     "ConflictAnalyzer",
     "ConflictReport",
     "CreateMergedPatch",
+    "DelegateToBashedPatch",
     "ExecuteXEditScript",
     "PatchExecutionError",
     "PatchOrchestrator",

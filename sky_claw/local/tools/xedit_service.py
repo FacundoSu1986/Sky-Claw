@@ -232,16 +232,20 @@ class XEditPipelineService:
                 # Resolver conflictos (genera plan)
                 result = await orchestrator.resolve(report)
 
-                # Ejecutar script si el orquestador lo requiere
-                if result.success and result.output_path and self._xedit_runner is not None:
-                    strategy_type = PatchStrategyType.CREATE_MERGED_PATCH
-                    if orchestrator._strategies:
-                        strategy_name = orchestrator._strategies[0].__class__.__name__
-                        if strategy_name == "ExecuteXEditScript":
-                            strategy_type = PatchStrategyType.EXECUTE_XEDIT_SCRIPT
-                        elif strategy_name == "ForwardDeclaration":
-                            strategy_type = PatchStrategyType.FORWARD_DECLARATION
-
+                # Ejecutar script si el orquestador lo requiere. El enrutado usa
+                # el strategy_type del plan SELECCIONADO (T-04): el código previo
+                # adivinaba mirando strategies[0], que no es la estrategia elegida.
+                # Fallback EXECUTE_XEDIT_SCRIPT para PatchResult sin strategy_type.
+                strategy_type = result.strategy_type or PatchStrategyType.EXECUTE_XEDIT_SCRIPT
+                delegated_to_wrye_bash = strategy_type is PatchStrategyType.DELEGATE_BASHED_PATCH
+                if delegated_to_wrye_bash:
+                    # ADR 0001: leveled lists van al Bashed Patch; acá no se
+                    # ejecuta xEdit. El caller encadena generate_bashed_patch.
+                    logger.info(
+                        "Plan delegado al Bashed Patch (Wrye Bash); no se ejecuta xEdit: %s",
+                        result.output_path,
+                    )
+                elif result.success and result.output_path and self._xedit_runner is not None:
                     plan = PatchPlan(
                         strategy_type=strategy_type,
                         target_plugins=([p.plugin_a for p in report.plugin_pairs[:1]] if report.plugin_pairs else []),
@@ -260,6 +264,7 @@ class XEditPipelineService:
                         xedit_exit_code=script_result.exit_code,
                         warnings=tuple(script_result.warnings),
                         error=(None if script_result.exit_code == 0 else script_result.stderr),
+                        strategy_type=strategy_type,
                     )
 
                 # Lanzar DENTRO del context manager para activar rollback automático
@@ -511,6 +516,8 @@ class XEditPipelineService:
         raw = dataclasses.asdict(result)
         if raw.get("output_path") is not None:
             raw["output_path"] = str(raw["output_path"])
+        if raw.get("strategy_type") is not None:
+            raw["strategy_type"] = result.strategy_type.value  # type: ignore[union-attr]
         raw["message"] = "" if raw.get("success") else str(raw.get("error") or "")
         return raw
 

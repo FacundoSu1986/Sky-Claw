@@ -101,3 +101,11 @@ class TestRunnerFailFast:
         resultado = await runner.run_dynamic_script(SCRIPT_SIN_MTE, plugins=["Prueba.esp"])
 
         assert resultado.exit_code == 0
+
+    async def test_deteccion_es_case_insensitive(self, tmp_path: Path) -> None:
+        """Pascal no distingue mayúsculas: 'uses MTEFUNCTIONS' también requiere la librería."""
+        runner = self._runner(tmp_path)
+        script = "unit Prueba;\nuses MTEFUNCTIONS, SysUtils;\nend.\n"
+
+        with pytest.raises(XEditScriptError, match="mteFunctions"):
+            await runner.run_dynamic_script(script, plugins=["Prueba.esp"])
