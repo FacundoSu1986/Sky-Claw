@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from sky_claw.local.xedit.conflict_analyzer import DEFAULT_CRITICAL_TYPES
+
 if TYPE_CHECKING:
     from sky_claw.antigravity.db.rollback_manager import RollbackManager
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
@@ -327,27 +329,18 @@ class CreateMergedPatch(PatchStrategy):
 class ExecuteXEditScript(PatchStrategy):
     """Estrategia para conflictos críticos vía scripts Pascal de xEdit.
 
-    Esta estrategia maneja conflictos de alto riesgo (NPC_, QUST, SCPT, PERK, etc.)
+    Esta estrategia maneja conflictos de alto riesgo (NPC_, QUST, SCEN, PERK, etc.)
     que requieren correcciones específicas mediante scripts Pascal ejecutados
     en xEdit headless.
 
     Priority: 20 (alta - usada para conflictos críticos)
     """
 
-    #: Record types considerados críticos
-    CRITICAL_TYPES: frozenset[str] = frozenset(
-        {
-            "NPC_",
-            "QUST",
-            "SCPT",
-            "PERK",
-            "SPEL",
-            "MGEF",
-            "FACT",
-            "DIAL",
-            "PACK",
-        }
-    )
+    #: Record types considerados críticos — única fuente: el set del
+    #: ConflictAnalyzer (SCA-001/T-07: la firma de scripts de Oblivion no
+    #: existe en Skyrim SE; el tipo relevante es SCEN). Duplicar el set
+    #: aquí producía drift.
+    CRITICAL_TYPES: frozenset[str] = DEFAULT_CRITICAL_TYPES
 
     def __init__(
         self,
@@ -463,13 +456,9 @@ class ExecuteXEditScript(PatchStrategy):
         if "NPC_" in record_types:
             return "fix_npc_conflicts.pas"
 
-        # Quest conflicts -> script específico
-        if "QUST" in record_types:
+        # Quest conflicts (incluye escenas y diálogo de quest) -> script específico
+        if record_types & {"QUST", "SCEN", "INFO"}:
             return "fix_quest_conflicts.pas"
-
-        # Script conflicts -> script específico
-        if "SCPT" in record_types:
-            return "fix_script_conflicts.pas"
 
         # Default: script genérico de conflictos
         return "fix_critical_conflicts.pas"
