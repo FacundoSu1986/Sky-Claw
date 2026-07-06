@@ -281,8 +281,15 @@ var
   formId: string;
   newRecord: IInterface;
 begin
+  Result := 0;
   recordType := Signature(e);
   formId := FormID(e);
+
+  // Solo la version ganadora por load order: sin este guard se copiaba la
+  // primera version iterada y se revertian los overrides de la modlist
+  // (P0, TECHNICAL_REVIEW.md seccion 4.1).
+  if not Equals(e, WinningOverride(e)) then
+    Exit;
 
   // Process LVLI, LVLN, LVSP records
   if (recordType = 'LVLI') or (recordType = 'LVLN') or (recordType = 'LVSP') then
