@@ -275,6 +275,27 @@ begin
   Result := 0;
 end;
 
+// Version ganadora por load order IGNORANDO el plugin de salida: en un
+// re-run el output ya cargado seria el WinningOverride de sus propios
+// records y el guard saltearia todas las fuentes (review Codex PR #238).
+function WinnerExcludingOutput(e: IInterface): IInterface;
+var
+  i: Integer;
+  master, ovr: IInterface;
+begin
+  master := MasterOrSelf(e);
+  Result := master;
+  for i := OverrideCount(master) - 1 downto 0 do
+  begin
+    ovr := OverrideByIndex(master, i);
+    if not SameText(GetFileName(GetFile(ovr)), outputPluginName) then
+    begin
+      Result := ovr;
+      Exit;
+    end;
+  end;
+end;
+
 function Process(e: IInterface): integer;
 var
   recordType: string;
@@ -285,10 +306,14 @@ begin
   recordType := Signature(e);
   formId := FormID(e);
 
-  // Solo la version ganadora por load order: sin este guard se copiaba la
-  // primera version iterada y se revertian los overrides de la modlist
-  // (P0, TECHNICAL_REVIEW.md seccion 4.1).
-  if not Equals(e, WinningOverride(e)) then
+  // Skip records que viven en el propio plugin de salida (caso re-run).
+  if SameText(GetFileName(GetFile(e)), outputPluginName) then
+    Exit;
+
+  // Solo la version ganadora por load order (ignorando el output): sin este
+  // guard se copiaba la primera version iterada y se revertian los overrides
+  // de la modlist (P0, TECHNICAL_REVIEW.md seccion 4.1).
+  if not Equals(e, WinnerExcludingOutput(e)) then
     Exit;
 
   // Process LVLI, LVLN, LVSP records

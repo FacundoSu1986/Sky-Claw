@@ -177,19 +177,24 @@ class LootSortingService:
         target_files = list(load_order.files)
         rolled_back = False
 
+        # Referencia al lock fuera del with: rolled_back se deriva del resultado
+        # REAL del rollback (tx.rollback_completed) — un restore fallido en la
+        # ruta de excepción solo se loguea, así que bool(target_files) mentiría
+        # (review Codex PR #238).
+        tx = SnapshotTransactionLock(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self._snapshot_manager,
+            resource_id=self.RESOURCE_ID,
+            agent_id=self.AGENT_ID,
+            target_files=target_files,
+            metadata={
+                "source": "loot_sorting",
+                "update_masterlist": update_masterlist,
+                "load_order_sources": list(load_order.sources),
+            },
+        )
         try:
-            async with SnapshotTransactionLock(
-                lock_manager=self._lock_manager,
-                snapshot_manager=self._snapshot_manager,
-                resource_id=self.RESOURCE_ID,
-                agent_id=self.AGENT_ID,
-                target_files=target_files,
-                metadata={
-                    "source": "loot_sorting",
-                    "update_masterlist": update_masterlist,
-                    "load_order_sources": list(load_order.sources),
-                },
-            ):
+            async with tx:
                 result = await runner.sort(update_masterlist=update_masterlist)
                 if not result.success:
                     # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
@@ -200,7 +205,7 @@ class LootSortingService:
             return {"status": "error", "success": False, "message": detail, "logs": detail}
         except _LootSortFailedError as exc:
             result = exc.result
-            rolled_back = bool(target_files)
+            rolled_back = tx.rollback_completed
         except (LOOTNotFoundError, LOOTTimeoutError) as exc:
             logger.error("LOOT sort failed: %s", exc)
             return {
@@ -208,7 +213,7 @@ class LootSortingService:
                 "success": False,
                 "message": str(exc),
                 "logs": str(exc),
-                "rolled_back": bool(target_files),
+                "rolled_back": tx.rollback_completed,
             }
 
         # Contrato compartido (deuda #5): ``message`` canónico junto a los campos

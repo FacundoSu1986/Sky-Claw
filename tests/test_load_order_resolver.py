@@ -45,6 +45,17 @@ class TestCandidatosLocalAppData:
 
         assert sorted(resolver.resolve().files) == sorted(esperados)
 
+    def test_detecta_localcache_de_ms_store(self, tmp_path: pathlib.Path) -> None:
+        """Game Pass sandboxea el load order bajo Packages\\...\\LocalCache\\Local."""
+        local_cache = tmp_path / "Packages" / "BethesdaSoftworks.SkyrimSE-PC_3275kfvn8vcwc" / "LocalCache" / "Local"
+        esperados = _crear_load_order(local_cache / "Skyrim Special Edition MS")
+
+        resolver = LoadOrderFileResolver(local_app_data=tmp_path)
+        resultado = resolver.resolve()
+
+        assert sorted(resultado.files) == sorted(esperados)
+        assert "msstore_localcache" in resultado.sources
+
     def test_sin_archivos_devuelve_vacio(self, tmp_path: pathlib.Path) -> None:
         resolver = LoadOrderFileResolver(local_app_data=tmp_path)
         resultado = resolver.resolve()

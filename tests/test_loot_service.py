@@ -297,6 +297,41 @@ async def test_restaura_load_order_si_loot_sale_con_error(
 
 
 @pytest.mark.asyncio
+async def test_restore_fallido_no_reporta_rollback(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si el restore del snapshot falla, rolled_back debe ser False.
+
+    La ruta de excepción del lock loguea el fallo de restore sin re-lanzar
+    (para no enmascarar el error original de LOOT); el servicio no puede
+    derivar rolled_back de bool(target_files) — review Codex PR #238.
+    """
+    resolver, plugins = _preparar_load_order(tmp_path)
+
+    async def sort_fallido(**_kwargs: object) -> LOOTResult:
+        plugins.write_text("CORRUPTO\n", encoding="utf-8")
+        return LOOTResult(return_code=1, errors=["boom"])
+
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=sort_fallido)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
+
+    with patch.object(
+        snapshot_manager,
+        "restore_snapshot",
+        AsyncMock(side_effect=OSError("archivo bloqueado")),
+    ):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert result["rolled_back"] is False
+    # El archivo quedó como LOOT lo dejó — el caller debe saberlo.
+    assert plugins.read_text(encoding="utf-8") == "CORRUPTO\n"
+
+
+@pytest.mark.asyncio
 async def test_sort_exitoso_conserva_los_cambios(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,

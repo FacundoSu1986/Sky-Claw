@@ -121,6 +121,18 @@ class LoadOrderFileResolver:
             local_app_data = pathlib.Path(env_value) if env_value else None
         if local_app_data is not None:
             candidates.extend(("localappdata", local_app_data / game_dir) for game_dir in _LOCALAPPDATA_GAME_DIRS)
+            # MS Store/Game Pass: el juego sandboxeado escribe bajo
+            # Packages\BethesdaSoftworks.SkyrimSE-PC_<hash>\LocalCache\Local\
+            # y esa instalación puede no tener la copia directa en LOCALAPPDATA
+            # (review Codex PR #238; documentado por Wrye Bash #585). Glob sobre
+            # el prefijo del paquete para no fijar el hash del publisher.
+            packages_root = local_app_data / "Packages"
+            if packages_root.is_dir():
+                for package_dir in sorted(packages_root.glob("BethesdaSoftworks.*Skyrim*")):
+                    local_cache = package_dir / "LocalCache" / "Local"
+                    candidates.extend(
+                        ("msstore_localcache", local_cache / game_dir) for game_dir in _LOCALAPPDATA_GAME_DIRS
+                    )
 
         if self._mo2_root is not None:
             candidates.append(("mo2_profile", self._mo2_root / "profiles" / self._profile))

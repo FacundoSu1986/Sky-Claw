@@ -154,6 +154,32 @@ begin
 end;
 
 {
+  WinnerExcludingOutput: version ganadora por load order IGNORANDO el plugin
+  de salida. Necesario al re-ejecutar sobre un output existente: el output ya
+  cargado seria el WinningOverride de sus propios records y el guard
+  saltearia todas las fuentes, dejando el parche viejo sin actualizar
+  (review Codex PR #238). Si todos los overrides viven en el output, gana el
+  master original.
+}
+function WinnerExcludingOutput(e: IInterface): IInterface;
+var
+  i: Integer;
+  master, ovr: IInterface;
+begin
+  master := MasterOrSelf(e);
+  Result := master;
+  for i := OverrideCount(master) - 1 downto 0 do
+  begin
+    ovr := OverrideByIndex(master, i);
+    if not SameText(GetFileName(GetFile(ovr)), outputPluginName) then
+    begin
+      Result := ovr;
+      Exit;
+    end;
+  end;
+end;
+
+{
   MergeRecord: Merges a single leveled list record into the output plugin.
   Returns True if successful, False otherwise.
 }
@@ -236,10 +262,15 @@ begin
   if not IsLeveledListRecord(e) then
     Exit;
 
-  // Solo la version ganadora por load order: sin este guard se copiaba la
-  // primera version iterada (el master base) y se descartaban los overrides
-  // ganadores, revirtiendo la modlist (P0, TECHNICAL_REVIEW.md seccion 4.1).
-  if not Equals(e, WinningOverride(e)) then
+  // Skip records que viven en el propio plugin de salida (caso re-run).
+  if SameText(GetFileName(GetFile(e)), outputPluginName) then
+    Exit;
+
+  // Solo la version ganadora por load order (ignorando el output): sin este
+  // guard se copiaba la primera version iterada (el master base) y se
+  // descartaban los overrides ganadores, revirtiendo la modlist (P0,
+  // TECHNICAL_REVIEW.md seccion 4.1).
+  if not Equals(e, WinnerExcludingOutput(e)) then
   begin
     Inc(skippedCount);
     Exit;
@@ -247,10 +278,6 @@ begin
 
   recordSig := Signature(e);
   formIdStr := GetFormIDString(e);
-  
-  // Skip records from the output plugin itself
-  if GetFileName(GetFile(e)) = outputPluginName then
-    Exit;
   
   // Log progress every 50 records
   if (processedCount > 0) and ((processedCount mod 50) = 0) then
