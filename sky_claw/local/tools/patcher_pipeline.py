@@ -175,7 +175,11 @@ class PatcherPipeline:
                     pipeline_config_path,
                     len(self._patchers),
                 )
-            except Exception as e:
+            # Acotado (T-10): un config corrupto degrada a pipeline vacío, pero
+            # PathViolationError debe PROPAGAR (S2-FIX) — el except Exception
+            # previo la tragaba. KeyError/TypeError/ValueError cubren from_dict
+            # y json.JSONDecodeError; OSError la lectura del archivo.
+            except (OSError, ValueError, KeyError, TypeError, PatcherPipelineError) as e:
                 logger.warning(
                     "Error cargando pipeline desde %s: %s. Iniciando vacío.",
                     pipeline_config_path,

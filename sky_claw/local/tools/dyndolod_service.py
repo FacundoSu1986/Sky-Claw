@@ -374,10 +374,13 @@ class DynDOLODPipelineService:
                 try:
                     await self._journal.mark_transaction_rolled_back(tx_id)
                 except Exception as journal_exc:
+                    # Aislar el fallo secundario para no enmascarar la
+                    # cancelación; traceback al log como sus handlers hermanos.
                     logger.error(
                         "Failed to mark TX %d as rolled back on cancel: %s",
                         tx_id,
                         journal_exc,
+                        exc_info=True,
                     )
             raise
 

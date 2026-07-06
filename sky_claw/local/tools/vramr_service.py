@@ -268,10 +268,14 @@ class VRAMrPipelineService:
                     agent_id=self.AGENT_ID,
                 )
             except Exception as release_exc:
-                logger.warning(
+                # Aislar el fallo secundario: no debe enmascarar el resultado
+                # del pipeline. Nivel error (el lock queda colgado hasta el
+                # TTL) con traceback, consistente con locks._safe_release.
+                logger.error(
                     "Fallo al liberar lock VRAMr (%s): %s",
                     resource_id,
                     release_exc,
+                    exc_info=True,
                 )
 
     # ------------------------------------------------------------------
