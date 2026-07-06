@@ -303,6 +303,28 @@ class EnvironmentScanner:
                 emoji = "⚠️" if not is_critical else "❌"
                 snap.health_messages.append(f"{emoji} {human_name} no encontrado")
 
+        # ── 3b. mteFunctions.pas ──────────────────────────────────────
+        # Los scripts Pascal de Sky-Claw declaran `uses mteFunctions`, pero
+        # xEdit no lo trae de fábrica: sin él la compilación falla a mitad de
+        # un Ritual con error críptico (T-09). Detectarlo acá, con link.
+        xedit_info = snap.tools.get("xedit")
+        if xedit_info is not None:
+            mte_path = xedit_info.exe_path.parent / "Edit Scripts" / "mteFunctions.pas"
+            if not mte_path.exists():
+                snap.missing.append(
+                    MissingTool(
+                        name="mteFunctions (xEdit)",
+                        technical_name="mteFunctions",
+                        friendly_description="Librería requerida por los scripts de parcheo de Sky-Claw",
+                        download_url="https://github.com/matortheeternal/TES5EditScripts",
+                        is_critical=False,
+                    )
+                )
+                snap.health_messages.append(
+                    "⚠️ xEdit encontrado pero falta mteFunctions.pas en 'Edit Scripts/': "
+                    "los scripts de parcheo de Sky-Claw no compilarán."
+                )
+
         # ── 4. Compute Health ─────────────────────────────────────────
         # A missing game is fatal regardless of which tools were seeded from
         # config, so don't let the tool tally downgrade CRITICAL → NEEDS_SETUP.

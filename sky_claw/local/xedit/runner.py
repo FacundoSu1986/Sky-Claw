@@ -650,10 +650,31 @@ class XEditRunner:
         # Ensure output directory exists
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
+    #: mteFunctions.pas no viene con xEdit; los scripts de Sky-Claw lo requieren.
+    MTE_FUNCTIONS_URL = "https://github.com/matortheeternal/TES5EditScripts"
+
     @property
     def script_generator(self) -> ScriptGenerator:
         """Access the script generator instance."""
         return self._script_generator
+
+    def _assert_mte_functions_available(self, script_content: str) -> None:
+        """Falla rápido si *script_content* usa mteFunctions y no está instalado.
+
+        Raises:
+            XEditScriptError: Con mensaje accionable (ruta esperada + link de
+                descarga) si falta ``Edit Scripts/mteFunctions.pas``.
+        """
+        if "mteFunctions" not in script_content:
+            return
+
+        mte_path = self._xedit_path.parent / "Edit Scripts" / "mteFunctions.pas"
+        if not mte_path.exists():
+            raise XEditScriptError(
+                f"El script requiere mteFunctions.pas y no existe en {mte_path}. "
+                f"Descargalo de {self.MTE_FUNCTIONS_URL} y copialo a la carpeta "
+                "'Edit Scripts' de xEdit."
+            )
 
     async def run_script(
         self,
@@ -818,6 +839,10 @@ class XEditRunner:
 
         if not self._xedit_path.exists():
             raise XEditNotFoundError(f"xEdit executable not found at {self._xedit_path}")
+
+        # Fallar rápido ANTES de lanzar xEdit si falta mteFunctions (T-09):
+        # la alternativa es un error de compilación críptico a mitad del Ritual.
+        self._assert_mte_functions_available(script_content)
 
         # Crear archivo temporal para el script
         script_path: pathlib.Path | None = None
