@@ -11,12 +11,13 @@ gap so a real sort serializes against:
 * the dry-run preview chain (which snapshots and force-reverts the same load
   order) — both share :data:`LOAD_ORDER_RESOURCE_ID`.
 
-**Snapshot rollback is intentionally deferred** (``target_files=[]``): the
-concrete file LOOT rewrites is environment-dependent (LOOT runs as a subprocess
-with ``--game-path``, outside the MO2 VFS) and is not reliably resolvable today,
-so snapshotting it blindly would be a false safety net. The protection that
-applies with certainty now is *serialization*; the snapshot can be added once
-the load-order path is resolvable (or LOOT is run through the MO2 VFS).
+**Snapshot rollback (T-06):** los ``target_files`` se resuelven con
+:class:`LoadOrderFileResolver` — la unión de ``plugins.txt``/``loadorder.txt``
+existentes en LOCALAPPDATA (LOOT corre fuera del VFS con ``--game-path``), el
+profile de MO2 y un override explícito. Un sort que lanza (timeout) o sale con
+error restaura el snapshot; si no se encuentra ningún candidato (entorno no
+configurado), se degrada a serialización-sola con warning, el comportamiento
+previo al T-06.
 """
 
 from __future__ import annotations
@@ -36,12 +37,14 @@ from sky_claw.local.loot.cli import (
     LOOTRunner,
     LOOTTimeoutError,
 )
+from sky_claw.local.mo2.load_order import LoadOrderFileResolver
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.core.models import LootExecutionParams
     from sky_claw.antigravity.core.path_resolver import PathResolutionService
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
     from sky_claw.antigravity.security.path_validator import PathValidator
+    from sky_claw.local.loot.parser import LOOTResult
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,16 @@ LOAD_ORDER_RESOURCE_ID = "load-order"
 #: (120s) rather than ``LOOTRunner``'s 60s default, so a slow masterlist update
 #: or a large load order completing between 60 and 120s is not falsely timed out.
 _DEFAULT_LOOT_TIMEOUT_SECONDS = 120
+
+
+class _LootSortFailedError(Exception):
+    """Interno: un sort con exit non-zero debe lanzar DENTRO del lock para que
+    ``SnapshotTransactionLock.__aexit__`` restaure el load order; el resultado
+    original viaja en la excepción para armar la respuesta al caller."""
+
+    def __init__(self, result: LOOTResult) -> None:
+        super().__init__(f"LOOT sort failed with return code {result.return_code}")
+        self.result = result
 
 
 class LootSortingService:
@@ -78,6 +91,7 @@ class LootSortingService:
         loot_exe: pathlib.Path | None = None,
         timeout: int = _DEFAULT_LOOT_TIMEOUT_SECONDS,
         loot_runner: LOOTRunner | None = None,
+        load_order_resolver: LoadOrderFileResolver | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -86,6 +100,24 @@ class LootSortingService:
         self._loot_exe = loot_exe
         self._timeout = timeout
         self._loot_runner = loot_runner
+        self._load_order_resolver = load_order_resolver
+
+    def _ensure_load_order_resolver(self) -> LoadOrderFileResolver:
+        """Construye perezosamente el resolver de load order (mismo patrón que
+        ``_ensure_loot_runner``): MO2 root/profile del path resolver si están
+        configurados; LOCALAPPDATA lo toma el resolver de su entorno."""
+        if self._load_order_resolver is not None:
+            return self._load_order_resolver
+
+        mo2_root: pathlib.Path | None = None
+        profile = "Default"
+        if self._path_resolver is not None:
+            mo2_root = self._path_resolver.get_mo2_path()
+            if mo2_root is not None:
+                profile = self._path_resolver.get_active_profile()
+
+        self._load_order_resolver = LoadOrderFileResolver(mo2_root=mo2_root, profile=profile)
+        return self._load_order_resolver
 
     def _ensure_loot_runner(self) -> LOOTRunner:
         """Lazily build the LOOTRunner, resolving the LOOT exe + game path on first use.
@@ -138,23 +170,46 @@ class LootSortingService:
             logger.error("LOOT runner unavailable: %s", exc)
             return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
 
+        # T-06: snapshotear lo que LOOT realmente puede reescribir. Sin
+        # candidatos (entorno no configurado) se degrada a serialización-sola,
+        # el comportamiento previo — el resolver ya lo dejó logueado.
+        load_order = self._ensure_load_order_resolver().resolve()
+        target_files = list(load_order.files)
+        rolled_back = False
+
         try:
             async with SnapshotTransactionLock(
                 lock_manager=self._lock_manager,
                 snapshot_manager=self._snapshot_manager,
                 resource_id=self.RESOURCE_ID,
                 agent_id=self.AGENT_ID,
-                target_files=[],  # snapshot deferred — see module docstring
-                metadata={"source": "loot_sorting", "update_masterlist": update_masterlist},
+                target_files=target_files,
+                metadata={
+                    "source": "loot_sorting",
+                    "update_masterlist": update_masterlist,
+                    "load_order_sources": list(load_order.sources),
+                },
             ):
                 result = await runner.sort(update_masterlist=update_masterlist)
+                if not result.success:
+                    # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
+                    raise _LootSortFailedError(result)
         except LockAcquisitionError as exc:
             logger.warning("Lock contention on '%s': %s", self.RESOURCE_ID, exc)
             detail = f"Could not acquire load-order lock '{self.RESOURCE_ID}': {exc}"
             return {"status": "error", "success": False, "message": detail, "logs": detail}
+        except _LootSortFailedError as exc:
+            result = exc.result
+            rolled_back = bool(target_files)
         except (LOOTNotFoundError, LOOTTimeoutError) as exc:
             logger.error("LOOT sort failed: %s", exc)
-            return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
+            return {
+                "status": "error",
+                "success": False,
+                "message": str(exc),
+                "logs": str(exc),
+                "rolled_back": bool(target_files),
+            }
 
         # Contrato compartido (deuda #5): ``message`` canónico junto a los campos
         # estructurados; en éxito queda vacío (el consumidor arma su copy). En
@@ -174,4 +229,5 @@ class LootSortingService:
             "warnings": result.warnings,
             "errors": result.errors,
             "logs": result.raw_stdout or "",
+            "rolled_back": rolled_back,
         }
