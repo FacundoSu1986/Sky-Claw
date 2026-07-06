@@ -38,6 +38,24 @@ def _make_daemon(modlist_path: Path, interval: float = 0.05) -> WatcherDaemon:
     )
 
 
+async def _correr_watch_loop_hasta(daemon: WatcherDaemon, dispatched: list[object], objetivo: object) -> None:
+    """Corre ``_watch_loop`` hasta que *objetivo* aparezca en *dispatched*.
+
+    Un sleep fijo es flaky en runners lentos (Windows CI): el loop puede no
+    llegar al segundo ``to_thread`` antes del cancel. Esperar la condición con
+    timeout generoso es determinista y rápido cuando el host es rápido.
+    """
+    task = asyncio.create_task(daemon._watch_loop())
+    try:
+        async with asyncio.timeout(5.0):
+            while objetivo not in dispatched:
+                await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 class TestWatcherDaemonIO:
     @pytest.mark.asyncio
     async def test_path_exists_dispatched_via_to_thread(self, tmp_path: Path) -> None:
@@ -59,11 +77,7 @@ class TestWatcherDaemonIO:
         daemon = _make_daemon(modlist)
 
         with patch("asyncio.to_thread", side_effect=spy_to_thread):
-            task = asyncio.create_task(daemon._watch_loop())
-            await asyncio.sleep(0.1)
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            await _correr_watch_loop_hasta(daemon, dispatched, os.path.exists)
 
         assert dispatched, "asyncio.to_thread was never called"
         assert os.path.exists in dispatched, (
@@ -87,11 +101,7 @@ class TestWatcherDaemonIO:
         daemon = _make_daemon(modlist)
 
         with patch("asyncio.to_thread", side_effect=spy_to_thread):
-            task = asyncio.create_task(daemon._watch_loop())
-            await asyncio.sleep(0.1)
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            await _correr_watch_loop_hasta(daemon, dispatched, os.stat)
 
         assert dispatched, "asyncio.to_thread was never called"
         assert os.stat in dispatched, (
