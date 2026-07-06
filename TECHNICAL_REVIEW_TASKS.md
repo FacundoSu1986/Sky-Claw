@@ -3,12 +3,14 @@
 **Fecha:** 2026-07-06
 **Metodología:** OODA (Observar/Orientar = `TECHNICAL_REVIEW.md`; este documento = Decidir; cada PR = Actuar) + TDD estricto (rojo → verde → refactor).
 
-**Estado de ejecución (2026-07-06):** en `claude/skyclaw-technical-review-k6lqub` (PR #238) —
-Sprint 1: ✅ T-01 (`5dab680`) · ✅ T-02 (`74811b2`) · ✅ T-05 (`0ab6c1e`) · ✅ T-06 (`1662bec`) ·
-✅ T-07 (`0f004e4`) · ✅ T-08 (`6405c9f`) · ✅ T-09 (`e37ab69`).
-Sprint 2: ✅ T-03 ADR 0001 (`40088b4`) · ✅ T-04 delegación a Bashed Patch (`916bfa1`) ·
-✅ fixes de reviews Codex/Copilot (`ddcb2e8`). Suite completa verde (2.475 passed).
-Siguiente: T-10/T-11 (BLE001 en runners), T-13/T-14 → T-15 (preflight VFS + versión LOOT).
+**Estado de ejecución (2026-07-06):**
+**PR #238 (MERGEADO):** Sprint 1 completo (T-01/02/05/06/07/08/09) + T-03 (ADR 0001) +
+T-04 (delegación a Bashed Patch) + fixes de reviews Codex/Copilot + fix del flake Windows
+de watcher_daemon_io.
+**Rama actual (reiniciada desde main):** ✅ T-10 BLE001 en `local/tools/` (`d6972de`) ·
+✅ T-13 `VfsHealthChecker` (`56dedbe`) · ✅ T-14 versión LOOT + advisory (`69be4c1`).
+Siguiente: T-15 (agregador de preflight, compone T-09/T-13/T-14 + límites de plugins) →
+T-16 (panel GUI); en paralelo T-11 (BLE001 en `local/xedit/`).
 **Reglas de atomicidad:** una tarea = una rama = un PR = una preocupación. Cada tarea nombra su test rojo y su criterio de aceptación. Tamaños: **S** (<½ día), **M** (½–1 día), **L** (1–3 días).
 
 ## Grafo de dependencias (resumen)
