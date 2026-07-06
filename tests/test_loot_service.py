@@ -17,6 +17,7 @@ from sky_claw.antigravity.db.locks import DistributedLockManager
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.loot.cli import LOOTTimeoutError
 from sky_claw.local.loot.parser import LOOTResult
+from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID, LootSortingService
 
 if TYPE_CHECKING:
@@ -68,16 +69,26 @@ def _runner_returning(result: LOOTResult | None = None) -> MagicMock:
     return runner
 
 
+def _resolver_vacio() -> MagicMock:
+    """Resolver de load order sin candidatos: evita que los tests toquen los
+    plugins.txt reales de la máquina (LOCALAPPDATA) vía el resolver por defecto."""
+    resolver = MagicMock()
+    resolver.resolve.return_value = LoadOrderPaths(files=(), sources=())
+    return resolver
+
+
 def _make_service(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
     runner: MagicMock,
+    load_order_resolver: object | None = None,
 ) -> LootSortingService:
     return LootSortingService(
         lock_manager=lock_manager,
         snapshot_manager=snapshot_manager,
         path_resolver=MagicMock(),
         loot_runner=runner,
+        load_order_resolver=load_order_resolver or _resolver_vacio(),
     )
 
 
@@ -184,6 +195,8 @@ async def test_builds_runner_from_resolver_with_preserved_timeout(
     resolver = MagicMock()
     resolver.get_loot_exe = MagicMock(return_value=loot_exe)
     resolver.get_skyrim_path = MagicMock(return_value=game_path)
+    # Sin MO2 configurado: el resolver de load order no debe inventar rutas.
+    resolver.get_mo2_path = MagicMock(return_value=None)
 
     captured: dict[str, object] = {}
 
@@ -215,3 +228,129 @@ def test_preview_chain_shares_load_order_resource_id() -> None:
     from sky_claw.antigravity.orchestrator.preview import chain_preview_service
 
     assert chain_preview_service._RESOURCE_ID == LOAD_ORDER_RESOURCE_ID
+
+
+# =============================================================================
+# T-06: snapshot real del load order (rollback si LOOT corrompe el orden)
+# =============================================================================
+
+_CONTENIDO_ORIGINAL = "Skyrim.esm\nOriginal.esp\n"
+
+
+def _preparar_load_order(tmp_path: pathlib.Path) -> tuple[LoadOrderFileResolver, pathlib.Path]:
+    """Crea un plugins.txt/loadorder.txt reales y un resolver apuntándoles."""
+    load_order_dir = tmp_path / "load_order"
+    load_order_dir.mkdir()
+    plugins = load_order_dir / "plugins.txt"
+    plugins.write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
+    (load_order_dir / "loadorder.txt").write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
+    return LoadOrderFileResolver(explicit_dir=load_order_dir), plugins
+
+
+@pytest.mark.asyncio
+async def test_restaura_load_order_si_loot_lanza_a_mitad(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si LOOT muere (timeout) después de mutar plugins.txt, se restaura el original."""
+    resolver, plugins = _preparar_load_order(tmp_path)
+
+    async def sort_corrupto(**_kwargs: object) -> LOOTResult:
+        plugins.write_text("CORRUPTO\n", encoding="utf-8")
+        raise LOOTTimeoutError(60)
+
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=sort_corrupto)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert result["rolled_back"] is True
+    assert plugins.read_text(encoding="utf-8") == _CONTENIDO_ORIGINAL
+
+
+@pytest.mark.asyncio
+async def test_restaura_load_order_si_loot_sale_con_error(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un exit non-zero de LOOT también dispara la restauración del snapshot."""
+    resolver, plugins = _preparar_load_order(tmp_path)
+
+    async def sort_fallido(**_kwargs: object) -> LOOTResult:
+        plugins.write_text("CORRUPTO\n", encoding="utf-8")
+        return LOOTResult(return_code=1, errors=["cyclic interaction detected"])
+
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=sort_fallido)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert result["rolled_back"] is True
+    assert "cyclic interaction detected" in result["message"]
+    assert plugins.read_text(encoding="utf-8") == _CONTENIDO_ORIGINAL
+
+
+@pytest.mark.asyncio
+async def test_restore_fallido_no_reporta_rollback(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si el restore del snapshot falla, rolled_back debe ser False.
+
+    La ruta de excepción del lock loguea el fallo de restore sin re-lanzar
+    (para no enmascarar el error original de LOOT); el servicio no puede
+    derivar rolled_back de bool(target_files) — review Codex PR #238.
+    """
+    resolver, plugins = _preparar_load_order(tmp_path)
+
+    async def sort_fallido(**_kwargs: object) -> LOOTResult:
+        plugins.write_text("CORRUPTO\n", encoding="utf-8")
+        return LOOTResult(return_code=1, errors=["boom"])
+
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=sort_fallido)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
+
+    with patch.object(
+        snapshot_manager,
+        "restore_snapshot",
+        AsyncMock(side_effect=OSError("archivo bloqueado")),
+    ):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert result["rolled_back"] is False
+    # El archivo quedó como LOOT lo dejó — el caller debe saberlo.
+    assert plugins.read_text(encoding="utf-8") == "CORRUPTO\n"
+
+
+@pytest.mark.asyncio
+async def test_sort_exitoso_conserva_los_cambios(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un sort exitoso NO revierte: el orden nuevo escrito por LOOT se conserva."""
+    resolver, plugins = _preparar_load_order(tmp_path)
+    orden_nuevo = "Skyrim.esm\nReordenado.esp\n"
+
+    async def sort_exitoso(**_kwargs: object) -> LOOTResult:
+        plugins.write_text(orden_nuevo, encoding="utf-8")
+        return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm", "Reordenado.esp"])
+
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=sort_exitoso)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    assert result["rolled_back"] is False
+    assert plugins.read_text(encoding="utf-8") == orden_nuevo

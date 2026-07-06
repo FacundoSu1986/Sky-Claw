@@ -80,9 +80,10 @@ class TestPatchOrchestratorIntegration:
         )
 
     def test_orchestrator_initialization(self, orchestrator):
-        """Verifica que el orquestador se inicializa correctamente con 2 estrategias."""
+        """Verifica que el orquestador se inicializa correctamente."""
         assert orchestrator is not None
-        assert len(orchestrator._strategies) == 2  # CreateMergedPatch + ExecuteXEditScript
+        # ExecuteXEditScript + DelegateToBashedPatch (ADR 0001).
+        assert len(orchestrator._strategies) == 2
 
         # Verificar que las estrategias están ordenadas por prioridad
         priorities = [s.get_priority() for s in orchestrator._strategies]
@@ -91,8 +92,10 @@ class TestPatchOrchestratorIntegration:
     def test_default_strategies_are_registered(self, orchestrator):
         """Verifica que las estrategias por defecto están registradas."""
         strategy_names = {s.__class__.__name__ for s in orchestrator._strategies}
-        assert "CreateMergedPatch" in strategy_names
         assert "ExecuteXEditScript" in strategy_names
+        assert "DelegateToBashedPatch" in strategy_names
+        # Excluida por ADR 0001: no implementa merge real de entradas.
+        assert "CreateMergedPatch" not in strategy_names
 
     @pytest.mark.asyncio
     async def test_resolve_empty_report(self, orchestrator):
@@ -112,7 +115,11 @@ class TestPatchOrchestratorIntegration:
 
     @pytest.mark.asyncio
     async def test_resolve_leveled_list_conflict(self, orchestrator):
-        """Verifica resolución de conflictos de leveled lists (LVLI)."""
+        """Los conflictos de leveled lists se delegan al Bashed Patch (ADR 0001).
+
+        El merge propio no implementa un merge real de entradas (Relev/Delev);
+        el plan resultante debe enrutar a Wrye Bash, sin script xEdit propio.
+        """
         # Crear conflicto de leveled list
         conflict = RecordConflict(
             form_id="00012345",
@@ -138,10 +145,9 @@ class TestPatchOrchestratorIntegration:
 
         result = await orchestrator.resolve(report)
 
-        # Verificar que se seleccionó CreateMergedPatch (para LVLI)
         assert result.success is True
-        assert result.conflicts_resolved == 1
-        assert result.output_path is not None
+        assert result.strategy_type is PatchStrategyType.DELEGATE_BASHED_PATCH
+        assert any("Bashed Patch" in w for w in result.warnings)
 
     @pytest.mark.asyncio
     async def test_resolve_critical_conflict(self, orchestrator):
@@ -250,6 +256,27 @@ class TestPatchStrategies:
         assert xedit_script_strategy.get_priority() > merged_patch_strategy.get_priority()
         assert xedit_script_strategy.get_priority() == 20
         assert merged_patch_strategy.get_priority() == 10
+
+    def test_critical_types_alineados_con_conflict_analyzer(self):
+        """T-07: una sola fuente de firmas críticas (SCA-001: SCEN, no SCPT).
+
+        El orquestador duplicaba el set del analyzer con SCPT (record de
+        Oblivion, inexistente en Skyrim SE) y sin INFO — la rama de "alto
+        riesgo por SCPT" era código muerto.
+        """
+        from sky_claw.local.xedit.conflict_analyzer import DEFAULT_CRITICAL_TYPES
+
+        assert ExecuteXEditScript.CRITICAL_TYPES == DEFAULT_CRITICAL_TYPES
+        assert "SCEN" in ExecuteXEditScript.CRITICAL_TYPES
+        assert "SCPT" not in ExecuteXEditScript.CRITICAL_TYPES
+
+    def test_scpt_no_aparece_en_el_orquestador(self):
+        """Anti-regresión T-07: ninguna referencia a SCPT en el módulo."""
+        import inspect
+
+        from sky_claw.local.xedit import patch_orchestrator
+
+        assert "SCPT" not in inspect.getsource(patch_orchestrator)
 
 
 class TestPatchPlanDataclass:

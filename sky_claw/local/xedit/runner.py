@@ -275,14 +275,46 @@ begin
   Result := 0;
 end;
 
+// Version ganadora por load order IGNORANDO el plugin de salida: en un
+// re-run el output ya cargado seria el WinningOverride de sus propios
+// records y el guard saltearia todas las fuentes (review Codex PR #238).
+function WinnerExcludingOutput(e: IInterface): IInterface;
+var
+  i: Integer;
+  master, ovr: IInterface;
+begin
+  master := MasterOrSelf(e);
+  Result := master;
+  for i := OverrideCount(master) - 1 downto 0 do
+  begin
+    ovr := OverrideByIndex(master, i);
+    if not SameText(GetFileName(GetFile(ovr)), outputPluginName) then
+    begin
+      Result := ovr;
+      Exit;
+    end;
+  end;
+end;
+
 function Process(e: IInterface): integer;
 var
   recordType: string;
   formId: string;
   newRecord: IInterface;
 begin
+  Result := 0;
   recordType := Signature(e);
   formId := FormID(e);
+
+  // Skip records que viven en el propio plugin de salida (caso re-run).
+  if SameText(GetFileName(GetFile(e)), outputPluginName) then
+    Exit;
+
+  // Solo la version ganadora por load order (ignorando el output): sin este
+  // guard se copiaba la primera version iterada y se revertian los overrides
+  // de la modlist (P0, TECHNICAL_REVIEW.md seccion 4.1).
+  if not Equals(e, WinnerExcludingOutput(e)) then
+    Exit;
 
   // Process LVLI, LVLN, LVSP records
   if (recordType = 'LVLI') or (recordType = 'LVLN') or (recordType = 'LVSP') then
@@ -586,10 +618,20 @@ end.
             )
 
         elif strategy == PatchStrategyType.CREATE_MERGED_PATCH:
-            # Generar script de merge para leveled lists
-            return ScriptGenerator.generate_merge_script(
-                output_plugin=patch_plan.output_plugin,
-                record_types=["LVLI", "LVLN", "LVSP"],
+            # Deshabilitada por ADR 0001: tras el hotfix T-02 el template hace
+            # forward del ganador, pero sigue sin implementar un merge real de
+            # entradas (Relev/Delev). Leveled lists → Bashed Patch.
+            raise XEditScriptError(
+                "La estrategia CREATE_MERGED_PATCH está deshabilitada: no "
+                "implementa un merge real de entradas de leveled lists "
+                "(Relev/Delev). Usá un Bashed Patch (Wrye Bash) — ADR 0001."
+            )
+
+        elif strategy == PatchStrategyType.DELEGATE_BASHED_PATCH:
+            # Los planes delegados los ejecuta Wrye Bash, no xEdit: si uno llega
+            # hasta acá hay un bug de enrutado en la capa de servicio.
+            raise XEditScriptError(
+                "Un plan DELEGATE_BASHED_PATCH no genera script xEdit: debe enrutarse al flujo de Wrye Bash (ADR 0001)."
             )
 
         elif strategy == PatchStrategyType.EXECUTE_XEDIT_SCRIPT:
@@ -640,10 +682,33 @@ class XEditRunner:
         # Ensure output directory exists
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
+    #: mteFunctions.pas no viene con xEdit; los scripts de Sky-Claw lo requieren.
+    MTE_FUNCTIONS_URL = "https://github.com/matortheeternal/TES5EditScripts"
+
     @property
     def script_generator(self) -> ScriptGenerator:
         """Access the script generator instance."""
         return self._script_generator
+
+    def _assert_mte_functions_available(self, script_content: str) -> None:
+        """Falla rápido si *script_content* usa mteFunctions y no está instalado.
+
+        Raises:
+            XEditScriptError: Con mensaje accionable (ruta esperada + link de
+                descarga) si falta ``Edit Scripts/mteFunctions.pas``.
+        """
+        # Pascal es case-insensitive: 'uses mtefunctions' también compila contra
+        # la librería, así que la detección no puede ser sensible a mayúsculas.
+        if "mtefunctions" not in script_content.lower():
+            return
+
+        mte_path = self._xedit_path.parent / "Edit Scripts" / "mteFunctions.pas"
+        if not mte_path.exists():
+            raise XEditScriptError(
+                f"El script requiere mteFunctions.pas y no existe en {mte_path}. "
+                f"Descargalo de {self.MTE_FUNCTIONS_URL} y copialo a la carpeta "
+                "'Edit Scripts' de xEdit."
+            )
 
     async def run_script(
         self,
@@ -808,6 +873,10 @@ class XEditRunner:
 
         if not self._xedit_path.exists():
             raise XEditNotFoundError(f"xEdit executable not found at {self._xedit_path}")
+
+        # Fallar rápido ANTES de lanzar xEdit si falta mteFunctions (T-09):
+        # la alternativa es un error de compilación críptico a mitad del Ritual.
+        self._assert_mte_functions_available(script_content)
 
         # Crear archivo temporal para el script
         script_path: pathlib.Path | None = None

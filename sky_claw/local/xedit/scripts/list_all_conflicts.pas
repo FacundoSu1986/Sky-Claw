@@ -19,11 +19,16 @@ unit list_all_conflicts;
 var
   totalConflicts, criticalCount, minorCount: Integer;
 
+{ Mantener sincronizado con DEFAULT_CRITICAL_TYPES / DEFAULT_WARNING_TYPES
+  de conflict_analyzer.py — anclado por tests/test_conflict_signatures_sync.py.
+  SCA-001/T-08: la firma de scripts de Oblivion no existe en Skyrim SE; los
+  tipos relevantes son SCEN e INFO. }
 function IsCriticalType(sig: string): Boolean;
 begin
-  Result := (sig = 'NPC_') or (sig = 'QUST') or (sig = 'SCPT') or
-            (sig = 'PERK') or (sig = 'SPEL') or (sig = 'MGEF') or
-            (sig = 'FACT') or (sig = 'DIAL') or (sig = 'PACK');
+  Result := (sig = 'NPC_') or (sig = 'QUST') or (sig = 'SCEN') or
+            (sig = 'INFO') or (sig = 'PERK') or (sig = 'SPEL') or
+            (sig = 'MGEF') or (sig = 'FACT') or (sig = 'DIAL') or
+            (sig = 'PACK');
 end;
 
 function IsWarningType(sig: string): Boolean;

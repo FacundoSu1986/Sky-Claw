@@ -623,10 +623,22 @@ class SnapshotTransactionLock:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._lease_lost = False
 
+        # Resultado del rollback, poblado en __aexit__. En la ruta de excepción
+        # un restore fallido solo se loguea (para no enmascarar el error
+        # original), así que el caller NO puede asumir que hubo rollback: debe
+        # consultar rollback_completed (review Codex PR #238).
+        self.rollback_attempted: bool = False
+        self.rollback_failures: list[str] = []
+
     @property
     def lease_lost(self) -> bool:
         """True if the heartbeat could not renew the lease (exclusivity gone)."""
         return self._lease_lost
+
+    @property
+    def rollback_completed(self) -> bool:
+        """True si el rollback corrió y restauró TODOS los snapshots (≥1)."""
+        return self.rollback_attempted and bool(self.snapshots) and not self.rollback_failures
 
     async def assert_owned(self, *, verify_db: bool = True) -> None:
         """Raise :class:`LockLeaseLostError` if exclusivity can no longer be guaranteed.
@@ -786,6 +798,7 @@ class SnapshotTransactionLock:
         # restores (its no-mutation contract wins).
         lease_loss = self._lease_lost or (exc_type is not None and issubclass(exc_type, LockLeaseLostError))
         should_rollback = self._force_rollback or (exc_type is not None and not lease_loss)
+        self.rollback_attempted = should_rollback
         try:
             if should_rollback:
                 await self._rollback_snapshots(exc_val=exc_val)
@@ -860,6 +873,7 @@ class SnapshotTransactionLock:
                     exc_info=True,
                 )
                 failures.append(snap.original_path)
+        self.rollback_failures = failures
 
         # A forced (dry-run) rollback that could not restore a file means we may
         # have left it mutated while the caller believes the preview was
