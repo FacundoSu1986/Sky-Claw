@@ -710,6 +710,14 @@ class PatchOrchestrator:
                 best_strategy = strategy
 
         if best_strategy is None or best_score == 0:
+            leveled_list_types = CreateMergedPatch.HANDLED_TYPES
+            if any(c.record_type.upper() in leveled_list_types for c in conflicts):
+                raise StrategySelectionError(
+                    "Los conflictos de leveled lists (LVLI/LVLN/LVSP) no tienen "
+                    "estrategia automática: el merge propio está deshabilitado "
+                    "porque revierte overrides (P0). Usá un Bashed Patch "
+                    "(Wrye Bash) para fusionar leveled lists."
+                )
             raise StrategySelectionError(f"No strategy can handle any of the {len(conflicts)} conflicts")
 
         return best_strategy
@@ -718,9 +726,13 @@ class PatchOrchestrator:
         """Retorna la lista de estrategias por defecto.
 
         Returns:
-            Lista con ExecuteXEditScript y CreateMergedPatch.
+            Lista con ExecuteXEditScript.
         """
-        return [ExecuteXEditScript(), CreateMergedPatch()]
+        # CreateMergedPatch excluida deliberadamente: su script de merge copia la
+        # primera versión de cada FormID y descarta los overrides posteriores, por
+        # lo que puede REVERTIR leveled lists de la modlist (P0, TECHNICAL_REVIEW.md
+        # §4.1). Reincorporar solo cuando T-04 implemente la semántica correcta.
+        return [ExecuteXEditScript()]
 
     @property
     def strategies(self) -> list[PatchStrategy]:

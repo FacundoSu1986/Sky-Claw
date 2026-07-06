@@ -586,10 +586,13 @@ end.
             )
 
         elif strategy == PatchStrategyType.CREATE_MERGED_PATCH:
-            # Generar script de merge para leveled lists
-            return ScriptGenerator.generate_merge_script(
-                output_plugin=patch_plan.output_plugin,
-                record_types=["LVLI", "LVLN", "LVSP"],
+            # El template de merge copia la primera versión de cada FormID y
+            # descarta los overrides posteriores — puede revertir leveled lists
+            # de la modlist (P0, TECHNICAL_REVIEW.md §4.1). Re-habilitar en T-04.
+            raise XEditScriptError(
+                "La estrategia CREATE_MERGED_PATCH está deshabilitada: su script "
+                "de merge revierte overrides de leveled lists (P0). Usá un "
+                "Bashed Patch (Wrye Bash) para fusionar leveled lists."
             )
 
         elif strategy == PatchStrategyType.EXECUTE_XEDIT_SCRIPT:

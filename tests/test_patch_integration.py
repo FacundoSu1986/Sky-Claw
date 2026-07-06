@@ -80,9 +80,11 @@ class TestPatchOrchestratorIntegration:
         )
 
     def test_orchestrator_initialization(self, orchestrator):
-        """Verifica que el orquestador se inicializa correctamente con 2 estrategias."""
+        """Verifica que el orquestador se inicializa correctamente."""
         assert orchestrator is not None
-        assert len(orchestrator._strategies) == 2  # CreateMergedPatch + ExecuteXEditScript
+        # Solo ExecuteXEditScript: CreateMergedPatch está deshabilitada por el
+        # P0 de leveled lists (TECHNICAL_REVIEW.md §4.1) hasta T-04.
+        assert len(orchestrator._strategies) == 1
 
         # Verificar que las estrategias están ordenadas por prioridad
         priorities = [s.get_priority() for s in orchestrator._strategies]
@@ -91,8 +93,9 @@ class TestPatchOrchestratorIntegration:
     def test_default_strategies_are_registered(self, orchestrator):
         """Verifica que las estrategias por defecto están registradas."""
         strategy_names = {s.__class__.__name__ for s in orchestrator._strategies}
-        assert "CreateMergedPatch" in strategy_names
         assert "ExecuteXEditScript" in strategy_names
+        # Excluida por el P0 de leveled lists (revierte overrides).
+        assert "CreateMergedPatch" not in strategy_names
 
     @pytest.mark.asyncio
     async def test_resolve_empty_report(self, orchestrator):
@@ -112,7 +115,11 @@ class TestPatchOrchestratorIntegration:
 
     @pytest.mark.asyncio
     async def test_resolve_leveled_list_conflict(self, orchestrator):
-        """Verifica resolución de conflictos de leveled lists (LVLI)."""
+        """Los conflictos de leveled lists fallan explícito recomendando Bashed Patch.
+
+        El merge propio está deshabilitado por el P0 (revierte overrides,
+        TECHNICAL_REVIEW.md §4.1); el error debe apuntar a la herramienta correcta.
+        """
         # Crear conflicto de leveled list
         conflict = RecordConflict(
             form_id="00012345",
@@ -138,10 +145,9 @@ class TestPatchOrchestratorIntegration:
 
         result = await orchestrator.resolve(report)
 
-        # Verificar que se seleccionó CreateMergedPatch (para LVLI)
-        assert result.success is True
-        assert result.conflicts_resolved == 1
-        assert result.output_path is not None
+        assert result.success is False
+        assert result.error is not None
+        assert "Bashed Patch" in result.error
 
     @pytest.mark.asyncio
     async def test_resolve_critical_conflict(self, orchestrator):
