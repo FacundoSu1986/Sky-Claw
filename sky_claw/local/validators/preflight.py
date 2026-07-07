@@ -22,6 +22,7 @@ consumirá la GUI (T-16) y el journal.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 from collections.abc import Awaitable, Callable
@@ -135,9 +136,11 @@ class PreflightService:
         # Caché de la detección: correr `loot --version` en cada ritual sería
         # relanzar el binario innecesariamente (y en el peor caso, pagar el
         # timeout completo por corrida). La versión instalada no cambia
-        # durante la vida del servicio.
+        # durante la vida del servicio. El lock evita el doble disparo ante
+        # run() concurrentes (review Copilot PR #240).
         self._version_cache: tuple[int, int, int] | None = None
         self._version_checked = False
+        self._version_lock = asyncio.Lock()
 
     async def run(self) -> PreflightReport:
         """Ejecuta los sensores configurados y agrega el semáforo."""
@@ -149,9 +152,10 @@ class PreflightService:
         loot_version: tuple[int, int, int] | None = None
         loot_detected = self._detect_version is not None
         if self._detect_version is not None:
-            if not self._version_checked:
-                self._version_cache = await self._detect_version()
-                self._version_checked = True
+            async with self._version_lock:
+                if not self._version_checked:
+                    self._version_cache = await self._detect_version()
+                    self._version_checked = True
             loot_version = self._version_cache
         checks.append(self._loot_check(loot_version, detector_configured=loot_detected))
 

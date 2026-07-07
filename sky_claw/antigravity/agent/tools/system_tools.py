@@ -97,6 +97,11 @@ async def run_loot_sort(
             lock_manager=lock_manager,
             snapshot_manager=snapshot_manager,
             loot_runner=loot_runner,
+            # Sin path_resolver en este path: loot_exe + mo2.root alimentan el
+            # preflight perezoso — sin esto el guard era un no-op en el camino
+            # del agente (review Codex PR #240 P1).
+            loot_exe=loot_exe,
+            mo2_root=getattr(mo2, "root", None),
         )
         # update_masterlist=False preserves the agent tool's prior no-network
         # behavior (ProfileParams has no masterlist flag).

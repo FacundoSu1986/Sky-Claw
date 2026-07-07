@@ -431,15 +431,33 @@ class PathResolutionService:
     # preflight necesita inspeccionar (review Codex PR #239). Solo para
     # inspección read-only (lstat); nunca para abrir/escribir archivos.
 
+    @staticmethod
+    def _raw_env_path(var_name: str) -> pathlib.Path | None:
+        """Path crudo desde *var_name*, degradando a None si es inválido.
+
+        Un valor con bytes nulos no lanza al construir el Path pero explota
+        recién en los os-calls (lstat) del checker — mejor filtrarlo acá con
+        logging, como hacen los getters validados (review Copilot PR #240).
+        """
+        raw = os.environ.get(var_name, "")
+        if not raw:
+            return None
+        if "\x00" in raw:
+            security_logger.warning("%s crudo inválido (byte nulo embebido); se ignora.", var_name)
+            return None
+        try:
+            return pathlib.Path(raw)
+        except ValueError as exc:
+            security_logger.warning("%s crudo inválido para pathlib: %s", var_name, exc)
+            return None
+
     def get_skyrim_path_raw(self) -> pathlib.Path | None:
         """SKYRIM_PATH tal como está configurado, sin resolver symlinks."""
-        raw = os.environ.get("SKYRIM_PATH", "")
-        return pathlib.Path(raw) if raw else None
+        return self._raw_env_path("SKYRIM_PATH")
 
     def get_mo2_path_raw(self) -> pathlib.Path | None:
         """MO2_PATH tal como está configurado, sin resolver symlinks."""
-        raw = os.environ.get("MO2_PATH", "")
-        return pathlib.Path(raw) if raw else None
+        return self._raw_env_path("MO2_PATH")
 
     def get_dyndolod_exe(self) -> pathlib.Path | None:
         """Resuelve DYNDLOD_EXE desde entorno validado."""

@@ -95,9 +95,16 @@ class VfsHealthChecker:
         *,
         game_path: pathlib.Path | None = None,
         mo2_root: pathlib.Path | None = None,
+        scan_mods_dir: bool = True,
     ) -> None:
         self._game_path = game_path
         self._mo2_root = mo2_root
+        # Enumerar mods/ (iterdir) sobre una ruta NO validada por el sandbox
+        # permitiría listar directorios arbitrarios (review Codex PR #240):
+        # el caller lo deshabilita cuando la ruta cruda no tiene contraparte
+        # validada. Los lstat de rutas fijas (root/ancestros/subdirs con
+        # nombre conocido) no enumeran nada y siempre corren.
+        self._scan_mods_dir = scan_mods_dir
 
     def check(self) -> list[VfsIssue]:
         """Devuelve los enlaces encontrados, sin duplicados, en orden estable."""
@@ -127,7 +134,7 @@ class VfsHealthChecker:
                 sub_path = self._mo2_root / subdir
                 add(sub_path, "warning", _REMEDIATION_MO2)
             mods_dir = self._mo2_root / "mods"
-            if mods_dir.is_dir():
+            if self._scan_mods_dir and mods_dir.is_dir():
                 for mod_dir in sorted(mods_dir.iterdir()):
                     add(mod_dir, "warning", _REMEDIATION_MO2)
 

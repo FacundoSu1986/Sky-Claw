@@ -17,7 +17,7 @@ from __future__ import annotations
 import pathlib
 import sys
 import tempfile
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -58,8 +58,10 @@ class TestAccessorsCrudos:
 
         resolver = PathResolutionService(path_validator=MagicMock())
 
-        assert resolver.get_skyrim_path_raw() == enlace
-        assert resolver.get_skyrim_path_raw().is_symlink()  # type: ignore[union-attr]
+        crudo = resolver.get_skyrim_path_raw()
+        assert crudo is not None
+        assert crudo == enlace
+        assert crudo.is_symlink()
 
     def test_sin_variable_devuelve_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("MO2_PATH", raising=False)
@@ -67,6 +69,18 @@ class TestAccessorsCrudos:
         resolver = PathResolutionService(path_validator=MagicMock())
 
         assert resolver.get_mo2_path_raw() is None
+
+    def test_valor_con_byte_nulo_degrada_a_none(self) -> None:
+        """Un env corrupto no debe tumbar el preflight: los bytes nulos
+        explotan recién en los os-calls del checker (review Copilot #240).
+        (putenv no acepta '\\0', así que se mockea environ.get directamente.)"""
+        resolver = PathResolutionService(path_validator=MagicMock())
+
+        with patch(
+            "sky_claw.antigravity.core.path_resolver.os.environ.get",
+            return_value="C:\\Juegos\x00\\Skyrim",
+        ):
+            assert resolver.get_skyrim_path_raw() is None
 
 
 class TestCableadoPerezoso:
@@ -95,6 +109,8 @@ class TestCableadoPerezoso:
         resolver = MagicMock()
         resolver.get_skyrim_path_raw = MagicMock(return_value=enlace)
         resolver.get_mo2_path_raw = MagicMock(return_value=None)
+        resolver.get_mo2_path = MagicMock(return_value=None)
+        resolver.detect_mo2_path = MagicMock(return_value=None)
         resolver.get_loot_exe = MagicMock(return_value=None)
 
         svc = self._service(resolver)
@@ -115,6 +131,8 @@ class TestCableadoPerezoso:
         resolver = MagicMock()
         resolver.get_skyrim_path_raw = MagicMock(return_value=game)
         resolver.get_mo2_path_raw = MagicMock(return_value=None)
+        resolver.get_mo2_path = MagicMock(return_value=None)
+        resolver.detect_mo2_path = MagicMock(return_value=None)
         resolver.get_loot_exe = MagicMock(return_value=None)
 
         runner = MagicMock()
@@ -147,6 +165,35 @@ class TestCableadoPerezoso:
         assert resultado["success"] is True
 
 
+class TestCallSiteDelAgente:
+    """El path del agente (sin path_resolver) también queda protegido (P1 #240)."""
+
+    @_symlink_guard
+    async def test_construye_preflight_desde_mo2_root(self, tmp_path: pathlib.Path) -> None:
+        from sky_claw.local.validators.preflight import PreflightStatus
+
+        mo2 = tmp_path / "MO2"
+        (mo2 / "mods").mkdir(parents=True)
+        real = tmp_path / "ModReal"
+        real.mkdir()
+        (mo2 / "mods" / "ModEnlazado").symlink_to(real, target_is_directory=True)
+
+        svc = LootSortingService(
+            lock_manager=MagicMock(),
+            snapshot_manager=MagicMock(),
+            loot_runner=MagicMock(),
+            mo2_root=mo2,
+        )
+
+        preflight = svc._ensure_preflight()
+        assert preflight is not None
+
+        reporte = await preflight.run()
+        vfs = next(c for c in reporte.checks if c.name == "vfs")
+        assert vfs.status is PreflightStatus.YELLOW
+        assert any("ModEnlazado" in d for d in vfs.details)
+
+
 class TestCacheDeVersion:
     """La versión de LOOT se detecta una vez por servicio, no por ritual."""
 
@@ -160,3 +207,24 @@ class TestCacheDeVersion:
         await servicio.run()
 
         detector.assert_awaited_once()
+
+    async def test_runs_concurrentes_no_duplican_la_deteccion(self) -> None:
+        """Dos run() en paralelo no deben disparar `loot --version` dos veces
+        (review Copilot #240): el lock serializa el primer llenado del caché."""
+        import asyncio
+
+        detecciones = 0
+
+        async def detector_lento() -> tuple[int, int, int]:
+            nonlocal detecciones
+            detecciones += 1
+            await asyncio.sleep(0.05)
+            return (0, 29, 0)
+
+        checker = MagicMock()
+        checker.check.return_value = []
+        servicio = PreflightService(vfs_checker=checker, loot_version_detector=detector_lento)
+
+        await asyncio.gather(servicio.run(), servicio.run())
+
+        assert detecciones == 1
