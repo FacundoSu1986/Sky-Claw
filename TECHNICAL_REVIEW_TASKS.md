@@ -7,10 +7,13 @@
 **PR #238 (MERGEADO):** Sprint 1 completo (T-01/02/05/06/07/08/09) + T-03 (ADR 0001) +
 T-04 (delegación a Bashed Patch) + fixes de reviews Codex/Copilot + fix del flake Windows
 de watcher_daemon_io.
-**Rama actual (reiniciada desde main):** ✅ T-10 BLE001 en `local/tools/` (`d6972de`) ·
-✅ T-13 `VfsHealthChecker` (`56dedbe`) · ✅ T-14 versión LOOT + advisory (`69be4c1`).
-Siguiente: T-15 (agregador de preflight, compone T-09/T-13/T-14 + límites de plugins) →
-T-16 (panel GUI); en paralelo T-11 (BLE001 en `local/xedit/`).
+**Rama actual (reiniciada desde main) — "Servicio de Preflight (backend)":**
+✅ T-10 BLE001 en `local/tools/` · ✅ T-13 `VfsHealthChecker` · ✅ T-14 versión LOOT +
+advisory · ✅ T-15 `PreflightService` (semáforo con regla de composición: symlinks +
+LOOT <0.29 = rojo; primer mutante cableado: `LootSortingService`, con
+`override_preflight` para HITL).
+Siguiente: T-16 (panel GUI consumiendo `PreflightReport.to_dict()`); T-11 (BLE001 en
+`local/xedit/`); cablear preflight en el resto de los mutantes (xEdit/Synthesis/DynDOLOD).
 **Reglas de atomicidad:** una tarea = una rama = un PR = una preocupación. Cada tarea nombra su test rojo y su criterio de aceptación. Tamaños: **S** (<½ día), **M** (½–1 día), **L** (1–3 días).
 
 ## Grafo de dependencias (resumen)
