@@ -217,3 +217,61 @@ Optimización: dentro de cada oleada las tareas sin flecha entre sí son **paral
 | 5 | T-25 (humano, con acompañamiento) | | |
 
 Con un solo ejecutor: seguir la numeración por oleadas; nunca adelantar Oleada 4 antes de cerrar T-01 (el P0 contenido es prerrequisito de confianza para todo lo demás).
+
+---
+
+## Oleada 7 — Caja negra de vuelo (extensión OODA 2026-07-07 · ADR 0002)
+
+**Origen:** la visión de producto "caja negra de vuelo de la modlist" formalizada en
+`docs/adr/0002-norte-caja-negra.md`. Cubre los ítems del review que quedaron sin tarea
+(§4.6 pipeline auditable con manifiestos, §5.5 panel por subrecord) y agrega las piezas
+genuinamente nuevas de la visión (sandbox de perfil MO2, informe final). **No altera las
+Oleadas 0–6 ni el trabajo en vuelo** (T-16, T-11, cableado de preflight en los mutantes
+restantes) — lo refuerza. Flujo must-have que esta oleada completa:
+`clonar perfil → preflight → analizar → explicar → proponer → aprobar → ejecutar → validar → informe`.
+
+```
+Grafo:  T-26 ─┬─> T-28 (junto con T-21)      T-27 (T-05 ya cerrada)
+              │
+T-29 (tras T-19a)      T-30 (repetible, sobre T-15 ya cerrada)
+```
+
+Ordenamiento sugerido: T-26 ∥ T-27 ∥ T-30 pueden arrancar ya (paralelizables con la
+Oleada 4); T-28 y T-29 esperan sus dependencias. **T-27 y T-28 se suman al criterio de
+GA de T-25**: la matriz de smoke real debe ejercitar el flujo must-have completo.
+
+### T-26 · `ActionManifest` por Ritual mutante (M)
+- **Archivos:** `sky_claw/antigravity/orchestrator/preview/manifest.py` (extender los modelos existentes) + `sky_claw/antigravity/db/journal.py` (persistencia).
+- **Cambio:** todo Ritual mutante produce, antes de ejecutar, un manifiesto inspeccionable: archivos que tocará, plugins/records que forwardea, herramienta + versión, y **plan de rollback** (qué snapshot restaura qué). Es el §4.6 del review (fases auditables) implementado sobre el contrato de preview existente, no un contrato paralelo.
+- **Test rojo:** un Ritual mutante (mock) ejecutado sin manifiesto previo falla; con manifiesto, el objeto persistido en el journal contiene archivos/herramienta/rollback y es recuperable tras reinicio (`model_validate_json` round-trip).
+- **Aceptación:** manifiesto persistido y consultable por Ritual; el approval gate muestra el manifiesto, no un resumen libre del LLM.
+- **Dependencias:** ninguna dura (reusa `preview/` + journal). Paralelizable con todo.
+
+### T-27 · `ProfileSandbox`: clonado de perfil MO2 + aislamiento del overwrite compartido (L)
+- **Archivos:** nuevo servicio en `sky_claw/local/mo2/` (junto a `load_order.py`/`vfs.py`; reusar el parsing con BOM preservado y `LoadOrderSnapshotService` de T-05).
+- **Cambio:** clonar el perfil MO2 activo (`plugins.txt`, `modlist.txt`, settings del profile), ejecutar los rituales mutantes contra la copia, producir un **diff explicable** (`plugins.txt`/`modlist.txt`/`overwrite`) y promover al perfil real solo tras aprobación.
+- **Aislamiento del overwrite compartido (crítico):** varios rituales mutantes NO escriben dentro del árbol del perfil sino en el **overwrite compartido de MO2** (`mo2_path/overwrite`), fuera del profile — p. ej. Synthesis (`sky_claw/local/tools/synthesis_service.py:127`, `output_path = mo2_path / "overwrite"`) y Pandora (`sky_claw/local/tools/pandora_service.py` docstring: salida "en el overwrite/MO2"). Clonar solo el perfil **no** los aísla. El sandbox debe **redirigir o snapshotear el overwrite compartido** y **cablear al sandbox los runners que apuntan ahí** antes de poder afirmar la garantía de aislamiento. Gancho natural: la infra de snapshot de T-05/T-06 y el patrón `target_files` diferido (`target_files=[]`) que hoy usan `loot_service`/`pandora_service` — resolver el destino real y redirigirlo a la copia.
+- **Test rojo:** (1) dado un fixture de instalación MO2, `clone_profile()` crea una copia aislada byte-fiel (BOM/encoding incluidos); un run que muta la copia no toca el perfil original; `diff()` reporta exactamente los cambios; `promote()` los aplica. (2) un run de Synthesis/Pandora contra el sandbox NO toca el `mo2_path/overwrite` real; su salida queda en la copia y aparece en el `diff()`.
+- **Aceptación:** ningún Ritual mutante escribe directamente ni en el perfil real ni en el overwrite compartido real cuando el sandbox está activo; el diff (perfil + overwrite) es visible antes de promover.
+- **Dependencias:** T-05 (cerrada). Definir en el diseño la interacción con el VFS (los clones viven fuera de `profiles/` activo o con nombre no cargado por MO2) y la redirección del overwrite para los runners que lo targetean.
+
+### T-28 · Informe final de vuelo (M)
+- **Archivos:** nuevo composer sobre journal + T-26 + T-21; vista en `sky_claw/antigravity/gui/views/`.
+- **Cambio:** al terminar cada Ritual, un informe legible: qué cambió, por qué, quién ganó cada conflicto, qué validó el post-run, y cómo revertir (apuntando a los snapshots reales). Es la "caja negra" leída después del vuelo — ensambla datos existentes, no inventa nuevos.
+- **Test rojo:** tras un run simulado con manifiesto + resultado de validador, el informe generado contiene las cuatro secciones (cambios/razones/ganadores/rollback) con los datos del journal; un run sin manifiesto produce informe degradado explícito, nunca vacío silencioso.
+- **Aceptación:** informe persistido por Ritual y visible en GUI; exportable como Markdown.
+- **Dependencias:** T-26, T-21.
+
+### T-29 · Panel de conflictos por subrecord + "abrir en xEdit" (M)
+- **Archivos:** `sky_claw/antigravity/gui/views/` (evolución del panel de conflictos) + datos de T-19a.
+- **Cambio:** el §5.5 del review: record → subrecord → ganador → perdedores → por qué → qué se preserva/pierde → parche sugerido; botón "abrir en xEdit" (lanzar xEdit ya integrado, posicionado en el plugin del conflicto). Menos "launcher bonito", más "panel de cirugía".
+- **Test rojo:** patrón de tests de GUI existente — dado un reporte de conflictos con flags por override (T-19a), el panel renderiza ganador/perdedor por subrecord y la explicación de la regla; el botón invoca el runner de xEdit con los argumentos correctos (mock).
+- **Aceptación:** un conflicto SPEL con `Manual Cost Calc` en riesgo se entiende desde el panel sin abrir xEdit.
+- **Dependencias:** T-19a (datos por subrecord). Coordinar con T-16 para no duplicar secciones de GUI.
+
+### T-30 · Sensores adicionales de preflight (S cada uno, repetible)
+- **Archivos:** `sky_claw/local/validators/` (nuevos sensores) + `preflight.py` (composición — el servicio ya está diseñado para agregar sensores).
+- **Sensores, en orden de valor:** (1) masters faltantes; (2) límites full/light con flags reales de header (junto con T-18); (3) overwrite sucio; (4) permisos de escritura en rutas de juego/MO2.
+- **Test rojo por sensor:** fixture con la condición → check amarillo/rojo con remediación accionable; sin la condición → verde. La regla de composición del semáforo se extiende con tests propios.
+- **Aceptación por iteración:** un sensor por PR, cableado al `PreflightService` y visible en el panel de T-16.
+- **Dependencias:** T-15 (cerrada); (2) se apoya en T-17/T-18. No bloquear un sensor por otro.
