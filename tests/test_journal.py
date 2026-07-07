@@ -90,6 +90,64 @@ class TestOperationJournal:
         assert entry is not None
         assert entry.status == OperationStatus.FAILED
 
+    @pytest.mark.asyncio
+    async def test_record_and_get_action_manifest(self, journal):
+        """Persistir un manifiesto por acción y recuperarlo por workflow_id."""
+        manifest = {"workflow_id": "wf-1", "ritual": "loot_sort", "tool": "LOOT"}
+
+        await journal.record_action_manifest(
+            workflow_id="wf-1",
+            manifest=manifest,
+            agent_id="chain-preview-approval-gate",
+        )
+
+        recuperado = await journal.get_action_manifest("wf-1")
+        assert recuperado == manifest
+
+    @pytest.mark.asyncio
+    async def test_get_action_manifest_ausente_devuelve_none(self, journal):
+        """Sin manifiesto persistido para ese workflow → None (no error)."""
+        assert await journal.get_action_manifest("wf-inexistente") is None
+
+
+@pytest.mark.asyncio
+async def test_action_manifest_sobrevive_reinicio(tmp_path):
+    """El manifiesto persiste en disco: recuperable tras reabrir el journal.
+
+    Simula un reinicio del proceso: se persiste con una instancia, se cierra,
+    y se lee con una instancia nueva sobre el mismo archivo .db.
+    """
+    from sky_claw.antigravity.orchestrator.preview.manifest import ActionManifest, RollbackStep
+
+    db_path = tmp_path / "restart_journal.db"
+    original = ActionManifest(
+        workflow_id="wf-persist",
+        ritual="xedit_patch",
+        tool="xEdit",
+        tool_version="4.1.5",
+        files_to_touch=["SkyClaw_Patch.esp"],
+        rollback_plan=[RollbackStep(target_file="SkyClaw_Patch.esp", snapshot_id="snap-1")],
+    )
+
+    escritor = OperationJournal(db_path)
+    await escritor.open()
+    await escritor.record_action_manifest(
+        workflow_id=original.workflow_id,
+        manifest=original.model_dump(mode="json"),
+        agent_id="test",
+    )
+    await escritor.close()
+
+    lector = OperationJournal(db_path)
+    await lector.open()
+    try:
+        data = await lector.get_action_manifest("wf-persist")
+    finally:
+        await lector.close()
+
+    assert data is not None
+    assert ActionManifest.model_validate(data) == original
+
 
 class TestFileSnapshotManager:
     """Tests for FileSnapshotManager."""

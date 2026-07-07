@@ -11,7 +11,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from sky_claw.antigravity.orchestrator.preview.approval_gate import ChainPreviewApprovalGate
-from sky_claw.antigravity.orchestrator.preview.manifest import PreviewManifest, StageChangeSet
+from sky_claw.antigravity.orchestrator.preview.guard import MissingManifestError
+from sky_claw.antigravity.orchestrator.preview.manifest import (
+    ActionManifest,
+    PreviewManifest,
+    StageChangeSet,
+)
 from sky_claw.antigravity.security.hitl import Decision
 
 
@@ -70,4 +75,95 @@ async def test_timeout_executes_nothing() -> None:
 
     assert result["status"] == "rejected"
     assert result["decision"] == "timeout"
+    execute_fn.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# ActionManifest: manifiesto por acción persistido y exigido (T-26a)
+# ---------------------------------------------------------------------------
+
+
+def _action_manifest() -> ActionManifest:
+    return ActionManifest(
+        workflow_id="wf-act",
+        ritual="loot_sort",
+        tool="LOOT",
+        tool_version="0.29.0",
+        files_to_touch=["plugins.txt"],
+    )
+
+
+def _journal_stub(stored: dict | None) -> MagicMock:
+    """Journal mock: record_action_manifest no-op; get_action_manifest devuelve ``stored``."""
+    journal = MagicMock()
+    journal.record_action_manifest = AsyncMock(return_value=1)
+    journal.get_action_manifest = AsyncMock(return_value=stored)
+    return journal
+
+
+@pytest.mark.asyncio
+async def test_action_aprobada_persiste_manifiesto_y_ejecuta() -> None:
+    manifest = _action_manifest()
+    journal = _journal_stub(manifest.model_dump(mode="json"))
+    execute_fn = AsyncMock(return_value={"ritual": "ran"})
+    hitl = MagicMock()
+    hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)
+    gate = ChainPreviewApprovalGate(
+        hitl_guard=hitl,
+        preview_fn=AsyncMock(),
+        execute_fn=execute_fn,
+        journal=journal,
+    )
+
+    result = await gate.preview_then_execute_action(manifest=manifest)
+
+    assert result["status"] == "executed"
+    assert result["result"] == {"ritual": "ran"}
+    # El manifiesto se persistió ANTES de pedir aprobación.
+    journal.record_action_manifest.assert_awaited_once()
+    execute_fn.assert_awaited_once()
+    # El operador vio el manifiesto serializado como detalle de la aprobación.
+    detail = hitl.request_approval.await_args.kwargs["detail"]
+    assert "wf-act" in detail
+
+
+@pytest.mark.asyncio
+async def test_action_aprobada_sin_manifiesto_persistido_no_ejecuta() -> None:
+    """Fail-secure: si el manifiesto no quedó persistido, el guard corta el run."""
+    manifest = _action_manifest()
+    journal = _journal_stub(None)  # get_action_manifest → None
+    execute_fn = AsyncMock(return_value={"ritual": "ran"})
+    hitl = MagicMock()
+    hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)
+    gate = ChainPreviewApprovalGate(
+        hitl_guard=hitl,
+        preview_fn=AsyncMock(),
+        execute_fn=execute_fn,
+        journal=journal,
+    )
+
+    with pytest.raises(MissingManifestError):
+        await gate.preview_then_execute_action(manifest=manifest)
+
+    execute_fn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_action_denegada_no_ejecuta() -> None:
+    manifest = _action_manifest()
+    journal = _journal_stub(manifest.model_dump(mode="json"))
+    execute_fn = AsyncMock(return_value={"ritual": "ran"})
+    hitl = MagicMock()
+    hitl.request_approval = AsyncMock(return_value=Decision.DENIED)
+    gate = ChainPreviewApprovalGate(
+        hitl_guard=hitl,
+        preview_fn=AsyncMock(),
+        execute_fn=execute_fn,
+        journal=journal,
+    )
+
+    result = await gate.preview_then_execute_action(manifest=manifest)
+
+    assert result["status"] == "rejected"
+    assert result["decision"] == "denied"
     execute_fn.assert_not_awaited()
