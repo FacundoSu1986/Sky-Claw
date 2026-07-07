@@ -51,8 +51,8 @@ proponer patch → aprobación humana → ejecutar → validar → informe final
 1. **Manifiesto por acción (T-26).** Todo Ritual mutante produce, antes de
    ejecutar, un manifiesto inspeccionable: qué archivos toca, qué plugins/
    records forwardea, con qué herramienta y versión, y cuál es el plan de
-   rollback. Se **extiende** `orchestrator/preview/manifest.py` (hoy limitado
-   al preview de la cadena LOOT→xEdit→DynDOLOD→bashed) y se persiste en el
+   rollback. Se **extiende** `sky_claw/antigravity/orchestrator/preview/manifest.py`
+   (hoy limitado al preview de la cadena LOOT→xEdit→DynDOLOD→bashed) y se persiste en el
    journal — no se crea un contrato paralelo.
 2. **ProfileSandbox (T-27).** Los rituales mutantes operan sobre un clon del
    perfil MO2; el perfil real solo se toca al promover un diff aprobado
