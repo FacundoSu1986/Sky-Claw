@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
     from sky_claw.antigravity.security.path_validator import PathValidator
     from sky_claw.local.loot.parser import LOOTResult
+    from sky_claw.local.validators.preflight import PreflightService
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ class LootSortingService:
         timeout: int = _DEFAULT_LOOT_TIMEOUT_SECONDS,
         loot_runner: LOOTRunner | None = None,
         load_order_resolver: LoadOrderFileResolver | None = None,
+        preflight: PreflightService | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -101,6 +103,7 @@ class LootSortingService:
         self._timeout = timeout
         self._loot_runner = loot_runner
         self._load_order_resolver = load_order_resolver
+        self._preflight = preflight
 
     def _ensure_load_order_resolver(self) -> LoadOrderFileResolver:
         """Construye perezosamente el resolver de load order (mismo patrón que
@@ -150,6 +153,7 @@ class LootSortingService:
         params: LootExecutionParams | None = None,
         *,
         update_masterlist: bool | None = None,
+        override_preflight: bool = False,
     ) -> dict[str, Any]:
         """Sort the load order under the load-order lock.
 
@@ -160,9 +164,28 @@ class LootSortingService:
         ``update_masterlist`` takes precedence when given (the agent tool passes
         ``False`` to preserve its no-network behavior); otherwise it falls back
         to ``params.update_masterlist`` (LootExecutionParams default is True).
+
+        Un preflight en ROJO (T-15: p.ej. symlinks + LOOT <0.29, el escenario
+        de LOOT ciego ante el VFS) bloquea el sort salvo ``override_preflight``
+        explícito (flujo HITL); el reporte viaja en la respuesta.
         """
         if update_masterlist is None:
             update_masterlist = bool(getattr(params, "update_masterlist", True))
+
+        if self._preflight is not None and not override_preflight:
+            preflight_report = await self._preflight.run()
+            if preflight_report.blocks_mutations:
+                detail = "Preflight en rojo: el sort de LOOT quedó bloqueado. " + "; ".join(
+                    c.summary for c in preflight_report.checks if c.status.value == "red"
+                )
+                logger.warning("%s", detail)
+                return {
+                    "status": "error",
+                    "success": False,
+                    "message": detail,
+                    "logs": detail,
+                    "preflight": preflight_report.to_dict(),
+                }
 
         try:
             runner = self._ensure_loot_runner()
