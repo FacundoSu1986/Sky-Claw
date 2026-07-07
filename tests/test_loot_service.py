@@ -77,6 +77,16 @@ def _resolver_vacio() -> MagicMock:
     return resolver
 
 
+def _preflight_verde() -> MagicMock:
+    """Preflight que no bloquea: estos tests anclan la mecánica del sort, no el
+    semáforo (cubierto por test_preflight_service/test_preflight_wiring)."""
+    reporte = MagicMock()
+    reporte.blocks_mutations = False
+    preflight = MagicMock()
+    preflight.run = AsyncMock(return_value=reporte)
+    return preflight
+
+
 def _make_service(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
@@ -89,6 +99,7 @@ def _make_service(
         path_resolver=MagicMock(),
         loot_runner=runner,
         load_order_resolver=load_order_resolver or _resolver_vacio(),
+        preflight=_preflight_verde(),
     )
 
 
@@ -211,6 +222,7 @@ async def test_builds_runner_from_resolver_with_preserved_timeout(
         lock_manager=lock_manager,
         snapshot_manager=snapshot_manager,
         path_resolver=resolver,
+        preflight=_preflight_verde(),
     )
     with patch("sky_claw.local.tools.loot_service.LOOTRunner", _FakeRunner):
         result = await svc.sort_load_order()
