@@ -175,9 +175,8 @@ class LootSortingService:
         if self._preflight is not None and not override_preflight:
             preflight_report = await self._preflight.run()
             if preflight_report.blocks_mutations:
-                detail = (
-                    "Preflight en rojo: el sort de LOOT quedó bloqueado. "
-                    + "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
+                detail = "Preflight en rojo: el sort de LOOT quedó bloqueado. " + "; ".join(
+                    c.summary for c in preflight_report.checks if c.status.value == "red"
                 )
                 logger.warning("%s", detail)
                 return {
