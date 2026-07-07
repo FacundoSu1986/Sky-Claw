@@ -728,10 +728,14 @@ class PatchOrchestrator:
                     )
                     return strategy
             except Exception as e:
-                logger.warning(
+                # Plugin-boundary deliberado: una estrategia custom rota no
+                # debe tumbar la selección — se loguea con traceback y se
+                # prueba la siguiente (T-11).
+                logger.error(
                     "Error checking strategy %s: %s",
                     strategy.__class__.__name__,
                     e,
+                    exc_info=True,
                 )
                 continue
 

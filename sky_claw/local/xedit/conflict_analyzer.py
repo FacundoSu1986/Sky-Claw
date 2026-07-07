@@ -238,12 +238,16 @@ class ConflictAnalyzer:
         # Note: A headless script like check_masters.pas might be run here.
         # This implementation delegates to the runner script checking.
         logger.info("[M-05] Verifying plugin master dependencies...")
+        # Acotado (T-11): solo los fallos del runner se degradan a mensajes;
+        # un bug inesperado propaga en vez de volverse un string silencioso.
+        from sky_claw.local.xedit.runner import XEditError
+
         try:
             result = await xedit_runner.run_script("check_masters.pas", plugins)
             if not result.success:
                 return [f"Error verifying masters: {err}" for err in result.errors]
             return []  # No missing masters detected
-        except Exception as exc:
+        except (XEditError, OSError) as exc:
             logger.error(f"Failed to verify masters: {exc}")
             return [str(exc)]
 
@@ -466,7 +470,9 @@ def parse_conflict_lines(stdout: str) -> list[RecordConflict]:
                     severity="info",  # classified later by the analyzer
                 )
             )
-        except Exception:
+        # Acotado (T-11): una línea malformada es un problema de parseo, no
+        # una razón para tragar cualquier bug del bloque.
+        except (ValueError, IndexError):
             logger.warning("Failed to parse CONFLICT line: %s", line, exc_info=True)
     return conflicts
 

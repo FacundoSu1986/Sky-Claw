@@ -123,9 +123,10 @@ ignore = [
 "tests/**" = ["D", "ANN", "RUF006", "BLE001"]   # RUF006 OK en tests: task lifecycle controlado por pytest.
 "local_scripts/**" = ["BLE001"]
 "scripts/**" = ["BLE001"]
-# BLE001 pendiente por carpeta (T-10 limpió sky_claw/local/tools/; T-11 y
-# siguientes van quitando entradas de esta lista). Archivos top-level
-# explícitos: los globs `*` de ruff cruzan separadores y taparían tools/.
+# BLE001 pendiente por carpeta (T-10 limpió sky_claw/local/tools/, T-11
+# sky_claw/local/xedit/; las siguientes van quitando entradas de esta
+# lista). Archivos top-level explícitos: los globs `*` de ruff cruzan
+# separadores y taparían las carpetas ya limpias.
 "sky_claw/app_context.py" = ["BLE001"]
 "sky_claw/compat.py" = ["BLE001"]
 "sky_claw/config.py" = ["BLE001"]
@@ -140,7 +141,6 @@ ignore = [
 "sky_claw/local/loot/**" = ["BLE001"]
 "sky_claw/local/mo2/**" = ["BLE001"]
 "sky_claw/local/validators/**" = ["BLE001"]
-"sky_claw/local/xedit/**" = ["BLE001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["sky_claw"]
