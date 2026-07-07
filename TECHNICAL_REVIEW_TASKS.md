@@ -247,12 +247,13 @@ GA de T-25**: la matriz de smoke real debe ejercitar el flujo must-have completo
 - **Aceptación:** manifiesto persistido y consultable por Ritual; el approval gate muestra el manifiesto, no un resumen libre del LLM.
 - **Dependencias:** ninguna dura (reusa `preview/` + journal). Paralelizable con todo.
 
-### T-27 · `ProfileSandbox`: clonado de perfil MO2 (L)
+### T-27 · `ProfileSandbox`: clonado de perfil MO2 + aislamiento del overwrite compartido (L)
 - **Archivos:** nuevo servicio en `sky_claw/local/mo2/` (junto a `load_order.py`/`vfs.py`; reusar el parsing con BOM preservado y `LoadOrderSnapshotService` de T-05).
 - **Cambio:** clonar el perfil MO2 activo (`plugins.txt`, `modlist.txt`, settings del profile), ejecutar los rituales mutantes contra la copia, producir un **diff explicable** (`plugins.txt`/`modlist.txt`/`overwrite`) y promover al perfil real solo tras aprobación.
-- **Test rojo:** dado un fixture de instalación MO2, `clone_profile()` crea una copia aislada byte-fiel (BOM/encoding incluidos); un run que muta la copia no toca el perfil original; `diff()` reporta exactamente los cambios; `promote()` los aplica.
-- **Aceptación:** ningún Ritual mutante escribe en el perfil real directamente cuando el sandbox está activo; el diff es visible antes de promover.
-- **Dependencias:** T-05 (cerrada). Definir en el diseño la interacción con el VFS (los clones viven fuera de `profiles/` activo o con nombre no cargado por MO2).
+- **Aislamiento del overwrite compartido (crítico):** varios rituales mutantes NO escriben dentro del árbol del perfil sino en el **overwrite compartido de MO2** (`mo2_path/overwrite`), fuera del profile — p. ej. Synthesis (`sky_claw/local/tools/synthesis_service.py:127`, `output_path = mo2_path / "overwrite"`) y Pandora (`sky_claw/local/tools/pandora_service.py` docstring: salida "en el overwrite/MO2"). Clonar solo el perfil **no** los aísla. El sandbox debe **redirigir o snapshotear el overwrite compartido** y **cablear al sandbox los runners que apuntan ahí** antes de poder afirmar la garantía de aislamiento. Gancho natural: la infra de snapshot de T-05/T-06 y el patrón `target_files` diferido (`target_files=[]`) que hoy usan `loot_service`/`pandora_service` — resolver el destino real y redirigirlo a la copia.
+- **Test rojo:** (1) dado un fixture de instalación MO2, `clone_profile()` crea una copia aislada byte-fiel (BOM/encoding incluidos); un run que muta la copia no toca el perfil original; `diff()` reporta exactamente los cambios; `promote()` los aplica. (2) un run de Synthesis/Pandora contra el sandbox NO toca el `mo2_path/overwrite` real; su salida queda en la copia y aparece en el `diff()`.
+- **Aceptación:** ningún Ritual mutante escribe directamente ni en el perfil real ni en el overwrite compartido real cuando el sandbox está activo; el diff (perfil + overwrite) es visible antes de promover.
+- **Dependencias:** T-05 (cerrada). Definir en el diseño la interacción con el VFS (los clones viven fuera de `profiles/` activo o con nombre no cargado por MO2) y la redirección del overwrite para los runners que lo targetean.
 
 ### T-28 · Informe final de vuelo (M)
 - **Archivos:** nuevo composer sobre journal + T-26 + T-21; vista en `sky_claw/antigravity/gui/views/`.
