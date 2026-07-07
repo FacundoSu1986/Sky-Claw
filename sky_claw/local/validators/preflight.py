@@ -138,7 +138,7 @@ class PreflightService:
         checks: list[PreflightCheck] = []
 
         vfs_issues = self._vfs_checker.check() if self._vfs_checker is not None else []
-        checks.append(self._vfs_check(vfs_issues))
+        checks.append(self._vfs_check(vfs_issues, checker_configured=self._vfs_checker is not None))
 
         loot_version: tuple[int, int, int] | None = None
         loot_detected = self._detect_version is not None
@@ -160,7 +160,14 @@ class PreflightService:
         return report
 
     @staticmethod
-    def _vfs_check(issues: list[Any]) -> PreflightCheck:
+    def _vfs_check(issues: list[Any], *, checker_configured: bool) -> PreflightCheck:
+        if not checker_configured:
+            # No mentir: "sin symlinks" implica que se verificó; acá no hubo sensor.
+            return PreflightCheck(
+                name="vfs",
+                status=PreflightStatus.GREEN,
+                summary="Sensor de VFS no configurado.",
+            )
         if not issues:
             return PreflightCheck(
                 name="vfs", status=PreflightStatus.GREEN, summary="Sin symlinks/junctions en rutas críticas."
@@ -212,8 +219,8 @@ class PreflightService:
             name="composition",
             status=PreflightStatus.RED,
             summary=(
-                f"Symlinks presentes + LOOT {'.'.join(map(str, version))} (<0.29): "
+                f"Enlaces (symlinks/junctions) presentes + LOOT {'.'.join(map(str, version))} (<0.29): "
                 "libloot resuelve los enlaces y queda ciego ante el VFS de MO2. "
-                "Actualizá LOOT a 0.29+ o eliminá los symlinks antes de ordenar."
+                "Actualizá LOOT a 0.29+ o eliminá los enlaces antes de ordenar."
             ),
         )

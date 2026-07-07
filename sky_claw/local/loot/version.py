@@ -79,11 +79,19 @@ async def detect_loot_version(
         return None
 
     output = stdout.decode(errors="replace") + "\n" + stderr.decode(errors="replace")
-    version = parse_loot_version(output)
-    if version is None:
+
+    # Exit non-zero = detección fallida aunque el output tenga algo parseable:
+    # un falso verde suprimiría el advisory/bloqueo del preflight (review
+    # Copilot PR #239). La versión desconocida ya advierte con cautela.
+    if return_code != 0:
         logger.warning(
-            "Output de 'loot --version' no reconocible (exit=%d): %r",
+            "'loot --version' salió con código %d; se trata como versión desconocida: %r",
             return_code,
             output[:200],
         )
+        return None
+
+    version = parse_loot_version(output)
+    if version is None:
+        logger.warning("Output de 'loot --version' no reconocible: %r", output[:200])
     return version

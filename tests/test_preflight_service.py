@@ -90,6 +90,10 @@ class TestSemaforo:
         reporte = await PreflightService().run()
 
         assert reporte.status is PreflightStatus.GREEN
+        # Pero sin mentir: "sin symlinks" implicaría que se verificó
+        # (review Copilot PR #239) — debe decir que el sensor no está.
+        vfs = next(c for c in reporte.checks if c.name == "vfs")
+        assert "no configurad" in vfs.summary.lower()
 
 
 class TestContratoDeDatos:

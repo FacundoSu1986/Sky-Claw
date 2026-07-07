@@ -76,3 +76,11 @@ class TestDeteccion:
 
         with patch("sky_claw.local.loot.version.run_capture", run_capture):
             assert await detect_loot_version(tmp_path / "loot.exe") is None
+
+    async def test_exit_non_zero_devuelve_none_aunque_haya_version(self, tmp_path: pathlib.Path) -> None:
+        """Un exit != 0 es detección fallida: un falso verde suprimiría el
+        advisory/bloqueo del preflight (review Copilot PR #239)."""
+        run_capture = AsyncMock(return_value=(b"LOOT v0.29.0\n", b"error inesperado", 1))
+
+        with patch("sky_claw.local.loot.version.run_capture", run_capture):
+            assert await detect_loot_version(tmp_path / "loot.exe") is None

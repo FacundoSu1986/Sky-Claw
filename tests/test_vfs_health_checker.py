@@ -9,6 +9,10 @@ Ritual toque nada.
 """
 
 import pathlib
+import sys
+import tempfile
+
+import pytest
 
 from sky_claw.local.validators.vfs_health import VfsHealthChecker
 
@@ -18,6 +22,22 @@ def _mo2_con_estructura(base: pathlib.Path) -> pathlib.Path:
     for sub in ("mods", "profiles", "overwrite"):
         (mo2 / sub).mkdir(parents=True)
     return mo2
+
+
+def _puede_crear_symlinks() -> bool:
+    """True si el proceso puede crear symlinks (en Windows requiere privilegios).
+
+    Mismo guard que tests/test_path_validator.py — sin él, esta suite falla
+    por permisos en entornos Windows sin Developer Mode/admin.
+    """
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            origen = pathlib.Path(td) / "src.txt"
+            origen.touch()
+            (pathlib.Path(td) / "link.txt").symlink_to(origen)
+        return True
+    except (OSError, NotImplementedError):
+        return False
 
 
 class TestRutasLimpias:
@@ -42,6 +62,10 @@ class TestRutasLimpias:
         assert VfsHealthChecker().check() == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" and not _puede_crear_symlinks(),
+    reason="Crear symlinks requiere privilegios elevados en Windows",
+)
 class TestDeteccion:
     def test_game_path_symlink_es_critico(self, tmp_path: pathlib.Path) -> None:
         """El caso documentado: ruta del juego symlinkeada ciega a LOOT <0.29."""
