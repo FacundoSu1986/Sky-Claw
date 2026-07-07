@@ -105,6 +105,35 @@ class LootSortingService:
         self._load_order_resolver = load_order_resolver
         self._preflight = preflight
 
+    def _ensure_preflight(self) -> PreflightService | None:
+        """Construye perezosamente el preflight desde el path resolver.
+
+        Review Codex PR #239 (P1): los call sites de producción no inyectaban
+        ``preflight``, así que el guard era un no-op fuera de los tests — la
+        construcción perezosa protege a todos sin cambiarlos. Usa las rutas
+        CRUDAS (P2): las resueltas siguen los symlinks y borran exactamente lo
+        que el VfsHealthChecker necesita inspeccionar.
+        """
+        if self._preflight is not None:
+            return self._preflight
+        if self._path_resolver is None:
+            return None
+
+        # Import perezoso: validators.preflight llega a tools._process vía
+        # loot.version; importarlo a nivel módulo desde tools/ podría ciclar.
+        from sky_claw.local.validators.preflight import PreflightService
+        from sky_claw.local.validators.vfs_health import VfsHealthChecker
+
+        raw_game = self._path_resolver.get_skyrim_path_raw()
+        raw_mo2 = self._path_resolver.get_mo2_path_raw()
+        vfs_checker = None
+        if raw_game is not None or raw_mo2 is not None:
+            vfs_checker = VfsHealthChecker(game_path=raw_game, mo2_root=raw_mo2)
+
+        loot_exe = self._loot_exe or self._path_resolver.get_loot_exe()
+        self._preflight = PreflightService(vfs_checker=vfs_checker, loot_exe=loot_exe)
+        return self._preflight
+
     def _ensure_load_order_resolver(self) -> LoadOrderFileResolver:
         """Construye perezosamente el resolver de load order (mismo patrón que
         ``_ensure_loot_runner``): MO2 root/profile del path resolver si están
@@ -172,8 +201,9 @@ class LootSortingService:
         if update_masterlist is None:
             update_masterlist = bool(getattr(params, "update_masterlist", True))
 
-        if self._preflight is not None and not override_preflight:
-            preflight_report = await self._preflight.run()
+        preflight = None if override_preflight else self._ensure_preflight()
+        if preflight is not None:
+            preflight_report = await preflight.run()
             if preflight_report.blocks_mutations:
                 detail = "Preflight en rojo: el sort de LOOT quedó bloqueado. " + "; ".join(
                     c.summary for c in preflight_report.checks if c.status.value == "red"

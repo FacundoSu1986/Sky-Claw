@@ -426,6 +426,21 @@ class PathResolutionService:
         """Resuelve MO2_PATH desde entorno validado."""
         return self.validate_env_path(os.environ.get("MO2_PATH", ""), "MO2_PATH")
 
+    # Accessors CRUDOS (sin resolver): el validate() de los getters de arriba
+    # sigue los symlinks, borrando exactamente lo que el VfsHealthChecker del
+    # preflight necesita inspeccionar (review Codex PR #239). Solo para
+    # inspección read-only (lstat); nunca para abrir/escribir archivos.
+
+    def get_skyrim_path_raw(self) -> pathlib.Path | None:
+        """SKYRIM_PATH tal como está configurado, sin resolver symlinks."""
+        raw = os.environ.get("SKYRIM_PATH", "")
+        return pathlib.Path(raw) if raw else None
+
+    def get_mo2_path_raw(self) -> pathlib.Path | None:
+        """MO2_PATH tal como está configurado, sin resolver symlinks."""
+        raw = os.environ.get("MO2_PATH", "")
+        return pathlib.Path(raw) if raw else None
+
     def get_dyndolod_exe(self) -> pathlib.Path | None:
         """Resuelve DYNDLOD_EXE desde entorno validado."""
         return self.validate_env_path(os.environ.get("DYNDLOD_EXE", ""), "DYNDLOD_EXE")

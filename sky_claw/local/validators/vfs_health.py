@@ -77,6 +77,12 @@ def _link_kind(path: pathlib.Path) -> str | None:
 class VfsHealthChecker:
     """Detecta symlinks/junctions en las rutas del juego y de MO2.
 
+    IMPORTANTE: pasar las rutas CONFIGURADAS sin resolver
+    (``PathResolutionService.get_*_path_raw()``). Las rutas resueltas por el
+    validator ya siguieron los symlinks — inspeccionarlas reporta verde sobre
+    el destino real y oculta el enlace que este checker existe para encontrar
+    (review Codex PR #239).
+
     Args:
         game_path: Instalación de Skyrim (ella y sus ancestros se inspeccionan;
             un enlace acá es ``critical`` por el caso LOOT/libloot).
