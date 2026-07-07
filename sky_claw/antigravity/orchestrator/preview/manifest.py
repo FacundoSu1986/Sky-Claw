@@ -129,6 +129,46 @@ class StageChangeSet(BaseModel):
     summary: str | None = None
 
 
+class RollbackStep(BaseModel):
+    """Un paso del plan de rollback: qué snapshot restaura qué archivo."""
+
+    target_file: str
+    snapshot_id: str
+
+
+class ActionManifest(BaseModel):
+    """Manifiesto de UNA acción (Ritual mutante) antes de ejecutarla.
+
+    Es la "caja negra de vuelo" por acción: declara qué archivos tocará el
+    Ritual, qué records forwardea, con qué herramienta+versión, y cuál es el
+    plan de rollback (qué snapshot restaura qué archivo). A diferencia de
+    :class:`PreviewManifest` (que describe el dry-run de la cadena completa),
+    esto describe una única acción y es el contrato que el approval gate
+    persiste y muestra al operador antes de ejecutar.
+    """
+
+    workflow_id: str
+    ritual: str
+    tool: str
+    tool_version: str | None = None
+    created_at: _dt.datetime = Field(default_factory=_utcnow)
+    files_to_touch: list[str] = Field(default_factory=list)
+    # Reusa ConflictPair: "estos records forwardeo, este gana, estos pierden".
+    records_forwarded: list[ConflictPair] = Field(default_factory=list)
+    rollback_plan: list[RollbackStep] = Field(default_factory=list)
+    summary: str | None = None
+
+    def describe(self) -> str:
+        """Resumen de una línea para el gate/GUI (evidencia, no magia)."""
+        version = f" {self.tool_version}" if self.tool_version else ""
+        return (
+            f"{self.ritual} vía {self.tool}{version}: "
+            f"{len(self.files_to_touch)} archivo(s), "
+            f"{len(self.records_forwarded)} record(s) forwardeado(s), "
+            f"rollback de {len(self.rollback_plan)} archivo(s)."
+        )
+
+
 class PreviewManifest(BaseModel):
     """Top-level manifest of a full dry-run of the modding chain."""
 

@@ -8,23 +8,27 @@ any file (every stage runs inside a force-rollback transaction).
 from __future__ import annotations
 
 from sky_claw.antigravity.orchestrator.preview.manifest import (
+    ActionManifest,
     ConflictPair,
     ConflictPreview,
     LoadOrderDiff,
     LODPlan,
     PluginMove,
     PreviewManifest,
+    RollbackStep,
     StageChangeSet,
     sort_by_master_rules,
 )
 
 __all__ = [
+    "ActionManifest",
     "ConflictPair",
     "ConflictPreview",
     "LODPlan",
     "LoadOrderDiff",
     "PluginMove",
     "PreviewManifest",
+    "RollbackStep",
     "StageChangeSet",
     "sort_by_master_rules",
 ]

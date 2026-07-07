@@ -93,6 +93,9 @@ class OperationType(StrEnum):
     FILE_MODIFY = "file_modify"
     FILE_DELETE = "file_delete"
     FILE_RENAME = "file_rename"
+    # Manifiesto por acción (T-26): declaración inspeccionable de un Ritual
+    # mutante antes de ejecutar (archivos/records/herramienta/plan de rollback).
+    MANIFEST = "manifest"
 
 
 class OperationStatus(StrEnum):
@@ -991,6 +994,66 @@ class OperationJournal:
                 entries.append(self._row_to_entry(row))
 
             return entries
+
+    # =========================================================================
+    # ACTION MANIFEST (T-26 — "caja negra de vuelo")
+    # =========================================================================
+
+    #: Prefijo del ``target_path`` sentinela bajo el que se indexa el manifiesto
+    #: por acción. Reusa el índice ``idx_journal_path`` para la lectura por
+    #: workflow sin agregar tablas ni columnas nuevas.
+    _MANIFEST_PATH_PREFIX = "manifest:"
+
+    async def record_action_manifest(
+        self,
+        *,
+        workflow_id: str,
+        manifest: dict[str, Any],
+        agent_id: str,
+        transaction_id: int | None = None,
+    ) -> int:
+        """Persiste el manifiesto por acción de un Ritual mutante.
+
+        El manifiesto (ya serializado a ``dict``) se guarda como ``metadata`` de
+        una entrada del journal, bajo el ``target_path`` sentinela
+        ``manifest:<workflow_id>``. Recibe un ``dict`` a propósito: el journal
+        (capa ``db``) no debe depender de los modelos de ``orchestrator`` — la
+        dirección de import es orchestrator→db.
+
+        Si no se pasa ``transaction_id`` se abre una transacción propia, de modo
+        que persistir un manifiesto sea autónomo (no requiere una transacción de
+        archivos en curso).
+
+        Returns:
+            El id de la entrada creada.
+        """
+        tx_id = transaction_id
+        if tx_id is None:
+            tx_id = await self.begin_transaction(
+                description=f"{self._MANIFEST_PATH_PREFIX}{workflow_id}",
+                agent_id=agent_id,
+            )
+
+        entry_id = await self.begin_operation(
+            agent_id=agent_id,
+            operation_type=OperationType.MANIFEST,
+            target_path=f"{self._MANIFEST_PATH_PREFIX}{workflow_id}",
+            transaction_id=tx_id,
+            metadata=manifest,
+        )
+        await self.complete_operation(entry_id)
+        return entry_id
+
+    async def get_action_manifest(self, workflow_id: str) -> dict[str, Any] | None:
+        """Recupera el manifiesto por acción más reciente de ``workflow_id``.
+
+        Returns:
+            El ``dict`` del manifiesto persistido, o ``None`` si no hay ninguno.
+        """
+        entries = await self.get_operations_by_path(f"{self._MANIFEST_PATH_PREFIX}{workflow_id}", limit=1)
+        if not entries:
+            return None
+        return entries[0].metadata
 
     # =========================================================================
     # MARK TRANSACTION ROLLED BACK
