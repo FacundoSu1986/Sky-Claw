@@ -232,6 +232,7 @@ ignore_errors = false
 [[tool.mypy.overrides]]
 module = [
     "sky_claw.antigravity.orchestrator.sync_engine",
+    "sky_claw.local.mo2.profile_sandbox",  # T-27: módulo nuevo, nace estricto (patrón T-12)
 ]
 strict = true
 ignore_errors = false
