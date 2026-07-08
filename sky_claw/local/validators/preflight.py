@@ -28,7 +28,7 @@ import pathlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sky_claw.local.loot.version import (
     LOOT_MIN_SYMLINK_SAFE,
@@ -37,10 +37,17 @@ from sky_claw.local.loot.version import (
 )
 from sky_claw.local.validators.vfs_health import VfsHealthChecker
 
+if TYPE_CHECKING:
+    from sky_claw.local.validators.missing_masters import MasterIssue
+
 logger = logging.getLogger(__name__)
 
 #: Detector de versión inyectable (facilita tests y desacopla del binario).
 VersionDetector = Callable[[], Awaitable[tuple[int, int, int] | None]]
+
+#: Sensor de masters inyectable (T-30·1): el builder arma el closure con el
+#: MissingMastersChecker + la fuente del load order; el servicio solo compone.
+MastersCheck = Callable[[], "list[MasterIssue]"]
 
 
 class PreflightStatus(StrEnum):
@@ -115,6 +122,10 @@ class PreflightService:
             :func:`detect_loot_version`. Ignorado si se inyecta
             ``loot_version_detector``.
         loot_version_detector: Detector asincrónico inyectable (tests/DI).
+        masters_check: Sensor de masters faltantes (T-30·1): callable que
+            devuelve los :class:`MasterIssue` del load order habilitado
+            (típicamente un closure sobre ``MissingMastersChecker.check``).
+            Corre en un thread (lee headers de plugins en disco).
     """
 
     def __init__(
@@ -123,8 +134,10 @@ class PreflightService:
         vfs_checker: VfsHealthChecker | None = None,
         loot_exe: pathlib.Path | None = None,
         loot_version_detector: VersionDetector | None = None,
+        masters_check: MastersCheck | None = None,
     ) -> None:
         self._vfs_checker = vfs_checker
+        self._masters_check = masters_check
         if loot_version_detector is None and loot_exe is not None:
             exe = loot_exe
 
@@ -167,6 +180,12 @@ class PreflightService:
             loot_version = self._version_cache
         checks.append(self._loot_check(loot_version, detector_configured=loot_detected))
 
+        masters_issues: list[MasterIssue] = []
+        if self._masters_check is not None:
+            # Lee headers de plugins en disco: fuera del event loop.
+            masters_issues = await asyncio.to_thread(self._masters_check)
+        checks.append(self._masters_checkpoint(masters_issues, checker_configured=self._masters_check is not None))
+
         composition = self._composition_check(vfs_issues, loot_version)
         if composition is not None:
             checks.append(composition)
@@ -200,6 +219,21 @@ class PreflightService:
             summary=f"{len(issues)} enlace(s) detectado(s) en la infraestructura.",
             details=tuple(f"{i.kind}: {i.path} — {i.remediation}" for i in issues),
         )
+
+    @staticmethod
+    def _masters_checkpoint(issues: list[MasterIssue], *, checker_configured: bool) -> PreflightCheck:
+        if not checker_configured:
+            # No mentir: "masters OK" implica que se verificó; acá no hubo sensor.
+            return PreflightCheck(
+                name="masters",
+                status=PreflightStatus.GREEN,
+                summary="Sensor de masters no configurado.",
+            )
+        # Import a nivel función: missing_masters importa PreflightCheck de este
+        # módulo, así que el import a nivel módulo sería un ciclo.
+        from sky_claw.local.validators.missing_masters import masters_preflight_check
+
+        return masters_preflight_check(issues)
 
     @staticmethod
     def _loot_check(version: tuple[int, int, int] | None, *, detector_configured: bool) -> PreflightCheck:
