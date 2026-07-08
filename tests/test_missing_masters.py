@@ -14,6 +14,8 @@ from __future__ import annotations
 import pathlib
 import struct
 
+import pytest
+
 from sky_claw.local.validators.missing_masters import (
     MissingMastersChecker,
     masters_preflight_check,
@@ -36,6 +38,14 @@ def _tes4_plugin(path: pathlib.Path, masters: list[str]) -> pathlib.Path:
     return path
 
 
+def _tes4_raw(path: pathlib.Path, payload: bytes, *, declared_size: int | None = None) -> pathlib.Path:
+    """Escribe un plugin sintético con payload TES4 arbitrario."""
+    data_size = len(payload) if declared_size is None else declared_size
+    header = b"TES4" + struct.pack("<IIIIHH", data_size, 0, 0, 0, 44, 0)
+    path.write_bytes(header + payload)
+    return path
+
+
 # ---------------------------------------------------------------------------
 # read_masters: parsing binario del header TES4
 # ---------------------------------------------------------------------------
@@ -55,8 +65,6 @@ def test_read_masters_sin_masters_devuelve_vacio(tmp_path: pathlib.Path) -> None
 
 def test_read_masters_archivo_truncado_no_explota(tmp_path: pathlib.Path) -> None:
     """Un header corrupto/truncado produce error tipado, no una excepción cruda."""
-    import pytest
-
     from sky_claw.local.validators.missing_masters import PluginHeaderError
 
     roto = tmp_path / "Roto.esp"
@@ -67,8 +75,6 @@ def test_read_masters_archivo_truncado_no_explota(tmp_path: pathlib.Path) -> Non
 
 
 def test_read_masters_firma_invalida_es_error_tipado(tmp_path: pathlib.Path) -> None:
-    import pytest
-
     from sky_claw.local.validators.missing_masters import PluginHeaderError
 
     falso = tmp_path / "NoEsPlugin.esp"
@@ -76,6 +82,36 @@ def test_read_masters_firma_invalida_es_error_tipado(tmp_path: pathlib.Path) -> 
 
     with pytest.raises(PluginHeaderError):
         read_masters(falso)
+
+
+def test_read_masters_rechaza_header_tes4_demasiado_grande(tmp_path: pathlib.Path) -> None:
+    """Un dataSize anómalo debe fallar antes de intentar leer un payload gigante."""
+    from sky_claw.local.validators.missing_masters import PluginHeaderError
+
+    gigante = _tes4_raw(tmp_path / "Gigante.esp", b"", declared_size=64 * 1024 * 1024)
+
+    with pytest.raises(PluginHeaderError, match="demasiado grande"):
+        read_masters(gigante)
+
+
+def test_read_masters_rechaza_subrecord_truncado(tmp_path: pathlib.Path) -> None:
+    """Un MAST cuyo size excede el payload TES4 es corrupción, no master parcial."""
+    from sky_claw.local.validators.missing_masters import PluginHeaderError
+
+    truncado = _tes4_raw(tmp_path / "Truncado.esp", b"MAST" + struct.pack("<H", 100) + b"Skyrim.esm")
+
+    with pytest.raises(PluginHeaderError, match="subrecord"):
+        read_masters(truncado)
+
+
+def test_read_masters_rechaza_xxxx_truncado(tmp_path: pathlib.Path) -> None:
+    """XXXX debe contener sus 4 bytes antes de extender el siguiente subrecord."""
+    from sky_claw.local.validators.missing_masters import PluginHeaderError
+
+    xxxx_truncado = _tes4_raw(tmp_path / "XXXXTruncado.esp", b"XXXX" + struct.pack("<H", 4) + b"\x20\x00")
+
+    with pytest.raises(PluginHeaderError, match="XXXX"):
+        read_masters(xxxx_truncado)
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +188,25 @@ def test_plugin_del_load_order_que_no_existe_se_reporta(tmp_path: pathlib.Path) 
     assert issues[0].severity == "warning"
 
 
+def test_master_habilitado_pero_ausente_en_disco_es_critical(tmp_path: pathlib.Path) -> None:
+    """Un master en plugins.txt pero borrado del disco no satisface al dependiente."""
+    data = tmp_path / "Data"
+    data.mkdir()
+    _tes4_plugin(data / "Dependiente.esp", ["Fantasma.esm"])
+
+    issues = MissingMastersChecker(plugin_dirs=[data]).check(["Fantasma.esm", "Dependiente.esp"])
+
+    assert any(i.plugin == "Fantasma.esm" and i.kind == "plugin_not_found" for i in issues)
+    assert any(
+        i.plugin == "Dependiente.esp"
+        and i.master == "Fantasma.esm"
+        and i.kind == "missing"
+        and i.severity == "critical"
+        for i in issues
+    )
+    assert masters_preflight_check(issues).status is PreflightStatus.RED
+
+
 def test_header_corrupto_se_reporta_como_unreadable(tmp_path: pathlib.Path) -> None:
     """Un plugin ilegible no tumba el preflight: issue warning y se sigue."""
     data = tmp_path / "Data"
@@ -177,6 +232,31 @@ def test_busca_en_multiples_directorios(tmp_path: pathlib.Path) -> None:
     issues = MissingMastersChecker(plugin_dirs=[data, mod_a]).check(["Skyrim.esm", "ModA.esp"])
 
     assert issues == []
+
+
+def test_directorio_inaccesible_no_tumba_preflight(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Un fallo de IO al listar directorios degrada a best-effort."""
+    data = tmp_path / "Data"
+    data.mkdir()
+    original_iterdir = pathlib.Path.iterdir
+
+    def fail_for_data(self: pathlib.Path):
+        if self == data:
+            raise OSError("permiso denegado")
+        return original_iterdir(self)
+
+    monkeypatch.setattr(pathlib.Path, "iterdir", fail_for_data)
+    caplog.set_level("DEBUG", logger="sky_claw.local.validators.missing_masters")
+
+    issues = MissingMastersChecker(plugin_dirs=[data]).check(["Fantasma.esp"])
+
+    assert len(issues) == 1
+    assert issues[0].kind == "plugin_not_found"
+    assert "permiso denegado" in caplog.text
 
 
 # ---------------------------------------------------------------------------

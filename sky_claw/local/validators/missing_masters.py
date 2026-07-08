@@ -40,6 +40,11 @@ _PLUGIN_SUFFIXES: frozenset[str] = frozenset({".esp", ".esm", ".esl"})
 #: Tamaño del header del record TES4 en Skyrim SE.
 _TES4_HEADER_SIZE = 24
 
+#: Límite defensivo para el payload del record TES4.
+#: Los masters viven en el header y deberían ocupar pocos KiB; 1 MiB deja
+#: margen amplio para headers reales sin permitir lecturas abusivas.
+_MAX_TES4_DATA_SIZE = 1024 * 1024
+
 Severity = Literal["critical", "warning"]
 IssueKind = Literal["missing", "disabled", "unreadable", "plugin_not_found"]
 
@@ -84,6 +89,8 @@ def read_masters(plugin: pathlib.Path) -> list[str]:
             if len(head) < _TES4_HEADER_SIZE or head[:4] != b"TES4":
                 raise PluginHeaderError(f"{plugin.name}: no tiene un header TES4 válido.")
             data_size = int.from_bytes(head[4:8], "little")
+            if data_size > _MAX_TES4_DATA_SIZE:
+                raise PluginHeaderError(f"{plugin.name}: header TES4 demasiado grande ({data_size} bytes).")
             data = fh.read(data_size)
     except OSError as exc:
         raise PluginHeaderError(f"{plugin.name}: no se pudo leer ({exc}).") from exc
@@ -93,11 +100,17 @@ def read_masters(plugin: pathlib.Path) -> list[str]:
     masters: list[str] = []
     offset = 0
     xxxx_size: int | None = None
-    while offset + 6 <= len(data):
+    while offset < len(data):
+        if offset + 6 > len(data):
+            raise PluginHeaderError(f"{plugin.name}: subrecord TES4 truncado.")
         sig = data[offset : offset + 4]
         size = int.from_bytes(data[offset + 4 : offset + 6], "little")
         offset += 6
-        if sig == b"XXXX" and size == 4:
+        if sig == b"XXXX":
+            if size != 4:
+                raise PluginHeaderError(f"{plugin.name}: subrecord XXXX inválido.")
+            if offset + 4 > len(data):
+                raise PluginHeaderError(f"{plugin.name}: subrecord XXXX truncado.")
             # XXXX extiende el tamaño del subrecord siguiente (raro en TES4,
             # pero el formato lo permite — manejo defensivo).
             xxxx_size = int.from_bytes(data[offset : offset + 4], "little")
@@ -105,11 +118,15 @@ def read_masters(plugin: pathlib.Path) -> list[str]:
             continue
         real_size = xxxx_size if xxxx_size is not None else size
         xxxx_size = None
+        if offset + real_size > len(data):
+            raise PluginHeaderError(f"{plugin.name}: subrecord TES4 truncado.")
         field = data[offset : offset + real_size]
         offset += real_size
         if sig == b"MAST":
             # zstring en windows-1252 (encoding clásico de los plugins).
             masters.append(field.rstrip(b"\x00").decode("cp1252", errors="replace"))
+    if xxxx_size is not None:
+        raise PluginHeaderError(f"{plugin.name}: subrecord XXXX sin campo siguiente.")
     return masters
 
 
@@ -165,7 +182,7 @@ class MissingMastersChecker:
 
             for master in masters:
                 key = master.casefold()
-                if key in enabled:
+                if key in enabled and key in available:
                     continue
                 if key in available:
                     issues.append(
@@ -206,11 +223,19 @@ class MissingMastersChecker:
         """Nombre casefold → ruta del plugin (primer directorio gana)."""
         available: dict[str, pathlib.Path] = {}
         for directory in self._plugin_dirs:
-            if not directory.is_dir():
+            try:
+                if not directory.is_dir():
+                    continue
+                entries = sorted(directory.iterdir())
+            except OSError as exc:
+                logger.debug("No se pudo inspeccionar %s: %s", directory, exc)
                 continue
-            for entry in sorted(directory.iterdir()):
-                if entry.is_file() and entry.suffix.lower() in _PLUGIN_SUFFIXES:
-                    available.setdefault(entry.name.casefold(), entry)
+            for entry in entries:
+                try:
+                    if entry.is_file() and entry.suffix.lower() in _PLUGIN_SUFFIXES:
+                        available.setdefault(entry.name.casefold(), entry)
+                except OSError as exc:
+                    logger.debug("No se pudo inspeccionar %s: %s", entry, exc)
         return available
 
 
