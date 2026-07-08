@@ -69,23 +69,41 @@ class SandboxSymlinkError(ProfileSandboxError):
     """
 
 
+class SandboxDriftError(ProfileSandboxError):
+    """El árbol real cambió desde el clonado — promover a ciegas es inseguro.
+
+    En la ventana de aprobación MO2, el usuario u otro proceso pueden escribir
+    en el perfil/overwrite reales. Esos cambios vivos NO son del ritual:
+    aplicarles el diff del clon los borraría o pisaría. Fail-closed: se
+    reclona y se re-ejecuta, no se promueve sobre un real desconocido.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class SandboxClone:
-    """Un clon materializado: rutas de origen y copia por área.
+    """Un clon materializado: origen, copia mutable y baseline por área.
+
+    El **baseline** es la foto intacta de clone-time: contra él se calcula el
+    diff (qué hizo el ritual sobre la copia) y contra él se detecta drift del
+    lado real antes de promover (review Codex PR #245).
 
     Attributes:
         root: Directorio raíz del clon (borrar esto descarta todo el sandbox).
         profile_source: Perfil real en ``profiles/<nombre>``.
-        profile_copy: Copia aislada del perfil.
+        profile_copy: Copia mutable del perfil (acá opera el ritual).
+        profile_baseline: Foto intacta del perfil al clonar.
         overwrite_source: Overwrite compartido real (puede no existir aún).
-        overwrite_copy: Copia aislada del overwrite.
+        overwrite_copy: Copia mutable del overwrite.
+        overwrite_baseline: Foto intacta del overwrite al clonar.
     """
 
     root: pathlib.Path
     profile_source: pathlib.Path
     profile_copy: pathlib.Path
+    profile_baseline: pathlib.Path
     overwrite_source: pathlib.Path
     overwrite_copy: pathlib.Path
+    overwrite_baseline: pathlib.Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,10 +173,15 @@ class ProfileSandbox:
         self._profile = profile
         root = sandbox_root.resolve() if sandbox_root is not None else self._mo2_root / _DEFAULT_SANDBOX_DIRNAME
 
+        # Prohibido dentro de CUALQUIER área clonada, no solo profiles/: un
+        # sandbox bajo overwrite/ contaminaría el árbol que se está clonando
+        # (recursión y artefactos propios en el diff — review Codex PR #245).
         profiles_dir = self._mo2_root / "profiles"
-        if root.is_relative_to(profiles_dir):
+        overwrite_dir = self._mo2_root / "overwrite"
+        if root.is_relative_to(profiles_dir) or root.is_relative_to(overwrite_dir):
             raise SandboxLocationError(
-                f"El sandbox no puede vivir dentro de {profiles_dir}: MO2 listaría el clon como un perfil real."
+                f"El sandbox no puede vivir dentro de un área clonada ({profiles_dir} u {overwrite_dir}): "
+                "MO2 listaría el clon como perfil o el clonado se contaminaría a sí mismo."
             )
         self._sandbox_root = root
 
@@ -185,8 +208,10 @@ class ProfileSandbox:
             root=clone_root,
             profile_source=profile_source,
             profile_copy=clone_root / "profile",
+            profile_baseline=clone_root / "baseline" / "profile",
             overwrite_source=overwrite_source,
             overwrite_copy=clone_root / "overwrite",
+            overwrite_baseline=clone_root / "baseline" / "overwrite",
         )
         await asyncio.to_thread(self._materialize, clone)
         logger.info(
@@ -210,9 +235,17 @@ class ProfileSandbox:
     async def promote(self, clone: SandboxClone) -> PromoteResult:
         """Aplica al estado real los cambios del clon (llamar SOLO tras aprobar).
 
-        Escribe added/modified y borra removed; el diff se recalcula acá mismo
-        para promover exactamente lo que hay, no un diff viejo del caller.
+        Primero verifica que el real no haya cambiado desde el clonado (drift
+        gate, fail-closed) y que no aparezcan symlinks; después aplica el diff
+        recalculado acá mismo — se promueve exactamente lo que hay, no un diff
+        viejo del caller.
+
+        Raises:
+            SandboxDriftError: Si el perfil/overwrite reales cambiaron desde
+                el clonado (promover pisaría cambios vivos).
+            SandboxSymlinkError: Si hay symlinks en alguno de los árboles.
         """
+        await asyncio.to_thread(self._check_drift, clone)
         changes = await asyncio.to_thread(self._compute_diff, clone)
         written, deleted = await asyncio.to_thread(self._apply_changes, clone, changes)
         logger.info(
@@ -233,7 +266,7 @@ class ProfileSandbox:
     # ------------------------------------------------------------------
 
     def _materialize(self, clone: SandboxClone) -> None:
-        """Copia byte-fiel de ambas áreas (``copy2`` preserva bytes y mtime)."""
+        """Copia byte-fiel de ambas áreas + baseline (``copy2`` preserva bytes y mtime)."""
         # Fail-closed ANTES de copiar: copytree seguiría un symlink del árbol
         # real y materializaría contenido de fuera del sandbox.
         self._reject_symlinks(clone.profile_source)
@@ -246,31 +279,67 @@ class ProfileSandbox:
             # Sin overwrite real todavía: el clon arranca con el área vacía y
             # todo lo que el ritual escriba ahí saldrá como "added" en el diff.
             clone.overwrite_copy.mkdir(parents=True)
+        # El baseline se copia DESDE las copias recién hechas para garantizar
+        # identidad bit a bit en t0 (diff y drift se miden contra esta foto).
+        shutil.copytree(clone.profile_copy, clone.profile_baseline, copy_function=shutil.copy2)
+        shutil.copytree(clone.overwrite_copy, clone.overwrite_baseline, copy_function=shutil.copy2)
+
+    @classmethod
+    def _tree_changes(cls, area: Area, old: pathlib.Path, new: pathlib.Path) -> tuple[FileChange, ...]:
+        """Cambios de ``old`` → ``new`` para un área (orden determinista)."""
+        changes: list[FileChange] = []
+        old_files = cls._relative_files(old)
+        new_files = cls._relative_files(new)
+
+        for rel in sorted(new_files - old_files):
+            changes.append(FileChange(area=area, relative_path=rel, kind="added"))
+        for rel in sorted(old_files - new_files):
+            changes.append(FileChange(area=area, relative_path=rel, kind="removed"))
+        for rel in sorted(old_files & new_files):
+            # Contenido, no mtime: filecmp con shallow=False lee por chunks.
+            if not filecmp.cmp(old / rel, new / rel, shallow=False):
+                changes.append(FileChange(area=area, relative_path=rel, kind="modified"))
+        return tuple(changes)
 
     def _compute_diff(self, clone: SandboxClone) -> tuple[FileChange, ...]:
-        changes: list[FileChange] = []
-        areas: tuple[tuple[Area, pathlib.Path, pathlib.Path], ...] = (
-            ("profile", clone.profile_source, clone.profile_copy),
-            ("overwrite", clone.overwrite_source, clone.overwrite_copy),
-        )
-        for area, source, copy in areas:
-            source_files = self._relative_files(source)
-            copy_files = self._relative_files(copy)
+        """Qué hizo el ritual: baseline (foto de clone-time) → copia mutada.
 
-            for rel in sorted(copy_files - source_files):
-                changes.append(FileChange(area=area, relative_path=rel, kind="added"))
-            for rel in sorted(source_files - copy_files):
-                changes.append(FileChange(area=area, relative_path=rel, kind="removed"))
-            for rel in sorted(source_files & copy_files):
-                # Contenido, no mtime: filecmp con shallow=False lee por chunks.
-                if not filecmp.cmp(source / rel, copy / rel, shallow=False):
-                    changes.append(FileChange(area=area, relative_path=rel, kind="modified"))
-        return tuple(changes)
+        Comparar contra el baseline y no contra el real vivo evita atribuirle
+        al ritual los cambios que MO2/el usuario hicieron en la ventana de
+        aprobación (review Codex PR #245).
+        """
+        return self._tree_changes("profile", clone.profile_baseline, clone.profile_copy) + self._tree_changes(
+            "overwrite", clone.overwrite_baseline, clone.overwrite_copy
+        )
+
+    def _check_drift(self, clone: SandboxClone) -> None:
+        """Corta si el real difiere del baseline (drift en la ventana de aprobación).
+
+        El walk del árbol real también rechaza symlinks aparecidos después del
+        clonado (destino inseguro para promote — review Codex PR #245).
+
+        Raises:
+            SandboxDriftError: Si el perfil/overwrite reales cambiaron.
+            SandboxSymlinkError: Si apareció un symlink en el árbol real.
+        """
+        drift = self._tree_changes("profile", clone.profile_baseline, clone.profile_source) + self._tree_changes(
+            "overwrite", clone.overwrite_baseline, clone.overwrite_source
+        )
+        if drift:
+            detalle = "; ".join(f"{c.area}/{c.relative_path} ({c.kind})" for c in drift[:10])
+            raise SandboxDriftError(
+                f"El árbol real cambió desde el clonado ({len(drift)} cambio(s): {detalle}). "
+                "Promover pisaría cambios vivos: reclonar y re-ejecutar el ritual."
+            )
 
     def _apply_changes(self, clone: SandboxClone, changes: tuple[FileChange, ...]) -> tuple[int, int]:
         written = 0
         deleted = 0
-        for change in changes:
+        # removed se aplica ANTES que added/modified: destraba reemplazos
+        # archivo→directorio y hace correcto el rename solo-de-mayúsculas en
+        # filesystems case-insensitive (review Codex PR #245).
+        ordered = sorted(changes, key=lambda c: 0 if c.kind == "removed" else 1)
+        for change in ordered:
             source, copy = (
                 (clone.profile_source, clone.profile_copy)
                 if change.area == "profile"
@@ -286,7 +355,20 @@ class ProfileSandbox:
                 deleted += 1
             else:  # added | modified
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(copy / change.relative_path, target)
+                if target.is_dir():
+                    # Reemplazo directorio→archivo: tras las removals el dir
+                    # solo conserva subdirectorios vacíos; despejarlo.
+                    _rmtree_force(target)
+                # Escritura atómica: copiar a un tmp del MISMO directorio y
+                # os.replace — un fallo a mitad de copia no trunca el archivo
+                # real (mismo patrón que las escrituras de load order del repo;
+                # review Codex PR #245).
+                tmp = target.parent / f"{target.name}.{uuid.uuid4().hex[:8]}.skyclaw-tmp"
+                try:
+                    shutil.copy2(copy / change.relative_path, tmp)
+                    os.replace(tmp, target)
+                finally:
+                    tmp.unlink(missing_ok=True)
                 written += 1
         return written, deleted
 

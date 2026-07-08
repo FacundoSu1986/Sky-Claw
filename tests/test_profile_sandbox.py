@@ -22,6 +22,7 @@ import pytest
 from sky_claw.local.mo2.profile_sandbox import (
     ProfileNotFoundError,
     ProfileSandbox,
+    SandboxDriftError,
     SandboxLocationError,
     SandboxSymlinkError,
 )
@@ -168,8 +169,10 @@ async def test_promote_aplica_los_cambios_al_perfil_real(mo2_root: pathlib.Path)
     assert (mo2_root / "profiles" / "Default" / "plugins.txt").read_bytes() == nuevo_orden
     assert (mo2_root / "overwrite" / "SkyClaw_Patch.esp").read_bytes() == b"TES4-fake"
     assert not (mo2_root / "overwrite" / "SKSE" / "plugin.log").exists()
-    # Tras promover, el clon y el real coinciden: diff vacío.
-    assert (await sandbox.diff(clone)).is_empty
+    # El diff se mide contra el baseline de clone-time: sigue describiendo lo
+    # que hizo el ritual aunque ya se haya promovido (el clon post-promoción
+    # está gastado — se descarta, no se reutiliza).
+    assert len((await sandbox.diff(clone)).changes) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -261,3 +264,99 @@ async def test_symlink_plantado_en_el_clon_se_rechaza(mo2_root: pathlib.Path, tm
 
     with pytest.raises(SandboxSymlinkError):
         await sandbox.diff(clone)
+
+
+# ---------------------------------------------------------------------------
+# Baseline y drift (reviews Codex PR #245)
+# ---------------------------------------------------------------------------
+
+
+async def test_diff_refleja_solo_lo_que_hizo_el_ritual(mo2_root: pathlib.Path) -> None:
+    """El diff compara contra el baseline de clone-time, no contra el estado
+    real vivo: un archivo que MO2/el usuario creó en el real durante la ventana
+    de aprobación NO aparece como 'removed' del ritual."""
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    clone = await sandbox.clone()
+
+    # El lado real cambia después del clonado (MO2 abierto, usuario, etc.).
+    (mo2_root / "overwrite" / "creado_por_mo2.txt").write_bytes(b"vivo")
+
+    diff = await sandbox.diff(clone)
+
+    assert diff.is_empty  # el ritual no hizo nada; el drift del real no es suyo
+
+
+async def test_promote_con_drift_del_real_se_rechaza(mo2_root: pathlib.Path) -> None:
+    """Si el real cambió desde el clonado, promover a ciegas borraría o
+    pisaría esos cambios vivos: fail-closed con error tipado, sin escribir."""
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    clone = await sandbox.clone()
+
+    (clone.overwrite_copy / "SkyClaw_Patch.esp").write_bytes(b"TES4-fake")
+    vivo = mo2_root / "overwrite" / "creado_por_mo2.txt"
+    vivo.write_bytes(b"vivo")  # drift en la ventana de aprobación
+
+    with pytest.raises(SandboxDriftError):
+        await sandbox.promote(clone)
+
+    # Nada se aplicó y el archivo vivo sobrevive.
+    assert vivo.read_bytes() == b"vivo"
+    assert not (mo2_root / "overwrite" / "SkyClaw_Patch.esp").exists()
+
+
+@_symlink_guard
+async def test_promote_con_symlink_en_el_real_se_rechaza(mo2_root: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """Un symlink aparecido en el árbol real es destino inseguro para promote:
+    se corta antes de escribir a través de él."""
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    clone = await sandbox.clone()
+
+    (clone.overwrite_copy / "SkyClaw_Patch.esp").write_bytes(b"TES4-fake")
+    fuera = tmp_path / "target_externo.txt"
+    fuera.write_bytes(b"externo")
+    (mo2_root / "overwrite" / "link.txt").symlink_to(fuera)
+
+    with pytest.raises(SandboxSymlinkError):
+        await sandbox.promote(clone)
+
+    assert not (mo2_root / "overwrite" / "SkyClaw_Patch.esp").exists()
+
+
+def test_sandbox_dentro_del_overwrite_es_rechazado(mo2_root: pathlib.Path) -> None:
+    """El overwrite es un área clonada: un sandbox adentro contaminaría el
+    propio árbol que se clona (recursión / artefactos en el diff)."""
+    with pytest.raises(SandboxLocationError):
+        ProfileSandbox(mo2_root=mo2_root, sandbox_root=mo2_root / "overwrite" / "sandbox")
+
+
+async def test_promote_reemplaza_archivo_por_directorio(mo2_root: pathlib.Path) -> None:
+    """removed se aplica antes que added: un ritual que reemplaza un archivo
+    por un directorio con hijos debe promoverse completo, no fallar a medias."""
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    clone = await sandbox.clone()
+
+    log = clone.overwrite_copy / "SKSE" / "plugin.log"
+    log.unlink()
+    log.mkdir()
+    (log / "nuevo.txt").write_bytes(b"hijo")
+
+    resultado = await sandbox.promote(clone)
+
+    real = mo2_root / "overwrite" / "SKSE" / "plugin.log"
+    assert real.is_dir()
+    assert (real / "nuevo.txt").read_bytes() == b"hijo"
+    assert resultado.files_deleted == 1
+    assert resultado.files_written == 1
+
+
+async def test_promote_no_deja_temporales(mo2_root: pathlib.Path) -> None:
+    """La escritura es atómica (tmp + replace en el mismo directorio): tras
+    promover no quedan archivos temporales en el árbol real."""
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    clone = await sandbox.clone()
+    (clone.profile_copy / "plugins.txt").write_bytes(b"\xef\xbb\xbf*USSEP.esp\r\n")
+
+    await sandbox.promote(clone)
+
+    residuos = [p for p in (mo2_root / "profiles" / "Default").rglob("*") if "skyclaw-tmp" in p.name]
+    assert residuos == []
