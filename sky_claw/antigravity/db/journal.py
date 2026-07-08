@@ -742,6 +742,45 @@ class OperationJournal:
         await self._update_status(entry_id, OperationStatus.COMPLETED)
         logger.debug("Operation completed", extra={"entry_id": entry_id})
 
+    async def persist_action_manifest(
+        self,
+        manifest: Any,
+        *,
+        agent_id: str,
+        transaction_id: int,
+    ) -> int:
+        """Persiste un ActionManifest (T-26, ADR 0002) como metadata de una operación.
+
+        La "caja negra de vuelo" exige que el manifiesto de un Ritual mutante
+        quede auditable: se guarda su ``model_dump(mode="json")`` en la columna
+        ``metadata`` (reusando ``begin_operation``, no una tabla nueva) y se
+        recupera con :meth:`get_operations_by_transaction` →
+        ``ActionManifest.model_validate(entry.metadata)``.
+
+        Args:
+            manifest: Un ``ActionManifest`` (pydantic). Se toma como ``Any`` para
+                no acoplar la capa DB al modelo del orquestador.
+            agent_id: Agente que emite el manifiesto (el servicio del Ritual).
+            transaction_id: Transacción activa del Ritual.
+
+        Returns:
+            El id de la entrada del journal donde quedó persistido.
+        """
+        primary_path = manifest.files_touched[0] if manifest.files_touched else manifest.ritual_id
+        op_id = await self.begin_operation(
+            agent_id=agent_id,
+            operation_type=OperationType.FILE_MODIFY,
+            target_path=str(primary_path),
+            transaction_id=transaction_id,
+            metadata=manifest.model_dump(mode="json"),
+        )
+        await self.complete_operation(op_id)
+        logger.info(
+            "ActionManifest persisted",
+            extra={"entry_id": op_id, "ritual_id": manifest.ritual_id, "tool": manifest.tool},
+        )
+        return op_id
+
     async def fail_operation(self, entry_id: int, error: str = "", metadata: dict[str, Any] | None = None) -> None:
         """
         Marcar una operación como fallida.

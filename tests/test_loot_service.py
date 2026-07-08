@@ -77,13 +77,14 @@ def _resolver_vacio() -> MagicMock:
     return resolver
 
 
-def _preflight_verde() -> MagicMock:
+def _preflight_verde(loot_version: tuple[int, int, int] | None = None) -> MagicMock:
     """Preflight que no bloquea: estos tests anclan la mecánica del sort, no el
     semáforo (cubierto por test_preflight_service/test_preflight_wiring)."""
     reporte = MagicMock()
     reporte.blocks_mutations = False
     preflight = MagicMock()
     preflight.run = AsyncMock(return_value=reporte)
+    preflight.loot_version = loot_version
     return preflight
 
 
@@ -366,3 +367,225 @@ async def test_sort_exitoso_conserva_los_cambios(
     assert result["success"] is True
     assert result["rolled_back"] is False
     assert plugins.read_text(encoding="utf-8") == orden_nuevo
+
+
+# =============================================================================
+# T-26: emisión del ActionManifest ("caja negra de vuelo", ADR 0002)
+# =============================================================================
+
+
+@pytest.fixture
+async def journal(tmp_path: pathlib.Path):
+    """OperationJournal real sobre una DB temporal."""
+    from sky_claw.antigravity.db.journal import OperationJournal
+
+    j = OperationJournal(tmp_path / "journal.db")
+    await j.open()
+    yield j  # type: ignore[misc]
+    await j.close()
+
+
+def _make_service_con_journal(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    runner: MagicMock,
+    journal: object,
+    resolver: object,
+    loot_version: tuple[int, int, int] | None = None,
+) -> LootSortingService:
+    return LootSortingService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=MagicMock(),
+        loot_runner=runner,
+        load_order_resolver=resolver,
+        preflight=_preflight_verde(loot_version),
+        journal=journal,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sort_emite_manifiesto_antes_de_mutar(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """Con journal cableado, el sort persiste un ActionManifest con archivos y
+    plan de rollback ANTES de correr LOOT (T-26)."""
+    from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
+
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    # Recuperar el manifiesto persistido y validarlo.
+    tx = await journal.get_last_operation(agent_id=LootSortingService.AGENT_ID)
+    assert tx is not None
+    manifest = ActionManifest.model_validate(tx.metadata)
+    assert manifest.tool == "LOOT"
+    assert str(plugins) in manifest.files_touched
+    assert len(manifest.rollback_plan) >= 1
+    assert manifest.rollback_plan[0].original_path == str(plugins)
+
+
+@pytest.mark.asyncio
+async def test_sin_manifiesto_el_sort_no_muta(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si la emisión del manifiesto falla, LOOT no se ejecuta (enforcement T-26)."""
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    with patch.object(journal, "persist_action_manifest", AsyncMock(side_effect=RuntimeError("boom"))):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert "manifiesto" in result["message"].lower()
+    runner.sort.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manifiesto_registra_la_version_de_loot(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """La versión que ya detectó el preflight se persiste en el manifiesto —
+    no se pierde ni se relanza el binario (review Codex PR #243)."""
+    from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
+
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver, loot_version=(0, 28, 0))
+
+    await svc.sort_load_order()
+
+    op = await journal.get_last_operation(agent_id=LootSortingService.AGENT_ID)
+    manifest = ActionManifest.model_validate(op.metadata)
+    assert manifest.tool_version == "0.28.0"
+
+
+@pytest.mark.asyncio
+async def test_emit_failure_no_deja_transaccion_pending(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si persist falla tras begin_transaction, la TX se marca rolled-back (no
+    queda PENDING) y el sort no muta (review Codex PR #243)."""
+    from sky_claw.antigravity.db.journal import TransactionStatus
+
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    with patch.object(journal, "persist_action_manifest", AsyncMock(side_effect=RuntimeError("boom"))):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    runner.sort.assert_not_awaited()
+    # Ninguna transacción quedó PENDING.
+    recientes = await journal.list_recent_transactions(limit=10)
+    assert all(t.status != TransactionStatus.PENDING for t in recientes)
+
+
+@pytest.mark.asyncio
+async def test_error_inesperado_del_runner_devuelve_dict(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un error del runner fuera de las excepciones LOOT-específicas no propaga:
+    se devuelve dict y la TX del manifiesto no queda PENDING (review Codex #243)."""
+    from sky_claw.antigravity.db.journal import TransactionStatus
+
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=RuntimeError("subprocess kaput"))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    result = await svc.sort_load_order()  # no debe propagar
+
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    recientes = await journal.list_recent_transactions(limit=10)
+    assert all(t.status != TransactionStatus.PENDING for t in recientes)
+
+
+@pytest.mark.asyncio
+async def test_error_del_journal_no_rompe_el_contrato_de_dict(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un JournalTransactionError en la emisión se convierte en dict serializable,
+    no propaga (review Copilot PR #243): sort_load_order siempre devuelve dict."""
+    from sky_claw.antigravity.db.journal import JournalTransactionError
+
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    with patch.object(journal, "begin_transaction", AsyncMock(side_effect=JournalTransactionError("db down"))):
+        result = await svc.sort_load_order()  # no debe propagar
+
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    runner.sort.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fallo_de_commit_del_journal_no_rompe_el_sort(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """El sort ya terminó: un fallo de commit del journal se loguea best-effort
+    y NO rompe el contrato de dict serializable (review Copilot PR #243)."""
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    with patch.object(journal, "commit_transaction", AsyncMock(side_effect=OSError("disk full"))):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is True  # el sort corrió; el commit-fail no lo tumba
+    runner.sort.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sin_journal_no_emite_manifiesto_pero_ordena(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Sin journal cableado (callers legacy), el sort corre igual — el manifiesto
+    es opcional a nivel dependencia, no rompe el camino existente."""
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    runner.sort.assert_awaited_once()

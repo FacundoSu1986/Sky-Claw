@@ -181,6 +181,10 @@ class SupervisorAgent:
             snapshot_manager=self.snapshot_manager,
             path_resolver=self._path_resolver,
             path_validator=self._path_validator,
+            # T-26 (review Codex PR #243): cablear el journal de producción para
+            # que el Ritual de LOOT emita el ActionManifest antes de mutar —
+            # sin esto el guard era test-only. Espeja los servicios hermanos.
+            journal=self.journal,
         )
 
         # Follow-up A: Pandora regenera behavior graphs, así que la corrida real va
