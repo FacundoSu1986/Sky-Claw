@@ -14,6 +14,8 @@ El clon vive FUERA de ``profiles/`` para que MO2 nunca lo cargue como perfil
 from __future__ import annotations
 
 import pathlib
+import sys
+import tempfile
 
 import pytest
 
@@ -21,6 +23,25 @@ from sky_claw.local.mo2.profile_sandbox import (
     ProfileNotFoundError,
     ProfileSandbox,
     SandboxLocationError,
+    SandboxSymlinkError,
+)
+
+
+def _puede_crear_symlinks() -> bool:
+    """En Windows crear symlinks requiere privilegios; mismo guard que test_preflight_wiring."""
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            origen = pathlib.Path(td) / "src.txt"
+            origen.touch()
+            (pathlib.Path(td) / "link.txt").symlink_to(origen)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+_symlink_guard = pytest.mark.skipif(
+    sys.platform == "win32" and not _puede_crear_symlinks(),
+    reason="Crear symlinks requiere privilegios elevados en Windows",
 )
 
 # Contenidos byte-exactos: BOM UTF-8 + CRLF, como los escribe MO2 en Windows.
@@ -177,3 +198,66 @@ async def test_discard_elimina_el_arbol_del_clon(mo2_root: pathlib.Path) -> None
     await sandbox.discard(clone)
 
     assert not clone.root.exists()
+
+
+# ---------------------------------------------------------------------------
+# Robustez (reviews Copilot PR #245)
+# ---------------------------------------------------------------------------
+
+
+async def test_mo2_root_se_normaliza_con_resolve(mo2_root: pathlib.Path) -> None:
+    """Un mo2_root con `..` o symlinks se normaliza al construir, como hace
+    MO2Controller — las rutas del clon no arrastran segmentos sin resolver."""
+    torcido = mo2_root.parent / "mo2" / ".." / "mo2"
+    sandbox = ProfileSandbox(mo2_root=torcido)
+
+    clone = await sandbox.clone()
+
+    assert ".." not in clone.profile_source.parts
+    assert clone.profile_source == (mo2_root / "profiles" / "Default").resolve()
+
+
+async def test_promote_sobreescribe_archivo_readonly(mo2_root: pathlib.Path) -> None:
+    """Los árboles de mods suelen traer archivos read-only: promote debe
+    limpiar el bit de escritura antes de sobreescribir, no morir a medias."""
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    clone = await sandbox.clone()
+
+    real = mo2_root / "profiles" / "Default" / "plugins.txt"
+    real.chmod(0o444)  # read-only, como los deja más de un instalador de mods
+    nuevo = b"\xef\xbb\xbf*USSEP.esp\r\n*Skyrim.esm\r\n"
+    (clone.profile_copy / "plugins.txt").write_bytes(nuevo)
+
+    resultado = await sandbox.promote(clone)
+
+    assert resultado.files_written == 1
+    assert real.read_bytes() == nuevo
+
+
+@_symlink_guard
+async def test_symlink_en_el_origen_se_rechaza(mo2_root: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """Fail-closed: un symlink en el árbol real puede sacar la copia/lectura
+    fuera del sandbox (misma política que file_permissions/vfs_health)."""
+    fuera = tmp_path / "fuera.txt"
+    fuera.write_bytes(b"contenido externo")
+    (mo2_root / "overwrite" / "link.txt").symlink_to(fuera)
+
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+
+    with pytest.raises(SandboxSymlinkError):
+        await sandbox.clone()
+
+
+@_symlink_guard
+async def test_symlink_plantado_en_el_clon_se_rechaza(mo2_root: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """Una herramienta externa corriendo sobre el clon podría plantar un
+    symlink; diff/promote deben cortar antes de leer/escribir a través de él."""
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    clone = await sandbox.clone()
+
+    fuera = tmp_path / "objetivo.txt"
+    fuera.write_bytes(b"target externo")
+    (clone.overwrite_copy / "plantado.txt").symlink_to(fuera)
+
+    with pytest.raises(SandboxSymlinkError):
+        await sandbox.diff(clone)

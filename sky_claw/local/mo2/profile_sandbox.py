@@ -60,6 +60,15 @@ class SandboxLocationError(ProfileSandboxError):
     """La raíz del sandbox caería dentro de ``profiles/`` (MO2 la cargaría)."""
 
 
+class SandboxSymlinkError(ProfileSandboxError):
+    """Se encontró un symlink en un árbol del sandbox — fail-closed.
+
+    Un symlink puede sacar la copia, el diff o la promoción fuera del sandbox
+    (leer contenido externo o escribir sobre targets inesperados). Misma
+    política que ``file_permissions``/``vfs_health``: cortar, no seguir.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class SandboxClone:
     """Un clon materializado: rutas de origen y copia por área.
@@ -139,12 +148,15 @@ class ProfileSandbox:
         sandbox_root: pathlib.Path | None = None,
     ) -> None:
         assert_safe_component(profile, field="profile")
-        self._mo2_root = mo2_root
+        # Normalizar como hace MO2Controller: sin resolve(), un mo2_root
+        # relativo o con symlinks dejaría el chequeo de ubicación y las rutas
+        # del clon inconsistentes entre sí (review Copilot PR #245).
+        self._mo2_root = mo2_root.resolve()
         self._profile = profile
-        root = sandbox_root if sandbox_root is not None else mo2_root / _DEFAULT_SANDBOX_DIRNAME
+        root = sandbox_root.resolve() if sandbox_root is not None else self._mo2_root / _DEFAULT_SANDBOX_DIRNAME
 
-        profiles_dir = (mo2_root / "profiles").resolve()
-        if root.resolve().is_relative_to(profiles_dir):
+        profiles_dir = self._mo2_root / "profiles"
+        if root.is_relative_to(profiles_dir):
             raise SandboxLocationError(
                 f"El sandbox no puede vivir dentro de {profiles_dir}: MO2 listaría el clon como un perfil real."
             )
@@ -222,6 +234,10 @@ class ProfileSandbox:
 
     def _materialize(self, clone: SandboxClone) -> None:
         """Copia byte-fiel de ambas áreas (``copy2`` preserva bytes y mtime)."""
+        # Fail-closed ANTES de copiar: copytree seguiría un symlink del árbol
+        # real y materializaría contenido de fuera del sandbox.
+        self._reject_symlinks(clone.profile_source)
+        self._reject_symlinks(clone.overwrite_source)
         clone.root.mkdir(parents=True, exist_ok=True)
         shutil.copytree(clone.profile_source, clone.profile_copy, copy_function=shutil.copy2)
         if clone.overwrite_source.is_dir():
@@ -261,6 +277,10 @@ class ProfileSandbox:
                 else (clone.overwrite_source, clone.overwrite_copy)
             )
             target = source / change.relative_path
+            # Los árboles de mods suelen traer archivos read-only (Windows):
+            # limpiar el bit de escritura antes de tocar el target para no
+            # dejar la promoción a medias (review Copilot PR #245).
+            _make_writable(target)
             if change.kind == "removed":
                 target.unlink(missing_ok=True)
                 deleted += 1
@@ -272,10 +292,34 @@ class ProfileSandbox:
 
     @staticmethod
     def _relative_files(root: pathlib.Path) -> set[str]:
-        """Archivos bajo ``root`` como rutas relativas con ``/`` (set vacío si no existe)."""
+        """Archivos bajo ``root`` como rutas relativas con ``/`` (set vacío si no existe).
+
+        Raises:
+            SandboxSymlinkError: Si el árbol contiene symlinks (fail-closed:
+                diff/promote los leerían o escribirían a través de ellos).
+        """
         if not root.is_dir():
             return set()
-        return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+        files: set[str] = set()
+        for p in root.rglob("*"):
+            if p.is_symlink():
+                raise SandboxSymlinkError(
+                    f"Symlink detectado en el sandbox: {p}. No se sigue (podría apuntar fuera del árbol)."
+                )
+            if p.is_file():
+                files.add(p.relative_to(root).as_posix())
+        return files
+
+    @classmethod
+    def _reject_symlinks(cls, root: pathlib.Path) -> None:
+        """Corta con :class:`SandboxSymlinkError` si hay symlinks bajo ``root``."""
+        cls._relative_files(root)
+
+
+def _make_writable(path: pathlib.Path) -> None:
+    """Suma el bit de escritura a ``path`` si existe (no-op ante cualquier OSError)."""
+    with contextlib.suppress(OSError):
+        path.chmod(path.stat().st_mode | stat.S_IWRITE)
 
 
 def _rmtree_force(path: pathlib.Path) -> None:
