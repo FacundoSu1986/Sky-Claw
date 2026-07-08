@@ -123,6 +123,10 @@ class AsyncToolRegistry:
         # Both must point at the same locks.db file (.skyclaw_backups/locks.db).
         lock_manager: Any | None = None,
         snapshot_manager: Any | None = None,
+        # T-26 (ADR 0002, follow-up de #243): journal para que run_loot_sort de
+        # este path del agente también emita+persista el ActionManifest ("caja
+        # negra de vuelo"). None = comportamiento previo (emisión gateada off).
+        journal: Any | None = None,
         # TASK-013 P1: Zero-Trust egress — gateway is threaded to every tool
         # that performs outbound HTTP so NetworkGateway.authorize() is always enforced.
         gateway: Any | None = None,
@@ -153,6 +157,7 @@ class AsyncToolRegistry:
         self._path_validator = path_validator
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
+        self._journal = journal
         self._gateway = gateway
         # T2-07: copiar el set para evitar mutaciones externas que cambien
         # silenciosamente la autorizacion de un registry ya construido.
@@ -470,6 +475,9 @@ class AsyncToolRegistry:
                 snapshot_manager=self._snapshot_manager,
                 # PR #171 follow-up: sandbox the config-controlled exe path.
                 path_validator=self._path_validator,
+                # T-26 (follow-up de #243): emitir la caja negra de vuelo también
+                # en el path del agente cuando app_context cablea el journal.
+                journal=self._journal,
             ),
         )
         self._tools["run_xedit_script"] = ToolDescriptor(

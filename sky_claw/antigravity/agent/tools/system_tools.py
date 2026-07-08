@@ -60,6 +60,7 @@ async def run_loot_sort(
     lock_manager: Any | None = None,
     snapshot_manager: Any | None = None,
     path_validator: Any | None = None,
+    journal: Any | None = None,
 ) -> str:
     """Invoke the LOOT CLI to sort the load order.
 
@@ -78,6 +79,13 @@ async def run_loot_sort(
     against the sandbox before any subprocess launch, exactly like the
     dry-run preview path already does (tool_dispatcher wires the same
     validator). A rejection surfaces through the existing error-JSON contract.
+
+    T-26 (ADR 0002, follow-up de #243): cuando ``journal`` está cableado (via
+    ``AsyncToolRegistry`` desde ``app_context``), se enhebra al
+    ``LootSortingService`` para que este path del agente también emita+persista
+    el ``ActionManifest`` ("caja negra de vuelo") antes de mutar — cerrando el
+    hueco donde la emisión era un no-op fuera del path de la GUI/supervisor
+    (review Codex #243 P1). Con ``journal=None`` el comportamiento no cambia.
     """
     if loot_runner is None and loot_exe is not None:
         try:
@@ -102,6 +110,9 @@ async def run_loot_sort(
             # del agente (review Codex PR #240 P1).
             loot_exe=loot_exe,
             mo2_root=getattr(mo2, "root", None),
+            # T-26 (follow-up de #243): la caja negra de vuelo también en el
+            # path del agente. None = comportamiento previo intacto.
+            journal=journal,
         )
         # update_masterlist=False preserves the agent tool's prior no-network
         # behavior (ProfileParams has no masterlist flag).
