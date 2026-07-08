@@ -84,3 +84,30 @@ class TestSelectStrategy:
         seleccionada = await orquestador.select_strategy(conflicto)
 
         assert isinstance(seleccionada, DelegateToBashedPatch)
+
+    async def test_cancelacion_propaga_no_se_traga(self) -> None:
+        """CancelledError debe propagar (no tratarse como estrategia rota) —
+        convención del repo, review Copilot PR #242."""
+        import asyncio
+
+        class EstrategiaCancelada(PatchStrategy):
+            async def can_handle(self, conflict: object) -> bool:
+                raise asyncio.CancelledError
+
+            async def create_plan(self, conflicts: list) -> object:  # pragma: no cover
+                raise NotImplementedError
+
+            def get_priority(self) -> int:
+                return 99
+
+        orquestador = PatchOrchestrator(
+            xedit_runner=MagicMock(),
+            snapshot_manager=MagicMock(),
+            rollback_manager=MagicMock(),
+            strategies=[EstrategiaCancelada(), DelegateToBashedPatch()],
+        )
+        conflicto = MagicMock()
+        conflicto.record_type = "LVLI"
+
+        with pytest.raises(asyncio.CancelledError):
+            await orquestador.select_strategy(conflicto)
