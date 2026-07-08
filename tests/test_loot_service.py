@@ -366,3 +366,106 @@ async def test_sort_exitoso_conserva_los_cambios(
     assert result["success"] is True
     assert result["rolled_back"] is False
     assert plugins.read_text(encoding="utf-8") == orden_nuevo
+
+
+# =============================================================================
+# T-26: emisión del ActionManifest ("caja negra de vuelo", ADR 0002)
+# =============================================================================
+
+
+@pytest.fixture
+async def journal(tmp_path: pathlib.Path):
+    """OperationJournal real sobre una DB temporal."""
+    from sky_claw.antigravity.db.journal import OperationJournal
+
+    j = OperationJournal(tmp_path / "journal.db")
+    await j.open()
+    yield j  # type: ignore[misc]
+    await j.close()
+
+
+def _make_service_con_journal(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    runner: MagicMock,
+    journal: object,
+    resolver: object,
+) -> LootSortingService:
+    return LootSortingService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=MagicMock(),
+        loot_runner=runner,
+        load_order_resolver=resolver,
+        preflight=_preflight_verde(),
+        journal=journal,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sort_emite_manifiesto_antes_de_mutar(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """Con journal cableado, el sort persiste un ActionManifest con archivos y
+    plan de rollback ANTES de correr LOOT (T-26)."""
+    from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
+
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    # Recuperar el manifiesto persistido y validarlo.
+    tx = await journal.get_last_operation(agent_id=LootSortingService.AGENT_ID)
+    assert tx is not None
+    manifest = ActionManifest.model_validate(tx.metadata)
+    assert manifest.tool == "LOOT"
+    assert str(plugins) in manifest.files_touched
+    assert len(manifest.rollback_plan) >= 1
+    assert manifest.rollback_plan[0].original_path == str(plugins)
+
+
+@pytest.mark.asyncio
+async def test_sin_manifiesto_el_sort_no_muta(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si la emisión del manifiesto falla, LOOT no se ejecuta (enforcement T-26)."""
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    with patch.object(journal, "persist_action_manifest", AsyncMock(side_effect=RuntimeError("boom"))):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert "manifiesto" in result["message"].lower()
+    runner.sort.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sin_journal_no_emite_manifiesto_pero_ordena(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Sin journal cableado (callers legacy), el sort corre igual — el manifiesto
+    es opcional a nivel dependencia, no rompe el camino existente."""
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    runner.sort.assert_awaited_once()

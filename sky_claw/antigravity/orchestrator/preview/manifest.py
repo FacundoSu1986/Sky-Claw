@@ -129,6 +129,42 @@ class StageChangeSet(BaseModel):
     summary: str | None = None
 
 
+class RollbackStep(BaseModel):
+    """One file's rollback pointer: which snapshot restores which original path.
+
+    Mirrors :class:`~sky_claw.antigravity.db.snapshot_manager.SnapshotInfo` (the
+    fields needed to reverse a mutation) so the manifest carries an actionable
+    rollback plan without holding a live snapshot-manager reference.
+    """
+
+    original_path: str
+    snapshot_path: str
+    snapshot_id: str
+
+
+class ActionManifest(BaseModel):
+    """Manifest of what a single mutating Ritual *will* change, emitted BEFORE
+    it executes (ADR 0002 — "caja negra de vuelo").
+
+    Unlike :class:`PreviewManifest` (a full chain dry-run), this describes one
+    Ritual: the files it will touch, the tool + version doing it, and the
+    rollback plan (which snapshot restores which file). It is serialization-first
+    so the same object feeds the approval gate, the journal, and the final
+    flight report (T-28) without re-deriving anything.
+    """
+
+    ritual_id: str
+    tool: str
+    tool_version: str | None = None
+    created_at: _dt.datetime = Field(default_factory=_utcnow)
+    files_touched: list[str] = Field(default_factory=list)
+    # Records/plugins the Ritual forwards (reuses the preview's conflict shape).
+    records_forwarded: list[ConflictPair] = Field(default_factory=list)
+    load_order_diff: LoadOrderDiff | None = None
+    rollback_plan: list[RollbackStep] = Field(default_factory=list)
+    summary: str | None = None
+
+
 class PreviewManifest(BaseModel):
     """Top-level manifest of a full dry-run of the modding chain."""
 
