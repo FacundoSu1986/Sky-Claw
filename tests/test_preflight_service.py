@@ -175,3 +175,74 @@ class TestBloqueoDeMutantes:
 
         assert resultado["success"] is True
         runner.sort.assert_awaited_once()
+
+
+class TestSensorDeMasters:
+    """T-30·1 (cableado): el sensor de masters compone en el semáforo."""
+
+    @staticmethod
+    def _issue_master(severity: str, kind: str = "missing") -> object:
+        from sky_claw.local.validators.missing_masters import MasterIssue
+
+        return MasterIssue(
+            plugin="Mod.esp",
+            master="NoInstalado.esm",
+            kind=kind,  # type: ignore[arg-type]
+            severity=severity,  # type: ignore[arg-type]
+            remediation="instalá el mod que lo provee",
+        )
+
+    async def test_master_faltante_fuerza_rojo(self) -> None:
+        checker = MagicMock()
+        checker.check.return_value = []
+        servicio = PreflightService(
+            vfs_checker=checker,
+            loot_version_detector=AsyncMock(return_value=(0, 29, 0)),
+            masters_check=lambda: [self._issue_master("critical")],
+        )
+
+        reporte = await servicio.run()
+
+        assert reporte.status is PreflightStatus.RED
+        assert reporte.blocks_mutations is True
+        masters = next(c for c in reporte.checks if c.name == "masters")
+        assert masters.status is PreflightStatus.RED
+        assert any("NoInstalado.esm" in d for d in masters.details)
+
+    async def test_masters_limpios_es_verde(self) -> None:
+        checker = MagicMock()
+        checker.check.return_value = []
+        servicio = PreflightService(
+            vfs_checker=checker,
+            loot_version_detector=AsyncMock(return_value=(0, 29, 0)),
+            masters_check=lambda: [],
+        )
+
+        reporte = await servicio.run()
+
+        assert reporte.status is PreflightStatus.GREEN
+        masters = next(c for c in reporte.checks if c.name == "masters")
+        assert masters.status is PreflightStatus.GREEN
+
+    async def test_solo_warnings_de_masters_es_amarillo(self) -> None:
+        checker = MagicMock()
+        checker.check.return_value = []
+        servicio = PreflightService(
+            vfs_checker=checker,
+            loot_version_detector=AsyncMock(return_value=(0, 29, 0)),
+            masters_check=lambda: [self._issue_master("warning", kind="plugin_not_found")],
+        )
+
+        reporte = await servicio.run()
+
+        assert reporte.status is PreflightStatus.YELLOW
+        assert reporte.blocks_mutations is False
+
+    async def test_sin_sensor_de_masters_no_miente(self) -> None:
+        """Sin sensor configurado el check es verde pero dice 'no configurado'
+        — misma regla de honestidad que vfs/loot_version."""
+        reporte = await _servicio(issues=[], version=(0, 29, 0)).run()
+
+        masters = next(c for c in reporte.checks if c.name == "masters")
+        assert masters.status is PreflightStatus.GREEN
+        assert "no configurado" in masters.summary.lower()
