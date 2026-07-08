@@ -44,8 +44,9 @@ def build_action_manifest(
         tool: Nombre de la herramienta que muta (ej. ``"LOOT"``).
         tool_version: Versión detectada, o ``None`` si no se pudo determinar.
         target_files: Archivos que el Ritual tocará (los mismos del snapshot).
-        snapshots: Snapshots capturados por el lock; cada uno es un
-            :class:`RollbackStep` (qué restaura qué). Puede ir vacío (entorno no
+        snapshots: ``SnapshotInfo`` capturados por el lock; la función traduce
+            cada uno a un :class:`RollbackStep` del plan de rollback (qué
+            snapshot restaura qué archivo). Puede ir vacío (entorno no
             resoluble): el manifiesto sigue siendo válido, con rollback vacío.
         records_forwarded: Records/plugins forwardeados (opcional).
         load_order_diff: Diff de orden de carga si aplica (opcional).

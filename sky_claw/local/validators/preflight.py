@@ -142,6 +142,14 @@ class PreflightService:
         self._version_checked = False
         self._version_lock = asyncio.Lock()
 
+    @property
+    def loot_version(self) -> tuple[int, int, int] | None:
+        """Versión de LOOT detectada (o None si aún no se corrió/​no se pudo).
+
+        Expuesta para que el consumidor la registre — p. ej. el ActionManifest
+        del sort (T-26) — sin relanzar el binario (review Codex PR #243)."""
+        return self._version_cache
+
     async def run(self) -> PreflightReport:
         """Ejecuta los sensores configurados y agrega el semáforo."""
         checks: list[PreflightCheck] = []

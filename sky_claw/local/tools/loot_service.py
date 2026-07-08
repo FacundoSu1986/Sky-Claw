@@ -22,6 +22,7 @@ previo al T-06.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 from typing import TYPE_CHECKING, Any
@@ -245,9 +246,13 @@ class LootSortingService:
         if update_masterlist is None:
             update_masterlist = bool(getattr(params, "update_masterlist", True))
 
+        # Versión de LOOT para el ActionManifest (T-26): la detecta el preflight
+        # sin relanzar el binario (review Codex PR #243). None si no corrió.
+        loot_version: tuple[int, int, int] | None = None
         preflight = None if override_preflight else self._ensure_preflight()
         if preflight is not None:
             preflight_report = await preflight.run()
+            loot_version = preflight.loot_version
             if preflight_report.blocks_mutations:
                 detail = "Preflight en rojo: el sort de LOOT quedó bloqueado. " + "; ".join(
                     c.summary for c in preflight_report.checks if c.status.value == "red"
@@ -297,13 +302,24 @@ class LootSortingService:
                 # mutar. Si el journal está cableado y la emisión falla, el sort
                 # NO procede (se lanza dentro del lock → __aexit__ revierte).
                 if self._journal is not None:
-                    journal_tx_id = await self._emit_action_manifest(tx, target_files)
+                    journal_tx_id = await self._emit_action_manifest(tx, target_files, loot_version)
                 result = await runner.sort(update_masterlist=update_masterlist)
                 if not result.success:
                     # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
                     raise _LootSortFailedError(result)
             if journal_tx_id is not None and self._journal is not None:
-                await self._journal.commit_transaction(journal_tx_id)
+                # El sort ya terminó y el lock se liberó; un fallo de commit del
+                # journal es de estado (el manifiesto ya quedó persistido), no
+                # debe romper el contrato "siempre devolver dict" (review
+                # Copilot PR #243). Best-effort: se loguea con traceback.
+                try:
+                    await self._journal.commit_transaction(journal_tx_id)
+                except Exception:  # noqa: BLE001 — boundary best-effort del journal
+                    logger.error(
+                        "Fallo al commitear la transacción del journal %d tras el sort exitoso",
+                        journal_tx_id,
+                        exc_info=True,
+                    )
         except LockAcquisitionError as exc:
             logger.warning("Lock contention on '%s': %s", self.RESOURCE_ID, exc)
             detail = f"Could not acquire load-order lock '{self.RESOURCE_ID}': {exc}"
@@ -333,6 +349,26 @@ class LootSortingService:
                 "logs": str(exc),
                 "rolled_back": tx.rollback_completed,
             }
+        except asyncio.CancelledError:
+            # La cancelación propaga; el snapshot ya se restauró en __aexit__.
+            # Cerrar la TX del journal es best-effort (no debe tragar la cancelación).
+            await self._mark_journal_rolled_back(journal_tx_id)
+            raise
+        except Exception as exc:  # noqa: BLE001 — contrato: sort_load_order SIEMPRE devuelve dict
+            # runner.sort() u otra pieza puede lanzar algo fuera de las excepciones
+            # LOOT-específicas (RuntimeError de subproceso, error de validador). El
+            # snapshot ya se restauró en __aexit__; acá cerramos la TX del manifiesto
+            # (no dejar PENDING) y devolvemos un dict serializable en vez de propagar
+            # (review Codex PR #243).
+            await self._mark_journal_rolled_back(journal_tx_id)
+            logger.error("Error inesperado en el sort de LOOT: %s", exc, exc_info=True)
+            return {
+                "status": "error",
+                "success": False,
+                "message": f"Error inesperado durante el sort: {exc}",
+                "logs": str(exc),
+                "rolled_back": tx.rollback_completed,
+            }
 
         # Contrato compartido (deuda #5): ``message`` canónico junto a los campos
         # estructurados; en éxito queda vacío (el consumidor arma su copy). En
@@ -359,6 +395,7 @@ class LootSortingService:
         self,
         tx: SnapshotTransactionLock,
         target_files: list[pathlib.Path],
+        loot_version: tuple[int, int, int] | None,
     ) -> int:
         """Construye y persiste el ActionManifest del sort dentro del lock (T-26).
 
@@ -367,13 +404,21 @@ class LootSortingService:
         rollback del manifiesto apunta a snapshots reales. Devuelve el id de la
         transacción del journal para poder commit/rollback después.
 
+        Args:
+            tx: El lock activo (sus ``snapshots`` alimentan el plan de rollback).
+            target_files: Archivos que el sort tocará.
+            loot_version: Versión de LOOT detectada por el preflight, o None.
+
         Raises:
             _ActionManifestError: Si begin_transaction/persist falla — el sort
-                no debe proceder sin la caja negra emitida.
+                no debe proceder sin la caja negra emitida. La TX del journal
+                recién abierta se marca rolled-back para no dejarla PENDING
+                (review Codex PR #243).
         """
         from sky_claw.antigravity.orchestrator.preview.action_manifest import build_action_manifest
 
         assert self._journal is not None  # cableado verificado por el caller
+        journal_tx_id: int | None = None
         try:
             journal_tx_id = await self._journal.begin_transaction(
                 description="loot_sort",
@@ -382,9 +427,7 @@ class LootSortingService:
             manifest = build_action_manifest(
                 ritual_id=f"loot-sort-{journal_tx_id}",
                 tool="LOOT",
-                # Threading de la versión detectada: follow-up (el preflight ya
-                # la conoce); el valor del manifiesto son archivos + rollback.
-                tool_version=None,
+                tool_version=".".join(map(str, loot_version)) if loot_version else None,
                 target_files=[str(f) for f in target_files],
                 snapshots=tx.snapshots,
                 summary="Ordenar orden de carga con LOOT.",
@@ -395,11 +438,29 @@ class LootSortingService:
                 transaction_id=journal_tx_id,
             )
             return journal_tx_id
-        except (OSError, RuntimeError, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001 — boundary: cualquier fallo del journal
+            # El journal puede lanzar JournalTransactionError, sqlite3.Error, etc.
+            # Todos deben convertirse a _ActionManifestError para que el
+            # enforcement devuelva un dict serializable en vez de propagar y
+            # romper el contrato de sort_load_order (review Copilot PR #243).
+            # No dejar la TX recién abierta en PENDING (review Codex PR #243).
+            await self._mark_journal_rolled_back(journal_tx_id)
             raise _ActionManifestError(str(exc)) from exc
 
     async def _mark_journal_rolled_back(self, journal_tx_id: int | None) -> None:
-        """Marca la transacción del journal como rolled-back si estaba abierta."""
+        """Marca la transacción del journal como rolled-back (best-effort).
+
+        Se llama en los caminos de excepción del sort; si el journal falla acá
+        (sqlite/IO) NO debe enmascarar el error original ni romper el contrato
+        de respuesta serializable — se suprime con log (review Copilot PR #243).
+        """
         if journal_tx_id is None or self._journal is None:
             return
-        await self._journal.mark_transaction_rolled_back(journal_tx_id)
+        try:
+            await self._journal.mark_transaction_rolled_back(journal_tx_id)
+        except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error(
+                "Fallo al marcar la transacción del journal %d como rolled-back",
+                journal_tx_id,
+                exc_info=True,
+            )
