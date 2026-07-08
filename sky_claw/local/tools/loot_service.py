@@ -320,6 +320,10 @@ class LootSortingService:
                         journal_tx_id,
                         exc_info=True,
                     )
+                # T-28 (ADR 0002): cerrar la caja negra con el informe
+                # post-vuelo. Va DESPUÉS del commit para leer el estado real
+                # de la TX; también best-effort — el sort ya fue exitoso.
+                await self._emit_flight_report(journal_tx_id)
         except LockAcquisitionError as exc:
             logger.warning("Lock contention on '%s': %s", self.RESOURCE_ID, exc)
             detail = f"Could not acquire load-order lock '{self.RESOURCE_ID}': {exc}"
@@ -446,6 +450,35 @@ class LootSortingService:
             # No dejar la TX recién abierta en PENDING (review Codex PR #243).
             await self._mark_journal_rolled_back(journal_tx_id)
             raise _ActionManifestError(str(exc)) from exc
+
+    async def _emit_flight_report(self, journal_tx_id: int) -> None:
+        """Compone y persiste el FlightReport del sort ya terminado (T-28).
+
+        Lee la caja negra desde el journal — el manifiesto persistido en
+        ``_emit_action_manifest`` y el estado REAL de la transacción (si el
+        commit best-effort falló, el informe dirá ``pending``: verdad antes
+        que optimismo) — y lo persiste en la misma transacción. Best-effort
+        con la misma disciplina que el commit: un fallo se loguea y NO rompe
+        el contrato "siempre devolver dict" ni revierte el sort exitoso.
+        """
+        from sky_claw.antigravity.orchestrator.preview.flight_report import (
+            compose_flight_report_from_journal,
+        )
+
+        assert self._journal is not None  # cableado verificado por el caller
+        try:
+            report = await compose_flight_report_from_journal(self._journal, transaction_id=journal_tx_id)
+            await self._journal.persist_flight_report(
+                report,
+                agent_id=self.AGENT_ID,
+                transaction_id=journal_tx_id,
+            )
+        except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error(
+                "Fallo al persistir el informe de vuelo de la transacción %d",
+                journal_tx_id,
+                exc_info=True,
+            )
 
     async def _mark_journal_rolled_back(self, journal_tx_id: int | None) -> None:
         """Marca la transacción del journal como rolled-back (best-effort).

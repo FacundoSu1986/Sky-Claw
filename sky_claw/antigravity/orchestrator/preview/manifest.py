@@ -16,7 +16,7 @@ in that order (stable within a rank) so the load-order diff is readable.
 from __future__ import annotations
 
 import datetime as _dt
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -163,6 +163,49 @@ class ActionManifest(BaseModel):
     load_order_diff: LoadOrderDiff | None = None
     rollback_plan: list[RollbackStep] = Field(default_factory=list)
     summary: str | None = None
+
+
+class FlightReport(BaseModel):
+    """Informe final de vuelo de un Ritual mutante, emitido DESPUÉS de ejecutar
+    (T-28, ADR 0002 — la caja negra leída después del vuelo).
+
+    Cada sección se copia del :class:`ActionManifest` persistido en el journal
+    — el informe ensambla datos existentes, no inventa nuevos: qué cambió
+    (``files_touched`` / ``load_order_diff``), por qué (``summary``), quién ganó
+    cada conflicto (``conflicts_resolved``) y cómo revertir (``rollback_plan``,
+    apuntando a snapshots reales). Un run sin manifiesto produce un informe
+    degradado explícito (``degraded`` + ``degraded_reason``), nunca un vacío
+    silencioso. Serialization-first: el mismo objeto se persiste en el journal,
+    alimenta la GUI y se exporta como Markdown.
+    """
+
+    # Discriminador: el manifiesto también viaja como metadata de una operación
+    # del journal y también trae ritual_id — esta clave distingue ambos ops.
+    kind: Literal["flight_report"] = "flight_report"
+    # Identidad del Ritual; opcionales para que el informe degradado (sin
+    # manifiesto que los aporte) siga siendo representable.
+    ritual_id: str | None = None
+    tool: str | None = None
+    tool_version: str | None = None
+    created_at: _dt.datetime = Field(default_factory=_utcnow)
+    # Valor del TransactionStatus del journal ("committed" / "rolled_back" /
+    # "pending"); str para no acoplar este modelo a la capa DB.
+    transaction_status: str
+    # Sección "qué cambió".
+    files_touched: list[str] = Field(default_factory=list)
+    load_order_diff: LoadOrderDiff | None = None
+    # Sección "por qué" (la narrativa adicional se deriva en el renderer).
+    summary: str | None = None
+    # Sección "quién ganó cada conflicto".
+    conflicts_resolved: list[ConflictPair] = Field(default_factory=list)
+    # Sección "cómo revertir".
+    rollback_plan: list[RollbackStep] = Field(default_factory=list)
+    # Slot para el post-run validator (T-21); mientras no exista, el renderer
+    # lo declara explícitamente como no disponible en vez de omitirlo.
+    post_run_validation: dict[str, Any] | None = None
+    # Degradado explícito: sin manifiesto persistido no hay vacío silencioso.
+    degraded: bool = False
+    degraded_reason: str | None = None
 
 
 class PreviewManifest(BaseModel):
