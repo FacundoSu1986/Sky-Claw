@@ -23,6 +23,7 @@ from sky_claw.antigravity.core.metrics_server import (
 )
 from sky_claw.antigravity.core.tracing import configure_tracing, shutdown_tracing
 from sky_claw.antigravity.db.async_registry import AsyncModRegistry
+from sky_claw.antigravity.db.journal import OperationJournal
 from sky_claw.antigravity.db.locks import DistributedLockManager
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
@@ -634,6 +635,21 @@ class AppContext:
             snapshot_manager = FileSnapshotManager(snapshot_dir=_LOCK_STAGING_DIR / "snapshots")
             await snapshot_manager.initialize()
 
+            # T-26 (ADR 0002, follow-up de #243): journal para que run_loot_sort
+            # de este path del agente también emita+persista el ActionManifest
+            # ("caja negra de vuelo") antes de mutar — cerrando el hueco donde la
+            # emisión era un no-op fuera del path de la GUI/supervisor. Comparte
+            # .skyclaw_backups/journal.db (mismo staging que locks.db, audit #190)
+            # y toma la conexión del DatabaseLifecycleManager (WAL recovery +
+            # pragmas hardenizadas + shutdown coordinado), igual que la history DB
+            # del router más abajo.
+            journal = OperationJournal(
+                db_path=_LOCK_STAGING_DIR / "journal.db",
+                lifecycle=self.lifecycle.manager,
+            )
+            await journal.open()
+            self._exit_stack.push_async_callback(journal.close)
+
             tool_registry = AsyncToolRegistry(
                 registry=self.database.registry,
                 mo2=mo2,
@@ -653,6 +669,8 @@ class AppContext:
                 # Audit #190: shared lock so run_loot_sort serializes with the orchestrator.
                 lock_manager=lock_manager,
                 snapshot_manager=snapshot_manager,
+                # T-26 (follow-up de #243): caja negra de vuelo en el path del agente.
+                journal=journal,
                 # TASK-013 P1: thread the NetworkGateway so all egress tools enforce
                 # Zero-Trust allow-list policy (fixes Copilot review comment on PR #78).
                 gateway=self.network.gateway,

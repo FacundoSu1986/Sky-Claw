@@ -518,3 +518,59 @@ class TestRunLootSortLock:
             assert await lm.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
         finally:
             await lm.close()
+
+    @pytest.mark.asyncio
+    async def test_emits_action_manifest_when_journal_wired(self, tmp_path: pathlib.Path) -> None:
+        """Con journal cableado, el path del agente persiste la "caja negra de
+        vuelo" del sort (T-26 end-to-end).
+
+        Cierra el ítem del path del agente que quedó abierto en #243: la emisión
+        del ActionManifest estaba gateada por ``self._journal is not None`` en el
+        servicio, pero el path del agente (Telegram / /api/chat) nunca le pasaba
+        journal, así que ahí la caja negra era un no-op (review Codex #243 P1).
+        """
+        from sky_claw.antigravity.db.journal import OperationJournal
+        from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
+        from sky_claw.local.tools.loot_service import LootSortingService
+
+        lm, sm = await self._managers(tmp_path)
+        journal = OperationJournal(tmp_path / "journal.db")
+        await journal.open()
+        try:
+            runner = MagicMock()
+            runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+            result = json.loads(
+                await run_loot_sort(
+                    MagicMock(),
+                    runner,
+                    None,
+                    "Default",
+                    lock_manager=lm,
+                    snapshot_manager=sm,
+                    journal=journal,
+                )
+            )
+            assert result["success"] is True
+            # El manifiesto quedó persistido en el journal del path del agente.
+            op = await journal.get_last_operation(agent_id=LootSortingService.AGENT_ID)
+            assert op is not None, "el path del agente debe persistir el ActionManifest"
+            manifest = ActionManifest.model_validate(op.metadata)
+            assert manifest.tool == "LOOT"
+        finally:
+            await journal.close()
+            await lm.close()
+
+    @pytest.mark.asyncio
+    async def test_journal_opcional_preserva_compat(self, tmp_path: pathlib.Path) -> None:
+        """Sin journal, el path del agente ordena igual que antes (back-compat)."""
+        lm, sm = await self._managers(tmp_path)
+        try:
+            runner = MagicMock()
+            runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+            result = json.loads(
+                await run_loot_sort(MagicMock(), runner, None, "Default", lock_manager=lm, snapshot_manager=sm)
+            )
+            assert result["success"] is True
+            runner.sort.assert_awaited_once()
+        finally:
+            await lm.close()
