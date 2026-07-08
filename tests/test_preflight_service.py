@@ -14,6 +14,7 @@ from __future__ import annotations
 import pathlib
 from unittest.mock import AsyncMock, MagicMock
 
+from sky_claw.local.validators.missing_masters import IssueKind, MasterIssue, Severity
 from sky_claw.local.validators.preflight import (
     PreflightReport,
     PreflightService,
@@ -181,14 +182,12 @@ class TestSensorDeMasters:
     """T-30·1 (cableado): el sensor de masters compone en el semáforo."""
 
     @staticmethod
-    def _issue_master(severity: str, kind: str = "missing") -> object:
-        from sky_claw.local.validators.missing_masters import MasterIssue
-
+    def _issue_master(severity: Severity, kind: IssueKind = "missing") -> MasterIssue:
         return MasterIssue(
             plugin="Mod.esp",
             master="NoInstalado.esm",
-            kind=kind,  # type: ignore[arg-type]
-            severity=severity,  # type: ignore[arg-type]
+            kind=kind,
+            severity=severity,
             remediation="instalá el mod que lo provee",
         )
 
