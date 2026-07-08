@@ -21,6 +21,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 from abc import ABC, abstractmethod
@@ -727,11 +728,21 @@ class PatchOrchestrator:
                         conflict.form_id,
                     )
                     return strategy
+            except asyncio.CancelledError:
+                # La cancelación de la task debe propagar, no tratarse como una
+                # estrategia rota (convención del repo; en 3.11 CancelledError
+                # es BaseException y el except de abajo no la atraparía, pero se
+                # deja explícito por claridad — review Copilot PR #242).
+                raise
             except Exception as e:
-                logger.warning(
+                # Plugin-boundary deliberado: una estrategia custom rota no
+                # debe tumbar la selección — se loguea con traceback y se
+                # prueba la siguiente (T-11).
+                logger.error(
                     "Error checking strategy %s: %s",
                     strategy.__class__.__name__,
                     e,
+                    exc_info=True,
                 )
                 continue
 
