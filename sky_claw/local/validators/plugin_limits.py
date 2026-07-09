@@ -90,9 +90,17 @@ class PluginLimitsChecker:
         full = 0
         light = 0
         unreadable = 0
+        seen: set[str] = set()
 
         for plugin_name in enabled_plugins:
-            path = available.get(plugin_name.casefold())
+            key = plugin_name.casefold()
+            # Un plugin no puede ocupar dos slots: un load order con nombres
+            # repetidos (stale/malformado) no debe inflar el conteo (review
+            # Copilot PR #250).
+            if key in seen:
+                continue
+            seen.add(key)
+            path = available.get(key)
             if path is None:
                 # Ausente en disco: no consume slot (el sensor de masters ya lo
                 # reporta como plugin_not_found).

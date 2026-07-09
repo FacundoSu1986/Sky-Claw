@@ -91,9 +91,7 @@ def test_full_dentro_del_limite_sin_issues(tmp_path: pathlib.Path) -> None:
 
 
 def test_full_excedido_es_critical(tmp_path: pathlib.Path) -> None:
-    """Sin tocar disco 255 veces: se inyecta el conteo con un directorio real
-    chico y un load order que repite — pero el checker cuenta plugins únicos
-    resueltos, así que forzamos el exceso con archivos reales."""
+    """255 plugins full reales (distintos) exceden el límite de 254 → critical."""
     data = tmp_path / "Data"
     data.mkdir()
     enabled = [_mk(data, f"M{i:04d}.esp") for i in range(FULL_PLUGIN_LIMIT + 1)]
@@ -105,6 +103,18 @@ def test_full_excedido_es_critical(tmp_path: pathlib.Path) -> None:
     assert len(criticos) == 1
     assert criticos[0].kind == "full_exceeded"
     assert "esl" in criticos[0].detail.lower()  # remediación: convertir a ESL
+
+
+def test_plugin_repetido_no_se_cuenta_doble(tmp_path: pathlib.Path) -> None:
+    """Un load order stale con nombres repetidos no infla el conteo: un plugin
+    no puede ocupar dos slots."""
+    data = tmp_path / "Data"
+    data.mkdir()
+    _mk(data, "Dup.esp")
+
+    limits = PluginLimitsChecker(plugin_dirs=[data]).check(["Dup.esp", "dup.esp", "DUP.ESP"])
+
+    assert limits.full_count == 1
 
 
 def test_full_cerca_del_limite_es_warning(tmp_path: pathlib.Path) -> None:

@@ -42,9 +42,16 @@ def test_lee_masters_y_flags_apagados(tmp_path: pathlib.Path) -> None:
 
     header = read_plugin_header(plugin)
 
-    assert header.masters == ["Skyrim.esm"]
+    assert header.masters == ("Skyrim.esm",)
     assert header.is_master is False
     assert header.is_light is False
+
+
+def test_plugin_header_es_hasheable(tmp_path: pathlib.Path) -> None:
+    """El dataclass frozen debe ser hasheable (masters es tupla, no lista)."""
+    header = read_plugin_header(_plugin(tmp_path / "H.esp", masters=["Skyrim.esm"]))
+
+    assert hash(header) == hash(header)  # no lanza TypeError
 
 
 def test_flag_master(tmp_path: pathlib.Path) -> None:

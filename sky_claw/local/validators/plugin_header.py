@@ -43,13 +43,15 @@ class PluginHeader:
     """Datos del header TES4 que el preflight necesita.
 
     Attributes:
-        masters: Masters declarados (subrecords ``MAST``), en orden.
+        masters: Masters declarados (subrecords ``MAST``), en orden. Es una
+            tupla para que el dataclass ``frozen`` sea inmutable y hasheable de
+            verdad (review Copilot PR #250).
         is_master: Flag ESM (0x1) — carga como master.
         is_light: Flag light/ESL (0x200) — cuenta contra el pool ligero (FE),
             aunque la extensión sea ``.esp`` (caso ESPFE, muy común).
     """
 
-    masters: list[str]
+    masters: tuple[str, ...]
     is_master: bool
     is_light: bool
 
@@ -82,7 +84,7 @@ def read_plugin_header(plugin: pathlib.Path) -> PluginHeader:
     )
 
 
-def _parse_masters(name: str, data: bytes) -> list[str]:
+def _parse_masters(name: str, data: bytes) -> tuple[str, ...]:
     """Recorre los subrecords del header y extrae los ``MAST`` (zstring cp1252)."""
     masters: list[str] = []
     offset = 0
@@ -114,4 +116,4 @@ def _parse_masters(name: str, data: bytes) -> list[str]:
             masters.append(field.rstrip(b"\x00").decode("cp1252", errors="replace"))
     if xxxx_size is not None:
         raise PluginHeaderError(f"{name}: subrecord XXXX sin campo siguiente.")
-    return masters
+    return tuple(masters)

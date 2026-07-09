@@ -86,7 +86,9 @@ def read_masters(plugin: pathlib.Path) -> list[str]:
     Raises:
         PluginHeaderError: Si el archivo está truncado o no es un plugin TES4.
     """
-    return read_plugin_header(plugin).masters
+    # El header expone los masters como tupla (inmutable); acá se conserva el
+    # contrato histórico ``list[str]``.
+    return list(read_plugin_header(plugin).masters)
 
 
 class MissingMastersChecker:
