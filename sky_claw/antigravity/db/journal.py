@@ -807,10 +807,19 @@ class OperationJournal:
         Returns:
             El id de la entrada del journal donde quedó persistido.
         """
+        # Espejo de persist_action_manifest: el primer files_touched como
+        # target_path lo hace ubicable por get_operations_by_path / idx_journal_path
+        # y consistente con el op del manifiesto; el informe degradado (sin
+        # archivos) cae al ritual_id o a un marcador por transacción.
+        primary_path = (
+            report.files_touched[0]
+            if report.files_touched
+            else (report.ritual_id or f"flight-report-tx-{transaction_id}")
+        )
         op_id = await self.begin_operation(
             agent_id=agent_id,
             operation_type=OperationType.FILE_MODIFY,
-            target_path=str(report.ritual_id or f"flight-report-tx-{transaction_id}"),
+            target_path=str(primary_path),
             transaction_id=transaction_id,
             metadata=report.model_dump(mode="json"),
         )

@@ -189,7 +189,8 @@ class FlightReport(BaseModel):
     tool_version: str | None = None
     created_at: _dt.datetime = Field(default_factory=_utcnow)
     # Valor del TransactionStatus del journal ("committed" / "rolled_back" /
-    # "pending"); str para no acoplar este modelo a la capa DB.
+    # "pending"), o "desconocido" si la transacción no existe al componer
+    # (ver compose_flight_report_from_journal); str para no acoplar a la capa DB.
     transaction_status: str
     # Sección "qué cambió".
     files_touched: list[str] = Field(default_factory=list)
