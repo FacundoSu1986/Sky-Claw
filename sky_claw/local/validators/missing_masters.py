@@ -27,6 +27,7 @@ import pathlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from sky_claw.local.validators.plugin_header import PluginHeaderError, read_plugin_header
 from sky_claw.local.validators.preflight import PreflightCheck, PreflightStatus
 
 if TYPE_CHECKING:
@@ -37,20 +38,20 @@ logger = logging.getLogger(__name__)
 #: Extensiones de plugin que el juego carga.
 _PLUGIN_SUFFIXES: frozenset[str] = frozenset({".esp", ".esm", ".esl"})
 
-#: Tamaño del header del record TES4 en Skyrim SE.
-_TES4_HEADER_SIZE = 24
-
-#: Límite defensivo para el payload del record TES4.
-#: Los masters viven en el header y deberían ocupar pocos KiB; 1 MiB deja
-#: margen amplio para headers reales sin permitir lecturas abusivas.
-_MAX_TES4_DATA_SIZE = 1024 * 1024
+# ``PluginHeaderError`` se re-exporta (el parser TES4 vive ahora en
+# ``plugin_header``): los consumidores históricos lo importan desde acá.
+__all__ = [
+    "IssueKind",
+    "MasterIssue",
+    "MissingMastersChecker",
+    "PluginHeaderError",
+    "Severity",
+    "masters_preflight_check",
+    "read_masters",
+]
 
 Severity = Literal["critical", "warning"]
 IssueKind = Literal["missing", "disabled", "unreadable", "plugin_not_found"]
-
-
-class PluginHeaderError(Exception):
-    """El archivo no tiene un header TES4 legible (truncado o no es un plugin)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,56 +79,16 @@ class MasterIssue:
 def read_masters(plugin: pathlib.Path) -> list[str]:
     """Lee los masters (subrecords ``MAST``) del header TES4 de ``plugin``.
 
-    Solo se lee el header (24 bytes + dataSize), nunca el archivo completo.
+    Delega en :func:`~sky_claw.local.validators.plugin_header.read_plugin_header`
+    (parser TES4 canónico); se conserva por compatibilidad con los consumidores
+    que solo necesitan los masters.
 
     Raises:
         PluginHeaderError: Si el archivo está truncado o no es un plugin TES4.
     """
-    try:
-        with plugin.open("rb") as fh:
-            head = fh.read(_TES4_HEADER_SIZE)
-            if len(head) < _TES4_HEADER_SIZE or head[:4] != b"TES4":
-                raise PluginHeaderError(f"{plugin.name}: no tiene un header TES4 válido.")
-            data_size = int.from_bytes(head[4:8], "little")
-            if data_size > _MAX_TES4_DATA_SIZE:
-                raise PluginHeaderError(f"{plugin.name}: header TES4 demasiado grande ({data_size} bytes).")
-            data = fh.read(data_size)
-    except OSError as exc:
-        raise PluginHeaderError(f"{plugin.name}: no se pudo leer ({exc}).") from exc
-    if len(data) < data_size:
-        raise PluginHeaderError(f"{plugin.name}: header TES4 truncado.")
-
-    masters: list[str] = []
-    offset = 0
-    xxxx_size: int | None = None
-    while offset < len(data):
-        if offset + 6 > len(data):
-            raise PluginHeaderError(f"{plugin.name}: subrecord TES4 truncado.")
-        sig = data[offset : offset + 4]
-        size = int.from_bytes(data[offset + 4 : offset + 6], "little")
-        offset += 6
-        if sig == b"XXXX":
-            if size != 4:
-                raise PluginHeaderError(f"{plugin.name}: subrecord XXXX inválido.")
-            if offset + 4 > len(data):
-                raise PluginHeaderError(f"{plugin.name}: subrecord XXXX truncado.")
-            # XXXX extiende el tamaño del subrecord siguiente (raro en TES4,
-            # pero el formato lo permite — manejo defensivo).
-            xxxx_size = int.from_bytes(data[offset : offset + 4], "little")
-            offset += 4
-            continue
-        real_size = xxxx_size if xxxx_size is not None else size
-        xxxx_size = None
-        if offset + real_size > len(data):
-            raise PluginHeaderError(f"{plugin.name}: subrecord TES4 truncado.")
-        field = data[offset : offset + real_size]
-        offset += real_size
-        if sig == b"MAST":
-            # zstring en windows-1252 (encoding clásico de los plugins).
-            masters.append(field.rstrip(b"\x00").decode("cp1252", errors="replace"))
-    if xxxx_size is not None:
-        raise PluginHeaderError(f"{plugin.name}: subrecord XXXX sin campo siguiente.")
-    return masters
+    # El header expone los masters como tupla (inmutable); acá se conserva el
+    # contrato histórico ``list[str]``.
+    return list(read_plugin_header(plugin).masters)
 
 
 class MissingMastersChecker:

@@ -234,6 +234,8 @@ module = [
     "sky_claw.antigravity.orchestrator.sync_engine",
     "sky_claw.local.mo2.profile_sandbox",  # T-27: módulo nuevo, nace estricto (patrón T-12)
     "sky_claw.local.validators.missing_masters",  # T-30·1: módulo nuevo, nace estricto
+    "sky_claw.local.validators.plugin_header",  # T-30·2/T-17: parser TES4 canónico, estricto
+    "sky_claw.local.validators.plugin_limits",  # T-30·2: sensor de límites full/light, estricto
 ]
 strict = true
 ignore_errors = false
