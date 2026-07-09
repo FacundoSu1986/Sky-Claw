@@ -41,6 +41,45 @@ INJECTION_PATTERNS = [
         "Intento de extracción de prompt",
         "HIGH",
     ),
+    # AG-1: patrones en ESPAÑOL — la app es español-first, así que la inyección en
+    # el idioma real de los usuarios debe bloquearse. Acento-opcional ([aá], [eé]…)
+    # porque los usuarios AR suelen tipear sin tildes, y con OBJETO específico
+    # (instrucciones/prompt/sistema/anterior) para no marcar español legítimo.
+    (
+        r"(?i)ignor[aá]\s+(todas?\s+)?(las?\s+)?(instrucciones|indicaciones|[oó]rdenes)\s+(previas|anteriores)",
+        "Bypass de instrucciones previas (ES)",
+        "CRITICAL",
+    ),
+    (
+        r"(?i)olvid[aá](te)?\s+(todo\s+lo\s+anterior|(todas?\s+)?(las?\s+)?instrucciones)",
+        "Amnesia forzada de prompt (ES)",
+        "HIGH",
+    ),
+    (
+        r"(?i)act[uú][aá]\s+como\s+(dan\b|(un[a]?\s+)?\w+\s+sin\s+restricciones|si\s+no\s+tuvieras)",
+        "Jailbreak de rol (ES)",
+        "HIGH",
+    ),
+    (
+        r"(?i)ya\s+no\s+(est[aá]s|ten[eé]s|sos)\s+(\w+\s+)?(limitad|restringid|obligad)",
+        "Override de restricciones (ES)",
+        "HIGH",
+    ),
+    (
+        r"(?i)nueva[s]?\s+(directiva|instrucci[oó]n|regla)\s*:",
+        "Inyección de directiva (ES)",
+        "HIGH",
+    ),
+    (
+        r"(?i)(mostr[aá]|imprim[ií]|revel[aá])(me|nos)?\s+(el\s+|tu\s+)?(prompt|instrucciones\s+(del\s+)?sistema)",
+        "Extracción de prompt (ES)",
+        "HIGH",
+    ),
+    (
+        r"(?i)como\s+desarrollador\s+(deb[eé]s|ten[eé]s\s+que|est[aá]s\s+obligad)",
+        "Ingeniería social de rol (ES)",
+        "HIGH",
+    ),
 ]
 
 # Patrones de Homoglifos y caracteres invisibles sospechosos (Steganography)

@@ -709,5 +709,11 @@ class LLMRouter:
                     continue
             except (json.JSONDecodeError, TypeError):
                 pass
-            messages.append({"role": role, "content": raw_content})
+            # S5 (Zero-Trust): re-sanitizar el contenido string al recargar. La DB
+            # chat_history es data en reposo; si fuera manipulada (ej. mod maliciosa
+            # con acceso al sandbox escribe una inyección en un user row), se
+            # re-inyectaría al LLM sin filtrar. sanitize_for_prompt es idempotente,
+            # así que para data ya limpia es un no-op. Los bloques JSON-list (output
+            # estructurado del modelo, con tool_use IDs) se dejan intactos arriba.
+            messages.append({"role": role, "content": sanitize_for_prompt(raw_content)})
         return messages

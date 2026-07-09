@@ -330,13 +330,21 @@ async def secure_llm_call(
 
 
 def _check_pii(text: str) -> None:
-    """Raise ``SecurityViolationError`` if *text* contains PII patterns."""
-    match = _COMBINED_PII_RE.search(text)
-    if match is None:
+    """Raise ``SecurityViolationError`` if *text* contains PII patterns.
+
+    AG-2: usa ``finditer`` (no ``.search()``) para reportar TODOS los tipos de PII
+    presentes, no solo el primero. El bloqueo ya ocurría con el primer match; esto
+    mejora la telemetría/mensaje (p.ej. "SSN + API key" en un mismo input).
+    """
+    found: list[str] = []
+    for match in _COMBINED_PII_RE.finditer(text):
+        for name, value in match.groupdict().items():
+            if value is not None and name not in found:
+                found.append(name)
+    if not found:
         return
-    for name, value in match.groupdict().items():
-        if value is not None:
-            raise SecurityViolationError(_PII_MESSAGES[name])
+    logger.warning("Guardrail: PII blocked in user input — tipos: %s", ", ".join(found))
+    raise SecurityViolationError("; ".join(_PII_MESSAGES[name] for name in found))
 
 
 def _check_paths(text: str) -> None:
