@@ -228,3 +228,124 @@ class TestCacheDeVersion:
         await asyncio.gather(servicio.run(), servicio.run())
 
         assert detecciones == 1
+
+
+class TestSensoresDeModlistCableados:
+    """T-30w: _ensure_preflight cablea los sensores de masters/límites cuando
+    las fuentes de plugins son resolubles (antes quedaban inertes: Codex #250)."""
+
+    @staticmethod
+    def _fixture_mo2(tmp_path: pathlib.Path, *, master_faltante: bool) -> tuple[pathlib.Path, pathlib.Path]:
+        """Arma una instancia MO2 mínima con un plugin y su plugins.txt.
+
+        Con ``master_faltante`` el plugin declara un master que no está en disco
+        → el sensor de masters debe marcarlo crítico.
+        """
+        import struct
+
+        def _tes4(path: pathlib.Path, masters: list[str]) -> None:
+            subrecords = b"HEDR" + struct.pack("<H", 12) + struct.pack("<fiI", 1.7, 0, 0x800)
+            for m in masters:
+                data = m.encode("cp1252") + b"\x00"
+                subrecords += b"MAST" + struct.pack("<H", len(data)) + data
+                subrecords += b"DATA" + struct.pack("<H", 8) + struct.pack("<Q", 0)
+            path.write_bytes(b"TES4" + struct.pack("<IIIIHH", len(subrecords), 0, 0, 0, 44, 0) + subrecords)
+
+        game_data = tmp_path / "Skyrim" / "Data"
+        game_data.mkdir(parents=True)
+        _tes4(game_data / "Skyrim.esm", [])
+
+        mo2 = tmp_path / "MO2"
+        mod = mo2 / "mods" / "MiMod"
+        mod.mkdir(parents=True)
+        masters = ["Skyrim.esm", "NoInstalado.esm"] if master_faltante else ["Skyrim.esm"]
+        _tes4(mod / "MiMod.esp", masters)
+
+        lo = tmp_path / "plugins.txt"
+        lo.write_bytes(b"\xef\xbb\xbf*Skyrim.esm\r\n*MiMod.esp\r\n")
+        return mo2, lo
+
+    def _resolver(self, *, skyrim: pathlib.Path, mo2: pathlib.Path) -> MagicMock:
+        resolver = MagicMock()
+        resolver.get_skyrim_path_raw = MagicMock(return_value=skyrim)
+        resolver.get_skyrim_path = MagicMock(return_value=skyrim)
+        resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
+        resolver.get_mo2_path = MagicMock(return_value=mo2)
+        resolver.detect_mo2_path = MagicMock(return_value=mo2)
+        resolver.get_active_profile = MagicMock(return_value="Default")
+        resolver.get_loot_exe = MagicMock(return_value=None)
+        return resolver
+
+    async def test_master_faltante_pone_el_preflight_rojo(self, tmp_path: pathlib.Path) -> None:
+        from sky_claw.local.validators.preflight import PreflightStatus
+
+        mo2, lo = self._fixture_mo2(tmp_path, master_faltante=True)
+        resolver = self._resolver(skyrim=tmp_path / "Skyrim", mo2=mo2)
+        load_order = MagicMock()
+        load_order.resolve.return_value = LoadOrderPaths(files=(lo,), sources=("override",))
+
+        svc = LootSortingService(
+            lock_manager=MagicMock(),
+            snapshot_manager=MagicMock(),
+            path_resolver=resolver,
+            loot_runner=MagicMock(),
+            load_order_resolver=load_order,
+        )
+
+        reporte = await svc._ensure_preflight().run()
+
+        masters = next(c for c in reporte.checks if c.name == "masters")
+        assert masters.status is PreflightStatus.RED
+        assert any("NoInstalado.esm" in d for d in masters.details)
+        assert reporte.blocks_mutations is True
+
+    async def test_modlist_sana_no_bloquea_por_masters(self, tmp_path: pathlib.Path) -> None:
+        from sky_claw.local.validators.preflight import PreflightStatus
+
+        mo2, lo = self._fixture_mo2(tmp_path, master_faltante=False)
+        resolver = self._resolver(skyrim=tmp_path / "Skyrim", mo2=mo2)
+        load_order = MagicMock()
+        load_order.resolve.return_value = LoadOrderPaths(files=(lo,), sources=("override",))
+
+        svc = LootSortingService(
+            lock_manager=MagicMock(),
+            snapshot_manager=MagicMock(),
+            path_resolver=resolver,
+            loot_runner=MagicMock(),
+            load_order_resolver=load_order,
+        )
+
+        reporte = await svc._ensure_preflight().run()
+
+        masters = next(c for c in reporte.checks if c.name == "masters")
+        limites = next(c for c in reporte.checks if c.name == "plugin_limits")
+        assert masters.status is PreflightStatus.GREEN
+        assert limites.status is PreflightStatus.GREEN
+        assert "2/254 full" in limites.summary
+
+    async def test_sin_load_order_los_sensores_dicen_no_configurado(self, tmp_path: pathlib.Path) -> None:
+        """Sin archivo de load order resoluble, no se miente verde: los checks
+        de masters/límites reportan 'no configurado'."""
+        resolver = MagicMock()
+        resolver.get_skyrim_path_raw = MagicMock(return_value=tmp_path / "Skyrim")
+        resolver.get_skyrim_path = MagicMock(return_value=tmp_path / "Skyrim")
+        resolver.get_mo2_path_raw = MagicMock(return_value=None)
+        resolver.get_mo2_path = MagicMock(return_value=None)
+        resolver.detect_mo2_path = MagicMock(return_value=None)
+        resolver.get_active_profile = MagicMock(return_value="Default")
+        resolver.get_loot_exe = MagicMock(return_value=None)
+        load_order = MagicMock()
+        load_order.resolve.return_value = LoadOrderPaths(files=(), sources=())
+
+        svc = LootSortingService(
+            lock_manager=MagicMock(),
+            snapshot_manager=MagicMock(),
+            path_resolver=resolver,
+            loot_runner=MagicMock(),
+            load_order_resolver=load_order,
+        )
+
+        reporte = await svc._ensure_preflight().run()
+
+        masters = next(c for c in reporte.checks if c.name == "masters")
+        assert "no configurado" in masters.summary.lower()
