@@ -122,6 +122,9 @@ repomix-output.*
 # Kimi agent config
 .kimi/
 
+# Codex agent config (autogenerado, local)
+.codex/
+
 # Agent metadata inside source tree
 sky_claw/.kilocode/
 sky_claw/.llm-chat-history/

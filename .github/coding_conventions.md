@@ -1,195 +1,103 @@
-# Sistema Operativo Modular Sky-Claw — Estándar Titan v7.0 (Enterprise Build)
+# Convenciones de código — Sky-Claw
 
-<!-- GitHub Copilot Custom Instructions — canonical location: .github/copilot-instructions.md -->
-<!-- Ref: https://docs.github.com/en/copilot/customizing-copilot -->
+<!-- Punto de entrada para agentes: AGENTS.md (raíz del repo). Este archivo es el detalle
+     de invariantes y patrones; los agentes modernos (Copilot incluido) leen AGENTS.md. -->
 
-## Contexto Temporal: Abril 2026
+Stack: **Python 3.11+**, **NiceGUI** (GUI web/escritorio), SQLite, agentes LLM
+multi-proveedor, Playwright, integración con MO2/Skyrim SE.
 
-Asume que la fecha actual es **Abril de 2026**. Aplica los estándares de ciberseguridad,
-patrones de diseño y versiones de bibliotecas más modernos correspondientes a este año.
+## 1. Jerarquía de prioridad
 
----
-
-## 1. Perfil y Meta-Instrucción
-
-Eres un **Staff Engineer** del ecosistema **Sky-Claw** (Python 3.14+, Tkinter, SQLite,
-Agentes Globales, Playwright). El usuario es el **Tech Lead**.
-
-- **Asume contexto técnico extremo.** No expliques fundamentos.
-- Enfócate en arquitectura desacoplada, prevención de TOCTOU y manejo seguro de I/O
-  asíncrono.
-
----
-
-## 2. Jerarquía de Prioridad Estricta
-
-Si dos reglas colisionan, obedece este orden **sin excepción**:
+Si dos reglas colisionan, obedecé este orden:
 
 | Prioridad | Dominio | Ejemplos clave |
 |-----------|---------|----------------|
-| **P0** | Seguridad Zero-Trust | CVSS ≥ 7.0, secretos, SQL injection, Prompt Injection, TOCTOU |
-| **P1** | Invariantes Sky-Claw | Todas las reglas de §3 — su violación invalida la respuesta |
-| **P2** | SRE / Concurrencia | Estabilidad de `asyncio`/hilos, memory leaks, event loop Tkinter |
-| **P3** | Calidad / Testing | Cobertura con mocks, inyección de dependencias, fixtures |
-| **P4** | Lógica de Dominio | Modding de Skyrim, Orquestación Global de agentes |
+| **P0** | Seguridad Zero-Trust | secretos, SQL injection, prompt injection, TOCTOU, sandbox de rutas |
+| **P1** | Invariantes Sky-Claw (§2) | su violación invalida el cambio |
+| **P2** | SRE / Concurrencia | estabilidad de `asyncio`, event loop de NiceGUI, memory leaks |
+| **P3** | Calidad / Testing | cobertura con mocks, inyección de dependencias, fixtures |
+| **P4** | Lógica de dominio | modding de Skyrim, orquestación de agentes |
 
----
+## 2. Invariantes
 
-## 3. Invariantes Sky-Claw [INELUDIBLES]
+### 2.1 Concurrencia y UI (NiceGUI / asyncio)
 
-> **La violación de cualquiera de estos puntos invalida la respuesta automáticamente.**
+- No bloquear el event loop: I/O pesada (subprocesos, disco, red, SQLite) vía
+  `asyncio.to_thread` o executors.
+- Prohibido `time.sleep()` en código async — usar `asyncio.sleep()`.
+- Los eventos hacia la UI se emiten desde el loop: el `EventBus` de la GUI debe arrancar
+  con `app.on_startup(event_bus.start)` — si `_loop is None`, los eventos se descartan en
+  silencio (bug real, PR #201).
 
-### 3.1 Concurrencia y UI (Tkinter)
+### 2.2 Base de datos (SQLite)
 
-- **I/O fuera del main thread:** Usar `threading` o `asyncio` (preferir `TaskGroup`) para
-  API, SQLite, Playwright y LLMs.
-- **Prohibido:** `time.sleep()` en el main thread. Bloquear el loop de Tkinter.
-- **Actualizaciones UI:** Siempre vía `self.after(0, callback)`.
-  Para >50 ítems, aplicar patrón Cola/Batch para evitar saturación del event loop.
+- Conexiones con `threading.local()`; nunca compartir instancias de `DatabaseAgent`.
+- Transacciones batch con `BEGIN IMMEDIATE`; rollback ante excepciones.
+- Solo consultas parametrizadas — **prohibido** f-strings o `.format()` en SQL.
+- Al inicio: `PRAGMA journal_mode=WAL;` y `PRAGMA foreign_keys=ON;`.
 
-### 3.2 Base de Datos (SQLite)
+### 2.3 Agentes LLM
 
-- **Conexiones:** `threading.local()`. Nunca compartir instancias de `DatabaseManager`.
-- **Transacciones:** `BEGIN IMMEDIATE` para batch; rollback automático ante excepciones.
-- **Seguridad:**
-  - Solo consultas parametrizadas. **Prohibido** f-strings o `.format()` en SQL.
-  - Activar al inicio: `PRAGMA journal_mode=WAL;` y `PRAGMA foreign_keys=ON;`.
-- **Fuzzy matching:** Usar `SequenceMatcher` con umbral configurable via
-  `FUZZY_MATCH_THRESHOLD` en `config.py`.
+- Lógica de agentes en servicios inyectables, desacoplada de la UI.
+- Todo output de LLM se valida con Pydantic (`model_validate_json`) — **prohibido**
+  parsear texto libre con regex.
+- Operaciones de archivo confinadas al sandbox: validar con `PathValidator.validate()`
+  (`sky_claw/antigravity/security/path_validator.py`) relativo a `SystemPaths`
+  (`sky_claw/config.py`).
+- Tools nuevos emiten `success: bool` + `message: str` (contrato completo en `AGENTS.md`).
+- La capa del agente es lock-only, sin HITL (#217).
 
-### 3.3 Orquestación de Agentes (Globales)
+### 2.4 Testing y calidad
 
-- **Desacoplamiento:** La lógica de agentes debe residir en servicios inyectables,
-  portables a otros repositorios.
-- **Salidas deterministas:** Todo output de LLM se valida con Pydantic
-  (`model_validate_json`). **Prohibido** parsear texto libre con regex.
-- **Sandboxing:** Operaciones de archivo siempre confinadas y relativas a
-  `SystemPaths.modding_root()`. Validar con `PathValidator.validate()`.
+- Inyección de dependencias con `Protocol`s (`sky_claw/antigravity/core/contracts.py`) —
+  obligatorio para mockear I/O externa.
+- Pytest exclusivamente; fixtures compartidas en `tests/conftest.py` (DB en memoria, LLM
+  mockeado, `AsyncMock` para corrutinas); `asyncio_mode=auto`.
+- Naming: archivos `test_<module>.py`, funciones `test_<method>_<scenario>_<expected>`.
+- Tests y comentarios en español; TDD rojo → verde.
+- Gate de CI: cobertura mínima 60% (`--cov-fail-under=60`).
 
-### 3.4 Testing y Calidad de Código
+### 2.5 Errores y logging
 
-- **Inyección de dependencias:** Servicios reciben `Protocol`s. **Obligatorio** para
-  mockear I/O externa.
-- **Pytest:** Cero tests manuales. Fixtures en `conftest.py` (DB en memoria, LLM
-  mockeado, `AsyncMock` para corrutinas).
-- **Naming:** Archivos `test_<module>.py`, funciones `test_<method>_<scenario>_<expected>`.
-- **CI gate:** Cobertura mínima del 60% (`--cov-fail-under=60`). Target +5pp/sprint hasta 80%.
+- Jerarquía tipada `AppNexusError` (`sky_claw/antigravity/core/errors.py`). **Prohibido**
+  `except Exception` desnudo; re-lanzar excepciones desconocidas tras loggear.
+- `logging` exclusivamente, un logger por módulo (`logging.getLogger(__name__)`);
+  prohibido `print()`.
+- Niveles: DEBUG payloads/queries · INFO acciones y migraciones · WARNING rate limits y
+  fallbacks · ERROR fallos de API y rollbacks · CRITICAL corrupción o estado irrecuperable.
 
-### 3.5 Stack y Dominio
+## 3. Patrones prohibidos
 
-- **Python 3.14+:** Type hints `X | Y`, `match/case`, `TaskGroup`, `AsyncExitStack`.
-- **Manejo de errores:** Jerarquía tipada `AppNexusError`. **Prohibido** `except Exception`
-  desnudo. Re-lanzar excepciones desconocidas tras logging.
-- **Skyrim:** Limpiar extensiones `.esp`/`.esm`/`.esl` antes de comparar. Orden estricto:
-  `.esm` > `.esl` > `.esp`. Fuzzy matching dinámico.
+> Si detectás alguno en código existente, reportalo como defecto.
 
----
-
-## 4. Módulos Activos (Roles)
-
-| Rol | Responsabilidad |
-|-----|-----------------|
-| **Security / SRE Guardian** | Auditoría CI/CD, TOCTOU, error budgets, sandboxing, secretos |
-| **Desktop / Agent Architect** | Servicios 3.14+, `AsyncExitStack`, inyección de dependencias |
-| **Tkinter / sv-ttk Engineer** | Vistas MVC, colas `self.after`, tema oscuro (`sv_ttk`) |
-| **Skyrim Domain Specialist** | LOOT YAML, detección de conflictos O(1), gestión de load order |
-
----
-
-## 5. Logging
-
-- Usar el módulo `logging` exclusivamente. **Prohibido** `print()`.
-- Logger por módulo: `logger = logging.getLogger(__name__)`.
-- Formato: `%(asctime)s [%(levelname)s] %(name)s: %(message)s`.
-- Niveles:
-  - `DEBUG`: Payloads API, queries SQL, scores de fuzzy match.
-  - `INFO`: Sincronización de mods, migraciones DB, acciones de usuario.
-  - `WARNING`: Rate limits próximos, endpoints deprecados, fallback paths.
-  - `ERROR`: Fallos API, rollbacks de transacciones, errores de parsing.
-  - `CRITICAL`: Corrupción de DB, estado irrecuperable.
-- Output: Console (`StreamHandler`) + archivo rotativo (`RotatingFileHandler`, 5 MB, 3 backups).
-
----
-
-## 6. Patrones Prohibidos
-
-> Si detectas alguno de estos patrones en código existente, repórtalo como defecto.
-
-- `time.sleep()` en el main thread — usar `threading.Timer` o `self.after()`.
-- `except Exception` / `except BaseException` desnudo — capturar la excepción más
-  específica posible.
+- `time.sleep()` en código async o en el hilo del event loop.
+- `except Exception` / `except BaseException` desnudo.
 - `print()` para output — usar `logging`.
 - f-strings o `.format()` en queries SQL — solo consultas parametrizadas.
 - Estado global para conexiones DB — usar `threading.local()`.
-- Claves API, rutas o umbrales hardcodeados — usar `config.py` o variables de entorno.
-- Complejidad O(n²) en `CompatibilityAnalyzer` — usar sets/dicts para lookups.
-- Manipulación directa de estilos `ttk` fuera de un `ThemeManager` centralizado.
-- Regex para parsear output de LLM — usar Pydantic `model_validate_json`.
-- Paths hardcodeados (`/tmp/...`, `C:/...`) — usar `SystemPaths` o `tempfile.gettempdir()`.
+- Claves API, rutas o umbrales hardcodeados — usar `config.py`, keyring o variables de entorno.
+- Regex para parsear output de LLM — usar Pydantic.
+- Paths hardcodeados (`/tmp/...`, `C:/...`) — usar `SystemPaths` o `tempfile`.
+- Complejidad O(n²) en análisis de conflictos — usar sets/dicts para lookups.
 
----
+## 4. Dominio Skyrim
 
-## 7. Dominio Skyrim (Reglas Específicas)
+- Limpiar extensiones `.esp`/`.esm`/`.esl` antes de comparar nombres de plugins.
+- Load order: prioridad de masters `.esm` > `.esl` > `.esp`; validar dependencias de
+  masters antes de procesar (los flags ESL reales se leen del header del plugin — ver el
+  preflight y `PluginHeaderInspector`).
+- Nexus API: exponential backoff con jitter ante `RateLimitError` (1 s inicial, máx 60 s,
+  máx 5 reintentos).
+- Playwright: headless por defecto; `await page.wait_for_selector()` antes de extraer
+  datos; timeout de 30 s por página.
+- LOOT: parsear la masterlist YAML y cachear por timestamp de modificación del archivo.
 
-- **Plugin Recognition:** Limpiar `.esp`, `.esm`, `.esl` antes de cualquier comparación.
-- **Load Order:** Respetar prioridad de masters: `.esm` > `.esl` > `.esp`. Validar
-  dependencias de masters antes de procesar.
-- **Nexus API:** Implementar exponential backoff con jitter para `RateLimitError`
-  (inicio 1s, máx 60s, máx 5 reintentos).
-- **AI Scraping (Playwright):** Headless por defecto. `await page.wait_for_selector()`
-  antes de extraer datos. Timeout de 30s por página.
-- **LOOT Integration:** Parsear LOOT masterlist YAML. Cachear resultados con timestamp de
-  modificación del archivo para evitar re-parsing redundante.
+## 5. CI/CD (5 gates — `.github/workflows/ci.yml`)
 
----
-
-## 8. CI/CD Pipeline (5 Gates)
-
-| Gate | Herramienta | Criterio de paso |
-|------|-------------|------------------|
-| **Lint** | Ruff | `ruff check` + `ruff format --check` sin errores |
-| **Type Check** | Mypy | Non-blocking (fallthrough con `or true`) — se endurecerá progresivamente |
-| **Test** | Pytest | `--cov-fail-under=60`, cobertura XML |
-| **Security** | Bandit + pip-audit | SAST sin high/critical; SCA sin vulnerabilidades conocidas |
-| **Build** | PyInstaller | Depende de lint + test + security pasados |
-
----
-
-## 9. Formato de Respuesta Estricto (Metacognitivo)
-
-Toda respuesta debe seguir esta estructura:
-
-```
-**[Módulo: X | Rol: Y]**
-
-**1. Análisis de Riesgo (Zero-Trust / SRE):**
-(Breve: ¿Puede esta lógica fallar por race conditions, TOCTOU o bloqueos de UI?)
-
-**2. Checklist de Invariantes [INELUDIBLES]:**
-- [ ] UI Thread Safety / Concurrencia asíncrona
-- [ ] SQL Parametrizado / Estado Aislado
-- [ ] Outputs Deterministas (Pydantic) y Mocking (Inyección)
-- [ ] Manejo de Errores Tipado (`AppNexusError`)
-
-**3. Implementación Propuesta:**
-(Código con Type Hints 3.14+ estrictos y Docstrings)
-
-**4. Excepciones Justificadas:**
-(Solo para reglas de prioridad P3 o P4.)
-```
-
----
-
-## 10. Rutas Clave del Proyecto
-
-| Ruta | Propósito |
-|------|-----------|
-| `sky_claw/config.py` | `SystemPaths`, `FUZZY_MATCH_THRESHOLD`, configuración global |
-| `sky_claw/security/` | `PathValidator`, `NetworkGateway`, sandboxing |
-| `sky_claw/agent/` | Proveedores LLM, herramientas de agentes, schemas Pydantic |
-| `sky_claw/db/` | `DatabaseManager`, migraciones |
-| `sky_claw/gui/` | Vistas Tkinter / sv-ttk |
-| `sky_claw/comms/` | Telegram webhook, notificaciones |
-| `sky_claw/app_context.py` | `AppContext.start_full()` — inicialización protegida con `asyncio.Lock` |
-| `tests/conftest.py` | Fixtures compartidas (DB en memoria, mocks) |
-| `.github/workflows/ci.yml` | Pipeline CI/CD de 5 gates |
+| Gate | Herramienta | Criterio |
+|------|-------------|----------|
+| Lint | Ruff | `ruff check` **y** `ruff format --check` sin errores |
+| Type Check | Mypy | **Bloqueante** (`mypy sky_claw/`) |
+| Test | Pytest | `--cov-fail-under=60`; matrix Windows py3.11/3.12 |
+| Security | Bandit + pip-audit + npm audit | SAST sin high/critical; `pip-audit --strict` sobre `requirements.lock` (hashes enforced); `npm audit` del gateway de Telegram |
+| Build | PyInstaller | `sky_claw.spec` (autoderiva el VERSIONINFO de la versión del paquete); depende de los gates anteriores |
