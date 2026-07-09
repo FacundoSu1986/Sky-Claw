@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
     from sky_claw.antigravity.security.path_validator import PathValidator
     from sky_claw.local.loot.parser import LOOTResult
-    from sky_claw.local.validators.preflight import PreflightService
+    from sky_claw.local.validators.preflight import LimitsCheck, MastersCheck, PreflightService
 
 logger = logging.getLogger(__name__)
 
@@ -216,8 +216,63 @@ class LootSortingService:
         # la versión del binario que efectivamente va a correr.
         loot_exe = loot_exe or pathlib.Path("loot.exe")
 
-        self._preflight = PreflightService(vfs_checker=vfs_checker, loot_exe=loot_exe)
+        # T-30w: cablear los sensores de masters/límites cuando las fuentes de
+        # plugins son resolubles. Si no lo son, quedan en None → el semáforo
+        # reporta "no configurado" en vez de mentir verde (regla de honestidad).
+        masters_check, limits_check = self._build_modlist_checks(raw_mo2, mo2_validated)
+
+        self._preflight = PreflightService(
+            vfs_checker=vfs_checker,
+            loot_exe=loot_exe,
+            masters_check=masters_check,
+            limits_check=limits_check,
+        )
         return self._preflight
+
+    def _build_modlist_checks(
+        self, raw_mo2: pathlib.Path | None, mo2_validated: bool
+    ) -> tuple[MastersCheck | None, LimitsCheck | None]:
+        """Construye los closures de los sensores de masters/límites (T-30w).
+
+        Resuelve las fuentes de plugins (Data del juego + carpetas de mods de
+        MO2 + load order habilitado) y, solo si hay directorios y plugins
+        habilitados, arma los closures que los sensores corren en un thread.
+        Best-effort: sin fuentes utilizables devuelve ``(None, None)``.
+        """
+        from sky_claw.local.mo2.plugin_sources import resolve_plugin_sources
+        from sky_claw.local.validators.missing_masters import MissingMastersChecker
+        from sky_claw.local.validators.plugin_limits import PluginLimitsChecker
+
+        game_data_dir: pathlib.Path | None = None
+        if self._path_resolver is not None:
+            skyrim = self._path_resolver.get_skyrim_path()
+            # isinstance defiende de resolvers mockeados que devuelven no-Path.
+            if isinstance(skyrim, pathlib.Path):
+                game_data_dir = skyrim / "Data"
+
+        mo2_mods_dir = raw_mo2 / "mods" if (mo2_validated and isinstance(raw_mo2, pathlib.Path)) else None
+
+        load_order_files = list(self._ensure_load_order_resolver().resolve().files)
+        load_order_file = _primary_load_order_file(load_order_files)
+
+        sources = resolve_plugin_sources(
+            game_data_dir=game_data_dir,
+            mo2_mods_dir=mo2_mods_dir,
+            load_order_file=load_order_file,
+        )
+        if not sources.plugin_dirs or not sources.enabled_plugins:
+            return None, None
+
+        plugin_dirs = sources.plugin_dirs
+        enabled = sources.enabled_plugins
+
+        def _masters() -> list[Any]:
+            return MissingMastersChecker(plugin_dirs=plugin_dirs).check(enabled)
+
+        def _limits() -> Any:
+            return PluginLimitsChecker(plugin_dirs=plugin_dirs).check(enabled)
+
+        return _masters, _limits
 
     def _ensure_load_order_resolver(self) -> LoadOrderFileResolver:
         """Construye perezosamente el resolver de load order (mismo patrón que
