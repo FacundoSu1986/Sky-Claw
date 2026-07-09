@@ -245,3 +245,55 @@ class TestSensorDeMasters:
         masters = next(c for c in reporte.checks if c.name == "masters")
         assert masters.status is PreflightStatus.GREEN
         assert "no configurado" in masters.summary.lower()
+
+
+class TestSensorDeLimites:
+    """T-30·2 (cableado): el sensor de límites full/light compone en el semáforo."""
+
+    @staticmethod
+    def _limits(full: int, light: int, *, critical: bool = False):
+        from sky_claw.local.validators.plugin_limits import LimitIssue, LoadOrderLimits
+
+        issues: tuple[LimitIssue, ...] = ()
+        if critical:
+            issues = (LimitIssue(kind="full_exceeded", severity="critical", detail="Pool full excedido: 255/254."),)
+        return LoadOrderLimits(full_count=full, light_count=light, unreadable=0, issues=issues)
+
+    async def test_limite_excedido_fuerza_rojo(self) -> None:
+        checker = MagicMock()
+        checker.check.return_value = []
+        servicio = PreflightService(
+            vfs_checker=checker,
+            loot_version_detector=AsyncMock(return_value=(0, 29, 0)),
+            limits_check=lambda: self._limits(255, 0, critical=True),
+        )
+
+        reporte = await servicio.run()
+
+        assert reporte.status is PreflightStatus.RED
+        assert reporte.blocks_mutations is True
+        limites = next(c for c in reporte.checks if c.name == "plugin_limits")
+        assert limites.status is PreflightStatus.RED
+
+    async def test_limites_ok_es_verde_con_conteos(self) -> None:
+        checker = MagicMock()
+        checker.check.return_value = []
+        servicio = PreflightService(
+            vfs_checker=checker,
+            loot_version_detector=AsyncMock(return_value=(0, 29, 0)),
+            limits_check=lambda: self._limits(200, 50),
+        )
+
+        reporte = await servicio.run()
+
+        assert reporte.status is PreflightStatus.GREEN
+        limites = next(c for c in reporte.checks if c.name == "plugin_limits")
+        assert limites.status is PreflightStatus.GREEN
+        assert "200" in limites.summary
+
+    async def test_sin_sensor_de_limites_no_miente(self) -> None:
+        reporte = await _servicio(issues=[], version=(0, 29, 0)).run()
+
+        limites = next(c for c in reporte.checks if c.name == "plugin_limits")
+        assert limites.status is PreflightStatus.GREEN
+        assert "no configurado" in limites.summary.lower()
