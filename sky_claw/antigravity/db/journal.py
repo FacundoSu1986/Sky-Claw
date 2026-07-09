@@ -781,6 +781,55 @@ class OperationJournal:
         )
         return op_id
 
+    async def persist_flight_report(
+        self,
+        report: Any,
+        *,
+        agent_id: str,
+        transaction_id: int,
+    ) -> int:
+        """Persiste un FlightReport (T-28, ADR 0002) como metadata de una operación.
+
+        El informe final de vuelo es la caja negra leída después del vuelo: se
+        guarda su ``model_dump(mode="json")`` en la columna ``metadata``
+        (reusando ``begin_operation``, igual que el manifiesto de T-26). Su
+        clave ``kind="flight_report"`` viaja dentro del metadata y lo distingue
+        del op del manifiesto en la misma transacción; el path de lectura es
+        ``compose_flight_report_from_journal`` (orchestrator/preview).
+
+        Args:
+            report: Un ``FlightReport`` (pydantic). Se toma como ``Any`` para
+                no acoplar la capa DB al modelo del orquestador.
+            agent_id: Agente que emite el informe (el servicio del Ritual).
+            transaction_id: Transacción del Ritual informado (puede estar ya
+                committed: el informe se emite post-vuelo).
+
+        Returns:
+            El id de la entrada del journal donde quedó persistido.
+        """
+        # Espejo de persist_action_manifest: el primer files_touched como
+        # target_path lo hace ubicable por get_operations_by_path / idx_journal_path
+        # y consistente con el op del manifiesto; el informe degradado (sin
+        # archivos) cae al ritual_id o a un marcador por transacción.
+        primary_path = (
+            report.files_touched[0]
+            if report.files_touched
+            else (report.ritual_id or f"flight-report-tx-{transaction_id}")
+        )
+        op_id = await self.begin_operation(
+            agent_id=agent_id,
+            operation_type=OperationType.FILE_MODIFY,
+            target_path=str(primary_path),
+            transaction_id=transaction_id,
+            metadata=report.model_dump(mode="json"),
+        )
+        await self.complete_operation(op_id)
+        logger.info(
+            "FlightReport persisted",
+            extra={"entry_id": op_id, "ritual_id": report.ritual_id, "tool": report.tool},
+        )
+        return op_id
+
     async def fail_operation(self, entry_id: int, error: str = "", metadata: dict[str, Any] | None = None) -> None:
         """
         Marcar una operación como fallida.

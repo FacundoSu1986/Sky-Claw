@@ -61,6 +61,46 @@ LOAD_ORDER_RESOURCE_ID = "load-order"
 #: or a large load order completing between 60 and 120s is not falsely timed out.
 _DEFAULT_LOOT_TIMEOUT_SECONDS = 120
 
+#: Prioridad al elegir el archivo cuyo orden refleja el load order: loadorder.txt
+#: tiene el orden completo; plugins.txt lista los activos con marca ``*``.
+_LOAD_ORDER_FILE_PRIORITY = ("loadorder.txt", "plugins.txt")
+
+
+def _primary_load_order_file(paths: list[pathlib.Path]) -> pathlib.Path | None:
+    """Elige el archivo de load order que mejor refleja el orden de plugins.
+
+    ``loadorder.txt`` primero (orden completo), luego ``plugins.txt``, y como
+    último recurso el primer candidato. ``None`` si no hay ninguno.
+    """
+    for preferido in _LOAD_ORDER_FILE_PRIORITY:
+        for path in paths:
+            if path.name.lower() == preferido:
+                return path
+    return paths[0] if paths else None
+
+
+def _read_plugin_order(path: pathlib.Path | None) -> list[str]:
+    """Lee el orden de plugins de un plugins.txt/loadorder.txt (best-effort).
+
+    Ignora líneas vacías y comentarios (``#``) y quita la marca de activo
+    (``*``), de modo que los nombres queden comparables con
+    ``LOOTResult.sorted_plugins``. Devuelve ``[]`` ante cualquier problema de
+    lectura/decodificación — el informe simplemente no llevará diff de orden.
+    """
+    if path is None:
+        return []
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, ValueError):
+        return []
+    plugins: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        plugins.append(line.lstrip("*").strip())
+    return plugins
+
 
 class _LootSortFailedError(Exception):
     """Interno: un sort con exit non-zero debe lanzar DENTRO del lock para que
@@ -279,6 +319,12 @@ class LootSortingService:
         target_files = list(load_order.files)
         rolled_back = False
 
+        # Orden ANTES del sort para el diff del informe post-vuelo (T-28): se
+        # lee acá porque LOOT reescribe el archivo al ordenar. El "después" será
+        # ``result.sorted_plugins``. Best-effort: si no se puede leer, el informe
+        # simplemente no lleva load_order_diff (nunca rompe el sort).
+        before_order = _read_plugin_order(_primary_load_order_file(target_files))
+
         # Referencia al lock fuera del with: rolled_back se deriva del resultado
         # REAL del rollback (tx.rollback_completed) — un restore fallido en la
         # ruta de excepción solo se loguea, así que bool(target_files) mentiría
@@ -296,6 +342,11 @@ class LootSortingService:
             },
         )
         journal_tx_id: int | None = None
+        # Una vez commiteada la TX, ninguna ruta posterior debe re-marcarla
+        # rolled-back: una cancelación mientras se compone/persiste el informe
+        # (post-commit) corrompería el audit trail de una TX ya exitosa
+        # (mark_transaction_rolled_back no valida el estado) — review Codex #249.
+        journal_committed = False
         try:
             async with tx:
                 # T-26 (ADR 0002): emitir la "caja negra de vuelo" ANTES de
@@ -314,12 +365,21 @@ class LootSortingService:
                 # Copilot PR #243). Best-effort: se loguea con traceback.
                 try:
                     await self._journal.commit_transaction(journal_tx_id)
+                    journal_committed = True
                 except Exception:  # noqa: BLE001 — boundary best-effort del journal
                     logger.error(
                         "Fallo al commitear la transacción del journal %d tras el sort exitoso",
                         journal_tx_id,
                         exc_info=True,
                     )
+                # T-28 (ADR 0002): cerrar la caja negra con el informe
+                # post-vuelo. Va DESPUÉS del commit para leer el estado real
+                # de la TX; también best-effort — el sort ya fue exitoso.
+                await self._emit_flight_report(
+                    journal_tx_id,
+                    before_order=before_order,
+                    after_order=result.sorted_plugins,
+                )
         except LockAcquisitionError as exc:
             logger.warning("Lock contention on '%s': %s", self.RESOURCE_ID, exc)
             detail = f"Could not acquire load-order lock '{self.RESOURCE_ID}': {exc}"
@@ -352,15 +412,19 @@ class LootSortingService:
         except asyncio.CancelledError:
             # La cancelación propaga; el snapshot ya se restauró en __aexit__.
             # Cerrar la TX del journal es best-effort (no debe tragar la cancelación).
-            await self._mark_journal_rolled_back(journal_tx_id)
+            # Si ya se commiteó (cancelación durante el informe post-vuelo) NO se
+            # revierte: la TX fue exitosa y el audit trail no debe mentir (#249).
+            if not journal_committed:
+                await self._mark_journal_rolled_back(journal_tx_id)
             raise
         except Exception as exc:  # noqa: BLE001 — contrato: sort_load_order SIEMPRE devuelve dict
             # runner.sort() u otra pieza puede lanzar algo fuera de las excepciones
             # LOOT-específicas (RuntimeError de subproceso, error de validador). El
             # snapshot ya se restauró en __aexit__; acá cerramos la TX del manifiesto
             # (no dejar PENDING) y devolvemos un dict serializable en vez de propagar
-            # (review Codex PR #243).
-            await self._mark_journal_rolled_back(journal_tx_id)
+            # (review Codex PR #243). Si ya se commiteó, no revertir (#249).
+            if not journal_committed:
+                await self._mark_journal_rolled_back(journal_tx_id)
             logger.error("Error inesperado en el sort de LOOT: %s", exc, exc_info=True)
             return {
                 "status": "error",
@@ -446,6 +510,52 @@ class LootSortingService:
             # No dejar la TX recién abierta en PENDING (review Codex PR #243).
             await self._mark_journal_rolled_back(journal_tx_id)
             raise _ActionManifestError(str(exc)) from exc
+
+    async def _emit_flight_report(
+        self,
+        journal_tx_id: int,
+        *,
+        before_order: list[str] | None = None,
+        after_order: list[str] | None = None,
+    ) -> None:
+        """Compone y persiste el FlightReport del sort ya terminado (T-28).
+
+        Lee la caja negra desde el journal — el manifiesto persistido en
+        ``_emit_action_manifest`` y el estado REAL de la transacción (si el
+        commit best-effort falló, el informe dirá ``pending``: verdad antes
+        que optimismo). El manifiesto se emite ANTES del sort y es inmutable,
+        así que no puede cargar el orden resultante; el diff real (orden antes
+        vs ``result.sorted_plugins``) se calcula acá y se adjunta al informe
+        (review Codex #249). Best-effort con la misma disciplina que el commit:
+        un fallo se loguea y NO rompe el contrato "siempre devolver dict" ni
+        revierte el sort exitoso.
+        """
+        from sky_claw.antigravity.orchestrator.preview.flight_report import (
+            compose_flight_report_from_journal,
+        )
+        from sky_claw.antigravity.orchestrator.preview.manifest import LoadOrderDiff
+
+        assert self._journal is not None  # cableado verificado por el caller
+        try:
+            report = await compose_flight_report_from_journal(self._journal, transaction_id=journal_tx_id)
+            # Adjuntar el diff real solo si hay orden antes/después y cambió;
+            # from_orders solo genera moves para plugins presentes en ambos, así
+            # que un listado parcial de LOOT no puede fabricar movimientos falsos.
+            if before_order and after_order:
+                diff = LoadOrderDiff.from_orders(before_order, after_order)
+                if diff.changed:
+                    report = report.model_copy(update={"load_order_diff": diff})
+            await self._journal.persist_flight_report(
+                report,
+                agent_id=self.AGENT_ID,
+                transaction_id=journal_tx_id,
+            )
+        except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error(
+                "Fallo al persistir el informe de vuelo de la transacción %d",
+                journal_tx_id,
+                exc_info=True,
+            )
 
     async def _mark_journal_rolled_back(self, journal_tx_id: int | None) -> None:
         """Marca la transacción del journal como rolled-back (best-effort).

@@ -8,6 +8,7 @@ same load order). Mirrors the fixture style of ``test_synthesis_service.py``.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -404,6 +405,26 @@ def _make_service_con_journal(
     )
 
 
+async def _ops_de_la_ultima_tx(journal):  # noqa: ANN001, ANN202
+    """Operaciones de la transacción más reciente del journal."""
+    (ultima,) = await journal.list_recent_transactions(limit=1)
+    return await journal.get_operations_by_transaction(ultima.transaction_id)
+
+
+async def _manifiesto_de_la_ultima_tx(journal):  # noqa: ANN001, ANN202
+    """El op del ActionManifest (no el del FlightReport, que también trae
+    ritual_id — se discrimina por la clave ``kind`` del informe, T-28)."""
+    from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
+
+    metadatas = [
+        e.metadata
+        for e in await _ops_de_la_ultima_tx(journal)
+        if e.metadata and e.metadata.get("ritual_id") and e.metadata.get("kind") != "flight_report"
+    ]
+    assert len(metadatas) == 1
+    return ActionManifest.model_validate(metadatas[0])
+
+
 @pytest.mark.asyncio
 async def test_sort_emite_manifiesto_antes_de_mutar(
     lock_manager: DistributedLockManager,
@@ -413,8 +434,6 @@ async def test_sort_emite_manifiesto_antes_de_mutar(
 ) -> None:
     """Con journal cableado, el sort persiste un ActionManifest con archivos y
     plan de rollback ANTES de correr LOOT (T-26)."""
-    from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
-
     resolver, plugins = _preparar_load_order(tmp_path)
     runner = MagicMock()
     runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
@@ -424,9 +443,7 @@ async def test_sort_emite_manifiesto_antes_de_mutar(
 
     assert result["success"] is True
     # Recuperar el manifiesto persistido y validarlo.
-    tx = await journal.get_last_operation(agent_id=LootSortingService.AGENT_ID)
-    assert tx is not None
-    manifest = ActionManifest.model_validate(tx.metadata)
+    manifest = await _manifiesto_de_la_ultima_tx(journal)
     assert manifest.tool == "LOOT"
     assert str(plugins) in manifest.files_touched
     assert len(manifest.rollback_plan) >= 1
@@ -463,8 +480,6 @@ async def test_manifiesto_registra_la_version_de_loot(
 ) -> None:
     """La versión que ya detectó el preflight se persiste en el manifiesto —
     no se pierde ni se relanza el binario (review Codex PR #243)."""
-    from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
-
     resolver, _plugins = _preparar_load_order(tmp_path)
     runner = MagicMock()
     runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
@@ -472,8 +487,7 @@ async def test_manifiesto_registra_la_version_de_loot(
 
     await svc.sort_load_order()
 
-    op = await journal.get_last_operation(agent_id=LootSortingService.AGENT_ID)
-    manifest = ActionManifest.model_validate(op.metadata)
+    manifest = await _manifiesto_de_la_ultima_tx(journal)
     assert manifest.tool_version == "0.28.0"
 
 
@@ -589,3 +603,146 @@ async def test_sin_journal_no_emite_manifiesto_pero_ordena(
 
     assert result["success"] is True
     runner.sort.assert_awaited_once()
+
+
+# =============================================================================
+# T-28: informe final de vuelo (la caja negra leída después del vuelo, ADR 0002)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_sort_exitoso_persiste_informe_de_vuelo(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """Tras un sort exitoso con journal cableado queda un FlightReport
+    persistido en la misma TX, compuesto desde el manifiesto real (T-28)."""
+    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    informes = [
+        FlightReport.model_validate(e.metadata)
+        for e in await _ops_de_la_ultima_tx(journal)
+        if e.metadata and e.metadata.get("kind") == "flight_report"
+    ]
+    assert len(informes) == 1
+    report = informes[0]
+    assert report.degraded is False
+    assert report.tool == "LOOT"
+    assert report.transaction_status == "committed"
+    assert str(plugins) in report.files_touched
+    assert report.rollback_plan[0].original_path == str(plugins)
+
+
+@pytest.mark.asyncio
+async def test_fallo_del_informe_no_rompe_el_contrato_de_dict(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """El informe es post-vuelo y best-effort: si su persistencia falla, el
+    sort ya exitoso sigue devolviendo dict de éxito (misma disciplina que el
+    commit del journal, T-26)."""
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    with patch.object(journal, "persist_flight_report", AsyncMock(side_effect=OSError("disk full"))):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    runner.sort.assert_awaited_once()
+    # La caja negra pre-vuelo (manifiesto) quedó persistida igual.
+    manifest = await _manifiesto_de_la_ultima_tx(journal)
+    assert manifest.tool == "LOOT"
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_durante_el_informe_no_revierte_la_tx_commiteada(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """Una cancelación mientras se emite el informe (post-commit) NO debe
+    re-marcar la TX ya commiteada como rolled-back: el sort fue exitoso y el
+    audit trail no debe mentir (review Codex #249)."""
+    from sky_claw.antigravity.db.journal import TransactionStatus
+
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    # persist_flight_report se ejecuta DESPUÉS del commit; una CancelledError acá
+    # propaga (BaseException, no la traga el best-effort) hasta el handler del sort.
+    with (
+        patch.object(journal, "persist_flight_report", AsyncMock(side_effect=asyncio.CancelledError())),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await svc.sort_load_order()
+
+    (ultima,) = await journal.list_recent_transactions(limit=1)
+    assert ultima.status == TransactionStatus.COMMITTED
+
+
+@pytest.mark.asyncio
+async def test_informe_registra_el_diff_real_de_orden(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """El informe adjunta el diff REAL de orden (archivo antes vs
+    result.sorted_plugins después), aunque el manifiesto pre-vuelo — emitido
+    antes de mutar e inmutable — no lo tenga (review Codex #249)."""
+    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+
+    resolver, _plugins = _preparar_load_order(tmp_path)  # orden previo: Skyrim.esm, Original.esp
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Original.esp", "Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    informes = [
+        FlightReport.model_validate(e.metadata)
+        for e in await _ops_de_la_ultima_tx(journal)
+        if e.metadata and e.metadata.get("kind") == "flight_report"
+    ]
+    assert len(informes) == 1
+    diff = informes[0].load_order_diff
+    assert diff is not None
+    assert diff.before == ["Skyrim.esm", "Original.esp"]
+    assert diff.after == ["Original.esp", "Skyrim.esm"]
+    assert diff.changed
+
+
+def test_read_plugin_order_ignora_comentarios_bom_y_marca_de_activo(tmp_path: pathlib.Path) -> None:
+    """El lector de orden quita BOM, comentarios y la marca ``*`` de activo."""
+    from sky_claw.local.tools.loot_service import _primary_load_order_file, _read_plugin_order
+
+    lo = tmp_path / "loadorder.txt"
+    lo.write_text("﻿# encabezado\n*Skyrim.esm\nOriginal.esp\n\n", encoding="utf-8")
+    pl = tmp_path / "plugins.txt"
+    pl.write_text("*Skyrim.esm\n", encoding="utf-8")
+
+    # loadorder.txt tiene prioridad sobre plugins.txt.
+    assert _primary_load_order_file([pl, lo]) == lo
+    assert _read_plugin_order(lo) == ["Skyrim.esm", "Original.esp"]
+    # Sin candidatos / archivo inexistente → lista vacía, nunca rompe.
+    assert _primary_load_order_file([]) is None
+    assert _read_plugin_order(None) == []
+    assert _read_plugin_order(tmp_path / "no-existe.txt") == []

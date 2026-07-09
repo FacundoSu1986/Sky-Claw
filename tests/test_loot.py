@@ -552,10 +552,22 @@ class TestRunLootSortLock:
             )
             assert result["success"] is True
             # El manifiesto quedó persistido en el journal del path del agente.
+            # Se selecciona explícito: el FlightReport (T-28) comparte la TX y
+            # también trae ritual_id — se discrimina por su clave ``kind``.
             op = await journal.get_last_operation(agent_id=LootSortingService.AGENT_ID)
-            assert op is not None, "el path del agente debe persistir el ActionManifest"
-            manifest = ActionManifest.model_validate(op.metadata)
+            assert op is not None, "el path del agente debe persistir la caja negra"
+            (ultima,) = await journal.list_recent_transactions(limit=1)
+            entries = await journal.get_operations_by_transaction(ultima.transaction_id)
+            manifiestos = [
+                e.metadata
+                for e in entries
+                if e.metadata and e.metadata.get("ritual_id") and e.metadata.get("kind") != "flight_report"
+            ]
+            assert len(manifiestos) == 1, "el path del agente debe persistir el ActionManifest"
+            manifest = ActionManifest.model_validate(manifiestos[0])
             assert manifest.tool == "LOOT"
+            # Y el informe post-vuelo (T-28) también quedó en la misma TX.
+            assert any(e.metadata and e.metadata.get("kind") == "flight_report" for e in entries)
         finally:
             await journal.close()
             await lm.close()
