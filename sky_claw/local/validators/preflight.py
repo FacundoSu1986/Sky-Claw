@@ -39,6 +39,7 @@ from sky_claw.local.validators.vfs_health import VfsHealthChecker
 
 if TYPE_CHECKING:
     from sky_claw.local.validators.missing_masters import MasterIssue
+    from sky_claw.local.validators.plugin_limits import LoadOrderLimits
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,10 @@ VersionDetector = Callable[[], Awaitable[tuple[int, int, int] | None]]
 #: Sensor de masters inyectable (T-30·1): el builder arma el closure con el
 #: MissingMastersChecker + la fuente del load order; el servicio solo compone.
 MastersCheck = Callable[[], "list[MasterIssue]"]
+
+#: Sensor de límites de plugins inyectable (T-30·2): closure sobre
+#: PluginLimitsChecker + el load order habilitado.
+LimitsCheck = Callable[[], "LoadOrderLimits"]
 
 
 class PreflightStatus(StrEnum):
@@ -126,6 +131,9 @@ class PreflightService:
             devuelve los :class:`MasterIssue` del load order habilitado
             (típicamente un closure sobre ``MissingMastersChecker.check``).
             Corre en un thread (lee headers de plugins en disco).
+        limits_check: Sensor de límites full/light (T-30·2): callable que
+            devuelve el :class:`LoadOrderLimits` (closure sobre
+            ``PluginLimitsChecker.check``). Corre en un thread.
     """
 
     def __init__(
@@ -135,9 +143,11 @@ class PreflightService:
         loot_exe: pathlib.Path | None = None,
         loot_version_detector: VersionDetector | None = None,
         masters_check: MastersCheck | None = None,
+        limits_check: LimitsCheck | None = None,
     ) -> None:
         self._vfs_checker = vfs_checker
         self._masters_check = masters_check
+        self._limits_check = limits_check
         if loot_version_detector is None and loot_exe is not None:
             exe = loot_exe
 
@@ -185,6 +195,11 @@ class PreflightService:
             # Lee headers de plugins en disco: fuera del event loop.
             masters_issues = await asyncio.to_thread(self._masters_check)
         checks.append(self._masters_checkpoint(masters_issues, checker_configured=self._masters_check is not None))
+
+        limits: LoadOrderLimits | None = None
+        if self._limits_check is not None:
+            limits = await asyncio.to_thread(self._limits_check)
+        checks.append(self._limits_checkpoint(limits))
 
         composition = self._composition_check(vfs_issues, loot_version)
         if composition is not None:
@@ -234,6 +249,20 @@ class PreflightService:
         from sky_claw.local.validators.missing_masters import masters_preflight_check
 
         return masters_preflight_check(issues)
+
+    @staticmethod
+    def _limits_checkpoint(limits: LoadOrderLimits | None) -> PreflightCheck:
+        if limits is None:
+            return PreflightCheck(
+                name="plugin_limits",
+                status=PreflightStatus.GREEN,
+                summary="Sensor de límites de plugins no configurado.",
+            )
+        # Import a nivel función: mismo ciclo que masters (plugin_limits importa
+        # PreflightCheck de este módulo).
+        from sky_claw.local.validators.plugin_limits import limits_preflight_check
+
+        return limits_preflight_check(limits)
 
     @staticmethod
     def _loot_check(version: tuple[int, int, int] | None, *, detector_configured: bool) -> PreflightCheck:
