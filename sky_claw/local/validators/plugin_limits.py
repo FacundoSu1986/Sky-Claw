@@ -131,16 +131,18 @@ class PluginLimitsChecker:
         """True/False si se pudo determinar; None si el header es ilegible.
 
         Un plugin es ligero si su extensión es ``.esl`` **o** su header trae el
-        flag light (ESPFE). La extensión ``.esl`` es implícitamente ligera aun
-        sin el flag, así que se chequea primero.
+        flag light (ESPFE). El header se lee SIEMPRE — también para ``.esl`` —
+        para no saltear la validación: un ``.esl`` corrupto debe reportarse
+        ilegible como cualquier otra extensión (review Codex PR #250). La
+        extensión ``.esl`` es ligera aun sin el flag, de ahí el ``or``.
         """
-        if plugin_name.lower().endswith(".esl"):
-            return True
+        ext_light = plugin_name.lower().endswith(".esl")
         try:
-            return read_plugin_header(path).is_light
+            header = read_plugin_header(path)
         except PluginHeaderError as exc:
             logger.debug("Header ilegible en %s: %s", plugin_name, exc)
             return None
+        return ext_light or header.is_light
 
     def _build_issues(self, full: int, light: int, unreadable: int) -> tuple[LimitIssue, ...]:
         issues: list[LimitIssue] = []

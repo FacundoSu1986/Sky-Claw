@@ -152,6 +152,21 @@ def test_header_ilegible_cae_a_extension_y_avisa(tmp_path: pathlib.Path) -> None
     assert any(i.kind == "unreadable" and i.severity == "warning" for i in limits.issues)
 
 
+def test_esl_ilegible_tambien_avisa(tmp_path: pathlib.Path) -> None:
+    """Un .esl corrupto sigue contando light por extensión, pero NO se saltea
+    la validación del header: se registra como ilegible igual que otras
+    extensiones (review Codex PR #250)."""
+    data = tmp_path / "Data"
+    data.mkdir()
+    (data / "Roto.esl").write_bytes(b"garbage")
+
+    limits = PluginLimitsChecker(plugin_dirs=[data]).check(["Roto.esl"])
+
+    assert limits.light_count == 1  # .esl es ligero por extensión
+    assert limits.unreadable == 1
+    assert any(i.kind == "unreadable" and i.severity == "warning" for i in limits.issues)
+
+
 # ---------------------------------------------------------------------------
 # Puente al semáforo
 # ---------------------------------------------------------------------------
