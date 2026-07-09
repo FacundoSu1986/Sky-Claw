@@ -46,7 +46,7 @@ INJECTION_PATTERNS = [
     # porque los usuarios AR suelen tipear sin tildes, y con OBJETO específico
     # (instrucciones/prompt/sistema/anterior) para no marcar español legítimo.
     (
-        r"(?i)ignor[aá]\s+(todas?\s+)?(las?\s+)?(instrucciones|indicaciones|[oó]rdenes)\s+(previas|anteriores)",
+        r"(?i)ignor[aá]\s+((todo\s+)?lo\s+anterior|(todas?\s+)?(las?\s+)?(instrucciones|indicaciones|[oó]rdenes)\s+(previas|anteriores))",
         "Bypass de instrucciones previas (ES)",
         "CRITICAL",
     ),
@@ -66,7 +66,7 @@ INJECTION_PATTERNS = [
         "HIGH",
     ),
     (
-        r"(?i)nueva[s]?\s+(directiva|instrucci[oó]n|regla)\s*:",
+        r"(?i)nueva[s]?\s+(directiva|instrucci[oó]n)\s*:",
         "Inyección de directiva (ES)",
         "HIGH",
     ),
