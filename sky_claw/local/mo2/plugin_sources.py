@@ -38,6 +38,7 @@ def resolve_plugin_sources(
     *,
     game_data_dir: pathlib.Path | None,
     mo2_mods_dir: pathlib.Path | None,
+    mo2_overwrite_dir: pathlib.Path | None = None,
     load_order_file: pathlib.Path | None,
 ) -> PluginSources:
     """Arma las fuentes de plugins desde el entorno (best-effort).
@@ -46,6 +47,8 @@ def resolve_plugin_sources(
         game_data_dir: ``Data`` del juego (masters base). ``None`` si no se sabe.
         mo2_mods_dir: ``<mo2>/mods``; se enumeran sus subcarpetas. ``None`` si no
             hay instancia MO2.
+        mo2_overwrite_dir: ``<mo2>/overwrite``, donde caen los plugins generados
+            (bashed patch, DynDOLOD…). Máxima precedencia en el VFS de MO2.
         load_order_file: ``plugins.txt``/``loadorder.txt`` del que salen los
             plugins habilitados. ``None`` si no se resolvió ninguno.
 
@@ -53,7 +56,7 @@ def resolve_plugin_sources(
         :class:`PluginSources` (tuplas vacías ante fuentes ausentes/ilegibles).
     """
     return PluginSources(
-        plugin_dirs=_resolve_plugin_dirs(game_data_dir, mo2_mods_dir),
+        plugin_dirs=_resolve_plugin_dirs(game_data_dir, mo2_mods_dir, mo2_overwrite_dir),
         enabled_plugins=_parse_enabled(load_order_file),
     )
 
@@ -61,8 +64,16 @@ def resolve_plugin_sources(
 def _resolve_plugin_dirs(
     game_data_dir: pathlib.Path | None,
     mo2_mods_dir: pathlib.Path | None,
+    mo2_overwrite_dir: pathlib.Path | None,
 ) -> tuple[pathlib.Path, ...]:
+    # Orden = precedencia del VFS de MO2 (los checkers hacen first-match):
+    # overwrite gana sobre los mods, y los mods sobre la Data base. La
+    # ordenación por prioridad de modlist.txt entre mods es una mejora futura;
+    # acá el conjunto activo lo determina plugins.txt, no la enumeración.
     dirs: list[pathlib.Path] = []
+    if _is_dir(mo2_overwrite_dir):
+        assert mo2_overwrite_dir is not None
+        dirs.append(mo2_overwrite_dir)
     if mo2_mods_dir is not None:
         try:
             entries = sorted(mo2_mods_dir.iterdir())
@@ -70,28 +81,33 @@ def _resolve_plugin_dirs(
             logger.debug("No se pudo enumerar %s: %s", mo2_mods_dir, exc)
             entries = []
         for entry in entries:
-            try:
-                if entry.is_dir():
-                    dirs.append(entry)
-            except OSError as exc:
-                logger.debug("No se pudo inspeccionar %s: %s", entry, exc)
-    if game_data_dir is not None:
-        try:
-            is_data_dir = game_data_dir.is_dir()
-        except OSError:
-            is_data_dir = False
-        if is_data_dir:
-            dirs.append(game_data_dir)
+            if _is_dir(entry):
+                dirs.append(entry)
+    if _is_dir(game_data_dir):
+        assert game_data_dir is not None
+        dirs.append(game_data_dir)
     return tuple(dirs)
+
+
+def _is_dir(path: pathlib.Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        return path.is_dir()
+    except OSError as exc:
+        logger.debug("No se pudo inspeccionar %s: %s", path, exc)
+        return False
 
 
 def _parse_enabled(load_order_file: pathlib.Path | None) -> tuple[str, ...]:
     if load_order_file is None:
         return ()
     try:
-        # utf-8-sig: MO2 escribe plugins.txt con BOM.
-        text = load_order_file.read_text(encoding="utf-8-sig")
-    except (OSError, ValueError) as exc:
+        # utf-8-sig: MO2 escribe plugins.txt con BOM. errors="replace": un byte
+        # suelto no debe tirar la decodificación y borrar el load order entero
+        # (best-effort real; precedente en chain_preview_service — review #252).
+        text = load_order_file.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError as exc:
         logger.debug("No se pudo leer el load order %s: %s", load_order_file, exc)
         return ()
 
