@@ -33,7 +33,7 @@ en [.github/coding_conventions.md](.github/coding_conventions.md).
 | `sky_claw/antigravity/gui/` | GUI NiceGUI (vistas, controllers, `models/app_state.py`) |
 | `sky_claw/antigravity/web/` | App web / daemon |
 | `sky_claw/antigravity/security/` | `path_validator.py` (`PathValidator` — sandboxing de rutas) |
-| `sky_claw/antigravity/comms/` | Gateway de Telegram (Node) |
+| `sky_claw/antigravity/comms/` | Comunicaciones (Python) + gateway de Telegram (Node en `telegram_gateway_node/`) |
 | `sky_claw/local/mo2/` | Integración con Mod Organizer 2 (perfiles, sandbox, modlist) |
 | `sky_claw/local/tools/` | Tools del agente (`tool_result.py`, runners de LOOT/xEdit/etc.) |
 | `sky_claw/config.py` | `SystemPaths` y configuración global |
