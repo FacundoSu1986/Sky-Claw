@@ -113,3 +113,35 @@ def test_bom_en_plugins_txt_se_maneja(tmp_path: pathlib.Path) -> None:
     sources = resolve_plugin_sources(game_data_dir=None, mo2_mods_dir=None, load_order_file=lo)
 
     assert sources.enabled_plugins == ("A.esp", "B.esp")
+
+
+def test_byte_invalido_no_deja_enabled_vacio(tmp_path: pathlib.Path) -> None:
+    """best-effort real: un byte no-UTF8 en un comentario no debe tirar la
+    decodificación y borrar el load order entero (review Copilot #252)."""
+    lo = tmp_path / "plugins.txt"
+    lo.write_bytes(b"# comentario \xff roto\r\n*A.esp\r\n")
+
+    sources = resolve_plugin_sources(game_data_dir=None, mo2_mods_dir=None, load_order_file=lo)
+
+    assert sources.enabled_plugins == ("A.esp",)
+
+
+def test_overwrite_incluido_con_maxima_precedencia(tmp_path: pathlib.Path) -> None:
+    """El overwrite de MO2 (plugins generados) se incluye y va primero (gana el
+    first-match de los checkers) — review Codex #252."""
+    mods = tmp_path / "MO2" / "mods"
+    (mods / "ModA").mkdir(parents=True)
+    overwrite = tmp_path / "MO2" / "overwrite"
+    overwrite.mkdir(parents=True)
+    data = tmp_path / "Skyrim" / "Data"
+    data.mkdir(parents=True)
+
+    sources = resolve_plugin_sources(
+        game_data_dir=data,
+        mo2_mods_dir=mods,
+        mo2_overwrite_dir=overwrite,
+        load_order_file=None,
+    )
+
+    assert sources.plugin_dirs[0] == overwrite  # máxima precedencia
+    assert data in sources.plugin_dirs  # Data última pero presente
