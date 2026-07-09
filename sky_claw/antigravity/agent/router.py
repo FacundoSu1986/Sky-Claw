@@ -29,6 +29,12 @@ from sky_claw.antigravity.core.errors import (
 )
 from sky_claw.antigravity.core.schemas import RouteClassification
 from sky_claw.antigravity.security.sanitize import sanitize_for_prompt
+from sky_claw.antigravity.security.text_inspector import TextInspector
+
+# S5: detector de inyección (frases OWASP LLM01, ES+EN) reutilizado para revalidar
+# el historial recargado. Stateless → una instancia compartida a nivel módulo.
+_HISTORY_INSPECTOR = TextInspector()
+_HISTORY_BLOCK_SEVERITIES = frozenset({"CRITICAL", "HIGH"})
 
 if TYPE_CHECKING:
     import aiohttp
@@ -709,5 +715,22 @@ class LLMRouter:
                     continue
             except (json.JSONDecodeError, TypeError):
                 pass
-            messages.append({"role": role, "content": raw_content})
+            # S5 (Zero-Trust): la DB chat_history es data en reposo; si fuera
+            # manipulada (ej. mod maliciosa con acceso al sandbox escribe una
+            # inyección en un user row), se re-inyectaría al LLM sin filtrar.
+            # - Filas 'user': además de sanitizar delimitadores, se corre el detector
+            #   de inyección de FRASES (sanitize_for_prompt NO lo hace) y se DESCARTA
+            #   la fila si dispara CRITICAL/HIGH (review Codex/Copilot en #251).
+            # - sanitize_for_prompt es idempotente → no-op para data ya limpia.
+            # Los bloques JSON-list (output estructurado del modelo, con tool_use IDs)
+            # se dejan intactos arriba.
+            if role == "user":
+                findings = _HISTORY_INSPECTOR.inspect(raw_content)
+                if any(f["severity"] in _HISTORY_BLOCK_SEVERITIES for f in findings):
+                    logger.warning(
+                        "S5: fila de historial 'user' descartada por inyección detectada (chat_id=%s)",
+                        chat_id,
+                    )
+                    continue
+            messages.append({"role": role, "content": sanitize_for_prompt(raw_content)})
         return messages

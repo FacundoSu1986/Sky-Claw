@@ -52,15 +52,16 @@ logger = logging.getLogger("SkyClaw.AgentGuardrail")
 # PII — combined detector. One compiled pattern with named groups beats four
 # sequential `re.search` calls in both clarity and runtime (single scan instead
 # of four). Alternation order encodes priority: SSN > card > api_key > password.
-# IGNORECASE applies to the whole pattern; SSN/card alternations are digit-only
-# so the flag is harmless for them.
-_COMBINED_PII_RE = re.compile(
-    r"(?P<ssn>\b\d{3}-\d{2}-\d{4}\b)"
-    r"|(?P<card>\b(?:\d{4}[ -]?){3}\d{1,4}\b)"
-    r"|(?P<api_key>\b(?:sk-[A-Za-z0-9]{15,}|[A-Za-z0-9]{32,}(?:_key|_secret|_token))\b)"
-    r"|(?P<password>password\s*[=:]\s*\S+)",
-    re.IGNORECASE,
-)
+# PII — detección POR TIPO (review Copilot AG-2): patrones independientes, no una
+# alternation con finditer. Con la alternation, un tipo que "encapsula" a otro
+# (p.ej. ``password=sk-...`` consume la key con ``\S+``) hacía que finditer
+# reportara solo uno. Buscar cada tipo por separado reporta TODOS los presentes.
+_PII_PATTERNS: dict[str, re.Pattern[str]] = {
+    "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+    "card": re.compile(r"\b(?:\d{4}[ -]?){3}\d{1,4}\b"),
+    "api_key": re.compile(r"\b(?:sk-[A-Za-z0-9]{15,}|[A-Za-z0-9]{32,}(?:_key|_secret|_token))\b", re.IGNORECASE),
+    "password": re.compile(r"password\s*[=:]\s*\S+", re.IGNORECASE),
+}
 
 _PII_MESSAGES: dict[str, str] = {
     "ssn": "PII detected in input: SSN pattern found",
@@ -330,13 +331,18 @@ async def secure_llm_call(
 
 
 def _check_pii(text: str) -> None:
-    """Raise ``SecurityViolationError`` if *text* contains PII patterns."""
-    match = _COMBINED_PII_RE.search(text)
-    if match is None:
+    """Raise ``SecurityViolationError`` if *text* contains PII patterns.
+
+    AG-2: busca cada tipo por separado (no ``.search()`` sobre una alternation) para
+    reportar TODOS los tipos presentes — incluso cuando uno encapsula a otro
+    (p.ej. ``password=sk-...`` es password Y api_key). El bloqueo ya ocurría con el
+    primer match; esto completa la telemetría/mensaje.
+    """
+    found = [name for name, pattern in _PII_PATTERNS.items() if pattern.search(text)]
+    if not found:
         return
-    for name, value in match.groupdict().items():
-        if value is not None:
-            raise SecurityViolationError(_PII_MESSAGES[name])
+    logger.warning("Guardrail: PII blocked in user input — tipos: %s", ", ".join(found))
+    raise SecurityViolationError("; ".join(_PII_MESSAGES[name] for name in found))
 
 
 def _check_paths(text: str) -> None:
