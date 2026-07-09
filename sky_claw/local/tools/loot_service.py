@@ -296,6 +296,11 @@ class LootSortingService:
             },
         )
         journal_tx_id: int | None = None
+        # Una vez commiteada la TX, ninguna ruta posterior debe re-marcarla
+        # rolled-back: una cancelación mientras se compone/persiste el informe
+        # (post-commit) corrompería el audit trail de una TX ya exitosa
+        # (mark_transaction_rolled_back no valida el estado) — review Codex #249.
+        journal_committed = False
         try:
             async with tx:
                 # T-26 (ADR 0002): emitir la "caja negra de vuelo" ANTES de
@@ -314,6 +319,7 @@ class LootSortingService:
                 # Copilot PR #243). Best-effort: se loguea con traceback.
                 try:
                     await self._journal.commit_transaction(journal_tx_id)
+                    journal_committed = True
                 except Exception:  # noqa: BLE001 — boundary best-effort del journal
                     logger.error(
                         "Fallo al commitear la transacción del journal %d tras el sort exitoso",
@@ -356,15 +362,19 @@ class LootSortingService:
         except asyncio.CancelledError:
             # La cancelación propaga; el snapshot ya se restauró en __aexit__.
             # Cerrar la TX del journal es best-effort (no debe tragar la cancelación).
-            await self._mark_journal_rolled_back(journal_tx_id)
+            # Si ya se commiteó (cancelación durante el informe post-vuelo) NO se
+            # revierte: la TX fue exitosa y el audit trail no debe mentir (#249).
+            if not journal_committed:
+                await self._mark_journal_rolled_back(journal_tx_id)
             raise
         except Exception as exc:  # noqa: BLE001 — contrato: sort_load_order SIEMPRE devuelve dict
             # runner.sort() u otra pieza puede lanzar algo fuera de las excepciones
             # LOOT-específicas (RuntimeError de subproceso, error de validador). El
             # snapshot ya se restauró en __aexit__; acá cerramos la TX del manifiesto
             # (no dejar PENDING) y devolvemos un dict serializable en vez de propagar
-            # (review Codex PR #243).
-            await self._mark_journal_rolled_back(journal_tx_id)
+            # (review Codex PR #243). Si ya se commiteó, no revertir (#249).
+            if not journal_committed:
+                await self._mark_journal_rolled_back(journal_tx_id)
             logger.error("Error inesperado en el sort de LOOT: %s", exc, exc_info=True)
             return {
                 "status": "error",

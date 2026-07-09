@@ -8,6 +8,7 @@ same load order). Mirrors the fixture style of ``test_synthesis_service.py``.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -665,3 +666,32 @@ async def test_fallo_del_informe_no_rompe_el_contrato_de_dict(
     # La caja negra pre-vuelo (manifiesto) quedó persistida igual.
     manifest = await _manifiesto_de_la_ultima_tx(journal)
     assert manifest.tool == "LOOT"
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_durante_el_informe_no_revierte_la_tx_commiteada(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """Una cancelación mientras se emite el informe (post-commit) NO debe
+    re-marcar la TX ya commiteada como rolled-back: el sort fue exitoso y el
+    audit trail no debe mentir (review Codex #249)."""
+    from sky_claw.antigravity.db.journal import TransactionStatus
+
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    # persist_flight_report se ejecuta DESPUÉS del commit; una CancelledError acá
+    # propaga (BaseException, no la traga el best-effort) hasta el handler del sort.
+    with (
+        patch.object(journal, "persist_flight_report", AsyncMock(side_effect=asyncio.CancelledError())),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await svc.sort_load_order()
+
+    (ultima,) = await journal.list_recent_transactions(limit=1)
+    assert ultima.status == TransactionStatus.COMMITTED
