@@ -695,3 +695,54 @@ async def test_cancelacion_durante_el_informe_no_revierte_la_tx_commiteada(
 
     (ultima,) = await journal.list_recent_transactions(limit=1)
     assert ultima.status == TransactionStatus.COMMITTED
+
+
+@pytest.mark.asyncio
+async def test_informe_registra_el_diff_real_de_orden(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """El informe adjunta el diff REAL de orden (archivo antes vs
+    result.sorted_plugins después), aunque el manifiesto pre-vuelo — emitido
+    antes de mutar e inmutable — no lo tenga (review Codex #249)."""
+    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+
+    resolver, _plugins = _preparar_load_order(tmp_path)  # orden previo: Skyrim.esm, Original.esp
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Original.esp", "Skyrim.esm"]))
+    svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    informes = [
+        FlightReport.model_validate(e.metadata)
+        for e in await _ops_de_la_ultima_tx(journal)
+        if e.metadata and e.metadata.get("kind") == "flight_report"
+    ]
+    assert len(informes) == 1
+    diff = informes[0].load_order_diff
+    assert diff is not None
+    assert diff.before == ["Skyrim.esm", "Original.esp"]
+    assert diff.after == ["Original.esp", "Skyrim.esm"]
+    assert diff.changed
+
+
+def test_read_plugin_order_ignora_comentarios_bom_y_marca_de_activo(tmp_path: pathlib.Path) -> None:
+    """El lector de orden quita BOM, comentarios y la marca ``*`` de activo."""
+    from sky_claw.local.tools.loot_service import _primary_load_order_file, _read_plugin_order
+
+    lo = tmp_path / "loadorder.txt"
+    lo.write_text("﻿# encabezado\n*Skyrim.esm\nOriginal.esp\n\n", encoding="utf-8")
+    pl = tmp_path / "plugins.txt"
+    pl.write_text("*Skyrim.esm\n", encoding="utf-8")
+
+    # loadorder.txt tiene prioridad sobre plugins.txt.
+    assert _primary_load_order_file([pl, lo]) == lo
+    assert _read_plugin_order(lo) == ["Skyrim.esm", "Original.esp"]
+    # Sin candidatos / archivo inexistente → lista vacía, nunca rompe.
+    assert _primary_load_order_file([]) is None
+    assert _read_plugin_order(None) == []
+    assert _read_plugin_order(tmp_path / "no-existe.txt") == []
