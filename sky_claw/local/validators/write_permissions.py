@@ -90,10 +90,30 @@ class WritePermissionsChecker:
         issues: list[WriteAccessIssue] = []
         for target in self._targets:
             try:
-                if not target.is_dir():
-                    continue
+                is_dir = target.is_dir()
+            except PermissionError as exc:
+                # No se pudo ni stat-ear (ACL de Windows niega atributos, o el
+                # padre es inaccesible): si el Ritual escribe acá va a fallar,
+                # así que es tan crítico como una denegación de escritura — no
+                # saltear en silencio (review Codex #256).
+                logger.debug("Acceso denegado al inspeccionar %s: %s", target, exc)
+                probed.append(str(target))
+                issues.append(
+                    WriteAccessIssue(
+                        path=str(target), kind="denied", severity="critical", remediation=_DENIED_REMEDIATION
+                    )
+                )
+                continue
             except OSError as exc:
                 logger.debug("No se pudo inspeccionar %s: %s", target, exc)
+                probed.append(str(target))
+                issues.append(
+                    WriteAccessIssue(path=str(target), kind="error", severity="warning", remediation=_ERROR_REMEDIATION)
+                )
+                continue
+            if not is_dir:
+                # Inexistente o no-directorio: no es residuo (otros sensores
+                # reportan rutas faltantes); is_dir() no lanza para inexistentes.
                 continue
             probed.append(str(target))
             issue = self._probe_write(target)

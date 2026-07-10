@@ -111,6 +111,36 @@ class TestProbe:
         for residuo in destino.iterdir():
             residuo.unlink()
 
+    def test_stat_denegado_es_critical(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Si ni siquiera se puede stat-ear el target (ACL de Windows, padre
+        inaccesible), es tan crítico como una denegación de escritura: no
+        saltear en silencio (review Codex #256)."""
+        destino = tmp_path / "d"
+        destino.mkdir()
+
+        def _boom(self: pathlib.Path) -> bool:
+            raise PermissionError("sin atributos")
+
+        monkeypatch.setattr(pathlib.Path, "is_dir", _boom)
+        report = _check(destino)
+
+        assert str(destino) in report.probed
+        assert report.issues[0].kind == "denied"
+        assert report.issues[0].severity == "critical"
+
+    def test_stat_con_otro_oserror_es_warning(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        destino = tmp_path / "d"
+        destino.mkdir()
+
+        def _boom(self: pathlib.Path) -> bool:
+            raise OSError("ruta en red caída")
+
+        monkeypatch.setattr(pathlib.Path, "is_dir", _boom)
+        report = _check(destino)
+
+        assert report.issues[0].kind == "error"
+        assert report.issues[0].severity == "warning"
+
     @_posix_guard
     @_root_guard
     def test_dir_sin_permiso_de_escritura_es_critical(self, tmp_path: pathlib.Path) -> None:

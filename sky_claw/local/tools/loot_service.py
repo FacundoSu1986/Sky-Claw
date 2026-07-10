@@ -234,9 +234,10 @@ class LootSortingService:
         # (no depende del load order), así que se cablea aparte de los de modlist.
         overwrite_check = self._build_overwrite_check(raw_mo2, mo2_validated)
 
-        # T-30·4: sensor de permisos de escritura sobre las rutas que un Ritual
-        # va a tocar (Data, overwrite, mods, perfil).
-        permissions_check = self._build_permissions_check(raw_mo2, mo2_validated)
+        # T-30·4: sensor de permisos de escritura sobre las rutas que ESTE
+        # Ritual (el sort de LOOT) reescribe — los dirs de los archivos de load
+        # order resueltos, no rutas de otros rituales (review Codex #256).
+        permissions_check = self._build_permissions_check()
 
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
@@ -248,34 +249,34 @@ class LootSortingService:
         )
         return self._preflight
 
-    def _build_permissions_check(self, raw_mo2: pathlib.Path | None, mo2_validated: bool) -> PermissionsCheck | None:
+    def _build_permissions_check(self) -> PermissionsCheck | None:
         """Construye el closure del sensor de permisos de escritura (T-30·4).
 
-        Arma las rutas que un Ritual mutante va a escribir: la ``Data`` del juego
-        (xEdit), el ``overwrite`` compartido (Synthesis/Pandora/DynDOLOD), los
-        ``mods`` y el perfil activo (LOOT reescribe ``plugins.txt``). El closure
-        re-prueba en cada run (freshness). Sin ninguna ruta construible devuelve
-        ``None`` → el semáforo dice "no configurado".
+        Prueba escritura exactamente en lo que ESTE Ritual reescribe: los
+        directorios de los archivos de load order resueltos —
+        ``plugins.txt``/``loadorder.txt`` en LOCALAPPDATA, el perfil de MO2 y
+        overrides — la misma unión que ``target_files`` snapshotea. Acotarlo a lo
+        que LOOT toca evita falsos rojos por un ``Data``/``overwrite`` de solo
+        lectura que no afectan al sort, e incluye LOCALAPPDATA/overrides que un
+        target por-directorio de MO2 no cubría (review Codex #256). El perfil ya
+        viene validado por ``LoadOrderFileResolver`` (no se re-arma la ruta acá,
+        así se evita el traversal de un ``MO2_PROFILE`` con ``..``). El closure
+        re-resuelve por run (freshness); sin archivos resolubles → ``None`` → el
+        semáforo dice "no configurado" (no miente verde).
         """
-        targets: list[pathlib.Path] = []
-        if self._path_resolver is not None:
-            skyrim = self._path_resolver.get_skyrim_path()
-            # isinstance defiende de resolvers mockeados que devuelven no-Path.
-            if isinstance(skyrim, pathlib.Path):
-                targets.append(skyrim / "Data")
-        if mo2_validated and isinstance(raw_mo2, pathlib.Path):
-            targets.append(raw_mo2 / "overwrite")
-            targets.append(raw_mo2 / "mods")
-            if self._path_resolver is not None:
-                profile = self._path_resolver.get_active_profile()
-                if isinstance(profile, str) and profile:
-                    targets.append(raw_mo2 / "profiles" / profile)
-
-        if not targets:
+        if not self._ensure_load_order_resolver().resolve().files:
             return None
         from sky_claw.local.validators.write_permissions import WritePermissionsChecker
 
         def _permissions() -> WriteAccessReport:
+            files = self._ensure_load_order_resolver().resolve().files
+            seen: set[pathlib.Path] = set()
+            targets: list[pathlib.Path] = []
+            for load_order_file in files:
+                parent = load_order_file.parent
+                if isinstance(parent, pathlib.Path) and parent not in seen:
+                    seen.add(parent)
+                    targets.append(parent)
             return WritePermissionsChecker(targets=targets).check()
 
         return _permissions

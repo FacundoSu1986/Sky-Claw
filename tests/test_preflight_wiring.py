@@ -14,6 +14,7 @@ sites existentes quedan protegidos sin cambios.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 import tempfile
@@ -601,20 +602,21 @@ class TestSensorDeOverwriteCableado:
 
 
 class TestSensorDePermisosCableado:
-    """T-30·4: _ensure_preflight cablea el sensor de permisos con las rutas que
-    los Rituales van a escribir (Data, overwrite, mods, profile)."""
+    """T-30·4: _ensure_preflight cablea el sensor de permisos sobre lo que ESTE
+    Ritual reescribe — los dirs de los archivos de load order resueltos, no
+    rutas de otros rituales (review Codex #256)."""
 
-    def _svc(self, *, skyrim: pathlib.Path | None, mo2: pathlib.Path | None) -> LootSortingService:
+    def _svc(self, *, load_order_files: tuple[pathlib.Path, ...]) -> LootSortingService:
         resolver = MagicMock()
-        resolver.get_skyrim_path_raw = MagicMock(return_value=skyrim)
-        resolver.get_skyrim_path = MagicMock(return_value=skyrim)
-        resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
-        resolver.get_mo2_path = MagicMock(return_value=mo2)
-        resolver.detect_mo2_path = MagicMock(return_value=mo2)
+        resolver.get_skyrim_path_raw = MagicMock(return_value=None)
+        resolver.get_skyrim_path = MagicMock(return_value=None)
+        resolver.get_mo2_path_raw = MagicMock(return_value=None)
+        resolver.get_mo2_path = MagicMock(return_value=None)
+        resolver.detect_mo2_path = MagicMock(return_value=None)
         resolver.get_active_profile = MagicMock(return_value="Default")
         resolver.get_loot_exe = MagicMock(return_value=None)
         load_order = MagicMock()
-        load_order.resolve.return_value = LoadOrderPaths(files=(), sources=())
+        load_order.resolve.return_value = LoadOrderPaths(files=load_order_files, sources=("test",))
         return LootSortingService(
             lock_manager=MagicMock(),
             snapshot_manager=MagicMock(),
@@ -623,25 +625,44 @@ class TestSensorDePermisosCableado:
             load_order_resolver=load_order,
         )
 
-    async def test_rutas_escribibles_es_verde_con_conteo(self, tmp_path: pathlib.Path) -> None:
+    async def test_dir_del_load_order_escribible_es_verde(self, tmp_path: pathlib.Path) -> None:
         from sky_claw.local.validators.preflight import PreflightStatus
 
-        skyrim = tmp_path / "Skyrim"
-        (skyrim / "Data").mkdir(parents=True)
-        mo2 = tmp_path / "MO2"
-        (mo2 / "mods").mkdir(parents=True)
-        (mo2 / "overwrite").mkdir()
+        localappdata = tmp_path / "LOCALAPPDATA" / "Skyrim Special Edition"
+        localappdata.mkdir(parents=True)
+        plugins_txt = localappdata / "plugins.txt"
+        plugins_txt.write_text("*Skyrim.esm\n", encoding="utf-8")
 
-        reporte = await self._svc(skyrim=skyrim, mo2=mo2)._ensure_preflight().run()
+        reporte = await self._svc(load_order_files=(plugins_txt,))._ensure_preflight().run()
 
         permisos = next(c for c in reporte.checks if c.name == "write_permissions")
         assert permisos.status is PreflightStatus.GREEN
         assert "no configurado" not in permisos.summary.lower()
-        # No deja residuos de probe en las carpetas.
-        assert list((mo2 / "overwrite").iterdir()) == []
+        # No deja residuos de probe en el directorio del load order.
+        assert list(localappdata.iterdir()) == [plugins_txt]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod 0o555 no aplica en Windows")
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root escribe igual")
+    async def test_dir_del_load_order_solo_lectura_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """Un LOCALAPPDATA de solo lectura (donde LOOT reescribe plugins.txt)
+        pone el preflight en rojo — el caso que el scope anterior no cubría."""
+        from sky_claw.local.validators.preflight import PreflightStatus
+
+        localappdata = tmp_path / "ro"
+        localappdata.mkdir()
+        plugins_txt = localappdata / "plugins.txt"
+        plugins_txt.write_text("*Skyrim.esm\n", encoding="utf-8")
+        localappdata.chmod(0o555)
+        try:
+            reporte = await self._svc(load_order_files=(plugins_txt,))._ensure_preflight().run()
+            permisos = next(c for c in reporte.checks if c.name == "write_permissions")
+            assert permisos.status is PreflightStatus.RED
+            assert reporte.blocks_mutations is True
+        finally:
+            localappdata.chmod(0o755)
 
     async def test_sin_rutas_dice_no_configurado(self, tmp_path: pathlib.Path) -> None:
-        reporte = await self._svc(skyrim=None, mo2=None)._ensure_preflight().run()
+        reporte = await self._svc(load_order_files=())._ensure_preflight().run()
 
         permisos = next(c for c in reporte.checks if c.name == "write_permissions")
         assert "no configurado" in permisos.summary.lower()
