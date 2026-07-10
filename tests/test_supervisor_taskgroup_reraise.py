@@ -109,3 +109,80 @@ class TestRunInterfaceIsolated:
             await sup._run_interface_isolated()
 
         assert any("recoverable" in r.message.lower() for r in caplog.records)
+
+
+class TestRunDaemonsAndInterface:
+    """H-2: los loops de los demonios son supervisados de verdad (fail-fast)."""
+
+    @staticmethod
+    def _bare_supervisor_with_daemons(maintenance, telemetry, watcher, interface_coro):
+        sup = SupervisorAgent.__new__(SupervisorAgent)
+        sup._maintenance_daemon = maintenance  # type: ignore[attr-defined]
+        sup._telemetry_daemon = telemetry  # type: ignore[attr-defined]
+        sup._watcher_daemon = watcher  # type: ignore[attr-defined]
+        sup._run_interface_isolated = interface_coro  # type: ignore[attr-defined,method-assign]
+        return sup
+
+    @staticmethod
+    def _forever_daemon() -> AsyncMock:
+        import asyncio
+
+        async def _run() -> None:
+            await asyncio.Event().wait()  # corre "para siempre" hasta cancelación
+
+        d = AsyncMock()
+        d.run = AsyncMock(side_effect=_run)
+        return d
+
+    @pytest.mark.asyncio
+    async def test_daemon_crash_propaga_y_cancela_al_resto(self) -> None:
+        """Si un loop de demonio explota, la excepción se propaga (fail-fast)."""
+        import asyncio
+
+        async def _crashing_run() -> None:
+            raise RuntimeError("watcher loop reventó")
+
+        crashing = AsyncMock()
+        crashing.run = AsyncMock(side_effect=_crashing_run)
+
+        maintenance = self._forever_daemon()
+        telemetry = self._forever_daemon()
+
+        async def _interface_forever() -> None:
+            await asyncio.Event().wait()
+
+        sup = self._bare_supervisor_with_daemons(maintenance, telemetry, crashing, _interface_forever)
+
+        with pytest.raises(RuntimeError, match="watcher loop reventó"):
+            await sup._run_daemons_and_interface()
+
+    @pytest.mark.asyncio
+    async def test_interface_retorna_apaga_con_gracia(self) -> None:
+        """Si la interfaz retorna normalmente, se cancelan los demonios sin error."""
+        maintenance = self._forever_daemon()
+        telemetry = self._forever_daemon()
+        watcher = self._forever_daemon()
+
+        async def _interface_returns() -> None:
+            return None
+
+        sup = self._bare_supervisor_with_daemons(maintenance, telemetry, watcher, _interface_returns)
+
+        # No debe lanzar; los demonios quedan cancelados.
+        await sup._run_daemons_and_interface()
+
+
+@pytest.mark.asyncio
+async def test_daemon_run_propaga_excepcion_del_loop() -> None:
+    """run() await-ea el loop directamente: sus excepciones se propagan (H-2)."""
+    from unittest.mock import MagicMock, patch
+
+    from sky_claw.antigravity.orchestrator.maintenance_daemon import MaintenanceDaemon
+
+    daemon = MaintenanceDaemon(snapshot_manager=MagicMock())
+
+    async def _boom() -> None:
+        raise RuntimeError("loop falló")
+
+    with patch.object(daemon, "_pruning_loop", side_effect=_boom), pytest.raises(RuntimeError, match="loop falló"):
+        await daemon.run()

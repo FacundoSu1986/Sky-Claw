@@ -64,6 +64,15 @@ class MaintenanceDaemon:
         self._task = asyncio.create_task(self._pruning_loop(), name="maintenance-pruning")
         logger.info("MaintenanceDaemon iniciado")
 
+    async def run(self) -> None:
+        """Ejecuta el loop en primer plano para que el caller lo supervise.
+
+        H-2: a diferencia de start() (fire-and-forget), run() await-ea el loop
+        directamente, de modo que cualquier excepción que escape su except
+        interno se propaga a quien lo supervisa (fail-fast colectivo real).
+        """
+        await self._pruning_loop()
+
     async def stop(self) -> None:
         """Detiene el loop de mantenimiento de forma grácil."""
         if self._task is None:

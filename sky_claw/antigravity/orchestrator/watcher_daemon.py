@@ -71,6 +71,10 @@ class WatcherDaemon:
             self._interval,
         )
 
+    async def run(self) -> None:
+        """Ejecuta el loop en primer plano para que el caller lo supervise (H-2)."""
+        await self._watch_loop()
+
     async def stop(self) -> None:
         """Detiene el loop de monitoreo de forma grácil."""
         if self._task is None:

@@ -94,6 +94,10 @@ class TelemetryDaemon:
         self._task = asyncio.create_task(self._telemetry_loop(), name="telemetry-1hz")
         logger.info("TelemetryDaemon iniciado (interval=%.1fs)", self._interval)
 
+    async def run(self) -> None:
+        """Ejecuta el loop en primer plano para que el caller lo supervise (H-2)."""
+        await self._telemetry_loop()
+
     async def stop(self) -> None:
         """Detiene el loop de telemetría de forma grácil."""
         if self._task is None:

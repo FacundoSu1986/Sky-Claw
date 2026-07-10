@@ -276,20 +276,13 @@ class SupervisorAgent:
             "system.modlist.changed",
             self._trigger_proactive_analysis,
         )
-        # ARC-01 + SUP-05: Iniciar demonios con TaskGroup para fail-fast colectivo.
-        # Si un daemon falla al iniciar, los demás se cancelan automáticamente.
-        async with asyncio.TaskGroup() as daemon_tg:
-            daemon_tg.create_task(self._maintenance_daemon.start())
-            daemon_tg.create_task(self._telemetry_daemon.start())
-            daemon_tg.create_task(self._watcher_daemon.start())
-
+        # ARC-01 + SUP-05 + H-2: supervisar los loops de los demonios JUNTO con la
+        # interfaz. Antes, el TaskGroup envolvía daemon.start() (fire-and-forget):
+        # sus hijos completaban en microsegundos y los loops reales quedaban
+        # huérfanos, con sus excepciones perdidas en el handler del event loop.
         try:
-            await self._run_interface_isolated()
+            await self._run_daemons_and_interface()
         finally:
-            # ARC-01: Detener demonios extraídos (LIFO)
-            await self._watcher_daemon.stop()
-            await self._telemetry_daemon.stop()
-            await self._maintenance_daemon.stop()
             # Sprint-1: Detener event bus después de los demonios
             await self._event_bus.stop()
             # Sprint-2: Cerrar lock manager
@@ -297,6 +290,42 @@ class SupervisorAgent:
             # FASE 1.5: Cerrar journal al terminar
             await self.journal.close()
             await self.db.close()
+
+    async def _run_daemons_and_interface(self) -> None:
+        """Corre los loops de los demonios + la interfaz con fail-fast real (H-2).
+
+        Los tres loops de demonio y ``_run_interface_isolated`` corren como
+        tareas supervisadas. Con ``FIRST_COMPLETED``:
+
+        - Si un loop de demonio escapa su ``except`` interno (BaseException que no
+          sea Cancelled, o bug en el propio handler), su tarea termina con
+          excepción: cancelamos al resto y la propagamos (fail-fast colectivo).
+        - Si la interfaz retorna normalmente (error de red recuperable ya
+          absorbido por ``_run_interface_isolated``), cancelamos los demonios y
+          salimos con gracia — preservando el apagado ordenado previo.
+        """
+        daemon_tasks = [
+            asyncio.create_task(self._maintenance_daemon.run(), name="daemon-maintenance"),
+            asyncio.create_task(self._telemetry_daemon.run(), name="daemon-telemetry"),
+            asyncio.create_task(self._watcher_daemon.run(), name="daemon-watcher"),
+        ]
+        interface_task = asyncio.create_task(self._run_interface_isolated(), name="interface")
+        all_tasks = [*daemon_tasks, interface_task]
+
+        try:
+            done, _pending = await asyncio.wait(all_tasks, return_when=asyncio.FIRST_COMPLETED)
+            # Propagar la primera excepción real (no Cancelled) de las tareas
+            # que terminaron. Un retorno normal de la interfaz no propaga nada.
+            for task in done:
+                if task.cancelled():
+                    continue
+                exc = task.exception()
+                if exc is not None:
+                    raise exc
+        finally:
+            for task in all_tasks:
+                task.cancel()
+            await asyncio.gather(*all_tasks, return_exceptions=True)
 
     async def _run_interface_isolated(self) -> None:
         """Run ``interface.connect()`` inside a TaskGroup, splitting recoverable
