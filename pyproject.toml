@@ -238,6 +238,7 @@ module = [
     "sky_claw.local.validators.plugin_header",  # T-30·2/T-17: parser TES4 canónico, estricto
     "sky_claw.local.validators.plugin_limits",  # T-30·2: sensor de límites full/light, estricto
     "sky_claw.local.validators.overwrite_health",  # T-30·3: sensor de overwrite sucio, estricto
+    "sky_claw.local.validators.write_permissions",  # T-30·4: sensor de permisos de escritura, estricto
     "sky_claw.antigravity.orchestrator.preview.flight_report",  # T-28: módulo nuevo, nace estricto
 ]
 strict = true

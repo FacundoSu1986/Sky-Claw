@@ -52,9 +52,11 @@ if TYPE_CHECKING:
         LimitsCheck,
         MastersCheck,
         OverwriteCheck,
+        PermissionsCheck,
         PreflightReport,
         PreflightService,
     )
+    from sky_claw.local.validators.write_permissions import WriteAccessReport
 
 logger = logging.getLogger(__name__)
 
@@ -232,14 +234,51 @@ class LootSortingService:
         # (no depende del load order), así que se cablea aparte de los de modlist.
         overwrite_check = self._build_overwrite_check(raw_mo2, mo2_validated)
 
+        # T-30·4: sensor de permisos de escritura sobre las rutas que un Ritual
+        # va a tocar (Data, overwrite, mods, perfil).
+        permissions_check = self._build_permissions_check(raw_mo2, mo2_validated)
+
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
             loot_exe=loot_exe,
             masters_check=masters_check,
             limits_check=limits_check,
             overwrite_check=overwrite_check,
+            permissions_check=permissions_check,
         )
         return self._preflight
+
+    def _build_permissions_check(self, raw_mo2: pathlib.Path | None, mo2_validated: bool) -> PermissionsCheck | None:
+        """Construye el closure del sensor de permisos de escritura (T-30·4).
+
+        Arma las rutas que un Ritual mutante va a escribir: la ``Data`` del juego
+        (xEdit), el ``overwrite`` compartido (Synthesis/Pandora/DynDOLOD), los
+        ``mods`` y el perfil activo (LOOT reescribe ``plugins.txt``). El closure
+        re-prueba en cada run (freshness). Sin ninguna ruta construible devuelve
+        ``None`` → el semáforo dice "no configurado".
+        """
+        targets: list[pathlib.Path] = []
+        if self._path_resolver is not None:
+            skyrim = self._path_resolver.get_skyrim_path()
+            # isinstance defiende de resolvers mockeados que devuelven no-Path.
+            if isinstance(skyrim, pathlib.Path):
+                targets.append(skyrim / "Data")
+        if mo2_validated and isinstance(raw_mo2, pathlib.Path):
+            targets.append(raw_mo2 / "overwrite")
+            targets.append(raw_mo2 / "mods")
+            if self._path_resolver is not None:
+                profile = self._path_resolver.get_active_profile()
+                if isinstance(profile, str) and profile:
+                    targets.append(raw_mo2 / "profiles" / profile)
+
+        if not targets:
+            return None
+        from sky_claw.local.validators.write_permissions import WritePermissionsChecker
+
+        def _permissions() -> WriteAccessReport:
+            return WritePermissionsChecker(targets=targets).check()
+
+        return _permissions
 
     def _build_overwrite_check(self, raw_mo2: pathlib.Path | None, mo2_validated: bool) -> OverwriteCheck | None:
         """Construye el closure del sensor de overwrite sucio (T-30·3).
