@@ -297,3 +297,55 @@ class TestSensorDeLimites:
         limites = next(c for c in reporte.checks if c.name == "plugin_limits")
         assert limites.status is PreflightStatus.GREEN
         assert "no configurado" in limites.summary.lower()
+
+
+class TestSensorDeOverwrite:
+    """T-30·3 (cableado): el sensor de overwrite sucio compone en el semáforo."""
+
+    @staticmethod
+    def _scan(*files: str):
+        from sky_claw.local.validators.overwrite_health import OverwriteScan
+
+        plugins = tuple(f for f in files if f.lower().endswith((".esp", ".esm", ".esl")))
+        return OverwriteScan(files=files, plugins=plugins)
+
+    async def test_overwrite_sucio_es_amarillo_y_no_bloquea(self) -> None:
+        """Suciedad advierte pero nunca bloquea: un Bashed Patch recién
+        generado en el overwrite es un estado legítimo a mitad de flujo."""
+        checker = MagicMock()
+        checker.check.return_value = []
+        servicio = PreflightService(
+            vfs_checker=checker,
+            loot_version_detector=AsyncMock(return_value=(0, 29, 0)),
+            overwrite_check=lambda: self._scan("Bashed Patch, 0.esp", "SKSE/skse64.log"),
+        )
+
+        reporte = await servicio.run()
+
+        assert reporte.status is PreflightStatus.YELLOW
+        assert reporte.blocks_mutations is False
+        overwrite = next(c for c in reporte.checks if c.name == "overwrite")
+        assert overwrite.status is PreflightStatus.YELLOW
+        assert any("Bashed Patch, 0.esp" in d for d in overwrite.details)
+
+    async def test_overwrite_limpio_es_verde(self) -> None:
+        checker = MagicMock()
+        checker.check.return_value = []
+        servicio = PreflightService(
+            vfs_checker=checker,
+            loot_version_detector=AsyncMock(return_value=(0, 29, 0)),
+            overwrite_check=lambda: self._scan(),
+        )
+
+        reporte = await servicio.run()
+
+        assert reporte.status is PreflightStatus.GREEN
+        overwrite = next(c for c in reporte.checks if c.name == "overwrite")
+        assert overwrite.status is PreflightStatus.GREEN
+
+    async def test_sin_sensor_de_overwrite_no_miente(self) -> None:
+        reporte = await _servicio(issues=[], version=(0, 29, 0)).run()
+
+        overwrite = next(c for c in reporte.checks if c.name == "overwrite")
+        assert overwrite.status is PreflightStatus.GREEN
+        assert "no configurado" in overwrite.summary.lower()
