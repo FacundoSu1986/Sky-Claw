@@ -48,6 +48,9 @@ class TelegramPolling:
         self._session = session
         self._interval = interval
         self._authorized_chat_id = authorized_chat_id
+        # review #257: loguear el fail-closed una sola vez por instancia (evita
+        # spam de ERROR si llegan muchos updates con el operador sin configurar).
+        self._fail_closed_logged = False
         self._last_update_id = 0
         self._running = False
         self._url = TELEGRAM_API_GET_UPDATES.format(token=token)
@@ -145,10 +148,16 @@ class TelegramPolling:
         # de lo contrario cualquier usuario que descubra el bot podría disparar
         # tools mutantes (uninstall_mod, run_loot_sort, download_mod, ...).
         if self._authorized_chat_id is None:
-            logger.error(
-                "authorized_chat_id no configurado (fail-closed). Configure telegram.operator_chat_id "
-                "para habilitar el procesamiento de updates."
-            )
+            # review #257: la clave real es `telegram_chat_id` en la config (o el
+            # flag CLI `--operator-chat-id`), no `telegram.operator_chat_id`. Y se
+            # loguea una sola vez por instancia para no spammear ERROR por update.
+            if not self._fail_closed_logged:
+                logger.error(
+                    "authorized_chat_id no configurado (fail-closed): se descartan TODOS los updates de "
+                    "Telegram. Configure `telegram_chat_id` en la config (o el flag --operator-chat-id) "
+                    "para habilitar el procesamiento."
+                )
+                self._fail_closed_logged = True
             return
 
         message = (

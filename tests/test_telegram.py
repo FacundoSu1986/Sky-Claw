@@ -362,6 +362,24 @@ class TestTelegramPollingFailClosed:
 
         handler.process_update.assert_not_awaited()
 
+    async def test_fail_closed_loguea_una_sola_vez(self, caplog) -> None:
+        """review #257: el ERROR de fail-closed se emite una vez por instancia, no por update."""
+        import logging
+
+        polling, handler = self._make_polling(None)
+        update = {"update_id": 1, "message": {"text": "hola", "chat": {"id": 555}}}
+
+        with caplog.at_level(logging.ERROR):
+            for _ in range(5):
+                await polling._process_raw_update(update)
+
+        fail_closed_errors = [r for r in caplog.records if "fail-closed" in r.getMessage()]
+        assert len(fail_closed_errors) == 1
+        # Y el mensaje apunta a la clave real, no a la inexistente telegram.operator_chat_id.
+        assert "telegram_chat_id" in fail_closed_errors[0].getMessage()
+        assert "telegram.operator_chat_id" not in fail_closed_errors[0].getMessage()
+        handler.process_update.assert_not_awaited()
+
     async def test_chat_id_autorizado_despacha(self) -> None:
         """El operador autorizado sí es despachado al handler."""
         polling, handler = self._make_polling(555)
