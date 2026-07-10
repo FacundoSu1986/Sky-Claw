@@ -9,13 +9,34 @@ dueño del clon: ``promote()`` tras aprobación HITL o ``discard()``.
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
+import sys
+import tempfile
 from typing import Any
 
 import pytest
 
-from sky_claw.local.mo2.profile_sandbox import ProfileSandbox, SandboxClone
+from sky_claw.local.mo2.profile_sandbox import ProfileSandbox, SandboxClone, SandboxSymlinkError
 from sky_claw.local.mo2.sandbox_run import SandboxedRunResult, run_ritual_in_sandbox
+
+
+def _puede_crear_symlinks() -> bool:
+    """Guard de privilegios (crear symlinks requiere admin en Windows)."""
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            origen = pathlib.Path(td) / "src"
+            origen.mkdir()
+            (pathlib.Path(td) / "link").symlink_to(origen, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+_symlink_guard = pytest.mark.skipif(
+    sys.platform == "win32" and not _puede_crear_symlinks(),
+    reason="Crear symlinks requiere privilegios elevados en Windows",
+)
 
 
 def _mo2(tmp_path: pathlib.Path) -> pathlib.Path:
@@ -114,3 +135,34 @@ class TestRunRitualInSandbox:
         assert resultado.result["success"] is False
         assert any(c.relative_path == "parcial.log" for c in resultado.diff.changes)
         assert resultado.clone.root.is_dir()  # el caller decide (forense → discard)
+
+    async def test_cancelacion_propaga_y_limpia_best_effort(self, tmp_path: pathlib.Path) -> None:
+        """review Codex #258 (P1): la cancelación NO se traga ni se demora —
+        propaga tras un discard best-effort."""
+        sandbox = _sandbox(tmp_path)
+
+        async def ritual(clone: SandboxClone) -> dict[str, Any]:
+            raise asyncio.CancelledError()
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_ritual_in_sandbox(sandbox=sandbox, ritual=ritual)
+
+        sandbox_root = tmp_path / "sandbox"
+        assert not sandbox_root.exists() or list(sandbox_root.iterdir()) == []
+
+    @_symlink_guard
+    async def test_diff_que_lanza_descarta_el_clon_y_propaga(self, tmp_path: pathlib.Path) -> None:
+        """review Codex #258 (P2): si el ritual deja un artefacto inseguro y el
+        diff() lanza, el clon no debe quedar huérfano (el caller nunca recibió
+        el handle para descartarlo)."""
+        sandbox = _sandbox(tmp_path)
+
+        async def ritual(clone: SandboxClone) -> dict[str, Any]:
+            (clone.overwrite_copy / "Link").symlink_to(tmp_path, target_is_directory=True)
+            return {"success": True, "message": ""}
+
+        with pytest.raises(SandboxSymlinkError):
+            await run_ritual_in_sandbox(sandbox=sandbox, ritual=ritual)
+
+        sandbox_root = tmp_path / "sandbox"
+        assert not sandbox_root.exists() or list(sandbox_root.iterdir()) == []

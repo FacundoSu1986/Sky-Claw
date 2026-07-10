@@ -202,6 +202,16 @@ class SynthesisPipelineService:
         """
         t0 = time.monotonic()
 
+        # T-27b: dentro del sandbox el snapshot+rollback del servicio es
+        # redundante (el clon ES el mecanismo de rollback: discard) y además
+        # destructivo para la evidencia — ante un fallo restauraría el
+        # Synthesis.esp previo del clon y el diff mostraría el estado pre-run
+        # en vez de la salida parcial que el operador necesita ver
+        # (review Codex #258). El lock se conserva (serialización).
+        if self._output_path is not None and create_snapshot:
+            logger.info("Run sandboxeado: snapshot del servicio deshabilitado (el clon es el rollback).")
+            create_snapshot = False
+
         # --- Early init ---
         try:
             runner = self._ensure_synthesis_runner()

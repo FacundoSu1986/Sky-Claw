@@ -767,3 +767,59 @@ async def test_run_sandboxeado_no_toca_el_overwrite_real(
 
     diff = await sandbox.diff(clone)
     assert any(c.area == "overwrite" and c.relative_path == "Synthesis.esp" and c.kind == "added" for c in diff.changes)
+
+
+@pytest.mark.asyncio
+async def test_fallo_sandboxeado_preserva_la_evidencia(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> None:
+    """review Codex #258 (P2): con output_path del sandbox y un Synthesis.esp
+    previo en el clon, un fallo del pipeline NO debe disparar el rollback del
+    snapshot del servicio — el diff debe mostrar la salida parcial (evidencia
+    para el operador), no el estado pre-run. Dentro del sandbox, el clon ES el
+    mecanismo de rollback (discard)."""
+    from sky_claw.local.mo2.profile_sandbox import ProfileSandbox
+
+    mo2 = tmp_path / "MO2"
+    profile = mo2 / "profiles" / "Default"
+    profile.mkdir(parents=True)
+    (profile / "plugins.txt").write_bytes(b"\xef\xbb\xbf*Skyrim.esm\r\n")
+    # Un Synthesis.esp previo en el overwrite real → se clona al sandbox y el
+    # servicio lo snapshotearia (create_snapshot=True default) si no fuera
+    # por el bypass sandboxeado.
+    (mo2 / "overwrite" / "Synthesis.esp").write_bytes(b"VIEJO")
+
+    sandbox = ProfileSandbox(mo2_root=mo2, sandbox_root=tmp_path / "sandbox")
+    clone = await sandbox.clone()
+
+    servicio = SynthesisPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        journal=mock_journal,
+        path_resolver=mock_path_resolver,
+        event_bus=event_bus,
+        pipeline_config_path=tmp_path / "nonexistent_pipeline.json",
+        output_path=clone.overwrite_copy,
+    )
+
+    async def _run_pipeline(self: SynthesisRunner, patcher_ids: list[str]) -> SynthesisResult:
+        # El pipeline escribe salida parcial y después falla.
+        (self._config.output_path / "Synthesis.esp").write_bytes(b"PARCIAL")
+        return _make_failure_result()
+
+    with patch.object(SynthesisRunner, "run_pipeline", _run_pipeline):
+        out = await servicio.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is False
+    # La evidencia se preserva: el clon conserva la salida parcial, NO el
+    # snapshot restaurado del estado previo.
+    assert (clone.overwrite_copy / "Synthesis.esp").read_bytes() == b"PARCIAL"
+    diff = await sandbox.diff(clone)
+    assert any(
+        c.area == "overwrite" and c.relative_path == "Synthesis.esp" and c.kind == "modified" for c in diff.changes
+    )

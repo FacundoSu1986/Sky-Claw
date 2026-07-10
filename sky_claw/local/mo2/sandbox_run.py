@@ -26,6 +26,8 @@ diseño de redirección aparte. DynDOLOD/bashed, ídem cuando toque cablearlos.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -78,11 +80,27 @@ async def run_ritual_in_sandbox(
     clone = await sandbox.clone()
     try:
         result = await ritual(clone)
-    except BaseException:
-        # No dejar clones colgados: el run no produjo un resultado utilizable.
-        await sandbox.discard(clone)
+        # El diff va dentro del mismo cleanup: si lanza (p. ej.
+        # SandboxSymlinkError por un artefacto inseguro que dejó el ritual),
+        # el caller nunca recibe el handle del clon — hay que descartarlo acá
+        # o quedaría un .skyclaw_sandbox huérfano (review Codex #258).
+        diff = await sandbox.diff(clone)
+    except asyncio.CancelledError:
+        # Limpieza best-effort SIN tragar ni demorar la cancelación
+        # (precedente: loot_service). KeyboardInterrupt/SystemExit propagan
+        # sin limpieza: en un shutdown no se hace I/O de filesystem.
+        with contextlib.suppress(Exception):
+            await sandbox.discard(clone)
         raise
-    diff = await sandbox.diff(clone)
+    except Exception:
+        # No dejar clones colgados: el run no produjo un resultado utilizable.
+        # Si el propio discard falla, propaga el error ORIGINAL (el del
+        # ritual/diff), no el de la limpieza.
+        try:
+            await sandbox.discard(clone)
+        except Exception:
+            logger.warning("No se pudo descartar el clon %s tras el fallo", clone.root, exc_info=True)
+        raise
     logger.info(
         "Ritual en sandbox completado (success=%s): %d cambio(s) en el clon %s",
         result.get("success"),
