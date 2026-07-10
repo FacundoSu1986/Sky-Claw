@@ -138,7 +138,8 @@ class XEditOutputParser:
         """Parse CONFLICT lines from the ``list_all_conflicts.pas`` output.
 
         Returns a list of dicts with keys:
-        ``form_id``, ``editor_id``, ``record_type``, ``winner``, ``losers``.
+        ``form_id``, ``editor_id``, ``record_type``, ``winner``, ``losers``,
+        ``flag_states`` (T-19a: estado de flags críticos por versión).
 
         Lines that don't match the expected format are silently skipped.
         """
@@ -152,6 +153,7 @@ class XEditOutputParser:
                 "record_type": c.record_type,
                 "winner": c.winner,
                 "losers": c.losers,
+                "flag_states": [{"plugin": f.plugin, "flag": f.flag, "value": f.value} for f in c.flag_states],
             }
             for c in raw
         ]

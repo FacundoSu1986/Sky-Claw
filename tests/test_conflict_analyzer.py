@@ -579,3 +579,111 @@ class TestValidateLoadOrderLimit:
         full = [f"mod{i:03d}.esp" for i in range(254)]
         light = [f"mod{i:03d}.esl" for i in range(100)]
         analyzer.validate_load_order_limit(full + light)  # Must not raise
+
+
+# ---------------------------------------------------------------------------
+# T-19a: flag_states por override (líneas FLAG|FormID|Plugin|FlagName|0/1)
+# ---------------------------------------------------------------------------
+
+SPEL_FLAG_OUTPUT = """\
+[00:01] Processing: Skyrim.esm
+CONFLICT|000AB123|HealSpell|SPEL|Overhaul.esp|Skyrim.esm,MagicFix.esp
+FLAG|000AB123|Skyrim.esm|Manual Cost Calc|1
+FLAG|000AB123|MagicFix.esp|Manual Cost Calc|1
+FLAG|000AB123|Overhaul.esp|Manual Cost Calc|0
+SUMMARY|total_conflicts=1|critical=1|minor=0
+"""
+
+
+class TestFlagStatesPorOverride:
+    """T-19a: el export por override del flag Manual Cost Calc llega parseado
+    al RecordConflict — el dato que la regla de T-19b y el panel de T-29
+    necesitan (un override define coste manual y el ganador no lo preserva)."""
+
+    def test_flag_states_se_adjuntan_por_form_id(self) -> None:
+        from sky_claw.local.xedit.conflict_analyzer import parse_conflict_lines
+
+        conflicts = parse_conflict_lines(SPEL_FLAG_OUTPUT)
+
+        assert len(conflicts) == 1
+        estados = {(f.plugin, f.flag, f.value) for f in conflicts[0].flag_states}
+        assert ("Skyrim.esm", "Manual Cost Calc", True) in estados
+        assert ("MagicFix.esp", "Manual Cost Calc", True) in estados
+        # El escenario de la regla T-19b: el ganador NO preserva el flag.
+        assert ("Overhaul.esp", "Manual Cost Calc", False) in estados
+
+    def test_sin_lineas_flag_queda_tupla_vacia(self) -> None:
+        """Compat: la salida actual (sin FLAG) produce flag_states == ()."""
+        from sky_claw.local.xedit.conflict_analyzer import parse_conflict_lines
+
+        conflicts = parse_conflict_lines(SAMPLE_OUTPUT)
+
+        assert len(conflicts) == 4  # nada del parseo existente cambia
+        assert all(c.flag_states == () for c in conflicts)
+
+    def test_orden_de_lineas_es_indistinto(self) -> None:
+        """Las FLAG pueden llegar antes que su CONFLICT (parser robusto)."""
+        from sky_claw.local.xedit.conflict_analyzer import parse_conflict_lines
+
+        reordenado = (
+            "FLAG|000AB123|Overhaul.esp|Manual Cost Calc|0\nCONFLICT|000AB123|HealSpell|SPEL|Overhaul.esp|Skyrim.esm\n"
+        )
+        conflicts = parse_conflict_lines(reordenado)
+
+        assert len(conflicts) == 1
+        assert conflicts[0].flag_states[0].plugin == "Overhaul.esp"
+        assert conflicts[0].flag_states[0].value is False
+
+    def test_flags_malformadas_se_saltean(self) -> None:
+        """FormID inválido, value fuera de {0,1}, campos de menos O de más →
+        skip con warning, sin tumbar el parseo. Los campos de más son
+        corrupción (el script controla el formato): parsearlos correría
+        plugin/flag/value en silencio (review Copilot #259)."""
+        from sky_claw.local.xedit.conflict_analyzer import parse_conflict_lines
+
+        salida = (
+            "CONFLICT|000AB123|HealSpell|SPEL|Overhaul.esp|Skyrim.esm\n"
+            "FLAG|ZZZNOHEX|Overhaul.esp|Manual Cost Calc|1\n"
+            "FLAG|000AB123|Overhaul.esp|Manual Cost Calc|2\n"
+            "FLAG|000AB123|solo3campos\n"
+            "FLAG|000AB123|Extra.esp|Manual Cost Calc|1|basura\n"
+            "FLAG|000AB123|Skyrim.esm|Manual Cost Calc|1\n"
+        )
+        conflicts = parse_conflict_lines(salida)
+
+        assert len(conflicts[0].flag_states) == 1
+        assert conflicts[0].flag_states[0].plugin == "Skyrim.esm"
+
+    def test_flag_de_form_id_sin_conflict_se_ignora(self) -> None:
+        from sky_claw.local.xedit.conflict_analyzer import parse_conflict_lines
+
+        salida = (
+            "FLAG|0FFFFFFF|Huerfano.esp|Manual Cost Calc|1\nCONFLICT|000AB123|HealSpell|SPEL|Overhaul.esp|Skyrim.esm\n"
+        )
+        conflicts = parse_conflict_lines(salida)
+
+        assert len(conflicts) == 1
+        assert conflicts[0].flag_states == ()
+
+    def test_to_dict_incluye_flag_states_y_es_serializable(self) -> None:
+        from sky_claw.local.xedit.conflict_analyzer import parse_conflict_lines
+
+        rc = parse_conflict_lines(SPEL_FLAG_OUTPUT)[0]
+        report = ConflictReport(
+            total_conflicts=1,
+            critical_conflicts=1,
+            plugin_pairs=[PluginConflictPair(plugin_a="Overhaul.esp", plugin_b="Skyrim.esm", conflicts=[rc])],
+        )
+
+        data = report.to_dict()
+
+        serializado = data["plugin_pairs"][0]["conflicts"][0]["flag_states"]
+        assert {"plugin": "Overhaul.esp", "flag": "Manual Cost Calc", "value": False} in serializado
+        json.dumps(data)  # sigue siendo JSON-serializable
+
+    def test_output_parser_expone_flag_states(self) -> None:
+        """El camino XEditOutputParser.parse_conflict_report también los lleva."""
+        dicts = XEditOutputParser.parse_conflict_report(SPEL_FLAG_OUTPUT)
+
+        assert len(dicts) == 1
+        assert {"plugin": "Overhaul.esp", "flag": "Manual Cost Calc", "value": False} in dicts[0]["flag_states"]
