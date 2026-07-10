@@ -721,6 +721,48 @@ class TestCheckForUpdates:
         assert not orphan.exists()
 
     @pytest.mark.asyncio
+    async def test_download_kept_when_registry_already_committed(self, tmp_path: pathlib.Path) -> None:
+        """T3: si upsert_mod commiteó y luego falla log_tasks_batch, NO se borra el archivo.
+
+        upsert_mod commitea antes de log_tasks_batch; la DB ya referencia la
+        descarga, así que borrarla dejaría al registry apuntando a un archivo
+        ausente.
+        """
+        import asyncio
+
+        downloaded = tmp_path / "Mod-2.0.7z"
+        downloaded.write_bytes(b"descargado")
+
+        mock_registry = AsyncMock()
+        mock_registry.upsert_mod = AsyncMock()  # commitea OK
+        mock_registry.log_tasks_batch = AsyncMock(side_effect=RuntimeError("log falló"))
+
+        mock_masterlist = AsyncMock()
+        mock_masterlist.fetch_mod_info = AsyncMock(
+            return_value={"mod_id": 222, "name": "Mod", "version": "2.0", "author": "d", "category_id": "1"}
+        )
+
+        mock_downloader = AsyncMock()
+        mock_downloader.get_file_info = AsyncMock(return_value=MagicMock(download_url="https://x/mod.7z"))
+        mock_downloader.download = AsyncMock(return_value=downloaded)
+
+        engine = SyncEngine(
+            mo2=AsyncMock(),
+            masterlist=mock_masterlist,
+            registry=mock_registry,
+            downloader=mock_downloader,
+            fetch_retry_wait=wait_none(),
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+        mod = {"nexus_id": 222, "version": "1.0", "name": "Mod"}
+
+        with pytest.raises(RuntimeError, match="log falló"):
+            await engine._check_and_update_mod(mod, session, asyncio.Semaphore(1))
+
+        # La DB ya referencia el archivo → NO debe borrarse.
+        assert downloaded.exists()
+
+    @pytest.mark.asyncio
     async def test_success_no_rollback_performed_flag(self, tmp_path: pathlib.Path) -> None:
         """M-3: en el path de éxito NO se marca rollback_performed (no hubo rollback)."""
         import asyncio

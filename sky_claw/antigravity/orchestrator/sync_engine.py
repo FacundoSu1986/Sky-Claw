@@ -602,6 +602,10 @@ class SyncEngine:
         # disco pero no registra la operación en el journal, así que la limpieza
         # journal-only NO borra el archivo.
         download_path: pathlib.Path | None = None
+        # T3 (review PR #257): upsert_mod commitea ANTES de log_tasks_batch. Si
+        # log_tasks_batch falla después, la DB ya apunta a esta descarga: NO es
+        # huérfana y borrarla dejaría al registry apuntando a un archivo ausente.
+        registry_committed = False
 
         try:
             if rm is not None:
@@ -681,6 +685,8 @@ class SyncEngine:
                 category=str(info.get("category_id", "")),
                 download_url=file_info.download_url,
             )
+            # T3: la DB ya referencia esta descarga; deja de ser huérfana.
+            registry_committed = True
             await self._registry.log_tasks_batch(
                 [(None, "update_mod", "success", f"{mod_name}: {local_version} -> {nexus_version}")]
             )
@@ -715,7 +721,7 @@ class SyncEngine:
                     await rm.mark_transaction_rolled_back(transaction_id)
                 except Exception as rb_exc:
                     logger.critical("mark_transaction_rolled_back failed for %s: %s", mod_name, rb_exc)
-            self._cleanup_orphan_download(download_path, mod_name)
+            self._cleanup_orphan_download(download_path, mod_name, registry_committed)
             return {
                 "status": "error",
                 "name": mod_name,
@@ -732,15 +738,19 @@ class SyncEngine:
                     await rm.mark_transaction_rolled_back(transaction_id)
                 except Exception as rb_exc:
                     logger.critical("mark_transaction_rolled_back also failed for %s: %s", mod_name, rb_exc)
-            self._cleanup_orphan_download(download_path, mod_name)
+            self._cleanup_orphan_download(download_path, mod_name, registry_committed)
             raise
 
     @staticmethod
-    def _cleanup_orphan_download(download_path: pathlib.Path | None, mod_name: str) -> None:
+    def _cleanup_orphan_download(download_path: pathlib.Path | None, mod_name: str, registry_committed: bool) -> None:
         """M-2: borra el archivo descargado si un error posterior abortó la
         operación. El descargador escribe el archivo pero no lo registra en el
-        journal, así que sin esto queda huérfano en disco indefinidamente."""
-        if download_path is None:
+        journal, así que sin esto queda huérfano en disco indefinidamente.
+
+        T3 (review PR #257): si upsert_mod ya commiteó (registry_committed), la DB
+        referencia el archivo — NO es huérfano y borrarlo dejaría al registry
+        apuntando a un archivo ausente. En ese caso no se borra."""
+        if download_path is None or registry_committed:
             return
         try:
             pathlib.Path(download_path).unlink(missing_ok=True)
