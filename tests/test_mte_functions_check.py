@@ -109,3 +109,43 @@ class TestRunnerFailFast:
 
         with pytest.raises(XEditScriptError, match="mteFunctions"):
             await runner.run_dynamic_script(script, plugins=["Prueba.esp"])
+
+
+class TestDynamicScriptNameValidation:
+    """H-6: run_dynamic_script valida script_name contra path traversal."""
+
+    def _runner(self, tmp_path: Path) -> XEditRunner:
+        xedit = _touch_exe(tmp_path, "SSEEdit.exe")
+        game = tmp_path / "game"
+        game.mkdir(exist_ok=True)
+        _instalar_mte_functions(tmp_path)
+        runner = XEditRunner(xedit_path=xedit, game_path=game, timeout=5)
+        runner._execute_process = AsyncMock(return_value=("", "", 0))  # type: ignore[method-assign]
+        return runner
+
+    @pytest.mark.parametrize(
+        "malicious",
+        [
+            "../../evil.pas",
+            "../escape.pas",
+            "sub/dir.pas",
+            "name;rm.pas",
+            "sin_extension",
+        ],
+    )
+    async def test_script_name_malicioso_rechazado(self, tmp_path: Path, malicious: str) -> None:
+        from sky_claw.local.xedit.runner import XEditValidationError
+
+        runner = self._runner(tmp_path)
+        with pytest.raises(XEditValidationError, match="Invalid script name"):
+            await runner.run_dynamic_script(SCRIPT_SIN_MTE, plugins=["Prueba.esp"], script_name=malicious)
+
+        # No debió llegar a lanzar el proceso.
+        runner._execute_process.assert_not_awaited()  # type: ignore[attr-defined]
+
+    async def test_script_name_valido_pasa(self, tmp_path: Path) -> None:
+        runner = self._runner(tmp_path)
+        resultado = await runner.run_dynamic_script(
+            SCRIPT_SIN_MTE, plugins=["Prueba.esp"], script_name="patch_create_merged_patch.pas"
+        )
+        assert resultado.exit_code == 0

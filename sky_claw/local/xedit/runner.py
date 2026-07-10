@@ -862,6 +862,13 @@ class XEditRunner:
 
         start_time = time.monotonic()
 
+        # H-6: validar script_name antes de usarlo como prefix del archivo
+        # temporal. Sin esto, un script_name con '../' recorre fuera del sandbox
+        # de scripts (NamedTemporaryFile une dir + prefix + random). Mismo check
+        # que run_script.
+        if not _SAFE_SCRIPT_NAME.match(script_name):
+            raise XEditValidationError(f"Invalid script name: {script_name!r}. Must match {_SAFE_SCRIPT_NAME.pattern}")
+
         # Validar plugins
         for plugin in plugins:
             if not _SAFE_PLUGIN_NAME.match(plugin):
