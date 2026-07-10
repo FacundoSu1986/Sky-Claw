@@ -366,6 +366,23 @@ class StateGraphState(TypedDict):
 # =============================================================================
 
 
+def _tool_dispatch_failed(result: Any) -> bool:
+    """True sólo ante una señal de fallo EXPLÍCITA en el resultado del dispatch.
+
+    T1 (review PR #257): los tools exitosos devuelven dicts data-only (p. ej.
+    ``QueryModMetadataStrategy`` retorna ``model_dump()`` con ``mod_id``/``name``,
+    sin ``status``) o el shape canónico ``{"success": True, ...}``. Marcar todo lo
+    que no sea ``status in {success, aborted}`` como fallo rompía esos éxitos. Los
+    errores del dispatcher usan siempre ``{"status": "error", "reason": ...}`` o el
+    canónico ``success == False``; sólo eso cuenta como fallo.
+    """
+    if not isinstance(result, dict):
+        return False
+    if result.get("status") == "error":
+        return True
+    return result.get("success") is False
+
+
 class StateGraphNodes:
     """Nodos del grafo de estados para Sky-Claw."""
 
@@ -734,19 +751,18 @@ class StateGraphEdges:
 
         if state.get("loop_detected"):
             return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.HITL_WAIT)
-        if state.get("last_error"):
+        # C-1: un fallo del dispatch (last_error, o señal de error explícita en el
+        # tool_result: denegación HITL, tool alucinada, crash envuelto por
+        # ErrorWrappingMiddleware) va a ERROR, no se silencia como COMPLETED.
+        if state.get("last_error") or _tool_dispatch_failed(tool_result):
             return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.ERROR)
-        elif tool_result and (tool_result.get("status") == "success" or tool_result.get("status") == "aborted"):
-            # FASE 4: Si la herramienta es generate_lods, ir a GENERATING_LODS
-            if tool_name == "generate_lods":
-                return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.GENERATING_LODS)
-            return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.COMPLETED)
 
-        # C-1: cualquier otro estado (status="error", desconocido, o tool_result
-        # ausente) NO es un éxito. Antes se caía a COMPLETED silenciando
-        # denegaciones HITL, tools alucinadas y crashes de subproceso envueltos
-        # por ErrorWrappingMiddleware. Fail-safe: ir a ERROR.
-        return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.ERROR)
+        # T1 (review PR #257): éxito abarca status success/aborted, el canónico
+        # success=True y los resultados data-only (sin 'status'). FASE 4: si la
+        # herramienta es generate_lods, ir a GENERATING_LODS.
+        if tool_name == "generate_lods":
+            return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.GENERATING_LODS)
+        return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.COMPLETED)
 
     @staticmethod
     def route_from_error(state: StateGraphState) -> str:
@@ -1319,10 +1335,15 @@ class StateGraphIntegration:
         # C-1: propagar el fallo de la tool a last_error para que error_node lo
         # registre y route_from_dispatching transite a ERROR con contexto. Sin
         # esto, un status="error" (denegación HITL, tool alucinada, crash
-        # envuelto) quedaba sin mensaje de error asociado.
-        if isinstance(result, dict) and result.get("status") not in ("success", "aborted"):
+        # envuelto) quedaba sin mensaje de error asociado. T1: sólo señales de
+        # error explícitas cuentan como fallo (ver _tool_dispatch_failed); los
+        # resultados data-only exitosos NO deben setear last_error.
+        if _tool_dispatch_failed(result):
             state["last_error"] = (
-                result.get("error") or result.get("message") or f"Tool '{tool_name}' falló sin detalle"
+                result.get("error")
+                or result.get("reason")
+                or result.get("message")
+                or f"Tool '{tool_name}' falló sin detalle"
             )
 
     async def _on_hitl_wait(self, state: StateGraphState) -> None:

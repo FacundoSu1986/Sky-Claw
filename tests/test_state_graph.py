@@ -220,9 +220,28 @@ class TestStateGraphEdges:
         result = StateGraphEdges.route_from_dispatching(state)
         assert result == SupervisorState.ERROR.value
 
-    def test_route_from_dispatching_unknown_status_goes_to_error(self):
-        """C-1: cualquier status desconocido cae a ERROR, no a COMPLETED (fail-safe)."""
-        state = {"tool_result": {"status": "weird"}, "tool_name": "run_loot_sort"}
+    def test_route_from_dispatching_data_only_success_goes_to_completed(self):
+        """T1: un resultado data-only sin 'status' (p.ej. model_dump) es éxito → COMPLETED.
+
+        query_mod_metadata retorna model_dump() (mod_id/name/version) sin 'status';
+        marcarlo como error rompía todos los dispatches exitosos data-only.
+        """
+        state = {
+            "tool_result": {"mod_id": 12021, "name": "SkyUI", "version": "5.2"},
+            "tool_name": "query_mod_metadata",
+        }
+        result = StateGraphEdges.route_from_dispatching(state)
+        assert result == SupervisorState.COMPLETED.value
+
+    def test_route_from_dispatching_canonical_success_flag_goes_to_completed(self):
+        """T1: el shape canónico {'success': True} es éxito → COMPLETED."""
+        state = {"tool_result": {"success": True, "message": ""}, "tool_name": "run_loot_sort"}
+        result = StateGraphEdges.route_from_dispatching(state)
+        assert result == SupervisorState.COMPLETED.value
+
+    def test_route_from_dispatching_canonical_failure_flag_goes_to_error(self):
+        """T1: el shape canónico {'success': False} es fallo → ERROR."""
+        state = {"tool_result": {"success": False, "message": "boom"}, "tool_name": "run_loot_sort"}
         result = StateGraphEdges.route_from_dispatching(state)
         assert result == SupervisorState.ERROR.value
 
@@ -235,12 +254,28 @@ class TestStateGraphEdges:
 
         class _FakeSupervisor:
             async def dispatch_tool(self, tool_name, payload):
-                return {"status": "error", "error": "subproceso crasheó"}
+                return {"status": "error", "reason": "subproceso crasheó"}
 
         translation.connect_supervisor(_FakeSupervisor())
         state = {"tool_name": "run_xedit_script", "tool_payload": {}}
         asyncio.run(translation._on_dispatching(state))
         assert state["last_error"] == "subproceso crasheó"
+
+    def test_on_dispatching_no_last_error_on_data_only_success(self):
+        """T1: un resultado data-only exitoso NO debe setear last_error."""
+        import asyncio
+
+        sg = SupervisorStateGraph(profile_name="TestProfile")
+        translation = StateGraphIntegration(sg)
+
+        class _FakeSupervisor:
+            async def dispatch_tool(self, tool_name, payload):
+                return {"mod_id": 12021, "name": "SkyUI", "version": "5.2"}
+
+        translation.connect_supervisor(_FakeSupervisor())
+        state = {"tool_name": "query_mod_metadata", "tool_payload": {}}
+        asyncio.run(translation._on_dispatching(state))
+        assert state.get("last_error") is None
 
     def test_route_from_error_max_retries(self):
         """Test routing from ERROR when max retries exceeded."""
