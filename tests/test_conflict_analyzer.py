@@ -635,8 +635,10 @@ class TestFlagStatesPorOverride:
         assert conflicts[0].flag_states[0].value is False
 
     def test_flags_malformadas_se_saltean(self) -> None:
-        """FormID inválido, value fuera de {0,1} o campos de menos → skip con
-        warning, sin tumbar el parseo (mismo trato que las CONFLICT)."""
+        """FormID inválido, value fuera de {0,1}, campos de menos O de más →
+        skip con warning, sin tumbar el parseo. Los campos de más son
+        corrupción (el script controla el formato): parsearlos correría
+        plugin/flag/value en silencio (review Copilot #259)."""
         from sky_claw.local.xedit.conflict_analyzer import parse_conflict_lines
 
         salida = (
@@ -644,6 +646,7 @@ class TestFlagStatesPorOverride:
             "FLAG|ZZZNOHEX|Overhaul.esp|Manual Cost Calc|1\n"
             "FLAG|000AB123|Overhaul.esp|Manual Cost Calc|2\n"
             "FLAG|000AB123|solo3campos\n"
+            "FLAG|000AB123|Extra.esp|Manual Cost Calc|1|basura\n"
             "FLAG|000AB123|Skyrim.esm|Manual Cost Calc|1\n"
         )
         conflicts = parse_conflict_lines(salida)

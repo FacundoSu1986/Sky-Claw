@@ -60,7 +60,9 @@ procedure EmitSpellFlagState(rec: IInterface; formID: string);
 var
   flagValue: string;
 begin
-  if not ElementExists(rec, 'SPIT') then
+  { El path completo: un SPIT presente pero sin campo Flags no debe tumbar
+    el script ni emitir un 0 inventado (review Copilot #259). }
+  if not ElementExists(rec, 'SPIT\Flags') then
     Exit;
   if (GetElementNativeValues(rec, 'SPIT\Flags') and $1) <> 0 then
     flagValue := '1'

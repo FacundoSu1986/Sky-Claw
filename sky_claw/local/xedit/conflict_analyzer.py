@@ -486,8 +486,11 @@ def parse_flag_lines(stdout: str) -> dict[str, list[OverrideFlagState]]:
         if not line.startswith("FLAG|"):
             continue
         parts = line.split("|")
-        if len(parts) < 5:
-            logger.warning("Malformed FLAG line (expected 5 fields): %s", line)
+        # Exactamente 5: el script controla el formato, así que un `|` de más
+        # es corrupción — parsearlo correría plugin/flag/value en silencio
+        # (review Copilot #259).
+        if len(parts) != 5:
+            logger.warning("Malformed FLAG line (expected exactly 5 fields): %s", line)
             continue
         form_id = parts[1].strip()
         if not _FORMID_RE.match(form_id):
@@ -512,7 +515,7 @@ def parse_conflict_lines(stdout: str) -> list[RecordConflict]:
 
     Las líneas ``FLAG|`` (T-19a) se adjuntan al conflict de su FormID en
     ``flag_states``; el join por FormID es robusto al orden de las líneas.
-    Lines that don't match are silently skipped with a debug log.
+    Lines that don't match are skipped with a warning log.
     """
     # T-19a: primera pasada — flags por FormID (el script puede emitirlas
     # antes o después de su CONFLICT).
