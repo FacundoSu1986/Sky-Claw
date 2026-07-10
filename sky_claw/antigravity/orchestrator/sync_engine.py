@@ -368,8 +368,12 @@ class SyncEngine:
                 )
                 await rm.fail_operation(entry_id, error=str(exc))
 
-                # Ejecutar rollback — result already reflects actual outcome
-                rollback_result = await rm.undo_last_operation(self._agent_id)
+                # H-1: revertir la operación que FALLÓ (por entry_id), no "la
+                # última del agente". undo_last_operation(agent_id) revierte el
+                # asiento más reciente del agente: bajo dos execute_file_operation
+                # concurrentes que comparten agent_id, el undo de B podría revertir
+                # la operación ya comprometida de A.
+                rollback_result = await rm.undo_operation(entry_id)
                 logger.warning(
                     "Rollback automático completado: success=%s, transaction=%s",
                     rollback_result.success,

@@ -99,6 +99,36 @@ class RollbackManager:
                 errors=("No completed or failed operation found for agent",),
             )
 
+        return await self._restore_entry(entry, log_scope=agent_id)
+
+    async def undo_operation(self, entry_id: int) -> RollbackResult:
+        """
+        Revierte una operación puntual identificada por ``entry_id``.
+
+        H-1: a diferencia de :meth:`undo_last_operation` (que resuelve "la última
+        del agente" y puede revertir una operación ya comprometida de otro flujo
+        concurrente que comparte ``agent_id``), esto deshace exactamente la
+        operación que falló. Comparte la lógica idempotente de restore + mark
+        (ver :meth:`_restore_entry`).
+        """
+        entry = await self._journal.get_operation_by_id(entry_id)
+
+        if entry is None:
+            return RollbackResult(
+                success=False,
+                transaction_id=entry_id,
+                errors=(f"No journal entry found for id={entry_id}",),
+            )
+
+        return await self._restore_entry(entry, log_scope=f"entry={entry_id}")
+
+    async def _restore_entry(self, entry: Any, *, log_scope: str) -> RollbackResult:
+        """Restaura una entry del journal (best-effort) y la marca ROLLED_BACK.
+
+        Lógica compartida por ``undo_last_operation`` y ``undo_operation``.
+        Idempotente (T2-02): nunca re-lanza el fallo de restore; marca la entry
+        como ROLLED_BACK SIEMPRE para que un retry no re-procese la misma entry.
+        """
         partial_errors: list[str] = []
         restored = 0
 
@@ -114,7 +144,7 @@ class RollbackManager:
             except (OSError, JournalSnapshotError) as e:
                 logger.critical(
                     "Rollback restore failed for %s (entry=%s): %s",
-                    agent_id,
+                    log_scope,
                     entry.id,
                     str(e),
                     exc_info=True,

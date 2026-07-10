@@ -239,3 +239,68 @@ async def test_no_snapshot_path_marks_rolled_back_without_restore(journal, tmp_p
     )
     assert entry is not None
     assert entry.status == OperationStatus.ROLLED_BACK
+
+
+@pytest.mark.asyncio
+async def test_undo_operation_reverts_specific_entry_not_last(journal, tmp_path):
+    """H-1: undo_operation(entry_id) revierte la operación indicada, no la última del agente.
+
+    Escenario del hallazgo: dos operaciones del MISMO agent_id (A luego B), ambas
+    COMPLETED. undo_last_operation(agent_id) revertiría B (la más reciente) aunque
+    quien falló fuera A. undo_operation(entry_id_A) debe revertir exactamente A.
+    """
+    restored_paths: list[str] = []
+    mgr = MagicMock()
+
+    async def _record_restore(snapshot, target):
+        restored_paths.append(str(target))
+        return True
+
+    mgr.restore_snapshot = AsyncMock(side_effect=_record_restore)
+    rm = RollbackManager(journal, mgr)
+
+    tx_id = await journal.begin_transaction(description="dual", mod_id=None, agent_id="dual-agent")
+    entry_a = await journal.begin_operation(
+        agent_id="dual-agent",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(tmp_path / "A.esp"),
+        transaction_id=tx_id,
+        snapshot_path=str(tmp_path / "A.bin"),
+    )
+    await journal.complete_operation(entry_a)
+    entry_b = await journal.begin_operation(
+        agent_id="dual-agent",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(tmp_path / "B.esp"),
+        transaction_id=tx_id,
+        snapshot_path=str(tmp_path / "B.bin"),
+    )
+    await journal.complete_operation(entry_b)
+
+    # Revertir explícitamente A (la operación "vieja"), no la última (B).
+    result = await rm.undo_operation(entry_a)
+
+    assert result.success is True
+    assert result.transaction_id == entry_a
+    # Se restauró SÓLO el target de A.
+    assert restored_paths == [str(tmp_path / "A.esp")]
+
+    # A quedó ROLLED_BACK; B sigue COMPLETED (intacta).
+    entry_a_after = await journal.get_operation_by_id(entry_a)
+    entry_b_after = await journal.get_operation_by_id(entry_b)
+    assert entry_a_after.status == OperationStatus.ROLLED_BACK
+    assert entry_b_after.status == OperationStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_undo_operation_missing_entry_returns_failure(journal):
+    """undo_operation con un entry_id inexistente devuelve success=False sin tocar disco."""
+    mgr = MagicMock()
+    mgr.restore_snapshot = AsyncMock()
+    rm = RollbackManager(journal, mgr)
+
+    result = await rm.undo_operation(999999)
+
+    assert result.success is False
+    assert result.transaction_id == 999999
+    mgr.restore_snapshot.assert_not_awaited()
