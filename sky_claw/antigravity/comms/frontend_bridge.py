@@ -722,11 +722,16 @@ class FrontendBridge:
             from sky_claw.antigravity.comms.telegram import TelegramWebhook
             from sky_claw.antigravity.comms.telegram_polling import TelegramPolling
 
+            # M-4: pasar authorized_user_id (int) para no dejar el HITL bloqueado
+            # tras el hot-reload. _validate_sender falla cerrado si es None y
+            # compara contra el user_id (int), por eso se convierte chat_id.
+            authorized_user_id = int(chat_id) if chat_id else None
             webhook_handler = TelegramWebhook(
                 router=self.ctx.router,
                 sender=self.ctx.sender,
                 session=self.ctx.session,
                 hitl=self.ctx.hitl,
+                authorized_user_id=authorized_user_id,
             )
             self.ctx.polling = TelegramPolling(
                 token=token,

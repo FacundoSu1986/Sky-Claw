@@ -23,7 +23,10 @@ if TYPE_CHECKING:
 
     from sky_claw.antigravity.security.path_validator import PathValidator
 
-from sky_claw.antigravity.security.path_validator import PathViolationError
+from sky_claw.antigravity.security.path_validator import (
+    PathViolationError,
+    assert_safe_component,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +190,16 @@ class AssetConflictDetector:
                     continue
                 if line.startswith("+"):
                     mod_name = line[1:]  # Remover el prefijo '+'
+                    # L-3: validar el nombre antes de usarlo como componente de path.
+                    # scan_mod_directory hace ``self._mo2_mods_path / mod_name`` y
+                    # ``rglob("*")``; un entry como ``+..\..\Windows\System32`` recorría
+                    # fuera del sandbox de MO2 y enumeraba archivos ajenos. Se rechaza
+                    # (skip) cualquier nombre con separadores o traversal.
+                    try:
+                        assert_safe_component(mod_name, field="mod_name")
+                    except PathViolationError:
+                        logger.warning("modlist: nombre de mod inseguro ignorado: %r", mod_name)
+                        continue
                     enabled_mods.append(mod_name)
                     logger.debug(f"Mod habilitado encontrado: {mod_name}")
                 elif line.startswith("-"):

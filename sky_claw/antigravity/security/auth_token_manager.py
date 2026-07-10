@@ -73,8 +73,20 @@ class AuthTokenManager:
             "created_at": self._created_at,
             "ttl": _TOKEN_TTL,
         }
-        self._token_path.write_text(json.dumps(payload), encoding="utf-8")
-        restrict_to_owner(self._token_path)
+        # H-08: escritura ATÓMICA. write_text in-place no es atómico (en Windows
+        # sobre todo): durante la rotación el daemon podía leer un archivo
+        # parcial/vacío, fallar el json.loads, caer al fallback "legacy plaintext"
+        # y usar un token corrupto para el handshake WS. Se escribe a un temp en el
+        # MISMO directorio (misma unidad → rename atómico) y se hace os.replace.
+        tmp_path = self._token_path.with_name(f".{self._token_path.name}.tmp.{secrets.token_hex(4)}")
+        try:
+            tmp_path.write_text(json.dumps(payload), encoding="utf-8")
+            restrict_to_owner(tmp_path)  # perms cerrados ANTES de exponerlo
+            tmp_path.replace(self._token_path)  # atómico (POSIX y Windows)
+        finally:
+            # Si el replace ya movió el temp, unlink es no-op (missing_ok).
+            with contextlib.suppress(OSError):
+                tmp_path.unlink(missing_ok=True)
 
         logger.info(f"Auth token generated (TTL={_TOKEN_TTL}s)")
         return self._token

@@ -165,32 +165,36 @@ class TestLOOTRunner:
             await runner.sort()
 
     @pytest.mark.asyncio
-    async def test_loot_timeout_wsl_taskkill(self, tmp_path: pathlib.Path) -> None:
-        """Golden Master: WSL2 taskkill annihilator fires on timeout."""
+    async def test_loot_timeout_kills_only_this_process(self, tmp_path: pathlib.Path) -> None:
+        """H-4 + review PR #257: en timeout se mata SÓLO este proceso (proc.kill()).
+
+        Ni /IM loot.exe (que mataba todas las instancias del host) ni
+        taskkill /PID <pid-linux> (que bajo WSL2 puede matar un proceso Windows
+        ajeno por colisión de PID). La garantía es proc.kill() + reap.
+        """
         config = self._make_config(tmp_path)
         runner = LOOTRunner(config)
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
         mock_proc.kill = MagicMock()
-
-        mock_taskkill = MagicMock()
+        mock_proc.pid = 4242
 
         with (
             patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sky_claw.local.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
             patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
-            patch("sky_claw.local.loot.cli.subprocess.run", mock_taskkill),
             patch("sky_claw.local.loot.cli.pathlib.Path.exists", return_value=True),
             pytest.raises(LOOTTimeoutError, match="timed out"),
         ):
             await runner.sort()
 
-        mock_taskkill.assert_called_once_with(
-            ["taskkill.exe", "/F", "/IM", "loot.exe", "/T"],
-            capture_output=True,
-            check=False,
-        )
+        # La garantía dura: se mató este proceso.
+        mock_proc.kill.assert_called_once()
+        # El módulo ya no importa subprocess (no hay taskkill host-wide).
+        import sky_claw.local.loot.cli as _cli
+
+        assert not hasattr(_cli, "subprocess")
 
     @pytest.mark.asyncio
     async def test_sort_with_errors(self, tmp_path: pathlib.Path) -> None:

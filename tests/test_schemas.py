@@ -603,6 +603,17 @@ class TestPathTraversalValidation:
         with pytest.raises(ValidationError):
             SecurityAuditRequest(target_path="%252e%252e%252fetc%252fpasswd")
 
+    def test_path_traversal_blocks_n_url_encoded(self):
+        """H-8: N-codificación (más de dos niveles) también se bloquea.
+
+        Antes se decodificaba sólo dos veces; puntos codificados 5x
+        (%252525252e) se colaban. Ahora se decodifica hasta punto fijo.
+        """
+        # '..' con cada punto codificado 5 veces: '%' + '25'*4 + '2e'.
+        dot5 = "%" + "25" * 4 + "2e"
+        with pytest.raises(ValidationError):
+            SecurityAuditRequest(target_path=f"{dot5}{dot5}/etc/passwd")
+
     def test_path_traversal_blocks_overlong_utf8_separator(self):
         """Test que separadores overlong UTF-8 son bloqueados."""
         with pytest.raises(ValidationError):

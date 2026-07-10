@@ -153,17 +153,20 @@ class PathTraversalValidator:
                     is_absolute=False,
                 )
 
-        # Paso 2b: Verificar con URL-decode para detectar ataques de codificación
-        # Se decodifica hasta dos veces para cubrir doble codificación (%252e → %2e → .)
+        # Paso 2b: Verificar con URL-decode para detectar ataques de codificación.
+        # H-8: se decodifica en bucle hasta punto fijo (no sólo dos veces), con un
+        # tope de iteraciones, para cerrar el bypass por N-codificación
+        # (p. ej. %25252e → %252e → %2e → '.'). Cada forma distinta se valida.
         try:
-            decoded_once = urllib.parse.unquote(path)
-            decoded_twice = urllib.parse.unquote(decoded_once)
-            # Only check each decoded form that differs from the previous step
             candidates = []
-            if decoded_once != path:
-                candidates.append(decoded_once)
-            if decoded_twice != decoded_once:
-                candidates.append(decoded_twice)
+            current = path
+            max_decode_iters = 6
+            for _ in range(max_decode_iters):
+                decoded = urllib.parse.unquote(current)
+                if decoded == current:
+                    break  # punto fijo: más decodificaciones no cambian nada
+                candidates.append(decoded)
+                current = decoded
             for decoded_path in candidates:
                 for pattern in PATH_TRAVERSAL_PATTERNS:
                     if pattern.search(decoded_path):

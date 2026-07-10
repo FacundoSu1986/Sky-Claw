@@ -931,7 +931,12 @@ def setup_app() -> None:
     """Configure NiceGUI app: assets, controllers, EventBus, store wiring."""
     global _chat_controller, _mod_controller, _nav_controller
 
-    app.add_static_files("/static", str(_CSS_PATH.parent))
+    # H-01: NO se registra "/static" apuntando a _CSS_PATH.parent (el directorio
+    # del paquete gui/). Servía TODO el árbol source (sky_claw_gui.py,
+    # _bootloader.py, controllers/…) sobre HTTP sin filtro de extensión, y nunca se
+    # referenciaba desde el cliente. El CSS se inyecta inline vía _load_css()
+    # (ui.add_css) y los fonts se sirven desde "/assets"; "/static" era pura
+    # superficie de exposición.
     app.add_static_files("/assets", str(_ASSETS_PATH))
 
     async def _seed_db() -> None:

@@ -46,11 +46,15 @@ fi
 echo ""
 
 # Step 3: Mypy Type Check
+# L-5: bloqueante (exit 1 en fallo), alineado con el gate de CI (mypy sky_claw/).
+# Antes se grepeaba "Success:" y el else no cortaba, así que los type errors
+# pasaban el pre-check local — type safety opt-in.
 echo "🏷️  Step 3: Mypy Type Check (type safety)..."
-if python3 -m mypy sky_claw tests --ignore-missing-imports 2>&1 | grep -q "Success:" ; then
+if python3 -m mypy sky_claw/ ; then
     echo "✅ Type check passed"
 else
-    echo "⚠️  Type check completed (warnings may exist)"
+    echo "❌ Type check FAILED (bloqueante — mismo gate que CI)"
+    exit 1
 fi
 echo ""
 

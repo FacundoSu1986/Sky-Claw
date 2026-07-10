@@ -142,6 +142,61 @@ class TestTelegramWebhook:
         await asyncio.sleep(0.1)
         mock_router.chat.assert_not_awaited()
 
+    @pytest.fixture()
+    async def secret_webhook_app(
+        self,
+    ) -> AsyncGenerator[tuple[web.Application, TelegramWebhook], None]:
+        """Webhook con secret_token configurado para probar la validación (H-5)."""
+        mock_router = MagicMock()
+        mock_router.chat = AsyncMock(return_value="ok")
+        mock_sender = MagicMock()
+        mock_sender.send = AsyncMock()
+        webhook = TelegramWebhook(
+            router=mock_router,
+            sender=mock_sender,
+            session=MagicMock(spec=aiohttp.ClientSession),
+            secret_token="s3cr3t-token-xyz",
+        )
+        app = web.Application()
+        app.router.add_post("/webhook", webhook.handle_update)
+        yield app, webhook
+        tasks = list(webhook._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_secret_token_correcto_acepta(self, aiohttp_client, secret_webhook_app) -> None:
+        """H-5: token correcto pasa la validación (200)."""
+        app, _ = secret_webhook_app
+        client = await aiohttp_client(app)
+        resp = await client.post(
+            "/webhook",
+            json=_make_update(1),
+            headers={"X-Telegram-Bot-Api-Secret-Token": "s3cr3t-token-xyz"},
+        )
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_secret_token_incorrecto_rechaza(self, aiohttp_client, secret_webhook_app) -> None:
+        """H-5: token incorrecto se rechaza con 401."""
+        app, _ = secret_webhook_app
+        client = await aiohttp_client(app)
+        resp = await client.post(
+            "/webhook",
+            json=_make_update(1),
+            headers={"X-Telegram-Bot-Api-Secret-Token": "wrong-token"},
+        )
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_secret_token_ausente_rechaza(self, aiohttp_client, secret_webhook_app) -> None:
+        """H-5: sin header de token se rechaza con 401."""
+        app, _ = secret_webhook_app
+        client = await aiohttp_client(app)
+        resp = await client.post("/webhook", json=_make_update(1))
+        assert resp.status == 401
+
     @pytest.mark.asyncio
     async def test_dedup_evicts_oldest(self) -> None:
         webhook, _, _ = _make_webhook()
@@ -274,3 +329,71 @@ class TestTelegramSender:
 
         assert mock_gateway.request.await_count == 5
         assert len(sender._send_times[789]) == 5
+
+
+# ------------------------------------------------------------------
+# TelegramPolling — control de acceso por chat_id (C-2)
+# ------------------------------------------------------------------
+
+
+class TestTelegramPollingFailClosed:
+    """Verifica el fail-closed del polling cuando no hay chat_id autorizado (C-2)."""
+
+    def _make_polling(self, authorized_chat_id):
+        from sky_claw.antigravity.comms.telegram_polling import TelegramPolling
+
+        handler = MagicMock()
+        handler.process_update = AsyncMock()
+        polling = TelegramPolling(
+            token="123:ABC",
+            webhook_handler=handler,
+            gateway=MagicMock(),
+            session=MagicMock(spec=aiohttp.ClientSession),
+            authorized_chat_id=authorized_chat_id,
+        )
+        return polling, handler
+
+    async def test_sin_chat_id_configurado_no_despacha(self) -> None:
+        """C-2: con authorized_chat_id=None el update NO debe llegar al handler."""
+        polling, handler = self._make_polling(None)
+        update = {"update_id": 1, "message": {"text": "hola", "chat": {"id": 555}}}
+
+        await polling._process_raw_update(update)
+
+        handler.process_update.assert_not_awaited()
+
+    async def test_fail_closed_loguea_una_sola_vez(self, caplog) -> None:
+        """review #257: el ERROR de fail-closed se emite una vez por instancia, no por update."""
+        import logging
+
+        polling, handler = self._make_polling(None)
+        update = {"update_id": 1, "message": {"text": "hola", "chat": {"id": 555}}}
+
+        with caplog.at_level(logging.ERROR):
+            for _ in range(5):
+                await polling._process_raw_update(update)
+
+        fail_closed_errors = [r for r in caplog.records if "fail-closed" in r.getMessage()]
+        assert len(fail_closed_errors) == 1
+        # Y el mensaje apunta a la clave real, no a la inexistente telegram.operator_chat_id.
+        assert "telegram_chat_id" in fail_closed_errors[0].getMessage()
+        assert "telegram.operator_chat_id" not in fail_closed_errors[0].getMessage()
+        handler.process_update.assert_not_awaited()
+
+    async def test_chat_id_autorizado_despacha(self) -> None:
+        """El operador autorizado sí es despachado al handler."""
+        polling, handler = self._make_polling(555)
+        update = {"update_id": 1, "message": {"text": "hola", "chat": {"id": 555}}}
+
+        await polling._process_raw_update(update)
+
+        handler.process_update.assert_awaited_once_with(update)
+
+    async def test_chat_id_no_autorizado_se_descarta(self) -> None:
+        """Un chat distinto al autorizado se descarta (comportamiento previo intacto)."""
+        polling, handler = self._make_polling(555)
+        update = {"update_id": 1, "message": {"text": "hola", "chat": {"id": 999}}}
+
+        await polling._process_raw_update(update)
+
+        handler.process_update.assert_not_awaited()

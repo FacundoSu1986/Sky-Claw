@@ -283,6 +283,47 @@ class TestCircuitBreakerRejection:
         await r.close()
 
     @pytest.mark.asyncio
+    async def test_llm_timeout_in_half_open_records_failure(
+        self, tool_registry: AsyncToolRegistry, tmp_path: pathlib.Path
+    ) -> None:
+        """H-3: un timeout del provider durante el probe HALF_OPEN llama
+        record_failure, devolviendo el breaker a OPEN en vez de dejarlo atascado.
+        """
+        cb_config = TokenCircuitBreakerConfig(spike_threshold_tokens=100, recovery_timeout_seconds=60)
+        r = _make_router(tmp_path, tool_registry, cb_config=cb_config)
+        await r.open()
+        r._semantic_router.route = MagicMock(
+            return_value={
+                "intent": "CHAT_GENERAL",
+                "confidence": 0.7,
+                "target_agent": None,
+                "tool_name": None,
+                "parameters": {},
+                "original_text": "",
+            }
+        )
+
+        # Forzar HALF_OPEN (como tras un recovery timeout).
+        r._circuit_breaker._state = "half_open"
+        r._circuit_breaker._half_open_used = False
+
+        # Provider que timeoutea.
+        async def _slow_chat(**_kwargs):
+            raise TimeoutError("provider mudo")
+
+        r._provider = MagicMock()
+        r._provider.chat = _slow_chat
+
+        session = MagicMock()
+        # chat atrapa la excepción en su except externo y retorna un string de error;
+        # lo relevante es que record_failure ya corrió y sacó al breaker de HALF_OPEN.
+        await r.chat("hola", session, chat_id="cbfail")
+
+        # El breaker NO quedó atascado en HALF_OPEN: volvió a OPEN.
+        assert r._circuit_breaker._state == "open"
+        await r.close()
+
+    @pytest.mark.asyncio
     async def test_circuit_breaker_includes_effective_system_tokens(
         self, tool_registry: AsyncToolRegistry, tmp_path: pathlib.Path
     ) -> None:

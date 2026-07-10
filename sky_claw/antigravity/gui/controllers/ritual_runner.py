@@ -13,6 +13,7 @@ view/bootloader own the actual element wiring and the store keys.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -25,6 +26,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: M-9: auto-approve armado SÓLO para el árbol de tasks del dispatch en curso.
+#: Un ContextVar (no un flag global del store) garantiza que la aprobación
+#: automática quede scoped a exactamente la task de ``run_ritual`` que lo armó:
+#: ``HITLGuard.request_approval`` invoca ``notify_fn`` inline dentro de esa misma
+#: task, mientras que un ``tool_execution`` concurrente de Telegram/LLM/API corre
+#: en OTRA task cuya copia de contexto tiene el default ``False`` → nunca se
+#: auto-aprueba. Antes esto era un bool global del store, armado por toda la
+#: duración del dispatch del GUI, que auto-aprobaba cualquier tool_execution de
+#: cualquier source concurrente (bypass del gate HITL).
+_ritual_auto_approve: contextvars.ContextVar[bool] = contextvars.ContextVar("ritual_auto_approve", default=False)
+
+
+def ritual_auto_approve_armed() -> bool:
+    """True si el dispatch de la task actual armó auto-approve (Modo local).
+
+    Getter que el bootloader pasa a :func:`make_gui_hitl_notify`; lee el
+    ContextVar scoped a la task, no un flag global.
+    """
+    return _ritual_auto_approve.get()
+
+
 # Store key the bridge parks a pending tool_execution approval under, and the key
 # the run flow publishes its result feedback under (both consumed by refreshable
 # panels in forge_dashboard so the chat input is never reset).
@@ -35,12 +57,6 @@ STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
 #: store. So one window's choice never enables auto-approval for another client
 #: (Codex review on #211).
 CLIENT_KEY_AUTO_APPROVE = "modo_local"
-#: Auto-approve armed for the CURRENT in-flight ritual only. ``run_ritual`` sets
-#: this from the launching client's toggle right before dispatch and disarms it
-#: after; the HITL bridge reads it instead of any global flag. Combined with the
-#: single-flight guard this scopes auto-approval to exactly the ritual the operator
-#: launched — never another client's, never an agent-initiated tool_execution.
-STORE_KEY_PENDING_AUTO_APPROVE = "pending_auto_approve"
 #: Single-flight guard: a ritual is dispatching or awaiting approval right now.
 STORE_KEY_RITUAL_IN_FLIGHT = "ritual_in_flight"
 
@@ -206,8 +222,11 @@ async def run_ritual(
         )
         return
     store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
-    # Arm auto-approve for THIS dispatch only (the launching client's choice).
-    store.set(STORE_KEY_PENDING_AUTO_APPROVE, bool(auto_approve))
+    # M-9: armar auto-approve SÓLO para el árbol de tasks de ESTE dispatch, vía
+    # ContextVar. No es un flag global: un tool_execution concurrente (Telegram/
+    # LLM/API) corre en otra task cuya copia de contexto tiene el default False,
+    # así que NUNCA se auto-aprueba por el Modo local de este ritual.
+    cv_token = _ritual_auto_approve.set(bool(auto_approve))
     try:
         result = await supervisor.dispatch_tool(tool_name, {})
     except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
@@ -218,8 +237,8 @@ async def run_ritual(
         )
         return
     finally:
+        _ritual_auto_approve.reset(cv_token)  # disarm (scoped a esta task)
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
-        store.set(STORE_KEY_PENDING_AUTO_APPROVE, False)  # disarm
         # Drop the approval prompt tied to this run so no stale modal lingers on
         # the timeout/denied path where the operator never clicked (Codex #211).
         store.set(STORE_KEY_PENDING_HITL, None)

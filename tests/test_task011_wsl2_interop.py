@@ -282,37 +282,42 @@ class TestMO2CloseGameAsync:
 
     @pytest.mark.asyncio
     async def test_close_game_uses_to_thread(self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]) -> None:
-        """close_game() wraps _kill_game_processes in asyncio.to_thread."""
+        """close_game() delega _kill_process_tree en asyncio.to_thread (con un PID lanzado)."""
         mo2_root, validator = tmp_mo2_env
         controller = MO2Controller(mo2_root, validator)
+        controller._launched_pid = 999  # M-8: hay un juego lanzado por esta instancia
 
         with patch("sky_claw.local.mo2.vfs.asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
-            mock_to_thread.return_value = ["SkyrimSE.exe"]
+            mock_to_thread.return_value = ["ModOrganizer.exe(999)"]
             result = await controller.close_game()
 
         mock_to_thread.assert_called_once()
         assert result["status"] == "closed"
-        assert result["killed_processes"] == ["SkyrimSE.exe"]
+        assert result["killed_processes"] == ["ModOrganizer.exe(999)"]
 
     @pytest.mark.asyncio
     async def test_close_game_returns_killed_list(self, tmp_mo2_env: tuple[pathlib.Path, MagicMock]) -> None:
-        """close_game() returns the list of killed process names."""
+        """M-8: close_game() mata el árbol del PID lanzado y NO procesos homónimos ajenos."""
         mo2_root, validator = tmp_mo2_env
         controller = MO2Controller(mo2_root, validator)
+        controller._launched_pid = 42  # PID del ModOrganizer.exe lanzado
 
-        mock_proc_item = MagicMock()
-        mock_proc_item.info = {"pid": 1, "name": "SkyrimSE.exe"}
-        mock_proc_item.kill = MagicMock()
+        root = MagicMock()
+        root.pid = 42
+        root.name = MagicMock(return_value="ModOrganizer.exe")
+        root.kill = MagicMock()
+        root.children = MagicMock(return_value=[])
 
-        mock_notepad = MagicMock()
-        mock_notepad.info = {"pid": 2, "name": "notepad.exe"}
+        def _fake_process(pid):
+            assert pid == 42, "close_game debe consultar sólo el PID lanzado"
+            return root
 
-        with patch("sky_claw.local.mo2.vfs.psutil.process_iter", return_value=[mock_proc_item, mock_notepad]):
+        with patch("sky_claw.local.mo2.vfs.psutil.Process", _fake_process):
             result = await controller.close_game()
 
         assert result["status"] == "closed"
-        assert "SkyrimSE.exe" in result["killed_processes"]
-        assert "notepad.exe" not in result["killed_processes"]
+        root.kill.assert_called_once()
+        assert any("42" in k for k in result["killed_processes"])
 
 
 # ===================================================================

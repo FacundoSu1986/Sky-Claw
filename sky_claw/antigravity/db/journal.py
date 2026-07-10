@@ -1010,6 +1010,41 @@ class OperationJournal:
 
                 return self._row_to_entry(row)
 
+    async def get_operation_by_id(self, entry_id: int) -> JournalEntry | None:
+        """
+        Obtener una operación puntual por su ``entry_id``.
+
+        A diferencia de :meth:`get_last_operation` (que resuelve por agente y es
+        vulnerable a revertir una operación no relacionada), esto permite al
+        RollbackManager deshacer exactamente la operación que falló.
+
+        Args:
+            entry_id: ID de la entrada del journal.
+
+        Returns:
+            La entrada encontrada o None.
+        """
+        db = await self._ensure_connected()
+
+        async with (
+            self._lock,
+            db.execute(
+                """
+                SELECT id, timestamp, agent_id, operation_type, target_path,
+                       status, snapshot_path, checksum, metadata
+                FROM journal_entries
+                WHERE id = ?
+                """,
+                (entry_id,),
+            ) as cursor,
+        ):
+            row = await cursor.fetchone()
+
+            if row is None:
+                return None
+
+            return self._row_to_entry(row)
+
     async def get_operations_by_agent(self, agent_id: str, limit: int = 100) -> list[JournalEntry]:
         """
         Obtener todas las operaciones de un agente.

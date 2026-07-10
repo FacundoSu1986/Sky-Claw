@@ -104,6 +104,27 @@ class TestStateGraphNodes:
 
         assert result["current_state"] == SupervisorState.DISPATCHING.value
 
+    def test_dispatching_node_resets_rollback_flags(self):
+        """M-1: dispatching_node resetea los flags de rollback de una operación previa.
+
+        Sin esto, un rollback anterior dejaba rollback_triggered=True; el siguiente
+        fallo de despacho veía `not rollback_triggered == False` y se saltaba
+        ROLLING_BACK, yendo directo a ERROR_FATAL sin recuperación.
+        """
+        state = {
+            "workflow_id": "test_wf",
+            "tool_name": "run_loot_sort",
+            "rollback_triggered": True,
+            "rollback_result": {"success": True},
+            "rollback_transaction_id": 42,
+        }
+        result = StateGraphNodes.dispatching_node(state)
+
+        assert result["current_state"] == SupervisorState.DISPATCHING.value
+        assert result["rollback_triggered"] is False
+        assert result["rollback_result"] is None
+        assert result["rollback_transaction_id"] is None
+
     def test_hitl_wait_node(self):
         """Test hitl_wait_node processes HITL request."""
         state = {
@@ -181,6 +202,80 @@ class TestStateGraphEdges:
         state = {"hitl_response": "timeout"}
         result = StateGraphEdges.route_from_hitl_wait(state)
         assert result == SupervisorState.ERROR.value
+
+    def test_route_from_dispatching_success(self):
+        """Test routing from DISPATCHING cuando la tool tiene éxito → COMPLETED."""
+        state = {"tool_result": {"status": "success"}, "tool_name": "query_mod_metadata"}
+        result = StateGraphEdges.route_from_dispatching(state)
+        assert result == SupervisorState.COMPLETED.value
+
+    def test_route_from_dispatching_tool_error_goes_to_error(self):
+        """C-1: un tool_result con status='error' NO debe caer a COMPLETED.
+
+        Regresión: denegación HITL, tool alucinada por el LLM y crash de
+        subproceso envuelto por ErrorWrappingMiddleware devuelven status='error'
+        sin setear last_error. Antes del fix caían al return COMPLETED final.
+        """
+        state = {"tool_result": {"status": "error", "error": "tool denegada"}, "tool_name": "uninstall_mod"}
+        result = StateGraphEdges.route_from_dispatching(state)
+        assert result == SupervisorState.ERROR.value
+
+    def test_route_from_dispatching_data_only_success_goes_to_completed(self):
+        """T1: un resultado data-only sin 'status' (p.ej. model_dump) es éxito → COMPLETED.
+
+        query_mod_metadata retorna model_dump() (mod_id/name/version) sin 'status';
+        marcarlo como error rompía todos los dispatches exitosos data-only.
+        """
+        state = {
+            "tool_result": {"mod_id": 12021, "name": "SkyUI", "version": "5.2"},
+            "tool_name": "query_mod_metadata",
+        }
+        result = StateGraphEdges.route_from_dispatching(state)
+        assert result == SupervisorState.COMPLETED.value
+
+    def test_route_from_dispatching_canonical_success_flag_goes_to_completed(self):
+        """T1: el shape canónico {'success': True} es éxito → COMPLETED."""
+        state = {"tool_result": {"success": True, "message": ""}, "tool_name": "run_loot_sort"}
+        result = StateGraphEdges.route_from_dispatching(state)
+        assert result == SupervisorState.COMPLETED.value
+
+    def test_route_from_dispatching_canonical_failure_flag_goes_to_error(self):
+        """T1: el shape canónico {'success': False} es fallo → ERROR."""
+        state = {"tool_result": {"success": False, "message": "boom"}, "tool_name": "run_loot_sort"}
+        result = StateGraphEdges.route_from_dispatching(state)
+        assert result == SupervisorState.ERROR.value
+
+    def test_on_dispatching_sets_last_error_on_tool_error(self):
+        """C-1: _on_dispatching propaga el mensaje del tool_result a last_error."""
+        import asyncio
+
+        sg = SupervisorStateGraph(profile_name="TestProfile")
+        translation = StateGraphIntegration(sg)
+
+        class _FakeSupervisor:
+            async def dispatch_tool(self, tool_name, payload):
+                return {"status": "error", "reason": "subproceso crasheó"}
+
+        translation.connect_supervisor(_FakeSupervisor())
+        state = {"tool_name": "run_xedit_script", "tool_payload": {}}
+        asyncio.run(translation._on_dispatching(state))
+        assert state["last_error"] == "subproceso crasheó"
+
+    def test_on_dispatching_no_last_error_on_data_only_success(self):
+        """T1: un resultado data-only exitoso NO debe setear last_error."""
+        import asyncio
+
+        sg = SupervisorStateGraph(profile_name="TestProfile")
+        translation = StateGraphIntegration(sg)
+
+        class _FakeSupervisor:
+            async def dispatch_tool(self, tool_name, payload):
+                return {"mod_id": 12021, "name": "SkyUI", "version": "5.2"}
+
+        translation.connect_supervisor(_FakeSupervisor())
+        state = {"tool_name": "query_mod_metadata", "tool_payload": {}}
+        asyncio.run(translation._on_dispatching(state))
+        assert state.get("last_error") is None
 
     def test_route_from_error_max_retries(self):
         """Test routing from ERROR when max retries exceeded."""

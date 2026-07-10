@@ -253,6 +253,55 @@ class TestChatEndTurn:
         assert call_count == 2
 
     @pytest.mark.asyncio
+    async def test_malformed_tool_use_block_does_not_abort_round(self, router: LLMRouter) -> None:
+        """L-2: un tool_use sin 'name' no debe abortar el round entero.
+
+        Antes, block["id"]/block["name"] con subscript fuera del try lanzaba
+        KeyError → except externo → "Error Critico" y otros tool_use válidos en la
+        misma response nunca se ejecutaban. Ahora el bloque malformado se aísla y
+        el válido igual corre hasta el end_turn.
+        """
+        tool_use_response = {
+            "stop_reason": "tool_use",
+            "content": [
+                # Bloque MALFORMADO: sin 'name'.
+                {"type": "tool_use", "id": "bad-1", "input": {}},
+                # Bloque VÁLIDO en la misma response.
+                {"type": "tool_use", "id": "tool-123", "name": "search_mod", "input": {"mod_name": "SKSE"}},
+            ],
+        }
+        end_turn_response = {
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "Listo."}],
+        }
+
+        call_count = 0
+
+        async def fake_json() -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            return tool_use_response if call_count == 1 else end_turn_response
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = fake_json
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = AsyncMock(return_value="")
+
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+        router._gateway.request = AsyncMock(return_value=mock_cm)
+        mock_session = MagicMock(spec=aiohttp.ClientSession)
+
+        result = await router.chat("busca SKSE", mock_session, chat_id="malformed-1")
+        # No abortó: llegó al end_turn y NO devolvió el "Error Critico".
+        assert result == "Listo."
+        assert "Critico" not in result
+        assert call_count == 2
+
+    @pytest.mark.asyncio
     async def test_tool_error_propagated(self, router: LLMRouter) -> None:
         # API requests a tool that doesn't exist
         tool_use_response = {

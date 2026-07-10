@@ -368,8 +368,12 @@ class SyncEngine:
                 )
                 await rm.fail_operation(entry_id, error=str(exc))
 
-                # Ejecutar rollback — result already reflects actual outcome
-                rollback_result = await rm.undo_last_operation(self._agent_id)
+                # H-1: revertir la operación que FALLÓ (por entry_id), no "la
+                # última del agente". undo_last_operation(agent_id) revierte el
+                # asiento más reciente del agente: bajo dos execute_file_operation
+                # concurrentes que comparten agent_id, el undo de B podría revertir
+                # la operación ya comprometida de A.
+                rollback_result = await rm.undo_operation(entry_id)
                 logger.warning(
                     "Rollback automático completado: success=%s, transaction=%s",
                     rollback_result.success,
@@ -593,6 +597,15 @@ class SyncEngine:
         mod_name = mod["name"]
         rm = self._rollback_manager
         transaction_id: int | None = None
+        # M-2: rastrear el archivo descargado para poder limpiarlo si un error
+        # posterior (DB) impide completar la operación. El descargador escribe a
+        # disco pero no registra la operación en el journal, así que la limpieza
+        # journal-only NO borra el archivo.
+        download_path: pathlib.Path | None = None
+        # T3 (review PR #257): upsert_mod commitea ANTES de log_tasks_batch. Si
+        # log_tasks_batch falla después, la DB ya apunta a esta descarga: NO es
+        # huérfana y borrarla dejaría al registry apuntando a un archivo ausente.
+        registry_committed = False
 
         try:
             if rm is not None:
@@ -663,6 +676,7 @@ class SyncEngine:
             download_path = await self._downloader.download(file_info, session)
 
             # 4. Atomic DB update
+            #    (M-2: si upsert/log falla, el except limpia download_path.)
             await self._registry.upsert_mod(
                 nexus_id=nexus_id,
                 name=info.get("name", mod_name),
@@ -671,6 +685,8 @@ class SyncEngine:
                 category=str(info.get("category_id", "")),
                 download_url=file_info.download_url,
             )
+            # T3: la DB ya referencia esta descarga; deja de ser huérfana.
+            registry_committed = True
             await self._registry.log_tasks_batch(
                 [(None, "update_mod", "success", f"{mod_name}: {local_version} -> {nexus_version}")]
             )
@@ -686,8 +702,10 @@ class SyncEngine:
                 "new_version": nexus_version,
                 "file_path": str(download_path),
             }
+            # M-3: la transacción se comiteó; NO hubo rollback. Marcar
+            # rollback_performed=True aquí era engañoso e inconsistente con el
+            # campo agregado (que queda False). Sólo se anota la transacción.
             if rm is not None:
-                result["rollback_performed"] = True
                 result["rollback_transaction_id"] = transaction_id
             return result
 
@@ -703,6 +721,7 @@ class SyncEngine:
                     await rm.mark_transaction_rolled_back(transaction_id)
                 except Exception as rb_exc:
                     logger.critical("mark_transaction_rolled_back failed for %s: %s", mod_name, rb_exc)
+            self._cleanup_orphan_download(download_path, mod_name, registry_committed)
             return {
                 "status": "error",
                 "name": mod_name,
@@ -719,7 +738,25 @@ class SyncEngine:
                     await rm.mark_transaction_rolled_back(transaction_id)
                 except Exception as rb_exc:
                     logger.critical("mark_transaction_rolled_back also failed for %s: %s", mod_name, rb_exc)
+            self._cleanup_orphan_download(download_path, mod_name, registry_committed)
             raise
+
+    @staticmethod
+    def _cleanup_orphan_download(download_path: pathlib.Path | None, mod_name: str, registry_committed: bool) -> None:
+        """M-2: borra el archivo descargado si un error posterior abortó la
+        operación. El descargador escribe el archivo pero no lo registra en el
+        journal, así que sin esto queda huérfano en disco indefinidamente.
+
+        T3 (review PR #257): si upsert_mod ya commiteó (registry_committed), la DB
+        referencia el archivo — NO es huérfano y borrarlo dejaría al registry
+        apuntando a un archivo ausente. En ese caso no se borra."""
+        if download_path is None or registry_committed:
+            return
+        try:
+            pathlib.Path(download_path).unlink(missing_ok=True)
+            logger.info("Descarga huérfana de %s eliminada: %s", mod_name, download_path)
+        except OSError as exc:
+            logger.warning("No se pudo eliminar la descarga huérfana %s: %s", download_path, exc)
 
     async def _safe_fetch_info(
         self,

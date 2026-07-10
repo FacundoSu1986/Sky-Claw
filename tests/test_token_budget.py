@@ -327,6 +327,35 @@ class TestCircuitBreaker:
         cb.record_response(200)  # Spike in probe → back to OPEN
         assert cb.state == "open"
 
+    def test_half_open_probe_failure_reopens_and_rearms(self) -> None:
+        """H-3: si el probe HALF_OPEN falla (timeout del LLM, sin record_response),
+        record_failure debe volver a OPEN y re-armar el reloj de recovery, en vez
+        de dejar el breaker atascado rechazando todo para siempre.
+        """
+        cb = TokenCircuitBreaker(
+            TokenCircuitBreakerConfig(
+                spike_threshold_tokens=100,
+                recovery_timeout_seconds=0,  # recovery inmediato para el test
+            )
+        )
+        cb.check_request(200)  # trip → OPEN
+        assert cb.state == "half_open"  # recovery 0s → HALF_OPEN
+        assert cb.check_request(50) is True  # probe permitido, _half_open_used=True
+
+        # El probe falla (p.ej. TimeoutError) — NO se llama record_response.
+        cb.record_failure()
+
+        # No debe quedar bricked: vuelve a OPEN y, con recovery 0s, re-permite un probe.
+        assert cb.state == "half_open"
+        assert cb.check_request(50) is True
+
+    def test_record_failure_noop_when_closed(self) -> None:
+        """H-3: record_failure en estado CLOSED no debe abrir el breaker."""
+        cb = TokenCircuitBreaker()
+        assert cb.state == "closed"
+        cb.record_failure()
+        assert cb.state == "closed"
+
     def test_manual_reset(self) -> None:
         cb = TokenCircuitBreaker(
             TokenCircuitBreakerConfig(

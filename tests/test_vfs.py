@@ -211,22 +211,52 @@ class TestGameControl:
         mock_create.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_close_game(self, controller: MO2Controller, monkeypatch) -> None:
+    async def test_close_game_kills_only_launched_tree(self, controller: MO2Controller, monkeypatch) -> None:
+        """M-8: close_game mata sólo el árbol del PID lanzado, no procesos homónimos ajenos."""
         from unittest.mock import MagicMock
 
-        mock_proc_1 = MagicMock()
-        mock_proc_1.info = {"name": "SkyrimSE.exe"}
-        mock_proc_1.kill = MagicMock()
+        # Árbol del juego lanzado: MO2 (root) → SKSE (hijo).
+        child = MagicMock()
+        child.pid = 555
+        child.name = MagicMock(return_value="skse64_loader.exe")
+        child.kill = MagicMock()
 
-        mock_proc_2 = MagicMock()
-        mock_proc_2.info = {"name": "chrome.exe"}
+        root = MagicMock()
+        root.pid = 12345
+        root.name = MagicMock(return_value="ModOrganizer.exe")
+        root.kill = MagicMock()
+        root.children = MagicMock(return_value=[child])
 
-        monkeypatch.setattr("psutil.process_iter", lambda x: [mock_proc_1, mock_proc_2])
+        # Un SkyrimSE.exe AJENO (otra instancia del usuario) NO debe tocarse.
+        def _fake_process(pid):
+            assert pid == 12345, "close_game debe consultar sólo el PID lanzado"
+            return root
+
+        monkeypatch.setattr("psutil.Process", _fake_process)
+
+        controller._launched_pid = 12345  # simular un launch previo
+        result = await controller.close_game()
+
+        assert result["status"] == "closed"
+        root.kill.assert_called_once()
+        child.kill.assert_called_once()
+        # killed_processes contiene el árbol lanzado, identificado por PID.
+        assert any("12345" in k for k in result["killed_processes"])
+        assert any("555" in k for k in result["killed_processes"])
+        # tras cerrar, el PID se limpia.
+        assert controller._launched_pid is None
+
+    @pytest.mark.asyncio
+    async def test_close_game_noop_without_launch(self, controller: MO2Controller, monkeypatch) -> None:
+        """M-8: sin un juego lanzado por esta instancia, close_game es no-op (no mata por nombre)."""
+        from unittest.mock import MagicMock
+
+        called = MagicMock()
+        monkeypatch.setattr("psutil.Process", called)
 
         result = await controller.close_game()
-        assert result["status"] == "closed"
-        assert "SkyrimSE.exe" in result["killed_processes"]
-        mock_proc_1.kill.assert_called_once()
+        assert result == {"status": "closed", "killed_processes": []}
+        called.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

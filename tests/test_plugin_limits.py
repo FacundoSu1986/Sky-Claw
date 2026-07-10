@@ -194,3 +194,35 @@ def test_check_rojo_si_excede(tmp_path: pathlib.Path) -> None:
     check = limits_preflight_check(limits)
 
     assert check.status is PreflightStatus.RED
+
+
+# ---------------------------------------------------------------------------
+# L-1: _run_plugin_limit_guard incluye .esl del modlist
+# ---------------------------------------------------------------------------
+
+
+async def test_guard_incluye_esl_del_modlist(tmp_path: pathlib.Path) -> None:
+    """L-1: el parser inline de _run_plugin_limit_guard cuenta los .esl del modlist.
+
+    Antes excluía .esl por extensión, subcontando el pool real y pudiendo dejar
+    pasar un perfil sobre el límite (el analyzer nunca veía los light plugins).
+    """
+    from unittest.mock import MagicMock
+
+    from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
+
+    modlist = tmp_path / "modlist.txt"
+    modlist.write_text(
+        "+A.esp\n+Light.esl\n+B.esm\n-Disabled.esp\n# comentario\n",
+        encoding="utf-8",
+    )
+
+    sup = SupervisorAgent.__new__(SupervisorAgent)
+    sup._path_resolver = MagicMock()  # type: ignore[attr-defined]
+    sup._path_resolver.resolve_modlist_path = MagicMock(return_value=modlist)
+
+    result = await sup._run_plugin_limit_guard("Default")
+
+    assert result["valid"] is True
+    # A.esp + Light.esl + B.esm (el -Disabled y el comentario se excluyen).
+    assert result["plugin_count"] == 3

@@ -38,3 +38,25 @@ class TestAssetScannerPscMapping:
         """The canonical extension map must list .psc under SCRIPT."""
         assert ".psc" in AssetConflictDetector.ASSET_EXTENSIONS[AssetType.SCRIPT]
         assert ".pex" in AssetConflictDetector.ASSET_EXTENSIONS[AssetType.SCRIPT]
+
+
+class TestParseModlistPathTraversal:
+    """L-3: parse_modlist rechaza nombres de mod con traversal (no rglob fuera del sandbox)."""
+
+    def test_modlist_entry_con_traversal_se_ignora(self, tmp_path: pathlib.Path) -> None:
+        mods = tmp_path / "MO2" / "mods"
+        mods.mkdir(parents=True)
+        profile_dir = tmp_path / "MO2" / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "modlist.txt").write_text(
+            "+ModBueno\n+..\\..\\..\\Windows\\System32\n+../etc\n+sub/dir\n+OtroBueno\n",
+            encoding="utf-8",
+        )
+
+        detector = AssetConflictDetector(mods, profile_name="Default")
+        enabled = detector.parse_modlist()
+
+        # Sólo los nombres seguros sobreviven; los de traversal/separadores se descartan.
+        assert "ModBueno" in enabled
+        assert "OtroBueno" in enabled
+        assert not any(".." in m or "/" in m or "\\" in m for m in enabled)

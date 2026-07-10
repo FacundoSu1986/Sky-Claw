@@ -9,8 +9,31 @@ const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
 const fs = require('fs');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
+
+/**
+ * Genera un certificado TLS auto-firmado con openssl.
+ *
+ * H-3: se usa execFileSync con un array de argumentos en vez de execSync con
+ * interpolación de strings. keyPath/certPath derivan de process.env.HOME, así
+ * que un HOME con metacaracteres de shell (';', backticks, '$()') rompía el
+ * quoting del comando y permitía inyección. Con execFileSync no interviene
+ * ningún shell y los paths se pasan como argv literales.
+ *
+ * @param {string} keyPath  Ruta de salida de la clave privada.
+ * @param {string} certPath Ruta de salida del certificado.
+ * @param {Function} [runner] Inyectable para tests (default: execFileSync).
+ */
+function generateSelfSignedCert(keyPath, certPath, runner = execFileSync) {
+    runner('openssl', [
+        'req', '-x509', '-newkey', 'rsa:2048',
+        '-keyout', keyPath,
+        '-out', certPath,
+        '-days', '365', '-nodes',
+        '-subj', '/CN=localhost',
+    ], { stdio: 'pipe' });
+}
 
 function getOrCreateTlsCerts() {
     // SEC-006: Priorizar certificados desde variables de entorno
@@ -75,7 +98,7 @@ function getOrCreateTlsCerts() {
     }
     try {
         fs.mkdirSync(certDir, { recursive: true });
-        execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPath}" -days 365 -nodes -subj "/CN=localhost"`, { stdio: 'pipe' });
+        generateSelfSignedCert(keyPath, certPath);
         return { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
     } catch (err) {
         console.warn(JSON.stringify({

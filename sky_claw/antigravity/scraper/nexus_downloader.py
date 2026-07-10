@@ -379,6 +379,68 @@ class NexusDownloader:
                 dest_result = dest
         return dest_result
 
+    async def _validate_manual_hash(self, file_info: FileInfo, path: pathlib.Path) -> None:
+        """H-7: valida MD5 (y SHA256 si se proveyó) de un archivo obtenido por
+        fallback manual, con la misma política estricta que la ruta premium.
+
+        La ruta premium valida hash chunk-a-chunk durante la descarga; el
+        fallback manual copiaba el archivo y retornaba sin validar nada más allá
+        del tamaño, dejando pasar archivos corruptos o manipulados. En mismatch
+        limpia el archivo y lanza HashValidationError.
+        """
+        # Determinar qué hashes son UTILIZABLES antes de leer el archivo.
+        # Review copilot #257: si file_info.sha256 venía con formato inválido y no
+        # había md5, el guard anterior (not md5 and not sha256) pasaba (sha256
+        # truthy) y ambos bloques de comparación se salteaban → el archivo se
+        # aceptaba SIN validar y SIN avisar. Ahora se avisa explícitamente y sólo
+        # se computa el hash que efectivamente se va a comparar (eficiencia).
+        has_md5 = bool(file_info.md5)
+        sha256_usable = bool(file_info.sha256) and validate_sha256_format(file_info.sha256)
+        if file_info.sha256 and not sha256_usable:
+            logger.warning(
+                "SHA256 de Nexus con formato inválido para %s; se ignora ese hash.",
+                file_info.file_name,
+            )
+        if not has_md5 and not sha256_usable:
+            logger.warning(
+                "Sin hashes utilizables provistos por Nexus para %s; no se puede validar el fallback manual.",
+                file_info.file_name,
+            )
+            return
+
+        md5_hash = hashlib.md5(usedforsecurity=False) if has_md5 else None  # nosec B324 - integridad
+        sha256_hash = hashlib.sha256() if sha256_usable else None
+
+        def _read_and_hash() -> None:
+            with open(path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(self._chunk_size), b""):
+                    if md5_hash is not None:
+                        md5_hash.update(chunk)
+                    if sha256_hash is not None:
+                        sha256_hash.update(chunk)
+
+        await asyncio.to_thread(_read_and_hash)
+
+        if md5_hash is not None:
+            actual_md5 = md5_hash.hexdigest()
+            if actual_md5.lower() != file_info.md5.lower():
+                await _cleanup(path)
+                raise HashValidationError(
+                    f"MD5 mismatch (fallback manual) for {file_info.file_name!r}: "
+                    f"expected={file_info.md5!r} got={actual_md5!r}"
+                )
+            logger.info("MD5 validado OK (fallback manual) para %s (%s)", file_info.file_name, actual_md5)
+
+        if sha256_hash is not None:
+            actual_sha256 = sha256_hash.hexdigest()
+            if actual_sha256.lower() != file_info.sha256.lower():
+                await _cleanup(path)
+                raise HashValidationError(
+                    f"SHA256 mismatch (fallback manual) for {file_info.file_name!r}: "
+                    f"expected={file_info.sha256!r} got={actual_sha256!r}"
+                )
+            logger.info("SHA256 validado OK (fallback manual) para %s", file_info.file_name)
+
     async def _handle_manual_fallback(
         self,
         file_info: FileInfo,
@@ -433,6 +495,7 @@ class NexusDownloader:
                                 "Manual download detected directly in staging dir: %s",
                                 dest,
                             )
+                            await self._validate_manual_hash(file_info, dest)
                             return dest
                         except (PermissionError, OSError):
                             pass  # Locked/Downloading
@@ -459,6 +522,7 @@ class NexusDownloader:
 
                             await asyncio.to_thread(shutil.copy2, target_in_downloads, dest)
                             logger.info("Manual download detected and copied: %s", dest)
+                            await self._validate_manual_hash(file_info, dest)
                             return dest
                         except (PermissionError, OSError):
                             pass

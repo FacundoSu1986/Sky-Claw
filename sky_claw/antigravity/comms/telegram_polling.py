@@ -48,6 +48,9 @@ class TelegramPolling:
         self._session = session
         self._interval = interval
         self._authorized_chat_id = authorized_chat_id
+        # review #257: loguear el fail-closed una sola vez por instancia (evita
+        # spam de ERROR si llegan muchos updates con el operador sin configurar).
+        self._fail_closed_logged = False
         self._last_update_id = 0
         self._running = False
         self._url = TELEGRAM_API_GET_UPDATES.format(token=token)
@@ -140,19 +143,34 @@ class TelegramPolling:
     async def _process_raw_update(self, update: dict[str, Any]) -> None:
         """Process a single raw update dict."""
 
-        # CWE-284: Drop-Early Middleware
-        if self._authorized_chat_id is not None:
-            message = (
-                update.get("message") or update.get("edited_message") or update.get("callback_query", {}).get("message")
-            )
-            if message:
-                chat_id = message.get("chat", {}).get("id")
-                if chat_id is not None and str(chat_id) != str(self._authorized_chat_id):
-                    logger.warning(
-                        "CWE-284: Unauthorized access attempt from chat_id=%s. Dropping update.",
-                        chat_id,
-                    )
-                    return
+        # CWE-284: Drop-Early Middleware.
+        # C-2: fail-closed. Sin operador configurado NO se procesa ningún update:
+        # de lo contrario cualquier usuario que descubra el bot podría disparar
+        # tools mutantes (uninstall_mod, run_loot_sort, download_mod, ...).
+        if self._authorized_chat_id is None:
+            # review #257: la clave real es `telegram_chat_id` en la config (o el
+            # flag CLI `--operator-chat-id`), no `telegram.operator_chat_id`. Y se
+            # loguea una sola vez por instancia para no spammear ERROR por update.
+            if not self._fail_closed_logged:
+                logger.error(
+                    "authorized_chat_id no configurado (fail-closed): se descartan TODOS los updates de "
+                    "Telegram. Configure `telegram_chat_id` en la config (o el flag --operator-chat-id) "
+                    "para habilitar el procesamiento."
+                )
+                self._fail_closed_logged = True
+            return
+
+        message = (
+            update.get("message") or update.get("edited_message") or update.get("callback_query", {}).get("message")
+        )
+        if message:
+            chat_id = message.get("chat", {}).get("id")
+            if chat_id is not None and str(chat_id) != str(self._authorized_chat_id):
+                logger.warning(
+                    "CWE-284: Unauthorized access attempt from chat_id=%s. Dropping update.",
+                    chat_id,
+                )
+                return
 
         if not hasattr(self._handler, "process_update"):
             raise TypeError("Handler must implement process_update(data: dict)")

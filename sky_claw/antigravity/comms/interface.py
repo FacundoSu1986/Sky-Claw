@@ -14,6 +14,10 @@ from sky_claw.antigravity.core.models import HitlApprovalRequest
 
 logger = logging.getLogger("SkyClaw.Interface")
 
+# T5: decisiones HITL aceptadas. request_hitl retorna exactamente estos valores;
+# cualquier otra cosa en un frame hitl_response se ignora como malformada.
+_VALID_HITL_DECISIONS = frozenset({"approved", "denied"})
+
 
 class InterfaceAgent:
     def __init__(self, gateway_url: str = "ws://127.0.0.1:18789", *, token_dir: str | None = None):
@@ -63,18 +67,35 @@ class InterfaceAgent:
 
     async def _listen_to_gateway(self):
         async for message in self.ws_connection:
-            data = json.loads(message)
-            if data.get("type") == "hitl_response":
-                req_id = data["request_id"]
-                if req_id in self._pending_hitl:
-                    self._pending_hitl[req_id]["decision"] = data["decision"]
-                    self._pending_hitl[req_id]["event"].set()
-            elif data.get("type") == "EJECUTAR":
-                logger.info("Señal 'EJECUTAR' recibida desde el Gateway.")
-                for callback in self._command_callbacks:
-                    task = asyncio.create_task(callback(data), name="interface-ejecutar")
-                    self._pending_dispatch.add(task)
-                    task.add_done_callback(self._on_dispatch_done)
+            # M-5: un frame malformado (no-JSON, o sin request_id/decision) NO
+            # debe tumbar el loop. json.loads / accesos por clave lanzaban
+            # JSONDecodeError/KeyError que connect() no captura → propagaban al
+            # TaskGroup del supervisor y crasheaban el proceso, deteniendo todos
+            # los demonios. Se aísla por-mensaje (igual que ws_daemon/frontend_bridge).
+            try:
+                data = json.loads(message)
+                if data.get("type") == "hitl_response":
+                    req_id = data.get("request_id")
+                    decision = data.get("decision")
+                    # T5 (review PR #257): sólo resolver el HITL pendiente con una
+                    # decisión VÁLIDA. Un frame con request_id pero sin decision (o
+                    # con un valor inesperado) despertaba la espera con None,
+                    # terminándola prematuramente (prompts duplicados / falso deny).
+                    # Un frame así se ignora y la espera sigue hasta una decisión real.
+                    if req_id is not None and req_id in self._pending_hitl and decision in _VALID_HITL_DECISIONS:
+                        self._pending_hitl[req_id]["decision"] = decision
+                        self._pending_hitl[req_id]["event"].set()
+                    elif req_id in self._pending_hitl:
+                        logger.warning("hitl_response con decision inválida %r (req=%s); ignorado", decision, req_id)
+                elif data.get("type") == "EJECUTAR":
+                    logger.info("Señal 'EJECUTAR' recibida desde el Gateway.")
+                    for callback in self._command_callbacks:
+                        task = asyncio.create_task(callback(data), name="interface-ejecutar")
+                        self._pending_dispatch.add(task)
+                        task.add_done_callback(self._on_dispatch_done)
+            except (json.JSONDecodeError, TypeError, KeyError, AttributeError) as exc:
+                logger.warning("Frame malformado del Gateway ignorado: %s", exc)
+                continue
 
     def _on_dispatch_done(self, task: asyncio.Task[None]) -> None:
         """PR-F (RUF006): libera la referencia + loggea excepciones del callback."""

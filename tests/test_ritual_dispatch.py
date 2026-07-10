@@ -11,11 +11,14 @@ a live NiceGUI client.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from sky_claw.antigravity.gui.controllers.ritual_runner import (
     RITUAL_TOOL_MAP,
     make_gui_hitl_notify,
+    ritual_auto_approve_armed,
     ritual_tool_name,
     run_ritual,
     summarize_ritual_result,
@@ -178,6 +181,58 @@ async def test_bridge_delegates_non_tool_execution_to_original() -> None:
     assert pending == []
 
 
+# ── M-9: auto-approve scoped a la task del ritual ────────────────────────────────
+async def test_auto_approve_scoped_to_ritual_task_not_concurrent() -> None:
+    """M-9: con Modo local ON, sólo el tool_execution del ritual del GUI se
+    auto-aprueba; un tool_execution CONCURRENTE (otra task, p.ej. Telegram/LLM)
+    corre con el ContextVar en su default y se parkea para aprobación manual.
+    """
+    responded: list[tuple[str, bool]] = []
+    pending: list[dict] = []
+
+    async def _respond(rid: str, approved: bool) -> None:
+        responded.append((rid, approved))
+
+    # Bridge cableado con el getter REAL (ContextVar), como en el bootloader.
+    notify = make_gui_hitl_notify(
+        respond=_respond,
+        set_pending=pending.append,
+        auto_approve_getter=ritual_auto_approve_armed,
+        delegate=None,
+    )
+
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    async def _dispatch(tool_name: str, payload: dict) -> dict:
+        # Corre en la task de run_ritual → ContextVar armado (True).
+        await notify(_FakeReq("ritual-req"))
+        dispatch_started.set()
+        await release_dispatch.wait()  # mantener el ritual "en vuelo"
+        return {"status": "success"}
+
+    sup = SimpleNamespace(dispatch_tool=_dispatch)
+    store = ReactiveStore()
+    ritual_task = asyncio.create_task(run_ritual("loot", supervisor=sup, store=store, auto_approve=True))
+
+    await dispatch_started.wait()
+    # Desde el contexto del TEST (default False) — simula un dispatch concurrente
+    # de Telegram/LLM mientras el ritual del GUI sigue en vuelo.
+    await notify(_FakeReq("foreign-req"))
+    release_dispatch.set()
+    await ritual_task
+
+    approved_ids = [rid for rid, ok in responded if ok]
+    assert "ritual-req" in approved_ids  # el del ritual SÍ se auto-aprobó
+    assert "foreign-req" not in approved_ids  # el concurrente NO
+    assert any(p["request_id"] == "foreign-req" for p in pending)  # se parkeó a modal
+
+
+async def test_auto_approve_armed_defaults_false_outside_ritual() -> None:
+    """M-9: fuera de un ritual, el getter devuelve False (no auto-aprueba)."""
+    assert ritual_auto_approve_armed() is False
+
+
 # ── run_ritual dispatch flow ─────────────────────────────────────────────────────
 async def test_run_ritual_dispatches_mapped_tool_and_publishes_feedback() -> None:
     store = ReactiveStore()
@@ -235,14 +290,14 @@ async def test_run_ritual_clears_pending_prompt_and_inflight_on_finish() -> None
 
 
 class _ArmCapturingSupervisor:
-    """Records the armed auto-approve flag visible during dispatch."""
+    """Records the armed auto-approve flag (ContextVar) visible during dispatch."""
 
-    def __init__(self, store: ReactiveStore) -> None:
-        self._store = store
+    def __init__(self) -> None:
         self.armed_during_dispatch: object = "unset"
 
     async def dispatch_tool(self, tool_name: str, payload: dict) -> dict:
-        self.armed_during_dispatch = self._store.get("pending_auto_approve")
+        # M-9: la señal es el ContextVar scoped a esta task, no un flag del store.
+        self.armed_during_dispatch = ritual_auto_approve_armed()
         return {"status": "success"}
 
 
@@ -250,15 +305,15 @@ async def test_run_ritual_arms_auto_approve_for_this_dispatch_only() -> None:
     # The launching client's Modo local choice must be armed for THIS dispatch
     # (so the HITL bridge auto-grants it) and disarmed right after.
     store = ReactiveStore()
-    sup = _ArmCapturingSupervisor(store)
+    sup = _ArmCapturingSupervisor()
     await run_ritual("loot", supervisor=sup, store=store, auto_approve=True)
     assert sup.armed_during_dispatch is True
-    assert store.get("pending_auto_approve") is False  # disarmed on finish
+    assert ritual_auto_approve_armed() is False  # disarmed on finish (fuera de la task)
 
 
 async def test_run_ritual_does_not_arm_when_auto_approve_off() -> None:
     store = ReactiveStore()
-    sup = _ArmCapturingSupervisor(store)
+    sup = _ArmCapturingSupervisor()
     await run_ritual("dyndolod", supervisor=sup, store=store)  # default False
     assert sup.armed_during_dispatch is False
-    assert store.get("pending_auto_approve") is False
+    assert ritual_auto_approve_armed() is False

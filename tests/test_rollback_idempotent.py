@@ -239,3 +239,101 @@ async def test_no_snapshot_path_marks_rolled_back_without_restore(journal, tmp_p
     )
     assert entry is not None
     assert entry.status == OperationStatus.ROLLED_BACK
+
+
+@pytest.mark.asyncio
+async def test_undo_operation_reverts_specific_entry_not_last(journal, tmp_path):
+    """H-1: undo_operation(entry_id) revierte la operación indicada, no la última del agente.
+
+    Escenario del hallazgo: dos operaciones del MISMO agent_id (A luego B), ambas
+    COMPLETED. undo_last_operation(agent_id) revertiría B (la más reciente) aunque
+    quien falló fuera A. undo_operation(entry_id_A) debe revertir exactamente A.
+    """
+    restored_paths: list[str] = []
+    mgr = MagicMock()
+
+    async def _record_restore(snapshot, target):
+        restored_paths.append(str(target))
+        return True
+
+    mgr.restore_snapshot = AsyncMock(side_effect=_record_restore)
+    rm = RollbackManager(journal, mgr)
+
+    tx_id = await journal.begin_transaction(description="dual", mod_id=None, agent_id="dual-agent")
+    entry_a = await journal.begin_operation(
+        agent_id="dual-agent",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(tmp_path / "A.esp"),
+        transaction_id=tx_id,
+        snapshot_path=str(tmp_path / "A.bin"),
+    )
+    await journal.complete_operation(entry_a)
+    entry_b = await journal.begin_operation(
+        agent_id="dual-agent",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(tmp_path / "B.esp"),
+        transaction_id=tx_id,
+        snapshot_path=str(tmp_path / "B.bin"),
+    )
+    await journal.complete_operation(entry_b)
+
+    # Revertir explícitamente A (la operación "vieja"), no la última (B).
+    result = await rm.undo_operation(entry_a)
+
+    assert result.success is True
+    assert result.transaction_id == entry_a
+    # Se restauró SÓLO el target de A.
+    assert restored_paths == [str(tmp_path / "A.esp")]
+
+    # A quedó ROLLED_BACK; B sigue COMPLETED (intacta).
+    entry_a_after = await journal.get_operation_by_id(entry_a)
+    entry_b_after = await journal.get_operation_by_id(entry_b)
+    assert entry_a_after.status == OperationStatus.ROLLED_BACK
+    assert entry_b_after.status == OperationStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_undo_operation_missing_entry_returns_failure(journal):
+    """undo_operation con un entry_id inexistente devuelve success=False sin tocar disco."""
+    mgr = MagicMock()
+    mgr.restore_snapshot = AsyncMock()
+    rm = RollbackManager(journal, mgr)
+
+    result = await rm.undo_operation(999999)
+
+    assert result.success is False
+    assert result.transaction_id == 999999
+    mgr.restore_snapshot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_undo_operation_idempotent_on_already_rolled_back(journal, tmp_path):
+    """T2 (review PR #257): un segundo undo_operation sobre la misma entry NO re-restaura.
+
+    Con lookup por id (no filtrado por estado), un retry sobre una entry ya
+    ROLLED_BACK re-restauraría el snapshot viejo, pisando trabajo posterior.
+    Debe ser no-op idempotente.
+    """
+    mgr = MagicMock()
+    mgr.restore_snapshot = AsyncMock(return_value=True)
+    rm = RollbackManager(journal, mgr)
+
+    tx_id = await journal.begin_transaction(description="idem", mod_id=None, agent_id="idem-agent")
+    entry_id = await journal.begin_operation(
+        agent_id="idem-agent",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(tmp_path / "t.esp"),
+        transaction_id=tx_id,
+        snapshot_path=str(tmp_path / "t.bin"),
+    )
+    await journal.complete_operation(entry_id)
+
+    first = await rm.undo_operation(entry_id)
+    assert first.success is True
+    assert mgr.restore_snapshot.await_count == 1
+
+    # Segundo undo: la entry ya está ROLLED_BACK → no debe volver a restaurar.
+    second = await rm.undo_operation(entry_id)
+    assert second.success is True
+    assert second.entries_restored == 0
+    assert mgr.restore_snapshot.await_count == 1  # NO se llamó una segunda vez

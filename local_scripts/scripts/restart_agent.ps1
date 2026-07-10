@@ -29,7 +29,18 @@ function Stop-SurgicalProcess {
 
         $Process = Get-Process -Id $SavedPid -ErrorAction SilentlyContinue
         if ($Process) {
-            Write-Host "[STOP] Deteniendo $Name (PID: $SavedPid)..." -ForegroundColor Cyan
+            # L-4: validar que el PID corresponda a un proceso ESPERADO antes de
+            # matarlo. El archivo .pid en .run/ podría ser sobreescrito por un
+            # usuario no privilegiado para inyectar un PID arbitrario (DoS local:
+            # matar AV/servicios). Sky-Claw corre bajo python/pythonw; el gateway
+            # bajo node. Cualquier otro nombre se rechaza.
+            $AllowedNames = @("python", "pythonw", "node")
+            if ($AllowedNames -notcontains $Process.ProcessName) {
+                Write-Host "[SECURITY] PID $SavedPid ($($Process.ProcessName)) no es un proceso Sky-Claw esperado. NO se detiene." -ForegroundColor Red
+                Remove-Item $PidFile -ErrorAction SilentlyContinue
+                return
+            }
+            Write-Host "[STOP] Deteniendo $Name (PID: $SavedPid, $($Process.ProcessName))..." -ForegroundColor Cyan
             Stop-Process -Id $SavedPid -Force -ErrorAction SilentlyContinue
             # Pequeña espera para asegurar liberación de recursos
             Start-Sleep -Milliseconds 800
