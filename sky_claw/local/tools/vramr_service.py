@@ -42,6 +42,10 @@ _CREATE_NO_WINDOW = 0x08000000
 _TAIL_LINES = 20
 _DEFAULT_TIMEOUT_SECONDS = 3600.0
 _KILL_GRACE_SECONDS = 3.0
+# S-4: cota para drenar buffers residuales tras la salida normal del proceso. Sin
+# ella, un nieto que heredó el pipe (write-end sin cerrar) dejaría el gather del
+# path de éxito colgado indefinidamente.
+_DRAIN_GRACE_SECONDS = 10.0
 
 
 class VRAMrExecutionError(Exception):
@@ -321,7 +325,26 @@ class VRAMrPipelineService:
                 await asyncio.gather(drain_out, drain_err, return_exceptions=True)
             raise
 
-        results = await asyncio.gather(drain_out, drain_err, return_exceptions=True)
+        # S-4: el proceso ya terminó; drenamos con una cota. Si un nieto heredó el
+        # pipe y sigue vivo, el EOF nunca llega y sin timeout este gather colgaría
+        # para siempre. Agotada la gracia, cancelamos los drains y seguimos con las
+        # líneas parciales ya capturadas (el proceso ya reportó su return code).
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(drain_out, drain_err, return_exceptions=True),
+                timeout=_DRAIN_GRACE_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "VRAMr: los drains no cerraron en %.1fs tras la salida del proceso "
+                "(posible nieto con pipe heredado); se continúa con output parcial.",
+                _DRAIN_GRACE_SECONDS,
+            )
+            drain_out.cancel()
+            drain_err.cancel()
+            with contextlib.suppress(BaseException):
+                await asyncio.gather(drain_out, drain_err, return_exceptions=True)
+            results = []
         for r in results:
             if isinstance(r, BaseException):
                 logger.warning("VRAMr stream drain lanzó excepción: %r", r)
