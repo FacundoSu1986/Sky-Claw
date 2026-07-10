@@ -1231,3 +1231,56 @@ class TestDownloadFilenameHardening:
             assert all(p not in (".", "..") for p in parts)
         except DownloadError:
             pass  # Also acceptable — raised when the sanitised name is still unsafe
+
+
+class TestManualFallbackHashValidation:
+    """H-7: el fallback manual valida hash antes de aceptar el archivo."""
+
+    async def test_validate_manual_hash_ok(self, tmp_path: pathlib.Path) -> None:
+        d = _make_downloader(tmp_path)
+        data = b"contenido correcto"
+        f = tmp_path / "mod.zip"
+        f.write_bytes(data)
+        fi = _make_file_info(md5=_md5_of(data))
+
+        # No debe lanzar; el archivo permanece.
+        await d._validate_manual_hash(fi, f)
+        assert f.exists()
+
+    async def test_validate_manual_hash_mismatch_limpia_y_lanza(self, tmp_path: pathlib.Path) -> None:
+        d = _make_downloader(tmp_path)
+        f = tmp_path / "mod.zip"
+        f.write_bytes(b"contenido corrupto")
+        fi = _make_file_info(md5=_md5_of(b"contenido esperado"))
+
+        with pytest.raises(HashValidationError, match="MD5 mismatch"):
+            await d._validate_manual_hash(fi, f)
+        # El archivo corrupto fue limpiado.
+        assert not f.exists()
+
+    async def test_validate_manual_hash_sin_hashes_no_lanza(self, tmp_path: pathlib.Path) -> None:
+        d = _make_downloader(tmp_path)
+        f = tmp_path / "mod.zip"
+        f.write_bytes(b"lo que sea")
+        fi = _make_file_info(md5="", sha256="")
+
+        await d._validate_manual_hash(fi, f)  # sólo warning
+        assert f.exists()
+
+    async def test_fallback_rechaza_archivo_corrupto_en_staging(self, tmp_path: pathlib.Path) -> None:
+        """El fallback manual con un archivo de hash incorrecto en staging lanza."""
+        d = _make_downloader(tmp_path)
+        dest = d.staging_dir
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"corrupto")  # dest ES el path que el fallback vigila
+        data_esperada = b"lo correcto"
+        fi = _make_file_info(
+            size_bytes=len(b"corrupto"),
+            md5=_md5_of(data_esperada),
+        )
+
+        with (
+            patch("webbrowser.open", return_value=True),
+            pytest.raises(HashValidationError, match="MD5 mismatch"),
+        ):
+            await d._handle_manual_fallback(fi, dest, None)
