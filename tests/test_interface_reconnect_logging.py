@@ -146,3 +146,43 @@ async def test_listen_ignora_hitl_sin_request_id():
 
     # No debe lanzar.
     await agent._listen_to_gateway()
+
+
+async def test_hitl_sin_decision_no_resuelve_la_espera():
+    """T5 (review PR #257): un hitl_response con request_id pero sin decision NO despierta."""
+    agent = InterfaceAgent(gateway_url="ws://127.0.0.1:18789")
+    event = asyncio.Event()
+    agent._pending_hitl["req-1"] = {"event": event, "decision": None}
+
+    # Frame malformado: request_id válido, sin decision.
+    agent.ws_connection = _ScriptedWS(['{"type": "hitl_response", "request_id": "req-1"}'])
+    await agent._listen_to_gateway()
+
+    # La espera NO debe haberse resuelto ni la decisión almacenada.
+    assert not event.is_set()
+    assert agent._pending_hitl["req-1"]["decision"] is None
+
+
+async def test_hitl_decision_invalida_no_resuelve():
+    """T5: una decision fuera del conjunto válido se ignora."""
+    agent = InterfaceAgent(gateway_url="ws://127.0.0.1:18789")
+    event = asyncio.Event()
+    agent._pending_hitl["req-2"] = {"event": event, "decision": None}
+
+    agent.ws_connection = _ScriptedWS(['{"type": "hitl_response", "request_id": "req-2", "decision": "maybe"}'])
+    await agent._listen_to_gateway()
+
+    assert not event.is_set()
+
+
+async def test_hitl_decision_valida_resuelve():
+    """T5: una decision válida sí resuelve la espera y almacena el valor."""
+    agent = InterfaceAgent(gateway_url="ws://127.0.0.1:18789")
+    event = asyncio.Event()
+    agent._pending_hitl["req-3"] = {"event": event, "decision": None}
+
+    agent.ws_connection = _ScriptedWS(['{"type": "hitl_response", "request_id": "req-3", "decision": "denied"}'])
+    await agent._listen_to_gateway()
+
+    assert event.is_set()
+    assert agent._pending_hitl["req-3"]["decision"] == "denied"
