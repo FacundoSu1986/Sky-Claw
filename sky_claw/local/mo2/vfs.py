@@ -118,6 +118,9 @@ class MO2Controller:
         self._validator = path_validator
         self._modlist_lock = asyncio.Lock()
         self._spawn_timeout = launch_timeout
+        # M-8: PID del ModOrganizer.exe lanzado por ESTA instancia. close_game
+        # mata sólo su árbol, no todos los procesos homónimos del host.
+        self._launched_pid: int | None = None
 
     @property
     def root(self) -> pathlib.Path:
@@ -366,38 +369,60 @@ class MO2Controller:
             )
             raise GameLaunchTimeoutError(self._spawn_timeout) from None
 
+        # M-8: recordar el PID lanzado para que close_game acote la terminación.
+        self._launched_pid = proc.pid
         return {"pid": proc.pid, "status": "launched", "profile": profile}
 
     async def close_game(self) -> dict[str, Any]:
-        """Attempt to forcefully close Skyrim SE and MO2.
+        """Attempt to forcefully close the game/MO2 tree launched by this controller.
 
-        TASK-011: The ``psutil`` iteration is wrapped in
-        ``asyncio.to_thread`` to avoid blocking the event loop.
+        M-8: sólo se mata el árbol del ModOrganizer.exe que ESTA instancia lanzó
+        (el PID guardado en :attr:`_launched_pid` + sus descendientes), no todos
+        los procesos del host que se llamen ``skyrimse.exe``/``modorganizer.exe``.
+        Así una segunda instancia de MO2/Skyrim del usuario no se ve afectada.
+
+        TASK-011: The ``psutil`` iteration is wrapped in ``asyncio.to_thread`` to
+        avoid blocking the event loop.
 
         Returns:
             Dict showing which processes were killed.
         """
-        killed = await asyncio.to_thread(self._kill_game_processes)
-        logger.info("Closed game processes: %s", killed)
+        pid = self._launched_pid
+        if pid is None:
+            logger.info("close_game: no hay un juego lanzado por esta instancia; no-op.")
+            return {"status": "closed", "killed_processes": []}
+
+        killed = await asyncio.to_thread(self._kill_process_tree, pid)
+        self._launched_pid = None
+        logger.info("Closed game process tree (pid=%s): %s", pid, killed)
         return {"status": "closed", "killed_processes": killed}
 
     @staticmethod
-    def _kill_game_processes() -> list[str]:
-        """Synchronous helper to find and kill game-related processes.
+    def _kill_process_tree(pid: int) -> list[str]:
+        """Mata SÓLO el proceso ``pid`` y sus descendientes (no por nombre).
 
-        Separated for ``asyncio.to_thread`` wrapping.
+        Separado para envolver en ``asyncio.to_thread``. Best-effort: procesos ya
+        muertos o sin permiso se ignoran.
         """
         killed: list[str] = []
-        for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            root = psutil.Process(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return killed
+
+        # Recolectar el árbol (hijos primero) antes de matar, para no perder la
+        # relación padre-hijo cuando el padre muere.
+        try:
+            procs = root.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            procs = []
+        procs.append(root)
+
+        for proc in procs:
             try:
-                name = proc.info["name"]
-                if name and name.lower() in (
-                    "skyrimse.exe",
-                    "skse64_loader.exe",
-                    "modorganizer.exe",
-                ):
-                    proc.kill()
-                    killed.append(name)
+                name = proc.name()
+                proc.kill()
+                killed.append(f"{name}({proc.pid})")
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
         return killed
