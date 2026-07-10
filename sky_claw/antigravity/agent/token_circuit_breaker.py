@@ -148,6 +148,21 @@ class TokenCircuitBreaker:
             else:
                 self._trip(f"Probe request spike in HALF_OPEN: {tokens_used} tokens")
 
+    def record_failure(self) -> None:
+        """Registrar un fallo de la llamada (timeout u otra excepción) sin token count.
+
+        H-3: ``record_response`` es la única transición de salida de HALF_OPEN, pero
+        sólo se llama tras una respuesta exitosa. Si el probe HALF_OPEN falla (p. ej.
+        ``asyncio.TimeoutError`` en la llamada al LLM), sin esto el breaker quedaba en
+        HALF_OPEN con ``_half_open_used=True`` rechazando todo para siempre.
+
+        En HALF_OPEN vuelve a OPEN (re-arma el reloj de recovery vía ``_trip``); en
+        CLOSED/OPEN es no-op (un fallo aislado no debe abrir el breaker; eso lo
+        gobierna el presupuesto de tokens en ``check_request``).
+        """
+        if self._state == "half_open":
+            self._trip("HALF_OPEN probe failed (timeout/exception)")
+
     def reset(self) -> None:
         """Force transition to CLOSED state (manual reset after HITL)."""
         self._state = "closed"

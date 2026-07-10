@@ -477,10 +477,18 @@ class LLMRouter:
                     provider_snapshot = self._provider
                 if provider_snapshot is None:
                     raise RuntimeError("SISTEMA: LLM Provider nulo. Iniciar Hot-Swap o configurar API Key primaria.")
-                response_data = await asyncio.wait_for(
-                    provider_snapshot.chat(**chat_kwargs),
-                    timeout=120.0,
-                )
+                try:
+                    response_data = await asyncio.wait_for(
+                        provider_snapshot.chat(**chat_kwargs),
+                        timeout=120.0,
+                    )
+                except BaseException:
+                    # H-3: la llamada consumió el probe de HALF_OPEN (check_request
+                    # arriba). Si falla (TimeoutError u otra excepción), record_response
+                    # nunca corre y el breaker quedaría atascado en HALF_OPEN rechazando
+                    # todo. record_failure lo devuelve a OPEN para re-armar el recovery.
+                    self._circuit_breaker.record_failure()
+                    raise
 
                 if response_data is None or not isinstance(response_data, dict):
                     return "Error: El proveedor de IA no devolvió datos."
