@@ -39,6 +39,7 @@ from sky_claw.local.validators.vfs_health import VfsHealthChecker
 
 if TYPE_CHECKING:
     from sky_claw.local.validators.missing_masters import MasterIssue
+    from sky_claw.local.validators.overwrite_health import OverwriteScan
     from sky_claw.local.validators.plugin_limits import LoadOrderLimits
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,10 @@ MastersCheck = Callable[[], "list[MasterIssue]"]
 #: Sensor de límites de plugins inyectable (T-30·2): closure sobre
 #: PluginLimitsChecker + el load order habilitado.
 LimitsCheck = Callable[[], "LoadOrderLimits"]
+
+#: Sensor de overwrite sucio inyectable (T-30·3): closure sobre
+#: OverwriteHealthChecker (escanea el overwrite compartido de MO2).
+OverwriteCheck = Callable[[], "OverwriteScan"]
 
 
 class PreflightStatus(StrEnum):
@@ -134,6 +139,10 @@ class PreflightService:
         limits_check: Sensor de límites full/light (T-30·2): callable que
             devuelve el :class:`LoadOrderLimits` (closure sobre
             ``PluginLimitsChecker.check``). Corre en un thread.
+        overwrite_check: Sensor de overwrite sucio (T-30·3): callable que
+            devuelve el :class:`OverwriteScan` (closure sobre
+            ``OverwriteHealthChecker.check``). Corre en un thread (escanea
+            disco).
     """
 
     def __init__(
@@ -144,10 +153,12 @@ class PreflightService:
         loot_version_detector: VersionDetector | None = None,
         masters_check: MastersCheck | None = None,
         limits_check: LimitsCheck | None = None,
+        overwrite_check: OverwriteCheck | None = None,
     ) -> None:
         self._vfs_checker = vfs_checker
         self._masters_check = masters_check
         self._limits_check = limits_check
+        self._overwrite_check = overwrite_check
         if loot_version_detector is None and loot_exe is not None:
             exe = loot_exe
 
@@ -200,6 +211,12 @@ class PreflightService:
         if self._limits_check is not None:
             limits = await asyncio.to_thread(self._limits_check)
         checks.append(self._limits_checkpoint(limits))
+
+        overwrite: OverwriteScan | None = None
+        if self._overwrite_check is not None:
+            # Escanea el overwrite en disco: fuera del event loop.
+            overwrite = await asyncio.to_thread(self._overwrite_check)
+        checks.append(self._overwrite_checkpoint(overwrite))
 
         composition = self._composition_check(vfs_issues, loot_version)
         if composition is not None:
@@ -263,6 +280,21 @@ class PreflightService:
         from sky_claw.local.validators.plugin_limits import limits_preflight_check
 
         return limits_preflight_check(limits)
+
+    @staticmethod
+    def _overwrite_checkpoint(scan: OverwriteScan | None) -> PreflightCheck:
+        if scan is None:
+            # No mentir: "overwrite limpio" implica que se escaneó; acá no hubo sensor.
+            return PreflightCheck(
+                name="overwrite",
+                status=PreflightStatus.GREEN,
+                summary="Sensor de overwrite no configurado.",
+            )
+        # Import a nivel función: mismo ciclo que masters/límites (overwrite_health
+        # importa PreflightCheck de este módulo).
+        from sky_claw.local.validators.overwrite_health import overwrite_preflight_check
+
+        return overwrite_preflight_check(scan)
 
     @staticmethod
     def _loot_check(version: tuple[int, int, int] | None, *, detector_configured: bool) -> PreflightCheck:

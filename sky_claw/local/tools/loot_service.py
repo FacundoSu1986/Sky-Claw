@@ -47,7 +47,14 @@ if TYPE_CHECKING:
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
     from sky_claw.antigravity.security.path_validator import PathValidator
     from sky_claw.local.loot.parser import LOOTResult
-    from sky_claw.local.validators.preflight import LimitsCheck, MastersCheck, PreflightService
+    from sky_claw.local.validators.overwrite_health import OverwriteScan
+    from sky_claw.local.validators.preflight import (
+        LimitsCheck,
+        MastersCheck,
+        OverwriteCheck,
+        PreflightReport,
+        PreflightService,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -221,13 +228,38 @@ class LootSortingService:
         # reporta "no configurado" en vez de mentir verde (regla de honestidad).
         masters_check, limits_check = self._build_modlist_checks(raw_mo2, mo2_validated)
 
+        # T-30·3: sensor de overwrite sucio. Solo requiere una raíz MO2 validada
+        # (no depende del load order), así que se cablea aparte de los de modlist.
+        overwrite_check = self._build_overwrite_check(raw_mo2, mo2_validated)
+
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
             loot_exe=loot_exe,
             masters_check=masters_check,
             limits_check=limits_check,
+            overwrite_check=overwrite_check,
         )
         return self._preflight
+
+    def _build_overwrite_check(self, raw_mo2: pathlib.Path | None, mo2_validated: bool) -> OverwriteCheck | None:
+        """Construye el closure del sensor de overwrite sucio (T-30·3).
+
+        Requiere solo una raíz MO2 validada (el overwrite es ``<mo2>/overwrite``,
+        fuera del árbol del perfil). El closure re-escanea en cada run — el
+        ``PreflightService`` se cachea, así que la salida de una herramienta
+        corrida entre preflight y preflight debe verse (freshness, patrón #252).
+        Sin MO2 resoluble devuelve ``None`` → el semáforo dice "no configurado".
+        """
+        if not (mo2_validated and isinstance(raw_mo2, pathlib.Path)):
+            return None
+        from sky_claw.local.validators.overwrite_health import OverwriteHealthChecker
+
+        overwrite_dir = raw_mo2 / "overwrite"
+
+        def _overwrite() -> OverwriteScan:
+            return OverwriteHealthChecker(overwrite_dir=overwrite_dir).check()
+
+        return _overwrite
 
     def _build_modlist_checks(
         self, raw_mo2: pathlib.Path | None, mo2_validated: bool
@@ -365,6 +397,7 @@ class LootSortingService:
         # Versión de LOOT para el ActionManifest (T-26): la detecta el preflight
         # sin relanzar el binario (review Codex PR #243). None si no corrió.
         loot_version: tuple[int, int, int] | None = None
+        preflight_report: PreflightReport | None = None
         preflight = None if override_preflight else self._ensure_preflight()
         if preflight is not None:
             preflight_report = await preflight.run()
@@ -519,7 +552,7 @@ class LootSortingService:
             if result.success
             else ("; ".join(str(e) for e in result.errors) or result.raw_stderr or result.raw_stdout or "")
         )
-        return {
+        response: dict[str, Any] = {
             "status": "success" if result.success else "error",
             "success": result.success,
             "message": message,
@@ -530,6 +563,13 @@ class LootSortingService:
             "logs": result.raw_stdout or "",
             "rolled_back": rolled_back,
         }
+        # Superficie de los warnings del preflight (T-30·3): un preflight no-verde
+        # que NO bloquea (amarillo, p.ej. overwrite sucio) igual debe llegar al
+        # operador. Sin esto solo se loguearía y el agente/GUI vería un success
+        # limpio, perdiendo el aviso antes del próximo Ritual (review Codex #254).
+        if preflight_report is not None and preflight_report.status.value != "green":
+            response["preflight"] = preflight_report.to_dict()
+        return response
 
     async def _emit_action_manifest(
         self,

@@ -517,3 +517,84 @@ class TestFreshnessYOverwrite:
         masters = next(c for c in reporte.checks if c.name == "masters")
         assert masters.status is PreflightStatus.RED
         assert any(i in d for d in masters.details for i in ("NoInstalado.esm",))
+
+
+class TestSensorDeOverwriteCableado:
+    """T-30·3: _ensure_preflight cablea el sensor de overwrite sucio cuando la
+    raíz MO2 es resoluble (un sensor sin cablear miente verde: lección #250)."""
+
+    def _svc(self, mo2: pathlib.Path | None) -> LootSortingService:
+        resolver = MagicMock()
+        resolver.get_skyrim_path_raw = MagicMock(return_value=None)
+        resolver.get_skyrim_path = MagicMock(return_value=None)
+        resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
+        resolver.get_mo2_path = MagicMock(return_value=mo2)
+        resolver.detect_mo2_path = MagicMock(return_value=mo2)
+        resolver.get_active_profile = MagicMock(return_value="Default")
+        resolver.get_loot_exe = MagicMock(return_value=None)
+        load_order = MagicMock()
+        load_order.resolve.return_value = LoadOrderPaths(files=(), sources=())
+        return LootSortingService(
+            lock_manager=MagicMock(),
+            snapshot_manager=MagicMock(),
+            path_resolver=resolver,
+            loot_runner=MagicMock(),
+            load_order_resolver=load_order,
+        )
+
+    async def test_overwrite_con_residuos_pone_amarillo(self, tmp_path: pathlib.Path) -> None:
+        from sky_claw.local.validators.preflight import PreflightStatus
+
+        mo2 = tmp_path / "MO2"
+        (mo2 / "mods").mkdir(parents=True)
+        overwrite = mo2 / "overwrite"
+        overwrite.mkdir()
+        (overwrite / "residuo.log").write_text("x", encoding="utf-8")
+
+        reporte = await self._svc(mo2)._ensure_preflight().run()
+
+        check = next(c for c in reporte.checks if c.name == "overwrite")
+        assert check.status is PreflightStatus.YELLOW
+        assert any("residuo.log" in d for d in check.details)
+        assert reporte.blocks_mutations is False  # suciedad advierte, no bloquea
+
+    async def test_overwrite_vacio_es_verde_cableado(self, tmp_path: pathlib.Path) -> None:
+        """Con MO2 resoluble el sensor corre de verdad: verde 'limpio', no
+        'no configurado'."""
+        from sky_claw.local.validators.preflight import PreflightStatus
+
+        mo2 = tmp_path / "MO2"
+        (mo2 / "mods").mkdir(parents=True)
+
+        reporte = await self._svc(mo2)._ensure_preflight().run()
+
+        check = next(c for c in reporte.checks if c.name == "overwrite")
+        assert check.status is PreflightStatus.GREEN
+        assert "no configurado" not in check.summary.lower()
+
+    async def test_sin_mo2_el_overwrite_dice_no_configurado(self, tmp_path: pathlib.Path) -> None:
+        reporte = await self._svc(None)._ensure_preflight().run()
+
+        check = next(c for c in reporte.checks if c.name == "overwrite")
+        assert "no configurado" in check.summary.lower()
+
+    async def test_residuos_agregados_despues_del_primer_run_se_ven(self, tmp_path: pathlib.Path) -> None:
+        """Freshness (patrón #252): el PreflightService se cachea pero el
+        closure re-escanea — la salida de una herramienta corrida entre
+        preflight y preflight debe verse en el segundo run."""
+        from sky_claw.local.validators.preflight import PreflightStatus
+
+        mo2 = tmp_path / "MO2"
+        (mo2 / "mods").mkdir(parents=True)
+        svc = self._svc(mo2)
+        preflight = svc._ensure_preflight()
+
+        primero = await preflight.run()
+        assert next(c for c in primero.checks if c.name == "overwrite").status is PreflightStatus.GREEN
+
+        overwrite = mo2 / "overwrite"
+        overwrite.mkdir()
+        (overwrite / "Synthesis.esp").write_bytes(b"TES4")
+
+        segundo = await preflight.run()
+        assert next(c for c in segundo.checks if c.name == "overwrite").status is PreflightStatus.YELLOW
