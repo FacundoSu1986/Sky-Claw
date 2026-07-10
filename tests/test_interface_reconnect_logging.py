@@ -103,3 +103,46 @@ async def test_reconnect_rewarns_after_successful_connect(monkeypatch, caplog):
     assert len(records) == 2
     assert records[0].levelno == logging.WARNING, "first drop after a connect must re-warn"
     assert records[1].levelno == logging.DEBUG
+
+
+class _ScriptedWS:
+    """WS stub que emite una lista fija de mensajes y luego cierra."""
+
+    def __init__(self, messages: list[str]) -> None:
+        self._messages = list(messages)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._messages:
+            raise StopAsyncIteration
+        return self._messages.pop(0)
+
+
+async def test_listen_ignora_frame_no_json_sin_crashear():
+    """M-5: un frame que no es JSON no debe propagar JSONDecodeError."""
+    agent = InterfaceAgent(gateway_url="ws://127.0.0.1:18789")
+    delivered: list[dict] = []
+
+    async def _cb(data: dict) -> None:
+        delivered.append(data)
+
+    agent._command_callbacks = [_cb]
+
+    agent.ws_connection = _ScriptedWS(["esto no es json {", '{"type": "EJECUTAR", "cmd": "x"}'])
+
+    # No debe lanzar; el frame válido posterior sigue procesándose.
+    await agent._listen_to_gateway()
+    await asyncio.sleep(0.01)  # dejar correr el callback de EJECUTAR
+
+    assert delivered and delivered[0]["cmd"] == "x"
+
+
+async def test_listen_ignora_hitl_sin_request_id():
+    """M-5: un hitl_response sin request_id no debe lanzar KeyError."""
+    agent = InterfaceAgent(gateway_url="ws://127.0.0.1:18789")
+    agent.ws_connection = _ScriptedWS(['{"type": "hitl_response", "decision": "approved"}'])
+
+    # No debe lanzar.
+    await agent._listen_to_gateway()
