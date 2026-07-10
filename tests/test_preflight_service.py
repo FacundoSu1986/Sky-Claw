@@ -176,6 +176,23 @@ class TestBloqueoDeMutantes:
 
         assert resultado["success"] is True
         runner.sort.assert_awaited_once()
+        # T-30·3 (review Codex #254): un preflight amarillo NO bloquea pero su
+        # aviso debe viajar en la respuesta exitosa — si no, el operador nunca lo ve.
+        assert resultado["preflight"]["status"] == "yellow"
+
+    async def test_preflight_verde_no_ensucia_la_respuesta(self) -> None:
+        """Simétrico: un preflight verde no agrega la clave 'preflight' al
+        success (solo se superficie lo accionable)."""
+        reporte = await _servicio(issues=[], version=(0, 29, 0)).run()
+        svc, runner = self._loot_service(reporte)
+        from sky_claw.local.loot.parser import LOOTResult
+
+        runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+
+        resultado = await svc.sort_load_order()
+
+        assert resultado["success"] is True
+        assert "preflight" not in resultado
 
 
 class TestSensorDeMasters:

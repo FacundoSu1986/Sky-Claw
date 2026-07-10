@@ -11,7 +11,11 @@ legítimo a mitad de flujo — MO2 mismo solo advierte.
 from __future__ import annotations
 
 import pathlib
+import sys
+import tempfile
 from unittest.mock import patch
+
+import pytest
 
 from sky_claw.local.validators.overwrite_health import (
     OverwriteHealthChecker,
@@ -23,6 +27,24 @@ from sky_claw.local.validators.preflight import PreflightStatus
 
 def _check(overwrite_dir: pathlib.Path) -> OverwriteScan:
     return OverwriteHealthChecker(overwrite_dir=overwrite_dir).check()
+
+
+def _puede_crear_symlinks() -> bool:
+    """Guard de privilegios (crear symlinks requiere admin en Windows)."""
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            origen = pathlib.Path(td) / "src"
+            origen.mkdir()
+            (pathlib.Path(td) / "link").symlink_to(origen, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+_symlink_guard = pytest.mark.skipif(
+    sys.platform == "win32" and not _puede_crear_symlinks(),
+    reason="Crear symlinks requiere privilegios elevados en Windows",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +111,31 @@ class TestEscaneo:
 
         assert scan == OverwriteScan(files=(), plugins=())
 
+    @_symlink_guard
+    def test_symlink_a_directorio_cuenta_como_sucio(self, tmp_path: pathlib.Path) -> None:
+        """Un symlink/junction en el overwrite NO es is_file() pero el sandbox
+        (T-27) lo rechaza: contarlo evita un falso verde (review Codex #254)."""
+        overwrite = tmp_path / "overwrite"
+        overwrite.mkdir()
+        real = tmp_path / "Generated"
+        real.mkdir()
+        (overwrite / "Link").symlink_to(real, target_is_directory=True)
+
+        scan = _check(overwrite)
+
+        assert "Link" in scan.files
+        assert overwrite_preflight_check(scan).status is PreflightStatus.YELLOW
+
+    @_symlink_guard
+    def test_symlink_roto_cuenta_como_sucio(self, tmp_path: pathlib.Path) -> None:
+        overwrite = tmp_path / "overwrite"
+        overwrite.mkdir()
+        (overwrite / "Roto").symlink_to(tmp_path / "no-existe")
+
+        scan = _check(overwrite)
+
+        assert "Roto" in scan.files
+
 
 # ---------------------------------------------------------------------------
 # overwrite_preflight_check (puente al semáforo)
@@ -133,3 +180,14 @@ class TestPuenteAlSemaforo:
         listadas = [d for d in check.details if d.startswith("meshes/")]
         assert len(listadas) == 10
         assert any("15 más" in d for d in check.details)
+
+    def test_plugins_se_priorizan_antes_del_cap(self) -> None:
+        """Un plugin que ordena DESPUÉS de los primeros 10 archivos genéricos
+        (meshes de BodySlide + zPatch.esp) igual debe aparecer en los details:
+        es el residuo de alto impacto (review Codex #254)."""
+        files = tuple(f"meshes/{i:03}.nif" for i in range(20)) + ("zPatch.esp",)
+        scan = OverwriteScan(files=files, plugins=("zPatch.esp",))
+
+        check = overwrite_preflight_check(scan)
+
+        assert "zPatch.esp" in check.details

@@ -42,6 +42,27 @@ _REMEDIATION = (
 )
 
 
+def _is_link(path: pathlib.Path) -> bool:
+    """True si *path* es un symlink o junction (reparse point).
+
+    Mira el enlace mismo, no su destino: un link a directorio o uno roto no es
+    ``is_file()`` pero sí es un residuo — y el sandbox (T-27) los rechaza, así
+    que dejarlos pasar en verde contaminaría el Ritual (review Codex #254).
+    Espeja la detección de ``vfs_health._link_kind`` (junctions vía
+    ``is_junction`` de Py3.12 o el ``st_reparse_tag`` del lstat en 3.11/Windows).
+    """
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        if is_junction is not None and is_junction():
+            return True
+        return bool(getattr(path.lstat(), "st_reparse_tag", 0))
+    except OSError as exc:
+        logger.debug("No se pudo inspeccionar el enlace %s: %s", path, exc)
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class OverwriteScan:
     """Contenido residual del overwrite compartido.
@@ -79,7 +100,11 @@ class OverwriteHealthChecker:
             entries = []
         for entry in entries:
             try:
-                if not entry.is_file():
+                # Un symlink/junction cuenta como residuo aunque is_file() sea
+                # falso (link a directorio o roto): is_file() sigue el enlace, así
+                # que un link-a-archivo ya caía acá; esto suma los link-a-dir/rotos
+                # que si no darían un falso verde (review Codex #254).
+                if not (_is_link(entry) or entry.is_file()):
                     continue
             except OSError as exc:
                 logger.debug("No se pudo inspeccionar %s: %s", entry, exc)
@@ -105,14 +130,21 @@ def overwrite_preflight_check(scan: OverwriteScan) -> PreflightCheck:
     """
     if not scan.files:
         return PreflightCheck(name="overwrite", status=PreflightStatus.GREEN, summary="Overwrite limpio.")
-    listed = list(scan.files[:_MAX_DETAIL_FILES])
-    remaining = len(scan.files) - len(listed)
+    # Priorizar los plugins: un plugin residual entra al load order con máxima
+    # precedencia (alto impacto), así que debe verse en los details aunque el
+    # overwrite tenga cientos de archivos genéricos (BodySlide) y el plugin
+    # ordene después del cap (review Codex #254).
+    plugins_set = set(scan.plugins)
+    ordered = list(scan.plugins) + [f for f in scan.files if f not in plugins_set]
+    listed = ordered[:_MAX_DETAIL_FILES]
+    remaining = len(ordered) - len(listed)
+    details = list(listed)
     if remaining:
-        listed.append(f"… y {remaining} más")
-    listed.append(_REMEDIATION)
+        details.append(f"… y {remaining} más")
+    details.append(_REMEDIATION)
     return PreflightCheck(
         name="overwrite",
         status=PreflightStatus.YELLOW,
         summary=f"{len(scan.files)} archivo(s) residual(es) en el overwrite ({len(scan.plugins)} plugin(s)).",
-        details=tuple(listed),
+        details=tuple(details),
     )

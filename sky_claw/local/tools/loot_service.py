@@ -52,6 +52,7 @@ if TYPE_CHECKING:
         LimitsCheck,
         MastersCheck,
         OverwriteCheck,
+        PreflightReport,
         PreflightService,
     )
 
@@ -396,6 +397,7 @@ class LootSortingService:
         # Versión de LOOT para el ActionManifest (T-26): la detecta el preflight
         # sin relanzar el binario (review Codex PR #243). None si no corrió.
         loot_version: tuple[int, int, int] | None = None
+        preflight_report: PreflightReport | None = None
         preflight = None if override_preflight else self._ensure_preflight()
         if preflight is not None:
             preflight_report = await preflight.run()
@@ -550,7 +552,7 @@ class LootSortingService:
             if result.success
             else ("; ".join(str(e) for e in result.errors) or result.raw_stderr or result.raw_stdout or "")
         )
-        return {
+        response: dict[str, Any] = {
             "status": "success" if result.success else "error",
             "success": result.success,
             "message": message,
@@ -561,6 +563,13 @@ class LootSortingService:
             "logs": result.raw_stdout or "",
             "rolled_back": rolled_back,
         }
+        # Superficie de los warnings del preflight (T-30·3): un preflight no-verde
+        # que NO bloquea (amarillo, p.ej. overwrite sucio) igual debe llegar al
+        # operador. Sin esto solo se loguearía y el agente/GUI vería un success
+        # limpio, perdiendo el aviso antes del próximo Ritual (review Codex #254).
+        if preflight_report is not None and preflight_report.status.value != "green":
+            response["preflight"] = preflight_report.to_dict()
+        return response
 
     async def _emit_action_manifest(
         self,
