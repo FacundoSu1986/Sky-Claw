@@ -77,6 +77,16 @@ DEFAULT_WARNING_TYPES: frozenset[str] = frozenset(
 
 #: Anything not in critical or warning is **info** (textures, strings, etc.).
 
+#: Flags críticos exportados por firma (T-19a). Fuente única (patrón T-08):
+#: ``list_all_conflicts.pas`` duplica a mano el guard por firma y el literal
+#: del nombre del flag — anclado por tests/test_conflict_signatures_sync.py.
+#: ``Manual Cost Calc`` es el bit 0x1 del campo Flags del subrecord SPIT: un
+#: override que lo define y un ganador que no lo preserva rompe el coste del
+#: hechizo silenciosamente (el caso canónico del review §5).
+CRITICAL_FLAGS: dict[str, tuple[str, ...]] = {
+    "SPEL": ("Manual Cost Calc",),
+}
+
 _SCRIPT_NAME = "list_all_conflicts.pas"
 
 # ---------------------------------------------------------------------------
@@ -95,6 +105,24 @@ LIGHT_PLUGIN_LIMIT: int = 4096
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class OverrideFlagState:
+    """Estado de un flag crítico en UNA versión del record (master u override).
+
+    T-19a: el dato por-versión que la regla de T-19b compara (¿el ganador
+    preserva el flag que otro override define?).
+
+    Attributes:
+        plugin: Plugin que aporta esta versión del record.
+        flag: Nombre canónico del flag (p. ej. ``"Manual Cost Calc"``).
+        value: Estado del flag en esta versión.
+    """
+
+    plugin: str
+    flag: str
+    value: bool
+
+
 @dataclass
 class RecordConflict:
     """A single record overridden by multiple plugins."""
@@ -105,6 +133,9 @@ class RecordConflict:
     winner: str
     losers: list[str]
     severity: str  # "critical", "warning", "info"
+    #: T-19a: estado de los flags críticos por versión del record (vacío si el
+    #: export no emitió FLAG para este FormID — compat con salidas viejas).
+    flag_states: tuple[OverrideFlagState, ...] = ()
 
 
 @dataclass
@@ -152,6 +183,9 @@ class ConflictReport:
                             "winner": c.winner,
                             "losers": c.losers,
                             "severity": c.severity,
+                            "flag_states": [
+                                {"plugin": f.plugin, "flag": f.flag, "value": f.value} for f in c.flag_states
+                            ],
                         }
                         for c in pp.conflicts
                     ],
@@ -435,6 +469,40 @@ class ConflictAnalyzer:
 # ---------------------------------------------------------------------------
 
 
+def parse_flag_lines(stdout: str) -> dict[str, list[OverrideFlagState]]:
+    """Parse FLAG lines from xEdit script output (T-19a).
+
+    Expected format (one line per record version — master and each override)::
+
+        FLAG|FormID|Plugin|FlagName|0/1
+
+    ``|`` es un separador robusto: es inválido en nombres de archivo Windows,
+    a diferencia de ``,``/``:`` que aparecen en plugins reales ("Bashed
+    Patch, 0.esp"). Malformed lines are skipped with a warning, like CONFLICT.
+    """
+    flags: dict[str, list[OverrideFlagState]] = {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("FLAG|"):
+            continue
+        parts = line.split("|")
+        if len(parts) < 5:
+            logger.warning("Malformed FLAG line (expected 5 fields): %s", line)
+            continue
+        form_id = parts[1].strip()
+        if not _FORMID_RE.match(form_id):
+            logger.warning("Invalid FormID '%s' in FLAG line: %s", form_id, line)
+            continue
+        value = parts[4].strip()
+        if value not in ("0", "1"):
+            logger.warning("Invalid flag value '%s' in FLAG line: %s", value, line)
+            continue
+        flags.setdefault(form_id, []).append(
+            OverrideFlagState(plugin=parts[2].strip(), flag=parts[3].strip(), value=value == "1")
+        )
+    return flags
+
+
 def parse_conflict_lines(stdout: str) -> list[RecordConflict]:
     """Parse CONFLICT lines from xEdit script output.
 
@@ -442,8 +510,14 @@ def parse_conflict_lines(stdout: str) -> list[RecordConflict]:
 
         CONFLICT|FormID|EditorID|RecordType|WinnerPlugin|LoserPlugin1,LoserPlugin2
 
+    Las líneas ``FLAG|`` (T-19a) se adjuntan al conflict de su FormID en
+    ``flag_states``; el join por FormID es robusto al orden de las líneas.
     Lines that don't match are silently skipped with a debug log.
     """
+    # T-19a: primera pasada — flags por FormID (el script puede emitirlas
+    # antes o después de su CONFLICT).
+    flag_states = parse_flag_lines(stdout)
+
     conflicts: list[RecordConflict] = []
     for line in stdout.splitlines():
         line = line.strip()
@@ -468,6 +542,7 @@ def parse_conflict_lines(stdout: str) -> list[RecordConflict]:
                     winner=parts[4].strip(),
                     losers=losers,
                     severity="info",  # classified later by the analyzer
+                    flag_states=tuple(flag_states.get(form_id, [])),
                 )
             )
         # Acotado (T-11): una línea malformada es un problema de parseo, no

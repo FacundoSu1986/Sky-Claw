@@ -25,8 +25,10 @@ Usage:
 from __future__ import annotations
 
 from sky_claw.local.xedit.conflict_analyzer import (
+    CRITICAL_FLAGS,
     ConflictAnalyzer,
     ConflictReport,
+    OverrideFlagState,
     PluginConflictPair,
     RecordConflict,
 )
@@ -58,12 +60,14 @@ from sky_claw.local.xedit.runner import (
 )
 
 __all__ = [
+    "CRITICAL_FLAGS",
     # Conflict analyzer
     "ConflictAnalyzer",
     "ConflictReport",
     "CreateMergedPatch",
     "DelegateToBashedPatch",
     "ExecuteXEditScript",
+    "OverrideFlagState",
     "PatchExecutionError",
     "PatchOrchestrator",
     "PatchPlan",

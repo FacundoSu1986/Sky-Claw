@@ -9,6 +9,13 @@
   Output format (one line per conflict):
     CONFLICT|<FormID>|<EditorID>|<RecordType>|<WinnerPlugin>|<LoserPlugin1>,<LoserPlugin2>
 
+  Per-version critical flag state (T-19a; one line per record version —
+  master and each override — only for signatures with critical flags):
+    FLAG|<FormID>|<Plugin>|<FlagName>|<0/1>
+
+  ('|' es separador seguro: invalido en filenames de Windows, a diferencia
+  de ','/':' que aparecen en plugins reales como "Bashed Patch, 0.esp".)
+
   Final summary line:
     SUMMARY|total_conflicts=<N>|critical=<N>|minor=<N>
 
@@ -42,6 +49,34 @@ begin
             (sig = 'FURN') or (sig = 'LVLI') or (sig = 'LVLN') or
             (sig = 'LVSP') or (sig = 'ENCH') or (sig = 'OTFT') or
             (sig = 'RACE') or (sig = 'COBJ') or (sig = 'KYWD');
+end;
+
+{ T-19a: estado del flag "Manual Cost Calc" (bit $1 de SPIT\Flags) para UNA
+  version del record SPEL. Mantener sincronizado con CRITICAL_FLAGS de
+  conflict_analyzer.py — anclado por tests/test_conflict_signatures_sync.py.
+  Honestidad: sin subrecord SPIT no se emite nada (ausencia = "desconocido",
+  no "flag apagado"). }
+procedure EmitSpellFlagState(rec: IInterface; formID: string);
+var
+  flagValue: string;
+begin
+  if not ElementExists(rec, 'SPIT') then
+    Exit;
+  if (GetElementNativeValues(rec, 'SPIT\Flags') and $1) <> 0 then
+    flagValue := '1'
+  else
+    flagValue := '0';
+  AddMessage('FLAG|' + formID + '|' + GetFileName(GetFile(rec)) + '|Manual Cost Calc|' + flagValue);
+end;
+
+{ Emite el estado del flag para el master y cada override del SPEL. }
+procedure EmitSpellFlagStates(e: IInterface; formID: string);
+var
+  i: Integer;
+begin
+  EmitSpellFlagState(e, formID);
+  for i := 0 to OverrideCount(e) - 1 do
+    EmitSpellFlagState(OverrideByIndex(e, i), formID);
 end;
 
 function Initialize: Integer;
@@ -103,6 +138,10 @@ begin
 
   { Output the conflict line. }
   AddMessage('CONFLICT|' + formID + '|' + editorID + '|' + sig + '|' + winner + '|' + loserList);
+
+  { T-19a: estado de flags criticos por version (solo firmas con flags). }
+  if sig = 'SPEL' then
+    EmitSpellFlagStates(e, formID);
 
   Inc(totalConflicts);
   if IsCriticalType(sig) then
