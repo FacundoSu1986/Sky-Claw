@@ -165,12 +165,12 @@ class TestLOOTRunner:
             await runner.sort()
 
     @pytest.mark.asyncio
-    async def test_loot_timeout_wsl_taskkill(self, tmp_path: pathlib.Path) -> None:
-        """H-4: en timeout bajo WSL2, taskkill acota al PID del proceso, no a /IM.
+    async def test_loot_timeout_kills_only_this_process(self, tmp_path: pathlib.Path) -> None:
+        """H-4 + review PR #257: en timeout se mata SÓLO este proceso (proc.kill()).
 
-        Antes se usaba ``/IM loot.exe``, que mataba TODAS las instancias de
-        loot.exe del host (LOOT GUI abierta, otro sky-claw), destruyendo trabajo
-        no guardado. Ahora se mata sólo el árbol de ESTE proceso por PID.
+        Ni /IM loot.exe (que mataba todas las instancias del host) ni
+        taskkill /PID <pid-linux> (que bajo WSL2 puede matar un proceso Windows
+        ajeno por colisión de PID). La garantía es proc.kill() + reap.
         """
         config = self._make_config(tmp_path)
         runner = LOOTRunner(config)
@@ -180,26 +180,21 @@ class TestLOOTRunner:
         mock_proc.kill = MagicMock()
         mock_proc.pid = 4242
 
-        mock_taskkill = MagicMock()
-
         with (
             patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sky_claw.local.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
             patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
-            patch("sky_claw.local.loot.cli.subprocess.run", mock_taskkill),
             patch("sky_claw.local.loot.cli.pathlib.Path.exists", return_value=True),
             pytest.raises(LOOTTimeoutError, match="timed out"),
         ):
             await runner.sort()
 
-        mock_taskkill.assert_called_once_with(
-            ["taskkill.exe", "/F", "/T", "/PID", "4242"],
-            capture_output=True,
-            check=False,
-        )
-        # Nunca debe usar /IM (que mataría procesos ajenos).
-        called_args = mock_taskkill.call_args.args[0]
-        assert "/IM" not in called_args
+        # La garantía dura: se mató este proceso.
+        mock_proc.kill.assert_called_once()
+        # El módulo ya no importa subprocess (no hay taskkill host-wide).
+        import sky_claw.local.loot.cli as _cli
+
+        assert not hasattr(_cli, "subprocess")
 
     @pytest.mark.asyncio
     async def test_sort_with_errors(self, tmp_path: pathlib.Path) -> None:

@@ -16,7 +16,6 @@ import asyncio
 import contextlib
 import logging
 import pathlib
-import subprocess
 from asyncio.exceptions import TimeoutError as AsyncTimeoutError
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -133,21 +132,18 @@ class LOOTRunner:
             raise LOOTNotFoundError(f"LOOT executable not found at {loot_path}") from None
         except (AsyncTimeoutError, TimeoutError):
             # TASK-011: Zombie prevention -- kill + reap.
+            # H-4 + review PR #257: NO se usa taskkill.exe en el path WSL2.
+            #  - /IM loot.exe (versión original) mataba TODAS las instancias de
+            #    loot.exe del host (LOOT GUI abierta, otro sky-claw), destruyendo
+            #    trabajo del usuario.
+            #  - /PID str(proc.pid) es peor aún: bajo WSL2 proc.pid es el PID de
+            #    Linux (el proceso interop), NO el de Windows; taskkill /PID con ese
+            #    número puede no matar el loot.exe colgado y, si colisiona con un
+            #    PID real de Windows, mata un proceso ajeno arbitrario.
+            # La garantía correcta es proc.kill() + reap: al matar el proceso Linux,
+            # la interop de WSL2 termina el proceso Windows asociado.
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-
-            # H-4: matar SOLO el árbol de ESTE proceso por PID, no por nombre de
-            # imagen. /IM loot.exe terminaba TODAS las instancias de loot.exe del
-            # host Windows (una LOOT GUI abierta, otro sky-claw concurrente),
-            # destruyendo su trabajo. /T /PID acota al árbol lanzado por nosotros.
-            # La garantía dura sigue siendo proc.kill() + reap; esto es best-effort.
-            if pathlib.Path("/mnt/c").exists():
-                await asyncio.to_thread(
-                    subprocess.run,
-                    ["taskkill.exe", "/F", "/T", "/PID", str(proc.pid)],
-                    capture_output=True,
-                    check=False,
-                )
 
             with contextlib.suppress(AsyncTimeoutError, TimeoutError):
                 await asyncio.wait_for(proc.wait(), timeout=3.0)
