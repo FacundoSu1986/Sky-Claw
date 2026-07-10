@@ -228,6 +228,36 @@ class TestDeepSeekProvider:
         assert headers["Authorization"] == "Bearer test-key"
 
     @pytest.mark.asyncio
+    async def test_error_no_loguea_body_de_usuario(self, caplog) -> None:
+        """M-6: en 4xx/5xx el log NO debe contener el contenido de los mensajes."""
+        import logging
+
+        provider = DeepSeekProvider(api_key="key")
+
+        mock_response = MagicMock()
+        mock_response.status = 401
+        mock_response.text = AsyncMock(return_value="Unauthorized")
+        mock_response.raise_for_status = MagicMock(side_effect=RuntimeError("401"))
+        mock_response.json = AsyncMock(return_value={})
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+
+        mock_gateway = MagicMock()
+        mock_gateway.request = AsyncMock(return_value=mock_response)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        secreto = "informacion-sensible-del-usuario-42"
+        messages = [{"role": "user", "content": secreto}]
+
+        with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError):
+            await provider.chat(messages, [], session, gateway=mock_gateway)
+
+        logs = "\n".join(r.getMessage() for r in caplog.records)
+        assert "DeepSeek error 401" in logs
+        # El contenido del mensaje del usuario NO debe filtrarse al log.
+        assert secreto not in logs
+
+    @pytest.mark.asyncio
     async def test_chat_with_tool_response(self) -> None:
         provider = DeepSeekProvider(api_key="key")
 

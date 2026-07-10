@@ -275,11 +275,16 @@ class DeepSeekProvider(LLMProvider):
         async with await gateway.request("POST", self.API_URL, session, json=body, headers=headers) as resp:
             if resp.status >= 400:
                 text = await resp.text()
+                # M-6: loguear sólo metadata — NO el request body, que contiene
+                # los mensajes del usuario (prompt/tool content, sensible y
+                # verboso). Consistente con el sibling OpenAIProvider.
                 logger.error(
-                    "DeepSeek error %d: %s. Body: %s",
+                    "DeepSeek error %d: %s (model=%s, %d msgs, %d tools)",
                     resp.status,
                     text,
-                    json.dumps(body)[:500],
+                    model,
+                    len(oai_messages),
+                    len(oai_tools),
                 )
             resp.raise_for_status()
             data = await resp.json()
