@@ -18,7 +18,10 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger("SkyClaw.validators.ssrf")
 
-# Redes bloqueadas según RFC 1918 y otras categorías
+# Redes bloqueadas según RFC 1918 y otras categorías.
+# H-06: completado para espejar network_gateway._is_blocked_ip (CGN, ULA IPv6,
+# multicast y reserved). El egress real va por NetworkGateway con DNS pinning;
+# esto es defensa en profundidad para callers que usen validate_url_ssrf directo.
 BLOCKED_NETWORKS = [
     ipaddress.ip_network("10.0.0.0/8"),  # RFC 1918 - Clase A
     ipaddress.ip_network("172.16.0.0/12"),  # RFC 1918 - Clase B
@@ -26,8 +29,13 @@ BLOCKED_NETWORKS = [
     ipaddress.ip_network("127.0.0.0/8"),  # Loopback
     ipaddress.ip_network("0.0.0.0/8"),  # Any-address
     ipaddress.ip_network("169.254.0.0/16"),  # Link-local (AWS/GCP metadata)
+    ipaddress.ip_network("100.64.0.0/10"),  # CGN / shared address space (RFC 6598)
+    ipaddress.ip_network("224.0.0.0/4"),  # IPv4 multicast
+    ipaddress.ip_network("240.0.0.0/4"),  # IPv4 reserved
     ipaddress.ip_network("::1/128"),  # IPv6 loopback
     ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
+    ipaddress.ip_network("fc00::/7"),  # IPv6 ULA (Unique Local Address)
+    ipaddress.ip_network("ff00::/8"),  # IPv6 multicast
 ]
 
 # Hostnames bloqueados por defecto
@@ -198,17 +206,24 @@ class SSRFValidator:
             for ip_str in resolved_ips:
                 try:
                     ip_obj = ipaddress.ip_address(ip_str)
+                except ValueError:
+                    continue
+                # H-06: normalizar IPv4-mapped IPv6 (p. ej. ::ffff:169.254.169.254)
+                # a su IPv4 para no evadir los bloqueos IPv4 vía la representación v6.
+                candidates: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [ip_obj]
+                mapped = getattr(ip_obj, "ipv4_mapped", None)
+                if mapped is not None:
+                    candidates.append(mapped)
+                for candidate in candidates:
                     for network in BLOCKED_NETWORKS:
-                        if ip_obj in network:
-                            logger.warning(f"SSRF blocked: IP {ip_str} en red bloqueada {network}")
+                        if candidate.version == network.version and candidate in network:
+                            logger.warning(f"SSRF blocked: IP {ip_str} ({candidate}) en red bloqueada {network}")
                             return SSRFValidationResult(
                                 is_valid=False,
                                 normalized_url=None,
                                 blocked_reason=f"IP resuelta {ip_str} está en red bloqueada",
                                 resolved_ip=ip_str,
                             )
-                except ValueError:
-                    continue
 
         # Paso 5: Construir URL normalizada
         normalized_url = self._normalize_url(parsed)
