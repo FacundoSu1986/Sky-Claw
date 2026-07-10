@@ -176,6 +176,11 @@ class DynDOLODPipelineService:
         start_time = time.monotonic()
         rolled_back = False
         tx_id: int | None = None
+        # M-7: rastrear los DirectoryRollback para reportar el resultado REAL del
+        # rollback (dr.rollback_completed) en vez de hardcodear rolled_back=True.
+        # El AsyncExitStack ejecuta los __aexit__ (restore) ANTES de que corran los
+        # except handlers, así que el flag ya está seteado cuando se leen.
+        dir_rollbacks: list[DirectoryRollback] = []
 
         logger.info(
             "Iniciando pipeline DynDOLOD: preset=%s, texgen=%s, snapshot=%s",
@@ -239,7 +244,9 @@ class DynDOLODPipelineService:
                     )
                 )
                 for output_dir in rollback_dirs:
-                    await tx_stack.enter_async_context(DirectoryRollback(output_dir))
+                    dr = DirectoryRollback(output_dir)
+                    await tx_stack.enter_async_context(dr)
+                    dir_rollbacks.append(dr)
 
                 # Comenzar transacción en journal DENTRO del lock
                 tx_id = await self._journal.begin_transaction(
@@ -332,9 +339,13 @@ class DynDOLODPipelineService:
             }
 
         except (DynDOLODExecutionError, DynDOLODTimeoutError) as exc:
-            rolled_back = True
+            # M-7: reportar el resultado REAL del rollback. Los __aexit__ de los
+            # DirectoryRollback ya corrieron (restore best-effort); rolled_back es
+            # True sólo si TODOS completaron. Un rmtree/rename fallido deja el output
+            # parcial en disco y debe reflejarse como rolled_back=False.
+            rolled_back = all(dr.rollback_completed for dr in dir_rollbacks)
             duration = time.monotonic() - start_time
-            logger.error("DynDOLOD pipeline domain error: %s", exc)
+            logger.error("DynDOLOD pipeline domain error: %s (rolled_back=%s)", exc, rolled_back)
 
             if tx_id is not None:
                 try:
@@ -386,7 +397,8 @@ class DynDOLODPipelineService:
 
         except Exception as exc:
             # PREVENCIÓN T11: Red de seguridad final — NUNCA dejar TX en PENDING
-            rolled_back = True
+            # M-7: resultado real del rollback (ver handler de dominio arriba).
+            rolled_back = all(dr.rollback_completed for dr in dir_rollbacks)
             duration = time.monotonic() - start_time
             logger.error(
                 "Unexpected error in DynDOLOD pipeline: %s",

@@ -46,6 +46,58 @@ async def test_failure_restores_original(tmp_path: pathlib.Path) -> None:
     assert not list(tmp_path.glob("Output.rollback-*"))
 
 
+async def test_rollback_completed_true_on_successful_restore(tmp_path: pathlib.Path) -> None:
+    """M-7: rollback_completed=True cuando el restore en el path de excepción tuvo éxito."""
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+
+    rb = DirectoryRollback(target)
+    with pytest.raises(RuntimeError, match="boom"):
+        async with rb:
+            raise RuntimeError("boom")
+
+    assert rb.rollback_completed is True
+
+
+async def test_rollback_completed_false_when_restore_fails(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M-7: si _restore_backup lanza OSError (best-effort, se traga), rollback_completed=False.
+
+    Antes, dyndolod/xedit hardcodeaban rolled_back=True aunque el restore fallara
+    en silencio, mintiendo al usuario y envenenando el audit trail.
+    """
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+
+    rb = DirectoryRollback(target)
+
+    async def _boom_restore() -> None:
+        raise OSError("rmtree bloqueado por handle de Windows")
+
+    # El body lanza → __aexit__ intenta restore, que ahora falla.
+    with pytest.raises(RuntimeError, match="boom"):
+        async with rb:
+            monkeypatch.setattr(rb, "_restore_backup", _boom_restore)
+            raise RuntimeError("boom")
+
+    assert rb.rollback_completed is False
+
+
+async def test_rollback_completed_false_on_success_path(tmp_path: pathlib.Path) -> None:
+    """M-7: en el path de éxito no hay rollback, así que rollback_completed queda False."""
+    target = tmp_path / "Output"
+    target.mkdir()
+
+    rb = DirectoryRollback(target)
+    async with rb:
+        pass
+
+    assert rb.rollback_completed is False
+
+
 async def test_first_run_no_backup_success(tmp_path: pathlib.Path) -> None:
     """Primer run (dir no existe): en éxito conserva el dir nuevo."""
     target = tmp_path / "Output"

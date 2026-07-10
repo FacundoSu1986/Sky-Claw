@@ -67,6 +67,12 @@ class DirectoryRollback:
         self._target = target_dir
         self._enabled = enabled
         self._backup: pathlib.Path | None = None
+        #: M-7: refleja si el rollback en el path de excepción se COMPLETÓ. El
+        #: restore es best-effort (traga OSError sin re-raise), así que el caller no
+        #: puede confiar en "hubo excepción ⇒ rolled_back=True". Este flag distingue
+        #: un restore exitoso de un fallo silencioso de rmtree/rename que dejó el
+        #: output parcial en disco. Espeja SnapshotTransactionLock.rollback_completed.
+        self.rollback_completed: bool = False
 
     async def __aenter__(self) -> DirectoryRollback:
         if not self._enabled:
@@ -96,6 +102,10 @@ class DirectoryRollback:
         try:
             if exc_type is not None:
                 await self._restore_backup()
+                # M-7: sólo aquí el rollback se considera COMPLETADO. Si
+                # _restore_backup lanza, no se llega a esta línea y el flag queda
+                # False, señalando al caller un rollback fallido.
+                self.rollback_completed = True
             else:
                 await self._discard_backup()
         except OSError:

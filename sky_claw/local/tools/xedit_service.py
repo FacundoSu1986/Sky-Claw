@@ -209,6 +209,9 @@ class XEditPipelineService:
         rolled_back = False
         tx_id: int | None = None
         in_lock_context = False
+        # M-7: bindear el lock para reportar el resultado REAL del rollback
+        # (tx_lock.rollback_completed) en vez de hardcodear rolled_back=True.
+        tx_lock: SnapshotTransactionLock | None = None
 
         try:
             async with SnapshotTransactionLock(
@@ -222,7 +225,7 @@ class XEditPipelineService:
                     "plugin": str(target_plugin),
                     "total_conflicts": report.total_conflicts,
                 },
-            ):
+            ) as tx_lock:
                 in_lock_context = True
                 tx_id = await self._journal.begin_transaction(
                     description="xedit_patch",
@@ -277,8 +280,10 @@ class XEditPipelineService:
                 await self._journal.commit_transaction(tx_id)
 
         except PatchingError as exc:
-            # __aexit__ ya restauró el snapshot
-            rolled_back = True
+            # __aexit__ ya intentó restaurar el snapshot. M-7: reportar el
+            # resultado REAL — rollback_completed es False si el restore falló
+            # silenciosamente, dejando los masters en estado parcial.
+            rolled_back = bool(tx_lock and tx_lock.rollback_completed)
             if tx_id is not None:
                 await self._journal.mark_transaction_rolled_back(tx_id)
             logger.error("Parcheo xEdit falló: %s", exc)
