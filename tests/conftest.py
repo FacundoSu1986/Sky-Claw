@@ -94,6 +94,22 @@ def _reset_governance_singleton() -> Iterator[None]:
         GovernanceManager._instance = None
 
 
+@pytest.fixture(autouse=True)
+def _localappdata_aislado(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirige LOCALAPPDATA a un directorio vacío por test (aislamiento del host).
+
+    ``LoadOrderFileResolver`` (y todo lo que lo construye por defecto, como
+    ``LootSortingService._ensure_load_order_resolver``) cae al env
+    ``LOCALAPPDATA`` cuando no se inyecta ``local_app_data``. En una máquina
+    con Skyrim SE instalado eso hacía que los tests vieran el
+    ``plugins.txt``/``loadorder.txt`` REALES del host y fallaran de forma
+    dependiente del entorno. Los tests que necesitan candidatos en
+    LOCALAPPDATA inyectan su propio directorio; los que necesitan la variable
+    ausente la borran con ``monkeypatch.delenv``.
+    """
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path_factory.mktemp("localappdata_aislado")))
+
+
 @pytest.fixture()
 def correlation_id() -> Iterator[str]:
     """Set a UUID4 correlation_id on the logging ContextVar for test duration.

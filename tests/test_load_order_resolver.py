@@ -72,6 +72,19 @@ class TestCandidatosLocalAppData:
         assert resolver.resolve().files == ()
 
 
+class TestAislamientoDelHost:
+    """Regresión: en hosts con Skyrim SE instalado, el fallback del resolver a
+    ``%LOCALAPPDATA%`` contaminaba todos los tests que no inyectan
+    ``local_app_data`` (fallaban 4 tests solo en esas máquinas). El conftest
+    aísla la variable por test; este canario lo verifica."""
+
+    def test_resolver_por_defecto_no_ve_el_load_order_del_host(self) -> None:
+        resultado = LoadOrderFileResolver().resolve()
+
+        assert resultado.files == ()
+        assert resultado.sources == ()
+
+
 class TestCandidatosMO2:
     """El profile de MO2 cubre el caso LOOT-vía-VFS (y futuros runners)."""
 
