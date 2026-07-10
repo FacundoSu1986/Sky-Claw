@@ -136,13 +136,13 @@ class TestExecuteFileOperationRollbackNoMutation:
         # _passive_pruning runs in finally; stub stats under the size limit so it no-ops
         mock_rm.get_snapshot_stats = AsyncMock(return_value=MagicMock(total_size_bytes=0))
 
-        # undo_last_operation returns a SUCCESSFUL rollback
+        # undo_operation returns a SUCCESSFUL rollback
         expected_result = RollbackResult(
             success=True,
             transaction_id=200,
             entries_restored=1,
         )
-        mock_rm.undo_last_operation = AsyncMock(return_value=expected_result)
+        mock_rm.undo_operation = AsyncMock(return_value=expected_result)
 
         engine = SyncEngine(
             mo2=AsyncMock(),
@@ -166,12 +166,12 @@ class TestExecuteFileOperationRollbackNoMutation:
             )
 
         # Verify undo was called
-        mock_rm.undo_last_operation.assert_called_once_with("sync_engine")
+        mock_rm.undo_operation.assert_called_once_with(200)
 
         # The returned result was NOT mutated — it still reports success=True
         # (We can't directly inspect the local variable, but we verify the mock
         # was called and the frozen dataclass would have prevented mutation)
-        returned_result = mock_rm.undo_last_operation.return_value
+        returned_result = mock_rm.undo_operation.return_value
         assert returned_result.success is True
 
     @pytest.mark.asyncio
@@ -187,7 +187,7 @@ class TestExecuteFileOperationRollbackNoMutation:
         mock_rm.get_snapshot_stats = AsyncMock(return_value=MagicMock(total_size_bytes=0))
 
         rollback_result = RollbackResult(success=True, transaction_id=200)
-        mock_rm.undo_last_operation = AsyncMock(return_value=rollback_result)
+        mock_rm.undo_operation = AsyncMock(return_value=rollback_result)
 
         engine = SyncEngine(
             mo2=AsyncMock(),
@@ -236,7 +236,7 @@ class TestExecuteFileOperationRollbackNoMutation:
             success=False,
             errors=("No completed operation found",),
         )
-        mock_rm.undo_last_operation = AsyncMock(return_value=rollback_result)
+        mock_rm.undo_operation = AsyncMock(return_value=rollback_result)
 
         engine = SyncEngine(
             mo2=AsyncMock(),
@@ -260,5 +260,5 @@ class TestExecuteFileOperationRollbackNoMutation:
             )
 
         # Rollback was attempted and its result (success=False) was preserved
-        mock_rm.undo_last_operation.assert_called_once()
-        assert mock_rm.undo_last_operation.return_value.success is False
+        mock_rm.undo_operation.assert_called_once()
+        assert mock_rm.undo_operation.return_value.success is False
