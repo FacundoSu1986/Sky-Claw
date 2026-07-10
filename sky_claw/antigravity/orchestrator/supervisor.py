@@ -540,7 +540,12 @@ class SupervisorAgent:
                 with open(modlist_path, encoding="utf-8") as fh:
                     for line in fh:
                         line = line.strip()
-                        if line.startswith("+") and line.lower().endswith((".esp", ".esm")):
+                        # L-1: incluir .esl. Los light masters (.esl y .esp/.esm con
+                        # flag ligero) SÍ cuentan hacia el límite de 254 masters de
+                        # Skyrim SE/AE; excluir .esl por extensión subcontaba el pool
+                        # real y podía dejar pasar un perfil sobre el límite. Mismo
+                        # criterio que parse_active_plugins.
+                        if line.startswith("+") and line.lower().endswith((".esp", ".esm", ".esl")):
                             active_plugins.append(line[1:])
 
             analyzer = ConflictAnalyzer()
