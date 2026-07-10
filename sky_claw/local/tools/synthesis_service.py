@@ -80,6 +80,7 @@ class SynthesisPipelineService:
         path_resolver: PathResolutionService,
         event_bus: CoreEventBus,
         pipeline_config_path: pathlib.Path | None = None,
+        output_path: pathlib.Path | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -89,6 +90,13 @@ class SynthesisPipelineService:
         self._pipeline_config_path = pipeline_config_path or (
             pathlib.Path(_BACKUP_STAGING_DIR) / "synthesis_pipeline.json"
         )
+        # T-27b: override del destino de salida. El sandbox de T-27 pasa
+        # `SandboxClone.overwrite_copy` para que el run escriba en la copia y
+        # no en el overwrite real (garantía de aislamiento). None = el cálculo
+        # de siempre (overwrite real / "Synthesis Output"). Fijo por instancia:
+        # un run sandboxeado construye su propio servicio (patrón ad-hoc de
+        # system_tools.run_pandora).
+        self._output_path = output_path
 
         # Lazy init — paths may not be available at construction time
         self._synthesis_runner: SynthesisRunner | None = None
@@ -124,9 +132,12 @@ class SynthesisPipelineService:
         if not synthesis_exe.exists():
             raise SynthesisExecutionError(f"Synthesis executable not found: {synthesis_exe}")
 
-        output_path = mo2_path / "overwrite"
-        if not output_path.exists():
-            output_path = mo2_path / "mods" / "Synthesis Output"
+        # T-27b: el override (sandbox) manda; sin él, el destino de siempre.
+        output_path = self._output_path
+        if output_path is None:
+            output_path = mo2_path / "overwrite"
+            if not output_path.exists():
+                output_path = mo2_path / "mods" / "Synthesis Output"
 
         config = SynthesisConfig(
             game_path=game_path,
