@@ -682,6 +682,83 @@ class TestCheckForUpdates:
         assert payload.updated_mods[0]["name"] == "OldMod"
         assert payload.updated_mods[0]["new_version"] == "2.0"
 
+    @pytest.mark.asyncio
+    async def test_orphan_download_removed_on_db_failure(self, tmp_path: pathlib.Path) -> None:
+        """M-2: si la escritura en DB falla tras una descarga exitosa, el archivo se limpia."""
+        import asyncio
+
+        orphan = tmp_path / "OldMod-2.0.7z"
+        orphan.write_bytes(b"descargado")
+
+        mock_registry = AsyncMock()
+        mock_registry.upsert_mod = AsyncMock(side_effect=RuntimeError("DB locked"))
+        mock_registry.log_tasks_batch = AsyncMock()
+
+        mock_masterlist = AsyncMock()
+        mock_masterlist.fetch_mod_info = AsyncMock(
+            return_value={"mod_id": 22222, "name": "OldMod", "version": "2.0", "author": "d", "category_id": "1"}
+        )
+
+        mock_downloader = AsyncMock()
+        mock_downloader.get_file_info = AsyncMock(return_value=MagicMock(download_url="https://x/oldmod.7z"))
+        mock_downloader.download = AsyncMock(return_value=orphan)
+
+        engine = SyncEngine(
+            mo2=AsyncMock(),
+            masterlist=mock_masterlist,
+            registry=mock_registry,
+            downloader=mock_downloader,
+            fetch_retry_wait=wait_none(),
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+        mod = {"nexus_id": 22222, "version": "1.0", "name": "OldMod"}
+
+        assert orphan.exists()
+        with pytest.raises(RuntimeError, match="DB locked"):
+            await engine._check_and_update_mod(mod, session, asyncio.Semaphore(1))
+
+        # El archivo descargado no debe quedar huérfano en disco.
+        assert not orphan.exists()
+
+    @pytest.mark.asyncio
+    async def test_success_no_rollback_performed_flag(self, tmp_path: pathlib.Path) -> None:
+        """M-3: en el path de éxito NO se marca rollback_performed (no hubo rollback)."""
+        import asyncio
+
+        downloaded = tmp_path / "Ok-2.0.7z"
+        downloaded.write_bytes(b"ok")
+
+        mock_registry = AsyncMock()
+        mock_registry.upsert_mod = AsyncMock()
+        mock_registry.log_tasks_batch = AsyncMock()
+
+        mock_masterlist = AsyncMock()
+        mock_masterlist.fetch_mod_info = AsyncMock(
+            return_value={"mod_id": 555, "name": "Ok", "version": "2.0", "author": "d", "category_id": "1"}
+        )
+
+        mock_downloader = AsyncMock()
+        mock_downloader.get_file_info = AsyncMock(return_value=MagicMock(download_url="https://x/ok.7z"))
+        mock_downloader.download = AsyncMock(return_value=downloaded)
+
+        mock_rm = AsyncMock()
+
+        engine = SyncEngine(
+            mo2=AsyncMock(),
+            masterlist=mock_masterlist,
+            registry=mock_registry,
+            downloader=mock_downloader,
+            rollback_manager=mock_rm,
+            fetch_retry_wait=wait_none(),
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+        mod = {"nexus_id": 555, "version": "1.0", "name": "Ok"}
+
+        result = await engine._check_and_update_mod(mod, session, asyncio.Semaphore(1))
+
+        assert result["status"] == "updated"
+        assert result.get("rollback_performed") is not True
+
 
 # ------------------------------------------------------------------
 # Shutdown lifecycle (lines 234-245)

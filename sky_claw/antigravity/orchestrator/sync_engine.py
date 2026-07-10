@@ -597,6 +597,11 @@ class SyncEngine:
         mod_name = mod["name"]
         rm = self._rollback_manager
         transaction_id: int | None = None
+        # M-2: rastrear el archivo descargado para poder limpiarlo si un error
+        # posterior (DB) impide completar la operación. El descargador escribe a
+        # disco pero no registra la operación en el journal, así que la limpieza
+        # journal-only NO borra el archivo.
+        download_path: pathlib.Path | None = None
 
         try:
             if rm is not None:
@@ -667,6 +672,7 @@ class SyncEngine:
             download_path = await self._downloader.download(file_info, session)
 
             # 4. Atomic DB update
+            #    (M-2: si upsert/log falla, el except limpia download_path.)
             await self._registry.upsert_mod(
                 nexus_id=nexus_id,
                 name=info.get("name", mod_name),
@@ -690,8 +696,10 @@ class SyncEngine:
                 "new_version": nexus_version,
                 "file_path": str(download_path),
             }
+            # M-3: la transacción se comiteó; NO hubo rollback. Marcar
+            # rollback_performed=True aquí era engañoso e inconsistente con el
+            # campo agregado (que queda False). Sólo se anota la transacción.
             if rm is not None:
-                result["rollback_performed"] = True
                 result["rollback_transaction_id"] = transaction_id
             return result
 
@@ -707,6 +715,7 @@ class SyncEngine:
                     await rm.mark_transaction_rolled_back(transaction_id)
                 except Exception as rb_exc:
                     logger.critical("mark_transaction_rolled_back failed for %s: %s", mod_name, rb_exc)
+            self._cleanup_orphan_download(download_path, mod_name)
             return {
                 "status": "error",
                 "name": mod_name,
@@ -723,7 +732,21 @@ class SyncEngine:
                     await rm.mark_transaction_rolled_back(transaction_id)
                 except Exception as rb_exc:
                     logger.critical("mark_transaction_rolled_back also failed for %s: %s", mod_name, rb_exc)
+            self._cleanup_orphan_download(download_path, mod_name)
             raise
+
+    @staticmethod
+    def _cleanup_orphan_download(download_path: pathlib.Path | None, mod_name: str) -> None:
+        """M-2: borra el archivo descargado si un error posterior abortó la
+        operación. El descargador escribe el archivo pero no lo registra en el
+        journal, así que sin esto queda huérfano en disco indefinidamente."""
+        if download_path is None:
+            return
+        try:
+            pathlib.Path(download_path).unlink(missing_ok=True)
+            logger.info("Descarga huérfana de %s eliminada: %s", mod_name, download_path)
+        except OSError as exc:
+            logger.warning("No se pudo eliminar la descarga huérfana %s: %s", download_path, exc)
 
     async def _safe_fetch_info(
         self,
