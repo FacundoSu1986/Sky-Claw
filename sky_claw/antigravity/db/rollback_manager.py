@@ -120,6 +120,15 @@ class RollbackManager:
                 errors=(f"No journal entry found for id={entry_id}",),
             )
 
+        # T2 (review PR #257): undo_operation resuelve por id (no filtra por
+        # estado como undo_last_operation). Si la entry YA fue revertida, no
+        # re-restaurar: el snapshot es viejo y una operación posterior pudo haber
+        # modificado el target: re-restaurar pisaría trabajo más nuevo. Retorno
+        # idempotente de éxito (no-op).
+        if entry.status == OperationStatus.ROLLED_BACK:
+            logger.info("undo_operation no-op: entry %s ya estaba ROLLED_BACK", entry_id)
+            return RollbackResult(success=True, transaction_id=entry_id, entries_restored=0)
+
         return await self._restore_entry(entry, log_scope=f"entry={entry_id}")
 
     async def _restore_entry(self, entry: Any, *, log_scope: str) -> RollbackResult:

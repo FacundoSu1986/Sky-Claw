@@ -304,3 +304,36 @@ async def test_undo_operation_missing_entry_returns_failure(journal):
     assert result.success is False
     assert result.transaction_id == 999999
     mgr.restore_snapshot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_undo_operation_idempotent_on_already_rolled_back(journal, tmp_path):
+    """T2 (review PR #257): un segundo undo_operation sobre la misma entry NO re-restaura.
+
+    Con lookup por id (no filtrado por estado), un retry sobre una entry ya
+    ROLLED_BACK re-restauraría el snapshot viejo, pisando trabajo posterior.
+    Debe ser no-op idempotente.
+    """
+    mgr = MagicMock()
+    mgr.restore_snapshot = AsyncMock(return_value=True)
+    rm = RollbackManager(journal, mgr)
+
+    tx_id = await journal.begin_transaction(description="idem", mod_id=None, agent_id="idem-agent")
+    entry_id = await journal.begin_operation(
+        agent_id="idem-agent",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(tmp_path / "t.esp"),
+        transaction_id=tx_id,
+        snapshot_path=str(tmp_path / "t.bin"),
+    )
+    await journal.complete_operation(entry_id)
+
+    first = await rm.undo_operation(entry_id)
+    assert first.success is True
+    assert mgr.restore_snapshot.await_count == 1
+
+    # Segundo undo: la entry ya está ROLLED_BACK → no debe volver a restaurar.
+    second = await rm.undo_operation(entry_id)
+    assert second.success is True
+    assert second.entries_restored == 0
+    assert mgr.restore_snapshot.await_count == 1  # NO se llamó una segunda vez
