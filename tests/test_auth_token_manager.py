@@ -313,7 +313,12 @@ class TestTokenFile:
         assert result is None
 
     def test_generate_calls_restrict_to_owner_on_file(self, tmp_path):
-        """restrict_to_owner must be called on the token file after writing."""
+        """restrict_to_owner debe cerrar los permisos antes de exponer el token.
+
+        H-08: la escritura es atómica (temp + os.replace), así que restrict_to_owner
+        se aplica al archivo TEMPORAL (``.ws_auth_token.tmp.<hex>``) ANTES del rename
+        —los perms del archivo final quedan cerrados atómicamente al aparecer.
+        """
         token_dir = tmp_path / "tokens"
         token_dir.mkdir()
 
@@ -322,11 +327,11 @@ class TestTokenFile:
             mock_restrict.reset_mock()  # reset the __init__ call
             mgr.generate()
 
-        # The last call should be on the token *file* (not just the directory)
+        # restrict_to_owner se llama sobre el temp que se convierte en el token file.
         called_paths = [str(c.args[0]) for c in mock_restrict.call_args_list]
-        token_file_str = str(mgr._token_path)
-        assert any(token_file_str in p or p in token_file_str for p in called_paths), (
-            f"restrict_to_owner was not called on the token file. Calls: {called_paths}"
+        token_name = mgr._token_path.name
+        assert any(token_name in p and ".tmp." in p for p in called_paths), (
+            f"restrict_to_owner no se llamó sobre el temp del token. Calls: {called_paths}"
         )
 
 
@@ -418,3 +423,41 @@ class TestTimingSafeComparison:
         wrong_hash = hashlib.sha256(b"nope").hexdigest()
         assert secrets.compare_digest(wrong_hash, stored_hash) is False
         assert mgr.validate("nope") is False
+
+
+# ===========================================================================
+# H-08: escritura atómica del token (os.replace, sin temporales huérfanos)
+# ===========================================================================
+
+
+class TestAtomicWrite:
+    def test_generate_no_deja_temporales(self, tmp_path):
+        """H-08: tras generate() no debe quedar ningún .ws_auth_token.tmp.* en el dir."""
+        mgr = _make_manager(tmp_path)
+        with patch("sky_claw.antigravity.security.auth_token_manager.restrict_to_owner"):
+            mgr.generate()
+            mgr.generate()  # segunda rotación
+
+        token_dir = tmp_path / "tokens"
+        leftovers = list(token_dir.glob("*.tmp.*"))
+        assert leftovers == [], f"temporales huérfanos: {leftovers}"
+
+    def test_token_file_es_json_valido_tras_generate(self, tmp_path):
+        """El archivo final siempre es JSON completo (nunca parcial/vacío)."""
+        mgr = _make_manager(tmp_path)
+        with patch("sky_claw.antigravity.security.auth_token_manager.restrict_to_owner"):
+            token = mgr.generate()
+
+        token_file = tmp_path / "tokens" / "ws_auth_token"
+        payload = json.loads(token_file.read_text(encoding="utf-8"))
+        assert payload["token"] == token
+        assert "created_at" in payload and "ttl" in payload
+
+    def test_read_token_file_round_trip(self, tmp_path):
+        """read_token_file recupera el token recién generado."""
+        mgr = _make_manager(tmp_path)
+        with patch("sky_claw.antigravity.security.auth_token_manager.restrict_to_owner"):
+            token = mgr.generate()
+
+        read_back = AuthTokenManager.read_token_file(token_dir=str(tmp_path / "tokens"))
+        assert read_back == token
