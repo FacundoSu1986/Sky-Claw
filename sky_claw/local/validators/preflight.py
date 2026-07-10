@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from sky_claw.local.validators.missing_masters import MasterIssue
     from sky_claw.local.validators.overwrite_health import OverwriteScan
     from sky_claw.local.validators.plugin_limits import LoadOrderLimits
+    from sky_claw.local.validators.write_permissions import WriteAccessReport
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,10 @@ LimitsCheck = Callable[[], "LoadOrderLimits"]
 #: Sensor de overwrite sucio inyectable (T-30·3): closure sobre
 #: OverwriteHealthChecker (escanea el overwrite compartido de MO2).
 OverwriteCheck = Callable[[], "OverwriteScan"]
+
+#: Sensor de permisos de escritura inyectable (T-30·4): closure sobre
+#: WritePermissionsChecker (write-probe en las rutas que el Ritual escribe).
+PermissionsCheck = Callable[[], "WriteAccessReport"]
 
 
 class PreflightStatus(StrEnum):
@@ -143,6 +148,10 @@ class PreflightService:
             devuelve el :class:`OverwriteScan` (closure sobre
             ``OverwriteHealthChecker.check``). Corre en un thread (escanea
             disco).
+        permissions_check: Sensor de permisos de escritura (T-30·4): callable
+            que devuelve el :class:`WriteAccessReport` (closure sobre
+            ``WritePermissionsChecker.check``). Corre en un thread (escribe un
+            probe temporal en disco).
     """
 
     def __init__(
@@ -154,11 +163,13 @@ class PreflightService:
         masters_check: MastersCheck | None = None,
         limits_check: LimitsCheck | None = None,
         overwrite_check: OverwriteCheck | None = None,
+        permissions_check: PermissionsCheck | None = None,
     ) -> None:
         self._vfs_checker = vfs_checker
         self._masters_check = masters_check
         self._limits_check = limits_check
         self._overwrite_check = overwrite_check
+        self._permissions_check = permissions_check
         if loot_version_detector is None and loot_exe is not None:
             exe = loot_exe
 
@@ -217,6 +228,12 @@ class PreflightService:
             # Escanea el overwrite en disco: fuera del event loop.
             overwrite = await asyncio.to_thread(self._overwrite_check)
         checks.append(self._overwrite_checkpoint(overwrite))
+
+        permissions: WriteAccessReport | None = None
+        if self._permissions_check is not None:
+            # Escribe un probe temporal en disco: fuera del event loop.
+            permissions = await asyncio.to_thread(self._permissions_check)
+        checks.append(self._permissions_checkpoint(permissions))
 
         composition = self._composition_check(vfs_issues, loot_version)
         if composition is not None:
@@ -295,6 +312,21 @@ class PreflightService:
         from sky_claw.local.validators.overwrite_health import overwrite_preflight_check
 
         return overwrite_preflight_check(scan)
+
+    @staticmethod
+    def _permissions_checkpoint(report: WriteAccessReport | None) -> PreflightCheck:
+        if report is None:
+            # No mentir: "escritura OK" implica que se probó; acá no hubo sensor.
+            return PreflightCheck(
+                name="write_permissions",
+                status=PreflightStatus.GREEN,
+                summary="Sensor de permisos no configurado.",
+            )
+        # Import a nivel función: mismo ciclo (write_permissions importa
+        # PreflightCheck de este módulo).
+        from sky_claw.local.validators.write_permissions import permissions_preflight_check
+
+        return permissions_preflight_check(report)
 
     @staticmethod
     def _loot_check(version: tuple[int, int, int] | None, *, detector_configured: bool) -> PreflightCheck:
