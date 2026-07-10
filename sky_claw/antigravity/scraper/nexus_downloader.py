@@ -388,25 +388,40 @@ class NexusDownloader:
         del tamaño, dejando pasar archivos corruptos o manipulados. En mismatch
         limpia el archivo y lanza HashValidationError.
         """
-        if not file_info.md5 and not file_info.sha256:
+        # Determinar qué hashes son UTILIZABLES antes de leer el archivo.
+        # Review copilot #257: si file_info.sha256 venía con formato inválido y no
+        # había md5, el guard anterior (not md5 and not sha256) pasaba (sha256
+        # truthy) y ambos bloques de comparación se salteaban → el archivo se
+        # aceptaba SIN validar y SIN avisar. Ahora se avisa explícitamente y sólo
+        # se computa el hash que efectivamente se va a comparar (eficiencia).
+        has_md5 = bool(file_info.md5)
+        sha256_usable = bool(file_info.sha256) and validate_sha256_format(file_info.sha256)
+        if file_info.sha256 and not sha256_usable:
             logger.warning(
-                "Sin hashes provistos por Nexus para %s; no se puede validar el fallback manual.",
+                "SHA256 de Nexus con formato inválido para %s; se ignora ese hash.",
+                file_info.file_name,
+            )
+        if not has_md5 and not sha256_usable:
+            logger.warning(
+                "Sin hashes utilizables provistos por Nexus para %s; no se puede validar el fallback manual.",
                 file_info.file_name,
             )
             return
 
-        md5_hash = hashlib.md5(usedforsecurity=False)  # nosec B324 - integridad, no seguridad
-        sha256_hash = hashlib.sha256()
+        md5_hash = hashlib.md5(usedforsecurity=False) if has_md5 else None  # nosec B324 - integridad
+        sha256_hash = hashlib.sha256() if sha256_usable else None
 
         def _read_and_hash() -> None:
             with open(path, "rb") as fh:
                 for chunk in iter(lambda: fh.read(self._chunk_size), b""):
-                    md5_hash.update(chunk)
-                    sha256_hash.update(chunk)
+                    if md5_hash is not None:
+                        md5_hash.update(chunk)
+                    if sha256_hash is not None:
+                        sha256_hash.update(chunk)
 
         await asyncio.to_thread(_read_and_hash)
 
-        if file_info.md5:
+        if md5_hash is not None:
             actual_md5 = md5_hash.hexdigest()
             if actual_md5.lower() != file_info.md5.lower():
                 await _cleanup(path)
@@ -416,7 +431,7 @@ class NexusDownloader:
                 )
             logger.info("MD5 validado OK (fallback manual) para %s (%s)", file_info.file_name, actual_md5)
 
-        if file_info.sha256 and validate_sha256_format(file_info.sha256):
+        if sha256_hash is not None:
             actual_sha256 = sha256_hash.hexdigest()
             if actual_sha256.lower() != file_info.sha256.lower():
                 await _cleanup(path)

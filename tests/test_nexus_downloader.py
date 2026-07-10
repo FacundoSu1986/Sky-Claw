@@ -1267,6 +1267,48 @@ class TestManualFallbackHashValidation:
         await d._validate_manual_hash(fi, f)  # sólo warning
         assert f.exists()
 
+    async def test_sha256_invalido_sin_md5_avisa_y_no_valida_en_silencio(self, tmp_path: pathlib.Path, caplog) -> None:
+        """Review copilot: sha256 de formato inválido + sin md5 no debe aceptar en silencio."""
+        import logging
+
+        d = _make_downloader(tmp_path)
+        f = tmp_path / "mod.zip"
+        f.write_bytes(b"lo que sea")
+        fi = _make_file_info(md5="", sha256="no-es-un-sha256-valido")
+
+        with caplog.at_level(logging.WARNING):
+            await d._validate_manual_hash(fi, f)  # no lanza (política actual) pero avisa
+
+        logs = "\n".join(r.getMessage() for r in caplog.records)
+        assert "formato inválido" in logs
+        assert "no se puede validar" in logs
+        assert f.exists()
+
+    async def test_sha256_invalido_pero_md5_valido_valida_por_md5(self, tmp_path: pathlib.Path) -> None:
+        """Un sha256 malformado no anula la validación por md5: mismatch de md5 igual lanza."""
+        d = _make_downloader(tmp_path)
+        f = tmp_path / "mod.zip"
+        f.write_bytes(b"corrupto")
+        fi = _make_file_info(md5=_md5_of(b"esperado"), sha256="zz-invalido")
+
+        with pytest.raises(HashValidationError, match="MD5 mismatch"):
+            await d._validate_manual_hash(fi, f)
+        assert not f.exists()
+
+    async def test_sha256_valido_mismatch_lanza(self, tmp_path: pathlib.Path) -> None:
+        """Regresión: un sha256 válido con contenido incorrecto sigue lanzando."""
+        import hashlib
+
+        d = _make_downloader(tmp_path)
+        f = tmp_path / "mod.zip"
+        f.write_bytes(b"corrupto")
+        sha_esperado = hashlib.sha256(b"esperado").hexdigest()
+        fi = _make_file_info(md5="", sha256=sha_esperado)
+
+        with pytest.raises(HashValidationError, match="SHA256 mismatch"):
+            await d._validate_manual_hash(fi, f)
+        assert not f.exists()
+
     async def test_fallback_rechaza_archivo_corrupto_en_staging(self, tmp_path: pathlib.Path) -> None:
         """El fallback manual con un archivo de hash incorrecto en staging lanza."""
         d = _make_downloader(tmp_path)
