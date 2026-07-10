@@ -734,7 +734,11 @@ class StateGraphEdges:
                 return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.GENERATING_LODS)
             return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.COMPLETED)
 
-        return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.COMPLETED)
+        # C-1: cualquier otro estado (status="error", desconocido, o tool_result
+        # ausente) NO es un éxito. Antes se caía a COMPLETED silenciando
+        # denegaciones HITL, tools alucinadas y crashes de subproceso envueltos
+        # por ErrorWrappingMiddleware. Fail-safe: ir a ERROR.
+        return StateGraphEdges._validate_and_route(SupervisorState.DISPATCHING, SupervisorState.ERROR)
 
     @staticmethod
     def route_from_error(state: StateGraphState) -> str:
@@ -1303,6 +1307,15 @@ class StateGraphIntegration:
             return
         result = await self._supervisor.dispatch_tool(tool_name, payload)
         state["tool_result"] = result
+
+        # C-1: propagar el fallo de la tool a last_error para que error_node lo
+        # registre y route_from_dispatching transite a ERROR con contexto. Sin
+        # esto, un status="error" (denegación HITL, tool alucinada, crash
+        # envuelto) quedaba sin mensaje de error asociado.
+        if isinstance(result, dict) and result.get("status") not in ("success", "aborted"):
+            state["last_error"] = (
+                result.get("error") or result.get("message") or f"Tool '{tool_name}' falló sin detalle"
+            )
 
     async def _on_hitl_wait(self, state: StateGraphState) -> None:
         """Callback para estado HITL_WAIT."""

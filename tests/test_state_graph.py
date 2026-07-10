@@ -182,6 +182,45 @@ class TestStateGraphEdges:
         result = StateGraphEdges.route_from_hitl_wait(state)
         assert result == SupervisorState.ERROR.value
 
+    def test_route_from_dispatching_success(self):
+        """Test routing from DISPATCHING cuando la tool tiene éxito → COMPLETED."""
+        state = {"tool_result": {"status": "success"}, "tool_name": "query_mod_metadata"}
+        result = StateGraphEdges.route_from_dispatching(state)
+        assert result == SupervisorState.COMPLETED.value
+
+    def test_route_from_dispatching_tool_error_goes_to_error(self):
+        """C-1: un tool_result con status='error' NO debe caer a COMPLETED.
+
+        Regresión: denegación HITL, tool alucinada por el LLM y crash de
+        subproceso envuelto por ErrorWrappingMiddleware devuelven status='error'
+        sin setear last_error. Antes del fix caían al return COMPLETED final.
+        """
+        state = {"tool_result": {"status": "error", "error": "tool denegada"}, "tool_name": "uninstall_mod"}
+        result = StateGraphEdges.route_from_dispatching(state)
+        assert result == SupervisorState.ERROR.value
+
+    def test_route_from_dispatching_unknown_status_goes_to_error(self):
+        """C-1: cualquier status desconocido cae a ERROR, no a COMPLETED (fail-safe)."""
+        state = {"tool_result": {"status": "weird"}, "tool_name": "run_loot_sort"}
+        result = StateGraphEdges.route_from_dispatching(state)
+        assert result == SupervisorState.ERROR.value
+
+    def test_on_dispatching_sets_last_error_on_tool_error(self):
+        """C-1: _on_dispatching propaga el mensaje del tool_result a last_error."""
+        import asyncio
+
+        sg = SupervisorStateGraph(profile_name="TestProfile")
+        translation = StateGraphIntegration(sg)
+
+        class _FakeSupervisor:
+            async def dispatch_tool(self, tool_name, payload):
+                return {"status": "error", "error": "subproceso crasheó"}
+
+        translation.connect_supervisor(_FakeSupervisor())
+        state = {"tool_name": "run_xedit_script", "tool_payload": {}}
+        asyncio.run(translation._on_dispatching(state))
+        assert state["last_error"] == "subproceso crasheó"
+
     def test_route_from_error_max_retries(self):
         """Test routing from ERROR when max retries exceeded."""
         state = {"error_count": 3}
