@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
@@ -604,9 +605,24 @@ class LLMRouter:
                 for block in content_blocks:
                     if block.get("type") != "tool_use":
                         continue
-                    tool_id: str = block["id"]
-                    tool_name: str = block["name"]
+                    # L-2: acceso defensivo. Antes block["id"]/block["name"] con
+                    # subscript FUERA del try lanzaba KeyError ante un tool_use
+                    # malformado (response truncada/bug de API/MITM), que caía al
+                    # except externo y abortaba el round de chat ENTERO (otros
+                    # tool_use válidos nunca se ejecutaban). Ahora se aísla por bloque.
+                    tool_id: str = block.get("id") or uuid.uuid4().hex
+                    tool_name = block.get("name", "")
                     tool_input: dict[str, Any] = block.get("input", {})
+                    if not tool_name:
+                        logger.warning("tool_use block sin 'name' (id=%s); se ignora ese bloque", tool_id)
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": sanitize_for_prompt("[Tool Error] tool_use block sin 'name'."),
+                            }
+                        )
+                        continue
 
                     try:
                         # Ejecutar herramienta con compatibilidad AsyncToolRegistry
