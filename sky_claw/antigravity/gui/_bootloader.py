@@ -59,9 +59,9 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
     the guard's timeout keeps the fail-closed auto-deny when nobody answers.
     """
     from sky_claw.antigravity.gui.controllers.ritual_runner import (
-        STORE_KEY_PENDING_AUTO_APPROVE,
         STORE_KEY_PENDING_HITL,
         make_gui_hitl_notify,
+        ritual_auto_approve_armed,
     )
 
     guard = ctx.hitl
@@ -69,15 +69,16 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
         logger.warning("No HITLGuard on AppContext — GUI ritual approval unavailable")
         return
     # Wrap (not replace) the original closure so Telegram scope approvals keep
-    # working; tool_execution + download are intercepted for the GUI. The getter
-    # reads the per-launch armed flag (set by run_ritual from the launching
-    # client's toggle) — not a global flag — so auto-approval is scoped to exactly
-    # the ritual the operator launched (Codex review on #211).
+    # working; tool_execution + download are intercepted for the GUI. M-9: el getter
+    # lee un ContextVar scoped a la task del dispatch (ritual_auto_approve_armed),
+    # no un flag global del store, así que la aprobación automática queda acotada a
+    # exactamente la task del ritual que la armó — nunca un tool_execution
+    # concurrente de Telegram/LLM/API.
     original_notify = guard._notify
     guard._notify = make_gui_hitl_notify(
         respond=guard.respond,
         set_pending=lambda payload: store.set(STORE_KEY_PENDING_HITL, payload),
-        auto_approve_getter=lambda: bool(store.get(STORE_KEY_PENDING_AUTO_APPROVE)),
+        auto_approve_getter=ritual_auto_approve_armed,
         delegate=original_notify,
     )
 
