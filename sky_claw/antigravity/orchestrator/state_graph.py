@@ -408,6 +408,14 @@ class StateGraphNodes:
         return {
             "current_state": SupervisorState.DISPATCHING.value,
             "previous_state": SupervisorState.ANALYZING.value,
+            # M-1: resetear el estado de rollback de una operación previa. rolling_back_node
+            # setea rollback_triggered=True y ningún nodo lo resetea al volver a IDLE. Sin
+            # este reset, tras el primer rollback en la sesión, route_from_error veía
+            # rollback_triggered stale=True y saltaba ROLLING_BACK en fallos posteriores,
+            # dejando el filesystem medio aplicado sin recuperación automática.
+            "rollback_triggered": False,
+            "rollback_result": None,
+            "rollback_transaction_id": None,
         }
 
     @staticmethod

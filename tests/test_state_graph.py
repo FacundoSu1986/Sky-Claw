@@ -104,6 +104,27 @@ class TestStateGraphNodes:
 
         assert result["current_state"] == SupervisorState.DISPATCHING.value
 
+    def test_dispatching_node_resets_rollback_flags(self):
+        """M-1: dispatching_node resetea los flags de rollback de una operación previa.
+
+        Sin esto, un rollback anterior dejaba rollback_triggered=True; el siguiente
+        fallo de despacho veía `not rollback_triggered == False` y se saltaba
+        ROLLING_BACK, yendo directo a ERROR_FATAL sin recuperación.
+        """
+        state = {
+            "workflow_id": "test_wf",
+            "tool_name": "run_loot_sort",
+            "rollback_triggered": True,
+            "rollback_result": {"success": True},
+            "rollback_transaction_id": 42,
+        }
+        result = StateGraphNodes.dispatching_node(state)
+
+        assert result["current_state"] == SupervisorState.DISPATCHING.value
+        assert result["rollback_triggered"] is False
+        assert result["rollback_result"] is None
+        assert result["rollback_transaction_id"] is None
+
     def test_hitl_wait_node(self):
         """Test hitl_wait_node processes HITL request."""
         state = {
