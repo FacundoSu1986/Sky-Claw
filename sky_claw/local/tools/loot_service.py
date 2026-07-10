@@ -47,7 +47,13 @@ if TYPE_CHECKING:
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
     from sky_claw.antigravity.security.path_validator import PathValidator
     from sky_claw.local.loot.parser import LOOTResult
-    from sky_claw.local.validators.preflight import LimitsCheck, MastersCheck, PreflightService
+    from sky_claw.local.validators.overwrite_health import OverwriteScan
+    from sky_claw.local.validators.preflight import (
+        LimitsCheck,
+        MastersCheck,
+        OverwriteCheck,
+        PreflightService,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -221,13 +227,38 @@ class LootSortingService:
         # reporta "no configurado" en vez de mentir verde (regla de honestidad).
         masters_check, limits_check = self._build_modlist_checks(raw_mo2, mo2_validated)
 
+        # T-30·3: sensor de overwrite sucio. Solo requiere una raíz MO2 validada
+        # (no depende del load order), así que se cablea aparte de los de modlist.
+        overwrite_check = self._build_overwrite_check(raw_mo2, mo2_validated)
+
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
             loot_exe=loot_exe,
             masters_check=masters_check,
             limits_check=limits_check,
+            overwrite_check=overwrite_check,
         )
         return self._preflight
+
+    def _build_overwrite_check(self, raw_mo2: pathlib.Path | None, mo2_validated: bool) -> OverwriteCheck | None:
+        """Construye el closure del sensor de overwrite sucio (T-30·3).
+
+        Requiere solo una raíz MO2 validada (el overwrite es ``<mo2>/overwrite``,
+        fuera del árbol del perfil). El closure re-escanea en cada run — el
+        ``PreflightService`` se cachea, así que la salida de una herramienta
+        corrida entre preflight y preflight debe verse (freshness, patrón #252).
+        Sin MO2 resoluble devuelve ``None`` → el semáforo dice "no configurado".
+        """
+        if not (mo2_validated and isinstance(raw_mo2, pathlib.Path)):
+            return None
+        from sky_claw.local.validators.overwrite_health import OverwriteHealthChecker
+
+        overwrite_dir = raw_mo2 / "overwrite"
+
+        def _overwrite() -> OverwriteScan:
+            return OverwriteHealthChecker(overwrite_dir=overwrite_dir).check()
+
+        return _overwrite
 
     def _build_modlist_checks(
         self, raw_mo2: pathlib.Path | None, mo2_validated: bool
