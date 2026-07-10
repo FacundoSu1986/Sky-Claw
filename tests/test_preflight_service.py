@@ -366,3 +366,61 @@ class TestSensorDeOverwrite:
         overwrite = next(c for c in reporte.checks if c.name == "overwrite")
         assert overwrite.status is PreflightStatus.GREEN
         assert "no configurado" in overwrite.summary.lower()
+
+
+class TestSensorDePermisos:
+    """T-30·4 (cableado): el sensor de permisos de escritura compone en el semáforo."""
+
+    @staticmethod
+    def _report(*, critical: bool = False, probed: int = 2):
+        from sky_claw.local.validators.write_permissions import WriteAccessIssue, WriteAccessReport
+
+        issues: tuple[WriteAccessIssue, ...] = ()
+        if critical:
+            issues = (
+                WriteAccessIssue(
+                    path="C:/Program Files/Skyrim/Data",
+                    kind="denied",
+                    severity="critical",
+                    remediation="corré fuera de Program Files",
+                ),
+            )
+        return WriteAccessReport(probed=tuple(f"ruta{i}" for i in range(probed)), issues=issues)
+
+    async def test_permiso_denegado_fuerza_rojo(self) -> None:
+        checker = MagicMock()
+        checker.check.return_value = []
+        servicio = PreflightService(
+            vfs_checker=checker,
+            loot_version_detector=AsyncMock(return_value=(0, 29, 0)),
+            permissions_check=lambda: self._report(critical=True),
+        )
+
+        reporte = await servicio.run()
+
+        assert reporte.status is PreflightStatus.RED
+        assert reporte.blocks_mutations is True
+        permisos = next(c for c in reporte.checks if c.name == "write_permissions")
+        assert permisos.status is PreflightStatus.RED
+
+    async def test_permisos_ok_es_verde(self) -> None:
+        checker = MagicMock()
+        checker.check.return_value = []
+        servicio = PreflightService(
+            vfs_checker=checker,
+            loot_version_detector=AsyncMock(return_value=(0, 29, 0)),
+            permissions_check=lambda: self._report(),
+        )
+
+        reporte = await servicio.run()
+
+        assert reporte.status is PreflightStatus.GREEN
+        permisos = next(c for c in reporte.checks if c.name == "write_permissions")
+        assert permisos.status is PreflightStatus.GREEN
+
+    async def test_sin_sensor_de_permisos_no_miente(self) -> None:
+        reporte = await _servicio(issues=[], version=(0, 29, 0)).run()
+
+        permisos = next(c for c in reporte.checks if c.name == "write_permissions")
+        assert permisos.status is PreflightStatus.GREEN
+        assert "no configurado" in permisos.summary.lower()
