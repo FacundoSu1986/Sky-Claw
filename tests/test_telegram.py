@@ -274,3 +274,53 @@ class TestTelegramSender:
 
         assert mock_gateway.request.await_count == 5
         assert len(sender._send_times[789]) == 5
+
+
+# ------------------------------------------------------------------
+# TelegramPolling — control de acceso por chat_id (C-2)
+# ------------------------------------------------------------------
+
+
+class TestTelegramPollingFailClosed:
+    """Verifica el fail-closed del polling cuando no hay chat_id autorizado (C-2)."""
+
+    def _make_polling(self, authorized_chat_id):
+        from sky_claw.antigravity.comms.telegram_polling import TelegramPolling
+
+        handler = MagicMock()
+        handler.process_update = AsyncMock()
+        polling = TelegramPolling(
+            token="123:ABC",
+            webhook_handler=handler,
+            gateway=MagicMock(),
+            session=MagicMock(spec=aiohttp.ClientSession),
+            authorized_chat_id=authorized_chat_id,
+        )
+        return polling, handler
+
+    async def test_sin_chat_id_configurado_no_despacha(self) -> None:
+        """C-2: con authorized_chat_id=None el update NO debe llegar al handler."""
+        polling, handler = self._make_polling(None)
+        update = {"update_id": 1, "message": {"text": "hola", "chat": {"id": 555}}}
+
+        await polling._process_raw_update(update)
+
+        handler.process_update.assert_not_awaited()
+
+    async def test_chat_id_autorizado_despacha(self) -> None:
+        """El operador autorizado sí es despachado al handler."""
+        polling, handler = self._make_polling(555)
+        update = {"update_id": 1, "message": {"text": "hola", "chat": {"id": 555}}}
+
+        await polling._process_raw_update(update)
+
+        handler.process_update.assert_awaited_once_with(update)
+
+    async def test_chat_id_no_autorizado_se_descarta(self) -> None:
+        """Un chat distinto al autorizado se descarta (comportamiento previo intacto)."""
+        polling, handler = self._make_polling(555)
+        update = {"update_id": 1, "message": {"text": "hola", "chat": {"id": 999}}}
+
+        await polling._process_raw_update(update)
+
+        handler.process_update.assert_not_awaited()

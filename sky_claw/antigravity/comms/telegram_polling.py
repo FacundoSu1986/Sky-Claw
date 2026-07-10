@@ -140,19 +140,28 @@ class TelegramPolling:
     async def _process_raw_update(self, update: dict[str, Any]) -> None:
         """Process a single raw update dict."""
 
-        # CWE-284: Drop-Early Middleware
-        if self._authorized_chat_id is not None:
-            message = (
-                update.get("message") or update.get("edited_message") or update.get("callback_query", {}).get("message")
+        # CWE-284: Drop-Early Middleware.
+        # C-2: fail-closed. Sin operador configurado NO se procesa ningún update:
+        # de lo contrario cualquier usuario que descubra el bot podría disparar
+        # tools mutantes (uninstall_mod, run_loot_sort, download_mod, ...).
+        if self._authorized_chat_id is None:
+            logger.error(
+                "authorized_chat_id no configurado (fail-closed). Configure telegram.operator_chat_id "
+                "para habilitar el procesamiento de updates."
             )
-            if message:
-                chat_id = message.get("chat", {}).get("id")
-                if chat_id is not None and str(chat_id) != str(self._authorized_chat_id):
-                    logger.warning(
-                        "CWE-284: Unauthorized access attempt from chat_id=%s. Dropping update.",
-                        chat_id,
-                    )
-                    return
+            return
+
+        message = (
+            update.get("message") or update.get("edited_message") or update.get("callback_query", {}).get("message")
+        )
+        if message:
+            chat_id = message.get("chat", {}).get("id")
+            if chat_id is not None and str(chat_id) != str(self._authorized_chat_id):
+                logger.warning(
+                    "CWE-284: Unauthorized access attempt from chat_id=%s. Dropping update.",
+                    chat_id,
+                )
+                return
 
         if not hasattr(self._handler, "process_update"):
             raise TypeError("Handler must implement process_update(data: dict)")
