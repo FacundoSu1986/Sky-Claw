@@ -136,11 +136,15 @@ class LOOTRunner:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
 
-            # Golden Master: WSL2/Windows native process annihilator (non-blocking).
+            # H-4: matar SOLO el árbol de ESTE proceso por PID, no por nombre de
+            # imagen. /IM loot.exe terminaba TODAS las instancias de loot.exe del
+            # host Windows (una LOOT GUI abierta, otro sky-claw concurrente),
+            # destruyendo su trabajo. /T /PID acota al árbol lanzado por nosotros.
+            # La garantía dura sigue siendo proc.kill() + reap; esto es best-effort.
             if pathlib.Path("/mnt/c").exists():
                 await asyncio.to_thread(
                     subprocess.run,
-                    ["taskkill.exe", "/F", "/IM", "loot.exe", "/T"],
+                    ["taskkill.exe", "/F", "/T", "/PID", str(proc.pid)],
                     capture_output=True,
                     check=False,
                 )

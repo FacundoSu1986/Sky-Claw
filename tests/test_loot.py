@@ -166,13 +166,19 @@ class TestLOOTRunner:
 
     @pytest.mark.asyncio
     async def test_loot_timeout_wsl_taskkill(self, tmp_path: pathlib.Path) -> None:
-        """Golden Master: WSL2 taskkill annihilator fires on timeout."""
+        """H-4: en timeout bajo WSL2, taskkill acota al PID del proceso, no a /IM.
+
+        Antes se usaba ``/IM loot.exe``, que mataba TODAS las instancias de
+        loot.exe del host (LOOT GUI abierta, otro sky-claw), destruyendo trabajo
+        no guardado. Ahora se mata sólo el árbol de ESTE proceso por PID.
+        """
         config = self._make_config(tmp_path)
         runner = LOOTRunner(config)
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"", b""))
         mock_proc.kill = MagicMock()
+        mock_proc.pid = 4242
 
         mock_taskkill = MagicMock()
 
@@ -187,10 +193,13 @@ class TestLOOTRunner:
             await runner.sort()
 
         mock_taskkill.assert_called_once_with(
-            ["taskkill.exe", "/F", "/IM", "loot.exe", "/T"],
+            ["taskkill.exe", "/F", "/T", "/PID", "4242"],
             capture_output=True,
             check=False,
         )
+        # Nunca debe usar /IM (que mataría procesos ajenos).
+        called_args = mock_taskkill.call_args.args[0]
+        assert "/IM" not in called_args
 
     @pytest.mark.asyncio
     async def test_sort_with_errors(self, tmp_path: pathlib.Path) -> None:
