@@ -142,6 +142,61 @@ class TestTelegramWebhook:
         await asyncio.sleep(0.1)
         mock_router.chat.assert_not_awaited()
 
+    @pytest.fixture()
+    async def secret_webhook_app(
+        self,
+    ) -> AsyncGenerator[tuple[web.Application, TelegramWebhook], None]:
+        """Webhook con secret_token configurado para probar la validación (H-5)."""
+        mock_router = MagicMock()
+        mock_router.chat = AsyncMock(return_value="ok")
+        mock_sender = MagicMock()
+        mock_sender.send = AsyncMock()
+        webhook = TelegramWebhook(
+            router=mock_router,
+            sender=mock_sender,
+            session=MagicMock(spec=aiohttp.ClientSession),
+            secret_token="s3cr3t-token-xyz",
+        )
+        app = web.Application()
+        app.router.add_post("/webhook", webhook.handle_update)
+        yield app, webhook
+        tasks = list(webhook._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_secret_token_correcto_acepta(self, aiohttp_client, secret_webhook_app) -> None:
+        """H-5: token correcto pasa la validación (200)."""
+        app, _ = secret_webhook_app
+        client = await aiohttp_client(app)
+        resp = await client.post(
+            "/webhook",
+            json=_make_update(1),
+            headers={"X-Telegram-Bot-Api-Secret-Token": "s3cr3t-token-xyz"},
+        )
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_secret_token_incorrecto_rechaza(self, aiohttp_client, secret_webhook_app) -> None:
+        """H-5: token incorrecto se rechaza con 401."""
+        app, _ = secret_webhook_app
+        client = await aiohttp_client(app)
+        resp = await client.post(
+            "/webhook",
+            json=_make_update(1),
+            headers={"X-Telegram-Bot-Api-Secret-Token": "wrong-token"},
+        )
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_secret_token_ausente_rechaza(self, aiohttp_client, secret_webhook_app) -> None:
+        """H-5: sin header de token se rechaza con 401."""
+        app, _ = secret_webhook_app
+        client = await aiohttp_client(app)
+        resp = await client.post("/webhook", json=_make_update(1))
+        assert resp.status == 401
+
     @pytest.mark.asyncio
     async def test_dedup_evicts_oldest(self) -> None:
         webhook, _, _ = _make_webhook()

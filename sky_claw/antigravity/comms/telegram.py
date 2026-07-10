@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
+import secrets
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -171,7 +172,10 @@ class TelegramWebhook:
         """
         if self._secret_token:
             token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
-            if not token or token != self._secret_token:
+            # H-5: comparación en tiempo constante. token != self._secret_token
+            # cortocircuitaba en el primer byte distinto, filtrando el secreto por
+            # timing. secrets.compare_digest es resistente a ese ataque.
+            if not token or not secrets.compare_digest(token, self._secret_token):
                 logger.warning("Unauthorized webhook access attempt")
                 return web.Response(status=401, text="Unauthorized")
 
