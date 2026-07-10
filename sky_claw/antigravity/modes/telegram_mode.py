@@ -27,7 +27,16 @@ async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
     if ctx.sender is None:
         logger.error("TELEGRAM_BOT_TOKEN required.")
         sys.exit(1)
-    webhook_handler = TelegramWebhook(router=ctx.router, sender=ctx.sender, session=ctx.session, hitl=ctx.hitl)
+    # M-4: pasar authorized_user_id. Sin él, _validate_sender falla cerrado
+    # (allowed_user_id=None ⇒ rechaza) y bloquea TODOS los approvals HITL en
+    # --mode telegram.
+    webhook_handler = TelegramWebhook(
+        router=ctx.router,
+        sender=ctx.sender,
+        session=ctx.session,
+        hitl=ctx.hitl,
+        authorized_user_id=ctx._args.operator_chat_id,
+    )
     polling = TelegramPolling(
         token=ctx.sender._token,
         webhook_handler=webhook_handler,
