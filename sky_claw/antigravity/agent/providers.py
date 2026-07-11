@@ -47,6 +47,24 @@ def _should_retry(exc: BaseException) -> bool:
     return isinstance(exc, aiohttp.ClientResponseError) and (exc.status == 429 or exc.status >= 500)
 
 
+# P-1: política de retry conservadora para APIs de pago remotas (rate-limits,
+# backoff largo justificado). Usada por Anthropic/DeepSeek/OpenAI.
+_PAID_API_RETRY: dict[str, Any] = {
+    "wait": wait_exponential(multiplier=1.5, min=2, max=60),
+    "stop": stop_after_attempt(5),
+    "retry": retry_if_exception(_should_retry),
+}
+
+# P-1: Ollama es local — sin rate-limiting, así que un hipo se reintenta
+# rápido; si el servicio está caído, no tiene sentido malgastar los backoffs
+# largos pensados para APIs remotas.
+_LOCAL_RETRY: dict[str, Any] = {
+    "wait": wait_exponential(multiplier=0.5, min=0.5, max=5),
+    "stop": stop_after_attempt(3),
+    "retry": retry_if_exception(_should_retry),
+}
+
+
 class LLMProvider(ABC):
     """Base class for LLM API providers."""
 
@@ -85,11 +103,7 @@ class AnthropicProvider(LLMProvider):
         #: Effective default model (config-driven; public for AppContext logging).
         self.model = model or self.DEFAULT_MODEL
 
-    @retry(
-        wait=wait_exponential(multiplier=1.5, min=2, max=60),
-        stop=stop_after_attempt(5),
-        retry=retry_if_exception(_should_retry),
-    )
+    @retry(**_PAID_API_RETRY)
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -156,7 +170,14 @@ def _convert_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert Anthropic message format to OpenAI chat format."""
+    """Convert Anthropic message format to OpenAI chat format.
+
+    P-3: un mensaje puede mezclar bloques ``tool_result`` con bloques
+    ``text``/``tool_use`` (p. ej. el modelo comenta mientras reporta un
+    resultado de tool). Ramificar solo por ``content[0].get("type")`` con un
+    ``continue`` temprano perdía el resto del mensaje según qué tipo de
+    bloque viniera primero. Se clasifica cada bloque en una sola pasada.
+    """
     result = []
     for msg in messages:
         role = msg["role"]
@@ -165,9 +186,12 @@ def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str
             result.append({"role": role, "content": content})
             continue
         if isinstance(content, list) and content and isinstance(content[0], dict):
-            first_type = content[0].get("type", "")
-            if first_type == "tool_result":
-                for block in content:
+            text_parts = []
+            tool_calls = []
+            has_non_tool_result_block = False
+            for block in content:
+                block_type = block.get("type")
+                if block_type == "tool_result":
                     result.append(
                         {
                             "role": "tool",
@@ -175,13 +199,11 @@ def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str
                             "content": block.get("content", ""),
                         }
                     )
-                continue
-            text_parts = []
-            tool_calls = []
-            for block in content:
-                if block.get("type") == "text":
+                    continue
+                has_non_tool_result_block = True
+                if block_type == "text":
                     text_parts.append(block.get("text", ""))
-                elif block.get("type") == "tool_use":
+                elif block_type == "tool_use":
                     tool_calls.append(
                         {
                             "id": block.get("id", uuid.uuid4().hex),
@@ -192,13 +214,18 @@ def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str
                             },
                         }
                     )
-            msg_dict: dict[str, Any] = {
-                "role": role,
-                "content": "\n".join(text_parts) if text_parts else ("..." if not tool_calls else None),
-            }
-            if tool_calls:
-                msg_dict["tool_calls"] = tool_calls
-            result.append(msg_dict)
+            # Solo emitir un mensaje de rol si hubo algún bloque que no sea
+            # tool_result (los tool_result ya se emitieron arriba). Un
+            # mensaje compuesto únicamente por tool_result no debe generar
+            # además un mensaje de rol vacío/"...".
+            if has_non_tool_result_block:
+                msg_dict: dict[str, Any] = {
+                    "role": role,
+                    "content": "\n".join(text_parts) if text_parts else ("..." if not tool_calls else None),
+                }
+                if tool_calls:
+                    msg_dict["tool_calls"] = tool_calls
+                result.append(msg_dict)
             continue
         result.append({"role": role, "content": str(content)})
     return result
@@ -254,11 +281,7 @@ class DeepSeekProvider(LLMProvider):
         #: Effective default model (config-driven; public for AppContext logging).
         self.model = model or self.DEFAULT_MODEL
 
-    @retry(
-        wait=wait_exponential(multiplier=1.5, min=2, max=60),
-        stop=stop_after_attempt(5),
-        retry=retry_if_exception(_should_retry),
-    )
+    @retry(**_PAID_API_RETRY)
     async def chat(self, messages, tools, session, gateway, *, system_prompt="", model=""):
         model = model or self.model
         oai_messages = _convert_messages_to_openai(messages)
@@ -315,11 +338,7 @@ class OpenAIProvider(LLMProvider):
         #: AppContext can surface it via ``getattr(provider, "model", ...)``).
         self.model = model or self.DEFAULT_MODEL
 
-    @retry(
-        wait=wait_exponential(multiplier=1.5, min=2, max=60),
-        stop=stop_after_attempt(5),
-        retry=retry_if_exception(_should_retry),
-    )
+    @retry(**_PAID_API_RETRY)
     async def chat(self, messages, tools, session, gateway, *, system_prompt="", model=""):
         model = model or self.model
         oai_messages = _convert_messages_to_openai(messages)
@@ -355,16 +374,18 @@ class OpenAIProvider(LLMProvider):
 class OllamaProvider(LLMProvider):
     DEFAULT_MODEL = "llama3.1"
 
-    def __init__(self, base_url="http://localhost:11434", model: str = ""):
+    #: P-2: inferencia local puede tardar minutos en hardware modesto — más
+    #: generoso que el default de 45s del NetworkGateway, pero acotado (no
+    #: cuelga indefinidamente si Ollama está colgado).
+    DEFAULT_TIMEOUT_SECONDS: float = 300.0
+
+    def __init__(self, base_url="http://localhost:11434", model: str = "", timeout: float = DEFAULT_TIMEOUT_SECONDS):
         self._base_url = base_url.rstrip("/")
         #: Effective default model (config-driven; public for AppContext logging).
         self.model = model or self.DEFAULT_MODEL
+        self._timeout = timeout
 
-    @retry(
-        wait=wait_exponential(multiplier=1.5, min=2, max=60),
-        stop=stop_after_attempt(5),
-        retry=retry_if_exception(_should_retry),
-    )
+    @retry(**_LOCAL_RETRY)
     async def chat(self, messages, tools, session, gateway, *, system_prompt="", model=""):
         model = model or self.model
         oai_messages = _convert_messages_to_openai(messages)
@@ -375,7 +396,8 @@ class OllamaProvider(LLMProvider):
         if oai_tools:
             body["tools"] = oai_tools
         url = f"{self._base_url}/v1/chat/completions"
-        async with await gateway.request("POST", url, session, json=body) as resp:
+        timeout = aiohttp.ClientTimeout(total=self._timeout)
+        async with await gateway.request("POST", url, session, json=body, timeout=timeout) as resp:
             if resp.status >= 400:
                 text = await resp.text()
                 logger.error("Ollama error %d: %s", resp.status, text)
