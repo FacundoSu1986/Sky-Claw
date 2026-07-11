@@ -318,7 +318,7 @@ class TestLimitesConFlagsReales:
             conflict_analyzer=analyzer,
         )
 
-    def test_con_rutas_resolubles_pasa_plugin_dirs(self, tmp_path: pathlib.Path) -> None:
+    async def test_con_rutas_resolubles_pasa_plugin_dirs(self, tmp_path: pathlib.Path) -> None:
         """T-18: con Skyrim/MO2 resolubles, el validador recibe los dirs y
         cuenta con flags reales (un ESPFE deja de inflar el pool full)."""
         skyrim = tmp_path / "Skyrim"
@@ -332,7 +332,7 @@ class TestLimitesConFlagsReales:
         analyzer.validate_load_order_limit = MagicMock(return_value=None)
 
         svc = self._service(tmp_path, resolver, analyzer)
-        avisos = svc._plugin_limit_warnings(["A.esp"])
+        avisos = await svc._plugin_limit_warnings(["A.esp"])
 
         assert avisos == []
         kwargs = analyzer.validate_load_order_limit.call_args.kwargs
@@ -340,13 +340,66 @@ class TestLimitesConFlagsReales:
         assert "Data" in dirs
         assert "ModA" in dirs
 
-    def test_sin_rutas_degrada_a_none(self, tmp_path: pathlib.Path) -> None:
-        """Sin entorno resoluble, el validador recibe plugin_dirs=None y
-        degrada solo a la heurística (con su warning honesto)."""
+    async def test_mo2_autodetectado_no_degrada(self, tmp_path: pathlib.Path) -> None:
+        """review Codex #267: sin MO2_PATH pero con MO2 auto-detectable, se
+        siguen leyendo headers reales (no se cae a la heurística)."""
+        skyrim = tmp_path / "Skyrim"
+        (skyrim / "Data").mkdir(parents=True)
+        mo2 = tmp_path / "MO2"
+        (mo2 / "mods" / "ModDetectado").mkdir(parents=True)
+        resolver = _resolver_without_paths()
+        resolver.get_skyrim_path = MagicMock(return_value=skyrim)
+        resolver.get_mo2_path = MagicMock(return_value=None)  # MO2_PATH sin setear
+        resolver.detect_mo2_path = MagicMock(return_value=mo2)  # pero detectable
         analyzer = MagicMock()
         analyzer.validate_load_order_limit = MagicMock(return_value=None)
 
-        svc = self._service(tmp_path, _resolver_without_paths(), analyzer)
-        svc._plugin_limit_warnings(["A.esp"])
+        svc = self._service(tmp_path, resolver, analyzer)
+        await svc._plugin_limit_warnings(["A.esp"])
+
+        dirs = {d.name for d in analyzer.validate_load_order_limit.call_args.kwargs["plugin_dirs"]}
+        assert "ModDetectado" in dirs  # se leyó del MO2 auto-detectado
+
+    async def test_sin_rutas_degrada_a_none(self, tmp_path: pathlib.Path) -> None:
+        """Sin entorno resoluble, el validador recibe plugin_dirs=None y
+        degrada solo a la heurística (con su warning honesto)."""
+        resolver = _resolver_without_paths()
+        resolver.detect_mo2_path = MagicMock(return_value=None)  # tampoco auto-detectable
+        analyzer = MagicMock()
+        analyzer.validate_load_order_limit = MagicMock(return_value=None)
+
+        svc = self._service(tmp_path, resolver, analyzer)
+        await svc._plugin_limit_warnings(["A.esp"])
 
         assert analyzer.validate_load_order_limit.call_args.kwargs["plugin_dirs"] is None
+
+    def test_dir_fuera_del_sandbox_se_descarta(self, tmp_path: pathlib.Path) -> None:
+        """review Copilot #267: zero-trust — un dir de plugins que cae fuera
+        del sandbox del PathValidator se descarta (no se lee ahí), best-effort."""
+        sandbox = tmp_path / "sandbox"
+        (sandbox / "Skyrim" / "Data").mkdir(parents=True)
+        # MO2 vive FUERA del sandbox → sus mods deben descartarse.
+        afuera = tmp_path / "afuera"
+        (afuera / "mods" / "ModX").mkdir(parents=True)
+        resolver = _resolver_without_paths()
+        resolver.get_skyrim_path = MagicMock(return_value=sandbox / "Skyrim")
+        resolver.get_mo2_path = MagicMock(return_value=afuera)
+        analyzer = MagicMock()
+        analyzer.validate_load_order_limit = MagicMock(return_value=None)
+
+        svc = ChainPreviewService(
+            lock_manager=MagicMock(),
+            snapshot_manager=MagicMock(),
+            journal=AsyncMock(),
+            path_resolver=resolver,
+            path_validator=PathValidator(roots=[sandbox]),  # solo sandbox/ es válido
+            event_bus=AsyncMock(),
+            loot_runner=MagicMock(),
+            xedit_runner=MagicMock(),
+            conflict_analyzer=analyzer,
+        )
+
+        dirs = svc._plugin_dirs()
+        nombres = {d.name for d in dirs}
+        assert "Data" in nombres  # dentro del sandbox: OK
+        assert "ModX" not in nombres  # fuera: descartado

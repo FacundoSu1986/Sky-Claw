@@ -169,7 +169,7 @@ class ChainPreviewService:
             sorted_order = loot_stage.load_order_diff.after if loot_stage.load_order_diff else []
 
             # Read-only 255-plugin guard against the LOOT-sorted order.
-            manifest_warnings.extend(self._plugin_limit_warnings(sorted_order))
+            manifest_warnings.extend(await self._plugin_limit_warnings(sorted_order))
 
             # xEdit reads the freshly LOOT-sorted order (the chain dependency).
             scan_plugins = plugins_for_scan if plugins_for_scan is not None else sorted_order
@@ -225,13 +225,22 @@ class ChainPreviewService:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _plugin_limit_warnings(self, plugins: list[str]) -> list[str]:
-        """Read-only 254/4096 plugin-pool check; returns warnings, never raises."""
+    async def _plugin_limit_warnings(self, plugins: list[str]) -> list[str]:
+        """Read-only 254/4096 plugin-pool check; returns warnings, never raises.
+
+        T-18: con dirs resolubles el conteo usa los flags reales del header (un
+        ESPFE cuenta como light); sin dirs, el validador degrada a la heurística
+        por extensión con warning. El escaneo (enumera mods + lee cada header)
+        va a un thread para no bloquear el event loop del preview (review Codex
+        #267).
+        """
+        dirs = await asyncio.to_thread(self._plugin_dirs)
         try:
-            # T-18: con dirs resolubles el conteo usa los flags reales del
-            # header (un ESPFE cuenta como light); sin dirs, el validador
-            # degrada solo a la heurística por extensión con warning.
-            self._conflict_analyzer.validate_load_order_limit(plugins, plugin_dirs=self._plugin_dirs() or None)
+            await asyncio.to_thread(
+                self._conflict_analyzer.validate_load_order_limit,
+                plugins,
+                plugin_dirs=dirs or None,
+            )
         except RuntimeError as exc:
             return [str(exc)]
         return []
@@ -247,6 +256,12 @@ class ChainPreviewService:
         if isinstance(skyrim, pathlib.Path):
             game_data_dir = skyrim / "Data"
         mo2 = self._path_resolver.get_mo2_path()
+        if not isinstance(mo2, pathlib.Path):
+            # Auto-detección de MO2 (mismo fallback que el preflight de LOOT):
+            # sin MO2_PATH pero instancia detectable, seguimos leyendo headers
+            # reales en vez de degradar a la heurística (review Codex #267).
+            detected = self._path_resolver.detect_mo2_path()
+            mo2 = detected if isinstance(detected, pathlib.Path) else None
         mo2_ok = isinstance(mo2, pathlib.Path)
         sources = resolve_plugin_sources(
             game_data_dir=game_data_dir,
@@ -254,7 +269,16 @@ class ChainPreviewService:
             mo2_overwrite_dir=mo2 / "overwrite" if mo2_ok else None,
             load_order_file=None,
         )
-        return sources.plugin_dirs
+        # Zero-trust (review Copilot #267): validar cada dir contra el sandbox
+        # antes de leer headers ahí. Best-effort — una ruta fuera del sandbox
+        # (o un symlink que escapa) se descarta con log, no rompe el preview.
+        validated: list[pathlib.Path] = []
+        for directory in sources.plugin_dirs:
+            try:
+                validated.append(self._path_validator.validate(directory))
+            except Exception as exc:  # noqa: BLE001 — boundary: descartar ruta insegura, no propagar
+                logger.debug("Dir de plugins descartado (fuera del sandbox): %s — %s", directory, exc)
+        return tuple(validated)
 
     @staticmethod
     async def _read_plugin_order(path: pathlib.Path) -> list[str]:

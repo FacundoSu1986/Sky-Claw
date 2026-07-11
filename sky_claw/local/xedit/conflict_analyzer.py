@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import pathlib
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -18,7 +19,6 @@ from typing import TYPE_CHECKING, Any
 from sky_claw.local.xedit.flag_rules import FlagAlert, evaluate_flag_rules
 
 if TYPE_CHECKING:
-    import pathlib
     from collections.abc import Sequence
 
     from sky_claw.local.xedit.runner import XEditRunner
@@ -276,21 +276,44 @@ class ConflictAnalyzer:
             # los checkpoints del preflight).
             from sky_claw.local.validators.plugin_limits import PluginLimitsChecker
 
-            limits = PluginLimitsChecker(plugin_dirs=plugin_dirs).check(plugins)
-            criticals = [i for i in limits.issues if i.severity == "critical"]
-            for issue in limits.issues:
-                if issue.severity == "critical":
-                    logger.critical("CRITICAL ALERT [%s]: %s", issue.kind, issue.detail)
-                else:
-                    logger.warning("[%s] %s", issue.kind, issue.detail)
-            if criticals:
-                raise RuntimeError("; ".join(i.detail for i in criticals))
-            return
+            # El checker indexa por basename; normalizar para no subcontar si
+            # el caller pasó paths completos (el contrato acepta ambos —
+            # review Copilot #267).
+            names = [pathlib.PurePath(p).name for p in plugins]
+            limits = PluginLimitsChecker(plugin_dirs=plugin_dirs).check(names)
+            # Cobertura: el checker SKIPEA los plugins que no encuentra en los
+            # dirs. Si los dirs no cubren todos los plugins activos (p. ej. MO2
+            # no resuelto → solo Data), delegar subcontaría y podría dejar
+            # pasar un overflow real — peor que la heurística. En ese caso se
+            # cae a la heurística por extensión, que cuenta todo (review Codex
+            # #267).
+            # located = plugins ÚNICOS ubicados en disco. unreadable es un
+            # subconjunto de full/light (se cuenta por extensión igual), así que
+            # NO se suma aparte o sobre-contaría.
+            located = limits.full_count + limits.light_count
+            unique = len({n.casefold() for n in names})
+            if located >= unique:
+                criticals = [i for i in limits.issues if i.severity == "critical"]
+                for issue in limits.issues:
+                    if issue.severity == "critical":
+                        logger.critical("CRITICAL ALERT [%s]: %s", issue.kind, issue.detail)
+                    else:
+                        logger.warning("[%s] %s", issue.kind, issue.detail)
+                if criticals:
+                    raise RuntimeError("; ".join(i.detail for i in criticals))
+                return
+            logger.warning(
+                "Cobertura de headers incompleta (%d/%d plugins ubicados en disco): se cae al conteo "
+                "por extensión para no subcontar los plugins ausentes de los dirs resueltos.",
+                located,
+                unique,
+            )
 
-        logger.warning(
-            "Límites full/light contados por extensión (aproximado): un ESPFE contaría "
-            "contra el pool equivocado — pasá plugin_dirs para usar los flags reales del header."
-        )
+        else:
+            logger.warning(
+                "Límites full/light contados por extensión (aproximado): un ESPFE contaría "
+                "contra el pool equivocado — pasá plugin_dirs para usar los flags reales del header."
+            )
         full_plugins = [p for p in plugins if p.lower().endswith((".esp", ".esm"))]
         light_plugins = [p for p in plugins if p.lower().endswith(".esl")]
 

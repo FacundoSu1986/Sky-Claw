@@ -796,6 +796,22 @@ class TestValidateLoadOrderLimitConFlagsReales:
 
         analyzer.validate_load_order_limit(list(nombres), plugin_dirs=[plugins_dir])  # no lanza
 
+    def test_paths_completos_se_normalizan_a_basename(self, tmp_path) -> None:
+        """review Copilot #267: el checker indexa por basename; si el caller
+        pasa paths completos, deben normalizarse o se subcontaría (dejando
+        pasar un overflow real)."""
+        plugins_dir = tmp_path / "Data"
+        plugins_dir.mkdir()
+        nombres = [f"full_{i:03}.esp" for i in range(255)]
+        for nombre in nombres:
+            _plugin_binario(plugins_dir / nombre, flags=0)  # full de verdad
+        # El caller pasa PATHS COMPLETOS, no basenames.
+        paths_completos = [str(plugins_dir / nombre) for nombre in nombres]
+        analyzer = ConflictAnalyzer()
+
+        with pytest.raises(RuntimeError, match="255/254"):
+            analyzer.validate_load_order_limit(paths_completos, plugin_dirs=[plugins_dir])
+
     def test_limite_full_real_excedido_lanza(self, tmp_path) -> None:
         plugins_dir = tmp_path / "Data"
         plugins_dir.mkdir()
@@ -806,6 +822,19 @@ class TestValidateLoadOrderLimitConFlagsReales:
 
         with pytest.raises(RuntimeError, match="255/254"):
             analyzer.validate_load_order_limit(list(nombres), plugin_dirs=[plugins_dir])
+
+    def test_dirs_incompletos_caen_a_heuristica(self, tmp_path) -> None:
+        """review Codex #267: si los dirs no cubren los plugins activos, el
+        checker skipea los ausentes → subcontaría. Se cae a la heurística que
+        cuenta todo por extensión (no perder un overflow real)."""
+        plugins_dir = tmp_path / "Data"
+        plugins_dir.mkdir()  # vacío: NO contiene ninguno de los plugins activos
+        nombres = [f"m_{i:03}.esp" for i in range(255)]
+        analyzer = ConflictAnalyzer()
+
+        # Con dirs que no cubren nada → cae a heurística → 255 full → lanza.
+        with pytest.raises(RuntimeError):
+            analyzer.validate_load_order_limit(nombres, plugin_dirs=[plugins_dir])
 
     def test_esl_corrupto_se_reporta_sin_explotar(self, tmp_path, caplog) -> None:
         """Un .esl con header ilegible no tumba la validación: cae al conteo
