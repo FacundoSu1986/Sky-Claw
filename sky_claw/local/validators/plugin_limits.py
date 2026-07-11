@@ -10,8 +10,9 @@ Exceder cualquiera de los dos impide arrancar. Este sensor los cuenta con los
 **flags reales** del header TES4 (vía :func:`read_plugin_header`), no por
 extensión: un ``.esp`` con flag ESL (ESPFE) consume slot *light*, no *full* —
 exactamente el caso que la heurística por extensión de
-``conflict_analyzer.validate_load_order_limit`` cuenta mal. Corre en el
-preflight, antes de cualquier herramienta.
+``conflict_analyzer.validate_load_order_limit`` contaba mal (hoy, con
+``plugin_dirs``, esa validación delega acá — T-18). Corre en el preflight,
+antes de cualquier herramienta.
 
 :func:`limits_preflight_check` compone el resultado en un :class:`PreflightCheck`
 para el semáforo; el cableado al ``PreflightService`` es un parámetro inyectable

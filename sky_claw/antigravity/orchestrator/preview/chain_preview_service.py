@@ -86,6 +86,9 @@ class ChainPreviewService:
         self._loot_runner = loot_runner
         self._xedit_runner = xedit_runner
         self._conflict_analyzer = conflict_analyzer
+        # T-18: para resolver los dirs de plugins y contar límites con flags
+        # reales del header (no por extensión).
+        self._path_resolver = path_resolver
 
         # Reuse the per-stage dry_run paths added in the pipeline services so
         # the chain never duplicates the plan-only logic.
@@ -225,10 +228,33 @@ class ChainPreviewService:
     def _plugin_limit_warnings(self, plugins: list[str]) -> list[str]:
         """Read-only 254/4096 plugin-pool check; returns warnings, never raises."""
         try:
-            self._conflict_analyzer.validate_load_order_limit(plugins)
+            # T-18: con dirs resolubles el conteo usa los flags reales del
+            # header (un ESPFE cuenta como light); sin dirs, el validador
+            # degrada solo a la heurística por extensión con warning.
+            self._conflict_analyzer.validate_load_order_limit(plugins, plugin_dirs=self._plugin_dirs() or None)
         except RuntimeError as exc:
             return [str(exc)]
         return []
+
+    def _plugin_dirs(self) -> tuple[pathlib.Path, ...]:
+        """Dirs donde viven los plugins (Data + mods/overwrite de MO2), para
+        contar límites con flags reales (T-18). Best-effort: entorno sin rutas
+        resolubles → tupla vacía (isinstance defiende de resolvers mockeados)."""
+        from sky_claw.local.mo2.plugin_sources import resolve_plugin_sources
+
+        game_data_dir: pathlib.Path | None = None
+        skyrim = self._path_resolver.get_skyrim_path()
+        if isinstance(skyrim, pathlib.Path):
+            game_data_dir = skyrim / "Data"
+        mo2 = self._path_resolver.get_mo2_path()
+        mo2_ok = isinstance(mo2, pathlib.Path)
+        sources = resolve_plugin_sources(
+            game_data_dir=game_data_dir,
+            mo2_mods_dir=mo2 / "mods" if mo2_ok else None,
+            mo2_overwrite_dir=mo2 / "overwrite" if mo2_ok else None,
+            load_order_file=None,
+        )
+        return sources.plugin_dirs
 
     @staticmethod
     async def _read_plugin_order(path: pathlib.Path) -> list[str]:

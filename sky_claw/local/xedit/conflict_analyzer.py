@@ -18,6 +18,9 @@ from typing import TYPE_CHECKING, Any
 from sky_claw.local.xedit.flag_rules import FlagAlert, evaluate_flag_rules
 
 if TYPE_CHECKING:
+    import pathlib
+    from collections.abc import Sequence
+
     from sky_claw.local.xedit.runner import XEditRunner
 
 logger = logging.getLogger(__name__)
@@ -240,19 +243,54 @@ class ConflictAnalyzer:
     # Public API
     # ------------------------------------------------------------------
 
-    def validate_load_order_limit(self, plugins: list[str]) -> None:
+    def validate_load_order_limit(
+        self,
+        plugins: list[str],
+        *,
+        plugin_dirs: Sequence[pathlib.Path] | None = None,
+    ) -> None:
         """Validates the Skyrim SSE/AE plugin limits for both full and light pools.
 
         Skyrim SE/AE has two independent plugin pools:
-        - Full plugins (.esp, .esm): max 254
-        - Light plugins (.esl): max 4096
+        - Full plugins: max 254
+        - Light plugins (FE): max 4096
+
+        T-18: con ``plugin_dirs`` el conteo usa los **flags reales** del header
+        TES4 (vía :class:`~sky_claw.local.validators.plugin_limits.PluginLimitsChecker`):
+        un ESPFE (``.esp`` con flag ESL) consume slot *light*, exactamente el
+        caso que la heurística por extensión contaba mal. Sin ``plugin_dirs``
+        se degrada a la heurística con un warning explícito (no mentir
+        precisión).
 
         Args:
             plugins: List of plugin filenames (basename or full path accepted).
+            plugin_dirs: Directorios donde viven los plugins (``Data`` y/o
+                carpetas de mods de MO2). ``None`` = conteo por extensión.
 
         Raises:
             RuntimeError: If either pool exceeds its respective limit.
         """
+        if plugin_dirs is not None:
+            # Import perezoso: plugin_limits importa PreflightCheck; mantener a
+            # conflict_analyzer liviano en el camino sin dirs (mismo patrón que
+            # los checkpoints del preflight).
+            from sky_claw.local.validators.plugin_limits import PluginLimitsChecker
+
+            limits = PluginLimitsChecker(plugin_dirs=plugin_dirs).check(plugins)
+            criticals = [i for i in limits.issues if i.severity == "critical"]
+            for issue in limits.issues:
+                if issue.severity == "critical":
+                    logger.critical("CRITICAL ALERT [%s]: %s", issue.kind, issue.detail)
+                else:
+                    logger.warning("[%s] %s", issue.kind, issue.detail)
+            if criticals:
+                raise RuntimeError("; ".join(i.detail for i in criticals))
+            return
+
+        logger.warning(
+            "Límites full/light contados por extensión (aproximado): un ESPFE contaría "
+            "contra el pool equivocado — pasá plugin_dirs para usar los flags reales del header."
+        )
         full_plugins = [p for p in plugins if p.lower().endswith((".esp", ".esm"))]
         light_plugins = [p for p in plugins if p.lower().endswith(".esl")]
 
