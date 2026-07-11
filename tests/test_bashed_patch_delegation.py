@@ -24,6 +24,7 @@ from sky_claw.local.xedit.conflict_analyzer import (
     RecordConflict,
 )
 from sky_claw.local.xedit.patch_orchestrator import (
+    LEVELED_LIST_TYPES,
     DelegateToBashedPatch,
     PatchOrchestrator,
     PatchResult,
@@ -89,6 +90,38 @@ class TestOrquestador:
         for tipo in ("LVLI", "LVLN", "LVSP"):
             assert await estrategia.can_handle(_conflicto(tipo, "warning")) is True
         assert await estrategia.can_handle(_conflicto("NPC_", "critical")) is False
+
+
+class TestLeveledListTypesEsCerrado:
+    """Ancla de regresión: LEVELED_LIST_TYPES es EXACTAMENTE {LVLI, LVLN, LVSP}.
+
+    Una auditoría propuso ampliarlo a LVLC/LVEF/REFR/NAVM. El veredicto (OODA+TOT)
+    fue NO ampliar, y este test fija ese veredicto para que nadie lo aplique a
+    ciegas más adelante:
+
+    - LVLC (Leveled Creature) y LVEF no existen como firmas de Skyrim SE — son
+      relictos de Oblivion/Fallout. El repo ya tiene precedente de removerlos
+      (SCA-001/T-07: SCPT→SCEN).
+    - REFR (refs colocadas) y NAVM (navmesh) son un dominio de conflicto
+      distinto, clasificado como WARNING en conflict_analyzer.DEFAULT_WARNING_TYPES.
+      El Bashed Patch NO los fusiona; rutearlos por LEVELED_LIST_TYPES los
+      mandaría a DelegateToBashedPatch → delegación falsa (ver ADR 0001), una
+      regresión de correctitud y potencialmente destructiva para navmeshes.
+    """
+
+    def test_set_es_exactamente_los_tres_tipos_de_skyrim(self) -> None:
+        assert sorted(LEVELED_LIST_TYPES) == ["LVLI", "LVLN", "LVSP"]
+
+    def test_tipos_no_leveled_estan_excluidos(self) -> None:
+        for tipo in ("REFR", "NAVM", "LVLC", "LVEF"):
+            assert tipo not in LEVELED_LIST_TYPES
+
+    async def test_delegacion_no_maneja_refr_ni_navm(self) -> None:
+        """El guard a nivel comportamiento: la delegación a Wrye Bash rechaza
+        conflictos de refs colocadas y navmesh."""
+        estrategia = DelegateToBashedPatch()
+        for tipo in ("REFR", "NAVM"):
+            assert await estrategia.can_handle(_conflicto(tipo, "warning")) is False
 
 
 class TestServicio:
