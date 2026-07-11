@@ -14,6 +14,9 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+# Sin ciclo: flag_rules solo importa de este módulo bajo TYPE_CHECKING.
+from sky_claw.local.xedit.flag_rules import FlagAlert, evaluate_flag_rules
+
 if TYPE_CHECKING:
     from sky_claw.local.xedit.runner import XEditRunner
 
@@ -136,6 +139,9 @@ class RecordConflict:
     #: T-19a: estado de los flags críticos por versión del record (vacío si el
     #: export no emitió FLAG para este FormID — compat con salidas viejas).
     flag_states: tuple[OverrideFlagState, ...] = ()
+    #: T-19b: alertas del motor de reglas de flags (las asigna analyze(), como
+    #: hace con severity). Vacío = ninguna regla disparó o faltan datos.
+    flag_alerts: tuple[FlagAlert, ...] = ()
 
 
 @dataclass
@@ -185,6 +191,16 @@ class ConflictReport:
                             "severity": c.severity,
                             "flag_states": [
                                 {"plugin": f.plugin, "flag": f.flag, "value": f.value} for f in c.flag_states
+                            ],
+                            "flag_alerts": [
+                                {
+                                    "flag": a.flag,
+                                    "winner": a.winner,
+                                    "defined_by": list(a.defined_by),
+                                    "severity": a.severity,
+                                    "explanation": a.explanation,
+                                }
+                                for a in c.flag_alerts
                             ],
                         }
                         for c in pp.conflicts
@@ -315,6 +331,9 @@ class ConflictAnalyzer:
         classified: list[RecordConflict] = []
         for rc in raw_conflicts:
             rc.severity = self._classify(rc.record_type)
+            # T-19b: el motor de reglas convierte el dato por-versión (T-19a)
+            # en alertas explicadas, adjuntas al conflicto para GUI/LLM.
+            rc.flag_alerts = evaluate_flag_rules(rc)
             classified.append(rc)
 
         # Group by plugin pairs.
@@ -344,6 +363,21 @@ class ConflictAnalyzer:
         if report.total_conflicts == 0:
             suggestions.append("No conflicts detected — load order looks clean.")
             return suggestions
+
+        # T-19b: las alertas del motor de reglas van PRIMERO — son lo más
+        # accionable (un flag concreto que el ganador pierde, con su porqué).
+        seen_alerts: set[tuple[str, str]] = set()
+        for c in _flat_conflicts(report):
+            for alert in c.flag_alerts:
+                key = (alert.form_id, alert.flag)
+                if key in seen_alerts:
+                    continue  # _group_by_pair duplica el conflicto por par
+                seen_alerts.add(key)
+                suggestions.append(
+                    f"{alert.editor_id} ({alert.form_id}): el ganador {alert.winner} no preserva "
+                    f"'{alert.flag}' definido por {', '.join(alert.defined_by)} — {alert.explanation}. "
+                    "Forwardear el flag en un parche xEdit."
+                )
 
         # Analyze by record type across all pairs.
         type_counts: dict[str, int] = defaultdict(int)
