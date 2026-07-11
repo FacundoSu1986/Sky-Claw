@@ -27,6 +27,12 @@ from sky_claw.local.tools._process import kill_and_reap
 
 logger = logging.getLogger(__name__)
 
+# S-4: gracia máxima para drenar los buffers residuales tras la salida normal del
+# proceso. Si un nieto (p.ej. TexGen lanzado por DynDOLOD) heredó el pipe y
+# sobrevive al padre, el write-end nunca cierra y `_drain` no vería EOF jamás; sin
+# esta cota, el `gather` del path de éxito colgaría `_execute_process` para siempre.
+_DRAIN_GRACE_SECONDS = 10.0
+
 
 # =============================================================================
 # EXCEPTIONS
@@ -522,7 +528,30 @@ class DynDOLODRunner:
             heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
-            results = await asyncio.gather(drain_out, drain_err, return_exceptions=True)
+            # S-4: el proceso ya terminó; drenamos los buffers residuales pero con
+            # una cota. Si un nieto heredó el pipe y sigue vivo, el EOF nunca llega
+            # y sin timeout este gather colgaría para siempre (igual que el path de
+            # timeout, que sí cancela los drains). Agotada la gracia, cancelamos los
+            # drains y seguimos con el output parcial (el proceso ya reportó éxito).
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(drain_out, drain_err, return_exceptions=True),
+                    timeout=_DRAIN_GRACE_SECONDS,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "%s: los drains no cerraron en %.1fs tras la salida del proceso "
+                    "(posible nieto con pipe heredado); se continúa con output parcial.",
+                    tool_name,
+                    _DRAIN_GRACE_SECONDS,
+                )
+                drain_out.cancel()
+                drain_err.cancel()
+                # gather(return_exceptions=True) sobre tasks ya canceladas captura
+                # sus CancelledError como resultados (no relanza); sin `suppress`
+                # una cancelación externa del caller propaga como corresponde.
+                await asyncio.gather(drain_out, drain_err, return_exceptions=True)
+                results = []
             for r in results:
                 if isinstance(r, BaseException):
                     logger.warning(

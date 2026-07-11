@@ -1025,3 +1025,46 @@ async def test_safe_mark_rolled_back_no_op_when_tx_id_is_none(
     )
     await svc._safe_mark_rolled_back(None)
     journal.mark_transaction_rolled_back.assert_not_called()
+
+
+# =============================================================================
+# S-4: drain con cota en el path de éxito
+# =============================================================================
+
+
+class TestRunVramrDrainGrace:
+    """S-4: ``_run_vramr`` no debe colgarse si un drain nunca ve EOF.
+
+    Si VRAMr deja un nieto que hereda el pipe y sobrevive al proceso, el
+    write-end nunca cierra y ``_read_stream`` no recibe EOF. Sin cota, el
+    ``gather`` del path de éxito colgaría ``_run_vramr`` indefinidamente.
+    """
+
+    async def test_drain_colgado_en_exito_retorna_dentro_del_grace(self) -> None:
+        async def _never_eof(*_a: object, **_k: object) -> bytes:
+            await asyncio.Event().wait()  # se bloquea para siempre
+            return b""  # pragma: no cover
+
+        proc = make_fake_proc(exit_code=0, stdout_lines=(b"out-1\n",))
+        proc.stderr.readline = _never_eof  # este drain nunca termina
+
+        # `_run_vramr` no toca lock_manager/journal/path_validator/event_bus.
+        svc = make_service(
+            lock_manager=MagicMock(),
+            mock_journal=AsyncMock(),
+            path_validator=MagicMock(),
+            event_bus=MagicMock(),
+        )
+
+        with (
+            patch.object(vramr_mod.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)),
+            patch.object(vramr_mod, "_DRAIN_GRACE_SECONDS", 0.1),
+        ):
+            exit_code, stdout_lines, stderr_lines = await asyncio.wait_for(
+                svc._run_vramr(pathlib.Path("VRAMr.exe"), [], timeout=60.0),
+                timeout=5.0,
+            )
+
+        assert exit_code == 0
+        assert stdout_lines == ["out-1"]  # stdout drenó normalmente
+        assert stderr_lines == []  # drain cancelado tras el grace → parcial

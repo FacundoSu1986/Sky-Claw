@@ -6,6 +6,7 @@ publication, journal lifecycle, and rollback on unexpected errors.
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -596,3 +597,61 @@ async def test_directory_rollback_discards_backup_on_success(
     assert (output_dir / "new.esp").read_text(encoding="utf-8") == "NEW"
     assert not (output_dir / "old.esp").exists()  # el output previo se descartó (regenerado)
     assert not list(mods.glob("DynDOLOD Output.rollback-*"))
+
+
+# =============================================================================
+# S-4: drain con cota en el path de éxito
+# =============================================================================
+
+
+class _EOFStream:
+    """StreamReader falso que devuelve EOF de inmediato."""
+
+    async def read(self, _n: int) -> bytes:
+        return b""
+
+
+class _HangingStream:
+    """StreamReader falso que nunca emite EOF (simula un nieto que heredó el pipe)."""
+
+    async def read(self, _n: int) -> bytes:
+        await asyncio.Event().wait()  # se bloquea para siempre
+        return b""  # pragma: no cover
+
+
+class TestExecuteProcessDrainGrace:
+    """S-4: el branch de salida normal no debe colgarse si un drain nunca ve EOF.
+
+    Si DynDOLOD/TexGen deja un nieto que hereda el pipe y sobrevive al padre, el
+    write-end nunca cierra y `_drain` no recibe EOF. Sin una cota, el `gather` del
+    path de éxito colgaría `_execute_process` pasado incluso el timeout global.
+    """
+
+    async def test_drain_colgado_en_exito_retorna_dentro_del_grace(self) -> None:
+        from sky_claw.local.tools import dyndolod_runner as ddl
+
+        proc = MagicMock()
+        proc.stdout = _EOFStream()
+        proc.stderr = _HangingStream()  # este drain nunca termina
+        proc.returncode = 0
+        proc.wait = AsyncMock(return_value=0)  # el proceso "salió" con éxito
+
+        config = MagicMock()
+        config.timeout_seconds = 3600
+        config.heartbeat_interval = 60
+        runner = ddl.DynDOLODRunner(config)
+
+        with (
+            patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)),
+            patch.object(ddl, "_DRAIN_GRACE_SECONDS", 0.1),
+        ):
+            # Con el fix retorna dentro del grace (0.1s); sin él, el gather del
+            # path de éxito cuelga y este wait_for externo dispararía TimeoutError.
+            stdout, stderr, return_code, _duration = await asyncio.wait_for(
+                runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "DynDOLOD"),
+                timeout=5.0,
+            )
+
+        assert return_code == 0
+        assert stdout == ""  # EOF inmediato
+        assert stderr == ""  # drain cancelado tras el grace → output parcial
