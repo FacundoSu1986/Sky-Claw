@@ -4,7 +4,7 @@
   Audience: any LLM agent (Claude Code, Cursor, Aider, Gemini, Codex) editing pipeline code.
   Scope: operational rules for xEdit, CAO, BodySlide, Pandora, LOOT, Wrye Bash,
          Synthesis, No Grass In Objects, TexGen, DynDOLOD.
-  Companion file: ../AGENTS.md (repo-wide coding conventions).
+  Companion file: ../../AGENTS.md (repo-wide coding conventions, two levels up).
 -->
 
 # SKYRIM MODDING PIPELINE — AGENT OPERATING PROCEDURES
@@ -45,7 +45,7 @@ The pipeline is a strict DAG. Each stage consumes the output of the previous sta
 │          │ (Batch Build)                 │ meshes + armor conform   │
 ├─────────────────────────────────────────────────────────────────────┤
 │  STAGE 4 │ Pandora Behaviour Engine      │ Compile AI behaviors     │
-│          │ (after XMPSSE skeleton mods)  │ into engine format       │
+│          │ (after XPMSSE skeleton mods)  │ into engine format       │
 ├─────────────────────────────────────────────────────────────────────┤
 │  STAGE 5 │ LOOT                          │ Stabilize load order     │
 │          │ (BEFORE any patch)            │ Verify master deps       │
@@ -56,7 +56,7 @@ The pipeline is a strict DAG. Each stage consumes the output of the previous sta
 │  STAGE 7 │ Synthesis                     │ Dynamic mutators +       │
 │          │ (after Wrye Bash)             │ Synthesis.esp            │
 ├─────────────────────────────────────────────────────────────────────┤
-│  STAGE 8 │ No Grass In Objects           │ Grass precache cache     │
+│  STAGE 8 │ No Grass In Objects           │ Grass precache (NG)      │
 │          │ (before DynDOLOD)             │ Prevents grass clipping  │
 ├─────────────────────────────────────────────────────────────────────┤
 │  STAGE 9 │ TexGen → DynDOLOD 3           │ Dynamic LOD generation   │
@@ -64,14 +64,14 @@ The pipeline is a strict DAG. Each stage consumes the output of the previous sta
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Stage dependencies (enforced in code)
+### Stage dependencies (documented here, NOT yet enforced at runtime)
 
 | Stage | Requires completed | Blocks |
 |-------|-------------------|--------|
 | 1 xEdit QAC | (nothing) | 2, 5, 6, 7, 8, 9 |
 | 2 CAO | (nothing, per-mod) | — |
 | 3 BodySlide | skeleton + physics mods installed | 4 |
-| 4 Pandora | animation mods + XMPSSE positioned | — |
+| 4 Pandora | animation mods + XPMSSE positioned | — |
 | 5 LOOT | 1 (clean masters) | 6, 7, 8, 9 |
 | 6 Wrye Bash | 5 (LOOT) | 7, 9 |
 | 7 Synthesis | 6 (Wrye Bash) | 9 |
@@ -123,7 +123,7 @@ The pipeline is a strict DAG. Each stage consumes the output of the previous sta
 
 **Purpose:** Interactive mesh configuration. Builds morphological body bases (CBBE, 3BA) and batch-conforms armors and clothing to preset proportions.
 
-**Inputs:** Structural body base mods (CBBE, 3BA), physics mods (CBPC, XMPSSE), and equipment mods with BodySlide support.
+**Inputs:** Structural body base mods (CBBE, 3BA), physics mods (CBPC, XPMSSE), and equipment mods with BodySlide support.
 
 **Procedure:**
 1. Launch from the mod manager.
@@ -141,7 +141,7 @@ The pipeline is a strict DAG. Each stage consumes the output of the previous sta
 
 **Purpose:** Dynamically compiles AI behaviors, character/creature animations, and skeleton schemas into a format the Bethesda engine can ingest.
 
-**Inputs:** Animation mods and universal skeleton patches (XMPSSE) installed and positioned in the load order FIRST.
+**Inputs:** Animation mods and universal skeleton patches (XPMSSE) installed and positioned in the load order FIRST.
 
 **Procedure:**
 1. Launch from the mod manager.
@@ -209,7 +209,7 @@ The pipeline is a strict DAG. Each stage consumes the output of the previous sta
 **Outputs:** A single consolidated plugin `Synthesis.esp`.
 
 **Exceptions:**
-- **Error "DotNet SDK Not Detected":** Windows environment collision with x86 (32-bit) dotnet vestiges. Solution: delete `/Program Files (x86)/dotnet` and reinstall the x64 channel SDK.
+- **Error "DotNet SDK Not Detected":** Windows environment collision with x86 (32-bit) dotnet vestiges. Solution: use the official .NET uninstall tool (`dotnet-core-uninstall`) or "Apps & Features" to remove the x86 runtime, then install the **x64 channel SDK** (not the runtime alone — see §0 directive #10). Do NOT hand-delete `C:\Program Files (x86)\dotnet`; that path is owned by Windows Installer and direct removal can break MSI-revert.
 - **Failure "Max Masters Exceeded":** Skyrim rejects any `.esp` requiring more than 254 masters. In loads exceeding ~1000 mods, Synthesis will fail here. ENABLE the directive **`Split Files if Max Masters Exceeded`** (Auto-Split) to fragment the output.
 
 ---
@@ -275,7 +275,7 @@ To escape the paralyzing effect of the Rule of One, two patchers are used and th
 
 **Scope:** Graphical conflicts (e.g. two mods overwriting the same brick texture).
 
-**Rule:** Resolved EXCLUSIVELY by manipulating the priority hierarchy of the mod manager's left-panel VFS. The mod higher in the left panel wins precedence for loose files. There is no record-level merge for assets.
+**Rule:** Resolved EXCLUSIVELY by manipulating the priority hierarchy of the mod manager's left-panel VFS. In MO2's `modlist.txt`, the mod listed **LAST** has the **highest** loose-file priority (the file is read bottom-up; see `sky_claw/local/assets/asset_scanner.py::parse_modlist` which reverses the file). In MO2's left-pane UI, that means the mod **lower** in the list (towards the bottom of the pane) wins. There is no record-level merge for assets.
 
 **Coherence rule:** Use CAO to compress loose files into `.bsa` archives. This prevents unnecessary disk reads and ensures spatial coherence. Uncompressed loose-file loads are a performance defect.
 
@@ -303,17 +303,17 @@ To escape the paralyzing effect of the Rule of One, two patchers are used and th
 
 ## 5. AGENT CODE-EDITING RULES
 
-When modifying pipeline code in this repository, the following rules apply ON TOP of `../AGENTS.md`:
+When modifying pipeline code in this repository, the following rules apply ON TOP of `../../AGENTS.md`:
 
-1. **ALWAYS** preserve the stage ordering encoded in `sky_claw/antigravity/orchestrator/tool_strategies/`. The strategy registration order mirrors §1.
-2. **NEVER** introduce a code path that invokes DynDOLOD before Wrye Bash + Synthesis have completed. Add a runtime guard if one does not exist.
+1. **NEVER** assume the strategy registration order in `build_default_tool_dispatcher()` (`sky_claw/antigravity/orchestrator/tool_dispatcher.py`) mirrors the pipeline order in §1. It does NOT — strategies are registered as LLM-callable tools, not executed in pipeline order. The §1 order is enforced by the agent's tool-call sequence, not by the dispatcher. Do not "fix" the registration order to match §1; that would be a regression.
+2. **NEVER** introduce a code path that invokes DynDOLOD before Wrye Bash + Synthesis have completed. The current `GenerateLodsStrategy.execute()` (see `sky_claw/antigravity/orchestrator/tool_strategies/generate_lods.py`) does NOT check upstream completion — a runtime guard is still needed and any new LOD-invocation path MUST add one.
 3. **NEVER** allow Wrye Bash strategy to merge categories beyond Leveled Lists without an explicit user override flag. Default scope = Leveled Lists ONLY.
-4. **ALWAYS** emit a `success: bool` + `message: str` from any new tool runner (see `tool_result.py` contract in `../AGENTS.md`).
+4. **ALWAYS** emit a `success: bool` + `message: str` from any new tool runner (see `tool_result.py` contract in `../../AGENTS.md`).
 5. **ALWAYS** log the pipeline stage index when a tool fails. Stage index is the primary debugging signal.
 6. **NEVER** mock the 254-master limit in tests. The Auto-Split directive is load-bearing for large mod lists and must be exercised, not stubbed.
-7. **ALWAYS** write tests in Spanish (repo convention from `../AGENTS.md`) even though this document is in English. The SOP is English-canonical for agent consumption; the test suite is Spanish-canonical for human convention.
+7. **ALWAYS** write tests in Spanish (repo convention from `../../AGENTS.md`) even though this document is in English. The SOP is English-canonical for agent consumption; the test suite is Spanish-canonical for human convention.
 8. **NEVER** remove the Dawnguard double-clean special case from `quick_auto_clean.py`. It is a documented anomaly, not a bug.
 
 ---
 
-*End of pipeline operating procedures. For repo-wide coding conventions, see [`../AGENTS.md`](../AGENTS.md).*
+*End of pipeline operating procedures. For repo-wide coding conventions, see [`../../AGENTS.md`](../../AGENTS.md).*
