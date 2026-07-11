@@ -14,6 +14,7 @@ configuration.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -21,7 +22,7 @@ import pathlib
 import sys
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import aiohttp
 from aiohttp import web
@@ -43,6 +44,10 @@ def _get_exe_dir() -> pathlib.Path:
 
 
 _CONFIG_PATH = _get_exe_dir() / "sky_claw_config.json"
+
+# Tope de espera al cerrar cada socket /ws/ui durante la rotación del token
+# (mismo valor que usaba el ops-hub eliminado en #219).
+ROTATION_CLOSE_TIMEOUT_SECONDS: Final[float] = 5.0
 
 
 def _dev_no_auth_enabled() -> bool:
@@ -85,6 +90,12 @@ class WebApp:
         self._chat_id = "web-session"
         self._config_path = config_path or _CONFIG_PATH
         self._auth_manager = auth_manager
+        # Sockets /ws/ui vivos: la rotación del token debe poder cerrarlos —
+        # el token se valida solo en el handshake, así que sin este registro
+        # un socket viejo sobreviviría a la rotación (tanda 6 #219).
+        self._ws_ui_clients: set[web.WebSocketResponse] = set()
+        self._ws_ui_lock = asyncio.Lock()
+        self._token_rotating = False
 
     @web.middleware
     async def _correlation_middleware(
@@ -138,7 +149,44 @@ class WebApp:
         app.router.add_post("/api/chat", self._handle_chat)
         app.router.add_get("/ws/ui", self._handle_ws_ui)
 
+        if self._auth_manager is not None:
+            self._auth_manager.register_rotation_callback(self.close_all_ws_ui_clients)
+
         return app
+
+    async def close_all_ws_ui_clients(self) -> None:
+        """Cierra todo socket /ws/ui activo con POLICY_VIOLATION (rotación de token).
+
+        1008 y no 4001: el 4001 cuenta para el lockout de auth del cliente GUI
+        (``agent_communication._AUTH_REJECTION_CLOSE_CODES``) y una rotación no
+        es un rechazo de credenciales — el cliente debe releer el token y
+        reconectar.
+
+        ``_token_rotating`` se setea dentro del lock antes de vaciar el set:
+        un handler concurrente que tome el lock después ve el flag y rechaza
+        la conexión en vez de sobrevivir silenciosamente a la ventana de
+        rotación (carrera señalada en el review de #104 del handler viejo).
+        """
+        async with self._ws_ui_lock:
+            self._token_rotating = True
+            stale = list(self._ws_ui_clients)
+            self._ws_ui_clients.clear()
+        try:
+            for ws in stale:
+                try:
+                    await asyncio.wait_for(
+                        ws.close(
+                            code=aiohttp.WSCloseCode.POLICY_VIOLATION,
+                            message=b"Token rotated -- reconnect required",
+                        ),
+                        timeout=ROTATION_CLOSE_TIMEOUT_SECONDS,
+                    )
+                except (TimeoutError, ConnectionResetError, OSError, RuntimeError) as exc:
+                    logger.warning("/ws/ui close durante rotación de token falló: %s", exc)
+        finally:
+            async with self._ws_ui_lock:
+                self._token_rotating = False
+        logger.info("Cerrados %d socket(s) /ws/ui por rotación de token.", len(stale))
 
     def _validate_ws_auth(self, request: web.Request) -> bool:
         """X-Auth-Token check for /ws/ui (fail-closed when no auth_manager)."""
@@ -166,11 +214,25 @@ class WebApp:
             return ws_reject
         ws = web.WebSocketResponse()
         await ws.prepare(request)
-        async for msg in ws:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                await self._handle_ws_ui_message(ws, msg.data)
-            elif msg.type == aiohttp.WSMsgType.ERROR:
-                logger.warning("/ws/ui socket error: %s", ws.exception())
+        async with self._ws_ui_lock:
+            if self._token_rotating:
+                # Rotación en curso: admitirlo dejaría vivo un socket con el
+                # token viejo; se rechaza y el cliente reconecta con el nuevo.
+                await ws.close(
+                    code=aiohttp.WSCloseCode.POLICY_VIOLATION,
+                    message=b"Token rotation in progress -- reconnect shortly",
+                )
+                return ws
+            self._ws_ui_clients.add(ws)
+        try:
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    await self._handle_ws_ui_message(ws, msg.data)
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    logger.warning("/ws/ui socket error: %s", ws.exception())
+        finally:
+            async with self._ws_ui_lock:
+                self._ws_ui_clients.discard(ws)
         return ws
 
     async def _handle_ws_ui_message(self, ws: web.WebSocketResponse, raw: str) -> None:
