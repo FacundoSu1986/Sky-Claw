@@ -169,6 +169,9 @@ class LootSortingService:
         # T-26 (ADR 0002): cuando el journal está cableado, el sort emite un
         # ActionManifest ANTES de mutar. Opcional para no romper callers legacy.
         self._journal = journal
+        # T-21: resolver de fuentes compartido con el validador post-run; lo
+        # setea _ensure_preflight (None hasta entonces o con preflight inyectado).
+        self._sources_resolver = None
 
     def _ensure_preflight(self) -> PreflightService | None:
         """Construye perezosamente el preflight con las piezas disponibles.
@@ -225,10 +228,15 @@ class LootSortingService:
         # la versión del binario que efectivamente va a correr.
         loot_exe = loot_exe or pathlib.Path("loot.exe")
 
+        # T-30w/T-21: el resolver de fuentes de plugins se comparte entre los
+        # sensores de modlist y el check de headers del validador post-run.
+        sources_resolver = self._build_sources_resolver(raw_mo2, mo2_validated)
+        self._sources_resolver = sources_resolver
+
         # T-30w: cablear los sensores de masters/límites cuando las fuentes de
         # plugins son resolubles. Si no lo son, quedan en None → el semáforo
         # reporta "no configurado" en vez de mentir verde (regla de honestidad).
-        masters_check, limits_check = self._build_modlist_checks(raw_mo2, mo2_validated)
+        masters_check, limits_check = self._build_modlist_checks(sources_resolver)
 
         # T-30·3: sensor de overwrite sucio. Solo requiere una raíz MO2 validada
         # (no depende del load order), así que se cablea aparte de los de modlist.
@@ -301,22 +309,16 @@ class LootSortingService:
 
         return _overwrite
 
-    def _build_modlist_checks(
-        self, raw_mo2: pathlib.Path | None, mo2_validated: bool
-    ) -> tuple[MastersCheck | None, LimitsCheck | None]:
-        """Construye los closures de los sensores de masters/límites (T-30w).
+    def _build_sources_resolver(self, raw_mo2: pathlib.Path | None, mo2_validated: bool):
+        """Closure que re-resuelve las fuentes de plugins en cada llamada.
 
-        Resuelve las fuentes de plugins (Data del juego + mods/overwrite de MO2
-        + load order habilitado). Los closures **re-resuelven en cada run** para
-        no quedar con un snapshot viejo: el ``PreflightService`` se cachea, así
-        que si el usuario instala/activa plugins después del primer sort, los
-        preflights siguientes deben ver el estado nuevo (review Codex #252).
-        Best-effort: si hoy no hay fuentes utilizables, devuelve ``(None, None)``
-        para que el semáforo reporte "no configurado" en vez de mentir verde.
+        Compartido por los sensores de modlist (T-30w) y el check de headers
+        del post-run (T-21). Re-resolver por llamada evita quedar con un
+        snapshot viejo: si el usuario instala/activa plugins después del
+        primer sort, las corridas siguientes ven el estado nuevo (review
+        Codex #252).
         """
         from sky_claw.local.mo2.plugin_sources import resolve_plugin_sources
-        from sky_claw.local.validators.missing_masters import MissingMastersChecker
-        from sky_claw.local.validators.plugin_limits import PluginLimitsChecker
 
         game_data_dir: pathlib.Path | None = None
         if self._path_resolver is not None:
@@ -346,17 +348,28 @@ class LootSortingService:
                 load_order_file=load_order_file,
             )
 
+        return _resolve
+
+    def _build_modlist_checks(self, sources_resolver) -> tuple[MastersCheck | None, LimitsCheck | None]:
+        """Construye los closures de los sensores de masters/límites (T-30w).
+
+        Best-effort: si hoy no hay fuentes utilizables, devuelve ``(None, None)``
+        para que el semáforo reporte "no configurado" en vez de mentir verde.
+        """
+        from sky_claw.local.validators.missing_masters import MissingMastersChecker
+        from sky_claw.local.validators.plugin_limits import PluginLimitsChecker
+
         # Gate de honestidad al construir: solo cablear si HOY hay fuentes.
-        initial = _resolve()
+        initial = sources_resolver()
         if not initial.plugin_dirs or not initial.enabled_plugins:
             return None, None
 
         def _masters():
-            sources = _resolve()
+            sources = sources_resolver()
             return MissingMastersChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
 
         def _limits():
-            sources = _resolve()
+            sources = sources_resolver()
             return PluginLimitsChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
 
         return _masters, _limits
@@ -467,6 +480,8 @@ class LootSortingService:
         load_order = self._ensure_load_order_resolver().resolve()
         target_files = list(load_order.files)
         rolled_back = False
+        # T-21: se llena solo en el path de éxito (el validador es post-vuelo).
+        post_run_payload: dict[str, Any] | None = None
 
         # Orden ANTES del sort para el diff del informe post-vuelo (T-28): se
         # lee acá porque LOOT reescribe el archivo al ordenar. El "después" será
@@ -507,6 +522,12 @@ class LootSortingService:
                 if not result.success:
                     # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
                     raise _LootSortFailedError(result)
+                # T-21: validar DENTRO del lock — con el lock liberado, otro
+                # Ritual concurrente podría mutar el load order antes de la
+                # lectura y el reporte quedaría atribuido a este sort (review
+                # Copilot #264). El helper no lanza (best-effort), así que no
+                # puede disparar el rollback de un sort exitoso.
+                post_run_payload = await self._run_post_run_validation()
             if journal_tx_id is not None and self._journal is not None:
                 # El sort ya terminó y el lock se liberó; un fallo de commit del
                 # journal es de estado (el manifiesto ya quedó persistido), no
@@ -528,6 +549,7 @@ class LootSortingService:
                     journal_tx_id,
                     before_order=before_order,
                     after_order=result.sorted_plugins,
+                    post_run_validation=post_run_payload,
                 )
         except LockAcquisitionError as exc:
             logger.warning("Lock contention on '%s': %s", self.RESOURCE_ID, exc)
@@ -609,6 +631,11 @@ class LootSortingService:
         # limpio, perdiendo el aviso antes del próximo Ritual (review Codex #254).
         if preflight_report is not None and preflight_report.status.value != "green":
             response["preflight"] = preflight_report.to_dict()
+        # T-21: los hallazgos del validador post-run llegan al caller — sin
+        # esto solo quedarían en el journal y el operador vería un success
+        # limpio (misma lección que el surfacing amarillo del preflight, #254).
+        if post_run_payload is not None and post_run_payload.get("has_findings"):
+            response["post_run"] = post_run_payload
         return response
 
     async def _emit_action_manifest(
@@ -667,12 +694,37 @@ class LootSortingService:
             await self._mark_journal_rolled_back(journal_tx_id)
             raise _ActionManifestError(str(exc)) from exc
 
+    async def _run_post_run_validation(self) -> dict[str, Any] | None:
+        """Corre el validador post-run (T-21) — best-effort, post-vuelo.
+
+        Reusa el MISMO ``PreflightService`` del gate previo (sus closures
+        re-resuelven por run, así que acá ven el estado post-mutación) y el
+        resolver de fuentes compartido para el check de headers. El guard
+        ``isinstance`` deja afuera los preflight mockeados/inyectados de tests
+        y callers ad-hoc: sin un servicio real no hay validación que afirmar.
+        Un fallo se loguea y devuelve ``None`` — jamás rompe un sort exitoso
+        (misma disciplina que el flight report, reviews #243/#249).
+        """
+        try:
+            from sky_claw.local.validators.post_run import PostRunValidator
+            from sky_claw.local.validators.preflight import PreflightService
+
+            preflight = self._ensure_preflight()
+            if not isinstance(preflight, PreflightService):
+                return None
+            validator = PostRunValidator(preflight=preflight, plugin_sources=self._sources_resolver)
+            return (await validator.run()).to_dict()
+        except Exception:  # noqa: BLE001 — post-vuelo best-effort (disciplina del flight report)
+            logger.error("El validador post-run falló (best-effort)", exc_info=True)
+            return None
+
     async def _emit_flight_report(
         self,
         journal_tx_id: int,
         *,
         before_order: list[str] | None = None,
         after_order: list[str] | None = None,
+        post_run_validation: dict[str, Any] | None = None,
     ) -> None:
         """Compone y persiste el FlightReport del sort ya terminado (T-28).
 
@@ -701,6 +753,10 @@ class LootSortingService:
                 diff = LoadOrderDiff.from_orders(before_order, after_order)
                 if diff.changed:
                     report = report.model_copy(update={"load_order_diff": diff})
+            # T-21: llenar el slot que T-28 dejó esperando al validador
+            # post-run — el informe deja de decir "T-21 pendiente".
+            if post_run_validation is not None:
+                report = report.model_copy(update={"post_run_validation": post_run_validation})
             await self._journal.persist_flight_report(
                 report,
                 agent_id=self.AGENT_ID,

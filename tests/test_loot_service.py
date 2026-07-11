@@ -746,3 +746,190 @@ def test_read_plugin_order_ignora_comentarios_bom_y_marca_de_activo(tmp_path: pa
     assert _primary_load_order_file([]) is None
     assert _read_plugin_order(None) == []
     assert _read_plugin_order(tmp_path / "no-existe.txt") == []
+
+
+# =============================================================================
+# T-21: validador post-run (cierra el lazo `validate` del pipeline §4.6)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_sort_exitoso_llena_el_slot_post_run_del_informe(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """El FlightReport persistido lleva el resultado del validador post-run en
+    el slot que T-28 dejó esperando a T-21 (nunca más "T-21 pendiente")."""
+    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+    from sky_claw.local.validators.preflight import PreflightService
+
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    # Preflight REAL (no el mock de _preflight_verde): el post-run solo corre
+    # sobre un PreflightService de verdad (guard isinstance del servicio).
+    checker = MagicMock()
+    checker.check.return_value = []
+    preflight = PreflightService(vfs_checker=checker, loot_version_detector=AsyncMock(return_value=(0, 29, 0)))
+    svc = LootSortingService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=MagicMock(),
+        loot_runner=runner,
+        load_order_resolver=resolver,
+        preflight=preflight,
+        journal=journal,
+    )
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    informes = [
+        FlightReport.model_validate(e.metadata)
+        for e in await _ops_de_la_ultima_tx(journal)
+        if e.metadata and e.metadata.get("kind") == "flight_report"
+    ]
+    assert len(informes) == 1
+    post_run = informes[0].post_run_validation
+    assert post_run is not None
+    assert post_run["kind"] == "post_run_validation"
+
+
+@pytest.mark.asyncio
+async def test_post_run_con_hallazgos_viaja_en_la_respuesta(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un post-run no-verde (p. ej. overwrite sucio que dejó el ritual) llega
+    al caller en la respuesta exitosa — no solo al journal."""
+    from sky_claw.local.validators.overwrite_health import OverwriteScan
+    from sky_claw.local.validators.preflight import PreflightService
+
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    checker = MagicMock()
+    checker.check.return_value = []
+    preflight = PreflightService(
+        vfs_checker=checker,
+        loot_version_detector=AsyncMock(return_value=(0, 29, 0)),
+        overwrite_check=lambda: OverwriteScan(files=("residuo.log",), plugins=()),
+    )
+    svc = LootSortingService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=MagicMock(),
+        loot_runner=runner,
+        load_order_resolver=resolver,
+        preflight=preflight,
+    )
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    assert result["post_run"]["has_findings"] is True
+    assert result["post_run"]["preflight"]["status"] == "yellow"
+
+
+@pytest.mark.asyncio
+async def test_fallo_del_post_run_no_rompe_el_sort_exitoso(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El validador es post-vuelo y best-effort: si explota, el sort exitoso
+    sigue devolviendo dict de éxito (misma disciplina que el flight report)."""
+    from sky_claw.local.validators import post_run as post_run_module
+    from sky_claw.local.validators.preflight import PreflightService
+
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    checker = MagicMock()
+    checker.check.return_value = []
+    preflight = PreflightService(vfs_checker=checker, loot_version_detector=AsyncMock(return_value=(0, 29, 0)))
+    svc = LootSortingService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=MagicMock(),
+        loot_runner=runner,
+        load_order_resolver=resolver,
+        preflight=preflight,
+    )
+
+    with patch.object(post_run_module.PostRunValidator, "run", AsyncMock(side_effect=OSError("boom"))):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    assert "post_run" not in result
+    runner.sort.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_post_run_verde_no_ensucia_la_respuesta(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Simétrico del surfacing amarillo (#254): sin hallazgos, la clave
+    `post_run` no aparece en la respuesta (solo se superficie lo accionable)."""
+    from sky_claw.local.validators.preflight import PreflightService
+
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    checker = MagicMock()
+    checker.check.return_value = []
+    preflight = PreflightService(vfs_checker=checker, loot_version_detector=AsyncMock(return_value=(0, 29, 0)))
+    svc = LootSortingService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=MagicMock(),
+        loot_runner=runner,
+        load_order_resolver=resolver,
+        preflight=preflight,
+    )
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    assert "post_run" not in result
+
+
+@pytest.mark.asyncio
+async def test_post_run_corre_dentro_del_lock_del_load_order(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """review Copilot #264: con el lock liberado, otro Ritual podría mutar el
+    load order antes de la lectura post-run y el reporte quedaría atribuido a
+    este sort. El spy intenta tomar el MISMO lock durante la validación: debe
+    fallar (el sort todavía lo tiene)."""
+    from sky_claw.antigravity.db.locks import LockAcquisitionError
+    from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
+
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
+
+    lock_tomado_durante_post_run: list[bool] = []
+
+    async def _spy(self: LootSortingService) -> None:
+        try:
+            info = await lock_manager.acquire_lock(LOAD_ORDER_RESOURCE_ID, agent_id="spy-post-run", ttl=1.0)
+            await lock_manager.release_lock(info.resource_id, info.agent_id)
+            lock_tomado_durante_post_run.append(False)  # se pudo tomar → estábamos FUERA
+        except LockAcquisitionError:
+            lock_tomado_durante_post_run.append(True)  # tomado → validamos ADENTRO
+        return None
+
+    with patch.object(LootSortingService, "_run_post_run_validation", _spy):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    assert lock_tomado_durante_post_run == [True]

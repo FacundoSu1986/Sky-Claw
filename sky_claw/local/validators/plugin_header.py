@@ -49,11 +49,14 @@ class PluginHeader:
         is_master: Flag ESM (0x1) — carga como master.
         is_light: Flag light/ESL (0x200) — cuenta contra el pool ligero (FE),
             aunque la extensión sea ``.esp`` (caso ESPFE, muy común).
+        form_version: Versión del formato del record (bytes 20-22 del header).
+            Skyrim SE espera 44; 43 = plugin de LE sin portear (T-21).
     """
 
     masters: tuple[str, ...]
     is_master: bool
     is_light: bool
+    form_version: int
 
 
 def read_plugin_header(plugin: pathlib.Path) -> PluginHeader:
@@ -81,6 +84,7 @@ def read_plugin_header(plugin: pathlib.Path) -> PluginHeader:
         masters=_parse_masters(plugin.name, data),
         is_master=bool(flags & _FLAG_MASTER),
         is_light=bool(flags & _FLAG_LIGHT),
+        form_version=int.from_bytes(head[20:22], "little"),
     )
 
 

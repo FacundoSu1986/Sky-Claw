@@ -22,8 +22,10 @@ _FLAG_MASTER = 0x00000001
 _FLAG_LIGHT = 0x00000200
 
 
-def _plugin(path: pathlib.Path, *, masters: list[str] | None = None, flags: int = 0) -> pathlib.Path:
-    """Escribe un plugin sintético con esos masters y flags de record."""
+def _plugin(
+    path: pathlib.Path, *, masters: list[str] | None = None, flags: int = 0, form_version: int = 44
+) -> pathlib.Path:
+    """Escribe un plugin sintético con esos masters, flags y formVersion."""
     subrecords = b""
     hedr = struct.pack("<fiI", 1.7, 0, 0x800)
     subrecords += b"HEDR" + struct.pack("<H", len(hedr)) + hedr
@@ -32,9 +34,18 @@ def _plugin(path: pathlib.Path, *, masters: list[str] | None = None, flags: int 
         subrecords += b"MAST" + struct.pack("<H", len(data)) + data
         subrecords += b"DATA" + struct.pack("<H", 8) + struct.pack("<Q", 0)
     # header: TES4 + dataSize + flags + formID + vc + formVersion + vc2
-    header = b"TES4" + struct.pack("<IIIIHH", len(subrecords), flags, 0, 0, 44, 0)
+    header = b"TES4" + struct.pack("<IIIIHH", len(subrecords), flags, 0, 0, form_version, 0)
     path.write_bytes(header + subrecords)
     return path
+
+
+def test_form_version_se_expone(tmp_path: pathlib.Path) -> None:
+    """T-21: el header trae el formVersion (44 = SE; 43 = LE sin portear)."""
+    se = read_plugin_header(_plugin(tmp_path / "SE.esp"))
+    le = read_plugin_header(_plugin(tmp_path / "LE.esp", form_version=43))
+
+    assert se.form_version == 44
+    assert le.form_version == 43
 
 
 def test_lee_masters_y_flags_apagados(tmp_path: pathlib.Path) -> None:
