@@ -84,6 +84,18 @@ class PatchStrategyType(Enum):
 
 
 #: Tipos de leveled lists (única fuente para las estrategias que los manejan).
+#: Es EXACTAMENTE el conjunto de firmas de leveled list de Skyrim SE/AE — no
+#: falta ninguna cuarta. Ampliarlo a LVLC/LVEF/REFR/NAVM (sugerido por una
+#: auditoría) sería un bug, no una mejora, y por eso queda excluido a propósito:
+#:   - LVLC (Leveled Creature) / LVEF: firmas de Oblivion/Fallout que NO existen
+#:     en Skyrim SE (las criaturas son NPC_; las leveled usan LVLN). Mismo
+#:     precedente que SCA-001/T-07, que ya retiró de este módulo una firma de
+#:     scripts de Oblivion inexistente en Skyrim (reemplazada por SCEN).
+#:   - REFR (refs colocadas) / NAVM (navmesh): otro dominio de conflicto,
+#:     clasificado como WARNING en conflict_analyzer.DEFAULT_WARNING_TYPES. El
+#:     Bashed Patch no los fusiona; rutearlos aquí produciría una delegación
+#:     falsa a Wrye Bash (ADR 0001), destructiva para navmeshes.
+#: Anclado por tests/test_bashed_patch_delegation.py::TestLeveledListTypesEsCerrado.
 LEVELED_LIST_TYPES: frozenset[str] = frozenset({"LVLI", "LVLN", "LVSP"})
 
 
