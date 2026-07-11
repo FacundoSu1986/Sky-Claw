@@ -32,6 +32,12 @@ from sky_claw.local.xedit.conflict_analyzer import (
     PluginConflictPair,
     RecordConflict,
 )
+from sky_claw.local.xedit.flag_rules import (
+    DEFAULT_FLAG_RULES,
+    FlagAlert,
+    FlagRule,
+    evaluate_flag_rules,
+)
 from sky_claw.local.xedit.output_parser import XEditOutputParser, XEditResult
 from sky_claw.local.xedit.patch_orchestrator import (
     CreateMergedPatch,
@@ -61,12 +67,15 @@ from sky_claw.local.xedit.runner import (
 
 __all__ = [
     "CRITICAL_FLAGS",
+    "DEFAULT_FLAG_RULES",
     # Conflict analyzer
     "ConflictAnalyzer",
     "ConflictReport",
     "CreateMergedPatch",
     "DelegateToBashedPatch",
     "ExecuteXEditScript",
+    "FlagAlert",
+    "FlagRule",
     "OverrideFlagState",
     "PatchExecutionError",
     "PatchOrchestrator",
@@ -94,4 +103,5 @@ __all__ = [
     "XEditTimeoutError",
     "XEditValidationError",
     "XEditWriteError",
+    "evaluate_flag_rules",
 ]

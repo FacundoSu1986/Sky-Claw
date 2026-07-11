@@ -687,3 +687,75 @@ class TestFlagStatesPorOverride:
 
         assert len(dicts) == 1
         assert {"plugin": "Overhaul.esp", "flag": "Manual Cost Calc", "value": False} in dicts[0]["flag_states"]
+
+
+# ---------------------------------------------------------------------------
+# T-19b: alertas de flags en el flujo analyze → to_dict → suggest_resolution
+# ---------------------------------------------------------------------------
+
+
+class TestFlagAlertsEnAnalyze:
+    """T-19b end-to-end: el motor de reglas corre dentro de analyze() y la
+    alerta explicada llega al reporte, al JSON y a las sugerencias."""
+
+    @staticmethod
+    def _runner() -> MagicMock:
+        mock_runner = MagicMock()
+        mock_runner.run_script = AsyncMock(
+            return_value=XEditResult(return_code=0, raw_stdout=SPEL_FLAG_OUTPUT, raw_stderr="")
+        )
+        return mock_runner
+
+    @pytest.mark.asyncio
+    async def test_analyze_adjunta_la_alerta_al_conflicto(self) -> None:
+        analyzer = ConflictAnalyzer()
+
+        report = await analyzer.analyze(["Skyrim.esm", "MagicFix.esp", "Overhaul.esp"], self._runner())
+
+        conflicto = report.plugin_pairs[0].conflicts[0]
+        assert len(conflicto.flag_alerts) == 1
+        alerta = conflicto.flag_alerts[0]
+        assert alerta.flag == "Manual Cost Calc"
+        assert alerta.winner == "Overhaul.esp"
+        assert "coste astronómico" in alerta.explanation
+
+    @pytest.mark.asyncio
+    async def test_to_dict_incluye_las_alertas(self) -> None:
+        analyzer = ConflictAnalyzer()
+        report = await analyzer.analyze(["Skyrim.esm"], self._runner())
+
+        data = report.to_dict()
+
+        alertas = data["plugin_pairs"][0]["conflicts"][0]["flag_alerts"]
+        assert len(alertas) == 1
+        assert alertas[0]["flag"] == "Manual Cost Calc"
+        assert alertas[0]["severity"] == "critical"
+        assert "coste astronómico" in alertas[0]["explanation"]
+        json.dumps(data)  # sigue siendo JSON-serializable
+
+    @pytest.mark.asyncio
+    async def test_suggest_resolution_lleva_el_texto_explicativo(self) -> None:
+        """La alerta explicada llega al operador como la sugerencia MÁS
+        prioritaria (primera de la lista)."""
+        analyzer = ConflictAnalyzer()
+        report = await analyzer.analyze(["Skyrim.esm"], self._runner())
+
+        sugerencias = analyzer.suggest_resolution(report)
+
+        assert "coste astronómico" in sugerencias[0]
+        assert "Manual Cost Calc" in sugerencias[0]
+
+    @pytest.mark.asyncio
+    async def test_salida_sin_flags_no_genera_alertas(self) -> None:
+        """Compat: la salida actual (sin líneas FLAG) → flag_alerts vacío."""
+        mock_runner = MagicMock()
+        mock_runner.run_script = AsyncMock(
+            return_value=XEditResult(return_code=0, raw_stdout=SAMPLE_OUTPUT, raw_stderr="")
+        )
+        analyzer = ConflictAnalyzer()
+
+        report = await analyzer.analyze(["Skyrim.esm"], mock_runner)
+
+        for pair in report.plugin_pairs:
+            for c in pair.conflicts:
+                assert c.flag_alerts == ()
