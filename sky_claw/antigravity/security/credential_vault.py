@@ -42,6 +42,15 @@ class _SQLitePool:
         self._pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue(maxsize=max_size)
         self._closed = False
         self._close_lock = asyncio.Lock()
+        # CV-1 — contrato estricto de close(): al retornar no queda ninguna
+        # conexión viva. _in_flight cuenta los acquire que pasaron el re-check
+        # de _closed (cubre también la ventana de _create_connection, donde la
+        # conexión todavía no existe); _borrowed son las conexiones ya
+        # entregadas, visibles para el force-close si expira el presupuesto.
+        self._in_flight = 0
+        self._all_returned = asyncio.Event()
+        self._all_returned.set()
+        self._borrowed: set[aiosqlite.Connection] = set()
 
     async def _create_connection(self) -> aiosqlite.Connection:
         # M-01.1 triage: exención deliberada del contrato M-01. El vault es un
@@ -93,27 +102,42 @@ class _SQLitePool:
             if self._closed:
                 raise VaultStorageError("SQLite connection pool is closed")
 
-            conn: aiosqlite.Connection | None = None
-            # Try to reuse an existing connection first.
+            # CV-1: desde acá este acquire cuenta como in-flight para que
+            # close() lo espere, incluso mientras la conexión se está creando.
+            self._in_flight += 1
+            self._all_returned.clear()
             try:
-                conn = self._pool.get_nowait()
-            except asyncio.QueueEmpty:
+                conn: aiosqlite.Connection
+                # Try to reuse an existing connection first.
                 try:
-                    conn = await asyncio.wait_for(self._create_connection(), timeout=self._timeout)
-                except TimeoutError as exc:
-                    raise VaultStorageError(f"SQLite pool timeout ({self._timeout}s) creating connection") from exc
+                    conn = self._pool.get_nowait()
+                except asyncio.QueueEmpty:
+                    try:
+                        conn = await asyncio.wait_for(self._create_connection(), timeout=self._timeout)
+                    except TimeoutError as exc:
+                        raise VaultStorageError(f"SQLite pool timeout ({self._timeout}s) creating connection") from exc
 
-            try:
-                yield conn
-            finally:
-                if conn is not None:
+                self._borrowed.add(conn)
+                try:
+                    yield conn
+                finally:
+                    self._borrowed.discard(conn)
                     if self._closed:
-                        await conn.close()
+                        # close() pudo habérnosla cerrado por force-close:
+                        # aiosqlite tolera el doble close(), pero un close
+                        # concurrente puede levantar ValueError("Connection
+                        # closed") — inocuo acá, el pool está muerto.
+                        with suppress(ValueError):
+                            await conn.close()
                     else:
                         try:
                             self._pool.put_nowait(conn)
                         except asyncio.QueueFull:
                             await conn.close()
+            finally:
+                self._in_flight -= 1
+                if self._in_flight == 0:
+                    self._all_returned.set()
         finally:
             # suppress(ValueError) handles the close()-race: close() releases
             # permits to wake waiting tasks, inflating the counter; an active
@@ -124,7 +148,14 @@ class _SQLitePool:
                 self._semaphore.release()
 
     async def close(self) -> None:
-        """Drain the pool and close every connection."""
+        """Drain the pool and close every connection.
+
+        CV-1 — contrato estricto: al retornar no queda ninguna conexión viva
+        al DB de secretos. Se espera (acotado por ``self._timeout``, el mismo
+        presupuesto Zero-Trust del pool) a que los acquire in-flight devuelvan
+        sus conexiones; si expira, las prestadas se cierran a la fuerza y se
+        deja registro (warning).
+        """
         async with self._close_lock:
             if self._closed:
                 return
@@ -140,6 +171,30 @@ class _SQLitePool:
             with suppress(ValueError):
                 self._semaphore.release()
 
+        while True:
+            try:
+                conn = self._pool.get_nowait()
+                await conn.close()
+            except asyncio.QueueEmpty:
+                break
+
+        # CV-1: esperar a que los acquire in-flight (prestadas o en creación)
+        # terminen y cierren/devuelvan su conexión. Presupuesto acotado: un
+        # borrower colgado no puede colgar el shutdown.
+        try:
+            await asyncio.wait_for(self._all_returned.wait(), timeout=self._timeout)
+        except TimeoutError:
+            logger.warning(
+                "Vault pool close(): %d conexión(es) prestada(s) sin devolver tras %.1fs — force-close.",
+                self._in_flight,
+                self._timeout,
+            )
+            for conn in list(self._borrowed):
+                with suppress(ValueError, aiosqlite.Error):
+                    await conn.close()
+
+        # Re-drain de seguridad: put_nowait está guardado por _closed así que
+        # no debería entrar nada nuevo, pero un drain vacío es barato.
         while True:
             try:
                 conn = self._pool.get_nowait()

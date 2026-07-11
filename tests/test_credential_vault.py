@@ -278,12 +278,16 @@ class TestCredentialVaultConnectionPool:
         # has added itself to _waiters) instead of relying on a fixed sleep.
         await asyncio.wait_for(_wait_for_semaphore_waiter(pool._semaphore), timeout=1.0)
 
-        await pool.close()
-        release_holder.set()
-        await asyncio.wait_for(h, timeout=1.0)
+        # CV-1: close() ahora espera a las conexiones prestadas, así que corre
+        # como task; el waiter debe fallar cerrado sin esperar al holder.
+        close_task = asyncio.create_task(pool.close())
 
         with pytest.raises(VaultStorageError, match="closed"):
             await asyncio.wait_for(w, timeout=1.0)
+
+        release_holder.set()
+        await asyncio.wait_for(h, timeout=1.0)
+        await asyncio.wait_for(close_task, timeout=1.0)
 
     @pytest.mark.asyncio
     async def test_close_wakes_semaphore_waiters_promptly(self, vault_factory) -> None:
@@ -315,12 +319,141 @@ class TestCredentialVaultConnectionPool:
         # measuring elapsed time — avoids timing-dependent flakiness on CI.
         await asyncio.wait_for(_wait_for_semaphore_waiter(pool._semaphore), timeout=1.0)
 
+        # CV-1: la intención del test es la latencia de wake del WAITER, no la
+        # duración total de close() (que ahora espera al holder): task + medir.
         loop = asyncio.get_running_loop()
         start = loop.time()
-        await pool.close()
+        close_task = asyncio.create_task(pool.close())
         await asyncio.wait_for(w, timeout=2.0)
         elapsed = loop.time() - start
         assert elapsed < 2.0, f"waiter stalled {elapsed:.1f}s — close() did not wake it"
 
         release_holder.set()
         await asyncio.wait_for(h, timeout=1.0)
+        await asyncio.wait_for(close_task, timeout=2.0)
+
+
+class TestCierreEstrictoDelPool:
+    """CV-1: contrato estricto de ``_SQLitePool.close()``.
+
+    Al retornar ``close()`` no debe quedar NINGUNA conexión viva al DB de
+    secretos: ni prestadas (se espera acotado a que se devuelvan, con
+    force-close al expirar el presupuesto) ni creadas en la ventana de
+    ``_create_connection`` por un acquire que ya pasó el re-check.
+    """
+
+    @pytest.mark.asyncio
+    async def test_close_espera_a_conexiones_prestadas(self, vault_factory) -> None:
+        """close() no retorna con una conexión prestada; al devolverse queda cerrada."""
+        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+            vault = vault_factory(pool_size=1)
+        await vault.initialize()
+        pool = vault._pool
+
+        holder_in = asyncio.Event()
+        release_holder = asyncio.Event()
+        prestada: list[aiosqlite.Connection] = []
+
+        async def holder() -> None:
+            async with pool.acquire() as conn:
+                prestada.append(conn)
+                holder_in.set()
+                await release_holder.wait()
+
+        h = asyncio.create_task(holder())
+        await asyncio.wait_for(holder_in.wait(), timeout=1.0)
+
+        close_task = asyncio.create_task(pool.close())
+        # Ceder el loop varias veces: close() debe seguir esperando al holder.
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not close_task.done(), "close() retornó con una conexión aún prestada"
+
+        release_holder.set()
+        await asyncio.wait_for(h, timeout=1.0)
+        await asyncio.wait_for(close_task, timeout=1.0)
+
+        # La conexión devuelta debe haber quedado cerrada de verdad.
+        with pytest.raises(ValueError, match="no active connection|[Cc]onnection closed"):
+            await prestada[0].execute("SELECT 1")
+
+    @pytest.mark.asyncio
+    async def test_close_hace_force_close_tras_timeout(self, vault_factory, caplog) -> None:
+        """Si una conexión prestada no se devuelve dentro del presupuesto del pool,
+        close() la cierra a la fuerza, deja un warning y retorna igual."""
+        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+            vault = vault_factory(pool_size=1)
+        await vault.initialize()
+        pool = vault._pool
+        pool._timeout = 0.2  # presupuesto corto para no demorar el test
+
+        holder_in = asyncio.Event()
+        release_holder = asyncio.Event()
+        prestada: list[aiosqlite.Connection] = []
+
+        async def holder() -> None:
+            async with pool.acquire() as conn:
+                prestada.append(conn)
+                holder_in.set()
+                await release_holder.wait()
+
+        h = asyncio.create_task(holder())
+        await asyncio.wait_for(holder_in.wait(), timeout=1.0)
+
+        with caplog.at_level(logging.WARNING, logger="SkyClaw.CredentialVault"):
+            await asyncio.wait_for(pool.close(), timeout=2.0)
+
+        # La conexión prestada quedó cerrada a la fuerza y hay registro del hecho.
+        with pytest.raises(ValueError, match="no active connection|[Cc]onnection closed"):
+            await prestada[0].execute("SELECT 1")
+        assert any("force-close" in rec.getMessage() for rec in caplog.records), (
+            "close() no dejó registro del force-close en el log"
+        )
+
+        # El holder termina después: su devolución tardía no debe explotar.
+        release_holder.set()
+        await asyncio.wait_for(h, timeout=1.0)
+
+    @pytest.mark.asyncio
+    async def test_conexion_creada_durante_close_queda_cerrada(self, vault_factory) -> None:
+        """Ventana de _create_connection: un acquire que pasó el re-check y está
+        creando su conexión mientras close() corre no debe dejarla viva ni
+        re-encolarla en el pool."""
+        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+            vault = vault_factory(pool_size=1)
+        # Sin initialize(): el pool arranca vacío y fuerza _create_connection.
+        pool = vault._pool
+
+        creando = asyncio.Event()
+        continuar = asyncio.Event()
+        crear_original = pool._create_connection
+
+        async def creacion_pausada() -> aiosqlite.Connection:
+            creando.set()
+            await continuar.wait()
+            return await crear_original()
+
+        pool._create_connection = creacion_pausada  # type: ignore[method-assign]
+
+        prestada: list[aiosqlite.Connection] = []
+
+        async def borrower() -> None:
+            async with pool.acquire() as conn:
+                prestada.append(conn)
+
+        b = asyncio.create_task(borrower())
+        await asyncio.wait_for(creando.wait(), timeout=1.0)
+
+        close_task = asyncio.create_task(pool.close())
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not close_task.done(), "close() retornó con un acquire in-flight"
+
+        continuar.set()
+        await asyncio.wait_for(b, timeout=2.0)
+        await asyncio.wait_for(close_task, timeout=2.0)
+
+        assert prestada, "el borrower nunca recibió su conexión"
+        with pytest.raises(ValueError, match="no active connection|[Cc]onnection closed"):
+            await prestada[0].execute("SELECT 1")
+        assert pool._pool.empty(), "una conexión post-close quedó re-encolada en el pool"
