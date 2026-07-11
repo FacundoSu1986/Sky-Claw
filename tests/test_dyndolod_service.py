@@ -643,7 +643,7 @@ class TestExecuteProcessDrainGrace:
 
         with (
             patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)),
-            patch.object(ddl, "_DRAIN_GRACE_SECONDS", 0.1, create=True),
+            patch.object(ddl, "_DRAIN_GRACE_SECONDS", 0.1),
         ):
             # Con el fix retorna dentro del grace (0.1s); sin él, el gather del
             # path de éxito cuelga y este wait_for externo dispararía TimeoutError.

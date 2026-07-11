@@ -321,8 +321,10 @@ class VRAMrPipelineService:
                 await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
             drain_out.cancel()
             drain_err.cancel()
-            with contextlib.suppress(BaseException):
-                await asyncio.gather(drain_out, drain_err, return_exceptions=True)
+            # gather(return_exceptions=True) sobre tasks ya canceladas captura sus
+            # CancelledError como resultados (no relanza); sin `suppress` una
+            # cancelación externa del caller propaga como corresponde.
+            await asyncio.gather(drain_out, drain_err, return_exceptions=True)
             raise
 
         # S-4: el proceso ya terminó; drenamos con una cota. Si un nieto heredó el
@@ -342,8 +344,10 @@ class VRAMrPipelineService:
             )
             drain_out.cancel()
             drain_err.cancel()
-            with contextlib.suppress(BaseException):
-                await asyncio.gather(drain_out, drain_err, return_exceptions=True)
+            # gather(return_exceptions=True) sobre tasks ya canceladas captura sus
+            # CancelledError como resultados (no relanza); sin `suppress` una
+            # cancelación externa del caller propaga como corresponde.
+            await asyncio.gather(drain_out, drain_err, return_exceptions=True)
             results = []
         for r in results:
             if isinstance(r, BaseException):

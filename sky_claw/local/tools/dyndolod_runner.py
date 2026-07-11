@@ -547,8 +547,10 @@ class DynDOLODRunner:
                 )
                 drain_out.cancel()
                 drain_err.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await asyncio.gather(drain_out, drain_err, return_exceptions=True)
+                # gather(return_exceptions=True) sobre tasks ya canceladas captura
+                # sus CancelledError como resultados (no relanza); sin `suppress`
+                # una cancelación externa del caller propaga como corresponde.
+                await asyncio.gather(drain_out, drain_err, return_exceptions=True)
                 results = []
             for r in results:
                 if isinstance(r, BaseException):
