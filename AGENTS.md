@@ -36,6 +36,7 @@ en [.github/coding_conventions.md](.github/coding_conventions.md).
 | `sky_claw/antigravity/comms/` | Comunicaciones (Python) + gateway de Telegram (Node en `telegram_gateway_node/`) |
 | `sky_claw/local/mo2/` | Integración con Mod Organizer 2 (perfiles, sandbox, modlist) |
 | `sky_claw/local/tools/` | Tools del agente (`tool_result.py`, runners de LOOT/xEdit/etc.) |
+| `sky_claw/local/AGENTS.md` | **SOP del pipeline de modding de Skyrim** (orden de stages, reglas por tool, failure modes) — leer antes de tocar `local/tools/`, `local/xedit/` u `orchestrator/tool_strategies/` |
 | `sky_claw/config.py` | `SystemPaths` y configuración global |
 | `sky_claw/app_context.py` | `AppContext.start_full()` — inicialización protegida con `asyncio.Lock` |
 | `tests/conftest.py` | Fixtures compartidas (DB en memoria, LLM mockeado) |
