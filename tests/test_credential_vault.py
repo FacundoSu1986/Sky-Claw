@@ -417,8 +417,9 @@ class TestCierreEstrictoDelPool:
     @pytest.mark.asyncio
     async def test_conexion_creada_durante_close_queda_cerrada(self, vault_factory) -> None:
         """Ventana de _create_connection: un acquire que pasó el re-check y está
-        creando su conexión mientras close() corre no debe dejarla viva ni
-        re-encolarla en el pool."""
+        creando su conexión mientras close() corre debe fallar cerrado — la
+        conexión recién creada muere antes del yield, nunca se entrega ni se
+        re-encola en el pool."""
         with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
             vault = vault_factory(pool_size=1)
         # Sin initialize(): el pool arranca vacío y fuerza _create_connection.
@@ -427,19 +428,23 @@ class TestCierreEstrictoDelPool:
         creando = asyncio.Event()
         continuar = asyncio.Event()
         crear_original = pool._create_connection
+        creadas: list[aiosqlite.Connection] = []
 
         async def creacion_pausada() -> aiosqlite.Connection:
             creando.set()
             await continuar.wait()
-            return await crear_original()
+            conn = await crear_original()
+            creadas.append(conn)
+            return conn
 
         pool._create_connection = creacion_pausada  # type: ignore[method-assign]
 
         prestada: list[aiosqlite.Connection] = []
 
         async def borrower() -> None:
-            async with pool.acquire() as conn:
-                prestada.append(conn)
+            with pytest.raises(VaultStorageError, match="closed"):
+                async with pool.acquire() as conn:
+                    prestada.append(conn)
 
         b = asyncio.create_task(borrower())
         await asyncio.wait_for(creando.wait(), timeout=1.0)
@@ -453,7 +458,62 @@ class TestCierreEstrictoDelPool:
         await asyncio.wait_for(b, timeout=2.0)
         await asyncio.wait_for(close_task, timeout=2.0)
 
-        assert prestada, "el borrower nunca recibió su conexión"
+        assert not prestada, "una conexión creada durante close() fue entregada al borrower"
+        assert creadas, "la creación pausada nunca produjo su conexión"
         with pytest.raises(ValueError, match="no active connection|[Cc]onnection closed"):
-            await prestada[0].execute("SELECT 1")
+            await creadas[0].execute("SELECT 1")
+        assert pool._pool.empty(), "una conexión post-close quedó re-encolada en el pool"
+
+    @pytest.mark.asyncio
+    async def test_timeout_de_close_con_creacion_pendiente_no_entrega_conexion(self, vault_factory, caplog) -> None:
+        """Review PR #263: si close() expira su espera mientras un acquire sigue
+        dentro de _create_connection, la conexión que nazca después NO debe
+        entregarse ni quedar viva — el borrower falla cerrado."""
+        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+            vault = vault_factory(pool_size=1)
+        # Sin initialize(): el pool arranca vacío y fuerza _create_connection.
+        pool = vault._pool
+
+        creando = asyncio.Event()
+        continuar = asyncio.Event()
+        crear_original = pool._create_connection
+        creadas: list[aiosqlite.Connection] = []
+
+        async def creacion_pausada() -> aiosqlite.Connection:
+            creando.set()
+            await continuar.wait()
+            conn = await crear_original()
+            creadas.append(conn)
+            return conn
+
+        pool._create_connection = creacion_pausada  # type: ignore[method-assign]
+
+        prestada: list[aiosqlite.Connection] = []
+
+        async def borrower() -> None:
+            with pytest.raises(VaultStorageError, match="closed"):
+                async with pool.acquire() as conn:
+                    prestada.append(conn)
+
+        b = asyncio.create_task(borrower())
+        # El acquire captura self._timeout (5s) al entrar; recién después de que
+        # quede pausado dentro de la creación se acorta el presupuesto para que
+        # SOLO la espera de close() expire, dejando la creación pendiente.
+        await asyncio.wait_for(creando.wait(), timeout=1.0)
+        pool._timeout = 0.2
+
+        with caplog.at_level(logging.WARNING, logger="SkyClaw.CredentialVault"):
+            await asyncio.wait_for(pool.close(), timeout=2.0)
+        assert any("force-close" in rec.getMessage() for rec in caplog.records), (
+            "close() expiró su espera sin dejar registro en el log"
+        )
+
+        # La creación completa DESPUÉS de que close() retornó: fail-closed.
+        continuar.set()
+        await asyncio.wait_for(b, timeout=2.0)
+
+        assert not prestada, "una conexión creada tras el timeout de close() fue entregada"
+        assert creadas, "la creación pausada nunca produjo su conexión"
+        with pytest.raises(ValueError, match="no active connection|[Cc]onnection closed"):
+            await creadas[0].execute("SELECT 1")
         assert pool._pool.empty(), "una conexión post-close quedó re-encolada en el pool"

@@ -116,6 +116,19 @@ class _SQLitePool:
                         conn = await asyncio.wait_for(self._create_connection(), timeout=self._timeout)
                     except TimeoutError as exc:
                         raise VaultStorageError(f"SQLite pool timeout ({self._timeout}s) creating connection") from exc
+                    # CV-1 (review PR #263): si close() corrió mientras la
+                    # conexión se creaba, no entregarla — muere acá y el
+                    # borrower falla cerrado, igual que un waiter despertado
+                    # por close(). Sin esto, un close() cuya espera expiró
+                    # podría retornar y esta conexión quedaría viva post-close
+                    # (no está en _borrowed, así que el force-close no la ve).
+                    if self._closed:
+                        with suppress(ValueError):
+                            await conn.close()
+                        # from None: el QueueEmpty de arriba es incidental
+                        # (solo significó "no había conexión para reusar"),
+                        # no la causa del fail-closed.
+                        raise VaultStorageError("SQLite connection pool is closed") from None
 
                 self._borrowed.add(conn)
                 try:
@@ -185,7 +198,9 @@ class _SQLitePool:
             await asyncio.wait_for(self._all_returned.wait(), timeout=self._timeout)
         except TimeoutError:
             logger.warning(
-                "Vault pool close(): %d conexión(es) prestada(s) sin devolver tras %.1fs — force-close.",
+                "Vault pool close(): %d conexión(es) prestada(s) sin devolver y %d acquire(s) "
+                "in-flight tras %.1fs — force-close.",
+                len(self._borrowed),
                 self._in_flight,
                 self._timeout,
             )
