@@ -14,7 +14,7 @@ from pythonjsonlogger import json
 
 from sky_claw.config import Config
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("sky_claw")
 
 # Correlation ID for tracking requests across components
 correlation_id_var: ContextVar[str] = ContextVar("correlation_id", default="")
@@ -241,10 +241,11 @@ def install_loop_exception_handler() -> None:
 
     def _handler(_loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
         exc = context.get("exception")
+        exc_info = (type(exc), exc, exc.__traceback__) if isinstance(exc, BaseException) else None
         logger.error(
             "Unhandled event-loop exception: %s",
             context.get("message", ""),
-            exc_info=exc if isinstance(exc, BaseException) else None,
+            exc_info=exc_info,
         )
 
     with contextlib.suppress(RuntimeError):

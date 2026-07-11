@@ -19,6 +19,7 @@ async def test_loop_exception_handler_logs_via_logger(caplog):
         loop.call_exception_handler({"message": "boom", "exception": ValueError("kaboom")})
     assert "Unhandled event-loop exception" in caplog.text
     assert "kaboom" in caplog.text  # exception rendered via exc_info
+    assert any(record.name == "sky_claw" for record in caplog.records)
 
 
 async def test_install_handler_desde_logging_config(caplog):
@@ -32,6 +33,7 @@ async def test_install_handler_desde_logging_config(caplog):
         loop.call_exception_handler({"message": "boom-gui", "exception": ValueError("kaboom-gui")})
     assert "Unhandled event-loop exception" in caplog.text
     assert "kaboom-gui" in caplog.text
+    assert any(record.name == "sky_claw" for record in caplog.records)
 
 
 def test_main_alias_apunta_al_helper_compartido():
