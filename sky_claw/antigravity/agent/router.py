@@ -55,6 +55,28 @@ MAX_HERMES_RETRIES = 3
 # FASE 1.5.3: Default tool round timeout
 DEFAULT_TOOL_ROUND_TIMEOUT = 120.0
 
+# RND-01: timeout por defecto para la llamada de chat al provider, para no
+# colgar ante un provider mudo. Providers con presupuesto propio más largo
+# (p. ej. OllamaProvider, inferencia local legítima >120s) lo exponen vía un
+# atributo público ``timeout`` que este módulo respeta — ver
+# _provider_chat_timeout().
+DEFAULT_PROVIDER_CHAT_TIMEOUT = 120.0
+
+
+def _provider_chat_timeout(provider: LLMProvider) -> float:
+    """Presupuesto de tiempo para una llamada ``provider.chat(...)``.
+
+    Usa el atributo público ``timeout`` del provider si lo expone y es mayor
+    al default (p. ej. OllamaProvider para inferencia local legítima); si no,
+    cae al default conservador RND-01. No se acorta nunca por debajo del
+    default: un provider remoto sin timeout propio no debe volverse más lento.
+    """
+    provider_timeout = getattr(provider, "timeout", None)
+    if isinstance(provider_timeout, (int, float)) and provider_timeout > DEFAULT_PROVIDER_CHAT_TIMEOUT:
+        return float(provider_timeout)
+    return DEFAULT_PROVIDER_CHAT_TIMEOUT
+
+
 _HERMES_TOOL_INSTRUCTIONS = (
     "\n\nYou have access to the following tools. To call a tool, respond with a "
     '<tool_call> block containing a JSON object with "name" and "arguments" keys. '
@@ -473,7 +495,10 @@ class LLMRouter:
                 # reload_provider cierran el provider anterior, una query en vuelo
                 # termina de forma segura contra su snapshot aunque ocurra un swap
                 # en paralelo (el swap solo afecta a las consultas siguientes).
-                # RND-01: Timeout de 120s para no colgar ante un provider mudo.
+                # RND-01: timeout para no colgar ante un provider mudo. Provider-
+                # aware (ver _provider_chat_timeout): un provider con presupuesto
+                # propio mayor al default (p. ej. OllamaProvider, inferencia
+                # local legítima >120s) no queda cortado artificialmente acá.
                 async with self._provider_lock:
                     provider_snapshot = self._provider
                 if provider_snapshot is None:
@@ -481,7 +506,7 @@ class LLMRouter:
                 try:
                     response_data = await asyncio.wait_for(
                         provider_snapshot.chat(**chat_kwargs),
-                        timeout=120.0,
+                        timeout=_provider_chat_timeout(provider_snapshot),
                     )
                 except BaseException:
                     # H-3: la llamada consumió el probe de HALF_OPEN (check_request

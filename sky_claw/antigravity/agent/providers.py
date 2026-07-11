@@ -169,6 +169,30 @@ def _convert_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]
     return result
 
 
+def _flush_openai_role_message(
+    result: list[dict[str, Any]],
+    role: str,
+    text_parts: list[str],
+    tool_calls: list[dict[str, Any]],
+    pending: bool,
+) -> None:
+    """Append the accumulated text/tool_use as a single role message, if any.
+
+    ``pending`` distinguishes "nothing seen since the last flush" from "saw a
+    block but it produced no text/tool_calls" (e.g. an unrecognised block
+    type) — the latter still needs the ``"..."`` fallback message.
+    """
+    if not pending:
+        return
+    msg_dict: dict[str, Any] = {
+        "role": role,
+        "content": "\n".join(text_parts) if text_parts else ("..." if not tool_calls else None),
+    }
+    if tool_calls:
+        msg_dict["tool_calls"] = list(tool_calls)
+    result.append(msg_dict)
+
+
 def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert Anthropic message format to OpenAI chat format.
 
@@ -176,9 +200,13 @@ def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str
     ``text``/``tool_use`` (p. ej. el modelo comenta mientras reporta un
     resultado de tool). Ramificar solo por ``content[0].get("type")`` con un
     ``continue`` temprano perdía el resto del mensaje según qué tipo de
-    bloque viniera primero. Se clasifica cada bloque en una sola pasada.
+    bloque viniera primero. Se clasifica cada bloque en una sola pasada,
+    intercalando (flush) el texto/tool_use acumulado antes de cada
+    tool_result para preservar el orden original — invertirlo cambiaría el
+    contexto que ve el modelo (un tool_result no puede parecer anterior al
+    texto que en realidad lo precedía).
     """
-    result = []
+    result: list[dict[str, Any]] = []
     for msg in messages:
         role = msg["role"]
         content = msg["content"]
@@ -186,12 +214,14 @@ def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str
             result.append({"role": role, "content": content})
             continue
         if isinstance(content, list) and content and isinstance(content[0], dict):
-            text_parts = []
-            tool_calls = []
-            has_non_tool_result_block = False
+            text_parts: list[str] = []
+            tool_calls: list[dict[str, Any]] = []
+            pending = False
             for block in content:
                 block_type = block.get("type")
                 if block_type == "tool_result":
+                    _flush_openai_role_message(result, role, text_parts, tool_calls, pending)
+                    text_parts, tool_calls, pending = [], [], False
                     result.append(
                         {
                             "role": "tool",
@@ -200,7 +230,10 @@ def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str
                         }
                     )
                     continue
-                has_non_tool_result_block = True
+                # Marca que hubo actividad desde el último flush, aunque el
+                # bloque sea de un tipo desconocido (preserva el fallback
+                # "..." incluso sin texto ni tool_calls reales).
+                pending = True
                 if block_type == "text":
                     text_parts.append(block.get("text", ""))
                 elif block_type == "tool_use":
@@ -222,18 +255,7 @@ def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str
                                 },
                             }
                         )
-            # Solo emitir un mensaje de rol si hubo algún bloque que no sea
-            # tool_result (los tool_result ya se emitieron arriba). Un
-            # mensaje compuesto únicamente por tool_result no debe generar
-            # además un mensaje de rol vacío/"...".
-            if has_non_tool_result_block:
-                msg_dict: dict[str, Any] = {
-                    "role": role,
-                    "content": "\n".join(text_parts) if text_parts else ("..." if not tool_calls else None),
-                }
-                if tool_calls:
-                    msg_dict["tool_calls"] = tool_calls
-                result.append(msg_dict)
+            _flush_openai_role_message(result, role, text_parts, tool_calls, pending)
             continue
         result.append({"role": role, "content": str(content)})
     return result
@@ -391,7 +413,10 @@ class OllamaProvider(LLMProvider):
         self._base_url = base_url.rstrip("/")
         #: Effective default model (config-driven; public for AppContext logging).
         self.model = model or self.DEFAULT_MODEL
-        self._timeout = timeout
+        #: Presupuesto de la request HTTP (público: LLMRouter lo lee vía
+        #: getattr para que su wait_for externo no corte la inferencia local
+        #: legítima antes de que este timeout tenga oportunidad de disparar).
+        self.timeout = timeout
 
     @retry(**_LOCAL_RETRY)
     async def chat(self, messages, tools, session, gateway, *, system_prompt="", model=""):
@@ -404,7 +429,7 @@ class OllamaProvider(LLMProvider):
         if oai_tools:
             body["tools"] = oai_tools
         url = f"{self._base_url}/v1/chat/completions"
-        timeout = aiohttp.ClientTimeout(total=self._timeout)
+        timeout = aiohttp.ClientTimeout(total=self.timeout)
         async with await gateway.request("POST", url, session, json=body, timeout=timeout) as resp:
             if resp.status >= 400:
                 text = await resp.text()

@@ -10,8 +10,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from sky_claw.antigravity.agent.providers import AnthropicProvider
-from sky_claw.antigravity.agent.router import MAX_CONTEXT_MESSAGES, MAX_TOOL_ROUNDS, LLMRouter
+from sky_claw.antigravity.agent.providers import AnthropicProvider, OllamaProvider
+from sky_claw.antigravity.agent.router import (
+    DEFAULT_PROVIDER_CHAT_TIMEOUT,
+    MAX_CONTEXT_MESSAGES,
+    MAX_TOOL_ROUNDS,
+    LLMRouter,
+    _provider_chat_timeout,
+)
 from sky_claw.antigravity.agent.tools import AsyncToolRegistry
 from sky_claw.antigravity.db.async_registry import AsyncModRegistry
 from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
@@ -493,3 +499,47 @@ class TestProviderLockSnapshot:
         finally:
             release.set()
             await asyncio.wait_for(chat_task, timeout=2.0)
+
+
+class TestProviderChatTimeout:
+    """Review Codex PR #266: el wait_for externo del router (RND-01) estaba
+    fijo en 120s para los 4 providers, así que el timeout propio de 300s de
+    OllamaProvider (P-2) nunca se alcanzaba en el path real — el router
+    cortaba antes. _provider_chat_timeout lo hace provider-aware."""
+
+    def test_provider_sin_timeout_propio_usa_el_default(self) -> None:
+        assert _provider_chat_timeout(AnthropicProvider("test-key")) == DEFAULT_PROVIDER_CHAT_TIMEOUT
+
+    def test_ollama_usa_su_timeout_mas_generoso(self) -> None:
+        provider = OllamaProvider()
+        assert provider.timeout == 300.0
+        assert _provider_chat_timeout(provider) == 300.0
+
+    def test_timeout_de_provider_menor_al_default_no_lo_acorta(self) -> None:
+        """Un provider remoto no debe volverse más lento por exponer un
+        timeout propio corto — el default conservador (RND-01) es un piso."""
+        provider = OllamaProvider(timeout=30.0)
+        assert _provider_chat_timeout(provider) == DEFAULT_PROVIDER_CHAT_TIMEOUT
+
+    @pytest.mark.asyncio
+    async def test_router_honra_el_timeout_generoso_de_ollama(self, router: LLMRouter) -> None:
+        """El router no debe cortar antes del presupuesto propio del provider."""
+        started = asyncio.Event()
+
+        class _SlowOllamaLikeProvider:
+            timeout = 300.0
+
+            async def chat(self, **_kwargs: Any) -> dict[str, Any]:
+                started.set()
+                await asyncio.sleep(0.3)  # más que el RND-01 default (120s) sería inviable en test; ver nota abajo
+                return {"stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}
+
+        await router.set_provider(_SlowOllamaLikeProvider())
+        # No podemos esperar 120s reales en un test; en cambio verificamos
+        # directamente que el router calcula el timeout correcto para esta
+        # instancia, que es lo que garantiza que wait_for no la corte a los 120s.
+        assert _provider_chat_timeout(router._provider) == 300.0
+
+        result = await router.chat("hola", MagicMock(), chat_id="c-timeout")
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        assert result == "ok"

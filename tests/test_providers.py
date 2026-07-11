@@ -133,6 +133,45 @@ class TestConvertMessagesToOpenAI:
         assert len(text_msgs) == 1
         assert text_msgs[0]["content"] == "nota del usuario"
 
+    def test_orden_de_bloques_mixtos_se_preserva(self) -> None:
+        """Review Codex PR #266: texto antes de un tool_result debe emitirse
+        ANTES en la lista result, no después — invertir el orden cambia el
+        contexto que ve el modelo (el tool_result parecería anterior a la
+        nota del usuario que en realidad lo precedía)."""
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "nota del usuario"},
+                    {"type": "tool_result", "tool_use_id": "t2", "content": "hecho"},
+                ],
+            }
+        ]
+        result = _convert_messages_to_openai(msgs)
+        roles_and_content = [(m["role"], m.get("content")) for m in result]
+        assert roles_and_content == [("user", "nota del usuario"), ("tool", "hecho")]
+
+    def test_texto_dividido_por_tool_result_emite_dos_mensajes_en_orden(self) -> None:
+        """texto1, tool_result, texto2 → dos mensajes de rol separados, con el
+        tool_result intercalado en su posición original."""
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "primero"},
+                    {"type": "tool_result", "tool_use_id": "t3", "content": "resultado"},
+                    {"type": "text", "text": "segundo"},
+                ],
+            }
+        ]
+        result = _convert_messages_to_openai(msgs)
+        roles_and_content = [(m["role"], m.get("content")) for m in result]
+        assert roles_and_content == [
+            ("user", "primero"),
+            ("tool", "resultado"),
+            ("user", "segundo"),
+        ]
+
     def test_multiples_tool_results_preservan_orden(self) -> None:
         """Regresión: varios tool_result mezclados con texto no deben colisionar."""
         msgs = [
@@ -611,7 +650,7 @@ class TestOllamaProvider:
 
     def test_timeout_configurable(self) -> None:
         provider = OllamaProvider(timeout=12.0)
-        assert provider._timeout == 12.0
+        assert provider.timeout == 12.0
 
     def test_timeout_default_es_generoso(self) -> None:
         """300s por defecto: inferencia local puede tardar minutos en hardware modesto."""
