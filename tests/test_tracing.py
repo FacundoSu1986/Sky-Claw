@@ -101,6 +101,36 @@ class TestTracingLogCorrelation:
         assert hasattr(record, "trace_id")
 
 
+class TestJsonFormatterTraceId:
+    """Ítem 4 sub-1: trace_id debe ser un campo REQUERIDO explícito del JSON
+    formatter (paridad con correlation_id), no depender del extra-merge de
+    pythonjsonlogger — que solo lo emite si el record ya trae el atributo."""
+
+    def test_trace_id_es_campo_requerido_del_json_formatter(self) -> None:
+        import json as _json
+
+        from pythonjsonlogger import json as _pjl
+
+        from sky_claw.logging_config import _JSON_LOG_FORMAT
+
+        formatter = _pjl.JsonFormatter(_JSON_LOG_FORMAT)
+        # Record SIN trace_id seteado: si trace_id es campo requerido, la clave
+        # aparece igual (valor null); si solo fuese extra-merge, faltaría.
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="hola",
+            args=(),
+            exc_info=None,
+        )
+        record.correlation_id = "cid-1"  # type: ignore[attr-defined]
+        out = _json.loads(formatter.format(record))
+        assert "trace_id" in out
+        assert "correlation_id" in out
+
+
 class TestSyncEngineSpans:
     def test_sync_engine_imports_get_tracer(self) -> None:
         from sky_claw.antigravity.orchestrator import sync_engine

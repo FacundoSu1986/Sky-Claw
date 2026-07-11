@@ -30,7 +30,7 @@ from sky_claw.antigravity.modes.security_mode import _run_security  # noqa: E402
 from sky_claw.antigravity.modes.telegram_mode import _run_telegram  # noqa: E402
 from sky_claw.app_context import AppContext  # noqa: E402
 from sky_claw.config import Config, SystemPaths  # noqa: E402
-from sky_claw.logging_config import setup_logging  # noqa: E402
+from sky_claw.logging_config import install_loop_exception_handler, setup_logging  # noqa: E402
 
 logger = logging.getLogger("sky_claw")
 
@@ -127,23 +127,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _install_loop_exception_handler() -> None:
-    """Route otherwise-unhandled event-loop exceptions (e.g. from fire-and-forget
-    tasks) to the structured logger instead of asyncio's default stderr handler,
-    so they flow through the JSON log + secret-redaction pipeline for root-cause
-    analysis. Best-effort: no-ops when no loop is running.
-    """
-
-    def _handler(_loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
-        exc = context.get("exception")
-        logger.error(
-            "Unhandled event-loop exception: %s",
-            context.get("message", ""),
-            exc_info=exc if isinstance(exc, BaseException) else None,
-        )
-
-    with contextlib.suppress(RuntimeError):
-        asyncio.get_running_loop().set_exception_handler(_handler)
+# Compat: el helper vive ahora en logging_config (compartido con el bootstrap de
+# la GUI, que instala su propio handler en el loop de NiceGUI). Se mantiene el
+# nombre para call-sites y tests existentes.
+_install_loop_exception_handler = install_loop_exception_handler
 
 
 async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> None:

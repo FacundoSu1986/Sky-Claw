@@ -19,7 +19,7 @@ from sky_claw.antigravity.gui.views.forge_dashboard import (
 )
 from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
 from sky_claw.app_context import AppContext, _resolve_config_path_static, start_full
-from sky_claw.logging_config import correlation_id_var
+from sky_claw.logging_config import correlation_id_var, install_loop_exception_handler
 
 logger = logging.getLogger("sky_claw")
 
@@ -295,6 +295,11 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
     async def _bootstrap() -> None:
         if "ctx" in _runtime:
             return
+        # Ítem 4 sub-3: la ruta GUI no pasa por __main__._main, así que instala
+        # acá su propio loop-exception-handler (corre dentro del loop de NiceGUI)
+        # para que las excepciones async no manejadas fluyan por el pipeline
+        # JSON + redacción en vez del stderr por defecto de asyncio.
+        install_loop_exception_handler()
         ctx = await start_full(args)
         _runtime["ctx"] = ctx
 
