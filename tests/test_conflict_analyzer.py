@@ -759,3 +759,102 @@ class TestFlagAlertsEnAnalyze:
         for pair in report.plugin_pairs:
             for c in pair.conflicts:
                 assert c.flag_alerts == ()
+
+
+# ---------------------------------------------------------------------------
+# T-18: límites full/light con flags reales del header (adiós heurística .esl)
+# ---------------------------------------------------------------------------
+
+
+def _plugin_binario(path, *, flags: int = 0) -> None:
+    """Plugin sintético mínimo con esos flags de record TES4 (0x200 = light)."""
+    import struct
+
+    hedr = struct.pack("<fiI", 1.7, 0, 0x800)
+    subrecords = b"HEDR" + struct.pack("<H", len(hedr)) + hedr
+    path.write_bytes(b"TES4" + struct.pack("<IIIIHH", len(subrecords), flags, 0, 0, 44, 0) + subrecords)
+
+
+class TestValidateLoadOrderLimitConFlagsReales:
+    """T-18: con plugin_dirs los pools se cuentan con los flags reales del
+    header (vía PluginLimitsChecker), no por extensión. El caso que la
+    heurística contaba mal: un ESPFE (.esp con flag ESL) consume slot light."""
+
+    def test_espfe_cuenta_como_light_con_flags_reales(self, tmp_path) -> None:
+        """El test rojo del backlog: 255 ESPFE — la heurística por extensión
+        los contaría como 255 full (> 254 → lanza); con flags reales son
+        light y NO se lanza."""
+        plugins_dir = tmp_path / "Data"
+        plugins_dir.mkdir()
+        nombres = [f"espfe_{i:03}.esp" for i in range(255)]
+        for nombre in nombres:
+            _plugin_binario(plugins_dir / nombre, flags=0x200)  # ESL-flag real
+        analyzer = ConflictAnalyzer()
+
+        with pytest.raises(RuntimeError):
+            analyzer.validate_load_order_limit(list(nombres))  # heurística: 255 "full"
+
+        analyzer.validate_load_order_limit(list(nombres), plugin_dirs=[plugins_dir])  # no lanza
+
+    def test_paths_completos_se_normalizan_a_basename(self, tmp_path) -> None:
+        """review Copilot #267: el checker indexa por basename; si el caller
+        pasa paths completos, deben normalizarse o se subcontaría (dejando
+        pasar un overflow real)."""
+        plugins_dir = tmp_path / "Data"
+        plugins_dir.mkdir()
+        nombres = [f"full_{i:03}.esp" for i in range(255)]
+        for nombre in nombres:
+            _plugin_binario(plugins_dir / nombre, flags=0)  # full de verdad
+        # El caller pasa PATHS COMPLETOS, no basenames.
+        paths_completos = [str(plugins_dir / nombre) for nombre in nombres]
+        analyzer = ConflictAnalyzer()
+
+        with pytest.raises(RuntimeError, match="255/254"):
+            analyzer.validate_load_order_limit(paths_completos, plugin_dirs=[plugins_dir])
+
+    def test_limite_full_real_excedido_lanza(self, tmp_path) -> None:
+        plugins_dir = tmp_path / "Data"
+        plugins_dir.mkdir()
+        nombres = [f"full_{i:03}.esp" for i in range(255)]
+        for nombre in nombres:
+            _plugin_binario(plugins_dir / nombre, flags=0)  # full de verdad
+        analyzer = ConflictAnalyzer()
+
+        with pytest.raises(RuntimeError, match="255/254"):
+            analyzer.validate_load_order_limit(list(nombres), plugin_dirs=[plugins_dir])
+
+    def test_dirs_incompletos_caen_a_heuristica(self, tmp_path) -> None:
+        """review Codex #267: si los dirs no cubren los plugins activos, el
+        checker skipea los ausentes → subcontaría. Se cae a la heurística que
+        cuenta todo por extensión (no perder un overflow real)."""
+        plugins_dir = tmp_path / "Data"
+        plugins_dir.mkdir()  # vacío: NO contiene ninguno de los plugins activos
+        nombres = [f"m_{i:03}.esp" for i in range(255)]
+        analyzer = ConflictAnalyzer()
+
+        # Con dirs que no cubren nada → cae a heurística → 255 full → lanza.
+        with pytest.raises(RuntimeError):
+            analyzer.validate_load_order_limit(nombres, plugin_dirs=[plugins_dir])
+
+    def test_esl_corrupto_se_reporta_sin_explotar(self, tmp_path, caplog) -> None:
+        """Un .esl con header ilegible no tumba la validación: cae al conteo
+        por extensión y queda el warning de 'unreadable' (aceptación T-18)."""
+        plugins_dir = tmp_path / "Data"
+        plugins_dir.mkdir()
+        (plugins_dir / "Roto.esl").write_bytes(b"NO-TES4-BASURA")
+        analyzer = ConflictAnalyzer()
+
+        with caplog.at_level("WARNING"):
+            analyzer.validate_load_order_limit(["Roto.esl"], plugin_dirs=[plugins_dir])
+
+        assert any("unreadable" in r.message or "ilegible" in r.message for r in caplog.records)
+
+    def test_sin_plugin_dirs_degrada_honesto(self, caplog) -> None:
+        """Sin dirs no hay flags reales: heurística de siempre + warning
+        explícito de conteo aproximado (no mentir precisión)."""
+        analyzer = ConflictAnalyzer()
+
+        with caplog.at_level("WARNING"):
+            analyzer.validate_load_order_limit(["A.esp", "B.esl"])
+
+        assert any("aproximado" in r.message for r in caplog.records)
