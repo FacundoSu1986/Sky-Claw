@@ -196,6 +196,41 @@ def test_save_settings_permite_provider_cloud_con_slot_guardado(tmp_path: pathli
     assert err is None
 
 
+def test_save_settings_acepta_generica_legacy_sin_cambiar_provider(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Instalación legacy: solo existe la llm_api_key genérica (sin slot por
+    provider). Guardar Ajustes SIN cambiar de provider debe aceptarla —
+    AppContext la usa como fallback y pertenece al provider actual."""
+    from sky_claw.config import Config
+
+    fake = _patch_keyring(monkeypatch)
+    fake.saved["llm_api_key"] = "sk-legacy"  # sin openai_api_key
+    cfg_path = tmp_path / "sky_claw_config.json"
+    cfg = Config(cfg_path)
+    cfg._data["llm_provider"] = "openai"  # el provider persistido no cambia
+    cfg.save()
+
+    err = save_settings(cfg_path, {"llm_provider": "openai"}, app_state=AppState(config_path=cfg_path))
+    assert err is None
+
+
+def test_save_settings_rechaza_generica_al_cambiar_de_provider(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Candado de la protección Codex #221: la genérica pertenece al provider
+    ANTERIOR; cambiar a otro provider cloud sin clave tipeada ni slot propio
+    sigue bloqueado (AppContext arrancaría con la clave equivocada)."""
+    from sky_claw.config import Config
+
+    fake = _patch_keyring(monkeypatch)
+    fake.saved["llm_api_key"] = "sk-del-provider-viejo"
+    cfg_path = tmp_path / "sky_claw_config.json"
+    cfg = Config(cfg_path)
+    cfg._data["llm_provider"] = "deepseek"
+    cfg.save()
+
+    err = save_settings(cfg_path, {"llm_provider": "openai"}, app_state=AppState(config_path=cfg_path))
+    assert err is not None
+    assert Config(cfg_path)._data["llm_provider"] == "deepseek"  # el nuevo no se persistió
+
+
 def test_save_settings_chat_id_vacio_limpia_el_valor(tmp_path: pathlib.Path, monkeypatch) -> None:
     """El chat id NO es secreto: vaciarlo en Ajustes debe persistir el borrado
     (si no, app_context seguiría notificando al chat viejo para siempre).

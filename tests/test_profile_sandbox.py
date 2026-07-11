@@ -24,6 +24,7 @@ from sky_claw.local.mo2.profile_sandbox import (
     ProfileSandbox,
     SandboxDriftError,
     SandboxLocationError,
+    SandboxRollbackError,
     SandboxSymlinkError,
 )
 
@@ -360,3 +361,132 @@ async def test_promote_no_deja_temporales(mo2_root: pathlib.Path) -> None:
 
     residuos = [p for p in (mo2_root / "profiles" / "Default").rglob("*") if "skyclaw-tmp" in p.name]
     assert residuos == []
+
+
+# ---------------------------------------------------------------------------
+# Promote transaccional: rollback ante fallo de I/O a mitad (pre-T-27b)
+# ---------------------------------------------------------------------------
+
+
+def _snapshot_tree(root: pathlib.Path) -> dict[str, bytes]:
+    """Foto byte-exacta de un árbol: {ruta relativa posix: contenido}."""
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+async def test_promote_con_fallo_a_mitad_hace_rollback_completo(mo2_root: pathlib.Path, monkeypatch) -> None:
+    """El tmp+os.replace protege cada archivo, no el conjunto: si el cambio N
+    falla, los N-1 anteriores ya estaban aplicados y el perfil quedaba mitad
+    viejo/mitad nuevo. El promote debe ser todo-o-nada: ante un OSError a
+    mitad, el árbol real vuelve byte-exacto al estado previo (incluidos los
+    removed, que se aplican primero)."""
+    import os as os_mod
+
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    clone = await sandbox.clone()
+
+    # 4 cambios mezclados: modified x2 (profile), added y removed (overwrite).
+    (clone.profile_copy / "plugins.txt").write_bytes(b"\xef\xbb\xbf*USSEP.esp\r\n*Skyrim.esm\r\n")
+    (clone.profile_copy / "modlist.txt").write_bytes(b"\xef\xbb\xbf+ModB\r\n-ModA\r\n")
+    (clone.overwrite_copy / "SkyClaw_Patch.esp").write_bytes(b"TES4-fake")
+    (clone.overwrite_copy / "SKSE" / "plugin.log").unlink()
+
+    foto_profile = _snapshot_tree(mo2_root / "profiles" / "Default")
+    foto_overwrite = _snapshot_tree(mo2_root / "overwrite")
+
+    # Falla SOLO la 2ª llamada a os.replace (el 1er modified ya se aplicó y el
+    # removed también); las siguientes pasan para que el rollback pueda usarlas.
+    replace_real = os_mod.replace
+    llamadas = {"n": 0}
+
+    def replace_con_fallo(src, dst, **kwargs):
+        llamadas["n"] += 1
+        if llamadas["n"] == 2:
+            raise OSError("disco falló a mitad del promote")
+        return replace_real(src, dst, **kwargs)
+
+    monkeypatch.setattr(os_mod, "replace", replace_con_fallo)
+
+    with pytest.raises(OSError, match="disco falló"):
+        await sandbox.promote(clone)
+
+    assert _snapshot_tree(mo2_root / "profiles" / "Default") == foto_profile
+    assert _snapshot_tree(mo2_root / "overwrite") == foto_overwrite
+
+
+async def test_promote_con_fallo_en_unlink_restaura_borrados(mo2_root: pathlib.Path, monkeypatch) -> None:
+    """Los removed se aplican primero con unlink: un fallo en el 2º borrado
+    debe reponer el 1º desde el backup, no dejar el borrado ya efectivo."""
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    clone = await sandbox.clone()
+
+    (clone.overwrite_copy / "SKSE" / "plugin.log").unlink()
+    (clone.overwrite_copy / "textures" / "foo.dds").unlink()
+
+    foto_overwrite = _snapshot_tree(mo2_root / "overwrite")
+
+    # Falla SOLO el unlink del target real foo.dds (filtrado por ruta exacta:
+    # los unlink de temporales y del clon deben seguir funcionando).
+    objetivo = mo2_root / "overwrite" / "textures" / "foo.dds"
+    unlink_real = pathlib.Path.unlink
+
+    def unlink_con_fallo(self: pathlib.Path, missing_ok: bool = False) -> None:
+        if self == objetivo:
+            raise OSError("disco falló en el unlink")
+        unlink_real(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink_con_fallo)
+
+    with pytest.raises(OSError, match="disco falló"):
+        await sandbox.promote(clone)
+
+    assert _snapshot_tree(mo2_root / "overwrite") == foto_overwrite
+
+
+async def test_promote_exitoso_limpia_el_rollback(mo2_root: pathlib.Path) -> None:
+    """Tras un promote exitoso no queda el directorio de rollback en el clon
+    ni temporales en el árbol real (regresión del cleanup)."""
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    clone = await sandbox.clone()
+    (clone.profile_copy / "plugins.txt").write_bytes(b"\xef\xbb\xbf*USSEP.esp\r\n")
+    (clone.overwrite_copy / "SKSE" / "plugin.log").unlink()
+
+    await sandbox.promote(clone)
+
+    assert list(clone.root.glob("rollback*")) == []
+    residuos = [p for p in (mo2_root / "overwrite").rglob("*") if "skyclaw-tmp" in p.name]
+    assert residuos == []
+
+
+async def test_promote_doble_fallo_lanza_rollback_error(mo2_root: pathlib.Path, monkeypatch) -> None:
+    """Si el promote falla Y el rollback también, se lanza SandboxRollbackError
+    con la ruta del backup en el mensaje y el directorio de rollback se
+    preserva para restauración manual."""
+    import os as os_mod
+
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    clone = await sandbox.clone()
+
+    (clone.profile_copy / "modlist.txt").write_bytes(b"\xef\xbb\xbf+ModB\r\n-ModA\r\n")
+    (clone.profile_copy / "plugins.txt").write_bytes(b"\xef\xbb\xbf*USSEP.esp\r\n*Skyrim.esm\r\n")
+
+    # La 1ª llamada pasa (modlist.txt aplicado); todas las siguientes fallan:
+    # falla el apply de plugins.txt Y el os.replace del rollback de modlist.txt.
+    replace_real = os_mod.replace
+    llamadas = {"n": 0}
+
+    def replace_con_fallo(src, dst, **kwargs):
+        llamadas["n"] += 1
+        if llamadas["n"] >= 2:
+            raise OSError("disco muerto")
+        return replace_real(src, dst, **kwargs)
+
+    monkeypatch.setattr(os_mod, "replace", replace_con_fallo)
+
+    with pytest.raises(SandboxRollbackError) as excinfo:
+        await sandbox.promote(clone)
+
+    rollback_dirs = list(clone.root.glob("rollback*"))
+    assert rollback_dirs, "el directorio de rollback debe preservarse para restauración manual"
+    assert str(rollback_dirs[0]) in str(excinfo.value)
+    # El backup del archivo aplicado sigue disponible para restaurar a mano.
+    assert (rollback_dirs[0] / "profile" / "modlist.txt").read_bytes() == _MODLIST
