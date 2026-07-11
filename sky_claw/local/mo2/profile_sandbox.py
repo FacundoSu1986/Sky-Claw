@@ -79,6 +79,16 @@ class SandboxDriftError(ProfileSandboxError):
     """
 
 
+class SandboxRollbackError(ProfileSandboxError):
+    """El promote falló Y el rollback también: el perfil real puede haber
+    quedado inconsistente.
+
+    El mensaje incluye la ruta del directorio de backup (que se preserva) para
+    restaurar a mano los archivos afectados; la excepción original del promote
+    viaja encadenada (``__cause__``).
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class SandboxClone:
     """Un clon materializado: origen, copia mutable y baseline por área.
@@ -240,10 +250,17 @@ class ProfileSandbox:
         recalculado acá mismo — se promueve exactamente lo que hay, no un diff
         viejo del caller.
 
+        La aplicación es transaccional (todo o nada): antes de mutar el árbol
+        real se respalda cada target afectado y, si un cambio falla a mitad,
+        los ya aplicados se revierten en orden inverso — el perfil real vuelve
+        byte-exacto al estado previo al promote.
+
         Raises:
             SandboxDriftError: Si el perfil/overwrite reales cambiaron desde
                 el clonado (promover pisaría cambios vivos).
             SandboxSymlinkError: Si hay symlinks en alguno de los árboles.
+            SandboxRollbackError: Si el promote falló Y el rollback también;
+                el backup se preserva para restauración manual.
         """
         await asyncio.to_thread(self._check_drift, clone)
         changes = await asyncio.to_thread(self._compute_diff, clone)
@@ -339,38 +356,126 @@ class ProfileSandbox:
         # archivo→directorio y hace correcto el rename solo-de-mayúsculas en
         # filesystems case-insensitive (review Codex PR #245).
         ordered = sorted(changes, key=lambda c: 0 if c.kind == "removed" else 1)
+
+        # Fase 0 — backup de todo target real afectado ANTES de mutar nada:
+        # el tmp+os.replace protege cada archivo individual, no el conjunto.
+        # Sin esto, un OSError en el cambio N dejaba los N-1 anteriores
+        # aplicados (los removed van primero → borrados ya efectivos) y el
+        # perfil MO2 quedaba mitad viejo/mitad nuevo. Un fallo en esta fase es
+        # seguro: el árbol real sigue intacto. El nombre del directorio es
+        # único por promote para no chocar al reintentar con el mismo clon.
+        rollback_dir = clone.root / f"rollback-{uuid.uuid4().hex[:8]}"
+        backups: dict[tuple[Area, str], pathlib.Path] = {}
         for change in ordered:
-            source, copy = (
-                (clone.profile_source, clone.profile_copy)
-                if change.area == "profile"
-                else (clone.overwrite_source, clone.overwrite_copy)
+            target = self._real_target(clone, change)
+            if target.is_file():
+                backup = rollback_dir / change.area / change.relative_path
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(target, backup)
+                backups[(change.area, change.relative_path)] = backup
+
+        # Fase 1 — aplicar; cada cambio entra a `applied` solo tras completarse.
+        applied: list[FileChange] = []
+        try:
+            for change in ordered:
+                source, copy = (
+                    (clone.profile_source, clone.profile_copy)
+                    if change.area == "profile"
+                    else (clone.overwrite_source, clone.overwrite_copy)
+                )
+                target = source / change.relative_path
+                # Los árboles de mods suelen traer archivos read-only (Windows):
+                # limpiar el bit de escritura antes de tocar el target para no
+                # dejar la promoción a medias (review Copilot PR #245).
+                _make_writable(target)
+                if change.kind == "removed":
+                    target.unlink(missing_ok=True)
+                    deleted += 1
+                else:  # added | modified
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.is_dir():
+                        # Reemplazo directorio→archivo: tras las removals el dir
+                        # solo conserva subdirectorios vacíos; despejarlo.
+                        _rmtree_force(target)
+                    # Escritura atómica: copiar a un tmp del MISMO directorio y
+                    # os.replace — un fallo a mitad de copia no trunca el archivo
+                    # real (mismo patrón que las escrituras de load order del repo;
+                    # review Codex PR #245).
+                    tmp = target.parent / f"{target.name}.{uuid.uuid4().hex[:8]}.skyclaw-tmp"
+                    try:
+                        shutil.copy2(copy / change.relative_path, tmp)
+                        os.replace(tmp, target)
+                    finally:
+                        tmp.unlink(missing_ok=True)
+                    written += 1
+                applied.append(change)
+        except Exception as original:
+            try:
+                self._rollback(clone, applied, backups)
+            except Exception as rollback_exc:
+                logger.exception("El rollback del promote también falló; backup preservado en %s", rollback_dir)
+                raise SandboxRollbackError(
+                    f"El promote falló ({original!r}) y el rollback también ({rollback_exc!r}): "
+                    f"el perfil real puede haber quedado inconsistente. "
+                    f"Backup para restauración manual en: {rollback_dir}"
+                ) from original
+            logger.warning(
+                "El promote falló a mitad (%s); el perfil real fue restaurado al estado previo.",
+                original,
             )
-            target = source / change.relative_path
-            # Los árboles de mods suelen traer archivos read-only (Windows):
-            # limpiar el bit de escritura antes de tocar el target para no
-            # dejar la promoción a medias (review Copilot PR #245).
-            _make_writable(target)
-            if change.kind == "removed":
+            raise
+        # Éxito: el backup ya no hace falta (best-effort; el clon entero se
+        # descarta después de todos modos).
+        _rmtree_force(rollback_dir)
+        return written, deleted
+
+    @staticmethod
+    def _real_target(clone: SandboxClone, change: FileChange) -> pathlib.Path:
+        """Ruta del target de un cambio en el árbol REAL (profile u overwrite)."""
+        source = clone.profile_source if change.area == "profile" else clone.overwrite_source
+        return source / change.relative_path
+
+    def _rollback(
+        self,
+        clone: SandboxClone,
+        applied: list[FileChange],
+        backups: dict[tuple[Area, str], pathlib.Path],
+    ) -> None:
+        """Revierte en orden inverso los cambios ya aplicados de un promote fallido.
+
+        Deja el árbol real byte-exacto al estado previo al promote. Caveat: los
+        directorios vacíos creados por el apply no se limpian ni se restauran
+        (el diff trackea archivos — ``_relative_files`` ignora dirs vacíos —
+        e inocuo para MO2).
+        """
+        for change in reversed(applied):
+            target = self._real_target(clone, change)
+            if change.kind == "added":
+                _make_writable(target)
                 target.unlink(missing_ok=True)
-                deleted += 1
-            else:  # added | modified
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if target.is_dir():
-                    # Reemplazo directorio→archivo: tras las removals el dir
-                    # solo conserva subdirectorios vacíos; despejarlo.
-                    _rmtree_force(target)
-                # Escritura atómica: copiar a un tmp del MISMO directorio y
-                # os.replace — un fallo a mitad de copia no trunca el archivo
-                # real (mismo patrón que las escrituras de load order del repo;
-                # review Codex PR #245).
+                continue
+            backup = backups.get((change.area, change.relative_path))
+            if backup is None:
+                # Imposible por construcción (modified/removed implican target
+                # preexistente ya respaldado en fase 0); fail-loud para que el
+                # caller lo reporte como SandboxRollbackError.
+                raise ProfileSandboxError(f"Sin backup para revertir {change.area}/{change.relative_path}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.is_dir():
+                # Caso archivo→directorio: deshacer los added ya dejó el dir
+                # vacío donde antes vivía el archivo borrado; despejarlo.
+                _rmtree_force(target)
+            _make_writable(target)
+            if change.kind == "modified":
+                # Mismo patrón atómico del apply: tmp en el MISMO directorio.
                 tmp = target.parent / f"{target.name}.{uuid.uuid4().hex[:8]}.skyclaw-tmp"
                 try:
-                    shutil.copy2(copy / change.relative_path, tmp)
+                    shutil.copy2(backup, tmp)
                     os.replace(tmp, target)
                 finally:
                     tmp.unlink(missing_ok=True)
-                written += 1
-        return written, deleted
+            else:  # removed → reponer el archivo borrado
+                shutil.copy2(backup, target)
 
     @staticmethod
     def _relative_files(root: pathlib.Path) -> set[str]:
