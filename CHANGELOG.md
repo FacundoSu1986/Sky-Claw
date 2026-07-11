@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`sky_claw/local/AGENTS.md` — SOP canónico del pipeline de modding de Skyrim para agentes IA** (orden cronológico de stages xEdit → CAO → BodySlide → Pandora → LOOT → Wrye Bash → Synthesis → No Grass In Objects → TexGen/DynDOLOD, reglas por tool, conflict resolution protocol, critical failure modes, code-editing rules para agentes). Cubre los tres subsistemas gobernados: `sky_claw/local/tools/`, `sky_claw/local/xedit/` y `sky_claw/antigravity/orchestrator/tool_strategies/`. Referenciado desde el `AGENTS.md` raíz. *Audiencia: cualquier LLM agent (Claude Code, Cursor, Aider, Gemini, Codex) que edite código del pipeline.*
+
 ### Security
 - **`python-engineio` 4.13.1 → 4.13.3 (CVE-2026-48802, CVE-2026-48809) y
   `python-socketio` 5.16.1 → 5.16.3 (CVE-2026-48804)** — misma ola de avisos
