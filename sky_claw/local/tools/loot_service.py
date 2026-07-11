@@ -522,12 +522,12 @@ class LootSortingService:
                 if not result.success:
                     # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
                     raise _LootSortFailedError(result)
-            # T-21: el lazo `validate` — re-correr los sensores DESPUÉS de la
-            # mutación (best-effort: nunca rompe un sort exitoso). Corre también
-            # para callers legacy sin journal; el resultado viaja en la
-            # respuesta y, cuando hay journal, en el slot del FlightReport.
-            post_run_payload = await self._run_post_run_validation()
-
+                # T-21: validar DENTRO del lock — con el lock liberado, otro
+                # Ritual concurrente podría mutar el load order antes de la
+                # lectura y el reporte quedaría atribuido a este sort (review
+                # Copilot #264). El helper no lanza (best-effort), así que no
+                # puede disparar el rollback de un sort exitoso.
+                post_run_payload = await self._run_post_run_validation()
             if journal_tx_id is not None and self._journal is not None:
                 # El sort ya terminó y el lock se liberó; un fallo de commit del
                 # journal es de estado (el manifiesto ya quedó persistido), no

@@ -897,3 +897,39 @@ async def test_post_run_verde_no_ensucia_la_respuesta(
 
     assert result["success"] is True
     assert "post_run" not in result
+
+
+@pytest.mark.asyncio
+async def test_post_run_corre_dentro_del_lock_del_load_order(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """review Copilot #264: con el lock liberado, otro Ritual podría mutar el
+    load order antes de la lectura post-run y el reporte quedaría atribuido a
+    este sort. El spy intenta tomar el MISMO lock durante la validación: debe
+    fallar (el sort todavía lo tiene)."""
+    from sky_claw.antigravity.db.locks import LockAcquisitionError
+    from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
+
+    resolver, _plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
+
+    lock_tomado_durante_post_run: list[bool] = []
+
+    async def _spy(self: LootSortingService) -> None:
+        try:
+            info = await lock_manager.acquire_lock(LOAD_ORDER_RESOURCE_ID, agent_id="spy-post-run", ttl=1.0)
+            await lock_manager.release_lock(info.resource_id, info.agent_id)
+            lock_tomado_durante_post_run.append(False)  # se pudo tomar → estábamos FUERA
+        except LockAcquisitionError:
+            lock_tomado_durante_post_run.append(True)  # tomado → validamos ADENTRO
+        return None
+
+    with patch.object(LootSortingService, "_run_post_run_validation", _spy):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    assert lock_tomado_durante_post_run == [True]
