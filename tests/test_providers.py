@@ -167,6 +167,36 @@ class TestConvertMessagesToOpenAI:
         result = _convert_messages_to_openai(msgs)
         assert result[-1]["content"] == "..."
 
+    def test_tool_use_sin_name_no_rompe_la_conversion(self) -> None:
+        """Review PR #266: router.py persiste el content_blocks crudo en el
+        historial ANTES de su sanitización defensiva de tool_use sin 'name'
+        (L-2). Si el LLMRouter luego cambia a un provider OpenAI-compatible,
+        _convert_messages_to_openai reprocesa ese historial — no debe romperse
+        con KeyError, debe omitir el bloque malformado."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t1", "input": {}}],
+            }
+        ]
+        result = _convert_messages_to_openai(msgs)
+        assert result[-1]["content"] == "..."
+        assert "tool_calls" not in result[-1]
+
+    def test_tool_use_sin_name_junto_a_uno_valido_preserva_el_valido(self) -> None:
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "bad", "input": {}},
+                    {"type": "tool_use", "id": "t2", "name": "search_mod", "input": {}},
+                ],
+            }
+        ]
+        result = _convert_messages_to_openai(msgs)
+        assert len(result[-1]["tool_calls"]) == 1
+        assert result[-1]["tool_calls"][0]["function"]["name"] == "search_mod"
+
 
 class TestParseOpenAIResponse:
     def test_text_only(self) -> None:

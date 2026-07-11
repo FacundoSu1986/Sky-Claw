@@ -204,16 +204,24 @@ def _convert_messages_to_openai(messages: list[dict[str, Any]]) -> list[dict[str
                 if block_type == "text":
                     text_parts.append(block.get("text", ""))
                 elif block_type == "tool_use":
-                    tool_calls.append(
-                        {
-                            "id": block.get("id", uuid.uuid4().hex),
-                            "type": "function",
-                            "function": {
-                                "name": block["name"],
-                                "arguments": json.dumps(block.get("input", {})),
-                            },
-                        }
-                    )
+                    # Acceso defensivo (L-2, mismo patrón que router.py): un
+                    # tool_use sin 'name' puede persistir en el historial
+                    # (router.py guarda content_blocks crudo antes de su propia
+                    # sanitización) y llegar acá si el LLMRouter luego cambia a
+                    # un provider OpenAI-compatible. Se omite el bloque en vez
+                    # de romper la conversión entera con KeyError.
+                    tool_name = block.get("name")
+                    if tool_name:
+                        tool_calls.append(
+                            {
+                                "id": block.get("id", uuid.uuid4().hex),
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": json.dumps(block.get("input", {})),
+                                },
+                            }
+                        )
             # Solo emitir un mensaje de rol si hubo algún bloque que no sea
             # tool_result (los tool_result ya se emitieron arriba). Un
             # mensaje compuesto únicamente por tool_result no debe generar
