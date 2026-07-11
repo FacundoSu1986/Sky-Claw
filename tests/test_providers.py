@@ -94,6 +94,148 @@ class TestConvertMessagesToOpenAI:
         assert len(result[0]["tool_calls"]) == 1
         assert result[0]["tool_calls"][0]["function"]["name"] == "search_mod"
 
+    def test_tool_result_con_texto_preserva_ambos(self) -> None:
+        """P-3: un tool_result primero no debe hacer perder el texto que sigue."""
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": '{"ok": true}'},
+                    {"type": "text", "text": "nota del usuario"},
+                ],
+            }
+        ]
+        result = _convert_messages_to_openai(msgs)
+        tool_msgs = [m for m in result if m["role"] == "tool"]
+        text_msgs = [m for m in result if m["role"] == "user"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "t1"
+        assert tool_msgs[0]["content"] == '{"ok": true}'
+        assert len(text_msgs) == 1
+        assert text_msgs[0]["content"] == "nota del usuario"
+
+    def test_texto_antes_de_tool_result_preserva_ambos(self) -> None:
+        """P-3: el orden inverso tampoco debe descartar el tool_result."""
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "nota del usuario"},
+                    {"type": "tool_result", "tool_use_id": "t2", "content": "hecho"},
+                ],
+            }
+        ]
+        result = _convert_messages_to_openai(msgs)
+        tool_msgs = [m for m in result if m["role"] == "tool"]
+        text_msgs = [m for m in result if m["role"] == "user"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "t2"
+        assert len(text_msgs) == 1
+        assert text_msgs[0]["content"] == "nota del usuario"
+
+    def test_orden_de_bloques_mixtos_se_preserva(self) -> None:
+        """Review Codex PR #266: texto antes de un tool_result debe emitirse
+        ANTES en la lista result, no después — invertir el orden cambia el
+        contexto que ve el modelo (el tool_result parecería anterior a la
+        nota del usuario que en realidad lo precedía)."""
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "nota del usuario"},
+                    {"type": "tool_result", "tool_use_id": "t2", "content": "hecho"},
+                ],
+            }
+        ]
+        result = _convert_messages_to_openai(msgs)
+        roles_and_content = [(m["role"], m.get("content")) for m in result]
+        assert roles_and_content == [("user", "nota del usuario"), ("tool", "hecho")]
+
+    def test_texto_dividido_por_tool_result_emite_dos_mensajes_en_orden(self) -> None:
+        """texto1, tool_result, texto2 → dos mensajes de rol separados, con el
+        tool_result intercalado en su posición original."""
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "primero"},
+                    {"type": "tool_result", "tool_use_id": "t3", "content": "resultado"},
+                    {"type": "text", "text": "segundo"},
+                ],
+            }
+        ]
+        result = _convert_messages_to_openai(msgs)
+        roles_and_content = [(m["role"], m.get("content")) for m in result]
+        assert roles_and_content == [
+            ("user", "primero"),
+            ("tool", "resultado"),
+            ("user", "segundo"),
+        ]
+
+    def test_multiples_tool_results_preservan_orden(self) -> None:
+        """Regresión: varios tool_result mezclados con texto no deben colisionar."""
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "a", "content": "1"},
+                    {"type": "tool_result", "tool_use_id": "b", "content": "2"},
+                ],
+            }
+        ]
+        result = _convert_messages_to_openai(msgs)
+        assert [m["tool_call_id"] for m in result] == ["a", "b"]
+
+    def test_solo_tool_use_sin_texto_da_content_none(self) -> None:
+        """Preserva el fallback: sin texto pero con tool_calls, content es None."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "search_mod", "input": {}},
+                ],
+            }
+        ]
+        result = _convert_messages_to_openai(msgs)
+        assert result[-1]["content"] is None
+        assert len(result[-1]["tool_calls"]) == 1
+
+    def test_bloque_sin_texto_ni_tool_calls_da_puntos_suspensivos(self) -> None:
+        """Preserva el fallback: ni texto ni tool_calls → content = '...'."""
+        msgs = [{"role": "assistant", "content": [{"type": "unknown_block"}]}]
+        result = _convert_messages_to_openai(msgs)
+        assert result[-1]["content"] == "..."
+
+    def test_tool_use_sin_name_no_rompe_la_conversion(self) -> None:
+        """Review PR #266: router.py persiste el content_blocks crudo en el
+        historial ANTES de su sanitización defensiva de tool_use sin 'name'
+        (L-2). Si el LLMRouter luego cambia a un provider OpenAI-compatible,
+        _convert_messages_to_openai reprocesa ese historial — no debe romperse
+        con KeyError, debe omitir el bloque malformado."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t1", "input": {}}],
+            }
+        ]
+        result = _convert_messages_to_openai(msgs)
+        assert result[-1]["content"] == "..."
+        assert "tool_calls" not in result[-1]
+
+    def test_tool_use_sin_name_junto_a_uno_valido_preserva_el_valido(self) -> None:
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "bad", "input": {}},
+                    {"type": "tool_use", "id": "t2", "name": "search_mod", "input": {}},
+                ],
+            }
+        ]
+        result = _convert_messages_to_openai(msgs)
+        assert len(result[-1]["tool_calls"]) == 1
+        assert result[-1]["tool_calls"][0]["function"]["name"] == "search_mod"
+
 
 class TestParseOpenAIResponse:
     def test_text_only(self) -> None:
@@ -480,6 +622,40 @@ class TestOllamaProvider:
         call_kwargs = mock_gateway.request.call_args[1]
         assert "headers" not in call_kwargs
 
+    @pytest.mark.asyncio
+    async def test_chat_pasa_timeout_para_ollama(self) -> None:
+        """P-2: sin timeout propio, un Ollama colgado bloquea hasta el default
+        del gateway (45s) — corto para inferencia local legítima."""
+        provider = OllamaProvider()
+
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = AsyncMock(
+            return_value={"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}
+        )
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+
+        mock_gateway = MagicMock()
+        mock_gateway.request = AsyncMock(return_value=mock_response)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        await provider.chat([{"role": "user", "content": "x"}], [], session, gateway=mock_gateway)
+
+        call_kwargs = mock_gateway.request.call_args[1]
+        assert "timeout" in call_kwargs
+        assert isinstance(call_kwargs["timeout"], aiohttp.ClientTimeout)
+        assert call_kwargs["timeout"].total == OllamaProvider.DEFAULT_TIMEOUT_SECONDS
+
+    def test_timeout_configurable(self) -> None:
+        provider = OllamaProvider(timeout=12.0)
+        assert provider.timeout == 12.0
+
+    def test_timeout_default_es_generoso(self) -> None:
+        """300s por defecto: inferencia local puede tardar minutos en hardware modesto."""
+        assert OllamaProvider().DEFAULT_TIMEOUT_SECONDS == 300.0
+
 
 # ------------------------------------------------------------------
 # Anthropic provider
@@ -677,3 +853,18 @@ class TestShouldRetry:
 
     def test_no_retry_on_generic_exception(self) -> None:
         assert _should_retry(ValueError("unrelated")) is False
+
+
+class TestRetryPorProvider:
+    """P-1: Ollama (local, sin rate-limit) usa una política de retry más rápida
+    y acotada que las APIs pagas (Anthropic/DeepSeek/OpenAI), que conservan la
+    política conservadora original (backoff hasta 60s, 5 intentos)."""
+
+    def test_ollama_usa_retry_local_rapido(self) -> None:
+        assert OllamaProvider.chat.retry.stop.max_attempt_number == 3
+        assert OllamaProvider.chat.retry.wait.max == 5.0
+
+    def test_apis_pagas_usan_retry_conservador(self) -> None:
+        for provider_cls in (AnthropicProvider, DeepSeekProvider, OpenAIProvider):
+            assert provider_cls.chat.retry.stop.max_attempt_number == 5
+            assert provider_cls.chat.retry.wait.max == 60.0
