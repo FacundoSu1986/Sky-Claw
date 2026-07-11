@@ -457,14 +457,26 @@ def save_settings(
     # Cambiar a un provider cloud requiere su clave: la tipeada ahora o el slot
     # {provider}_api_key ya guardado. Sin esto, AppContext caería a la
     # llm_api_key genérica — la del provider ANTERIOR — y el arranque fallaría
-    # (review Codex en #221).
+    # (review Codex en #221). Excepción legacy: si el provider NO cambia
+    # respecto del persistido, la llm_api_key genérica cuenta como clave válida
+    # — AppContext ya la usa como fallback (app_context._make_llm_provider /
+    # reload_llm_provider) y en ese caso pertenece al provider actual.
     if provider in ("anthropic", "deepseek", "openai") and not api_key:
         try:
             has_slot = bool(keyring.get_password("sky_claw", f"{provider}_api_key"))
         except Exception:
             has_slot = False
         if not has_slot:
-            return f"Ingresá la API Key de {provider}: no hay una clave guardada para ese proveedor"
+            try:
+                current_provider = str(Config(config_path)._data.get("llm_provider") or "")
+            except Exception:
+                current_provider = ""
+            try:
+                has_generic = bool(keyring.get_password("sky_claw", "llm_api_key"))
+            except Exception:
+                has_generic = False
+            if not (provider == current_provider and has_generic):
+                return f"Ingresá la API Key de {provider}: no hay una clave guardada para ese proveedor"
 
     # Secretos → keyring, solo si el usuario tipeó algo (vacío = conservar).
     secrets_map = {
