@@ -297,3 +297,56 @@ async def test_preview_chain_event_payload_has_id(tmp_path: pathlib.Path) -> Non
         assert published.payload.get("workflow_id") == "wf-id"
     finally:
         await lock_mgr.close()
+
+
+# ---------------------------------------------------------------------------
+# T-18: el check de límites del preview usa flags reales cuando hay rutas
+# ---------------------------------------------------------------------------
+
+
+class TestLimitesConFlagsReales:
+    def _service(self, tmp_path: pathlib.Path, resolver: MagicMock, analyzer: MagicMock) -> ChainPreviewService:
+        return ChainPreviewService(
+            lock_manager=MagicMock(),
+            snapshot_manager=MagicMock(),
+            journal=AsyncMock(),
+            path_resolver=resolver,
+            path_validator=PathValidator(roots=[tmp_path]),
+            event_bus=AsyncMock(),
+            loot_runner=MagicMock(),
+            xedit_runner=MagicMock(),
+            conflict_analyzer=analyzer,
+        )
+
+    def test_con_rutas_resolubles_pasa_plugin_dirs(self, tmp_path: pathlib.Path) -> None:
+        """T-18: con Skyrim/MO2 resolubles, el validador recibe los dirs y
+        cuenta con flags reales (un ESPFE deja de inflar el pool full)."""
+        skyrim = tmp_path / "Skyrim"
+        (skyrim / "Data").mkdir(parents=True)
+        mo2 = tmp_path / "MO2"
+        (mo2 / "mods" / "ModA").mkdir(parents=True)
+        resolver = _resolver_without_paths()
+        resolver.get_skyrim_path = MagicMock(return_value=skyrim)
+        resolver.get_mo2_path = MagicMock(return_value=mo2)
+        analyzer = MagicMock()
+        analyzer.validate_load_order_limit = MagicMock(return_value=None)
+
+        svc = self._service(tmp_path, resolver, analyzer)
+        avisos = svc._plugin_limit_warnings(["A.esp"])
+
+        assert avisos == []
+        kwargs = analyzer.validate_load_order_limit.call_args.kwargs
+        dirs = {d.name for d in kwargs["plugin_dirs"]}
+        assert "Data" in dirs
+        assert "ModA" in dirs
+
+    def test_sin_rutas_degrada_a_none(self, tmp_path: pathlib.Path) -> None:
+        """Sin entorno resoluble, el validador recibe plugin_dirs=None y
+        degrada solo a la heurística (con su warning honesto)."""
+        analyzer = MagicMock()
+        analyzer.validate_load_order_limit = MagicMock(return_value=None)
+
+        svc = self._service(tmp_path, _resolver_without_paths(), analyzer)
+        svc._plugin_limit_warnings(["A.esp"])
+
+        assert analyzer.validate_load_order_limit.call_args.kwargs["plugin_dirs"] is None
