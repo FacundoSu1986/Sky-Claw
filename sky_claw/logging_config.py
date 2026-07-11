@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import getpass
 import logging
 import logging.handlers
@@ -12,8 +14,16 @@ from pythonjsonlogger import json
 
 from sky_claw.config import Config
 
+logger = logging.getLogger(__name__)
+
 # Correlation ID for tracking requests across components
 correlation_id_var: ContextVar[str] = ContextVar("correlation_id", default="")
+
+#: Campos del log JSON. ``trace_id`` es explícito (paridad con
+#: ``correlation_id``): ambos los setea CorrelationFilter, pero sin declararlo
+#: aquí quedaba a merced del extra-merge de pythonjsonlogger (que solo lo emite
+#: si el record ya trae el atributo). Como campo requerido, siempre aparece.
+_JSON_LOG_FORMAT = "%(asctime)s %(levelname)s %(correlation_id)s %(trace_id)s %(name)s %(message)s"
 
 # Get current configuration and user for redaction
 _GLOBAL_CFG = Config()
@@ -217,6 +227,30 @@ class CorrelationFilter(logging.Filter):
         return True
 
 
+def install_loop_exception_handler() -> None:
+    """Route otherwise-unhandled event-loop exceptions (e.g. from fire-and-forget
+    tasks) to the structured logger instead of asyncio's default stderr handler,
+    so they flow through the JSON log + secret-redaction pipeline for root-cause
+    analysis. Best-effort: no-ops when no loop is running.
+
+    Vive acá (y no en ``__main__``) porque cada event loop necesita su propio
+    handler: ``_main`` lo instala para las rutas CLI/Telegram/oneshot, y la GUI
+    (loop propio de NiceGUI) lo instala en su bootstrap — ambos comparten esta
+    única implementación.
+    """
+
+    def _handler(_loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
+        exc = context.get("exception")
+        logger.error(
+            "Unhandled event-loop exception: %s",
+            context.get("message", ""),
+            exc_info=exc if isinstance(exc, BaseException) else None,
+        )
+
+    with contextlib.suppress(RuntimeError):
+        asyncio.get_running_loop().set_exception_handler(_handler)
+
+
 def setup_logging(level: int = logging.INFO, log_file: str = "sky_claw.log"):
     """Set up structured logging with rotation and specialized handlers."""
     root_logger = logging.getLogger()
@@ -244,7 +278,7 @@ def setup_logging(level: int = logging.INFO, log_file: str = "sky_claw.log"):
     # --- File Handlers (Rotating) ---
     os.makedirs("logs", exist_ok=True)
 
-    json_formatter = json.JsonFormatter("%(asctime)s %(levelname)s %(correlation_id)s %(name)s %(message)s")
+    json_formatter = json.JsonFormatter(_JSON_LOG_FORMAT)
 
     def _add_rotating_handler(logger_obj, filename, propagate=True):
         file_path = os.path.join("logs", filename)
