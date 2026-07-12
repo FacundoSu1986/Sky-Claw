@@ -150,6 +150,25 @@ class TestOrdenYExtensibilidad:
         severidades = [rec.severity for rec in recs]
         assert severidades == ["critical", "warning", "info"]
 
+    def test_severidad_desconocida_cae_en_info(self) -> None:
+        """Una severidad no reconocida no se propaga: el grupo cae en ``info``."""
+        recs = recommend([_conflicto(record_type="LVLI", severity="rarísima")])
+
+        assert len(recs) == 1
+        assert recs[0].severity == "info"
+
+    def test_severidad_conocida_gana_a_la_desconocida_en_el_grupo(self) -> None:
+        """En un grupo mixto, la conocida más alta manda (la rara se ignora)."""
+        recs = recommend(
+            [
+                _conflicto(record_type="LVLI", severity="rarísima"),
+                _conflicto(record_type="LVLI", severity="critical"),
+            ]
+        )
+
+        assert len(recs) == 1
+        assert recs[0].severity == "critical"
+
     def test_regla_custom_mapea_tipo_nuevo(self) -> None:
         """Extensibilidad: una regla es un dato, no código (mismo motor)."""
         regla = StrategyRule(

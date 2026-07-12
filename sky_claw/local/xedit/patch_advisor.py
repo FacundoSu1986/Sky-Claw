@@ -162,8 +162,16 @@ def _match_rule(record_type: str, rules: Sequence[StrategyRule]) -> StrategyRule
 
 
 def _most_severe(severities: Sequence[str]) -> str:
-    """La severidad más alta del grupo (default ``info`` si desconocida)."""
-    return min(severities, key=lambda s: _SEVERITY_RANK.get(s, len(_SEVERITY_RANK)))
+    """La severidad más alta del grupo, sobre las severidades conocidas.
+
+    Las severidades desconocidas se ignoran (no se propagan a
+    :attr:`PatchRecommendation.severity` ni al ordenamiento); si ninguna del
+    grupo es conocida, cae en ``"info"`` (la más baja, orden conservador).
+    """
+    conocidas = [s for s in severities if s in _SEVERITY_RANK]
+    if not conocidas:
+        return "info"
+    return min(conocidas, key=lambda s: _SEVERITY_RANK[s])
 
 
 def recommend(
