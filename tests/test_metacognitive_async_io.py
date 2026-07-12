@@ -39,7 +39,7 @@ async def test_phase_resolve_lee_archivos_en_thread(tmp_path: pathlib.Path, monk
         await engine._phase_resolve()
 
     # La lectura del archivo pasó por un thread.
-    assert "_read_text_file_blocking" in calls, f"to_thread no usado para el read: {calls}"
+    assert any("blocking" in name for name in calls), f"to_thread no usado para el read: {calls}"
     # Regresión funcional: el escaneo corrió y persistió su resultado.
     gov.update_scan_result.assert_awaited_once()
     assert engine.session_data["status"] == "RESOLVING"

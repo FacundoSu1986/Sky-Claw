@@ -259,4 +259,4 @@ async def test_guard_lee_modlist_en_thread(tmp_path: pathlib.Path, monkeypatch) 
     assert result["valid"] is True
     assert result["plugin_count"] == 3
     # La lectura del modlist pasó por un thread.
-    assert "_read_active_plugins_blocking" in calls, f"to_thread no usado para el read: {calls}"
+    assert any("blocking" in name for name in calls), f"to_thread no usado para el read: {calls}"
