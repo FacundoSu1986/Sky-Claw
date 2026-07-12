@@ -27,6 +27,7 @@ from sky_claw.local.xedit.conflict_analyzer import (
     PluginConflictPair,
     RecordConflict,
 )
+from sky_claw.local.xedit.flag_rules import FlagAlert
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -165,7 +166,9 @@ async def test_preview_chain_no_mutation_and_full_manifest(tmp_path: pathlib.Pat
         assert xedit_stage.executed_for_real is False
         assert xedit_stage.conflicts is not None
         assert xedit_stage.conflicts.critical == 1
-        assert xedit_stage.conflicts.proposed_resolution == "execute_xedit_script"
+        # T-20·2: proposed_resolution se reconcilia con la recomendación del
+        # asistente (NPC_ crítico -> xedit_manual), no el coarse "execute_xedit_script".
+        assert xedit_stage.conflicts.proposed_resolution == "xedit_manual"
 
         dyndolod_stage = manifest.stages[2]
         assert dyndolod_stage.executed_for_real is False
@@ -403,3 +406,171 @@ class TestLimitesConFlagsReales:
         nombres = {d.name for d in dirs}
         assert "Data" in nombres  # dentro del sandbox: OK
         assert "ModX" not in nombres  # fuera: descartado
+
+
+# ---------------------------------------------------------------------------
+# T-20·2: el asistente de parcheo (recommend()) viaja al operador vía el preview
+# ---------------------------------------------------------------------------
+
+
+def _report_con_recomendaciones() -> ConflictReport:
+    """Report con una lista nivelada (dedup entre dos losers) y un SPEL cuyo
+    ganador pierde un flag crítico (escala a xedit_manual, T-19b)."""
+    lvli = RecordConflict(
+        form_id="00000010",
+        editor_id="LListX",
+        record_type="LVLI",
+        winner="A.esm",
+        losers=["B.esp"],
+        severity="warning",
+    )
+    # Mismo record LVLI perdido por OTRO loser: al aplanar plugin_pairs aparece
+    # dos veces — recommend() debe deduplicarlo y contarlo UNA sola vez.
+    lvli_dup = RecordConflict(
+        form_id="00000010",
+        editor_id="LListX",
+        record_type="LVLI",
+        winner="A.esm",
+        losers=["C.esp"],
+        severity="warning",
+    )
+    spel = RecordConflict(
+        form_id="00000020",
+        editor_id="SpellX",
+        record_type="SPEL",
+        winner="A.esm",
+        losers=["B.esp"],
+        severity="critical",
+        flag_alerts=(
+            FlagAlert(
+                form_id="00000020",
+                editor_id="SpellX",
+                record_type="SPEL",
+                flag="Persistent",
+                winner="A.esm",
+                defined_by=("B.esp",),
+                explanation="el ganador no preserva el flag",
+                severity="critical",
+            ),
+        ),
+    )
+    return ConflictReport(
+        total_conflicts=2,
+        critical_conflicts=1,
+        plugin_pairs=[
+            PluginConflictPair(plugin_a="A.esm", plugin_b="B.esp", conflicts=[lvli, spel]),
+            PluginConflictPair(plugin_a="A.esm", plugin_b="C.esp", conflicts=[lvli_dup]),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_preview_xedit_adjunta_recomendaciones(tmp_path: pathlib.Path) -> None:
+    """La etapa xEdit del manifiesto lleva las recomendaciones del asistente:
+    LVLI→bashed_patch (deduplicado), SPEL→xedit_manual (escalada por flag), con
+    FormIDs y alertas trazadas — el asistente ya no queda huérfano."""
+    plugins_txt = tmp_path / "plugins.txt"
+    plugins_txt.write_text("*A.esm\n", encoding="utf-8")
+
+    async def loot_sort() -> LOOTResult:
+        return LOOTResult(return_code=0, sorted_plugins=["A.esm"])
+
+    async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
+        return _report_con_recomendaciones()
+
+    event_bus = AsyncMock(spec=CoreEventBus)
+    event_bus.publish = AsyncMock()
+
+    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    try:
+        manifest = await service.preview_chain(workflow_id="wf-rec", load_order_file=plugins_txt)
+
+        xedit_stage = manifest.stages[1]
+        assert xedit_stage.conflicts is not None
+        por_tipo = {r.record_type: r for r in xedit_stage.conflicts.recommendations}
+        assert set(por_tipo) == {"LVLI", "SPEL"}
+
+        lvli = por_tipo["LVLI"]
+        assert lvli.approach == "bashed_patch"
+        assert lvli.conflict_count == 1  # dedup end-to-end: dos plugin_pairs, un record
+        assert lvli.form_ids == ["00000010"]
+
+        spel = por_tipo["SPEL"]
+        assert spel.approach == "xedit_manual"  # escalada por flag crítico perdido
+        assert "00000020" in spel.form_ids
+        assert len(spel.flag_alerts) == 1
+        assert spel.flag_alerts[0]["flag"] == "Persistent"
+
+        # proposed_resolution se reconcilia con las recomendaciones (enfoques
+        # distintos en orden de severidad: crítico SPEL primero, luego LVLI).
+        assert xedit_stage.conflicts.proposed_resolution == "xedit_manual, bashed_patch"
+    finally:
+        await lock_mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_preview_xedit_reconcilia_proposed_resolution_listas_niveladas(tmp_path: pathlib.Path) -> None:
+    """review Codex #272: un report con solo listas niveladas no-críticas ya no
+    propone create_merged_patch (rechazado por ADR 0001) contradiciendo la
+    recomendación bashed_patch — proposed_resolution deriva de las recomendaciones."""
+    plugins_txt = tmp_path / "plugins.txt"
+    plugins_txt.write_text("*A.esm\n", encoding="utf-8")
+
+    async def loot_sort() -> LOOTResult:
+        return LOOTResult(return_code=0, sorted_plugins=["A.esm"])
+
+    async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
+        lvli = RecordConflict(
+            form_id="00000010",
+            editor_id="LListX",
+            record_type="LVLI",
+            winner="A.esm",
+            losers=["B.esp"],
+            severity="warning",
+        )
+        return ConflictReport(
+            total_conflicts=1,
+            critical_conflicts=0,  # no crítico: xedit_service propondría create_merged_patch
+            plugin_pairs=[PluginConflictPair(plugin_a="A.esm", plugin_b="B.esp", conflicts=[lvli])],
+        )
+
+    event_bus = AsyncMock(spec=CoreEventBus)
+    event_bus.publish = AsyncMock()
+
+    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    try:
+        manifest = await service.preview_chain(workflow_id="wf-lvli", load_order_file=plugins_txt)
+
+        conflicts = manifest.stages[1].conflicts
+        assert conflicts is not None
+        assert conflicts.proposed_resolution == "bashed_patch"  # NO "create_merged_patch"
+        assert [r.approach for r in conflicts.recommendations] == ["bashed_patch"]
+    finally:
+        await lock_mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_preview_xedit_sin_conflictos_recomendaciones_vacias(tmp_path: pathlib.Path) -> None:
+    """Sin conflictos no hay recomendaciones — el manifiesto es honesto (lista
+    vacía), no inventa un enfoque."""
+    plugins_txt = tmp_path / "plugins.txt"
+    plugins_txt.write_text("*A.esm\n", encoding="utf-8")
+
+    async def loot_sort() -> LOOTResult:
+        return LOOTResult(return_code=0, sorted_plugins=["A.esm"])
+
+    async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
+        return ConflictReport(total_conflicts=0, critical_conflicts=0, plugin_pairs=[])
+
+    event_bus = AsyncMock(spec=CoreEventBus)
+    event_bus.publish = AsyncMock()
+
+    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    try:
+        manifest = await service.preview_chain(workflow_id="wf-sin", load_order_file=plugins_txt)
+
+        xedit_stage = manifest.stages[1]
+        assert xedit_stage.conflicts is not None
+        assert xedit_stage.conflicts.recommendations == []
+    finally:
+        await lock_mgr.close()

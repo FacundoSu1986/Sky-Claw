@@ -27,19 +27,24 @@ from sky_claw.antigravity.db.locks import DistributedLockManager, SnapshotTransa
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 from sky_claw.antigravity.orchestrator.preview.manifest import (
     LoadOrderDiff,
+    PatchRecommendationView,
     PreviewManifest,
     StageChangeSet,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.tools.xedit_service import XEditPipelineService
+from sky_claw.local.xedit.patch_advisor import recommend
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sky_claw.antigravity.core.path_resolver import PathResolutionService
     from sky_claw.antigravity.db.journal import OperationJournal
     from sky_claw.antigravity.security.path_validator import PathValidator
     from sky_claw.local.loot.cli import LOOTRunner
     from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer
+    from sky_claw.local.xedit.patch_advisor import PatchRecommendation
     from sky_claw.local.xedit.runner import XEditRunner
 
 logger = logging.getLogger("SkyClaw.ChainPreviewService")
@@ -52,6 +57,21 @@ PREVIEW_TOPIC = "ops.hitl.preview"
 #: the load order instead of racing — the preview's force-rollback can no longer
 #: clobber a concurrent real sort (audit #190).
 _RESOURCE_ID = LOAD_ORDER_RESOURCE_ID
+
+
+def _summarize_approaches(recs: Sequence[PatchRecommendation]) -> str:
+    """Resumen de los enfoques recomendados distintos, en el orden por severidad
+    que devuelve ``recommend()``.
+
+    Es la base para reconciliar ``proposed_resolution`` con las recomendaciones:
+    las recomendaciones son la fuente de verdad de la estrategia, así que el
+    resumen no puede contradecirlas (review Codex #272).
+    """
+    enfoques: list[str] = []
+    for rec in recs:
+        if rec.approach not in enfoques:
+            enfoques.append(rec.approach)
+    return ", ".join(enfoques)
 
 
 class ChainPreviewService:
@@ -211,10 +231,34 @@ class ChainPreviewService:
         )
 
     async def _preview_xedit(self, plugins: list[str], target_plugin: pathlib.Path) -> StageChangeSet:
-        """Run the read-only conflict scan, then plan (not run) the patch."""
+        """Run the read-only conflict scan, then plan (not run) the patch.
+
+        T-20·2: adjunta al preview las recomendaciones del asistente de parcheo
+        (``recommend()``) para que la capa advisory — qué enfoque conviene por
+        grupo de conflictos y por qué — viaje al operador en el manifiesto en
+        vez de quedar huérfana. Aplanar ``plugin_pairs`` repite un record una vez
+        por loser; ``recommend()`` deduplica por (firma, FormID).
+        """
         report = await self._conflict_analyzer.analyze(plugins, self._xedit_runner)
         result = await self._xedit_service.execute_patch(report, target_plugin, dry_run=True)
-        return StageChangeSet.model_validate(result["change_set"])
+        change_set = StageChangeSet.model_validate(result["change_set"])
+        if change_set.conflicts is not None:
+            conflicts = [c for pair in report.plugin_pairs for c in pair.conflicts]
+            recs = recommend(conflicts)
+            change_set.conflicts.recommendations = [
+                PatchRecommendationView.model_validate(rec.to_dict()) for rec in recs
+            ]
+            if recs:
+                # Reconciliar proposed_resolution con las recomendaciones (review
+                # Codex #272): el preview de xEdit por defecto propone
+                # create_merged_patch para listas niveladas no-críticas, lo que
+                # contradice la recomendación bashed_patch (ADR 0001). Las
+                # recomendaciones son la fuente de verdad; derivamos un resumen de
+                # los enfoques distintos (en orden de severidad) para que ambos
+                # campos coincidan y ningún consumidor muestre consejos
+                # mutuamente excluyentes.
+                change_set.conflicts.proposed_resolution = _summarize_approaches(recs)
+        return change_set
 
     async def _preview_dyndolod(self, *, preset: str, run_texgen: bool) -> StageChangeSet:
         """Estimate the LODs DynDOLOD would generate (plan-only, never launched)."""

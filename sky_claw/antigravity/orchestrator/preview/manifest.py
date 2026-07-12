@@ -88,6 +88,25 @@ class ConflictPair(BaseModel):
     form_id: str | None = None
 
 
+class PatchRecommendationView(BaseModel):
+    """La recomendación advisory del asistente de parcheo (T-20), en el manifiesto.
+
+    Espeja :meth:`~sky_claw.local.xedit.patch_advisor.PatchRecommendation.to_dict`
+    (por eso ``form_ids`` es ``list[str]`` y ``flag_alerts`` son dicts ya
+    serializados): el servicio construye esta vista con
+    ``PatchRecommendationView.model_validate(rec.to_dict())``, así este módulo no
+    importa ``local.xedit`` y el shape queda anclado por un test de sincronía.
+    """
+
+    approach: str
+    record_type: str
+    rationale: str
+    severity: str
+    conflict_count: int
+    form_ids: list[str] = Field(default_factory=list)
+    flag_alerts: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ConflictPreview(BaseModel):
     """What xEdit's read-only scan found and how a patch would resolve it."""
 
@@ -98,6 +117,10 @@ class ConflictPreview(BaseModel):
     pairs: list[ConflictPair] = Field(default_factory=list)
     # The patch strategy that *would* run if approved (plan-only; not executed).
     proposed_resolution: str | None = None
+    # Capa advisory del asistente de parcheo (T-20): qué enfoque conviene por
+    # grupo de conflictos y por qué. Default vacío ⇒ retrocompatible con
+    # manifiestos previos. Complementa (no reemplaza) ``proposed_resolution``.
+    recommendations: list[PatchRecommendationView] = Field(default_factory=list)
 
 
 class LODPlan(BaseModel):
