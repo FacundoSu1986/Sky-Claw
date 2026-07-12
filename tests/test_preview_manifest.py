@@ -16,10 +16,13 @@ from sky_claw.antigravity.orchestrator.preview.manifest import (
     ConflictPreview,
     LoadOrderDiff,
     LODPlan,
+    PatchRecommendationView,
     PreviewManifest,
     StageChangeSet,
     sort_by_master_rules,
 )
+from sky_claw.local.xedit.flag_rules import FlagAlert
+from sky_claw.local.xedit.patch_advisor import PatchRecommendation
 
 # ---------------------------------------------------------------------------
 # sort_by_master_rules
@@ -127,3 +130,71 @@ def test_preview_manifest_round_trip() -> None:
 def test_stage_change_set_rejects_unknown_stage() -> None:
     with pytest.raises(ValidationError):
         StageChangeSet(stage="bogus", executed_for_real=True)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# PatchRecommendationView — la vista serializable del asistente de parcheo (T-20·2)
+# ---------------------------------------------------------------------------
+
+
+def _recommendation_con_alerta() -> PatchRecommendation:
+    """Una recomendación advisory con una alerta de flag crítico (caso rico)."""
+    alerta = FlagAlert(
+        form_id="00000020",
+        editor_id="SpellX",
+        record_type="SPEL",
+        flag="Persistent",
+        winner="Winner.esp",
+        defined_by=("Loser.esp",),
+        explanation="el ganador no preserva el flag",
+        severity="critical",
+    )
+    return PatchRecommendation(
+        approach="xedit_manual",
+        record_type="SPEL",
+        rationale="forwardeo manual del flag crítico",
+        severity="critical",
+        conflict_count=1,
+        form_ids=("00000020",),
+        flag_alerts=(alerta,),
+    )
+
+
+def test_patch_recommendation_view_espeja_to_dict() -> None:
+    """Anclaje de sincronía: la vista del manifiesto valida el ``to_dict()`` del
+    dataclass del advisor sin pérdida — una regla nueva que rompa el shape de
+    serialización falla acá, antes de que la recomendación llegue al operador."""
+    rec = _recommendation_con_alerta()
+
+    view = PatchRecommendationView.model_validate(rec.to_dict())
+
+    assert view.approach == "xedit_manual"
+    assert view.record_type == "SPEL"
+    assert view.rationale == "forwardeo manual del flag crítico"
+    assert view.severity == "critical"
+    assert view.conflict_count == 1
+    assert view.form_ids == ["00000020"]  # la tupla del dataclass se serializa a lista
+    assert len(view.flag_alerts) == 1
+    assert view.flag_alerts[0]["flag"] == "Persistent"
+    assert view.flag_alerts[0]["defined_by"] == ["Loser.esp"]
+
+
+def test_patch_recommendation_view_round_trip_json() -> None:
+    view = PatchRecommendationView.model_validate(_recommendation_con_alerta().to_dict())
+
+    restored = PatchRecommendationView.model_validate_json(view.model_dump_json())
+
+    assert restored == view
+
+
+def test_conflict_preview_recommendations_default_vacio_y_round_trip() -> None:
+    """``recommendations`` es opcional (default vacío ⇒ retrocompatible) y
+    sobrevive el round-trip serializado dentro del ConflictPreview."""
+    preview = ConflictPreview(total_conflicts=1, critical=1)
+    assert preview.recommendations == []  # default: manifiestos viejos siguen validando
+
+    view = PatchRecommendationView.model_validate(_recommendation_con_alerta().to_dict())
+    preview.recommendations = [view]
+
+    restored = ConflictPreview.model_validate_json(preview.model_dump_json())
+    assert restored.recommendations == [view]
