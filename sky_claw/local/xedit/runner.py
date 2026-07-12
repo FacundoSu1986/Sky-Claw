@@ -1023,9 +1023,10 @@ class XEditRunner:
 
         A diferencia de :meth:`run_script`/:meth:`execute_patch` (headless, con
         ``-autoexit`` y timeout), es un lanzamiento **detached** (fire-and-forget:
-        la sesión la cierra el operador) y de **SOLO LECTURA** — NO pasa
-        ``-IKnowWhatImDoing`` ni ``-script``, así que xEdit no puede escribir
-        plugins desde esta invocación.
+        la sesión la cierra el operador) y **sin escrituras automatizadas** — NO
+        pasa ``-IKnowWhatImDoing`` ni ``-script``, así que Sky-Claw no aplica
+        parches por script desde acá. La sesión interactiva sí es editable: es el
+        propósito del botón, que el operador forwardee el conflicto a mano.
 
         Args:
             plugins: Plugins del conflicto a cargar (winner + losers). xEdit carga
@@ -1061,13 +1062,17 @@ class XEditRunner:
             raise XEditNotFoundError(f"xEdit executable not found at {self._xedit_path}") from None
 
     def _build_interactive_command(self, plugins: list[str]) -> list[str]:
-        """Construye comando para abrir xEdit en modo lectura (interactivo).
+        """Construye comando para abrir xEdit en una sesión interactiva.
 
-        A diferencia de :meth:`_build_write_command`: NO incluye
-        ``-IKnowWhatImDoing`` ni ``-script`` (no escribe) ni ``-autoexit`` (la GUI
-        queda abierta para el operador). Solo ``-SSE`` + ``-D:`` y los plugins del
-        conflicto como positional args (xEdit los carga con sus masters, sin
-        diálogo de selección).
+        Espeja el template probado de :meth:`run_script` para cargar plugins:
+        ``-autoload`` salta el diálogo de selección de Master/Plugin, y los plugins
+        del conflicto van como positional args (xEdit los carga con sus masters).
+        ``-D:`` apunta al directorio ``Data`` del juego —no a la raíz de instalación—
+        que es donde viven los plugins (igual que :meth:`quick_auto_clean`).
+
+        A diferencia de :meth:`_build_write_command` NO incluye ``-IKnowWhatImDoing``
+        ni ``-script`` ni ``-autoexit``: sin escrituras automatizadas y con la GUI
+        abierta para el forwardeo manual del operador.
 
         Args:
             plugins: Plugins del conflicto (ya validados por el caller).
@@ -1078,7 +1083,8 @@ class XEditRunner:
         cmd = [
             str(self._xedit_path),
             "-SSE",
-            f"-D:{self._game_path}",
+            "-autoload",
+            f"-D:{self._game_path / 'Data'}",
         ]
         cmd.extend(plugins)
         return cmd

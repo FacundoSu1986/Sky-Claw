@@ -227,6 +227,58 @@ def test_surgery_rows_match_recommendation_by_form_id() -> None:
     assert by_form["002"]["severity"] == "critical"
 
 
+def test_uncovered_recommendations_survive_empty_pairs() -> None:
+    """El preview solo mete pairs *críticos*: un preview solo-menor (LVLI→bashed_patch)
+    deja pairs vacío pero igual recomienda. La recomendación debe seguir visible
+    vía ``uncovered_recommendations`` (regresión, review Codex #278)."""
+    manifest = {
+        "workflow_id": "x",
+        "stages": [
+            {
+                "stage": "xedit",
+                "executed_for_real": False,
+                "conflicts": {
+                    "total_conflicts": 2,
+                    "critical": 0,
+                    "minor": 2,
+                    "proposed_resolution": "create_merged_patch",
+                    "pairs": [],  # el preview no incluye pairs no-críticos
+                    "recommendations": [
+                        {
+                            "approach": "bashed_patch",
+                            "record_type": "LVLI",
+                            "rationale": "listas niveladas → delega en Bashed Patch",
+                            "severity": "minor",
+                            "conflict_count": 2,
+                            "form_ids": ["001", "002"],
+                            "flag_alerts": [],
+                        }
+                    ],
+                },
+            }
+        ],
+        "warnings": [],
+    }
+
+    vm = build_preview_view_model(manifest)
+
+    # Sin pairs no hay filas de cirugía, pero la recomendación no desaparece.
+    assert vm["conflicts"]["surgery"] == []
+    uncovered = vm["conflicts"]["uncovered_recommendations"]
+    assert len(uncovered) == 1
+    assert uncovered[0]["approach"] == "bashed_patch"
+    assert uncovered[0]["record_type"] == "LVLI"
+
+
+def test_covered_recommendation_is_not_duplicated() -> None:
+    """Una recomendación cuyo record_type SÍ tiene fila de cirugía no se re-lista
+    en ``uncovered_recommendations`` (evita duplicar el parche ya mostrado inline)."""
+    vm = build_preview_view_model(_spel_surgery_manifest_dict())
+
+    assert len(vm["conflicts"]["surgery"]) == 1  # el par SPEL genera su fila
+    assert vm["conflicts"]["uncovered_recommendations"] == []
+
+
 def test_surgery_rows_degrade_without_recommendation() -> None:
     """Un par sin recomendación ni alerta que matchee degrada a los campos base
     (winner/losers + plugins), con los campos advisory vacíos — nunca rompe."""

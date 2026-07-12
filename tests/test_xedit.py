@@ -206,7 +206,7 @@ class TestXEditRunnerInteractiveLaunch:
         return XEditRunner(xedit_path=xedit, game_path=game, timeout=5)
 
     @pytest.mark.asyncio
-    async def test_launch_builds_read_only_command(self, tmp_path: pathlib.Path) -> None:
+    async def test_launch_builds_interactive_command(self, tmp_path: pathlib.Path) -> None:
         runner = self._make_runner(tmp_path)
         proc = AsyncMock()
 
@@ -218,12 +218,14 @@ class TestXEditRunnerInteractiveLaunch:
 
         assert returned is proc
         (cmd,), _ = spawn.call_args
-        # Ejecutable + -SSE + -D:{game} + los plugins del conflicto como positional args.
         assert cmd[0] == str(tmp_path / "SSEEdit.exe")
         assert "-SSE" in cmd
-        assert f"-D:{tmp_path / 'Skyrim'}" in cmd
+        # -autoload salta el diálogo de selección y carga los plugins pasados.
+        assert "-autoload" in cmd
+        # -D: apunta al Data del juego (donde viven los plugins), no a la raíz.
+        assert f"-D:{tmp_path / 'Skyrim' / 'Data'}" in cmd
         assert cmd[-2:] == ["Winner.esp", "Loser.esp"]
-        # Modo lectura: nada que permita escribir ni cerrar la GUI de golpe.
+        # Sin escrituras automatizadas: nada de -IKnowWhatImDoing/-script/-autoexit.
         assert "-IKnowWhatImDoing" not in cmd
         assert "-autoexit" not in cmd
         assert not any(arg.startswith("-script") for arg in cmd)

@@ -118,6 +118,23 @@ def build_preview_view_model(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
     conf = (by_stage.get("xedit") or {}).get("conflicts") or {}
+    # Capa advisory del asistente de parcheo (T-20·2): qué enfoque conviene por
+    # grupo de conflictos y por qué.
+    recommendations = [
+        {
+            "record_type": rec.get("record_type") or "",
+            "approach": rec.get("approach") or "",
+            "rationale": rec.get("rationale") or "",
+            "severity": rec.get("severity") or "",
+            "conflict_count": rec.get("conflict_count", 0),
+            "form_ids": rec.get("form_ids", []),
+        }
+        for rec in conf.get("recommendations", [])
+    ]
+    # Vista de "cirugía" por subrecord (T-29): fusiona par + recomendación + alerta
+    # de flag para que el operador decida el forwardeo sin abrir xEdit.
+    surgery = _build_surgery_rows(conf)
+    covered_types = {row["record_type"] for row in surgery}
     conflicts = {
         "total": conf.get("total_conflicts", 0),
         "critical": conf.get("critical", 0),
@@ -133,23 +150,13 @@ def build_preview_view_model(manifest: dict[str, Any]) -> dict[str, Any]:
             }
             for pair in conf.get("pairs", [])
         ],
-        # Capa advisory del asistente de parcheo (T-20·2): qué enfoque conviene
-        # por grupo de conflictos y por qué. Sin esto el panel dejaría caer la
-        # recomendación en silencio (review Codex #272).
-        "recommendations": [
-            {
-                "record_type": rec.get("record_type") or "",
-                "approach": rec.get("approach") or "",
-                "rationale": rec.get("rationale") or "",
-                "severity": rec.get("severity") or "",
-                "conflict_count": rec.get("conflict_count", 0),
-                "form_ids": rec.get("form_ids", []),
-            }
-            for rec in conf.get("recommendations", [])
-        ],
-        # Vista de "cirugía" por subrecord (T-29): fusiona par + recomendación +
-        # alerta de flag para que el operador decida el forwardeo sin abrir xEdit.
-        "surgery": _build_surgery_rows(conf),
+        "recommendations": recommendations,
+        "surgery": surgery,
+        # Recomendaciones cuyo record_type no aparece en ninguna fila de cirugía:
+        # el preview solo mete pairs *críticos*, así que un preview solo-menor (p.
+        # ej. LVLI→bashed_patch) deja pairs vacío pero igual recomienda. Sin esto,
+        # esas recomendaciones desaparecerían del panel (regresión, review Codex #278).
+        "uncovered_recommendations": [rec for rec in recommendations if rec["record_type"] not in covered_types],
     }
 
     plan = (by_stage.get("dyndolod") or {}).get("lod_plan")
@@ -187,8 +194,12 @@ def create_preview_manifest_panel(
     """Render the dry-run preview manifest with Approve / Reject controls.
 
     ``on_open_xedit`` recibe los plugins de un conflicto (winner + losers) cuando
-    el operador pulsa "Abrir en xEdit" para forwardear a mano (T-29); el
-    controller lo cablea a :meth:`XEditRunner.launch_interactive`.
+    el operador pulsa "Abrir en xEdit" para forwardear a mano (T-29). Es un
+    callback **síncrono**: ``create_cta_button`` lo invoca sin ``await``, así que
+    el controller debe envolver la corrutina de :meth:`XEditRunner.launch_interactive`
+    y agendarla (p. ej. ``asyncio.create_task`` / ``background_tasks.create``); si
+    se pasara el método async crudo, el clic solo crearía y descartaría la corrutina
+    y xEdit nunca se lanzaría.
     """
     vm = build_preview_view_model(manifest)
 
@@ -233,6 +244,17 @@ def create_preview_manifest_panel(
                         on_click=lambda plugins=row["plugins"]: on_open_xedit(plugins),
                         variant="secondary",
                     )
+
+        # --- Recommended strategy (recomendaciones sin fila de cirugía) ---
+        # Un preview solo-menor deja pairs (críticos) vacío pero igual recomienda
+        # (p. ej. bashed_patch); esta sección evita que esas recomendaciones
+        # desaparezcan al no tener conflicto crítico que las ancle.
+        if conflicts["uncovered_recommendations"]:
+            ui.label("Recommended strategy").classes("text-white font-semibold mt-2")
+            for rec in conflicts["uncovered_recommendations"]:
+                ui.label(
+                    f"{rec['record_type']} ({rec['conflict_count']}) → {rec['approach']}: {rec['rationale']}"
+                ).classes("text-[#d1d5db] text-sm")
 
         # --- LOD plan ---
         if vm["lod"] is not None:
