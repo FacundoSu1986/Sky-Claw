@@ -49,14 +49,21 @@ logger = logging.getLogger(__name__)
 
 
 def _read_active_plugins_blocking(modlist_path: pathlib.Path) -> list[str]:
-    """Lee el modlist MO2 y devuelve los plugins habilitados (I/O bloqueante).
+    """Lee el modlist MO2 y devuelve las carpetas de mods activos (I/O bloqueante).
 
     PT-1 (S-6): aislada para envolverla en ``asyncio.to_thread`` desde el guard
-    async y no bloquear el event loop. Filtra por extensión (``.esp``, ``.esm``,
-    ``.esl``) en las líneas de ``modlist.txt``; **no** inspecciona flags de
-    cabecera ESPFE, por lo que ``.esp/.esm`` con flag ligero no se distinguen de
-    los regulares. Usar solo como guard de slot aproximado, no como conteo exacto
-    de light masters.
+    async y no bloquear el event loop.
+
+    IMPORTANTE: ``modlist.txt`` registra mods habilitados, no plugins activos en
+    el orden de carga. Esta función actúa únicamente como una heurística previa
+    rápida filtrando por prefijo ``+`` y extensión (``.esp/.esm/.esl``). No
+    inspecciona flags de cabecera, por lo que un ESPFE (``.esp`` con flag ligero)
+    cuenta igual que uno normal.
+
+    El conteo y orden exacto para el límite de plugins de Skyrim SE/AE se obtiene
+    desde ``plugins.txt``/``loadorder.txt`` y es validado exhaustivamente por
+    ``PluginLimitsChecker`` (T-30·2). Este guard es conservador y prefiere
+    sobrecontar (incluyendo ``.esl`` bajo criterio L-1) antes que subcontar.
     """
     active_plugins: list[str] = []
     if not modlist_path.exists():

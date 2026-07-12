@@ -23,11 +23,18 @@ async def test_phase_resolve_lee_archivos_en_thread(tmp_path: pathlib.Path, monk
     gov.is_scanned_and_clean = AsyncMock(return_value=False)
     gov.update_scan_result = AsyncMock()
 
-    calls: list[str] = []
+    calls: list = []
     real_to_thread = asyncio.to_thread
 
+    def _unwrap(f):
+        while hasattr(f, "__wrapped__"):
+            f = f.__wrapped__
+        if hasattr(f, "func"):
+            f = f.func
+        return f
+
     async def _spy(fn, *a, **k):
-        calls.append(getattr(fn, "__name__", ""))
+        calls.append(_unwrap(fn))
         return await real_to_thread(fn, *a, **k)
 
     monkeypatch.setattr(asyncio, "to_thread", _spy)
@@ -39,7 +46,9 @@ async def test_phase_resolve_lee_archivos_en_thread(tmp_path: pathlib.Path, monk
         await engine._phase_resolve()
 
     # La lectura del archivo pasó por un thread.
-    assert "_read_text_file_blocking" in calls, f"to_thread no usado para el read: {calls}"
+    from sky_claw.antigravity.security.metacognitive_logic import _read_text_file_blocking
+
+    assert _read_text_file_blocking in calls, f"to_thread no usado para el read: {calls}"
     # Regresión funcional: el escaneo corrió y persistió su resultado.
     gov.update_scan_result.assert_awaited_once()
     assert engine.session_data["status"] == "RESOLVING"
