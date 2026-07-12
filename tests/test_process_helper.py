@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.local.tools._process import kill_and_reap, run_capture
+from sky_claw.local.tools._process import kill_and_reap, run_capture, spawn_detached
 
 
 def _proc(*, communicate=None, returncode=0, wait_rc=-9) -> AsyncMock:
@@ -197,3 +197,37 @@ async def test_run_capture_kills_and_reraises_on_cancel():
         with pytest.raises(asyncio.CancelledError):
             await task
     proc.kill.assert_called_once()
+
+
+# --- spawn_detached ---------------------------------------------------------
+
+
+async def test_spawn_detached_returns_process_fire_and_forget():
+    """Lanzamiento interactivo: devuelve el proceso SIN capturar salida ni
+    matar/reap — la GUI la opera y cierra el usuario (p. ej. xEdit para forwardeo
+    manual). Sin PIPE no se bloquea con pipes llenos en una sesión larga."""
+    proc = _proc()
+    with patch("asyncio.create_subprocess_exec", return_value=proc) as spawn:
+        returned = await spawn_detached(["xEdit.exe", "-SSE", "P.esp"])
+
+    assert returned is proc
+    _, kwargs = spawn.call_args
+    # Sin PIPE: no capturamos stdout/stderr de una sesión interactiva larga.
+    assert "stdout" not in kwargs
+    assert "stderr" not in kwargs
+    # El proceso debe SOBREVIVIR a la llamada: nunca se mata/reap acá.
+    proc.kill.assert_not_called()
+
+
+async def test_spawn_detached_windows_suppresses_console(monkeypatch):
+    """En Windows aplica CREATE_NO_WINDOW: la GUI aparece igual, solo se suprime
+    la consola de la que colgaría el editor."""
+    import sky_claw.local.tools._process as _process
+
+    monkeypatch.setattr(_process.sys, "platform", "win32")
+    proc = _proc()
+    with patch("asyncio.create_subprocess_exec", return_value=proc) as spawn:
+        await spawn_detached(["xEdit.exe"])
+
+    _, kwargs = spawn.call_args
+    assert kwargs.get("creationflags") == _process._CREATE_NO_WINDOW

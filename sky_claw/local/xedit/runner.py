@@ -13,6 +13,7 @@ Phase 2 Extensions:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 import re
@@ -20,7 +21,7 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from sky_claw.local.tools._process import run_capture
+from sky_claw.local.tools._process import run_capture, spawn_detached
 from sky_claw.local.xedit.output_parser import XEditOutputParser, XEditResult
 
 if TYPE_CHECKING:
@@ -1012,6 +1013,75 @@ class XEditRunner:
         )
 
         return result
+
+    async def launch_interactive(self, plugins: list[str]) -> asyncio.subprocess.Process:
+        """Abre xEdit en modo lectura, posicionado en los plugins del conflicto.
+
+        Es el backend del botón "Abrir en xEdit" del panel de cirugía (T-29):
+        cuando el operador decide forwardear un conflicto a mano, esto lanza la
+        GUI interactiva con los plugins en disputa ya cargados.
+
+        A diferencia de :meth:`run_script`/:meth:`execute_patch` (headless, con
+        ``-autoexit`` y timeout), es un lanzamiento **detached** (fire-and-forget:
+        la sesión la cierra el operador) y de **SOLO LECTURA** — NO pasa
+        ``-IKnowWhatImDoing`` ni ``-script``, así que xEdit no puede escribir
+        plugins desde esta invocación.
+
+        Args:
+            plugins: Plugins del conflicto a cargar (winner + losers). xEdit carga
+                esos y sus masters, sin diálogo de selección.
+
+        Returns:
+            El proceso lanzado (el caller puede trackear su ``pid``).
+
+        Raises:
+            XEditValidationError: Si la lista está vacía o algún plugin es inválido.
+            XEditNotFoundError: Si el ejecutable de xEdit no existe.
+        """
+        if not plugins:
+            raise XEditValidationError("launch_interactive requires at least one plugin")
+
+        # Mismos guards que run_dynamic_script: inyección en nombres + sandbox del exe.
+        for plugin in plugins:
+            if not _SAFE_PLUGIN_NAME.match(plugin):
+                raise XEditValidationError(f"Invalid plugin name: {plugin!r}. Must match {_SAFE_PLUGIN_NAME.pattern}")
+
+        if self._validator is not None:
+            self._validator.validate(self._xedit_path)
+
+        if not self._xedit_path.exists():
+            raise XEditNotFoundError(f"xEdit executable not found at {self._xedit_path}")
+
+        cmd = self._build_interactive_command(plugins)
+        logger.info("Launching xEdit (interactive, read-only): %s", " ".join(cmd))
+
+        try:
+            return await spawn_detached(cmd)
+        except FileNotFoundError:
+            raise XEditNotFoundError(f"xEdit executable not found at {self._xedit_path}") from None
+
+    def _build_interactive_command(self, plugins: list[str]) -> list[str]:
+        """Construye comando para abrir xEdit en modo lectura (interactivo).
+
+        A diferencia de :meth:`_build_write_command`: NO incluye
+        ``-IKnowWhatImDoing`` ni ``-script`` (no escribe) ni ``-autoexit`` (la GUI
+        queda abierta para el operador). Solo ``-SSE`` + ``-D:`` y los plugins del
+        conflicto como positional args (xEdit los carga con sus masters, sin
+        diálogo de selección).
+
+        Args:
+            plugins: Plugins del conflicto (ya validados por el caller).
+
+        Returns:
+            Lista de argumentos para el lanzamiento.
+        """
+        cmd = [
+            str(self._xedit_path),
+            "-SSE",
+            f"-D:{self._game_path}",
+        ]
+        cmd.extend(plugins)
+        return cmd
 
     def _build_write_command(
         self,
