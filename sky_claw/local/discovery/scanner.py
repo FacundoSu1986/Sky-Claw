@@ -116,6 +116,12 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
     # Try reading version from PE header
     try:
         import pefile  # type: ignore[import-untyped]
+        pe_err = pefile.PEFormatError
+    except ImportError:
+        pe_err = ValueError
+
+    try:
+        import pefile  # type: ignore[import-untyped]
 
         pe = pefile.PE(str(exe_path), fast_load=True)
         pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"]])
@@ -132,7 +138,7 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
                         # VarFileInfo → fixed version info
                         pass
         pe.close()
-    except Exception:
+    except (ImportError, OSError, ValueError, pe_err):
         # pefile not installed or PE parsing failed — try file size heuristic
         try:
             size_mb = exe_path.stat().st_size / (1024 * 1024)
