@@ -52,10 +52,11 @@ def _read_active_plugins_blocking(modlist_path: pathlib.Path) -> list[str]:
     """Lee el modlist MO2 y devuelve los plugins habilitados (I/O bloqueante).
 
     PT-1 (S-6): aislada para envolverla en ``asyncio.to_thread`` desde el guard
-    async y no bloquear el event loop. Conserva el criterio L-1: cuenta los
-    light masters (``.esl`` y ``.esp/.esm`` con flag ligero) que SÍ consumen
-    slot del pool de 254 masters de Skyrim SE/AE (mismo criterio que
-    ``parse_active_plugins``).
+    async y no bloquear el event loop. Filtra por extensión (``.esp``, ``.esm``,
+    ``.esl``) en las líneas de ``modlist.txt``; **no** inspecciona flags de
+    cabecera ESPFE, por lo que ``.esp/.esm`` con flag ligero no se distinguen de
+    los regulares. Usar solo como guard de slot aproximado, no como conteo exacto
+    de light masters.
     """
     active_plugins: list[str] = []
     if not modlist_path.exists():
