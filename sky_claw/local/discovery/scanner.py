@@ -97,6 +97,38 @@ _XEDIT_NAMES = ("SSEEdit.exe", "TES5Edit.exe", "xEdit.exe")
 # ── Skyrim Version Detection ─────────────────────────────────────────
 
 
+def _read_pe_product_version(exe_path: pathlib.Path) -> str | None:
+    """ProductVersion del recurso PE del ejecutable.
+
+    Devuelve ``""`` si el PE es válido pero no trae versión, y ``None`` si
+    ``pefile`` no está instalada o el parseo falla — señal para que el caller
+    recurra a la heurística de tamaño. ``PEFormatError`` hereda de ``Exception``
+    a secas (no de ``OSError``/``ValueError``), por eso se nombra explícita.
+    """
+    try:
+        import pefile  # type: ignore[import-untyped]
+    except ImportError:
+        return None
+
+    version = ""
+    try:
+        pe = pefile.PE(str(exe_path), fast_load=True)
+        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"]])
+        if hasattr(pe, "FileInfo"):
+            for fi_list in pe.FileInfo:
+                for fi in fi_list:
+                    if hasattr(fi, "StringTable"):
+                        for st in fi.StringTable:
+                            ver = st.entries.get(b"ProductVersion", b"").decode()
+                            if ver:
+                                version = ver
+                                break
+        pe.close()
+    except (OSError, ValueError, pefile.PEFormatError):
+        return None
+    return version
+
+
 def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
     """Try to read the PE version resource from SkyrimSE.exe / Skyrim.exe.
 
@@ -114,32 +146,8 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
         edition = SkyrimEdition.LE
 
     # Try reading version from PE header
-    try:
-        import pefile  # type: ignore[import-untyped]
-
-        pe_err = pefile.PEFormatError
-    except ImportError:
-        pe_err = ValueError
-
-    try:
-        import pefile  # type: ignore[import-untyped]
-
-        pe = pefile.PE(str(exe_path), fast_load=True)
-        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"]])
-        if hasattr(pe, "FileInfo"):
-            for fi_list in pe.FileInfo:
-                for fi in fi_list:
-                    if hasattr(fi, "StringTable"):
-                        for st in fi.StringTable:
-                            ver = st.entries.get(b"ProductVersion", b"").decode()
-                            if ver:
-                                version = ver
-                                break
-                    if hasattr(fi, "Value"):
-                        # VarFileInfo → fixed version info
-                        pass
-        pe.close()
-    except (ImportError, OSError, ValueError, pe_err):
+    pe_version = _read_pe_product_version(exe_path)
+    if pe_version is None:
         # pefile not installed or PE parsing failed — try file size heuristic
         try:
             size_mb = exe_path.stat().st_size / (1024 * 1024)
@@ -147,6 +155,8 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
                 edition = SkyrimEdition.AE
         except OSError:
             pass
+    else:
+        version = pe_version
 
     # Upgrade SE to AE based on version number
     if edition == SkyrimEdition.SE and version:
