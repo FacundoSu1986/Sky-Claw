@@ -197,23 +197,23 @@ def test_check_rojo_si_excede(tmp_path: pathlib.Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# L-1: _run_plugin_limit_guard incluye .esl del modlist
+# L-1: _run_plugin_limit_guard lee el load order real
 # ---------------------------------------------------------------------------
 
 
-async def test_guard_incluye_esl_del_modlist(tmp_path: pathlib.Path) -> None:
-    """L-1: el parser inline de _run_plugin_limit_guard cuenta los .esl del modlist.
-
-    Antes excluía .esl por extensión, subcontando el pool real y pudiendo dejar
-    pasar un perfil sobre el límite (el analyzer nunca veía los light plugins).
-    """
+async def test_guard_usa_plugins_txt_y_descarta_modlist(tmp_path: pathlib.Path) -> None:
+    """El guard cuenta plugins habilitados, no carpetas de mods activas."""
     from unittest.mock import MagicMock
 
     from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
 
     modlist = tmp_path / "modlist.txt"
     modlist.write_text(
-        "+A.esp\n+Light.esl\n+B.esm\n-Disabled.esp\n# comentario\n",
+        "+CarpetaConNombre.esp\n+OtraCarpeta.esm\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "plugins.txt").write_text(
+        "*A.esp\n*Light.esl\nB.esm\n# comentario\n",
         encoding="utf-8",
     )
 
@@ -224,12 +224,12 @@ async def test_guard_incluye_esl_del_modlist(tmp_path: pathlib.Path) -> None:
     result = await sup._run_plugin_limit_guard("Default")
 
     assert result["valid"] is True
-    # A.esp + Light.esl + B.esm (el -Disabled y el comentario se excluyen).
-    assert result["plugin_count"] == 3
+    # Solo A.esp y Light.esl están habilitados; B.esm no lleva '*'.
+    assert result["plugin_count"] == 2
 
 
-async def test_guard_lee_modlist_en_thread(tmp_path: pathlib.Path, monkeypatch) -> None:
-    """PT-1 (S-6): la lectura del modlist (I/O de archivo) debe hacerse en un
+async def test_guard_lee_load_order_en_thread(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """PT-1 (S-6): la lectura del load order debe hacerse en un
     thread (asyncio.to_thread) para no bloquear el event loop — el guard corre
     en la ruta async de orquestación antes de DynDOLOD/Synthesis/Wrye Bash."""
     import asyncio
@@ -238,7 +238,8 @@ async def test_guard_lee_modlist_en_thread(tmp_path: pathlib.Path, monkeypatch) 
     from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
 
     modlist = tmp_path / "modlist.txt"
-    modlist.write_text("+A.esp\n+Light.esl\n+B.esm\n", encoding="utf-8")
+    modlist.write_text("+Carpeta.esp\n", encoding="utf-8")
+    (tmp_path / "plugins.txt").write_text("*A.esp\n*Light.esl\n*B.esm\n", encoding="utf-8")
 
     calls: list = []
     real_to_thread = asyncio.to_thread
@@ -262,10 +263,10 @@ async def test_guard_lee_modlist_en_thread(tmp_path: pathlib.Path, monkeypatch) 
 
     result = await sup._run_plugin_limit_guard("Default")
 
-    # Regresión funcional: el parseo (con L-1: incluye .esl) no cambia.
+    # Regresión funcional: se cuentan las tres entradas habilitadas reales.
     assert result["valid"] is True
     assert result["plugin_count"] == 3
-    # La lectura del modlist pasó por un thread.
+    # La lectura del load order pasó por un thread.
     from sky_claw.antigravity.orchestrator.supervisor import _read_active_plugins_blocking
 
     assert _read_active_plugins_blocking in calls, f"to_thread no usado para el read: {calls}"

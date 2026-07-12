@@ -50,31 +50,27 @@ logger = logging.getLogger(__name__)
 
 
 def _read_active_plugins_blocking(modlist_path: pathlib.Path) -> list[str]:
-    """Lee el modlist MO2 y devuelve las carpetas de mods activos (I/O bloqueante).
+    """Lee el load order del perfil y devuelve sus plugins habilitados.
 
     PT-1 (S-6): aislada para envolverla en ``asyncio.to_thread`` desde el guard
     async y no bloquear el event loop.
 
-    IMPORTANTE: ``modlist.txt`` registra mods habilitados, no plugins activos en
-    el orden de carga. Esta función actúa únicamente como una heurística previa
-    rápida filtrando por prefijo ``+`` y extensión (``.esp/.esm/.esl``). No
-    inspecciona flags de cabecera, por lo que un ESPFE (``.esp`` con flag ligero)
-    cuenta igual que uno normal.
-
-    El conteo y orden exacto para el límite de plugins de Skyrim SE/AE se obtiene
-    desde ``plugins.txt``/``loadorder.txt`` y es validado exhaustivamente por
-    ``PluginLimitsChecker`` (T-30·2). Este guard es conservador y prefiere
-    sobrecontar (incluyendo ``.esl`` bajo criterio L-1) antes que subcontar.
+    ``modlist_path`` se usa solamente para localizar el directorio del perfil:
+    ``modlist.txt`` enumera *mods*, no el load order. ``plugins.txt`` contiene
+    las entradas habilitadas (``*``) y tiene precedencia; ``loadorder.txt`` es
+    el fallback para perfiles donde el primero no existe.
     """
-    active_plugins: list[str] = []
-    if not modlist_path.exists():
-        return active_plugins
-    with open(modlist_path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line.startswith("+") and line.lower().endswith((".esp", ".esm", ".esl")):
-                active_plugins.append(line[1:])
-    return active_plugins
+    for filename, source in (("plugins.txt", "plugins_txt"), ("loadorder.txt", "loadorder")):
+        load_order_path = modlist_path.parent / filename
+        try:
+            if load_order_path.is_file():
+                return parse_active_plugins(
+                    load_order_path.read_text(encoding="utf-8-sig", errors="replace"),
+                    source=source,
+                )
+        except OSError as exc:
+            logger.warning("No se pudo leer el load order %s: %s", load_order_path, exc)
+    return []
 
 
 security_logger = logging.getLogger(f"{__name__}.security")
