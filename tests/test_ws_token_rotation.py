@@ -180,13 +180,21 @@ class TestWebAppCierraWsUiEnRotacion:
         await client.start_server()
         try:
             async with client.ws_connect("/ws/ui", headers={"X-Auth-Token": "token-bueno"}) as ws:
+                # Round-trip antes de rotar: garantiza que el handler ya
+                # registró el socket en _ws_ui_clients (llegó a su loop de
+                # mensajes) antes de disparar el callback — anti-flake.
+                await ws.send_json({"type": "command", "command": "chat", "payload": {"text": "ping"}})
+                await ws.receive_json(timeout=5)
+
                 # Simula la rotación: AuthTokenManager invoca los callbacks
                 # registrados tras un generate() exitoso.
                 for cb in auth.callbacks:
                     await cb()
                 msg = await ws.receive(timeout=5)
                 assert msg.type == aiohttp.WSMsgType.CLOSE
-                assert msg.data == aiohttp.WSCloseCode.POLICY_VIOLATION  # 1008, no 4001 (lockout)
+                # msg.data trae el código en aiohttp actual; close_code es el
+                # fallback documentado si algún build no lo puebla.
+                assert (msg.data or ws.close_code) == aiohttp.WSCloseCode.POLICY_VIOLATION  # 1008, no 4001 (lockout)
             assert webapp._ws_ui_clients == set()
         finally:
             await client.close()
@@ -206,7 +214,46 @@ class TestWebAppCierraWsUiEnRotacion:
             async with client.ws_connect("/ws/ui", headers={"X-Auth-Token": "token-bueno"}) as ws:
                 msg = await ws.receive(timeout=5)
                 assert msg.type == aiohttp.WSMsgType.CLOSE
-                assert msg.data == aiohttp.WSCloseCode.POLICY_VIOLATION
+                assert (msg.data or ws.close_code) == aiohttp.WSCloseCode.POLICY_VIOLATION
             assert webapp._ws_ui_clients == set()
         finally:
             await client.close()
+
+    @pytest.mark.asyncio
+    async def test_rechazo_por_rotacion_cierra_el_socket_fuera_del_lock(self, monkeypatch):
+        """El close() del socket rechazado por rotación debe correr con
+        ``_ws_ui_lock`` ya liberado: si el cliente no ACKea el close frame
+        (timeout ~10s de aiohttp), sostener el lock durante ese close bloquea
+        el finally de close_all_ws_ui_clients, otros handshakes concurrentes y
+        los discards del set — un solo cliente colgado congela toda la cola."""
+        auth = _StubAuthRotacion()
+        webapp = WebApp(router=None, session=None, auth_manager=auth)
+        app = webapp.create_app()
+        webapp._token_rotating = True  # rotación en curso
+
+        # Se registra el estado del lock en CADA invocación de close(): aiohttp
+        # llama close() de nuevo al apagar el TestServer (limpieza defensiva de
+        # sockets abiertos), y esa segunda llamada siempre ve el lock libre —
+        # solo la PRIMERA invocación (la del rechazo por rotación) es la que
+        # importa para anclar el bug.
+        lock_states: list[bool] = []
+        original_close = aiohttp.web.WebSocketResponse.close
+
+        async def spying_close(self_ws, *args, **kwargs):
+            lock_states.append(webapp._ws_ui_lock.locked())
+            return await original_close(self_ws, *args, **kwargs)
+
+        monkeypatch.setattr(aiohttp.web.WebSocketResponse, "close", spying_close)
+
+        server = TestServer(app)
+        client = TestClient(server)
+        await client.start_server()
+        try:
+            async with client.ws_connect("/ws/ui", headers={"X-Auth-Token": "token-bueno"}) as ws:
+                msg = await ws.receive(timeout=5)
+                assert msg.type == aiohttp.WSMsgType.CLOSE
+        finally:
+            await client.close()
+
+        assert lock_states
+        assert lock_states[0] is False

@@ -10,6 +10,7 @@ Cubre:
 
 from __future__ import annotations
 
+import logging
 import pathlib
 
 from sky_claw.antigravity.gui.models.app_state import AppState
@@ -185,6 +186,32 @@ def test_save_settings_exige_clave_al_cambiar_a_provider_sin_slot(tmp_path: path
     assert err is not None
     assert fake.writes == []
     assert not cfg_path.exists()  # el provider nuevo no quedó persistido
+
+
+def test_save_settings_loguea_si_falla_la_lectura_del_provider_persistido(
+    tmp_path: pathlib.Path, monkeypatch, caplog
+) -> None:
+    """Si Config(config_path) explota al leer el provider persistido (disco,
+    TOML corrupto), el except no debe quedar mudo: logger.exception debe
+    registrar el fallo. El fallback a current_provider="" se mantiene igual
+    que antes (sigue bloqueando, ya que sin provider persistido no hay forma
+    de confirmar que la genérica pertenece al provider actual)."""
+    import sky_claw.antigravity.gui.sky_claw_gui as gui_module
+
+    _patch_keyring(monkeypatch)  # sin slot propio ni genérica
+    cfg_path = tmp_path / "sky_claw_config.json"
+
+    monkeypatch.setattr(
+        gui_module,
+        "Config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disco lleno")),
+    )
+
+    with caplog.at_level(logging.ERROR, logger=gui_module.logger.name):
+        err = save_settings(cfg_path, {"llm_provider": "openai"}, app_state=AppState(config_path=cfg_path))
+
+    assert err is not None  # sin slot y sin poder confirmar el provider persistido: sigue bloqueado
+    assert any("provider" in record.getMessage().lower() for record in caplog.records)
 
 
 def test_save_settings_permite_provider_cloud_con_slot_guardado(tmp_path: pathlib.Path, monkeypatch) -> None:
