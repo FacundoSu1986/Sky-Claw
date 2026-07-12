@@ -241,6 +241,8 @@ module = [
     "sky_claw.local.validators.plugin_limits",  # T-30·2: sensor de límites full/light, estricto
     "sky_claw.local.validators.overwrite_health",  # T-30·3: sensor de overwrite sucio, estricto
     "sky_claw.local.xedit.flag_rules",  # T-19b: motor declarativo de reglas de flags, estricto
+    "sky_claw.local.xedit.grass_analyzer",  # PR-2 grass cache: módulo nuevo, nace estricto
+    "sky_claw.local.xedit.script_staging",  # PR-2 grass cache: módulo nuevo, nace estricto
     "sky_claw.local.validators.post_run",  # T-21: validador post-run, estricto
     "sky_claw.local.validators.write_permissions",  # T-30·4: sensor de permisos de escritura, estricto
     "sky_claw.local.xedit.patch_advisor",  # T-20: asistente de estrategia de parcheo, estricto
@@ -257,3 +259,6 @@ packages = ["sky_claw"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "sky_claw/antigravity/security/security_policy.yaml" = "sky_claw/antigravity/security/security_policy.yaml"
+# PR-2 grass cache: los .pas bundleados se stagean a "Edit Scripts" en runtime;
+# sin ellos run_script falla con script-not-found (anclado en test_packaging.py).
+"sky_claw/local/xedit/scripts" = "sky_claw/local/xedit/scripts"

@@ -152,6 +152,8 @@ class TestAnalyze:
     async def test_full_analysis(self) -> None:
         """End-to-end: mock xEdit runner → parsed + classified report."""
         mock_runner = MagicMock()
+        # PR-2 grass cache: analyze() stagea su .pas antes de correr.
+        mock_runner.ensure_scripts_staged = AsyncMock(return_value=[])
         mock_runner.run_script = AsyncMock(
             return_value=XEditResult(
                 return_code=0,
@@ -179,6 +181,8 @@ class TestAnalyze:
     @pytest.mark.asyncio
     async def test_no_conflicts_report(self) -> None:
         mock_runner = MagicMock()
+        # PR-2 grass cache: analyze() stagea su .pas antes de correr.
+        mock_runner.ensure_scripts_staged = AsyncMock(return_value=[])
         mock_runner.run_script = AsyncMock(
             return_value=XEditResult(
                 return_code=0,
@@ -199,6 +203,8 @@ class TestAnalyze:
     async def test_falla_de_xedit_lanza_en_vez_de_reporte_vacio(self) -> None:
         """Exit != 0 no debe parecer "sin conflictos": ocultaría disputas reales (Codex #226)."""
         mock_runner = MagicMock()
+        # PR-2 grass cache: analyze() stagea su .pas antes de correr.
+        mock_runner.ensure_scripts_staged = AsyncMock(return_value=[])
         mock_runner.run_script = AsyncMock(
             return_value=XEditResult(
                 return_code=1,
@@ -215,6 +221,8 @@ class TestAnalyze:
     async def test_errores_parseados_tambien_lanzan(self) -> None:
         # success es False también si hay errors, aunque el exit code sea 0.
         mock_runner = MagicMock()
+        # PR-2 grass cache: analyze() stagea su .pas antes de correr.
+        mock_runner.ensure_scripts_staged = AsyncMock(return_value=[])
         mock_runner.run_script = AsyncMock(
             return_value=XEditResult(
                 return_code=0,
@@ -238,6 +246,8 @@ class TestPluginPairGrouping:
     @pytest.mark.asyncio
     async def test_groups_by_pair(self) -> None:
         mock_runner = MagicMock()
+        # PR-2 grass cache: analyze() stagea su .pas antes de correr.
+        mock_runner.ensure_scripts_staged = AsyncMock(return_value=[])
         mock_runner.run_script = AsyncMock(
             return_value=XEditResult(
                 return_code=0,
@@ -262,6 +272,8 @@ class TestPluginPairGrouping:
     @pytest.mark.asyncio
     async def test_sorted_by_conflict_count(self) -> None:
         mock_runner = MagicMock()
+        # PR-2 grass cache: analyze() stagea su .pas antes de correr.
+        mock_runner.ensure_scripts_staged = AsyncMock(return_value=[])
         mock_runner.run_script = AsyncMock(
             return_value=XEditResult(
                 return_code=0,
@@ -701,6 +713,8 @@ class TestFlagAlertsEnAnalyze:
     @staticmethod
     def _runner() -> MagicMock:
         mock_runner = MagicMock()
+        # PR-2 grass cache: analyze() stagea su .pas antes de correr.
+        mock_runner.ensure_scripts_staged = AsyncMock(return_value=[])
         mock_runner.run_script = AsyncMock(
             return_value=XEditResult(return_code=0, raw_stdout=SPEL_FLAG_OUTPUT, raw_stderr="")
         )
@@ -749,6 +763,8 @@ class TestFlagAlertsEnAnalyze:
     async def test_salida_sin_flags_no_genera_alertas(self) -> None:
         """Compat: la salida actual (sin líneas FLAG) → flag_alerts vacío."""
         mock_runner = MagicMock()
+        # PR-2 grass cache: analyze() stagea su .pas antes de correr.
+        mock_runner.ensure_scripts_staged = AsyncMock(return_value=[])
         mock_runner.run_script = AsyncMock(
             return_value=XEditResult(return_code=0, raw_stdout=SAMPLE_OUTPUT, raw_stderr="")
         )
