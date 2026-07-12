@@ -226,3 +226,37 @@ async def test_guard_incluye_esl_del_modlist(tmp_path: pathlib.Path) -> None:
     assert result["valid"] is True
     # A.esp + Light.esl + B.esm (el -Disabled y el comentario se excluyen).
     assert result["plugin_count"] == 3
+
+
+async def test_guard_lee_modlist_en_thread(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """PT-1 (S-6): la lectura del modlist (I/O de archivo) debe hacerse en un
+    thread (asyncio.to_thread) para no bloquear el event loop — el guard corre
+    en la ruta async de orquestación antes de DynDOLOD/Synthesis/Wrye Bash."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
+
+    modlist = tmp_path / "modlist.txt"
+    modlist.write_text("+A.esp\n+Light.esl\n+B.esm\n", encoding="utf-8")
+
+    calls: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    async def _spy(fn, *a, **k):
+        calls.append(getattr(fn, "__name__", ""))
+        return await real_to_thread(fn, *a, **k)
+
+    monkeypatch.setattr(asyncio, "to_thread", _spy)
+
+    sup = SupervisorAgent.__new__(SupervisorAgent)
+    sup._path_resolver = MagicMock()  # type: ignore[attr-defined]
+    sup._path_resolver.resolve_modlist_path = MagicMock(return_value=modlist)
+
+    result = await sup._run_plugin_limit_guard("Default")
+
+    # Regresión funcional: el parseo (con L-1: incluye .esl) no cambia.
+    assert result["valid"] is True
+    assert result["plugin_count"] == 3
+    # La lectura del modlist pasó por un thread.
+    assert any("blocking" in name for name in calls), f"to_thread no usado para el read: {calls}"

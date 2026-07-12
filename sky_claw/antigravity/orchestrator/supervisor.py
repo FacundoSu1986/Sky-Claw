@@ -46,6 +46,28 @@ from sky_claw.local.tools.xedit_service import XEditPipelineService
 from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport
 
 logger = logging.getLogger(__name__)
+
+
+def _read_active_plugins_blocking(modlist_path: pathlib.Path) -> list[str]:
+    """Lee el modlist MO2 y devuelve los plugins habilitados (I/O bloqueante).
+
+    PT-1 (S-6): aislada para envolverla en ``asyncio.to_thread`` desde el guard
+    async y no bloquear el event loop. Conserva el criterio L-1: cuenta los
+    light masters (``.esl`` y ``.esp/.esm`` con flag ligero) que SÍ consumen
+    slot del pool de 254 masters de Skyrim SE/AE (mismo criterio que
+    ``parse_active_plugins``).
+    """
+    active_plugins: list[str] = []
+    if not modlist_path.exists():
+        return active_plugins
+    with open(modlist_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line.startswith("+") and line.lower().endswith((".esp", ".esm", ".esl")):
+                active_plugins.append(line[1:])
+    return active_plugins
+
+
 security_logger = logging.getLogger(f"{__name__}.security")
 
 # FASE 1.5: Constante para directorio de staging de backups
@@ -535,18 +557,9 @@ class SupervisorAgent:
         try:
             active_plugins: list[str] = []
             modlist_path = self._path_resolver.resolve_modlist_path(profile)
-            # Leer modlist (si existe) para extraer plugins habilitados
-            if modlist_path.exists():
-                with open(modlist_path, encoding="utf-8") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        # L-1: incluir .esl. Los light masters (.esl y .esp/.esm con
-                        # flag ligero) SÍ cuentan hacia el límite de 254 masters de
-                        # Skyrim SE/AE; excluir .esl por extensión subcontaba el pool
-                        # real y podía dejar pasar un perfil sobre el límite. Mismo
-                        # criterio que parse_active_plugins.
-                        if line.startswith("+") and line.lower().endswith((".esp", ".esm", ".esl")):
-                            active_plugins.append(line[1:])
+            # PT-1 (S-6): leer el modlist (I/O de archivo) en un thread para no
+            # bloquear el event loop; el parseo con criterio L-1 vive en el helper.
+            active_plugins = await asyncio.to_thread(_read_active_plugins_blocking, modlist_path)
 
             analyzer = ConflictAnalyzer()
             analyzer.validate_load_order_limit(active_plugins)

@@ -5,6 +5,7 @@ Framework de decisión secuencial de 5 pasos para Auditoría Purple Team.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +18,18 @@ from .purple_scanner import run_scan
 from .text_inspector import scan_text
 
 logger = logging.getLogger(__name__)
+
+
+def _read_text_file_blocking(file_path: str) -> str:
+    """Lectura sync de un archivo de texto (I/O bloqueante).
+
+    PT-1 (PS-3): aislada en un helper para envolverla en ``asyncio.to_thread``
+    desde el path async de escaneo, evitando bloquear el event loop por
+    archivo durante escaneos de repositorios grandes. Mismo idiom que
+    ``governance.get_file_hash_async`` / ``_hash_file_blocking``.
+    """
+    with open(file_path, encoding="utf-8", errors="ignore") as f:
+        return f.read()
 
 
 class SecurityMetacognition:
@@ -89,8 +102,7 @@ class SecurityMetacognition:
                 continue
 
             try:
-                with open(file_path, encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
+                content = await asyncio.to_thread(_read_text_file_blocking, file_path)
 
                 # Escáner según extensión
                 findings = []
