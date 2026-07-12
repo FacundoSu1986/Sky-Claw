@@ -214,16 +214,25 @@ class WebApp:
             return ws_reject
         ws = web.WebSocketResponse()
         await ws.prepare(request)
+        rotating = False
         async with self._ws_ui_lock:
             if self._token_rotating:
                 # Rotación en curso: admitirlo dejaría vivo un socket con el
                 # token viejo; se rechaza y el cliente reconecta con el nuevo.
-                await ws.close(
-                    code=aiohttp.WSCloseCode.POLICY_VIOLATION,
-                    message=b"Token rotation in progress -- reconnect shortly",
-                )
-                return ws
-            self._ws_ui_clients.add(ws)
+                rotating = True
+            else:
+                self._ws_ui_clients.add(ws)
+        if rotating:
+            # El close corre FUERA del lock: si el cliente no ACKea el close
+            # frame (timeout ~10s de aiohttp), sostener el lock acá bloquearía
+            # el finally de close_all_ws_ui_clients, otros handshakes
+            # concurrentes y los discards del set (un solo cliente colgado
+            # congelaría toda la cola).
+            await ws.close(
+                code=aiohttp.WSCloseCode.POLICY_VIOLATION,
+                message=b"Token rotation in progress -- reconnect shortly",
+            )
+            return ws
         try:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:

@@ -470,6 +470,7 @@ def save_settings(
             try:
                 current_provider = str(Config(config_path)._data.get("llm_provider") or "")
             except Exception:
+                logger.exception("No se pudo leer el provider actual desde %s", config_path)
                 current_provider = ""
             try:
                 has_generic = bool(keyring.get_password("sky_claw", "llm_api_key"))
