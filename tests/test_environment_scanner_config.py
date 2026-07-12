@@ -74,9 +74,11 @@ async def test_missing_configured_tool_path_falls_back_to_missing(tmp_path: Path
 
 def test_read_pe_product_version_devuelve_none_con_pe_corrupto(tmp_path: Path) -> None:
     # Ancla del contrato del helper (limpieza post-#275): el stub "MZ" de 2 bytes
-    # dispara pefile.PEFormatError, que hereda de Exception a secas (no de
-    # OSError/ValueError). El helper debe absorberla y devolver None — señal de
-    # "usar heurística de tamaño" — sin propagar jamás la excepción.
+    # dispara pefile.PEFormatError si pefile está instalada (hereda de Exception
+    # a secas, no de OSError/ValueError), o bien el helper retorna None antes
+    # por ImportError si pefile no está disponible en el entorno. En ambos casos
+    # el helper debe devolver None — señal de "usar heurística de tamaño" —
+    # sin propagar jamás la excepción.
     exe = _touch_exe(tmp_path, "SkyrimSE.exe")
 
     assert _read_pe_product_version(exe) is None
