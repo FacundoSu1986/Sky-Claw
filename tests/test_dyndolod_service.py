@@ -655,3 +655,74 @@ class TestExecuteProcessDrainGrace:
         assert return_code == 0
         assert stdout == ""  # EOF inmediato
         assert stderr == ""  # drain cancelado tras el grace → output parcial
+
+
+# =============================================================================
+# Cancelación externa — limpieza de proceso y drains
+# =============================================================================
+
+
+class _DrainUntilReleased:
+    """Stream que permite observar si el runner cancela el drain."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.finished = asyncio.Event()
+
+    async def read(self, _n: int) -> bytes:
+        try:
+            await self.release.wait()
+            return b""
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        finally:
+            self.finished.set()
+
+
+class TestExecuteProcessCancellation:
+    async def test_cancelacion_externa_mata_proceso_y_cancela_drains(self) -> None:
+        """Un shutdown no deja DynDOLOD ni sus readers vivos en segundo plano."""
+        from sky_claw.local.tools import dyndolod_runner as ddl
+
+        wait_started = asyncio.Event()
+        process_reaped = asyncio.Event()
+        stdout = _DrainUntilReleased()
+        stderr = _DrainUntilReleased()
+        proc = MagicMock()
+        proc.pid = None
+        proc.returncode = None
+        proc.stdout = stdout
+        proc.stderr = stderr
+
+        async def _wait() -> int:
+            wait_started.set()
+            await process_reaped.wait()
+            proc.returncode = -9
+            return -9
+
+        def _kill() -> None:
+            process_reaped.set()
+
+        proc.wait = _wait
+        proc.kill = MagicMock(side_effect=_kill)
+        config = MagicMock(timeout_seconds=3600, heartbeat_interval=60)
+        runner = ddl.DynDOLODRunner(config)
+
+        with patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)):
+            task = asyncio.create_task(runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "DynDOLOD"))
+            try:
+                await wait_started.wait()
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+                proc.kill.assert_called_once()
+                assert stdout.cancelled.is_set()
+                assert stderr.cancelled.is_set()
+            finally:
+                stdout.release.set()
+                stderr.release.set()
+                await stdout.finished.wait()
+                await stderr.finished.wait()

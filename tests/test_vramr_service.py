@@ -1068,3 +1068,74 @@ class TestRunVramrDrainGrace:
         assert exit_code == 0
         assert stdout_lines == ["out-1"]  # stdout drenó normalmente
         assert stderr_lines == []  # drain cancelado tras el grace → parcial
+
+
+# =============================================================================
+# Cancelación externa — limpieza de proceso y drains
+# =============================================================================
+
+
+class _LineDrainUntilReleased:
+    """Stream línea-a-línea que expone la cancelación del drain."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.finished = asyncio.Event()
+
+    async def readline(self) -> bytes:
+        try:
+            await self.release.wait()
+            return b""
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        finally:
+            self.finished.set()
+
+
+async def test_cancelacion_externa_mata_vramr_y_cancela_drains() -> None:
+    """Un shutdown no deja VRAMr ni sus readers vivos en segundo plano."""
+    wait_started = asyncio.Event()
+    process_reaped = asyncio.Event()
+    stdout = _LineDrainUntilReleased()
+    stderr = _LineDrainUntilReleased()
+    proc = MagicMock()
+    proc.returncode = None
+    proc.stdout = stdout
+    proc.stderr = stderr
+
+    async def _wait() -> int:
+        wait_started.set()
+        await process_reaped.wait()
+        proc.returncode = -9
+        return -9
+
+    def _kill() -> None:
+        process_reaped.set()
+
+    proc.wait = _wait
+    proc.kill = MagicMock(side_effect=_kill)
+    svc = make_service(
+        lock_manager=MagicMock(),
+        mock_journal=AsyncMock(),
+        path_validator=MagicMock(),
+        event_bus=MagicMock(),
+    )
+
+    with patch.object(vramr_mod.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)):
+        task = asyncio.create_task(svc._run_vramr(pathlib.Path("VRAMr.exe"), [], timeout=60.0))
+        try:
+            await wait_started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            proc.kill.assert_called_once()
+            assert stdout.cancelled.is_set()
+            assert stderr.cancelled.is_set()
+        finally:
+            stdout.release.set()
+            stderr.release.set()
+            await stdout.finished.wait()
+            await stderr.finished.wait()

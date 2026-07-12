@@ -501,6 +501,16 @@ class DynDOLODRunner:
 
         try:
             await asyncio.wait_for(proc.wait(), timeout=effective_timeout)
+        except asyncio.CancelledError:
+            # Un shutdown externo debe matar el árbol antes de propagar la
+            # cancelación: de otro modo DynDOLOD/TexGen continúa escribiendo
+            # después de que la capa superior liberó su lock o hizo rollback.
+            await kill_and_reap(proc)
+            heartbeat.cancel()
+            drain_out.cancel()
+            drain_err.cancel()
+            await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
+            raise
         except TimeoutError:
             # Global timeout exceeded — kill process tree (evita nietos como
             # TexGen huérfanos) y cancela las tasks de monitoreo.
