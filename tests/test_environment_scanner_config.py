@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sky_claw.local.discovery.scanner import EnvironmentScanner
+from sky_claw.local.discovery.scanner import EnvironmentScanner, _read_pe_product_version
 
 
 def _touch_exe(directory: Path, name: str) -> Path:
@@ -70,6 +70,16 @@ async def test_missing_configured_tool_path_falls_back_to_missing(tmp_path: Path
 
     assert not snap.has_tool("loot")
     assert any(m.technical_name.lower() == "loot" for m in snap.missing)
+
+
+def test_read_pe_product_version_devuelve_none_con_pe_corrupto(tmp_path: Path) -> None:
+    # Ancla del contrato del helper (limpieza post-#275): el stub "MZ" de 2 bytes
+    # dispara pefile.PEFormatError, que hereda de Exception a secas (no de
+    # OSError/ValueError). El helper debe absorberla y devolver None — señal de
+    # "usar heurística de tamaño" — sin propagar jamás la excepción.
+    exe = _touch_exe(tmp_path, "SkyrimSE.exe")
+
+    assert _read_pe_product_version(exe) is None
 
 
 async def test_bare_scanner_without_skyrim_stays_critical(tmp_path: Path, monkeypatch) -> None:
