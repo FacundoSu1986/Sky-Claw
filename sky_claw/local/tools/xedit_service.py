@@ -225,7 +225,6 @@ class XEditPipelineService:
         result: PatchResult | None = None
         rolled_back = False
         tx_id: int | None = None
-        in_lock_context = False
         # M-7: bindear el lock para reportar el resultado REAL del rollback
         # (tx_lock.rollback_completed) en vez de hardcodear rolled_back=True.
         tx_lock: SnapshotTransactionLock | None = None
@@ -243,7 +242,6 @@ class XEditPipelineService:
                     "total_conflicts": report.total_conflicts,
                 },
             ) as tx_lock:
-                in_lock_context = True
                 tx_id = await self._journal.begin_transaction(
                     description="xedit_patch",
                     agent_id=self.AGENT_ID,
@@ -292,7 +290,6 @@ class XEditPipelineService:
                     raise PatchingError(f"xEdit falló con código {result.xedit_exit_code}: {result.error}")
 
             # Normal exit — lock context exited without error
-            in_lock_context = False
             if tx_id is not None:
                 await self._journal.commit_transaction(tx_id)
 
@@ -301,8 +298,13 @@ class XEditPipelineService:
             # resultado REAL — rollback_completed es False si el restore falló
             # silenciosamente, dejando los masters en estado parcial.
             rolled_back = bool(tx_lock and tx_lock.rollback_completed)
-            if tx_id is not None:
+            if tx_id is not None and rolled_back:
                 await self._journal.mark_transaction_rolled_back(tx_id)
+            elif tx_id is not None:
+                logger.critical(
+                    "Rollback xEdit incompleto para TX %d; se mantiene pendiente para recuperación manual.",
+                    tx_id,
+                )
             logger.error("Parcheo xEdit falló: %s", exc)
             result = PatchResult(
                 success=False,
@@ -327,8 +329,8 @@ class XEditPipelineService:
             )
 
         except Exception as exc:
-            rolled_back = in_lock_context
-            if tx_id is not None:
+            rolled_back = bool(tx_lock and tx_lock.rollback_completed)
+            if tx_id is not None and rolled_back:
                 try:
                     await self._journal.mark_transaction_rolled_back(tx_id)
                 except Exception as rollback_exc:
@@ -338,6 +340,11 @@ class XEditPipelineService:
                         rollback_exc,
                         exc_info=True,
                     )
+            elif tx_id is not None:
+                logger.critical(
+                    "Rollback xEdit incompleto para TX %d; se mantiene pendiente para recuperación manual.",
+                    tx_id,
+                )
             logger.error("Unexpected exception in xedit patch pipeline: %s", exc, exc_info=True)
             result = PatchResult(
                 success=False,

@@ -21,6 +21,7 @@ from sky_claw.antigravity.core.event_payloads import (
 )
 from sky_claw.antigravity.db.locks import DistributedLockManager
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.local.tools import xedit_service as xedit_service_mod
 from sky_claw.local.tools.xedit_service import XEditPipelineService
 from sky_claw.local.xedit.conflict_analyzer import (
     ConflictReport,
@@ -338,6 +339,50 @@ async def test_execute_patch_unexpected_exception_marks_rollback(
     completed_call = next(c for c in calls if c.args[0].topic == "xedit.patch.completed")
     assert completed_call.args[0].payload["success"] is False
     assert completed_call.args[0].payload["rolled_back"] is True
+
+
+class _RollbackFailedLock:
+    """Lock de frontera: el cuerpo falla y la restauración no se completa."""
+
+    rollback_completed = False
+
+    async def __aenter__(self) -> _RollbackFailedLock:
+        return self
+
+    async def __aexit__(self, *_args: object) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [OSError("Disk full"), PatchingError("xEdit crashed")])
+async def test_execute_patch_no_marca_rollback_si_la_restauracion_falla(
+    failure: Exception,
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    mock_conflict_report: ConflictReport,
+    target_plugin: pathlib.Path,
+) -> None:
+    """El journal y el evento no pueden declarar recuperación inexistente."""
+    mock_orchestrator = AsyncMock()
+    mock_orchestrator.resolve = AsyncMock(side_effect=failure)
+    mock_orchestrator._strategies = []
+    service = make_service(lock_manager, snapshot_manager, mock_journal, mock_path_resolver, mock_event_bus)
+
+    with (
+        patch.object(service, "_ensure_patch_orchestrator", return_value=mock_orchestrator),
+        patch.object(xedit_service_mod, "SnapshotTransactionLock", return_value=_RollbackFailedLock()),
+    ):
+        result = await service.execute_patch(mock_conflict_report, target_plugin)
+
+    assert result["success"] is False
+    mock_journal.mark_transaction_rolled_back.assert_not_awaited()
+    completed_call = next(
+        c for c in mock_event_bus.publish.call_args_list if c.args[0].topic == "xedit.patch.completed"
+    )
+    assert completed_call.args[0].payload["rolled_back"] is False
 
 
 # =============================================================================
