@@ -72,9 +72,13 @@ async def test_missing_configured_tool_path_falls_back_to_missing(tmp_path: Path
     assert any(m.technical_name.lower() == "loot" for m in snap.missing)
 
 
-async def test_bare_scanner_without_skyrim_stays_critical(tmp_path: Path) -> None:
+async def test_bare_scanner_without_skyrim_stays_critical(tmp_path: Path, monkeypatch) -> None:
     # Regression guard: with no config and no Skyrim, behaviour is unchanged —
     # the scan still reports the game as not found.
+    async def mock_find_skyrim(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(EnvironmentScanner, "_find_skyrim", mock_find_skyrim)
     scanner = EnvironmentScanner()
 
     snap = await scanner.scan()
