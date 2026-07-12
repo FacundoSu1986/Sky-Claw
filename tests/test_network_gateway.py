@@ -456,6 +456,68 @@ class TestSharedDNSPinCache:
             await ctx.close()
 
 
+class TestSafeResolverLRUEviction:
+    """El pin cache DNS es un OrderedDict LRU capado a ``_MAX_PINNED_ENTRIES``
+    para acotar la memoria cuando se resuelven muchos hosts distintos. Ítem 9:
+    coverage de la eviction (``popitem(last=False)`` al superar el cap) y de la
+    promoción a MRU (``move_to_end`` en cada hit)."""
+
+    @pytest.mark.asyncio
+    async def test_eviction_expulsa_el_entry_mas_viejo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+        import socket
+
+        from sky_claw.antigravity.security import network_gateway
+        from sky_claw.antigravity.security.network_gateway import SafeResolver
+
+        monkeypatch.setattr(network_gateway, "_MAX_PINNED_ENTRIES", 3)
+        resolver = SafeResolver(EgressPolicy(block_private_ips=False))
+
+        async def _fake_getaddrinfo(host, port, *, family, type):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", port))]
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", _fake_getaddrinfo)
+
+        # Cuatro hosts distintos con cap 3: el 4º dispara la eviction del más viejo.
+        for host in ("a", "b", "c", "d"):
+            await resolver.resolve(host, 443, socket.AF_INET)
+
+        keys = [k[0] for k in resolver._pinned]
+        assert len(resolver._pinned) == 3  # capado, no crece sin límite
+        assert keys == ["b", "c", "d"]  # "a" (el más viejo) fue expulsado
+
+    @pytest.mark.asyncio
+    async def test_promocion_lru_protege_al_reusado(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import asyncio
+        import socket
+
+        from sky_claw.antigravity.security import network_gateway
+        from sky_claw.antigravity.security.network_gateway import SafeResolver
+
+        monkeypatch.setattr(network_gateway, "_MAX_PINNED_ENTRIES", 3)
+        resolver = SafeResolver(EgressPolicy(block_private_ips=False))
+
+        calls = {"n": 0}
+
+        async def _fake_getaddrinfo(host, port, *, family, type):
+            calls["n"] += 1
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", port))]
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", _fake_getaddrinfo)
+
+        for host in ("a", "b", "c"):
+            await resolver.resolve(host, 443, socket.AF_INET)
+        # Re-resolver "a": es un HIT → promueve "a" a MRU y NO vuelve a llamar DNS.
+        await resolver.resolve("a", 443, socket.AF_INET)
+        # Nuevo host "d" → dispara eviction; el más viejo ahora es "b" (no "a").
+        await resolver.resolve("d", 443, socket.AF_INET)
+
+        keys = [k[0] for k in resolver._pinned]
+        assert calls["n"] == 4  # a,b,c,d — el re-hit de "a" no llamó getaddrinfo
+        assert "b" not in keys  # "b" quedó como el más viejo y fue expulsado
+        assert set(keys) == {"a", "c", "d"}  # "a" sobrevivió por la promoción
+
+
 # ------------------------------------------------------------------
 # Dot-based domain matcher (_matching_pattern semantics)
 # ------------------------------------------------------------------
