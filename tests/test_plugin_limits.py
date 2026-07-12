@@ -240,11 +240,18 @@ async def test_guard_lee_modlist_en_thread(tmp_path: pathlib.Path, monkeypatch) 
     modlist = tmp_path / "modlist.txt"
     modlist.write_text("+A.esp\n+Light.esl\n+B.esm\n", encoding="utf-8")
 
-    calls: list[str] = []
+    calls: list = []
     real_to_thread = asyncio.to_thread
 
+    def _unwrap(f):
+        while hasattr(f, "__wrapped__"):
+            f = f.__wrapped__
+        if hasattr(f, "func"):
+            f = f.func
+        return f
+
     async def _spy(fn, *a, **k):
-        calls.append(getattr(fn, "__name__", ""))
+        calls.append(_unwrap(fn))
         return await real_to_thread(fn, *a, **k)
 
     monkeypatch.setattr(asyncio, "to_thread", _spy)
@@ -259,4 +266,5 @@ async def test_guard_lee_modlist_en_thread(tmp_path: pathlib.Path, monkeypatch) 
     assert result["valid"] is True
     assert result["plugin_count"] == 3
     # La lectura del modlist pasó por un thread.
-    assert any("blocking" in name for name in calls), f"to_thread no usado para el read: {calls}"
+    from sky_claw.antigravity.orchestrator.supervisor import _read_active_plugins_blocking
+    assert _read_active_plugins_blocking in calls, f"to_thread no usado para el read: {calls}"
