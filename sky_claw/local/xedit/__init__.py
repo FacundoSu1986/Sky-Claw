@@ -39,6 +39,16 @@ from sky_claw.local.xedit.flag_rules import (
     evaluate_flag_rules,
 )
 from sky_claw.local.xedit.output_parser import XEditOutputParser, XEditResult
+from sky_claw.local.xedit.patch_advisor import (
+    BASHED_PATCH,
+    DEFAULT_STRATEGY_RULES,
+    REVIEW,
+    SYNTHESIS,
+    XEDIT_MANUAL,
+    PatchRecommendation,
+    StrategyRule,
+    recommend,
+)
 from sky_claw.local.xedit.patch_orchestrator import (
     CreateMergedPatch,
     DelegateToBashedPatch,
@@ -66,8 +76,13 @@ from sky_claw.local.xedit.runner import (
 )
 
 __all__ = [
+    "BASHED_PATCH",
     "CRITICAL_FLAGS",
     "DEFAULT_FLAG_RULES",
+    "DEFAULT_STRATEGY_RULES",
+    "REVIEW",
+    "SYNTHESIS",
+    "XEDIT_MANUAL",
     # Conflict analyzer
     "ConflictAnalyzer",
     "ConflictReport",
@@ -77,9 +92,11 @@ __all__ = [
     "FlagAlert",
     "FlagRule",
     "OverrideFlagState",
+    # Patch advisor (T-20)
     "PatchExecutionError",
     "PatchOrchestrator",
     "PatchPlan",
+    "PatchRecommendation",
     "PatchResult",
     "PatchStrategy",
     "PatchStrategyType",
@@ -87,6 +104,7 @@ __all__ = [
     "PatchingError",
     "PluginConflictPair",
     "RecordConflict",
+    "StrategyRule",
     "ScriptExecutionResult",
     "ScriptGenerationError",
     "ScriptGenerator",
@@ -104,4 +122,5 @@ __all__ = [
     "XEditValidationError",
     "XEditWriteError",
     "evaluate_flag_rules",
+    "recommend",
 ]

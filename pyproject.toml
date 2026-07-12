@@ -242,6 +242,7 @@ module = [
     "sky_claw.local.xedit.flag_rules",  # T-19b: motor declarativo de reglas de flags, estricto
     "sky_claw.local.validators.post_run",  # T-21: validador post-run, estricto
     "sky_claw.local.validators.write_permissions",  # T-30·4: sensor de permisos de escritura, estricto
+    "sky_claw.local.xedit.patch_advisor",  # T-20: asistente de estrategia de parcheo, estricto
     "sky_claw.antigravity.orchestrator.preview.flight_report",  # T-28: módulo nuevo, nace estricto
 ]
 strict = true
