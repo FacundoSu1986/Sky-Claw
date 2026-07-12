@@ -37,11 +37,14 @@ from sky_claw.local.tools.xedit_service import XEditPipelineService
 from sky_claw.local.xedit.patch_advisor import recommend
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sky_claw.antigravity.core.path_resolver import PathResolutionService
     from sky_claw.antigravity.db.journal import OperationJournal
     from sky_claw.antigravity.security.path_validator import PathValidator
     from sky_claw.local.loot.cli import LOOTRunner
     from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer
+    from sky_claw.local.xedit.patch_advisor import PatchRecommendation
     from sky_claw.local.xedit.runner import XEditRunner
 
 logger = logging.getLogger("SkyClaw.ChainPreviewService")
@@ -54,6 +57,21 @@ PREVIEW_TOPIC = "ops.hitl.preview"
 #: the load order instead of racing — the preview's force-rollback can no longer
 #: clobber a concurrent real sort (audit #190).
 _RESOURCE_ID = LOAD_ORDER_RESOURCE_ID
+
+
+def _summarize_approaches(recs: Sequence[PatchRecommendation]) -> str:
+    """Resumen de los enfoques recomendados distintos, en el orden por severidad
+    que devuelve ``recommend()``.
+
+    Es la base para reconciliar ``proposed_resolution`` con las recomendaciones:
+    las recomendaciones son la fuente de verdad de la estrategia, así que el
+    resumen no puede contradecirlas (review Codex #272).
+    """
+    enfoques: list[str] = []
+    for rec in recs:
+        if rec.approach not in enfoques:
+            enfoques.append(rec.approach)
+    return ", ".join(enfoques)
 
 
 class ChainPreviewService:
@@ -226,9 +244,20 @@ class ChainPreviewService:
         change_set = StageChangeSet.model_validate(result["change_set"])
         if change_set.conflicts is not None:
             conflicts = [c for pair in report.plugin_pairs for c in pair.conflicts]
+            recs = recommend(conflicts)
             change_set.conflicts.recommendations = [
-                PatchRecommendationView.model_validate(rec.to_dict()) for rec in recommend(conflicts)
+                PatchRecommendationView.model_validate(rec.to_dict()) for rec in recs
             ]
+            if recs:
+                # Reconciliar proposed_resolution con las recomendaciones (review
+                # Codex #272): el preview de xEdit por defecto propone
+                # create_merged_patch para listas niveladas no-críticas, lo que
+                # contradice la recomendación bashed_patch (ADR 0001). Las
+                # recomendaciones son la fuente de verdad; derivamos un resumen de
+                # los enfoques distintos (en orden de severidad) para que ambos
+                # campos coincidan y ningún consumidor muestre consejos
+                # mutuamente excluyentes.
+                change_set.conflicts.proposed_resolution = _summarize_approaches(recs)
         return change_set
 
     async def _preview_dyndolod(self, *, preset: str, run_texgen: bool) -> StageChangeSet:

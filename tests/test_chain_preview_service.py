@@ -166,7 +166,9 @@ async def test_preview_chain_no_mutation_and_full_manifest(tmp_path: pathlib.Pat
         assert xedit_stage.executed_for_real is False
         assert xedit_stage.conflicts is not None
         assert xedit_stage.conflicts.critical == 1
-        assert xedit_stage.conflicts.proposed_resolution == "execute_xedit_script"
+        # T-20·2: proposed_resolution se reconcilia con la recomendación del
+        # asistente (NPC_ crítico -> xedit_manual), no el coarse "execute_xedit_script".
+        assert xedit_stage.conflicts.proposed_resolution == "xedit_manual"
 
         dyndolod_stage = manifest.stages[2]
         assert dyndolod_stage.executed_for_real is False
@@ -498,6 +500,51 @@ async def test_preview_xedit_adjunta_recomendaciones(tmp_path: pathlib.Path) -> 
         assert "00000020" in spel.form_ids
         assert len(spel.flag_alerts) == 1
         assert spel.flag_alerts[0]["flag"] == "Persistent"
+
+        # proposed_resolution se reconcilia con las recomendaciones (enfoques
+        # distintos en orden de severidad: crítico SPEL primero, luego LVLI).
+        assert xedit_stage.conflicts.proposed_resolution == "xedit_manual, bashed_patch"
+    finally:
+        await lock_mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_preview_xedit_reconcilia_proposed_resolution_listas_niveladas(tmp_path: pathlib.Path) -> None:
+    """review Codex #272: un report con solo listas niveladas no-críticas ya no
+    propone create_merged_patch (rechazado por ADR 0001) contradiciendo la
+    recomendación bashed_patch — proposed_resolution deriva de las recomendaciones."""
+    plugins_txt = tmp_path / "plugins.txt"
+    plugins_txt.write_text("*A.esm\n", encoding="utf-8")
+
+    async def loot_sort() -> LOOTResult:
+        return LOOTResult(return_code=0, sorted_plugins=["A.esm"])
+
+    async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
+        lvli = RecordConflict(
+            form_id="00000010",
+            editor_id="LListX",
+            record_type="LVLI",
+            winner="A.esm",
+            losers=["B.esp"],
+            severity="warning",
+        )
+        return ConflictReport(
+            total_conflicts=1,
+            critical_conflicts=0,  # no crítico: xedit_service propondría create_merged_patch
+            plugin_pairs=[PluginConflictPair(plugin_a="A.esm", plugin_b="B.esp", conflicts=[lvli])],
+        )
+
+    event_bus = AsyncMock(spec=CoreEventBus)
+    event_bus.publish = AsyncMock()
+
+    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    try:
+        manifest = await service.preview_chain(workflow_id="wf-lvli", load_order_file=plugins_txt)
+
+        conflicts = manifest.stages[1].conflicts
+        assert conflicts is not None
+        assert conflicts.proposed_resolution == "bashed_patch"  # NO "create_merged_patch"
+        assert [r.approach for r in conflicts.recommendations] == ["bashed_patch"]
     finally:
         await lock_mgr.close()
 

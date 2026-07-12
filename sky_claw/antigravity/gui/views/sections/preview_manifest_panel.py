@@ -68,6 +68,20 @@ def build_preview_view_model(manifest: dict[str, Any]) -> dict[str, Any]:
             }
             for pair in conf.get("pairs", [])
         ],
+        # Capa advisory del asistente de parcheo (T-20·2): qué enfoque conviene
+        # por grupo de conflictos y por qué. Sin esto el panel dejaría caer la
+        # recomendación en silencio (review Codex #272).
+        "recommendations": [
+            {
+                "record_type": rec.get("record_type") or "",
+                "approach": rec.get("approach") or "",
+                "rationale": rec.get("rationale") or "",
+                "severity": rec.get("severity") or "",
+                "conflict_count": rec.get("conflict_count", 0),
+                "form_ids": rec.get("form_ids", []),
+            }
+            for rec in conf.get("recommendations", [])
+        ],
     }
 
     plan = (by_stage.get("dyndolod") or {}).get("lod_plan")
@@ -127,6 +141,14 @@ def create_preview_manifest_panel(
             ui.label(f"{row['record_type']} {row['form_id']}: {row['winner']} wins over {row['losers']}").classes(
                 "text-[#d1d5db] text-sm"
             )
+
+        # --- Recommended strategy (asistente de parcheo T-20·2) ---
+        if conflicts["recommendations"]:
+            ui.label("Recommended strategy").classes("text-white font-semibold mt-2")
+            for rec in conflicts["recommendations"]:
+                ui.label(
+                    f"{rec['record_type']} ({rec['conflict_count']}) → {rec['approach']}: {rec['rationale']}"
+                ).classes("text-[#d1d5db] text-sm")
 
         # --- LOD plan ---
         if vm["lod"] is not None:

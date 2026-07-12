@@ -12,6 +12,7 @@ from sky_claw.antigravity.orchestrator.preview.manifest import (
     ConflictPreview,
     LoadOrderDiff,
     LODPlan,
+    PatchRecommendationView,
     PreviewManifest,
     StageChangeSet,
 )
@@ -36,6 +37,16 @@ def _manifest_dict() -> dict:
                     minor=2,
                     pairs=[ConflictPair(winner="A.esm", losers=["B.esp"], record_type="NPC_", form_id="001")],
                     proposed_resolution="execute_xedit_script",
+                    recommendations=[
+                        PatchRecommendationView(
+                            approach="xedit_manual",
+                            record_type="NPC_",
+                            rationale="conflicto de alto riesgo (narrativa/IA)",
+                            severity="critical",
+                            conflict_count=1,
+                            form_ids=["001"],
+                        ),
+                    ],
                 ),
             ),
             StageChangeSet(
@@ -72,6 +83,15 @@ def test_view_model_conflicts_and_lod() -> None:
     assert vm["conflicts"]["rows"][0]["winner"] == "A.esm"
     assert vm["conflicts"]["rows"][0]["losers"] == "B.esp"
 
+    # T-20·2: la recomendación del asistente de parcheo se surface (no se cae en
+    # silencio en el panel principal del Operations Hub).
+    recs = vm["conflicts"]["recommendations"]
+    assert len(recs) == 1
+    assert recs[0]["record_type"] == "NPC_"
+    assert recs[0]["approach"] == "xedit_manual"
+    assert recs[0]["conflict_count"] == 1
+    assert "narrativa" in recs[0]["rationale"]
+
     assert vm["lod"] is not None
     assert vm["lod"]["preset"] == "High"
     assert "DynDOLOD.esp" in vm["lod"]["would_generate"]
@@ -85,6 +105,7 @@ def test_view_model_handles_empty_manifest() -> None:
     assert vm["load_order"]["changed"] is False
     assert vm["load_order"]["moves"] == []
     assert vm["conflicts"]["total"] == 0
+    assert vm["conflicts"]["recommendations"] == []
     assert vm["lod"] is None
     assert vm["warnings"] == []
 
