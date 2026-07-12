@@ -29,26 +29,36 @@ def _build_surgery_rows(conf: dict[str, Any]) -> list[dict[str, Any]]:
 
     Es la "cirugía" del panel (T-29): por cada ``pair`` une —
 
-    - la recomendación del asistente de parcheo (T-20) por ``record_type`` → el
-      parche sugerido, y
+    - la recomendación del asistente de parcheo (T-20) por ``form_id`` (con
+      ``record_type`` como fallback) → el parche sugerido y su severidad, y
     - la alerta de flag (T-19b) por ``form_id`` → el flag en riesgo, el "por qué"
       de la regla y qué plugins lo definen (lo que se pierde),
 
-    de modo que el operador entienda winner/loser + por qué + qué se pierde +
-    parche SIN abrir xEdit. Defensivo: un par sin recomendación/alerta que
-    matchee degrada a los campos base (los advisory quedan vacíos, nunca ``None``).
+    de modo que el operador entienda winner/loser + riesgo + por qué + qué se
+    pierde + parche SIN abrir xEdit. Defensivo: un par sin recomendación/alerta
+    que matchee degrada a los campos base (los advisory quedan vacíos, nunca
+    ``None``).
+
+    El match por ``form_id`` (no solo por ``record_type``) evita cruzar el parche
+    de un record con el de otro cuando un tipo tiene varias recomendaciones con
+    distintos ``form_ids``; ``record_type`` queda solo como respaldo.
     """
-    # Índices: recomendación por record_type (primera gana) y alerta por form_id.
+    # Índices: recomendación por form_id (preciso) y por record_type (fallback),
+    # y alerta de flag por form_id. En todos, la primera aparición gana.
+    rec_by_form_id: dict[str, dict[str, Any]] = {}
     rec_by_type: dict[str, dict[str, Any]] = {}
     alert_by_form_id: dict[str, dict[str, Any]] = {}
     for rec in conf.get("recommendations") or []:
         record_type = rec.get("record_type") or ""
         if record_type and record_type not in rec_by_type:
             rec_by_type[record_type] = rec
+        for rec_form_id in rec.get("form_ids") or []:
+            if rec_form_id and rec_form_id not in rec_by_form_id:
+                rec_by_form_id[rec_form_id] = rec
         for alert in rec.get("flag_alerts") or []:
-            form_id = alert.get("form_id") or ""
-            if form_id and form_id not in alert_by_form_id:
-                alert_by_form_id[form_id] = alert
+            alert_form_id = alert.get("form_id") or ""
+            if alert_form_id and alert_form_id not in alert_by_form_id:
+                alert_by_form_id[alert_form_id] = alert
 
     rows: list[dict[str, Any]] = []
     for pair in conf.get("pairs") or []:
@@ -56,7 +66,7 @@ def _build_surgery_rows(conf: dict[str, Any]) -> list[dict[str, Any]]:
         losers = pair.get("losers", [])
         record_type = pair.get("record_type") or ""
         form_id = pair.get("form_id") or ""
-        rec = rec_by_type.get(record_type)
+        rec = rec_by_form_id.get(form_id) or rec_by_type.get(record_type)
         alert = alert_by_form_id.get(form_id) or {}
         rows.append(
             {
@@ -64,6 +74,9 @@ def _build_surgery_rows(conf: dict[str, Any]) -> list[dict[str, Any]]:
                 "form_id": form_id,
                 "winner": winner,
                 "losers": ", ".join(losers),
+                # Severidad/riesgo: la de la alerta de flag (por-record) manda; si no
+                # hay alerta, la del grupo de la recomendación. Deja priorizar sin xEdit.
+                "severity": alert.get("severity") or (rec.get("severity", "") if rec else ""),
                 "flag": alert.get("flag", ""),
                 "why": alert.get("explanation", ""),
                 # "Qué se pierde": los plugins que SÍ definen el flag que el ganador no preserva.
@@ -203,9 +216,11 @@ def create_preview_manifest_panel(
         ).classes("text-white font-semibold mt-2")
         for row in conflicts["surgery"]:
             with ui.element("div").classes("border-l-2 border-[#374151] pl-3 mt-2 gap-1"):
-                ui.label(f"{row['record_type']} {row['form_id']}: {row['winner']} wins over {row['losers']}").classes(
-                    "text-[#d1d5db] text-sm font-medium"
-                )
+                # La severidad va en la línea del conflicto para priorizar de un vistazo.
+                severity = f" [{row['severity']}]" if row["severity"] else ""
+                ui.label(
+                    f"{row['record_type']} {row['form_id']}{severity}: {row['winner']} wins over {row['losers']}"
+                ).classes("text-[#d1d5db] text-sm font-medium")
                 if row["flag"]:
                     ui.label(f"⚠ pierde «{row['flag']}»: {row['why']}").classes("text-[#f59e0b] text-sm")
                     if row["lost_from"]:
