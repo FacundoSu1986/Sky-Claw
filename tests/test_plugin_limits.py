@@ -267,4 +267,5 @@ async def test_guard_lee_modlist_en_thread(tmp_path: pathlib.Path, monkeypatch) 
     assert result["plugin_count"] == 3
     # La lectura del modlist pasó por un thread.
     from sky_claw.antigravity.orchestrator.supervisor import _read_active_plugins_blocking
+
     assert _read_active_plugins_blocking in calls, f"to_thread no usado para el read: {calls}"

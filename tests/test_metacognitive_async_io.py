@@ -47,6 +47,7 @@ async def test_phase_resolve_lee_archivos_en_thread(tmp_path: pathlib.Path, monk
 
     # La lectura del archivo pasó por un thread.
     from sky_claw.antigravity.security.metacognitive_logic import _read_text_file_blocking
+
     assert _read_text_file_blocking in calls, f"to_thread no usado para el read: {calls}"
     # Regresión funcional: el escaneo corrió y persistió su resultado.
     gov.update_scan_result.assert_awaited_once()
