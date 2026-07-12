@@ -234,3 +234,114 @@ async def test_backup_refleja_el_estado_previo_a_la_ultima_escritura(
 
     backup = grass_control.with_suffix(".ini.bak")
     assert backup.read_bytes() == intermedio
+
+
+# ---------------------------------------------------------------------------
+# Review PR #279: claves duplicadas — gana la última (semántica ConfigParser
+# strict=False del repo, ver tests/test_safe_save_validator.py:185).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ini_con_duplicados(tmp_path: pathlib.Path) -> pathlib.Path:
+    ini = tmp_path / "Skyrim.ini"
+    # Dos ocurrencias activas de la misma clave en el mismo scope: el juego (y
+    # el validador del repo) tratan la SEGUNDA como efectiva.
+    ini.write_bytes(b"[Grass]\r\nbAllowCreateGrass=0\r\nbAllowCreateGrass=1\r\n")
+    return ini
+
+
+async def test_get_devuelve_la_ultima_ocurrencia_en_duplicados(
+    editor: IniEditor, ini_con_duplicados: pathlib.Path
+) -> None:
+    # El valor efectivo es el de la última línea (=1), no el de la primera.
+    assert await editor.get(ini_con_duplicados, "bAllowCreateGrass", section="Grass") == "1"
+
+
+async def test_set_edita_la_ultima_ocurrencia_en_duplicados(
+    editor: IniEditor, ini_con_duplicados: pathlib.Path
+) -> None:
+    resultado = await editor.set(ini_con_duplicados, "bAllowCreateGrass", "9", section="Grass")
+
+    assert resultado.previous_value == "1"  # reporta el valor efectivo previo
+    # Se edita la ocurrencia efectiva (la última); la primera queda intacta.
+    assert ini_con_duplicados.read_bytes() == b"[Grass]\r\nbAllowCreateGrass=0\r\nbAllowCreateGrass=9\r\n"
+
+
+# ---------------------------------------------------------------------------
+# Review PR #279: headers de sección con comentario trailing — ConfigParser
+# strict=False los acepta como la misma sección.
+# ---------------------------------------------------------------------------
+
+_INI_HEADER_COMENTADO = b"[Grass] ; tweaks de precache\r\nfGrassStartFadeDistance=7000.0000\r\n"
+
+
+@pytest.fixture
+def ini_header_comentado(tmp_path: pathlib.Path) -> pathlib.Path:
+    ini = tmp_path / "Skyrim.ini"
+    ini.write_bytes(_INI_HEADER_COMENTADO)
+    return ini
+
+
+async def test_get_reconoce_header_de_seccion_con_comentario(
+    editor: IniEditor, ini_header_comentado: pathlib.Path
+) -> None:
+    assert await editor.get(ini_header_comentado, "fGrassStartFadeDistance", section="Grass") == "7000.0000"
+
+
+async def test_set_edita_seccion_con_header_comentado_sin_duplicarla(
+    editor: IniEditor, ini_header_comentado: pathlib.Path
+) -> None:
+    await editor.set(ini_header_comentado, "fGrassStartFadeDistance", "20272.0000", section="Grass")
+
+    contenido = ini_header_comentado.read_bytes()
+    # No se agrega un [Grass] nuevo al final: el header comentado es esa sección.
+    assert contenido.count(b"[Grass]") == 1
+    assert b"[Grass] ; tweaks de precache\r\n" in contenido  # header intacto byte a byte
+    assert b"fGrassStartFadeDistance=20272.0000\r\n" in contenido
+
+
+# ---------------------------------------------------------------------------
+# Review PR #279 (Copilot): _write_atomic no debe enmascarar el error root-cause
+# con un fallo de cleanup del tmp.
+# ---------------------------------------------------------------------------
+
+
+async def test_write_atomic_no_enmascara_el_error_original(
+    editor: IniEditor,
+    skyrim_ini: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _replace_falla(src: object, dst: object) -> None:
+        raise OSError("replace original")
+
+    def _unlink_falla(self: pathlib.Path, *args: object, **kwargs: object) -> None:
+        raise OSError("cleanup del tmp")
+
+    monkeypatch.setattr("sky_claw.local.mo2.ini_editor.os.replace", _replace_falla)
+    monkeypatch.setattr(pathlib.Path, "unlink", _unlink_falla)
+
+    # Debe propagar el error de os.replace, NO el del unlink en el finally.
+    with pytest.raises(OSError, match="replace original"):
+        await editor.set(skyrim_ini, "fGrassStartFadeDistance", "1.0", section="Grass")
+
+
+# ---------------------------------------------------------------------------
+# Review PR #279 (Codex): ediciones concurrentes al mismo INI no deben perder
+# escrituras (read/modify/write serializado).
+# ---------------------------------------------------------------------------
+
+
+async def test_sets_concurrentes_no_pierden_escrituras(editor: IniEditor, tmp_path: pathlib.Path) -> None:
+    import asyncio
+
+    ini = tmp_path / "GrassControl.ini"
+    ini.write_bytes(b"")
+    claves = [f"Key-{i}" for i in range(25)]
+
+    await asyncio.gather(*(editor.set(ini, clave, "True") for clave in claves))
+
+    # Sin serialización, los workers snapshotean los mismos bytes y se pisan:
+    # varias claves se perderían. Con el lock, sobreviven las 25.
+    for clave in claves:
+        assert await editor.get(ini, clave) == "True"

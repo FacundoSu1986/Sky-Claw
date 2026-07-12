@@ -25,13 +25,19 @@ rollback primario del ritual grass es descartar el clon/mod de config entero).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import pathlib
+import re
 import uuid
 from dataclasses import dataclass
 
 _BOM = b"\xef\xbb\xbf"
 _COMMENT_PREFIXES = (";", "#")
+#: Header de sección, espejando ``configparser.SECTCRE`` (``\[(?P<header>.+)\]``
+#: con ``.match``): tolera comentarios trailing como ``[Grass] ; tweaks``, que
+#: el parser del repo (``ConfigParser(strict=False)``) acepta como sección.
+_SECTION_RE = re.compile(r"\[(?P<header>.+)\]")
 #: EOL para archivos nuevos o sin EOL detectable (convención Windows/Skyrim).
 _DEFAULT_EOL = "\r\n"
 #: Separador para claves nuevas cuando el scope no tiene precedente que imitar:
@@ -76,7 +82,17 @@ class _KeyHit:
 
 
 class IniEditor:
-    """Editor byte-fiel de archivos INI (con secciones o sintaxis plana NGIO)."""
+    """Editor byte-fiel de archivos INI (con secciones o sintaxis plana NGIO).
+
+    Las escrituras se serializan con un lock de instancia (mismo patrón coarse
+    que ``MO2Controller._modlist_lock``): sin él, dos ``set`` concurrentes sobre
+    el mismo archivo (``asyncio.gather``) snapshotean los mismos bytes de origen
+    y el segundo ``os.replace`` pisa la edición del primero (lost update). El
+    lock cubre a UNA instancia; el contrato es un editor por ritual/archivo.
+    """
+
+    def __init__(self) -> None:
+        self._write_lock = asyncio.Lock()
 
     async def get(self, path: pathlib.Path, key: str, section: str | None = None) -> str | None:
         """Lee el valor de *key* (en ``[section]``, o en el área plana si es ``None``).
@@ -105,8 +121,12 @@ class IniEditor:
 
         *value* se escribe verbatim (API de strings: ``"20272.0000"`` no se
         normaliza).
+
+        El lock serializa el ciclo read/modify/write completo: dos ``set``
+        concurrentes sobre el mismo archivo no se pisan.
         """
-        return await asyncio.to_thread(self._set_sync, path, key, value, section)
+        async with self._write_lock:
+            return await asyncio.to_thread(self._set_sync, path, key, value, section)
 
     # ------------------------------------------------------------------
     # Núcleo síncrono (corre en to_thread: I/O de archivos chicos)
@@ -194,11 +214,14 @@ def _serialize(bom: bool, lines: list[_Line]) -> bytes:
 
 
 def _section_of(body: str) -> str | None:
-    """Nombre de sección si *body* es un header ``[Nombre]``, si no ``None``."""
-    stripped = body.strip()
-    if stripped.startswith("[") and stripped.endswith("]") and len(stripped) > 2:
-        return stripped[1:-1].strip()
-    return None
+    """Nombre de sección si *body* es un header ``[Nombre]``, si no ``None``.
+
+    Tolera comentarios trailing (``[Grass] ; ...``) igual que ConfigParser. El
+    header original se preserva byte a byte: ``set`` solo edita la línea del
+    valor, nunca reescribe el header.
+    """
+    mo = _SECTION_RE.match(body.strip())
+    return mo.group("header").strip() if mo is not None else None
 
 
 def _split_key_line(body: str) -> tuple[str, str, str] | None:
@@ -220,9 +243,18 @@ def _split_key_line(body: str) -> tuple[str, str, str] | None:
 
 
 def _find_key(lines: list[_Line], key: str, section: str | None) -> _KeyHit | None:
+    """Localiza la ocurrencia EFECTIVA de *key* en su scope.
+
+    En claves duplicadas gana la ÚLTIMA, igual que ``ConfigParser(strict=False)``
+    (el parser del repo — ``safe_save_validator.py``): el motor de Skyrim lee la
+    última, así que editar la primera dejaría el setting sin cambiar. Se recorre
+    entero acumulando el último match (incluye secciones homónimas repetidas,
+    que MO2/ConfigParser fusionan).
+    """
     target = section.lower() if section is not None else None
     current: str | None = None
     wanted = key.lower()
+    last_hit: _KeyHit | None = None
     for index, line in enumerate(lines):
         header = _section_of(line.body)
         if header is not None:
@@ -233,8 +265,8 @@ def _find_key(lines: list[_Line], key: str, section: str | None) -> _KeyHit | No
         parsed = _split_key_line(line.body)
         if parsed is not None and parsed[1].lower() == wanted:
             prefix, _, value = parsed
-            return _KeyHit(index=index, prefix=prefix, value=value)
-    return None
+            last_hit = _KeyHit(index=index, prefix=prefix, value=value)
+    return last_hit
 
 
 def _detect_eol(lines: list[_Line]) -> str:
@@ -320,7 +352,10 @@ def _write_atomic(path: pathlib.Path, data: bytes) -> None:
         tmp.write_bytes(data)
         os.replace(tmp, path)
     finally:
-        if tmp.exists():  # pragma: no cover - solo si os.replace falló
+        # Cleanup best-effort: si write_bytes/os.replace fallaron, un error de
+        # unlink acá enmascararía la causa raíz. Se suprime (igual que
+        # `_write_modlist_atomic` en vfs.py) para que propague el error original.
+        with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
 
 
