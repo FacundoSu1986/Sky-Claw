@@ -132,7 +132,7 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
                         # VarFileInfo → fixed version info
                         pass
         pe.close()
-    except (ImportError, OSError, ValueError):
+    except Exception:
         # pefile not installed or PE parsing failed — try file size heuristic
         try:
             size_mb = exe_path.stat().st_size / (1024 * 1024)
