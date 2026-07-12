@@ -116,6 +116,7 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
     # Try reading version from PE header
     try:
         import pefile  # type: ignore[import-untyped]
+
         pe_err = pefile.PEFormatError
     except ImportError:
         pe_err = ValueError
