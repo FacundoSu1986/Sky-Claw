@@ -141,6 +141,12 @@ class PatchRecommendation:
             "form_ids": list(self.form_ids),
             "flag_alerts": [
                 {
+                    # Identificadores por-alerta: en un grupo con varios records
+                    # la lista de form_ids del grupo no basta para mapear qué
+                    # alerta corresponde a qué record — se preservan acá.
+                    "form_id": a.form_id,
+                    "editor_id": a.editor_id,
+                    "record_type": a.record_type,
                     "flag": a.flag,
                     "winner": a.winner,
                     "defined_by": list(a.defined_by),
@@ -184,28 +190,51 @@ def recommend(
     orden es por severidad (crítico primero) y, a igual severidad, alfabético
     por tipo para ser determinista.
 
+    Un grupo cuyos conflictos pierden un flag **crítico** (T-19b) escala a
+    :data:`XEDIT_MANUAL` por sobre la regla de tipo: el flag hay que
+    forwardearlo a mano en xEdit y ninguna herramienta automática lo reaplica.
+
     Args:
-        conflicts: Conflictos a analizar (de :class:`ConflictAnalyzer`).
+        conflicts: Conflictos a analizar (de :class:`ConflictAnalyzer`). Se
+            deduplican por record (firma + FormID): al aplanar
+            ``ConflictReport.plugin_pairs`` un record con N losers aparece N
+            veces, y contar cada copia inflaría el conteo/evidencia.
         rules: Reglas de estrategia (default: :data:`DEFAULT_STRATEGY_RULES`).
 
     Returns:
         Una tupla de :class:`PatchRecommendation`, una por tipo de record.
         Nunca contiene un enfoque de merged patch propio (ADR 0001).
     """
-    # Agrupar por firma normalizada, preservando el orden de aparición.
+    # Deduplicar por record (firma + FormID), preservando el orden de aparición:
+    # el mismo record aparece una vez por loser al aplanar plugin_pairs.
+    vistos: set[tuple[str, str]] = set()
     grupos: dict[str, list[RecordConflict]] = {}
     for conflict in conflicts:
         sig = conflict.record_type.upper().strip()
+        clave = (sig, conflict.form_id)
+        if clave in vistos:
+            continue
+        vistos.add(clave)
         grupos.setdefault(sig, []).append(conflict)
 
     recomendaciones: list[PatchRecommendation] = []
     for sig, grupo in grupos.items():
-        rule = _match_rule(sig, rules)
-        approach = rule.approach if rule is not None else REVIEW
-        rationale = rule.rationale if rule is not None else _REVIEW_RATIONALE
+        flag_alerts = tuple(alert for c in grupo for alert in c.flag_alerts)
+        criticos = tuple(a for a in flag_alerts if a.severity == "critical")
+        if criticos:
+            # Escalada por flag crítico perdido: forwardeo manual en xEdit.
+            approach = XEDIT_MANUAL
+            flags = ", ".join(sorted({a.flag for a in criticos}))
+            rationale = (
+                f"el ganador no preserva flags críticos ({flags}): forwardearlos a mano en un "
+                "parche xEdit; ninguna herramienta automática los reaplica con seguridad"
+            )
+        else:
+            rule = _match_rule(sig, rules)
+            approach = rule.approach if rule is not None else REVIEW
+            rationale = rule.rationale if rule is not None else _REVIEW_RATIONALE
         severity = _most_severe([c.severity for c in grupo])
         form_ids = tuple(c.form_id for c in grupo)
-        flag_alerts = tuple(alert for c in grupo for alert in c.flag_alerts)
         recomendaciones.append(
             PatchRecommendation(
                 approach=approach,

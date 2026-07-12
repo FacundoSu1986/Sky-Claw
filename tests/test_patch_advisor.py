@@ -135,6 +135,53 @@ class TestTrazabilidad:
         assert len(recs) == 1
         assert recs[0].flag_alerts == (alerta,)
 
+    def test_flag_critico_escala_a_xedit_manual(self) -> None:
+        """Un flag crítico perdido escala por sobre la regla de tipo (review Codex)."""
+        alerta = FlagAlert(
+            form_id="000AB123",
+            editor_id="HealSpell",
+            record_type="SPEL",
+            flag="Manual Cost Calc",
+            winner="Overhaul.esp",
+            defined_by=("Skyrim.esm",),
+            explanation="coste astronómico",
+        )
+        recs = recommend([_conflicto(record_type="SPEL", severity="critical", flag_alerts=(alerta,))])
+
+        assert len(recs) == 1
+        assert recs[0].approach == XEDIT_MANUAL
+        # El porqué nombra el flag que se pierde (accionable, no genérico).
+        assert "Manual Cost Calc" in recs[0].rationale
+
+    def test_spel_sin_alerta_sigue_en_review(self) -> None:
+        """Sin flag crítico perdido, un SPEL sin regla de tipo queda en REVIEW."""
+        recs = recommend([_conflicto(record_type="SPEL", severity="critical")])
+
+        assert len(recs) == 1
+        assert recs[0].approach == REVIEW
+
+    def test_deduplica_conflictos_por_record(self) -> None:
+        """Al aplanar plugin_pairs un record aparece una vez por loser: dedup."""
+        alerta = FlagAlert(
+            form_id="000AB123",
+            editor_id="HealSpell",
+            record_type="SPEL",
+            flag="Manual Cost Calc",
+            winner="Overhaul.esp",
+            defined_by=("Skyrim.esm",),
+            explanation="coste astronómico",
+        )
+        # El mismo record (misma firma + FormID) dos veces — como saldría de un
+        # winner con dos losers.
+        duplicado = _conflicto(record_type="SPEL", severity="critical", flag_alerts=(alerta,))
+        recs = recommend([duplicado, duplicado])
+
+        assert len(recs) == 1
+        assert recs[0].conflict_count == 1
+        assert recs[0].form_ids == ("000AB123",)
+        # La alerta tampoco se duplica.
+        assert recs[0].flag_alerts == (alerta,)
+
 
 class TestOrdenYExtensibilidad:
     def test_orden_por_severidad_critico_primero(self) -> None:
@@ -161,8 +208,8 @@ class TestOrdenYExtensibilidad:
         """En un grupo mixto, la conocida más alta manda (la rara se ignora)."""
         recs = recommend(
             [
-                _conflicto(record_type="LVLI", severity="rarísima"),
-                _conflicto(record_type="LVLI", severity="critical"),
+                _conflicto(record_type="LVLI", form_id="00000001", severity="rarísima"),
+                _conflicto(record_type="LVLI", form_id="00000002", severity="critical"),
             ]
         )
 
