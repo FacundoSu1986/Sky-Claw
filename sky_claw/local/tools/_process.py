@@ -145,3 +145,49 @@ async def run_capture(
         # any) propagates unchanged; the caller maps it to a domain error.
         if not completed:
             await kill_and_reap(proc)
+
+
+async def spawn_detached(
+    args: list[str],
+    *,
+    cwd: str | None = None,
+) -> asyncio.subprocess.Process:
+    """Lanza *args* como proceso interactivo *detached* — fire-and-forget.
+
+    Contrapartida de :func:`run_capture` para las GUIs que el usuario opera y
+    cierra a mano (p. ej. abrir xEdit posicionado en un conflicto para forwardeo
+    manual — T-29). Las dos diferencias clave:
+
+    - **Sin PIPE**: no captura ``stdout``/``stderr``. En una sesión larga los
+      pipes se llenarían y bloquearían al proceso; además no hay salida que
+      parsear.
+    - **Sin kill/reap**: el proceso debe SOBREVIVIR a esta llamada (es el editor
+      abierto), así que ni se trackea ni se mata al retornar.
+
+    En Windows aplica ``CREATE_NO_WINDOW`` para no parpadear una consola (la GUI
+    del editor aparece igual; solo se suprime la consola de la que colgaría).
+
+    Parameters
+    ----------
+    args:
+        Full argv vector; ``args[0]`` is the executable.
+    cwd:
+        Working directory for the child, or ``None``.
+
+    Returns
+    -------
+    asyncio.subprocess.Process
+        El proceso lanzado (el caller puede leer su ``pid``).
+
+    Raises
+    ------
+    FileNotFoundError
+        If the executable does not exist (caller maps to a domain error).
+    """
+    kwargs: dict[str, Any] = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = _CREATE_NO_WINDOW
+    if cwd is not None:
+        kwargs["cwd"] = cwd
+
+    return await asyncio.create_subprocess_exec(*args, **kwargs)

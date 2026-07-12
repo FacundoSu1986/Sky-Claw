@@ -185,6 +185,71 @@ class TestXEditRunnerExecution:
 
 
 # ------------------------------------------------------------------
+# XEditRunner — lanzamiento interactivo (T-29)
+# ------------------------------------------------------------------
+
+
+class TestXEditRunnerInteractiveLaunch:
+    """Abrir xEdit en modo lectura, posicionado en los plugins del conflicto.
+
+    Es el backend del botón "Abrir en xEdit" del panel de cirugía (T-29). A
+    diferencia de run_script/execute_patch (headless, ``-autoexit``, timeout), es
+    un lanzamiento detached (lo cierra el operador) y de SOLO LECTURA: sin
+    ``-IKnowWhatImDoing`` ni ``-script``, xEdit no puede escribir desde acá.
+    """
+
+    def _make_runner(self, tmp_path: pathlib.Path) -> XEditRunner:
+        xedit = tmp_path / "SSEEdit.exe"
+        xedit.touch()
+        game = tmp_path / "Skyrim"
+        game.mkdir()
+        return XEditRunner(xedit_path=xedit, game_path=game, timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_launch_builds_interactive_command(self, tmp_path: pathlib.Path) -> None:
+        runner = self._make_runner(tmp_path)
+        proc = AsyncMock()
+
+        with patch(
+            "sky_claw.local.xedit.runner.spawn_detached",
+            AsyncMock(return_value=proc),
+        ) as spawn:
+            returned = await runner.launch_interactive(["Winner.esp", "Loser.esp"])
+
+        assert returned is proc
+        (cmd,), _ = spawn.call_args
+        assert cmd[0] == str(tmp_path / "SSEEdit.exe")
+        assert "-SSE" in cmd
+        # -autoload salta el diálogo de selección y carga los plugins pasados.
+        assert "-autoload" in cmd
+        # -D: apunta al Data del juego (donde viven los plugins), no a la raíz.
+        assert f"-D:{tmp_path / 'Skyrim' / 'Data'}" in cmd
+        assert cmd[-2:] == ["Winner.esp", "Loser.esp"]
+        # Sin escrituras automatizadas: nada de -IKnowWhatImDoing/-script/-autoexit.
+        assert "-IKnowWhatImDoing" not in cmd
+        assert "-autoexit" not in cmd
+        assert not any(arg.startswith("-script") for arg in cmd)
+
+    @pytest.mark.asyncio
+    async def test_launch_rejects_invalid_plugin(self, tmp_path: pathlib.Path) -> None:
+        runner = self._make_runner(tmp_path)
+        with pytest.raises(XEditValidationError, match="Invalid plugin name"):
+            await runner.launch_interactive(["../evil.dll"])
+
+    @pytest.mark.asyncio
+    async def test_launch_rejects_empty_plugins(self, tmp_path: pathlib.Path) -> None:
+        runner = self._make_runner(tmp_path)
+        with pytest.raises(XEditValidationError, match="at least one plugin"):
+            await runner.launch_interactive([])
+
+    @pytest.mark.asyncio
+    async def test_launch_raises_when_xedit_missing(self, tmp_path: pathlib.Path) -> None:
+        runner = XEditRunner(xedit_path=tmp_path / "nonexistent.exe", game_path=tmp_path)
+        with pytest.raises(XEditNotFoundError):
+            await runner.launch_interactive(["Winner.esp"])
+
+
+# ------------------------------------------------------------------
 # Tool integration
 # ------------------------------------------------------------------
 

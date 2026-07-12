@@ -13,6 +13,7 @@ Phase 2 Extensions:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 import re
@@ -20,7 +21,7 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from sky_claw.local.tools._process import run_capture
+from sky_claw.local.tools._process import run_capture, spawn_detached
 from sky_claw.local.xedit.output_parser import XEditOutputParser, XEditResult
 
 if TYPE_CHECKING:
@@ -1012,6 +1013,81 @@ class XEditRunner:
         )
 
         return result
+
+    async def launch_interactive(self, plugins: list[str]) -> asyncio.subprocess.Process:
+        """Abre xEdit en modo lectura, posicionado en los plugins del conflicto.
+
+        Es el backend del botón "Abrir en xEdit" del panel de cirugía (T-29):
+        cuando el operador decide forwardear un conflicto a mano, esto lanza la
+        GUI interactiva con los plugins en disputa ya cargados.
+
+        A diferencia de :meth:`run_script`/:meth:`execute_patch` (headless, con
+        ``-autoexit`` y timeout), es un lanzamiento **detached** (fire-and-forget:
+        la sesión la cierra el operador) y **sin escrituras automatizadas** — NO
+        pasa ``-IKnowWhatImDoing`` ni ``-script``, así que Sky-Claw no aplica
+        parches por script desde acá. La sesión interactiva sí es editable: es el
+        propósito del botón, que el operador forwardee el conflicto a mano.
+
+        Args:
+            plugins: Plugins del conflicto a cargar (winner + losers). xEdit carga
+                esos y sus masters, sin diálogo de selección.
+
+        Returns:
+            El proceso lanzado (el caller puede trackear su ``pid``).
+
+        Raises:
+            XEditValidationError: Si la lista está vacía o algún plugin es inválido.
+            XEditNotFoundError: Si el ejecutable de xEdit no existe.
+        """
+        if not plugins:
+            raise XEditValidationError("launch_interactive requires at least one plugin")
+
+        # Mismos guards que run_dynamic_script: inyección en nombres + sandbox del exe.
+        for plugin in plugins:
+            if not _SAFE_PLUGIN_NAME.match(plugin):
+                raise XEditValidationError(f"Invalid plugin name: {plugin!r}. Must match {_SAFE_PLUGIN_NAME.pattern}")
+
+        if self._validator is not None:
+            self._validator.validate(self._xedit_path)
+
+        if not self._xedit_path.exists():
+            raise XEditNotFoundError(f"xEdit executable not found at {self._xedit_path}")
+
+        cmd = self._build_interactive_command(plugins)
+        logger.info("Launching xEdit (interactive, read-only): %s", " ".join(cmd))
+
+        try:
+            return await spawn_detached(cmd)
+        except FileNotFoundError:
+            raise XEditNotFoundError(f"xEdit executable not found at {self._xedit_path}") from None
+
+    def _build_interactive_command(self, plugins: list[str]) -> list[str]:
+        """Construye comando para abrir xEdit en una sesión interactiva.
+
+        Espeja el template probado de :meth:`run_script` para cargar plugins:
+        ``-autoload`` salta el diálogo de selección de Master/Plugin, y los plugins
+        del conflicto van como positional args (xEdit los carga con sus masters).
+        ``-D:`` apunta al directorio ``Data`` del juego —no a la raíz de instalación—
+        que es donde viven los plugins (igual que :meth:`quick_auto_clean`).
+
+        A diferencia de :meth:`_build_write_command` NO incluye ``-IKnowWhatImDoing``
+        ni ``-script`` ni ``-autoexit``: sin escrituras automatizadas y con la GUI
+        abierta para el forwardeo manual del operador.
+
+        Args:
+            plugins: Plugins del conflicto (ya validados por el caller).
+
+        Returns:
+            Lista de argumentos para el lanzamiento.
+        """
+        cmd = [
+            str(self._xedit_path),
+            "-SSE",
+            "-autoload",
+            f"-D:{self._game_path / 'Data'}",
+        ]
+        cmd.extend(plugins)
+        return cmd
 
     def _build_write_command(
         self,
