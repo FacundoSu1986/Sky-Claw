@@ -41,8 +41,22 @@ if TYPE_CHECKING:
     from sky_claw.antigravity.core.path_resolver import PathResolutionService
     from sky_claw.antigravity.db.journal import OperationJournal
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+    from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
 logger = logging.getLogger(__name__)
+
+
+def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
+    """Adjunta el reporte de preflight al ``result`` cuando no está verde.
+
+    Mismo criterio que ``loot_service`` (T-16b): un semáforo verde no ensucia el
+    dict; amarillo/rojo viajan como ``result["preflight"]`` para que el panel vivo
+    (``_ritual_preflight_panel``) los renderice.
+    """
+    if report is not None and report.status.value != "green":
+        result["preflight"] = report.to_dict()
+    return result
+
 
 _BACKUP_STAGING_DIR = ".skyclaw_backups/"
 
@@ -77,6 +91,7 @@ class XEditPipelineService:
         journal: OperationJournal,
         path_resolver: PathResolutionService,
         event_bus: CoreEventBus,
+        preflight: PreflightService | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -87,6 +102,8 @@ class XEditPipelineService:
         # Lazy init — paths may not be available at construction time
         self._xedit_runner: XEditRunner | None = None
         self._patch_orchestrator: PatchOrchestrator | None = None
+        # Preflight inyectable (tests) o construido perezosamente en el primer uso.
+        self._preflight = preflight
 
     # ------------------------------------------------------------------
     # Lazy initialization (migrado de SupervisorAgent._ensure_patch_orchestrator)
@@ -368,6 +385,54 @@ class XEditPipelineService:
     # QuickAutoClean (Follow-up B) — limpieza de los DLC oficiales sucios
     # ------------------------------------------------------------------
 
+    def _ensure_preflight(self) -> PreflightService | None:
+        """Construye perezosamente el preflight de xEdit (T-16c·1).
+
+        Tailored a ``quick_auto_clean``, que reescribe los DLC oficiales en el
+        directorio ``Data`` del juego: los sensores relevantes son **permisos de
+        escritura sobre ``Data``** (si no es escribible, la limpieza muere a mitad)
+        y **symlinks/junctions** en las rutas crudas del juego/MO2. NO cablea la
+        versión de LOOT ni masters/límites/overwrite — irrelevantes para limpiar
+        masters base. Reusa las primitivas compartidas (``VfsHealthChecker``,
+        ``WritePermissionsChecker``); no toca ``loot_service``. Devuelve ``None``
+        si no hay ruta de juego (sin gate, mismo criterio que loot).
+        """
+        if self._preflight is not None:
+            return self._preflight
+
+        game = self._path_resolver.get_skyrim_path()
+        if not isinstance(game, pathlib.Path):
+            return None
+
+        # Import perezoso (anti-ciclo: validators.preflight llega a tools._process).
+        from sky_claw.local.validators.preflight import PreflightService
+        from sky_claw.local.validators.vfs_health import VfsHealthChecker
+        from sky_claw.local.validators.write_permissions import WritePermissionsChecker
+
+        # Rutas CRUDAS para el sensor de symlinks (las resueltas ya los siguieron).
+        raw_game = self._path_resolver.get_skyrim_path_raw()
+        raw_mo2 = self._path_resolver.get_mo2_path_raw()
+        raw_game = raw_game if isinstance(raw_game, pathlib.Path) else None
+        raw_mo2 = raw_mo2 if isinstance(raw_mo2, pathlib.Path) else None
+        vfs_checker = None
+        if raw_game is not None or raw_mo2 is not None:
+            vfs_checker = VfsHealthChecker(game_path=raw_game, mo2_root=raw_mo2, scan_mods_dir=False)
+
+        data_dir = game / "Data"
+
+        def _permissions():
+            # Re-probe por llamada (freshness): un cambio de permisos entre corridas se ve.
+            return WritePermissionsChecker(targets=[data_dir]).check()
+
+        # omit_unconfigured: xEdit solo cablea vfs + permisos; sin esto el panel
+        # mostraría "no configurado" para LOOT/masters/límites/overwrite (ruido).
+        self._preflight = PreflightService(
+            vfs_checker=vfs_checker,
+            permissions_check=_permissions,
+            omit_unconfigured=True,
+        )
+        return self._preflight
+
     async def quick_auto_clean(self) -> dict[str, Any]:
         """Limpia los DLC oficiales sucios con SSEEdit QuickAutoClean.
 
@@ -388,6 +453,25 @@ class XEditPipelineService:
             detail = "SKYRIM_PATH no está configurado."
             return {"status": "error", "success": False, "message": detail, "logs": detail}
 
+        # Preflight brutal ANTES de tocar nada (T-16c·1): un semáforo ROJO (p. ej.
+        # Data sin permisos de escritura) cancela la limpieza sin tomar el lock ni
+        # invocar xEdit. Amarillo/verde no bloquean; el reporte se surface al panel.
+        preflight = self._ensure_preflight()
+        preflight_report = None
+        if preflight is not None:
+            preflight_report = await preflight.run()
+            if preflight_report.blocks_mutations:
+                red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
+                logger.warning("QuickAutoClean bloqueado por preflight en rojo: %s", red)
+                return {
+                    "status": "error",
+                    "success": False,
+                    "reason": "PreflightBlocked",
+                    "message": f"Preflight en rojo, limpieza cancelada: {red}",
+                    "logs": red,
+                    "preflight": preflight_report.to_dict(),
+                }
+
         try:
             runner = self._ensure_xedit_runner()
         except PatchingError as exc:
@@ -399,13 +483,16 @@ class XEditPipelineService:
         if not targets:
             logger.info("QuickAutoClean: no se encontraron DLC oficiales en %s", data_dir)
             # Contrato: message vacío en éxito; el detalle informativo va en logs.
-            return {
-                "status": "success",
-                "success": True,
-                "message": "",
-                "cleaned": [],
-                "logs": "No se encontraron DLC oficiales para limpiar.",
-            }
+            return _attach_preflight(
+                {
+                    "status": "success",
+                    "success": True,
+                    "message": "",
+                    "cleaned": [],
+                    "logs": "No se encontraron DLC oficiales para limpiar.",
+                },
+                preflight_report,
+            )
 
         cleaned: list[str] = []
         try:
@@ -440,7 +527,10 @@ class XEditPipelineService:
             }
 
         logger.info("QuickAutoClean exitoso: %s", cleaned)
-        return {"status": "success", "success": True, "message": "", "cleaned": cleaned}
+        return _attach_preflight(
+            {"status": "success", "success": True, "message": "", "cleaned": cleaned},
+            preflight_report,
+        )
 
     # ------------------------------------------------------------------
     # Dry-run / preview (plan-only)

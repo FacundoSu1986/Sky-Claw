@@ -164,12 +164,18 @@ class PreflightService:
         limits_check: LimitsCheck | None = None,
         overwrite_check: OverwriteCheck | None = None,
         permissions_check: PermissionsCheck | None = None,
+        omit_unconfigured: bool = False,
     ) -> None:
         self._vfs_checker = vfs_checker
         self._masters_check = masters_check
         self._limits_check = limits_check
         self._overwrite_check = overwrite_check
         self._permissions_check = permissions_check
+        # T-16c·1: cuando está activo, un sensor no cableado NO emite su checkpoint
+        # "no configurado". Un ritual que solo usa un subconjunto (xEdit: vfs +
+        # permisos) muestra un semáforo limpio, sin el ruido de sensores ajenos.
+        # Default False: LOOT mantiene el reporte completo con "no configurado".
+        self._omit_unconfigured = omit_unconfigured
         if loot_version_detector is None and loot_exe is not None:
             exe = loot_exe
 
@@ -195,12 +201,26 @@ class PreflightService:
         del sort (T-26) — sin relanzar el binario (review Codex PR #243)."""
         return self._version_cache
 
+    def _keep(self, configured: bool) -> bool:
+        """True si el checkpoint del sensor debe emitirse.
+
+        Siempre, salvo que ``omit_unconfigured`` esté activo y el sensor no esté
+        cableado (entonces se omite en vez de reportar "no configurado")."""
+        return configured or not self._omit_unconfigured
+
     async def run(self) -> PreflightReport:
-        """Ejecuta los sensores configurados y agrega el semáforo."""
+        """Ejecuta los sensores configurados y agrega el semáforo.
+
+        Con ``omit_unconfigured`` (T-16c·1) los sensores no cableados no emiten su
+        checkpoint "no configurado": un ritual que solo usa un subconjunto (xEdit:
+        vfs + permisos) muestra un semáforo limpio. Por defecto (LOOT) el reporte
+        es completo.
+        """
         checks: list[PreflightCheck] = []
 
         vfs_issues = self._vfs_checker.check() if self._vfs_checker is not None else []
-        checks.append(self._vfs_check(vfs_issues, checker_configured=self._vfs_checker is not None))
+        if self._keep(self._vfs_checker is not None):
+            checks.append(self._vfs_check(vfs_issues, checker_configured=self._vfs_checker is not None))
 
         loot_version: tuple[int, int, int] | None = None
         loot_detected = self._detect_version is not None
@@ -210,36 +230,41 @@ class PreflightService:
                     self._version_cache = await self._detect_version()
                     self._version_checked = True
             loot_version = self._version_cache
-        checks.append(self._loot_check(loot_version, detector_configured=loot_detected))
+        if self._keep(loot_detected):
+            checks.append(self._loot_check(loot_version, detector_configured=loot_detected))
 
         masters_issues: list[MasterIssue] = []
         if self._masters_check is not None:
             # Lee headers de plugins en disco: fuera del event loop.
             masters_issues = await asyncio.to_thread(self._masters_check)
-        checks.append(self._masters_checkpoint(masters_issues, checker_configured=self._masters_check is not None))
+        if self._keep(self._masters_check is not None):
+            checks.append(self._masters_checkpoint(masters_issues, checker_configured=self._masters_check is not None))
 
         limits: LoadOrderLimits | None = None
         if self._limits_check is not None:
             limits = await asyncio.to_thread(self._limits_check)
-        checks.append(self._limits_checkpoint(limits))
+        if self._keep(self._limits_check is not None):
+            checks.append(self._limits_checkpoint(limits))
 
         overwrite: OverwriteScan | None = None
         if self._overwrite_check is not None:
             # Escanea el overwrite en disco: fuera del event loop.
             overwrite = await asyncio.to_thread(self._overwrite_check)
-        checks.append(self._overwrite_checkpoint(overwrite))
+        if self._keep(self._overwrite_check is not None):
+            checks.append(self._overwrite_checkpoint(overwrite))
 
         permissions: WriteAccessReport | None = None
         if self._permissions_check is not None:
             # Escribe un probe temporal en disco: fuera del event loop.
             permissions = await asyncio.to_thread(self._permissions_check)
-        checks.append(self._permissions_checkpoint(permissions))
+        if self._keep(self._permissions_check is not None):
+            checks.append(self._permissions_checkpoint(permissions))
 
         composition = self._composition_check(vfs_issues, loot_version)
         if composition is not None:
             checks.append(composition)
 
-        status = max((c.status for c in checks), key=_SEVERITY_RANK.__getitem__)
+        status = max((c.status for c in checks), key=_SEVERITY_RANK.__getitem__, default=PreflightStatus.GREEN)
         report = PreflightReport(status=status, checks=tuple(checks))
         logger.info(
             "Preflight: %s (%s)",

@@ -97,6 +97,36 @@ class TestSemaforo:
         assert "no configurad" in vfs.summary.lower()
 
 
+class TestOmitUnconfigured:
+    """T-16c·1: un ritual que solo cablea un subconjunto de sensores (xEdit: vfs +
+    permisos) puede omitir los checkpoints 'no configurado' para un semáforo limpio."""
+
+    async def test_omite_los_sensores_no_cableados(self) -> None:
+        checker = MagicMock()
+        checker.check.return_value = []
+        reporte = await PreflightService(vfs_checker=checker, omit_unconfigured=True).run()
+
+        # Solo el sensor cableado (vfs); nada de loot_version/masters/límites/overwrite/permisos.
+        assert {c.name for c in reporte.checks} == {"vfs"}
+        assert reporte.status is PreflightStatus.GREEN
+
+    async def test_default_mantiene_los_no_configurados(self) -> None:
+        # Sin la opción se preserva la honestidad "no configurado" (comportamiento de LOOT).
+        checker = MagicMock()
+        checker.check.return_value = []
+        names = {c.name for c in (await PreflightService(vfs_checker=checker).run()).checks}
+
+        assert {"loot_version", "masters", "plugin_limits", "overwrite", "write_permissions"} <= names
+
+    async def test_omit_sin_ningun_sensor_no_rompe(self) -> None:
+        # Ningún sensor cableado + omit → reporte vacío pero verde (max con default).
+        reporte = await PreflightService(omit_unconfigured=True).run()
+
+        assert reporte.checks == ()
+        assert reporte.status is PreflightStatus.GREEN
+        assert reporte.blocks_mutations is False
+
+
 class TestContratoDeDatos:
     async def test_to_dict_es_serializable_y_estable(self) -> None:
         reporte = await _servicio(issues=[_issue("warning")], version=(0, 28, 0)).run()
