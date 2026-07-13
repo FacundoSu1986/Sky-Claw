@@ -95,13 +95,12 @@ class TestDrenajeAcotadoDeTelemetria:
         mock_proc.wait = AsyncMock(return_value=0)
         mock_proc.returncode = 0
 
-        capturado: dict[str, asyncio.Task[None]] = {}
+        tareas_creadas: list[asyncio.Task[None]] = []
         real_create_task = asyncio.create_task
 
         def _spy_create_task(coro, **kwargs):  # type: ignore[no-untyped-def]
             task = real_create_task(coro, **kwargs)
-            # El monitor es la única tarea creada dentro de execute().
-            capturado["monitor"] = task
+            tareas_creadas.append(task)
             return task
 
         with (
@@ -116,7 +115,10 @@ class TestDrenajeAcotadoDeTelemetria:
         ):
             await asyncio.wait_for(executor.execute("bin", []), timeout=3.0)
 
-        assert capturado["monitor"].done()
+        # Anclamos TODAS las tareas que execute() crea (no solo "la última"):
+        # ninguna debe sobrevivir a execute().
+        assert tareas_creadas, "execute() debió crear la tarea de telemetría"
+        assert all(t.done() for t in tareas_creadas)
 
 
 class TestSignalAbortRace:

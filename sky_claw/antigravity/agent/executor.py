@@ -182,6 +182,11 @@ class ManagedToolExecutor:
         drenaje colgaría para siempre. Acotamos con ``_drain_timeout``; al
         expirar, ``wait_for`` deja el monitor cancelado y el ``finally`` de
         ``execute`` lo recoge.
+
+        Trade-off explícito: al cancelar, la telemetría del pipe aún no leída se
+        descarta (pérdida ACEPTADA frente a colgar el orquestador). Solo afecta
+        al caso patológico del nieto que retiene el pipe; en el camino normal el
+        drenaje completa por EOF mucho antes del tope y no se pierde nada.
         """
         try:
             await asyncio.wait_for(monitor_task, timeout=self._drain_timeout)
