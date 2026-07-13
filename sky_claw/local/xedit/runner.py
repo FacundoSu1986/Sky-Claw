@@ -23,8 +23,11 @@ from typing import TYPE_CHECKING
 
 from sky_claw.local.tools._process import run_capture, spawn_detached
 from sky_claw.local.xedit.output_parser import XEditOutputParser, XEditResult
+from sky_claw.local.xedit.script_staging import StagedScript, stage_scripts
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sky_claw.antigravity.security.path_validator import PathValidator
     from sky_claw.local.xedit.patch_orchestrator import PatchPlan
 
@@ -711,10 +714,44 @@ class XEditRunner:
                 "'Edit Scripts' de xEdit."
             )
 
+    async def ensure_scripts_staged(self, script_names: Sequence[str]) -> list[StagedScript]:
+        """Stagea scripts Pascal bundleados en la carpeta ``Edit Scripts`` de xEdit.
+
+        ``run_script`` pasa ``-script:<nombre>`` y xEdit lo resuelve contra SU
+        ``Edit Scripts/`` — los ``.pas`` del repo no llegan solos ahí. Wrapper
+        fino sobre :func:`stage_scripts` (idempotente, byte-compare) porque el
+        runner es quien conoce ``xedit_path``; corre en ``to_thread`` (I/O).
+
+        Args:
+            script_names: Nombres de scripts del bundle (``foo.pas``).
+
+        Returns:
+            Un :class:`StagedScript` por nombre (acción copied/replaced/unchanged).
+
+        Raises:
+            PathViolationError: ``xedit_path`` está fuera del sandbox del
+                validator (mismo guard que ``run_script`` — evita escribir
+                bajo una instalación de xEdit apuntada por config mala o
+                comprometida).
+            ValueError: Nombre que escapa del bundle (traversal).
+            FileNotFoundError: Script inexistente en el bundle o dir de xEdit
+                inexistente.
+        """
+        if self._validator is not None:
+            self._validator.validate(self._xedit_path)
+
+        return await asyncio.to_thread(
+            stage_scripts,
+            self._xedit_path.parent / "Edit Scripts",
+            script_names,
+        )
+
     async def run_script(
         self,
         script_name: str,
         plugins: list[str],
+        *,
+        timeout: int | None = None,
     ) -> XEditResult:
         """Execute an xEdit Pascal script in headless mode (read-only).
 
@@ -723,6 +760,9 @@ class XEditRunner:
                 Must match ``^[a-zA-Z0-9_\\-]+\\.pas$``.
             plugins: List of plugin filenames to load.
                 Each must match ``^[a-zA-Z0-9_\\- .]+\\.es[pmlt]$``.
+            timeout: Per-call timeout in seconds; ``None`` keeps the runner's
+                constructor timeout. Long scans (e.g. the grass worldspaces
+                LAND sweep) exceed the 120s default.
 
         Returns:
             Parsed xEdit result with conflicts and processed plugins.
@@ -754,7 +794,7 @@ class XEditRunner:
 
         logger.info("Running xEdit (read-only): %s", " ".join(args))
 
-        stdout_text, stderr_text, return_code = await self._execute_process(args)
+        stdout_text, stderr_text, return_code = await self._execute_process(args, timeout=timeout)
 
         if return_code != 0:
             logger.warning("xEdit exited with code %d: %s", return_code, stderr_text)
@@ -1210,11 +1250,15 @@ class XEditRunner:
     async def _execute_process(
         self,
         args: list[str],
+        *,
+        timeout: int | None = None,
     ) -> tuple[str, str, int]:
         """Ejecuta un proceso xEdit y captura su salida.
 
         Args:
             args: Argumentos del comando a ejecutar.
+            timeout: Timeout por llamada en segundos; ``None`` usa el del
+                constructor.
 
         Returns:
             Tupla con (stdout, stderr, return_code).
@@ -1223,12 +1267,13 @@ class XEditRunner:
             XEditNotFoundError: Si el ejecutable no existe.
             XEditTimeoutError: Si excede el timeout.
         """
+        effective_timeout = timeout if timeout is not None else self._timeout
         try:
-            stdout, stderr, returncode = await run_capture(args, timeout=self._timeout)
+            stdout, stderr, returncode = await run_capture(args, timeout=effective_timeout)
         except FileNotFoundError:
             raise XEditNotFoundError(f"xEdit executable not found at {self._xedit_path}") from None
         except TimeoutError:
-            raise XEditTimeoutError(f"xEdit timed out after {self._timeout}s") from None
+            raise XEditTimeoutError(f"xEdit timed out after {effective_timeout}s") from None
 
         stdout_text = stdout.decode(errors="replace")
         stderr_text = stderr.decode(errors="replace")

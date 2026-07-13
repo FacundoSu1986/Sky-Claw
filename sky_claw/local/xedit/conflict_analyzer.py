@@ -376,6 +376,10 @@ class ConflictAnalyzer:
         Returns:
             :class:`ConflictReport` with classified and grouped conflicts.
         """
+        # PR-2 grass cache: run_script pasa -script:<nombre> y xEdit lo resuelve
+        # contra SU "Edit Scripts/" — sin staging, el .pas bundleado solo
+        # funcionaba si el usuario lo copiaba a mano.
+        await xedit_runner.ensure_scripts_staged([_SCRIPT_NAME])
         result = await xedit_runner.run_script(_SCRIPT_NAME, plugins)
 
         # xEdit puede salir con código != 0 (script/master/load fallido) y
