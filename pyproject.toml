@@ -233,6 +233,7 @@ ignore_errors = false
 module = [
     "sky_claw.antigravity.orchestrator.sync_engine",
     "sky_claw.local.mo2.ini_editor",  # PR-1 grass cache: módulo nuevo, nace estricto
+    "sky_claw.local.mo2.grass_profile",  # PR-3 grass cache: módulo nuevo, nace estricto
     "sky_claw.local.mo2.profile_sandbox",  # T-27: módulo nuevo, nace estricto (patrón T-12)
     "sky_claw.local.mo2.plugin_sources",  # T-30w: resolver de fuentes de plugins, estricto
     "sky_claw.local.mo2.sandbox_run",  # T-27b·1: orquestador de rituales en sandbox, estricto
