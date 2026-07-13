@@ -161,11 +161,12 @@ async def test_grasscontrol_ini_worldspaces_y_flags(manager: GrassProfileManager
     mod_dir = await manager.build_config_mod(["Tamriel", "DLC2SolstheimWorld"])
 
     grass_ini = (mod_dir / "SKSE" / "Plugins" / "GrassControl.ini").read_text(encoding="utf-8")
-    # Durante la generación: cache activo, sin cargar-solo-de-cache.
+    # NGIO-NG documenta arrancar la generación con AMBOS en true (README).
     assert "Use-grass-cache = True" in grass_ini
-    assert "Only-load-from-cache = False" in grass_ini
-    # Worldspaces de Fase A entre comillas dobles, separados por espacio.
-    assert 'OnlyPregenerateWorldSpaces = "Tamriel DLC2SolstheimWorld"' in grass_ini
+    assert "Only-load-from-cache = True" in grass_ini
+    # Clave NGIO-NG con guiones, worldspaces entre comillas separados por ';'
+    # (GrassControl.toml oficial) — la forma legacy space-joined la ignoraría.
+    assert 'Only-pregenerate-world-spaces = "Tamriel;DLC2SolstheimWorld"' in grass_ini
 
 
 async def test_worldspaces_vacio_escribe_comillas_vacias(manager: GrassProfileManager) -> None:
@@ -174,7 +175,7 @@ async def test_worldspaces_vacio_escribe_comillas_vacias(manager: GrassProfileMa
     mod_dir = await manager.build_config_mod([])
 
     grass_ini = (mod_dir / "SKSE" / "Plugins" / "GrassControl.ini").read_text(encoding="utf-8")
-    assert 'OnlyPregenerateWorldSpaces = ""' in grass_ini
+    assert 'Only-pregenerate-world-spaces = ""' in grass_ini
 
 
 async def test_ssedisplaytweaks_baja_resolucion(manager: GrassProfileManager) -> None:
@@ -185,8 +186,9 @@ async def test_ssedisplaytweaks_baja_resolucion(manager: GrassProfileManager) ->
     sse_ini = (mod_dir / "SKSE" / "Plugins" / "SSEDisplayTweaks.ini").read_text(encoding="utf-8")
     # Ventana marginal para acelerar los micro-lanzamientos entre CTDs. En
     # secciones clásicas el IniEditor usa "key=value" (estilo INI del juego).
+    # 800x400 es la resolución que exige el SOP §2.8 para tolerar los scans.
     assert "[Render]" in sse_ini
-    assert "Resolution=800x600" in sse_ini
+    assert "Resolution=800x400" in sse_ini
     assert "Borderless=true" in sse_ini
 
 
@@ -199,13 +201,30 @@ async def test_params_override_gana_sobre_default(manager: GrassProfileManager) 
     assert "Use-grass-cache = False" in grass_ini  # override
     assert "Extra-flag = 1" in grass_ini  # clave nueva
     # Los defaults no pisados siguen presentes.
-    assert "Only-load-from-cache = False" in grass_ini
+    assert "Only-load-from-cache = True" in grass_ini
 
 
 async def test_build_config_mod_requiere_clon_primero(manager: GrassProfileManager) -> None:
     # Sin clon no hay dónde habilitar el mod: fail-closed antes de escribir nada.
     with pytest.raises(GrassProfileError):
         await manager.build_config_mod(["Tamriel"])
+
+
+@_symlink_guard
+async def test_mod_de_config_symlink_no_borra_su_target(mo2_root: pathlib.Path, manager: GrassProfileManager) -> None:
+    # Si el nombre del mod de config ya existe como symlink a OTRO mod, borrarlo
+    # con _rmtree_force sobre la ruta resuelta arrasaría ese mod. Fail-closed.
+    await manager.create_clone_profile()
+    otro = mo2_root / "mods" / "OtroModImportante"
+    otro.mkdir()
+    (otro / "importante.esp").write_bytes(b"no-borrar")
+    (mo2_root / "mods" / "SkyClaw - Grass Precache Config").symlink_to(otro, target_is_directory=True)
+
+    with pytest.raises(GrassProfileError):
+        await manager.build_config_mod(["Tamriel"])
+
+    # El árbol al que apunta el symlink quedó intacto.
+    assert (otro / "importante.esp").read_bytes() == b"no-borrar"
 
 
 # ---------------------------------------------------------------------------

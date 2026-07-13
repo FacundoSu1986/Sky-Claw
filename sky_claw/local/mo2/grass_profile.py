@@ -61,18 +61,26 @@ _GRASSCONTROL_REL = pathlib.PurePosixPath("SKSE/Plugins/GrassControl.ini")
 _SSEDISPLAYTWEAKS_REL = pathlib.PurePosixPath("SKSE/Plugins/SSEDisplayTweaks.ini")
 
 #: Flags planos de ``GrassControl.ini`` (sintaxis NGIO-NG, sin secciones) para
-#: la fase de GENERACIÓN: cache activo, sin cargar-solo-de-cache. Al terminar el
-#: ritual, capas superiores flipean ``Only-load-from-cache`` a ``True``.
+#: la fase de GENERACIÓN. El README de NGIO-NG documenta arrancar el precache con
+#: ``Use-grass-cache = true`` **y** ``Only-load-from-cache = true`` (este último
+#: es también el estado de uso normal posterior: cargar solo del cache generado).
 _DEFAULT_GRASSCONTROL: dict[str, str] = {
     "Use-grass-cache": "True",
-    "Only-load-from-cache": "False",
+    "Only-load-from-cache": "True",
 }
+
+#: Clave NGIO-NG que limita el precache a una lista de worldspaces (los que la
+#: Fase A detectó con pasto). Ojo: es con guiones y semicolon-delimited, no la
+#: forma legacy ``OnlyPregenerateWorldSpaces`` space-joined (GrassControl.toml
+#: oficial de NGIO-NG) — la forma legacy la ignora NGIO-NG y escanearía TODO.
+_WORLDSPACES_KEY = "Only-pregenerate-world-spaces"
 
 #: ``SSEDisplayTweaks.ini`` (con secciones): ventana marginal para acelerar los
 #: micro-lanzamientos entre CTDs y bajar la presión de VRAM durante el precache.
+#: 800x400 es la resolución que exige el SOP §2.8 para tolerar los scans de celda.
 _DEFAULT_SSEDISPLAYTWEAKS: dict[str, dict[str, str]] = {
     "Render": {
-        "Resolution": "800x600",
+        "Resolution": "800x400",
         "Fullscreen": "false",
         "Borderless": "true",
         "BorderlessUpscale": "false",
@@ -178,9 +186,9 @@ class GrassProfileManager:
         """Crea el mod de config y lo habilita en el clon con máxima prioridad.
 
         Escribe ``SKSE/Plugins/GrassControl.ini`` (flags de generación +
-        ``OnlyPregenerateWorldSpaces`` con los worldspaces de Fase A entre
-        comillas dobles), ``SKSE/Plugins/SSEDisplayTweaks.ini`` (resolución
-        marginal) y ``meta.ini``; luego agrega el mod al ``modlist.txt`` del
+        ``Only-pregenerate-world-spaces`` con los worldspaces de Fase A entre
+        comillas dobles, separados por ``;``), ``SKSE/Plugins/SSEDisplayTweaks.ini``
+        (resolución marginal) y ``meta.ini``; luego agrega el mod al ``modlist.txt`` del
         clon — en MO2 la última línea es la de mayor prioridad, así que el
         ``GrassControl.ini`` del mod gana los conflictos.
 
@@ -200,9 +208,19 @@ class GrassProfileManager:
             raise GrassProfileError(
                 f"El perfil clon '{self._clone_profile}' no existe: llamá create_clone_profile() primero."
             )
-        mod_dir = self._validator.validate(self._root / "mods" / self._config_mod_name, strict_symlink=False)
+        # Fail-closed si el destino ya existe como symlink/junction: validate()
+        # resuelve el symlink y _rmtree_force borraría su TARGET (otro mod o
+        # perfil del árbol MO2), no el enlace. Se chequea el path CRUDO — el
+        # resuelto nunca reporta is_symlink (review Codex #284).
+        raw_mod_dir = self._root / "mods" / self._config_mod_name
+        if raw_mod_dir.is_symlink():
+            raise GrassProfileError(
+                f"El mod de config '{self._config_mod_name}' ya existe como symlink ({raw_mod_dir}): "
+                "fail-closed para no borrar el árbol al que apunta."
+            )
+        mod_dir = self._validator.validate(raw_mod_dir, strict_symlink=False)
 
-        grass_values = {**_DEFAULT_GRASSCONTROL, "OnlyPregenerateWorldSpaces": _format_worldspaces(worldspaces)}
+        grass_values = {**_DEFAULT_GRASSCONTROL, _WORLDSPACES_KEY: _format_worldspaces(worldspaces)}
         if params:
             grass_values.update(params)
 
@@ -283,8 +301,12 @@ class GrassProfileManager:
 
 
 def _format_worldspaces(worldspaces: Sequence[str]) -> str:
-    """``OnlyPregenerateWorldSpaces`` de NGIO: nombres entre comillas, separados por espacio."""
-    return '"' + " ".join(worldspaces) + '"'
+    """``Only-pregenerate-world-spaces`` de NGIO-NG: nombres entre comillas, separados por ``;``.
+
+    El separador es semicolon (no espacio): así lo define y ejemplifica el
+    ``GrassControl.toml`` oficial de NGIO-NG (``"WorldA;WorldB;WorldC"``).
+    """
+    return '"' + ";".join(worldspaces) + '"'
 
 
 def _reject_symlinks(root: pathlib.Path) -> None:
