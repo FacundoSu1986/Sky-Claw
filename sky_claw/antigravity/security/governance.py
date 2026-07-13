@@ -40,6 +40,10 @@ class WhitelistSchema(BaseModel):
 
 class GovernanceManager:
     _instance = None
+    # G-1/G-2 (ADR 0004): threading.Lock intencional. get_instance() es solo para
+    # bootstrap y acciones sync esporádicas (approve_file), nunca hot-path async ni
+    # multi-hilo concurrente, así que no bloquea el event loop. Ver el ADR y su
+    # criterio de reversión antes de migrarlo a asyncio.Lock.
     _lock = threading.Lock()
     _HMAC_KEY_SERVICE = "sky_claw_whitelist_hmac"
     _HASH_CONCURRENCY = 4
