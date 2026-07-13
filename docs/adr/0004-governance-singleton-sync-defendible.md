@@ -31,18 +31,26 @@ Dos hallazgos del OODA analysis apuntan al mismo patrón en
   el singleton) — no desde ningún método async del hot-path.
 - **Call-sites reales de `get_instance()`** (grep sobre `sky_claw/`, no-tests):
   - `app_context.py:467` — bootstrap **one-time** del proceso (inyección del
-    lifecycle en el arranque), secuencial, sin otro hilo compitiendo.
+    lifecycle en el arranque). Corre dentro de `_start_full_inner` (async), así que
+    la primera creación (y su `_load_whitelist`) ya ejecuta en el event loop, pero
+    en el arranque, sin otras corutinas críticas compitiendo.
   - `purple_security_agent.py:137`, `security_mode.py:50` — dentro de
     `approve_file`, una acción **sync y esporádica** del operador.
-  - `metacognitive_logic.py:94` — obtención del singleton ya construido.
-  - Ninguno lo envuelve en `asyncio.to_thread` desde varias corutinas/hilos: **no
-    existe el escenario de contención cross-thread** que G-1 requiere. (El propio
-    OODA analysis lo admite: "callers async podrían invocarlo en
-    `asyncio.to_thread()` pero **no lo hacen** en el código observado".)
-- **Duración del lock:** tras la primera creación, `get_instance()` solo compara
-  `base_path` y retorna — microsegundos. Solo la **primera** llamada corre
-  `__init__`/`_load_whitelist` (I/O de archivo, ~ms) bajo el lock, y ocurre en el
-  bootstrap, no en el hot-path.
+  - `metacognitive_logic.py:94` — **desde `async def _phase_resolve()`**, alcanzado
+    por la API `audit_resource()` y el `PurpleSecurityAgent`. Corrección tras el
+    review de Codex (#289): este call-site **es async**, así que la afirmación
+    "get_instance no se llama desde código async" sería falsa y no se sostiene.
+- **Por qué el veredicto se mantiene, corregido:**
+  - **G-1 (threading.Lock):** aunque `_phase_resolve` (async) lo invoque, la app
+    corre un **único event loop**; `approve_file` y el audit no compiten desde
+    hilos paralelos por `_lock`. Sin contención cross-thread, el `with cls._lock`
+    es instantáneo y no cede ni bloquea el loop de forma apreciable.
+  - **G-2 (`_load_whitelist`):** el I/O sync **sí** puede correr en el loop (primera
+    creación, sea en el bootstrap o en el primer `_phase_resolve`). Pero es
+    **one-time** y trivial — leer un JSON de hashes + verificación HMAC — y queda
+    **dominado por el escaneo de archivos** que el propio `_phase_resolve` ejecuta
+    a continuación (rglob + lectura por archivo, ya en `asyncio.to_thread` tras
+    #270/PT-1). El costo marginal de moverlo fuera del loop no lo justifica.
 
 ## Alternativas evaluadas (Tree of Thoughts)
 
@@ -71,26 +79,35 @@ bootstrap fuera del loop, cuando el bootstrap ya hace I/O sync de init por dise�
 
 **No cambiar.** El patrón singleton sync de `GovernanceManager` (con
 `threading.Lock` e I/O de init sincrónico) se mantiene. G-1 y G-2 se cierran como
-**evaluados — sin cambio de código**: el riesgo descrito no es alcanzable con los
-call-sites actuales.
+**evaluados — sin cambio de código**, pero por el motivo correcto: `get_instance()`
+**sí** se invoca desde async, y aun así el costo (lock sin contención + carga de
+whitelist one-time y trivial) no justifica migrar a `asyncio.Lock` / diferir la
+carga. Lo que **no** se sostiene es la fundamentación original ("no se llama desde
+async"), corregida aquí tras el review de Codex.
 
 ## Consecuencias
 
-- Invariante que sostiene esta decisión: **`get_instance()` es solo para
-  bootstrap/acciones sync esporádicas** — no debe invocarse en el hot-path async
-  ni desde múltiples hilos concurrentes. Un comentario en `_lock` fija esta
-  invariante en el código.
-- Todo trabajo pesado o de I/O recurrente del manager sigue yendo por
-  `asyncio.to_thread` (como ya hace el hashing), no bajo `_lock`.
+- La decisión **no** descansa en una invariante de "get_instance = sync-only"
+  (sería falsa: `_phase_resolve` async lo llama). Descansa en el **costo trivial y
+  one-time** de la primera creación: `threading.Lock` sin contención cross-thread
+  (un solo loop) + un `_load_whitelist` de un JSON chico, dominado por el escaneo
+  que el audit hace a continuación. El comentario en `_lock` refleja esto.
+- Todo trabajo pesado o de I/O **recurrente** del manager sigue yendo por
+  `asyncio.to_thread` (como ya hace el hashing), no bajo `_lock`. La carga de
+  whitelist queda exceptuada por ser one-time.
 
 ## Criterio de reversión
 
 Reabrir (empezando por la rama (b), acotada) si aparece cualquiera de estas
 condiciones:
 
-1. Un call-site nuevo invoca `get_instance()` **en el hot-path async** (por
-   request/iteración), no solo en bootstrap.
+1. La **primera creación** del singleton pasa a ocurrir en un punto sensible a
+   latencia y **recurrente** — p. ej. si `get_instance()` deja de estar cacheado
+   o se reconstruye por request, de modo que `_load_whitelist` deje de ser
+   one-time y su I/O sync en el loop se vuelva un costo repetido.
 2. `get_instance()` pasa a llamarse desde **múltiples hilos concurrentes** (p. ej.
-   un `ThreadPoolExecutor` que construya el singleton en paralelo con el loop).
-3. `__init__`/`_load_whitelist` crece hasta un I/O caro y recurrente (no
-   one-time), volviendo relevante moverlo fuera del loop.
+   un `ThreadPoolExecutor` que construya el singleton en paralelo con el loop),
+   materializando la contención del `threading.Lock` que hoy no ocurre.
+3. `_load_whitelist` crece hasta un I/O caro (whitelist grande, validación
+   costosa), volviendo relevante diferirlo/`to_thread` aunque siga siendo
+   one-time.
