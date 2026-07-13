@@ -24,8 +24,19 @@ class ManagedToolExecutor:
     and strict process lifecycle management (Zombie Prevention).
     """
 
-    def __init__(self, timeout: float = 300.0, path_validator: PathValidator | None = None) -> None:
+    def __init__(
+        self,
+        timeout: float = 300.0,
+        path_validator: PathValidator | None = None,
+        *,
+        drain_timeout: float = 10.0,
+    ) -> None:
         self.timeout: float = timeout
+        # E-1: gracia máxima para drenar los pipes de telemetría DESPUÉS de que
+        # el proceso principal murió. En condiciones normales el drenaje termina
+        # en microsegundos (EOF inmediato); este tope solo muerde si un
+        # proceso-nieto heredó el descriptor del pipe y nunca lo cierra.
+        self._drain_timeout: float = drain_timeout
         self.proc: asyncio.subprocess.Process | None = None
         self._abort_event: asyncio.Event = asyncio.Event()
         if path_validator is not None:
@@ -113,6 +124,7 @@ class ManagedToolExecutor:
 
         logger.info(f"🚀 EXECUTOR [WSL2_INVOKE]: {binary_path}")
 
+        monitor_task: asyncio.Task[None] | None = None
         try:
             # We must use binary_path (Linux path) to find the file in WSL,
             # but Windows arguments for its execution context.
@@ -129,7 +141,6 @@ class ManagedToolExecutor:
             try:
                 # Wait for completion OR timeout OR abort signal
                 await asyncio.wait_for(self.proc.wait(), timeout=self.timeout)
-                await monitor_task
             except TimeoutError:
                 logger.error(f"⚠️ WATCHDOG: Timeout de {self.timeout}s alcanzado.")
                 await self.abort()
@@ -137,6 +148,12 @@ class ManagedToolExecutor:
             except asyncio.CancelledError:
                 await self.abort()
                 raise
+
+            # E-1: el proceso principal terminó; drenamos la telemetría con una
+            # espera ACOTADA. El ``await monitor_task`` previo era ilimitado: si
+            # un proceso-nieto heredaba el descriptor del pipe, el ``readline()``
+            # nunca veía EOF y el orquestador quedaba colgado para siempre.
+            await self._drain_telemetry(monitor_task)
 
             if self._abort_event.is_set():
                 return -1
@@ -147,6 +164,33 @@ class ManagedToolExecutor:
             logger.exception(f"❌ EXECUTOR ERROR: {e}")
             await self.abort()
             return -1
+        finally:
+            # Garantía anti-huérfano: el monitor de telemetría nunca sobrevive a
+            # execute() (incluidos los caminos de timeout/abort/error, donde el
+            # ``raise`` saltaba el drenaje y dejaba la tarea colgada).
+            if monitor_task is not None and not monitor_task.done():
+                monitor_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await monitor_task
+
+    async def _drain_telemetry(self, monitor_task: asyncio.Task[None]) -> None:
+        """E-1: espera ACOTADA al drenaje de los streams de telemetría.
+
+        Tras la muerte del proceso, drenar los pipes debería ser instantáneo
+        (solo resta leer lo buffereado hasta EOF). Pero si un proceso-nieto
+        heredó el descriptor del pipe, ``readline()`` nunca recibe EOF y el
+        drenaje colgaría para siempre. Acotamos con ``_drain_timeout``; al
+        expirar, ``wait_for`` deja el monitor cancelado y el ``finally`` de
+        ``execute`` lo recoge.
+        """
+        try:
+            await asyncio.wait_for(monitor_task, timeout=self._drain_timeout)
+        except TimeoutError:
+            logger.warning(
+                "⏱️ Drenaje de telemetría excedió %ss (¿pipe heredado por un proceso hijo?). "
+                "Cancelando el monitor y continuando.",
+                self._drain_timeout,
+            )
 
     async def _stream_telemetry(self, callback: Callable[[str], Coroutine[Any, Any, None]] | None):
         """Streams stdout and stderr concurrently to the provided telemetry callback."""
@@ -174,9 +218,14 @@ class ManagedToolExecutor:
     def signal_abort(self):
         """Triggers the emergency stop from an external thread or task."""
         self._abort_event.set()
-        if self.proc:
+        # E-3: capturar la referencia UNA sola vez. ``signal_abort`` puede
+        # invocarse desde otro hilo (ver docstring): si un ``abort()`` concurrente
+        # nulea ``self.proc`` entre el check y el uso, releer ``self.proc`` daría
+        # ``None.terminate()`` → AttributeError (no cubierto por el ``suppress``).
+        proc = self.proc
+        if proc is not None:
             with contextlib.suppress(ProcessLookupError):
-                self.proc.terminate()
+                proc.terminate()
 
     async def abort(self):
         """Forcefully terminates the managed sub-process and its family."""
