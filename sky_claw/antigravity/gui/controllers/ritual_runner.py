@@ -59,6 +59,10 @@ STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
 CLIENT_KEY_AUTO_APPROVE = "modo_local"
 #: Single-flight guard: a ritual is dispatching or awaiting approval right now.
 STORE_KEY_RITUAL_IN_FLIGHT = "ritual_in_flight"
+#: Último reporte de preflight (``PreflightReport.to_dict()``) que un dispatch
+#: adjuntó — hoy solo el sort de LOOT lo produce. El panel refrescable
+#: ``_ritual_preflight_panel`` lo renderiza con ``create_preflight_panel`` (T-16b).
+STORE_KEY_RITUAL_PREFLIGHT = "ritual_preflight"
 
 # Los 5 Rituales del Panel, cada uno con su estrategia HITL-gated en el dispatcher.
 RITUAL_TOOL_MAP: dict[str, str] = {
@@ -123,6 +127,21 @@ def summarize_ritual_result(tool_key: str, result: dict[str, Any]) -> tuple[str,
             "negative",
         )
     return (f"El ritual «{tool_key}» falló: {normalized['message']}", "negative")
+
+
+def preflight_from_result(result: Any) -> dict[str, Any] | None:
+    """Extrae el reporte de preflight de un result de dispatch, o ``None``.
+
+    Hoy solo el sort de LOOT corre preflight y adjunta
+    ``result["preflight"] = PreflightReport.to_dict()`` cuando el semáforo no está
+    verde o bloquea la mutación (``loot_service``). Defensivo: solo devuelve un
+    dict; cualquier otra shape (sin la clave, o un valor no-dict) → ``None``.
+    """
+    if isinstance(result, dict):
+        preflight = result.get("preflight")
+        if isinstance(preflight, dict):
+            return preflight
+    return None
 
 
 def make_gui_hitl_notify(
@@ -199,6 +218,10 @@ async def run_ritual(
     cannot crash the loop. The HITL gate inside ``dispatch_tool`` is what asks
     for approval — see :func:`make_gui_hitl_notify`.
     """
+    # Limpiar el semáforo de preflight de cualquier run anterior: cada invocación
+    # arranca sin panel stale (T-16b). Se re-puebla al final si el dispatch adjunta
+    # un reporte (hoy solo el sort de LOOT lo hace).
+    store.set(STORE_KEY_RITUAL_PREFLIGHT, None)
     tool_name = ritual_tool_name(tool_key)
     if tool_name is None:
         store.set(
@@ -244,6 +267,10 @@ async def run_ritual(
         store.set(STORE_KEY_PENDING_HITL, None)
     text, kind = summarize_ritual_result(tool_key, result if isinstance(result, dict) else {})
     store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": text, "type": kind})
+    # Surface del reporte de preflight que el dispatch adjuntó (hoy solo LOOT): el
+    # panel refrescable lo renderiza con create_preflight_panel (T-16b). Rojo = el
+    # gate de loot_service ya frenó el sort; el panel lo hace visible al operador.
+    store.set(STORE_KEY_RITUAL_PREFLIGHT, preflight_from_result(result))
 
 
 async def run_ritual_install(

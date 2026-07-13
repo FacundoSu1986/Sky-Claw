@@ -17,7 +17,9 @@ from types import SimpleNamespace
 
 from sky_claw.antigravity.gui.controllers.ritual_runner import (
     RITUAL_TOOL_MAP,
+    STORE_KEY_RITUAL_PREFLIGHT,
     make_gui_hitl_notify,
+    preflight_from_result,
     ritual_auto_approve_armed,
     ritual_tool_name,
     run_ritual,
@@ -317,3 +319,69 @@ async def test_run_ritual_does_not_arm_when_auto_approve_off() -> None:
     await run_ritual("dyndolod", supervisor=sup, store=store)  # default False
     assert sup.armed_during_dispatch is False
     assert ritual_auto_approve_armed() is False
+
+
+# ── T-16b: surface del reporte de preflight al panel vivo ─────────────────────────
+def test_preflight_from_result_extracts_the_dict() -> None:
+    report = {"status": "red", "blocks_mutations": True, "checks": []}
+    assert preflight_from_result({"success": False, "preflight": report}) == report
+
+
+def test_preflight_from_result_none_when_absent() -> None:
+    assert preflight_from_result({"success": True}) is None
+
+
+def test_preflight_from_result_none_for_non_dict_result() -> None:
+    # Un dispatch que devuelve una shape inesperada no debe romper el surface.
+    assert preflight_from_result("boom") is None
+    assert preflight_from_result(None) is None
+
+
+def test_preflight_from_result_none_when_preflight_not_a_dict() -> None:
+    assert preflight_from_result({"preflight": "red"}) is None
+
+
+async def test_run_ritual_surfaces_preflight_report_to_store() -> None:
+    # Hoy solo LOOT corre preflight y adjunta result["preflight"] = to_dict();
+    # run_ritual debe publicarlo al store para que el panel lo renderice.
+    store = ReactiveStore()
+    report = {
+        "status": "yellow",
+        "blocks_mutations": False,
+        "checks": [{"name": "overwrite", "status": "yellow", "summary": "residuos", "details": []}],
+    }
+    sup = _FakeSupervisor({"success": True, "preflight": report})
+    await run_ritual("loot", supervisor=sup, store=store)
+    assert store.get(STORE_KEY_RITUAL_PREFLIGHT) == report
+
+
+async def test_run_ritual_without_preflight_leaves_the_key_empty() -> None:
+    store = ReactiveStore()
+    sup = _FakeSupervisor({"success": True})
+    await run_ritual("dyndolod", supervisor=sup, store=store)
+    assert store.get(STORE_KEY_RITUAL_PREFLIGHT) is None
+
+
+async def test_run_ritual_blocked_loot_surfaces_red_report_and_negative_feedback() -> None:
+    # Un sort bloqueado por preflight rojo: feedback negativo Y el panel muestra
+    # el semáforo rojo para que el operador vea POR QUÉ se frenó.
+    store = ReactiveStore()
+    red = {
+        "status": "red",
+        "blocks_mutations": True,
+        "checks": [{"name": "composition", "status": "red", "summary": "symlinks + LOOT <0.29", "details": []}],
+    }
+    sup = _FakeSupervisor({"success": False, "reason": "PreflightBlocked", "preflight": red})
+    await run_ritual("loot", supervisor=sup, store=store)
+    fb = store.get("ritual_feedback")
+    assert fb is not None and fb["type"] == "negative"
+    assert store.get(STORE_KEY_RITUAL_PREFLIGHT) == red
+
+
+async def test_run_ritual_clears_stale_preflight_on_new_run() -> None:
+    # Un reporte de un run anterior no debe quedar pegado si el nuevo no trae uno.
+    store = ReactiveStore()
+    store.set(STORE_KEY_RITUAL_PREFLIGHT, {"status": "red", "blocks_mutations": True, "checks": []})
+    sup = _FakeSupervisor({"success": True})  # este dispatch no adjunta preflight
+    await run_ritual("dyndolod", supervisor=sup, store=store)
+    assert store.get(STORE_KEY_RITUAL_PREFLIGHT) is None
