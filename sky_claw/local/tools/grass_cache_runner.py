@@ -124,6 +124,13 @@ class GrassCacheConfig:
                 raise ValueError(f"{campo} debe ser > 0")
         if not self.game_exe_names:
             raise ValueError("game_exe_names no puede estar vacío")
+        if not any((self.game_path / nombre).is_file() for nombre in self.game_exe_names):
+            # Sin este guard, un game_path equivocado (p.ej. la raíz de MO2)
+            # recibe el flag donde NGIO jamás lo ve: el juego corre en modo
+            # normal hasta agotar el deadline de 12 h.
+            raise ValueError(
+                f"game_path no contiene el ejecutable del juego ({', '.join(self.game_exe_names)}): {self.game_path}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,13 +220,16 @@ class GrassCacheRunner:
                 await self._snapshot_cache(),
             )
 
-        await asyncio.to_thread(self._flag_path.write_text, "", encoding="utf-8")
-        # Baseline del stall detector: el estado del cache ANTES del primer
-        # lanzamiento — un primer ciclo sin .cgid nuevos ya cuenta como racha.
-        last_snapshot = await self._snapshot_cache()
-        await self._emit_progress("launching", crash_count)
-
         try:
+            # El try cubre DESDE la escritura del flag: una cancelación dura
+            # durante el snapshot inicial o el primer progress (que propaga
+            # CancelledError) también debe limpiar el flag en el finally.
+            await asyncio.to_thread(self._flag_path.write_text, "", encoding="utf-8")
+            # Baseline del stall detector: el estado del cache ANTES del primer
+            # lanzamiento — un primer ciclo sin .cgid nuevos ya cuenta como racha.
+            last_snapshot = await self._snapshot_cache()
+            await self._emit_progress("launching", crash_count)
+
             for _ in range(self._config.max_restarts + 1):
                 game_pid = None
                 try:
@@ -239,6 +249,18 @@ class GrassCacheRunner:
                             await self._matar_todo(game_pid)
                             return self._resultado(
                                 "cancelled", "Cancelado durante el arranque.", crash_count, await self._snapshot_cache()
+                            )
+                        if time.monotonic() - self._start_mono >= self._config.max_runtime_s:
+                            # El deadline es GLOBAL: sin este check, ciclos de
+                            # no-spawn repetidos lo excederían por hasta
+                            # stall_threshold * spawn_window_s.
+                            await self._matar_todo(game_pid)
+                            return self._resultado(
+                                "timeout",
+                                f"Deadline global de {self._config.max_runtime_s:.0f}s alcanzado "
+                                "durante la ventana de spawn; el cache parcial se conserva.",
+                                crash_count,
+                                await self._snapshot_cache(),
                             )
                         if not await self._flag_exists():
                             # NGIO terminó durante el boot (reanudación casi
@@ -373,11 +395,16 @@ class GrassCacheRunner:
                 continue  # el próximo ciclo del while atiende la cancelación
 
     async def _salida_exito(self, crash_count: int, game_pid: int | None) -> GrassCacheRunResult:
-        """Fin multi-criterio: flag ausente + postcheck fail-closed de .cgid."""
+        """Fin multi-criterio: flag ausente + postcheck fail-closed de .cgid.
+
+        El éxito exige count > 0 **y** bytes > 0: el fallo silencioso de
+        zero-bounds documentado en el SOP también se manifiesta como archivos
+        ``.cgid`` de cero bytes — un cache "presente pero vacío" no es éxito.
+        """
         await self._matar_todo(game_pid)
         snap = await self._snapshot_cache()
         await self._emit_progress("finished", crash_count)
-        if snap[0] > 0:
+        if snap[0] > 0 and snap[1] > 0:
             return self._resultado(
                 "completed",
                 "",
@@ -387,7 +414,7 @@ class GrassCacheRunner:
             )
         return self._resultado(
             "completed",
-            "El precache terminó pero no generó ningún .cgid: cache vacío — "
+            "El precache terminó pero el cache quedó vacío (sin .cgid o todos de 0 bytes) — "
             "revisar records GRAS con bounds nulos (fallo silencioso de NGIO).",
             crash_count,
             snap,
@@ -448,10 +475,15 @@ class GrassCacheRunner:
         """UNA pasada de búsqueda del juego (el caller polea).
 
         Rama B (D1): hijo del árbol de MO2. Rama C (fallback): búsqueda global
-        por nombre acotada por ``create_time >= min_create_epoch`` — no adopta
-        un Skyrim preexistente del usuario ni pierde al juego reparentado.
+        por nombre acotada por ``create_time >= min_create_epoch`` **y** por el
+        exe residente en ``game_path`` — no adopta un Skyrim preexistente del
+        usuario, ni uno de otra instalación lanzado en la ventana, ni pierde al
+        juego reparentado. La atribución perfecta post-reparent es imposible
+        (el vínculo padre-hijo se perdió); si el exe no es legible
+        (AccessDenied), se acepta por nombre+tiempo con warning.
         """
         nombres = {n.lower() for n in self._config.game_exe_names}
+        game_dir = self._config.game_path.resolve()
         try:
             hijos = psutil.Process(mo2_pid).children(recursive=True)
         except psutil.Error:
@@ -463,15 +495,29 @@ class GrassCacheRunner:
             except psutil.Error:
                 continue
         try:
-            for proc in psutil.process_iter(["name", "create_time"]):
+            for proc in psutil.process_iter(["name", "create_time", "exe"]):
                 try:
                     info = proc.info
                     nombre = str(info.get("name") or "")
                     creado = float(info.get("create_time") or 0.0)
+                    exe = info.get("exe")
                 except psutil.Error:
                     continue
-                if nombre.lower() in nombres and creado >= min_create_epoch:
-                    return int(proc.pid)
+                if nombre.lower() not in nombres or creado < min_create_epoch:
+                    continue
+                if exe:
+                    try:
+                        if pathlib.Path(str(exe)).resolve().parent != game_dir:
+                            continue  # mismo nombre pero OTRA instalación: no se adopta
+                    except OSError:
+                        continue
+                else:
+                    logger.warning(
+                        "Adoptando %s (pid=%s) por nombre+tiempo: exe ilegible para verificar la instalación.",
+                        nombre,
+                        proc.pid,
+                    )
+                return int(proc.pid)
         except psutil.Error:
             logger.warning("process_iter falló durante la búsqueda del juego.", exc_info=True)
         return None

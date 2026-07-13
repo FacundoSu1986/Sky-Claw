@@ -53,15 +53,23 @@ _GIB = 1024**3
 class _ProcFake:
     """Un proceso del mundo: handle estilo psutil.Process."""
 
-    def __init__(self, mundo: _MundoProcesos, pid: int, nombre: str, create_time: float) -> None:
+    def __init__(
+        self,
+        mundo: _MundoProcesos,
+        pid: int,
+        nombre: str,
+        create_time: float,
+        exe: str | None = None,
+    ) -> None:
         self._mundo = mundo
         self.pid = pid
         self._nombre = nombre
         self._create_time = create_time
+        self._exe = exe
 
     @property
     def info(self) -> dict[str, Any]:
-        return {"name": self._nombre, "create_time": self._create_time}
+        return {"name": self._nombre, "create_time": self._create_time, "exe": self._exe}
 
     def name(self) -> str:
         return self._nombre
@@ -145,6 +153,7 @@ def entorno(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
     """(game_path, overwrite_grass_dir) sobre tmp_path; Grass/ NO existe aún."""
     game = tmp_path / "game"
     game.mkdir()
+    (game / "SkyrimSE.exe").write_bytes(b"MZ")  # el config exige el exe presente
     overwrite = tmp_path / "overwrite"
     overwrite.mkdir()
     return game, overwrite / "Grass"
@@ -219,6 +228,12 @@ def test_config_valida_paths_y_valores(entorno: tuple[pathlib.Path, pathlib.Path
 
     with pytest.raises(ValueError, match="game_path"):
         GrassCacheConfig(game_path=game / "no_existe", overwrite_grass_dir=grass)
+    # Directorio existente pero SIN el exe del juego (p.ej. la raíz de MO2):
+    # el flag iría donde NGIO jamás lo ve y el run se comería las 12 h.
+    sin_exe = game.parent / "mo2_root"
+    sin_exe.mkdir()
+    with pytest.raises(ValueError, match="ejecutable"):
+        GrassCacheConfig(game_path=sin_exe, overwrite_grass_dir=grass)
     with pytest.raises(ValueError, match="overwrite_grass_dir"):
         GrassCacheConfig(game_path=game, overwrite_grass_dir=game / "x" / "y" / "Grass")
     with pytest.raises(ValueError, match="max_restarts"):
@@ -280,6 +295,34 @@ async def test_crea_el_flag_durante_el_run_y_lo_limpia_al_salir(config: GrassCac
 # ---------------------------------------------------------------------------
 # Spawn window
 # ---------------------------------------------------------------------------
+
+
+async def test_deadline_global_rige_tambien_en_spawn_window(config: GrassCacheConfig, mo2: AsyncMock) -> None:
+    # Fix review #287: sin el check dentro de la ventana de spawn, ciclos de
+    # no-spawn repetidos excederían max_runtime por stall_threshold*spawn_window.
+    async def _launch_sin_juego(profile: str) -> dict[str, Any]:
+        return {"pid": 55, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch_sin_juego
+    cfg = dataclasses.replace(config, max_runtime_s=0.05, spawn_window_s=30.0)
+
+    resultado = await _correr(_runner(cfg, mo2))
+
+    assert resultado.outcome == "timeout", "el deadline global gana aunque la ventana de spawn siga abierta"
+    assert not (cfg.game_path / "PrecacheGrass.txt").exists()
+
+
+async def test_cancelacion_dura_durante_progreso_inicial_limpia_el_flag(
+    config: GrassCacheConfig, mo2: AsyncMock
+) -> None:
+    # Fix review #287: una CancelledError en el primer on_progress (antes del
+    # loop) también debe pasar por el finally que borra el flag.
+    duro = AsyncMock(side_effect=asyncio.CancelledError)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _runner(config, mo2, on_progress=duro).run()
+
+    assert not (config.game_path / "PrecacheGrass.txt").exists(), "el finally debe cubrir la fase inicial"
 
 
 async def test_juego_nunca_aparece_en_ciclo_cero_es_spawn_failed(config: GrassCacheConfig, mo2: AsyncMock) -> None:
@@ -364,6 +407,30 @@ async def test_mo2_muerto_el_fallback_por_nombre_encuentra_al_juego(
     assert resultado.outcome == "cancelled"
     assert resultado.crash_count == 0, "la muerte de MO2 no es un crash del juego"
     assert 2000 not in mundo.vivos, "D7b: el juego huérfano debe morir aunque close_game no lo alcance"
+
+
+async def test_fallback_ignora_skyrim_de_otra_instalacion(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, tmp_path: pathlib.Path
+) -> None:
+    # Fix review #287: un SkyrimSE con nombre y create_time válidos pero cuyo
+    # exe vive en OTRA instalación (otro MO2/otro juego del usuario) no se
+    # adopta — matarlo en cancel/timeout rompería una sesión ajena.
+    otra_instalacion = tmp_path / "otro_juego"
+    otra_instalacion.mkdir()
+    ajeno = _ProcFake(mundo, 4000, "SkyrimSE.exe", time.time() + 60, exe=str(otra_instalacion / "SkyrimSE.exe"))
+    mundo.vivos.add(4000)
+    mundo.globales.append(ajeno)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        return {"pid": 999, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    cfg = dataclasses.replace(config, spawn_window_s=0.05)
+
+    resultado = await _correr(_runner(cfg, mo2))
+
+    assert resultado.outcome == "spawn_failed"
+    assert 4000 in mundo.vivos, "el Skyrim de otra instalación no se toca jamás"
 
 
 async def test_process_iter_ignora_skyrim_preexistente(
@@ -451,6 +518,29 @@ async def test_flag_ausente_con_cero_cgid_es_fallo_silencioso(
     assert resultado.success is False
     assert resultado.cgid_count == 0
     assert "cgid" in resultado.message.lower() or "vac" in resultado.message.lower()
+
+
+async def test_cgid_todos_vacios_es_fallo_silencioso(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # Fix review #287 (P1): el zero-bounds también se manifiesta como .cgid de
+    # 0 bytes — un cache "presente pero vacío" jamás es success=True.
+    chequeos = itertools.count()
+
+    def _al_chequear(pid: int) -> None:
+        if next(chequeos) >= 1:
+            _escribir_cgid(config.overwrite_grass_dir, "Tamriel.cgid", datos=b"")
+            (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+
+    mundo.al_chequear_pid = _al_chequear
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "completed"
+    assert resultado.success is False
+    assert resultado.cgid_count == 1
+    assert resultado.cache_size_mb == 0
+    assert "vac" in resultado.message.lower()
 
 
 async def test_tres_crashes_consecutivos_terminan_en_exito(
