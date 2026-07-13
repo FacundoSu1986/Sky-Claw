@@ -345,11 +345,19 @@ async def test_mo2_muerto_el_fallback_por_nombre_encuentra_al_juego(
         return {"pid": 999, "status": "launched", "profile": profile}  # 999 jamás vivo
 
     mo2.launch_game.side_effect = _launch
+    # Señal determinista de "la vigilancia arrancó": el primer pid_exists del
+    # juego adoptado solo ocurre en la fase de vigilancia (sin sleeps fijos).
+    vigilando = asyncio.Event()
+
+    def _al_chequear(pid: int) -> None:
+        if pid == 2000:
+            vigilando.set()
+
+    mundo.al_chequear_pid = _al_chequear
     cancel = asyncio.Event()
     tarea = asyncio.create_task(_runner(config, mo2).run(cancel))
 
-    await poll_until(lambda: mo2.launch_game.await_count >= 1, timeout=5.0)
-    await asyncio.sleep(0.05)  # dejar que la vigilancia arranque
+    await asyncio.wait_for(vigilando.wait(), timeout=5.0)
     cancel.set()
     resultado = await asyncio.wait_for(tarea, timeout=10)
 
@@ -602,15 +610,21 @@ async def test_disco_lleno_durante_el_run_corta_con_disk_full(
 
 
 async def test_heartbeat_emite_progreso_tipado(config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos) -> None:
+    # Determinista sin ratios de reloj: el flag se borra recién DESPUÉS de que
+    # el callback observó un heartbeat "scanning" (en Windows py3.11
+    # time.monotonic tiene granularidad ~15.6 ms y un contador de iteraciones
+    # puede ganarle al reloj — flake real visto en CI del PR #287).
     progresos: list[GrassCacheProgress] = []
+    visto_scanning = False
 
     async def _on_progress(p: GrassCacheProgress) -> None:
+        nonlocal visto_scanning
         progresos.append(p)
-
-    chequeos = itertools.count()
+        if p.phase == "scanning":
+            visto_scanning = True
 
     def _al_chequear(pid: int) -> None:
-        if next(chequeos) >= 4:
+        if visto_scanning:
             _escribir_cgid(config.overwrite_grass_dir, "Tamriel.cgid")
             (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
 
