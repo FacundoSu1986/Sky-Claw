@@ -15,12 +15,17 @@
   Output (stdout via AddMessage, pipe-delimited; consumido por
   grass_analyzer.py, anclado por tests/test_grass_scripts_sync.py):
 
-    ZEROBOUND|<FormID 8hex>|<EditorID>|<WinnerPlugin>|<SourcePlugin>|<reason>
+    ZEROBOUND|<FormID 8hex>|<EditorID>|<WinnerPlugin>|<OriginPlugin>|<reason>
 
   reason: 'zeros' = OBND presente todo-ceros; 'missing' = subrecord OBND
   ausente. Son dos fallos distintos — la ausencia no se inventa como cero
-  (honestidad tipo SPIT, review Copilot #259). SourcePlugin = master que
-  introdujo el record (el mod a purgar segun el SOP §2.8).
+  (honestidad tipo SPIT, review Copilot #259).
+
+  WinnerPlugin = la version GANADORA, la que NGIO ve rota: es el mod a
+  purgar/arreglar (Recalc Bounds en Creation Kit) segun el SOP §2.8.
+  OriginPlugin = el master que introdujo el record originalmente — solo
+  contexto. Si un override tardio rompe un record cuyo master tenia bounds
+  validos, OriginPlugin sigue siendo inocente: NO usarlo como el culpable.
 
   Linea final (obligatoria — su ausencia = scan truncado):
 

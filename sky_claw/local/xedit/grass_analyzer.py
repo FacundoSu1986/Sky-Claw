@@ -93,8 +93,8 @@ class ZeroBoundGrass:
 
     form_id: str
     editor_id: str
-    winner_plugin: str  # la versión que NGIO ve
-    source_plugin: str  # el master que introdujo el record (mod a purgar, SOP §2.8)
+    winner_plugin: str  # la version con los bounds rotos — lo que NGIO ve, el mod a purgar (SOP §2.8)
+    origin_plugin: str  # el master que introdujo el record originalmente (contexto; NO asumir que es el culpable)
     reason: str  # "zeros" | "missing"
 
 
@@ -119,7 +119,7 @@ class ZeroBoundReport:
                     "form_id": f.form_id,
                     "editor_id": f.editor_id,
                     "winner_plugin": f.winner_plugin,
-                    "source_plugin": f.source_plugin,
+                    "origin_plugin": f.origin_plugin,
                     "reason": f.reason,
                 }
                 for f in self.findings
@@ -172,7 +172,7 @@ def parse_zero_bound_lines(stdout: str) -> list[ZeroBoundGrass]:
         if len(partes) != 6:
             logger.warning("Línea ZEROBOUND malformada (%d campos, esperados 6): %r", len(partes), line)
             continue
-        _, form_id, editor_id, winner, source, reason = partes
+        _, form_id, editor_id, winner, origin, reason = partes
         if not _FORMID_RE.match(form_id):
             logger.warning("Línea ZEROBOUND con FormID inválido: %r", line)
             continue
@@ -184,7 +184,7 @@ def parse_zero_bound_lines(stdout: str) -> list[ZeroBoundGrass]:
                 form_id=form_id,
                 editor_id=editor_id,
                 winner_plugin=winner,
-                source_plugin=source,
+                origin_plugin=origin,
                 reason=reason,
             )
         )
@@ -219,8 +219,12 @@ class GrassAnalyzer:
             ``OnlyPregenerateWorldSpaces``.
 
         Raises:
-            RuntimeError: xEdit falló, la salida está truncada (sin SUMMARY) o
-                el conteo no cierra (fail-closed — lección #226).
+            RuntimeError: xEdit falló, la salida está truncada (sin SUMMARY),
+                el conteo no cierra (fail-closed — lección #226), o
+                ``land_scanned=0`` (el idiom LAND→WRLD no visitó ningún
+                record: Skyrim.esm siempre trae LAND, así que un scan real
+                jamás da cero — reportarlo como "sin worldspaces" vaciaría
+                ``OnlyPregenerateWorldSpaces`` en silencio).
         """
         result = await self._run(SCRIPT_WORLDSPACES, plugins, xedit_runner, timeout)
         worldspaces = parse_worldspace_lines(result.raw_stdout)
@@ -230,6 +234,11 @@ class GrassAnalyzer:
             parsed_count=len(worldspaces),
             script=SCRIPT_WORLDSPACES,
         )
+        if summary.get("land_scanned", 0) == 0:
+            raise RuntimeError(
+                f"Salida de {SCRIPT_WORLDSPACES} sospechosa: land_scanned=0 con un load order "
+                "cargado indica que el scan de LAND no corrió (script roto), no que no haya pasto."
+            )
         return GrassWorldspaceReport(worldspaces=worldspaces, summary=summary)
 
     async def detect_zero_bound_grass(
@@ -244,6 +253,11 @@ class GrassAnalyzer:
         Cero hallazgos con SUMMARY consistente es ÉXITO (reporte vacío); los
         hallazgos explican el fallo silencioso de NGIO y requieren Recalc
         Bounds manual en Creation Kit (delegación HITL en capas superiores).
+
+        La remediación apunta a ``winner_plugin`` (la versión con los bounds
+        rotos, lo que NGIO ve) — NUNCA a ``origin_plugin``: un override tardío
+        puede romper un record cuyo master original tenía bounds válidos, y
+        purgar el master no arregla nada.
         """
         result = await self._run(SCRIPT_ZERO_BOUNDS, plugins, xedit_runner, timeout)
         findings = parse_zero_bound_lines(result.raw_stdout)

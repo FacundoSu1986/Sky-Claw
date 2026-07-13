@@ -93,19 +93,23 @@ def stage_scripts(
     edit_scripts_dir.mkdir(exist_ok=True)
 
     staged: list[StagedScript] = []
-    for name, source in zip(script_names, sources, strict=True):
-        destination = edit_scripts_dir / name
+    for source in sources:
+        # ``source.name`` (basename resuelto), no el *name* crudo del caller:
+        # un nombre con traversal que resuelve DENTRO del bundle (ej.
+        # "../scripts/x.pas") pasa el check de arriba pero escaparia de
+        # *edit_scripts_dir* si se reusara tal cual para el destino.
+        destination = edit_scripts_dir / source.name
         data = source.read_bytes()
         if destination.exists():
             if destination.read_bytes() == data:
-                staged.append(StagedScript(name=name, action="unchanged", destination=destination))
+                staged.append(StagedScript(name=source.name, action="unchanged", destination=destination))
                 continue
             action: Action = "replaced"
         else:
             action = "copied"
         destination.write_bytes(data)
-        logger.info("Script %s stageado en %s (%s)", name, destination, action)
-        staged.append(StagedScript(name=name, action=action, destination=destination))
+        logger.info("Script %s stageado en %s (%s)", source.name, destination, action)
+        staged.append(StagedScript(name=source.name, action=action, destination=destination))
     return staged
 
 

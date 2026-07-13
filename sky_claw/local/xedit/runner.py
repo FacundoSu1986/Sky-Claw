@@ -729,10 +729,17 @@ class XEditRunner:
             Un :class:`StagedScript` por nombre (acción copied/replaced/unchanged).
 
         Raises:
+            PathViolationError: ``xedit_path`` está fuera del sandbox del
+                validator (mismo guard que ``run_script`` — evita escribir
+                bajo una instalación de xEdit apuntada por config mala o
+                comprometida).
             ValueError: Nombre que escapa del bundle (traversal).
             FileNotFoundError: Script inexistente en el bundle o dir de xEdit
                 inexistente.
         """
+        if self._validator is not None:
+            self._validator.validate(self._xedit_path)
+
         return await asyncio.to_thread(
             stage_scripts,
             self._xedit_path.parent / "Edit Scripts",

@@ -86,6 +86,22 @@ def test_nombre_fuera_del_bundle_lanza(xedit_dir: pathlib.Path) -> None:
         stage_scripts(destino, ["../evil.pas"])
 
 
+def test_nombre_con_traversal_que_resuelve_al_bundle_no_escapa_destino(xedit_dir: pathlib.Path) -> None:
+    # ``../scripts/list_all_conflicts.pas`` resuelve DENTRO del bundle (pasa el
+    # check de traversal), pero si el nombre crudo se reusara para el destino
+    # escaparia de Edit Scripts/ hacia xedit_dir/scripts/. El staging debe usar
+    # el basename real, no el string tal cual vino.
+    destino = xedit_dir / "Edit Scripts"
+    nombre_con_traversal = "../scripts/" + _PRECEDENTE
+
+    resultado = stage_scripts(destino, [nombre_con_traversal])
+
+    assert resultado[0].destination == destino / _PRECEDENTE
+    assert resultado[0].destination.is_relative_to(destino)
+    assert (destino / _PRECEDENTE).exists()
+    assert not (xedit_dir / "scripts" / _PRECEDENTE).exists()
+
+
 def test_dir_xedit_inexistente_lanza(tmp_path: pathlib.Path) -> None:
     # El parent de Edit Scripts es el dir de xEdit: si no existe, NO se
     # materializa una instalación fantasma.
@@ -110,6 +126,32 @@ async def test_runner_ensure_scripts_staged_delega(tmp_path: pathlib.Path) -> No
 
     assert resultado[0].action == "copied"
     assert (tmp_path / "Edit Scripts" / _PRECEDENTE).exists()
+
+
+async def test_runner_ensure_scripts_staged_valida_xedit_path_antes_de_escribir(
+    tmp_path: pathlib.Path,
+) -> None:
+    # run_script consulta al validator ANTES de tocar el ejecutable; el
+    # staging debia hacer lo mismo. Sin este guard, un xedit_path fuera del
+    # sandbox (config mala o comprometida) crea/sobreescribe "Edit Scripts/"
+    # fuera de los roots permitidos antes de que el validator diga que no.
+    from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+
+    fuera_del_sandbox = tmp_path / "fuera"
+    fuera_del_sandbox.mkdir()
+    sandbox_root = tmp_path / "sandbox"
+    sandbox_root.mkdir()
+    validator = PathValidator(roots=[sandbox_root])
+    runner = XEditRunner(
+        xedit_path=fuera_del_sandbox / "SSEEdit.exe",
+        game_path=tmp_path,
+        path_validator=validator,
+    )
+
+    with pytest.raises(PathViolationError):
+        await runner.ensure_scripts_staged([_PRECEDENTE])
+
+    assert not (fuera_del_sandbox / "Edit Scripts").exists()
 
 
 async def test_conflict_analyzer_stagea_su_script() -> None:

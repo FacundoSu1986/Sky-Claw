@@ -178,10 +178,11 @@ def test_parsea_zero_bounds() -> None:
     assert zeros.form_id == "0101A001"
     assert zeros.editor_id == "BrokenTundraGrass"
     assert zeros.winner_plugin == "BrokenGrass.esp"
-    assert zeros.source_plugin == "BrokenGrass.esp"
+    assert zeros.origin_plugin == "BrokenGrass.esp"
     assert zeros.reason == "zeros"
     assert missing.reason == "missing"
     assert missing.winner_plugin == "Fix.esp"
+    assert missing.origin_plugin == "BrokenGrass.esp"
 
 
 def test_zero_bound_reason_invalido_se_saltea() -> None:
@@ -269,6 +270,19 @@ async def test_conteo_inconsistente_con_summary_lanza() -> None:
     runner = _runner(salida)
 
     with pytest.raises(RuntimeError, match="inconsistente"):
+        await GrassAnalyzer().list_grass_worldspaces(["Skyrim.esm"], runner)
+
+
+async def test_land_scanned_cero_lanza_fail_closed() -> None:
+    # land_scanned=0 con SUMMARY consistente (0 worldspaces, conteo cerrado):
+    # Skyrim.esm siempre trae LAND records, asi que un scan real jamas visita
+    # cero. Si ocurre, el idiom LAND->WRLD del script se rompio (ej. el masters
+    # no cargaron) y "sin worldspaces" seria un OnlyPregenerateWorldSpaces
+    # vacio silencioso — el fallo que este modulo existe para evitar.
+    salida = "SUMMARY|grass_worldspaces=0|land_scanned=0|ltex_grass=0\n"
+    runner = _runner(salida)
+
+    with pytest.raises(RuntimeError, match="land_scanned"):
         await GrassAnalyzer().list_grass_worldspaces(["Skyrim.esm"], runner)
 
 
