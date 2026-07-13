@@ -217,6 +217,11 @@ class LLMRouter:
         self._lifecycle = lifecycle  # DatabaseLifecycleManager | None (M-01.1 DI)
         self._owns_conn: bool = False  # True when we opened the connection directly (no lifecycle)
         self._conn: aiosqlite.Connection | None = None
+        # R-2: serializa el acceso a la conexión de historial. Sin él, un close()
+        # en shutdown podía nular self._conn entre el execute() y el commit() de
+        # _save_message (o cerrar la conexión durante un _load_context en vuelo),
+        # produciendo AttributeError / uso de conexión cerrada.
+        self._conn_lock: asyncio.Lock = asyncio.Lock()
 
         # Standard 2026 Orchestration Layers
         self._semantic_router = SemanticRouter()
@@ -275,25 +280,29 @@ class LLMRouter:
         requested from it (WAL recovery + hardened pragmas already applied).
         Otherwise falls back to a direct ``aiosqlite.connect`` (pre-M-01).
         """
-        if self._conn is not None:
-            return
-        if self._lifecycle is not None:
-            self._owns_conn = False
-            self._conn = await self._lifecycle.get_connection(self._db_path)
-        else:
-            self._owns_conn = True
-            self._conn = await aiosqlite.connect(self._db_path)
-            await self._conn.execute("PRAGMA journal_mode=WAL")
-        await self._conn.executescript(_HISTORY_SCHEMA)
+        async with self._conn_lock:
+            if self._conn is not None:
+                return
+            if self._lifecycle is not None:
+                self._owns_conn = False
+                self._conn = await self._lifecycle.get_connection(self._db_path)
+            else:
+                self._owns_conn = True
+                self._conn = await aiosqlite.connect(self._db_path)
+                await self._conn.execute("PRAGMA journal_mode=WAL")
+            await self._conn.executescript(_HISTORY_SCHEMA)
 
     async def close(self) -> None:
         """Close the history database (lifecycle-owned connections stay open)."""
-        if self._conn is not None:
-            if self._owns_conn:
-                await self._conn.close()
-                self._owns_conn = False
-            # Si el lifecycle es externo, el propietario cierra en shutdown_all().
-            self._conn = None
+        # R-2: bajo el lock, para no cerrar la conexión mientras _save_message /
+        # _load_context la están usando.
+        async with self._conn_lock:
+            if self._conn is not None:
+                if self._owns_conn:
+                    await self._conn.close()
+                    self._owns_conn = False
+                # Si el lifecycle es externo, el propietario cierra en shutdown_all().
+                self._conn = None
 
     # ------------------------------------------------------------------
     # LLM Hot-Swapping Factory Pattern (SRE Phase 1)
@@ -736,22 +745,28 @@ class LLMRouter:
 
     async def _save_message(self, chat_id: str, role: str, content: str) -> None:
         """Persist a message to the history database immediately."""
-        if self._conn is None:
-            raise RuntimeError("Router database is not open")
-        await self._conn.execute(
-            "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-            (chat_id, role, content, time.time()),
-        )
-        await self._conn.commit()
+        # R-2: bajo el lock, para que un close() concurrente no nule self._conn
+        # entre el execute() y el commit().
+        async with self._conn_lock:
+            if self._conn is None:
+                raise RuntimeError("Router database is not open")
+            await self._conn.execute(
+                "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                (chat_id, role, content, time.time()),
+            )
+            await self._conn.commit()
 
     async def _load_context(self, chat_id: str) -> list[dict[str, Any]]:
-        if self._conn is None:
-            raise RuntimeError("Router database is not open")
-        async with self._conn.execute(
-            "SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
-            (chat_id, self._max_context),
-        ) as cur:
-            rows = await cur.fetchall()
+        # R-2: la lectura de filas va bajo el lock (la conexión no se cierra a
+        # mitad de query); el parseo posterior no lo necesita.
+        async with self._conn_lock:
+            if self._conn is None:
+                raise RuntimeError("Router database is not open")
+            async with self._conn.execute(
+                "SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+                (chat_id, self._max_context),
+            ) as cur:
+                rows = await cur.fetchall()
 
         messages: list[dict[str, Any]] = []
         for row in reversed(rows):
