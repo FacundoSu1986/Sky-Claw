@@ -26,8 +26,11 @@ from sky_claw.antigravity.gui.controllers.ritual_runner import (
     RITUAL_INSTALLER_MAP,
     STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
+    STORE_KEY_RITUAL_PREFLIGHT,
 )
 from sky_claw.antigravity.gui.state import get_store
+
+from .sections import create_preflight_panel
 
 # Stash for the HITL respond callback so the module-level modal refreshable can
 # reach it (set per render in render_forge_dashboard, like the live panels read
@@ -266,6 +269,7 @@ def render_forge_dashboard(
         # Overlays driven by the store (own refreshables → never reset the chat).
         _hitl_modal_panel()
         _ritual_feedback_panel()
+        _ritual_preflight_panel()
         _sidebar(active, conflicts, pending, active_section, callbacks, connected)
         with ui.element("div").style(
             "position:relative; z-index:2; flex:1; min-width:0; display:flex; flex-direction:column;"
@@ -629,6 +633,37 @@ def _ritual_feedback_panel() -> None:
         )
         x.on(
             "click", lambda _=None: (get_store().set(STORE_KEY_RITUAL_FEEDBACK, None), _ritual_feedback_panel.refresh())
+        )
+        with x:
+            ui.html("&times;")
+
+
+@ui.refreshable
+def _ritual_preflight_panel() -> None:
+    """Semáforo de preflight del último Ritual, como panel dismissible (T-16b).
+
+    Renderiza el reporte que el dispatch adjuntó (``result["preflight"]``) con
+    :func:`create_preflight_panel` — hoy solo el sort de LOOT corre preflight. Un
+    reporte rojo significa que el gate de ``loot_service`` ya frenó el sort; este
+    panel lo hace visible. Se muestra solo mientras ``ritual_preflight`` esté set;
+    el botón ``×`` lo limpia (mismo patrón que :func:`_ritual_feedback_panel`).
+    """
+    report = get_store().get(STORE_KEY_RITUAL_PREFLIGHT)
+    if not report:
+        return
+    wrap = (
+        "position:fixed; right:22px; bottom:96px; z-index:1000; max-width:420px;"
+        "display:flex; align-items:flex-start; gap:8px;"
+    )
+    with ui.element("div").style(wrap):
+        with ui.element("div").style("flex:1; min-width:0;"):
+            create_preflight_panel(report)
+        x = ui.element("button").style(
+            "cursor:pointer; background:none; border:none; color:#8a8270; font-size:15px; line-height:1; padding:0 2px;"
+        )
+        x.on(
+            "click",
+            lambda _=None: (get_store().set(STORE_KEY_RITUAL_PREFLIGHT, None), _ritual_preflight_panel.refresh()),
         )
         with x:
             ui.html("&times;")

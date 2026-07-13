@@ -39,6 +39,7 @@ from sky_claw.antigravity.gui.controllers import (
 from sky_claw.antigravity.gui.controllers.ritual_runner import (
     STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
+    STORE_KEY_RITUAL_PREFLIGHT,
     run_ritual,
     run_ritual_install,
 )
@@ -58,6 +59,7 @@ from sky_claw.antigravity.gui.views.forge_dashboard import (
     STORE_KEY_ENV,
     _hitl_modal_panel,
     _ritual_feedback_panel,
+    _ritual_preflight_panel,
     modo_local_enabled,
 )
 from sky_claw.config import Config
@@ -1019,6 +1021,9 @@ def setup_app() -> None:
     # a prompt or showing a result never resets the chat input.
     store.subscribe(STORE_KEY_PENDING_HITL, _hitl_modal_panel.refresh)
     store.subscribe(STORE_KEY_RITUAL_FEEDBACK, _ritual_feedback_panel.refresh)
+    # T-16b: el semáforo de preflight que el dispatch adjunta se surface en su
+    # propio @ui.refreshable, sin resetear el chat (mismo patrón que el toast).
+    store.subscribe(STORE_KEY_RITUAL_PREFLIGHT, _ritual_preflight_panel.refresh)
 
     # Descargas: la carga del historial se dispara al navegar a la sección (no
     # en el render — review Copilot #224), y todos los refresh de esta pantalla
