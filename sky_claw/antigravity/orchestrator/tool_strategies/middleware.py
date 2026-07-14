@@ -50,6 +50,9 @@ DESTRUCTIVE_TOOL_PATTERNS: frozenset[str] = frozenset(
         "generate_animations",
         # Follow-up B: QuickAutoClean reescribe los plugins oficiales en disco.
         "quick_auto_clean",
+        # PR-5 grass cache: el precache muta el árbol MO2 (clon + mod de
+        # config) y lanza el juego en crash-loop durante horas.
+        "generate_grass_cache",
         # Nombre real de la strategy (resolve_conflict_patch.py define
         # name="resolve_conflict_with_patch"); el alias viejo sin "_with"
         # nunca matcheó y dejaba la tool de xEdit SIN gate HITL.

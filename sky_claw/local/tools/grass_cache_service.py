@@ -1,0 +1,372 @@
+"""GrassCacheService — orquestador del ritual de grass cache NGIO (PR-5).
+
+Compone las piezas ya mergeadas del plan (Stage 8 del SOP):
+
+- **Fase A** (read-only, sin lock): :class:`GrassAnalyzer` (PR-2) — worldspaces
+  con pasto para ``Only-pregenerate-world-spaces`` + detección del fallo
+  silencioso de zero-bounds.
+- **Fase B**: :class:`GrassProfileManager` (PR-3) — perfil MO2 dedicado clonado
+  + mod de configuración; el perfil real jamás se toca.
+- **Fase C**: :class:`GrassCacheRunner` (PR-4) — crash-loop supervisor.
+- **Fase D**: restauración del entorno (``teardown()`` SIEMPRE, incluso en
+  éxito); el cache generado queda en ``overwrite/Grass`` (MO2 lo sirve vía el
+  overwrite; empaquetarlo como mod dedicado es follow-up documentado).
+
+Disciplinas del repo:
+- El ritual entero corre bajo el **lock distribuido** ``grass-cache``
+  (``SnapshotTransactionLock`` sin snapshots: lease con auto-renew — un run de
+  12 h excede cualquier TTL fijo). El cache parcial se conserva SIEMPRE.
+- **Journal por transacción** (patrón LOOT/DynDOLOD): commit en éxito,
+  ``mark_transaction_rolled_back`` en fallo.
+- **Guard Stage 5→8 (NUEVO)**: las dependencias de pipeline estaban
+  documentadas pero no aplicadas (§5.2 del SOP exige guards en paths nuevos).
+  Se verifica en el journal que LOOT (``loot-sorting-service``) tenga una
+  operación COMPLETED; fail-closed sin journal. ``force_stage_guard=True`` lo
+  saltea de forma explícita y VISIBLE en el prompt HITL.
+- Contrato de retorno: dict ``success: bool`` + ``message: str`` (vacío en
+  éxito) — ``normalize_tool_result`` jamás cae en "error desconocido".
+- Eventos lifecycle al bus (``pipeline.grass_cache.started/completed``) +
+  traducción del callback de progreso del runner a
+  ``pipeline.grass_cache.progress`` (el runner es agnóstico del bus — D3).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import dataclasses
+import logging
+import time
+from typing import TYPE_CHECKING, Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from sky_claw.antigravity.db.journal import OperationStatus
+from sky_claw.antigravity.db.locks import LockAcquisitionError, SnapshotTransactionLock
+from sky_claw.local.tools.grass_cache_runner import (
+    GrassCacheConfig,
+    GrassCacheProgress,
+    GrassCacheRunner,
+    GrassCacheRunResult,
+)
+from sky_claw.local.xedit.grass_analyzer import GrassAnalyzer
+
+if TYPE_CHECKING:
+    import pathlib
+    from collections.abc import Callable
+
+    from sky_claw.antigravity.core.event_bus import CoreEventBus
+    from sky_claw.antigravity.db.journal import OperationJournal
+    from sky_claw.antigravity.db.locks import DistributedLockManager
+    from sky_claw.antigravity.db.snapshots import FileSnapshotManager
+    from sky_claw.local.mo2.grass_profile import GrassProfileManager
+    from sky_claw.local.mo2.vfs import MO2Controller
+    from sky_claw.local.xedit.runner import XEditRunner
+
+logger = logging.getLogger(__name__)
+
+#: Recurso del lock distribuido: un solo ritual de grass a la vez.
+GRASS_CACHE_RESOURCE_ID = "grass-cache"
+
+
+class GrassCacheServiceError(Exception):
+    """Configuración/estado inválido del servicio (mensaje accionable)."""
+
+
+class GenerateGrassCacheParams(BaseModel):
+    """Payload de ``generate`` (validación única, compartida con la strategy).
+
+    Attributes:
+        worldspaces: EditorIDs con pasto (salida de la Fase A) — obligatorio y
+            no vacío: un precache sin filtro escanearía TODO el load order.
+        conflicting_mods: Mods a desactivar SOLO en el clon (ENB helper, etc.).
+        max_runtime_s / max_restarts / stall_threshold: Overrides opcionales de
+            los presupuestos del runner.
+        force_stage_guard: Saltea el guard Stage 5→8 (visible en el prompt
+            HITL — un bypass jamás es silencioso).
+    """
+
+    model_config = ConfigDict(strict=True)
+
+    worldspaces: list[str] = Field(min_length=1)
+    conflicting_mods: list[str] = Field(default_factory=list)
+    max_runtime_s: float | None = None
+    max_restarts: int | None = None
+    stall_threshold: int | None = None
+    force_stage_guard: bool = False
+
+
+class GrassCacheService:
+    """Orquesta las Fases A→D del precache de grass bajo lock + journal.
+
+    Args:
+        lock_manager / snapshot_manager: Infra del lease distribuido.
+        journal: :class:`OperationJournal` (None solo en tests: el guard
+            Stage 5→8 es fail-closed sin journal).
+        event_bus: Bus de eventos lifecycle (opcional).
+        profile_manager: Fase B (inyectable; requerido para ``generate``).
+        analyzer: Fase A (default: :class:`GrassAnalyzer` real).
+        xedit_runner_provider: Provider lazy del runner de xEdit para la
+            Fase A (patrón ``XEditPipelineService._ensure_xedit_runner``).
+        mo2: Controller para lanzar el juego (Fase C).
+        game_path: Dir de ``SkyrimSE.exe`` (para el flag del runner).
+        overwrite_grass_dir: ``<mo2>/overwrite/Grass``.
+        runner_factory: Fábrica del runner (inyectable para tests).
+        lock_factory: Fábrica del ``SnapshotTransactionLock`` (tests).
+    """
+
+    RESOURCE_ID: str = GRASS_CACHE_RESOURCE_ID
+    AGENT_ID: str = "grass-cache-service"
+    #: Agent id con el que LOOT journaliza (guard Stage 5→8).
+    LOOT_AGENT_ID: str = "loot-sorting-service"
+
+    def __init__(
+        self,
+        *,
+        lock_manager: DistributedLockManager,
+        snapshot_manager: FileSnapshotManager,
+        journal: OperationJournal | None = None,
+        event_bus: CoreEventBus | None = None,
+        profile_manager: GrassProfileManager | None = None,
+        analyzer: GrassAnalyzer | None = None,
+        xedit_runner_provider: Callable[[], XEditRunner] | None = None,
+        mo2: MO2Controller | None = None,
+        game_path: pathlib.Path | None = None,
+        overwrite_grass_dir: pathlib.Path | None = None,
+        runner_factory: Callable[..., GrassCacheRunner] | None = None,
+        lock_factory: Callable[..., SnapshotTransactionLock] | None = None,
+    ) -> None:
+        self._lock_manager = lock_manager
+        self._snapshot_manager = snapshot_manager
+        self._journal = journal
+        self._event_bus = event_bus
+        self._profile_manager = profile_manager
+        self._analyzer = analyzer if analyzer is not None else GrassAnalyzer()
+        self._xedit_runner_provider = xedit_runner_provider
+        self._mo2 = mo2
+        self._game_path = game_path
+        self._overwrite_grass_dir = overwrite_grass_dir
+        self._runner_factory = runner_factory if runner_factory is not None else GrassCacheRunner
+        self._lock_factory = lock_factory if lock_factory is not None else SnapshotTransactionLock
+
+    # ------------------------------------------------------------------
+    # Fase A — diagnóstico read-only (sin lock, sin HITL)
+    # ------------------------------------------------------------------
+
+    async def analyze_prerequisites(self, plugins: list[str], *, timeout: int | None = None) -> dict[str, Any]:
+        """Worldspaces con pasto + zero-bounds; ``ready`` resume si se puede seguir."""
+        try:
+            if self._xedit_runner_provider is None:
+                raise GrassCacheServiceError(
+                    "El runner de xEdit no está configurado (XEDIT_PATH/SKYRIM_PATH): "
+                    "la Fase A necesita xEdit para el scan de worldspaces."
+                )
+            xedit_runner = self._xedit_runner_provider()
+            ws = await self._analyzer.list_grass_worldspaces(plugins, xedit_runner, timeout=timeout)
+            zb = await self._analyzer.detect_zero_bound_grass(plugins, xedit_runner, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 — el contrato exige dict, no excepción
+            logger.warning("Fase A de grass falló", exc_info=True)
+            return {"success": False, "message": str(exc)}
+        ready = bool(ws.editor_ids) and not zb.has_findings
+        return {
+            "success": True,
+            "message": "",
+            "worldspaces": ws.to_dict(),
+            "zero_bounds": zb.to_dict(),
+            "editor_ids": ws.editor_ids,
+            "ready": ready,
+        }
+
+    # ------------------------------------------------------------------
+    # Fases B→D — el ritual mutante (lock + journal + HITL vía strategy)
+    # ------------------------------------------------------------------
+
+    async def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Ejecuta el precache completo; siempre devuelve el dict del contrato.
+
+        La cancelación dura (``asyncio.CancelledError``) propaga tras el
+        teardown — es la única no-devolución, semántica estándar del repo.
+        """
+        inicio = time.monotonic()
+        try:
+            params = GenerateGrassCacheParams(**payload)
+        except Exception as exc:  # noqa: BLE001 — ValidationError y afines → contrato
+            return self._error(f"Payload inválido para generate_grass_cache: {exc}", inicio)
+
+        guard = await self._stage_guard(force=params.force_stage_guard)
+        if guard is not None:
+            return self._error(guard, inicio)
+
+        try:
+            pm = self._require(self._profile_manager, "profile_manager (GrassProfileManager)")
+            mo2 = self._require(self._mo2, "mo2 (MO2Controller)")
+            config = self._build_runner_config(params, pm)
+        except GrassCacheServiceError as exc:
+            return self._error(str(exc), inicio)
+
+        await self._publish(
+            "pipeline.grass_cache.started",
+            {"worldspaces": params.worldspaces, "conflicting_mods": params.conflicting_mods},
+        )
+
+        tx = self._lock_factory(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self._snapshot_manager,
+            resource_id=self.RESOURCE_ID,
+            agent_id=self.AGENT_ID,
+            metadata={"source": "grass_cache", "worldspaces": len(params.worldspaces)},
+        )
+        journal_tx: int | None = None
+        run_result: GrassCacheRunResult | None = None
+        error_msg: str | None = None
+        try:
+            async with tx:
+                if self._journal is not None:
+                    journal_tx = await self._journal.begin_transaction(
+                        "Grass precache (NGIO, Stage 8)", agent_id=self.AGENT_ID
+                    )
+                # -- Fase B: preparación aislada (solo el clon se muta) --
+                await pm.create_clone_profile()
+                await pm.build_config_mod(params.worldspaces)
+                if params.conflicting_mods:
+                    await pm.disable_conflicting_mods(params.conflicting_mods)
+                # -- Fase C: crash-loop --
+                runner = self._runner_factory(config, mo2, on_progress=self._make_progress_publisher())
+                run_result = await runner.run()
+        except LockAcquisitionError as exc:
+            return self._error(f"No se pudo tomar el lock '{self.RESOURCE_ID}': {exc}", inicio)
+        except Exception as exc:  # noqa: BLE001 — GrassProfileError y afines → contrato
+            logger.warning("El ritual de grass falló antes/durante el runner", exc_info=True)
+            error_msg = str(exc)
+        finally:
+            # -- Fase D: restaurar el entorno SIEMPRE (también en éxito). El
+            # cache queda en overwrite/Grass — jamás se borra (cache parcial
+            # reanuda; cache completo es el producto).
+            await self._teardown_best_effort()
+
+        exito = run_result is not None and run_result.success
+        await self._journal_close(journal_tx, exito=exito)
+        resultado = self._componer_resultado(run_result, error_msg, inicio)
+        await self._publish(
+            "pipeline.grass_cache.completed",
+            {
+                "success": resultado["success"],
+                "outcome": resultado.get("outcome"),
+                "duration_seconds": resultado["duration_seconds"],
+            },
+        )
+        return resultado
+
+    # ------------------------------------------------------------------
+    # Internos
+    # ------------------------------------------------------------------
+
+    async def _stage_guard(self, *, force: bool) -> str | None:
+        """Guard Stage 5→8: LOOT completado según el journal, o mensaje de error."""
+        if force:
+            logger.warning("Guard Stage 5→8 SALTEADO por force_stage_guard=True (visible en HITL).")
+            return None
+        if self._journal is None:
+            return (
+                "Guard Stage 5→8: sin journal no puede verificarse que LOOT (Stage 5) haya "
+                "completado. Configurá el journal o pasá force_stage_guard=True (visible en HITL)."
+            )
+        entry = await self._journal.get_last_operation(self.LOOT_AGENT_ID, statuses=[OperationStatus.COMPLETED])
+        if entry is None:
+            return (
+                "Stage 5 (LOOT) no consta como completado en el journal: corré "
+                "execute_loot_sorting antes del precache de grass (orden del SOP), "
+                "o pasá force_stage_guard=True si sabés lo que hacés."
+            )
+        return None
+
+    def _build_runner_config(self, params: GenerateGrassCacheParams, pm: GrassProfileManager) -> GrassCacheConfig:
+        game_path = self._require(self._game_path, "game_path (dir de SkyrimSE.exe — SKYRIM_PATH)")
+        grass_dir = self._require(self._overwrite_grass_dir, "overwrite_grass_dir (<mo2>/overwrite/Grass)")
+        overrides: dict[str, Any] = {}
+        if params.max_runtime_s is not None:
+            overrides["max_runtime_s"] = params.max_runtime_s
+        if params.max_restarts is not None:
+            overrides["max_restarts"] = params.max_restarts
+        if params.stall_threshold is not None:
+            overrides["stall_threshold"] = params.stall_threshold
+        try:
+            return GrassCacheConfig(
+                game_path=game_path,
+                overwrite_grass_dir=grass_dir,
+                profile=pm.clone_profile,
+                **overrides,
+            )
+        except ValueError as exc:
+            raise GrassCacheServiceError(f"Configuración del runner inválida: {exc}") from exc
+
+    def _make_progress_publisher(self) -> Callable[[GrassCacheProgress], Any]:
+        """Callback runner→bus (el runner es agnóstico del bus — D3)."""
+
+        async def _publicar(progreso: GrassCacheProgress) -> None:
+            await self._publish("pipeline.grass_cache.progress", dataclasses.asdict(progreso))
+
+        return _publicar
+
+    async def _teardown_best_effort(self) -> None:
+        if self._profile_manager is None:
+            return
+        try:
+            await self._profile_manager.teardown()
+        except Exception:  # noqa: BLE001 — el teardown jamás enmascara el resultado
+            logger.warning("El teardown del ritual de grass falló (limpiar a mano el clon/mod)", exc_info=True)
+
+    async def _journal_close(self, journal_tx: int | None, *, exito: bool) -> None:
+        if self._journal is None or journal_tx is None:
+            return
+        with contextlib.suppress(Exception):
+            if exito:
+                await self._journal.commit_transaction(journal_tx)
+            else:
+                await self._journal.mark_transaction_rolled_back(journal_tx)
+
+    def _componer_resultado(
+        self, run_result: GrassCacheRunResult | None, error_msg: str | None, inicio: float
+    ) -> dict[str, Any]:
+        duracion = time.monotonic() - inicio
+        if run_result is None:
+            return self._error(error_msg or "El ritual de grass no llegó a ejecutar el runner.", inicio)
+        return {
+            "success": run_result.success,
+            "message": run_result.message,
+            "outcome": run_result.outcome,
+            "crash_count": run_result.crash_count,
+            "cgid_count": run_result.cgid_count,
+            "cache_size_mb": run_result.cache_size_mb,
+            "elapsed_s": run_result.elapsed_s,
+            "cancelled": run_result.cancelled,
+            "stalled": run_result.stalled,
+            "duration_seconds": duracion,
+        }
+
+    async def _publish(self, topic: str, payload: dict[str, Any]) -> None:
+        if self._event_bus is None:
+            return
+        try:
+            from sky_claw.antigravity.core.event_bus import Event
+
+            await self._event_bus.publish(Event(topic=topic, payload=payload, source=self.AGENT_ID))
+        except Exception:  # noqa: BLE001 — un bus roto no corta el ritual
+            logger.warning("No se pudo publicar %s al bus", topic, exc_info=True)
+
+    @staticmethod
+    def _error(mensaje: str, inicio: float) -> dict[str, Any]:
+        return {"success": False, "message": mensaje, "duration_seconds": time.monotonic() - inicio}
+
+    @staticmethod
+    def _require(valor: Any, nombre: str) -> Any:
+        if valor is None:
+            raise GrassCacheServiceError(f"Dependencia no configurada: {nombre}.")
+        return valor
+
+
+__all__ = [
+    "GRASS_CACHE_RESOURCE_ID",
+    "GenerateGrassCacheParams",
+    "GrassCacheService",
+    "GrassCacheServiceError",
+]

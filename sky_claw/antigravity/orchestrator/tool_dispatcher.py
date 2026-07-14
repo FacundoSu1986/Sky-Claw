@@ -14,6 +14,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from sky_claw.antigravity.orchestrator.tool_strategies.analyze_grass_prerequisites import (
+    AnalyzeGrassPrerequisitesStrategy,
+)
 from sky_claw.antigravity.orchestrator.tool_strategies.base import (
     DuplicateToolError,
     NextCall,
@@ -32,6 +35,9 @@ from sky_claw.antigravity.orchestrator.tool_strategies.generate_animations impor
 )
 from sky_claw.antigravity.orchestrator.tool_strategies.generate_bashed_patch import (
     GenerateBashedPatchStrategy,
+)
+from sky_claw.antigravity.orchestrator.tool_strategies.generate_grass_cache import (
+    GenerateGrassCacheStrategy,
 )
 from sky_claw.antigravity.orchestrator.tool_strategies.generate_lods import GenerateLodsStrategy
 from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
@@ -257,6 +263,24 @@ def build_orchestration_dispatcher(
     dispatcher.register(
         QuickAutoCleanStrategy(service=supervisor._xedit_service),
         middleware=[gate],
+    )
+
+    # PR-5 grass cache: la Fase A es read-only (sin gate, con wrapping como
+    # preview_chain); el ritual completo es destructivo → gate innermost.
+    dispatcher.register(
+        AnalyzeGrassPrerequisitesStrategy(service=supervisor._grass_cache_service),
+        middleware=[
+            ErrorWrappingMiddleware("GrassAnalysisFailed"),
+            DictResultGuardMiddleware("InvalidGrassAnalysisResult"),
+        ],
+    )
+    dispatcher.register(
+        GenerateGrassCacheStrategy(service=supervisor._grass_cache_service),
+        middleware=[
+            ErrorWrappingMiddleware("GrassCacheExecutionFailed"),
+            DictResultGuardMiddleware("InvalidGrassCacheResult"),
+            gate,
+        ],
     )
 
     # Lambdas re-resolve attributes on each call so test fixtures can
