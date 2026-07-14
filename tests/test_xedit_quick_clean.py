@@ -346,6 +346,27 @@ async def test_preflight_yellow_cleans_and_surfaces_report(
 
 
 @pytest.mark.asyncio
+async def test_preflight_yellow_surfaced_even_when_clean_fails(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    # Review Codex #288 (P2): un preflight amarillo se surface incluso si la
+    # limpieza falla después (el runner devuelve error → rollback), en vez de
+    # perderse el warning ya computado en el path de error.
+    game = _game_with_masters(tmp_path, ("Update.esm",))
+    runner = MagicMock()
+    runner.quick_auto_clean = AsyncMock(
+        return_value=ScriptExecutionResult(success=False, exit_code=2, stdout="", stderr="boom", records_processed=0)
+    )
+    yellow = _permissions_report(PreflightStatus.YELLOW, "Escritura verificada con advertencias.")
+    svc = _make_service(lock_manager, snapshot_manager, game, runner, preflight=_FakePreflight(yellow))
+
+    result = await svc.quick_auto_clean()
+
+    assert result["success"] is False  # la limpieza falló y se hizo rollback
+    assert result["preflight"]["status"] == "yellow"  # pero el warning se surface igual
+
+
+@pytest.mark.asyncio
 async def test_preflight_green_does_not_attach_report(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:

@@ -422,7 +422,11 @@ class XEditPipelineService:
 
         def _permissions():
             # Re-probe por llamada (freshness): un cambio de permisos entre corridas se ve.
-            return WritePermissionsChecker(targets=[data_dir]).check()
+            # Prueba el dir Data Y cada master oficial presente: un master read-only en
+            # un Data escribible haría fallar la reescritura, y el probe de dir no lo ve
+            # (review Codex #288). Re-escanea los masters en cada corrida.
+            masters = [data_dir / m for m in _OFFICIAL_DIRTY_MASTERS if (data_dir / m).is_file()]
+            return WritePermissionsChecker(targets=[data_dir, *masters]).check()
 
         # omit_unconfigured: xEdit solo cablea vfs + permisos; sin esto el panel
         # mostraría "no configurado" para LOOT/masters/límites/overwrite (ruido).
@@ -462,7 +466,9 @@ class XEditPipelineService:
             preflight_report = await preflight.run()
             if preflight_report.blocks_mutations:
                 red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
-                logger.warning("QuickAutoClean bloqueado por preflight en rojo: %s", red)
+                # Regla 5 del SOP (local/AGENTS.md): loguear el índice de stage al fallar.
+                # QuickAutoClean es STAGE 1 del pipeline (§1).
+                logger.warning("QuickAutoClean (stage 1) bloqueado por preflight en rojo: %s", red)
                 return {
                     "status": "error",
                     "success": False,
@@ -475,8 +481,11 @@ class XEditPipelineService:
         try:
             runner = self._ensure_xedit_runner()
         except PatchingError as exc:
-            logger.error("XEditRunner no disponible para QuickAutoClean: %s", exc)
-            return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
+            logger.error("XEditRunner (stage 1) no disponible para QuickAutoClean: %s", exc)
+            return _attach_preflight(
+                {"status": "error", "success": False, "message": str(exc), "logs": str(exc)},
+                preflight_report,
+            )
 
         data_dir = game_path / "Data"
         targets = [data_dir / master for master in _OFFICIAL_DIRTY_MASTERS if (data_dir / master).is_file()]
@@ -511,20 +520,26 @@ class XEditPipelineService:
                         raise PatchingError(f"QuickAutoClean falló para {path.name} (exit {result.exit_code}).")
                     cleaned.append(path.name)
         except LockAcquisitionError as exc:
-            logger.warning("Lock contention on '%s': %s", XEDIT_CLEAN_RESOURCE_ID, exc)
+            logger.warning("Lock contention on '%s' (stage 1): %s", XEDIT_CLEAN_RESOURCE_ID, exc)
             detail = f"No se pudo adquirir el lock '{XEDIT_CLEAN_RESOURCE_ID}': {exc}"
-            return {"status": "error", "success": False, "message": detail, "logs": detail}
+            return _attach_preflight(
+                {"status": "error", "success": False, "message": detail, "logs": detail},
+                preflight_report,
+            )
         except (PatchingError, XEditError) as exc:
             # __aexit__ ya restauró los snapshots (rollback de todos los masters).
-            logger.error("QuickAutoClean falló; rollback aplicado: %s", exc)
-            return {
-                "status": "error",
-                "success": False,
-                "message": str(exc),
-                "cleaned": [],
-                "rolled_back": True,
-                "logs": str(exc),
-            }
+            logger.error("QuickAutoClean (stage 1) falló; rollback aplicado: %s", exc)
+            return _attach_preflight(
+                {
+                    "status": "error",
+                    "success": False,
+                    "message": str(exc),
+                    "cleaned": [],
+                    "rolled_back": True,
+                    "logs": str(exc),
+                },
+                preflight_report,
+            )
 
         logger.info("QuickAutoClean exitoso: %s", cleaned)
         return _attach_preflight(

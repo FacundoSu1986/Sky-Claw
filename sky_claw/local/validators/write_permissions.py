@@ -76,21 +76,26 @@ class WritePermissionsChecker:
     """Prueba escritura real en cada ruta objetivo (crear + borrar un temporal).
 
     Args:
-        targets: Rutas que los Rituales van a escribir (``Data``, ``overwrite``,
-            ``mods``, perfil de MO2). Las inexistentes o que no son dir se
-            saltean (otros sensores reportan rutas faltantes).
+        targets: Rutas que los Rituales van a escribir. Un **directorio** se
+            prueba creando/borrando un temporal (``Data``, ``overwrite``,
+            ``mods``, perfil de MO2); un **archivo existente** se prueba abriéndolo
+            en modo escritura sin modificarlo (p. ej. un master oficial que
+            QuickAutoClean reescribe — un archivo read-only en un dir escribible
+            no lo ve el probe de directorio). Las rutas inexistentes se saltean
+            (otros sensores reportan rutas faltantes).
     """
 
     def __init__(self, *, targets: Sequence[pathlib.Path]) -> None:
         self._targets = tuple(targets)
 
     def check(self) -> WriteAccessReport:
-        """Prueba escritura en cada target que exista y sea directorio."""
+        """Prueba escritura en cada target existente (directorio o archivo)."""
         probed: list[str] = []
         issues: list[WriteAccessIssue] = []
         for target in self._targets:
             try:
                 is_dir = target.is_dir()
+                is_file = target.is_file() if not is_dir else False
             except PermissionError as exc:
                 # No se pudo ni stat-ear (ACL de Windows niega atributos, o el
                 # padre es inaccesible): si el Ritual escribe acá va a fallar,
@@ -111,12 +116,16 @@ class WritePermissionsChecker:
                     WriteAccessIssue(path=str(target), kind="error", severity="warning", remediation=_ERROR_REMEDIATION)
                 )
                 continue
-            if not is_dir:
-                # Inexistente o no-directorio: no es residuo (otros sensores
-                # reportan rutas faltantes); is_dir() no lanza para inexistentes.
+            if is_dir:
+                probed.append(str(target))
+                issue = self._probe_write(target)
+            elif is_file:
+                probed.append(str(target))
+                issue = self._probe_write_file(target)
+            else:
+                # Inexistente (ni dir ni archivo): no es residuo — otros sensores
+                # reportan rutas faltantes; is_dir()/is_file() no lanzan para inexistentes.
                 continue
-            probed.append(str(target))
-            issue = self._probe_write(target)
             if issue is not None:
                 issues.append(issue)
         if issues:
@@ -151,6 +160,27 @@ class WritePermissionsChecker:
             return WriteAccessIssue(
                 path=str(directory), kind="probe_residue", severity="warning", remediation=_RESIDUE_REMEDIATION
             )
+        return None
+
+    @staticmethod
+    def _probe_write_file(path: pathlib.Path) -> WriteAccessIssue | None:
+        """Prueba escritura sobre un archivo EXISTENTE sin modificarlo.
+
+        Abre en modo ``"r+b"`` (lectura+escritura, sin truncar) y cierra sin
+        escribir: si el archivo es read-only (atributo o ACL), el ``open`` lanza
+        ``PermissionError`` → crítico. Cubre el caso que el probe de directorio no
+        ve — ``Data`` escribible pero un master oficial read-only, donde
+        QuickAutoClean fallaría al reescribirlo (review Codex #288).
+        """
+        try:
+            with path.open("r+b"):
+                pass
+        except PermissionError as exc:
+            logger.debug("Escritura denegada en el archivo %s: %s", path, exc)
+            return WriteAccessIssue(path=str(path), kind="denied", severity="critical", remediation=_DENIED_REMEDIATION)
+        except OSError as exc:
+            logger.debug("No se pudo abrir %s para escritura: %s", path, exc)
+            return WriteAccessIssue(path=str(path), kind="error", severity="warning", remediation=_ERROR_REMEDIATION)
         return None
 
 
