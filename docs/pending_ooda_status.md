@@ -206,12 +206,26 @@ acoplamiento técnico inexistente.
 Por valor/riesgo, en orden:
 
 1. **T-27 — invocar `run_ritual_in_sandbox` desde al menos un dispatcher real**
-   (Synthesis, que ya tiene el seam de inyección `output_path` listo). Esfuerzo
-   bajo — la infraestructura (`ProfileSandbox` + `run_ritual_in_sandbox`) ya
-   existe, falta el cableado del dispatcher. Convierte la garantía de
-   aislamiento de "teórica para todos" a "activa para uno", cerrando el gap de
-   mayor severidad (escritura directa al overwrite real) para el runner más
-   fácil de aislar.
+   (Synthesis, que ya tiene el seam de inyección `output_path` listo).
+   **Corrección de estimación (2026-07-14):** esta sección decía "esfuerzo
+   bajo, solo falta cablear el dispatcher" — verificado ahora que es
+   optimista. `run_ritual_in_sandbox()` devuelve un clon **vivo** que el
+   caller debe `promote()` o `discard()` "tras aprobación HITL" (contrato
+   documentado en su propio docstring), y **ese bucle de decisión
+   post-ejecución no existe en ningún lado del código** — no hay callers de
+   `promote`/`discard` fuera de tests. El único gate HITL de producción
+   (`approval_gate.py::ChainPreviewApprovalGate`) es un patrón distinto:
+   aprueba **antes** de ejecutar, sobre un dry-run — no sirve para "ya corrí
+   contra el clon, ¿promuevo o descarto según el diff?". Cablear esto bien
+   exige decidir el contrato del tool (¿la promoción es síncrona dentro de la
+   misma llamada, bloqueando en el HITL, o asíncrona con un estado
+   "pendiente de promoción" que la GUI resuelve después?) y construir esa
+   superficie — no es una línea de código, es una feature de tamaño M/L que
+   merece su propio diseño (como los ítems 6/7/8 de esta sesión), no un
+   apurón. Ejecutar una versión apurada (auto-promote sin revisión real
+   rompe la transparencia que el sandbox existe para dar; auto-discard rompe
+   la funcionalidad de Synthesis en silencio) sería peor que dejarlo
+   pendiente y bien descrito.
 2. **T-26/T-28 backend — cablear `persist_action_manifest`/`persist_flight_report`
    en xEdit/Synthesis/DynDOLOD/Pandora/Wrye Bash.** Sin dependencia de (1);
    candidato natural para empezar por xEdit (segundo runner en importancia
