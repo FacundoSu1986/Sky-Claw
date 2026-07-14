@@ -271,7 +271,9 @@ def build_orchestration_dispatcher(
     dispatcher.register(
         ExecuteSynthesisPipelineStrategy(
             flow_provider=lambda: _build_synthesis_sandbox_flow(supervisor),
-            service_factory=lambda output_path, journal: _build_sandboxed_synthesis_service(supervisor, output_path, journal),
+            service_factory=lambda output_path, journal: _build_sandboxed_synthesis_service(
+                supervisor, output_path, journal
+            ),
             real_journal_provider=lambda: supervisor.journal,
         ),
         middleware=[

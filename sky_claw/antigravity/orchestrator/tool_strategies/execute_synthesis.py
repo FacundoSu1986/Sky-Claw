@@ -54,6 +54,7 @@ class ExecuteSynthesisPipelineStrategy:
         flow = self._flow_provider()
 
         from sky_claw.antigravity.db.journal import StagingJournal
+
         staging_journal = StagingJournal(self._real_journal_provider())
 
         async def ritual(clone: SandboxClone) -> dict[str, Any]:
@@ -72,4 +73,3 @@ class ExecuteSynthesisPipelineStrategy:
             await staging_journal.rollback_staged()
 
         return result
-

@@ -1204,7 +1204,12 @@ class NoOpJournal(OperationJournal):
         pass
 
     async def begin_operation(
-        self, transaction_id: int, operation_type: Any, target_path: str, agent_id: str, metadata: dict[str, Any] | None = None
+        self,
+        transaction_id: int,
+        operation_type: Any,
+        target_path: str,
+        agent_id: str,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         return 999999
 
@@ -1319,4 +1324,3 @@ class StagingJournal(OperationJournal):
             await self._real_journal.mark_transaction_rolled_back(self._staged_tx_id)
             self._staged_tx_id = None
             self._staged_commit = False
-
