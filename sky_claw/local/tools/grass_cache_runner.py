@@ -174,6 +174,10 @@ class GrassCacheRunner:
             (patrón ``XEditRunner``: fallar temprano, antes de tocar nada).
         on_progress: Callback async opcional (D3). Sus excepciones ``Exception``
             se suprimen con warning; ``CancelledError`` propaga.
+
+    Raises:
+        PathViolationError: Si el path del flag queda fuera del sandbox del
+            *path_validator* (fail-early: antes de escribir nada).
     """
 
     def __init__(
@@ -231,12 +235,28 @@ class GrassCacheRunner:
             await self._emit_progress("launching", crash_count)
 
             for _ in range(self._config.max_restarts + 1):
+                if time.monotonic() - self._start_mono >= self._config.max_runtime_s:
+                    # Deadline global también entre relanzamientos: acota el
+                    # overshoot a un relaunch_delay (auditoría #287).
+                    await self._matar_todo(game_pid)
+                    return self._resultado(
+                        "timeout",
+                        f"Deadline global de {self._config.max_runtime_s:.0f}s alcanzado; "
+                        "el cache parcial se conserva.",
+                        crash_count,
+                        await self._snapshot_cache(),
+                    )
                 game_pid = None
                 try:
                     info: dict[str, Any] = await self._mo2.launch_game(self._config.profile)
                     mo2_pid: int | None = int(info["pid"])
-                except GameLaunchTimeoutError:
-                    logger.warning("MO2 no apareció en la tabla de procesos; se trata como no-spawn.")
+                except FileNotFoundError:
+                    raise  # ModOrganizer.exe ausente: misconfiguración (contrato de run())
+                except (GameLaunchTimeoutError, OSError):
+                    # PermissionError/OSError del spawn = mismo trato que un
+                    # no-spawn: outcome estructurado, no excepción cruda
+                    # (auditoría #287).
+                    logger.warning("El lanzamiento de MO2 falló; se trata como no-spawn.", exc_info=True)
                     mo2_pid = None
                 t_spawn_mono = time.monotonic()
                 min_create_epoch = time.time() - _CREATE_TIME_EPSILON  # wall-clock para psutil
@@ -246,7 +266,7 @@ class GrassCacheRunner:
                 if mo2_pid is not None:
                     while time.monotonic() - t_spawn_mono < self._config.spawn_window_s:
                         if cancel.is_set():
-                            await self._matar_todo(game_pid)
+                            await self._matar_todo(await self._ultima_atribucion(game_pid, mo2_pid, min_create_epoch))
                             return self._resultado(
                                 "cancelled", "Cancelado durante el arranque.", crash_count, await self._snapshot_cache()
                             )
@@ -254,7 +274,7 @@ class GrassCacheRunner:
                             # El deadline es GLOBAL: sin este check, ciclos de
                             # no-spawn repetidos lo excederían por hasta
                             # stall_threshold * spawn_window_s.
-                            await self._matar_todo(game_pid)
+                            await self._matar_todo(await self._ultima_atribucion(game_pid, mo2_pid, min_create_epoch))
                             return self._resultado(
                                 "timeout",
                                 f"Deadline global de {self._config.max_runtime_s:.0f}s alcanzado "
@@ -275,12 +295,17 @@ class GrassCacheRunner:
                         # La muerte de MO2 acá NO es fallo: el juego pudo
                         # reparentarse; el fallback por nombre lo sigue buscando.
                         if await self._sleep_or_cancel(cancel, self._config.spawn_poll_interval_s):
-                            await self._matar_todo(None)
+                            await self._matar_todo(await self._ultima_atribucion(game_pid, mo2_pid, min_create_epoch))
                             return self._resultado(
                                 "cancelled", "Cancelado durante el arranque.", crash_count, await self._snapshot_cache()
                             )
                 if exito_temprano:
-                    return await self._salida_exito(crash_count, game_pid)
+                    # Última atribución (auditoría #287, D7b): el flag pudo
+                    # borrarse ANTES de localizar al juego — sin esta búsqueda
+                    # final, un juego reparentado quedaría vivo en modo normal.
+                    return await self._salida_exito(
+                        crash_count, await self._ultima_atribucion(game_pid, mo2_pid, min_create_epoch)
+                    )
 
                 if game_pid is None:
                     # Ventana agotada sin juego localizado.
@@ -311,7 +336,14 @@ class GrassCacheRunner:
                 else:
                     stall_streak = 0
                 last_snapshot = snap
-                await self._emit_progress("crashed", crash_count)
+                await self._emit_progress("crashed", crash_count, snap)
+                if not await self._flag_exists():
+                    # NGIO borró el flag justo antes de morir: completó. Este
+                    # check va ANTES que el de stall (auditoría #287): un
+                    # resume casi terminado muere sin escribir nada y NO debe
+                    # reportarse como stalled. Un relanzamiento acá abriría el
+                    # juego en modo normal (falso "vivo eterno" hasta timeout).
+                    return await self._salida_exito(crash_count, game_pid)
                 if stall_streak >= self._config.stall_threshold:
                     await self._matar_todo(game_pid)
                     return self._resultado(
@@ -321,11 +353,6 @@ class GrassCacheRunner:
                         crash_count,
                         snap,
                     )
-                if not await self._flag_exists():
-                    # NGIO borró el flag justo antes de morir: completó — un
-                    # relanzamiento acá abriría el juego en modo normal (falso
-                    # "vivo eterno" hasta el timeout).
-                    return await self._salida_exito(crash_count, game_pid)
                 # Árbol MO2 residual fuera ANTES de pisar el slot _launched_pid.
                 await self._mo2.close_game()
                 if await self._sleep_or_cancel(cancel, self._config.relaunch_delay_s):
@@ -391,8 +418,9 @@ class GrassCacheRunner:
             if time.monotonic() - last_heartbeat >= self._config.heartbeat_interval_s:
                 await self._emit_progress("scanning", crash_count)
                 last_heartbeat = time.monotonic()
-            if await self._sleep_or_cancel(cancel, self._config.poll_interval_s):
-                continue  # el próximo ciclo del while atiende la cancelación
+            # La cancelación que llegue durante el sleep la atiende el check ①
+            # del próximo ciclo (el sleep despierta al instante con el event).
+            await self._sleep_or_cancel(cancel, self._config.poll_interval_s)
 
     async def _salida_exito(self, crash_count: int, game_pid: int | None) -> GrassCacheRunResult:
         """Fin multi-criterio: flag ausente + postcheck fail-closed de .cgid.
@@ -419,6 +447,19 @@ class GrassCacheRunner:
             crash_count,
             snap,
         )
+
+    async def _ultima_atribucion(
+        self, game_pid: int | None, mo2_pid: int | None, min_create_epoch: float
+    ) -> int | None:
+        """Búsqueda final del juego antes de una salida desde la spawn window.
+
+        El flag puede borrarse (o llegar una cancelación/timeout) ANTES de que
+        el juego fuera atribuido: sin este intento final, un juego reparentado
+        quedaría vivo tras la salida (D7b — auditoría #287).
+        """
+        if game_pid is not None or mo2_pid is None:
+            return game_pid
+        return await self._find_game_pid(mo2_pid, min_create_epoch)
 
     async def _matar_todo(self, game_pid: int | None) -> None:
         """``close_game()`` (árbol MO2, M-8) + kill directo del juego (D7b).
@@ -465,7 +506,15 @@ class GrassCacheRunner:
             if self._config.overwrite_grass_dir.is_dir()
             else self._config.overwrite_grass_dir.parent
         )
-        uso = await asyncio.to_thread(shutil.disk_usage, probe)
+        try:
+            uso = await asyncio.to_thread(shutil.disk_usage, probe)
+        except OSError:
+            # TOCTOU (probe borrado entre is_dir y disk_usage) o share de red
+            # parpadeando: un error de MEDICIÓN no debe abortar un run de 12h
+            # ni confundirse con disco lleno (auditoría #287). Se devuelve el
+            # umbral exacto (no corta) y se deja rastro.
+            logger.warning("No se pudo medir el disco libre en %s; el ritual continúa.", probe, exc_info=True)
+            return self._config.min_free_bytes
         return int(uso.free)
 
     async def _find_game_pid(self, mo2_pid: int, min_create_epoch: float) -> int | None:
@@ -505,18 +554,21 @@ class GrassCacheRunner:
                     continue
                 if nombre.lower() not in nombres or creado < min_create_epoch:
                     continue
-                if exe:
-                    try:
-                        if pathlib.Path(str(exe)).resolve().parent != game_dir:
-                            continue  # mismo nombre pero OTRA instalación: no se adopta
-                    except OSError:
-                        continue
-                else:
+                if not exe:
+                    # exe ilegible (AccessDenied: proceso elevado/de otro
+                    # usuario): fail-closed — adoptar a ciegas podría terminar
+                    # matando la sesión de OTRO Skyrim (auditoría #287).
                     logger.warning(
-                        "Adoptando %s (pid=%s) por nombre+tiempo: exe ilegible para verificar la instalación.",
+                        "Se ignora %s (pid=%s): exe ilegible, no se puede verificar la instalación.",
                         nombre,
                         proc.pid,
                     )
+                    continue
+                try:
+                    if pathlib.Path(str(exe)).resolve().parent != game_dir:
+                        continue  # mismo nombre pero OTRA instalación: no se adopta
+                except OSError:
+                    continue
                 return int(proc.pid)
         except psutil.Error:
             logger.warning("process_iter falló durante la búsqueda del juego.", exc_info=True)
@@ -541,11 +593,19 @@ class GrassCacheRunner:
             with contextlib.suppress(psutil.Error):
                 proc.kill()
 
-    async def _emit_progress(self, phase: GrassCachePhase, crash_count: int) -> None:
-        """Foto de progreso al callback; un observador roto no mata el ritual."""
+    async def _emit_progress(
+        self, phase: GrassCachePhase, crash_count: int, snap: tuple[int, int] | None = None
+    ) -> None:
+        """Foto de progreso al callback; un observador roto no mata el ritual.
+
+        *snap* permite reutilizar un snapshot recién computado por el caller —
+        hacia el final del precache ``Grass/`` tiene decenas de miles de
+        ``.cgid`` y un glob+stat duplicado por crash no es gratis.
+        """
         if self._on_progress is None:
             return
-        snap = await self._snapshot_cache()
+        if snap is None:
+            snap = await self._snapshot_cache()
         progreso = GrassCacheProgress(
             phase=phase,
             crash_count=crash_count,

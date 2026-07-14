@@ -382,7 +382,7 @@ async def test_mo2_muerto_el_fallback_por_nombre_encuentra_al_juego(
     # encuentra vía process_iter + filtro por create_time (D1-C). D7b: en la
     # cancelación, el kill directo del game_pid mata al juego huérfano.
     async def _launch(profile: str) -> dict[str, Any]:
-        juego = _ProcFake(mundo, 2000, "SkyrimSE.exe", time.time())
+        juego = _ProcFake(mundo, 2000, "SkyrimSE.exe", time.time(), exe=str(config.game_path / "SkyrimSE.exe"))
         mundo.vivos.add(2000)
         mundo.globales.append(juego)
         return {"pid": 999, "status": "launched", "profile": profile}  # 999 jamás vivo
@@ -594,6 +594,126 @@ async def test_flag_borrado_justo_antes_del_crash_no_relanza(
     assert resultado.success is True
     assert resultado.crash_count == 1
     assert mo2.launch_game.await_count == 1, "el flag ausente post-crash no debe relanzar"
+
+
+async def test_flag_borrado_en_el_ciclo_del_stall_gana_el_exito(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # Auditoría adversarial #287: con la racha de stall en el umbral, si NGIO
+    # borró el flag en el MISMO ciclo (resume casi completo que muere sin
+    # escribir nada), el resultado es completed — jamás stalled.
+    _escribir_cgid(config.overwrite_grass_dir, "previo.cgid")  # baseline no vacío
+
+    def _al_chequear(pid: int) -> None:
+        if pid not in mundo.vivos or mundo.vidas.get(pid) == 0:
+            (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    mundo.al_chequear_pid = _al_chequear
+    cfg = dataclasses.replace(config, stall_threshold=1)  # el crash SIN .cgid nuevos ya alcanza el umbral
+
+    resultado = await _correr(_runner(cfg, mo2))
+
+    assert resultado.outcome == "completed", "el flag ausente gana sobre el detector de stall"
+    assert resultado.stalled is False
+
+
+async def test_salida_exitosa_en_spawn_window_mata_al_juego_reparentado(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # Auditoría adversarial #287 (D7b): si NGIO borra el flag durante la
+    # ventana de spawn ANTES de que el juego fuera atribuido, la salida de
+    # éxito hace una última búsqueda y mata al juego reparentado — sin ella
+    # quedaría un SkyrimSE huérfano corriendo en modo normal.
+    async def _launch(profile: str) -> dict[str, Any]:
+        juego = _ProcFake(mundo, 5000, "SkyrimSE.exe", time.time(), exe=str(config.game_path / "SkyrimSE.exe"))
+        mundo.vivos.add(5000)
+        mundo.globales.append(juego)
+        _escribir_cgid(config.overwrite_grass_dir, "Tamriel.cgid")
+        (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+        return {"pid": 999, "status": "launched", "profile": profile}  # MO2 ya muerto
+
+    mo2.launch_game.side_effect = _launch
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "completed"
+    assert resultado.success is True
+    assert 5000 not in mundo.vivos, "la última atribución debe matar al juego reparentado"
+
+
+async def test_permission_error_de_launch_es_spawn_failed_y_file_not_found_propaga(
+    config: GrassCacheConfig, mo2: AsyncMock
+) -> None:
+    # Auditoría adversarial #287: un OSError del spawn (exe sin permiso de
+    # ejecución) vuelve como outcome estructurado; FileNotFoundError (MO2
+    # ausente = misconfiguración) sigue propagando según el contrato.
+    cfg = dataclasses.replace(config, spawn_window_s=0.05)
+    mo2.launch_game.side_effect = PermissionError("ejecución denegada")
+
+    resultado = await _correr(_runner(cfg, mo2))
+
+    assert resultado.outcome == "spawn_failed"
+    assert not (cfg.game_path / "PrecacheGrass.txt").exists()
+
+    mo2.launch_game.side_effect = FileNotFoundError("MO2 executable not found")
+    with pytest.raises(FileNotFoundError):
+        await _correr(_runner(cfg, mo2))
+
+
+async def test_exe_ilegible_no_se_adopta_fail_closed(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # Auditoría adversarial #287: exe=None (AccessDenied de psutil) ya no se
+    # adopta por nombre+tiempo — matar un proceso sin verificar su instalación
+    # puede cerrar la sesión de OTRO Skyrim (elevado/otro usuario).
+    ilegible = _ProcFake(mundo, 6000, "SkyrimSE.exe", time.time() + 60, exe=None)
+    mundo.vivos.add(6000)
+    mundo.globales.append(ilegible)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        return {"pid": 999, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    cfg = dataclasses.replace(config, spawn_window_s=0.05)
+
+    resultado = await _correr(_runner(cfg, mo2))
+
+    assert resultado.outcome == "spawn_failed"
+    assert 6000 in mundo.vivos, "un proceso sin exe verificable jamás se mata"
+
+
+async def test_error_transitorio_de_disco_no_aborta_el_run(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Auditoría adversarial #287: un FileNotFoundError de disk_usage (TOCTOU,
+    # share de red parpadeando) no debe reventar un run de 12h — se loguea y
+    # el ritual continúa.
+    lecturas = itertools.count()
+
+    def _disk_usage(_p: Any) -> Any:
+        if next(lecturas) == 0:
+            return _USO_DISCO(total=100 * _GIB, used=1 * _GIB, free=99 * _GIB)
+        raise FileNotFoundError("probe desapareció")
+
+    monkeypatch.setattr("sky_claw.local.tools.grass_cache_runner.shutil.disk_usage", _disk_usage)
+    chequeos = itertools.count()
+
+    def _al_chequear(pid: int) -> None:
+        if next(chequeos) >= 1:
+            _escribir_cgid(config.overwrite_grass_dir, "Tamriel.cgid")
+            (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+
+    mundo.al_chequear_pid = _al_chequear
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "completed"
+    assert resultado.success is True
 
 
 # ---------------------------------------------------------------------------
