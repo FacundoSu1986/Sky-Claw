@@ -218,8 +218,12 @@ class SetupToolsParams(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(strict=True)
 
     tools: list[str] = pydantic.Field(
-        default_factory=lambda: ["loot", "xedit", "pandora", "bodyslide"],
-        description="List of tools to install. Supported: 'loot', 'xedit', 'pandora', 'bodyslide'.",
+        default_factory=lambda: ["loot", "xedit", "pandora", "bodyslide", "ngio"],
+        description=(
+            "List of tools to install. Supported: 'loot', 'xedit', 'pandora', 'bodyslide', "
+            "'ngio' (dependencias del precache de grass: NGIO-NG + Address Library + "
+            "Grass Cache Helper NG en AE)."
+        ),
     )
 
 

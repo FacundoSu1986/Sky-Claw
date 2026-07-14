@@ -7,11 +7,13 @@ passes through :class:`NetworkGateway` for egress control.
 
 from __future__ import annotations
 
+import configparser
 import hashlib
 import logging
 import pathlib
 import zipfile
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -26,6 +28,7 @@ from sky_claw.config import (
     GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
     SystemPaths,
 )
+from sky_claw.local.discovery.environment import SkyrimEdition
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.scraper.nexus_downloader import NexusDownloader
@@ -37,6 +40,22 @@ logger = logging.getLogger(__name__)
 _LOOT_RELEASES_URL = "https://api.github.com/repos/loot/loot/releases/latest"
 _XEDIT_RELEASES_URL = "https://api.github.com/repos/TES5Edit/TES5Edit/releases/latest"
 _PANDORA_RELEASES_URL = "https://api.github.com/repos/Monitor221hz/Pandora-Behaviour-Engine-Plus/releases/latest"
+_NGIO_RELEASES_URL = "https://api.github.com/repos/DwemerEngineer/No-Grass-In-Objects-NG/releases/latest"
+
+# Dependencias del precache de grass (SOP §2.8): NGIO-NG desde GitHub; Address
+# Library y Grass Cache Helper NG desde Nexus. Los nombres son los directorios
+# que ensure_ngio crea bajo mods/ (el orquestador los activa en modlist.txt).
+NGIO_MOD_NAME = "No Grass In Objects NG"
+ADDRESS_LIBRARY_MOD_NAME = "Address Library for SKSE Plugins"
+GRASS_CACHE_HELPER_MOD_NAME = "Grass Cache Helper NG"
+_ADDRESS_LIBRARY_NEXUS_ID = 32444
+_GRASS_CACHE_HELPER_NEXUS_ID = 101095
+
+#: Pin opcional de SHA-256 por nombre exacto de asset/file. Presente y no
+#: coincide → abort + borrar archivo. Ausente → TOFU: se loguea el hash
+#: completo (copiable a este dict para pinear). Un release nuevo cambia el
+#: nombre del asset, así que un pin viejo nunca bloquea versiones nuevas.
+_PINNED_SHA256: dict[str, str] = {}
 
 # Common Windows paths where LOOT / SSEEdit may already be installed.
 LOOT_COMMON_PATHS: tuple[pathlib.Path, ...] = (
@@ -78,6 +97,23 @@ class InstallResult:
 
     tool_name: str
     exe_path: pathlib.Path
+    version: str
+    already_existed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ModInstallResult:
+    """Resultado de instalar un componente NGIO como mod de MO2 (sin exe).
+
+    Attributes:
+        mod_name: Nombre del directorio del mod bajo ``mods/``.
+        mod_dir: Ruta del mod instalado.
+        version: Tag de GitHub, ``file_name`` de Nexus, o ``"existing"``.
+        already_existed: True si el mod ya estaba instalado (sentinel presente).
+    """
+
+    mod_name: str
+    mod_dir: pathlib.Path
     version: str
     already_existed: bool
 
@@ -170,6 +206,63 @@ def scan_common_paths(common_paths: tuple[pathlib.Path, ...], exe_name: str) -> 
         if found is not None:
             return found
     return None
+
+
+def _select_address_library_file(files: list[dict[str, Any]], edition: SkyrimEdition) -> int:
+    """Elige el ``file_id`` de Address Library (Nexus 32444) para la edición.
+
+    Filtra ``category_name == "MAIN"`` (fallback: todos los files) y matchea
+    ``"anniversary"`` (AE) / ``"special"`` (SE) en ``name``/``file_name``
+    lowercased. Nexus a veces sirve ``file_id`` como lista ``[id, game]`` —
+    se toma el segundo elemento, mismo quirk que ``get_file_info``.
+
+    Raises:
+        ToolInstallError: Si ningún file matchea la edición (lista los nombres
+            disponibles para diagnóstico).
+    """
+    keyword = "anniversary" if edition is SkyrimEdition.AE else "special"
+    main_files = [f for f in files if str(f.get("category_name", "")).upper() == "MAIN"] or list(files)
+    for f in main_files:
+        haystack = f"{f.get('name', '')} {f.get('file_name', '')}".lower()
+        if keyword in haystack:
+            fid = f.get("file_id")
+            if isinstance(fid, list):
+                return int(fid[1])
+            return int(fid)  # type: ignore[arg-type]
+    available = [str(f.get("name") or f.get("file_name") or "?") for f in files]
+    raise ToolInstallError(
+        f"Ningún archivo de Address Library coincide con la edición {edition.value}. Disponibles: {available}"
+    )
+
+
+def _flatten_single_root(mod_dir: pathlib.Path) -> None:
+    """Si el archive envolvió el payload en UNA carpeta raíz, sube su contenido.
+
+    MO2 exige ``SKSE/`` en la raíz del mod; algunos archives de Nexus/GitHub
+    envuelven todo en ``NombreMod-1.2.3/``. No aplana si la única carpeta ya
+    es ``SKSE`` (layout correcto).
+    """
+    children = list(mod_dir.iterdir())
+    if len(children) != 1 or not children[0].is_dir() or children[0].name.lower() == "skse":
+        return
+    root = children[0]
+    for item in root.iterdir():
+        item.rename(mod_dir / item.name)
+    root.rmdir()
+    logger.info("Aplanada la carpeta raíz %r del archive en %s", root.name, mod_dir)
+
+
+def _write_mod_meta_ini(mod_dir: pathlib.Path, mod_name: str, version: str) -> None:
+    """``meta.ini`` mínimo para que MO2 muestre el mod (patrón de GrassProfile)."""
+    config = configparser.ConfigParser()
+    config["General"] = {
+        "modid": "0",
+        "version": version,
+        "name": mod_name,
+        "comments": "Instalado por Sky-Claw (dependencias del precache de grass NGIO).",
+    }
+    with (mod_dir / "meta.ini").open("w", encoding="utf-8") as fh:
+        config.write(fh)
 
 
 # ---------------------------------------------------------------------------
@@ -465,9 +558,224 @@ class ToolsInstaller:
             already_existed=False,
         )
 
+    async def ensure_ngio(
+        self,
+        mods_dir: pathlib.Path,
+        session: aiohttp.ClientSession,
+        downloader: NexusDownloader | None = None,
+        *,
+        edition: SkyrimEdition,
+    ) -> list[ModInstallResult]:
+        """Instala las dependencias del precache de grass NGIO como mods de MO2.
+
+        Componentes (SOP §2.8): NGIO-NG (GitHub DwemerEngineer), Address
+        Library for SKSE Plugins (Nexus 32444, file según edición) y — SOLO en
+        Anniversary Edition — Grass Cache Helper NG (Nexus 101095). Cada mod
+        se extrae directo a ``mods_dir/<Nombre>/`` con su ``meta.ini``; NO se
+        toca ``modlist.txt`` — la activación es responsabilidad del ritual
+        (``MO2Controller.add_mod_to_modlist`` con los ``mod_name`` devueltos).
+
+        Idempotente: un componente con sentinel (``SKSE/Plugins/*.dll`` o
+        ``*.bin``) presente no se re-descarga ni pide HITL. Si el operador
+        deniega a mitad de camino, lo ya instalado queda y el próximo run
+        pide solo lo faltante.
+
+        Args:
+            mods_dir: Directorio ``mods/`` de la instancia MO2.
+            session: Sesión HTTP activa.
+            downloader: NexusDownloader (obligatorio — Address Library solo
+                existe en Nexus).
+            edition: Edición detectada del juego (SE/AE); LE/UNKNOWN abortan.
+
+        Returns:
+            Lista ordenada de :class:`ModInstallResult` (NGIO, Address Library
+            y, en AE, Grass Cache Helper NG).
+        """
+        if edition not in (SkyrimEdition.SE, SkyrimEdition.AE):
+            raise ToolInstallError(
+                f"NGIO-NG requiere Skyrim SE o AE (edición detectada: {edition.value}). "
+                "Corré el escaneo de entorno o configurá skyrim_path antes de reintentar."
+            )
+        if downloader is None:
+            raise ToolInstallError(
+                "Address Library viene de Nexus: hace falta un NexusDownloader (configurá la API key de Nexus)."
+            )
+        self._validator.validate(mods_dir)
+
+        results = [
+            await self._ensure_github_mod(
+                mods_dir,
+                session,
+                mod_name=NGIO_MOD_NAME,
+                releases_url=_NGIO_RELEASES_URL,
+                keyword="NoGrassInObjectsNG",
+                sentinel_glob="*.dll",
+                request_slug="ngio",
+                source_hint="GitHub DwemerEngineer/No-Grass-In-Objects-NG",
+            ),
+            await self._ensure_nexus_mod(
+                mods_dir,
+                session,
+                downloader,
+                mod_name=ADDRESS_LIBRARY_MOD_NAME,
+                nexus_id=_ADDRESS_LIBRARY_NEXUS_ID,
+                sentinel_glob="version-1-5-*.bin" if edition is SkyrimEdition.SE else "version-1-6-*.bin",
+                request_slug="address-library",
+                select_file=lambda files: _select_address_library_file(files, edition),
+            ),
+        ]
+        if edition is SkyrimEdition.AE:
+            results.append(
+                await self._ensure_nexus_mod(
+                    mods_dir,
+                    session,
+                    downloader,
+                    mod_name=GRASS_CACHE_HELPER_MOD_NAME,
+                    nexus_id=_GRASS_CACHE_HELPER_NEXUS_ID,
+                    sentinel_glob="*.dll",
+                    request_slug="grass-cache-helper",
+                )
+            )
+        return results
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _existing_mod_result(self, mod_dir: pathlib.Path, mod_name: str, sentinel_glob: str) -> ModInstallResult | None:
+        """Idempotencia: mod con sentinel presente → resultado sin HITL ni red."""
+        if any((mod_dir / "SKSE" / "Plugins").glob(sentinel_glob)):
+            logger.info("%s ya instalado en %s", mod_name, mod_dir)
+            return ModInstallResult(
+                mod_name=mod_name,
+                mod_dir=mod_dir,
+                version="existing",
+                already_existed=True,
+            )
+        return None
+
+    def _verify_mod_payload(self, mod_dir: pathlib.Path, mod_name: str, sentinel_glob: str) -> None:
+        """Fail-closed si el archive no trajo el payload SKSE esperado."""
+        if not any((mod_dir / "SKSE" / "Plugins").glob(sentinel_glob)):
+            raise ToolInstallError(
+                f"La extracción de {mod_name} terminó pero no se encontró "
+                f"SKSE/Plugins/{sentinel_glob} — layout inesperado del archive."
+            )
+
+    async def _ensure_github_mod(
+        self,
+        mods_dir: pathlib.Path,
+        session: aiohttp.ClientSession,
+        *,
+        mod_name: str,
+        releases_url: str,
+        keyword: str,
+        sentinel_glob: str,
+        request_slug: str,
+        source_hint: str,
+    ) -> ModInstallResult:
+        """Instala un mod desde un release de GitHub en ``mods_dir/<mod_name>/``."""
+        mod_dir = mods_dir / mod_name
+        existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob)
+        if existing is not None:
+            return existing
+
+        asset, version = await self._find_github_asset(session, releases_url, keyword=keyword)
+
+        decision = await self._hitl.request_approval(
+            request_id=f"install-{request_slug}-{version}",
+            reason=f"¿Instalar el mod {mod_name} {version}?",
+            url=asset.browser_download_url,
+            detail=(f"Asset: {asset.name}\nSize: {asset.size / (1024 * 1024):.1f} MB\nSource: {source_hint}"),
+            category="download",
+        )
+        if decision is not Decision.APPROVED:
+            raise ToolInstallError(f"Instalación de {mod_name} denegada por el operador (decision={decision.value})")
+
+        archive = await self._download_asset(
+            session,
+            asset,
+            mod_dir,
+            expected_sha256=_PINNED_SHA256.get(asset.name),
+        )
+        self._extract(archive, mod_dir)
+        archive.unlink(missing_ok=True)
+        _flatten_single_root(mod_dir)
+        self._verify_mod_payload(mod_dir, mod_name, sentinel_glob)
+        _write_mod_meta_ini(mod_dir, mod_name, version)
+
+        logger.info("%s %s instalado como mod en %s", mod_name, version, mod_dir)
+        return ModInstallResult(mod_name=mod_name, mod_dir=mod_dir, version=version, already_existed=False)
+
+    async def _ensure_nexus_mod(
+        self,
+        mods_dir: pathlib.Path,
+        session: aiohttp.ClientSession,
+        downloader: NexusDownloader,
+        *,
+        mod_name: str,
+        nexus_id: int,
+        sentinel_glob: str,
+        request_slug: str,
+        select_file: Callable[[list[dict[str, Any]]], int] | None = None,
+    ) -> ModInstallResult:
+        """Instala un mod desde Nexus en ``mods_dir/<mod_name>/``.
+
+        Con *select_file* el caller elige el file entre todos los de
+        ``list_files`` (p.ej. Address Library SE vs AE); sin él se usa el
+        file primary de :meth:`NexusDownloader.get_file_info`.
+        """
+        mod_dir = mods_dir / mod_name
+        existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob)
+        if existing is not None:
+            return existing
+
+        try:
+            file_id: int | None = None
+            if select_file is not None:
+                files = await downloader.list_files(nexus_id, session)
+                file_id = select_file(files)
+            file_info = await downloader.get_file_info(nexus_id, file_id, session)
+        except ToolInstallError:
+            raise
+        except Exception as exc:
+            raise ToolInstallError(
+                f"No pude obtener metadata de Nexus para {mod_name} (mod {nexus_id}): {exc}"
+            ) from exc
+
+        decision = await self._hitl.request_approval(
+            request_id=f"install-{request_slug}-{file_info.file_id}",
+            reason=f"¿Instalar el mod {mod_name} (Nexus ID {nexus_id})?",
+            url=f"https://www.nexusmods.com/skyrimspecialedition/mods/{nexus_id}",
+            detail=(
+                f"File: {file_info.file_name}\nSize: {file_info.size_bytes / (1024 * 1024):.1f} MB\nSource: Nexus Mods"
+            ),
+            category="download",
+        )
+        if decision is not Decision.APPROVED:
+            raise ToolInstallError(f"Instalación de {mod_name} denegada por el operador (decision={decision.value})")
+
+        # Pin de SHA-256 keyed por file_name: NexusDownloader.download ya
+        # enforcea FileInfo.sha256 (HashValidationError + cleanup del parcial).
+        pin = _PINNED_SHA256.get(file_info.file_name)
+        if pin:
+            file_info = replace(file_info, sha256=pin)
+
+        archive = await downloader.download(file_info, session)
+        mod_dir.mkdir(parents=True, exist_ok=True)
+        self._extract(archive, mod_dir)
+        archive.unlink(missing_ok=True)
+        _flatten_single_root(mod_dir)
+        self._verify_mod_payload(mod_dir, mod_name, sentinel_glob)
+        _write_mod_meta_ini(mod_dir, mod_name, file_info.file_name)
+
+        logger.info("%s (%s) instalado como mod en %s", mod_name, file_info.file_name, mod_dir)
+        return ModInstallResult(
+            mod_name=mod_name,
+            mod_dir=mod_dir,
+            version=file_info.file_name,
+            already_existed=False,
+        )
 
     async def _find_github_asset(
         self,
@@ -538,10 +846,13 @@ class ToolsInstaller:
         session: aiohttp.ClientSession,
         asset: ReleaseAsset,
         dest_dir: pathlib.Path,
+        expected_sha256: str | None = None,
     ) -> pathlib.Path:
         """Download a GitHub release asset to *dest_dir* via the API endpoint.
 
         Validates file size after download.  Logs progress every 10 MB.
+        Con *expected_sha256* pinneado, un mismatch borra el archivo y aborta;
+        sin pin se loguea el hash completo (TOFU, copiable para pinear).
         """
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / asset.name
@@ -593,12 +904,22 @@ class ToolsInstaller:
             dest.unlink(missing_ok=True)
             raise ToolInstallError(f"Size mismatch for {asset.name}: expected {asset.size}, got {downloaded}")
 
-        logger.info(
-            "Downloaded %s (%d bytes, sha256=%s)",
-            asset.name,
-            downloaded,
-            hasher.hexdigest()[:16],
-        )
+        actual_sha256 = hasher.hexdigest()
+        if expected_sha256 is not None:
+            if actual_sha256.lower() != expected_sha256.lower():
+                dest.unlink(missing_ok=True)
+                raise ToolInstallError(
+                    f"SHA-256 mismatch para {asset.name}: esperado {expected_sha256}, "
+                    f"obtenido {actual_sha256} — descarga abortada y archivo borrado."
+                )
+            logger.info("SHA-256 validado OK para %s (%d bytes)", asset.name, downloaded)
+        else:
+            logger.warning(
+                "Sin pin SHA-256 para %s (TOFU). %d bytes, sha256=%s",
+                asset.name,
+                downloaded,
+                actual_sha256,
+            )
         return dest
 
     def _extract(self, archive: pathlib.Path, dest: pathlib.Path) -> None:

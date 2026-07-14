@@ -6,6 +6,7 @@ import logging
 import pathlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 import aiofiles
 import aiohttp
@@ -178,6 +179,47 @@ class NexusDownloader:
     @property
     def timeout(self) -> int:
         return self._timeout
+
+    async def list_files(
+        self,
+        nexus_id: int,
+        session: aiohttp.ClientSession,
+    ) -> list[dict[str, Any]]:
+        """Lista cruda de ``files.json`` del mod (para selección por nombre/categoría).
+
+        Mismo retry/authorize/headers/errores que el bloque ``file_id is None``
+        de :meth:`get_file_info`, pero devuelve TODOS los files en vez de elegir
+        el primary — el caller decide (p.ej. Address Library publica archivos
+        MAIN separados para SE 1.5.x y AE 1.6.x).
+        """
+        result: list[dict[str, Any]] = []
+        async for attempt in AsyncRetrying(
+            wait=self._file_info_retry_wait,
+            stop=stop_after_attempt(5),
+            retry=retry_if_exception(_should_retry_nexus),
+            before_sleep=_log_retry,
+            reraise=True,
+        ):
+            with attempt:
+                async with self._semaphore:
+                    # Añadir jitter para evitar Thundering Herd
+                    await asyncio.sleep(self._random.uniform(0.1, 0.5))
+
+                    headers = {"apikey": self._api_key, "Accept": "application/json"}
+                    meta_timeout = aiohttp.ClientTimeout(total=30)
+
+                    files_url = f"{_NEXUS_API_BASE}/games/{self._game_domain}/mods/{nexus_id}/files.json"
+                    await self._gateway.authorize("GET", files_url)
+                    async with session.get(files_url, headers=headers, timeout=meta_timeout) as resp:
+                        if resp.status in (401, 403):
+                            raise DownloadError("Invalid or missing Nexus API key")
+                        if resp.status == 404:
+                            raise DownloadError(f"Mod {nexus_id} not found")
+                        resp.raise_for_status()  # Dispara ClientResponseError en 429 para activar el reintento
+                        files_data = await resp.json()
+
+                    result = files_data.get("files", [])
+        return result
 
     # Aplicamos Exponential Backoff. Empieza en 2s, sube hasta 60s, max 5 intentos.
     async def get_file_info(
