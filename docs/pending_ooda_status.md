@@ -16,9 +16,13 @@ cualquier ítem, como pide `AGENTS.md`.
 - **Arbitraje de bugs (OODA analysis, 34 hallazgos):** completo. Todos los
   CRÍTICOS y HIGH accionables están cerrados, mitigados o evaluados
   (ADR 0003, ADR 0004). Lo que resta es cosmético o de bajo impacto — ver §3.
-- **Roadmap de producto "caja negra de vuelo" (ADR 0002, Oleada 7):**
-  T-26/T-28(backend)/T-29/T-30 cerrados. **Dos gaps reales** sobreviven a la
-  verificación de código, no solo de commit-message — ver §1.
+- **Roadmap de producto "caja negra de vuelo" (ADR 0002, Oleada 7):** T-30 y
+  T-29 sí cerrados. **T-26, T-27 y T-28 están sobre-declarados como "cerrados"
+  en el historial de commits — la cobertura real es solo LOOT**, ver §1
+  (corregido tras review de Codex sobre el primer draft de este mismo
+  documento — la ironía es la prueba de campo del problema que motiva esta
+  nota: verificar "un archivo" no es lo mismo que verificar "todo caller en
+  el árbol").
 - **Deuda estructural continua (T-10/T-11/T-12):** en curso, sin bloquear GA
   — ver §2.
 - **GUI/accesibilidad (Oleada 5) y smoke E2E (Oleada 6):** nunca arrancadas
@@ -28,53 +32,73 @@ cualquier ítem, como pide `AGENTS.md`.
 
 ## 1 — Gaps reales en el roadmap "caja negra de vuelo" (mayor valor)
 
-Verificados por grep directo contra el código, no por el commit-message del PR
-que cerró la tarea (los mensajes de cierre a veces declaran "listo" sin cubrir
-el 100% del criterio de aceptación original).
+Verificados por grep del **árbol completo de callers**, no de un archivo
+puntual ni del commit-message del PR que cerró la tarea (draft anterior de
+este documento cometió exactamente ese error — corregido gracias al review de
+Codex en #290, ver evidencia por ítem).
 
-### 1.1 T-27b·2 — Pandora no está cableado al `ProfileSandbox`
+### 1.1 T-26/T-28 — ActionManifest y FlightReport: solo LOOT los emite en producción
 
-`docs/adr/../TECHNICAL_REVIEW_TASKS.md` T-27 nombra **explícitamente** a
-Pandora (junto con Synthesis) como runner que escribe en el overwrite
-compartido de MO2 y que el sandbox debe aislar. T-27b·1 (#258) cableó
-Synthesis. **Pandora sigue sin sandbox:**
-
-```
-$ grep -n "ProfileSandbox\|sandbox" sky_claw/local/tools/pandora_service.py
-(sin resultados)
-```
-
-Mientras esto no se cierre, un Ritual de Pandora contra un perfil con
-`ProfileSandbox` activo **no está realmente aislado** — la garantía de T-27
-("ningún Ritual mutante escribe directamente... en el overwrite compartido
-real") es falsa para Pandora. Es la brecha de mayor severidad de este
-inventario porque contradice una garantía de seguridad ya declarada cerrada.
-
-### 1.2 T-28 — Informe final de vuelo: falta la vista GUI
-
-El commit de cierre (#249) es explícito: *"T-28 backend"*. El criterio de
-aceptación original pedía además una vista en
-`sky_claw/antigravity/gui/views/`:
+`persist_action_manifest` y `persist_flight_report` (`journal.py:745,784`) son
+la infraestructura de persistencia — **cualquier** runner podría llamarlas,
+pero en producción **solo `loot_service.py` lo hace**:
 
 ```
-$ find sky_claw/antigravity/gui -iname "*flight*" -o -iname "*informe*"
-(sin resultados relevantes — solo preflight_panel.py, que es otra cosa)
+$ grep -rln "persist_action_manifest\|persist_flight_report" sky_claw/ | grep -v test
+sky_claw/antigravity/db/journal.py       # la definición
+sky_claw/local/tools/loot_service.py     # el único caller de producción
 ```
 
-El backend ensambla el informe (journal + manifiesto + validador) pero el
-operador no tiene dónde leerlo en la GUI todavía — la "caja negra" existe
-pero nadie la abre sin ir a la API/DB directamente.
+`xedit_service.py` y `dyndolod_service.py` importan `preview.manifest` —
+un modelo **distinto**, el de preview de la cadena LOOT→xEdit→DynDOLOD
+(dry-run, pre-aprobación), no el `ActionManifest` persistido por-Ritual que
+T-26 exigía. `synthesis_service.py`, `pandora_service.py` y
+`wrye_bash_runner.py` no tienen **ninguna** referencia a manifest/flight
+report.
 
-### 1.3 Follow-up explícito de T-16c·1: preflight sin cablear en DynDOLOD/Pandora/Wrye Bash
+**Consecuencia real:** el criterio de aceptación de T-26 ("todo Ritual
+mutante produce" el manifiesto) y el de T-28 ("informe... por Ritual") **no
+se cumplen** — se cumplen solo para LOOT. No es "backend listo, falta GUI"
+(lo que decía el draft anterior de este doc): falta cablear el backend mismo
+en xEdit/Synthesis/DynDOLOD/Pandora/Wrye Bash, y **recién después** tiene
+sentido construir la vista GUI de T-28 (mostrar un informe que hoy, para la
+mayoría de los Rituales, no existiría).
 
-El propio PR #288 (T-16c·1) lo declara en su descripción:
+### 1.2 T-27 — El sandbox nunca se activa en ningún Ritual real (no es solo "falta Pandora")
 
-> *"Follow-up: cablear preflight en DynDOLOD/Pandora (path_resolver) y wrye_bash"*
+El draft anterior decía "T-27b·1 (#258) cableó Synthesis" y que solo faltaba
+Pandora. Es impreciso: T-27b·1 construyó el **seam** de inyección
+(`SynthesisPipelineService` acepta un `output_path` override apuntable a
+`SandboxClone.overwrite_copy`) y el orquestador `run_ritual_in_sandbox()`
+(`sky_claw/local/mo2/sandbox_run.py`) que sabe clonar/correr/diff/promote.
+Pero **nada en producción invoca `run_ritual_in_sandbox`**:
 
-Hoy el semáforo de preflight (T-15/T-16) cubre LOOT y xEdit QuickAutoClean.
-DynDOLOD, Pandora y Wrye Bash siguen ejecutando **sin ese gate** — mismo
-patrón de riesgo que motivó T-15 originalmente (mutantes corriendo sin
-validación previa).
+```
+$ grep -rln "run_ritual_in_sandbox" sky_claw/ | grep -v test
+sky_claw/local/mo2/sandbox_run.py    # solo la propia definición
+```
+
+El propio docstring de `sandbox_run.py` es honesto al respecto: documenta que
+Pandora/DynDOLOD/bashed "no son redirigibles hoy", pero no aclara que
+**Synthesis tampoco corre sandboxeado en la práctica** — el seam existe, el
+orquestador existe, pero ningún dispatcher de Ritual real los conecta. Es el
+mismo patrón "sensor sin cablear = verde mentiroso" que el propio historial
+del repo ya señaló una vez para el preflight (mensaje de PR #250). La
+garantía central de T-27 ("ningún Ritual mutante escribe... en el overwrite
+compartido real cuando el sandbox está activo") **no es cierta para ningún
+runner hoy**, no solo para Pandora.
+
+### 1.3 Preflight sin cablear: agregar Synthesis a la lista (no solo DynDOLOD/Pandora/Wrye Bash)
+
+`TECHNICAL_REVIEW_TASKS.md:16` nombra explícitamente **xEdit/Synthesis/
+DynDOLOD** como los mutantes pendientes de preflight — el draft anterior de
+este doc, basado solo en el follow-up de la descripción de #288, omitió
+Synthesis (#288 cubrió el subset de xEdit QuickAutoClean, no Synthesis).
+`synthesis_service.py` no tiene ningún gate de `PreflightService` antes de
+`execute_pipeline`. Hoy el semáforo cubre solo LOOT y el subset de xEdit
+QuickAutoClean (T-16c·1, #288); DynDOLOD, Pandora y Wrye Bash tampoco lo
+tienen — mismo patrón de riesgo que motivó T-15 originalmente (mutantes
+corriendo sin validación previa).
 
 ---
 
@@ -144,14 +168,22 @@ corrida real. Ítem ya conocido y documentado, sin cambio de estado.
 
 ## Decide — recomendación de próximo frente
 
-Por valor/riesgo, en orden:
+Por valor/riesgo, en orden (revisado tras §1.1/1.2 corregidos):
 
-1. **T-27b·2 (Pandora → ProfileSandbox)** — cierra una brecha de seguridad
-   real en una garantía ya declarada cumplida. Mayor prioridad de este
-   inventario.
-2. **T-16c·2/3 (preflight en DynDOLOD/Pandora/Wrye Bash)** — mismo patrón de
-   riesgo que ya motivó T-15; extender el gate existente es mecánico.
-3. **T-28 GUI view** — desbloquea el valor de producto ya construido en
-   backend (nadie lee el informe sin ir a la DB).
-4. Todo lo demás (T-12/T-10/T-11 continuos, Oleada 5, residuales del OODA) es
+1. **T-26/T-28 backend — cablear `persist_action_manifest`/`persist_flight_report`
+   en xEdit/Synthesis/DynDOLOD/Pandora/Wrye Bash.** Es la base de la que
+   dependen T-27 (el diff del sandbox se apoya en el mismo journal) y la vista
+   GUI de T-28 (no hay nada que mostrar sin esto). Mayor prioridad: sin esto,
+   "caja negra de vuelo" es cierto solo para un runner de seis.
+2. **T-27 — invocar `run_ritual_in_sandbox` desde al menos un dispatcher real**
+   (Synthesis, que ya tiene el seam listo, es el candidato obvio) para que la
+   garantía de aislamiento deje de ser teórica. Sin esto, T-27b·2 (Pandora)
+   sería construir la segunda mitad de una garantía cuya primera mitad
+   (Synthesis) tampoco está activa.
+3. **T-16c·2/3 (preflight en Synthesis/DynDOLOD/Pandora/Wrye Bash)** — mismo
+   patrón de riesgo que ya motivó T-15; extender el gate existente es
+   mecánico y no tiene dependencias cruzadas con lo anterior.
+4. **T-28 GUI view** — solo después de (1): mostrar un informe que hoy no
+   existiría para la mayoría de los Rituales sería peor que no mostrarlo.
+5. Todo lo demás (T-12/T-10/T-11 continuos, Oleada 5, residuales del OODA) es
    deuda de fondo o requiere un humano — no urgente para el próximo PR.
