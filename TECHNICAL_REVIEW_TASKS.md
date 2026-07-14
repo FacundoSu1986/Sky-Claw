@@ -1,19 +1,27 @@
 # Backlog atómico — Ejecución del plan de TECHNICAL_REVIEW.md
 
-**Fecha:** 2026-07-06
+**Fecha del plan original:** 2026-07-06 (histórico — la lista de tareas de abajo
+NO refleja qué está cerrado; ver estado vigente más abajo).
 **Metodología:** OODA (Observar/Orientar = `TECHNICAL_REVIEW.md`; este documento = Decidir; cada PR = Actuar) + TDD estricto (rojo → verde → refactor).
 
-**Estado de ejecución (2026-07-06):**
-**PR #238 (MERGEADO):** Sprint 1 completo (T-01/02/05/06/07/08/09) + T-03 (ADR 0001) +
-T-04 (delegación a Bashed Patch) + fixes de reviews Codex/Copilot + fix del flake Windows
-de watcher_daemon_io.
-**Rama actual (reiniciada desde main) — "Servicio de Preflight (backend)":**
-✅ T-10 BLE001 en `local/tools/` · ✅ T-13 `VfsHealthChecker` · ✅ T-14 versión LOOT +
-advisory · ✅ T-15 `PreflightService` (semáforo con regla de composición: symlinks +
-LOOT <0.29 = rojo; primer mutante cableado: `LootSortingService`, con
-`override_preflight` para HITL).
-Siguiente: T-16 (panel GUI consumiendo `PreflightReport.to_dict()`); T-11 (BLE001 en
-`local/xedit/`); cablear preflight en el resto de los mutantes (xEdit/Synthesis/DynDOLOD).
+## Estado vigente — ver `docs/pending_ooda_status.md`
+
+**No confíes en los checkmarks de este archivo para saber qué está cerrado**
+(ninguna tarea de este doc se tilda al cerrarse — ver la convención nueva más
+abajo, que corrige esto hacia adelante). El snapshot verificado contra el
+código actual vive en
+[`docs/pending_ooda_status.md`](docs/pending_ooda_status.md); reverificar ahí
+(fecha en su encabezado) antes de asumir que una tarea sigue abierta o
+cerrada. `ZERO_TRUST_TODO.md` fue fusionado ahí (§2.3) y eliminado como
+archivo separado.
+
+**Convención (agregada 2026-07-13):** todo PR que cierre una tarea T-XX de
+este backlog debe, en el mismo PR, actualizar `docs/pending_ooda_status.md`
+(o dejar constancia explícita si el cierre es parcial) — no basta con que el
+título/mensaje del PR lo declare. Motivo: un review de Codex sobre #290
+demostró que T-26/T-27/T-28 estaban declarados "cerrados" en el historial de
+commits sin que el backend cubriera más de un runner de seis.
+
 **Reglas de atomicidad:** una tarea = una rama = un PR = una preocupación. Cada tarea nombra su test rojo y su criterio de aceptación. Tamaños: **S** (<½ día), **M** (½–1 día), **L** (1–3 días).
 
 ## Grafo de dependencias (resumen)

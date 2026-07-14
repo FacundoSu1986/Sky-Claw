@@ -24,6 +24,12 @@ en [.github/coding_conventions.md](.github/coding_conventions.md).
   `ruff check sky_claw/ tests/` **y** `ruff format --check sky_claw/ tests/`.
   `mypy sky_claw/` es **bloqueante en CI** (no es informativo).
 - Una rama + un PR por cambio; no commitear directo a `main`.
+- **Al cerrar una tarea del backlog** (`TECHNICAL_REVIEW_TASKS.md`, T-XX):
+  actualizar `docs/pending_ooda_status.md` en el mismo PR (o dejar constancia
+  explícita si el cierre es parcial/cubre solo un runner). El título del PR
+  declarando "cerrado" **no alcanza** — verificar el árbol completo de
+  callers, no un archivo puntual (lección de #290: T-26/T-27/T-28 quedaron
+  "cerrados" en el historial cuando el backend solo cubría LOOT).
 
 ## Mapa del repo
 
@@ -56,6 +62,11 @@ veces (#214, #216) antes del fix de raíz.*
 **Capa del agente LLM**: lock-only, **sin HITL** (decisión documentada en #217).
 
 ## Pendientes conocidos
+
+Ver [`docs/pending_ooda_status.md`](docs/pending_ooda_status.md) para el inventario
+completo verificado contra el código (reemplaza mantener la lista acá, que se
+desactualiza igual que cualquier otro doc estático). Un ítem persiste acá por ser
+transversal a toda tarea que toque `local/tools/xedit_service.py`:
 
 - **Smoke real de "Limpiar Archivos" (QuickAutoClean).** Los tests mockean el subproceso:
   validan los argumentos (`-quickautoclean -autoexit -autoload`, los mismos que usa PACT)
