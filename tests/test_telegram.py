@@ -25,18 +25,25 @@ if TYPE_CHECKING:
 # ------------------------------------------------------------------
 
 
-def _make_update(update_id: int, chat_id: int = 123, text: str = "hello") -> dict:
+def _make_update(
+    update_id: int,
+    chat_id: int = 123,
+    text: str = "hello",
+    sender_id: int | None = None,
+) -> dict:
     return {
         "update_id": update_id,
         "message": {
             "text": text,
             "chat": {"id": chat_id},
+            "from": {"id": chat_id if sender_id is None else sender_id},
         },
     }
 
 
 def _make_webhook(
     router_response: str = "I found 3 mods",
+    authorized_user_id: int | None = 123,
 ) -> tuple[TelegramWebhook, AsyncMock, AsyncMock]:
     """Create a TelegramWebhook with mocked router and sender."""
     mock_router = MagicMock()
@@ -51,6 +58,7 @@ def _make_webhook(
         router=mock_router,
         sender=mock_sender,
         session=mock_session,
+        authorized_user_id=authorized_user_id,
     )
     return webhook, mock_router, mock_sender
 
@@ -96,6 +104,29 @@ class TestTelegramWebhook:
 
         mock_router.chat.assert_awaited_once_with("search Requiem", webhook._session, chat_id="123")
         mock_sender.send.assert_awaited_once_with(123, "I found 3 mods")
+
+    @pytest.mark.asyncio
+    async def test_group_message_never_reaches_router(self) -> None:
+        """Un grupo no puede representar la identidad de un operador individual."""
+        webhook, mock_router, _ = _make_webhook(authorized_user_id=123)
+
+        await webhook.process_update(
+            _make_update(
+                500,
+                chat_id=-100123,
+                text="run_loot_sort",
+                sender_id=777,
+            )
+        )
+
+        try:
+            mock_router.chat.assert_not_awaited()
+            assert not webhook._tasks
+        finally:
+            tasks = list(webhook._tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     @pytest.mark.asyncio
     async def test_deduplication(self, aiohttp_client, webhook_app) -> None:

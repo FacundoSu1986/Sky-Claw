@@ -163,6 +163,21 @@ class TelegramWebhook:
 
         return True
 
+    def _validate_private_operator(self, message_or_callback: dict[str, Any]) -> bool:
+        """Acepta sólo al operador configurado en su chat privado.
+
+        ``telegram_chat_id`` se reutiliza como identidad del operador para el
+        modo privado de Telegram, donde ``chat.id == from.id``. Un ID negativo
+        de grupo no representa a un usuario y no puede abrir una frontera de
+        confianza para tools mutantes.
+        """
+        if not self._validate_sender(message_or_callback):
+            return False
+
+        message = message_or_callback.get("message") or message_or_callback
+        chat_id = message.get("chat", {}).get("id")
+        return chat_id is not None and str(chat_id) == str(self._allowed_user_id)
+
     async def handle_update(self, request: web.Request) -> web.Response:
         """Handle an incoming Telegram update.
 
@@ -219,6 +234,10 @@ class TelegramWebhook:
         chat_id = chat.get("id")
 
         if not text or chat_id is None:
+            return
+
+        if not self._validate_private_operator(message):
+            logger.warning("Telegram update rechazado: el operador debe usar su chat privado autorizado.")
             return
 
         # Intercept HITL operator commands before routing to the LLM.
@@ -289,7 +308,7 @@ class TelegramWebhook:
     async def _handle_callback_query(self, query: dict[str, Any]) -> None:
         """Handle an operator clicking an inline button (Approve/Deny)."""
         # H-03: Validación anti-spoofing
-        if not self._validate_sender(query):
+        if not self._validate_private_operator(query):
             logger.warning("Intento de spoofing HITL detectado y bloqueado en callback_query.")
             callback_id = query.get("id")
             if callback_id:
@@ -359,7 +378,7 @@ class TelegramWebhook:
         "not found" message is sent instead.
         """
         # H-03: Validación anti-spoofing
-        if message is not None and not self._validate_sender(message):
+        if message is not None and not self._validate_private_operator(message):
             logger.warning("Intento de spoofing HITL detectado y bloqueado.")
             return
 
