@@ -35,10 +35,12 @@ class ExecuteSynthesisPipelineStrategy:
         self,
         *,
         flow_provider: Callable[[], SandboxPromotionFlow],
-        service_factory: Callable[[pathlib.Path], SynthesisPipelineService],
+        service_factory: Callable[[pathlib.Path, Any], SynthesisPipelineService],
+        real_journal_provider: Callable[[], Any],
     ) -> None:
         self._flow_provider = flow_provider
         self._service_factory = service_factory
+        self._real_journal_provider = real_journal_provider
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         # Filter to only valid parameters — the LLM may inject extra keys
@@ -50,12 +52,24 @@ class ExecuteSynthesisPipelineStrategy:
             logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
 
         flow = self._flow_provider()
+        
+        from sky_claw.antigravity.db.journal import StagingJournal
+        staging_journal = StagingJournal(self._real_journal_provider())
 
         async def ritual(clone: SandboxClone) -> dict[str, Any]:
             # Servicio fresco por run, con la salida redirigida a la copia del
             # overwrite (T-27b: el servicio deshabilita su propio snapshot en
             # modo sandbox — el clon ES el rollback).
-            service = self._service_factory(clone.overwrite_copy)
+            service = self._service_factory(clone.overwrite_copy, staging_journal)
             return await service.execute_pipeline(**filtered)
 
-        return await flow.run(ritual_name="synthesis", ritual=ritual)
+        result = await flow.run(ritual_name="synthesis", ritual=ritual)
+        
+        sandbox_info = result.get("sandbox", {})
+        if sandbox_info.get("promoted"):
+            await staging_journal.commit_staged()
+        else:
+            await staging_journal.rollback_staged()
+            
+        return result
+

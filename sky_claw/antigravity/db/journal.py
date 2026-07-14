@@ -1176,3 +1176,147 @@ class OperationJournal:
     ) -> None:
         """Context manager exit."""
         await self.close()
+
+
+class NoOpJournal(OperationJournal):
+    """Journal de operaciones que no realiza ninguna operación de escritura en DB.
+
+    Útil para ejecuciones en sandbox donde no se quiere persistir el historial
+    antes de la aprobación del operador.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    async def open(self) -> None:
+        pass
+
+    async def close(self) -> None:
+        pass
+
+    async def begin_transaction(self, description: str, mod_id: int | None = None, agent_id: str = "system") -> int:
+        return 999999
+
+    async def commit_transaction(self, transaction_id: int) -> None:
+        pass
+
+    async def rollback_transaction(self, transaction_id: int) -> None:
+        pass
+
+    async def begin_operation(
+        self, transaction_id: int, operation_type: Any, target_path: str, agent_id: str, metadata: dict[str, Any] | None = None
+    ) -> int:
+        return 999999
+
+    async def complete_operation(self, entry_id: int) -> None:
+        pass
+
+    async def fail_operation(self, entry_id: int, error: str = "", metadata: dict[str, Any] | None = None) -> None:
+        pass
+
+    async def log_operation(
+        self,
+        transaction_id: int,
+        operation_type: Any,
+        target_path: str,
+        agent_id: str,
+        status: Any = "started",
+        snapshot_path: str | None = None,
+        checksum: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        return 999999
+
+    async def persist_action_manifest(self, transaction_id: int, action_manifest: Any) -> None:
+        pass
+
+    async def persist_flight_report(self, transaction_id: int, flight_report: Any) -> None:
+        pass
+
+    async def mark_rolled_back(self, entry_id: int, details: str | None = None) -> None:
+        pass
+
+    async def mark_transaction_rolled_back(self, transaction_id: int) -> None:
+        pass
+
+
+class StagingJournal(OperationJournal):
+    """Journal que difiere el commit de la transacción en el journal real
+
+    hasta que se confirma la promoción del sandbox.
+    """
+
+    def __init__(self, real_journal: OperationJournal) -> None:
+        self._real_journal = real_journal
+        self._staged_tx_id: int | None = None
+        self._staged_commit = False
+
+    async def open(self) -> None:
+        # El real_journal ya debería estar abierto.
+        pass
+
+    async def close(self) -> None:
+        pass
+
+    async def begin_transaction(self, description: str, mod_id: int | None = None, agent_id: str = "system") -> int:
+        tx_id = await self._real_journal.begin_transaction(
+            description=description,
+            mod_id=mod_id,
+            agent_id=agent_id,
+        )
+        self._staged_tx_id = tx_id
+        self._staged_commit = False
+        return tx_id
+
+    async def commit_transaction(self, transaction_id: int) -> None:
+        if transaction_id == self._staged_tx_id:
+            self._staged_commit = True
+            logger.info("StagingJournal: commit diferido para la transacción %d", transaction_id)
+        else:
+            await self._real_journal.commit_transaction(transaction_id)
+
+    async def rollback_transaction(self, transaction_id: int) -> None:
+        await self._real_journal.rollback_transaction(transaction_id)
+
+    async def mark_transaction_rolled_back(self, transaction_id: int) -> None:
+        if transaction_id == self._staged_tx_id:
+            self._staged_commit = False
+        await self._real_journal.mark_transaction_rolled_back(transaction_id)
+
+    async def begin_operation(self, *args: Any, **kwargs: Any) -> int:
+        return await self._real_journal.begin_operation(*args, **kwargs)
+
+    async def complete_operation(self, *args: Any, **kwargs: Any) -> None:
+        await self._real_journal.complete_operation(*args, **kwargs)
+
+    async def fail_operation(self, *args: Any, **kwargs: Any) -> None:
+        await self._real_journal.fail_operation(*args, **kwargs)
+
+    async def log_operation(self, *args: Any, **kwargs: Any) -> int:
+        return await self._real_journal.log_operation(*args, **kwargs)
+
+    async def persist_action_manifest(self, *args: Any, **kwargs: Any) -> None:
+        await self._real_journal.persist_action_manifest(*args, **kwargs)
+
+    async def persist_flight_report(self, *args: Any, **kwargs: Any) -> None:
+        await self._real_journal.persist_flight_report(*args, **kwargs)
+
+    async def mark_rolled_back(self, *args: Any, **kwargs: Any) -> None:
+        await self._real_journal.mark_rolled_back(*args, **kwargs)
+
+    async def commit_staged(self) -> None:
+        """Confirma la transacción diferida en el journal real."""
+        if self._staged_tx_id is not None and self._staged_commit:
+            logger.info("StagingJournal: confirmando transacción diferida %d", self._staged_tx_id)
+            await self._real_journal.commit_transaction(self._staged_tx_id)
+            self._staged_tx_id = None
+            self._staged_commit = False
+
+    async def rollback_staged(self) -> None:
+        """Revierte la transacción diferida en el journal real."""
+        if self._staged_tx_id is not None:
+            logger.info("StagingJournal: revirtiendo transacción diferida %d", self._staged_tx_id)
+            await self._real_journal.mark_transaction_rolled_back(self._staged_tx_id)
+            self._staged_tx_id = None
+            self._staged_commit = False
+

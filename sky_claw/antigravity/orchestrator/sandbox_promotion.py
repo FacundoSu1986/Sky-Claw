@@ -109,6 +109,19 @@ def _sandbox_annotation(
     }
 
 
+def _rewrite_clone_paths(data: Any, clone: SandboxClone) -> Any:
+    """Reescribe recursivamente las rutas del clon por las del perfil real en el dict de resultado."""
+    if isinstance(data, dict):
+        return {k: _rewrite_clone_paths(v, clone) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [_rewrite_clone_paths(item, clone) for item in data]
+    elif isinstance(data, str):
+        res = data.replace(str(clone.profile_copy), str(clone.profile_source))
+        res = res.replace(str(clone.overwrite_copy), str(clone.overwrite_source))
+        return res
+    return data
+
+
 class SandboxPromotionFlow:
     """Corre un ritual en sandbox y resuelve promote/discard vía HITL.
 
@@ -171,19 +184,22 @@ class SandboxPromotionFlow:
         # evidencia para el operador (filosofía caja negra) y el clon se
         # descarta — sin GUI de forense, un clon vivo sería solo un leak.
         if not result.get("success"):
-            await self._sandbox.discard(clone)
+            with contextlib.suppress(Exception):
+                await self._sandbox.discard(clone)
             result["sandbox"] = _sandbox_annotation(diff, promoted=False, decision="ritual_failed")
             return result
 
         if diff.is_empty:
-            await self._sandbox.discard(clone)
+            with contextlib.suppress(Exception):
+                await self._sandbox.discard(clone)
             result["sandbox"] = _sandbox_annotation(diff, promoted=False, decision="empty_diff")
             return result
 
         decision = await self._request_decision(ritual_name, diff, clone)
 
         if decision is not Decision.APPROVED:
-            await self._sandbox.discard(clone)
+            with contextlib.suppress(Exception):
+                await self._sandbox.discard(clone)
             logger.warning(
                 "SandboxPromotionFlow: promoción de '%s' NO aprobada (decision=%s) — %d cambio(s) descartado(s).",
                 ritual_name,
@@ -248,7 +264,8 @@ class SandboxPromotionFlow:
         except SandboxDriftError as exc:
             # El árbol real cambió en la ventana de aprobación: promover
             # pisaría cambios vivos. El propio promote ya cortó; descartar.
-            await self._sandbox.discard(clone)
+            with contextlib.suppress(Exception):
+                await self._sandbox.discard(clone)
             result["success"] = False
             result["message"] = str(exc)
             result["reason"] = "SandboxDriftDetected"
@@ -268,14 +285,27 @@ class SandboxPromotionFlow:
             result["reason"] = "SandboxRollbackFailed"
             result["sandbox"] = _sandbox_annotation(diff, promoted=False, decision="rollback_failed")
             return result
+        except Exception:
+            # Descarte general para errores imprevistos (e.g. symlinks en Windows)
+            with contextlib.suppress(Exception):
+                await self._sandbox.discard(clone)
+            raise
 
-        await self._sandbox.discard(clone)
+        try:
+            await self._sandbox.discard(clone)
+        except Exception:
+            logger.warning("Limpieza post-promoción fallida: no se pudo descartar %s", clone.root, exc_info=True)
+
         logger.info(
             "SandboxPromotionFlow: '%s' promovido al perfil real (%d escrito(s), %d borrado(s)).",
             ritual_name,
             promocion.files_written,
             promocion.files_deleted,
         )
+        
+        # Reescribir las rutas en el payload final
+        result = _rewrite_clone_paths(result, clone)
+        
         result["sandbox"] = _sandbox_annotation(
             diff,
             promoted=True,
@@ -284,3 +314,4 @@ class SandboxPromotionFlow:
             files_deleted=promocion.files_deleted,
         )
         return result
+

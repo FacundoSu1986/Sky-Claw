@@ -208,7 +208,7 @@ def _build_synthesis_sandbox_flow(supervisor: SupervisorAgent) -> Any:
     )
 
 
-def _build_sandboxed_synthesis_service(supervisor: SupervisorAgent, output_path: Any) -> Any:
+def _build_sandboxed_synthesis_service(supervisor: SupervisorAgent, output_path: Any, journal: Any) -> Any:
     """Fresh :class:`SynthesisPipelineService` writing into the sandbox clone.
 
     Un servicio por run sandboxeado (patrón documentado en el propio servicio,
@@ -220,7 +220,7 @@ def _build_sandboxed_synthesis_service(supervisor: SupervisorAgent, output_path:
     return SynthesisPipelineService(
         lock_manager=supervisor._lock_manager,
         snapshot_manager=supervisor.snapshot_manager,
-        journal=supervisor.journal,
+        journal=journal,
         path_resolver=supervisor._path_resolver,
         event_bus=supervisor._event_bus,
         pipeline_config_path=supervisor._synthesis_service._pipeline_config_path,
@@ -271,7 +271,8 @@ def build_orchestration_dispatcher(
     dispatcher.register(
         ExecuteSynthesisPipelineStrategy(
             flow_provider=lambda: _build_synthesis_sandbox_flow(supervisor),
-            service_factory=lambda output_path: _build_sandboxed_synthesis_service(supervisor, output_path),
+            service_factory=lambda output_path, journal: _build_sandboxed_synthesis_service(supervisor, output_path, journal),
+            real_journal_provider=lambda: supervisor.journal,
         ),
         middleware=[
             ErrorWrappingMiddleware("SynthesisPipelineExecutionFailed"),
