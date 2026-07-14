@@ -155,7 +155,10 @@ async def setup_tools(
                         edition=edition,
                     )
                     if local_cfg:
-                        local_cfg.ngio_mods = [m.mod_name for m in mods]
+                        if hasattr(local_cfg, "_data"):
+                            local_cfg._data["ngio_mods"] = [m.mod_name for m in mods]
+                        else:
+                            local_cfg.ngio_mods = [m.mod_name for m in mods]
                     results["ngio"] = {
                         "status": ("already_installed" if all(m.already_existed for m in mods) else "installed"),
                         "edition": edition.value,
