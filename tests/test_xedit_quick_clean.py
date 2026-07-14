@@ -19,6 +19,11 @@ from sky_claw.local.tools.xedit_service import (
     XEDIT_CLEAN_RESOURCE_ID,
     XEditPipelineService,
 )
+from sky_claw.local.validators.preflight import (
+    PreflightCheck,
+    PreflightReport,
+    PreflightStatus,
+)
 from sky_claw.local.xedit.runner import (
     ScriptExecutionResult,
     XEditRunner,
@@ -68,11 +73,24 @@ def _game_with_masters(tmp_path: pathlib.Path, masters: tuple[str, ...]) -> path
     return game
 
 
+class _FakePreflight:
+    """Preflight inyectable: ``run()`` devuelve un reporte fijo (gate de T-16c·1)."""
+
+    def __init__(self, report: PreflightReport) -> None:
+        self._report = report
+        self.ran = False
+
+    async def run(self) -> PreflightReport:
+        self.ran = True
+        return self._report
+
+
 def _make_service(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
     game_path: pathlib.Path,
     runner: MagicMock,
+    preflight: object | None = None,
 ) -> XEditPipelineService:
     resolver = MagicMock()
     resolver.get_skyrim_path = MagicMock(return_value=game_path)
@@ -82,6 +100,7 @@ def _make_service(
         journal=AsyncMock(),
         path_resolver=resolver,
         event_bus=AsyncMock(),
+        preflight=preflight,  # type: ignore[arg-type]  # fake duck-typed en tests
     )
     svc._xedit_runner = runner  # inyectar runner — evita resolver el exe real
     return svc
@@ -271,3 +290,115 @@ async def test_missing_game_path_returns_error_without_locking(
     assert result["success"] is False
     runner.quick_auto_clean.assert_not_awaited()
     assert await lock_manager.get_lock_info(XEDIT_CLEAN_RESOURCE_ID) is None
+
+
+# =============================================================================
+# T-16c·1: gate de preflight en quick_auto_clean
+# =============================================================================
+
+
+def _permissions_report(status: PreflightStatus, summary: str) -> PreflightReport:
+    """Reporte con un solo check de permisos en el estado pedido."""
+    return PreflightReport(
+        status=status,
+        checks=(PreflightCheck(name="write_permissions", status=status, summary=summary, details=()),),
+    )
+
+
+@pytest.mark.asyncio
+async def test_preflight_red_blocks_clean_without_locking_and_surfaces_report(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    # Un preflight ROJO (p. ej. Data sin permisos) frena la limpieza ANTES de
+    # tocar nada: no invoca el runner, no toma el lock, y surface el semáforo.
+    game = _game_with_masters(tmp_path, ("Update.esm",))
+    runner = MagicMock()
+    runner.quick_auto_clean = AsyncMock(return_value=_ok_result())
+    red = _permissions_report(PreflightStatus.RED, "Data sin permisos de escritura.")
+    svc = _make_service(lock_manager, snapshot_manager, game, runner, preflight=_FakePreflight(red))
+
+    result = await svc.quick_auto_clean()
+
+    assert result["success"] is False
+    assert result["reason"] == "PreflightBlocked"
+    assert result["preflight"]["status"] == "red"
+    runner.quick_auto_clean.assert_not_awaited()
+    assert await lock_manager.get_lock_info(XEDIT_CLEAN_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_preflight_yellow_cleans_and_surfaces_report(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    # Amarillo advierte pero no bloquea: la limpieza corre y el reporte se surface.
+    game = _game_with_masters(tmp_path, ("Update.esm",))
+    runner = MagicMock()
+    runner.quick_auto_clean = AsyncMock(return_value=_ok_result())
+    yellow = _permissions_report(PreflightStatus.YELLOW, "Escritura verificada con advertencias.")
+    svc = _make_service(lock_manager, snapshot_manager, game, runner, preflight=_FakePreflight(yellow))
+
+    result = await svc.quick_auto_clean()
+
+    assert result["success"] is True
+    assert result["cleaned"] == ["Update.esm"]
+    assert result["preflight"]["status"] == "yellow"
+    runner.quick_auto_clean.assert_awaited_once_with("Update.esm")
+
+
+@pytest.mark.asyncio
+async def test_preflight_yellow_surfaced_even_when_clean_fails(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    # Review Codex #288 (P2): un preflight amarillo se surface incluso si la
+    # limpieza falla después (el runner devuelve error → rollback), en vez de
+    # perderse el warning ya computado en el path de error.
+    game = _game_with_masters(tmp_path, ("Update.esm",))
+    runner = MagicMock()
+    runner.quick_auto_clean = AsyncMock(
+        return_value=ScriptExecutionResult(success=False, exit_code=2, stdout="", stderr="boom", records_processed=0)
+    )
+    yellow = _permissions_report(PreflightStatus.YELLOW, "Escritura verificada con advertencias.")
+    svc = _make_service(lock_manager, snapshot_manager, game, runner, preflight=_FakePreflight(yellow))
+
+    result = await svc.quick_auto_clean()
+
+    assert result["success"] is False  # la limpieza falló y se hizo rollback
+    assert result["preflight"]["status"] == "yellow"  # pero el warning se surface igual
+
+
+@pytest.mark.asyncio
+async def test_preflight_green_does_not_attach_report(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    # Verde no ensucia el result con el reporte (mismo criterio que loot_service).
+    game = _game_with_masters(tmp_path, ("Update.esm",))
+    runner = MagicMock()
+    runner.quick_auto_clean = AsyncMock(return_value=_ok_result())
+    green = _permissions_report(PreflightStatus.GREEN, "Escritura verificada en 1 ruta(s).")
+    svc = _make_service(lock_manager, snapshot_manager, game, runner, preflight=_FakePreflight(green))
+
+    result = await svc.quick_auto_clean()
+
+    assert result["success"] is True
+    assert "preflight" not in result
+
+
+@pytest.mark.asyncio
+async def test_preflight_builds_permissions_over_data_and_no_loot_version(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    # Smoke de construcción (sin inyectar): el preflight de xEdit prueba escritura
+    # sobre Data y NO cablea la versión de LOOT (irrelevante para limpiar DLCs).
+    game = _game_with_masters(tmp_path, ("Update.esm",))
+    runner = MagicMock()
+    runner.quick_auto_clean = AsyncMock(return_value=_ok_result())
+    svc = _make_service(lock_manager, snapshot_manager, game, runner)  # sin preflight → lo construye
+
+    preflight = svc._ensure_preflight()
+    assert preflight is not None
+    report = await preflight.run()
+    names = {c.name for c in report.checks}
+    assert "write_permissions" in names
+    assert "loot_version" not in names  # xEdit no mide la versión de LOOT
+    # Data de tmp es escribible → el sensor de permisos no bloquea.
+    assert report.blocks_mutations is False

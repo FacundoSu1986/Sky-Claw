@@ -54,14 +54,6 @@ class TestProbe:
         assert report.probed == ()
         assert report.issues == ()
 
-    def test_target_que_es_archivo_se_saltea(self, tmp_path: pathlib.Path) -> None:
-        archivo = tmp_path / "f.txt"
-        archivo.write_text("x", encoding="utf-8")
-
-        report = _check(archivo)
-
-        assert report.probed == ()
-
     def test_permission_error_mapea_critical(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Independiente de plataforma: un PermissionError al abrir el probe es
         denegación de escritura → crítico."""
@@ -152,6 +144,37 @@ class TestProbe:
             assert any(i.severity == "critical" for i in report.issues)
         finally:
             readonly.chmod(0o755)
+
+    def test_archivo_escribible_es_verde_y_no_se_modifica(self, tmp_path: pathlib.Path) -> None:
+        # Un archivo existente se prueba abriéndolo en r+b: verde si es escribible,
+        # y el contenido queda intacto (no se escribe nada) — review Codex #288.
+        archivo = tmp_path / "Update.esm"
+        archivo.write_bytes(b"TES4")
+        report = _check(archivo)
+
+        assert report.issues == ()
+        assert str(archivo) in report.probed
+        assert archivo.read_bytes() == b"TES4"
+
+    @_posix_guard
+    @_root_guard
+    def test_archivo_read_only_es_critical(self, tmp_path: pathlib.Path) -> None:
+        # Un master read-only en un Data escribible: el probe de directorio no lo
+        # ve, pero el probe de archivo sí lo marca crítico (review Codex #288).
+        archivo = tmp_path / "Update.esm"
+        archivo.write_bytes(b"TES4")
+        archivo.chmod(0o444)
+        try:
+            report = _check(archivo)
+            assert any(i.severity == "critical" for i in report.issues)
+        finally:
+            archivo.chmod(0o644)
+
+    def test_archivo_inexistente_se_saltea(self, tmp_path: pathlib.Path) -> None:
+        report = _check(tmp_path / "no_existe.esm")
+
+        assert report.probed == ()
+        assert report.issues == ()
 
 
 # ---------------------------------------------------------------------------
