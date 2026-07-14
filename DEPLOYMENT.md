@@ -55,7 +55,8 @@ variables de entorno.
 
 ### Paths de herramientas (excepción Zero-Trust documentada)
 `path_resolver.py` es el **único** punto que lee estas variables de entorno
-(ver `ZERO_TRUST_TODO.md`); ningún otro módulo debe leerlas directo. Nombres
+(ver `docs/pending_ooda_status.md` §2.3 — migración a `config.toml` pendiente,
+sin fecha); ningún otro módulo debe leerlas directo. Nombres
 reales según `sky_claw/antigravity/core/path_resolver.py`:
 
 | Variable de entorno | Uso |

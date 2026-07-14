@@ -120,6 +120,29 @@ gui, agent, security, comms, core, db), más `local/mo2/`, `local/validators/`,
 `local/discovery/`, `local/loot/`, `local/fomod/`, `local/assets/`. Es la
 exención más grande que queda del backlog original.
 
+### 2.3 Zero-Trust — 2 ítems residuales (heredados de `ZERO_TRUST_TODO.md`, fusionado en esta nota)
+
+`ZERO_TRUST_TODO.md` declaraba todo "Completado ✅" salvo una excepción
+documentada, pero su sección "Acción recomendada futura" tenía 2 ítems
+genuinamente abiertos (verificados, no en el resumen ✅ del propio doc — el
+mismo patrón de esta nota completa: el checkbox de arriba no reflejaba el
+contenido de abajo):
+
+1. **Migrar `PathResolutionService` de `os.environ` a `config.toml` puro.**
+   Vigente: `path_resolver.py` sigue con ~10 sitios `os.environ.get(...)`. Es
+   la excepción ya documentada y aceptada como "único punto centralizado
+   permitido" — no es urgente, pero sigue sin fecha.
+2. **Consolidar secretos en `CredentialVault.get_key(name)` con backend
+   keyring.** No existe: `grep -rn "def get_key" credential_vault.py` no
+   encuentra nada. Sin empezar.
+
+Nota al margen: `ritual_runner.py:342` escribe (`os.environ[env_name] = ...`,
+no lee) fuera del punto centralizado — sembrando la var justo tras instalar
+una tool para que el resolver la vea sin esperar un rescan. Es una escritura
+legítima, no una violación de la regla de "lectura única" del doc original
+(que nunca contempló el caso de escritura), pero deja la regla incompleta si
+se retoma el ítem 1.
+
 ---
 
 ## 3 — Residuales del OODA analysis (34 hallazgos) — bajo valor, ya evaluados
