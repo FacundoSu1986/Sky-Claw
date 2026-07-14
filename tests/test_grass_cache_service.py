@@ -62,9 +62,18 @@ def _resultado_runner(**overrides: Any) -> GrassCacheRunResult:
 
 
 def _journal_con_loot_completado() -> AsyncMock:
-    """Journal fake donde Stage 5 (LOOT) consta como completado."""
+    """Journal fake donde Stage 5 (LOOT) consta como completado Y commiteado.
+
+    El marcador confiable es el FlightReport post-éxito (kind="flight_report",
+    transaction_status="committed"): el ActionManifest pre-sort también queda
+    COMPLETED aunque el sort falle (review Codex #291), así que una entry
+    COMPLETED pelada NO alcanza.
+    """
     journal = AsyncMock()
-    journal.get_last_operation.return_value = MagicMock(status=OperationStatus.COMPLETED)
+    journal.get_last_operation.return_value = MagicMock(
+        status=OperationStatus.COMPLETED,
+        metadata={"kind": "flight_report", "transaction_status": "committed"},
+    )
     journal.begin_transaction.return_value = 77
     journal.begin_operation.return_value = 5
     return journal
@@ -85,8 +94,14 @@ def _servicio(
     journal: Any = None,
     runner_result: GrassCacheRunResult | None = None,
     lock_tx: Any = None,
+    lock_txs: dict[str, Any] | None = None,
 ) -> tuple[GrassCacheService, dict[str, Any]]:
-    """Servicio con TODAS las dependencias inyectadas y trackeadas."""
+    """Servicio con TODAS las dependencias inyectadas y trackeadas.
+
+    ``lock_tx`` inyecta el tx del recurso ``grass-cache``; ``lock_txs`` permite
+    inyectar por recurso (p.ej. ``load-order``). La fábrica registra cada
+    pedido de lock en ``colaboradores["llamadas_lock"]``.
+    """
     game = tmp_path / "game"
     game.mkdir(exist_ok=True)
     (game / "SkyrimSE.exe").write_bytes(b"MZ")
@@ -100,12 +115,24 @@ def _servicio(
     runner.run.return_value = runner_result if runner_result is not None else _resultado_runner()
     runner_factory = MagicMock(return_value=runner)
 
+    llamadas_lock: list[dict[str, Any]] = []
+
+    def _fabrica_lock(**kwargs: Any) -> Any:
+        llamadas_lock.append(kwargs)
+        recurso = kwargs.get("resource_id")
+        if lock_txs is not None and recurso in lock_txs:
+            return lock_txs[recurso]
+        if lock_tx is not None and recurso == "grass-cache":
+            return lock_tx
+        return _lock_tx_fake()
+
     event_bus = AsyncMock()
     colaboradores = {
         "profile_manager": profile_manager,
         "runner": runner,
         "runner_factory": runner_factory,
         "event_bus": event_bus,
+        "llamadas_lock": llamadas_lock,
     }
     service = GrassCacheService(
         lock_manager=MagicMock(),
@@ -117,7 +144,7 @@ def _servicio(
         game_path=game,
         overwrite_grass_dir=mo2_root / "overwrite" / "Grass",
         runner_factory=runner_factory,
-        lock_factory=(lambda **_kw: lock_tx) if lock_tx is not None else (lambda **_kw: _lock_tx_fake()),
+        lock_factory=_fabrica_lock,
     )
     return service, colaboradores
 
@@ -234,6 +261,40 @@ async def test_generate_force_stage_guard_saltea_el_guard(tmp_path: pathlib.Path
     assert resultado["success"] is True, resultado["message"]
 
 
+async def test_generate_guard_rechaza_manifiesto_sin_flight_report(tmp_path: pathlib.Path) -> None:
+    """Un ActionManifest pre-sort queda COMPLETED aunque el sort falle (la
+    transacción se marca rolled-back, la operación no): el guard NO debe
+    aceptarlo como prueba de Stage 5 — exige el FlightReport post-éxito
+    (review Codex #291)."""
+    journal = _journal_con_loot_completado()
+    journal.get_last_operation.return_value = MagicMock(
+        status=OperationStatus.COMPLETED,
+        metadata={"ritual_id": "loot-sort-99", "tool": "LOOT"},  # manifiesto, sin kind
+    )
+    service, colab = _servicio(tmp_path, journal=journal)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    _assert_error_de_contrato(resultado, "LOOT")
+    colab["profile_manager"].create_clone_profile.assert_not_awaited()
+
+
+async def test_generate_guard_rechaza_flight_report_no_commiteado(tmp_path: pathlib.Path) -> None:
+    """Un FlightReport con transaction_status != committed (commit best-effort
+    fallido) no alcanza: fail-closed, re-correr LOOT es barato."""
+    journal = _journal_con_loot_completado()
+    journal.get_last_operation.return_value = MagicMock(
+        status=OperationStatus.COMPLETED,
+        metadata={"kind": "flight_report", "transaction_status": "pending"},
+    )
+    service, colab = _servicio(tmp_path, journal=journal)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    _assert_error_de_contrato(resultado, "LOOT")
+    colab["profile_manager"].create_clone_profile.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # generate — orquestación B→D
 # ---------------------------------------------------------------------------
@@ -284,6 +345,79 @@ async def test_generate_lock_ocupado_cumple_contrato(tmp_path: pathlib.Path) -> 
 
     _assert_error_de_contrato(resultado, "lock")
     colab["profile_manager"].create_clone_profile.assert_not_awaited()
+    # Sin lock NO somos dueños del estado: teardown() acá borraría el clon/mod
+    # del run ACTIVO que sí tiene el lock (review Codex #291).
+    colab["profile_manager"].teardown.assert_not_awaited()
+
+
+async def test_generate_toma_tambien_el_lock_de_load_order(tmp_path: pathlib.Path) -> None:
+    """El ritual lee loadorder.txt durante horas: además del lock grass-cache
+    debe tomar load-order para excluir un sort de LOOT concurrente (review
+    Codex #291)."""
+    service, colab = _servicio(tmp_path, journal=_journal_con_loot_completado())
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is True, resultado["message"]
+    recursos = {c["resource_id"] for c in colab["llamadas_lock"]}
+    assert recursos == {"grass-cache", "load-order"}
+
+
+async def test_generate_load_order_ocupado_no_muta_ni_hace_teardown(tmp_path: pathlib.Path) -> None:
+    """Si LOOT tiene el lock load-order, el ritual aborta limpio: sin Fase B
+    y sin teardown (no se creó estado propio)."""
+    tx_lo = _lock_tx_fake()
+    tx_lo.__aenter__ = AsyncMock(side_effect=LockAcquisitionError("load-order", "loot-sorting-service"))
+    service, colab = _servicio(
+        tmp_path,
+        journal=_journal_con_loot_completado(),
+        lock_txs={"load-order": tx_lo},
+    )
+
+    resultado = await service.generate(_PAYLOAD)
+
+    _assert_error_de_contrato(resultado, "lock")
+    colab["profile_manager"].create_clone_profile.assert_not_awaited()
+    colab["profile_manager"].teardown.assert_not_awaited()
+
+
+async def test_generate_teardown_corre_dentro_del_lock(tmp_path: pathlib.Path) -> None:
+    """La Fase D restaura el entorno ANTES de liberar el lock: con el lock ya
+    suelto, otro run podría clonar el perfil y este teardown se lo borraría
+    (review Codex #291)."""
+    orden: list[str] = []
+    tx = _lock_tx_fake()
+
+    async def _liberar(*_args: Any) -> bool:
+        orden.append("lock_release")
+        return False
+
+    tx.__aexit__ = AsyncMock(side_effect=_liberar)
+    service, colab = _servicio(tmp_path, journal=_journal_con_loot_completado(), lock_tx=tx)
+    colab["profile_manager"].teardown.side_effect = lambda: orden.append("teardown")
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is True, resultado["message"]
+    assert orden.index("teardown") < orden.index("lock_release")
+
+
+async def test_generate_fallo_al_liberar_el_lock_invalida_el_exito(tmp_path: pathlib.Path) -> None:
+    """Si __aexit__ del lock falla (lease perdido con el auto-renew), la
+    exclusividad no estuvo garantizada: el run NO puede reportarse exitoso ni
+    commitear el journal aunque el runner haya terminado bien (review Codex
+    #291)."""
+    tx = _lock_tx_fake()
+    tx.__aexit__ = AsyncMock(side_effect=RuntimeError("lease del lock perdido durante el run"))
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal, lock_tx=tx)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    _assert_error_de_contrato(resultado, "lease")
+    journal.commit_transaction.assert_not_awaited()
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    colab["profile_manager"].teardown.assert_awaited()
 
 
 async def test_generate_fallo_de_fase_b_hace_teardown_y_cumple_contrato(tmp_path: pathlib.Path) -> None:
@@ -329,6 +463,23 @@ async def test_generate_cancelacion_hace_teardown_y_propaga(tmp_path: pathlib.Pa
         await service.generate(_PAYLOAD)
 
     colab["profile_manager"].teardown.assert_awaited()
+    # La TX del journal no queda PENDING: rollback best-effort antes de
+    # propagar la cancelación (review Codex #291).
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
+async def test_generate_fallo_loguea_stage_8(tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture) -> None:
+    """SOP §5 regla 5: todo fallo de tool loguea el stage index del pipeline."""
+    import logging
+
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal)
+    colab["profile_manager"].build_config_mod.side_effect = GrassProfileError("el clon ya existe")
+
+    with caplog.at_level(logging.WARNING, logger="sky_claw.local.tools.grass_cache_service"):
+        await service.generate(_PAYLOAD)
+
+    assert any("Stage 8" in registro.message for registro in caplog.records)
 
 
 async def test_generate_progreso_del_runner_se_publica_al_bus(tmp_path: pathlib.Path) -> None:

@@ -13,16 +13,21 @@ Compone las piezas ya mergeadas del plan (Stage 8 del SOP):
   overwrite; empaquetarlo como mod dedicado es follow-up documentado).
 
 Disciplinas del repo:
-- El ritual entero corre bajo el **lock distribuido** ``grass-cache``
-  (``SnapshotTransactionLock`` sin snapshots: lease con auto-renew — un run de
-  12 h excede cualquier TTL fijo). El cache parcial se conserva SIEMPRE.
+- El ritual entero corre bajo DOS locks distribuidos: ``grass-cache`` (un solo
+  ritual a la vez) y ``load-order`` (el juego lee ``loadorder.txt`` durante
+  todo el crash-loop — un sort de LOOT concurrente lo corrompería).
+  ``SnapshotTransactionLock`` sin snapshots: lease con auto-renew — un run de
+  12 h excede cualquier TTL fijo. El cache parcial se conserva SIEMPRE, y el
+  ``teardown()`` corre DENTRO del lock (fuera, borraría estado de otro run).
 - **Journal por transacción** (patrón LOOT/DynDOLOD): commit en éxito,
-  ``mark_transaction_rolled_back`` en fallo.
+  ``mark_transaction_rolled_back`` en fallo y en cancelación (nunca PENDING).
 - **Guard Stage 5→8 (NUEVO)**: las dependencias de pipeline estaban
   documentadas pero no aplicadas (§5.2 del SOP exige guards en paths nuevos).
-  Se verifica en el journal que LOOT (``loot-sorting-service``) tenga una
-  operación COMPLETED; fail-closed sin journal. ``force_stage_guard=True`` lo
-  saltea de forma explícita y VISIBLE en el prompt HITL.
+  Se verifica en el journal que LOOT (``loot-sorting-service``) tenga un
+  **FlightReport commiteado** (el ActionManifest pre-sort queda COMPLETED
+  aunque el sort falle, así que una operación COMPLETED pelada no alcanza);
+  fail-closed sin journal. ``force_stage_guard=True`` lo saltea de forma
+  explícita y VISIBLE en el prompt HITL.
 - Contrato de retorno: dict ``success: bool`` + ``message: str`` (vacío en
   éxito) — ``normalize_tool_result`` jamás cae en "error desconocido".
 - Eventos lifecycle al bus (``pipeline.grass_cache.started/completed``) +
@@ -32,6 +37,7 @@ Disciplinas del repo:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
 import logging
@@ -48,6 +54,7 @@ from sky_claw.local.tools.grass_cache_runner import (
     GrassCacheRunner,
     GrassCacheRunResult,
 )
+from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.xedit.grass_analyzer import GrassAnalyzer
 
 if TYPE_CHECKING:
@@ -215,35 +222,66 @@ class GrassCacheService:
             agent_id=self.AGENT_ID,
             metadata={"source": "grass_cache", "worldspaces": len(params.worldspaces)},
         )
+        # El juego lee loadorder.txt/plugins.txt durante TODO el crash-loop: sin
+        # el lock load-order, un sort de LOOT concurrente reescribiría el orden
+        # a mitad del precache y el cache saldría de un orden inconsistente
+        # (review Codex #291). Orden de adquisición fijo (grass-cache →
+        # load-order); nadie toma load-order → grass-cache, así que no hay
+        # deadlock. LOOT queda bloqueado mientras dura el ritual — es correcto.
+        lo_tx = self._lock_factory(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self._snapshot_manager,
+            resource_id=LOAD_ORDER_RESOURCE_ID,
+            agent_id=self.AGENT_ID,
+            metadata={"source": "grass_cache"},
+        )
         journal_tx: int | None = None
         run_result: GrassCacheRunResult | None = None
         error_msg: str | None = None
         try:
-            async with tx:
+            async with tx, lo_tx:
                 if self._journal is not None:
                     journal_tx = await self._journal.begin_transaction(
                         "Grass precache (NGIO, Stage 8)", agent_id=self.AGENT_ID
                     )
-                # -- Fase B: preparación aislada (solo el clon se muta) --
-                await pm.create_clone_profile()
-                await pm.build_config_mod(params.worldspaces)
-                if params.conflicting_mods:
-                    await pm.disable_conflicting_mods(params.conflicting_mods)
-                # -- Fase C: crash-loop --
-                runner = self._runner_factory(config, mo2, on_progress=self._make_progress_publisher())
-                run_result = await runner.run()
+                try:
+                    # -- Fase B: preparación aislada (solo el clon se muta) --
+                    await pm.create_clone_profile()
+                    await pm.build_config_mod(params.worldspaces)
+                    if params.conflicting_mods:
+                        await pm.disable_conflicting_mods(params.conflicting_mods)
+                    # -- Fase C: crash-loop --
+                    runner = self._runner_factory(config, mo2, on_progress=self._make_progress_publisher())
+                    run_result = await runner.run()
+                finally:
+                    # -- Fase D: restaurar el entorno SIEMPRE que ESTA invocación
+                    # haya empezado el setup, y DENTRO del lock: con el lock ya
+                    # suelto (o nunca adquirido) el teardown borraría el clon/mod
+                    # de otro run activo (review Codex #291). El cache queda en
+                    # overwrite/Grass — jamás se borra (parcial reanuda; completo
+                    # es el producto).
+                    await self._teardown_best_effort()
         except LockAcquisitionError as exc:
-            return self._error(f"No se pudo tomar el lock '{self.RESOURCE_ID}': {exc}", inicio)
+            # Sin lock no somos dueños de NINGÚN estado: ni Fase B ni teardown.
+            return self._error(f"No se pudo tomar el lock del ritual de grass: {exc}", inicio)
+        except asyncio.CancelledError:
+            # La TX del journal no puede quedar PENDING en un shutdown: cierre
+            # best-effort ANTES de propagar la cancelación (review Codex #291).
+            await self._journal_close(journal_tx, exito=False)
+            raise
         except Exception as exc:  # noqa: BLE001 — GrassProfileError y afines → contrato
-            logger.warning("El ritual de grass falló antes/durante el runner", exc_info=True)
+            # SOP §5 regla 5: el stage index es la señal primaria de debugging.
+            logger.warning(
+                "Stage 8 (No Grass In Objects): el ritual de grass falló",
+                exc_info=True,
+                extra={"pipeline_stage": 8},
+            )
             error_msg = str(exc)
-        finally:
-            # -- Fase D: restaurar el entorno SIEMPRE (también en éxito). El
-            # cache queda en overwrite/Grass — jamás se borra (cache parcial
-            # reanuda; cache completo es el producto).
-            await self._teardown_best_effort()
 
-        exito = run_result is not None and run_result.success
+        # Un fallo posterior al runner (p.ej. lease perdido al liberar el lock)
+        # invalida el éxito: la exclusividad no estuvo garantizada, así que el
+        # journal NO se commitea aunque run_result diga success (Codex #291).
+        exito = error_msg is None and run_result is not None and run_result.success
         await self._journal_close(journal_tx, exito=exito)
         resultado = self._componer_resultado(run_result, error_msg, inicio)
         await self._publish(
@@ -276,6 +314,19 @@ class GrassCacheService:
                 "Stage 5 (LOOT) no consta como completado en el journal: corré "
                 "execute_loot_sorting antes del precache de grass (orden del SOP), "
                 "o pasá force_stage_guard=True si sabés lo que hacés."
+            )
+        # Una operación COMPLETED pelada NO prueba un sort exitoso: LOOT
+        # persiste el ActionManifest (COMPLETED) ANTES de runner.sort(), y si
+        # el sort falla solo la TRANSACCIÓN se marca rolled-back — la operación
+        # queda. El marcador confiable es el FlightReport, que solo se emite en
+        # el path de éxito y carga el estado real de la TX (review Codex #291).
+        meta = entry.metadata if isinstance(entry.metadata, dict) else {}
+        if meta.get("kind") != "flight_report" or meta.get("transaction_status") != "committed":
+            return (
+                "Stage 5 (LOOT) no consta como completado Y commiteado: la última "
+                "operación journalizada de LOOT no es el informe de vuelo de un sort "
+                "exitoso (un manifiesto pre-sort queda COMPLETED aunque el sort falle). "
+                "Corré execute_loot_sorting hasta el éxito, o pasá force_stage_guard=True."
             )
         return None
 
@@ -328,8 +379,17 @@ class GrassCacheService:
         self, run_result: GrassCacheRunResult | None, error_msg: str | None, inicio: float
     ) -> dict[str, Any]:
         duracion = time.monotonic() - inicio
+        if error_msg is not None:
+            # Prioridad al error aunque el runner haya terminado: un fallo
+            # posterior (lease perdido, teardown que propagó) invalida el
+            # éxito. Los datos del runner viajan como diagnóstico.
+            resultado = self._error(error_msg, inicio)
+            if run_result is not None:
+                resultado["outcome"] = run_result.outcome
+                resultado["cgid_count"] = run_result.cgid_count
+            return resultado
         if run_result is None:
-            return self._error(error_msg or "El ritual de grass no llegó a ejecutar el runner.", inicio)
+            return self._error("El ritual de grass no llegó a ejecutar el runner.", inicio)
         return {
             "success": run_result.success,
             "message": run_result.message,
