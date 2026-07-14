@@ -17,12 +17,14 @@ cualquier ítem, como pide `AGENTS.md`.
   CRÍTICOS y HIGH accionables están cerrados, mitigados o evaluados
   (ADR 0003, ADR 0004). Lo que resta es cosmético o de bajo impacto — ver §3.
 - **Roadmap de producto "caja negra de vuelo" (ADR 0002, Oleada 7):** T-30 y
-  T-29 sí cerrados. **T-26, T-27 y T-28 están sobre-declarados como "cerrados"
+  T-29 sí cerrados. **T-26 y T-28 están sobre-declarados como "cerrados"
   en el historial de commits — la cobertura real es solo LOOT**, ver §1
   (corregido tras review de Codex sobre el primer draft de este mismo
   documento — la ironía es la prueba de campo del problema que motiva esta
   nota: verificar "un archivo" no es lo mismo que verificar "todo caller en
-  el árbol").
+  el árbol"). **T-27: cerrado parcialmente el 2026-07-14** — Synthesis corre
+  sandboxeado con promote/discard HITL real (ADR 0005); Pandora/DynDOLOD/
+  Wrye Bash siguen sin palanca de redirección, ver §1.2.
 - **Deuda estructural continua (T-10/T-11/T-12):** en curso, sin bloquear GA
   — ver §2.
 - **GUI/accesibilidad (Oleada 5) y smoke E2E (Oleada 6):** nunca arrancadas
@@ -64,29 +66,35 @@ en xEdit/Synthesis/DynDOLOD/Pandora/Wrye Bash, y **recién después** tiene
 sentido construir la vista GUI de T-28 (mostrar un informe que hoy, para la
 mayoría de los Rituales, no existiría).
 
-### 1.2 T-27 — El sandbox nunca se activa en ningún Ritual real (no es solo "falta Pandora")
+### 1.2 T-27 — Synthesis sandboxeado con promote/discard real (2026-07-14); Pandora/DynDOLOD/Wrye Bash siguen fuera
 
-El draft anterior decía "T-27b·1 (#258) cableó Synthesis" y que solo faltaba
-Pandora. Es impreciso: T-27b·1 construyó el **seam** de inyección
-(`SynthesisPipelineService` acepta un `output_path` override apuntable a
-`SandboxClone.overwrite_copy`) y el orquestador `run_ritual_in_sandbox()`
-(`sky_claw/local/mo2/sandbox_run.py`) que sabe clonar/correr/diff/promote.
-Pero **nada en producción invoca `run_ritual_in_sandbox`**:
+**Actualización 2026-07-14 (cierre PARCIAL — no declarar T-27 "cerrado"):**
+`SandboxPromotionFlow` (`sky_claw/antigravity/orchestrator/sandbox_promotion.py`,
+ADR 0005) es ahora el dueño de producción del ciclo clonar → correr → diff →
+HITL → promote/discard, y `execute_synthesis_pipeline` corre **siempre** por
+él (strategy + builders lazy en `tool_dispatcher.py`). El bucle de decisión
+post-ejecución que faltaba se resolvió **síncrono**, bloqueando en
+`HITLGuard.request_approval` (categoría nueva `sandbox_promotion`, nunca
+auto-aprobada por «Modo local» ni por el fallback headless — ese fallback
+auto-aprobaba categorías desconocidas y se cerró en el mismo PR). Denegado/
+timeout/drift/ritual-fallido descartan fail-closed con el diff como evidencia
+en `result["sandbox"]`; solo `APPROVED` promueve. Ver ADR 0005 para el TOT
+(síncrono vs. asíncrono vs. auto-políticas) y el criterio de reversión.
 
-```
-$ grep -rln "run_ritual_in_sandbox" sky_claw/ | grep -v test
-sky_claw/local/mo2/sandbox_run.py    # solo la propia definición
-```
+**Lo que sigue abierto de T-27:** Pandora no es redirigible hoy (sin palanca
+de output — el subproceso escribe vía el VFS de MO2 con `cwd`); DynDOLOD y
+Wrye Bash, ídem. Su aislamiento requiere diseño de redirección aparte
+(follow-up documentado en `sandbox_run.py`). Hasta entonces la garantía de
+T-27 es real **solo para Synthesis**.
 
-El propio docstring de `sandbox_run.py` es honesto al respecto: documenta que
-Pandora/DynDOLOD/bashed "no son redirigibles hoy", pero no aclara que
-**Synthesis tampoco corre sandboxeado en la práctica** — el seam existe, el
-orquestador existe, pero ningún dispatcher de Ritual real los conecta. Es el
-mismo patrón "sensor sin cablear = verde mentiroso" que el propio historial
-del repo ya señaló una vez para el preflight (mensaje de PR #250). La
-garantía central de T-27 ("ningún Ritual mutante escribe... en el overwrite
-compartido real cuando el sandbox está activo") **no es cierta para ningún
-runner hoy**, no solo para Pandora.
+Contexto histórico (por qué esto era el gap #1): T-27b·1 construyó el seam de
+inyección y `run_ritual_in_sandbox()`, pero nada en producción los invocaba —
+`grep -rln run_ritual_in_sandbox sky_claw/ | grep -v test` devolvía solo la
+definición. Mismo patrón "sensor sin cablear = verde mentiroso" que el
+preflight (PR #250). El dato que reencuadró el esfuerzo: el bucle HITL no
+había que construirlo — `HITLGuard` (`security/hitl.py`) ya era una primitiva
+genérica bloqueante puenteada a GUI y Telegram; la nota anterior de este doc
+("el único gate HITL existente aprueba ANTES de ejecutar") era incompleta.
 
 ### 1.3 Preflight sin cablear: agregar Synthesis a la lista (no solo DynDOLOD/Pandora/Wrye Bash)
 
@@ -205,27 +213,13 @@ acoplamiento técnico inexistente.
 
 Por valor/riesgo, en orden:
 
-1. **T-27 — invocar `run_ritual_in_sandbox` desde al menos un dispatcher real**
-   (Synthesis, que ya tiene el seam de inyección `output_path` listo).
-   **Corrección de estimación (2026-07-14):** esta sección decía "esfuerzo
-   bajo, solo falta cablear el dispatcher" — verificado ahora que es
-   optimista. `run_ritual_in_sandbox()` devuelve un clon **vivo** que el
-   caller debe `promote()` o `discard()` "tras aprobación HITL" (contrato
-   documentado en su propio docstring), y **ese bucle de decisión
-   post-ejecución no existe en ningún lado del código** — no hay callers de
-   `promote`/`discard` fuera de tests. El único gate HITL de producción
-   (`approval_gate.py::ChainPreviewApprovalGate`) es un patrón distinto:
-   aprueba **antes** de ejecutar, sobre un dry-run — no sirve para "ya corrí
-   contra el clon, ¿promuevo o descarto según el diff?". Cablear esto bien
-   exige decidir el contrato del tool (¿la promoción es síncrona dentro de la
-   misma llamada, bloqueando en el HITL, o asíncrona con un estado
-   "pendiente de promoción" que la GUI resuelve después?) y construir esa
-   superficie — no es una línea de código, es una feature de tamaño M/L que
-   merece su propio diseño (como los ítems 6/7/8 de esta sesión), no un
-   apurón. Ejecutar una versión apurada (auto-promote sin revisión real
-   rompe la transparencia que el sandbox existe para dar; auto-discard rompe
-   la funcionalidad de Synthesis en silencio) sería peor que dejarlo
-   pendiente y bien descrito.
+1. ~~**T-27 — invocar `run_ritual_in_sandbox` desde al menos un dispatcher
+   real**~~ **Hecho para Synthesis (2026-07-14, ADR 0005)** — ver §1.2: el
+   flujo promote/discard se resolvió síncrono vía `HITLGuard` y
+   `execute_synthesis_pipeline` corre siempre sandboxeado. El resto de T-27
+   (redirección de output para Pandora/DynDOLOD/Wrye Bash) requiere diseño
+   por-runner y queda como follow-up; no entra en este ranking hasta tener
+   palanca de redirección.
 2. **T-26/T-28 backend — cablear `persist_action_manifest`/`persist_flight_report`
    en xEdit/Synthesis/DynDOLOD/Pandora/Wrye Bash.** Sin dependencia de (1);
    candidato natural para empezar por xEdit (segundo runner en importancia

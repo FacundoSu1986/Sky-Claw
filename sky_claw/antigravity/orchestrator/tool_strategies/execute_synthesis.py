@@ -1,8 +1,15 @@
 """Strategy for the `execute_synthesis_pipeline` tool.
 
-Replaces supervisor.py:271-293. The try/except + isinstance(dict) guard
-that wrapped the legacy branch is now provided by ErrorWrappingMiddleware
-+ DictResultGuardMiddleware (registered in `tool_dispatcher.py`).
+T-27b·2 (ADR 0005): el pipeline ya no corre contra el overwrite real — la
+strategy construye el ritual apuntado a ``clone.overwrite_copy`` y delega el
+ciclo clonar → correr → diff → HITL → promote/discard en
+:class:`~sky_claw.antigravity.orchestrator.sandbox_promotion.SandboxPromotionFlow`.
+Ambos colaboradores llegan como providers lazy (mismo patrón que
+``PreviewChainStrategy``): cablear el dispatcher nunca exige MO2 presente, y
+un provider que falla lo convierte ErrorWrappingMiddleware en error dict.
+
+Sin gate HITL pre-ejecución (double-gating, precedente PR #173): la aprobación
+post-run sobre el diff real es estrictamente más fuerte que aprobar a ciegas.
 """
 
 from __future__ import annotations
@@ -11,6 +18,11 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    import pathlib
+    from collections.abc import Callable
+
+    from sky_claw.antigravity.orchestrator.sandbox_promotion import SandboxPromotionFlow
+    from sky_claw.local.mo2.profile_sandbox import SandboxClone
     from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
 
 logger = logging.getLogger(__name__)
@@ -19,8 +31,14 @@ logger = logging.getLogger(__name__)
 class ExecuteSynthesisPipelineStrategy:
     name = "execute_synthesis_pipeline"
 
-    def __init__(self, service: SynthesisPipelineService) -> None:
-        self.service = service
+    def __init__(
+        self,
+        *,
+        flow_provider: Callable[[], SandboxPromotionFlow],
+        service_factory: Callable[[pathlib.Path], SynthesisPipelineService],
+    ) -> None:
+        self._flow_provider = flow_provider
+        self._service_factory = service_factory
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         # Filter to only valid parameters — the LLM may inject extra keys
@@ -30,4 +48,14 @@ class ExecuteSynthesisPipelineStrategy:
         unexpected = payload_dict.keys() - valid_keys
         if unexpected:
             logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
-        return await self.service.execute_pipeline(**filtered)
+
+        flow = self._flow_provider()
+
+        async def ritual(clone: SandboxClone) -> dict[str, Any]:
+            # Servicio fresco por run, con la salida redirigida a la copia del
+            # overwrite (T-27b: el servicio deshabilita su propio snapshot en
+            # modo sandbox — el clon ES el rollback).
+            service = self._service_factory(clone.overwrite_copy)
+            return await service.execute_pipeline(**filtered)
+
+        return await flow.run(ritual_name="synthesis", ritual=ritual)

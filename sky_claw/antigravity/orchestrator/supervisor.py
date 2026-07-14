@@ -239,6 +239,9 @@ class SupervisorAgent:
                 "SupervisorAgent sin hitl_guard — las tools destructivas serán "
                 "DENEGADAS (fail-closed). Inyectar AppContext.hitl para habilitar HITL."
             )
+        # T-27b·2: el flow de promoción del sandbox necesita el guard crudo
+        # (no solo el middleware) para la aprobación post-run del diff.
+        self._hitl_guard = hitl_guard
         self._tool_dispatcher = build_orchestration_dispatcher(
             self,
             hitl_gate=HitlGateMiddleware(hitl_guard=hitl_guard),
