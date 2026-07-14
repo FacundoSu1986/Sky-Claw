@@ -191,22 +191,37 @@ corrida real. Ítem ya conocido y documentado, sin cambio de estado.
 
 ## Decide — recomendación de próximo frente
 
-Por valor/riesgo, en orden (revisado tras §1.1/1.2 corregidos):
+**Corrección (2026-07-14):** la versión anterior de esta sección afirmaba que
+"el diff del sandbox se apoya en el mismo journal" para justificar cablear el
+backend de manifest/flight-report antes que activar el sandbox. Es **falso** —
+verificado ahora: `grep -n "journal\|persist_" sky_claw/local/mo2/
+profile_sandbox.py sky_claw/local/mo2/sandbox_run.py` no da resultados. El
+`diff()`/`promote()` del sandbox es puramente file-based (comparación de
+árboles antes/después del clon), sin ninguna dependencia del journal. Las dos
+pistas (T-26/T-28 backend, T-27 activación) son **independientes** — pueden
+abordarse en cualquier orden o en paralelo. Reordenado por ventana de
+exposición (qué gap cierra más rápido con menos esfuerzo), no por un
+acoplamiento técnico inexistente.
 
-1. **T-26/T-28 backend — cablear `persist_action_manifest`/`persist_flight_report`
-   en xEdit/Synthesis/DynDOLOD/Pandora/Wrye Bash.** Es la base de la que
-   dependen T-27 (el diff del sandbox se apoya en el mismo journal) y la vista
-   GUI de T-28 (no hay nada que mostrar sin esto). Mayor prioridad: sin esto,
-   "caja negra de vuelo" es cierto solo para un runner de seis.
-2. **T-27 — invocar `run_ritual_in_sandbox` desde al menos un dispatcher real**
-   (Synthesis, que ya tiene el seam listo, es el candidato obvio) para que la
-   garantía de aislamiento deje de ser teórica. Sin esto, T-27b·2 (Pandora)
-   sería construir la segunda mitad de una garantía cuya primera mitad
-   (Synthesis) tampoco está activa.
+Por valor/riesgo, en orden:
+
+1. **T-27 — invocar `run_ritual_in_sandbox` desde al menos un dispatcher real**
+   (Synthesis, que ya tiene el seam de inyección `output_path` listo). Esfuerzo
+   bajo — la infraestructura (`ProfileSandbox` + `run_ritual_in_sandbox`) ya
+   existe, falta el cableado del dispatcher. Convierte la garantía de
+   aislamiento de "teórica para todos" a "activa para uno", cerrando el gap de
+   mayor severidad (escritura directa al overwrite real) para el runner más
+   fácil de aislar.
+2. **T-26/T-28 backend — cablear `persist_action_manifest`/`persist_flight_report`
+   en xEdit/Synthesis/DynDOLOD/Pandora/Wrye Bash.** Sin dependencia de (1);
+   candidato natural para empezar por xEdit (segundo runner en importancia
+   tras LOOT, limpieza destructiva por naturaleza) — requiere antes aclarar la
+   relación entre `preview.manifest` (dry-run, ya usado por xEdit/DynDOLOD) y
+   el `ActionManifest` persistido que exige T-26, para no duplicar conceptos.
 3. **T-16c·2/3 (preflight en Synthesis/DynDOLOD/Pandora/Wrye Bash)** — mismo
    patrón de riesgo que ya motivó T-15; extender el gate existente es
    mecánico y no tiene dependencias cruzadas con lo anterior.
-4. **T-28 GUI view** — solo después de (1): mostrar un informe que hoy no
+4. **T-28 GUI view** — solo después de (2): mostrar un informe que hoy no
    existiría para la mayoría de los Rituales sería peor que no mostrarlo.
 5. Todo lo demás (T-12/T-10/T-11 continuos, Oleada 5, residuales del OODA) es
    deuda de fondo o requiere un humano — no urgente para el próximo PR.
