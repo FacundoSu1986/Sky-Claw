@@ -8,6 +8,7 @@ snapshots se acumulan en disco sin referencia en el journal.
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,6 +27,7 @@ def _make_engine_with_mock_rm() -> tuple[SyncEngine, MagicMock]:
     mock_rm.fail_operation = AsyncMock()
     mock_rm.commit_transaction = AsyncMock()
     mock_rm.mark_transaction_rolled_back = AsyncMock()
+    mock_rm.undo_operation = AsyncMock(return_value=MagicMock(success=True, transaction_id=100))
     mock_rm.undo_last_operation = AsyncMock()
     mock_rm.get_snapshot_stats = AsyncMock(return_value=MagicMock(total_size_bytes=0))
 
@@ -168,3 +170,26 @@ async def test_mark_transaction_rolled_back_failure_does_not_mask_original(
         op.close()
 
     mock_rm.mark_transaction_rolled_back.assert_awaited_once_with(100)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_rolls_back_started_file_operation(tmp_path: pathlib.Path) -> None:
+    """La cancelación debe cerrar el asiento STARTED antes de propagarse."""
+    engine, mock_rm = _make_engine_with_mock_rm()
+    target = tmp_path / "mod.esp"
+    target.write_text("content")
+
+    async def cancelled_operation() -> None:
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await engine.execute_file_operation(
+            operation_type=OperationType.FILE_MODIFY,
+            target_path=target,
+            operation=cancelled_operation(),
+            description="cancelled operation",
+        )
+
+    mock_rm.fail_operation.assert_awaited_once_with(200, error="operation cancelled")
+    mock_rm.undo_operation.assert_awaited_once_with(200)
+    mock_rm.commit_transaction.assert_not_awaited()

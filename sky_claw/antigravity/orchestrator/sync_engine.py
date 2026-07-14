@@ -359,6 +359,26 @@ class SyncEngine:
 
                 return result
 
+            except asyncio.CancelledError:
+                # Cancelar una operación no puede dejar su asiento STARTED: el
+                # caller puede reintentarla y el rollback debe conservar el
+                # estado observable del archivo antes de propagar la señal.
+                logger.warning("Operación cancelada; ejecutando rollback automático")
+                try:
+                    await rm.fail_operation(entry_id, error="operation cancelled")
+                except Exception as cleanup_exc:
+                    logger.critical("No se pudo marcar la operación cancelada como fallida: %s", cleanup_exc)
+                try:
+                    rollback_result = await rm.undo_operation(entry_id)
+                    logger.warning(
+                        "Rollback tras cancelación completado: success=%s, transaction=%s",
+                        rollback_result.success,
+                        rollback_result.transaction_id,
+                    )
+                except Exception as cleanup_exc:
+                    logger.critical("Rollback tras cancelación falló: %s", cleanup_exc)
+                raise
+
             except Exception as exc:
                 # 6. Error: marcar como fallida y ejecutar rollback
                 logger.error(
