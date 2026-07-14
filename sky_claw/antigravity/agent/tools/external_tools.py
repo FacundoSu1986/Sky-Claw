@@ -12,14 +12,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+import pathlib
+from typing import Any
 
 import aiohttp
 
 from sky_claw.antigravity.security.network_gateway import GatewayTCPConnector, NetworkGateway
-
-if TYPE_CHECKING:
-    import pathlib
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +84,7 @@ async def setup_tools(
         own_session = True
 
     try:
-        for tool_name in tools or ["loot", "xedit", "pandora", "bodyslide"]:
+        for tool_name in tools or ["loot", "xedit", "pandora", "bodyslide", "ngio"]:
             tool_name_lower = tool_name.lower()
             try:
                 if tool_name_lower == "loot":
@@ -125,9 +123,49 @@ async def setup_tools(
                         "exe_path": str(result.exe_path),
                         "version": result.version,
                     }
+                elif tool_name_lower == "ngio":
+                    # Dependencias del precache de grass (Stage 8): se instalan
+                    # como mods de MO2 (no tienen exe) y la selección SE/AE la
+                    # decide la edición real del ejecutable del juego.
+                    from sky_claw.local.discovery.scanner import detect_skyrim_edition
+
+                    mo2_root = getattr(local_cfg, "mo2_root", None) if local_cfg else None
+                    skyrim_str = getattr(local_cfg, "skyrim_path", None) if local_cfg else None
+                    if not mo2_root:
+                        results["ngio"] = {"error": "mo2_root no configurado: corré el escaneo de entorno primero."}
+                        continue
+                    if not skyrim_str:
+                        results["ngio"] = {"error": "skyrim_path no configurado: no puedo detectar SE vs AE para NGIO."}
+                        continue
+                    skyrim_exe = pathlib.Path(skyrim_str) / "SkyrimSE.exe"
+                    if not skyrim_exe.is_file():
+                        results["ngio"] = {
+                            "error": (
+                                f"No encontré SkyrimSE.exe en {skyrim_str}: NGIO-NG requiere "
+                                "Skyrim SE/AE (revisá skyrim_path)."
+                            )
+                        }
+                        continue
+                    # pefile hace I/O síncrono de PE: fuera del event loop.
+                    edition = await asyncio.to_thread(detect_skyrim_edition, skyrim_exe)
+                    mods = await tools_installer.ensure_ngio(
+                        pathlib.Path(mo2_root) / "mods",
+                        session,
+                        downloader,
+                        edition=edition,
+                    )
+                    if local_cfg:
+                        local_cfg.ngio_mods = [m.mod_name for m in mods]
+                    results["ngio"] = {
+                        "status": ("already_installed" if all(m.already_existed for m in mods) else "installed"),
+                        "edition": edition.value,
+                        "mods": [m.mod_name for m in mods],
+                        "mod_dirs": [str(m.mod_dir) for m in mods],
+                        "versions": {m.mod_name: m.version for m in mods},
+                    }
                 else:
                     results[tool_name] = {
-                        "error": (f"Unknown tool: {tool_name!r}. Supported: loot, xedit, pandora, bodyslide")
+                        "error": (f"Unknown tool: {tool_name!r}. Supported: loot, xedit, pandora, bodyslide, ngio")
                     }
             except ToolInstallError as exc:
                 results[tool_name_lower] = {"error": str(exc)}
