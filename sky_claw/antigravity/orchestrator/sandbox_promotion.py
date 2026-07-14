@@ -302,10 +302,10 @@ class SandboxPromotionFlow:
             promocion.files_written,
             promocion.files_deleted,
         )
-        
+
         # Reescribir las rutas en el payload final
         result = _rewrite_clone_paths(result, clone)
-        
+
         result["sandbox"] = _sandbox_annotation(
             diff,
             promoted=True,

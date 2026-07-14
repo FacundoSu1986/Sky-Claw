@@ -52,7 +52,7 @@ class ExecuteSynthesisPipelineStrategy:
             logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
 
         flow = self._flow_provider()
-        
+
         from sky_claw.antigravity.db.journal import StagingJournal
         staging_journal = StagingJournal(self._real_journal_provider())
 
@@ -64,12 +64,12 @@ class ExecuteSynthesisPipelineStrategy:
             return await service.execute_pipeline(**filtered)
 
         result = await flow.run(ritual_name="synthesis", ritual=ritual)
-        
+
         sandbox_info = result.get("sandbox", {}) if isinstance(result, dict) else {}
         if sandbox_info.get("promoted"):
             await staging_journal.commit_staged()
         else:
             await staging_journal.rollback_staged()
-            
+
         return result
 
