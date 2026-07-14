@@ -65,7 +65,7 @@ class ExecuteSynthesisPipelineStrategy:
 
         result = await flow.run(ritual_name="synthesis", ritual=ritual)
         
-        sandbox_info = result.get("sandbox", {})
+        sandbox_info = result.get("sandbox", {}) if isinstance(result, dict) else {}
         if sandbox_info.get("promoted"):
             await staging_journal.commit_staged()
         else:

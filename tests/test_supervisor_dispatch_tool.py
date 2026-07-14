@@ -47,6 +47,7 @@ def supervisor() -> SupervisorAgent:
     sup._pandora_service.generate_animations = AsyncMock()
     sup._xedit_service.quick_auto_clean = AsyncMock()
     sup.profile_name = "TestProfile"
+    sup.journal = AsyncMock()
     # allow_unattended: estos tests caracterizan el routing del dispatcher,
     # no la gate HITL (cubierta en test_hitl_destructive_gate.py).
     sup._tool_dispatcher = build_orchestration_dispatcher(
@@ -174,7 +175,7 @@ def _wire_fake_synthesis_flow(monkeypatch, *, side_effect=None, return_value=Non
     service.execute_pipeline = AsyncMock(side_effect=side_effect, return_value=return_value)
     factory_calls: list[pathlib.Path] = []
 
-    def _fake_service_factory(sup, output_path):
+    def _fake_service_factory(sup, output_path, journal):
         factory_calls.append(output_path)
         return service
 
