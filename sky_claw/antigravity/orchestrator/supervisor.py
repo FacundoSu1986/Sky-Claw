@@ -34,6 +34,7 @@ from sky_claw.antigravity.security.hitl import HITLGuard
 from sky_claw.antigravity.security.network_gateway import NetworkGateway
 from sky_claw.local.assets import AssetConflictDetector, AssetConflictReport
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+from sky_claw.local.tools.grass_cache_service import GrassCacheService
 from sky_claw.local.tools.loot_service import LootSortingService
 from sky_claw.local.tools.pandora_service import PandoraPipelineService
 from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
@@ -224,6 +225,19 @@ class SupervisorAgent:
             lock_manager=self._lock_manager,
             snapshot_manager=self.snapshot_manager,
             path_resolver=self._path_resolver,
+        )
+
+        # PR-5 grass cache: orquestador del Stage 8 (NGIO). El runner de xEdit
+        # de la Fase A se resuelve perezosamente vía el servicio de xEdit; las
+        # dependencias de Fases B/C (perfil MO2, game path) se cablean cuando
+        # el ritual se configura (PR-6) — hasta entonces el servicio devuelve
+        # errores accionables del contrato, no excepciones crudas.
+        self._grass_cache_service = GrassCacheService(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self.snapshot_manager,
+            journal=self.journal,
+            event_bus=self._event_bus,
+            xedit_runner_provider=self._xedit_service._ensure_xedit_runner,
         )
 
         # Lazy init para runners legacy que aún no son servicios puros (WryeBash, AssetDetector)

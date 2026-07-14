@@ -414,6 +414,7 @@ class TestDispatcherGateWiring:
         sup._xedit_service = MagicMock()
         sup._dyndolod_service = MagicMock()
         sup._pandora_service = MagicMock()
+        sup._grass_cache_service = MagicMock()
         sup.profile_name = "TestProfile"
         return sup
 
@@ -478,6 +479,7 @@ class TestDestructiveToolPatterns:
             "generate_animations",
             "quick_auto_clean",
             "resolve_conflict_with_patch",
+            "generate_grass_cache",
         }
         assert expected == DESTRUCTIVE_TOOL_PATTERNS
 

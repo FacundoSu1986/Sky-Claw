@@ -45,6 +45,7 @@ def supervisor() -> SupervisorAgent:
     sup._dyndolod_service.execute = AsyncMock()
     sup._pandora_service = MagicMock()
     sup._pandora_service.generate_animations = AsyncMock()
+    sup._grass_cache_service = MagicMock()
     sup._xedit_service.quick_auto_clean = AsyncMock()
     sup.profile_name = "TestProfile"
     # allow_unattended: estos tests caracterizan el routing del dispatcher,

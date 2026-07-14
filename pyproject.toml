@@ -245,6 +245,9 @@ module = [
     "sky_claw.local.xedit.grass_analyzer",  # PR-2 grass cache: módulo nuevo, nace estricto
     "sky_claw.local.xedit.script_staging",  # PR-2 grass cache: módulo nuevo, nace estricto
     "sky_claw.local.tools.grass_cache_runner",  # PR-4 grass cache: módulo nuevo, nace estricto
+    "sky_claw.local.tools.grass_cache_service",  # PR-5 grass cache: módulo nuevo, nace estricto
+    "sky_claw.antigravity.orchestrator.tool_strategies.analyze_grass_prerequisites",  # PR-5, estricto
+    "sky_claw.antigravity.orchestrator.tool_strategies.generate_grass_cache",  # PR-5, estricto
     "sky_claw.local.validators.post_run",  # T-21: validador post-run, estricto
     "sky_claw.local.validators.write_permissions",  # T-30·4: sensor de permisos de escritura, estricto
     "sky_claw.local.xedit.patch_advisor",  # T-20: asistente de estrategia de parcheo, estricto
