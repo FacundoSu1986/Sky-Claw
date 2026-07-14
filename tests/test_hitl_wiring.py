@@ -631,6 +631,24 @@ class TestHITLToolExecutionCategory:
             await ctx.stop()
 
     @pytest.mark.asyncio
+    async def test_sandbox_promotion_denied_without_operator_channel(self, tmp_path: pathlib.Path) -> None:
+        """T-27b·2: la promoción del sandbox tampoco se auto-aprueba headless —
+        auto-aprobar equivaldría a promover el diff sin que nadie lo revise."""
+        ctx = await self._boot_ctx_without_operator_channel(tmp_path)
+        try:
+            decision = await asyncio.wait_for(
+                ctx.hitl.request_approval(
+                    request_id="sandbox-synthesis-abc123",
+                    reason="El ritual 'synthesis' terminó en sandbox",
+                    category="sandbox_promotion",
+                ),
+                timeout=5.0,
+            )
+            assert decision is Decision.DENIED
+        finally:
+            await ctx.stop()
+
+    @pytest.mark.asyncio
     async def test_default_category_auto_approved_without_operator_channel(self, tmp_path: pathlib.Path) -> None:
         """Pins the legacy behavior: non-tool requests keep auto-approving."""
         ctx = await self._boot_ctx_without_operator_channel(tmp_path)

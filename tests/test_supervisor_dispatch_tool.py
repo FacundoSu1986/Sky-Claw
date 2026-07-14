@@ -48,6 +48,7 @@ def supervisor() -> SupervisorAgent:
     sup._grass_cache_service = MagicMock()
     sup._xedit_service.quick_auto_clean = AsyncMock()
     sup.profile_name = "TestProfile"
+    sup.journal = AsyncMock()
     # allow_unattended: estos tests caracterizan el routing del dispatcher,
     # no la gate HITL (cubierta en test_hitl_destructive_gate.py).
     sup._tool_dispatcher = build_orchestration_dispatcher(
@@ -138,21 +139,72 @@ async def test_execute_loot_sorting_propagates_update_masterlist_true(supervisor
 
 
 # ---------------------------------------------------------------------------
-# execute_synthesis_pipeline (try/except + dict guard)
+# execute_synthesis_pipeline (sandbox flow + try/except + dict guard — T-27b·2)
 # ---------------------------------------------------------------------------
 
 
-async def test_execute_synthesis_pipeline_success(supervisor):
-    supervisor._synthesis_service.execute_pipeline.return_value = {"status": "ok", "patches": 3}
+class _SynthesisFlowFake:
+    """SandboxPromotionFlow fake: corre el ritual contra un clon fake y anota.
 
-    result = await supervisor.dispatch_tool("execute_synthesis_pipeline", {"patcher_ids": ["a"]})
+    Permite caracterizar el routing del dispatcher sin MO2 real; el contrato
+    completo del flow se cubre en ``test_sandbox_promotion.py``.
+    """
 
-    supervisor._synthesis_service.execute_pipeline.assert_awaited_once_with(patcher_ids=["a"])
-    assert result == {"status": "ok", "patches": 3}
+    def __init__(self, overwrite_copy) -> None:
+        from types import SimpleNamespace
+
+        self.clone = SimpleNamespace(overwrite_copy=overwrite_copy)
+        self.runs: list[str] = []
+
+    async def run(self, *, ritual_name, ritual):
+        self.runs.append(ritual_name)
+        result = await ritual(self.clone)
+        if isinstance(result, dict):
+            result = dict(result)
+            result["sandbox"] = {"promoted": True, "decision": "approved"}
+        return result
 
 
-async def test_execute_synthesis_pipeline_exception_wrapped(supervisor):
-    supervisor._synthesis_service.execute_pipeline.side_effect = RuntimeError("boom")
+def _wire_fake_synthesis_flow(monkeypatch, *, side_effect=None, return_value=None):
+    """Monkeypatchea los builders lazy del dispatcher (se resuelven por-call)."""
+    import pathlib
+
+    from sky_claw.antigravity.orchestrator import tool_dispatcher as td
+
+    flow = _SynthesisFlowFake(overwrite_copy=pathlib.Path("clone") / "overwrite")
+    service = MagicMock()
+    service.execute_pipeline = AsyncMock(side_effect=side_effect, return_value=return_value)
+    factory_calls: list[pathlib.Path] = []
+
+    def _fake_service_factory(sup, output_path, journal):
+        factory_calls.append(output_path)
+        return service
+
+    monkeypatch.setattr(td, "_build_synthesis_sandbox_flow", lambda sup: flow)
+    monkeypatch.setattr(td, "_build_sandboxed_synthesis_service", _fake_service_factory)
+    return flow, service, factory_calls
+
+
+async def test_execute_synthesis_pipeline_runs_sandboxed_and_filters_payload(supervisor, monkeypatch):
+    """El dispatch pasa por el flow de sandbox: el servicio se construye
+    apuntando al overwrite del clon y el payload se filtra a las claves válidas."""
+    flow, service, factory_calls = _wire_fake_synthesis_flow(
+        monkeypatch, return_value={"success": True, "message": "", "patches": 3}
+    )
+
+    result = await supervisor.dispatch_tool(
+        "execute_synthesis_pipeline", {"patcher_ids": ["a"], "tool_name": "basura_del_llm"}
+    )
+
+    assert flow.runs == ["synthesis"]
+    service.execute_pipeline.assert_awaited_once_with(patcher_ids=["a"])
+    assert factory_calls == [flow.clone.overwrite_copy]
+    assert result["patches"] == 3
+    assert result["sandbox"]["promoted"] is True
+
+
+async def test_execute_synthesis_pipeline_exception_wrapped(supervisor, monkeypatch):
+    _wire_fake_synthesis_flow(monkeypatch, side_effect=RuntimeError("boom"))
 
     result = await supervisor.dispatch_tool("execute_synthesis_pipeline", {"patcher_ids": ["a"]})
 
@@ -161,12 +213,26 @@ async def test_execute_synthesis_pipeline_exception_wrapped(supervisor):
     assert "boom" in result["details"]
 
 
-async def test_execute_synthesis_pipeline_non_dict_result(supervisor):
-    supervisor._synthesis_service.execute_pipeline.return_value = "oops not a dict"
+async def test_execute_synthesis_pipeline_non_dict_result(supervisor, monkeypatch):
+    _wire_fake_synthesis_flow(monkeypatch, return_value="oops not a dict")
 
     result = await supervisor.dispatch_tool("execute_synthesis_pipeline", {"patcher_ids": ["a"]})
 
     assert result == {"status": "error", "reason": "InvalidSynthesisPipelineResult"}
+
+
+async def test_execute_synthesis_pipeline_sin_guard_deniega_fail_closed(supervisor, monkeypatch, tmp_path):
+    """Builder REAL: sin HITLGuard el ritual se deniega sin ejecutarse — nadie
+    podría aprobar la promoción del diff (fail-closed, ADR 0005)."""
+    supervisor._hitl_guard = None
+    supervisor._path_resolver = MagicMock()
+    supervisor._path_resolver.get_mo2_path.return_value = tmp_path
+
+    result = await supervisor.dispatch_tool("execute_synthesis_pipeline", {"patcher_ids": ["a"]})
+
+    assert result["success"] is False
+    assert result["reason"] == "SandboxPromotionUnavailable"
+    supervisor._synthesis_service.execute_pipeline.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -281,17 +347,16 @@ async def test_quick_auto_clean_delegates(supervisor):
     assert result["success"] is True
 
 
-async def test_execute_synthesis_pipeline_filters_extra_llm_keys(supervisor):
+async def test_execute_synthesis_pipeline_filters_extra_llm_keys(supervisor, monkeypatch):
     """VULN-2 fix: Extra keys injected by the LLM are filtered out."""
-    supervisor._synthesis_service.execute_pipeline.return_value = {"status": "ok"}
+    _, service, _ = _wire_fake_synthesis_flow(monkeypatch, return_value={"success": True, "message": ""})
 
-    result = await supervisor.dispatch_tool(
+    await supervisor.dispatch_tool(
         "execute_synthesis_pipeline",
         {"patcher_ids": ["a"], "tool_name": "execute_synthesis_pipeline", "extra": True},
     )
 
-    supervisor._synthesis_service.execute_pipeline.assert_awaited_once_with(patcher_ids=["a"])
-    assert result == {"status": "ok"}
+    service.execute_pipeline.assert_awaited_once_with(patcher_ids=["a"])
 
 
 # ---------------------------------------------------------------------------

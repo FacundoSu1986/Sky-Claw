@@ -162,6 +162,11 @@ def make_gui_hitl_notify(
     "Modo local": a network download is egress and is always confirmed by hand.
     The parked entry carries the asset ``url`` so the modal can show its origin.
 
+    For ``category == "sandbox_promotion"`` (T-27b·2, ADR 0005) the modal is
+    also parked and **never** auto-approved: es la decisión post-run de
+    promover el diff de un sandbox al perfil real — revisar ese diff es el
+    propósito del sandbox, así que «Modo local» no la salta.
+
     Every other category falls through to ``delegate`` (the original Telegram
     closure), so scope approvals keep their existing behaviour.
     """
@@ -180,6 +185,17 @@ def make_gui_hitl_notify(
                         "detail": getattr(req, "detail", ""),
                     }
                 )
+            return
+        if category == "sandbox_promotion":
+            # Promoción post-run del sandbox (T-27b·2): siempre modal, nunca
+            # auto-aprobada — el operador decide sobre el diff real.
+            set_pending(
+                {
+                    "request_id": req.request_id,
+                    "reason": getattr(req, "reason", ""),
+                    "detail": getattr(req, "detail", ""),
+                }
+            )
             return
         if category == "download":
             # Egress: never auto-approved — always parks a manual Aprobar/Denegar.

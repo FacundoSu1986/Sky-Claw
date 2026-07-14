@@ -192,6 +192,48 @@ def _build_chain_preview_service(supervisor: SupervisorAgent) -> ChainPreviewSer
     )
 
 
+def _build_synthesis_sandbox_flow(supervisor: SupervisorAgent) -> Any:
+    """Lazily build the :class:`SandboxPromotionFlow` for the Synthesis Ritual.
+
+    Invoked only when ``execute_synthesis_pipeline`` is dispatched (not at
+    registration time), so wiring the dispatcher never requires MO2 to be
+    present. Raises ``RuntimeError`` when MO2 is not configured; the strategy's
+    ErrorWrappingMiddleware converts that into a serializable error dict.
+    """
+    # Local imports keep dispatcher construction cheap and avoid import cycles.
+    from sky_claw.antigravity.orchestrator.sandbox_promotion import SandboxPromotionFlow
+    from sky_claw.local.mo2.profile_sandbox import ProfileSandbox
+
+    mo2_path = supervisor._path_resolver.get_mo2_path()
+    if mo2_path is None:
+        raise RuntimeError("Cannot sandbox the Synthesis pipeline: MO2_PATH must be configured.")
+
+    return SandboxPromotionFlow(
+        sandbox=ProfileSandbox(mo2_root=mo2_path, profile=supervisor.profile_name),
+        hitl_guard=supervisor._hitl_guard,
+    )
+
+
+def _build_sandboxed_synthesis_service(supervisor: SupervisorAgent, output_path: Any, journal: Any) -> Any:
+    """Fresh :class:`SynthesisPipelineService` writing into the sandbox clone.
+
+    Un servicio por run sandboxeado (patrón documentado en el propio servicio,
+    T-27b): mismas dependencias que ``supervisor._synthesis_service`` pero con
+    ``output_path`` apuntando a ``SandboxClone.overwrite_copy``.
+    """
+    from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
+
+    return SynthesisPipelineService(
+        lock_manager=supervisor._lock_manager,
+        snapshot_manager=supervisor.snapshot_manager,
+        journal=journal,
+        path_resolver=supervisor._path_resolver,
+        event_bus=supervisor._event_bus,
+        pipeline_config_path=supervisor._synthesis_service._pipeline_config_path,
+        output_path=output_path,
+    )
+
+
 def build_orchestration_dispatcher(
     supervisor: SupervisorAgent,
     *,
@@ -227,8 +269,19 @@ def build_orchestration_dispatcher(
         middleware=[gate],
     )
 
+    # T-27b·2: Synthesis corre SIEMPRE en sandbox — el flow resuelve
+    # promote/discard vía HITL post-run sobre el diff real (ADR 0005). Sin
+    # gate pre-ejecución: sería double-gating (precedente PR #173). Lambdas
+    # lazy: registrar no exige MO2 presente y los tests pueden monkey-patchear
+    # los builders a nivel módulo.
     dispatcher.register(
-        ExecuteSynthesisPipelineStrategy(service=supervisor._synthesis_service),
+        ExecuteSynthesisPipelineStrategy(
+            flow_provider=lambda: _build_synthesis_sandbox_flow(supervisor),
+            service_factory=lambda output_path, journal: _build_sandboxed_synthesis_service(
+                supervisor, output_path, journal
+            ),
+            real_journal_provider=lambda: supervisor.journal,
+        ),
         middleware=[
             ErrorWrappingMiddleware("SynthesisPipelineExecutionFailed"),
             DictResultGuardMiddleware("InvalidSynthesisPipelineResult"),

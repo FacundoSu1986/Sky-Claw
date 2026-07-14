@@ -19,7 +19,12 @@ Contrato de propiedad del clon:
 El ritual es un callable inyectado (``local/mo2/`` no importa
 ``local/tools/``: sin acople ni ciclo de imports).
 
-Follow-up T-27b·2: Pandora no es redirigible hoy (sin palanca de output — el
+El dueño de producción de este ciclo es
+``sky_claw.antigravity.orchestrator.sandbox_promotion.SandboxPromotionFlow``
+(T-27b·2, ADR 0005): corre el ritual acá, presenta el diff al operador vía
+HITL y resuelve promote/discard según la decisión.
+
+Follow-up: Pandora no es redirigible hoy (sin palanca de output — el
 subproceso escribe vía el VFS de MO2 con ``cwd``); su aislamiento requiere
 diseño de redirección aparte. DynDOLOD/bashed, ídem cuando toque cablearlos.
 """

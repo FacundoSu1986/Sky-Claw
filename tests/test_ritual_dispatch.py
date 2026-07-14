@@ -162,6 +162,42 @@ async def test_bridge_opens_modal_when_toggle_off() -> None:
     assert pending == [{"request_id": "r2", "reason": "Tool 'execute_loot_sorting'…", "detail": "payload: <empty>"}]
 
 
+async def test_bridge_parks_sandbox_promotion_even_with_auto_approve_on() -> None:
+    """T-27b·2: la promoción post-run del sandbox NUNCA se auto-aprueba por
+    «Modo local» — revisar el diff es el propósito del sandbox. Siempre modal."""
+    responded: list[tuple[str, bool]] = []
+    pending: list[dict] = []
+
+    async def _respond(rid: str, approved: bool) -> None:
+        responded.append((rid, approved))
+
+    async def _delegate(req: _FakeReq) -> None:  # pragma: no cover - must not run
+        raise AssertionError("sandbox_promotion es del GUI, no del delegate de Telegram")
+
+    notify = make_gui_hitl_notify(
+        respond=_respond,
+        set_pending=pending.append,
+        auto_approve_getter=lambda: True,
+        delegate=_delegate,
+    )
+    await notify(
+        _FakeReq(
+            "s1",
+            category="sandbox_promotion",
+            reason="El ritual 'synthesis' terminó en sandbox",
+            detail="+ overwrite/Synthesis.esp",
+        )
+    )
+    assert responded == []
+    assert pending == [
+        {
+            "request_id": "s1",
+            "reason": "El ritual 'synthesis' terminó en sandbox",
+            "detail": "+ overwrite/Synthesis.esp",
+        }
+    ]
+
+
 async def test_bridge_delegates_non_tool_execution_to_original() -> None:
     delegated: list[str] = []
     pending: list[dict] = []

@@ -48,15 +48,17 @@ def _make_telemetry_store_bridge(store: ReactiveStore):
 
 
 def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
-    """Route ``tool_execution`` + ``download`` HITL approvals to the GUI.
+    """Route ``tool_execution`` + ``download`` + ``sandbox_promotion`` HITL approvals to the GUI.
 
     Composes over the AppContext's existing notify closure: ``tool_execution``
     prompts are handled by the GUI — auto-approved when the "Modo local" toggle is
     on, otherwise parked in the store so the page shows an Aprobar/Denegar modal.
     ``download`` prompts (the "Instalar" button — Follow-up C) are also parked in the
     modal but are **never** auto-approved (network egress is always confirmed by
-    hand). Every other category still flows to the original (Telegram) closure, and
-    the guard's timeout keeps the fail-closed auto-deny when nobody answers.
+    hand); ídem ``sandbox_promotion`` (T-27b·2: el diff post-run de un sandbox se
+    revisa siempre — auto-promover lo vaciaría de sentido). Every other category
+    still flows to the original (Telegram) closure, and the guard's timeout keeps
+    the fail-closed auto-deny when nobody answers.
     """
     from sky_claw.antigravity.gui.controllers.ritual_runner import (
         STORE_KEY_PENDING_HITL,
