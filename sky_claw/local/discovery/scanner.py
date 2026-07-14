@@ -170,6 +170,11 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
     return version, edition
 
 
+def detect_skyrim_edition(exe_path: pathlib.Path) -> SkyrimEdition:
+    """Edición (SE/AE/LE/UNKNOWN) del ejecutable de Skyrim en *exe_path*."""
+    return _detect_skyrim_version(exe_path)[1]
+
+
 # ── Scanner ───────────────────────────────────────────────────────────
 
 
