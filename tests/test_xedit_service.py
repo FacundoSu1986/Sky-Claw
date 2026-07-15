@@ -345,6 +345,8 @@ class _RollbackFailedLock:
     """Lock de frontera: el cuerpo falla y la restauración no se completa."""
 
     rollback_completed = False
+    #: El lock real siempre expone ``snapshots`` (lo lee el ActionManifest T-26).
+    snapshots: list = []  # noqa: RUF012 — fake de test, no un modelo mutable real
 
     async def __aenter__(self) -> _RollbackFailedLock:
         return self
@@ -693,3 +695,312 @@ async def test_execute_patch_dry_run_merged_patch_when_no_critical(
     assert conflicts["proposed_resolution"] == "create_merged_patch"
     assert conflicts["pairs"] == []  # no critical conflicts to surface
     mock_event_bus.publish.assert_not_called()
+
+
+# =============================================================================
+# T-26/T-28: caja negra de vuelo (ActionManifest + FlightReport) — ADR 0002
+#
+# xEdit es el segundo Ritual productor tras LOOT. Ambos entry points mutantes
+# (execute_patch y quick_auto_clean) persisten la caja negra: manifiesto
+# fail-closed ANTES de mutar, informe best-effort DESPUÉS del commit. Los tests
+# corren contra un OperationJournal REAL (como test_loot_service.py) porque el
+# informe se compone leyendo la caja negra ya persistida.
+# =============================================================================
+
+
+@pytest.fixture
+async def real_journal(tmp_path: pathlib.Path):  # noqa: ANN201
+    """OperationJournal real sobre una DB temporal (espejo de test_loot_service)."""
+    from sky_claw.antigravity.db.journal import OperationJournal
+
+    j = OperationJournal(tmp_path / "xedit_journal.db")
+    await j.open()
+    yield j  # type: ignore[misc]
+    await j.close()
+
+
+async def _ops_ultima_tx(journal):  # noqa: ANN001, ANN202
+    (ultima,) = await journal.list_recent_transactions(limit=1)
+    return await journal.get_operations_by_transaction(ultima.transaction_id)
+
+
+async def _manifiesto_ultima_tx(journal):  # noqa: ANN001, ANN202
+    """El op del ActionManifest (no el del FlightReport, discriminado por ``kind``)."""
+    from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
+
+    metas = [
+        e.metadata
+        for e in await _ops_ultima_tx(journal)
+        if e.metadata and e.metadata.get("ritual_id") and e.metadata.get("kind") != "flight_report"
+    ]
+    assert len(metas) == 1
+    return ActionManifest.model_validate(metas[0])
+
+
+async def _informe_ultima_tx(journal):  # noqa: ANN001, ANN202
+    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+
+    informes = [
+        FlightReport.model_validate(e.metadata)
+        for e in await _ops_ultima_tx(journal)
+        if e.metadata and e.metadata.get("kind") == "flight_report"
+    ]
+    return informes
+
+
+def _service_real_journal(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal: object,
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    preflight: object | None = None,
+) -> XEditPipelineService:
+    return XEditPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        journal=journal,  # type: ignore[arg-type]
+        path_resolver=mock_path_resolver,
+        event_bus=mock_event_bus,
+        preflight=preflight,  # type: ignore[arg-type]
+    )
+
+
+def _orchestrator_exitoso(target_plugin: pathlib.Path) -> AsyncMock:
+    result = PatchResult(
+        success=True,
+        output_path=target_plugin,
+        records_patched=4,
+        conflicts_resolved=1,
+        xedit_exit_code=0,
+        warnings=(),
+        error=None,
+    )
+    orch = AsyncMock()
+    orch.resolve = AsyncMock(return_value=result)
+    orch._strategies = []
+    return orch
+
+
+# ---- execute_patch -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_patch_emite_manifiesto_antes_de_ejecutar(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    mock_conflict_report: ConflictReport,
+    target_plugin: pathlib.Path,
+) -> None:
+    """Un patch exitoso persiste un ActionManifest con archivos y plan de rollback
+    (tool=xEdit) ANTES de mutar (T-26)."""
+    orch = _orchestrator_exitoso(target_plugin)
+    service = _service_real_journal(lock_manager, snapshot_manager, real_journal, mock_path_resolver, mock_event_bus)
+
+    with patch.object(service, "_ensure_patch_orchestrator", return_value=orch):
+        result = await service.execute_patch(mock_conflict_report, target_plugin)
+
+    assert result["success"] is True
+    manifest = await _manifiesto_ultima_tx(real_journal)
+    assert manifest.tool == "xEdit"
+    assert str(target_plugin) in manifest.files_touched
+    assert len(manifest.rollback_plan) >= 1
+    assert manifest.rollback_plan[0].original_path == str(target_plugin)
+
+
+@pytest.mark.asyncio
+async def test_execute_patch_sin_manifiesto_no_muta(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    mock_conflict_report: ConflictReport,
+    target_plugin: pathlib.Path,
+) -> None:
+    """Si la emisión del manifiesto falla, xEdit no se ejecuta (fail-closed T-26)
+    y la TX no queda PENDING."""
+    from sky_claw.antigravity.db.journal import TransactionStatus
+
+    orch = _orchestrator_exitoso(target_plugin)
+    service = _service_real_journal(lock_manager, snapshot_manager, real_journal, mock_path_resolver, mock_event_bus)
+
+    with (
+        patch.object(service, "_ensure_patch_orchestrator", return_value=orch),
+        patch.object(real_journal, "persist_action_manifest", AsyncMock(side_effect=RuntimeError("boom"))),
+    ):
+        result = await service.execute_patch(mock_conflict_report, target_plugin)
+
+    assert result["success"] is False
+    assert "manifiesto" in (result.get("message", "") + result.get("error", "")).lower()
+    orch.resolve.assert_not_awaited()
+    recientes = await real_journal.list_recent_transactions(limit=10)
+    assert all(t.status != TransactionStatus.PENDING for t in recientes)
+
+
+@pytest.mark.asyncio
+async def test_execute_patch_exitoso_persiste_informe_de_vuelo(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    mock_conflict_report: ConflictReport,
+    target_plugin: pathlib.Path,
+) -> None:
+    """Tras un patch exitoso queda un FlightReport commiteado en la misma TX (T-28)."""
+    orch = _orchestrator_exitoso(target_plugin)
+    service = _service_real_journal(lock_manager, snapshot_manager, real_journal, mock_path_resolver, mock_event_bus)
+
+    with patch.object(service, "_ensure_patch_orchestrator", return_value=orch):
+        result = await service.execute_patch(mock_conflict_report, target_plugin)
+
+    assert result["success"] is True
+    informes = await _informe_ultima_tx(real_journal)
+    assert len(informes) == 1
+    assert informes[0].degraded is False
+    assert informes[0].tool == "xEdit"
+    assert informes[0].transaction_status == "committed"
+
+
+@pytest.mark.asyncio
+async def test_execute_patch_fallo_del_informe_no_rompe_el_patch(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    mock_conflict_report: ConflictReport,
+    target_plugin: pathlib.Path,
+) -> None:
+    """El informe es post-vuelo best-effort: si falla, el patch exitoso no se rompe;
+    el manifiesto pre-vuelo queda persistido igual."""
+    orch = _orchestrator_exitoso(target_plugin)
+    service = _service_real_journal(lock_manager, snapshot_manager, real_journal, mock_path_resolver, mock_event_bus)
+
+    with (
+        patch.object(service, "_ensure_patch_orchestrator", return_value=orch),
+        patch.object(real_journal, "persist_flight_report", AsyncMock(side_effect=OSError("disk full"))),
+    ):
+        result = await service.execute_patch(mock_conflict_report, target_plugin)
+
+    assert result["success"] is True
+    manifest = await _manifiesto_ultima_tx(real_journal)
+    assert manifest.tool == "xEdit"
+
+
+# ---- quick_auto_clean --------------------------------------------------------
+
+
+def _preparar_dirty_masters(mock_path_resolver: MagicMock) -> pathlib.Path:
+    """Crea Data/Update.esm en el árbol del juego del resolver y lo devuelve."""
+    game_path = mock_path_resolver.get_skyrim_path()
+    data_dir = game_path / "Data"
+    data_dir.mkdir(exist_ok=True)
+    master = data_dir / "Update.esm"
+    master.write_bytes(b"TES4")
+    return master
+
+
+def _preflight_verde() -> MagicMock:
+    reporte = MagicMock()
+    reporte.blocks_mutations = False
+    reporte.status.value = "green"
+    reporte.to_dict = MagicMock(return_value={})
+    pf = MagicMock()
+    pf.run = AsyncMock(return_value=reporte)
+    return pf
+
+
+def _runner_clean(success: bool) -> MagicMock:
+    resultado = MagicMock()
+    resultado.success = success
+    resultado.exit_code = 0 if success else 3
+    runner = MagicMock()
+    runner.quick_auto_clean = AsyncMock(return_value=resultado)
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_quick_auto_clean_emite_caja_negra(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+) -> None:
+    """QuickAutoClean exitoso persiste manifiesto (masters como target_files) +
+    informe commiteado, tool=SSEEdit (T-26/T-28)."""
+    master = _preparar_dirty_masters(mock_path_resolver)
+    service = _service_real_journal(
+        lock_manager, snapshot_manager, real_journal, mock_path_resolver, mock_event_bus, preflight=_preflight_verde()
+    )
+    runner = _runner_clean(success=True)
+
+    with patch.object(service, "_ensure_xedit_runner", return_value=runner):
+        result = await service.quick_auto_clean()
+
+    assert result["success"] is True
+    assert result["cleaned"] == ["Update.esm"]
+    manifest = await _manifiesto_ultima_tx(real_journal)
+    assert manifest.tool == "SSEEdit"
+    assert str(master) in manifest.files_touched
+    informes = await _informe_ultima_tx(real_journal)
+    assert len(informes) == 1
+    assert informes[0].transaction_status == "committed"
+
+
+@pytest.mark.asyncio
+async def test_quick_auto_clean_sin_manifiesto_no_limpia(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+) -> None:
+    """Fail-closed: si el manifiesto no se emite, no se limpia ningún master."""
+    _preparar_dirty_masters(mock_path_resolver)
+    service = _service_real_journal(
+        lock_manager, snapshot_manager, real_journal, mock_path_resolver, mock_event_bus, preflight=_preflight_verde()
+    )
+    runner = _runner_clean(success=True)
+
+    with (
+        patch.object(service, "_ensure_xedit_runner", return_value=runner),
+        patch.object(real_journal, "persist_action_manifest", AsyncMock(side_effect=RuntimeError("boom"))),
+    ):
+        result = await service.quick_auto_clean()
+
+    assert result["success"] is False
+    runner.quick_auto_clean.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_quick_auto_clean_fallo_marca_rollback(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+) -> None:
+    """Si xEdit falla, se hace rollback, la TX se marca rolled-back y no queda un
+    informe de vuelo de éxito."""
+    from sky_claw.antigravity.db.journal import TransactionStatus
+
+    _preparar_dirty_masters(mock_path_resolver)
+    service = _service_real_journal(
+        lock_manager, snapshot_manager, real_journal, mock_path_resolver, mock_event_bus, preflight=_preflight_verde()
+    )
+    runner = _runner_clean(success=False)
+
+    with patch.object(service, "_ensure_xedit_runner", return_value=runner):
+        result = await service.quick_auto_clean()
+
+    assert result["success"] is False
+    recientes = await real_journal.list_recent_transactions(limit=10)
+    assert all(t.status != TransactionStatus.PENDING for t in recientes)
+    (ultima,) = await real_journal.list_recent_transactions(limit=1)
+    assert ultima.status == TransactionStatus.ROLLED_BACK

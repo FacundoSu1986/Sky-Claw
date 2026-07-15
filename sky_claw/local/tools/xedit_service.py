@@ -73,6 +73,13 @@ _OFFICIAL_DIRTY_MASTERS: tuple[str, ...] = (
 )
 
 
+class _ActionManifestError(Exception):
+    """Interno (T-26): la emisión del manifiesto de vuelo falló. Se lanza DENTRO
+    del lock (antes de mutar) para que el Ritual NO proceda sin manifiesto — la
+    caja negra no es opcional cuando el journal está cableado (espejo de
+    ``loot_service._ActionManifestError``)."""
+
+
 class XEditPipelineService:
     """Servicio dedicado para la ejecución de parches xEdit transaccionales.
 
@@ -257,6 +264,19 @@ class XEditPipelineService:
                     agent_id=self.AGENT_ID,
                 )
 
+                # T-26 (ADR 0002): emitir el ActionManifest ANTES de mutar. Los
+                # snapshots ya los capturó el lock al entrar; si la emisión falla
+                # se aborta sin ejecutar xEdit (fail-closed, _ActionManifestError).
+                await self._emit_action_manifest(
+                    tx_id=tx_id,
+                    ritual_id=f"xedit-patch-{tx_id}",
+                    tool="xEdit",
+                    target_files=[target_plugin],
+                    snapshots=tx_lock.snapshots,
+                    records_forwarded=self._records_forwarded(report),
+                    summary=f"Resolver {report.total_conflicts} conflicto(s) con xEdit sobre {target_plugin.name}.",
+                )
+
                 # Resolver conflictos (genera plan)
                 result = await orchestrator.resolve(report)
 
@@ -302,6 +322,24 @@ class XEditPipelineService:
             # Normal exit — lock context exited without error
             if tx_id is not None:
                 await self._journal.commit_transaction(tx_id)
+                # T-28: cerrar la caja negra con el informe post-vuelo (best-effort,
+                # tras el commit para leer el estado REAL de la TX).
+                await self._emit_flight_report(tx_id)
+
+        except _ActionManifestError as exc:
+            # La caja negra no se pudo emitir: xEdit no corrió. No dejar la TX
+            # recién abierta en PENDING (espejo de loot_service, review Codex #243).
+            await self._mark_journal_rolled_back(tx_id)
+            logger.error("No se pudo emitir el ActionManifest; parcheo abortado: %s", exc)
+            result = PatchResult(
+                success=False,
+                output_path=None,
+                records_patched=0,
+                conflicts_resolved=0,
+                xedit_exit_code=-1,
+                warnings=(),
+                error=f"Manifiesto de vuelo requerido no emitido: {exc}",
+            )
 
         except PatchingError as exc:
             # __aexit__ ya intentó restaurar el snapshot. M-7: reportar el
@@ -521,6 +559,7 @@ class XEditPipelineService:
             )
 
         cleaned: list[str] = []
+        tx_id: int | None = None
         try:
             async with SnapshotTransactionLock(
                 lock_manager=self._lock_manager,
@@ -529,13 +568,49 @@ class XEditPipelineService:
                 agent_id=self.AGENT_ID,
                 target_files=targets,
                 metadata={"source": "xedit_quickclean", "masters": [p.name for p in targets]},
-            ):
+            ) as tx_lock:
+                tx_id = await self._journal.begin_transaction(
+                    description="xedit_quickclean",
+                    agent_id=self.AGENT_ID,
+                )
+                # T-26: la caja negra ANTES de tocar los masters (fail-closed).
+                await self._emit_action_manifest(
+                    tx_id=tx_id,
+                    ritual_id=f"xedit-quickclean-{tx_id}",
+                    tool="SSEEdit",
+                    target_files=targets,
+                    snapshots=tx_lock.snapshots,
+                    summary=f"Limpiar {len(targets)} master(s) oficial(es) sucio(s) con SSEEdit QuickAutoClean.",
+                )
                 for path in targets:
                     result = await runner.quick_auto_clean(path.name)
                     if not result.success:
                         # Lanzar DENTRO del context activa el rollback automático.
                         raise PatchingError(f"QuickAutoClean falló para {path.name} (exit {result.exit_code}).")
                     cleaned.append(path.name)
+            # Éxito: cerrar la caja negra (best-effort — la limpieza ya ocurrió;
+            # un fallo del journal no revierte un Ritual exitoso, precedente LOOT).
+            try:
+                await self._journal.commit_transaction(tx_id)
+                await self._emit_flight_report(tx_id)
+            except Exception:  # noqa: BLE001 — boundary best-effort del journal
+                logger.error("Fallo al cerrar la caja negra de QuickAutoClean (TX %s)", tx_id, exc_info=True)
+        except _ActionManifestError as exc:
+            # La caja negra no se pudo emitir: no se limpió nada. __aexit__ ya
+            # restauró los snapshots; marcar la TX para no dejarla PENDING.
+            await self._mark_journal_rolled_back(tx_id)
+            logger.error("QuickAutoClean: no se pudo emitir el ActionManifest; abortado: %s", exc)
+            detail = f"Manifiesto de vuelo requerido no emitido: {exc}"
+            return _attach_preflight(
+                {
+                    "status": "error",
+                    "success": False,
+                    "reason": "ActionManifestFailed",
+                    "message": detail,
+                    "logs": detail,
+                },
+                preflight_report,
+            )
         except LockAcquisitionError as exc:
             logger.warning("Lock contention on '%s' (stage 1): %s", XEDIT_CLEAN_RESOURCE_ID, exc)
             detail = f"No se pudo adquirir el lock '{XEDIT_CLEAN_RESOURCE_ID}': {exc}"
@@ -545,6 +620,7 @@ class XEditPipelineService:
             )
         except (PatchingError, XEditError) as exc:
             # __aexit__ ya restauró los snapshots (rollback de todos los masters).
+            await self._mark_journal_rolled_back(tx_id)
             logger.error("QuickAutoClean (stage 1) falló; rollback aplicado: %s", exc)
             return _attach_preflight(
                 {
@@ -628,6 +704,102 @@ class XEditPipelineService:
             "message": change_set.summary,
             "change_set": change_set.model_dump(mode="json"),
         }
+
+    # ------------------------------------------------------------------
+    # Caja negra de vuelo (T-26/T-28, ADR 0002) — espejo de loot_service
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _records_forwarded(report: ConflictReport) -> list[Any]:
+        """Pares de conflicto críticos para el ActionManifest (T-26): qué records
+        forwardeó el parche. Best-effort — un report sin pares no aporta ninguno
+        (mismo criterio de criticidad que ``_preview_patch``)."""
+        from sky_claw.antigravity.orchestrator.preview.manifest import ConflictPair
+
+        pares: list[Any] = []
+        for pair in report.plugin_pairs:
+            for conflict in pair.conflicts:
+                if getattr(conflict, "severity", None) == "critical":
+                    pares.append(
+                        ConflictPair(
+                            winner=conflict.winner,
+                            losers=list(conflict.losers),
+                            record_type=conflict.record_type,
+                            form_id=conflict.form_id,
+                        )
+                    )
+        return pares
+
+    async def _emit_action_manifest(
+        self,
+        *,
+        tx_id: int,
+        ritual_id: str,
+        tool: str,
+        target_files: list[pathlib.Path],
+        snapshots: Any,
+        summary: str,
+        records_forwarded: list[Any] | None = None,
+    ) -> None:
+        """Construye y persiste el ActionManifest ANTES de mutar (T-26).
+
+        Fail-closed: cualquier fallo del builder o del journal se convierte en
+        :class:`_ActionManifestError` para que el caller aborte el Ritual sin
+        mutar (la caja negra no es opcional cuando el journal está cableado).
+        """
+        from sky_claw.antigravity.orchestrator.preview.action_manifest import build_action_manifest
+
+        try:
+            manifest = build_action_manifest(
+                ritual_id=ritual_id,
+                tool=tool,
+                tool_version=None,  # xEdit no expone versión hoy (follow-up).
+                target_files=[str(f) for f in target_files],
+                snapshots=snapshots,
+                records_forwarded=records_forwarded,
+                summary=summary,
+            )
+            await self._journal.persist_action_manifest(
+                manifest,
+                agent_id=self.AGENT_ID,
+                transaction_id=tx_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — boundary: cualquier fallo del journal/builder
+            raise _ActionManifestError(str(exc)) from exc
+
+    async def _emit_flight_report(self, tx_id: int) -> None:
+        """Compone y persiste el FlightReport del Ritual terminado (T-28).
+
+        Post-vuelo y best-effort: lee la caja negra desde el journal (el
+        manifiesto persistido + el estado REAL de la TX) y la persiste. Un fallo
+        se loguea y NO rompe un Ritual ya exitoso (misma disciplina que LOOT).
+        """
+        from sky_claw.antigravity.orchestrator.preview.flight_report import (
+            compose_flight_report_from_journal,
+        )
+
+        try:
+            report = await compose_flight_report_from_journal(self._journal, transaction_id=tx_id)
+            await self._journal.persist_flight_report(
+                report,
+                agent_id=self.AGENT_ID,
+                transaction_id=tx_id,
+            )
+        except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error("Fallo al persistir el informe de vuelo de la TX %d", tx_id, exc_info=True)
+
+    async def _mark_journal_rolled_back(self, tx_id: int | None) -> None:
+        """Marca la TX del journal como rolled-back (best-effort).
+
+        Se llama en los caminos de excepción; un fallo del journal acá no debe
+        enmascarar el error original ni romper el contrato de dict serializable.
+        """
+        if tx_id is None:
+            return
+        try:
+            await self._journal.mark_transaction_rolled_back(tx_id)
+        except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error("Fallo al marcar la TX %d del journal como rolled-back", tx_id, exc_info=True)
 
     # ------------------------------------------------------------------
     # Helpers
