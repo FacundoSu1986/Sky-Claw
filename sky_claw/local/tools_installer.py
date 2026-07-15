@@ -235,6 +235,34 @@ def _select_address_library_file(files: list[dict[str, Any]], edition: SkyrimEdi
     )
 
 
+def _select_ngio_asset(assets: list[dict[str, Any]], edition: SkyrimEdition) -> dict[str, Any]:
+    """Elige el asset de NGIO-NG (GitHub) para la edición.
+
+    Las releases publican builds SEPARADOS, y sus nombres no contienen la
+    palabra "grass" ni el nombre del repo: ``NGIO-AE-<ver>.zip`` (Anniversary,
+    1.6.x), ``NGIO-NG_<ver>.7z`` (1.5.97/SE) y ``NGIO-NG-<ver>-VR.zip`` (VR,
+    SIEMPRE excluido). Un keyword único bajaría el build equivocado o ninguno
+    (bug del #293), por eso se elige por edición: AE → nombre con ``ngio-ae``;
+    SE → un asset de NGIO sin ese marcador.
+
+    Raises:
+        ToolInstallError: Si ningún asset matchea la edición (lista los nombres
+            disponibles para diagnóstico, sin caer al build equivocado).
+    """
+    candidates = [
+        a for a in assets if "ngio" in str(a.get("name", "")).lower() and "vr" not in str(a.get("name", "")).lower()
+    ]
+    want_ae = edition is SkyrimEdition.AE
+    for a in candidates:
+        is_ae = "ngio-ae" in str(a.get("name", "")).lower()
+        if is_ae == want_ae:
+            return a
+    available = [str(a.get("name") or "?") for a in assets]
+    raise ToolInstallError(
+        f"Ningún asset de NGIO-NG coincide con la edición {edition.value} (VR excluido). Disponibles: {available}"
+    )
+
+
 def _flatten_single_root(mod_dir: pathlib.Path) -> None:
     """Si el archive envolvió el payload en UNA carpeta raíz, sube su contenido.
 
@@ -608,7 +636,7 @@ class ToolsInstaller:
                 session,
                 mod_name=NGIO_MOD_NAME,
                 releases_url=_NGIO_RELEASES_URL,
-                keyword="NoGrassInObjectsNG",
+                asset_select=lambda assets: _select_ngio_asset(assets, edition),
                 sentinel_glob="*.dll",
                 request_slug="ngio",
                 source_hint="GitHub DwemerEngineer/No-Grass-In-Objects-NG",
@@ -669,18 +697,23 @@ class ToolsInstaller:
         *,
         mod_name: str,
         releases_url: str,
-        keyword: str,
+        keyword: str | None = None,
+        asset_select: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
         sentinel_glob: str,
         request_slug: str,
         source_hint: str,
     ) -> ModInstallResult:
-        """Instala un mod desde un release de GitHub en ``mods_dir/<mod_name>/``."""
+        """Instala un mod desde un release de GitHub en ``mods_dir/<mod_name>/``.
+
+        Con *asset_select* elige el asset por criterio (p.ej. edición, cuando el
+        release trae varios builds); si no, usa *keyword*.
+        """
         mod_dir = mods_dir / mod_name
         existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob)
         if existing is not None:
             return existing
 
-        asset, version = await self._find_github_asset(session, releases_url, keyword=keyword)
+        asset, version = await self._find_github_asset(session, releases_url, keyword=keyword, select=asset_select)
 
         decision = await self._hitl.request_approval(
             request_id=f"install-{request_slug}-{version}",
@@ -781,14 +814,21 @@ class ToolsInstaller:
         self,
         session: aiohttp.ClientSession,
         releases_url: str,
-        keyword: str,
+        *,
+        keyword: str | None = None,
+        select: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
     ) -> tuple[ReleaseAsset, str]:
         """Fetch the latest GitHub release and find a matching asset.
 
         Args:
             session: HTTP session.
             releases_url: GitHub API URL for latest release.
-            keyword: Substring the asset name must contain.
+            keyword: Substring the asset name must contain (modo simple, un solo
+                asset esperado). Ignorado si se pasa *select*.
+            select: Selector sobre los assets de archivo (``.zip``/``.7z``) que
+                decide cuál usar — p.ej. por edición cuando el release publica
+                varios builds (NGIO: SE/AE/VR). Puede lanzar ``ToolInstallError``
+                propio si nada matchea.
 
         Returns:
             Tuple of (:class:`ReleaseAsset`, version tag).
@@ -816,30 +856,37 @@ class ToolsInstaller:
 
         version: str = data.get("tag_name", "unknown")
         assets: list[dict[str, Any]] = data.get("assets", [])
+        archives = [a for a in assets if str(a.get("name", "")).lower().endswith((".zip", ".7z"))]
 
-        # Find the first asset whose name contains the keyword and is
-        # a .zip or .7z archive.
-        for a in assets:
-            name: str = a.get("name", "")
-            if keyword.lower() in name.lower() and (name.endswith(".zip") or name.endswith(".7z")):
-                api_url = a.get("url")
-                browser_download_url = a.get("browser_download_url")
-                if not isinstance(api_url, str) or not api_url:
-                    raise ToolInstallError(f"Release asset {name!r} is missing its GitHub API URL")
-                if not isinstance(browser_download_url, str) or not browser_download_url:
-                    raise ToolInstallError(f"Release asset {name!r} is missing its browser download URL")
-                return (
-                    ReleaseAsset(
-                        name=name,
-                        size=int(a.get("size", 0)),
-                        download_url=api_url,
-                        browser_download_url=browser_download_url,
-                    ),
-                    version,
+        if select is not None:
+            chosen = select(archives)  # el selector lanza ToolInstallError si nada matchea
+        else:
+            chosen = next(
+                (a for a in archives if keyword is not None and keyword.lower() in str(a.get("name", "")).lower()),
+                None,
+            )
+            if chosen is None:
+                available = [a.get("name", "?") for a in assets]
+                raise ToolInstallError(
+                    f"No asset matching '{keyword}' (.zip/.7z) in release {version}. Available: {available}"
                 )
 
-        available = [a.get("name", "?") for a in assets]
-        raise ToolInstallError(f"No asset matching '{keyword}' (.zip/.7z) in release {version}. Available: {available}")
+        name = str(chosen.get("name", ""))
+        api_url = chosen.get("url")
+        browser_download_url = chosen.get("browser_download_url")
+        if not isinstance(api_url, str) or not api_url:
+            raise ToolInstallError(f"Release asset {name!r} is missing its GitHub API URL")
+        if not isinstance(browser_download_url, str) or not browser_download_url:
+            raise ToolInstallError(f"Release asset {name!r} is missing its browser download URL")
+        return (
+            ReleaseAsset(
+                name=name,
+                size=int(chosen.get("size", 0)),
+                download_url=api_url,
+                browser_download_url=browser_download_url,
+            ),
+            version,
+        )
 
     async def _download_asset(
         self,

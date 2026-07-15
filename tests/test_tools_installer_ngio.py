@@ -36,6 +36,7 @@ from sky_claw.local.tools_installer import (
     ToolInstallError,
     ToolsInstaller,
     _select_address_library_file,
+    _select_ngio_asset,
 )
 
 # ---------------------------------------------------------------------------
@@ -87,7 +88,14 @@ def _zip_bytes_malicioso() -> bytes:
     return buf.getvalue()
 
 
-_NGIO_ASSET = "NoGrassInObjectsNG-1.0.13.zip"
+# Nombre real del build SE/NG (los assets de NGIO empiezan con "NGIO-"; ver
+# github.com/DwemerEngineer/No-Grass-In-Objects-NG/releases). Se usa .zip (no
+# .7z) para que la extracción de los tests funcione sin py7zr.
+_NGIO_ASSET = "NGIO-NG_1.0.13.zip"
+# Assets reales de una release de NGIO (nombres verificados contra la release
+# viva 1.0.13): AE (1.6.x), NG (1.5.97/SE) y VR (siempre excluido).
+_NGIO_ASSET_AE = "NGIO-AE-1.0.13-1.6.640.zip"
+_NGIO_ASSET_VR = "NGIO-NG-1.0.13-VR.zip"
 
 _ZIP_NGIO = _zip_bytes({"SKSE/Plugins/GrassControl.dll": "fake-dll", "SKSE/Plugins/GrassControl.ini": "cfg"})
 _ZIP_ADDRLIB_SE = _zip_bytes({"SKSE/Plugins/version-1-5-97-0.bin": "fake-bin"})
@@ -117,19 +125,28 @@ _ADDRLIB_FILES: list[dict[str, Any]] = [
 ]
 
 
+def _ngio_asset_entry(asset_name: str, size: int) -> dict[str, Any]:
+    return {
+        "name": asset_name,
+        "size": size,
+        "url": f"https://api.github.com/repos/DwemerEngineer/No-Grass-In-Objects-NG/releases/assets/{hash(asset_name) & 0xFFFF}",
+        "browser_download_url": (
+            f"https://github.com/DwemerEngineer/No-Grass-In-Objects-NG/releases/download/1.0.13/{asset_name}"
+        ),
+    }
+
+
 def _ngio_release_json(tag: str = "1.0.13", asset_name: str = _NGIO_ASSET, size: int = 0) -> dict[str, Any]:
+    """Release de NGIO con los TRES builds reales (AE / NG-SE / VR).
+
+    ``asset_name``/``size`` describen el build que efectivamente se descarga
+    (el que la selección por edición elige); los otros dos existen para que la
+    selección se ejercite de verdad. VR debe quedar siempre afuera.
+    """
+    otros = {_NGIO_ASSET, _NGIO_ASSET_AE, _NGIO_ASSET_VR} - {asset_name}
     return {
         "tag_name": tag,
-        "assets": [
-            {
-                "name": asset_name,
-                "size": size,
-                "url": "https://api.github.com/repos/DwemerEngineer/No-Grass-In-Objects-NG/releases/assets/3001",
-                "browser_download_url": (
-                    f"https://github.com/DwemerEngineer/No-Grass-In-Objects-NG/releases/download/{tag}/{asset_name}"
-                ),
-            },
-        ],
+        "assets": [_ngio_asset_entry(asset_name, size), *(_ngio_asset_entry(n, size) for n in sorted(otros))],
     }
 
 
@@ -244,6 +261,39 @@ class TestSeleccionAddressLibrary:
         assert "Otra cosa" in str(exc_info.value)
 
 
+class TestSeleccionNgioAsset:
+    """Selección del build de NGIO-NG (GitHub) por edición — los assets reales
+    son NGIO-AE-* (1.6.x), NGIO-NG_* (1.5.97/SE) y NGIO-NG-*-VR (excluido).
+    Con ``keyword`` genérico el instalador bajaría el build equivocado (o
+    ninguno): esta selección es la que arregla el bug del #293."""
+
+    _ASSETS = [
+        {"name": "NGIO-AE-1.0.13-1.6.640.zip"},
+        {"name": "NGIO-NG_1.0.13.1.7z"},
+        {"name": "NGIO-NG-1.0.13-VR.zip"},
+    ]
+
+    def test_ae_elige_el_build_ae(self) -> None:
+        """En Anniversary Edition se elige el asset NGIO-AE (1.6.x), no el NG ni el VR."""
+        assert _select_ngio_asset(self._ASSETS, SkyrimEdition.AE)["name"] == "NGIO-AE-1.0.13-1.6.640.zip"
+
+    def test_se_elige_el_build_ng_no_ae(self) -> None:
+        """En Special Edition se elige el NGIO-NG (1.5.97), nunca el marcado AE."""
+        assert _select_ngio_asset(self._ASSETS, SkyrimEdition.SE)["name"] == "NGIO-NG_1.0.13.1.7z"
+
+    def test_vr_siempre_excluido(self) -> None:
+        """VR jamás se elige: con solo AE+VR disponibles, SE no cae al VR — falla explícito."""
+        solo_ae_y_vr = [{"name": "NGIO-AE-1.0.13.zip"}, {"name": "NGIO-NG-1.0.13-VR.zip"}]
+        with pytest.raises(ToolInstallError):
+            _select_ngio_asset(solo_ae_y_vr, SkyrimEdition.SE)
+
+    def test_sin_match_lista_disponibles(self) -> None:
+        """Si ningún asset es de NGIO, ToolInstallError lista lo disponible (diagnóstico, no keyword ciego)."""
+        with pytest.raises(ToolInstallError) as exc_info:
+            _select_ngio_asset([{"name": "otracosa.zip"}], SkyrimEdition.AE)
+        assert "otracosa.zip" in str(exc_info.value)
+
+
 # ---------------------------------------------------------------------------
 # ensure_ngio — validaciones previas (sin red)
 # ---------------------------------------------------------------------------
@@ -328,6 +378,36 @@ class TestEnsureNgioInstalacion:
         # Grass Cache Helper NG (101095) jamás se consulta en SE.
         assert all(call.args[0] != 101095 for call in downloader.get_file_info.await_args_list)
         assert not (mods_dir / GRASS_CACHE_HELPER_MOD_NAME).exists()
+
+    async def test_se_baja_el_build_ng_no_el_ae_ni_vr(
+        self, installer: ToolsInstaller, mods_dir: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        """Con los 3 builds en la release, SE aprueba/baja el NGIO-NG (no el AE ni el VR)."""
+        _mock_gateway_github(installer, _ZIP_NGIO)
+        hitl = _aprobar_todo(installer)
+        downloader = _downloader_se(tmp_path)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        await installer.ensure_ngio(mods_dir, session, downloader, edition=SkyrimEdition.SE)
+
+        # La primera aprobación HITL es la de NGIO; su detalle nombra el asset elegido.
+        detalle_ngio = hitl.await_args_list[0].kwargs["detail"]
+        assert _NGIO_ASSET in detalle_ngio
+        assert "-AE-" not in detalle_ngio and "-VR" not in detalle_ngio
+
+    async def test_ae_baja_el_build_ae(
+        self, installer: ToolsInstaller, mods_dir: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        """En AE se aprueba/baja el build NGIO-AE, no el NG-SE."""
+        _mock_gateway_github(installer, _ZIP_NGIO)
+        hitl = _aprobar_todo(installer)
+        downloader = _downloader_ae(tmp_path)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        await installer.ensure_ngio(mods_dir, session, downloader, edition=SkyrimEdition.AE)
+
+        detalle_ngio = hitl.await_args_list[0].kwargs["detail"]
+        assert _NGIO_ASSET_AE in detalle_ngio
 
     async def test_ae_exige_grass_cache_helper(
         self, installer: ToolsInstaller, mods_dir: pathlib.Path, tmp_path: pathlib.Path
