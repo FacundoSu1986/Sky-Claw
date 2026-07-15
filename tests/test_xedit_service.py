@@ -345,10 +345,12 @@ class _RollbackFailedLock:
     """Lock de frontera: el cuerpo falla y la restauración no se completa."""
 
     rollback_completed = False
-    #: El lock real siempre expone ``snapshots`` (lo lee el ActionManifest T-26).
-    snapshots: list = []  # noqa: RUF012 — fake de test, no un modelo mutable real
 
     async def __aenter__(self) -> _RollbackFailedLock:
+        # El lock real siempre expone ``snapshots`` (lo lee el ActionManifest
+        # T-26); atributo de INSTANCIA para no compartir una lista mutable entre
+        # casos (review Copilot #303).
+        self.snapshots: list = []
         return self
 
     async def __aexit__(self, *_args: object) -> bool:
@@ -890,6 +892,32 @@ async def test_execute_patch_fallo_del_informe_no_rompe_el_patch(
     assert result["success"] is True
     manifest = await _manifiesto_ultima_tx(real_journal)
     assert manifest.tool == "xEdit"
+
+
+@pytest.mark.asyncio
+async def test_execute_patch_fallo_de_commit_no_rompe_el_patch(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    mock_conflict_report: ConflictReport,
+    target_plugin: pathlib.Path,
+) -> None:
+    """El patch ya mutó: un fallo del commit del journal es best-effort y NO
+    convierte el Ritual exitoso en error (misma disciplina que LOOT, review
+    Copilot #303)."""
+    orch = _orchestrator_exitoso(target_plugin)
+    service = _service_real_journal(lock_manager, snapshot_manager, real_journal, mock_path_resolver, mock_event_bus)
+
+    with (
+        patch.object(service, "_ensure_patch_orchestrator", return_value=orch),
+        patch.object(real_journal, "commit_transaction", AsyncMock(side_effect=OSError("disk full"))),
+    ):
+        result = await service.execute_patch(mock_conflict_report, target_plugin)
+
+    assert result["success"] is True
+    orch.resolve.assert_awaited_once()
 
 
 # ---- quick_auto_clean --------------------------------------------------------

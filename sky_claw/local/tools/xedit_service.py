@@ -319,11 +319,17 @@ class XEditPipelineService:
                 if result is not None and not result.success:
                     raise PatchingError(f"xEdit falló con código {result.xedit_exit_code}: {result.error}")
 
-            # Normal exit — lock context exited without error
+            # Normal exit — lock context exited without error. El commit del
+            # journal es best-effort (el patch ya mutó): un fallo puntual de
+            # IO/SQLite no debe convertir un Ritual exitoso en error (misma
+            # disciplina que loot_service, review Copilot #303). El informe se
+            # emite igual y reflejará el estado REAL de la TX (pending si el
+            # commit falló) — no se pierde el cierre de la caja negra.
             if tx_id is not None:
-                await self._journal.commit_transaction(tx_id)
-                # T-28: cerrar la caja negra con el informe post-vuelo (best-effort,
-                # tras el commit para leer el estado REAL de la TX).
+                try:
+                    await self._journal.commit_transaction(tx_id)
+                except Exception:  # noqa: BLE001 — boundary best-effort del journal
+                    logger.error("Fallo al commitear la TX %d del patch xEdit", tx_id, exc_info=True)
                 await self._emit_flight_report(tx_id)
 
         except _ActionManifestError as exc:
@@ -588,13 +594,16 @@ class XEditPipelineService:
                         # Lanzar DENTRO del context activa el rollback automático.
                         raise PatchingError(f"QuickAutoClean falló para {path.name} (exit {result.exit_code}).")
                     cleaned.append(path.name)
-            # Éxito: cerrar la caja negra (best-effort — la limpieza ya ocurrió;
-            # un fallo del journal no revierte un Ritual exitoso, precedente LOOT).
+            # Éxito: cerrar la caja negra (best-effort — la limpieza ya ocurrió).
+            # El commit y el informe van SEPARADOS: si el commit falla, el
+            # FlightReport se emite igual y refleja el estado REAL de la TX
+            # (pending) — no se pierde el cierre por un fallo puntual del commit
+            # (misma disciplina que loot_service, review Copilot #303).
             try:
                 await self._journal.commit_transaction(tx_id)
-                await self._emit_flight_report(tx_id)
             except Exception:  # noqa: BLE001 — boundary best-effort del journal
-                logger.error("Fallo al cerrar la caja negra de QuickAutoClean (TX %s)", tx_id, exc_info=True)
+                logger.error("Fallo al commitear la TX %s de QuickAutoClean", tx_id, exc_info=True)
+            await self._emit_flight_report(tx_id)
         except _ActionManifestError as exc:
             # La caja negra no se pudo emitir: no se limpió nada. __aexit__ ya
             # restauró los snapshots; marcar la TX para no dejarla PENDING.
