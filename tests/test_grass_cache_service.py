@@ -30,6 +30,7 @@ from sky_claw.local.mo2.grass_profile import GrassProfileError
 from sky_claw.local.tools.grass_cache_runner import GrassCacheRunResult
 from sky_claw.local.tools.grass_cache_service import (
     GrassCacheService,
+    GrassRuntimeDeps,
 )
 from sky_claw.local.tools.tool_result import normalize_tool_result
 from sky_claw.local.xedit.grass_analyzer import (
@@ -544,6 +545,64 @@ def test_contrato_flight_report_lectura_escritura() -> None:
     # Un ActionManifest (sin kind=flight_report) tampoco alcanza.
     assert is_flight_report_committed({"ritual_id": "loot-sort-1", "transaction_status": "committed"}) is False
     assert is_flight_report_committed(None) is False
+
+
+async def test_generate_resuelve_deps_por_provider_lazy(tmp_path: pathlib.Path) -> None:
+    """Las deps de Fases B/C pueden venir de un provider lazy (no solo concretas):
+    se resuelven al ejecutar el ritual, tras la hidratación de entorno (Codex #301)."""
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "SkyrimSE.exe").write_bytes(b"MZ")
+    (tmp_path / "mo2" / "overwrite").mkdir(parents=True)
+
+    profile_manager = AsyncMock()
+    profile_manager.clone_profile = "SkyClaw-GrassCache"
+    profile_manager.teardown.return_value = []
+    runner = AsyncMock()
+    runner.run.return_value = _resultado_runner()
+    llamadas = {"provider": 0}
+
+    def _provider() -> GrassRuntimeDeps:
+        llamadas["provider"] += 1
+        return GrassRuntimeDeps(
+            profile_manager=profile_manager,
+            mo2=MagicMock(),
+            game_path=game,
+            overwrite_grass_dir=tmp_path / "mo2" / "overwrite" / "Grass",
+        )
+
+    service = GrassCacheService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=_journal_con_loot_completado(),
+        event_bus=AsyncMock(),
+        runner_factory=MagicMock(return_value=runner),
+        lock_factory=lambda **_kw: _lock_tx_fake(),
+        runtime_deps_provider=_provider,
+    )
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is True, resultado["message"]
+    profile_manager.create_clone_profile.assert_awaited_once()
+    assert llamadas["provider"] == 1
+
+
+async def test_generate_provider_devuelve_none_es_error_de_contrato(tmp_path: pathlib.Path) -> None:
+    """Si el entorno aún no está configurado, el provider devuelve None y el
+    servicio responde con error de contrato accionable (sin deps concretas)."""
+    service = GrassCacheService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=_journal_con_loot_completado(),
+        event_bus=AsyncMock(),
+        lock_factory=lambda **_kw: _lock_tx_fake(),
+        runtime_deps_provider=lambda: None,
+    )
+
+    resultado = await service.generate(_PAYLOAD)
+
+    _assert_error_de_contrato(resultado, "no configurada")
 
 
 async def test_generate_progreso_del_runner_se_publica_al_bus(tmp_path: pathlib.Path) -> None:

@@ -80,6 +80,20 @@ class GrassCacheServiceError(Exception):
     """Configuración/estado inválido del servicio (mensaje accionable)."""
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class GrassRuntimeDeps:
+    """Deps de Fases B/C resueltas de forma perezosa (perfil MO2 + paths).
+
+    Se arman al EJECUTAR el ritual, no al construir el servicio: en producción
+    ``MO2_PATH``/``SKYRIM_PATH`` se hidratan después de crear el supervisor.
+    """
+
+    profile_manager: GrassProfileManager
+    mo2: MO2Controller
+    game_path: pathlib.Path
+    overwrite_grass_dir: pathlib.Path
+
+
 class GenerateGrassCacheParams(BaseModel):
     """Payload de ``generate`` (validación única, compartida con la strategy).
 
@@ -140,6 +154,7 @@ class GrassCacheService:
         mo2: MO2Controller | None = None,
         game_path: pathlib.Path | None = None,
         overwrite_grass_dir: pathlib.Path | None = None,
+        runtime_deps_provider: Callable[[], GrassRuntimeDeps | None] | None = None,
         runner_factory: Callable[..., GrassCacheRunner] | None = None,
         lock_factory: Callable[..., SnapshotTransactionLock] | None = None,
     ) -> None:
@@ -153,8 +168,34 @@ class GrassCacheService:
         self._mo2 = mo2
         self._game_path = game_path
         self._overwrite_grass_dir = overwrite_grass_dir
+        # Provider lazy de las deps de Fases B/C: se llama al ejecutar el ritual
+        # (no en __init__), así los paths se resuelven DESPUÉS de la hidratación
+        # de entorno de la GUI (review Codex #301). Las deps concretas de arriba
+        # (inyectadas en tests) tienen precedencia.
+        self._runtime_deps_provider = runtime_deps_provider
         self._runner_factory = runner_factory if runner_factory is not None else GrassCacheRunner
         self._lock_factory = lock_factory if lock_factory is not None else SnapshotTransactionLock
+
+    def _ensure_runtime_deps(self) -> None:
+        """Puebla (una vez) las deps de Fases B/C desde el provider lazy.
+
+        En producción ``MO2_PATH``/``SKYRIM_PATH`` se hidratan DESPUÉS de
+        construir el supervisor (escaneo de entorno de la GUI), así que
+        resolverlas en ``__init__`` daría ``None`` permanente. Se resuelven al
+        correr el ritual: si el entorno ya está listo, se pueblan; si no, quedan
+        ``None`` y se reintenta en la próxima corrida.
+        """
+        if self._profile_manager is not None:
+            return  # deps concretas (tests) o ya pobladas
+        if self._runtime_deps_provider is None:
+            return
+        deps = self._runtime_deps_provider()
+        if deps is None:
+            return
+        self._profile_manager = deps.profile_manager
+        self._mo2 = deps.mo2
+        self._game_path = deps.game_path
+        self._overwrite_grass_dir = deps.overwrite_grass_dir
 
     # ------------------------------------------------------------------
     # Fase A — diagnóstico read-only (sin lock, sin HITL)
@@ -212,6 +253,7 @@ class GrassCacheService:
             return self._error(guard, inicio)
 
         try:
+            self._ensure_runtime_deps()  # resuelve MO2/paths lazy (post-hidratación)
             pm = self._require(self._profile_manager, "profile_manager (GrassProfileManager)")
             mo2 = self._require(self._mo2, "mo2 (MO2Controller)")
             config = self._build_runner_config(params, pm)
@@ -456,4 +498,5 @@ __all__ = [
     "GenerateGrassCacheParams",
     "GrassCacheService",
     "GrassCacheServiceError",
+    "GrassRuntimeDeps",
 ]
