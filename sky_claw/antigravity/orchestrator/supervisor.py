@@ -36,7 +36,7 @@ from sky_claw.local.assets import AssetConflictDetector, AssetConflictReport
 from sky_claw.local.mo2.grass_profile import GrassProfileManager
 from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
-from sky_claw.local.tools.grass_cache_service import GrassCacheService
+from sky_claw.local.tools.grass_cache_service import GrassCacheService, GrassRuntimeDeps
 from sky_claw.local.tools.loot_service import LootSortingService
 from sky_claw.local.tools.pandora_service import PandoraPipelineService
 from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
@@ -228,20 +228,18 @@ class SupervisorAgent:
         # Grass cache: orquestador del Stage 8 (NGIO). El runner de xEdit de la
         # Fase A se resuelve perezosamente vía el servicio de xEdit; las
         # dependencias de Fases B/C (perfil MO2, game path, overwrite/Grass) las
-        # arma _build_grass_dependencies (boot-safe: None si el entorno está a
-        # medio configurar → el servicio devuelve errores accionables del
-        # contrato, no excepciones crudas).
-        grass_pm, grass_mo2, grass_game_path, grass_overwrite_dir = self._build_grass_dependencies()
+        # arma _build_grass_dependencies como PROVIDER LAZY: se resuelven al
+        # ejecutar el ritual, no en __init__, porque en la GUI MO2_PATH/
+        # SKYRIM_PATH se hidratan DESPUÉS de construir el supervisor (review
+        # Codex #301). El servicio devuelve error accionable del contrato si
+        # todavía no están configuradas.
         self._grass_cache_service = GrassCacheService(
             lock_manager=self._lock_manager,
             snapshot_manager=self.snapshot_manager,
             journal=self.journal,
             event_bus=self._event_bus,
             xedit_runner_provider=self._xedit_service.ensure_xedit_runner,
-            profile_manager=grass_pm,
-            mo2=grass_mo2,
-            game_path=grass_game_path,
-            overwrite_grass_dir=grass_overwrite_dir,
+            runtime_deps_provider=self._build_grass_dependencies,
         )
 
         # Lazy init para runners legacy que aún no son servicios puros (WryeBash, AssetDetector)
@@ -282,6 +280,10 @@ class SupervisorAgent:
         validator only when none is provided (standalone / tests).
         """
         resolution_validator = sandbox_validator if sandbox_validator is not None else self._path_validator
+        # El ritual de grass escribe en <MO2>/profiles y <MO2>/mods, así que
+        # necesita el MISMO validator de modding que el resolver (no el rollback
+        # backup-only, que rechazaría esos paths — review Codex #301).
+        self._modding_validator = resolution_validator
         return PathResolutionService(
             path_validator=resolution_validator,
             profile_name=self.profile_name,
@@ -517,27 +519,38 @@ class SupervisorAgent:
         """Retorna el RollbackManager para inyección de dependencias."""
         return self.rollback_manager
 
-    def _build_grass_dependencies(
-        self,
-    ) -> tuple[GrassProfileManager | None, MO2Controller | None, pathlib.Path | None, pathlib.Path | None]:
-        """Resuelve las deps de Fases B/C del ritual de grass (Stage 8), boot-safe.
+    def _build_grass_dependencies(self) -> GrassRuntimeDeps | None:
+        """Provider lazy de las deps de Fases B/C del ritual de grass (Stage 8).
 
-        Devuelve ``(profile_manager, mo2, game_path, overwrite_grass_dir)``.
-        Cualquiera puede ser ``None`` si ``MO2_PATH``/``SKYRIM_PATH`` no están
-        resueltos — el :class:`GrassCacheService` los trata como "dependencia no
-        configurada" con un error accionable, así que un entorno a medio armar no
-        rompe el arranque. ``get_*_path()`` devuelven ``None`` (no lanzan) y
-        ``MO2Controller`` solo hace ``resolve()`` (no valida existencia), por eso
-        la construcción es segura en ``__init__``.
+        Lo llama el :class:`GrassCacheService` al EJECUTAR el ritual (no en
+        ``__init__``): en la GUI, ``MO2_PATH``/``SKYRIM_PATH`` se hidratan
+        después de construir el supervisor, así que resolverlas antes daría
+        ``None`` permanente (review Codex #301). Devuelve ``None`` si todavía
+        faltan — el servicio responde con su error de contrato accionable y se
+        reintenta en la próxima corrida.
+
+        Usa el validator de MODDING (``_modding_validator``, el mismo que el
+        path resolver), no el rollback backup-only que rechazaría
+        ``<MO2>/profiles`` y ``<MO2>/mods``; y clona el perfil ACTIVO
+        (``self.profile_name``), no el ``Default`` por defecto.
         """
         mo2_root = self._path_resolver.get_mo2_path()
         game_path = self._path_resolver.get_skyrim_path()
-        if mo2_root is None:
-            return None, None, game_path, None
-        mo2 = MO2Controller(mo2_root, self._path_validator)
-        profile_manager = GrassProfileManager(mo2_root, self._path_validator, controller=mo2)
-        overwrite_grass_dir = mo2_root / "overwrite" / "Grass"
-        return profile_manager, mo2, game_path, overwrite_grass_dir
+        if mo2_root is None or game_path is None:
+            return None
+        mo2 = MO2Controller(mo2_root, self._modding_validator)
+        profile_manager = GrassProfileManager(
+            mo2_root,
+            self._modding_validator,
+            source_profile=self.profile_name,
+            controller=mo2,
+        )
+        return GrassRuntimeDeps(
+            profile_manager=profile_manager,
+            mo2=mo2,
+            game_path=game_path,
+            overwrite_grass_dir=mo2_root / "overwrite" / "Grass",
+        )
 
     # =========================================================================
     # FASE 6: Wrye Bash Integration
