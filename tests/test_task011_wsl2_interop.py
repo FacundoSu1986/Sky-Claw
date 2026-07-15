@@ -285,7 +285,7 @@ class TestMO2CloseGameAsync:
         """close_game() delega _kill_process_tree en asyncio.to_thread (con un PID lanzado)."""
         mo2_root, validator = tmp_mo2_env
         controller = MO2Controller(mo2_root, validator)
-        controller._launched_pid = 999  # M-8: hay un juego lanzado por esta instancia
+        controller._launched_pids = {999}  # M-8: hay un juego lanzado por esta instancia
 
         with patch("sky_claw.local.mo2.vfs.asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
             mock_to_thread.return_value = ["ModOrganizer.exe(999)"]
@@ -300,7 +300,7 @@ class TestMO2CloseGameAsync:
         """M-8: close_game() mata el árbol del PID lanzado y NO procesos homónimos ajenos."""
         mo2_root, validator = tmp_mo2_env
         controller = MO2Controller(mo2_root, validator)
-        controller._launched_pid = 42  # PID del ModOrganizer.exe lanzado
+        controller._launched_pids = {42}  # PID del ModOrganizer.exe lanzado
 
         root = MagicMock()
         root.pid = 42

@@ -209,6 +209,60 @@ class TestGameControl:
         assert result["status"] == "launched"
         assert result["pid"] == 12345
         mock_create.assert_awaited_once()
+        # §1.1: el PID quedó trackeado para que close_game pueda terminarlo.
+        assert controller._launched_pids == {12345}
+
+    @pytest.mark.asyncio
+    async def test_launch_game_trackea_pid_antes_de_verificar(
+        self, controller: MO2Controller, mo2_root: pathlib.Path, monkeypatch
+    ) -> None:
+        """§1.1: el PID se registra ANTES de _verify_pid_alive, así una muerte/
+        cancelación durante la verificación no deja un MO2 fuera de close_game."""
+        (mo2_root / "ModOrganizer.exe").write_text("dummy")
+        from unittest.mock import AsyncMock
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 777
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
+
+        visto: dict[str, bool] = {}
+
+        async def _verify_espia(pid: int) -> None:
+            # En el momento de verificar, el PID ya debe estar trackeado.
+            visto["trackeado"] = pid in controller._launched_pids
+
+        monkeypatch.setattr("sky_claw.local.mo2.vfs._verify_pid_alive", _verify_espia)
+
+        await controller.launch_game("Default")
+
+        assert visto["trackeado"] is True
+
+    @pytest.mark.asyncio
+    async def test_launch_game_timeout_no_deja_pid_trackeado(
+        self, controller: MO2Controller, mo2_root: pathlib.Path, monkeypatch
+    ) -> None:
+        """Si el spawn no aparece (TimeoutError), el PID se descarta (no queda
+        trackeado) y el proceso defunto se mata."""
+        (mo2_root / "ModOrganizer.exe").write_text("dummy")
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 888
+        mock_proc.kill = MagicMock()
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
+
+        async def _verify_cuelga(pid: int) -> None:
+            raise TimeoutError
+
+        monkeypatch.setattr("sky_claw.local.mo2.vfs._verify_pid_alive", _verify_cuelga)
+
+        from sky_claw.local.mo2.vfs import GameLaunchTimeoutError
+
+        with pytest.raises(GameLaunchTimeoutError):
+            await controller.launch_game("Default")
+
+        assert controller._launched_pids == set()
+        mock_proc.kill.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_close_game_kills_only_launched_tree(self, controller: MO2Controller, monkeypatch) -> None:
@@ -234,7 +288,7 @@ class TestGameControl:
 
         monkeypatch.setattr("psutil.Process", _fake_process)
 
-        controller._launched_pid = 12345  # simular un launch previo
+        controller._launched_pids = {12345}  # simular un launch previo
         result = await controller.close_game()
 
         assert result["status"] == "closed"
@@ -243,8 +297,35 @@ class TestGameControl:
         # killed_processes contiene el árbol lanzado, identificado por PID.
         assert any("12345" in k for k in result["killed_processes"])
         assert any("555" in k for k in result["killed_processes"])
-        # tras cerrar, el PID se limpia.
-        assert controller._launched_pid is None
+        # tras cerrar, los PIDs se limpian.
+        assert controller._launched_pids == set()
+
+    @pytest.mark.asyncio
+    async def test_close_game_mata_todos_los_pids_lanzados(self, controller: MO2Controller, monkeypatch) -> None:
+        """§1.2: si se relanzó MO2 sin cerrar, close_game mata TODOS los árboles
+        trackeados, no solo el último — un MO2 viejo vivo no queda huérfano."""
+        from unittest.mock import MagicMock
+
+        procesos = {}
+        for pid in (100, 200):
+            p = MagicMock()
+            p.pid = pid
+            p.name = MagicMock(return_value="ModOrganizer.exe")
+            p.kill = MagicMock()
+            p.children = MagicMock(return_value=[])
+            procesos[pid] = p
+
+        monkeypatch.setattr("psutil.Process", lambda pid: procesos[pid])
+
+        controller._launched_pids = {100, 200}
+        result = await controller.close_game()
+
+        assert result["status"] == "closed"
+        procesos[100].kill.assert_called_once()
+        procesos[200].kill.assert_called_once()
+        assert any("100" in k for k in result["killed_processes"])
+        assert any("200" in k for k in result["killed_processes"])
+        assert controller._launched_pids == set()
 
     @pytest.mark.asyncio
     async def test_close_game_noop_without_launch(self, controller: MO2Controller, monkeypatch) -> None:

@@ -118,9 +118,13 @@ class MO2Controller:
         self._validator = path_validator
         self._modlist_lock = asyncio.Lock()
         self._spawn_timeout = launch_timeout
-        # M-8: PID del ModOrganizer.exe lanzado por ESTA instancia. close_game
-        # mata sólo su árbol, no todos los procesos homónimos del host.
-        self._launched_pid: int | None = None
+        # M-8: PIDs de ModOrganizer.exe lanzados por ESTA instancia. close_game
+        # mata SÓLO estos árboles (+ descendientes), no los procesos homónimos
+        # del host. Es un SET (no un solo PID) para no perder un MO2 previo si se
+        # relanzó sin cerrar, y cada PID se registra ANTES de verificar el spawn
+        # para no dejar huérfanos si MO2 muere o la operación se cancela durante
+        # la verificación (análisis hostil §1.1/§1.2).
+        self._launched_pids: set[int] = set()
 
     @property
     def root(self) -> pathlib.Path:
@@ -351,6 +355,12 @@ class MO2Controller:
         except FileNotFoundError:
             raise FileNotFoundError(f"MO2 executable not found: {validated_exe}") from None
 
+        # §1.1: registrar el PID ANTES de verificar el spawn. Si MO2 muere (o la
+        # operación se cancela) entre la verificación y el registro, un PID sin
+        # trackear quedaría FUERA del alcance de close_game → MO2/Skyrim huérfano
+        # corriendo el precache contra la instalación real (análisis hostil §1.1).
+        self._launched_pids.add(proc.pid)
+
         # TASK-011: Verify the process actually spawned (short grace period).
         try:
             await asyncio.wait_for(
@@ -358,7 +368,9 @@ class MO2Controller:
                 timeout=self._spawn_timeout,
             )
         except TimeoutError:
-            # Spawn failed -- clean up the defunct process.
+            # Spawn failed -- el proceso nunca apareció: dejar de trackearlo y
+            # limpiar el defunto.
+            self._launched_pids.discard(proc.pid)
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(TimeoutError):
@@ -369,17 +381,19 @@ class MO2Controller:
             )
             raise GameLaunchTimeoutError(self._spawn_timeout) from None
 
-        # M-8: recordar el PID lanzado para que close_game acote la terminación.
-        self._launched_pid = proc.pid
         return {"pid": proc.pid, "status": "launched", "profile": profile}
 
     async def close_game(self) -> dict[str, Any]:
         """Attempt to forcefully close the game/MO2 tree launched by this controller.
 
-        M-8: sólo se mata el árbol del ModOrganizer.exe que ESTA instancia lanzó
-        (el PID guardado en :attr:`_launched_pid` + sus descendientes), no todos
+        M-8: sólo se matan los árboles de los ModOrganizer.exe que ESTA instancia
+        lanzó (los PIDs de :attr:`_launched_pids` + sus descendientes), no todos
         los procesos del host que se llamen ``skyrimse.exe``/``modorganizer.exe``.
         Así una segunda instancia de MO2/Skyrim del usuario no se ve afectada.
+
+        §1.2: se matan TODOS los PIDs trackeados, no solo el último — si el
+        crash-loop relanzó MO2 sin cerrarlo (o un cierre previo no alcanzó a
+        limpiar), un MO2 viejo vivo no debe quedar huérfano (análisis hostil §1.2).
 
         TASK-011: The ``psutil`` iteration is wrapped in ``asyncio.to_thread`` to
         avoid blocking the event loop.
@@ -387,14 +401,16 @@ class MO2Controller:
         Returns:
             Dict showing which processes were killed.
         """
-        pid = self._launched_pid
-        if pid is None:
+        pids = sorted(self._launched_pids)
+        if not pids:
             logger.info("close_game: no hay un juego lanzado por esta instancia; no-op.")
             return {"status": "closed", "killed_processes": []}
 
-        killed = await asyncio.to_thread(self._kill_process_tree, pid)
-        self._launched_pid = None
-        logger.info("Closed game process tree (pid=%s): %s", pid, killed)
+        killed: list[str] = []
+        for pid in pids:
+            killed.extend(await asyncio.to_thread(self._kill_process_tree, pid))
+        self._launched_pids.clear()
+        logger.info("Closed game process tree(s) (pids=%s): %s", pids, killed)
         return {"status": "closed", "killed_processes": killed}
 
     @staticmethod
