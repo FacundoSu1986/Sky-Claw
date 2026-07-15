@@ -37,7 +37,6 @@ Disciplinas del repo:
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import dataclasses
 import logging
@@ -47,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from sky_claw.antigravity.db.journal import OperationStatus
+from sky_claw.antigravity.db.journal_contracts import is_flight_report_committed
 from sky_claw.antigravity.db.locks import LockAcquisitionError, SnapshotTransactionLock
 from sky_claw.local.tools.grass_cache_runner import (
     GrassCacheConfig,
@@ -190,8 +190,15 @@ class GrassCacheService:
     async def generate(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Ejecuta el precache completo; siempre devuelve el dict del contrato.
 
-        La cancelación dura (``asyncio.CancelledError``) propaga tras el
-        teardown — es la única no-devolución, semántica estándar del repo.
+        Cualquier ``BaseException`` (``CancelledError``, ``KeyboardInterrupt``,
+        ``SystemExit``) propaga tras cerrar el journal y correr el teardown —
+        es la única no-devolución, semántica estándar del repo.
+
+        Nota operativa: el ritual toma el lock ``load-order`` durante TODO su
+        transcurso (hasta ``max_runtime_s``, 12 h por defecto), así que un sort
+        de LOOT u otra mutación del orden de carga queda bloqueada mientras dura
+        — es a propósito (correctitud > conveniencia): el juego lee
+        ``loadorder.txt`` en cada relanzamiento. El escape es cancelar el ritual.
         """
         inicio = time.monotonic()
         try:
@@ -238,6 +245,7 @@ class GrassCacheService:
         journal_tx: int | None = None
         run_result: GrassCacheRunResult | None = None
         error_msg: str | None = None
+        teardown_failures: list[str] = []
         try:
             async with tx, lo_tx:
                 if self._journal is not None:
@@ -259,16 +267,12 @@ class GrassCacheService:
                     # suelto (o nunca adquirido) el teardown borraría el clon/mod
                     # de otro run activo (review Codex #291). El cache queda en
                     # overwrite/Grass — jamás se borra (parcial reanuda; completo
-                    # es el producto).
-                    await self._teardown_best_effort()
+                    # es el producto). Los fallos de limpieza se exponen en el
+                    # resultado en vez de tragarse (§1.6).
+                    teardown_failures = await self._teardown_best_effort()
         except LockAcquisitionError as exc:
             # Sin lock no somos dueños de NINGÚN estado: ni Fase B ni teardown.
             return self._error(f"No se pudo tomar el lock del ritual de grass: {exc}", inicio)
-        except asyncio.CancelledError:
-            # La TX del journal no puede quedar PENDING en un shutdown: cierre
-            # best-effort ANTES de propagar la cancelación (review Codex #291).
-            await self._journal_close(journal_tx, exito=False)
-            raise
         except Exception as exc:  # noqa: BLE001 — GrassProfileError y afines → contrato
             # SOP §5 regla 5: el stage index es la señal primaria de debugging.
             logger.warning(
@@ -277,6 +281,14 @@ class GrassCacheService:
                 extra={"pipeline_stage": 8},
             )
             error_msg = str(exc)
+        except BaseException:
+            # CancelledError, KeyboardInterrupt, SystemExit: NINGUNO hereda de
+            # Exception (CancelledError deriva directo de BaseException en 3.8+),
+            # así que sin este handler el cierre del journal de más abajo se
+            # saltearía y la TX quedaría PENDING hasta el sweep de 24 h. Cierre
+            # best-effort ANTES de propagar (review análisis hostil §1.3).
+            await self._journal_close(journal_tx, exito=False)
+            raise
 
         # Un fallo posterior al runner (p.ej. lease perdido al liberar el lock)
         # invalida el éxito: la exclusividad no estuvo garantizada, así que el
@@ -284,6 +296,11 @@ class GrassCacheService:
         exito = error_msg is None and run_result is not None and run_result.success
         await self._journal_close(journal_tx, exito=exito)
         resultado = self._componer_resultado(run_result, error_msg, inicio)
+        if teardown_failures:
+            # El cache en overwrite/Grass está OK, pero el clon/mod no se
+            # limpiaron: el operador debe borrarlos a mano o el próximo run
+            # fallará con "el clon ya existe" (fail-closed de create_clone_profile).
+            resultado["teardown_failures"] = teardown_failures
         await self._publish(
             "pipeline.grass_cache.completed",
             {
@@ -318,10 +335,9 @@ class GrassCacheService:
         # Una operación COMPLETED pelada NO prueba un sort exitoso: LOOT
         # persiste el ActionManifest (COMPLETED) ANTES de runner.sort(), y si
         # el sort falla solo la TRANSACCIÓN se marca rolled-back — la operación
-        # queda. El marcador confiable es el FlightReport, que solo se emite en
-        # el path de éxito y carga el estado real de la TX (review Codex #291).
-        meta = entry.metadata if isinstance(entry.metadata, dict) else {}
-        if meta.get("kind") != "flight_report" or meta.get("transaction_status") != "committed":
+        # queda. El marcador confiable es el FlightReport commiteado; el contrato
+        # LOOT↔grass vive en journal_contracts (review Codex #291 + §2.2).
+        if not is_flight_report_committed(entry.metadata):
             return (
                 "Stage 5 (LOOT) no consta como completado Y commiteado: la última "
                 "operación journalizada de LOOT no es el informe de vuelo de un sort "
@@ -358,13 +374,21 @@ class GrassCacheService:
 
         return _publicar
 
-    async def _teardown_best_effort(self) -> None:
+    async def _teardown_best_effort(self) -> list[str]:
+        """Teardown de Fase D; devuelve los paths que no se pudieron limpiar.
+
+        Nunca lanza (el teardown jamás enmascara el resultado del ritual), pero
+        tampoco traga en silencio: la lista de fallos vuelve al caller para
+        exponerla en el resultado (análisis hostil §1.6).
+        """
         if self._profile_manager is None:
-            return
+            return []
         try:
-            await self._profile_manager.teardown()
+            fallidos = await self._profile_manager.teardown()
         except Exception:  # noqa: BLE001 — el teardown jamás enmascara el resultado
-            logger.warning("El teardown del ritual de grass falló (limpiar a mano el clon/mod)", exc_info=True)
+            logger.warning("El teardown del ritual de grass lanzó (limpiar a mano el clon/mod)", exc_info=True)
+            return ["<el teardown lanzó una excepción inesperada — revisar logs>"]
+        return [str(p) for p in fallidos]
 
     async def _journal_close(self, journal_tx: int | None, *, exito: bool) -> None:
         if self._journal is None or journal_tx is None:

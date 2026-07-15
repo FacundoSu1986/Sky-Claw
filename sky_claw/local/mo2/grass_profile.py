@@ -284,20 +284,40 @@ class GrassProfileManager:
     # teardown
     # ------------------------------------------------------------------
 
-    async def teardown(self) -> None:
+    async def teardown(self) -> list[pathlib.Path]:
         """Borra el perfil clon y el mod de config (idempotente).
 
         Es el rollback de la Fase B: como el ritual jamás tocó el perfil real,
         deshacer todo es simplemente eliminar el clon y el mod. No falla si
         alguno (o ambos) no existen.
+
+        ``_rmtree_force`` LANZA si un borrado no completa (p.ej. un SkyrimSE
+        huérfano mantiene un handle abierto en Windows), así que cada objetivo
+        se intenta por separado — un fallo en el clon no impide intentar el mod
+        (análisis hostil §1.6) — y se devuelven los paths que no se pudieron
+        borrar para que el caller los exponga en vez de tragarlos.
+
+        Returns:
+            Lista de rutas que NO se pudieron eliminar (vacía en éxito total).
         """
-        clon = self._root / "profiles" / self._clone_profile
-        mod = self._root / "mods" / self._config_mod_name
-        await asyncio.to_thread(_rmtree_force, clon)
-        await asyncio.to_thread(_rmtree_force, mod)
-        logger.info(
-            "Teardown del ritual grass: clon '%s' y mod '%s' eliminados", self._clone_profile, self._config_mod_name
-        )
+        objetivos = [
+            self._root / "profiles" / self._clone_profile,
+            self._root / "mods" / self._config_mod_name,
+        ]
+        fallidos: list[pathlib.Path] = []
+        for objetivo in objetivos:
+            try:
+                await asyncio.to_thread(_rmtree_force, objetivo)
+            except Exception:  # noqa: BLE001 — un objetivo trabado no debe frenar al otro
+                logger.warning("Teardown del ritual grass: no se pudo borrar %s", objetivo, exc_info=True)
+                fallidos.append(objetivo)
+        if not fallidos:
+            logger.info(
+                "Teardown del ritual grass: clon '%s' y mod '%s' eliminados",
+                self._clone_profile,
+                self._config_mod_name,
+            )
+        return fallidos
 
 
 def _format_worldspaces(worldspaces: Sequence[str]) -> str:

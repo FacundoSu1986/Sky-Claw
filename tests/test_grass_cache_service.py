@@ -110,6 +110,8 @@ def _servicio(
 
     profile_manager = AsyncMock()
     profile_manager.clone_profile = "SkyClaw-GrassCache"
+    # teardown() ahora devuelve la lista de paths que no pudo borrar (§1.6).
+    profile_manager.teardown.return_value = []
 
     runner = AsyncMock()
     runner.run.return_value = runner_result if runner_result is not None else _resultado_runner()
@@ -394,7 +396,12 @@ async def test_generate_teardown_corre_dentro_del_lock(tmp_path: pathlib.Path) -
 
     tx.__aexit__ = AsyncMock(side_effect=_liberar)
     service, colab = _servicio(tmp_path, journal=_journal_con_loot_completado(), lock_tx=tx)
-    colab["profile_manager"].teardown.side_effect = lambda: orden.append("teardown")
+
+    def _teardown() -> list[Any]:
+        orden.append("teardown")
+        return []
+
+    colab["profile_manager"].teardown.side_effect = _teardown
 
     resultado = await service.generate(_PAYLOAD)
 
@@ -480,6 +487,63 @@ async def test_generate_fallo_loguea_stage_8(tmp_path: pathlib.Path, caplog: pyt
         await service.generate(_PAYLOAD)
 
     assert any("Stage 8" in registro.message for registro in caplog.records)
+
+
+async def test_generate_keyboardinterrupt_cierra_journal_y_propaga(tmp_path: pathlib.Path) -> None:
+    """§1.3: un BaseException que no es Exception (KeyboardInterrupt/SystemExit)
+    NO debe saltear el cierre del journal — antes quedaba PENDING hasta el sweep
+    de 24 h. Debe hacer teardown, marcar rolled-back y propagar."""
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal)
+    colab["runner"].run.side_effect = KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        await service.generate(_PAYLOAD)
+
+    colab["profile_manager"].teardown.assert_awaited()
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    journal.commit_transaction.assert_not_awaited()
+
+
+async def test_generate_expone_teardown_failures(tmp_path: pathlib.Path) -> None:
+    """§1.6: si el teardown no pudo borrar el clon/mod, el resultado lo EXPONE
+    (no se traga): el operador debe limpiar a mano o el próximo run fallará."""
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal)
+    trabado = tmp_path / "mo2" / "profiles" / "SkyClaw-GrassCache"
+    colab["profile_manager"].teardown.return_value = [trabado]
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is True, resultado["message"]
+    assert resultado["teardown_failures"] == [str(trabado)]
+
+
+async def test_generate_sin_fallos_de_teardown_no_agrega_la_clave(tmp_path: pathlib.Path) -> None:
+    """En el happy path (teardown limpio) el resultado NO trae teardown_failures."""
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado())
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert "teardown_failures" not in resultado
+
+
+def test_contrato_flight_report_lectura_escritura() -> None:
+    """§2.2: el helper de lectura (is_flight_report_committed) concuerda con lo
+    que escribe el modelo FlightReport de LOOT — mismo kind y transaction_status."""
+    from sky_claw.antigravity.db.journal import TransactionStatus
+    from sky_claw.antigravity.db.journal_contracts import FLIGHT_REPORT_KIND, is_flight_report_committed
+    from sky_claw.antigravity.orchestrator.preview.manifest import FlightReport
+
+    commiteado = FlightReport(transaction_status=TransactionStatus.COMMITTED.value).model_dump(mode="json")
+    assert commiteado["kind"] == FLIGHT_REPORT_KIND
+    assert is_flight_report_committed(commiteado) is True
+
+    revertido = FlightReport(transaction_status=TransactionStatus.ROLLED_BACK.value).model_dump(mode="json")
+    assert is_flight_report_committed(revertido) is False
+    # Un ActionManifest (sin kind=flight_report) tampoco alcanza.
+    assert is_flight_report_committed({"ritual_id": "loot-sort-1", "transaction_status": "committed"}) is False
+    assert is_flight_report_committed(None) is False
 
 
 async def test_generate_progreso_del_runner_se_publica_al_bus(tmp_path: pathlib.Path) -> None:

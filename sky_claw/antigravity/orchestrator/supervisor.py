@@ -233,7 +233,7 @@ class SupervisorAgent:
             snapshot_manager=self.snapshot_manager,
             journal=self.journal,
             event_bus=self._event_bus,
-            xedit_runner_provider=self._xedit_service._ensure_xedit_runner,
+            xedit_runner_provider=self._xedit_service.ensure_xedit_runner,
         )
 
         # Lazy init para runners legacy que aún no son servicios puros (WryeBash, AssetDetector)
