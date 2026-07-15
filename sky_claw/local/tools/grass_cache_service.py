@@ -37,6 +37,7 @@ Disciplinas del repo:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
 import logging
@@ -281,12 +282,14 @@ class GrassCacheService:
                 extra={"pipeline_stage": 8},
             )
             error_msg = str(exc)
-        except BaseException:
-            # CancelledError, KeyboardInterrupt, SystemExit: NINGUNO hereda de
-            # Exception (CancelledError deriva directo de BaseException en 3.8+),
-            # así que sin este handler el cierre del journal de más abajo se
-            # saltearía y la TX quedaría PENDING hasta el sweep de 24 h. Cierre
-            # best-effort ANTES de propagar (review análisis hostil §1.3).
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            # Estos tres NO heredan de Exception (CancelledError deriva directo
+            # de BaseException en 3.8+), así que sin este handler el cierre del
+            # journal de más abajo se saltearía y la TX quedaría PENDING hasta el
+            # sweep de 24 h. Se enumeran EXPLÍCITAMENTE (no `except BaseException`
+            # desnudo, prohibido por coding_conventions §3) para no interceptar
+            # excepciones interpreter-level inesperadas como GeneratorExit o
+            # BaseExceptionGroup. Cierre best-effort ANTES de propagar (§1.3).
             await self._journal_close(journal_tx, exito=False)
             raise
 
