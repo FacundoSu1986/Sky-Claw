@@ -118,13 +118,14 @@ class MO2Controller:
         self._validator = path_validator
         self._modlist_lock = asyncio.Lock()
         self._spawn_timeout = launch_timeout
-        # M-8: PIDs de ModOrganizer.exe lanzados por ESTA instancia. close_game
-        # mata SÓLO estos árboles (+ descendientes), no los procesos homónimos
-        # del host. Es un SET (no un solo PID) para no perder un MO2 previo si se
-        # relanzó sin cerrar, y cada PID se registra ANTES de verificar el spawn
-        # para no dejar huérfanos si MO2 muere o la operación se cancela durante
-        # la verificación (análisis hostil §1.1/§1.2).
-        self._launched_pids: set[int] = set()
+        # M-8: ModOrganizer.exe lanzados por ESTA instancia, indexados por PID →
+        # ``create_time`` (identidad estable contra reuso de PID del SO; ``None``
+        # si no se pudo leer al lanzar). close_game mata SÓLO estos árboles (+
+        # descendientes), no los procesos homónimos del host. Es un dict (no un
+        # solo PID) para no perder un MO2 previo si se relanzó sin cerrar, y cada
+        # PID se registra ANTES de verificar el spawn para no dejar huérfanos si
+        # MO2 muere o la operación se cancela durante la verificación (§1.1/§1.2).
+        self._launched_procs: dict[int, float | None] = {}
 
     @property
     def root(self) -> pathlib.Path:
@@ -359,7 +360,12 @@ class MO2Controller:
         # operación se cancela) entre la verificación y el registro, un PID sin
         # trackear quedaría FUERA del alcance de close_game → MO2/Skyrim huérfano
         # corriendo el precache contra la instalación real (análisis hostil §1.1).
-        self._launched_pids.add(proc.pid)
+        # Se guarda el create_time (identidad estable) para que close_game no
+        # mate un proceso ajeno si el SO reusó el PID (review Codex #302).
+        create_time: float | None = None
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            create_time = psutil.Process(proc.pid).create_time()
+        self._launched_procs[proc.pid] = create_time
 
         # TASK-011: Verify the process actually spawned (short grace period).
         try:
@@ -370,7 +376,7 @@ class MO2Controller:
         except TimeoutError:
             # Spawn failed -- el proceso nunca apareció: dejar de trackearlo y
             # limpiar el defunto.
-            self._launched_pids.discard(proc.pid)
+            self._launched_procs.pop(proc.pid, None)
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(TimeoutError):
@@ -401,30 +407,50 @@ class MO2Controller:
         Returns:
             Dict showing which processes were killed.
         """
-        pids = sorted(self._launched_pids)
-        if not pids:
+        # Snapshot: se procesan SOLO estos PIDs. No se usa clear() porque un
+        # launch_game concurrente podría registrar un PID nuevo mientras matamos
+        # (await), y clear() lo descartaría dejándolo huérfano (review Codex
+        # #302). Los ops de dict son atómicos bajo el GIL, así que alcanza con
+        # quitar exactamente lo procesado.
+        snapshot = sorted(self._launched_procs.items())
+        if not snapshot:
             logger.info("close_game: no hay un juego lanzado por esta instancia; no-op.")
             return {"status": "closed", "killed_processes": []}
 
         killed: list[str] = []
-        for pid in pids:
-            killed.extend(await asyncio.to_thread(self._kill_process_tree, pid))
-        self._launched_pids.clear()
+        for pid, create_time in snapshot:
+            killed.extend(await asyncio.to_thread(self._kill_process_tree, pid, create_time))
+        for pid, _ in snapshot:
+            self._launched_procs.pop(pid, None)
+        pids = [pid for pid, _ in snapshot]
         logger.info("Closed game process tree(s) (pids=%s): %s", pids, killed)
         return {"status": "closed", "killed_processes": killed}
 
     @staticmethod
-    def _kill_process_tree(pid: int) -> list[str]:
+    def _kill_process_tree(pid: int, expected_create_time: float | None = None) -> list[str]:
         """Mata SÓLO el proceso ``pid`` y sus descendientes (no por nombre).
 
         Separado para envolver en ``asyncio.to_thread``. Best-effort: procesos ya
         muertos o sin permiso se ignoran.
+
+        Si se pasa *expected_create_time*, se verifica la identidad del proceso
+        antes de matar: un PID reusado por el SO (tras morir el MO2 original)
+        tendría otro ``create_time`` → no se mata un proceso ajeno del usuario
+        (review Codex #302). ``None`` (create_time no capturado al lanzar) omite
+        el chequeo: el proceso casi siempre ya murió (``NoSuchProcess``).
         """
         killed: list[str] = []
         try:
             root = psutil.Process(pid)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return killed
+
+        if expected_create_time is not None:
+            try:
+                if root.create_time() != expected_create_time:
+                    return killed  # PID reusado: NO es el proceso que lanzamos
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return killed
 
         # Recolectar el árbol (hijos primero) antes de matar, para no perder la
         # relación padre-hijo cuando el padre muere.

@@ -210,7 +210,7 @@ class TestGameControl:
         assert result["pid"] == 12345
         mock_create.assert_awaited_once()
         # §1.1: el PID quedó trackeado para que close_game pueda terminarlo.
-        assert controller._launched_pids == {12345}
+        assert 12345 in controller._launched_procs
 
     @pytest.mark.asyncio
     async def test_launch_game_trackea_pid_antes_de_verificar(
@@ -229,7 +229,7 @@ class TestGameControl:
 
         async def _verify_espia(pid: int) -> None:
             # En el momento de verificar, el PID ya debe estar trackeado.
-            visto["trackeado"] = pid in controller._launched_pids
+            visto["trackeado"] = pid in controller._launched_procs
 
         monkeypatch.setattr("sky_claw.local.mo2.vfs._verify_pid_alive", _verify_espia)
 
@@ -261,7 +261,7 @@ class TestGameControl:
         with pytest.raises(GameLaunchTimeoutError):
             await controller.launch_game("Default")
 
-        assert controller._launched_pids == set()
+        assert controller._launched_procs == {}
         mock_proc.kill.assert_called_once()
 
     @pytest.mark.asyncio
@@ -288,7 +288,7 @@ class TestGameControl:
 
         monkeypatch.setattr("psutil.Process", _fake_process)
 
-        controller._launched_pids = {12345}  # simular un launch previo
+        controller._launched_procs = {12345: None}  # simular un launch previo
         result = await controller.close_game()
 
         assert result["status"] == "closed"
@@ -298,7 +298,7 @@ class TestGameControl:
         assert any("12345" in k for k in result["killed_processes"])
         assert any("555" in k for k in result["killed_processes"])
         # tras cerrar, los PIDs se limpian.
-        assert controller._launched_pids == set()
+        assert controller._launched_procs == {}
 
     @pytest.mark.asyncio
     async def test_close_game_mata_todos_los_pids_lanzados(self, controller: MO2Controller, monkeypatch) -> None:
@@ -317,7 +317,7 @@ class TestGameControl:
 
         monkeypatch.setattr("psutil.Process", lambda pid: procesos[pid])
 
-        controller._launched_pids = {100, 200}
+        controller._launched_procs = {100: None, 200: None}
         result = await controller.close_game()
 
         assert result["status"] == "closed"
@@ -325,7 +325,59 @@ class TestGameControl:
         procesos[200].kill.assert_called_once()
         assert any("100" in k for k in result["killed_processes"])
         assert any("200" in k for k in result["killed_processes"])
-        assert controller._launched_pids == set()
+        assert controller._launched_procs == {}
+
+    @pytest.mark.asyncio
+    async def test_close_game_no_mata_pid_reusado(self, controller: MO2Controller, monkeypatch) -> None:
+        """Codex #302: si el SO reusó un PID muerto, su create_time difiere del
+        guardado → NO se mata ese proceso ajeno del usuario."""
+        from unittest.mock import MagicMock
+
+        ajeno = MagicMock()
+        ajeno.pid = 42
+        ajeno.name = MagicMock(return_value="proceso_ajeno.exe")
+        ajeno.kill = MagicMock()
+        ajeno.children = MagicMock(return_value=[])
+        ajeno.create_time = MagicMock(return_value=999.0)  # distinto al guardado
+
+        monkeypatch.setattr("psutil.Process", lambda pid: ajeno)
+
+        controller._launched_procs = {42: 111.0}  # lanzamos un MO2 con create_time 111.0
+        result = await controller.close_game()
+
+        assert result["status"] == "closed"
+        assert result["killed_processes"] == []  # identidad no coincide → no se mata
+        ajeno.kill.assert_not_called()
+        assert controller._launched_procs == {}
+
+    @pytest.mark.asyncio
+    async def test_close_game_conserva_pid_agregado_durante_el_cierre(
+        self, controller: MO2Controller, monkeypatch
+    ) -> None:
+        """Codex #302: un launch_game concurrente que registra un PID nuevo
+        mientras close_game mata los viejos NO debe perderse (no clear())."""
+        from unittest.mock import MagicMock
+
+        viejo = MagicMock()
+        viejo.pid = 100
+        viejo.name = MagicMock(return_value="ModOrganizer.exe")
+        viejo.kill = MagicMock()
+        viejo.children = MagicMock(return_value=[])
+
+        def _fake_process(pid):
+            # Simular un launch_game concurrente: registra un PID nuevo mientras
+            # matamos el viejo (dentro del to_thread de _kill_process_tree).
+            controller._launched_procs[500] = 222.0
+            return viejo
+
+        monkeypatch.setattr("psutil.Process", _fake_process)
+
+        controller._launched_procs = {100: None}
+        await controller.close_game()
+
+        # El viejo se removió; el nuevo (agregado durante el cierre) sobrevive.
+        assert 100 not in controller._launched_procs
+        assert controller._launched_procs == {500: 222.0}
 
     @pytest.mark.asyncio
     async def test_close_game_noop_without_launch(self, controller: MO2Controller, monkeypatch) -> None:
