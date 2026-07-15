@@ -264,8 +264,9 @@ async def test_teardown_borra_clon_y_mod(mo2_root: pathlib.Path, manager: GrassP
     mod = mo2_root / "mods" / "SkyClaw - Grass Precache Config"
     assert clon.is_dir() and mod.is_dir()
 
-    await manager.teardown()
+    fallidos = await manager.teardown()
 
+    assert fallidos == []
     assert not clon.exists()
     assert not mod.exists()
     # El perfil real sigue en pie.
@@ -274,7 +275,34 @@ async def test_teardown_borra_clon_y_mod(mo2_root: pathlib.Path, manager: GrassP
 
 async def test_teardown_es_idempotente(manager: GrassProfileManager) -> None:
     # Sin haber creado nada, y dos veces seguidas: no debe fallar.
-    await manager.teardown()
+    assert await manager.teardown() == []
     await manager.create_clone_profile()
     await manager.teardown()
     await manager.teardown()
+
+
+async def test_teardown_reporta_fallos_e_intenta_ambos(
+    mo2_root: pathlib.Path, manager: GrassProfileManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§1.6: si el borrado del clon lanza, teardown igual intenta el mod y
+    devuelve el path del clon como fallo (en vez de tragarlo o cortar)."""
+    await manager.create_clone_profile()
+    await manager.build_config_mod(["Tamriel"])
+    clon = mo2_root / "profiles" / "SkyClaw-GrassCache"
+    mod = mo2_root / "mods" / "SkyClaw - Grass Precache Config"
+
+    import sky_claw.local.mo2.grass_profile as gp
+
+    def _rmtree_selectivo(path: pathlib.Path) -> None:
+        if path == clon:
+            raise PermissionError("handle abierto por un SkyrimSE huérfano (Windows)")
+        _borrar_real(path)
+
+    _borrar_real = gp._rmtree_force
+    monkeypatch.setattr(gp, "_rmtree_force", _rmtree_selectivo)
+
+    fallidos = await manager.teardown()
+
+    assert fallidos == [clon]
+    assert clon.exists(), "el clon quedó (borrado falló) y se reporta"
+    assert not mod.exists(), "el mod SÍ se intentó y borró pese al fallo previo"

@@ -109,6 +109,16 @@ class XEditPipelineService:
     # Lazy initialization (migrado de SupervisorAgent._ensure_patch_orchestrator)
     # ------------------------------------------------------------------
 
+    def ensure_xedit_runner(self) -> XEditRunner:
+        """Accessor público del :class:`XEditRunner` (lazy, valida el entorno).
+
+        Otros servicios (p.ej. ``GrassCacheService`` para su Fase A) necesitan
+        un provider del runner; que dependan de este método público en vez del
+        ``_ensure_xedit_runner`` privado evita acoplarse a un interno (análisis
+        hostil §3.3.1).
+        """
+        return self._ensure_xedit_runner()
+
     def _ensure_xedit_runner(self) -> XEditRunner:
         """Inicializa lazily el :class:`XEditRunner` validando paths del entorno.
 
