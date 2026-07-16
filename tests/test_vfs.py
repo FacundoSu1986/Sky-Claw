@@ -391,6 +391,32 @@ class TestGameControl:
         assert result == {"status": "closed", "killed_processes": []}
         called.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_close_game_concurrente_no_mata_dos_veces(self, controller: MO2Controller, monkeypatch) -> None:
+        """Follow-up H1 (auditoría #300-#304): _procs_lock serializa la región
+        snapshot→matar→pop. Dos close_game concurrentes NO toman el mismo
+        snapshot: el segundo ve el dict ya vaciado por el primero y no re-mata
+        el árbol (kill una sola vez)."""
+        from unittest.mock import MagicMock
+
+        proc = MagicMock()
+        proc.pid = 100
+        proc.name = MagicMock(return_value="ModOrganizer.exe")
+        proc.kill = MagicMock()
+        proc.children = MagicMock(return_value=[])
+        monkeypatch.setattr("psutil.Process", lambda pid: proc)
+
+        controller._launched_procs = {100: None}
+        # to_thread cede el loop, así que el segundo close_game arranca mientras
+        # el primero mata; sin el lock ambos tomarían snapshot {100}.
+        r1, r2 = await asyncio.gather(controller.close_game(), controller.close_game())
+
+        proc.kill.assert_called_once()
+        assert controller._launched_procs == {}
+        # Exactamente una de las dos corridas reportó el kill; la otra fue no-op.
+        killed = r1["killed_processes"] + r2["killed_processes"]
+        assert len([k for k in killed if "100" in k]) == 1
+
 
 # ---------------------------------------------------------------------------
 # TestHostileComponentInputs

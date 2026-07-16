@@ -163,20 +163,29 @@ no se puede evaluar.
 
 ---
 
-## Residuo accionable real
+## Residuo accionable real — IMPLEMENTADO
 
-De toda la auditoría, lo que sí vale la pena capturar como follow-ups:
+De toda la auditoría, lo que sí valía la pena capturar como follow-ups (los tres se
+implementaron en este PR):
 
-1. **Test de rollback parcial con el lock real** (cierra el único punto válido de H3):
-   un test en `tests/test_synthesis_rollback_honesto.py` (o en los tests de locks) que
-   haga fallar el restore de 1 de N snapshots y verifique `rollback_completed is False`
-   + `rollback_failures == [<path>]` + TX en PENDING.
-2. **Unificar el `MO2Controller`** (punto válido de H4): inyectar la instancia de
-   `AppContext` en `_build_grass_dependencies` (o exponer un accessor), o al menos
-   invalidar el cache de `_ensure_runtime_deps` si `MO2_PATH`/`SKYRIM_PATH` cambian.
-3. **Opcional (higiene, H1):** un `asyncio.Lock` alrededor de la región
-   snapshot→kill→pop de `close_game` para blindar el diseño ante un eventual futuro
-   free-threaded. Hoy no hay bug bajo el GIL.
+1. **Test de rollback parcial con el lock real** (cierra el único punto válido de H3).
+   - `tests/test_distributed_locks.py::test_rollback_parcial_reporta_incompleto_y_lista_el_fallo`:
+     falla el restore de 1 de 2 snapshots con el `SnapshotTransactionLock` real y
+     verifica `rollback_completed is False`, `rollback_failures == [<path fallido>]`, y
+     que el otro archivo sí se restauró.
+   - `tests/test_synthesis_rollback_honesto.py::test_no_declara_rollback_con_lock_real_si_el_restore_falla`:
+     end-to-end por `SynthesisPipelineService` con el lock real y `restore_snapshot`
+     reventando en `__aexit__` → el servicio no marca la TX y reporta `rolled_back=False`.
+2. **Unificar el `MO2Controller`** (punto válido de H4): `AppContext` expone la instancia
+   compartida (`self.mo2_controller`), el bootloader la inyecta al `SupervisorAgent`
+   (`mo2_controller=...`), y `_build_grass_dependencies` la reusa vía
+   `_resolve_grass_mo2_controller` (memoizada si no hay una inyectada). Ya no se crea un
+   controller nuevo por resolución. Tests: `test_supervisor_grass_wiring.py`
+   (`..._reusa_el_controller_compartido`, `..._memoiza_el_controller`).
+3. **Higiene (H1):** `MO2Controller` gana un `asyncio.Lock` (`_procs_lock`) que serializa
+   todo acceso a `_launched_procs` (registro en `launch_game`, pop por timeout, y la
+   región snapshot→matar→pop de `close_game`). Test:
+   `test_vfs.py::test_close_game_concurrente_no_mata_dos_veces`.
 
-Ninguno es bloqueante; los tres son mejoras incrementales sobre código que ya se
-comporta correctamente en los escenarios que la auditoría describe como críticos.
+Ninguno era bloqueante; los tres son mejoras incrementales sobre código que ya se
+comportaba correctamente en los escenarios que la auditoría describe como críticos.

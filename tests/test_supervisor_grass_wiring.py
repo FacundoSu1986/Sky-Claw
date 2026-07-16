@@ -37,6 +37,8 @@ def _supervisor_con_resolver(
     sup._path_resolver = resolver
     sup._modding_validator = validator
     sup.profile_name = profile_name
+    # Sin controller compartido inyectado por defecto (tests/standalone).
+    sup._mo2_controller = None
     return sup
 
 
@@ -103,3 +105,39 @@ def test_build_grass_dependencies_sin_skyrim_devuelve_none(tmp_path: pathlib.Pat
     sup = _supervisor_con_resolver(mo2_root, None, PathValidator(roots=[tmp_path]))
 
     assert sup._build_grass_dependencies() is None
+
+
+def test_build_grass_dependencies_reusa_el_controller_compartido(tmp_path: pathlib.Path) -> None:
+    """Follow-up H4: si el AppContext inyectó un MO2Controller con el mismo root,
+    el ritual de grass reusa ESA instancia (no crea una paralela)."""
+    mo2_root = tmp_path / "MO2"
+    mo2_root.mkdir()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+    validator = PathValidator(roots=[tmp_path])
+    sup = _supervisor_con_resolver(mo2_root, game, validator)
+    shared = MO2Controller(mo2_root, validator)
+    sup._mo2_controller = shared
+
+    deps = sup._build_grass_dependencies()
+
+    assert deps is not None
+    assert deps.mo2 is shared
+    assert deps.profile_manager._controller is shared
+
+
+def test_build_grass_dependencies_memoiza_el_controller(tmp_path: pathlib.Path) -> None:
+    """Follow-up H4: sin controller inyectado se construye UNO y se memoiza —
+    dos resoluciones devuelven la MISMA instancia (antes creaba una nueva por
+    llamada, partiendo el tracking de PIDs)."""
+    mo2_root = tmp_path / "MO2"
+    mo2_root.mkdir()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+    sup = _supervisor_con_resolver(mo2_root, game, PathValidator(roots=[tmp_path]))
+
+    primera = sup._build_grass_dependencies()
+    segunda = sup._build_grass_dependencies()
+
+    assert primera is not None and segunda is not None
+    assert primera.mo2 is segunda.mo2

@@ -126,6 +126,13 @@ class MO2Controller:
         # PID se registra ANTES de verificar el spawn para no dejar huérfanos si
         # MO2 muere o la operación se cancela durante la verificación (§1.1/§1.2).
         self._launched_procs: dict[int, float | None] = {}
+        # Serializa TODO acceso a _launched_procs (registro en launch_game, pop
+        # por timeout, y la región snapshot→matar→pop de close_game). Las
+        # mutaciones del dict son atómicas bajo el GIL, pero dos close_game
+        # concurrentes tomarían el mismo snapshot y matarían el árbol dos veces
+        # (el segundo kill es no-op hoy, pero el lock lo blinda ante un futuro
+        # sin GIL — verificación auditoría PRs #300-#304, follow-up H1).
+        self._procs_lock = asyncio.Lock()
 
     @property
     def root(self) -> pathlib.Path:
@@ -365,7 +372,11 @@ class MO2Controller:
         create_time: float | None = None
         with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
             create_time = psutil.Process(proc.pid).create_time()
-        self._launched_procs[proc.pid] = create_time
+        # Sección crítica breve (solo la escritura): NO se sostiene el lock
+        # durante la verificación de abajo, que puede tardar hasta
+        # _spawn_timeout y bloquearía un close_game concurrente.
+        async with self._procs_lock:
+            self._launched_procs[proc.pid] = create_time
 
         # TASK-011: Verify the process actually spawned (short grace period).
         try:
@@ -376,7 +387,8 @@ class MO2Controller:
         except TimeoutError:
             # Spawn failed -- el proceso nunca apareció: dejar de trackearlo y
             # limpiar el defunto.
-            self._launched_procs.pop(proc.pid, None)
+            async with self._procs_lock:
+                self._launched_procs.pop(proc.pid, None)
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(TimeoutError):
@@ -410,18 +422,23 @@ class MO2Controller:
         # Snapshot: se procesan SOLO estos PIDs. No se usa clear() porque un
         # launch_game concurrente podría registrar un PID nuevo mientras matamos
         # (await), y clear() lo descartaría dejándolo huérfano (review Codex
-        # #302). Los ops de dict son atómicos bajo el GIL, así que alcanza con
-        # quitar exactamente lo procesado.
-        snapshot = sorted(self._launched_procs.items())
-        if not snapshot:
-            logger.info("close_game: no hay un juego lanzado por esta instancia; no-op.")
-            return {"status": "closed", "killed_processes": []}
+        # #302). Toda la región snapshot→matar→pop va bajo _procs_lock: dos
+        # close_game concurrentes no toman el mismo snapshot ni matan el árbol
+        # dos veces (el segundo ve el dict ya vaciado), y un launch_game
+        # concurrente espera al lock y registra su PID DESPUÉS del pop, así que
+        # no se pierde (se matará en la próxima corrida). Verificación auditoría
+        # PRs #300-#304, follow-up H1.
+        async with self._procs_lock:
+            snapshot = sorted(self._launched_procs.items())
+            if not snapshot:
+                logger.info("close_game: no hay un juego lanzado por esta instancia; no-op.")
+                return {"status": "closed", "killed_processes": []}
 
-        killed: list[str] = []
-        for pid, create_time in snapshot:
-            killed.extend(await asyncio.to_thread(self._kill_process_tree, pid, create_time))
-        for pid, _ in snapshot:
-            self._launched_procs.pop(pid, None)
+            killed: list[str] = []
+            for pid, create_time in snapshot:
+                killed.extend(await asyncio.to_thread(self._kill_process_tree, pid, create_time))
+            for pid, _ in snapshot:
+                self._launched_procs.pop(pid, None)
         pids = [pid for pid, _ in snapshot]
         logger.info("Closed game process tree(s) (pids=%s): %s", pids, killed)
         return {"status": "closed", "killed_processes": killed}

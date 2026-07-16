@@ -319,6 +319,10 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
             # después de construir el supervisor; el hot-swap de provider se ve
             # sin recablear). Stack lock-only → el advisor degrada a manual_only.
             patch_advisor_llm=ctx.make_patch_advisor_llm(),
+            # Reusar el MO2Controller compartido del AppContext en el ritual de
+            # grass, para no partir el tracking de PIDs entre instancias
+            # (follow-up H4, verificación auditoría PRs #300-#304).
+            mo2_controller=ctx.mo2_controller,
         )
         _runtime["supervisor"] = supervisor
 
