@@ -39,32 +39,35 @@ puntual ni del commit-message del PR que cerró la tarea (draft anterior de
 este documento cometió exactamente ese error — corregido gracias al review de
 Codex en #290, ver evidencia por ítem).
 
-### 1.1 T-26/T-28 — ActionManifest y FlightReport: solo LOOT los emite en producción
+### 1.1 T-26/T-28 — ActionManifest y FlightReport: LOOT + xEdit los emiten; faltan 4 runners
 
-`persist_action_manifest` y `persist_flight_report` (`journal.py:745,784`) son
-la infraestructura de persistencia — **cualquier** runner podría llamarlas,
-pero en producción **solo `loot_service.py` lo hace**:
+**Actualización 2026-07-15 (cierre PARCIAL — no declarar T-26/T-28 "cerrados"):**
+`xedit_service.py` es ahora el **segundo productor de producción** tras LOOT.
+Sus **dos** entry points mutantes persisten la caja negra: `execute_patch`
+(`tool="xEdit"`) y `quick_auto_clean` (`tool="SSEEdit"`, al que se le agregó la
+transacción de journal que antes no abría). Ambos emiten el `ActionManifest`
+fail-closed ANTES de mutar (si no se puede persistir, no se muta) y el
+`FlightReport` best-effort tras el commit — espejo exacto de la disciplina de
+`loot_service.py`. Cubrir **ambos** entry points fue deliberado: cablear solo
+`execute_patch` habría dejado `quick_auto_clean` como mutante sin caja negra,
+repitiendo la sobre-declaración que este doc advierte.
 
 ```
 $ grep -rln "persist_action_manifest\|persist_flight_report" sky_claw/ | grep -v test
 sky_claw/antigravity/db/journal.py       # la definición
-sky_claw/local/tools/loot_service.py     # el único caller de producción
+sky_claw/local/tools/loot_service.py     # productor (T-26/T-28 v1)
+sky_claw/local/tools/xedit_service.py    # productor (2026-07-15, ambos entry points)
 ```
 
-`xedit_service.py` y `dyndolod_service.py` importan `preview.manifest` —
-un modelo **distinto**, el de preview de la cadena LOOT→xEdit→DynDOLOD
-(dry-run, pre-aprobación), no el `ActionManifest` persistido por-Ritual que
-T-26 exigía. `synthesis_service.py`, `pandora_service.py` y
-`wrye_bash_runner.py` no tienen **ninguna** referencia a manifest/flight
-report.
-
-**Consecuencia real:** el criterio de aceptación de T-26 ("todo Ritual
-mutante produce" el manifiesto) y el de T-28 ("informe... por Ritual") **no
-se cumplen** — se cumplen solo para LOOT. No es "backend listo, falta GUI"
-(lo que decía el draft anterior de este doc): falta cablear el backend mismo
-en xEdit/Synthesis/DynDOLOD/Pandora/Wrye Bash, y **recién después** tiene
-sentido construir la vista GUI de T-28 (mostrar un informe que hoy, para la
-mayoría de los Rituales, no existiría).
+**Lo que sigue abierto:** `synthesis_service.py`, `dyndolod_service.py`,
+`pandora_service.py` y `wrye_bash_runner.py` no emiten manifest/flight report
+(dyndolod/xedit importan `preview.manifest`, un modelo **distinto** — el de
+preview dry-run de la cadena, no el `ActionManifest` persistido por-Ritual).
+El criterio de aceptación de T-26 ("todo Ritual mutante produce" el
+manifiesto) y el de T-28 ("informe... por Ritual") se cumplen hoy para LOOT y
+xEdit; faltan esos 4 runners antes de que tenga sentido la vista GUI de T-28
+(mostrar un informe que, para la mayoría de los Rituales, todavía no existe).
+`tool_version` queda en `None` para xEdit (no la expone hoy) — follow-up menor.
 
 ### 1.2 T-27 — Synthesis sandboxeado con promote/discard real (2026-07-14); Pandora/DynDOLOD/Wrye Bash siguen fuera
 
