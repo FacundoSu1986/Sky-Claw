@@ -597,17 +597,16 @@ class XEditPipelineService:
 
         # Import perezoso (anti-ciclo: validators.preflight llega a tools._process).
         from sky_claw.local.validators.preflight import PreflightService
-        from sky_claw.local.validators.vfs_health import VfsHealthChecker
+        from sky_claw.local.validators.preflight_sensors import build_vfs_sensor
         from sky_claw.local.validators.write_permissions import WritePermissionsChecker
 
-        # Rutas CRUDAS para el sensor de symlinks (las resueltas ya los siguieron).
-        raw_game = self._path_resolver.get_skyrim_path_raw()
-        raw_mo2 = self._path_resolver.get_mo2_path_raw()
-        raw_game = raw_game if isinstance(raw_game, pathlib.Path) else None
-        raw_mo2 = raw_mo2 if isinstance(raw_mo2, pathlib.Path) else None
-        vfs_checker = None
-        if raw_game is not None or raw_mo2 is not None:
-            vfs_checker = VfsHealthChecker(game_path=raw_game, mo2_root=raw_mo2, scan_mods_dir=False)
+        # Rutas CRUDAS para el sensor de symlinks (las resueltas ya los siguieron) —
+        # builder compartido (T-16d): coacciona no-Path y guarda "al menos una raíz".
+        vfs_checker = build_vfs_sensor(
+            raw_game=self._path_resolver.get_skyrim_path_raw(),
+            raw_mo2=self._path_resolver.get_mo2_path_raw(),
+            scan_mods_dir=False,
+        )
 
         data_dir = game / "Data"
 
