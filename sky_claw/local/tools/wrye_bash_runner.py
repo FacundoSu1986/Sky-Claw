@@ -17,6 +17,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Nombre canónico del plugin que genera Wrye Bash. Única fuente para el
+#: runner y sus callers (supervisor / tool del agente), que lo necesitan para
+#: snapshotearlo antes de regenerarlo. Debe coincidir con
+#: ``DelegateToBashedPatch.BASHED_PATCH_NAME`` (anclado por test).
+BASHED_PATCH_NAME = "Bashed Patch, 0.esp"
+
 
 class WryeBashExecutionError(Exception):
     pass
@@ -53,9 +59,9 @@ class WryeBashRunner:
         program = str(self.config.wrye_bash_path)
         # A .py entry point is launched through the interpreter; an .exe directly.
         if program.endswith(".py"):
-            args = ["python", program, "-b", "Bashed Patch, 0.esp"]
+            args = ["python", program, "-b", BASHED_PATCH_NAME]
         else:
-            args = [program, "-b", "Bashed Patch, 0.esp"]
+            args = [program, "-b", BASHED_PATCH_NAME]
 
         try:
             stdout, stderr, return_code = await run_capture(

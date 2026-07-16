@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 BODYSLIDE_MESHES_RESOURCE_ID = "bodyslide-meshes"
 
 
+class _BashedPatchFailedError(Exception):
+    """Interno: transporta el WryeBashResult fallido fuera del lock para que
+    ``__aexit__`` restaure el snapshot del Bashed Patch previo."""
+
+    def __init__(self, result: Any) -> None:
+        super().__init__(f"Wrye Bash exit {result.return_code}")
+        self.result = result
+
+
 async def check_load_order(mo2: Any, profile: str) -> str:
     """Read the MO2 modlist for a profile.
 
@@ -394,19 +403,72 @@ async def close_game(mo2: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def generate_bashed_patch(wrye_bash_runner: Any) -> str:
+async def generate_bashed_patch(
+    wrye_bash_runner: Any,
+    *,
+    lock_manager: Any | None = None,
+    snapshot_manager: Any | None = None,
+) -> str:
     """Generate 'Bashed Patch, 0.esp' using WryeBashRunner.
 
     NOTE: Plugin limit validation (M-04) is handled at the Supervisor level
     (execute_wrye_bash_pipeline). Here we only execute the runner.
     This handler is used when AsyncToolRegistry invokes the tool directly.
+
+    §2.1 auditoría (mismo vector P1 que ``run_loot_sort``/``run_pandora``/
+    ``run_bodyslide_batch``): Wrye Bash reescribe el Bashed Patch leyendo el
+    load order completo, así que cuando el lock distribuido está cableado
+    (producción vía ``app_context``) este path del agente serializa en el
+    MISMO lock ``load-order`` que LOOT y el Ritual de la GUI — el lock
+    cross-process solo protege si TODOS los mutadores participan. El ``.esp``
+    previo se snapshotea para rollback si la generación muere a mitad de
+    escritura. Sin lock manager (callers legacy / tests) corre directo,
+    preservando el comportamiento anterior.
     """
     if wrye_bash_runner is None:
         return json.dumps({"error": "WryeBashRunner is not configured. Set WRYE_BASH_PATH."})
-    try:
-        result = await wrye_bash_runner.generate_bashed_patch()
-    except Exception as exc:
-        return json.dumps({"error": str(exc)})
+
+    if lock_manager is not None and snapshot_manager is not None:
+        from sky_claw.antigravity.db.locks import LockAcquisitionError, SnapshotTransactionLock
+        from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
+        from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
+
+        # Snapshot del .esp previo si existe (regeneración). getattr defensivo:
+        # el runner llega tipado Any desde el registry.
+        target_files: list[Any] = []
+        config = getattr(wrye_bash_runner, "config", None)
+        game_path = getattr(config, "game_path", None)
+        if game_path is not None:
+            bashed_patch = game_path / "Data" / BASHED_PATCH_NAME
+            if bashed_patch.is_file():
+                target_files = [bashed_patch]
+
+        try:
+            async with SnapshotTransactionLock(
+                lock_manager=lock_manager,
+                snapshot_manager=snapshot_manager,
+                resource_id=LOAD_ORDER_RESOURCE_ID,
+                agent_id="wrye-bash-tool",
+                target_files=target_files,
+                metadata={"source": "generate_bashed_patch"},
+            ):
+                result = await wrye_bash_runner.generate_bashed_patch()
+                if not result.success:
+                    # Lanzar DENTRO del lock: __aexit__ restaura el Bashed
+                    # Patch previo en vez de dejar el .esp a medio escribir.
+                    raise _BashedPatchFailedError(result)
+        except LockAcquisitionError as exc:
+            return json.dumps({"error": f"Could not acquire '{LOAD_ORDER_RESOURCE_ID}' lock: {exc}"})
+        except _BashedPatchFailedError as exc:
+            result = exc.result
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+    else:
+        try:
+            result = await wrye_bash_runner.generate_bashed_patch()
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+
     return json.dumps(
         {
             "success": result.success,

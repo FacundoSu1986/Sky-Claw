@@ -373,3 +373,31 @@ Por valor/riesgo, en orden:
    existiría para la mayoría de los Rituales sería peor que no mostrarlo.
 5. Todo lo demás (T-12/T-10/T-11 continuos, Oleada 5, residuales del OODA) es
    deuda de fondo o requiere un humano — no urgente para el próximo PR.
+
+---
+
+## Addendum (2026-07-16, tarde) — Wrye Bash bajo el lock `load-order` + snapshot
+
+**Cerrado** (§2.1 del reporte de consistencia de la auditoría — era el ÚNICO
+mutador de plugins fuera de la disciplina lock+snapshot):
+
+- `SupervisorAgent.execute_wrye_bash_pipeline` (GUI/dispatcher) y el tool del
+  agente `system_tools.generate_bashed_patch` (LLM/Telegram) corren ahora bajo
+  `SnapshotTransactionLock` sobre el MISMO recurso que LOOT
+  (`LOAD_ORDER_RESOURCE_ID`): un sort concurrente ya no puede correr mientras
+  se construye el Bashed Patch (que lee el load order completo), y viceversa.
+- El `Bashed Patch, 0.esp` previo se snapshotea antes de regenerar: un
+  timeout/fallo a mitad de escritura restaura el patch anterior en vez de
+  dejar el `.esp` corrupto persistente. `rolled_back` se reporta honesto vía
+  `rollback_completed` (False en la primera generación — nada que restaurar).
+- Nombre canónico `BASHED_PATCH_NAME` extraído a `wrye_bash_runner.py` y
+  anclado contra `DelegateToBashedPatch.BASHED_PATCH_NAME` (ADR 0001).
+- Anclado en `tests/test_wrye_bash_lock.py` (ambos paths + rollback + ancla).
+
+**Sigue abierto del reporte de consistencia** (candidatos para PRs separados):
+VRAMr con lock custom sin heartbeat (TTL 10 min < duración del run), identidad
+de PID por `create_time` en `grass_cache_runner` (réplica del patrón #302), y
+`rglob("*.cgid")` + `to_json` atómico en `patcher_pipeline`. Este addendum no
+cambia el ranking del "Decide" de arriba — Wrye Bash entra como serialización
+correcta, no como preflight (T-16c·3) ni caja negra (T-26), que siguen
+pendientes para este runner.
