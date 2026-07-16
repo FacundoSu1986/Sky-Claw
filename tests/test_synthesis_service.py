@@ -23,6 +23,11 @@ from sky_claw.local.tools.synthesis_runner import (
     SynthesisRunner,
 )
 from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
+from sky_claw.local.validators.preflight import (
+    PreflightCheck,
+    PreflightReport,
+    PreflightStatus,
+)
 
 if TYPE_CHECKING:
     import pathlib
@@ -823,3 +828,205 @@ async def test_fallo_sandboxeado_preserva_la_evidencia(
     assert any(
         c.area == "overwrite" and c.relative_path == "Synthesis.esp" and c.kind == "modified" for c in diff.changes
     )
+
+
+# =============================================================================
+# T-16c·2: gate de preflight en Synthesis (STAGE 7 del pipeline)
+# =============================================================================
+
+
+class _FakePreflight:
+    """Preflight inyectable: ``run()`` devuelve un reporte fijo (gate de T-16c·2)."""
+
+    def __init__(self, report: PreflightReport) -> None:
+        self._report = report
+        self.ran = False
+
+    async def run(self) -> PreflightReport:
+        self.ran = True
+        return self._report
+
+
+def _limits_report(status: PreflightStatus, summary: str) -> PreflightReport:
+    """Reporte con un solo check de límites de plugins (el failure mode típico
+    de Synthesis: >254 masters) en el estado pedido."""
+    return PreflightReport(
+        status=status,
+        checks=(PreflightCheck(name="plugin_limits", status=status, summary=summary, details=()),),
+    )
+
+
+def _svc_with_preflight(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+    preflight: object,
+) -> SynthesisPipelineService:
+    return SynthesisPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        journal=mock_journal,
+        path_resolver=mock_path_resolver,
+        event_bus=event_bus,
+        pipeline_config_path=tmp_path / "nonexistent_pipeline.json",
+        preflight=preflight,  # type: ignore[arg-type]  # fake duck-typed en tests
+    )
+
+
+@pytest.mark.asyncio
+async def test_preflight_red_blocks_synthesis_without_running(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> None:
+    # Un preflight ROJO (p.ej. 254 masters excedidos, o output sin permisos) frena
+    # Synthesis ANTES de tocar nada: no corre el pipeline, no abre transacción.
+    red = _limits_report(PreflightStatus.RED, "255 plugins full: excede el límite de slots del engine (254).")
+    svc = _svc_with_preflight(
+        lock_manager, snapshot_manager, mock_journal, mock_path_resolver, event_bus, tmp_path, _FakePreflight(red)
+    )
+
+    with patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock) as run_mock:
+        out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is False
+    assert out["reason"] == "PreflightBlocked"
+    assert out["preflight"]["status"] == "red"
+    run_mock.assert_not_awaited()
+    mock_journal.begin_transaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_preflight_yellow_runs_and_surfaces(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> None:
+    yellow = _limits_report(PreflightStatus.YELLOW, "250/254 plugins full: cerca del límite.")
+    svc = _svc_with_preflight(
+        lock_manager, snapshot_manager, mock_journal, mock_path_resolver, event_bus, tmp_path, _FakePreflight(yellow)
+    )
+    output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    output_esp.touch()
+
+    with (
+        patch.object(
+            SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=_make_success_result(output_esp)
+        ),
+        patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=True),
+    ):
+        out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is True
+    assert out["preflight"]["status"] == "yellow"  # el warning se surface, no bloquea
+
+
+@pytest.mark.asyncio
+async def test_preflight_green_does_not_attach(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> None:
+    green = _limits_report(PreflightStatus.GREEN, "Load order dentro de límites.")
+    svc = _svc_with_preflight(
+        lock_manager, snapshot_manager, mock_journal, mock_path_resolver, event_bus, tmp_path, _FakePreflight(green)
+    )
+    output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    output_esp.touch()
+
+    with (
+        patch.object(
+            SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=_make_success_result(output_esp)
+        ),
+        patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=True),
+    ):
+        out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is True
+    assert "preflight" not in out
+
+
+@pytest.mark.asyncio
+async def test_ensure_preflight_builds_permissions_over_output_no_loot_version(
+    synthesis_service: SynthesisPipelineService,
+) -> None:
+    # Smoke de construcción (sin inyectar): el preflight de Synthesis prueba
+    # escritura sobre el output y NO cablea la versión de LOOT (irrelevante).
+    preflight = synthesis_service._ensure_preflight()
+    assert preflight is not None
+    report = await preflight.run()
+    names = {c.name for c in report.checks}
+    assert "write_permissions" in names
+    assert "loot_version" not in names
+    assert report.blocks_mutations is False
+
+
+def _bare_service(resolver: MagicMock) -> SynthesisPipelineService:
+    return SynthesisPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=AsyncMock(),
+        path_resolver=resolver,
+        event_bus=MagicMock(),
+    )
+
+
+def test_build_modlist_checks_uses_mo2_profile_load_order(tmp_path: pathlib.Path) -> None:
+    # review Codex #306: masters/límites se cablean desde el plugins.txt del
+    # PERFIL MO2 activo (profiles/<perfil>/plugins.txt).
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    mo2 = tmp_path / "MO2"
+    (mo2 / "mods" / "ModA").mkdir(parents=True)
+    (mo2 / "mods" / "ModA" / "A.esp").write_bytes(b"TES4")
+    (mo2 / "overwrite").mkdir()
+    profile_dir = mo2 / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "plugins.txt").write_bytes(b"\xef\xbb\xbf*A.esp\r\n")
+
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=game)
+    resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_active_profile = MagicMock(return_value="Default")
+
+    masters, limits = _bare_service(resolver)._build_modlist_checks(game, mo2)
+
+    assert masters is not None and limits is not None  # cableado desde el perfil MO2
+
+
+def test_build_modlist_checks_ignores_localappdata_without_mo2_profile(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # review Codex #306: sin plugins.txt en el perfil MO2, el gate NO se cae al
+    # %LOCALAPPDATA% global que reescribe LOOT — valida solo el perfil activo.
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    mo2 = tmp_path / "MO2"
+    (mo2 / "mods").mkdir(parents=True)
+    (mo2 / "overwrite").mkdir()
+    (mo2 / "profiles" / "Default").mkdir(parents=True)  # perfil SIN plugins.txt
+    # Un plugins.txt global que el resolver de unión hubiera tomado primero.
+    lad_game = tmp_path / "LocalAppData" / "Skyrim Special Edition"
+    lad_game.mkdir(parents=True)
+    (lad_game / "plugins.txt").write_bytes(b"\xef\xbb\xbf*Global.esp\r\n")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=game)
+    resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_active_profile = MagicMock(return_value="Default")
+
+    # Sin perfil resoluble → (None, None), NO se cae a LOCALAPPDATA.
+    assert _bare_service(resolver)._build_modlist_checks(game, mo2) == (None, None)
