@@ -165,3 +165,31 @@ async def test_sin_transaccion_no_emite_informe(real_journal: Any, tmp_path: pat
 
     txs = await real_journal.list_recent_transactions(limit=1)
     assert txs == []  # ninguna TX abierta → ningún informe
+
+
+@pytest.mark.asyncio
+async def test_rollback_fallido_no_emite_informe_de_descarte(real_journal: Any, tmp_path: pathlib.Path) -> None:
+    """SandboxRollbackFailed = promote falló Y su rollback también: el overwrite
+    real puede estar inconsistente y el clon queda como backup manual. NO se emite
+    un FlightReport de descarte limpio que mienta "nada llegó al real" (review #310)."""
+    clone = _fake_clone(tmp_path)
+
+    class _FlowRollbackFailed:
+        async def run(self, *, ritual_name: str, ritual: Any) -> dict[str, Any]:
+            result = dict(await ritual(clone))
+            result["success"] = False
+            result["reason"] = "SandboxRollbackFailed"
+            result["sandbox"] = {"promoted": False, "decision": "rollback_failed"}
+            return result
+
+    strategy = ExecuteSynthesisPipelineStrategy(
+        flow_provider=lambda: _FlowRollbackFailed(),
+        service_factory=_manifest_writing_factory(clone),
+        real_journal_provider=lambda: real_journal,
+    )
+
+    await strategy.execute({"patcher_ids": ["a"]})
+
+    # La TX existe (el ritual la abrió) pero el informe de descarte se omite.
+    informes = await _flight_reports_ultima_tx(real_journal)
+    assert informes == []

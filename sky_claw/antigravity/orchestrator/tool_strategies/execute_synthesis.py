@@ -74,20 +74,36 @@ class ExecuteSynthesisPipelineStrategy:
         # (commit_staged/rollback_staged la resetean a None).
         tx_id = staging_journal.staged_transaction_id
         sandbox_info = result.get("sandbox", {}) if isinstance(result, dict) else {}
+        reason = result.get("reason") if isinstance(result, dict) else None
         promoted = bool(sandbox_info.get("promoted"))
         if promoted:
             await staging_journal.commit_staged()
         else:
             await staging_journal.rollback_staged()
 
-        # T-28 (ADR 0002): cerrar la caja negra recién ACÁ. Synthesis corre en
-        # sandbox con commit diferido, así que el informe compuesto dentro de
-        # execute_pipeline reflejaría un estado pre-promoción stale (por eso #309
-        # dejó T-28 como follow-up de esta capa). Ahora la TX real ya tiene su
-        # estado final (committed/rolled_back). Las rutas del clon → reales SOLO
-        # al promover (mismo criterio que rewrite_clone_paths en _promote, que
-        # reescribe únicamente la rama promovida; un descarte no tocó el real).
-        await self._emit_flight_report(real_journal, tx_id=tx_id, clone=captured.get("clone") if promoted else None)
+        if reason == "SandboxRollbackFailed":
+            # promote() falló Y su rollback también (SandboxRollbackError): el
+            # overwrite real puede quedar INCONSISTENTE y el clon se preserva como
+            # backup de restauración manual (el flow NO lo descarta). Emitir un
+            # informe de descarte limpio ("rolled_back", rutas del clon) mentiría
+            # "nada llegó al real" y ocultaría que hace falta recuperación manual.
+            # Se omite el FlightReport; el `reason` del result es la alerta al
+            # operador (review Codex #310).
+            logger.critical(
+                "Synthesis: promote falló con rollback fallido (TX %s); se omite el "
+                "FlightReport para no registrar un descarte limpio engañoso.",
+                tx_id,
+            )
+        else:
+            # T-28 (ADR 0002): cerrar la caja negra recién ACÁ. Synthesis corre en
+            # sandbox con commit diferido, así que el informe compuesto dentro de
+            # execute_pipeline reflejaría un estado pre-promoción stale (por eso
+            # #309 dejó T-28 como follow-up de esta capa). Ahora la TX real ya
+            # tiene su estado final (committed/rolled_back). Las rutas del clon →
+            # reales SOLO al promover (mismo criterio que rewrite_clone_paths en
+            # _promote, que reescribe únicamente la rama promovida; un descarte no
+            # tocó el real).
+            await self._emit_flight_report(real_journal, tx_id=tx_id, clone=captured.get("clone") if promoted else None)
 
         return result
 
