@@ -47,11 +47,7 @@ if TYPE_CHECKING:
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
     from sky_claw.antigravity.security.path_validator import PathValidator
     from sky_claw.local.loot.parser import LOOTResult
-    from sky_claw.local.validators.overwrite_health import OverwriteScan
     from sky_claw.local.validators.preflight import (
-        LimitsCheck,
-        MastersCheck,
-        OverwriteCheck,
         PermissionsCheck,
         PreflightReport,
         PreflightService,
@@ -189,10 +185,15 @@ class LootSortingService:
         if self._preflight is not None:
             return self._preflight
 
-        # Import perezoso: validators.preflight llega a tools._process vía
-        # loot.version; importarlo a nivel módulo desde tools/ podría ciclar.
+        # Import perezoso: validators.preflight (y los builders compartidos que
+        # llegan a él) alcanzan tools._process vía loot.version; importarlos a
+        # nivel módulo desde tools/ podría ciclar.
         from sky_claw.local.validators.preflight import PreflightService
-        from sky_claw.local.validators.vfs_health import VfsHealthChecker
+        from sky_claw.local.validators.preflight_sensors import (
+            build_modlist_sensors,
+            build_overwrite_sensor,
+            build_vfs_sensor,
+        )
 
         raw_game: pathlib.Path | None = None
         raw_mo2: pathlib.Path | None = None
@@ -216,13 +217,8 @@ class LootSortingService:
             raw_mo2 = self._mo2_root
             mo2_validated = True  # raíz provista por el caller (instancia MO2 real)
 
-        vfs_checker = None
-        if raw_game is not None or raw_mo2 is not None:
-            vfs_checker = VfsHealthChecker(
-                game_path=raw_game,
-                mo2_root=raw_mo2,
-                scan_mods_dir=mo2_validated,
-            )
+        # Builder compartido (T-16d): rutas CRUDAS, guard de "al menos una raíz".
+        vfs_checker = build_vfs_sensor(raw_game=raw_game, raw_mo2=raw_mo2, scan_mods_dir=mo2_validated)
 
         # Espejo del fallback de _ensure_loot_runner: el preflight debe medir
         # la versión del binario que efectivamente va a correr.
@@ -233,14 +229,17 @@ class LootSortingService:
         sources_resolver = self._build_sources_resolver(raw_mo2, mo2_validated)
         self._sources_resolver = sources_resolver
 
-        # T-30w: cablear los sensores de masters/límites cuando las fuentes de
-        # plugins son resolubles. Si no lo son, quedan en None → el semáforo
-        # reporta "no configurado" en vez de mentir verde (regla de honestidad).
-        masters_check, limits_check = self._build_modlist_checks(sources_resolver)
+        # T-30w (builder compartido T-16d): cablear los sensores de
+        # masters/límites cuando las fuentes de plugins son resolubles. Si no lo
+        # son, quedan en None → el semáforo reporta "no configurado" en vez de
+        # mentir verde (regla de honestidad).
+        masters_check, limits_check = build_modlist_sensors(sources_resolver)
 
-        # T-30·3: sensor de overwrite sucio. Solo requiere una raíz MO2 validada
-        # (no depende del load order), así que se cablea aparte de los de modlist.
-        overwrite_check = self._build_overwrite_check(raw_mo2, mo2_validated)
+        # T-30·3 (builder compartido T-16d): sensor de overwrite sucio. Solo
+        # requiere una raíz MO2 validada (el overwrite es <mo2>/overwrite, fuera
+        # del árbol del perfil), así que se cablea aparte de los de modlist.
+        overwrite_dir = raw_mo2 / "overwrite" if (mo2_validated and isinstance(raw_mo2, pathlib.Path)) else None
+        overwrite_check = build_overwrite_sensor(overwrite_dir)
 
         # T-30·4: sensor de permisos de escritura sobre las rutas que ESTE
         # Ritual (el sort de LOOT) reescribe — los dirs de los archivos de load
@@ -289,26 +288,6 @@ class LootSortingService:
 
         return _permissions
 
-    def _build_overwrite_check(self, raw_mo2: pathlib.Path | None, mo2_validated: bool) -> OverwriteCheck | None:
-        """Construye el closure del sensor de overwrite sucio (T-30·3).
-
-        Requiere solo una raíz MO2 validada (el overwrite es ``<mo2>/overwrite``,
-        fuera del árbol del perfil). El closure re-escanea en cada run — el
-        ``PreflightService`` se cachea, así que la salida de una herramienta
-        corrida entre preflight y preflight debe verse (freshness, patrón #252).
-        Sin MO2 resoluble devuelve ``None`` → el semáforo dice "no configurado".
-        """
-        if not (mo2_validated and isinstance(raw_mo2, pathlib.Path)):
-            return None
-        from sky_claw.local.validators.overwrite_health import OverwriteHealthChecker
-
-        overwrite_dir = raw_mo2 / "overwrite"
-
-        def _overwrite() -> OverwriteScan:
-            return OverwriteHealthChecker(overwrite_dir=overwrite_dir).check()
-
-        return _overwrite
-
     def _build_sources_resolver(self, raw_mo2: pathlib.Path | None, mo2_validated: bool):
         """Closure que re-resuelve las fuentes de plugins en cada llamada.
 
@@ -349,30 +328,6 @@ class LootSortingService:
             )
 
         return _resolve
-
-    def _build_modlist_checks(self, sources_resolver) -> tuple[MastersCheck | None, LimitsCheck | None]:
-        """Construye los closures de los sensores de masters/límites (T-30w).
-
-        Best-effort: si hoy no hay fuentes utilizables, devuelve ``(None, None)``
-        para que el semáforo reporte "no configurado" en vez de mentir verde.
-        """
-        from sky_claw.local.validators.missing_masters import MissingMastersChecker
-        from sky_claw.local.validators.plugin_limits import PluginLimitsChecker
-
-        # Gate de honestidad al construir: solo cablear si HOY hay fuentes.
-        initial = sources_resolver()
-        if not initial.plugin_dirs or not initial.enabled_plugins:
-            return None, None
-
-        def _masters():
-            sources = sources_resolver()
-            return MissingMastersChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
-
-        def _limits():
-            sources = sources_resolver()
-            return PluginLimitsChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
-
-        return _masters, _limits
 
     def _ensure_load_order_resolver(self) -> LoadOrderFileResolver:
         """Construye perezosamente el resolver de load order (mismo patrón que

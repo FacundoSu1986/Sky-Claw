@@ -222,17 +222,16 @@ class SynthesisPipelineService:
 
         # Imports perezosos (anti-ciclo: validators.preflight llega a tools._process).
         from sky_claw.local.validators.preflight import PreflightService
-        from sky_claw.local.validators.vfs_health import VfsHealthChecker
+        from sky_claw.local.validators.preflight_sensors import build_overwrite_sensor, build_vfs_sensor
         from sky_claw.local.validators.write_permissions import WritePermissionsChecker
 
-        # vfs sobre rutas CRUDAS (las resueltas ya siguieron los symlinks).
-        raw_game = self._path_resolver.get_skyrim_path_raw()
-        raw_mo2 = self._path_resolver.get_mo2_path_raw()
-        raw_game = raw_game if isinstance(raw_game, pathlib.Path) else None
-        raw_mo2 = raw_mo2 if isinstance(raw_mo2, pathlib.Path) else None
-        vfs_checker = None
-        if raw_game is not None or raw_mo2 is not None:
-            vfs_checker = VfsHealthChecker(game_path=raw_game, mo2_root=raw_mo2, scan_mods_dir=False)
+        # vfs sobre rutas CRUDAS (las resueltas ya siguieron los symlinks) —
+        # builder compartido (T-16d): coacciona no-Path y guarda "al menos una raíz".
+        vfs_checker = build_vfs_sensor(
+            raw_game=self._path_resolver.get_skyrim_path_raw(),
+            raw_mo2=self._path_resolver.get_mo2_path_raw(),
+            scan_mods_dir=False,
+        )
 
         # Output real donde Synthesis escribe (el override del sandbox manda; si no,
         # overwrite / "Synthesis Output" — mismo cálculo que _ensure_synthesis_runner).
@@ -241,23 +240,18 @@ class SynthesisPipelineService:
             output_dir = mo2 / "overwrite"
             if not output_dir.exists():
                 output_dir = mo2 / "mods" / "Synthesis Output"
-        overwrite_dir = mo2 / "overwrite"
 
         def _permissions():
             # Re-probe por llamada (freshness): un cambio de permisos entre corridas se ve.
             return WritePermissionsChecker(targets=[output_dir]).check()
 
-        def _overwrite():
-            from sky_claw.local.validators.overwrite_health import OverwriteHealthChecker
-
-            return OverwriteHealthChecker(overwrite_dir=overwrite_dir).check()
-
+        overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
         masters_check, limits_check = self._build_modlist_checks(game, mo2)
 
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
             permissions_check=_permissions,
-            overwrite_check=_overwrite,
+            overwrite_check=overwrite_check,
             masters_check=masters_check,
             limits_check=limits_check,
             omit_unconfigured=True,
@@ -280,8 +274,7 @@ class SynthesisPipelineService:
             return None, None
         from sky_claw.antigravity.security.path_validator import PathViolationError, assert_safe_component
         from sky_claw.local.mo2.plugin_sources import resolve_plugin_sources
-        from sky_claw.local.validators.missing_masters import MissingMastersChecker
-        from sky_claw.local.validators.plugin_limits import PluginLimitsChecker
+        from sky_claw.local.validators.preflight_sensors import build_modlist_sensors
 
         try:
             assert_safe_component(profile, field="profile")  # guard de path-traversal (como el resolver de T-05)
@@ -307,18 +300,11 @@ class SynthesisPipelineService:
                 load_order_file=load_order_file,
             )
 
-        if not _sources().plugin_dirs or not _sources().enabled_plugins:
-            return None, None
-
-        def _masters():
-            sources = _sources()
-            return MissingMastersChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
-
-        def _limits():
-            sources = _sources()
-            return PluginLimitsChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
-
-        return _masters, _limits
+        # Builder compartido (T-16d): gate de honestidad + freshness. Lo
+        # específico de Synthesis es el resolver de arriba (perfil MO2 activo,
+        # NO el LOCALAPPDATA global que reescribe LOOT); el cableado de los
+        # closures de masters/límites es idéntico al de LOOT/xEdit.
+        return build_modlist_sensors(_sources)
 
     # ------------------------------------------------------------------
     # Pipeline execution
