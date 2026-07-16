@@ -52,24 +52,84 @@ class ExecuteSynthesisPipelineStrategy:
             logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
 
         flow = self._flow_provider()
+        real_journal = self._real_journal_provider()
 
         from sky_claw.antigravity.db.journal import StagingJournal
 
-        staging_journal = StagingJournal(self._real_journal_provider())
+        staging_journal = StagingJournal(real_journal)
+
+        captured: dict[str, SandboxClone] = {}
 
         async def ritual(clone: SandboxClone) -> dict[str, Any]:
             # Servicio fresco por run, con la salida redirigida a la copia del
             # overwrite (T-27b: el servicio deshabilita su propio snapshot en
             # modo sandbox — el clon ES el rollback).
+            captured["clone"] = clone
             service = self._service_factory(clone.overwrite_copy, staging_journal)
             return await service.execute_pipeline(**filtered)
 
         result = await flow.run(ritual_name="synthesis", ritual=ritual)
 
+        # Capturar la TX diferida ANTES de resolver el staged journal
+        # (commit_staged/rollback_staged la resetean a None).
+        tx_id = staging_journal.staged_transaction_id
         sandbox_info = result.get("sandbox", {}) if isinstance(result, dict) else {}
-        if sandbox_info.get("promoted"):
+        reason = result.get("reason") if isinstance(result, dict) else None
+        promoted = bool(sandbox_info.get("promoted"))
+        if promoted:
             await staging_journal.commit_staged()
         else:
             await staging_journal.rollback_staged()
 
+        if reason == "SandboxRollbackFailed":
+            # promote() falló Y su rollback también (SandboxRollbackError): el
+            # overwrite real puede quedar INCONSISTENTE y el clon se preserva como
+            # backup de restauración manual (el flow NO lo descarta). Emitir un
+            # informe de descarte limpio ("rolled_back", rutas del clon) mentiría
+            # "nada llegó al real" y ocultaría que hace falta recuperación manual.
+            # Se omite el FlightReport; el `reason` del result es la alerta al
+            # operador (review Codex #310).
+            logger.critical(
+                "Synthesis: promote falló con rollback fallido (TX %s); se omite el "
+                "FlightReport para no registrar un descarte limpio engañoso.",
+                tx_id,
+            )
+        else:
+            # T-28 (ADR 0002): cerrar la caja negra recién ACÁ. Synthesis corre en
+            # sandbox con commit diferido, así que el informe compuesto dentro de
+            # execute_pipeline reflejaría un estado pre-promoción stale (por eso
+            # #309 dejó T-28 como follow-up de esta capa). Ahora la TX real ya
+            # tiene su estado final (committed/rolled_back). Las rutas del clon →
+            # reales SOLO al promover (mismo criterio que rewrite_clone_paths en
+            # _promote, que reescribe únicamente la rama promovida; un descarte no
+            # tocó el real).
+            await self._emit_flight_report(real_journal, tx_id=tx_id, clone=captured.get("clone") if promoted else None)
+
         return result
+
+    async def _emit_flight_report(self, journal: Any, *, tx_id: int | None, clone: SandboxClone | None) -> None:
+        """Compone y persiste el FlightReport de la TX ya resuelta (T-28, best-effort).
+
+        Sin TX (el ritual no llegó a abrirla: fail-closed sin guard, o abortó
+        antes de ``begin_transaction``) no hay caja negra que cerrar. Con ``clone``
+        se traducen las rutas del clon a las reales del overwrite. Un fallo se
+        loguea y NO rompe el resultado del ritual (disciplina best-effort de
+        LOOT/xEdit).
+        """
+        if tx_id is None:
+            return
+        try:
+            from sky_claw.antigravity.orchestrator.preview.flight_report import (
+                compose_flight_report_from_journal,
+            )
+
+            report = await compose_flight_report_from_journal(journal, transaction_id=tx_id)
+            if clone is not None:
+                from sky_claw.antigravity.orchestrator.preview.manifest import FlightReport
+                from sky_claw.antigravity.orchestrator.sandbox_promotion import rewrite_clone_paths
+
+                report = FlightReport.model_validate(rewrite_clone_paths(report.model_dump(mode="json"), clone))
+            # agent_id del servicio de Synthesis (mismo que emite el manifiesto).
+            await journal.persist_flight_report(report, agent_id="synthesis-service", transaction_id=tx_id)
+        except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error("Fallo al persistir el FlightReport de la TX %s de Synthesis", tx_id, exc_info=True)

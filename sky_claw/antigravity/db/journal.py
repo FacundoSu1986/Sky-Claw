@@ -1256,6 +1256,16 @@ class StagingJournal(OperationJournal):
         self._staged_tx_id: int | None = None
         self._staged_commit = False
 
+    @property
+    def staged_transaction_id(self) -> int | None:
+        """La TX real diferida, o ``None`` si aún no se abrió o ya se resolvió.
+
+        El caller la captura ANTES de ``commit_staged``/``rollback_staged`` (que
+        la resetean a ``None``) para poder cerrar la caja negra post-vuelo (T-28)
+        contra el journal real una vez que la TX tiene su estado final.
+        """
+        return self._staged_tx_id
+
     async def open(self) -> None:
         # El real_journal ya debería estar abierto.
         pass
