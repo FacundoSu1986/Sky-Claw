@@ -109,12 +109,12 @@ def _sandbox_annotation(
     }
 
 
-def _rewrite_clone_paths(data: Any, clone: SandboxClone) -> Any:
+def rewrite_clone_paths(data: Any, clone: SandboxClone) -> Any:
     """Reescribe recursivamente las rutas del clon por las del perfil real en el dict de resultado."""
     if isinstance(data, dict):
-        return {k: _rewrite_clone_paths(v, clone) for k, v in data.items()}
+        return {k: rewrite_clone_paths(v, clone) for k, v in data.items()}
     elif isinstance(data, list):
-        return [_rewrite_clone_paths(item, clone) for item in data]
+        return [rewrite_clone_paths(item, clone) for item in data]
     elif isinstance(data, str):
         res = data.replace(str(clone.profile_copy), str(clone.profile_source))
         res = res.replace(str(clone.overwrite_copy), str(clone.overwrite_source))
@@ -304,7 +304,7 @@ class SandboxPromotionFlow:
         )
 
         # Reescribir las rutas en el payload final
-        result = _rewrite_clone_paths(result, clone)
+        result = rewrite_clone_paths(result, clone)
 
         result["sandbox"] = _sandbox_annotation(
             diff,

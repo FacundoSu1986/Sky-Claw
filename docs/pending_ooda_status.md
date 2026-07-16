@@ -73,15 +73,26 @@ promoción. El cierre correcto del informe post-vuelo + la traducción a rutas
 reales pertenecen al **promotion flow** (`ExecuteSynthesisPipelineStrategy` /
 `SandboxPromotionFlow`, dueño del mapeo clon→real) — follow-up documentado.
 
-**Lo que sigue abierto:** T-28 en Synthesis (vía promotion flow, arriba);
-`dyndolod_service.py`, `pandora_service.py` y `wrye_bash_runner.py` no emiten
-manifest/flight report (dyndolod/xedit importan `preview.manifest`, un modelo
-**distinto** — el de preview dry-run de la cadena, no el `ActionManifest`
-persistido por-Ritual). El criterio de aceptación de T-26 ("todo Ritual mutante
-produce" el manifiesto) se cumple hoy para LOOT, xEdit y Synthesis; T-28 para
-LOOT y xEdit. Faltan esos 3 runners (+ T-28 de Synthesis) antes de que tenga
-sentido la vista GUI de T-28. `tool_version` queda en `None` para xEdit y
-Synthesis (no la exponen hoy) — follow-up menor.
+**Actualización 2026-07-16 (PR follow-up — T-28 de Synthesis cerrado vía el
+promotion flow):** `ExecuteSynthesisPipelineStrategy` ahora emite el
+`FlightReport` DESPUÉS de resolver el staged journal (`commit_staged`/
+`rollback_staged`), componiéndolo desde el journal REAL para la TX ya resuelta
+(estado final `committed`/`rolled_back`, no el `pending` diferido). Traduce las
+rutas del clon a las reales del overwrite **solo al promover** (reusa
+`rewrite_clone_paths`, ex-`_rewrite_clone_paths`, ahora público); un descarte
+conserva la ruta del clon porque no se aplicó nada al real. `StagingJournal`
+expone `staged_transaction_id` para capturar la TX antes de que
+`commit_staged`/`rollback_staged` la reseteen. Componer desde el journal real
+(no el staging) sortea el hueco de read-APIs del `StagingJournal`.
+
+**Lo que sigue abierto:** `dyndolod_service.py`, `pandora_service.py` y
+`wrye_bash_runner.py` no emiten manifest/flight report (dyndolod/xedit importan
+`preview.manifest`, un modelo **distinto** — el de preview dry-run de la cadena,
+no el `ActionManifest` persistido por-Ritual). El criterio de aceptación de T-26
+("todo Ritual mutante produce" el manifiesto) se cumple hoy para LOOT, xEdit y
+Synthesis; T-28 para LOOT, xEdit y **Synthesis**. Faltan esos 3 runners antes de
+que tenga sentido la vista GUI de T-28. `tool_version` queda en `None` para
+xEdit y Synthesis (no la exponen hoy) — follow-up menor.
 
 ### 1.2 T-27 — Synthesis sandboxeado con promote/discard real (2026-07-14); Pandora/DynDOLOD/Wrye Bash siguen fuera
 
