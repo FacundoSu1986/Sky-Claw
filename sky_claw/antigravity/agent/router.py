@@ -321,6 +321,52 @@ class LLMRouter:
         async with self._provider_lock:
             self._provider = provider
 
+    async def complete_simple(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        session: aiohttp.ClientSession,
+    ) -> str:
+        """Completion one-shot: sin historial, sin tools, sin persistencia.
+
+        Seam para consumidores que necesitan UNA respuesta de texto del
+        provider activo (p. ej. el ``PatchAdvisorLLM`` de Fase 1 AI-assisted)
+        sin arrastrar el loop de tool-use ni la historia de chat. Respeta la
+        misma disciplina que ``chat``: snapshot del provider bajo lock
+        (hot-swap seguro), llamada HTTP fuera del lock, timeout provider-aware
+        (RND-01).
+
+        Raises:
+            RuntimeError: Si no hay provider activo — el caller decide su
+                fail-closed (el advisor degrada a manual_only).
+            TimeoutError: Si el provider no responde dentro del presupuesto.
+        """
+        async with self._provider_lock:
+            provider_snapshot = self._provider
+        if provider_snapshot is None:
+            raise RuntimeError("SISTEMA: LLM Provider nulo. Iniciar Hot-Swap o configurar API Key primaria.")
+
+        chat_kwargs: dict[str, Any] = {
+            "messages": [{"role": "user", "content": user_prompt}],
+            "tools": [],
+            "session": session,
+            "gateway": self._gateway,
+            "system_prompt": system_prompt,
+        }
+        if self._model:
+            chat_kwargs["model"] = self._model
+        response_data = await asyncio.wait_for(
+            provider_snapshot.chat(**chat_kwargs),
+            timeout=_provider_chat_timeout(provider_snapshot),
+        )
+        if not isinstance(response_data, dict):
+            raise RuntimeError("El proveedor de IA no devolvió datos.")
+        blocks = response_data.get("content", [])
+        texts = [
+            str(block.get("text", "")) for block in blocks if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return "\n".join(text for text in texts if text)
+
     async def reload_provider(self, new_provider_name: str) -> bool:
         """Cambia el LLM subyacente en caliente extrayendo llaves Zero-Trust del Vault."""
         logger.info(f"🔄 Iniciando secuencia de Hot-Swap hacia [{new_provider_name}]...")

@@ -197,6 +197,48 @@ corrida real. Ítem ya conocido y documentado, sin cambio de estado.
 
 ---
 
+## Addendum (2026-07-16) — cierre del "parche placebo" + Fase 1 AI-assisted
+
+**Cerrado en este PR** (verificado con tests ancla, no solo con el diff):
+
+- **Éxito placebo del parcheo crítico.** Los 3 scripts `.pas` que
+  `ExecuteXEditScript._select_script_for_conflicts` referencia
+  (`fix_npc_conflicts`/`fix_quest_conflicts`/`fix_critical_conflicts`) nunca
+  existieron; el pipeline degradaba en silencio a `TEMPLATE_APPLY_PATCH`
+  (cuerpo de `Process` placeholder, sin lógica) y reportaba éxito con un
+  `.esp` vacío. Ahora: `can_handle` exige script en disco, `create_plan` y el
+  generador fallan closed, y el service pasa el plan REAL del orquestador al
+  runner (antes lo reconstruía perdiendo `script_path`/`form_ids`). Anclado en
+  `tests/test_patch_placebo_fail_closed.py`.
+- **Fase 1 AI-assisted (advisory).** `AIAssistedPatch` (priority=1, catch-all)
+  enruta los conflictos críticos sin script al `PatchAdvisorLLM`
+  (`sky_claw/local/ai/`): recomendaciones fail-closed en `warnings`, sin
+  mutación (`output_path=None`), HITL visible en `describe_for_approval`.
+  Sin LLM configurado → error accionable, jamás placebo. El callable LLM lo
+  arma `AppContext.make_patch_advisor_llm()` (lazy: respeta el boot de la GUI
+  y el hot-swap de provider) sobre `LLMRouter.complete_simple`.
+- **`rolled_back` honesto en Synthesis** (misma clase de bug que #295 cerró en
+  xEdit): el service ahora consulta `tx_lock.rollback_completed` en vez de
+  inferir con flags; un restore fallido deja la TX pendiente y reporta
+  `rolled_back=False`. Anclado en `tests/test_synthesis_rollback_honesto.py`.
+
+**Pendientes NUEVOS que abre este PR:**
+
+- **Smoke de `dump_record_detail.pas` contra xEdit real.** Igual que el resto
+  de los `.pas` bundleados: los tests validan el parser Python del protocolo,
+  no que el script compile/corra en SSEEdit (mismo bloqueo que §4.2/§4.3).
+  Hasta ese smoke, el advisor trabaja con `dump=None` si el script falla
+  (best-effort, degradación declarada en el prompt).
+- **Calidad real de las recomendaciones del LLM.** Fase 1 es el experimento:
+  probar 2-4 semanas con conflictos reales (Requiem+Ordinator) antes de
+  decidir Fase 2 (batch+foros+GUI card) y Fase 3 (auto-parcheo). El stub de
+  `forum_search` devuelve `[]` a propósito.
+- **Fase 2: campo `recommendations` dedicado en el contrato.** Fase 1 viaja
+  en `warnings` (hack deliberado para no romper callers); la GUI card de
+  Fase 2 necesita el campo estructurado.
+
+---
+
 ## Decide — recomendación de próximo frente
 
 **Corrección (2026-07-14):** la versión anterior de esta sección afirmaba que

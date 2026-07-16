@@ -253,6 +253,12 @@ module = [
     "sky_claw.local.xedit.patch_advisor",  # T-20: asistente de estrategia de parcheo, estricto
     "sky_claw.antigravity.orchestrator.preview.flight_report",  # T-28: módulo nuevo, nace estricto
     "sky_claw.antigravity.orchestrator.sandbox_promotion",  # T-27b·2: flujo promote/discard HITL, estricto
+    "sky_claw.local.ai.conflict_prompt",  # Fase 1 AI-assisted: prompt builder, nace estricto
+    "sky_claw.local.ai.forum_search",  # Fase 1 AI-assisted: forum search (stub), nace estricto
+    "sky_claw.local.ai.patch_advisor_llm",  # Fase 1 AI-assisted: LLM advisor, nace estricto
+    "sky_claw.local.ai.recommendation",  # Fase 1 AI-assisted: modelos de datos, nace estricto
+    "sky_claw.local.xedit.ai_assisted_strategy",  # Fase 1 AI-assisted: strategy catch-all, estricto
+    "sky_claw.local.xedit.record_dump_parser",  # Fase 1 AI-assisted: parser del dump, estricto
 ]
 strict = true
 ignore_errors = false

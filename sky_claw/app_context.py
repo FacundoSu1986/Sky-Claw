@@ -35,6 +35,7 @@ from sky_claw.antigravity.security.network_gateway import GatewayTCPConnector, N
 from sky_claw.antigravity.security.path_validator import PathValidator
 from sky_claw.antigravity.security.prompt_armor import build_system_header
 from sky_claw.config import LOOT_COMMON_PATHS, XEDIT_COMMON_PATHS, Config, SystemPaths
+from sky_claw.local.ai.patch_advisor_llm import LLMCallable
 from sky_claw.local.auto_detect import AutoDetector
 from sky_claw.local.local_config import load as _load_legacy_json
 from sky_claw.local.mo2.vfs import MO2Controller
@@ -260,6 +261,31 @@ class AppContext:
         await self.router.set_provider(new_provider)
         logger.info("🚀 Hot-reload LLM: el router ahora usa %s", type(new_provider).__name__)
         return True
+
+    def make_patch_advisor_llm(self) -> LLMCallable:
+        """Callable ``(system, user) -> respuesta`` para el advisor de IA (Fase 1).
+
+        El router y la sesión HTTP se resuelven PEREZOSAMENTE en cada llamada,
+        no al construir el closure: en la GUI el supervisor se construye antes
+        de que ``start_full`` monte el router (misma lección que las deps lazy
+        de grass, review Codex #301), y el hot-swap de provider debe verse
+        reflejado sin recablear nada. Stack lock-only (router nunca montado) →
+        la llamada lanza ``RuntimeError`` accionable y el ``PatchAdvisorLLM``
+        degrada a ``manual_only`` (fail-closed).
+        """
+
+        async def _call(system_prompt: str, user_prompt: str) -> str:
+            router = self.router
+            session = self.network.session
+            if router is None or session is None:
+                raise RuntimeError(
+                    "No hay proveedor LLM activo (stack lock-only o boot incompleto). "
+                    "Configurá un provider (OpenAI/Anthropic/DeepSeek/Ollama) para "
+                    "habilitar el advisor de IA."
+                )
+            return await router.complete_simple(system_prompt, user_prompt, session)
+
+        return _call
 
     @property
     def registry(self):

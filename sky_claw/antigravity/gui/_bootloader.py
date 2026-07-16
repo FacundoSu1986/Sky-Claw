@@ -314,6 +314,11 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
             # C2: compartir el único NetworkGateway del AppContext (misma caché DNS
             # pinning + reglas de egress que el router/tools), sin duplicar política.
             gateway=ctx.network.gateway,
+            # Fase 1 AI-assisted: callable lazy que resuelve router/sesión del
+            # AppContext EN CADA llamada (el router se monta en start_full,
+            # después de construir el supervisor; el hot-swap de provider se ve
+            # sin recablear). Stack lock-only → el advisor degrada a manual_only.
+            patch_advisor_llm=ctx.make_patch_advisor_llm(),
         )
         _runtime["supervisor"] = supervisor
 

@@ -30,6 +30,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from sky_claw.local.xedit.conflict_analyzer import DEFAULT_CRITICAL_TYPES
+from sky_claw.local.xedit.script_staging import BUNDLED_SCRIPTS_DIR
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.db.rollback_manager import RollbackManager
@@ -81,6 +82,10 @@ class PatchStrategyType(Enum):
     EXECUTE_XEDIT_SCRIPT = "execute_xedit_script"  # Para correcciones específicas de FormID
     FORWARD_DECLARATION = "forward_declaration"  # Para forward de records
     DELEGATE_BASHED_PATCH = "delegate_bashed_patch"  # Leveled lists → Wrye Bash (ADR 0001)
+    # Fase 1 AI-assisted: conflictos críticos sin script .pas específico van al
+    # LLM advisor. La strategy produce un plan advisory (no escribe .esp); el
+    # service layer (XEditPipelineService.execute_patch) enruta al PatchAdvisorLLM.
+    AI_ASSISTED = "ai_assisted"  # Conflictos críticos → LLM advisor (Fase 1)
 
 
 #: Tipos de leveled lists (única fuente para las estrategias que los manejan).
@@ -151,6 +156,13 @@ class PatchResult:
     #: campo — antes adivinaba mirando ``orchestrator._strategies[0]``, que no
     #: es la estrategia seleccionada (bug latente de enrutado).
     strategy_type: PatchStrategyType | None = None
+    #: Plan completo seleccionado por ``resolve()``. Antes el service layer
+    #: reconstruía un PatchPlan a mano desde este resultado, descartando
+    #: ``script_path`` y ``form_ids`` — el runner nunca recibía el script real
+    #: y caía en silencio al template genérico (que no aplica lógica alguna)
+    #: reportando éxito: un parche placebo. ``None`` solo en resultados de
+    #: error o construidos fuera de ``resolve()``.
+    plan: PatchPlan | None = None
 
     @classmethod
     def create(
@@ -163,6 +175,7 @@ class PatchResult:
         warnings: list[str] | None = None,
         error: str | None = None,
         strategy_type: PatchStrategyType | None = None,
+        plan: PatchPlan | None = None,
     ) -> PatchResult:
         """Factory method para crear PatchResult con lista de warnings mutable.
 
@@ -175,6 +188,7 @@ class PatchResult:
             warnings: Lista de advertencias (se convierte a tuple).
             error: Mensaje de error si aplica.
             strategy_type: Tipo de estrategia del plan seleccionado.
+            plan: Plan completo seleccionado por ``resolve()``.
 
         Returns:
             PatchResult inmutable.
@@ -188,6 +202,7 @@ class PatchResult:
             warnings=tuple(warnings) if warnings else tuple(),
             error=error,
             strategy_type=strategy_type,
+            plan=plan,
         )
 
 
@@ -437,29 +452,45 @@ class ExecuteXEditScript(PatchStrategy):
         """Inicializa la estrategia.
 
         Args:
-            scripts_dir: Directorio donde están los scripts Pascal.
+            scripts_dir: Directorio donde están los scripts Pascal. Default:
+                el bundle del paquete (``BUNDLED_SCRIPTS_DIR``) — el ``"."``
+                anterior apuntaba al cwd, donde ningún script vive, y hacía
+                que el chequeo de existencia fuera imposible de satisfacer.
             output_dir: Directorio donde se generará el patch.
         """
-        self._scripts_dir = scripts_dir or pathlib.Path(".")
+        self._scripts_dir = scripts_dir or BUNDLED_SCRIPTS_DIR
         self._output_dir = output_dir or pathlib.Path(".")
 
     async def can_handle(self, conflict: RecordConflict) -> bool:
-        """Verifica si el conflicto es de severidad crítica.
+        """Verifica si el conflicto es crítico Y su script Pascal existe.
+
+        La existencia del script es parte del contrato: sin este chequeo la
+        estrategia reclamaba todo conflicto crítico (prioridad 20) aunque el
+        ``.pas`` seleccionado no existiera, y el pipeline terminaba generando
+        el template genérico — un placebo que no aplica lógica pero reporta
+        éxito. Fail-closed: sin script real, esta estrategia no aplica y el
+        conflicto cae a la siguiente (el advisor de IA, o "no strategy").
 
         Args:
             conflict: Conflicto a evaluar.
 
         Returns:
-            True si severity == "critical".
+            True si severity == "critical" y el ``.pas`` seleccionado existe.
         """
-        is_critical = conflict.severity == "critical"
+        if conflict.severity != "critical":
+            return False
+        # Stat puntual (sin lectura): no amerita to_thread en un chequeo por
+        # conflicto que corre N veces durante la selección de estrategia.
+        script = self._scripts_dir / self._select_script_for_conflicts([conflict])
+        exists = script.is_file()
         logger.debug(
-            "ExecuteXEditScript.can_handle: record_type=%s, severity=%s, result=%s",
+            "ExecuteXEditScript.can_handle: record_type=%s, severity=%s, script=%s, exists=%s",
             conflict.record_type,
             conflict.severity,
-            is_critical,
+            script.name,
+            exists,
         )
-        return is_critical
+        return exists
 
     async def create_plan(self, conflicts: list[RecordConflict]) -> PatchPlan:
         """Crea un plan para ejecutar script xEdit de corrección.
@@ -497,6 +528,18 @@ class ExecuteXEditScript(PatchStrategy):
         # Determinar el script a usar basado en los tipos de records
         script_name = self._select_script_for_conflicts(critical_conflicts)
         script_path = self._scripts_dir / script_name
+
+        # Defensa en profundidad (además de can_handle): un plan con script
+        # inexistente terminaría en el fallback placebo del runner. El caso
+        # se da con sets mixtos — el script elegido para el CONJUNTO puede no
+        # ser el que can_handle validó por conflicto individual.
+        if not script_path.is_file():
+            raise ScriptGenerationError(
+                f"El script {script_name!r} no existe en {self._scripts_dir} — "
+                "no se genera un plan sin script real (el template genérico es "
+                "un placebo que no resuelve nada). Resolvé el conflicto en xEdit "
+                "manualmente o habilitá el advisor de IA."
+            )
 
         # Generar nombre del patch
         output_plugin = "SkyClaw_CriticalPatch.esp"
@@ -672,16 +715,19 @@ class PatchOrchestrator:
                     "ejecutá el ritual de Wrye Bash para materializar el merge (ADR 0001)."
                 )
 
-            # Retornar resultado exitoso con el plan
-            # (La ejecución real se hace en supervisor.py)
+            # Retornar resultado exitoso con el plan COMPLETO adjunto: el
+            # service layer se lo pasa tal cual al runner (script_path y
+            # form_ids incluidos) en vez de reconstruirlo a mano perdiéndolos.
+            # Un plan advisory (AI_ASSISTED) no nombra .esp: output_path=None.
             return PatchResult(
                 success=True,
-                output_path=pathlib.Path(plan.output_plugin),
+                output_path=pathlib.Path(plan.output_plugin) if plan.output_plugin else None,
                 records_patched=plan.estimated_records,
                 conflicts_resolved=len(all_conflicts),
                 xedit_exit_code=0,
                 warnings=tuple(warnings),
                 strategy_type=plan.strategy_type,
+                plan=plan,
             )
 
         except StrategySelectionError as e:
@@ -822,13 +868,23 @@ class PatchOrchestrator:
         """Retorna la lista de estrategias por defecto.
 
         Returns:
-            Lista con ExecuteXEditScript y DelegateToBashedPatch.
+            Lista con ExecuteXEditScript, DelegateToBashedPatch y AIAssistedPatch
+            (catch-all advisory para conflictos críticos sin script específico).
         """
         # CreateMergedPatch excluida deliberadamente: tras el hotfix T-02 hace un
         # forward del ganador (ya no revierte overrides como en el P0 original),
         # pero sigue sin implementar un merge real de entradas (Relev/Delev).
         # Las leveled lists se delegan al Bashed Patch de Wrye Bash — ADR 0001.
-        return [ExecuteXEditScript(), DelegateToBashedPatch()]
+        #
+        # AIAssistedPatch (Fase 1) se registra con priority=1 (la más baja) como
+        # catch-all: un conflicto crítico que ExecuteXEditScript no reclame (su
+        # can_handle exige que el .pas exista) cae al LLM advisor en vez de a
+        # "no strategy". La strategy produce un plan advisory (no escribe .esp);
+        # el service layer enruta al PatchAdvisorLLM. Import perezoso anti-ciclo:
+        # ai_assisted_strategy importa de este módulo.
+        from sky_claw.local.xedit.ai_assisted_strategy import AIAssistedPatch
+
+        return [ExecuteXEditScript(), DelegateToBashedPatch(), AIAssistedPatch()]
 
     @property
     def strategies(self) -> list[PatchStrategy]:

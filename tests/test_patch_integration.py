@@ -82,8 +82,9 @@ class TestPatchOrchestratorIntegration:
     def test_orchestrator_initialization(self, orchestrator):
         """Verifica que el orquestador se inicializa correctamente."""
         assert orchestrator is not None
-        # ExecuteXEditScript + DelegateToBashedPatch (ADR 0001).
-        assert len(orchestrator._strategies) == 2
+        # ExecuteXEditScript + DelegateToBashedPatch (ADR 0001) +
+        # AIAssistedPatch (Fase 1: catch-all advisory).
+        assert len(orchestrator._strategies) == 3
 
         # Verificar que las estrategias están ordenadas por prioridad
         priorities = [s.get_priority() for s in orchestrator._strategies]
@@ -191,11 +192,24 @@ class TestPatchStrategies:
         return CreateMergedPatch(output_dir=Path("/tmp"))
 
     @pytest.fixture
-    def xedit_script_strategy(self):
-        """Crea una instancia de ExecuteXEditScript."""
+    def xedit_script_strategy(self, tmp_path):
+        """ExecuteXEditScript con los scripts .pas REALES en disco.
+
+        can_handle ahora exige que el script exista (fail-closed anti-placebo):
+        la fixture materializa los tres scripts para que los tests de contrato
+        crítico sigan validando el enrutado, no la ausencia de archivos.
+        """
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        for name in (
+            "fix_npc_conflicts.pas",
+            "fix_quest_conflicts.pas",
+            "fix_critical_conflicts.pas",
+        ):
+            (scripts_dir / name).write_text("// stub de test", encoding="utf-8")
         return ExecuteXEditScript(
-            scripts_dir=Path("/tmp/scripts"),
-            output_dir=Path("/tmp"),
+            scripts_dir=scripts_dir,
+            output_dir=tmp_path,
         )
 
     @pytest.mark.asyncio
