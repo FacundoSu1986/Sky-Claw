@@ -126,12 +126,13 @@ class MO2Controller:
         # PID se registra ANTES de verificar el spawn para no dejar huérfanos si
         # MO2 muere o la operación se cancela durante la verificación (§1.1/§1.2).
         self._launched_procs: dict[int, float | None] = {}
-        # Serializa TODO acceso a _launched_procs (registro en launch_game, pop
-        # por timeout, y la región snapshot→matar→pop de close_game). Las
-        # mutaciones del dict son atómicas bajo el GIL, pero dos close_game
+        # Serializa la región snapshot→matar→pop de close_game: dos close_game
         # concurrentes tomarían el mismo snapshot y matarían el árbol dos veces
         # (el segundo kill es no-op hoy, pero el lock lo blinda ante un futuro
         # sin GIL — verificación auditoría PRs #300-#304, follow-up H1).
+        # launch_game NO toma este lock: registra el PID con una escritura de
+        # dict plana (atómica) para no reabrir la ventana de huérfano de #302 si
+        # la task se cancela esperando el lock (review Codex #305 C1).
         self._procs_lock = asyncio.Lock()
 
     @property
@@ -372,11 +373,14 @@ class MO2Controller:
         create_time: float | None = None
         with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
             create_time = psutil.Process(proc.pid).create_time()
-        # Sección crítica breve (solo la escritura): NO se sostiene el lock
-        # durante la verificación de abajo, que puede tardar hasta
-        # _spawn_timeout y bloquearía un close_game concurrente.
-        async with self._procs_lock:
-            self._launched_procs[proc.pid] = create_time
+        # Escritura de dict PLANA (atómica bajo el GIL): NO se toma _procs_lock
+        # acá. Un await entre el spawn y el registro reabriría la ventana de
+        # huérfano que #302 cerró — si la task se cancela esperando el lock (un
+        # close_game concurrente lo sostiene durante su kill loop), el PID nunca
+        # se registra y el snapshot ya tomado de close_game no lo ve (review
+        # Codex #305 C1). close_game snapshotea+popea solo su snapshot, así que
+        # este registro concurrente sobrevive sin necesidad del lock.
+        self._launched_procs[proc.pid] = create_time
 
         # TASK-011: Verify the process actually spawned (short grace period).
         try:
@@ -386,9 +390,8 @@ class MO2Controller:
             )
         except TimeoutError:
             # Spawn failed -- el proceso nunca apareció: dejar de trackearlo y
-            # limpiar el defunto.
-            async with self._procs_lock:
-                self._launched_procs.pop(proc.pid, None)
+            # limpiar el defunto. Pop plano (atómico, idempotente).
+            self._launched_procs.pop(proc.pid, None)
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(TimeoutError):

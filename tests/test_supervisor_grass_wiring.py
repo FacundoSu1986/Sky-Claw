@@ -107,29 +107,29 @@ def test_build_grass_dependencies_sin_skyrim_devuelve_none(tmp_path: pathlib.Pat
     assert sup._build_grass_dependencies() is None
 
 
-def test_build_grass_dependencies_reusa_el_controller_compartido(tmp_path: pathlib.Path) -> None:
-    """Follow-up H4: si el AppContext inyectó un MO2Controller con el mismo root,
-    el ritual de grass reusa ESA instancia (no crea una paralela)."""
+def test_build_grass_dependencies_controller_aislado_del_appcontext(tmp_path: pathlib.Path) -> None:
+    """Codex #305 C2: el ritual de grass usa un MO2Controller PROPIO, aislado del
+    del AppContext. close_game() del runner mata TODOS los PIDs trackeados, así
+    que compartir el tracking con el juego que el usuario lanzó lo mataría."""
     mo2_root = tmp_path / "MO2"
     mo2_root.mkdir()
     game = tmp_path / "Skyrim"
     game.mkdir()
-    validator = PathValidator(roots=[tmp_path])
-    sup = _supervisor_con_resolver(mo2_root, game, validator)
-    shared = MO2Controller(mo2_root, validator)
-    sup._mo2_controller = shared
+    sup = _supervisor_con_resolver(mo2_root, game, PathValidator(roots=[tmp_path]))
 
     deps = sup._build_grass_dependencies()
 
     assert deps is not None
-    assert deps.mo2 is shared
-    assert deps.profile_manager._controller is shared
+    # La instancia es propia del ritual (se construyó y memoizó acá), no una
+    # inyectada desde afuera: el memo estaba vacío antes de la resolución.
+    assert isinstance(deps.mo2, MO2Controller)
+    assert deps.profile_manager._controller is deps.mo2
 
 
 def test_build_grass_dependencies_memoiza_el_controller(tmp_path: pathlib.Path) -> None:
-    """Follow-up H4: sin controller inyectado se construye UNO y se memoiza —
-    dos resoluciones devuelven la MISMA instancia (antes creaba una nueva por
-    llamada, partiendo el tracking de PIDs)."""
+    """Follow-up H4 (parte válida): el controller propio se memoiza — dos
+    resoluciones devuelven la MISMA instancia (antes creaba una nueva por
+    llamada, partiendo el tracking de PIDs entre corridas del ritual)."""
     mo2_root = tmp_path / "MO2"
     mo2_root.mkdir()
     game = tmp_path / "Skyrim"

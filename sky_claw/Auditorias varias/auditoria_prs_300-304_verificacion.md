@@ -176,15 +176,23 @@ implementaron en este PR):
    - `tests/test_synthesis_rollback_honesto.py::test_no_declara_rollback_con_lock_real_si_el_restore_falla`:
      end-to-end por `SynthesisPipelineService` con el lock real y `restore_snapshot`
      reventando en `__aexit__` → el servicio no marca la TX y reporta `rolled_back=False`.
-2. **Unificar el `MO2Controller`** (punto válido de H4): `AppContext` expone la instancia
-   compartida (`self.mo2_controller`), el bootloader la inyecta al `SupervisorAgent`
-   (`mo2_controller=...`), y `_build_grass_dependencies` la reusa vía
-   `_resolve_grass_mo2_controller` (memoizada si no hay una inyectada). Ya no se crea un
-   controller nuevo por resolución. Tests: `test_supervisor_grass_wiring.py`
-   (`..._reusa_el_controller_compartido`, `..._memoiza_el_controller`).
-3. **Higiene (H1):** `MO2Controller` gana un `asyncio.Lock` (`_procs_lock`) que serializa
-   todo acceso a `_launched_procs` (registro en `launch_game`, pop por timeout, y la
-   región snapshot→matar→pop de `close_game`). Test:
+2. **`MO2Controller` de grass memoizado y AISLADO** (parte válida de H4, corregida tras el
+   review de Codex #305 C2): `_build_grass_dependencies` ya no crea un controller nuevo por
+   resolución — lo **memoiza** vía `_resolve_grass_mo2_controller`. Pero el controller es
+   **propio del ritual, NO compartido con el AppContext**: el runner de grass llama
+   `close_game()` entre relanzamientos, y `close_game()` mata TODOS los PIDs trackeados
+   (§1.2) — compartir el tracking con el juego que el usuario lanzó por la tool normal lo
+   mataría. La "isolation" del diseño original era la feature correcta; el cleanup de grass
+   debe ser ritual-scoped. Tests: `test_supervisor_grass_wiring.py`
+   (`..._controller_aislado_del_appcontext`, `..._memoiza_el_controller`).
+   *Nota:* una primera versión de este follow-up **unificó** el controller con el del
+   AppContext (inyectándolo desde el bootloader); Codex mostró que eso rompía el aislamiento
+   del cleanup, y se revirtió a memoización aislada.
+3. **Higiene (H1):** `MO2Controller` gana un `asyncio.Lock` (`_procs_lock`) que serializa la
+   región snapshot→matar→pop de `close_game` (dos `close_game` concurrentes no re-matan el
+   árbol). `launch_game` **no** toma el lock: registra el PID con una escritura de dict plana
+   (atómica) para no reabrir la ventana de huérfano de #302 si la task se cancela esperando
+   el lock (matiz corregido tras el review de Codex #305 C1). Test:
    `test_vfs.py::test_close_game_concurrente_no_mata_dos_veces`.
 
 Ninguno era bloqueante; los tres son mejoras incrementales sobre código que ya se

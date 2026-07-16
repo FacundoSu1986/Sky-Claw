@@ -132,16 +132,15 @@ class SupervisorAgent:
         # start_full monte el router). None = advisor no disponible: los
         # conflictos críticos sin script fallan closed con mensaje accionable.
         patch_advisor_llm: LLMCallable | None = None,
-        # El MO2Controller compartido del AppContext (SyncEngine/tools lo usan).
-        # Se reusa en el ritual de grass para NO partir el tracking de PIDs
-        # (_launched_procs) entre dos instancias: un MO2 lanzado por una no sería
-        # visible para el close_game de la otra (verificación auditoría PRs
-        # #300-#304, follow-up H4). None (tests/standalone) → se construye uno
-        # perezosamente y se memoiza.
-        mo2_controller: MO2Controller | None = None,
     ):
         self.db = DatabaseAgent()
-        self._mo2_controller = mo2_controller
+        # Memo del MO2Controller PROPIO del ritual de grass — aislado del
+        # controller del AppContext a propósito: el cleanup de grass
+        # (close_game entre relanzamientos) mata TODOS los PIDs trackeados, así
+        # que compartir el tracking con el juego que el usuario lanzó por la
+        # tool normal lo mataría (review Codex #305 C2). Se puebla perezosamente
+        # en _resolve_grass_mo2_controller y se reusa entre corridas del ritual.
+        self._mo2_controller: MO2Controller | None = None
         # C2: reutilizar el NetworkGateway del AppContext cuando se inyecta, para
         # NO duplicar caché DNS pinning ni reglas de egress (dos políticas que
         # podrían divergir). ``is not None`` explícito (no ``or``): un gateway
@@ -569,21 +568,22 @@ class SupervisorAgent:
         )
 
     def _resolve_grass_mo2_controller(self, mo2_root: pathlib.Path) -> MO2Controller:
-        """Reusa el MO2Controller compartido del AppContext si su root coincide;
-        si no (o no se inyectó uno), construye UNO y lo memoiza.
+        """Devuelve el MO2Controller PROPIO del ritual de grass, memoizado.
 
-        Antes se creaba un ``MO2Controller`` nuevo en cada resolución, partiendo
-        el tracking de PIDs (``_launched_procs``) entre esta instancia y la del
-        AppContext (SyncEngine/tools): un MO2 lanzado por una no era visible para
-        el ``close_game`` de la otra (verificación auditoría PRs #300-#304,
-        follow-up H4). El validator de modding es el mismo que inyecta el
-        AppContext al construir su controller, así que reusarlo es sano.
+        Es una instancia AISLADA a propósito (no la del AppContext): el runner
+        de grass llama ``close_game()`` entre relanzamientos y al salir, y
+        ``close_game`` mata TODOS los PIDs trackeados (§1.2). Si compartiera el
+        ``_launched_procs`` con el controller del AppContext, arrancar el grass
+        cache mataría el Skyrim que el usuario lanzó con la tool normal (review
+        Codex #305 C2). El cleanup de grass debe ser ritual-scoped.
+
+        Se memoiza (en vez de construir uno nuevo por resolución) para no
+        recrearlo en reintentos del ritual y mantener un tracking de PIDs
+        estable entre corridas.
         """
         resolved = mo2_root.resolve()
         if self._mo2_controller is not None and self._mo2_controller.root == resolved:
             return self._mo2_controller
-        # Sin controller compartido (tests/standalone) o con un root distinto:
-        # construir y memoizar para no recrearlo en reintentos del ritual.
         self._mo2_controller = MO2Controller(resolved, self._modding_validator)
         return self._mo2_controller
 

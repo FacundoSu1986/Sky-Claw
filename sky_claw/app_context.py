@@ -175,11 +175,6 @@ class AppContext:
         # Motor de sincronización — lo consume el botón "Buscar actualizaciones"
         # de la GUI (detect_pending_updates). None hasta que corra start_full.
         self.sync_engine: SyncEngine | None = None
-        # MO2Controller compartido (lo construye start()): SyncEngine/tools lo
-        # consumen, y se inyecta al SupervisorAgent para que el ritual de grass
-        # reuse la MISMA instancia y no parta el tracking de PIDs (follow-up H4
-        # de la verificación de auditoría PRs #300-#304).
-        self.mo2_controller: MO2Controller | None = None
         self.tools_installer: ToolsInstaller | None = None
         # Resolved tools install dir, populated in start() — read by the GUI
         # "Instalar" button (Follow-up C). None until the full start path runs.
@@ -522,10 +517,6 @@ class AppContext:
             validator = PathValidator(roots=sandbox_roots)
             self.sandbox_validator = validator
             mo2 = MO2Controller(mo2_root, validator)
-            # Exponer la instancia compartida para inyectarla al supervisor
-            # (ritual de grass) y evitar un segundo controller con tracking de
-            # PIDs propio (follow-up H4, verificación auditoría PRs #300-#304).
-            self.mo2_controller = mo2
 
             await self.network.initialize(nexus_key, self._args.staging_dir)
 
