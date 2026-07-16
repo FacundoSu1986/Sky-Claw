@@ -887,7 +887,7 @@ async def test_preflight_red_blocks_synthesis_without_running(
 ) -> None:
     # Un preflight ROJO (p.ej. 254 masters excedidos, o output sin permisos) frena
     # Synthesis ANTES de tocar nada: no corre el pipeline, no abre transacción.
-    red = _limits_report(PreflightStatus.RED, "255 plugins full: excede el límite de 254 masters.")
+    red = _limits_report(PreflightStatus.RED, "255 plugins full: excede el límite de slots del engine (254).")
     svc = _svc_with_preflight(
         lock_manager, snapshot_manager, mock_journal, mock_path_resolver, event_bus, tmp_path, _FakePreflight(red)
     )
@@ -971,3 +971,62 @@ async def test_ensure_preflight_builds_permissions_over_output_no_loot_version(
     assert "write_permissions" in names
     assert "loot_version" not in names
     assert report.blocks_mutations is False
+
+
+def _bare_service(resolver: MagicMock) -> SynthesisPipelineService:
+    return SynthesisPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=AsyncMock(),
+        path_resolver=resolver,
+        event_bus=MagicMock(),
+    )
+
+
+def test_build_modlist_checks_uses_mo2_profile_load_order(tmp_path: pathlib.Path) -> None:
+    # review Codex #306: masters/límites se cablean desde el plugins.txt del
+    # PERFIL MO2 activo (profiles/<perfil>/plugins.txt).
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    mo2 = tmp_path / "MO2"
+    (mo2 / "mods" / "ModA").mkdir(parents=True)
+    (mo2 / "mods" / "ModA" / "A.esp").write_bytes(b"TES4")
+    (mo2 / "overwrite").mkdir()
+    profile_dir = mo2 / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "plugins.txt").write_bytes(b"\xef\xbb\xbf*A.esp\r\n")
+
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=game)
+    resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_active_profile = MagicMock(return_value="Default")
+
+    masters, limits = _bare_service(resolver)._build_modlist_checks(game, mo2)
+
+    assert masters is not None and limits is not None  # cableado desde el perfil MO2
+
+
+def test_build_modlist_checks_ignores_localappdata_without_mo2_profile(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # review Codex #306: sin plugins.txt en el perfil MO2, el gate NO se cae al
+    # %LOCALAPPDATA% global que reescribe LOOT — valida solo el perfil activo.
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    mo2 = tmp_path / "MO2"
+    (mo2 / "mods").mkdir(parents=True)
+    (mo2 / "overwrite").mkdir()
+    (mo2 / "profiles" / "Default").mkdir(parents=True)  # perfil SIN plugins.txt
+    # Un plugins.txt global que el resolver de unión hubiera tomado primero.
+    lad_game = tmp_path / "LocalAppData" / "Skyrim Special Edition"
+    lad_game.mkdir(parents=True)
+    (lad_game / "plugins.txt").write_bytes(b"\xef\xbb\xbf*Global.esp\r\n")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
+
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=game)
+    resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_active_profile = MagicMock(return_value="Default")
+
+    # Sin perfil resoluble → (None, None), NO se cae a LOCALAPPDATA.
+    assert _bare_service(resolver)._build_modlist_checks(game, mo2) == (None, None)

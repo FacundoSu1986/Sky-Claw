@@ -199,11 +199,18 @@ class SynthesisPipelineService:
         Synthesis procesa TODO el modlist, así que los sensores relevantes son:
         **permisos de escritura sobre el output** (overwrite / clon del sandbox —
         si no es escribible, Synthesis muere generando ``Synthesis.esp``),
-        **límites full/light** (>254 masters = ``Max Masters Exceeded``, el crash
-        documentado del SOP §0.7), **masters faltantes**, **overwrite sucio** y
-        **symlinks/junctions**. NO cablea la versión de LOOT (irrelevante para
-        Synthesis). Reusa las primitivas compartidas; no toca ``loot_service``.
-        Sensores no resolubles → ``None`` (omitidos con ``omit_unconfigured``).
+        **límites full/light del load order** (salud general del engine: un load
+        order ya al/por encima del límite de slots es un problema real),
+        **masters faltantes**, **overwrite sucio** y **symlinks/junctions**. NO
+        cablea la versión de LOOT (irrelevante para Synthesis). Reusa las
+        primitivas compartidas; no toca ``loot_service``. Sensores no resolubles →
+        ``None`` (omitidos con ``omit_unconfigured``).
+
+        NOTA (follow-up, review Codex #306): ``plugin_limits`` mide slots
+        full/light del engine, NO el fan-in de masters del ``Synthesis.esp``
+        generado — el ``Max Masters Exceeded`` del SOP §0.7 depende de cuántos
+        plugins fuente lista el ESP de salida y de si el auto-split de Synthesis
+        está activo, señales que este gate todavía no computa.
         """
         if self._preflight is not None:
             return self._preflight
@@ -258,25 +265,33 @@ class SynthesisPipelineService:
         return self._preflight
 
     def _build_modlist_checks(self, game: pathlib.Path, mo2: pathlib.Path) -> tuple[Any, Any]:
-        """Closures de masters/límites vía el resolver de fuentes compartido.
+        """Closures de masters/límites del **perfil MO2 activo**.
 
-        Solo si el perfil MO2 activo y las fuentes son resolubles; si no, devuelve
-        ``(None, None)`` → los checkpoints salen "no configurado" (omitidos). No
-        miente verde: solo cablea si HOY hay fuentes utilizables (lección #250).
+        Lee el load order de ``profiles/<perfil>/plugins.txt`` — NO el
+        ``%LOCALAPPDATA%\\plugins.txt`` global que reescribe LOOT fuera del VFS.
+        El gate de Synthesis debe validar el modlist REAL de MO2 contra el que
+        corre el ritual, no un load order global/stale que ``LoadOrderFileResolver``
+        prioriza en su unión (review Codex #306). Solo si el perfil es resoluble y
+        las fuentes utilizables; si no, ``(None, None)`` → checkpoints "no
+        configurado" (omitidos). No miente verde (lección #250).
         """
         profile = self._path_resolver.get_active_profile()
         if not isinstance(profile, str):
             return None, None
-        from sky_claw.local.mo2.load_order import LoadOrderFileResolver
+        from sky_claw.antigravity.security.path_validator import PathViolationError, assert_safe_component
         from sky_claw.local.mo2.plugin_sources import resolve_plugin_sources
         from sky_claw.local.validators.missing_masters import MissingMastersChecker
         from sky_claw.local.validators.plugin_limits import PluginLimitsChecker
 
-        lo_files = list(LoadOrderFileResolver(mo2_root=mo2, profile=profile).resolve().files)
-        # plugins.txt (activos con `*`) antes que loadorder.txt (incluye deshabilitados).
+        try:
+            assert_safe_component(profile, field="profile")  # guard de path-traversal (como el resolver de T-05)
+        except PathViolationError:
+            return None, None
+        profile_dir = mo2 / "profiles" / profile
+        # plugins.txt (activos con `*`) antes que loadorder.txt (orden completo).
         load_order_file = next(
-            (f for f in lo_files if f.name.lower() == "plugins.txt"),
-            lo_files[0] if lo_files else None,
+            (profile_dir / name for name in ("plugins.txt", "loadorder.txt") if (profile_dir / name).is_file()),
+            None,
         )
         if load_order_file is None:
             return None, None
