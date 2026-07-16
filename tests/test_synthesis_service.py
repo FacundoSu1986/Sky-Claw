@@ -1033,12 +1033,13 @@ def test_build_modlist_checks_ignores_localappdata_without_mo2_profile(
 
 
 # =============================================================================
-# T-26/T-28 (ADR 0002): caja negra de vuelo en Synthesis (tercer productor tras
-# LOOT y xEdit). El entry point mutante (execute_pipeline) persiste el
-# manifiesto fail-closed ANTES de mutar y el informe best-effort DESPUÉS del
-# commit. Los tests corren contra un OperationJournal REAL (como
-# test_loot_service/test_xedit_service) porque el informe se compone leyendo la
-# caja negra ya persistida.
+# T-26 (ADR 0002): ActionManifest en Synthesis (tercer productor tras LOOT y
+# xEdit). El entry point mutante (execute_pipeline) persiste el manifiesto
+# fail-closed ANTES de mutar. El FlightReport (T-28) NO se emite acá: Synthesis
+# corre SIEMPRE en sandbox con commit diferido a la promoción, así que el cierre
+# post-vuelo con las rutas reales pertenece al promotion flow (follow-up, review
+# #309). Los tests corren contra un OperationJournal REAL (como
+# test_loot_service/test_xedit_service).
 # =============================================================================
 
 
@@ -1100,7 +1101,7 @@ def _svc_real_journal(
 
 
 @pytest.mark.asyncio
-async def test_black_box_persiste_manifiesto_y_informe(
+async def test_black_box_persiste_manifiesto(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
     real_journal,  # noqa: ANN001
@@ -1109,7 +1110,8 @@ async def test_black_box_persiste_manifiesto_y_informe(
     tmp_path: pathlib.Path,
 ) -> None:
     """Un pipeline exitoso persiste un ActionManifest (tool=Synthesis, con el ESP
-    de salida en files_touched) ANTES de mutar y un FlightReport DESPUÉS (T-26/T-28)."""
+    de salida en files_touched) ANTES de mutar (T-26). El FlightReport NO se emite
+    en execute_pipeline (sandbox con commit diferido → follow-up del promotion flow)."""
     output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
     output_esp.touch()
     svc = _svc_real_journal(lock_manager, snapshot_manager, real_journal, mock_path_resolver, event_bus, tmp_path)
@@ -1134,8 +1136,8 @@ async def test_black_box_persiste_manifiesto_y_informe(
     manifest = await _manifiesto_ultima_tx(real_journal)
     assert manifest.tool == "Synthesis"
     assert str(output_esp) in manifest.files_touched
-    informes = await _informe_ultima_tx(real_journal)
-    assert len(informes) == 1
+    # T-28 fuera de scope acá: no se emite informe en execute_pipeline (review #309).
+    assert await _informe_ultima_tx(real_journal) == []
 
 
 @pytest.mark.asyncio
@@ -1175,7 +1177,7 @@ async def test_sin_manifiesto_no_ejecuta_patchers(
 
 
 @pytest.mark.asyncio
-async def test_informe_falla_no_rompe_run_exitoso(
+async def test_fallo_del_manifiesto_no_propaga_si_el_rollback_marking_falla(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
     real_journal,  # noqa: ANN001
@@ -1183,18 +1185,19 @@ async def test_informe_falla_no_rompe_run_exitoso(
     event_bus: CoreEventBus,
     tmp_path: pathlib.Path,
 ) -> None:
-    """El FlightReport es best-effort: un fallo al persistirlo NO rompe un pipeline
-    ya exitoso (misma disciplina que LOOT/xEdit, T-28)."""
+    """Si el journal ya falló al persistir el manifiesto Y vuelve a fallar al marcar
+    la TX rolled_back, execute_pipeline igual devuelve ActionManifestFailed sin
+    propagar la excepción secundaria (guardado, review #309)."""
     output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
     output_esp.touch()
     svc = _svc_real_journal(lock_manager, snapshot_manager, real_journal, mock_path_resolver, event_bus, tmp_path)
+    run_pipeline = AsyncMock(return_value=_make_success_result(output_esp))
 
     with (
-        patch.object(
-            SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=_make_success_result(output_esp)
-        ),
+        patch.object(real_journal, "persist_action_manifest", AsyncMock(side_effect=RuntimeError("boom"))),
+        patch.object(real_journal, "mark_transaction_rolled_back", AsyncMock(side_effect=RuntimeError("also down"))),
+        patch.object(SynthesisRunner, "run_pipeline", run_pipeline),
         patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=True),
-        patch.object(real_journal, "persist_flight_report", AsyncMock(side_effect=OSError("disk full"))),
         patch.dict(
             "os.environ",
             {
@@ -1206,6 +1209,6 @@ async def test_informe_falla_no_rompe_run_exitoso(
     ):
         out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
 
-    assert out["success"] is True  # el informe roto no tumba el run
-    manifest = await _manifiesto_ultima_tx(real_journal)
-    assert manifest.tool == "Synthesis"
+    run_pipeline.assert_not_awaited()
+    assert out["success"] is False
+    assert out["reason"] == "ActionManifestFailed"  # la excepción secundaria no lo enmascaró
