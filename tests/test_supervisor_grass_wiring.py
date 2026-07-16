@@ -37,6 +37,8 @@ def _supervisor_con_resolver(
     sup._path_resolver = resolver
     sup._modding_validator = validator
     sup.profile_name = profile_name
+    # Sin controller compartido inyectado por defecto (tests/standalone).
+    sup._mo2_controller = None
     return sup
 
 
@@ -103,3 +105,39 @@ def test_build_grass_dependencies_sin_skyrim_devuelve_none(tmp_path: pathlib.Pat
     sup = _supervisor_con_resolver(mo2_root, None, PathValidator(roots=[tmp_path]))
 
     assert sup._build_grass_dependencies() is None
+
+
+def test_build_grass_dependencies_controller_aislado_del_appcontext(tmp_path: pathlib.Path) -> None:
+    """Codex #305 C2: el ritual de grass usa un MO2Controller PROPIO, aislado del
+    del AppContext. close_game() del runner mata TODOS los PIDs trackeados, así
+    que compartir el tracking con el juego que el usuario lanzó lo mataría."""
+    mo2_root = tmp_path / "MO2"
+    mo2_root.mkdir()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+    sup = _supervisor_con_resolver(mo2_root, game, PathValidator(roots=[tmp_path]))
+
+    deps = sup._build_grass_dependencies()
+
+    assert deps is not None
+    # La instancia es propia del ritual (se construyó y memoizó acá), no una
+    # inyectada desde afuera: el memo estaba vacío antes de la resolución.
+    assert isinstance(deps.mo2, MO2Controller)
+    assert deps.profile_manager._controller is deps.mo2
+
+
+def test_build_grass_dependencies_memoiza_el_controller(tmp_path: pathlib.Path) -> None:
+    """Follow-up H4 (parte válida): el controller propio se memoiza — dos
+    resoluciones devuelven la MISMA instancia (antes creaba una nueva por
+    llamada, partiendo el tracking de PIDs entre corridas del ritual)."""
+    mo2_root = tmp_path / "MO2"
+    mo2_root.mkdir()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+    sup = _supervisor_con_resolver(mo2_root, game, PathValidator(roots=[tmp_path]))
+
+    primera = sup._build_grass_dependencies()
+    segunda = sup._build_grass_dependencies()
+
+    assert primera is not None and segunda is not None
+    assert primera.mo2 is segunda.mo2

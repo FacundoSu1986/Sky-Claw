@@ -134,6 +134,13 @@ class SupervisorAgent:
         patch_advisor_llm: LLMCallable | None = None,
     ):
         self.db = DatabaseAgent()
+        # Memo del MO2Controller PROPIO del ritual de grass — aislado del
+        # controller del AppContext a propósito: el cleanup de grass
+        # (close_game entre relanzamientos) mata TODOS los PIDs trackeados, así
+        # que compartir el tracking con el juego que el usuario lanzó por la
+        # tool normal lo mataría (review Codex #305 C2). Se puebla perezosamente
+        # en _resolve_grass_mo2_controller y se reusa entre corridas del ritual.
+        self._mo2_controller: MO2Controller | None = None
         # C2: reutilizar el NetworkGateway del AppContext cuando se inyecta, para
         # NO duplicar caché DNS pinning ni reglas de egress (dos políticas que
         # podrían divergir). ``is not None`` explícito (no ``or``): un gateway
@@ -546,7 +553,7 @@ class SupervisorAgent:
         game_path = self._path_resolver.get_skyrim_path()
         if mo2_root is None or game_path is None:
             return None
-        mo2 = MO2Controller(mo2_root, self._modding_validator)
+        mo2 = self._resolve_grass_mo2_controller(mo2_root)
         profile_manager = GrassProfileManager(
             mo2_root,
             self._modding_validator,
@@ -559,6 +566,26 @@ class SupervisorAgent:
             game_path=game_path,
             overwrite_grass_dir=mo2_root / "overwrite" / "Grass",
         )
+
+    def _resolve_grass_mo2_controller(self, mo2_root: pathlib.Path) -> MO2Controller:
+        """Devuelve el MO2Controller PROPIO del ritual de grass, memoizado.
+
+        Es una instancia AISLADA a propósito (no la del AppContext): el runner
+        de grass llama ``close_game()`` entre relanzamientos y al salir, y
+        ``close_game`` mata TODOS los PIDs trackeados (§1.2). Si compartiera el
+        ``_launched_procs`` con el controller del AppContext, arrancar el grass
+        cache mataría el Skyrim que el usuario lanzó con la tool normal (review
+        Codex #305 C2). El cleanup de grass debe ser ritual-scoped.
+
+        Se memoiza (en vez de construir uno nuevo por resolución) para no
+        recrearlo en reintentos del ritual y mantener un tracking de PIDs
+        estable entre corridas.
+        """
+        resolved = mo2_root.resolve()
+        if self._mo2_controller is not None and self._mo2_controller.root == resolved:
+            return self._mo2_controller
+        self._mo2_controller = MO2Controller(resolved, self._modding_validator)
+        return self._mo2_controller
 
     # =========================================================================
     # FASE 6: Wrye Bash Integration

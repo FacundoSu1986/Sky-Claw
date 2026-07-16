@@ -178,6 +178,39 @@ async def test_declara_rollback_cuando_la_restauracion_ocurrio(
     assert out["success"] is False
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
     assert _payload_completed(mock_event_bus)["rolled_back"] is True
+
+
+@pytest.mark.asyncio
+async def test_no_declara_rollback_con_lock_real_si_el_restore_falla(
+    servicio: SynthesisPipelineService,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Follow-up H3 (auditoría #300-#304): mismo camino que el test de restore
+    exitoso, pero con el LOCK REAL y ``restore_snapshot`` reventando en
+    ``__aexit__``. El servicio consulta ``rollback_completed`` (False) → NO marca
+    la TX como rolled_back y reporta ``rolled_back=False``. Antes solo se cubría
+    con un fake del lock o con el lock real y restore completo."""
+    esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    esp.write_bytes(b"TES4 original")
+
+    async def _restore_falla(*_a: object, **_k: object) -> bool:
+        raise OSError("disco perdido durante el rollback")
+
+    snapshot_manager.restore_snapshot = _restore_falla  # type: ignore[assignment]
+
+    with (
+        patch.object(SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=_resultado_fallido()),
+        patch.dict("os.environ", _env_de_tools(tmp_path)),
+    ):
+        out = await servicio.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is False
+    # Restore fallido → la TX queda PENDIENTE para recuperación manual.
+    mock_journal.mark_transaction_rolled_back.assert_not_awaited()
+    assert _payload_completed(mock_event_bus)["rolled_back"] is False
     assert esp.read_bytes() == b"TES4 original"  # el snapshot restauró
 
 

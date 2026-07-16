@@ -622,6 +622,58 @@ async def test_exception_path_restore_failure_does_not_mask_original(
     assert await lock_manager.get_lock_info("x.esp") is None
 
 
+@pytest.mark.asyncio
+async def test_rollback_parcial_reporta_incompleto_y_lista_el_fallo(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Follow-up H3 (auditoría #300-#304): rollback de N archivos donde UNO no se
+    restaura → rollback_completed=False y rollback_failures nombra SÓLO el que
+    falló. El otro archivo sí queda restaurado a su contenido original. Cierra el
+    gap: no había test del caso PARCIAL ejercitando el lock real (solo el fake y
+    el restore completo)."""
+    file_ok = tmp_path / "ok.esp"
+    file_ok.write_text("original OK")
+    file_fail = tmp_path / "fail.esp"
+    file_fail.write_text("original FAIL")
+    await snapshot_manager.initialize()
+
+    original_restore = snapshot_manager.restore_snapshot
+
+    async def _restore_selectivo(snapshot_path: object, original_path: object, **kwargs: object) -> bool:
+        # Solo falla la restauración de file_fail; file_ok se restaura de verdad.
+        if str(original_path) == str(file_fail):
+            raise OSError("disco perdido para fail.esp")
+        return await original_restore(snapshot_path, original_path, **kwargs)  # type: ignore[arg-type]
+
+    snapshot_manager.restore_snapshot = _restore_selectivo  # type: ignore[assignment]
+
+    captured: dict[str, SnapshotTransactionLock] = {}
+    with pytest.raises(RuntimeError, match="boom"):
+        async with SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id="parcial.esp",
+            agent_id="agent",
+            target_files=[file_ok, file_fail],
+        ) as lock:
+            captured["lock"] = lock
+            file_ok.write_text("mutado OK")
+            file_fail.write_text("mutado FAIL")
+            raise RuntimeError("boom")
+
+    lock = captured["lock"]
+    # Restauración incompleta: el flag NO puede reportar rollback completo.
+    assert lock.rollback_completed is False
+    assert [str(p) for p in lock.rollback_failures] == [str(file_fail)]
+    # El archivo restaurable volvió a su contenido original; el fallido sigue mutado.
+    assert file_ok.read_text() == "original OK"
+    assert file_fail.read_text() == "mutado FAIL"
+    # Lock liberado pese al rollback parcial (sin huérfano).
+    assert await lock_manager.get_lock_info("parcial.esp") is None
+
+
 # =============================================================================
 # Concurrency test
 # =============================================================================
