@@ -1030,3 +1030,182 @@ def test_build_modlist_checks_ignores_localappdata_without_mo2_profile(
 
     # Sin perfil resoluble → (None, None), NO se cae a LOCALAPPDATA.
     assert _bare_service(resolver)._build_modlist_checks(game, mo2) == (None, None)
+
+
+# =============================================================================
+# T-26/T-28 (ADR 0002): caja negra de vuelo en Synthesis (tercer productor tras
+# LOOT y xEdit). El entry point mutante (execute_pipeline) persiste el
+# manifiesto fail-closed ANTES de mutar y el informe best-effort DESPUÉS del
+# commit. Los tests corren contra un OperationJournal REAL (como
+# test_loot_service/test_xedit_service) porque el informe se compone leyendo la
+# caja negra ya persistida.
+# =============================================================================
+
+
+@pytest.fixture
+async def real_journal(tmp_path: pathlib.Path):  # noqa: ANN201
+    """OperationJournal real sobre una DB temporal (espejo de test_xedit_service)."""
+    from sky_claw.antigravity.db.journal import OperationJournal
+
+    j = OperationJournal(tmp_path / "synthesis_journal.db")
+    await j.open()
+    yield j  # type: ignore[misc]
+    await j.close()
+
+
+async def _ops_ultima_tx(journal):  # noqa: ANN001, ANN202
+    (ultima,) = await journal.list_recent_transactions(limit=1)
+    return await journal.get_operations_by_transaction(ultima.transaction_id)
+
+
+async def _manifiesto_ultima_tx(journal):  # noqa: ANN001, ANN202
+    """El op del ActionManifest (no el del FlightReport, discriminado por ``kind``)."""
+    from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
+
+    metas = [
+        e.metadata
+        for e in await _ops_ultima_tx(journal)
+        if e.metadata and e.metadata.get("ritual_id") and e.metadata.get("kind") != "flight_report"
+    ]
+    assert len(metas) == 1
+    return ActionManifest.model_validate(metas[0])
+
+
+async def _informe_ultima_tx(journal):  # noqa: ANN001, ANN202
+    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+
+    return [
+        FlightReport.model_validate(e.metadata)
+        for e in await _ops_ultima_tx(journal)
+        if e.metadata and e.metadata.get("kind") == "flight_report"
+    ]
+
+
+def _svc_real_journal(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    journal: object,
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> SynthesisPipelineService:
+    return SynthesisPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        journal=journal,  # type: ignore[arg-type]
+        path_resolver=mock_path_resolver,
+        event_bus=event_bus,
+        pipeline_config_path=tmp_path / "nonexistent_pipeline.json",
+    )
+
+
+@pytest.mark.asyncio
+async def test_black_box_persiste_manifiesto_y_informe(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un pipeline exitoso persiste un ActionManifest (tool=Synthesis, con el ESP
+    de salida en files_touched) ANTES de mutar y un FlightReport DESPUÉS (T-26/T-28)."""
+    output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    output_esp.touch()
+    svc = _svc_real_journal(lock_manager, snapshot_manager, real_journal, mock_path_resolver, event_bus, tmp_path)
+
+    with (
+        patch.object(
+            SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=_make_success_result(output_esp)
+        ),
+        patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=True),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
+    ):
+        out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is True
+    manifest = await _manifiesto_ultima_tx(real_journal)
+    assert manifest.tool == "Synthesis"
+    assert str(output_esp) in manifest.files_touched
+    informes = await _informe_ultima_tx(real_journal)
+    assert len(informes) == 1
+
+
+@pytest.mark.asyncio
+async def test_sin_manifiesto_no_ejecuta_patchers(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si la persistencia del manifiesto falla, el pipeline NO corre (fail-closed):
+    ningún patcher se ejecuta y el resultado trae reason=ActionManifestFailed (T-26)."""
+    output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    output_esp.touch()
+    svc = _svc_real_journal(lock_manager, snapshot_manager, real_journal, mock_path_resolver, event_bus, tmp_path)
+    run_pipeline = AsyncMock(return_value=_make_success_result(output_esp))
+
+    with (
+        patch.object(real_journal, "persist_action_manifest", AsyncMock(side_effect=RuntimeError("boom"))),
+        patch.object(SynthesisRunner, "run_pipeline", run_pipeline),
+        patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=True),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
+    ):
+        out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
+
+    run_pipeline.assert_not_awaited()  # fail-closed: no se mutó nada
+    assert out["success"] is False
+    assert out["reason"] == "ActionManifestFailed"
+
+
+@pytest.mark.asyncio
+async def test_informe_falla_no_rompe_run_exitoso(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El FlightReport es best-effort: un fallo al persistirlo NO rompe un pipeline
+    ya exitoso (misma disciplina que LOOT/xEdit, T-28)."""
+    output_esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    output_esp.touch()
+    svc = _svc_real_journal(lock_manager, snapshot_manager, real_journal, mock_path_resolver, event_bus, tmp_path)
+
+    with (
+        patch.object(
+            SynthesisRunner, "run_pipeline", new_callable=AsyncMock, return_value=_make_success_result(output_esp)
+        ),
+        patch.object(SynthesisRunner, "validate_synthesis_esp", new_callable=AsyncMock, return_value=True),
+        patch.object(real_journal, "persist_flight_report", AsyncMock(side_effect=OSError("disk full"))),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
+    ):
+        out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is True  # el informe roto no tumba el run
+    manifest = await _manifiesto_ultima_tx(real_journal)
+    assert manifest.tool == "Synthesis"

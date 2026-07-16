@@ -73,6 +73,13 @@ def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) ->
     return result
 
 
+class _ActionManifestError(Exception):
+    """Interno (T-26): la emisión del manifiesto de vuelo falló. Se lanza DENTRO
+    del lock (antes de mutar) para que el Ritual NO proceda sin manifiesto — la
+    caja negra no es opcional cuando el journal está cableado (espejo de
+    ``loot_service``/``xedit_service._ActionManifestError``)."""
+
+
 class SynthesisPipelineService:
     """Servicio dedicado para la ejecución del pipeline de Synthesis.
 
@@ -396,6 +403,7 @@ class SynthesisPipelineService:
 
         result: SynthesisResult
         rolled_back = False
+        manifest_failed = False
         tx_id: int | None = None
         # M-7 (misma lección que #295 en xedit_service): bindear el lock para
         # reportar el resultado REAL del rollback (tx_lock.rollback_completed)
@@ -420,6 +428,17 @@ class SynthesisPipelineService:
                     agent_id=self.AGENT_ID,
                 )
 
+                # T-26 (ADR 0002): la caja negra ANTES de tocar el output
+                # (fail-closed). Si el manifiesto no se puede emitir, se lanza
+                # DENTRO del lock → __aexit__ restaura los snapshots y ningún
+                # patcher corre (espejo de xedit_service).
+                await self._emit_action_manifest(
+                    tx_id=tx_id,
+                    target_files=[target_esp],
+                    snapshots=tx_lock.snapshots,
+                    summary=f"Ejecutar {len(patcher_ids)} patcher(s) de Synthesis → {target_esp.name}.",
+                )
+
                 result = await runner.run_pipeline(patcher_ids)
 
                 # Validar ESP DENTRO del context manager para activar rollback
@@ -439,9 +458,34 @@ class SynthesisPipelineService:
                         stderr=result.stderr,
                     )
 
-            # Commit journal
+            # Commit journal. Un fallo del commit conserva el camino de "rollback
+            # honesto" (#295): propaga a ``except Exception`` → resultado fallido
+            # + TX pendiente (la mutación quedó aplicada sin restauración). El
+            # FlightReport se cierra solo tras un commit exitoso.
             if tx_id is not None:
                 await self._journal.commit_transaction(tx_id)
+                # T-28: cerrar la caja negra tras el commit (best-effort).
+                await self._emit_flight_report(tx_id)
+
+        except _ActionManifestError as exc:
+            # La caja negra no se pudo emitir: ningún patcher corrió. __aexit__ ya
+            # restauró los snapshots; marcar la TX para no dejarla PENDING. Como
+            # la mutación nunca ocurrió, marcar rolled_back es siempre seguro acá.
+            manifest_failed = True
+            rolled_back = bool(tx_lock and tx_lock.rollback_completed)
+            if tx_id is not None:
+                await self._journal.mark_transaction_rolled_back(tx_id)
+            logger.error("Synthesis: no se pudo emitir el ActionManifest; abortado: %s", exc)
+            detail = f"Manifiesto de vuelo requerido no emitido: {exc}"
+            result = SynthesisResult(
+                success=False,
+                output_esp=None,
+                return_code=-1,
+                stdout="",
+                stderr=detail,
+                patchers_executed=[],
+                errors=[detail],
+            )
 
         except (SynthesisExecutionError, SynthesisValidationError) as exc:
             # __aexit__ intentó restaurar los snapshots. M-7: reportar el
@@ -546,7 +590,68 @@ class SynthesisPipelineService:
                 duration,
             )
 
-        return _attach_preflight(self._result_to_dict(result), preflight_report)
+        out = self._result_to_dict(result)
+        if manifest_failed:
+            out["reason"] = "ActionManifestFailed"
+        return _attach_preflight(out, preflight_report)
+
+    # ------------------------------------------------------------------
+    # Caja negra de vuelo (T-26/T-28, ADR 0002) — espejo de xedit_service
+    # ------------------------------------------------------------------
+
+    async def _emit_action_manifest(
+        self,
+        *,
+        tx_id: int,
+        target_files: list[pathlib.Path],
+        snapshots: Any,
+        summary: str,
+    ) -> None:
+        """Construye y persiste el ActionManifest ANTES de mutar (T-26).
+
+        Fail-closed: cualquier fallo del builder o del journal se convierte en
+        :class:`_ActionManifestError` para que el caller aborte el pipeline sin
+        mutar (la caja negra no es opcional cuando el journal está cableado).
+        """
+        from sky_claw.antigravity.orchestrator.preview.action_manifest import build_action_manifest
+
+        try:
+            manifest = build_action_manifest(
+                ritual_id=f"synthesis-pipeline-{tx_id}",
+                tool="Synthesis",
+                tool_version=None,  # Synthesis no expone versión hoy (follow-up).
+                target_files=[str(f) for f in target_files],
+                snapshots=snapshots,
+                summary=summary,
+            )
+            await self._journal.persist_action_manifest(
+                manifest,
+                agent_id=self.AGENT_ID,
+                transaction_id=tx_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — boundary: cualquier fallo del journal/builder
+            raise _ActionManifestError(str(exc)) from exc
+
+    async def _emit_flight_report(self, tx_id: int) -> None:
+        """Compone y persiste el FlightReport del Ritual terminado (T-28).
+
+        Post-vuelo y best-effort: lee la caja negra desde el journal (el
+        manifiesto persistido + el estado REAL de la TX) y la persiste. Un fallo
+        se loguea y NO rompe un pipeline ya exitoso (misma disciplina que LOOT/xEdit).
+        """
+        from sky_claw.antigravity.orchestrator.preview.flight_report import (
+            compose_flight_report_from_journal,
+        )
+
+        try:
+            report = await compose_flight_report_from_journal(self._journal, transaction_id=tx_id)
+            await self._journal.persist_flight_report(
+                report,
+                agent_id=self.AGENT_ID,
+                transaction_id=tx_id,
+            )
+        except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error("Fallo al persistir el informe de vuelo de la TX %d", tx_id, exc_info=True)
 
     # ------------------------------------------------------------------
     # Helpers
