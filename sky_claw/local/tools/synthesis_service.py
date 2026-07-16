@@ -53,11 +53,24 @@ if TYPE_CHECKING:
     from sky_claw.antigravity.core.path_resolver import PathResolutionService
     from sky_claw.antigravity.db.journal import OperationJournal
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+    from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
 logger = logging.getLogger(__name__)
 
 # Directorio de staging de backups (compartido con supervisor)
 _BACKUP_STAGING_DIR = ".skyclaw_backups/"
+
+
+def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
+    """Adjunta el reporte de preflight al ``result`` cuando no está verde.
+
+    Mismo criterio que ``loot_service``/``xedit_service`` (T-16b/T-16c·1): un
+    semáforo verde no ensucia el dict; amarillo/rojo viajan como
+    ``result["preflight"]`` para que el panel vivo lo renderice.
+    """
+    if report is not None and report.status.value != "green":
+        result["preflight"] = report.to_dict()
+    return result
 
 
 class SynthesisPipelineService:
@@ -81,12 +94,15 @@ class SynthesisPipelineService:
         event_bus: CoreEventBus,
         pipeline_config_path: pathlib.Path | None = None,
         output_path: pathlib.Path | None = None,
+        preflight: PreflightService | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
         self._journal = journal
         self._path_resolver = path_resolver
         self._event_bus = event_bus
+        # Preflight inyectable (tests) o construido perezosamente en el primer uso.
+        self._preflight = preflight
         self._pipeline_config_path = pipeline_config_path or (
             pathlib.Path(_BACKUP_STAGING_DIR) / "synthesis_pipeline.json"
         )
@@ -177,6 +193,118 @@ class SynthesisPipelineService:
 
         return self._patcher_pipeline
 
+    def _ensure_preflight(self) -> PreflightService | None:
+        """Construye perezosamente el preflight de Synthesis (T-16c·2, STAGE 7).
+
+        Synthesis procesa TODO el modlist, así que los sensores relevantes son:
+        **permisos de escritura sobre el output** (overwrite / clon del sandbox —
+        si no es escribible, Synthesis muere generando ``Synthesis.esp``),
+        **límites full/light** (>254 masters = ``Max Masters Exceeded``, el crash
+        documentado del SOP §0.7), **masters faltantes**, **overwrite sucio** y
+        **symlinks/junctions**. NO cablea la versión de LOOT (irrelevante para
+        Synthesis). Reusa las primitivas compartidas; no toca ``loot_service``.
+        Sensores no resolubles → ``None`` (omitidos con ``omit_unconfigured``).
+        """
+        if self._preflight is not None:
+            return self._preflight
+
+        game = self._path_resolver.get_skyrim_path()
+        mo2 = self._path_resolver.get_mo2_path()
+        if not isinstance(game, pathlib.Path) or not isinstance(mo2, pathlib.Path):
+            return None
+
+        # Imports perezosos (anti-ciclo: validators.preflight llega a tools._process).
+        from sky_claw.local.validators.preflight import PreflightService
+        from sky_claw.local.validators.vfs_health import VfsHealthChecker
+        from sky_claw.local.validators.write_permissions import WritePermissionsChecker
+
+        # vfs sobre rutas CRUDAS (las resueltas ya siguieron los symlinks).
+        raw_game = self._path_resolver.get_skyrim_path_raw()
+        raw_mo2 = self._path_resolver.get_mo2_path_raw()
+        raw_game = raw_game if isinstance(raw_game, pathlib.Path) else None
+        raw_mo2 = raw_mo2 if isinstance(raw_mo2, pathlib.Path) else None
+        vfs_checker = None
+        if raw_game is not None or raw_mo2 is not None:
+            vfs_checker = VfsHealthChecker(game_path=raw_game, mo2_root=raw_mo2, scan_mods_dir=False)
+
+        # Output real donde Synthesis escribe (el override del sandbox manda; si no,
+        # overwrite / "Synthesis Output" — mismo cálculo que _ensure_synthesis_runner).
+        output_dir = self._output_path
+        if output_dir is None:
+            output_dir = mo2 / "overwrite"
+            if not output_dir.exists():
+                output_dir = mo2 / "mods" / "Synthesis Output"
+        overwrite_dir = mo2 / "overwrite"
+
+        def _permissions():
+            # Re-probe por llamada (freshness): un cambio de permisos entre corridas se ve.
+            return WritePermissionsChecker(targets=[output_dir]).check()
+
+        def _overwrite():
+            from sky_claw.local.validators.overwrite_health import OverwriteHealthChecker
+
+            return OverwriteHealthChecker(overwrite_dir=overwrite_dir).check()
+
+        masters_check, limits_check = self._build_modlist_checks(game, mo2)
+
+        self._preflight = PreflightService(
+            vfs_checker=vfs_checker,
+            permissions_check=_permissions,
+            overwrite_check=_overwrite,
+            masters_check=masters_check,
+            limits_check=limits_check,
+            omit_unconfigured=True,
+        )
+        return self._preflight
+
+    def _build_modlist_checks(self, game: pathlib.Path, mo2: pathlib.Path) -> tuple[Any, Any]:
+        """Closures de masters/límites vía el resolver de fuentes compartido.
+
+        Solo si el perfil MO2 activo y las fuentes son resolubles; si no, devuelve
+        ``(None, None)`` → los checkpoints salen "no configurado" (omitidos). No
+        miente verde: solo cablea si HOY hay fuentes utilizables (lección #250).
+        """
+        profile = self._path_resolver.get_active_profile()
+        if not isinstance(profile, str):
+            return None, None
+        from sky_claw.local.mo2.load_order import LoadOrderFileResolver
+        from sky_claw.local.mo2.plugin_sources import resolve_plugin_sources
+        from sky_claw.local.validators.missing_masters import MissingMastersChecker
+        from sky_claw.local.validators.plugin_limits import PluginLimitsChecker
+
+        lo_files = list(LoadOrderFileResolver(mo2_root=mo2, profile=profile).resolve().files)
+        # plugins.txt (activos con `*`) antes que loadorder.txt (incluye deshabilitados).
+        load_order_file = next(
+            (f for f in lo_files if f.name.lower() == "plugins.txt"),
+            lo_files[0] if lo_files else None,
+        )
+        if load_order_file is None:
+            return None, None
+        game_data_dir = game / "Data"
+        mo2_mods_dir = mo2 / "mods"
+        mo2_overwrite_dir = mo2 / "overwrite"
+
+        def _sources():
+            return resolve_plugin_sources(
+                game_data_dir=game_data_dir,
+                mo2_mods_dir=mo2_mods_dir,
+                mo2_overwrite_dir=mo2_overwrite_dir,
+                load_order_file=load_order_file,
+            )
+
+        if not _sources().plugin_dirs or not _sources().enabled_plugins:
+            return None, None
+
+        def _masters():
+            sources = _sources()
+            return MissingMastersChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
+
+        def _limits():
+            sources = _sources()
+            return PluginLimitsChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
+
+        return _masters, _limits
+
     # ------------------------------------------------------------------
     # Pipeline execution
     # ------------------------------------------------------------------
@@ -212,13 +340,28 @@ class SynthesisPipelineService:
             logger.info("Run sandboxeado: snapshot del servicio deshabilitado (el clon es el rollback).")
             create_snapshot = False
 
+        # Preflight brutal ANTES de tocar nada (T-16c·2, STAGE 7): un semáforo ROJO
+        # (p. ej. >254 masters, u output sin permisos) cancela Synthesis sin correr el
+        # pipeline ni abrir transacción. Amarillo/verde no bloquean; se surface al panel.
+        preflight = self._ensure_preflight()
+        preflight_report = None
+        if preflight is not None:
+            preflight_report = await preflight.run()
+            if preflight_report.blocks_mutations:
+                red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
+                logger.warning("Synthesis (stage 7) bloqueado por preflight en rojo: %s", red)
+                blocked = self._error_dict(f"Preflight en rojo, Synthesis cancelado: {red}")
+                blocked["reason"] = "PreflightBlocked"
+                blocked["preflight"] = preflight_report.to_dict()
+                return blocked
+
         # --- Early init ---
         try:
             runner = self._ensure_synthesis_runner()
             pipeline = self._ensure_patcher_pipeline()
         except SynthesisExecutionError as exc:
-            logger.error("Error inicializando Synthesis: %s", exc)
-            return self._error_dict(str(exc))
+            logger.error("Error inicializando Synthesis (stage 7): %s", exc)
+            return _attach_preflight(self._error_dict(str(exc)), preflight_report)
 
         if patcher_ids is None:
             enabled = pipeline.get_enabled_patchers()
@@ -226,7 +369,7 @@ class SynthesisPipelineService:
 
         if not patcher_ids:
             logger.warning("No hay patchers para ejecutar")
-            return self._error_dict("No patchers configured or enabled")
+            return _attach_preflight(self._error_dict("No patchers configured or enabled"), preflight_report)
 
         target_esp = runner._config.output_path / "Synthesis.esp"
 
@@ -402,7 +545,7 @@ class SynthesisPipelineService:
                 duration,
             )
 
-        return self._result_to_dict(result)
+        return _attach_preflight(self._result_to_dict(result), preflight_report)
 
     # ------------------------------------------------------------------
     # Helpers
