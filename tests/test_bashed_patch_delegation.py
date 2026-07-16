@@ -70,7 +70,8 @@ class TestOrquestador:
 
     def test_estrategias_por_defecto_incluyen_delegacion(self, orquestador: PatchOrchestrator) -> None:
         nombres = {s.__class__.__name__ for s in orquestador.strategies}
-        assert nombres == {"ExecuteXEditScript", "DelegateToBashedPatch"}
+        # AIAssistedPatch (Fase 1): catch-all advisory para críticos sin script.
+        assert nombres == {"ExecuteXEditScript", "DelegateToBashedPatch", "AIAssistedPatch"}
 
     async def test_resolve_lvli_produce_plan_delegado(self, orquestador: PatchOrchestrator) -> None:
         resultado = await orquestador.resolve(_reporte(_conflicto("LVLI", "warning")))
@@ -79,11 +80,19 @@ class TestOrquestador:
         assert resultado.strategy_type is PatchStrategyType.DELEGATE_BASHED_PATCH
         assert any("Bashed Patch" in w for w in resultado.warnings)
 
-    async def test_conflictos_criticos_siguen_en_xedit(self, orquestador: PatchOrchestrator) -> None:
+    async def test_conflictos_criticos_no_van_al_bashed_patch(self, orquestador: PatchOrchestrator) -> None:
+        """El punto de esta ancla es que la delegación NO roba críticos (ADR 0001).
+
+        Con el bundle actual (sin fix_npc_conflicts.pas) el crítico enruta al
+        advisor de IA — can_handle de ExecuteXEditScript exige script real
+        (fail-closed anti-placebo). Con el .pas en disco volvería a
+        EXECUTE_XEDIT_SCRIPT (anclado en test_ai_assisted_strategy.py).
+        """
         resultado = await orquestador.resolve(_reporte(_conflicto("NPC_", "critical"), criticos=1))
 
         assert resultado.success is True
-        assert resultado.strategy_type is PatchStrategyType.EXECUTE_XEDIT_SCRIPT
+        assert resultado.strategy_type is not PatchStrategyType.DELEGATE_BASHED_PATCH
+        assert resultado.strategy_type is PatchStrategyType.AI_ASSISTED
 
     async def test_delegacion_maneja_los_tres_tipos(self) -> None:
         estrategia = DelegateToBashedPatch()

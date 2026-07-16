@@ -32,6 +32,7 @@ from sky_claw.antigravity.orchestrator.ws_event_streamer import LangGraphEventSt
 from sky_claw.antigravity.scraper.scraper_agent import ScraperAgent
 from sky_claw.antigravity.security.hitl import HITLGuard
 from sky_claw.antigravity.security.network_gateway import NetworkGateway
+from sky_claw.local.ai.patch_advisor_llm import LLMCallable
 from sky_claw.local.assets import AssetConflictDetector, AssetConflictReport
 from sky_claw.local.mo2.grass_profile import GrassProfileManager
 from sky_claw.local.mo2.vfs import MO2Controller
@@ -125,6 +126,12 @@ class SupervisorAgent:
         lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
         path_validator: PathValidatorProtocol | None = None,
         gateway: NetworkGateway | None = None,
+        # Fase 1 AI-assisted: callable (system, user) -> respuesta para el
+        # PatchAdvisorLLM. Lo arma AppContext.make_patch_advisor_llm() (resuelve
+        # router/sesión perezosamente — el supervisor se construye antes de que
+        # start_full monte el router). None = advisor no disponible: los
+        # conflictos críticos sin script fallan closed con mensaje accionable.
+        patch_advisor_llm: LLMCallable | None = None,
     ):
         self.db = DatabaseAgent()
         # C2: reutilizar el NetworkGateway del AppContext cuando se inyecta, para
@@ -200,6 +207,7 @@ class SupervisorAgent:
             journal=self.journal,
             path_resolver=self._path_resolver,
             event_bus=self._event_bus,
+            llm=patch_advisor_llm,  # Fase 1 AI-assisted (None = fail-closed)
         )
 
         # Audit #190: LOOT --sort rewrites the shared load order, so the real

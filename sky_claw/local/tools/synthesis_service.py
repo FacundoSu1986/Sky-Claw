@@ -253,13 +253,13 @@ class SynthesisPipelineService:
         result: SynthesisResult
         rolled_back = False
         tx_id: int | None = None
-        # Tracks whether an exception was raised while the SnapshotTransactionLock
-        # context was still active.  Set to True on entry, back to False once the
-        # `async with` block completes without error.  The `except Exception` handler
-        # uses this to distinguish "exception inside the lock (snapshots were restored
-        # by __aexit__)" from "exception outside the lock (e.g. commit_transaction
-        # raised)", where no snapshot rollback actually occurred.
-        in_lock_context = False
+        # M-7 (misma lección que #295 en xedit_service): bindear el lock para
+        # reportar el resultado REAL del rollback (tx_lock.rollback_completed)
+        # en vez de inferirlo con flags — el flag anterior (in_lock_context)
+        # declaraba rolled_back=True aunque la restauración del snapshot
+        # hubiera fallado en __aexit__, dejando el .esp en estado parcial
+        # mientras el caller creía que se había revertido.
+        tx_lock: SnapshotTransactionLock | None = None
 
         try:
             async with SnapshotTransactionLock(
@@ -269,8 +269,7 @@ class SynthesisPipelineService:
                 agent_id=self.AGENT_ID,
                 target_files=target_files,
                 metadata={"source": "synthesis_pipeline", "patchers": patcher_ids},
-            ):
-                in_lock_context = True
+            ) as tx_lock:
                 # Begin journal transaction AFTER lock+snapshot acquired
                 tx_id = await self._journal.begin_transaction(
                     description="synthesis_pipeline",
@@ -296,18 +295,24 @@ class SynthesisPipelineService:
                         stderr=result.stderr,
                     )
 
-            # Normal exit — lock context exited without error
-            in_lock_context = False
-
             # Commit journal
             if tx_id is not None:
                 await self._journal.commit_transaction(tx_id)
 
         except (SynthesisExecutionError, SynthesisValidationError) as exc:
-            # __aexit__ ya restauró los snapshots
-            rolled_back = bool(target_files)
-            if tx_id is not None:
+            # __aexit__ intentó restaurar los snapshots. M-7: reportar el
+            # resultado REAL — rollback_completed es False si el restore falló
+            # (o si no había snapshots que restaurar).
+            rolled_back = bool(tx_lock and tx_lock.rollback_completed)
+            if tx_id is not None and (rolled_back or not target_files):
+                # Sin target_files no había nada que restaurar: la TX se marca
+                # abortada como siempre. Con snapshots restaurados, ídem.
                 await self._journal.mark_transaction_rolled_back(tx_id)
+            elif tx_id is not None:
+                logger.critical(
+                    "Rollback Synthesis incompleto para TX %d; se mantiene pendiente para recuperación manual.",
+                    tx_id,
+                )
             logger.error("Pipeline Synthesis falló: %s", exc)
             _rc = getattr(exc, "return_code", None)
             result = SynthesisResult(
@@ -335,14 +340,15 @@ class SynthesisPipelineService:
 
         except Exception as exc:
             # Unexpected exception (OSError, asyncio.TimeoutError, etc.)
-            # Only set rolled_back=True when the exception occurred inside the lock
-            # context — __aexit__ restores snapshots in that case.  If the exception
-            # happened after the lock was released (e.g. commit_transaction raised),
-            # no snapshot rollback occurred so rolled_back must remain False.
+            # M-7: rolled_back sale de tx_lock.rollback_completed — True SOLO si
+            # __aexit__ corrió y restauró todos los snapshots (≥1). Cubre ambos
+            # casos que el flag anterior confundía: excepción fuera del lock
+            # (commit_transaction falló → no hubo rollback) y restore fallido
+            # dentro de __aexit__ (rollback_failures no vacío).
             # Note: asyncio.CancelledError is BaseException, not Exception —
             # it intentionally propagates through here uncaught.
-            rolled_back = in_lock_context and bool(target_files)
-            if tx_id is not None:
+            rolled_back = bool(tx_lock and tx_lock.rollback_completed)
+            if tx_id is not None and (rolled_back or not target_files):
                 try:
                     await self._journal.mark_transaction_rolled_back(tx_id)
                 except Exception as rollback_exc:
@@ -352,6 +358,11 @@ class SynthesisPipelineService:
                         rollback_exc,
                         exc_info=True,
                     )
+            elif tx_id is not None:
+                logger.critical(
+                    "Rollback Synthesis incompleto para TX %d; se mantiene pendiente para recuperación manual.",
+                    tx_id,
+                )
             logger.error("Unexpected exception in synthesis pipeline: %s", exc, exc_info=True)
             result = SynthesisResult(
                 success=False,

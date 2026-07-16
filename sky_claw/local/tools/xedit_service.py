@@ -11,6 +11,7 @@ retorna un dict de error serializable — nunca propaga hacia el Supervisor.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import pathlib
@@ -27,6 +28,7 @@ from sky_claw.antigravity.db.locks import (
     LockAcquisitionError,
     SnapshotTransactionLock,
 )
+from sky_claw.local.ai.patch_advisor_llm import LLMCallable, PatchAdvisorLLM
 from sky_claw.local.xedit.conflict_analyzer import ConflictReport
 from sky_claw.local.xedit.patch_orchestrator import (
     PatchingError,
@@ -35,12 +37,14 @@ from sky_claw.local.xedit.patch_orchestrator import (
     PatchResult,
     PatchStrategyType,
 )
+from sky_claw.local.xedit.record_dump_parser import RecordDump, normalize_form_id, parse_dump_output
 from sky_claw.local.xedit.runner import ScriptExecutionResult, XEditError, XEditRunner
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.core.path_resolver import PathResolutionService
     from sky_claw.antigravity.db.journal import OperationJournal
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+    from sky_claw.local.ai.recommendation import PatchRecommendation
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
 logger = logging.getLogger(__name__)
@@ -99,6 +103,10 @@ class XEditPipelineService:
         path_resolver: PathResolutionService,
         event_bus: CoreEventBus,
         preflight: PreflightService | None = None,
+        # Fase 1 AI-assisted: callable (system, user) -> respuesta, opcional.
+        # None = advisor no disponible — los conflictos críticos sin script
+        # fallan closed con mensaje accionable (nunca un parche placebo).
+        llm: LLMCallable | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -111,6 +119,7 @@ class XEditPipelineService:
         self._patch_orchestrator: PatchOrchestrator | None = None
         # Preflight inyectable (tests) o construido perezosamente en el primer uso.
         self._preflight = preflight
+        self._patch_advisor: PatchAdvisorLLM | None = PatchAdvisorLLM(llm=llm) if llm is not None else None
 
     # ------------------------------------------------------------------
     # Lazy initialization (migrado de SupervisorAgent._ensure_patch_orchestrator)
@@ -286,6 +295,7 @@ class XEditPipelineService:
                 # Fallback EXECUTE_XEDIT_SCRIPT para PatchResult sin strategy_type.
                 strategy_type = result.strategy_type or PatchStrategyType.EXECUTE_XEDIT_SCRIPT
                 delegated_to_wrye_bash = strategy_type is PatchStrategyType.DELEGATE_BASHED_PATCH
+                ai_assisted = strategy_type is PatchStrategyType.AI_ASSISTED
                 if delegated_to_wrye_bash:
                     # ADR 0001: leveled lists van al Bashed Patch; acá no se
                     # ejecuta xEdit. El caller encadena generate_bashed_patch.
@@ -293,8 +303,20 @@ class XEditPipelineService:
                         "Plan delegado al Bashed Patch (Wrye Bash); no se ejecuta xEdit: %s",
                         result.output_path,
                     )
+                elif ai_assisted:
+                    # Fase 1 AI-assisted: no se ejecuta script mutante. El
+                    # PatchAdvisorLLM produce recomendaciones advisory; el
+                    # operador decide si las sigue manualmente en xEdit.
+                    result = await self._run_ai_advisor(report, result)
                 elif result.success and result.output_path and self._xedit_runner is not None:
-                    plan = PatchPlan(
+                    # Usar el plan REAL del orquestador (script_path y form_ids
+                    # incluidos). La reconstrucción manual anterior los
+                    # descartaba: el runner nunca veía el script seleccionado y
+                    # caía al template placebo reportando éxito sin parchear.
+                    # El fallback reconstruido queda solo para PatchResult
+                    # construidos fuera de resolve() (estrategias custom) — el
+                    # runner falla closed si el plan no trae script real.
+                    plan = result.plan or PatchPlan(
                         strategy_type=strategy_type,
                         target_plugins=([p.plugin_a for p in report.plugin_pairs[:1]] if report.plugin_pairs else []),
                         output_plugin=str(result.output_path),
@@ -317,6 +339,10 @@ class XEditPipelineService:
 
                 # Lanzar DENTRO del context manager para activar rollback automático
                 if result is not None and not result.success:
+                    if ai_assisted:
+                        # El advisor no ejecuta xEdit: el exit code -1 sintético
+                        # solo ensuciaría el mensaje accionable.
+                        raise PatchingError(result.error or "El advisor de IA no pudo producir recomendaciones.")
                     raise PatchingError(f"xEdit falló con código {result.xedit_exit_code}: {result.error}")
 
             # Normal exit — lock context exited without error. El commit del
@@ -441,6 +467,110 @@ class XEditPipelineService:
             )
 
         return self._result_to_dict(result)
+
+    # ------------------------------------------------------------------
+    # AI advisor (Fase 1) — recomendaciones advisory para conflictos críticos
+    # ------------------------------------------------------------------
+
+    async def _run_ai_advisor(
+        self,
+        report: ConflictReport,
+        plan_result: PatchResult,
+    ) -> PatchResult:
+        """Ejecuta el LLM advisor para los conflictos críticos (Fase 1).
+
+        No muta ningún plugin: devuelve un ``PatchResult`` con ``success=True``,
+        ``output_path=None`` y las recomendaciones serializadas en ``warnings``
+        (Fase 2 añade un campo dedicado). El caller (dispatcher/GUI/Telegram)
+        las surfacea al operador, que decide y ejecuta manualmente en xEdit.
+
+        Sin LLM configurado (``self._patch_advisor is None``) falla closed con
+        un mensaje accionable — nunca un parche placebo ni un éxito vacío.
+        """
+        if self._patch_advisor is None:
+            logger.warning(
+                "AIAssistedPatch seleccionada pero no hay LLM configurado — fail-closed con mensaje accionable."
+            )
+            return PatchResult(
+                success=False,
+                output_path=None,
+                records_patched=0,
+                conflicts_resolved=0,
+                xedit_exit_code=-1,
+                warnings=(),
+                error=(
+                    "Conflicto crítico sin script .pas específico y sin LLM configurado. "
+                    "Configurá un proveedor LLM (OpenAI/Anthropic/DeepSeek/Ollama) para "
+                    "habilitar el advisor de IA, o resolvé el conflicto manualmente en xEdit."
+                ),
+                strategy_type=PatchStrategyType.AI_ASSISTED,
+            )
+
+        # 1. Dump de los records conflictivos (best-effort: sin dump el advisor
+        #    recomienda con menos contexto y lo declara en el prompt).
+        dump_stdout = await self._dump_conflicting_records(report)
+        dumps = parse_dump_output(dump_stdout) if dump_stdout else []
+        dumps_by_form: dict[str, RecordDump] = {d.form_id: d for d in dumps}
+
+        # 2. Una recomendación por conflicto crítico. advise() es fail-closed
+        #    (manual_only ante cualquier fallo), así que el loop no aborta.
+        recommendations: list[PatchRecommendation] = []
+        for pair in report.plugin_pairs:
+            for conflict in pair.conflicts:
+                if conflict.severity != "critical":
+                    continue
+                dump = dumps_by_form.get(normalize_form_id(conflict.form_id))
+                recommendations.append(await self._patch_advisor.advise(conflict, dump))
+
+        # 3. Resultado advisory: las recomendaciones viajan en warnings para
+        #    que el contrato dict actual las surfacee sin romper callers.
+        warnings = tuple(
+            f"AI Advice [{r.record_type} {r.form_id}] ({r.severity}, conf={r.confidence:.2f}): {r.summary}"
+            for r in recommendations
+        )
+        logger.info(
+            "AI advisor completado: %d recomendaciones para conflictos críticos (dump=%s).",
+            len(recommendations),
+            "sí" if dumps else "no",
+        )
+        return PatchResult(
+            success=True,  # el advisor produjo recomendaciones — no un .esp
+            output_path=None,
+            records_patched=0,
+            conflicts_resolved=len(recommendations),
+            xedit_exit_code=0,
+            warnings=warnings,
+            error=None,
+            strategy_type=PatchStrategyType.AI_ASSISTED,
+            plan=plan_result.plan,
+        )
+
+    async def _dump_conflicting_records(self, report: ConflictReport) -> str:
+        """Corre ``dump_record_detail.pas`` sobre los plugins del report.
+
+        Best-effort: el dump enriquece el prompt pero no es prerequisito — si
+        xEdit no está disponible o el script falla, devuelve ``""`` y el
+        advisor trabaja con el contexto del ConflictReport solamente.
+        """
+        if self._xedit_runner is None:
+            return ""
+        plugins: set[str] = set()
+        for pair in report.plugin_pairs:
+            plugins.add(pair.plugin_a)
+            plugins.add(pair.plugin_b)
+        if not plugins:
+            return ""
+        try:
+            # Staging idempotente: run_script resuelve -script:<nombre> contra
+            # la carpeta Edit Scripts de xEdit, no contra el bundle del repo.
+            await self._xedit_runner.ensure_scripts_staged(["dump_record_detail.pas"])
+            result = await self._xedit_runner.run_script("dump_record_detail.pas", sorted(plugins))
+            return result.raw_stdout
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — best-effort: el advisor sigue sin dump
+            logger.warning("dump_record_detail.pas falló (el advisor sigue sin dump): %s", exc)
+            return ""
 
     # ------------------------------------------------------------------
     # QuickAutoClean (Follow-up B) — limpieza de los DLC oficiales sucios
@@ -822,6 +952,9 @@ class XEditPipelineService:
         en éxito, y el detalle de ``error`` en fallo.
         """
         raw = dataclasses.asdict(result)
+        # El plan interno no viaja en el contrato dict (contiene Path/Enum no
+        # serializables); es un detalle de enrutado service→runner.
+        raw.pop("plan", None)
         if raw.get("output_path") is not None:
             raw["output_path"] = str(raw["output_path"])
         if raw.get("strategy_type") is not None:

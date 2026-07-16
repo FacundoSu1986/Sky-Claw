@@ -639,10 +639,19 @@ end.
             )
 
         elif strategy == PatchStrategyType.EXECUTE_XEDIT_SCRIPT:
-            # Generar script de parcheo genérico
-            return ScriptGenerator.generate_patch_script(
-                output_plugin=patch_plan.output_plugin,
-                form_ids=patch_plan.form_ids if patch_plan.form_ids else None,
+            # Fail-closed: un plan EXECUTE_XEDIT_SCRIPT llega acá SOLO si su
+            # script_path no existe (execute_patch lee el script real cuando
+            # está presente). El template genérico (TEMPLATE_APPLY_PATCH) tiene
+            # el cuerpo de Process como placeholder sin lógica de parcheo:
+            # generaba un .esp vacío con exit 0 y el pipeline reportaba éxito
+            # sin resolver nada — un parche placebo, peor que fallar. Mismo
+            # precedente que CREATE_MERGED_PATCH (deshabilitada, ADR 0001).
+            raise XEditScriptError(
+                f"El plan EXECUTE_XEDIT_SCRIPT no tiene un script Pascal real "
+                f"(script_path={patch_plan.script_path}). No se genera el template "
+                "genérico: es un placebo que no aplica lógica pero reporta éxito. "
+                "Agregá el script .pas al bundle o resolvé el conflicto con el "
+                "advisor de IA / manualmente en xEdit."
             )
 
         else:

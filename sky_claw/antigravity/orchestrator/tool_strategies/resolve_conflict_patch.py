@@ -28,11 +28,21 @@ class ResolveConflictWithPatchStrategy:
 
     def describe_for_approval(self, payload_dict: dict[str, Any]) -> str:
         target_plugin, report = self._parse_payload(payload_dict)
-        return (
-            f"target_plugin={str(target_plugin)!r}, "
-            f"total_conflicts={report.total_conflicts!r}, "
-            f"critical_conflicts={report.critical_conflicts!r}"
-        )
+        parts = [
+            f"target_plugin={str(target_plugin)!r}",
+            f"total_conflicts={report.total_conflicts!r}",
+            f"critical_conflicts={report.critical_conflicts!r}",
+        ]
+        # Fase 1 AI-assisted: si hay conflictos críticos sin script .pas, van
+        # al LLM advisor. Hacerlo visible en el prompt HITL — el operador debe
+        # saber que la IA va a RECOMENDAR (advisory, sin mutación) antes de
+        # aprobar la tool.
+        if report.critical_conflicts > 0:
+            parts.append(
+                f"critical_conflicts→AI_advisor={report.critical_conflicts!r} "
+                "(advisory, sin mutación — el operador decide)"
+            )
+        return ", ".join(parts)
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         target_plugin, report = self._parse_payload(payload_dict)
