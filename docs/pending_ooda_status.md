@@ -57,17 +57,31 @@ $ grep -rln "persist_action_manifest\|persist_flight_report" sky_claw/ | grep -v
 sky_claw/antigravity/db/journal.py       # la definición
 sky_claw/local/tools/loot_service.py     # productor (T-26/T-28 v1)
 sky_claw/local/tools/xedit_service.py    # productor (2026-07-15, ambos entry points)
+sky_claw/local/tools/synthesis_service.py # productor de T-26 (2026-07-16, PR #309)
 ```
 
-**Lo que sigue abierto:** `synthesis_service.py`, `dyndolod_service.py`,
-`pandora_service.py` y `wrye_bash_runner.py` no emiten manifest/flight report
-(dyndolod/xedit importan `preview.manifest`, un modelo **distinto** — el de
-preview dry-run de la cadena, no el `ActionManifest` persistido por-Ritual).
-El criterio de aceptación de T-26 ("todo Ritual mutante produce" el
-manifiesto) y el de T-28 ("informe... por Ritual") se cumplen hoy para LOOT y
-xEdit; faltan esos 4 runners antes de que tenga sentido la vista GUI de T-28
-(mostrar un informe que, para la mayoría de los Rituales, todavía no existe).
-`tool_version` queda en `None` para xEdit (no la expone hoy) — follow-up menor.
+**Actualización 2026-07-16 (PR #309 — Synthesis emite T-26; T-28 diferido):**
+`synthesis_service.py` es ahora productor del `ActionManifest` (T-26):
+`execute_pipeline` lo persiste fail-closed ANTES de correr los patchers (si no
+se puede persistir, no se muta; `tool="Synthesis"`). **T-28 (FlightReport)
+queda deliberadamente FUERA** en Synthesis: corre SIEMPRE en sandbox
+(`tool_dispatcher`) con un `StagingJournal` de **commit diferido** hasta la
+promoción, así que un informe compuesto dentro de `execute_pipeline` reflejaría
+un estado pre-promoción (pending) y quedaría stale; además el manifiesto
+registra la ruta del **clon** (`clone.overwrite_copy`) que se descarta tras la
+promoción. El cierre correcto del informe post-vuelo + la traducción a rutas
+reales pertenecen al **promotion flow** (`ExecuteSynthesisPipelineStrategy` /
+`SandboxPromotionFlow`, dueño del mapeo clon→real) — follow-up documentado.
+
+**Lo que sigue abierto:** T-28 en Synthesis (vía promotion flow, arriba);
+`dyndolod_service.py`, `pandora_service.py` y `wrye_bash_runner.py` no emiten
+manifest/flight report (dyndolod/xedit importan `preview.manifest`, un modelo
+**distinto** — el de preview dry-run de la cadena, no el `ActionManifest`
+persistido por-Ritual). El criterio de aceptación de T-26 ("todo Ritual mutante
+produce" el manifiesto) se cumple hoy para LOOT, xEdit y Synthesis; T-28 para
+LOOT y xEdit. Faltan esos 3 runners (+ T-28 de Synthesis) antes de que tenga
+sentido la vista GUI de T-28. `tool_version` queda en `None` para xEdit y
+Synthesis (no la exponen hoy) — follow-up menor.
 
 ### 1.2 T-27 — Synthesis sandboxeado con promote/discard real (2026-07-14); Pandora/DynDOLOD/Wrye Bash siguen fuera
 
