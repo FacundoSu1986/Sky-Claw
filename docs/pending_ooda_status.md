@@ -242,6 +242,42 @@ corrida real. Ítem ya conocido y documentado, sin cambio de estado.
 
 ---
 
+## Addendum (2026-07-16) — verificación de auditoría externa (#305) + follow-ups
+
+Una auditoría externa (estilo "Copilot bot") reportó 5 hallazgos sobre los PRs
+#300–#304. Se **verificó cada uno contra el código** (no contra el texto de la
+auditoría) y se documentó el veredicto en
+`sky_claw/Auditorias varias/auditoria_prs_300-304_verificacion.md`: citas reales,
+pero 2 hallazgos con afirmaciones fabricadas, 1 redundante (pedía código que ya
+existe), 1 parcial y 1 truncado. Solo 3 puntos eran accionables, y se cerraron en
+el mismo PR:
+
+- **H3 — cobertura de rollback parcial (lock real).** Faltaba un test del caso
+  "algunos snapshots restaurados, otros no" ejercitando el `SnapshotTransactionLock`
+  real (los previos usaban un fake o un restore completo). Anclado en
+  `tests/test_distributed_locks.py::test_rollback_parcial_reporta_incompleto_y_lista_el_fallo`
+  y `tests/test_synthesis_rollback_honesto.py::test_no_declara_rollback_con_lock_real_si_el_restore_falla`.
+- **H1 — `close_game` bajo lock.** `MO2Controller._procs_lock` serializa la región
+  snapshot→matar→pop de `close_game` (dos cierres concurrentes ya no re-matan el
+  árbol). `launch_game` **no** toma el lock: registra el PID con escritura de dict
+  plana para no reabrir la ventana de huérfano de #302.
+- **H4 — `MO2Controller` de grass memoizado y AISLADO.** `_build_grass_dependencies`
+  ya no crea un controller nuevo por resolución (lo memoiza), pero con una instancia
+  **propia del ritual**, no compartida con la del AppContext.
+
+**Lección (mismo patrón recurrente de este doc):** el primer intento de H4
+**unificó** el controller de grass con el del AppContext, y el review de Codex sobre
+la PR mostró que eso rompía el aislamiento del cleanup — `GrassCacheRunner` llama
+`close_game()` entre relanzamientos, y `close_game()` mata **todos** los PIDs
+trackeados, así que compartir el tracking habría matado el Skyrim que el usuario
+lanzó con la tool normal. Se revirtió a memoización aislada. Verificar "el archivo"
+(el provider de grass) no bastaba: había que seguir el árbol de callers hasta
+`close_game` para ver el efecto. La "split tracking" que la auditoría creía un bug
+era, de hecho, la feature correcta (cleanup ritual-scoped). No abre pendientes
+estructurales nuevos.
+
+---
+
 ## Decide — recomendación de próximo frente
 
 **Corrección (2026-07-14):** la versión anterior de esta sección afirmaba que
