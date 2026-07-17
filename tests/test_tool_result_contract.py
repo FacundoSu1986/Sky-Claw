@@ -74,6 +74,10 @@ async def test_dyndolod_service_runner_no_disponible_cumple_contrato() -> None:
     with (
         patch.object(DynDOLODPipelineService, "_publish_started", new=AsyncMock()),
         patch.object(DynDOLODPipelineService, "_publish_completed", new=AsyncMock()),
+        # El objeto se crea con __new__ (sin __init__): el gate de preflight
+        # (T-16c·3) se saltea porque este test aísla el contrato de error del
+        # runner no disponible, ortogonal al preflight.
+        patch.object(DynDOLODPipelineService, "_ensure_preflight", return_value=None),
         patch.object(
             DynDOLODPipelineService,
             "_ensure_runner",

@@ -15,6 +15,7 @@ from sky_claw.local.validators.missing_masters import MasterIssue
 from sky_claw.local.validators.overwrite_health import OverwriteScan
 from sky_claw.local.validators.plugin_limits import LoadOrderLimits
 from sky_claw.local.validators.preflight_sensors import (
+    build_mo2_profile_sources_resolver,
     build_modlist_sensors,
     build_overwrite_sensor,
     build_vfs_sensor,
@@ -123,3 +124,44 @@ class TestBuildOverwriteSensor:
         (overwrite / "nuevo.txt").write_text("x")
         # El closure re-escanea: ve el archivo aparecido entre corridas (freshness).
         assert "nuevo.txt" in sensor().files
+
+
+class TestBuildMo2ProfileSourcesResolver:
+    """Resolver de fuentes desde el perfil MO2 activo (T-16c·2/3): lee
+    ``profiles/<perfil>/plugins.txt``, NO el %LOCALAPPDATA% global."""
+
+    def _fixture(self, tmp_path):
+        game = tmp_path / "Skyrim"
+        (game / "Data").mkdir(parents=True)
+        mo2 = tmp_path / "MO2"
+        (mo2 / "mods" / "ModA").mkdir(parents=True)
+        (mo2 / "mods" / "ModA" / "A.esp").write_bytes(b"TES4")
+        (mo2 / "overwrite").mkdir()
+        profile_dir = mo2 / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "plugins.txt").write_bytes(b"\xef\xbb\xbf*A.esp\r\n")
+        return game, mo2
+
+    def test_perfil_resoluble_devuelve_closure_de_fuentes(self, tmp_path):
+        game, mo2 = self._fixture(tmp_path)
+        resolver = build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="Default")
+        assert resolver is not None
+        sources = resolver()
+        assert isinstance(sources, PluginSources)
+        assert "A.esp" in sources.enabled_plugins  # solo activos con `*`
+
+    def test_profile_no_str_devuelve_none(self, tmp_path):
+        game, mo2 = self._fixture(tmp_path)
+        assert build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile=None) is None
+
+    def test_sin_plugins_txt_en_el_perfil_devuelve_none(self, tmp_path):
+        game = tmp_path / "Skyrim"
+        (game / "Data").mkdir(parents=True)
+        mo2 = tmp_path / "MO2"
+        (mo2 / "profiles" / "Default").mkdir(parents=True)  # perfil SIN plugins.txt
+        assert build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="Default") is None
+
+    def test_perfil_inseguro_devuelve_none(self, tmp_path):
+        game, mo2 = self._fixture(tmp_path)
+        # Un nombre de perfil con traversal no debe resolver (guard assert_safe_component).
+        assert build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="../evil") is None

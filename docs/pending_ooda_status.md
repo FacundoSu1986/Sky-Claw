@@ -136,6 +136,17 @@ QuickAutoClean (T-16c·1, #288); DynDOLOD, Pandora y Wrye Bash tampoco lo
 tienen — mismo patrón de riesgo que motivó T-15 originalmente (mutantes
 corriendo sin validación previa).
 
+**Actualización 2026-07-16:** el preflight quedó cableado en **Synthesis**
+(T-16c·2, #306) y en **DynDOLOD** (T-16c·3): `dyndolod_service.execute` corre el
+gate ANTES de adquirir el lock / abrir transacción / publicar el evento de
+inicio — un rojo (p. ej. el dir de salida sin permisos) cancela el run de 30+
+min / GBs; amarillo/verde no bloquean y se surface en todos los retornos. Los
+sensores (vfs + permisos sobre `mods/` y los `*/Output` + masters/límites del
+perfil MO2 activo + overwrite) reusan las primitivas compartidas de T-16d; la
+costura del resolver del perfil MO2 se extrajo a
+`build_mo2_profile_sources_resolver` (compartida por Synthesis y DynDOLOD).
+**Falta preflight en:** Pandora y Wrye Bash.
+
 ---
 
 ## 2 — Deuda estructural continua (no bloquea GA, mantenimiento de fondo)

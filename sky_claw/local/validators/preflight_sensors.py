@@ -92,6 +92,55 @@ def build_modlist_sensors(
     return _masters, _limits
 
 
+def build_mo2_profile_sources_resolver(
+    *,
+    game: pathlib.Path,
+    mo2: pathlib.Path,
+    profile: str | None,
+) -> Callable[[], PluginSources] | None:
+    """Resolver de fuentes de plugins desde el **perfil MO2 activo** (T-16c·2/3).
+
+    Lee el load order de ``profiles/<perfil>/plugins.txt`` (activos con ``*``) o,
+    en su defecto, ``loadorder.txt`` — NO el ``%LOCALAPPDATA%`` global que
+    reescribe LOOT fuera del VFS. Los rituales que procesan TODO el modlist
+    (Synthesis, DynDOLOD) deben validar el modlist REAL que corre MO2, no un load
+    order global/stale que ``LoadOrderFileResolver`` prioriza en su unión (review
+    Codex #306). Valida el nombre del perfil contra path traversal
+    (``assert_safe_component``). Devuelve ``None`` si el perfil no es resoluble o
+    no hay archivo de load order → el caller reporta "no configurado", no miente
+    verde (lección #250). El feed de ``build_modlist_sensors``.
+    """
+    if not isinstance(profile, str):
+        return None
+    from sky_claw.antigravity.security.path_validator import PathViolationError, assert_safe_component
+    from sky_claw.local.mo2.plugin_sources import resolve_plugin_sources
+
+    try:
+        assert_safe_component(profile, field="profile")  # guard de path-traversal (patrón T-05)
+    except PathViolationError:
+        return None
+    profile_dir = mo2 / "profiles" / profile
+    load_order_file = next(
+        (profile_dir / name for name in ("plugins.txt", "loadorder.txt") if (profile_dir / name).is_file()),
+        None,
+    )
+    if load_order_file is None:
+        return None
+    game_data_dir = game / "Data"
+    mo2_mods_dir = mo2 / "mods"
+    mo2_overwrite_dir = mo2 / "overwrite"
+
+    def _resolve() -> PluginSources:
+        return resolve_plugin_sources(
+            game_data_dir=game_data_dir,
+            mo2_mods_dir=mo2_mods_dir,
+            mo2_overwrite_dir=mo2_overwrite_dir,
+            load_order_file=load_order_file,
+        )
+
+    return _resolve
+
+
 def build_overwrite_sensor(overwrite_dir: pathlib.Path | None) -> OverwriteCheck | None:
     """Closure del sensor de overwrite sucio (T-30·3, extraído en T-16d).
 
