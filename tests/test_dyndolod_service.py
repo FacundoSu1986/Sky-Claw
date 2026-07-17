@@ -977,3 +977,142 @@ def test_permission_targets_incluye_output_inexistente_freshness(
     assert not output.exists()  # todavía no existe (primer run / limpiado)
 
     assert output in svc._permission_targets()  # igual está en la lista de sondeo
+
+
+# =============================================================================
+# T-26/T-28: caja negra de vuelo en DynDOLOD (4.º productor tras LOOT/xEdit/Synthesis)
+# =============================================================================
+
+
+@pytest.fixture
+async def real_journal(tmp_path: pathlib.Path):  # noqa: ANN201
+    from sky_claw.antigravity.db.journal import OperationJournal
+
+    j = OperationJournal(tmp_path / "dyndolod_journal.db")
+    await j.open()
+    yield j  # type: ignore[misc]
+    await j.close()
+
+
+async def _ops_ultima_tx(journal):  # noqa: ANN001, ANN202
+    (ultima,) = await journal.list_recent_transactions(limit=1)
+    return await journal.get_operations_by_transaction(ultima.transaction_id)
+
+
+async def _manifiesto_ultima_tx(journal):  # noqa: ANN001, ANN202
+    from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
+
+    metas = [
+        e.metadata
+        for e in await _ops_ultima_tx(journal)
+        if e.metadata and e.metadata.get("ritual_id") and e.metadata.get("kind") != "flight_report"
+    ]
+    assert len(metas) == 1
+    return ActionManifest.model_validate(metas[0])
+
+
+async def _informe_ultima_tx(journal):  # noqa: ANN001, ANN202
+    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+
+    return [
+        FlightReport.model_validate(e.metadata)
+        for e in await _ops_ultima_tx(journal)
+        if e.metadata and e.metadata.get("kind") == "flight_report"
+    ]
+
+
+def _svc_real_journal(
+    mock_lock_manager: AsyncMock,
+    mock_snapshot_manager: AsyncMock,
+    real_journal: object,
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+) -> DynDOLODPipelineService:
+    return DynDOLODPipelineService(
+        lock_manager=mock_lock_manager,
+        snapshot_manager=mock_snapshot_manager,
+        journal=real_journal,  # type: ignore[arg-type]
+        path_resolver=mock_path_resolver,
+        event_bus=mock_event_bus,
+    )
+
+
+def _wire_runner_ok(service: DynDOLODPipelineService, tmp_path: pathlib.Path) -> AsyncMock:
+    mock_runner = AsyncMock(spec=DynDOLODRunner)
+    mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
+    mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    mock_config = MagicMock()
+    mock_config.mo2_mods_path = tmp_path / "mods"
+    (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
+    mock_runner._config = mock_config
+    service._runner = mock_runner
+    return mock_runner
+
+
+@pytest.mark.asyncio
+async def test_dyndolod_persiste_manifiesto_y_informe(
+    mock_lock_manager: AsyncMock,
+    mock_snapshot_manager: AsyncMock,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un run exitoso persiste un ActionManifest (tool=DynDOLOD, con el mod de
+    salida en files_touched) ANTES de mutar y un FlightReport DESPUÉS (T-26/T-28)."""
+    svc = _svc_real_journal(mock_lock_manager, mock_snapshot_manager, real_journal, mock_path_resolver, mock_event_bus)
+    _wire_runner_ok(svc, tmp_path)
+
+    result = await svc.execute(preset="High", run_texgen=True, create_snapshot=False)
+
+    assert result["success"] is True
+    manifest = await _manifiesto_ultima_tx(real_journal)
+    assert manifest.tool == "DynDOLOD"
+    assert str(tmp_path / "mods" / "DynDOLOD Output") in manifest.files_touched
+    informes = await _informe_ultima_tx(real_journal)
+    assert len(informes) == 1
+    assert informes[0].transaction_status == "committed"
+
+
+@pytest.mark.asyncio
+async def test_dyndolod_sin_manifiesto_no_ejecuta(
+    mock_lock_manager: AsyncMock,
+    mock_snapshot_manager: AsyncMock,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si la persistencia del manifiesto falla, el pipeline NO corre (fail-closed):
+    reason=ActionManifestFailed y la TX se marca rolled_back."""
+    svc = _svc_real_journal(mock_lock_manager, mock_snapshot_manager, real_journal, mock_path_resolver, mock_event_bus)
+    runner = _wire_runner_ok(svc, tmp_path)
+
+    with patch.object(real_journal, "persist_action_manifest", AsyncMock(side_effect=RuntimeError("boom"))):
+        result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    runner.run_full_pipeline.assert_not_awaited()  # fail-closed: no se mutó nada
+    assert result["success"] is False
+    assert result["reason"] == "ActionManifestFailed"
+
+
+@pytest.mark.asyncio
+async def test_dyndolod_informe_falla_no_rompe_run(
+    mock_lock_manager: AsyncMock,
+    mock_snapshot_manager: AsyncMock,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El FlightReport es best-effort: un fallo al persistirlo NO rompe un run ya
+    exitoso (misma disciplina que LOOT/xEdit)."""
+    svc = _svc_real_journal(mock_lock_manager, mock_snapshot_manager, real_journal, mock_path_resolver, mock_event_bus)
+    _wire_runner_ok(svc, tmp_path)
+
+    with patch.object(real_journal, "persist_flight_report", AsyncMock(side_effect=OSError("disk full"))):
+        result = await svc.execute(preset="Low", run_texgen=False, create_snapshot=False)
+
+    assert result["success"] is True  # el informe roto no tumba el run
+    manifest = await _manifiesto_ultima_tx(real_journal)
+    assert manifest.tool == "DynDOLOD"
