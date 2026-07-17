@@ -216,3 +216,192 @@ async def test_missing_paths_returns_error_without_locking(
 
     assert result["success"] is False
     assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None
+
+
+# =============================================================================
+# T-16c·4: gate de preflight en Pandora (antes de regenerar los behavior graphs)
+# =============================================================================
+
+from sky_claw.local.validators.preflight import (  # noqa: E402
+    PreflightCheck,
+    PreflightReport,
+    PreflightStatus,
+)
+
+
+class _FakePreflight:
+    """Preflight inyectable: ``run()`` devuelve un reporte fijo."""
+
+    def __init__(self, report: PreflightReport) -> None:
+        self._report = report
+
+    async def run(self) -> PreflightReport:
+        return self._report
+
+
+def _perm_report(status: PreflightStatus, summary: str) -> PreflightReport:
+    """Reporte con un solo check de permisos (el failure mode típico de Pandora:
+    el dir de salida de behaviors sin permisos) en el estado pedido."""
+    return PreflightReport(
+        status=status,
+        checks=(PreflightCheck(name="write_permissions", status=status, summary=summary, details=()),),
+    )
+
+
+def _svc_with_preflight(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    runner: MagicMock,
+    preflight: object,
+) -> PandoraPipelineService:
+    return PandoraPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=MagicMock(),
+        pandora_runner=runner,
+        preflight=preflight,  # type: ignore[arg-type]  # fake duck-typed en tests
+    )
+
+
+@pytest.mark.asyncio
+async def test_preflight_red_blocks_pandora_without_running(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """Un preflight ROJO (p. ej. el dir de salida sin permisos) frena Pandora ANTES
+    de tocar nada: no corre el subproceso, no toma el lock."""
+    runner = _runner_returning()
+    red = _perm_report(PreflightStatus.RED, "Data/overwrite sin permisos de escritura.")
+    svc = _svc_with_preflight(lock_manager, snapshot_manager, runner, _FakePreflight(red))
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert result["reason"] == "PreflightBlocked"
+    assert result["preflight"]["status"] == "red"
+    runner.run_pandora.assert_not_awaited()
+    assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_preflight_yellow_no_bloquea_y_surface(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """Un preflight AMARILLO no bloquea, pero se adjunta al result para el panel."""
+    runner = _runner_returning()
+    yellow = _perm_report(PreflightStatus.YELLOW, "Overwrite con residuos.")
+    svc = _svc_with_preflight(lock_manager, snapshot_manager, runner, _FakePreflight(yellow))
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is True
+    assert result["preflight"]["status"] == "yellow"
+    runner.run_pandora.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_preflight_green_no_ensucia_el_result(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """Un preflight VERDE no agrega la clave ``preflight`` (comportamiento actual intacto)."""
+    runner = _runner_returning()
+    green = _perm_report(PreflightStatus.GREEN, "Escritura verificada.")
+    svc = _svc_with_preflight(lock_manager, snapshot_manager, runner, _FakePreflight(green))
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is True
+    assert "preflight" not in result
+
+
+@pytest.mark.asyncio
+async def test_ensure_preflight_construye_sensores_con_paths_resolubles(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """Con game/MO2/exe resolubles, ``_ensure_preflight`` arma un PreflightService
+    real (no None) y sondea los dirs candidatos de salida (Data/overwrite/exe)."""
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    mo2 = tmp_path / "MO2"
+    (mo2 / "overwrite").mkdir(parents=True)
+    exe = tmp_path / "Pandora" / "Pandora.exe"
+    exe.parent.mkdir(parents=True)
+
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=game)
+    resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_pandora_exe = MagicMock(return_value=exe)
+    resolver.get_skyrim_path_raw = MagicMock(return_value=game)
+    resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
+
+    svc = PandoraPipelineService(lock_manager=lock_manager, snapshot_manager=snapshot_manager, path_resolver=resolver)
+
+    assert svc._ensure_preflight() is not None
+    targets = svc._permission_targets()
+    assert game / "Data" in targets
+    assert mo2 / "overwrite" in targets
+    assert exe.parent in targets
+
+
+def test_permission_targets_incluye_pandora_output_concreto(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """Freshness/F2 (review #314): sondea el dir del exe Y el Pandora_Output hijo —
+    un output read-only con el padre escribible pasaría inadvertido si no."""
+    exe = tmp_path / "Pandora" / "Pandora.exe"
+    exe.parent.mkdir(parents=True)
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=None)
+    resolver.get_mo2_path = MagicMock(return_value=None)
+    resolver.get_pandora_exe = MagicMock(return_value=exe)
+
+    svc = PandoraPipelineService(lock_manager=lock_manager, snapshot_manager=snapshot_manager, path_resolver=resolver)
+    targets = svc._permission_targets()
+
+    assert exe.parent in targets
+    assert exe.parent / "Pandora_Output" in targets
+
+
+def test_preflight_con_runner_inyectado_sin_resolver(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """F1 (review #314): el agent tool construye el servicio con un PandoraRunner
+    pero SIN resolver — el gate NO debe desactivarse; se deriva del config del runner."""
+    from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
+
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    exe = tmp_path / "Pandora" / "Pandora.exe"
+    exe.parent.mkdir(parents=True)
+    runner = PandoraRunner(PandoraConfig(pandora_exe=exe, game_path=game))
+
+    svc = PandoraPipelineService(lock_manager=lock_manager, snapshot_manager=snapshot_manager, pandora_runner=runner)
+
+    assert svc._ensure_preflight() is not None  # gate activo pese a no haber resolver
+    targets = svc._permission_targets()
+    assert game / "Data" in targets
+    assert exe.parent in targets
+
+
+def test_preflight_standalone_sin_mo2(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """F3 (review #314): standalone con SKYRIM_PATH/PANDORA_EXE pero sin MO2_PATH —
+    el gate igual protege Data + el output del exe; solo se omite el sensor de overwrite."""
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    exe = tmp_path / "Pandora" / "Pandora.exe"
+    exe.parent.mkdir(parents=True)
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=game)
+    resolver.get_mo2_path = MagicMock(return_value=None)  # sin MO2
+    resolver.get_pandora_exe = MagicMock(return_value=exe)
+    resolver.get_skyrim_path_raw = MagicMock(return_value=game)
+    resolver.get_mo2_path_raw = MagicMock(return_value=None)
+
+    svc = PandoraPipelineService(lock_manager=lock_manager, snapshot_manager=snapshot_manager, path_resolver=resolver)
+
+    assert svc._ensure_preflight() is not None  # no exige MO2
+    targets = svc._permission_targets()
+    assert game / "Data" in targets
+    assert exe.parent in targets
+    assert not any("overwrite" in str(t) for t in targets)  # sin MO2 → sin overwrite
