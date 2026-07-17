@@ -71,6 +71,24 @@ GrassCachePhase = Literal["launching", "scanning", "crashed", "relaunching", "fi
 
 
 @dataclass(frozen=True, slots=True)
+class _GamePid:
+    """PID del juego + su ``create_time`` en el momento de la ATRIBUCIÓN.
+
+    Se captura una sola vez, cuando ``_scan_for_game_sync`` identifica el
+    proceso (no en el kill, más tarde): revalidar contra el ``create_time``
+    capturado AHÍ es lo que demuestra que, al matar, seguimos hablando del
+    MISMO proceso que atribuimos — no uno que el SO reusó después para otro
+    ``SkyrimSE.exe`` de la misma instalación (p. ej. el usuario relanzó el
+    juego manualmente entre la atribución y el kill — review Codex #316,
+    mismo patrón que ``vfs.py`` #302). ``create_time=None`` si no se pudo leer
+    al atribuir (AccessDenied puntual): el kill omite el chequeo de tiempo.
+    """
+
+    pid: int
+    create_time: float | None
+
+
+@dataclass(frozen=True, slots=True)
 class GrassCacheConfig:
     """Configuración del crash-loop. TODOS los tiempos viven acá (los tests
     pasan intervalos diminutos — sin monkeypatch de constantes de módulo).
@@ -211,7 +229,7 @@ class GrassCacheRunner:
         crash_count = 0
         stall_streak = 0
         game_ever_seen = False
-        game_pid: int | None = None
+        game_pid: _GamePid | None = None
 
         # -- Pre-vuelo: sin side effects hasta pasar estos guards --
         if cancel.is_set():
@@ -383,7 +401,7 @@ class GrassCacheRunner:
     # Fases internas
     # ------------------------------------------------------------------
 
-    async def _vigilar(self, game_pid: int, cancel: asyncio.Event, crash_count: int) -> GrassCacheRunResult | None:
+    async def _vigilar(self, game_pid: _GamePid, cancel: asyncio.Event, crash_count: int) -> GrassCacheRunResult | None:
         """Poll de la vida del juego. ``None`` = crash (el caller relanza)."""
         last_heartbeat = time.monotonic()
         while True:
@@ -413,7 +431,7 @@ class GrassCacheRunner:
                     crash_count,
                     await self._snapshot_cache(),
                 )
-            if not await self._pid_alive(game_pid):
+            if not await self._pid_alive(game_pid.pid):
                 return None  # crash: murió con el flag presente
             if time.monotonic() - last_heartbeat >= self._config.heartbeat_interval_s:
                 await self._emit_progress("scanning", crash_count)
@@ -422,7 +440,7 @@ class GrassCacheRunner:
             # del próximo ciclo (el sleep despierta al instante con el event).
             await self._sleep_or_cancel(cancel, self._config.poll_interval_s)
 
-    async def _salida_exito(self, crash_count: int, game_pid: int | None) -> GrassCacheRunResult:
+    async def _salida_exito(self, crash_count: int, game_pid: _GamePid | None) -> GrassCacheRunResult:
         """Fin multi-criterio: flag ausente + postcheck fail-closed de .cgid.
 
         El éxito exige count > 0 **y** bytes > 0: el fallo silencioso de
@@ -449,8 +467,8 @@ class GrassCacheRunner:
         )
 
     async def _ultima_atribucion(
-        self, game_pid: int | None, mo2_pid: int | None, min_create_epoch: float
-    ) -> int | None:
+        self, game_pid: _GamePid | None, mo2_pid: int | None, min_create_epoch: float
+    ) -> _GamePid | None:
         """Búsqueda final del juego antes de una salida desde la spawn window.
 
         El flag puede borrarse (o llegar una cancelación/timeout) ANTES de que
@@ -461,15 +479,15 @@ class GrassCacheRunner:
             return game_pid
         return await self._find_game_pid(mo2_pid, min_create_epoch)
 
-    async def _matar_todo(self, game_pid: int | None) -> None:
+    async def _matar_todo(self, game_pid: _GamePid | None) -> None:
         """``close_game()`` (árbol MO2, M-8) + kill directo del juego (D7b).
 
         Si MO2 salió tras lanzar, su PID está muerto y ``close_game`` no
         alcanza al juego reparentado: el kill directo cierra ese hueco.
         """
         await self._mo2.close_game()
-        if game_pid is not None and await self._pid_alive(game_pid):
-            await asyncio.to_thread(self._kill_game_tree_sync, game_pid)
+        if game_pid is not None and await self._pid_alive(game_pid.pid):
+            await asyncio.to_thread(self._kill_game_tree_sync, game_pid.pid, game_pid.create_time)
 
     # ------------------------------------------------------------------
     # Helpers (I/O y psutil sync detrás de to_thread)
@@ -517,10 +535,10 @@ class GrassCacheRunner:
             return self._config.min_free_bytes
         return int(uso.free)
 
-    async def _find_game_pid(self, mo2_pid: int, min_create_epoch: float) -> int | None:
+    async def _find_game_pid(self, mo2_pid: int, min_create_epoch: float) -> _GamePid | None:
         return await asyncio.to_thread(self._scan_for_game_sync, mo2_pid, min_create_epoch)
 
-    def _scan_for_game_sync(self, mo2_pid: int, min_create_epoch: float) -> int | None:
+    def _scan_for_game_sync(self, mo2_pid: int, min_create_epoch: float) -> _GamePid | None:
         """UNA pasada de búsqueda del juego (el caller polea).
 
         Rama B (D1): hijo del árbol de MO2. Rama C (fallback): búsqueda global
@@ -530,6 +548,11 @@ class GrassCacheRunner:
         juego reparentado. La atribución perfecta post-reparent es imposible
         (el vínculo padre-hijo se perdió); si el exe no es legible
         (AccessDenied), se acepta por nombre+tiempo con warning.
+
+        El ``create_time`` capturado ACÁ (no en el kill) es lo que le permite a
+        ``_kill_game_tree_sync`` revalidar identidad más tarde — review Codex
+        #316: un PID reusado por otro exe de la MISMA instalación pasaría el
+        chequeo de nombre+exe pero tendría un ``create_time`` distinto.
         """
         nombres = {n.lower() for n in self._config.game_exe_names}
         game_dir = self._config.game_path.resolve()
@@ -540,7 +563,12 @@ class GrassCacheRunner:
         for hijo in hijos:
             try:
                 if hijo.name().lower() in nombres:
-                    return int(hijo.pid)
+                    creado: float | None
+                    try:
+                        creado = hijo.create_time()
+                    except psutil.Error:
+                        creado = None
+                    return _GamePid(pid=int(hijo.pid), create_time=creado)
             except psutil.Error:
                 continue
         try:
@@ -548,11 +576,12 @@ class GrassCacheRunner:
                 try:
                     info = proc.info
                     nombre = str(info.get("name") or "")
-                    creado = float(info.get("create_time") or 0.0)
+                    creado_raw = info.get("create_time")
+                    creado_fallback = float(creado_raw or 0.0)
                     exe = info.get("exe")
                 except psutil.Error:
                     continue
-                if nombre.lower() not in nombres or creado < min_create_epoch:
+                if nombre.lower() not in nombres or creado_fallback < min_create_epoch:
                     continue
                 if not exe:
                     # exe ilegible (AccessDenied: proceso elevado/de otro
@@ -569,7 +598,7 @@ class GrassCacheRunner:
                         continue  # mismo nombre pero OTRA instalación: no se adopta
                 except OSError:
                     continue
-                return int(proc.pid)
+                return _GamePid(pid=int(proc.pid), create_time=creado_raw)
         except psutil.Error:
             logger.warning("process_iter falló durante la búsqueda del juego.", exc_info=True)
         return None
@@ -577,19 +606,27 @@ class GrassCacheRunner:
     async def _pid_alive(self, pid: int) -> bool:
         return bool(await asyncio.to_thread(psutil.pid_exists, pid))
 
-    def _es_proceso_del_juego(self, proc: psutil.Process) -> bool:
-        """True si *proc* es un exe del juego residente en ``game_path``.
+    def _es_proceso_del_juego(self, proc: psutil.Process, expected_create_time: float | None) -> bool:
+        """True si *proc* es el MISMO juego atribuido (nombre + exe + create_time).
 
-        Misma verificación que ``_scan_for_game_sync`` usa al ATRIBUIR el juego
-        (nombre en ``game_exe_names`` + exe bajo ``game_path``), reutilizada al
-        MATAR: entre la atribución y el kill el SO pudo reusar el PID para otro
-        proceso, y matar su árbol a ciegas cerraría un Steam/Discord/otro Skyrim
-        ajeno (auditoría #287 §2.5). Fail-closed: nombre que no matchea o exe
-        ilegible (AccessDenied) ⇒ NO es nuestro juego, no se mata.
+        Misma verificación de nombre+exe que ``_scan_for_game_sync`` usa al
+        ATRIBUIR el juego, MÁS ``create_time`` (review Codex #316): un PID
+        reusado por OTRO ``SkyrimSE.exe`` de la MISMA instalación (p. ej. el
+        usuario relanza el juego manualmente entre la atribución y el kill)
+        pasaría el chequeo de nombre+exe solo, pero tendría un ``create_time``
+        distinto al capturado en la atribución — matar su árbol a ciegas
+        cerraría la sesión que el usuario acaba de abrir. Fail-closed: nombre
+        que no matchea, exe ilegible (AccessDenied) o ``create_time`` que no
+        coincide ⇒ NO es nuestro juego, no se mata. ``expected_create_time=None``
+        (no se pudo leer al atribuir) omite ESE chequeo puntual — el proceso
+        casi siempre ya murió para cuando esto importa (mismo criterio que
+        ``vfs.MO2Controller._kill_process_tree``, review Codex #302).
         """
         nombres = {n.lower() for n in self._config.game_exe_names}
         try:
             if proc.name().lower() not in nombres:
+                return False
+            if expected_create_time is not None and proc.create_time() != expected_create_time:
                 return False
             exe = proc.exe()
         except psutil.Error:
@@ -601,21 +638,22 @@ class GrassCacheRunner:
         except OSError:
             return False
 
-    def _kill_game_tree_sync(self, pid: int) -> None:
+    def _kill_game_tree_sync(self, pid: int, expected_create_time: float | None = None) -> None:
         """Kill directo del árbol del juego (réplica acotada de M-8 sobre el
         game_pid — D7b). Best-effort.
 
-        Revalida la identidad del PID raíz ANTES de matar (§2.5): un PID reusado
-        por el SO tras morir el juego original tendría otro nombre/exe → no se
-        mata un proceso ajeno del usuario. Los hijos se matan solo si la raíz
-        verificó (son descendientes del juego real)."""
+        Revalida la identidad del PID raíz ANTES de matar (§2.5 + #316): un PID
+        reusado por el SO tras morir/relanzarse el juego original tendría otro
+        nombre/exe/create_time → no se mata un proceso ajeno del usuario. Los
+        hijos se matan solo si la raíz verificó (son descendientes del juego
+        real)."""
         try:
             root = psutil.Process(pid)
         except psutil.Error:
             return
-        if not self._es_proceso_del_juego(root):
+        if not self._es_proceso_del_juego(root, expected_create_time):
             logger.warning(
-                "No se mata el pid=%s: ya no es un exe del juego bajo %s (PID reusado por el SO).",
+                "No se mata el pid=%s: ya no es el mismo exe del juego bajo %s (PID reusado por el SO).",
                 pid,
                 self._config.game_path,
             )

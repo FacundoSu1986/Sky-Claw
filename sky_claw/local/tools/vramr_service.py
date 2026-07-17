@@ -39,6 +39,7 @@ from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
 from sky_claw.antigravity.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
+    LockLeaseLostError,
     SnapshotTransactionLock,
 )
 from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
@@ -226,6 +227,22 @@ class VRAMrPipelineService:
                 exc,
             )
             error = f"Lock contention: {exc}"
+
+        except LockLeaseLostError as exc:
+            # El heartbeat perdió el lease DURANTE/tras el run (renovación
+            # fallida, otro agente pudo tomar el lock): __aexit__ NO revierte
+            # ante lease loss (evita clobberear una mutación concurrente
+            # ajena) — el journal ya pudo haberse commiteado (VRAMr completó
+            # con exit 0) pero la exclusividad no estuvo garantizada durante
+            # TODO el run largo, así que output_dir puede tener contenido de
+            # OTRO proceso. No se limpia (limpiar podría borrar su trabajo);
+            # se reporta como fallo con el estado incierto (review Codex #316).
+            logger.error(
+                "Lease del lock '%s' perdido durante/tras VRAMr: %s",
+                lock_resource_id,
+                exc,
+            )
+            error = f"Lock lease lost: {exc}"
 
         duration = time.monotonic() - t0
         success = error is None

@@ -20,13 +20,14 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sky_claw.antigravity.agent.tools.system_tools import generate_bashed_patch
-from sky_claw.antigravity.db.locks import DistributedLockManager
+from sky_claw.antigravity.db.locks import DistributedLockManager, LockLeaseLostError
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.antigravity.orchestrator import supervisor as supervisor_mod
 from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME, WryeBashResult
@@ -34,6 +35,23 @@ from sky_claw.local.xedit.patch_orchestrator import DelegateToBashedPatch
 
 if TYPE_CHECKING:
     import pathlib
+
+
+class _LockLeaseLost:
+    """Lock de frontera: en un clean-exit (el body no lanzó), ``__aexit__`` se
+    comporta como una lease perdida — mismo contrato que ``SnapshotTransactionLock``
+    real (review Codex #316: el heartbeat pudo perder el lease DURANTE un run
+    largo aunque el body haya terminado con éxito)."""
+
+    rollback_completed = False
+
+    async def __aenter__(self) -> _LockLeaseLost:
+        return self
+
+    async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: object, exc_tb: object) -> bool:
+        if exc_type is None:
+            raise LockLeaseLostError("lease perdida (simulado)")
+        return False
 
 
 @pytest.fixture
@@ -278,6 +296,95 @@ async def test_handler_path_directo_sin_lock_preservado(game_dir: pathlib.Path) 
 async def test_handler_runner_none_es_error_estructurado() -> None:
     out = json.loads(await generate_bashed_patch(None))
     assert "error" in out
+
+
+# =============================================================================
+# Lease perdida a mitad de run (review Codex #316) — el contrato dict/T11
+# =============================================================================
+
+
+async def test_pipeline_lease_perdida_devuelve_dict_no_propaga(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    game_dir: pathlib.Path,
+) -> None:
+    """Si el heartbeat pierde el lease en un clean-exit, execute_wrye_bash_pipeline
+    debe devolver el dict de error documentado — no dejar propagar LockLeaseLostError."""
+    runner = _runner(game_dir)  # generate_bashed_patch() "termina con éxito"
+    sup = _supervisor(runner, lock_manager, snapshot_manager)
+
+    with patch.object(supervisor_mod, "SnapshotTransactionLock", return_value=_LockLeaseLost()):
+        out = await sup.execute_wrye_bash_pipeline(validate_limit=False)
+
+    assert out["success"] is False
+    assert "lease" in out["error"].lower()
+    assert out["rolled_back"] is False
+
+
+async def test_handler_lease_perdida_devuelve_json_de_error(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    game_dir: pathlib.Path,
+) -> None:
+    runner = _runner(game_dir)
+
+    # generate_bashed_patch hace el import de SnapshotTransactionLock LOCAL
+    # (dentro de la función): el patch debe apuntar a la fuente
+    # (sky_claw.antigravity.db.locks), no al módulo system_tools.
+    with patch("sky_claw.antigravity.db.locks.SnapshotTransactionLock", return_value=_LockLeaseLost()):
+        out = json.loads(
+            await generate_bashed_patch(runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager)
+        )
+
+    assert "error" in out
+    assert "lease" in out["error"].lower()
+
+
+# =============================================================================
+# Primera generación fallida: sin snapshot previo, el .esp corrupto se limpia
+# (review Codex #316 — antes quedaba persistente en Data/)
+# =============================================================================
+
+
+async def test_pipeline_primer_fallo_sin_esp_previo_borra_el_parcial(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    game_dir: pathlib.Path,
+) -> None:
+    esp = game_dir / "Data" / BASHED_PATCH_NAME
+    runner = _runner(game_dir)
+
+    async def on_run() -> WryeBashResult:
+        esp.write_bytes(b"TES4 truncado a medio escribir")  # bash.py murió acá
+        return _resultado(False)
+
+    runner.generate_bashed_patch = AsyncMock(side_effect=on_run)
+    sup = _supervisor(runner, lock_manager, snapshot_manager)
+
+    out = await sup.execute_wrye_bash_pipeline(validate_limit=False)
+
+    assert out["success"] is False
+    assert not esp.exists(), "el .esp corrupto de la primera generación no debe quedar persistente"
+
+
+async def test_handler_primer_fallo_sin_esp_previo_borra_el_parcial(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    game_dir: pathlib.Path,
+) -> None:
+    esp = game_dir / "Data" / BASHED_PATCH_NAME
+    runner = _runner(game_dir)
+
+    async def on_run() -> WryeBashResult:
+        esp.write_bytes(b"TES4 truncado a medio escribir")
+        return _resultado(False)
+
+    runner.generate_bashed_patch = AsyncMock(side_effect=on_run)
+
+    out = json.loads(await generate_bashed_patch(runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager))
+
+    assert out["success"] is False
+    assert not esp.exists()
 
 
 # =============================================================================

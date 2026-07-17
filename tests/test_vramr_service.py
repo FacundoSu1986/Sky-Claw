@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
-from sky_claw.antigravity.db.locks import DistributedLockManager
+from sky_claw.antigravity.db.locks import DistributedLockManager, LockLeaseLostError
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 from sky_claw.antigravity.security.path_validator import PathValidator
 from sky_claw.local.tools import vramr_service as vramr_mod
@@ -421,6 +421,53 @@ async def test_lock_contention_returns_error_without_rollback(
     completed = mock_event_bus.publish.call_args_list[1].args[0]
     assert completed.payload["rolled_back"] is False
     assert completed.payload["success"] is False
+
+
+class _LockLeaseLost:
+    """Lock de frontera: en un clean-exit (el body no lanzó), ``__aexit__`` se
+    comporta como una lease perdida — review Codex #316: el heartbeat pudo
+    perder el lease DURANTE un run largo aunque VRAMr haya terminado con
+    exit 0 (el body ya cometió el journal y salió sin excepción)."""
+
+    rollback_completed = False
+
+    async def __aenter__(self) -> _LockLeaseLost:
+        return self
+
+    async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: object, exc_tb: object) -> bool:
+        if exc_type is None:
+            raise LockLeaseLostError("lease perdida (simulado)")
+        return False
+
+
+async def test_lease_perdida_devuelve_dict_no_propaga(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_event_bus: AsyncMock,
+    path_validator: PathValidator,
+    vramr_exe: pathlib.Path,
+    output_dir: pathlib.Path,
+) -> None:
+    """Regla T11: execute_pipeline SIEMPRE devuelve dict, incluso si el lock
+    pierde el lease en un clean-exit (después de que VRAMr terminó bien)."""
+    svc = make_service(
+        lock_manager=lock_manager,
+        mock_journal=mock_journal,
+        path_validator=path_validator,
+        event_bus=mock_event_bus,
+        snapshot_manager=snapshot_manager,
+    )
+
+    with (
+        patch.object(vramr_mod, "SnapshotTransactionLock", return_value=_LockLeaseLost()),
+        patch.object(vramr_mod.asyncio, "create_subprocess_exec", AsyncMock(return_value=make_fake_proc(exit_code=0))),
+    ):
+        result = await svc.execute_pipeline(vramr_exe=vramr_exe, args=[], output_dir=output_dir)
+
+    assert result["success"] is False
+    assert "lease" in result["error"].lower()
+    assert result["rolled_back"] is False
 
 
 # =============================================================================

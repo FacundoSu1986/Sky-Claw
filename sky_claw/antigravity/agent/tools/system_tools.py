@@ -10,6 +10,7 @@ via the tool's ``params_model``.  Handlers receive pre-validated arguments.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import pathlib
@@ -434,8 +435,11 @@ async def generate_bashed_patch(
         from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
 
         # Snapshot del .esp previo si existe (regeneración). getattr defensivo:
-        # el runner llega tipado Any desde el registry.
+        # el runner llega tipado Any desde el registry. bashed_patch queda None
+        # si no se pudo resolver game_path — guarda explícita para el cleanup
+        # de más abajo (no asumir que "target_files vacío" implica el path resuelto).
         target_files: list[Any] = []
+        bashed_patch: pathlib.Path | None = None
         config = getattr(wrye_bash_runner, "config", None)
         game_path = getattr(config, "game_path", None)
         if game_path is not None:
@@ -461,7 +465,17 @@ async def generate_bashed_patch(
             return json.dumps({"error": f"Could not acquire '{LOAD_ORDER_RESOURCE_ID}' lock: {exc}"})
         except _BashedPatchFailedError as exc:
             result = exc.result
+            if not target_files and bashed_patch is not None:
+                # Primera generación: sin .esp previo que snapshotear, así que
+                # __aexit__ no restauró nada — el .esp corrupto/truncado que el
+                # runner dejó a medio escribir quedaría persistente en Data/
+                # (review Codex #316, mismo gap que el pipeline del supervisor).
+                with contextlib.suppress(OSError):
+                    bashed_patch.unlink(missing_ok=True)
         except Exception as exc:
+            # Incluye LockLeaseLostError (heartbeat perdió el lease durante la
+            # generación): __aexit__ no revierte ante lease loss, así que el
+            # .esp queda en estado incierto — se reporta como error, no éxito.
             return json.dumps({"error": str(exc)})
     else:
         try:

@@ -79,6 +79,9 @@ class _ProcFake:
         # exe ilegible como None (el runner lo trata como fail-closed).
         return self._exe
 
+    def create_time(self) -> float:
+        return self._create_time
+
     def kill(self) -> None:
         self._mundo.vivos.discard(self.pid)
 
@@ -716,6 +719,45 @@ async def test_pid_reusado_por_otro_proceso_no_se_mata(
 
     assert resultado.outcome == "cancelled"
     assert 7000 in mundo.vivos, "§2.5: un PID reusado por otro proceso jamás se mata"
+
+
+async def test_pid_reusado_por_el_mismo_juego_relanzado_no_se_mata(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # Review Codex #316: name+exe solos NO alcanzan — un PID reusado por OTRO
+    # SkyrimSE.exe de la MISMA instalación (el usuario relanza el juego a mano
+    # entre la atribución y el kill) pasaría ese chequeo igual. Debe comparar
+    # también create_time contra el capturado al atribuir.
+    juego = _ProcFake(mundo, 8000, "SkyrimSE.exe", time.time(), exe=str(config.game_path / "SkyrimSE.exe"))
+    mundo.vivos.add(8000)
+    mundo.globales.append(juego)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        return {"pid": 999, "status": "launched", "profile": profile}  # MO2 ya muerto
+
+    mo2.launch_game.side_effect = _launch
+
+    vigilando = asyncio.Event()
+
+    def _al_chequear(pid: int) -> None:
+        if pid == 8000 and not vigilando.is_set():
+            vigilando.set()
+            # ...pero JUSTO antes del kill el usuario relanza el MISMO juego:
+            # mismo pid (el SO lo reusó), mismo name+exe, OTRO create_time.
+            mundo.globales[:] = [
+                _ProcFake(mundo, 8000, "SkyrimSE.exe", time.time() + 3600, exe=str(config.game_path / "SkyrimSE.exe"))
+            ]
+
+    mundo.al_chequear_pid = _al_chequear
+    cancel = asyncio.Event()
+    tarea = asyncio.create_task(_runner(config, mo2).run(cancel))
+
+    await asyncio.wait_for(vigilando.wait(), timeout=5.0)
+    cancel.set()
+    resultado = await asyncio.wait_for(tarea, timeout=10)
+
+    assert resultado.outcome == "cancelled"
+    assert 8000 in mundo.vivos, "#316: create_time distinto (mismo name+exe) tampoco se mata"
 
 
 async def test_permission_error_de_launch_es_spawn_failed_y_file_not_found_propaga(

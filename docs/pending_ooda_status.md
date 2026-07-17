@@ -477,3 +477,48 @@ rollback honesto de Synthesis, advisor Fase 1) está cerrado y anclado.
 **Frente verificable-por-agente: agotado.** El trabajo de valor restante
 (Telegram end-to-end, GUI/FOMOD, smoke E2E T-25, smoke de los `.pas` contra
 xEdit real) requiere un rig humano con Skyrim/MO2 — no ejecutable en CI.
+
+---
+
+## Addendum (2026-07-17) — 4 hallazgos de Codex en el review del PR #316
+
+El review automático de Codex sobre el PR #316 (2026-07-17) encontró 4
+gaps reales en los fixes de ese mismo PR — verificados uno por uno contra el
+código antes de aplicar el fix (protocolo del repo: nunca confiar ciegamente
+en un hallazgo externo). Los 4 eran correctos:
+
+- **`grass_cache_runner._kill_game_tree_sync` no comparaba `create_time`.**
+  El fix anterior (mismo PR) revalidaba nombre+exe antes de matar, pero un PID
+  reusado por OTRO `SkyrimSE.exe` de la MISMA instalación (el usuario relanza
+  el juego a mano entre la atribución y el kill) pasaba ese chequeo igual —
+  mismo nombre, mismo exe, distinto proceso. Fix: `_scan_for_game_sync` ahora
+  captura `create_time` en el momento de la ATRIBUCIÓN (nuevo tipo `_GamePid`
+  que viaja pid+create_time por todo `run()`, en vez de un `int` pelado) y
+  `_kill_game_tree_sync`/`_es_proceso_del_juego` lo comparan contra el del
+  proceso vivo antes de matar. Mismo patrón que `vfs.py` #302. Anclado en
+  `test_pid_reusado_por_el_mismo_juego_relanzado_no_se_mata`.
+- **`LockLeaseLostError` sin capturar en Wrye Bash y VRAMr.** Ambos usan
+  `SnapshotTransactionLock` (nuevo en este PR); su `__aexit__` puede relanzar
+  `LockLeaseLostError` en un CLEAN exit si el heartbeat perdió el lease
+  durante un run largo — ninguno de los dos tenía un `except` para esa clase
+  (Wrye Bash: solo `LockAcquisitionError`/`_WryeBashFailedError`/
+  `WryeBashExecutionError`; VRAMr: el `except Exception` estaba DENTRO del
+  `async with`, no cubre lo que lanza `__aexit__` al salir). Sin el fix,
+  ambos violaban el contrato "siempre devolver dict" y propagaban. Fix:
+  `except LockLeaseLostError` explícito en los tres call sites (pipeline del
+  supervisor, handler del agente ya lo cubría por su `except Exception`
+  genérico — se dejó el comentario aclarando por qué, VRAMr). Se reporta como
+  fallo con `rolled_back=False` (la exclusividad no estuvo garantizada, no se
+  puede declarar éxito ni intentar limpiar sin arriesgar clobberear a otro
+  agente).
+- **Bashed Patch corrupto no se limpiaba en la primera generación.** Cuando
+  `target_files=[]` (no hay `.esp` previo que snapshotear), un fallo dentro
+  del lock no tenía nada que restaurar — el `.esp` truncado que Wrye Bash dejó
+  a medio escribir quedaba persistente en `Data/`. Fix: en ambos paths
+  (pipeline + handler del agente), si `target_files` estaba vacío y el run
+  falló, se borra el artefacto nuevo (best-effort). Mismo patrón que
+  `vramr_service._cleanup_output_dir`.
+
+Los 4 fixes están en el mismo PR #316 (no un PR separado — eran defectos
+introducidos por ese PR, corregidos antes de merge). Gates verdes, suite
+completa passing.
