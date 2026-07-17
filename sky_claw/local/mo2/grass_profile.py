@@ -56,12 +56,21 @@ _DEFAULT_CLONE_PROFILE = "SkyClaw-GrassCache"
 _DEFAULT_CONFIG_MOD = "SkyClaw - Grass Precache Config"
 
 #: Ruta del ``GrassControl.ini`` de NGIO-NG dentro del árbol de un mod MO2.
+#: El plugin lee exactamente ``Data/SKSE/Plugins/GrassControl.ini`` (verificado
+#: en el source oficial: ``include/GrassControl/Config.h``,
+#: ``iniPath = "Data/SKSE/Plugins/GrassControl.ini"``). El ``GrassControl.toml``
+#: del repo es material de referencia; el runtime lee el ``.ini``.
 _GRASSCONTROL_REL = pathlib.PurePosixPath("SKSE/Plugins/GrassControl.ini")
+#: Sección que NGIO-NG exige para las claves de grass. El plugin parsea con
+#: ``CSimpleIniA`` y lee ``ReadBoolSetting(ini, "GrassConfig", <clave>, ...)``
+#: (``src/Config.cpp``): sin este header las claves caen en la sección vacía y
+#: el plugin las IGNORA (usaría sus defaults → escanearía TODOS los worldspaces).
+_GRASSCONTROL_SECTION = "GrassConfig"
 #: Ruta del ``SSEDisplayTweaks.ini`` dentro del árbol de un mod MO2.
 _SSEDISPLAYTWEAKS_REL = pathlib.PurePosixPath("SKSE/Plugins/SSEDisplayTweaks.ini")
 
-#: Flags planos de ``GrassControl.ini`` (sintaxis NGIO-NG, sin secciones) para
-#: la fase de GENERACIÓN. El README de NGIO-NG documenta arrancar el precache con
+#: Claves de ``[GrassConfig]`` (ver ``_GRASSCONTROL_SECTION``) para la fase de
+#: GENERACIÓN. El README de NGIO-NG documenta arrancar el precache con
 #: ``Use-grass-cache = true`` **y** ``Only-load-from-cache = true`` (este último
 #: es también el estado de uso normal posterior: cargar solo del cache generado).
 _DEFAULT_GRASSCONTROL: dict[str, str] = {
@@ -69,10 +78,9 @@ _DEFAULT_GRASSCONTROL: dict[str, str] = {
     "Only-load-from-cache": "True",
 }
 
-#: Clave NGIO-NG que limita el precache a una lista de worldspaces (los que la
-#: Fase A detectó con pasto). Ojo: es con guiones y semicolon-delimited, no la
-#: forma legacy ``OnlyPregenerateWorldSpaces`` space-joined (GrassControl.toml
-#: oficial de NGIO-NG) — la forma legacy la ignora NGIO-NG y escanearía TODO.
+#: Clave de ``[GrassConfig]`` que limita el precache a una lista de worldspaces
+#: (los que la Fase A detectó con pasto). Con guiones y semicolon-delimited entre
+#: comillas (``"WorldA;WorldB"``) — la sintaxis exacta que parsea NGIO-NG.
 _WORLDSPACES_KEY = "Only-pregenerate-world-spaces"
 
 #: ``SSEDisplayTweaks.ini`` (con secciones): ventana marginal para acelerar los
@@ -253,9 +261,10 @@ class GrassProfileManager:
 
     async def _write_grasscontrol(self, mod_dir: pathlib.Path, values: Mapping[str, str]) -> None:
         path = mod_dir / _GRASSCONTROL_REL
-        # Sintaxis plana NGIO-NG (sin secciones): section=None en el IniEditor.
+        # NGIO-NG lee las claves bajo [GrassConfig] (CSimpleIniA, src/Config.cpp):
+        # deben escribirse EN esa sección, no planas, o el plugin las ignora.
         for key, value in values.items():
-            await self._ini.set(path, key, value)
+            await self._ini.set(path, key, value, section=_GRASSCONTROL_SECTION)
 
     async def _write_ssedisplaytweaks(self, mod_dir: pathlib.Path) -> None:
         path = mod_dir / _SSEDISPLAYTWEAKS_REL
