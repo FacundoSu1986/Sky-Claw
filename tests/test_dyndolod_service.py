@@ -904,3 +904,76 @@ async def test_ensure_preflight_construye_sensores_con_mo2_resoluble(
 
     preflight = svc._ensure_preflight()
     assert preflight is not None  # sensores cableados, no un no-op
+
+
+def _resolver_para_permisos(tmp_path: pathlib.Path) -> MagicMock:
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    mo2 = tmp_path / "MO2"
+    (mo2 / "mods").mkdir(parents=True)
+    exe = tmp_path / "DynDOLOD" / "DynDOLODx64.exe"
+    exe.parent.mkdir(parents=True)
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=game)
+    resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_mo2_mods_path = MagicMock(return_value=mo2 / "mods")
+    resolver.get_dyndolod_exe = MagicMock(return_value=exe)
+    resolver.get_skyrim_path_raw = MagicMock(return_value=game)
+    resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
+    resolver.get_active_profile = MagicMock(return_value="Default")
+    return resolver
+
+
+def _svc(resolver: MagicMock, mock_lock_manager, mock_snapshot_manager, mock_journal, mock_event_bus):
+    return DynDOLODPipelineService(
+        lock_manager=mock_lock_manager,
+        snapshot_manager=mock_snapshot_manager,
+        journal=mock_journal,
+        path_resolver=resolver,
+        event_bus=mock_event_bus,
+    )
+
+
+def test_permission_targets_incluye_staging_y_empaquetado(
+    mock_lock_manager: AsyncMock,
+    mock_snapshot_manager: AsyncMock,
+    mock_journal: AsyncMock,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El sensor de permisos sondea el empaquetado (mods/*) Y el staging crudo
+    (raíz MO2 + dir del exe) donde DynDOLOD escribe primero (review #311 F2)."""
+    resolver = _resolver_para_permisos(tmp_path)
+    svc = _svc(resolver, mock_lock_manager, mock_snapshot_manager, mock_journal, mock_event_bus)
+    mo2 = tmp_path / "MO2"
+    exe_dir = tmp_path / "DynDOLOD"
+
+    targets = svc._permission_targets()
+
+    # Empaquetado bajo mods/
+    assert mo2 / "mods" in targets
+    assert mo2 / "mods" / "DynDOLOD Output" in targets
+    assert mo2 / "mods" / "TexGen Output" in targets
+    # Staging crudo bajo la raíz MO2 y el dir del exe
+    assert mo2 / "DynDOLOD_Output" in targets
+    assert mo2 / "TexGen_Output" in targets
+    assert exe_dir / "DynDOLOD_Output" in targets
+    assert exe_dir / "TexGen_Output" in targets
+
+
+def test_permission_targets_incluye_output_inexistente_freshness(
+    mock_lock_manager: AsyncMock,
+    mock_snapshot_manager: AsyncMock,
+    mock_journal: AsyncMock,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Freshness (review #311 F1): la ruta del output empaquetado está en los
+    targets aunque el dir NO exista al construir — así un output creado read-only
+    en un run posterior se sondea (el checker se salta los inexistentes)."""
+    resolver = _resolver_para_permisos(tmp_path)
+    svc = _svc(resolver, mock_lock_manager, mock_snapshot_manager, mock_journal, mock_event_bus)
+    output = tmp_path / "MO2" / "mods" / "DynDOLOD Output"
+    assert not output.exists()  # todavía no existe (primer run / limpiado)
+
+    assert output in svc._permission_targets()  # igual está en la lista de sondeo

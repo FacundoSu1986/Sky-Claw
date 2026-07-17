@@ -189,22 +189,11 @@ class DynDOLODPipelineService:
             scan_mods_dir=False,
         )
 
-        # Permisos sobre lo que DynDOLOD reescribe: ``mods/`` (donde crea los mods
-        # de salida) + los ``*/Output`` existentes por si quedaron read-only.
-        mods = self._path_resolver.get_mo2_mods_path()
-        targets: list[pathlib.Path] = []
-        if isinstance(mods, pathlib.Path):
-            targets.append(mods)
-            for name in (DynDOLODRunner.DYNDOLLOD_MOD_NAME, DynDOLODRunner.TEXGEN_MOD_NAME):
-                out = mods / name
-                if out.is_dir():
-                    targets.append(out)
-
+        # Permisos: los targets se recalculan POR CORRIDA dentro del closure
+        # (freshness, review Codex #311) — un dir de salida creado read-only
+        # después de construir el preflight cacheado debe verse igual.
         def _permissions() -> Any:
-            # Re-probe por llamada (freshness): un cambio de permisos entre corridas se ve.
-            return WritePermissionsChecker(targets=targets).check()
-
-        permissions_check = _permissions if targets else None
+            return WritePermissionsChecker(targets=self._permission_targets()).check()
 
         overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
 
@@ -215,13 +204,47 @@ class DynDOLODPipelineService:
 
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
-            permissions_check=permissions_check,
+            permissions_check=_permissions,
             overwrite_check=overwrite_check,
             masters_check=masters_check,
             limits_check=limits_check,
             omit_unconfigured=True,
         )
         return self._preflight
+
+    def _permission_targets(self) -> list[pathlib.Path]:
+        """Rutas que DynDOLOD reescribe, resueltas EN CADA corrida (review #311).
+
+        - ``mods/`` (padre donde crea los mods) + los mod dirs empaquetados
+          (``DynDOLOD Output``/``TexGen Output``).
+        - El **staging crudo** (``DynDOLOD_Output``/``TexGen_Output``) que la
+          herramienta crea/reusa bajo la raíz MO2 y el dir del exe
+          (``dyndolod_runner._find_texgen_output``/``_find_dyndolod_output``): su
+          padre debe ser escribible para crearlo, y un staging existente
+          read-only mata el run tras la generación. No se sondea el ``cwd`` del
+          agente: no es el cwd del subproceso de DynDOLOD.
+
+        ``WritePermissionsChecker`` sondea solo los dirs existentes, así que
+        incluir rutas aún inexistentes es seguro (se saltan) y las que aparezcan
+        en runs futuros se sondean sin reconstruir el preflight cacheado.
+        """
+        candidates: list[pathlib.Path] = []
+        mods = self._path_resolver.get_mo2_mods_path()
+        if isinstance(mods, pathlib.Path):
+            candidates += [mods, mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME, mods / DynDOLODRunner.TEXGEN_MOD_NAME]
+
+        roots: list[pathlib.Path] = []
+        mo2 = self._path_resolver.get_mo2_path()
+        if isinstance(mo2, pathlib.Path):
+            roots.append(mo2)
+        exe = self._path_resolver.get_dyndolod_exe()
+        if isinstance(exe, pathlib.Path):
+            roots.append(exe.parent)
+        for root in roots:
+            candidates += [root, root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME, root / DynDOLODRunner.TEXGEN_OUTPUT_NAME]
+
+        seen: set[pathlib.Path] = set()
+        return [p for p in candidates if not (p in seen or seen.add(p))]
 
     # ------------------------------------------------------------------
     # Pipeline principal
