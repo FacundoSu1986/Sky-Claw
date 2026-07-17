@@ -7,11 +7,18 @@ explícitas pedidas por la misión:
 * Subprocess directo con :func:`asyncio.create_subprocess_exec` (no runner intermedio).
 * Streaming línea-a-línea de ``stdout``/``stderr`` al logger en tiempo real.
 
-VRAMr no muta archivos existentes; escribe a un ``output_dir`` fresco. Por eso
-no usamos :class:`SnapshotTransactionLock`: serializamos runs concurrentes con
-:class:`DistributedLockManager` y, ante fallo dentro del lock, limpiamos los
-artefactos nuevos de ``output_dir`` (dejando intacto cualquier archivo
-preexistente) y marcamos el journal-TX como ``rolled_back``.
+VRAMr no muta archivos existentes; escribe a un ``output_dir`` fresco, así que
+el lock se toma con ``target_files=[]`` (mismo patrón "serializar sin
+snapshotear" que ``pandora_service``): no hay archivo previo que restaurar. El
+rollback ante fallo es propio — limpiar los artefactos NUEVOS de ``output_dir``
+(dejando intacto cualquier archivo preexistente) + marcar el journal-TX como
+``rolled_back``.
+
+Se usa :class:`SnapshotTransactionLock` (no ``acquire_lock`` crudo) porque un
+run de VRAMr dura horas (default 1 h) y el lease del lock expira a los 10 min
+(``DEFAULT_LOCK_TTL_SECONDS``): sin el heartbeat + auto-renew que trae el
+context manager, la serialización desaparecía en silencio a mitad de run y otro
+mutador podía entrar (§2.1 reporte de consistencia de la auditoría).
 
 Regla T11: el servicio nunca propaga excepciones al caller — siempre
 devuelve un ``dict[str, Any]`` serializable.
@@ -26,16 +33,20 @@ import pathlib
 import shutil
 import sys
 import time
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
-from sky_claw.antigravity.db.locks import DistributedLockManager, LockAcquisitionError
+from sky_claw.antigravity.db.locks import (
+    DistributedLockManager,
+    LockAcquisitionError,
+    SnapshotTransactionLock,
+)
 from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.tools._process import kill_and_reap
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.db.journal import OperationJournal
+    from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +83,16 @@ class VRAMrPipelineService:
         self,
         *,
         lock_manager: DistributedLockManager,
+        snapshot_manager: FileSnapshotManager,
         journal: OperationJournal,
         path_validator: PathValidator,
         event_bus: CoreEventBus,
         default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         self._lock_manager = lock_manager
+        # target_files=[] siempre (VRAMr no muta entrada), pero SnapshotTransactionLock
+        # lo exige — es quien aporta el heartbeat/auto-renew que el run largo necesita.
+        self._snapshot_manager = snapshot_manager
         self._journal = journal
         self._path_validator = path_validator
         self._event_bus = event_bus
@@ -148,9 +163,17 @@ class VRAMrPipelineService:
         lock_resource_id = str(validated_output)
 
         try:
-            async with self._lock_scope(resource_id=lock_resource_id):
+            async with SnapshotTransactionLock(
+                lock_manager=self._lock_manager,
+                snapshot_manager=self._snapshot_manager,
+                resource_id=lock_resource_id,
+                agent_id=self.AGENT_ID,
+                target_files=[],  # VRAMr no muta entrada — serializa, no snapshotea
+                metadata={"source": "vramr_pipeline", "output_dir": lock_resource_id},
+            ):
                 # Todos los cambios + post-procesado ocurren dentro del lock
-                # para mantener atomicidad y evitar ventanas de race.
+                # para mantener atomicidad y evitar ventanas de race. El heartbeat
+                # del lock renueva el lease durante el run largo (horas).
                 try:
                     tx_id = await self._journal.begin_transaction(
                         description="vramr_pipeline",
@@ -243,45 +266,6 @@ class VRAMrPipelineService:
             rolled_back=rolled_back,
             duration=duration,
         )
-
-    # ------------------------------------------------------------------
-    # Lock scope (non-mutating — no snapshots de archivos)
-    # ------------------------------------------------------------------
-
-    @contextlib.asynccontextmanager
-    async def _lock_scope(
-        self,
-        *,
-        resource_id: str,
-    ) -> AsyncIterator[None]:
-        """Adquiere/libera un lock distribuido sin snapshotear nada.
-
-        A diferencia de :class:`SnapshotTransactionLock`, este scope no
-        crea snapshots de archivos (VRAMr no muta entrada). Solo
-        serializa runs concurrentes sobre el mismo ``output_dir``.
-        """
-        await self._lock_manager.acquire_lock(
-            resource_id=resource_id,
-            agent_id=self.AGENT_ID,
-        )
-        try:
-            yield
-        finally:
-            try:
-                await self._lock_manager.release_lock(
-                    resource_id=resource_id,
-                    agent_id=self.AGENT_ID,
-                )
-            except Exception as release_exc:
-                # Aislar el fallo secundario: no debe enmascarar el resultado
-                # del pipeline. Nivel error (el lock queda colgado hasta el
-                # TTL) con traceback, consistente con locks._safe_release.
-                logger.error(
-                    "Fallo al liberar lock VRAMr (%s): %s",
-                    resource_id,
-                    release_exc,
-                    exc_info=True,
-                )
 
     # ------------------------------------------------------------------
     # Subprocess execution + streaming

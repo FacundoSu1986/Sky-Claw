@@ -25,6 +25,7 @@ import pytest
 
 from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
 from sky_claw.antigravity.db.locks import DistributedLockManager
+from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 from sky_claw.antigravity.security.path_validator import PathValidator
 from sky_claw.local.tools import vramr_service as vramr_mod
 from sky_claw.local.tools.vramr_service import (
@@ -58,6 +59,13 @@ async def lock_manager(tmp_lock_db: pathlib.Path):
     await mgr.initialize()
     yield mgr
     await mgr.close()
+
+
+@pytest.fixture
+async def snapshot_manager(tmp_path: pathlib.Path) -> FileSnapshotManager:
+    d = tmp_path / "snapshots"
+    d.mkdir()
+    return FileSnapshotManager(snapshot_dir=d)
 
 
 @pytest.fixture
@@ -135,9 +143,18 @@ def make_service(
     path_validator: PathValidator,
     event_bus: AsyncMock | CoreEventBus,
     default_timeout: float = 60.0,
+    snapshot_manager: FileSnapshotManager | None = None,
 ) -> VRAMrPipelineService:
+    # target_files=[] → SnapshotTransactionLock nunca toca el snapshot_manager,
+    # pero es un arg requerido. Se construye uno real en un tmpdir efímero para
+    # no acoplar los 23 call sites a una fixture nueva.
+    if snapshot_manager is None:
+        import tempfile
+
+        snapshot_manager = FileSnapshotManager(snapshot_dir=pathlib.Path(tempfile.mkdtemp()))
     return VRAMrPipelineService(
         lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
         journal=mock_journal,
         path_validator=path_validator,
         event_bus=event_bus,
@@ -404,6 +421,95 @@ async def test_lock_contention_returns_error_without_rollback(
     completed = mock_event_bus.publish.call_args_list[1].args[0]
     assert completed.payload["rolled_back"] is False
     assert completed.payload["success"] is False
+
+
+# =============================================================================
+# 6b. Lease de larga duración: el lock usa SnapshotTransactionLock (§2.1)
+# =============================================================================
+
+
+async def test_lease_sobrevive_al_ttl_gracias_al_heartbeat(
+    tmp_lock_db: pathlib.Path,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_event_bus: AsyncMock,
+    path_validator: PathValidator,
+    vramr_exe: pathlib.Path,
+    output_dir: pathlib.Path,
+) -> None:
+    """El bug §2.1: con ``acquire_lock`` crudo (TTL 10 min) un run largo perdía
+    el lease en silencio. Con SnapshotTransactionLock el heartbeat lo renueva.
+
+    Se fuerza un TTL diminuto (0.3 s) y un run que dura más que eso; al terminar,
+    el lock sigue siendo del servicio (no expiró) y se libera limpio."""
+    mgr = DistributedLockManager(tmp_lock_db, default_ttl=0.3, max_retries=2, backoff_base=0.05, backoff_max=0.2)
+    await mgr.initialize()
+    try:
+        svc = make_service(
+            lock_manager=mgr,
+            snapshot_manager=snapshot_manager,
+            mock_journal=mock_journal,
+            path_validator=path_validator,
+            event_bus=mock_event_bus,
+        )
+
+        async def _proc_lento(*_a: object, **_k: object) -> MagicMock:
+            # El "run" dura ~3× el TTL: sin heartbeat el lease habría expirado.
+            proc = make_fake_proc(exit_code=0)
+            original = proc.wait
+
+            async def _wait_lento() -> int:
+                await asyncio.sleep(0.9)
+                return await original()
+
+            proc.wait = _wait_lento  # type: ignore[assignment]
+            return proc
+
+        with patch.object(vramr_mod.asyncio, "create_subprocess_exec", AsyncMock(side_effect=_proc_lento)):
+            result = await svc.execute_pipeline(vramr_exe=vramr_exe, args=[], output_dir=output_dir)
+
+        assert result["success"] is True  # el lease no expiró a mitad de run
+        # Lock liberado limpio al salir del context manager.
+        assert await mgr.get_lock_info(str(output_dir)) is None
+    finally:
+        await mgr.close()
+
+
+async def test_lock_tomado_con_target_files_vacio(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_event_bus: AsyncMock,
+    path_validator: PathValidator,
+    vramr_exe: pathlib.Path,
+    output_dir: pathlib.Path,
+) -> None:
+    """VRAMr no snapshotea entrada: el lock se toma con ``target_files=[]``
+    (rollback propio vía _cleanup_output_dir). Ancla el contrato del swap."""
+    captured: dict[str, object] = {}
+    real_lock = vramr_mod.SnapshotTransactionLock
+
+    def _spy(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return real_lock(**kwargs)  # type: ignore[arg-type]
+
+    svc = make_service(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        mock_journal=mock_journal,
+        path_validator=path_validator,
+        event_bus=mock_event_bus,
+    )
+    with (
+        patch.object(vramr_mod, "SnapshotTransactionLock", side_effect=_spy),
+        patch.object(
+            vramr_mod.asyncio, "create_subprocess_exec", AsyncMock(side_effect=lambda *a, **k: make_fake_proc())
+        ),
+    ):
+        await svc.execute_pipeline(vramr_exe=vramr_exe, args=[], output_dir=output_dir)
+
+    assert captured["target_files"] == []
+    assert captured["resource_id"] == str(output_dir)
 
 
 # =============================================================================
@@ -817,7 +923,10 @@ async def test_release_lock_failure_is_swallowed(
     output_dir: pathlib.Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="sky_claw.local.tools.vramr_service")
+    # Tras el swap a SnapshotTransactionLock, el fallo de release lo aísla y
+    # loguea el _safe_release del propio lock (locks.py), no el VRAMr — el
+    # comportamiento visible (swallowed, pipeline exitosa) se conserva.
+    caplog.set_level(logging.WARNING, logger="sky_claw.antigravity.db.locks")
     svc = make_service(
         lock_manager=lock_manager,
         mock_journal=mock_journal,
@@ -844,8 +953,8 @@ async def test_release_lock_failure_is_swallowed(
             args=[],
             output_dir=output_dir,
         )
-    assert result["success"] is True
-    assert any("Fallo al liberar lock" in r.message for r in caplog.records)
+    assert result["success"] is True  # el fallo de release no tumba el pipeline
+    assert any("Failed to release lock" in r.message for r in caplog.records)
 
 
 # =============================================================================

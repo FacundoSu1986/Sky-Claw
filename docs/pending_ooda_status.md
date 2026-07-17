@@ -401,3 +401,44 @@ de PID por `create_time` en `grass_cache_runner` (réplica del patrón #302), y
 cambia el ranking del "Decide" de arriba — Wrye Bash entra como serialización
 correcta, no como preflight (T-16c·3) ni caja negra (T-26), que siguen
 pendientes para este runner.
+
+---
+
+## Addendum (2026-07-16, noche) — VRAMr bajo SnapshotTransactionLock
+
+**Cerrado** (fix #5 del reporte de consistencia — "reemplazar el lock custom
+de VRAMr con SnapshotTransactionLock"):
+
+- `vramr_service.execute_pipeline` dejó de tomar el lock con `acquire_lock`
+  crudo (vía el `_lock_scope` custom, ahora eliminado) y usa
+  `SnapshotTransactionLock` con `target_files=[]` — el mismo patrón "serializar
+  sin snapshotear" de `pandora_service`. VRAMr no muta entrada, así que no hay
+  snapshot que restaurar; su rollback propio (`_cleanup_output_dir` de los
+  artefactos nuevos) se conserva intacto.
+- El punto del fix: un run de VRAMr dura horas (default 1 h) y el lease del
+  lock expira a los 10 min (`DEFAULT_LOCK_TTL_SECONDS`). Con `acquire_lock`
+  crudo el lease moría a mitad de run y la serialización desaparecía en
+  silencio; `SnapshotTransactionLock` trae el heartbeat + auto-renew que
+  mantiene el lease vivo. Anclado en `tests/test_vramr_service.py`
+  (`test_lease_sobrevive_al_ttl_gracias_al_heartbeat` con TTL 0.3s vs run 0.9s,
+  y `test_lock_tomado_con_target_files_vacio`).
+- **Matiz de severidad (verificado):** `VRAMrPipelineService` solo se construye
+  en tests — no está cableado a producción todavía. El bug era LATENTE (no
+  activo): el fix es correcto y future-proof, pero no había un camino de
+  usuario expuesto. El reporte lo etiquetó BLOQUEANTE sin verificar el
+  cableado; la etiqueta sobre-estimaba la severidad activa.
+
+**Estado del reporte de consistencia tras este PR** (los BLOQUEANTES/mejoras
+verificables-por-agente): Wrye Bash ✅ (serialización), VRAMr ✅ (heartbeat).
+Quedan dos ítems menores y de bajo riesgo, candidatos para un PR chico:
+`patcher_pipeline.to_json` atómico (config de patchers, escritura no atómica —
+Media) e identidad de PID por `create_time` en `grass_cache_runner._kill_game_tree_sync`
+(IMPORTANTE-baja, mitigada porque `_scan_for_game_sync` ya valida create_time+exe
+al ATRIBUIR el juego). El `glob("*.cgid")` no-recursivo NO se toca sin el smoke
+real de NGIO (probable no-bug: NGIO escribe planos con worldspace en el nombre).
+
+**Techo alcanzado:** con Wrye Bash + VRAMr cerrados, el pozo de bugs de
+concurrencia verificables-por-agente de alto valor está agotado. Lo que queda
+de VALOR real (bot de Telegram end-to-end, GUI de instalación/FOMOD, smoke E2E
+T-25, smoke de `dump_record_detail.pas` contra xEdit real) requiere un rig
+humano con Skyrim/MO2 real — no ejecutable por un agente en CI.
