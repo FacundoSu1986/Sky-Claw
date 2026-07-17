@@ -41,11 +41,7 @@ from sky_claw.local.tools.grass_cache_service import GrassCacheService, GrassRun
 from sky_claw.local.tools.loot_service import LootSortingService
 from sky_claw.local.tools.pandora_service import PandoraPipelineService
 from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
-from sky_claw.local.tools.wrye_bash_runner import (
-    WryeBashConfig,
-    WryeBashExecutionError,
-    WryeBashRunner,
-)
+from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
 from sky_claw.local.tools.xedit_service import XEditPipelineService
 from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport
 
@@ -257,9 +253,20 @@ class SupervisorAgent:
             runtime_deps_provider=self._build_grass_dependencies,
         )
 
-        # Lazy init para runners legacy que aún no son servicios puros (WryeBash, AssetDetector)
+        # PR A (caja negra de Wrye Bash): extracción Strangler-Fig del pipeline que
+        # antes vivía inline en el supervisor. Era el ÚNICO ritual mutante sin
+        # SnapshotTransactionLock (hueco de concurrencia); el servicio lo corre bajo el
+        # lock distribuido. El guard M-04 (compartido, expuesto por validate_plugin_limit)
+        # se inyecta desde acá porque no es exclusivo de Wrye Bash.
+        self._wrye_bash_service = WryeBashPipelineService(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self.snapshot_manager,
+            path_resolver=self._path_resolver,
+            plugin_limit_guard=self._run_plugin_limit_guard,
+        )
+
+        # Lazy init para runners legacy que aún no son servicios puros (AssetDetector)
         self._asset_detector: AssetConflictDetector | None = None
-        self._wrye_bash_runner: WryeBashRunner | None = None
 
         # Strangler Fig: dispatcher para herramientas migradas. Las branches del match/case
         # delegan progresivamente a este dispatcher. Se construye al final del __init__
@@ -591,50 +598,6 @@ class SupervisorAgent:
     # FASE 6: Wrye Bash Integration
     # =========================================================================
 
-    def _ensure_wrye_bash_runner(self) -> WryeBashRunner:
-        """FASE 6: Asegura que el WryeBashRunner esté inicializado.
-
-        Variables de entorno requeridas:
-        - WRYE_BASH_PATH: Ruta a Wrye Bash (bash.exe o bash.py)
-        - SKYRIM_PATH: Ruta al directorio de Skyrim SE/AE
-        - MO2_PATH: Ruta al directorio de MO2
-
-        Returns:
-            WryeBashRunner inicializado.
-
-        Raises:
-            WryeBashExecutionError: Si no se puede inicializar.
-        """
-        if self._wrye_bash_runner is not None:
-            return self._wrye_bash_runner
-
-        game_path = self._path_resolver.get_skyrim_path()
-        mo2_path = self._path_resolver.get_mo2_path()
-        wrye_bash_path = self._path_resolver.get_wrye_bash_path()
-
-        if not game_path or not mo2_path or not wrye_bash_path:
-            raise WryeBashExecutionError(
-                "Cannot initialize WryeBashRunner: "
-                "SKYRIM_PATH, MO2_PATH, and WRYE_BASH_PATH environment variables must be valid paths"
-            )
-
-        if not wrye_bash_path.exists():
-            raise WryeBashExecutionError(f"Wrye Bash executable not found: {wrye_bash_path}")
-
-        config = WryeBashConfig(
-            wrye_bash_path=wrye_bash_path,
-            game_path=game_path,
-            mo2_path=mo2_path,
-        )
-        self._wrye_bash_runner = WryeBashRunner(config)
-
-        logger.info(
-            "WryeBashRunner inicializado: game=%s, bash=%s",
-            game_path,
-            wrye_bash_path,
-        )
-        return self._wrye_bash_runner
-
     async def _run_plugin_limit_guard(self, profile: str) -> dict[str, Any]:
         """M-04/M-05: Gate preventivo — valida el límite de 254 plugins.
 
@@ -702,94 +665,24 @@ class SupervisorAgent:
     ) -> dict[str, Any]:
         """FASE 6: Genera el Bashed Patch con Wrye Bash.
 
-        Flujo:
-        1. [M-04] Validación de límite de plugins (gate preventivo)
-        2. Ejecutar WryeBashRunner.generate_bashed_patch()
-        3. Registrar resultado en OperationJournal
-
-        NOTA: La generación del Bashed Patch NO modifica archivos de mod
-        existentes — crea/sobreescribe únicamente 'Bashed Patch, 0.esp'.
-        Por esta razón no se crea snapshot del load order previo;
-        únicamente se registra la operación en el journal.
+        Delega en :class:`WryeBashPipelineService` (extracción Strangler-Fig, PR A):
+        el servicio corre la generación bajo :class:`SnapshotTransactionLock` — la
+        serialización que a este ritual le faltaba (era el único mutante sin lock). El
+        guard M-04 compartido se inyectó en construcción; el runner se construye
+        perezosamente desde el ``path_resolver``.
 
         Args:
             profile: Perfil MO2 a usar (default: self.profile_name).
-            validate_limit: Si True, ejecuta el guard M-04 antes de proceder.
+            validate_limit: Si True, corre el guard M-04 antes de proceder.
 
         Returns:
-            dict con ``success``, ``return_code``, ``stdout``, ``stderr``.
+            dict con ``success``, ``return_code``, ``stdout``, ``stderr`` (o un dict de
+            error para los modos de fallo conocidos).
         """
-        active_profile = profile or self.profile_name
-
-        logger.info(
-            "[FASE-6] Iniciando generación de Bashed Patch para perfil '%s'.",
-            active_profile,
+        return await self._wrye_bash_service.execute_pipeline(
+            profile=profile or self.profile_name,
+            validate_limit=validate_limit,
         )
-
-        # PASO 0: Gate preventivo M-04 — validar límite de plugins
-        if validate_limit:
-            guard_result = await self._run_plugin_limit_guard(active_profile)
-            if not guard_result.get("valid", True):
-                logger.error(
-                    "[FASE-6] Abortando Bashed Patch: validación M-04 falló. %s",
-                    guard_result.get("error"),
-                )
-                return {
-                    "success": False,
-                    "aborted_by": "plugin_limit_guard",
-                    "plugin_count": guard_result.get("plugin_count"),
-                    "error": guard_result.get("error"),
-                }
-
-        # PASO 1: Asegurar runner inicializado
-        try:
-            runner = self._ensure_wrye_bash_runner()
-        except WryeBashExecutionError as exc:
-            logger.error("[FASE-6] Error inicializando WryeBashRunner: %s", exc)
-            return {"success": False, "error": str(exc)}
-
-        # PASO 2: Ejecutar generación del Bashed Patch
-        try:
-            result = await runner.generate_bashed_patch()
-        except WryeBashExecutionError as exc:
-            logger.error("[FASE-6] WryeBashExecutionError: %s", exc)
-            return {"success": False, "error": str(exc)}
-
-        # PASO 3: Registrar resultado mediante logging estructurado.
-        # Nota: este flujo NO usa OperationJournal; la observabilidad se
-        # logra exclusivamente vía logger.info con extra={} estructurado.
-        logger.info(
-            "[FASE-6] Bashed Patch result logged",
-            extra={
-                "agent_id": "wrye_bash_runner",
-                "operation_type": "bashed_patch_generation",
-                "file_path": "Bashed Patch, 0.esp",
-                "success": result.success,
-                "return_code": result.return_code,
-                "duration_seconds": result.duration_seconds,
-                "profile": active_profile,
-            },
-        )
-
-        if result.success:
-            logger.info(
-                "[FASE-6] Bashed Patch generado exitosamente en %.1fs.",
-                result.duration_seconds,
-            )
-        else:
-            logger.error(
-                "[FASE-6] Wrye Bash retornó código %d. stderr: %s",
-                result.return_code,
-                result.stderr[:500],
-            )
-
-        return {
-            "success": result.success,
-            "return_code": result.return_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "duration_seconds": result.duration_seconds,
-        }
 
     # =========================================================================
     # FASE 5: Asset Conflict Detection Integration
