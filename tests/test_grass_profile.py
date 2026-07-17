@@ -161,12 +161,20 @@ async def test_grasscontrol_ini_worldspaces_y_flags(manager: GrassProfileManager
     mod_dir = await manager.build_config_mod(["Tamriel", "DLC2SolstheimWorld"])
 
     grass_ini = (mod_dir / "SKSE" / "Plugins" / "GrassControl.ini").read_text(encoding="utf-8")
-    # NGIO-NG documenta arrancar la generación con AMBOS en true (README).
-    assert "Use-grass-cache = True" in grass_ini
-    assert "Only-load-from-cache = True" in grass_ini
-    # Clave NGIO-NG con guiones, worldspaces entre comillas separados por ';'
-    # (GrassControl.toml oficial) — la forma legacy space-joined la ignoraría.
-    assert 'Only-pregenerate-world-spaces = "Tamriel;DLC2SolstheimWorld"' in grass_ini
+    # NGIO-NG parsea GrassControl.ini con CSimpleIniA y lee las claves bajo la
+    # sección [GrassConfig] (verificado en el source: include/GrassControl/Config.h
+    # define iniPath="Data/SKSE/Plugins/GrassControl.ini"; src/Config.cpp hace
+    # ReadBoolSetting(ini, "GrassConfig", "Use-grass-cache", ...)). Sin el header,
+    # las claves quedan en la sección vacía y el plugin las ignora.
+    assert "[GrassConfig]" in grass_ini
+    assert grass_ini.index("[GrassConfig]") < grass_ini.index("Use-grass-cache")
+    # En modo-sección el IniEditor escribe key=value (sin espacios, estilo INT
+    # clásico); CSimpleIniA trimea al leer, así que el plugin lo acepta. El valor
+    # "True" también: GetBoolValue de SimpleIni mira solo el 1er char ('T'→true).
+    assert "Use-grass-cache=True" in grass_ini
+    assert "Only-load-from-cache=True" in grass_ini
+    # Clave NGIO-NG con guiones, worldspaces entre comillas separados por ';'.
+    assert 'Only-pregenerate-world-spaces="Tamriel;DLC2SolstheimWorld"' in grass_ini
 
 
 async def test_worldspaces_vacio_escribe_comillas_vacias(manager: GrassProfileManager) -> None:
@@ -175,7 +183,8 @@ async def test_worldspaces_vacio_escribe_comillas_vacias(manager: GrassProfileMa
     mod_dir = await manager.build_config_mod([])
 
     grass_ini = (mod_dir / "SKSE" / "Plugins" / "GrassControl.ini").read_text(encoding="utf-8")
-    assert 'Only-pregenerate-world-spaces = ""' in grass_ini
+    # Modo-sección: el IniEditor escribe key=value (sin espacios).
+    assert 'Only-pregenerate-world-spaces=""' in grass_ini
 
 
 async def test_ssedisplaytweaks_baja_resolucion(manager: GrassProfileManager) -> None:
@@ -198,10 +207,11 @@ async def test_params_override_gana_sobre_default(manager: GrassProfileManager) 
     mod_dir = await manager.build_config_mod(["Tamriel"], params={"Use-grass-cache": "False", "Extra-flag": "1"})
 
     grass_ini = (mod_dir / "SKSE" / "Plugins" / "GrassControl.ini").read_text(encoding="utf-8")
-    assert "Use-grass-cache = False" in grass_ini  # override
-    assert "Extra-flag = 1" in grass_ini  # clave nueva
+    # Modo-sección: el IniEditor escribe key=value (sin espacios).
+    assert "Use-grass-cache=False" in grass_ini  # override
+    assert "Extra-flag=1" in grass_ini  # clave nueva
     # Los defaults no pisados siguen presentes.
-    assert "Only-load-from-cache = True" in grass_ini
+    assert "Only-load-from-cache=True" in grass_ini
 
 
 async def test_build_config_mod_requiere_clon_primero(manager: GrassProfileManager) -> None:
