@@ -577,12 +577,48 @@ class GrassCacheRunner:
     async def _pid_alive(self, pid: int) -> bool:
         return bool(await asyncio.to_thread(psutil.pid_exists, pid))
 
+    def _es_proceso_del_juego(self, proc: psutil.Process) -> bool:
+        """True si *proc* es un exe del juego residente en ``game_path``.
+
+        Misma verificación que ``_scan_for_game_sync`` usa al ATRIBUIR el juego
+        (nombre en ``game_exe_names`` + exe bajo ``game_path``), reutilizada al
+        MATAR: entre la atribución y el kill el SO pudo reusar el PID para otro
+        proceso, y matar su árbol a ciegas cerraría un Steam/Discord/otro Skyrim
+        ajeno (auditoría #287 §2.5). Fail-closed: nombre que no matchea o exe
+        ilegible (AccessDenied) ⇒ NO es nuestro juego, no se mata.
+        """
+        nombres = {n.lower() for n in self._config.game_exe_names}
+        try:
+            if proc.name().lower() not in nombres:
+                return False
+            exe = proc.exe()
+        except psutil.Error:
+            return False
+        if not exe:
+            return False
+        try:
+            return pathlib.Path(exe).resolve().parent == self._config.game_path.resolve()
+        except OSError:
+            return False
+
     def _kill_game_tree_sync(self, pid: int) -> None:
         """Kill directo del árbol del juego (réplica acotada de M-8 sobre el
-        game_pid — D7b). Best-effort."""
+        game_pid — D7b). Best-effort.
+
+        Revalida la identidad del PID raíz ANTES de matar (§2.5): un PID reusado
+        por el SO tras morir el juego original tendría otro nombre/exe → no se
+        mata un proceso ajeno del usuario. Los hijos se matan solo si la raíz
+        verificó (son descendientes del juego real)."""
         try:
             root = psutil.Process(pid)
         except psutil.Error:
+            return
+        if not self._es_proceso_del_juego(root):
+            logger.warning(
+                "No se mata el pid=%s: ya no es un exe del juego bajo %s (PID reusado por el SO).",
+                pid,
+                self._config.game_path,
+            )
             return
         try:
             procs = list(root.children(recursive=True))

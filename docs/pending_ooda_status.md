@@ -442,3 +442,38 @@ concurrencia verificables-por-agente de alto valor está agotado. Lo que queda
 de VALOR real (bot de Telegram end-to-end, GUI de instalación/FOMOD, smoke E2E
 T-25, smoke de `dump_record_detail.pas` contra xEdit real) requiere un rig
 humano con Skyrim/MO2 real — no ejecutable por un agente en CI.
+
+---
+
+## Addendum (2026-07-16, cierre) — patcher_pipeline atómico + identidad de PID en grass
+
+**Cerrados** (los dos ítems menores restantes del reporte de consistencia):
+
+- **`PatcherPipeline.to_json` escritura atómica.** Escribía con `open(w)` +
+  `json.dump` directo: un crash a mitad del dump dejaba el JSON de config
+  truncado y el próximo `from_json`/`__init__` fallaba con pipeline corrupto.
+  Ahora escribe a un tmp único en el mismo dir y hace `os.replace` atómico
+  (patrón de `vfs._write_modlist_atomic`); el tmp huérfano se limpia si falla.
+  Anclado en `tests/test_patcher_pipeline_atomic.py` (incluye el caso de crash
+  a mitad del dump que preserva el config previo byte a byte).
+- **Identidad de PID en `grass_cache_runner._kill_game_tree_sync`.** El kill
+  directo del juego reparentado (D7b) mataba por PID sin revalidar identidad:
+  entre la atribución y el kill el SO puede reusar el PID para otro proceso
+  (Steam/Discord/otro Skyrim), y matar su árbol cerraría una sesión ajena.
+  Ahora revalida name ∈ `game_exe_names` + exe bajo `game_path` (helper
+  `_es_proceso_del_juego`, misma verificación que `_scan_for_game_sync` usa al
+  atribuir) antes de matar; fail-closed si el exe es ilegible. Anclado en
+  `test_pid_reusado_por_otro_proceso_no_se_mata`. El mundo de procesos falso
+  del test se hizo fiel (`Process(pid)` devuelve el proc registrado con su
+  name/exe reales) para poder ejercitar el revalidado.
+
+**Reporte de consistencia de la auditoría: CERRADO** salvo el `glob("*.cgid")`
+no-recursivo, que se deja a propósito — probable no-bug (NGIO escribe los
+`.cgid` planos con el worldspace en el nombre) y no verificable sin el smoke
+real de NGIO en un rig con Skyrim. Todo lo demás (Wrye Bash lock, VRAMr
+heartbeat, patcher atómico, grass PID, más los del PR #304: parche placebo,
+rollback honesto de Synthesis, advisor Fase 1) está cerrado y anclado.
+
+**Frente verificable-por-agente: agotado.** El trabajo de valor restante
+(Telegram end-to-end, GUI/FOMOD, smoke E2E T-25, smoke de los `.pas` contra
+xEdit real) requiere un rig humano con Skyrim/MO2 — no ejecutable en CI.

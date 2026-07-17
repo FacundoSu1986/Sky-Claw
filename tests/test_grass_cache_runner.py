@@ -74,6 +74,11 @@ class _ProcFake:
     def name(self) -> str:
         return self._nombre
 
+    def exe(self) -> str | None:
+        # psutil.Process.exe() puede lanzar AccessDenied; el mundo modela el
+        # exe ilegible como None (el runner lo trata como fail-closed).
+        return self._exe
+
     def kill(self) -> None:
         self._mundo.vivos.discard(self.pid)
 
@@ -101,6 +106,11 @@ class _MundoProcesos:
         self.globales: list[_ProcFake] = []
         self.vidas: dict[int, int] = {}
         self.al_chequear_pid: Any = None
+        # Dir del juego para que alta_juego construya un exe verificable bajo él
+        # (lo setea la fixture `mundo` desde `entorno`). El kill del runner ahora
+        # revalida name+exe antes de matar (§2.5), así que el juego "legítimo"
+        # debe residir en game_path o no se mataría.
+        self.game_dir: pathlib.Path | None = None
 
     def pid_exists(self, pid: int) -> bool:
         if self.al_chequear_pid is not None:
@@ -117,7 +127,24 @@ class _MundoProcesos:
     def Process(self, pid: int) -> _ProcFake:  # noqa: N802 — espejo de la API psutil
         if pid not in self.vivos:
             raise psutil_real.NoSuchProcess(pid)
+        # Devolver el proc REGISTRADO (name/exe reales) si existe: el kill del
+        # runner revalida identidad vía Process(pid).exe(), así que el handle
+        # debe ser fiel, no un genérico. Fallback MO2 para pids sin _ProcFake
+        # propio (el pid de MO2 no se registra como objeto, solo como key).
+        registrado = self._buscar_registrado(pid)
+        if registrado is not None:
+            return registrado
         return _ProcFake(self, pid, "ModOrganizer.exe", 0.0)
+
+    def _buscar_registrado(self, pid: int) -> _ProcFake | None:
+        for p in self.globales:
+            if p.pid == pid:
+                return p
+        for lst in self.hijos.values():
+            for p in lst:
+                if p.pid == pid:
+                    return p
+        return None
 
     def process_iter(self, attrs: list[str] | None = None) -> Any:
         return iter([p for p in self.globales if p.pid in self.vivos])
@@ -135,7 +162,10 @@ class _MundoProcesos:
     ) -> _ProcFake:
         """Registra MO2 + su juego hijo, ambos vivos."""
         self.vivos |= {mo2_pid, game_pid}
-        juego = _ProcFake(self, game_pid, nombre, create_time if create_time is not None else time.time())
+        # exe bajo game_dir → el juego "legítimo" pasa el revalidado de identidad
+        # del kill (§2.5). Si la fixture no seteó game_dir, exe queda None.
+        exe = str(self.game_dir / nombre) if self.game_dir is not None else None
+        juego = _ProcFake(self, game_pid, nombre, create_time if create_time is not None else time.time(), exe=exe)
         self.hijos[mo2_pid] = [juego]
         self.globales.append(juego)
         if vidas is not None:
@@ -178,8 +208,9 @@ def config(entorno: tuple[pathlib.Path, pathlib.Path]) -> GrassCacheConfig:
 
 
 @pytest.fixture
-def mundo(monkeypatch: pytest.MonkeyPatch) -> _MundoProcesos:
+def mundo(monkeypatch: pytest.MonkeyPatch, entorno: tuple[pathlib.Path, pathlib.Path]) -> _MundoProcesos:
     m = _MundoProcesos()
+    m.game_dir = entorno[0]  # alta_juego construye el exe del juego bajo game_path
     monkeypatch.setattr(gcr_mod, "psutil", m)
     return m
 
@@ -644,6 +675,47 @@ async def test_salida_exitosa_en_spawn_window_mata_al_juego_reparentado(
     assert resultado.outcome == "completed"
     assert resultado.success is True
     assert 5000 not in mundo.vivos, "la última atribución debe matar al juego reparentado"
+
+
+async def test_pid_reusado_por_otro_proceso_no_se_mata(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, tmp_path: pathlib.Path
+) -> None:
+    # §2.5: entre la atribución del juego y el kill directo (D7b), el SO puede
+    # reusar el PID para OTRO proceso. _kill_game_tree_sync revalida name+exe
+    # antes de matar: un PID reusado (exe fuera de game_path, o nombre ajeno)
+    # NO se mata — cerrar un Steam/Discord/otro Skyrim ajeno sería el bug.
+    otra_instalacion = tmp_path / "steam"
+    otra_instalacion.mkdir()
+    # El pid 7000 se atribuye como el juego (exe bajo game_path)...
+    juego = _ProcFake(mundo, 7000, "SkyrimSE.exe", time.time(), exe=str(config.game_path / "SkyrimSE.exe"))
+    mundo.vivos.add(7000)
+    mundo.globales.append(juego)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        return {"pid": 999, "status": "launched", "profile": profile}  # MO2 ya muerto
+
+    mo2.launch_game.side_effect = _launch
+
+    vigilando = asyncio.Event()
+
+    def _al_chequear(pid: int) -> None:
+        if pid == 7000 and not vigilando.is_set():
+            vigilando.set()
+            # ...pero JUSTO antes del kill el SO reusa el pid 7000 para otro exe.
+            mundo.globales[:] = [
+                _ProcFake(mundo, 7000, "steam.exe", time.time(), exe=str(otra_instalacion / "steam.exe"))
+            ]
+
+    mundo.al_chequear_pid = _al_chequear
+    cancel = asyncio.Event()
+    tarea = asyncio.create_task(_runner(config, mo2).run(cancel))
+
+    await asyncio.wait_for(vigilando.wait(), timeout=5.0)
+    cancel.set()
+    resultado = await asyncio.wait_for(tarea, timeout=10)
+
+    assert resultado.outcome == "cancelled"
+    assert 7000 in mundo.vivos, "§2.5: un PID reusado por otro proceso jamás se mata"
 
 
 async def test_permission_error_de_launch_es_spawn_failed_y_file_not_found_propaga(
