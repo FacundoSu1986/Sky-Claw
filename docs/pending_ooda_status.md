@@ -154,7 +154,21 @@ sensores (vfs + permisos sobre `mods/` y los `*/Output` + masters/límites del
 perfil MO2 activo + overwrite) reusan las primitivas compartidas de T-16d; la
 costura del resolver del perfil MO2 se extrajo a
 `build_mo2_profile_sources_resolver` (compartida por Synthesis y DynDOLOD).
-**Falta preflight en:** Pandora y Wrye Bash.
+
+**Actualización 2026-07-17 (T-16c·4 — preflight en Pandora):**
+`pandora_service.generate_animations` corre el gate ANTES de tomar el lock / correr
+el subproceso. Sensores a-medida: **vfs** (rutas crudas) + **permisos** sobre los
+dirs candidatos de salida de behaviors (`Data`, `overwrite`, dir del exe — el
+destino exacto es dependiente del entorno VFS/standalone, se sondean todos los
+resolubles) + **overwrite sucio**. NO cablea masters/límites: Pandora procesa mods
+de ANIMACIÓN (FNIS/Nemesis), no el load order de plugins. **Falta preflight en:**
+Wrye Bash.
+
+**Follow-up conocido de Pandora:** el servicio NO tiene el journal cableado (a
+diferencia de los otros 4 rituales) → T-26/T-28 requieren primero agregar el
+journal + abrir transacción. Y fijar el destino de salida exacto (probablemente
+lanzando vía MO2) para permisos/manifest precisos + un rollback real — trabajo de
+dominio, follow-up separado.
 
 ---
 
