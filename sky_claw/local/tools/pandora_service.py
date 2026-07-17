@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 #: Lock resource id compartido para la regeneración de behavior graphs de Pandora.
 BEHAVIOR_GRAPHS_RESOURCE_ID = "behavior-graphs"
 
+#: Nombre del dir de salida de Pandora en setups standalone (junto al exe).
+_PANDORA_OUTPUT_DIR = "Pandora_Output"
+
 
 def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
     """Adjunta el reporte de preflight al ``result`` cuando no está verde.
@@ -81,6 +84,47 @@ class PandoraPipelineService:
         # Preflight inyectable (tests) o construido perezosamente en el primer uso.
         self._preflight = preflight
 
+    def _resolve_pandora_paths(
+        self,
+    ) -> tuple[pathlib.Path | None, pathlib.Path | None, pathlib.Path | None, pathlib.Path | None, pathlib.Path | None]:
+        """Reúne ``(game, mo2, exe, raw_game, raw_mo2)`` desde el ``path_resolver``
+        **O** el config del runner inyectado (review Codex #314).
+
+        El agent tool (``system_tools.run_pandora``) construye el servicio con un
+        ``PandoraRunner`` pero SIN resolver — el gate no debe desactivarse por eso,
+        así que si falta el resolver se deriva ``game``/``exe`` del ``config`` del
+        runner. MO2 solo lo conoce el resolver (el config de Pandora no lo tiene).
+        """
+        game = mo2 = exe = raw_game = raw_mo2 = None
+        resolver = self._path_resolver
+        if resolver is not None:
+            g = resolver.get_skyrim_path()
+            game = g if isinstance(g, pathlib.Path) else None
+            m = resolver.get_mo2_path()
+            mo2 = m if isinstance(m, pathlib.Path) else None
+            rg = resolver.get_skyrim_path_raw()
+            raw_game = rg if isinstance(rg, pathlib.Path) else None
+            rm = resolver.get_mo2_path_raw()
+            raw_mo2 = rm if isinstance(rm, pathlib.Path) else None
+            e = resolver.get_pandora_exe()
+            exe = e if isinstance(e, pathlib.Path) else None
+        runner = self._pandora_runner
+        if runner is not None:
+            cfg = getattr(runner, "config", None)
+            cfg_game = getattr(cfg, "game_path", None)
+            cfg_exe = getattr(cfg, "pandora_exe", None)
+            if game is None and isinstance(cfg_game, pathlib.Path):
+                game = cfg_game
+            if exe is None and isinstance(cfg_exe, pathlib.Path):
+                exe = cfg_exe
+        if self._pandora_exe is not None:
+            exe = self._pandora_exe
+        # Fallback de raw: sin resolver (runner inyectado) no hay rutas crudas; usar
+        # las resueltas es mejor que no cablear vfs (detecta symlinks en la ruta).
+        raw_game = raw_game or game
+        raw_mo2 = raw_mo2 or mo2
+        return game, mo2, exe, raw_game, raw_mo2
+
     def _ensure_preflight(self) -> PreflightService | None:
         """Construye perezosamente el preflight de Pandora (T-16c·4, STAGE 4).
 
@@ -90,18 +134,19 @@ class PandoraPipelineService:
         sondean todos los resolubles), **symlinks/junctions** en las rutas crudas,
         y **overwrite sucio** (Pandora lee/escribe el overwrite; uno sucio hace el
         diff inatribuible). NO cablea masters/límites: Pandora procesa mods de
-        ANIMACIÓN (estilo FNIS/Nemesis), no el load order de plugins — el límite de
-        slots / masters faltantes no es lo que valida. Sin ``path_resolver`` o sin
-        game/MO2 resolubles → ``None`` (sin gate, mismo criterio que loot/Synthesis).
+        ANIMACIÓN (estilo FNIS/Nemesis), no el load order de plugins.
+
+        Se construye con lo que HAYA (review #314): basta game **o** exe **o** MO2
+        resoluble (desde el resolver o el config del runner). El overwrite solo se
+        cablea con MO2; en standalone (SKYRIM_PATH/PANDORA_EXE sin MO2_PATH) se
+        omite ese sensor pero el gate igual protege ``Data`` y el output del exe.
+        Sin NINGUNA raíz → ``None`` (sin gate, honesto).
         """
         if self._preflight is not None:
             return self._preflight
-        if self._path_resolver is None:
-            return None
 
-        game = self._path_resolver.get_skyrim_path()
-        mo2 = self._path_resolver.get_mo2_path()
-        if not isinstance(game, pathlib.Path) or not isinstance(mo2, pathlib.Path):
+        game, mo2, exe, raw_game, raw_mo2 = self._resolve_pandora_paths()
+        if game is None and mo2 is None and exe is None:
             return None
 
         # Imports perezosos (anti-ciclo: validators.preflight llega a tools._process).
@@ -110,17 +155,15 @@ class PandoraPipelineService:
         from sky_claw.local.validators.write_permissions import WritePermissionsChecker
 
         # vfs sobre rutas CRUDAS (las resueltas ya siguieron los symlinks).
-        vfs_checker = build_vfs_sensor(
-            raw_game=self._path_resolver.get_skyrim_path_raw(),
-            raw_mo2=self._path_resolver.get_mo2_path_raw(),
-            scan_mods_dir=False,
-        )
+        vfs_checker = build_vfs_sensor(raw_game=raw_game, raw_mo2=raw_mo2, scan_mods_dir=False)
 
         # Permisos: targets recalculados POR CORRIDA dentro del closure (freshness).
         def _permissions() -> Any:
             return WritePermissionsChecker(targets=self._permission_targets()).check()
 
-        overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
+        # El overwrite solo aplica con MO2; sin MO2 se omite (no se inventa un
+        # sensor sin fuente — review #314 F3).
+        overwrite_check = build_overwrite_sensor(mo2 / "overwrite") if mo2 is not None else None
 
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
@@ -136,22 +179,20 @@ class PandoraPipelineService:
         El destino exacto es dependiente del entorno (lanzado vía el VFS de MO2 →
         el ``overwrite``; standalone → ``Data`` o un ``Pandora_Output`` junto al
         exe), así que se sondean todos los candidatos resolubles: el ``Data`` del
-        juego, el ``overwrite`` de MO2 y el dir del exe de Pandora. El
-        ``WritePermissionsChecker`` se salta los inexistentes; se resuelve por
-        corrida (freshness). Fijar el destino exacto es follow-up de dominio.
+        juego, el ``overwrite`` de MO2, el dir del exe **y el ``Pandora_Output``
+        concreto** (un output hijo read-only con el padre escribible pasaría
+        inadvertido — review #314 F2). El ``WritePermissionsChecker`` se salta los
+        inexistentes; se resuelve por corrida (freshness).
         """
+        game, mo2, exe, _, _ = self._resolve_pandora_paths()
         candidates: list[pathlib.Path] = []
-        if self._path_resolver is None:
-            return candidates
-        game = self._path_resolver.get_skyrim_path()
-        if isinstance(game, pathlib.Path):
+        if game is not None:
             candidates.append(game / "Data")
-        mo2 = self._path_resolver.get_mo2_path()
-        if isinstance(mo2, pathlib.Path):
+        if mo2 is not None:
             candidates.append(mo2 / "overwrite")
-        exe = self._pandora_exe or self._path_resolver.get_pandora_exe()
-        if isinstance(exe, pathlib.Path):
+        if exe is not None:
             candidates.append(exe.parent)
+            candidates.append(exe.parent / _PANDORA_OUTPUT_DIR)
         seen: set[pathlib.Path] = set()
         return [p for p in candidates if not (p in seen or seen.add(p))]
 
