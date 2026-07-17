@@ -27,6 +27,11 @@ from sky_claw.local.tools.dyndolod_runner import (
     ToolExecutionResult,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+from sky_claw.local.validators.preflight import (
+    PreflightCheck,
+    PreflightReport,
+    PreflightStatus,
+)
 
 # =============================================================================
 # Fixtures
@@ -726,3 +731,176 @@ class TestExecuteProcessCancellation:
                 stderr.release.set()
                 await stdout.finished.wait()
                 await stderr.finished.wait()
+
+
+# =============================================================================
+# T-16c·3: gate de preflight en DynDOLOD (antes de un run de 30+ min / GBs)
+# =============================================================================
+
+
+class _FakePreflight:
+    """Preflight inyectable: ``run()`` devuelve un reporte fijo."""
+
+    def __init__(self, report: PreflightReport) -> None:
+        self._report = report
+        self.ran = False
+
+    async def run(self) -> PreflightReport:
+        self.ran = True
+        return self._report
+
+
+def _perm_report(status: PreflightStatus, summary: str) -> PreflightReport:
+    """Reporte con un solo check de permisos (el failure mode típico de DynDOLOD:
+    el dir de salida read-only) en el estado pedido."""
+    return PreflightReport(
+        status=status,
+        checks=(PreflightCheck(name="write_permissions", status=status, summary=summary, details=()),),
+    )
+
+
+def _svc_with_preflight(
+    mock_lock_manager: AsyncMock,
+    mock_snapshot_manager: AsyncMock,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    preflight: object,
+) -> DynDOLODPipelineService:
+    return DynDOLODPipelineService(
+        lock_manager=mock_lock_manager,
+        snapshot_manager=mock_snapshot_manager,
+        journal=mock_journal,
+        path_resolver=mock_path_resolver,
+        event_bus=mock_event_bus,
+        preflight=preflight,  # type: ignore[arg-type]  # fake duck-typed en tests
+    )
+
+
+def _wire_runner(service: DynDOLODPipelineService, tmp_path: pathlib.Path) -> AsyncMock:
+    mock_runner = AsyncMock(spec=DynDOLODRunner)
+    mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
+    mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    mock_config = MagicMock()
+    mock_config.mo2_mods_path = tmp_path / "mods"
+    (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
+    mock_runner._config = mock_config
+    service._runner = mock_runner
+    return mock_runner
+
+
+@pytest.mark.asyncio
+async def test_preflight_red_blocks_dyndolod_without_running(
+    mock_lock_manager: AsyncMock,
+    mock_snapshot_manager: AsyncMock,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un preflight ROJO (p.ej. el dir de salida sin permisos) frena DynDOLOD ANTES
+    de tocar nada: no adquiere lock, no abre transacción, no corre el pipeline."""
+    red = _perm_report(PreflightStatus.RED, "Data/output sin permisos de escritura.")
+    svc = _svc_with_preflight(
+        mock_lock_manager, mock_snapshot_manager, mock_journal, mock_path_resolver, mock_event_bus, _FakePreflight(red)
+    )
+    runner = _wire_runner(svc, tmp_path)
+
+    result = await svc.execute(preset="High", run_texgen=True, create_snapshot=False)
+
+    assert result["success"] is False
+    assert result["reason"] == "PreflightBlocked"
+    assert result["preflight"]["status"] == "red"
+    runner.run_full_pipeline.assert_not_awaited()
+    mock_journal.begin_transaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_preflight_yellow_no_bloquea_y_surface(
+    mock_lock_manager: AsyncMock,
+    mock_snapshot_manager: AsyncMock,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un preflight AMARILLO no bloquea el run, pero se adjunta al result para el panel."""
+    yellow = _perm_report(PreflightStatus.YELLOW, "Overwrite con residuos.")
+    svc = _svc_with_preflight(
+        mock_lock_manager,
+        mock_snapshot_manager,
+        mock_journal,
+        mock_path_resolver,
+        mock_event_bus,
+        _FakePreflight(yellow),
+    )
+    _wire_runner(svc, tmp_path)
+
+    result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    assert result["success"] is True
+    assert result["preflight"]["status"] == "yellow"
+    mock_journal.commit_transaction.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_preflight_green_no_ensucia_el_result(
+    mock_lock_manager: AsyncMock,
+    mock_snapshot_manager: AsyncMock,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un preflight VERDE no agrega la clave ``preflight`` (comportamiento actual intacto)."""
+    green = _perm_report(PreflightStatus.GREEN, "Escritura verificada.")
+    svc = _svc_with_preflight(
+        mock_lock_manager,
+        mock_snapshot_manager,
+        mock_journal,
+        mock_path_resolver,
+        mock_event_bus,
+        _FakePreflight(green),
+    )
+    _wire_runner(svc, tmp_path)
+
+    result = await svc.execute(preset="Low", run_texgen=False, create_snapshot=False)
+
+    assert result["success"] is True
+    assert "preflight" not in result
+
+
+@pytest.mark.asyncio
+async def test_ensure_preflight_construye_sensores_con_mo2_resoluble(
+    mock_lock_manager: AsyncMock,
+    mock_snapshot_manager: AsyncMock,
+    mock_journal: AsyncMock,
+    mock_event_bus: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Con game/MO2 resolubles, ``_ensure_preflight`` arma un PreflightService real
+    (no None) — el gate deja de ser un no-op."""
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    mo2 = tmp_path / "MO2"
+    (mo2 / "mods").mkdir(parents=True)
+    (mo2 / "overwrite").mkdir()
+
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=game)
+    resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_mo2_mods_path = MagicMock(return_value=mo2 / "mods")
+    resolver.get_skyrim_path_raw = MagicMock(return_value=game)
+    resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
+    resolver.get_active_profile = MagicMock(return_value="Default")
+
+    svc = DynDOLODPipelineService(
+        lock_manager=mock_lock_manager,
+        snapshot_manager=mock_snapshot_manager,
+        journal=mock_journal,
+        path_resolver=resolver,
+        event_bus=mock_event_bus,
+    )
+
+    preflight = svc._ensure_preflight()
+    assert preflight is not None  # sensores cableados, no un no-op

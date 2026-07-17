@@ -15,7 +15,7 @@ import dataclasses
 import logging
 import pathlib
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
 from sky_claw.antigravity.core.event_payloads import (
@@ -39,7 +39,22 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODTimeoutError,
 )
 
+if TYPE_CHECKING:
+    from sky_claw.local.validators.preflight import PreflightReport, PreflightService
+
 logger = logging.getLogger("SkyClaw.DynDOLODPipelineService")
+
+
+def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
+    """Adjunta el reporte de preflight al ``result`` cuando no está verde.
+
+    Mismo criterio que ``loot_service``/``xedit_service``/``synthesis_service``
+    (T-16b/T-16c): un semáforo verde no ensucia el dict; amarillo/rojo viajan
+    como ``result["preflight"]`` para que el panel vivo lo renderice.
+    """
+    if report is not None and report.status.value != "green":
+        result["preflight"] = report.to_dict()
+    return result
 
 
 class DynDOLODPipelineService:
@@ -67,12 +82,15 @@ class DynDOLODPipelineService:
         journal: OperationJournal,
         path_resolver: PathResolutionService,
         event_bus: CoreEventBus,
+        preflight: PreflightService | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
         self._journal = journal
         self._path_resolver = path_resolver
         self._event_bus = event_bus
+        # Preflight inyectable (tests) o construido perezosamente en el primer uso.
+        self._preflight = preflight
 
         # Lazy init — runner requiere env vars que pueden no existir aún.
         self._runner: DynDOLODRunner | None = None
@@ -132,6 +150,79 @@ class DynDOLODPipelineService:
         )
         return self._runner
 
+    def _ensure_preflight(self) -> PreflightService | None:
+        """Construye perezosamente el preflight de DynDOLOD (T-16c·3).
+
+        DynDOLOD regenera GBs de LODs bajo ``mods/`` en un run de 30+ min, así que
+        los sensores relevantes son: **permisos de escritura** sobre los dirs de
+        salida (``mods/`` y los ``*/Output`` existentes — el clásico "output
+        read-only mata el run a mitad"), **símbolos/junctions** en las rutas
+        crudas, **masters faltantes** y **límites full/light** del perfil MO2
+        activo (DynDOLOD lee todo el load order), y **overwrite sucio**. NO cablea
+        la versión de LOOT (irrelevante). Reusa las primitivas compartidas
+        (T-16d/T-16c·3); no toca los otros servicios. Sensores no resolubles →
+        ``None`` (omitidos con ``omit_unconfigured``). Sin game/MO2 → ``None``
+        (sin gate, mismo criterio que loot/Synthesis).
+        """
+        if self._preflight is not None:
+            return self._preflight
+
+        game = self._path_resolver.get_skyrim_path()
+        mo2 = self._path_resolver.get_mo2_path()
+        if not isinstance(game, pathlib.Path) or not isinstance(mo2, pathlib.Path):
+            return None
+
+        # Imports perezosos (anti-ciclo: validators.preflight llega a tools._process).
+        from sky_claw.local.validators.preflight import PreflightService
+        from sky_claw.local.validators.preflight_sensors import (
+            build_mo2_profile_sources_resolver,
+            build_modlist_sensors,
+            build_overwrite_sensor,
+            build_vfs_sensor,
+        )
+        from sky_claw.local.validators.write_permissions import WritePermissionsChecker
+
+        # vfs sobre rutas CRUDAS (las resueltas ya siguieron los symlinks).
+        vfs_checker = build_vfs_sensor(
+            raw_game=self._path_resolver.get_skyrim_path_raw(),
+            raw_mo2=self._path_resolver.get_mo2_path_raw(),
+            scan_mods_dir=False,
+        )
+
+        # Permisos sobre lo que DynDOLOD reescribe: ``mods/`` (donde crea los mods
+        # de salida) + los ``*/Output`` existentes por si quedaron read-only.
+        mods = self._path_resolver.get_mo2_mods_path()
+        targets: list[pathlib.Path] = []
+        if isinstance(mods, pathlib.Path):
+            targets.append(mods)
+            for name in (DynDOLODRunner.DYNDOLLOD_MOD_NAME, DynDOLODRunner.TEXGEN_MOD_NAME):
+                out = mods / name
+                if out.is_dir():
+                    targets.append(out)
+
+        def _permissions() -> Any:
+            # Re-probe por llamada (freshness): un cambio de permisos entre corridas se ve.
+            return WritePermissionsChecker(targets=targets).check()
+
+        permissions_check = _permissions if targets else None
+
+        overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
+
+        resolver = build_mo2_profile_sources_resolver(
+            game=game, mo2=mo2, profile=self._path_resolver.get_active_profile()
+        )
+        masters_check, limits_check = build_modlist_sensors(resolver) if resolver is not None else (None, None)
+
+        self._preflight = PreflightService(
+            vfs_checker=vfs_checker,
+            permissions_check=permissions_check,
+            overwrite_check=overwrite_check,
+            masters_check=masters_check,
+            limits_check=limits_check,
+            omit_unconfigured=True,
+        )
+        return self._preflight
+
     # ------------------------------------------------------------------
     # Pipeline principal
     # ------------------------------------------------------------------
@@ -173,6 +264,26 @@ class DynDOLODPipelineService:
         if dry_run:
             return await self._preview(preset=preset, run_texgen=run_texgen)
 
+        # Preflight brutal ANTES de tocar nada (T-16c·3): un semáforo ROJO (p. ej.
+        # el dir de salida sin permisos) cancela el run de 30+ min / GBs sin adquirir
+        # el lock, abrir transacción, ni publicar el evento de inicio. Amarillo/verde
+        # no bloquean; el reporte se surface al panel en todos los retornos.
+        preflight = self._ensure_preflight()
+        preflight_report: PreflightReport | None = None
+        if preflight is not None:
+            preflight_report = await preflight.run()
+            if preflight_report.blocks_mutations:
+                red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
+                logger.warning("DynDOLOD (stage 9) bloqueado por preflight en rojo: %s", red)
+                return {
+                    "status": "error",
+                    "success": False,
+                    "reason": "PreflightBlocked",
+                    "message": f"Preflight en rojo, DynDOLOD cancelado: {red}",
+                    "errors": [red],
+                    "preflight": preflight_report.to_dict(),
+                }
+
         start_time = time.monotonic()
         rolled_back = False
         tx_id: int | None = None
@@ -208,12 +319,15 @@ class DynDOLODPipelineService:
                 duration_seconds=duration,
                 rolled_back=False,
             )
-            return {
-                "success": False,
-                "message": str(exc),
-                "errors": [str(exc)],
-                "duration_seconds": duration,
-            }
+            return _attach_preflight(
+                {
+                    "success": False,
+                    "message": str(exc),
+                    "errors": [str(exc)],
+                    "duration_seconds": duration,
+                },
+                preflight_report,
+            )
 
         # DD-1: Directorios regenerados a proteger con rollback move-aside.
         # El backend de snapshots es copy-based/solo-archivos y ``Output/`` puede
@@ -311,12 +425,15 @@ class DynDOLODPipelineService:
 
                 result_dict = normalize_for_serialization(dataclasses.asdict(result))
 
-                return {
-                    "success": True,
-                    "message": "",
-                    **result_dict,
-                    "duration_seconds": duration,
-                }
+                return _attach_preflight(
+                    {
+                        "success": True,
+                        "message": "",
+                        **result_dict,
+                        "duration_seconds": duration,
+                    },
+                    preflight_report,
+                )
 
         except LockAcquisitionError as exc:
             duration = time.monotonic() - start_time
@@ -331,12 +448,15 @@ class DynDOLODPipelineService:
                 duration_seconds=duration,
                 rolled_back=False,
             )
-            return {
-                "success": False,
-                "message": f"Lock acquisition failed: {exc}",
-                "errors": [f"Lock acquisition failed: {exc}"],
-                "duration_seconds": duration,
-            }
+            return _attach_preflight(
+                {
+                    "success": False,
+                    "message": f"Lock acquisition failed: {exc}",
+                    "errors": [f"Lock acquisition failed: {exc}"],
+                    "duration_seconds": duration,
+                },
+                preflight_report,
+            )
 
         except (DynDOLODExecutionError, DynDOLODTimeoutError) as exc:
             # M-7: reportar el resultado REAL del rollback. Los __aexit__ de los
@@ -369,13 +489,16 @@ class DynDOLODPipelineService:
                 duration_seconds=duration,
                 rolled_back=rolled_back,
             )
-            return {
-                "success": False,
-                "message": str(exc),
-                "errors": [str(exc)],
-                "duration_seconds": duration,
-                "rolled_back": rolled_back,
-            }
+            return _attach_preflight(
+                {
+                    "success": False,
+                    "message": str(exc),
+                    "errors": [str(exc)],
+                    "duration_seconds": duration,
+                    "rolled_back": rolled_back,
+                },
+                preflight_report,
+            )
 
         except asyncio.CancelledError:
             # Cancelación de task — hacer cleanup mínimo y re-lanzar.
@@ -428,13 +551,16 @@ class DynDOLODPipelineService:
                 duration_seconds=duration,
                 rolled_back=rolled_back,
             )
-            return {
-                "success": False,
-                "message": str(exc),
-                "errors": [str(exc)],
-                "duration_seconds": duration,
-                "rolled_back": rolled_back,
-            }
+            return _attach_preflight(
+                {
+                    "success": False,
+                    "message": str(exc),
+                    "errors": [str(exc)],
+                    "duration_seconds": duration,
+                    "rolled_back": rolled_back,
+                },
+                preflight_report,
+            )
 
     # ------------------------------------------------------------------
     # Dry-run / preview (plan-only estimate)

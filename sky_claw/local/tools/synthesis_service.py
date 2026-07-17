@@ -269,49 +269,23 @@ class SynthesisPipelineService:
         """Closures de masters/límites del **perfil MO2 activo**.
 
         Lee el load order de ``profiles/<perfil>/plugins.txt`` — NO el
-        ``%LOCALAPPDATA%\\plugins.txt`` global que reescribe LOOT fuera del VFS.
-        El gate de Synthesis debe validar el modlist REAL de MO2 contra el que
-        corre el ritual, no un load order global/stale que ``LoadOrderFileResolver``
-        prioriza en su unión (review Codex #306). Solo si el perfil es resoluble y
-        las fuentes utilizables; si no, ``(None, None)`` → checkpoints "no
-        configurado" (omitidos). No miente verde (lección #250).
+        ``%LOCALAPPDATA%\\plugins.txt`` global que reescribe LOOT fuera del VFS
+        (review Codex #306). Delega en los builders compartidos (T-16c·3): el
+        resolver del perfil MO2 y el cableado de masters/límites son idénticos a
+        los de DynDOLOD. Sin perfil/fuentes resolubles → ``(None, None)`` →
+        checkpoints "no configurado" (omitidos). No miente verde (lección #250).
         """
-        profile = self._path_resolver.get_active_profile()
-        if not isinstance(profile, str):
-            return None, None
-        from sky_claw.antigravity.security.path_validator import PathViolationError, assert_safe_component
-        from sky_claw.local.mo2.plugin_sources import resolve_plugin_sources
-        from sky_claw.local.validators.preflight_sensors import build_modlist_sensors
-
-        try:
-            assert_safe_component(profile, field="profile")  # guard de path-traversal (como el resolver de T-05)
-        except PathViolationError:
-            return None, None
-        profile_dir = mo2 / "profiles" / profile
-        # plugins.txt (activos con `*`) antes que loadorder.txt (orden completo).
-        load_order_file = next(
-            (profile_dir / name for name in ("plugins.txt", "loadorder.txt") if (profile_dir / name).is_file()),
-            None,
+        from sky_claw.local.validators.preflight_sensors import (
+            build_mo2_profile_sources_resolver,
+            build_modlist_sensors,
         )
-        if load_order_file is None:
+
+        resolver = build_mo2_profile_sources_resolver(
+            game=game, mo2=mo2, profile=self._path_resolver.get_active_profile()
+        )
+        if resolver is None:
             return None, None
-        game_data_dir = game / "Data"
-        mo2_mods_dir = mo2 / "mods"
-        mo2_overwrite_dir = mo2 / "overwrite"
-
-        def _sources():
-            return resolve_plugin_sources(
-                game_data_dir=game_data_dir,
-                mo2_mods_dir=mo2_mods_dir,
-                mo2_overwrite_dir=mo2_overwrite_dir,
-                load_order_file=load_order_file,
-            )
-
-        # Builder compartido (T-16d): gate de honestidad + freshness. Lo
-        # específico de Synthesis es el resolver de arriba (perfil MO2 activo,
-        # NO el LOCALAPPDATA global que reescribe LOOT); el cableado de los
-        # closures de masters/límites es idéntico al de LOOT/xEdit.
-        return build_modlist_sensors(_sources)
+        return build_modlist_sensors(resolver)
 
     # ------------------------------------------------------------------
     # Pipeline execution
