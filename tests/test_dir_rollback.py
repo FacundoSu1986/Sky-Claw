@@ -155,3 +155,35 @@ async def test_rename_failure_fail_closed(tmp_path: pathlib.Path, monkeypatch: p
 
     # El dir original sigue intacto (no se movió).
     assert (target / "old.txt").read_text(encoding="utf-8") == "OLD"
+
+
+async def test_commit_desactiva_el_restore_en_excepcion(tmp_path: pathlib.Path) -> None:
+    """Tras commit() (punto de no-retorno), una excepción posterior NO restaura:
+    el output nuevo se conserva (review Codex #312)."""
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="post-commit"):
+        async with DirectoryRollback(target) as rb:
+            target.mkdir()
+            (target / "new.txt").write_text("NEW", encoding="utf-8")
+            await rb.commit()  # el output ya es final
+            raise RuntimeError("post-commit boom")  # p. ej. cancelación durante el informe
+
+    # El output nuevo se conserva; NO se restauró el viejo.
+    assert (target / "new.txt").read_text(encoding="utf-8") == "NEW"
+    assert not (target / "old.txt").exists()
+    assert not list(tmp_path.glob("Output.rollback-*"))  # backup descartado
+
+
+async def test_commit_es_idempotente(tmp_path: pathlib.Path) -> None:
+    """commit() dos veces no rompe (idempotente)."""
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+
+    async with DirectoryRollback(target) as rb:
+        target.mkdir()
+        await rb.commit()
+        await rb.commit()  # segunda vez: no-op

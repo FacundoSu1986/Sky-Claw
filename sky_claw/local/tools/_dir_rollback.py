@@ -117,6 +117,27 @@ class DirectoryRollback:
                 exc_info=True,
             )
 
+    async def commit(self) -> None:
+        """Confirma el estado nuevo tras un punto de no-retorno (review Codex #312).
+
+        Una vez que la mutación es final (p. ej. el commit del journal ya ocurrió),
+        el output NO debe revertirse aunque el bloque salga por excepción — en
+        particular una ``CancelledError`` durante trabajo best-effort post-commit
+        (informe de vuelo, shutdown). ``commit()`` descarta el backup y DESACTIVA el
+        restore, así el ``__aexit__`` posterior es un no-op. Idempotente; el discard
+        es best-effort (un backup huérfano solo ocupa espacio, no corrompe).
+        """
+        if not self._enabled:
+            return
+        self._enabled = False
+        try:
+            await self._discard_backup()
+        except OSError:
+            logger.warning(
+                "commit(): no se pudo descartar el backup de '%s' (queda huérfano)", self._target, exc_info=True
+            )
+        self._backup = None
+
     async def _restore_backup(self) -> None:
         """Descarta el parcial nuevo y restaura el directorio original."""
         if await asyncio.to_thread(self._target.exists):

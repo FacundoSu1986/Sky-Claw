@@ -435,11 +435,25 @@ class DynDOLODPipelineService:
             if run_texgen:
                 rollback_dirs.append(mods_path / runner.TEXGEN_MOD_NAME)
 
-        # T-26: los mods de salida que el ritual reescribe (independiente del
-        # snapshot) — el files_touched del ActionManifest.
+        # T-26: los paths que el ritual reescribe (independiente del snapshot) —
+        # el files_touched del ActionManifest. Incluye los mods de salida
+        # empaquetados Y el staging crudo (DynDOLOD_Output/TexGen_Output) que la
+        # herramienta escribe antes de empaquetar, bajo la raíz MO2 y el dir del
+        # exe (review Codex #312): son mutaciones persistentes que el operador
+        # puede necesitar auditar/limpiar tras un run fallido.
         manifest_targets: list[pathlib.Path] = [mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME]
+        _staging_names = [DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME]
         if run_texgen:
             manifest_targets.append(mods_path / DynDOLODRunner.TEXGEN_MOD_NAME)
+            _staging_names.append(DynDOLODRunner.TEXGEN_OUTPUT_NAME)
+        _exe = runner._config.dyndolod_exe
+        _staging_roots = [
+            root
+            for root in (runner._config.mo2_path, _exe.parent if isinstance(_exe, pathlib.Path) else None)
+            if isinstance(root, pathlib.Path)
+        ]
+        for _root in _staging_roots:
+            manifest_targets += [_root / _name for _name in _staging_names]
 
         # 3. Ejecutar bajo lock transaccional + rollback de directorios.
         # AsyncExitStack: el lock se adquiere primero y se libera último; los
@@ -456,26 +470,29 @@ class DynDOLODPipelineService:
                         metadata={"preset": preset, "run_texgen": run_texgen},
                     )
                 )
-                for output_dir in rollback_dirs:
-                    dr = DirectoryRollback(output_dir)
-                    await tx_stack.enter_async_context(dr)
-                    dir_rollbacks.append(dr)
-
-                # Comenzar transacción en journal DENTRO del lock
+                # Comenzar transacción en journal DENTRO del lock.
                 tx_id = await self._journal.begin_transaction(
                     description=f"DynDOLOD pipeline (preset={preset}, texgen={run_texgen})",
                     agent_id="dyndolod-pipeline-service",
                 )
 
-                # T-26 (ADR 0002): la caja negra ANTES de generar LODs
-                # (fail-closed). Si el manifiesto no se puede emitir, se lanza
-                # DENTRO del lock → los DirectoryRollback restauran y el pipeline
-                # NO corre (espejo de xedit_service).
+                # T-26 (ADR 0002): la caja negra ANTES de la primera mutación de
+                # FS — se persiste el manifiesto ANTES del move-aside de los
+                # DirectoryRollback (review Codex #312): si el proceso muere en el
+                # gap, el journal ya tiene el manifiesto de la mutación. Fail-closed:
+                # si no se puede emitir, se lanza y el pipeline NO corre (ningún
+                # move-aside ocurrió todavía; espejo de xedit_service).
                 await self._emit_action_manifest(
                     tx_id=tx_id,
                     target_files=manifest_targets,
                     summary=f"Generar LODs (preset={preset}, texgen={run_texgen}) → {len(manifest_targets)} mod(s).",
                 )
+
+                # Move-aside de los outputs regenerados (primera mutación de FS).
+                for output_dir in rollback_dirs:
+                    dr = DirectoryRollback(output_dir)
+                    await tx_stack.enter_async_context(dr)
+                    dir_rollbacks.append(dr)
 
                 # Ejecutar pipeline
                 result = await runner.run_full_pipeline(
@@ -499,6 +516,14 @@ class DynDOLODPipelineService:
 
                 # Commit en journal
                 await self._journal.commit_transaction(tx_id)
+
+                # F1 (review Codex #312): tras el commit el output es FINAL —
+                # confirmar los move-aside para que un fallo post-commit (incl. una
+                # CancelledError durante el informe best-effort, que evade el
+                # ``except Exception``) NO revierta una generación ya committeada al
+                # desenrollar el AsyncExitStack.
+                for dr in dir_rollbacks:
+                    await dr.commit()
 
                 # T-28: cerrar la caja negra tras el commit (best-effort — los
                 # LODs ya se generaron; un fallo del informe no tumba el run).
@@ -565,7 +590,7 @@ class DynDOLODPipelineService:
                         journal_exc,
                         exc_info=True,
                     )
-            logger.error("DynDOLOD: no se pudo emitir el ActionManifest; abortado: %s", exc)
+            logger.error("DynDOLOD (stage 9): no se pudo emitir el ActionManifest; abortado: %s", exc)
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,

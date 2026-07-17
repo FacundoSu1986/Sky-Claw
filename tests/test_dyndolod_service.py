@@ -1043,6 +1043,8 @@ def _wire_runner_ok(service: DynDOLODPipelineService, tmp_path: pathlib.Path) ->
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
     mock_config = MagicMock()
     mock_config.mo2_mods_path = tmp_path / "mods"
+    mock_config.mo2_path = tmp_path / "MO2"
+    mock_config.dyndolod_exe = tmp_path / "DynDOLOD" / "DynDOLODx64.exe"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
     service._runner = mock_runner
@@ -1068,7 +1070,11 @@ async def test_dyndolod_persiste_manifiesto_y_informe(
     assert result["success"] is True
     manifest = await _manifiesto_ultima_tx(real_journal)
     assert manifest.tool == "DynDOLOD"
+    # Empaquetado bajo mods/
     assert str(tmp_path / "mods" / "DynDOLOD Output") in manifest.files_touched
+    # Staging crudo bajo la raíz MO2 y el dir del exe (review #312)
+    assert str(tmp_path / "MO2" / "DynDOLOD_Output") in manifest.files_touched
+    assert str(tmp_path / "DynDOLOD" / "DynDOLOD_Output") in manifest.files_touched
     informes = await _informe_ultima_tx(real_journal)
     assert len(informes) == 1
     assert informes[0].transaction_status == "committed"
