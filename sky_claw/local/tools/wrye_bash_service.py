@@ -13,8 +13,11 @@ construcción perezosa del runner desde el ``PathResolutionService`` y **snapsho
 diferido** (``target_files=[]``) porque el archivo concreto que escribe Wrye Bash
 (``Bashed Patch, 0.esp``) sale vía la VFS de MO2 (subproceso con ``cwd``) y su ubicación
 real es dependiente del entorno. La protección que aplica con certeza ahora es la
-*serialización*; el preflight brutal (PR B) y el ActionManifest/FlightReport (PR C, que
-cablea el journal) quedan como follow-ups documentados.
+*serialización*: un lock **anidado** (``Bashed Patch, 0.esp`` externo + ``load-order``
+interno, mismo patrón que ``grass_cache_service``) que serializa Wrye Bash tanto contra
+otra corrida propia como contra un sort de LOOT — el Bashed Patch se arma del orden
+activo que LOOT reescribe. El preflight brutal (PR B) y el ActionManifest/FlightReport
+(PR C, que cablea el journal) quedan como follow-ups documentados.
 """
 
 from __future__ import annotations
@@ -26,8 +29,10 @@ from typing import TYPE_CHECKING, Any
 from sky_claw.antigravity.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
+    LockError,
     SnapshotTransactionLock,
 )
+from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.tools.wrye_bash_runner import (
     WryeBashConfig,
     WryeBashExecutionError,
@@ -40,8 +45,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Lock resource id para la generación del Bashed Patch. Espeja a Synthesis
-#: (``Synthesis.esp``): cada ritual mutante serializa sobre su artefacto de salida.
+#: Lock resource id (externo) para la generación del Bashed Patch. Espeja a Synthesis
+#: (``Synthesis.esp``): serializa sobre el artefacto de salida contra otra corrida de
+#: Wrye Bash. Además se anida el lock ``load-order`` (ver ``execute_pipeline``) porque
+#: el Bashed Patch se arma del orden activo que LOOT reescribe.
 BASHED_PATCH_RESOURCE_ID = "Bashed Patch, 0.esp"
 
 
@@ -150,6 +157,7 @@ class WryeBashPipelineService:
                     "aborted_by": "plugin_limit_guard",
                     "plugin_count": guard_result.get("plugin_count"),
                     "error": guard_result.get("error"),
+                    "message": guard_result.get("error") or "",
                 }
 
         # PASO 1: Asegurar runner inicializado.
@@ -157,29 +165,57 @@ class WryeBashPipelineService:
             runner = self.ensure_runner()
         except WryeBashExecutionError as exc:
             logger.error("[FASE-6] Error inicializando WryeBashRunner: %s", exc)
-            return {"success": False, "error": str(exc)}
+            return {"success": False, "error": str(exc), "message": str(exc)}
 
-        # PASO 2: Ejecutar la generación BAJO el lock distribuido — Wrye Bash era el
-        # único ritual mutante sin serializar (hueco de concurrencia). Snapshot
-        # diferido: la salida ('Bashed Patch, 0.esp') sale vía la VFS de MO2 con cwd,
-        # env-dependiente; la garantía que aplica con certeza ahora es la serialización.
+        # PASO 2: Ejecutar la generación BAJO lock anidado — Wrye Bash era el único
+        # ritual mutante sin serializar (hueco de concurrencia).
+        #  - EXTERNO 'Bashed Patch, 0.esp': serializa contra otra corrida de Wrye Bash.
+        #  - INTERNO 'load-order': el Bashed Patch se arma del orden ACTIVO que LOOT
+        #    reescribe (plugins.txt/loadorder.txt). Sin este lock, un sort de LOOT
+        #    concurrente (otro cliente/agente) reescribiría el orden a mitad de la
+        #    corrida y el patch saldría de un orden inestable, violando el invariante
+        #    "Bashed Patch después de LOOT" (review Codex #315; mismo patrón que grass).
+        # Orden de adquisición FIJO (bashed-patch → load-order), consistente con grass
+        # (grass-cache → load-order): nadie toma load-order primero, así que no hay
+        # deadlock. Snapshot diferido en ambos: la salida sale vía la VFS de MO2 con cwd
+        # y Wrye Bash solo LEE el load order (LOOT es quien lo snapshotea al mutarlo).
         try:
-            async with SnapshotTransactionLock(
-                lock_manager=self._lock_manager,
-                snapshot_manager=self._snapshot_manager,
-                resource_id=self.RESOURCE_ID,
-                agent_id=self.AGENT_ID,
-                target_files=[],  # snapshot diferido — ver docstring del módulo
-                metadata={"source": "wrye_bash_bashed_patch", "profile": profile},
+            async with (
+                SnapshotTransactionLock(
+                    lock_manager=self._lock_manager,
+                    snapshot_manager=self._snapshot_manager,
+                    resource_id=self.RESOURCE_ID,
+                    agent_id=self.AGENT_ID,
+                    target_files=[],  # snapshot diferido — ver docstring del módulo
+                    metadata={"source": "wrye_bash_bashed_patch", "profile": profile},
+                ),
+                SnapshotTransactionLock(
+                    lock_manager=self._lock_manager,
+                    snapshot_manager=self._snapshot_manager,
+                    resource_id=LOAD_ORDER_RESOURCE_ID,
+                    agent_id=self.AGENT_ID,
+                    target_files=[],
+                    metadata={"source": "wrye_bash_bashed_patch", "profile": profile},
+                ),
             ):
                 result = await runner.generate_bashed_patch()
         except LockAcquisitionError as exc:
-            logger.warning("Lock contention on '%s': %s", self.RESOURCE_ID, exc)
-            detail = f"Could not acquire bashed-patch lock '{self.RESOURCE_ID}': {exc}"
-            return {"success": False, "error": detail}
+            logger.warning("Lock contention (bashed-patch/load-order): %s", exc)
+            detail = f"Could not acquire bashed-patch/load-order lock: {exc}"
+            return {"success": False, "error": detail, "message": detail}
+        except LockError as exc:
+            # __aexit__ del lock puede lanzar LockLeaseLostError (renovación fallida /
+            # lease expirado durante una corrida larga) u otros errores de la capa de
+            # lock en la salida limpia. La tool se despacha SOLO con el gate HITL (sin
+            # el middleware que envuelve errores), así que sin este catch la excepción
+            # burbujea como crash de dispatch. La pérdida de lease invalida la
+            # exclusividad → reportar éxito mentiría: devolvemos success=False honesto.
+            logger.error("[FASE-6] Error de la capa de lock durante Wrye Bash: %s", exc)
+            detail = f"Lock error durante la generación del Bashed Patch: {exc}"
+            return {"success": False, "error": detail, "message": detail}
         except WryeBashExecutionError as exc:
             logger.error("[FASE-6] WryeBashExecutionError: %s", exc)
-            return {"success": False, "error": str(exc)}
+            return {"success": False, "error": str(exc), "message": str(exc)}
 
         # PASO 3: Observabilidad vía logging estructurado. Este flujo AÚN no usa
         # OperationJournal; el ActionManifest/FlightReport llega en el PR C.
@@ -208,8 +244,14 @@ class WryeBashPipelineService:
                 result.stderr[:500],
             )
 
+        # Contrato de tool-result compartido (AGENTS.md): ``message`` canónico junto a
+        # los campos estructurados; vacío en éxito, el detalle del fallo (stderr/stdout)
+        # cuando el subproceso salió non-zero. Sin esto, StateGraphIntegration lee
+        # error→reason→message y reportaría "falló sin detalle" (review Codex #315).
+        message = "" if result.success else (result.stderr or result.stdout or "")
         return {
             "success": result.success,
+            "message": message,
             "return_code": result.return_code,
             "stdout": result.stdout,
             "stderr": result.stderr,

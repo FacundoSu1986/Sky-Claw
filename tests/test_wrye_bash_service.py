@@ -273,3 +273,113 @@ async def test_ensure_runner_construye_desde_el_resolver(
     assert runner.config.wrye_bash_path == wrye_bash_exe
     assert runner.config.game_path == game_path
     assert runner.config.mo2_path == mo2_path
+
+
+# ---------------------------------------------------------------------------
+# Review Codex #315 — lock anidado con load-order, lease perdido, message canónico
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_toma_tambien_el_lock_de_load_order(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """El lock anidado toma load-order además del Bashed Patch (invariante post-LOOT)."""
+    from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
+
+    seen: dict[str, object] = {}
+
+    async def on_run() -> WryeBashResult:
+        seen["bashed"] = await lock_manager.get_lock_info(BASHED_PATCH_RESOURCE_ID)
+        seen["load_order"] = await lock_manager.get_lock_info(LOAD_ORDER_RESOURCE_ID)
+        return WryeBashResult(success=True, return_code=0, stdout="", stderr="", duration_seconds=0.1)
+
+    runner = MagicMock()
+    runner.generate_bashed_patch = AsyncMock(side_effect=on_run)
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    await svc.execute_pipeline(profile="Default")
+
+    assert seen["bashed"] is not None
+    assert seen["load_order"] is not None
+    # Ambos liberados al salir del context anidado.
+    assert await lock_manager.get_lock_info(BASHED_PATCH_RESOURCE_ID) is None
+    assert await lock_manager.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_serializa_contra_sort_de_loot(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """Un LOOT sort en curso (load-order tomado) bloquea a Wrye Bash — no corre."""
+    from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
+
+    await lock_manager.acquire_lock(LOAD_ORDER_RESOURCE_ID, "loot-runner", ttl=30.0)
+    runner = _runner_returning()
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    assert "lock" in result["error"].lower()
+    runner.generate_bashed_patch.assert_not_awaited()
+    # El lock externo (Bashed Patch) NO quedó colgado tras fallar la adquisición interna.
+    assert await lock_manager.get_lock_info(BASHED_PATCH_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_lease_perdido_al_cerrar_devuelve_error(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """Un LockLeaseLostError en __aexit__ (renovación fallida) no crashea el dispatch."""
+    from sky_claw.antigravity.db.locks import LockLeaseLostError
+
+    class _LeaseLostLock:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _LeaseLostLock:
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            raise LockLeaseLostError("lease perdido durante la corrida")
+
+    runner = _runner_returning()
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    with patch("sky_claw.local.tools.wrye_bash_service.SnapshotTransactionLock", _LeaseLostLock):
+        result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    assert result["message"]  # detalle serializable, no un crash de dispatch
+    runner.generate_bashed_patch.assert_awaited_once()  # el runner corrió; el lease se perdió al cerrar
+
+
+@pytest.mark.asyncio
+async def test_fallo_non_zero_emite_message_canonico(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """Un exit non-zero llena el campo canónico ``message`` con el stderr (contrato de tools)."""
+    runner = _runner_returning(
+        WryeBashResult(
+            success=False, return_code=2, stdout="", stderr="patch failed: master missing", duration_seconds=1.0
+        )
+    )
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    assert result["message"] == "patch failed: master missing"
+
+
+@pytest.mark.asyncio
+async def test_exito_message_vacio(lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager) -> None:
+    """En éxito, ``message`` es cadena vacía (canónico)."""
+    runner = _runner_returning()
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is True
+    assert result["message"] == ""
