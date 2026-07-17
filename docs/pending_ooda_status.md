@@ -85,14 +85,23 @@ expone `staged_transaction_id` para capturar la TX antes de que
 `commit_staged`/`rollback_staged` la reseteen. Componer desde el journal real
 (no el staging) sortea el hueco de read-APIs del `StagingJournal`.
 
-**Lo que sigue abierto:** `dyndolod_service.py`, `pandora_service.py` y
-`wrye_bash_runner.py` no emiten manifest/flight report (dyndolod/xedit importan
-`preview.manifest`, un modelo **distinto** — el de preview dry-run de la cadena,
-no el `ActionManifest` persistido por-Ritual). El criterio de aceptación de T-26
-("todo Ritual mutante produce" el manifiesto) se cumple hoy para LOOT, xEdit y
-Synthesis; T-28 para LOOT, xEdit y **Synthesis**. Faltan esos 3 runners antes de
-que tenga sentido la vista GUI de T-28. `tool_version` queda en `None` para
-xEdit y Synthesis (no la exponen hoy) — follow-up menor.
+**Actualización 2026-07-16 (T-26/T-28 en DynDOLOD):** `dyndolod_service.execute`
+emite el `ActionManifest` fail-closed tras `begin_transaction` (antes de generar
+LODs; `tool="DynDOLOD"`, `files_touched` = los mods de salida) y el
+`FlightReport` best-effort tras `commit_transaction` (DynDOLOD es directo, no
+sandboxeado → emisión en el servicio, espejo de xEdit; no pasa por el promotion
+flow). Un fallo del manifiesto aborta con `reason="ActionManifestFailed"` y la TX
+marcada rolled_back. LIMITACIÓN documentada: el `rollback_plan` del manifiesto
+queda vacío (`snapshots=[]`) porque el rollback de DynDOLOD es el move-aside de
+`DirectoryRollback` (los `Output/` pesan GBs), no el snapshot manager — un plan
+consciente del move-aside es follow-up.
+
+**Lo que sigue abierto:** `pandora_service.py` y `wrye_bash_runner.py` no emiten
+manifest/flight report. El criterio de aceptación de T-26 ("todo Ritual mutante
+produce" el manifiesto) y T-28 ("informe... por Ritual") se cumplen hoy para
+LOOT, xEdit, Synthesis y **DynDOLOD**. Faltan Pandora y Wrye Bash antes de que
+tenga sentido la vista GUI de T-28. `tool_version` queda en `None` para xEdit,
+Synthesis y DynDOLOD (no la exponen hoy) — follow-up menor.
 
 ### 1.2 T-27 — Synthesis sandboxeado con promote/discard real (2026-07-14); Pandora/DynDOLOD/Wrye Bash siguen fuera
 

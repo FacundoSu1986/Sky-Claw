@@ -57,6 +57,13 @@ def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) ->
     return result
 
 
+class _ActionManifestError(Exception):
+    """Interno (T-26): la emisión del manifiesto de vuelo falló. Se lanza DENTRO
+    del lock (antes de mutar) para que el Ritual NO proceda sin manifiesto — la
+    caja negra no es opcional cuando el journal está cableado (espejo de
+    ``loot_service``/``xedit_service``/``synthesis_service._ActionManifestError``)."""
+
+
 class DynDOLODPipelineService:
     """Servicio transaccional para el pipeline DynDOLOD (TexGen + DynDOLOD).
 
@@ -247,6 +254,69 @@ class DynDOLODPipelineService:
         return [p for p in candidates if not (p in seen or seen.add(p))]
 
     # ------------------------------------------------------------------
+    # Caja negra de vuelo (T-26/T-28, ADR 0002) — espejo de xedit_service
+    # ------------------------------------------------------------------
+
+    async def _emit_action_manifest(
+        self,
+        *,
+        tx_id: int,
+        target_files: list[pathlib.Path],
+        summary: str,
+    ) -> None:
+        """Construye y persiste el ActionManifest ANTES de mutar (T-26).
+
+        Fail-closed: cualquier fallo del builder o del journal se convierte en
+        :class:`_ActionManifestError` para que el caller aborte el pipeline sin
+        mutar (la caja negra no es opcional cuando el journal está cableado).
+
+        NOTA: el rollback de DynDOLOD es el move-aside de ``DirectoryRollback``
+        (los ``Output/`` pesan GBs; snapshot copy-based sería carísimo), NO el
+        snapshot manager — por eso el lock usa ``target_files=[]`` y el
+        ``rollback_plan`` del manifiesto queda vacío por diseño (``snapshots=[]``).
+        Un plan de rollback consciente del move-aside es follow-up.
+        """
+        from sky_claw.antigravity.orchestrator.preview.action_manifest import build_action_manifest
+
+        try:
+            manifest = build_action_manifest(
+                ritual_id=f"dyndolod-pipeline-{tx_id}",
+                tool="DynDOLOD",
+                tool_version=None,  # DynDOLOD no expone versión hoy (follow-up).
+                target_files=[str(f) for f in target_files],
+                snapshots=[],  # rollback = DirectoryRollback move-aside, no snapshots.
+                summary=summary,
+            )
+            await self._journal.persist_action_manifest(
+                manifest,
+                agent_id="dyndolod-pipeline-service",
+                transaction_id=tx_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — boundary: cualquier fallo del journal/builder
+            raise _ActionManifestError(str(exc)) from exc
+
+    async def _emit_flight_report(self, tx_id: int) -> None:
+        """Compone y persiste el FlightReport del Ritual terminado (T-28).
+
+        Post-vuelo y best-effort: lee la caja negra desde el journal (el
+        manifiesto persistido + el estado REAL de la TX) y la persiste. Un fallo
+        se loguea y NO rompe un pipeline ya exitoso (misma disciplina que LOOT/xEdit).
+        """
+        from sky_claw.antigravity.orchestrator.preview.flight_report import (
+            compose_flight_report_from_journal,
+        )
+
+        try:
+            report = await compose_flight_report_from_journal(self._journal, transaction_id=tx_id)
+            await self._journal.persist_flight_report(
+                report,
+                agent_id="dyndolod-pipeline-service",
+                transaction_id=tx_id,
+            )
+        except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error("Fallo al persistir el informe de vuelo de la TX %d", tx_id, exc_info=True)
+
+    # ------------------------------------------------------------------
     # Pipeline principal
     # ------------------------------------------------------------------
 
@@ -365,6 +435,26 @@ class DynDOLODPipelineService:
             if run_texgen:
                 rollback_dirs.append(mods_path / runner.TEXGEN_MOD_NAME)
 
+        # T-26: los paths que el ritual reescribe (independiente del snapshot) —
+        # el files_touched del ActionManifest. Incluye los mods de salida
+        # empaquetados Y el staging crudo (DynDOLOD_Output/TexGen_Output) que la
+        # herramienta escribe antes de empaquetar, bajo la raíz MO2 y el dir del
+        # exe (review Codex #312): son mutaciones persistentes que el operador
+        # puede necesitar auditar/limpiar tras un run fallido.
+        manifest_targets: list[pathlib.Path] = [mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME]
+        _staging_names = [DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME]
+        if run_texgen:
+            manifest_targets.append(mods_path / DynDOLODRunner.TEXGEN_MOD_NAME)
+            _staging_names.append(DynDOLODRunner.TEXGEN_OUTPUT_NAME)
+        _exe = runner._config.dyndolod_exe
+        _staging_roots = [
+            root
+            for root in (runner._config.mo2_path, _exe.parent if isinstance(_exe, pathlib.Path) else None)
+            if isinstance(root, pathlib.Path)
+        ]
+        for _root in _staging_roots:
+            manifest_targets += [_root / _name for _name in _staging_names]
+
         # 3. Ejecutar bajo lock transaccional + rollback de directorios.
         # AsyncExitStack: el lock se adquiere primero y se libera último; los
         # DirectoryRollback se restauran ANTES de soltar el lock.
@@ -380,16 +470,29 @@ class DynDOLODPipelineService:
                         metadata={"preset": preset, "run_texgen": run_texgen},
                     )
                 )
-                for output_dir in rollback_dirs:
-                    dr = DirectoryRollback(output_dir)
-                    await tx_stack.enter_async_context(dr)
-                    dir_rollbacks.append(dr)
-
-                # Comenzar transacción en journal DENTRO del lock
+                # Comenzar transacción en journal DENTRO del lock.
                 tx_id = await self._journal.begin_transaction(
                     description=f"DynDOLOD pipeline (preset={preset}, texgen={run_texgen})",
                     agent_id="dyndolod-pipeline-service",
                 )
+
+                # T-26 (ADR 0002): la caja negra ANTES de la primera mutación de
+                # FS — se persiste el manifiesto ANTES del move-aside de los
+                # DirectoryRollback (review Codex #312): si el proceso muere en el
+                # gap, el journal ya tiene el manifiesto de la mutación. Fail-closed:
+                # si no se puede emitir, se lanza y el pipeline NO corre (ningún
+                # move-aside ocurrió todavía; espejo de xedit_service).
+                await self._emit_action_manifest(
+                    tx_id=tx_id,
+                    target_files=manifest_targets,
+                    summary=f"Generar LODs (preset={preset}, texgen={run_texgen}) → {len(manifest_targets)} mod(s).",
+                )
+
+                # Move-aside de los outputs regenerados (primera mutación de FS).
+                for output_dir in rollback_dirs:
+                    dr = DirectoryRollback(output_dir)
+                    await tx_stack.enter_async_context(dr)
+                    dir_rollbacks.append(dr)
 
                 # Ejecutar pipeline
                 result = await runner.run_full_pipeline(
@@ -413,6 +516,18 @@ class DynDOLODPipelineService:
 
                 # Commit en journal
                 await self._journal.commit_transaction(tx_id)
+
+                # F1 (review Codex #312): tras el commit el output es FINAL —
+                # confirmar los move-aside para que un fallo post-commit (incl. una
+                # CancelledError durante el informe best-effort, que evade el
+                # ``except Exception``) NO revierta una generación ya committeada al
+                # desenrollar el AsyncExitStack.
+                for dr in dir_rollbacks:
+                    await dr.commit()
+
+                # T-28: cerrar la caja negra tras el commit (best-effort — los
+                # LODs ya se generaron; un fallo del informe no tumba el run).
+                await self._emit_flight_report(tx_id)
 
                 duration = time.monotonic() - start_time
                 await self._log_result(result, preset, success=True)
@@ -457,6 +572,47 @@ class DynDOLODPipelineService:
                     },
                     preflight_report,
                 )
+
+        except _ActionManifestError as exc:
+            # La caja negra no se pudo emitir: ningún LOD se generó. Los
+            # DirectoryRollback ya restauraron (nada mutó); marcar la TX para no
+            # dejarla PENDING (guardado — el journal que ya reventó podría fallar
+            # de nuevo). rolled_back real vía dir_rollbacks (M-7).
+            rolled_back = all(dr.rollback_completed for dr in dir_rollbacks)
+            duration = time.monotonic() - start_time
+            if tx_id is not None:
+                try:
+                    await self._journal.mark_transaction_rolled_back(tx_id)
+                except Exception as journal_exc:  # noqa: BLE001 — boundary best-effort del journal
+                    logger.error(
+                        "Failed to mark TX %d rolled back after manifest failure: %s",
+                        tx_id,
+                        journal_exc,
+                        exc_info=True,
+                    )
+            logger.error("DynDOLOD (stage 9): no se pudo emitir el ActionManifest; abortado: %s", exc)
+            await self._publish_completed(
+                preset=preset,
+                run_texgen=run_texgen,
+                success=False,
+                texgen_success=False,
+                dyndolod_success=False,
+                errors=(str(exc),),
+                duration_seconds=duration,
+                rolled_back=rolled_back,
+            )
+            detail = f"Manifiesto de vuelo requerido no emitido: {exc}"
+            return _attach_preflight(
+                {
+                    "success": False,
+                    "reason": "ActionManifestFailed",
+                    "message": detail,
+                    "errors": [detail],
+                    "duration_seconds": duration,
+                    "rolled_back": rolled_back,
+                },
+                preflight_report,
+            )
 
         except LockAcquisitionError as exc:
             duration = time.monotonic() - start_time
