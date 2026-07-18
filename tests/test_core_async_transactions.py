@@ -176,3 +176,63 @@ async def test_cancelación_espera_commit_y_conserva_commit_point(
     async with conn.execute("SELECT value FROM writes") as cursor:
         rows = await cursor.fetchall()
     assert [row[0] for row in rows] == ["confirmada"]
+
+
+async def test_cancelación_interna_de_commit_hace_rollback_bajo_lock(
+    base_transaccional: tuple[
+        DatabaseLifecycleManager,
+        Path,
+        aiosqlite.Connection,
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle, db_path, conn = base_transaccional
+    rollback_iniciado = asyncio.Event()
+    liberar_rollback = asyncio.Event()
+    lock_adquirido = asyncio.Event()
+    rollback_original = conn.rollback
+
+    async def commit_cancelado() -> None:
+        raise asyncio.CancelledError("commit cancelado")
+
+    async def rollback_bloqueado() -> None:
+        rollback_iniciado.set()
+        await liberar_rollback.wait()
+        await rollback_original()
+
+    monkeypatch.setattr(conn, "commit", commit_cancelado)
+    monkeypatch.setattr(conn, "rollback", rollback_bloqueado)
+
+    async def escribir() -> None:
+        async with lifecycle.transaction(db_path) as transaction_conn:
+            await transaction_conn.execute(
+                "INSERT INTO writes (value) VALUES (?)",
+                ("commit_cancelado",),
+            )
+
+    async def esperar_lock() -> None:
+        async with lifecycle.get_write_lock(db_path):
+            lock_adquirido.set()
+
+    tarea = asyncio.create_task(escribir())
+    try:
+        await _esperar(rollback_iniciado)
+    except TimeoutError:
+        with pytest.raises(asyncio.CancelledError, match="commit cancelado"):
+            await tarea
+        pytest.fail("la cancelación interna del commit no inició rollback")
+
+    assert conn.in_transaction
+    tarea_lock = asyncio.create_task(esperar_lock())
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(lock_adquirido.wait(), timeout=0.05)
+
+    liberar_rollback.set()
+    with pytest.raises(asyncio.CancelledError, match="commit cancelado"):
+        await tarea
+    await tarea_lock
+
+    assert not conn.in_transaction
+    async with conn.execute("SELECT value FROM writes") as cursor:
+        rows = await cursor.fetchall()
+    assert rows == []

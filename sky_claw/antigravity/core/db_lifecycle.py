@@ -73,6 +73,14 @@ class WALHealth(BaseModel):
     message: str = ""
 
 
+class _DatabaseOperationCancelled(asyncio.CancelledError):
+    """Distingue una operación DB cancelada de la cancelación del llamador."""
+
+    def __init__(self, cause: asyncio.CancelledError) -> None:
+        super().__init__(*cause.args)
+        self.cause = cause
+
+
 # ---------------------------------------------------------------------------
 # DatabaseLifecycleManager
 # ---------------------------------------------------------------------------
@@ -538,7 +546,11 @@ class DatabaseLifecycleManager:
                 if cancelación is None:
                     cancelación = error
 
-        task.result()
+        try:
+            task.result()
+        except asyncio.CancelledError as error:
+            raise _DatabaseOperationCancelled(error) from error
+
         if cancelación is not None:
             raise cancelación
 
@@ -558,6 +570,9 @@ class DatabaseLifecycleManager:
 
             try:
                 await self._await_db_operation(conn.commit())
+            except _DatabaseOperationCancelled as error:
+                await self._await_db_operation(conn.rollback())
+                raise error.cause from error
             except asyncio.CancelledError:
                 # La cancelación se propaga después de completar el commit.
                 raise
