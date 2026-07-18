@@ -157,6 +157,89 @@ async def test_fallback_revierte_si_commit_falla(
         await conn.close()
 
 
+async def test_init_database_revierte_las_cinco_tablas_si_falla_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El schema de DatabaseAgent no persiste tablas parciales."""
+    db_path = tmp_path / "database-schema-rollback.db"
+
+    class LifecycleConFalloDDL(DatabaseLifecycleManager):
+        @asynccontextmanager
+        async def transaction(
+            self,
+            transaction_path: Path | str,
+        ) -> AsyncGenerator[aiosqlite.Connection, None]:
+            async with super().transaction(transaction_path) as conn:
+                execute_original = conn.execute
+
+                async def execute_con_fallo(
+                    sql: str,
+                    *args: object,
+                ) -> aiosqlite.Cursor:
+                    if "CREATE TABLE IF NOT EXISTS conflicts" in sql:
+                        raise sqlite3.OperationalError("fallo DDL inducido")
+                    return await execute_original(sql, *args)
+
+                monkeypatch.setattr(conn, "execute", execute_con_fallo)
+                try:
+                    yield conn
+                finally:
+                    monkeypatch.setattr(conn, "execute", execute_original)
+
+    lifecycle = LifecycleConFalloDDL(db_paths=[db_path])
+    monkeypatch.setattr(
+        "sky_claw.antigravity.core.database.DatabaseLifecycleManager",
+        lambda **_kwargs: lifecycle,
+    )
+
+    database = DatabaseAgent(str(db_path))
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="fallo DDL inducido"):
+            await database.init_db()
+    finally:
+        await database.close()
+
+    nombres_schema = (
+        "scraper_state",
+        "agent_memory",
+        "mods",
+        "conflicts",
+        "activity_log",
+    )
+    async with (
+        aiosqlite.connect(db_path) as conn,
+        conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?, ?, ?, ?)",
+            nombres_schema,
+        ) as cursor,
+    ):
+        tablas = await cursor.fetchall()
+
+    assert tablas == []
+
+
+async def test_init_database_crea_las_cinco_tablas(tmp_path: Path) -> None:
+    """El init exitoso conserva el schema completo esperado."""
+    db_path = tmp_path / "database-schema-ok.db"
+    database = DatabaseAgent(str(db_path))
+    await database.init_db()
+    try:
+        conn = await database._get_conn()
+        async with conn.execute("SELECT name FROM sqlite_master WHERE type='table'") as cursor:
+            tablas = {row[0] for row in await cursor.fetchall()}
+
+        assert {
+            "scraper_state",
+            "agent_memory",
+            "mods",
+            "conflicts",
+            "activity_log",
+        } <= tablas
+    finally:
+        await database.close()
+
+
 @pytest.fixture
 async def base_transaccional(
     tmp_path: Path,

@@ -46,6 +46,7 @@ class DatabaseAgent:
         self._conn.row_factory = aiosqlite.Row
 
         async with self._write_transaction() as conn:
+            await conn.execute("BEGIN IMMEDIATE")
             # ── Core tables (Scraper / Agent Memory) ──
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS scraper_state (
