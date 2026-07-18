@@ -22,6 +22,8 @@ import atexit
 import logging
 import sqlite3
 import time
+from collections.abc import AsyncGenerator, Awaitable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -522,6 +524,46 @@ class DatabaseLifecycleManager:
 
             await self._init_single(path_obj)
             return self._connections[path_str]
+
+    @staticmethod
+    async def _await_db_operation(awaitable: Awaitable[None]) -> None:
+        """Completa una operación SQLite aunque el llamador sea cancelado."""
+        task = asyncio.ensure_future(awaitable)
+        cancelación: asyncio.CancelledError | None = None
+
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as error:
+                if cancelación is None:
+                    cancelación = error
+
+        task.result()
+        if cancelación is not None:
+            raise cancelación
+
+    @asynccontextmanager
+    async def transaction(
+        self,
+        db_path: Path | str,
+    ) -> AsyncGenerator[aiosqlite.Connection, None]:
+        """Serializa una transacción completa sobre la conexión compartida."""
+        conn = await self.get_connection(db_path)
+        async with self.get_write_lock(db_path):
+            try:
+                yield conn
+            except BaseException:
+                await self._await_db_operation(conn.rollback())
+                raise
+
+            try:
+                await self._await_db_operation(conn.commit())
+            except asyncio.CancelledError:
+                # La cancelación se propaga después de completar el commit.
+                raise
+            except BaseException:
+                await self._await_db_operation(conn.rollback())
+                raise
 
     def get_write_lock(self, db_path: Path | str) -> asyncio.Lock:
         """Return the write lock bound to the connection for *db_path*.
