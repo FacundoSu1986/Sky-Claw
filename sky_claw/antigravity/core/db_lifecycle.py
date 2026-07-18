@@ -632,14 +632,19 @@ class DatabaseLifecycleManager:
 
         if rollback_error is None:
             if cancellation_to_restore is not None:
+                if cancellation_to_restore is operation_error:
+                    return
                 raise cancellation_to_restore from operation_error
             return
 
         close_error = await self._quarantine_connection(db_path, conn)
-        try:
-            raise rollback_error from operation_error
-        except BaseException as chained_rollback_error:
-            diagnostic_error = chained_rollback_error
+        if cancellation_to_restore is operation_error:
+            diagnostic_error = rollback_error
+        else:
+            try:
+                raise rollback_error from operation_error
+            except BaseException as chained_rollback_error:
+                diagnostic_error = chained_rollback_error
 
         if close_error is not None:
             try:
@@ -663,7 +668,13 @@ class DatabaseLifecycleManager:
             try:
                 yield conn
             except BaseException as error:
-                await self._rollback_after_failure(db_path, conn, error)
+                cancellation = error if isinstance(error, asyncio.CancelledError) else None
+                await self._rollback_after_failure(
+                    db_path,
+                    conn,
+                    error,
+                    cancellation,
+                )
                 raise
 
             try:

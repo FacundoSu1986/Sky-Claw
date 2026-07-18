@@ -533,3 +533,74 @@ async def test_cuarentena_cierra_afectada_sin_cerrar_reemplazo(
             await conn_afectada.execute("SELECT 1")
     finally:
         await conn_afectada.close()
+
+
+async def test_cancelación_del_cuerpo_gana_si_rollback_falla(
+    base_transaccional: tuple[
+        DatabaseLifecycleManager,
+        Path,
+        aiosqlite.Connection,
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle, db_path, conn_afectada = base_transaccional
+    fila_insertada = asyncio.Event()
+    close_iniciado = asyncio.Event()
+    liberar_close = asyncio.Event()
+    lock_adquirido = asyncio.Event()
+    close_original = conn_afectada.close
+
+    async def rollback_fallido() -> None:
+        raise sqlite3.OperationalError("fallo de rollback del cuerpo")
+
+    async def close_bloqueado() -> None:
+        close_iniciado.set()
+        await liberar_close.wait()
+        await close_original()
+
+    monkeypatch.setattr(conn_afectada, "rollback", rollback_fallido)
+    monkeypatch.setattr(conn_afectada, "close", close_bloqueado)
+
+    async def escribir() -> None:
+        async with lifecycle.transaction(db_path) as transaction_conn:
+            await transaction_conn.execute(
+                "INSERT INTO writes (value) VALUES (?)",
+                ("cancelada",),
+            )
+            fila_insertada.set()
+            await asyncio.Event().wait()
+
+    async def esperar_lock() -> None:
+        async with lifecycle.get_write_lock(db_path):
+            lock_adquirido.set()
+
+    tarea = asyncio.create_task(escribir())
+    await _esperar(fila_insertada)
+    tarea.cancel("cancelación del cuerpo")
+    await _esperar(close_iniciado)
+    assert not tarea.done()
+
+    tarea_lock = asyncio.create_task(esperar_lock())
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(lock_adquirido.wait(), timeout=0.05)
+
+    liberar_close.set()
+    with pytest.raises(asyncio.CancelledError, match="cancelación del cuerpo") as exc_info:
+        await tarea
+    await tarea_lock
+
+    assert tarea.cancelled()
+    rollback_error = exc_info.value.__cause__
+    assert isinstance(rollback_error, sqlite3.OperationalError)
+    assert str(rollback_error) == "fallo de rollback del cuerpo"
+
+    async with lifecycle.transaction(db_path) as conn_segura:
+        assert conn_segura is not conn_afectada
+        await conn_segura.execute(
+            "INSERT INTO writes (value) VALUES (?)",
+            ("segunda",),
+        )
+
+    async with conn_segura.execute("SELECT value FROM writes") as cursor:
+        rows = await cursor.fetchall()
+    assert [row[0] for row in rows] == ["segunda"]
