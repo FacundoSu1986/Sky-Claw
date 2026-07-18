@@ -5,15 +5,86 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiosqlite
 import pytest
 
+from sky_claw.antigravity.core.database import DatabaseAgent
 from sky_claw.antigravity.core.db_lifecycle import (
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
 )
+from sky_claw.antigravity.core.dlq_manager import DLQManager
+from sky_claw.antigravity.core.event_bus import Event
+
+
+class LifecycleEspia(DatabaseLifecycleManager):
+    """Cuenta los limites transaccionales y su concurrencia real."""
+
+    def __init__(self, db_path: Path) -> None:
+        super().__init__(
+            db_paths=[db_path],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        self.entradas = 0
+        self.activas = 0
+        self.maximo_activas = 0
+
+    @asynccontextmanager
+    async def transaction(
+        self,
+        db_path: Path | str,
+    ) -> AsyncGenerator[aiosqlite.Connection, None]:
+        async with super().transaction(db_path) as conn:
+            self.entradas += 1
+            self.activas += 1
+            self.maximo_activas = max(self.maximo_activas, self.activas)
+            try:
+                yield conn
+            finally:
+                self.activas -= 1
+
+
+async def test_database_y_dlq_comparten_dueno_transaccional(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DatabaseAgent y DLQ serializan todas sus escrituras por lifecycle."""
+    db_path = tmp_path / "core-shared.db"
+    lifecycle = LifecycleEspia(db_path)
+    monkeypatch.setattr(
+        "sky_claw.antigravity.core.database.DatabaseLifecycleManager",
+        lambda **_kwargs: lifecycle,
+    )
+
+    database = DatabaseAgent(str(db_path))
+    await database.init_db()
+
+    async def handler(_event: Event) -> None:
+        return None
+
+    dlq = DLQManager(db_path, lambda _name: handler, lifecycle=lifecycle)
+    event = Event(
+        topic="core.test",
+        payload={"valor": 1},
+        timestamp_ms=1,
+        source="test",
+    )
+
+    try:
+        await asyncio.gather(
+            database.set_memory("clave", "valor", 1.0),
+            dlq.enqueue(event, handler, RuntimeError("fallo esperado")),
+        )
+
+        assert lifecycle.entradas >= 3
+        assert lifecycle.maximo_activas == 1
+        assert await database.get_memory("clave") == "valor"
+        assert len(await dlq.list_pending()) == 1
+    finally:
+        await database.close()
 
 
 @pytest.fixture

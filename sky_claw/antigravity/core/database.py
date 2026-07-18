@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiosqlite
@@ -43,60 +45,59 @@ class DatabaseAgent:
         self._conn = await self._lifecycle.get_connection(self.db_path)
         self._conn.row_factory = aiosqlite.Row
 
-        # ── Core tables (Scraper / Agent Memory) ──
-        await self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS scraper_state (
-                domain TEXT PRIMARY KEY,
-                cookies TEXT,
-                failures INTEGER DEFAULT 0,
-                locked_until REAL DEFAULT 0
-            )
-        """)
-        await self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS agent_memory (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                updated_at REAL
-            )
-        """)
+        async with self._write_transaction() as conn:
+            # ── Core tables (Scraper / Agent Memory) ──
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS scraper_state (
+                    domain TEXT PRIMARY KEY,
+                    cookies TEXT,
+                    failures INTEGER DEFAULT 0,
+                    locked_until REAL DEFAULT 0
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_memory (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at REAL
+                )
+            """)
 
-        # ── GUI tables (Mods / Conflicts / Activity Log) ──
-        await self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS mods (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL,
-                version TEXT,
-                size_mb REAL DEFAULT 0,
-                status TEXT DEFAULT 'inactive',
-                source TEXT,
-                installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP
-            )
-        """)
-        await self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS conflicts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                mod_id_1 INTEGER,
-                mod_id_2 INTEGER,
-                conflict_type TEXT,
-                resolved BOOLEAN DEFAULT 0,
-                resolution TEXT,
-                detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (mod_id_1) REFERENCES mods(id),
-                FOREIGN KEY (mod_id_2) REFERENCES mods(id)
-            )
-        """)
-        await self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS activity_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_type TEXT,
-                message TEXT,
-                details TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        await self._conn.commit()
+            # ── GUI tables (Mods / Conflicts / Activity Log) ──
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS mods (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    version TEXT,
+                    size_mb REAL DEFAULT 0,
+                    status TEXT DEFAULT 'inactive',
+                    source TEXT,
+                    installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS conflicts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mod_id_1 INTEGER,
+                    mod_id_2 INTEGER,
+                    conflict_type TEXT,
+                    resolved BOOLEAN DEFAULT 0,
+                    resolution TEXT,
+                    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (mod_id_1) REFERENCES mods(id),
+                    FOREIGN KEY (mod_id_2) REFERENCES mods(id)
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS activity_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT,
+                    message TEXT,
+                    details TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
         logger.info(
             "Base de datos SQLite inicializada en modo WAL "
             "(scraper_state, agent_memory, mods, conflicts, activity_log)."
@@ -125,6 +126,14 @@ class DatabaseAgent:
             raise RuntimeError("DatabaseAgent not initialized. Await init_db() first.")
         return self._conn
 
+    @asynccontextmanager
+    async def _write_transaction(self) -> AsyncGenerator[aiosqlite.Connection, None]:
+        """Delega una escritura completa al lifecycle transaccional."""
+        if self._lifecycle is None:
+            raise RuntimeError("DatabaseAgent not initialized. Await init_db() first.")
+        async with self._lifecycle.transaction(self.db_path) as conn:
+            yield conn
+
     # ─────────────────────────────────────────────────────────────────────
     # Scraper / Circuit Breaker
     # ─────────────────────────────────────────────────────────────────────
@@ -136,20 +145,18 @@ class DatabaseAgent:
             return dict(row) if row else {"failures": 0, "locked_until": 0}
 
     async def update_circuit_breaker(self, domain: str, failures: int, locked_until: float) -> None:
-        conn = await self._get_conn()
         try:
-            await conn.execute(
-                """
-                INSERT INTO scraper_state (domain, failures, locked_until)
-                VALUES (?, ?, ?)
-                ON CONFLICT(domain) DO UPDATE SET
-                failures=excluded.failures, locked_until=excluded.locked_until
-            """,
-                (domain, failures, locked_until),
-            )
-            await conn.commit()
+            async with self._write_transaction() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO scraper_state (domain, failures, locked_until)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(domain) DO UPDATE SET
+                    failures=excluded.failures, locked_until=excluded.locked_until
+                """,
+                    (domain, failures, locked_until),
+                )
         except sqlite3.Error:
-            await conn.rollback()
             raise
 
     # ─────────────────────────────────────────────────────────────────────
@@ -163,20 +170,18 @@ class DatabaseAgent:
             return row[0] if row else None
 
     async def set_memory(self, key: str, value: str, updated_at: float) -> None:
-        conn = await self._get_conn()
         try:
-            await conn.execute(
-                """
-                INSERT INTO agent_memory (key, value, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET
-                value=excluded.value, updated_at=excluded.updated_at
-            """,
-                (key, value, updated_at),
-            )
-            await conn.commit()
+            async with self._write_transaction() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO agent_memory (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value, updated_at=excluded.updated_at
+                """,
+                    (key, value, updated_at),
+                )
         except sqlite3.Error:
-            await conn.rollback()
             raise
 
     # ─────────────────────────────────────────────────────────────────────
@@ -209,28 +214,26 @@ class DatabaseAgent:
         El id se lee por nombre (determinista, sin carrera de
         ``last_insert_rowid()`` en la conexión compartida).
         """
-        conn = await self._get_conn()
         try:
-            await conn.execute(
-                """
-                INSERT INTO mods (name, version, size_mb, source, status)
-                VALUES (?, ?, ?, ?, 'active')
-                ON CONFLICT(name) DO UPDATE SET
-                    version = excluded.version,
-                    size_mb = excluded.size_mb,
-                    source = excluded.source,
-                    status = 'active',
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (name, version, size_mb, source),
-            )
-            await conn.commit()
+            async with self._write_transaction() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO mods (name, version, size_mb, source, status)
+                    VALUES (?, ?, ?, ?, 'active')
+                    ON CONFLICT(name) DO UPDATE SET
+                        version = excluded.version,
+                        size_mb = excluded.size_mb,
+                        source = excluded.source,
+                        status = 'active',
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (name, version, size_mb, source),
+                )
+                async with conn.execute("SELECT id FROM mods WHERE name = ?", (name,)) as cursor:
+                    row = await cursor.fetchone()
+                    return row[0] if row else 0
         except sqlite3.Error:
-            await conn.rollback()
             raise
-        async with conn.execute("SELECT id FROM mods WHERE name = ?", (name,)) as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else 0
 
     async def get_conflicts(self, resolved: bool | None = None) -> list[dict]:
         """Obtiene conflictos con filtro opcional."""
@@ -253,41 +256,35 @@ class DatabaseAgent:
         el id de otra corrutina que insertó entre awaits en la conexión
         compartida (review de Copilot en #220).
         """
-        conn = await self._get_conn()
         try:
-            cursor = await conn.execute(
-                "INSERT INTO conflicts (mod_id_1, mod_id_2, conflict_type) VALUES (?, ?, ?)",
-                (mod_id_1, mod_id_2, conflict_type),
-            )
-            row_id = cursor.lastrowid or 0
-            await conn.commit()
+            async with self._write_transaction() as conn:
+                cursor = await conn.execute(
+                    "INSERT INTO conflicts (mod_id_1, mod_id_2, conflict_type) VALUES (?, ?, ?)",
+                    (mod_id_1, mod_id_2, conflict_type),
+                )
+                row_id = cursor.lastrowid or 0
         except sqlite3.Error:
-            await conn.rollback()
             raise
         return row_id
 
     async def resolve_conflict(self, conflict_id: int, resolution: str | None = None) -> None:
         """Marca un conflicto como resuelto (opcionalmente con una nota)."""
-        conn = await self._get_conn()
         try:
-            await conn.execute(
-                "UPDATE conflicts SET resolved = 1, resolution = ? WHERE id = ?",
-                (resolution, conflict_id),
-            )
-            await conn.commit()
+            async with self._write_transaction() as conn:
+                await conn.execute(
+                    "UPDATE conflicts SET resolved = 1, resolution = ? WHERE id = ?",
+                    (resolution, conflict_id),
+                )
         except sqlite3.Error:
-            await conn.rollback()
             raise
 
     async def log_activity(self, event_type: str, message: str, details: dict | None = None) -> None:
         """Registra actividad en el log."""
-        conn = await self._get_conn()
         try:
-            await conn.execute(
-                "INSERT INTO activity_log (event_type, message, details) VALUES (?, ?, ?)",
-                (event_type, message, json.dumps(details) if details else None),
-            )
-            await conn.commit()
+            async with self._write_transaction() as conn:
+                await conn.execute(
+                    "INSERT INTO activity_log (event_type, message, details) VALUES (?, ?, ?)",
+                    (event_type, message, json.dumps(details) if details else None),
+                )
         except sqlite3.Error:
-            await conn.rollback()
             raise

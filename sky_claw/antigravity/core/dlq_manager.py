@@ -152,7 +152,7 @@ class DLQManager:
         next_retry = self._compute_next_retry_at(now, 1, self._base_backoff_s)
         payload_json = json.dumps(event.payload, sort_keys=True, default=str)
 
-        async with self._connect() as db:
+        async with self._write_transaction() as db:
             await db.execute(
                 """
                 INSERT INTO dead_letter_events
@@ -174,7 +174,6 @@ class DLQManager:
                     now,
                 ),
             )
-            await db.commit()
 
         logger.debug(
             "DLQ: encolado evento '%s' desde handler '%s' (error: %s)",
@@ -202,9 +201,8 @@ class DLQManager:
         if self._schema_ensured:
             return
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with self._connect() as db:
+        async with self._write_transaction() as db:
             await db.executescript(_DDL)
-            await db.commit()
         self._schema_ensured = True
 
     async def _recover_stale_rows(self) -> None:
@@ -216,13 +214,12 @@ class DLQManager:
         otros procesos que posean filas legítimamente en progreso.
         """
         now = self._clock()
-        async with self._connect() as db:
+        async with self._write_transaction() as db:
             await db.execute(
                 "UPDATE dead_letter_events SET status='pending', updated_at=?"
                 " WHERE status='in_progress' AND updated_at + 60000 < ?",
                 (now, now),
             )
-            await db.commit()
 
     @contextlib.asynccontextmanager
     async def _connect(self) -> AsyncGenerator[aiosqlite.Connection, None]:
@@ -236,17 +233,7 @@ class DLQManager:
         if self._lifecycle is not None:
             conn = await self._lifecycle.get_connection(self._db_path)
             conn.row_factory = aiosqlite.Row
-            try:
-                yield conn
-            except BaseException:
-                # Cancellation/error between a DML and its commit() must not
-                # leave a dangling transaction on the SHARED connection — the
-                # next operation would inherit it (and the lifecycle checkpoint
-                # fails with "database table is locked"). The per-op fallback
-                # below gets this for free: closing the connection rolls back.
-                with contextlib.suppress(Exception):
-                    await conn.rollback()
-                raise
+            yield conn
             return
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("PRAGMA busy_timeout=5000")  # must be first: protects WAL mode switch
@@ -255,6 +242,23 @@ class DLQManager:
             await db.execute("PRAGMA synchronous=NORMAL")
             db.row_factory = aiosqlite.Row
             yield db
+
+    @contextlib.asynccontextmanager
+    async def _write_transaction(self) -> AsyncGenerator[aiosqlite.Connection, None]:
+        """Abre una unidad de escritura con commit o rollback propios."""
+        if self._lifecycle is not None:
+            async with self._lifecycle.transaction(self._db_path) as db:
+                yield db
+            return
+
+        async with self._connect() as db:
+            try:
+                yield db
+            except BaseException:
+                await db.rollback()
+                raise
+            else:
+                await db.commit()
 
     # ------------------------------------------------------------------
     # Internal — retry loop
@@ -293,17 +297,18 @@ class DLQManager:
         """Procesa una sola fila: resuelve handler, reintenta, actualiza estado.
 
         H-05 — Atomic claim: el UPDATE incluye AND status='pending' para que sólo
-        un worker (o tick) pueda reclamar la fila. Si rowcount==0, otro worker ya la
+        un worker (o tick) pueda reclamar la fila. Si changes()==0, otro worker ya la
         tomó → retornamos sin ejecutar el handler (evita double-dispatch).
         """
         now = self._clock()
-        async with self._connect() as db:
-            cur = await db.execute(
+        async with self._write_transaction() as db:
+            await db.execute(
                 "UPDATE dead_letter_events SET status='in_progress', updated_at=? WHERE id=? AND status='pending'",
                 (now, row.id),
             )
-            await db.commit()
-            if cur.rowcount == 0:
+            async with db.execute("SELECT changes()") as cursor:
+                changes = await cursor.fetchone()
+            if changes is None or changes[0] == 0:
                 logger.debug(
                     "DLQ: fila id=%d ya fue tomada por otro worker — omitiendo",
                     row.id,
@@ -315,12 +320,11 @@ class DLQManager:
             # Handler no registrado aún: tratar como transient, reintent en 60s
             now2 = self._clock()
             next_retry = now2 + 60_000  # Retry en 1 minuto
-            async with self._connect() as db:
+            async with self._write_transaction() as db:
                 await db.execute(
                     "UPDATE dead_letter_events SET status='pending', next_retry_at=?, updated_at=? WHERE id=?",
                     (next_retry, now2, row.id),
                 )
-                await db.commit()
             logger.debug(
                 "DLQ: handler '%s' no registrado aún, reintentando en 60s",
                 row.handler_name,
@@ -348,7 +352,7 @@ class DLQManager:
             # Ahora: UPDATE attempts+1 RETURNING attempts da el contador real
             # post-incremento; toda la logica se basa en ese valor.
             now2 = self._clock()
-            async with self._connect() as db:
+            async with self._write_transaction() as db:
                 cur = await db.execute(
                     """
                     UPDATE dead_letter_events
@@ -365,7 +369,6 @@ class DLQManager:
                 if returned is None:
                     # Recovery race: la fila fue reseteada a 'pending' por el
                     # startup recovery o tomada por otro worker. No corromper.
-                    await db.commit()
                     logger.warning(
                         "DLQ: fila id=%d ya no esta in_progress — recovery race",
                         row.id,
@@ -379,7 +382,6 @@ class DLQManager:
                         "UPDATE dead_letter_events SET status='dead', updated_at=? WHERE id=?",
                         (now2, row.id),
                     )
-                    await db.commit()
                     logger.warning(
                         "DLQ: evento '%s' handler '%s' agoto %d intentos -> dead",
                         row.topic,
@@ -393,11 +395,9 @@ class DLQManager:
                         "UPDATE dead_letter_events SET status='pending', next_retry_at=? WHERE id=?",
                         (next_retry, row.id),
                     )
-                    await db.commit()
         else:
-            async with self._connect() as db:
+            async with self._write_transaction() as db:
                 await db.execute("DELETE FROM dead_letter_events WHERE id=?", (row.id,))
-                await db.commit()
             logger.info(
                 "DLQ: evento '%s' handler '%s' reintentado con éxito (intentos=%d)",
                 row.topic,
@@ -409,7 +409,7 @@ class DLQManager:
         """Marca una fila como 'dead' con el motivo dado."""
         now = self._clock()
         final_attempts = attempts if attempts is not None else row.attempts
-        async with self._connect() as db:
+        async with self._write_transaction() as db:
             await db.execute(
                 """
                 UPDATE dead_letter_events
@@ -418,7 +418,6 @@ class DLQManager:
                 """,
                 (reason, now, final_attempts, row.id),
             )
-            await db.commit()
 
     async def _fetch_due_batch(self, limit: int) -> list[DLQRow]:
         """Retorna filas pendientes cuyo next_retry_at ya venció.
