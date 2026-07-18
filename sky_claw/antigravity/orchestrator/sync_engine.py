@@ -363,20 +363,14 @@ class SyncEngine:
                 # Cancelar una operación no puede dejar su asiento STARTED: el
                 # caller puede reintentarla y el rollback debe conservar el
                 # estado observable del archivo antes de propagar la señal.
+                # F3 (auditoría 2026-07-18): el par fail+undo corre bajo shield
+                # — una SEGUNDA cancelación (shutdown + gather del caller, o un
+                # wait_for externo) no puede partir el undo a la mitad y dejar
+                # el archivo a medias con el journal en FAILED. Si esa segunda
+                # señal llega, este await propaga CancelledError igual, pero la
+                # task shieldeada completa el rollback en background.
                 logger.warning("Operación cancelada; ejecutando rollback automático")
-                try:
-                    await rm.fail_operation(entry_id, error="operation cancelled")
-                except Exception as cleanup_exc:
-                    logger.critical("No se pudo marcar la operación cancelada como fallida: %s", cleanup_exc)
-                try:
-                    rollback_result = await rm.undo_operation(entry_id)
-                    logger.warning(
-                        "Rollback tras cancelación completado: success=%s, transaction=%s",
-                        rollback_result.success,
-                        rollback_result.transaction_id,
-                    )
-                except Exception as cleanup_exc:
-                    logger.critical("Rollback tras cancelación falló: %s", cleanup_exc)
+                await asyncio.shield(self._rollback_operacion_cancelada(rm, entry_id))
                 raise
 
             except Exception as exc:
@@ -406,7 +400,34 @@ class SyncEngine:
             # Bound snapshot storage growth: prune on every file operation,
             # success or failure.  Logs and swallows its own errors so it never
             # masks the real outcome of the operation above.
-            await self._passive_pruning()
+            # F3: NO encolar más awaits (DB/FS) en la ruta de unwind de una
+            # cancelación — demoraría la señal y el pruning puede correr en la
+            # próxima operación no cancelada. cancelling() > 0 = cancel en vuelo.
+            current_task = asyncio.current_task()
+            if current_task is None or current_task.cancelling() == 0:
+                await self._passive_pruning()
+
+    async def _rollback_operacion_cancelada(self, rm: RollbackManager, entry_id: int) -> None:
+        """F3 (auditoría 2026-07-18): marca FAILED y revierte una operación cancelada.
+
+        Corre bajo ``asyncio.shield`` desde ``execute_file_operation``: el
+        caller puede recibir una segunda cancelación, pero el undo debe
+        completarse igual para conservar el estado observable del archivo.
+        Nunca lanza — cada paso degrada a log CRITICAL.
+        """
+        try:
+            await rm.fail_operation(entry_id, error="operation cancelled")
+        except Exception as cleanup_exc:
+            logger.critical("No se pudo marcar la operación cancelada como fallida: %s", cleanup_exc)
+        try:
+            rollback_result = await rm.undo_operation(entry_id)
+            logger.warning(
+                "Rollback tras cancelación completado: success=%s, transaction=%s",
+                rollback_result.success,
+                rollback_result.transaction_id,
+            )
+        except Exception as cleanup_exc:
+            logger.critical("Rollback tras cancelación falló: %s", cleanup_exc)
 
     async def _passive_pruning(self) -> None:
         """FASE 1.5: Ejecuta pruning pasivo del directorio de backups.
