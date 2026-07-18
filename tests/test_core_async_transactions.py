@@ -384,7 +384,6 @@ async def test_cancelación_original_gana_si_commit_y_rollback_fallan(
     liberar_rollback = asyncio.Event()
     rollback_terminado = asyncio.Event()
     lock_adquirido = asyncio.Event()
-    rollback_original = conn.rollback
 
     async def commit_bloqueado_y_fallido() -> None:
         commit_iniciado.set()
@@ -442,5 +441,55 @@ async def test_cancelación_original_gana_si_commit_y_rollback_fallan(
     assert isinstance(commit_error, sqlite3.OperationalError)
     assert str(commit_error) == "fallo de commit"
 
-    await rollback_original()
-    assert not conn.in_transaction
+    conn_segura = await lifecycle.get_connection(db_path)
+    assert conn_segura is not conn
+
+
+async def test_rollback_fallido_cuarentena_conexión_antes_de_reutilizarla(
+    base_transaccional: tuple[
+        DatabaseLifecycleManager,
+        Path,
+        aiosqlite.Connection,
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle, db_path, conn_afectada = base_transaccional
+    commit_original = conn_afectada.commit
+    rollback_original = conn_afectada.rollback
+    commits = 0
+    rollbacks = 0
+
+    async def commit_falla_una_vez() -> None:
+        nonlocal commits
+        commits += 1
+        if commits == 1:
+            raise sqlite3.OperationalError("fallo de commit")
+        await commit_original()
+
+    async def rollback_falla_una_vez() -> None:
+        nonlocal rollbacks
+        rollbacks += 1
+        if rollbacks == 1:
+            raise sqlite3.OperationalError("fallo de rollback")
+        await rollback_original()
+
+    monkeypatch.setattr(conn_afectada, "commit", commit_falla_una_vez)
+    monkeypatch.setattr(conn_afectada, "rollback", rollback_falla_una_vez)
+
+    with pytest.raises(sqlite3.OperationalError, match="fallo de rollback"):
+        async with lifecycle.transaction(db_path) as transaction_conn:
+            await transaction_conn.execute(
+                "INSERT INTO writes (value) VALUES (?)",
+                ("sucia",),
+            )
+
+    async with lifecycle.transaction(db_path) as conn_segura:
+        assert conn_segura is not conn_afectada
+        await conn_segura.execute(
+            "INSERT INTO writes (value) VALUES (?)",
+            ("segunda",),
+        )
+
+    async with conn_segura.execute("SELECT value FROM writes") as cursor:
+        rows = await cursor.fetchall()
+    assert [row[0] for row in rows] == ["segunda"]
