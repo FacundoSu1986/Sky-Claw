@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.db.journal import OperationStatus
+from sky_claw.antigravity.db.journal import OperationStatus, TransactionStatus
 from sky_claw.antigravity.db.locks import LockAcquisitionError
 from sky_claw.local.mo2.grass_profile import GrassProfileError
 from sky_claw.local.tools.grass_cache_runner import GrassCacheRunResult
@@ -504,6 +504,65 @@ async def test_generate_keyboardinterrupt_cierra_journal_y_propaga(tmp_path: pat
     colab["profile_manager"].teardown.assert_awaited()
     journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
     journal.commit_transaction.assert_not_awaited()
+
+
+async def test_generate_cancelacion_en_cierre_final_del_journal_reintenta_rollback(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Auditoría hostil (V-1): el cierre final del journal corre DESPUÉS de
+    soltar los locks, fuera del ``except`` de cancelación de arriba. Una
+    cancelación exacta durante ese commit no debe dejar la TX sin intentar
+    cerrarla: se reintenta un rollback best-effort antes de propagar — pero
+    solo si la TX sigue PENDING de verdad (ver test de abajo)."""
+    journal = _journal_con_loot_completado()
+    journal.commit_transaction.side_effect = asyncio.CancelledError
+    journal.get_transaction.return_value = MagicMock(status=TransactionStatus.PENDING)
+    service, colab = _servicio(tmp_path, journal=journal)  # runner exitoso por default
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.generate(_PAYLOAD)
+
+    journal.commit_transaction.assert_awaited_once_with(77)
+    journal.get_transaction.assert_awaited_once_with(77)
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    colab["profile_manager"].teardown.assert_awaited()
+
+
+async def test_generate_cancelacion_post_commit_no_pisa_una_tx_ya_committed(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Review Codex (PR #317, P2): la cancelación del ``commit_transaction()``
+    final puede llegar DESPUÉS de que el UPDATE ya corrió en la BD —
+    ``mark_transaction_rolled_back`` no valida el estado, así que un reintento
+    ciego sobre-escribiría un ritual exitoso a rolled_back. Si al reconsultar
+    la TX ya consta COMMITTED, el reintento NO debe tocarla."""
+    journal = _journal_con_loot_completado()
+    journal.commit_transaction.side_effect = asyncio.CancelledError
+    journal.get_transaction.return_value = MagicMock(status=TransactionStatus.COMMITTED)
+    service, colab = _servicio(tmp_path, journal=journal)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.generate(_PAYLOAD)
+
+    journal.get_transaction.assert_awaited_once_with(77)
+    journal.mark_transaction_rolled_back.assert_not_awaited()
+    colab["profile_manager"].teardown.assert_awaited()
+
+
+async def test_journal_close_fallo_de_bd_se_loguea(tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Auditoría hostil (A-1): el cierre best-effort del journal no debe
+    tragar un fallo de BD en silencio — sin log, un commit/rollback roto
+    desincroniza el journal sin dejar rastro."""
+    import logging
+
+    journal = _journal_con_loot_completado()
+    journal.commit_transaction.side_effect = RuntimeError("constraint violation")
+    service, _ = _servicio(tmp_path, journal=journal)
+
+    with caplog.at_level(logging.WARNING, logger="sky_claw.local.tools.grass_cache_service"):
+        await service._journal_close(77, exito=True)
+
+    assert any("journal" in registro.message.lower() for registro in caplog.records)
 
 
 async def test_generate_expone_teardown_failures(tmp_path: pathlib.Path) -> None:
