@@ -42,7 +42,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from sky_claw.antigravity.security.hitl import Decision
 from sky_claw.local.mo2.profile_sandbox import SandboxDriftError, SandboxRollbackError
@@ -72,6 +72,13 @@ _MAX_DETAIL_LENGTH = 800
 _MAX_LISTED_PATHS = 10
 
 _KIND_PREFIX = {"added": "+", "modified": "~", "removed": "-"}
+
+#: Desenlace terminal del promote tras una cancelación de ``run()`` — ver
+#: :meth:`SandboxPromotionFlow.desenlace_promocion`. "rollback_fallido" es
+#: distinto de "no_aplicada" a propósito: el árbol real puede haber quedado
+#: inconsistente y el caller no debe registrar un descarte limpio (review
+#: Codex #322 P2).
+DesenlacePromocion = Literal["aplicada", "no_aplicada", "rollback_fallido"]
 
 
 def format_diff_detail(diff: SandboxDiff) -> str:
@@ -144,6 +151,43 @@ class SandboxPromotionFlow:
         # así que sin esto un cleanup que quedó corriendo en background podría
         # ser recolectado por GC antes de terminar (review Codex PR #320).
         self._cleanup_tasks: set[asyncio.Task[None]] = set()
+        # Review Codex #320 (P1) + #322 (P2): la task del promote de este run.
+        # desenlace_promocion() deriva el resultado terminal DE la task misma
+        # (no de un flag que un cleanup cancelado podría no llegar a setear):
+        # el promote shieldeado siempre alcanza un estado terminal observable.
+        self._promote_task: asyncio.Task[PromoteResult] | None = None
+
+    async def desenlace_promocion(self) -> DesenlacePromocion:
+        """Desenlace terminal del promote, para el caller cuyo :meth:`run`
+        terminó en ``CancelledError`` y necesita resolver su journal diferido.
+
+        Espera los cleanups en vuelo y el propio ``promote_task`` (review Codex
+        #322 P2: un cleanup cancelado por el teardown sale de ``_cleanup_tasks``
+        sin haber observado el promote — la task del promote es la única fuente
+        que garantiza estado terminal). Valores:
+
+        * ``"aplicada"`` — el promote completó: los cambios ESTÁN en el árbol
+          real → corresponde ``commit_staged``.
+        * ``"no_aplicada"`` — el promote no corrió, terminó cancelado, cortó por
+          drift o falló con su rollback interno OK: el árbol real quedó intacto
+          → corresponde ``rollback_staged``.
+        * ``"rollback_fallido"`` — promote falló Y su rollback también
+          (:class:`SandboxRollbackError`): el árbol real puede estar
+          INCONSISTENTE y el clon se preserva con el backup manual. La TX se
+          marca rolled_back (mismo criterio que la rama no cancelada, review
+          #310) pero el caller debe alertar recuperación manual, no registrar
+          un descarte limpio.
+        """
+        while self._cleanup_tasks:
+            await asyncio.gather(*list(self._cleanup_tasks), return_exceptions=True)
+        if self._promote_task is None:
+            return "no_aplicada"
+        (resultado,) = await asyncio.gather(self._promote_task, return_exceptions=True)
+        if isinstance(resultado, SandboxRollbackError):
+            return "rollback_fallido"
+        if isinstance(resultado, BaseException):
+            return "no_aplicada"
+        return "aplicada"
 
     async def run(
         self,
@@ -278,6 +322,10 @@ class SandboxPromotionFlow:
         cancelación se espera su desenlace real y recién entonces se limpia.
         """
         promote_task = asyncio.ensure_future(self._sandbox.promote(clone))
+        # Review Codex #320/#322: registrar la task ANTES de await-earla —
+        # desenlace_promocion() deriva de ella el resultado terminal aunque
+        # una cancelación posterior impida al caller ver el result.
+        self._promote_task = promote_task
         try:
             promocion = await asyncio.shield(promote_task)
         except asyncio.CancelledError:
@@ -402,7 +450,8 @@ class SandboxPromotionFlow:
         else:
             # El hilo del promote completó pese a la cancelación: los cambios
             # YA están aplicados al perfil real aunque el caller reciba
-            # CancelledError — dejar constancia explícita para el operador.
+            # CancelledError — dejar constancia explícita para el operador
+            # (desenlace_promocion() lo deriva de la task, review Codex #320/#322).
             logger.warning(
                 "SandboxPromotionFlow: '%s' fue cancelado pero el promote COMPLETÓ — "
                 "%d escrito(s), %d borrado(s) ya aplicados al perfil real.",

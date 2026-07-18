@@ -14,6 +14,8 @@ post-run sobre el diff real es estrictamente más fuerte que aprobar a ciegas.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -41,6 +43,72 @@ class ExecuteSynthesisPipelineStrategy:
         self._flow_provider = flow_provider
         self._service_factory = service_factory
         self._real_journal_provider = real_journal_provider
+        # Referencias fuertes a las resoluciones de journal post-cancelación
+        # (el loop solo referencia tasks débilmente; patrón de
+        # SandboxPromotionFlow._cleanup_tasks — review Codex #320).
+        self._resoluciones_pendientes: set[asyncio.Task[None]] = set()
+
+    async def drain_pendientes(self) -> None:
+        """Espera las resoluciones de journal en vuelo (review Codex #322, P2).
+
+        Lo invoca el shutdown del supervisor (vía ``dispatcher.drain()``) ANTES
+        de cerrar el journal real: sin esto, una segunda cancelación deja la
+        resolución corriendo en background y el cierre del journal puede
+        ganarle la carrera, dejando la TX diferida sin estado final.
+        """
+        while self._resoluciones_pendientes:
+            await asyncio.gather(*list(self._resoluciones_pendientes), return_exceptions=True)
+
+    async def _resolver_staged_tras_cancelacion(
+        self,
+        flow: SandboxPromotionFlow,
+        staging_journal: Any,
+        tx_id: int,
+    ) -> None:
+        """Resuelve la TX diferida de un run cancelado según el desenlace real.
+
+        ``flow.desenlace_promocion()`` espera los cleanups en vuelo del promote
+        shieldeado y responde si los cambios llegaron al árbol real. El
+        FlightReport se omite en esta ruta (telemetría best-effort desde un
+        contexto cancelado); el estado del journal es lo crítico. Nunca lanza:
+        si la resolución falla, queda el CRITICAL con el tx_id para
+        reconciliación manual.
+        """
+        try:
+            desenlace = await flow.desenlace_promocion()
+            if desenlace == "aplicada":
+                await staging_journal.commit_staged()
+            else:
+                # "no_aplicada" y "rollback_fallido" marcan la TX rolled_back —
+                # mismo criterio que la rama no cancelada (review #310) — pero
+                # el segundo NO es un descarte limpio y se alerta abajo.
+                await staging_journal.rollback_staged()
+            if desenlace == "rollback_fallido":
+                # Review Codex #322 (P2): promote falló Y su rollback también.
+                # El overwrite real puede estar INCONSISTENTE y el clon se
+                # preserva con el backup manual — registrar solo un rollback
+                # limpio ocultaría que hace falta recuperación manual.
+                logger.critical(
+                    "Synthesis cancelado con promote en rollback FALLIDO: TX diferida %s "
+                    "marcada rolled_back, pero el overwrite real puede requerir "
+                    "restauración manual desde el backup preservado en el clon.",
+                    tx_id,
+                )
+            else:
+                logger.warning(
+                    "Synthesis cancelado: TX diferida %s resuelta como %s (promote %s aplicó "
+                    "cambios al árbol real); FlightReport omitido en esta ruta.",
+                    tx_id,
+                    "committed" if desenlace == "aplicada" else "rolled_back",
+                    "SÍ" if desenlace == "aplicada" else "NO",
+                )
+        except Exception:
+            logger.critical(
+                "Synthesis cancelado y NO se pudo resolver la TX diferida %s — "
+                "requiere reconciliación manual en el journal real.",
+                tx_id,
+                exc_info=True,
+            )
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         # Filter to only valid parameters — the LLM may inject extra keys
@@ -68,7 +136,24 @@ class ExecuteSynthesisPipelineStrategy:
             service = self._service_factory(clone.overwrite_copy, staging_journal)
             return await service.execute_pipeline(**filtered)
 
-        result = await flow.run(ritual_name="synthesis", ritual=ritual)
+        try:
+            result = await flow.run(ritual_name="synthesis", ritual=ritual)
+        except asyncio.CancelledError:
+            # Review Codex #320 (P1): si la cancelación llegó durante un promote
+            # aprobado que terminó COMPLETANDO, los archivos reales quedan
+            # aplicados pero este método ya no llega al commit_staged de abajo:
+            # la TX diferida quedaba sin estado final en el journal real. Se
+            # resuelve acá — commit si el promote aplicó cambios, rollback si
+            # no — bajo shield para sobrevivir una segunda cancelación, y la
+            # señal propaga igual (contrato asyncio intacto).
+            tx_id = staging_journal.staged_transaction_id
+            if tx_id is not None:
+                resolucion = asyncio.ensure_future(self._resolver_staged_tras_cancelacion(flow, staging_journal, tx_id))
+                self._resoluciones_pendientes.add(resolucion)
+                resolucion.add_done_callback(self._resoluciones_pendientes.discard)
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(resolucion)
+            raise
 
         # Capturar la TX diferida ANTES de resolver el staged journal
         # (commit_staged/rollback_staged la resetean a None).
