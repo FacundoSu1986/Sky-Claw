@@ -110,6 +110,39 @@ async def test_run_pandora_none_runner_is_structured_error() -> None:
     assert "error" in out
 
 
+# ── T-26/T-28 (review Codex #318): el path del agente TAMBIÉN emite la caja negra ──
+@pytest.mark.asyncio
+async def test_run_pandora_agent_path_emite_caja_negra_con_journal(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """El path del agente, con journal cableado (via app_context), emite el
+    ActionManifest + FlightReport igual que run_loot_sort — sin esto un run de
+    Pandora por Telegram/LLM mutaría sin caja negra (T-26/T-28 no cubiertos)."""
+    from unittest.mock import patch
+
+    journal = AsyncMock()
+    journal.begin_transaction = AsyncMock(return_value=77)
+    journal.commit_transaction = AsyncMock()
+    journal.mark_transaction_rolled_back = AsyncMock()
+    journal.persist_action_manifest = AsyncMock()
+    journal.persist_flight_report = AsyncMock()
+    runner = MagicMock()
+    runner.run_pandora = AsyncMock(return_value=_runner_result())
+
+    with patch(
+        "sky_claw.antigravity.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        out = json.loads(
+            await run_pandora(runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager, journal=journal)
+        )
+
+    assert out["success"] is True
+    journal.persist_action_manifest.assert_awaited_once()  # T-26
+    journal.commit_transaction.assert_awaited_once_with(77)
+    journal.persist_flight_report.assert_awaited_once()  # T-28
+
+
 # ── P2 (#3): aprobación no engañosa para generate_animations ─────────────────────
 def test_generate_animations_validate_accepts_empty_payload() -> None:
     GenerateAnimationsStrategy(service=MagicMock()).validate_for_approval({})  # no raise

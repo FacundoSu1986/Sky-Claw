@@ -14,6 +14,7 @@ protección que aplica con certeza ahora es la *serialización*.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,7 @@ from sky_claw.local.tools.pandora_runner import (
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.core.path_resolver import PathResolutionService
+    from sky_claw.antigravity.db.journal import OperationJournal
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
@@ -41,6 +43,13 @@ BEHAVIOR_GRAPHS_RESOURCE_ID = "behavior-graphs"
 
 #: Nombre del dir de salida de Pandora en setups standalone (junto al exe).
 _PANDORA_OUTPUT_DIR = "Pandora_Output"
+
+
+class _ActionManifestError(Exception):
+    """Interno (T-26): la emisión del manifiesto de vuelo falló. Se lanza DENTRO
+    del lock (antes de mutar) para que Pandora NO proceda sin manifiesto — la
+    caja negra no es opcional cuando el journal está cableado (espejo de
+    ``loot_service``/``dyndolod_service._ActionManifestError``)."""
 
 
 def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
@@ -75,6 +84,7 @@ class PandoraPipelineService:
         pandora_exe: pathlib.Path | None = None,
         pandora_runner: PandoraRunner | None = None,
         preflight: PreflightService | None = None,
+        journal: OperationJournal | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -83,6 +93,11 @@ class PandoraPipelineService:
         self._pandora_runner = pandora_runner
         # Preflight inyectable (tests) o construido perezosamente en el primer uso.
         self._preflight = preflight
+        # T-26/T-28 (ADR 0002): cuando el journal está cableado (path GUI/dispatcher),
+        # Pandora emite la caja negra de vuelo. El path del agente (system_tools.
+        # run_pandora) construye el servicio SIN journal → no emite (honesto: no hay
+        # journal que persistir), espejo del gating opcional de loot_service.
+        self._journal = journal
 
     def _resolve_pandora_paths(
         self,
@@ -226,6 +241,96 @@ class PandoraPipelineService:
         )
         return self._pandora_runner
 
+    # ------------------------------------------------------------------
+    # Caja negra de vuelo (T-26/T-28, ADR 0002) — espejo de loot_service
+    # ------------------------------------------------------------------
+
+    async def _emit_action_manifest(
+        self,
+        tx: SnapshotTransactionLock,
+        target_files: list[pathlib.Path],
+    ) -> int:
+        """Construye y persiste el ActionManifest de Pandora dentro del lock (T-26).
+
+        Se llama ANTES de ``runner.run_pandora()`` con el journal ya cableado.
+        Devuelve el id de la transacción del journal para commit/rollback posterior.
+
+        NOTA: Pandora corre con snapshot diferido (``target_files=[]`` en el lock),
+        así que ``tx.snapshots`` — y por ende el plan de rollback del manifiesto —
+        queda vacío por diseño: la salida de behavior graphs es dependiente del
+        entorno (VFS de MO2 con ``cwd``) y no se snapshotea. El manifiesto registra
+        los dirs candidatos que Pandora toca para auditoría (files_touched).
+
+        Raises:
+            _ActionManifestError: Si begin_transaction/persist falla — Pandora no
+                debe proceder sin la caja negra emitida. La TX recién abierta se
+                marca rolled-back para no dejarla PENDING (espejo de loot_service).
+        """
+        from sky_claw.antigravity.orchestrator.preview.action_manifest import build_action_manifest
+
+        assert self._journal is not None  # cableado verificado por el caller
+        journal_tx_id: int | None = None
+        try:
+            journal_tx_id = await self._journal.begin_transaction(
+                description="pandora_animations",
+                agent_id=self.AGENT_ID,
+            )
+            manifest = build_action_manifest(
+                ritual_id=f"pandora-animations-{journal_tx_id}",
+                tool="Pandora",
+                tool_version=None,  # Pandora no expone versión hoy (follow-up menor).
+                target_files=[str(f) for f in target_files],
+                snapshots=tx.snapshots,  # [] por el snapshot diferido — plan de rollback vacío por diseño.
+                summary="Regenerar behavior graphs (animaciones) con Pandora.",
+            )
+            await self._journal.persist_action_manifest(
+                manifest,
+                agent_id=self.AGENT_ID,
+                transaction_id=journal_tx_id,
+            )
+            return journal_tx_id
+        except Exception as exc:  # noqa: BLE001 — boundary: cualquier fallo del journal/builder
+            # No dejar la TX recién abierta en PENDING; convertir a _ActionManifestError
+            # para que el caller devuelva un dict serializable en vez de propagar.
+            await self._mark_journal_rolled_back(journal_tx_id)
+            raise _ActionManifestError(str(exc)) from exc
+
+    async def _emit_flight_report(self, journal_tx_id: int) -> None:
+        """Compone y persiste el FlightReport de Pandora ya terminado (T-28).
+
+        Post-vuelo y best-effort: lee la caja negra desde el journal (el manifiesto
+        persistido + el estado REAL de la TX). Un fallo se loguea y NO rompe un run
+        ya exitoso (misma disciplina que LOOT/DynDOLOD).
+        """
+        from sky_claw.antigravity.orchestrator.preview.flight_report import (
+            compose_flight_report_from_journal,
+        )
+
+        assert self._journal is not None  # cableado verificado por el caller
+        try:
+            report = await compose_flight_report_from_journal(self._journal, transaction_id=journal_tx_id)
+            await self._journal.persist_flight_report(
+                report,
+                agent_id=self.AGENT_ID,
+                transaction_id=journal_tx_id,
+            )
+        except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error("Fallo al persistir el informe de vuelo de la TX %d", journal_tx_id, exc_info=True)
+
+    async def _mark_journal_rolled_back(self, journal_tx_id: int | None) -> None:
+        """Marca la transacción del journal como rolled-back (best-effort).
+
+        Se llama en los caminos de excepción; si el journal falla acá (sqlite/IO)
+        NO debe enmascarar el error original ni romper el contrato de dict
+        serializable (espejo de loot_service._mark_journal_rolled_back).
+        """
+        if journal_tx_id is None or self._journal is None:
+            return
+        try:
+            await self._journal.mark_transaction_rolled_back(journal_tx_id)
+        except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error("Fallo al marcar la TX del journal %d como rolled-back", journal_tx_id, exc_info=True)
+
     async def generate_animations(self) -> dict[str, Any]:
         """Regenera las animaciones con Pandora bajo el lock de behavior-graphs.
 
@@ -261,24 +366,100 @@ class PandoraPipelineService:
                 {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}, preflight_report
             )
 
+        # Lock ligado a una variable para leer sus snapshots (manifiesto) tras el with.
+        tx = SnapshotTransactionLock(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self._snapshot_manager,
+            resource_id=self.RESOURCE_ID,
+            agent_id=self.AGENT_ID,
+            target_files=[],  # snapshot diferido — ver docstring del módulo
+            metadata={"source": "pandora_animations"},
+        )
+        journal_tx_id: int | None = None
+        # Una vez commiteada la TX, ninguna ruta posterior debe re-marcarla rolled-back:
+        # una cancelación mientras se compone/persiste el informe (post-commit)
+        # corrompería el audit trail de una TX ya exitosa (review Codex #249/#318).
+        journal_committed = False
         try:
-            async with SnapshotTransactionLock(
-                lock_manager=self._lock_manager,
-                snapshot_manager=self._snapshot_manager,
-                resource_id=self.RESOURCE_ID,
-                agent_id=self.AGENT_ID,
-                target_files=[],  # snapshot diferido — ver docstring del módulo
-                metadata={"source": "pandora_animations"},
-            ):
+            async with tx:
+                # T-26 (ADR 0002): emitir la caja negra ANTES de mutar. Si el journal
+                # está cableado y la emisión falla, Pandora NO corre (se lanza dentro
+                # del lock → __aexit__ libera; nada mutó todavía). El path del agente
+                # (sin journal) salta esto — no hay caja negra que emitir.
+                if self._journal is not None:
+                    journal_tx_id = await self._emit_action_manifest(tx, self._permission_targets())
                 result = await runner.run_pandora()
+            # Lock liberado. Cerrar la caja negra según el resultado real del run.
+            if journal_tx_id is not None and self._journal is not None:
+                if result.success:
+                    # El run ya terminó y el lock se liberó; un fallo de commit es de
+                    # estado (el manifiesto ya quedó persistido), best-effort (no rompe
+                    # el contrato "siempre devolver dict"). Espejo de loot_service.
+                    try:
+                        await self._journal.commit_transaction(journal_tx_id)
+                        journal_committed = True
+                    except Exception:  # noqa: BLE001 — boundary best-effort del journal
+                        logger.error(
+                            "Fallo al commitear la TX del journal %d tras Pandora exitoso",
+                            journal_tx_id,
+                            exc_info=True,
+                        )
+                    # T-28: cerrar la caja negra con el informe post-vuelo (best-effort).
+                    await self._emit_flight_report(journal_tx_id)
+                else:
+                    # Run non-zero (timeout/exit): no commitear, marcar rolled-back para
+                    # no dejar la TX PENDING (la caja negra registra un run fallido).
+                    await self._mark_journal_rolled_back(journal_tx_id)
         except LockAcquisitionError as exc:
+            # La contención ocurre en __aenter__, antes de emitir el manifiesto:
+            # journal_tx_id sigue None, no hay TX que revertir.
             logger.warning("Lock contention on '%s': %s", self.RESOURCE_ID, exc)
             detail = f"Could not acquire behavior-graphs lock '{self.RESOURCE_ID}': {exc}"
             return _attach_preflight(
                 {"status": "error", "success": False, "message": detail, "logs": detail}, preflight_report
             )
+        except _ActionManifestError as exc:
+            # La caja negra no se pudo emitir: Pandora no corrió (fail-closed). La TX
+            # recién abierta ya fue marcada rolled-back dentro de _emit_action_manifest.
+            logger.error("Pandora (stage 4): no se pudo emitir el ActionManifest; abortado: %s", exc)
+            detail = f"Manifiesto de vuelo requerido no emitido: {exc}"
+            return _attach_preflight(
+                {
+                    "status": "error",
+                    "success": False,
+                    "reason": "ActionManifestFailed",
+                    "message": detail,
+                    "logs": detail,
+                },
+                preflight_report,
+            )
         except PandoraExecutionError as exc:
+            # El runner lanzó DENTRO del lock: marcar la TX rolled-back (no PENDING).
+            await self._mark_journal_rolled_back(journal_tx_id)
             logger.error("Pandora execution failed: %s", exc)
+            return _attach_preflight(
+                {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}, preflight_report
+            )
+        except asyncio.CancelledError:
+            # Cancelación (shutdown / timeout del task) mientras corría run_pandora o
+            # se cerraba la caja negra: cerrar la TX del journal para no dejarla PENDING
+            # (review Codex #318). Si ya se commiteó (cancelación durante el informe
+            # post-vuelo) NO se revierte — la TX fue exitosa y el audit trail no debe
+            # mentir (#249). El __aexit__ del lock ya liberó; se re-lanza la cancelación.
+            if not journal_committed:
+                await self._mark_journal_rolled_back(journal_tx_id)
+            raise
+        except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
+            # Red de seguridad final: incluye LockLeaseLostError que __aexit__ del lock
+            # puede lanzar en una salida limpia si el heartbeat perdió el lease durante
+            # el run (renovación fallida / otro agente reclamó el lock). No es
+            # LockAcquisitionError ni PandoraExecutionError, así que sin este catch
+            # burbujearía rompiendo el contrato y dejaría la TX PENDING (review Codex
+            # #318). Si no se commiteó, marcar rolled-back (la exclusividad no estuvo
+            # garantizada — reportar éxito mentiría).
+            if not journal_committed:
+                await self._mark_journal_rolled_back(journal_tx_id)
+            logger.error("Error inesperado en Pandora: %s", exc, exc_info=True)
             return _attach_preflight(
                 {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}, preflight_report
             )

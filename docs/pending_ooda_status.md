@@ -96,12 +96,39 @@ queda vacío (`snapshots=[]`) porque el rollback de DynDOLOD es el move-aside de
 `DirectoryRollback` (los `Output/` pesan GBs), no el snapshot manager — un plan
 consciente del move-aside es follow-up.
 
-**Lo que sigue abierto:** `pandora_service.py` y `wrye_bash_runner.py` no emiten
-manifest/flight report. El criterio de aceptación de T-26 ("todo Ritual mutante
-produce" el manifiesto) y T-28 ("informe... por Ritual") se cumplen hoy para
-LOOT, xEdit, Synthesis y **DynDOLOD**. Faltan Pandora y Wrye Bash antes de que
-tenga sentido la vista GUI de T-28. `tool_version` queda en `None` para xEdit,
-Synthesis y DynDOLOD (no la exponen hoy) — follow-up menor.
+**Actualización 2026-07-18 (T-26/T-28 en Pandora):** `pandora_service.generate_animations`
+emite ahora el `ActionManifest` fail-closed ANTES de correr el subproceso
+(`tool="Pandora"`, `files_touched` = los dirs candidatos de salida de behavior
+graphs) y el `FlightReport` best-effort tras el commit. Espeja la disciplina de
+`loot_service`: el gating es por **presencia del journal**, y AMBOS paths de
+producción lo cablean vía `app_context` — el GUI/dispatcher (`supervisor` inyecta
+`journal=self.journal`) y el del agente LLM/Telegram (`system_tools.run_pandora`
+recibe `journal=self._journal`, igual que `run_loot_sort`). Sin journal (callers
+legacy / tests) no se emite (comportamiento previo intacto). El snapshot es
+diferido (`target_files=[]`, como el lock), así que el `rollback_plan` del
+manifiesto queda vacío por diseño (la salida sale vía el VFS de MO2 con `cwd`; el
+manifiesto registra los dirs tocados para auditoría, no un plan de restore). Un
+fallo del manifiesto aborta Pandora sin correr (`reason="ActionManifestFailed"`)
+y marca la TX rolled-back; un run non-zero, una `CancelledError`
+(shutdown/timeout) y un `LockLeaseLostError` en el `__aexit__` del lock también
+cierran la TX rolled-back en vez de dejarla PENDING (contrato T11 — siempre
+devolver dict serializable, salvo la cancelación que se re-lanza tras cerrar la
+caja negra). Anclado en `test_pandora_service.py`
+(`test_emite_manifest_antes_de_correr...`, `test_manifest_fail_closed...`,
+`test_lease_perdida...`, `test_cancelacion_marca_rolled_back...`, etc.) y
+`test_pandora_agent_gate.py` (`test_run_pandora_agent_path_emite_caja_negra...`).
+Los 3 P2 del review de Codex sobre el PR #318 (CancelledError, LockLeaseLostError,
+journal en el path del agente) se verificaron reales y se cerraron en el mismo PR.
+
+**Lo que sigue abierto:** solo `wrye_bash` (runner/service) no emite manifest/
+flight report — es el ÚNICO ritual mutante que falta. El criterio de aceptación
+de T-26 ("todo Ritual mutante produce" el manifiesto) y T-28 ("informe... por
+Ritual") se cumplen hoy para LOOT, xEdit, Synthesis, **DynDOLOD** y **Pandora**
+(5/6). Wrye Bash es follow-up de la serie del otro agente (PR C anunciado en el
+#315: "ActionManifest + FlightReport" para Wrye Bash) — se deja en su carril para
+no colisionar. Cuando cierre, tiene sentido la vista GUI de T-28 (6/6).
+`tool_version` queda en `None` para xEdit, Synthesis, DynDOLOD y Pandora (no la
+exponen hoy) — follow-up menor.
 
 ### 1.2 T-27 — Synthesis sandboxeado con promote/discard real (2026-07-14); Pandora/DynDOLOD/Wrye Bash siguen fuera
 

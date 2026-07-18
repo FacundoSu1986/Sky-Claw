@@ -530,10 +530,13 @@ class AsyncToolRegistry:
             params_model=None,
             # Codex #213 P1: serialize on the shared behavior-graphs lock (like
             # run_loot_sort / Audit #190) so the agent path can't race a GUI Ritual.
+            # T-26/T-28 (review Codex #318): pasar el journal para que este path del
+            # agente TAMBIÉN emita la caja negra de vuelo, igual que run_loot_sort.
             fn=lambda: run_pandora(
                 self._resolve_pandora_runner(),
                 lock_manager=self._lock_manager,
                 snapshot_manager=self._snapshot_manager,
+                journal=self._journal,
             ),
         )
         self._tools["run_bodyslide"] = ToolDescriptor(
