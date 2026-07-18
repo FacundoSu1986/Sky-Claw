@@ -350,7 +350,7 @@ corrida real. Ítem ya conocido y documentado, sin cambio de estado.
 Una auditoría externa (estilo "Copilot bot") reportó 5 hallazgos sobre los PRs
 #300–#304. Se **verificó cada uno contra el código** (no contra el texto de la
 auditoría) y se documentó el veredicto en
-`sky_claw/Auditorias varias/auditoria_prs_300-304_verificacion.md`: citas reales,
+`docs/audits/auditoria_prs_300-304_verificacion.md`: citas reales,
 pero 2 hallazgos con afirmaciones fabricadas, 1 redundante (pedía código que ya
 existe), 1 parcial y 1 truncado. Solo 3 puntos eran accionables, y se cerraron en
 el mismo PR:
