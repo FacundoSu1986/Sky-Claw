@@ -313,14 +313,16 @@ class TestCancelacionDurantePromote:
             self.descartes += 1
             await self._real.discard(clone)
 
-    async def _correr_y_cancelar_en_promote(self, sandbox: _SandboxPromoteLento) -> asyncio.Task[dict[str, Any]]:
+    async def _correr_y_cancelar_en_promote(
+        self, sandbox: _SandboxPromoteLento
+    ) -> tuple[asyncio.Task[dict[str, Any]], SandboxPromotionFlow]:
         """Lanza el flow, espera a que el promote arranque y cancela la task."""
         guard = _GuardFake(Decision.APPROVED)
         flow = SandboxPromotionFlow(sandbox=sandbox, hitl_guard=guard)  # type: ignore[arg-type]
         task = asyncio.create_task(flow.run(ritual_name="synthesis", ritual=_ritual_escribe_esp))
         await asyncio.wait_for(sandbox.promote_iniciado.wait(), timeout=2.0)
         task.cancel()
-        return task
+        return task, flow
 
     async def _esperar(self, condicion: Any, timeout: float = 2.0) -> None:
         """Drena el loop hasta que ``condicion()`` sea verdadera (cleanup shieldeado)."""
@@ -336,7 +338,7 @@ class TestCancelacionDurantePromote:
         sandbox = self._SandboxPromoteLento(
             _sandbox(tmp_path), resultado_promote=PromoteResult(files_written=1, files_deleted=0)
         )
-        task = await self._correr_y_cancelar_en_promote(sandbox)
+        task, flow = await self._correr_y_cancelar_en_promote(sandbox)
         # El promote "sigue corriendo en el hilo": liberar su desenlace.
         sandbox.liberar_promote.set()
 
@@ -355,7 +357,7 @@ class TestCancelacionDurantePromote:
         sandbox = self._SandboxPromoteLento(
             _sandbox(tmp_path), resultado_promote=PromoteResult(files_written=1, files_deleted=0)
         )
-        task = await self._correr_y_cancelar_en_promote(sandbox)
+        task, flow = await self._correr_y_cancelar_en_promote(sandbox)
         # Darle varios ciclos al loop SIN liberar el promote.
         for _ in range(20):
             await asyncio.sleep(0)
@@ -375,7 +377,7 @@ class TestCancelacionDurantePromote:
             _sandbox(tmp_path),
             resultado_promote=SandboxRollbackError("Backup para restauración manual en: rollback-x"),
         )
-        task = await self._correr_y_cancelar_en_promote(sandbox)
+        task, flow = await self._correr_y_cancelar_en_promote(sandbox)
         sandbox.liberar_promote.set()
 
         with pytest.raises(asyncio.CancelledError):
@@ -419,7 +421,9 @@ class TestCancelacionDurantePromote:
             await asyncio.sleep(0)
         assert sandbox.descartes == 0
 
-    async def test_desenlace_promocion_true_si_el_promote_completo_pese_al_cancel(self, tmp_path: pathlib.Path) -> None:
+    async def test_desenlace_promocion_aplicada_si_el_promote_completo_pese_al_cancel(
+        self, tmp_path: pathlib.Path
+    ) -> None:
         """Review Codex #320 (P1 línea 287): el caller cancelado necesita saber
         si el promote terminó aplicando cambios al árbol real, para resolver su
         journal diferido (commit_staged) en vez de dejarlo sin estado final."""
@@ -438,9 +442,9 @@ class TestCancelacionDurantePromote:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        assert await asyncio.wait_for(flow.desenlace_promocion(), timeout=2.0) is True
+        assert await asyncio.wait_for(flow.desenlace_promocion(), timeout=2.0) == "aplicada"
 
-    async def test_desenlace_promocion_false_si_el_promote_nunca_corrio(self, tmp_path: pathlib.Path) -> None:
+    async def test_desenlace_promocion_no_aplicada_si_el_promote_nunca_corrio(self, tmp_path: pathlib.Path) -> None:
         """Cancelación antes del promote (en la ventana HITL): ningún cambio
         llegó al árbol real — el journal diferido debe revertirse."""
 
@@ -453,7 +457,54 @@ class TestCancelacionDurantePromote:
         with pytest.raises(asyncio.CancelledError):
             await flow.run(ritual_name="synthesis", ritual=_ritual_escribe_esp)
 
-        assert await asyncio.wait_for(flow.desenlace_promocion(), timeout=2.0) is False
+        assert await asyncio.wait_for(flow.desenlace_promocion(), timeout=2.0) == "no_aplicada"
+
+    async def test_desenlace_promocion_distingue_el_rollback_fallido(self, tmp_path: pathlib.Path) -> None:
+        """Review Codex #322 (P2): promote fallido CON rollback fallido no es un
+        descarte limpio — el árbol real puede estar inconsistente y el caller
+        debe alertar recuperación manual, no registrar "no_aplicada"."""
+        sandbox = self._SandboxPromoteLento(
+            _sandbox(tmp_path),
+            resultado_promote=SandboxRollbackError("Backup para restauración manual en: rollback-x"),
+        )
+        task, flow = await self._correr_y_cancelar_en_promote(sandbox)
+        sandbox.liberar_promote.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert await asyncio.wait_for(flow.desenlace_promocion(), timeout=2.0) == "rollback_fallido"
+
+    async def test_desenlace_promocion_espera_al_promote_si_el_cleanup_fue_cancelado(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Review Codex #322 (P2): un cleanup cancelado por el teardown sale de
+        _cleanup_tasks sin observar el promote — desenlace_promocion debe
+        esperar a la task del promote igual, no responder "no_aplicada" con los
+        cambios todavía aterrizando en el árbol real."""
+        from sky_claw.local.mo2.profile_sandbox import PromoteResult
+
+        sandbox = self._SandboxPromoteLento(
+            _sandbox(tmp_path), resultado_promote=PromoteResult(files_written=1, files_deleted=0)
+        )
+        guard = _GuardFake(Decision.APPROVED)
+        flow = SandboxPromotionFlow(sandbox=sandbox, hitl_guard=guard)  # type: ignore[arg-type]
+        task = asyncio.create_task(flow.run(ritual_name="synthesis", ritual=_ritual_escribe_esp))
+        await asyncio.wait_for(sandbox.promote_iniciado.wait(), timeout=2.0)
+
+        task.cancel()  # 1ª cancelación → arranca el cleanup
+        await self._esperar(lambda: len(flow._cleanup_tasks) == 1)
+        next(iter(flow._cleanup_tasks)).cancel()  # teardown cancela el cleanup
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        desenlace_task = asyncio.create_task(flow.desenlace_promocion())
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not desenlace_task.done()  # espera al promote, no responde en falso
+
+        sandbox.liberar_promote.set()  # el "hilo" del promote completa después
+        assert await asyncio.wait_for(desenlace_task, timeout=2.0) == "aplicada"
 
 
 class TestFormatDiffDetail:

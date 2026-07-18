@@ -127,6 +127,23 @@ class OrchestrationToolDispatcher:
         """Snapshot of currently registered tool names (for introspection / tests)."""
         return list(self._strategies.keys())
 
+    async def drain(self) -> None:
+        """Espera el trabajo en background de las strategies (review Codex #322).
+
+        Duck-typed: toda strategy que exponga ``drain_pendientes()`` (p. ej.
+        las resoluciones de journal post-cancelación de Synthesis) es esperada
+        acá. El supervisor lo invoca en su shutdown ANTES de cerrar journal y
+        DB, para que ningún cleanup en vuelo corra contra recursos cerrados.
+        """
+        for strategy in self._strategies.values():
+            drain_pendientes = getattr(strategy, "drain_pendientes", None)
+            if drain_pendientes is None:
+                continue
+            try:
+                await drain_pendientes()
+            except Exception:
+                logger.warning("drain de la strategy '%s' falló (no bloquea el shutdown)", strategy.name, exc_info=True)
+
 
 def _make_thunk(
     middleware: ToolMiddleware,

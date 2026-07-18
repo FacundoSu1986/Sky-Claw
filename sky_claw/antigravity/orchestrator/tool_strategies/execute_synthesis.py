@@ -48,6 +48,17 @@ class ExecuteSynthesisPipelineStrategy:
         # SandboxPromotionFlow._cleanup_tasks — review Codex #320).
         self._resoluciones_pendientes: set[asyncio.Task[None]] = set()
 
+    async def drain_pendientes(self) -> None:
+        """Espera las resoluciones de journal en vuelo (review Codex #322, P2).
+
+        Lo invoca el shutdown del supervisor (vía ``dispatcher.drain()``) ANTES
+        de cerrar el journal real: sin esto, una segunda cancelación deja la
+        resolución corriendo en background y el cierre del journal puede
+        ganarle la carrera, dejando la TX diferida sin estado final.
+        """
+        while self._resoluciones_pendientes:
+            await asyncio.gather(*list(self._resoluciones_pendientes), return_exceptions=True)
+
     async def _resolver_staged_tras_cancelacion(
         self,
         flow: SandboxPromotionFlow,
@@ -64,18 +75,33 @@ class ExecuteSynthesisPipelineStrategy:
         reconciliación manual.
         """
         try:
-            promovido = await flow.desenlace_promocion()
-            if promovido:
+            desenlace = await flow.desenlace_promocion()
+            if desenlace == "aplicada":
                 await staging_journal.commit_staged()
             else:
+                # "no_aplicada" y "rollback_fallido" marcan la TX rolled_back —
+                # mismo criterio que la rama no cancelada (review #310) — pero
+                # el segundo NO es un descarte limpio y se alerta abajo.
                 await staging_journal.rollback_staged()
-            logger.warning(
-                "Synthesis cancelado: TX diferida %s resuelta como %s (promote %s aplicó "
-                "cambios al árbol real); FlightReport omitido en esta ruta.",
-                tx_id,
-                "committed" if promovido else "rolled_back",
-                "SÍ" if promovido else "NO",
-            )
+            if desenlace == "rollback_fallido":
+                # Review Codex #322 (P2): promote falló Y su rollback también.
+                # El overwrite real puede estar INCONSISTENTE y el clon se
+                # preserva con el backup manual — registrar solo un rollback
+                # limpio ocultaría que hace falta recuperación manual.
+                logger.critical(
+                    "Synthesis cancelado con promote en rollback FALLIDO: TX diferida %s "
+                    "marcada rolled_back, pero el overwrite real puede requerir "
+                    "restauración manual desde el backup preservado en el clon.",
+                    tx_id,
+                )
+            else:
+                logger.warning(
+                    "Synthesis cancelado: TX diferida %s resuelta como %s (promote %s aplicó "
+                    "cambios al árbol real); FlightReport omitido en esta ruta.",
+                    tx_id,
+                    "committed" if desenlace == "aplicada" else "rolled_back",
+                    "SÍ" if desenlace == "aplicada" else "NO",
+                )
         except Exception:
             logger.critical(
                 "Synthesis cancelado y NO se pudo resolver la TX diferida %s — "

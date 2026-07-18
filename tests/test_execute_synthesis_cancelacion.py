@@ -39,9 +39,9 @@ class _FlowCanceladoEnPromote:
     """Flow fake: el ritual corre (abre la TX staged) y la cancelación llega
     durante el promote; ``desenlace_promocion`` reporta el desenlace real."""
 
-    def __init__(self, clone: SimpleNamespace, *, promovido: bool, ritual_corre: bool = True) -> None:
+    def __init__(self, clone: SimpleNamespace, *, desenlace: str, ritual_corre: bool = True) -> None:
         self._clone = clone
-        self._promovido = promovido
+        self._desenlace = desenlace
         self._ritual_corre = ritual_corre
 
     async def run(self, *, ritual_name: str, ritual: Any) -> dict[str, Any]:
@@ -49,8 +49,8 @@ class _FlowCanceladoEnPromote:
             await ritual(self._clone)
         raise asyncio.CancelledError()
 
-    async def desenlace_promocion(self) -> bool:
-        return self._promovido
+    async def desenlace_promocion(self) -> str:
+        return self._desenlace
 
 
 def _tx_staging_factory() -> Any:
@@ -94,7 +94,7 @@ class TestResolucionStagedTrasCancelacion:
         """El caso del review: archivos reales aplicados pese al cancel → la TX
         diferida se confirma en el journal real, y la señal propaga igual."""
         real_journal = _real_journal_mock(tx_id=7)
-        strategy = _strategy(real_journal, _FlowCanceladoEnPromote(_fake_clone(tmp_path), promovido=True))
+        strategy = _strategy(real_journal, _FlowCanceladoEnPromote(_fake_clone(tmp_path), desenlace="aplicada"))
 
         with pytest.raises(asyncio.CancelledError):
             await strategy.execute({})
@@ -106,7 +106,7 @@ class TestResolucionStagedTrasCancelacion:
         """Cancelación sin cambios en el árbol real → la TX diferida se marca
         rolled_back (no queda PENDING para siempre)."""
         real_journal = _real_journal_mock(tx_id=7)
-        strategy = _strategy(real_journal, _FlowCanceladoEnPromote(_fake_clone(tmp_path), promovido=False))
+        strategy = _strategy(real_journal, _FlowCanceladoEnPromote(_fake_clone(tmp_path), desenlace="no_aplicada"))
 
         with pytest.raises(asyncio.CancelledError):
             await strategy.execute({})
@@ -120,7 +120,7 @@ class TestResolucionStagedTrasCancelacion:
         real_journal = _real_journal_mock()
         strategy = _strategy(
             real_journal,
-            _FlowCanceladoEnPromote(_fake_clone(tmp_path), promovido=False, ritual_corre=False),
+            _FlowCanceladoEnPromote(_fake_clone(tmp_path), desenlace="no_aplicada", ritual_corre=False),
         )
 
         with pytest.raises(asyncio.CancelledError):
@@ -129,3 +129,77 @@ class TestResolucionStagedTrasCancelacion:
         real_journal.commit_transaction.assert_not_awaited()
         real_journal.mark_transaction_rolled_back.assert_not_awaited()
         real_journal.begin_transaction.assert_not_awaited()
+
+    async def test_rollback_fallido_marca_rolled_back_pero_alerta_recuperacion_manual(
+        self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Review Codex #322 (P2): promote fallido CON rollback fallido no es un
+        descarte limpio — la TX se marca rolled_back (criterio #310) pero queda
+        el CRITICAL de restauración manual, no un rollback silencioso."""
+        real_journal = _real_journal_mock(tx_id=7)
+        strategy = _strategy(real_journal, _FlowCanceladoEnPromote(_fake_clone(tmp_path), desenlace="rollback_fallido"))
+
+        with caplog.at_level("CRITICAL"), pytest.raises(asyncio.CancelledError):
+            await strategy.execute({})
+
+        real_journal.mark_transaction_rolled_back.assert_awaited_once_with(7)
+        real_journal.commit_transaction.assert_not_awaited()
+        assert any("restauración manual" in r.message for r in caplog.records if r.levelname == "CRITICAL")
+
+
+class TestDrainDePendientes:
+    async def test_drain_espera_las_resoluciones_en_vuelo(self, tmp_path: pathlib.Path) -> None:
+        """Review Codex #322 (P2): el shutdown del supervisor drena las
+        resoluciones ANTES de cerrar el journal — drain_pendientes bloquea
+        hasta que la resolución en background termina."""
+        strategy = _strategy(_real_journal_mock(), _FlowCanceladoEnPromote(_fake_clone(tmp_path), desenlace="aplicada"))
+        liberar = asyncio.Event()
+        terminado = False
+
+        async def _resolucion_lenta() -> None:
+            nonlocal terminado
+            await liberar.wait()
+            terminado = True
+
+        pendiente = asyncio.ensure_future(_resolucion_lenta())
+        strategy._resoluciones_pendientes.add(pendiente)
+        pendiente.add_done_callback(strategy._resoluciones_pendientes.discard)
+
+        drain_task = asyncio.create_task(strategy.drain_pendientes())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not drain_task.done()  # bloqueado esperando la resolución
+
+        liberar.set()
+        await asyncio.wait_for(drain_task, timeout=2.0)
+        assert terminado is True
+
+    async def test_dispatcher_drain_invoca_a_las_strategies_que_lo_exponen(self) -> None:
+        """El supervisor llama dispatcher.drain() en su shutdown; toda strategy
+        con drain_pendientes() debe ser esperada (duck-typed)."""
+        from sky_claw.antigravity.orchestrator.tool_dispatcher import OrchestrationToolDispatcher
+
+        drenados: list[str] = []
+
+        class _StrategyConDrain:
+            name = "con_drain"
+
+            async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
+                return {}
+
+            async def drain_pendientes(self) -> None:
+                drenados.append(self.name)
+
+        class _StrategySinDrain:
+            name = "sin_drain"
+
+            async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
+                return {}
+
+        dispatcher = OrchestrationToolDispatcher()
+        dispatcher.register(_StrategyConDrain())
+        dispatcher.register(_StrategySinDrain())
+
+        await dispatcher.drain()
+
+        assert drenados == ["con_drain"]

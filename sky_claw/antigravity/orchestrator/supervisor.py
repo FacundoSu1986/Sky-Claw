@@ -361,6 +361,11 @@ class SupervisorAgent:
         try:
             await self._run_daemons_and_interface()
         finally:
+            # Review Codex #322 (P2): esperar los cleanups en background de las
+            # strategies (resoluciones de journal post-cancelación) ANTES de
+            # cerrar journal/DB — un undo corriendo contra un journal cerrado
+            # dejaría la TX diferida sin estado final.
+            await self._tool_dispatcher.drain()
             # Sprint-1: Detener event bus después de los demonios
             await self._event_bus.stop()
             # Sprint-2: Cerrar lock manager
