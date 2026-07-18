@@ -361,3 +361,86 @@ async def test_cancelación_externa_gana_a_fallo_de_commit_tras_rollback(
     async with conn.execute("SELECT value FROM writes") as cursor:
         rows = await cursor.fetchall()
     assert rows == []
+
+
+@pytest.mark.parametrize(
+    "segunda_cancelación",
+    [False, True],
+    ids=["sin_segunda_cancelación", "con_segunda_cancelación"],
+)
+async def test_cancelación_original_gana_si_commit_y_rollback_fallan(
+    base_transaccional: tuple[
+        DatabaseLifecycleManager,
+        Path,
+        aiosqlite.Connection,
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+    segunda_cancelación: bool,
+) -> None:
+    lifecycle, db_path, conn = base_transaccional
+    commit_iniciado = asyncio.Event()
+    liberar_commit = asyncio.Event()
+    rollback_iniciado = asyncio.Event()
+    liberar_rollback = asyncio.Event()
+    rollback_terminado = asyncio.Event()
+    lock_adquirido = asyncio.Event()
+    rollback_original = conn.rollback
+
+    async def commit_bloqueado_y_fallido() -> None:
+        commit_iniciado.set()
+        await liberar_commit.wait()
+        raise sqlite3.OperationalError("fallo de commit")
+
+    async def rollback_bloqueado_y_fallido() -> None:
+        rollback_iniciado.set()
+        await liberar_rollback.wait()
+        rollback_terminado.set()
+        raise sqlite3.OperationalError("fallo de rollback")
+
+    monkeypatch.setattr(conn, "commit", commit_bloqueado_y_fallido)
+    monkeypatch.setattr(conn, "rollback", rollback_bloqueado_y_fallido)
+
+    async def escribir() -> None:
+        async with lifecycle.transaction(db_path) as transaction_conn:
+            await transaction_conn.execute(
+                "INSERT INTO writes (value) VALUES (?)",
+                ("fallos_encadenados",),
+            )
+
+    async def esperar_lock() -> None:
+        async with lifecycle.get_write_lock(db_path):
+            lock_adquirido.set()
+
+    tarea = asyncio.create_task(escribir())
+    await _esperar(commit_iniciado)
+    tarea.cancel("cancelación original")
+    await asyncio.sleep(0)
+    assert not tarea.done()
+
+    liberar_commit.set()
+    await _esperar(rollback_iniciado)
+    tarea_lock = asyncio.create_task(esperar_lock())
+
+    if segunda_cancelación:
+        tarea.cancel("segunda cancelación")
+        await asyncio.sleep(0)
+
+    assert not tarea.done()
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(lock_adquirido.wait(), timeout=0.05)
+
+    liberar_rollback.set()
+    with pytest.raises(asyncio.CancelledError, match="cancelación original") as exc_info:
+        await tarea
+    await tarea_lock
+
+    assert rollback_terminado.is_set()
+    rollback_error = exc_info.value.__cause__
+    assert isinstance(rollback_error, sqlite3.OperationalError)
+    assert str(rollback_error) == "fallo de rollback"
+    commit_error = rollback_error.__cause__
+    assert isinstance(commit_error, sqlite3.OperationalError)
+    assert str(commit_error) == "fallo de commit"
+
+    await rollback_original()
+    assert not conn.in_transaction

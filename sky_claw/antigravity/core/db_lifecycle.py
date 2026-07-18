@@ -587,6 +587,33 @@ class DatabaseLifecycleManager:
         if cancelación is not None:
             raise cancelación
 
+    async def _rollback_after_failed_commit(
+        self,
+        conn: aiosqlite.Connection,
+        commit_failure: _DatabaseOperationFailedAfterCancellation,
+    ) -> None:
+        """Observa rollback y después restaura la cancelación original."""
+        rollback_error: BaseException | None = None
+        try:
+            await self._await_db_operation(conn.rollback())
+        except _DatabaseOperationFailedAfterCancellation as error:
+            rollback_error = error.operation_error
+        except _DatabaseOperationCancelled as error:
+            rollback_error = error.cause
+        except asyncio.CancelledError:
+            # Una cancelación externa posterior no reemplaza a la original.
+            pass
+        except BaseException as error:
+            rollback_error = error
+
+        if rollback_error is not None:
+            try:
+                raise rollback_error from commit_failure.operation_error
+            except BaseException as chained_rollback_error:
+                raise commit_failure.cancellation from chained_rollback_error
+
+        raise commit_failure.cancellation from commit_failure.operation_error
+
     @asynccontextmanager
     async def transaction(
         self,
@@ -604,8 +631,7 @@ class DatabaseLifecycleManager:
             try:
                 await self._await_db_operation(conn.commit())
             except _DatabaseOperationFailedAfterCancellation as error:
-                await self._await_db_operation(conn.rollback())
-                raise error.cancellation from error.operation_error
+                await self._rollback_after_failed_commit(conn, error)
             except _DatabaseOperationCancelled as error:
                 await self._await_db_operation(conn.rollback())
                 raise error.cause from error
