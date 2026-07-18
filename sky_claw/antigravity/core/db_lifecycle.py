@@ -81,6 +81,19 @@ class _DatabaseOperationCancelled(asyncio.CancelledError):
         self.cause = cause
 
 
+class _DatabaseOperationFailedAfterCancellation(asyncio.CancelledError):
+    """Conserva cancelación externa y fallo posterior de la operación DB."""
+
+    def __init__(
+        self,
+        cancellation: asyncio.CancelledError,
+        operation_error: BaseException,
+    ) -> None:
+        super().__init__(*cancellation.args)
+        self.cancellation = cancellation
+        self.operation_error = operation_error
+
+
 # ---------------------------------------------------------------------------
 # DatabaseLifecycleManager
 # ---------------------------------------------------------------------------
@@ -538,18 +551,38 @@ class DatabaseLifecycleManager:
         """Completa una operación SQLite aunque el llamador sea cancelado."""
         task = asyncio.ensure_future(awaitable)
         cancelación: asyncio.CancelledError | None = None
+        current_task = asyncio.current_task()
 
         while not task.done():
             try:
                 await asyncio.shield(task)
             except asyncio.CancelledError as error:
-                if cancelación is None:
+                cancelación_externa = not task.cancelled() or (
+                    current_task is not None and current_task.cancelling() > 0
+                )
+                if cancelación_externa and cancelación is None:
                     cancelación = error
+            except BaseException:
+                if task.done():
+                    break
+                raise
 
         try:
             task.result()
         except asyncio.CancelledError as error:
+            if cancelación is not None:
+                raise _DatabaseOperationFailedAfterCancellation(
+                    cancelación,
+                    error,
+                ) from error
             raise _DatabaseOperationCancelled(error) from error
+        except BaseException as error:
+            if cancelación is not None:
+                raise _DatabaseOperationFailedAfterCancellation(
+                    cancelación,
+                    error,
+                ) from error
+            raise
 
         if cancelación is not None:
             raise cancelación
@@ -570,6 +603,9 @@ class DatabaseLifecycleManager:
 
             try:
                 await self._await_db_operation(conn.commit())
+            except _DatabaseOperationFailedAfterCancellation as error:
+                await self._await_db_operation(conn.rollback())
+                raise error.cancellation from error.operation_error
             except _DatabaseOperationCancelled as error:
                 await self._await_db_operation(conn.rollback())
                 raise error.cause from error

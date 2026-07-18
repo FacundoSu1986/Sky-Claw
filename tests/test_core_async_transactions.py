@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -232,6 +233,130 @@ async def test_cancelación_interna_de_commit_hace_rollback_bajo_lock(
         await tarea
     await tarea_lock
 
+    assert not conn.in_transaction
+    async with conn.execute("SELECT value FROM writes") as cursor:
+        rows = await cursor.fetchall()
+    assert rows == []
+
+
+async def test_commit_fallido_hace_rollback_bajo_lock(
+    base_transaccional: tuple[
+        DatabaseLifecycleManager,
+        Path,
+        aiosqlite.Connection,
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle, db_path, conn = base_transaccional
+    rollback_iniciado = asyncio.Event()
+    liberar_rollback = asyncio.Event()
+    lock_adquirido = asyncio.Event()
+    rollback_original = conn.rollback
+
+    async def commit_fallido() -> None:
+        raise sqlite3.OperationalError("commit fallido")
+
+    async def rollback_bloqueado() -> None:
+        rollback_iniciado.set()
+        await liberar_rollback.wait()
+        await rollback_original()
+
+    monkeypatch.setattr(conn, "commit", commit_fallido)
+    monkeypatch.setattr(conn, "rollback", rollback_bloqueado)
+
+    async def escribir() -> None:
+        async with lifecycle.transaction(db_path) as transaction_conn:
+            await transaction_conn.execute(
+                "INSERT INTO writes (value) VALUES (?)",
+                ("commit_fallido",),
+            )
+
+    async def esperar_lock() -> None:
+        async with lifecycle.get_write_lock(db_path):
+            lock_adquirido.set()
+
+    tarea = asyncio.create_task(escribir())
+    await _esperar(rollback_iniciado)
+    assert conn.in_transaction
+    assert not tarea.done()
+
+    tarea_lock = asyncio.create_task(esperar_lock())
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(lock_adquirido.wait(), timeout=0.05)
+
+    liberar_rollback.set()
+    with pytest.raises(sqlite3.OperationalError, match="commit fallido"):
+        await tarea
+    await tarea_lock
+
+    assert not conn.in_transaction
+    async with conn.execute("SELECT value FROM writes") as cursor:
+        rows = await cursor.fetchall()
+    assert rows == []
+
+
+async def test_cancelación_externa_gana_a_fallo_de_commit_tras_rollback(
+    base_transaccional: tuple[
+        DatabaseLifecycleManager,
+        Path,
+        aiosqlite.Connection,
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle, db_path, conn = base_transaccional
+    commit_iniciado = asyncio.Event()
+    liberar_commit = asyncio.Event()
+    rollback_iniciado = asyncio.Event()
+    liberar_rollback = asyncio.Event()
+    lock_adquirido = asyncio.Event()
+    rollback_original = conn.rollback
+
+    async def commit_bloqueado_y_fallido() -> None:
+        commit_iniciado.set()
+        await liberar_commit.wait()
+        raise sqlite3.OperationalError("commit fallido tras cancelación")
+
+    async def rollback_bloqueado() -> None:
+        rollback_iniciado.set()
+        await liberar_rollback.wait()
+        await rollback_original()
+
+    monkeypatch.setattr(conn, "commit", commit_bloqueado_y_fallido)
+    monkeypatch.setattr(conn, "rollback", rollback_bloqueado)
+
+    async def escribir() -> None:
+        async with lifecycle.transaction(db_path) as transaction_conn:
+            await transaction_conn.execute(
+                "INSERT INTO writes (value) VALUES (?)",
+                ("cancelada_con_fallo",),
+            )
+
+    async def esperar_lock() -> None:
+        async with lifecycle.get_write_lock(db_path):
+            lock_adquirido.set()
+
+    tarea = asyncio.create_task(escribir())
+    await _esperar(commit_iniciado)
+    tarea.cancel()
+    await asyncio.sleep(0)
+    assert not tarea.done()
+
+    liberar_commit.set()
+    await _esperar(rollback_iniciado)
+    assert conn.in_transaction
+    assert not tarea.done()
+
+    tarea_lock = asyncio.create_task(esperar_lock())
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(lock_adquirido.wait(), timeout=0.05)
+
+    liberar_rollback.set()
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await tarea
+    await tarea_lock
+
+    assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
+    assert str(exc_info.value.__cause__) == "commit fallido tras cancelación"
     assert not conn.in_transaction
     async with conn.execute("SELECT value FROM writes") as cursor:
         rows = await cursor.fetchall()
