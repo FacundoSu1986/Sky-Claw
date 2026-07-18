@@ -139,6 +139,11 @@ class SandboxPromotionFlow:
     def __init__(self, *, sandbox: ProfileSandbox, hitl_guard: HITLGuard | None) -> None:
         self._sandbox = sandbox
         self._hitl_guard = hitl_guard
+        # Referencias fuertes a los cleanups post-cancelación: el loop solo
+        # guarda referencias débiles a las tasks (ver docs de asyncio.shield),
+        # así que sin esto un cleanup que quedó corriendo en background podría
+        # ser recolectado por GC antes de terminar (review Codex PR #320).
+        self._cleanup_tasks: set[asyncio.Task[None]] = set()
 
     async def run(
         self,
@@ -282,6 +287,8 @@ class SandboxPromotionFlow:
             # propia task shieldeada para que una segunda cancelación tampoco
             # lo interrumpa a él (termina en background si eso pasa).
             cleanup = asyncio.ensure_future(self._finalizar_promote_cancelado(ritual_name, promote_task, clone))
+            self._cleanup_tasks.add(cleanup)
+            cleanup.add_done_callback(self._cleanup_tasks.discard)
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.shield(cleanup)
             raise
@@ -350,11 +357,16 @@ class SandboxPromotionFlow:
         Espeja los contratos de la rama no cancelada: tras un
         :class:`SandboxRollbackError` el clon NO se descarta (su árbol contiene
         el backup de restauración manual); en cualquier otro desenlace el clon
-        se descarta best-effort. Nunca lanza — corre bajo ``asyncio.shield`` y
-        su única misión es dejar el filesystem en un estado explicable.
+        se descarta best-effort. Corre bajo ``asyncio.shield`` y su única misión
+        es dejar el filesystem en un estado explicable. Única excepción que
+        propaga: su PROPIA cancelación con el promote aún en vuelo — ahí no es
+        seguro tocar el clon y el leak es preferible a la corrupción.
         """
         try:
-            promocion = await promote_task
+            # Shield también acá: si el teardown cancela a ESTA task de cleanup,
+            # el promote sigue vivo en su hilo — y esa cancelación propia no es
+            # prueba de que el promote paró (review Codex PR #320).
+            promocion = await asyncio.shield(promote_task)
         except SandboxRollbackError:
             logger.critical(
                 "SandboxPromotionFlow: cancelado durante el promote de '%s' y el promote "
@@ -364,6 +376,18 @@ class SandboxPromotionFlow:
             )
             return
         except asyncio.CancelledError:
+            if not promote_task.cancelled():
+                # Cancelaron al PROPIO cleanup (p. ej. teardown del loop) con el
+                # promote posiblemente aún en vuelo: descartar acá borraría los
+                # backups que ese hilo todavía necesita. Propagar sin limpiar —
+                # un clon huérfano es recuperable; un perfil corrupto no.
+                logger.critical(
+                    "SandboxPromotionFlow: cleanup de '%s' cancelado con el promote aún en vuelo; "
+                    "el clon %s NO se descarta (contiene los backups del promote).",
+                    ritual_name,
+                    clone.root,
+                )
+                raise
             logger.warning(
                 "SandboxPromotionFlow: el promote de '%s' terminó cancelado antes de mutar; descartando el clon.",
                 ritual_name,

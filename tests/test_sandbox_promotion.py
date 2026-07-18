@@ -387,6 +387,38 @@ class TestCancelacionDurantePromote:
         assert sandbox.descartes == 0
         assert not _sin_clones_colgados(tmp_path)  # el backup queda en disco
 
+    async def test_cancelar_el_cleanup_no_descarta_con_el_promote_vivo(self, tmp_path: pathlib.Path) -> None:
+        """Review Codex PR #320: si el teardown cancela a la task de cleanup
+        directamente, eso NO prueba que el promote paró — descartar el clon
+        borraría los backups que su hilo todavía necesita."""
+        from sky_claw.local.mo2.profile_sandbox import PromoteResult
+
+        sandbox = self._SandboxPromoteLento(
+            _sandbox(tmp_path), resultado_promote=PromoteResult(files_written=1, files_deleted=0)
+        )
+        guard = _GuardFake(Decision.APPROVED)
+        flow = SandboxPromotionFlow(sandbox=sandbox, hitl_guard=guard)  # type: ignore[arg-type]
+        task = asyncio.create_task(flow.run(ritual_name="synthesis", ritual=_ritual_escribe_esp))
+        await asyncio.wait_for(sandbox.promote_iniciado.wait(), timeout=2.0)
+
+        task.cancel()  # 1ª cancelación → arranca el cleanup
+        await self._esperar(lambda: len(flow._cleanup_tasks) == 1)
+        cleanup = next(iter(flow._cleanup_tasks))
+        cleanup.cancel()  # teardown cancela el cleanup con el promote aún vivo
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert sandbox.descartes == 0  # el clon (y sus backups) quedan intactos
+
+        # El "hilo" del promote termina después; nadie debe tocar el clon igual.
+        sandbox.liberar_promote.set()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert sandbox.descartes == 0
+
 
 class TestFormatDiffDetail:
     def test_resume_conteo_y_lista_los_primeros_paths(self) -> None:
