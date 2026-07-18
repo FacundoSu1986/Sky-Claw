@@ -564,11 +564,13 @@ class AsyncToolRegistry:
             params_model=None,
             # #315: delega a WryeBashPipelineService (lock anidado Bashed
             # Patch + load-order) cuando el lock manager está cableado — mismo
-            # servicio que usa el Ritual de la GUI/dispatcher.
+            # servicio que usa el Ritual de la GUI/dispatcher. #315 PR C: pasar el
+            # journal para que este path también emita la caja negra (T-26/T-28).
             fn=lambda: generate_bashed_patch(
                 self._wrye_bash_runner,
                 lock_manager=self._lock_manager,
                 snapshot_manager=self._snapshot_manager,
+                journal=self._journal,
             ),
         )
         self._tools["uninstall_mod"] = ToolDescriptor(

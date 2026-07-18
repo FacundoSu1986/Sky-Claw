@@ -399,6 +399,7 @@ async def generate_bashed_patch(
     *,
     lock_manager: Any | None = None,
     snapshot_manager: Any | None = None,
+    journal: Any | None = None,
 ) -> str:
     """Generate 'Bashed Patch, 0.esp' using WryeBashRunner.
 
@@ -415,6 +416,10 @@ async def generate_bashed_patch(
     mismo vector P1 que ``run_loot_sort``/``run_pandora``). Sin lock manager
     (callers legacy / tests) corre directo, preservando el comportamiento
     anterior.
+
+    T-26/T-28 (ADR 0002, "PR C" del #315): cuando ``journal`` está cableado (via
+    ``app_context``) este path del agente TAMBIÉN emite la caja negra de vuelo —
+    igual que ``run_loot_sort``/``run_pandora``. Con ``journal=None`` no se emite.
     """
     if wrye_bash_runner is None:
         return json.dumps({"error": "WryeBashRunner is not configured. Set WRYE_BASH_PATH."})
@@ -426,6 +431,7 @@ async def generate_bashed_patch(
             lock_manager=lock_manager,
             snapshot_manager=snapshot_manager,
             wrye_bash_runner=wrye_bash_runner,
+            journal=journal,
         )
         # El servicio siempre devuelve un dict serializable (guard M-04, lock
         # contention, LockLeaseLostError, error de ejecución) — nunca propaga.

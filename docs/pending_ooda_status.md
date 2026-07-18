@@ -120,15 +120,32 @@ caja negra). Anclado en `test_pandora_service.py`
 Los 3 P2 del review de Codex sobre el PR #318 (CancelledError, LockLeaseLostError,
 journal en el path del agente) se verificaron reales y se cerraron en el mismo PR.
 
-**Lo que sigue abierto:** solo `wrye_bash` (runner/service) no emite manifest/
-flight report — es el ÚNICO ritual mutante que falta. El criterio de aceptación
-de T-26 ("todo Ritual mutante produce" el manifiesto) y T-28 ("informe... por
-Ritual") se cumplen hoy para LOOT, xEdit, Synthesis, **DynDOLOD** y **Pandora**
-(5/6). Wrye Bash es follow-up de la serie del otro agente (PR C anunciado en el
-#315: "ActionManifest + FlightReport" para Wrye Bash) — se deja en su carril para
-no colisionar. Cuando cierre, tiene sentido la vista GUI de T-28 (6/6).
-`tool_version` queda en `None` para xEdit, Synthesis, DynDOLOD y Pandora (no la
-exponen hoy) — follow-up menor.
+**Actualización 2026-07-18 (T-26/T-28 en Wrye Bash — 6/6 CERRADO):** cierra el
+"PR C" anunciado en el #315. `wrye_bash_service.execute_pipeline` emite ahora el
+`ActionManifest` fail-closed ANTES de correr `bash.py` (`tool="Wrye Bash"`,
+`files_touched` = la ruta del Bashed Patch en `Data/`) y el `FlightReport`
+best-effort tras el commit. Se implementó como CONTINUACIÓN del
+`WryeBashPipelineService` del otro agente (#315), no como diseño competidor —
+espeja `loot_service`/`pandora_service`: journal OPCIONAL cableado en AMBOS paths
+de producción vía `app_context` (el `supervisor` inyecta `journal=self.journal`,
+y `system_tools.generate_bashed_patch` recibe `journal=self._journal`). Snapshot
+diferido → `rollback_plan` vacío por diseño (Wrye Bash solo LEE el load order;
+la salida sale vía el VFS de MO2 con `cwd`). Endurecido desde el arranque con las
+lecciones del review de Codex sobre #318: fail-closed del manifiesto
+(`reason="ActionManifestFailed"`), y cierre de la TX rolled-back ante run
+non-zero, `WryeBashExecutionError`, `LockLeaseLostError` (ya cubierto por el
+`except LockError` de #315) y `asyncio.CancelledError` (re-lanzada), más una red
+T11 final. Anclado en `test_wrye_bash_service.py` (10 tests nuevos) y
+`test_wrye_bash_lock.py` (`test_handler_con_journal_emite_caja_negra`).
+
+**T-26/T-28 COMPLETO — 6/6 rituales mutantes** producen la caja negra: LOOT,
+xEdit, Synthesis, DynDOLOD, Pandora y **Wrye Bash**. Con esto tiene sentido la
+vista GUI de T-28. `tool_version` queda en `None` para xEdit, Synthesis, DynDOLOD,
+Pandora y Wrye Bash (no la exponen hoy) — follow-up menor. El **preflight brutal
+de Wrye Bash (PR B, #323)** ya se mergeó (el otro agente): esta rama se rebasó
+sobre él e integró la caja negra (PR C) *encima* del preflight — ambos gates
+conviven en `execute_pipeline` (preflight primero, luego el manifiesto dentro del
+lock). Con PR B + PR C, Wrye Bash queda al día con la disciplina de sus hermanos.
 
 ### 1.2 T-27 — Synthesis sandboxeado con promote/discard real (2026-07-14); Pandora/DynDOLOD/Wrye Bash siguen fuera
 

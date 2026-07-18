@@ -16,13 +16,17 @@ real es dependiente del entorno. La protección que aplica con certeza ahora es 
 *serialización*: un lock **anidado** (``Bashed Patch, 0.esp`` externo + ``load-order``
 interno, mismo patrón que ``grass_cache_service``) que serializa Wrye Bash tanto contra
 otra corrida propia como contra un sort de LOOT — el Bashed Patch se arma del orden
-activo que LOOT reescribe. El preflight brutal (PR B) y el ActionManifest/FlightReport
-(PR C, que cablea el journal) quedan como follow-ups documentados.
+activo que LOOT reescribe. El preflight brutal (PR B) corre PRIMERO y la caja negra de
+vuelo (ActionManifest fail-closed + FlightReport best-effort, T-26/T-28, "PR C") se
+emite con ``journal`` opcional, espejando ``loot_service``. Con ambos, Wrye Bash queda
+al día con la disciplina de sus hermanos rituales (6/6 en preflight y caja negra).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import pathlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -34,15 +38,15 @@ from sky_claw.antigravity.db.locks import (
 )
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.tools.wrye_bash_runner import (
+    BASHED_PATCH_NAME,
     WryeBashConfig,
     WryeBashExecutionError,
     WryeBashRunner,
 )
 
 if TYPE_CHECKING:
-    import pathlib
-
     from sky_claw.antigravity.core.path_resolver import PathResolutionService
+    from sky_claw.antigravity.db.journal import OperationJournal
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
@@ -53,6 +57,13 @@ logger = logging.getLogger(__name__)
 #: Wrye Bash. Además se anida el lock ``load-order`` (ver ``execute_pipeline``) porque
 #: el Bashed Patch se arma del orden activo que LOOT reescribe.
 BASHED_PATCH_RESOURCE_ID = "Bashed Patch, 0.esp"
+
+
+class _ActionManifestError(Exception):
+    """Interno (T-26): la emisión del manifiesto de vuelo falló. Se lanza DENTRO
+    del lock (antes de mutar) para que Wrye Bash NO proceda sin manifiesto — la
+    caja negra no es opcional cuando el journal está cableado (espejo de
+    ``loot_service``/``pandora_service._ActionManifestError``)."""
 
 
 def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
@@ -89,6 +100,7 @@ class WryeBashPipelineService:
         wrye_bash_runner: WryeBashRunner | None = None,
         plugin_limit_guard: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
         preflight: PreflightService | None = None,
+        journal: OperationJournal | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -97,6 +109,11 @@ class WryeBashPipelineService:
         self._plugin_limit_guard = plugin_limit_guard
         # Preflight inyectable (tests) o construido perezosamente en el primer uso.
         self._preflight = preflight
+        # T-26/T-28 (ADR 0002, "PR C"): cuando el journal está cableado, la generación
+        # del Bashed Patch emite la caja negra de vuelo. Se cablea en AMBOS paths de
+        # producción vía app_context (GUI/dispatcher y agente), igual que loot_service.
+        # Sin journal (callers legacy / tests) no se emite.
+        self._journal = journal
 
     def _ensure_preflight(self) -> PreflightService | None:
         """Construye perezosamente el preflight de Wrye Bash (T-16c, PR B, FASE 6).
@@ -117,8 +134,6 @@ class WryeBashPipelineService:
             return self._preflight
         if self._path_resolver is None:
             return None
-
-        import pathlib
 
         game = self._path_resolver.get_skyrim_path()
         mo2 = self._path_resolver.get_mo2_path()
@@ -227,6 +242,97 @@ class WryeBashPipelineService:
         )
         return self._wrye_bash_runner
 
+    # ------------------------------------------------------------------
+    # Caja negra de vuelo (T-26/T-28, ADR 0002) — espejo de loot_service
+    # ------------------------------------------------------------------
+
+    def _bashed_patch_target(self, runner: WryeBashRunner) -> str:
+        """Ruta del Bashed Patch para el ``files_touched`` del manifiesto.
+
+        Vive en el ``Data`` del juego (``bash.py`` corre con ``cwd=game_path``). Si
+        el game path no es resoluble, cae al nombre canónico — el manifiesto igual
+        registra QUÉ artefacto se tocó, aunque no la ruta absoluta.
+        """
+        game_path = getattr(runner.config, "game_path", None)
+        if isinstance(game_path, pathlib.Path):
+            return str(game_path / "Data" / BASHED_PATCH_NAME)
+        return BASHED_PATCH_NAME
+
+    async def _emit_action_manifest(self, target_file: str) -> int:
+        """Construye y persiste el ActionManifest ANTES de mutar (T-26).
+
+        Se llama DENTRO del lock, antes de ``generate_bashed_patch()``. Devuelve el id
+        de la transacción del journal para commit/rollback posterior. Snapshot diferido
+        (``target_files=[]`` en el lock) → ``snapshots=[]``: el rollback de Wrye Bash no
+        es copy-based (la salida sale vía la VFS de MO2 con ``cwd``); el manifiesto
+        registra el artefacto tocado para auditoría, sin plan de restore.
+
+        Raises:
+            _ActionManifestError: Si begin_transaction/persist falla — Wrye Bash no
+                debe proceder sin la caja negra emitida. La TX recién abierta se marca
+                rolled-back para no dejarla PENDING (espejo de loot_service).
+        """
+        from sky_claw.antigravity.orchestrator.preview.action_manifest import build_action_manifest
+
+        assert self._journal is not None  # cableado verificado por el caller
+        journal_tx_id: int | None = None
+        try:
+            journal_tx_id = await self._journal.begin_transaction(
+                description="wrye_bash_bashed_patch",
+                agent_id=self.AGENT_ID,
+            )
+            manifest = build_action_manifest(
+                ritual_id=f"wrye-bash-{journal_tx_id}",
+                tool="Wrye Bash",
+                tool_version=None,  # Wrye Bash no expone versión hoy (follow-up menor).
+                target_files=[target_file],
+                snapshots=[],  # snapshot diferido — plan de rollback vacío por diseño.
+                summary="Generar el Bashed Patch con Wrye Bash.",
+            )
+            await self._journal.persist_action_manifest(
+                manifest,
+                agent_id=self.AGENT_ID,
+                transaction_id=journal_tx_id,
+            )
+            return journal_tx_id
+        except Exception as exc:  # noqa: BLE001 — boundary: cualquier fallo del journal/builder
+            await self._mark_journal_rolled_back(journal_tx_id)
+            raise _ActionManifestError(str(exc)) from exc
+
+    async def _emit_flight_report(self, journal_tx_id: int) -> None:
+        """Compone y persiste el FlightReport del Ritual terminado (T-28).
+
+        Post-vuelo y best-effort: lee la caja negra del journal (manifiesto + estado
+        REAL de la TX). Un fallo se loguea y NO rompe un run ya exitoso.
+        """
+        from sky_claw.antigravity.orchestrator.preview.flight_report import (
+            compose_flight_report_from_journal,
+        )
+
+        assert self._journal is not None  # cableado verificado por el caller
+        try:
+            report = await compose_flight_report_from_journal(self._journal, transaction_id=journal_tx_id)
+            await self._journal.persist_flight_report(
+                report,
+                agent_id=self.AGENT_ID,
+                transaction_id=journal_tx_id,
+            )
+        except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error("Fallo al persistir el informe de vuelo de la TX %d", journal_tx_id, exc_info=True)
+
+    async def _mark_journal_rolled_back(self, journal_tx_id: int | None) -> None:
+        """Marca la TX del journal como rolled-back (best-effort).
+
+        Se llama en los caminos de excepción; si el journal falla acá NO debe
+        enmascarar el error original ni romper el contrato de dict serializable.
+        """
+        if journal_tx_id is None or self._journal is None:
+            return
+        try:
+            await self._journal.mark_transaction_rolled_back(journal_tx_id)
+        except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error("Fallo al marcar la TX del journal %d como rolled-back", journal_tx_id, exc_info=True)
+
     async def execute_pipeline(
         self,
         *,
@@ -309,6 +415,10 @@ class WryeBashPipelineService:
         # (grass-cache → load-order): nadie toma load-order primero, así que no hay
         # deadlock. Snapshot diferido en ambos: la salida sale vía la VFS de MO2 con cwd
         # y Wrye Bash solo LEE el load order (LOOT es quien lo snapshotea al mutarlo).
+        journal_tx_id: int | None = None
+        # Una vez commiteada la TX, ninguna ruta posterior debe re-marcarla rolled-back
+        # (una cancelación post-commit corrompería el audit trail — review Codex #249/#318).
+        journal_committed = False
         try:
             async with (
                 SnapshotTransactionLock(
@@ -328,11 +438,43 @@ class WryeBashPipelineService:
                     metadata={"source": "wrye_bash_bashed_patch", "profile": profile},
                 ),
             ):
+                # T-26 (ADR 0002): emitir la caja negra ANTES de mutar. Si el journal
+                # está cableado y la emisión falla, Wrye Bash NO corre (fail-closed:
+                # se lanza dentro del lock, nada mutó). El path sin journal la salta.
+                if self._journal is not None:
+                    journal_tx_id = await self._emit_action_manifest(self._bashed_patch_target(runner))
                 result = await runner.generate_bashed_patch()
+            # Locks liberados. Cerrar la caja negra según el resultado real del run.
+            if journal_tx_id is not None and self._journal is not None:
+                if result.success:
+                    try:
+                        await self._journal.commit_transaction(journal_tx_id)
+                        journal_committed = True
+                    except Exception:  # noqa: BLE001 — boundary best-effort del journal
+                        logger.error(
+                            "Fallo al commitear la TX del journal %d tras el Bashed Patch exitoso",
+                            journal_tx_id,
+                            exc_info=True,
+                        )
+                    # T-28: cerrar la caja negra con el informe post-vuelo (best-effort).
+                    await self._emit_flight_report(journal_tx_id)
+                else:
+                    # Run non-zero: no commitear, marcar rolled-back (no dejar PENDING).
+                    await self._mark_journal_rolled_back(journal_tx_id)
         except LockAcquisitionError as exc:
+            # Contención en __aenter__, antes del manifiesto: journal_tx_id sigue None.
             logger.warning("Lock contention (bashed-patch/load-order): %s", exc)
             detail = f"Could not acquire bashed-patch/load-order lock: {exc}"
             return _attach_preflight({"success": False, "error": detail, "message": detail}, preflight_report)
+        except _ActionManifestError as exc:
+            # La caja negra no se pudo emitir: Wrye Bash no corrió (fail-closed). La TX
+            # recién abierta ya fue marcada rolled-back dentro de _emit_action_manifest.
+            logger.error("[FASE-6] No se pudo emitir el ActionManifest; abortado: %s", exc)
+            detail = f"Manifiesto de vuelo requerido no emitido: {exc}"
+            return _attach_preflight(
+                {"success": False, "reason": "ActionManifestFailed", "error": detail, "message": detail},
+                preflight_report,
+            )
         except LockError as exc:
             # __aexit__ del lock puede lanzar LockLeaseLostError (renovación fallida /
             # lease expirado durante una corrida larga) u otros errores de la capa de
@@ -340,15 +482,34 @@ class WryeBashPipelineService:
             # el middleware que envuelve errores), así que sin este catch la excepción
             # burbujea como crash de dispatch. La pérdida de lease invalida la
             # exclusividad → reportar éxito mentiría: devolvemos success=False honesto.
+            # Si no se commiteó, cerrar la TX del journal (no dejar PENDING).
+            if not journal_committed:
+                await self._mark_journal_rolled_back(journal_tx_id)
             logger.error("[FASE-6] Error de la capa de lock durante Wrye Bash: %s", exc)
             detail = f"Lock error durante la generación del Bashed Patch: {exc}"
             return _attach_preflight({"success": False, "error": detail, "message": detail}, preflight_report)
         except WryeBashExecutionError as exc:
+            await self._mark_journal_rolled_back(journal_tx_id)
             logger.error("[FASE-6] WryeBashExecutionError: %s", exc)
             return _attach_preflight({"success": False, "error": str(exc), "message": str(exc)}, preflight_report)
+        except asyncio.CancelledError:
+            # Cancelación (shutdown/timeout del task): cerrar la TX del journal para no
+            # dejarla PENDING (salvo que ya se commiteara, #249) y re-lanzar (review
+            # Codex #318). Los __aexit__ de los locks ya liberaron.
+            if not journal_committed:
+                await self._mark_journal_rolled_back(journal_tx_id)
+            raise
+        except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
+            # Red de seguridad final para cualquier error inesperado en la salida del
+            # lock/journal (no Lock* ni WryeBashExecutionError): no dejar la TX PENDING
+            # ni romper el contrato "siempre devolver dict".
+            if not journal_committed:
+                await self._mark_journal_rolled_back(journal_tx_id)
+            logger.error("[FASE-6] Error inesperado durante Wrye Bash: %s", exc, exc_info=True)
+            return _attach_preflight({"success": False, "error": str(exc), "message": str(exc)}, preflight_report)
 
-        # PASO 4: Observabilidad vía logging estructurado. Este flujo AÚN no usa
-        # OperationJournal; el ActionManifest/FlightReport llega en el PR C.
+        # PASO 4: Observabilidad vía logging estructurado (complementa la caja negra
+        # del journal — el manifiesto/informe ya se persistieron arriba si está cableado).
         logger.info(
             "[FASE-6] Bashed Patch result logged",
             extra={

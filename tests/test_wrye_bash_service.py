@@ -15,12 +15,13 @@ supervisor, no lo posee este servicio.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.db.locks import DistributedLockManager
+from sky_claw.antigravity.db.locks import DistributedLockManager, LockLeaseLostError
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools.wrye_bash_runner import WryeBashExecutionError, WryeBashResult
 from sky_claw.local.tools.wrye_bash_service import (
@@ -525,3 +526,226 @@ async def test_sin_fuentes_resolubles_no_gatea(
     assert result["success"] is True
     assert "preflight" not in result
     runner.generate_bashed_patch.assert_awaited_once()
+
+
+# =============================================================================
+# T-26/T-28 (ADR 0002, "PR C"): caja negra de vuelo — ActionManifest + FlightReport.
+# Wrye Bash era el ÚLTIMO ritual mutante sin caja negra (6/6 con esto). Espeja
+# loot_service/pandora_service: journal OPCIONAL, cableado en AMBOS paths de
+# producción (GUI y agente) vía app_context. Convive con el preflight (PR B).
+# =============================================================================
+
+
+@pytest.fixture
+def mock_journal() -> AsyncMock:
+    journal = AsyncMock()
+    journal.begin_transaction = AsyncMock(return_value=88)
+    journal.commit_transaction = AsyncMock()
+    journal.mark_transaction_rolled_back = AsyncMock()
+    journal.persist_action_manifest = AsyncMock()
+    journal.persist_flight_report = AsyncMock()
+    return journal
+
+
+def _svc_with_journal(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    runner: MagicMock,
+    journal: AsyncMock,
+) -> WryeBashPipelineService:
+    return WryeBashPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=MagicMock(),
+        wrye_bash_runner=runner,
+        journal=journal,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cn_emite_manifest_antes_de_correr_y_flight_report_tras_commit(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """T-26/T-28: con journal cableado, el manifiesto se persiste ANTES de correr
+    Wrye Bash y el informe de vuelo tras el commit (éxito)."""
+    orden: list[str] = []
+
+    async def _persist_manifest(*_a: object, **_k: object) -> None:
+        orden.append("manifest")
+
+    async def on_run() -> WryeBashResult:
+        orden.append("run")
+        return WryeBashResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=0.1)
+
+    mock_journal.persist_action_manifest = AsyncMock(side_effect=_persist_manifest)
+    runner = MagicMock()
+    runner.generate_bashed_patch = AsyncMock(side_effect=on_run)
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    with patch(
+        "sky_claw.antigravity.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is True
+    assert orden == ["manifest", "run"]  # caja negra ANTES de mutar
+    mock_journal.begin_transaction.assert_awaited_once()
+    mock_journal.commit_transaction.assert_awaited_once_with(88)
+    mock_journal.persist_flight_report.assert_awaited_once()
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cn_manifest_fail_closed_aborta_sin_correr(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """T-26 fail-closed: si el manifiesto no se puede persistir, Wrye Bash NO corre."""
+    mock_journal.persist_action_manifest = AsyncMock(side_effect=RuntimeError("journal DB locked"))
+    runner = _runner_returning()
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    assert result["reason"] == "ActionManifestFailed"
+    runner.generate_bashed_patch.assert_not_awaited()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(88)
+    mock_journal.commit_transaction.assert_not_called()
+    assert await lock_manager.get_lock_info(BASHED_PATCH_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_cn_sin_journal_no_emite_pero_corre(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """Sin journal (callers legacy / tests) corre normal sin emitir la caja negra."""
+    runner = _runner_returning()
+    svc = _make_service(lock_manager, snapshot_manager, runner)  # sin journal
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is True
+    runner.generate_bashed_patch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cn_flight_report_best_effort_no_rompe_exito(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """T-28 best-effort: un fallo al persistir el informe NO tumba un run exitoso."""
+    mock_journal.persist_flight_report = AsyncMock(side_effect=RuntimeError("journal caído"))
+    runner = _runner_returning()
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    with patch(
+        "sky_claw.antigravity.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is True
+    mock_journal.commit_transaction.assert_awaited_once_with(88)
+
+
+@pytest.mark.asyncio
+async def test_cn_fallo_de_ejecucion_marca_rolled_back(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """Un WryeBashExecutionError tras el manifiesto marca la TX rolled-back."""
+    runner = MagicMock()
+    runner.generate_bashed_patch = AsyncMock(side_effect=WryeBashExecutionError("boom"))
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(88)
+    mock_journal.commit_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cn_resultado_non_zero_marca_rolled_back(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """Un WryeBashResult con success=False (exit non-zero) cierra la TX rolled-back."""
+    runner = _runner_returning(
+        WryeBashResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=1.0)
+    )
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(88)
+    mock_journal.commit_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cn_lock_contention_no_abre_transaccion(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """La emisión del manifiesto ocurre DENTRO del lock: si no se pudo tomar, el
+    journal ni se toca."""
+    await lock_manager.acquire_lock(BASHED_PATCH_RESOURCE_ID, "other-runner", ttl=30.0)
+    runner = _runner_returning()
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    mock_journal.begin_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+
+
+class _LockLeaseLostFake:
+    """Lock de frontera: en un clean-exit ``__aexit__`` se comporta como lease perdida
+    (review Codex #318). ``snapshots=[]`` porque Wrye Bash corre con snapshot diferido."""
+
+    snapshots: list[object] = []
+
+    def __init__(self, **_kwargs: object) -> None:
+        pass
+
+    async def __aenter__(self) -> _LockLeaseLostFake:
+        return self
+
+    async def __aexit__(self, exc_type: type[BaseException] | None, exc: object, tb: object) -> bool:
+        if exc_type is None:
+            raise LockLeaseLostError("lease perdida durante el run (simulado)")
+        return False
+
+
+@pytest.mark.asyncio
+async def test_cn_lease_perdida_marca_rolled_back(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """Con journal cableado, un LockLeaseLostError en el __aexit__ del lock cierra la
+    TX rolled-back (no queda PENDING) además de devolver el dict de error."""
+    runner = _runner_returning()
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    with patch("sky_claw.local.tools.wrye_bash_service.SnapshotTransactionLock", _LockLeaseLostFake):
+        result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(88)
+    mock_journal.commit_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cn_cancelacion_marca_rolled_back_y_propaga(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """Una cancelación (shutdown/timeout) mientras corre Wrye Bash cierra la TX
+    rolled-back y re-lanza la CancelledError (review Codex #318)."""
+    runner = MagicMock()
+    runner.generate_bashed_patch = AsyncMock(side_effect=asyncio.CancelledError())
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    with pytest.raises(asyncio.CancelledError):
+        await svc.execute_pipeline(profile="Default")
+
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(88)
+    mock_journal.commit_transaction.assert_not_called()
+    assert await lock_manager.get_lock_info(BASHED_PATCH_RESOURCE_ID) is None

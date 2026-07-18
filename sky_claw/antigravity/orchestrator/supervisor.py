@@ -266,6 +266,8 @@ class SupervisorAgent:
             snapshot_manager=self.snapshot_manager,
             path_resolver=self._path_resolver,
             plugin_limit_guard=self._run_plugin_limit_guard,
+            # T-26/T-28 ("PR C" del #315): cablear el journal para emitir la caja negra.
+            journal=self.journal,
         )
 
         # Lazy init para runners legacy que aún no son servicios puros (AssetDetector)

@@ -185,6 +185,37 @@ async def test_handler_runner_none_es_error_estructurado() -> None:
     assert "error" in out
 
 
+async def test_handler_con_journal_emite_caja_negra(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+) -> None:
+    """T-26/T-28 (#315 PR C): el path del agente, con journal cableado (via
+    app_context), emite el ActionManifest + FlightReport igual que run_loot_sort —
+    sin esto un Bashed Patch generado por Telegram/LLM no tendría caja negra."""
+    journal = AsyncMock()
+    journal.begin_transaction = AsyncMock(return_value=88)
+    journal.commit_transaction = AsyncMock()
+    journal.mark_transaction_rolled_back = AsyncMock()
+    journal.persist_action_manifest = AsyncMock()
+    journal.persist_flight_report = AsyncMock()
+    runner = _runner()
+
+    with patch(
+        "sky_claw.antigravity.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        out = json.loads(
+            await generate_bashed_patch(
+                runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager, journal=journal
+            )
+        )
+
+    assert out["success"] is True
+    journal.persist_action_manifest.assert_awaited_once()  # T-26
+    journal.commit_transaction.assert_awaited_once_with(88)
+    journal.persist_flight_report.assert_awaited_once()  # T-28
+
+
 def test_nombre_canonico_del_bashed_patch_sincronizado() -> None:
     """El runner, el servicio (#315) y la estrategia de delegación (ADR 0001)
     nombran el mismo .esp — un drift acá rompería el snapshot/lock de alguno."""
