@@ -144,6 +144,25 @@ class SandboxPromotionFlow:
         # así que sin esto un cleanup que quedó corriendo en background podría
         # ser recolectado por GC antes de terminar (review Codex PR #320).
         self._cleanup_tasks: set[asyncio.Task[None]] = set()
+        # Review Codex #320 (P1): desenlace terminal del promote. True apenas
+        # el promote aplicó cambios al árbol real — incluso si completó en
+        # background tras una cancelación. desenlace_promocion() lo expone
+        # para que el caller resuelva su journal diferido.
+        self._promocion_aplicada = False
+
+    async def desenlace_promocion(self) -> bool:
+        """¿El promote llegó a aplicar cambios al árbol real?
+
+        Para el caller cuya invocación de :meth:`run` terminó en
+        ``CancelledError``: espera los cleanups en vuelo (que observan el
+        desenlace real del promote shieldeado) y responde si los cambios
+        quedaron aplicados — con eso puede resolver su journal diferido
+        (``commit_staged``/``rollback_staged``) en lugar de dejar la
+        transacción sin estado final (review Codex #320, P1 línea 287).
+        """
+        while self._cleanup_tasks:
+            await asyncio.gather(*list(self._cleanup_tasks), return_exceptions=True)
+        return self._promocion_aplicada
 
     async def run(
         self,
@@ -280,6 +299,10 @@ class SandboxPromotionFlow:
         promote_task = asyncio.ensure_future(self._sandbox.promote(clone))
         try:
             promocion = await asyncio.shield(promote_task)
+            # Review Codex #320 (P1): a partir de acá los cambios ESTÁN en el
+            # árbol real — desenlace_promocion() lo reporta al caller aunque
+            # una cancelación posterior le impida ver el result.
+            self._promocion_aplicada = True
         except asyncio.CancelledError:
             # Descartar el clon con el promote aún en vuelo rompería su
             # rollback (los backups viven en el árbol del clon): primero se
@@ -402,7 +425,9 @@ class SandboxPromotionFlow:
         else:
             # El hilo del promote completó pese a la cancelación: los cambios
             # YA están aplicados al perfil real aunque el caller reciba
-            # CancelledError — dejar constancia explícita para el operador.
+            # CancelledError — dejar constancia explícita para el operador y
+            # exponerlo vía desenlace_promocion() (review Codex #320).
+            self._promocion_aplicada = True
             logger.warning(
                 "SandboxPromotionFlow: '%s' fue cancelado pero el promote COMPLETÓ — "
                 "%d escrito(s), %d borrado(s) ya aplicados al perfil real.",

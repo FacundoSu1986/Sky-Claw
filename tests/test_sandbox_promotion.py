@@ -419,6 +419,42 @@ class TestCancelacionDurantePromote:
             await asyncio.sleep(0)
         assert sandbox.descartes == 0
 
+    async def test_desenlace_promocion_true_si_el_promote_completo_pese_al_cancel(self, tmp_path: pathlib.Path) -> None:
+        """Review Codex #320 (P1 línea 287): el caller cancelado necesita saber
+        si el promote terminó aplicando cambios al árbol real, para resolver su
+        journal diferido (commit_staged) en vez de dejarlo sin estado final."""
+        from sky_claw.local.mo2.profile_sandbox import PromoteResult
+
+        sandbox = self._SandboxPromoteLento(
+            _sandbox(tmp_path), resultado_promote=PromoteResult(files_written=1, files_deleted=0)
+        )
+        guard = _GuardFake(Decision.APPROVED)
+        flow = SandboxPromotionFlow(sandbox=sandbox, hitl_guard=guard)  # type: ignore[arg-type]
+        task = asyncio.create_task(flow.run(ritual_name="synthesis", ritual=_ritual_escribe_esp))
+        await asyncio.wait_for(sandbox.promote_iniciado.wait(), timeout=2.0)
+
+        task.cancel()
+        sandbox.liberar_promote.set()  # el "hilo" del promote completa igual
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert await asyncio.wait_for(flow.desenlace_promocion(), timeout=2.0) is True
+
+    async def test_desenlace_promocion_false_si_el_promote_nunca_corrio(self, tmp_path: pathlib.Path) -> None:
+        """Cancelación antes del promote (en la ventana HITL): ningún cambio
+        llegó al árbol real — el journal diferido debe revertirse."""
+
+        class _GuardCancelado:
+            async def request_approval(self, **kwargs: Any) -> Decision:
+                raise asyncio.CancelledError()
+
+        flow = SandboxPromotionFlow(sandbox=_sandbox(tmp_path), hitl_guard=_GuardCancelado())  # type: ignore[arg-type]
+
+        with pytest.raises(asyncio.CancelledError):
+            await flow.run(ritual_name="synthesis", ritual=_ritual_escribe_esp)
+
+        assert await asyncio.wait_for(flow.desenlace_promocion(), timeout=2.0) is False
+
 
 class TestFormatDiffDetail:
     def test_resume_conteo_y_lista_los_primeros_paths(self) -> None:
