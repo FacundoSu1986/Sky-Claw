@@ -493,3 +493,43 @@ async def test_rollback_fallido_cuarentena_conexión_antes_de_reutilizarla(
     async with conn_segura.execute("SELECT value FROM writes") as cursor:
         rows = await cursor.fetchall()
     assert [row[0] for row in rows] == ["segunda"]
+
+
+async def test_cuarentena_cierra_afectada_sin_cerrar_reemplazo(
+    base_transaccional: tuple[
+        DatabaseLifecycleManager,
+        Path,
+        aiosqlite.Connection,
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lifecycle, db_path, conn_afectada = base_transaccional
+    path_str = str(db_path.resolve())
+    conn_reemplazo = await aiosqlite.connect(path_str)
+
+    async def commit_fallido() -> None:
+        raise sqlite3.OperationalError("fallo de commit")
+
+    async def rollback_reemplaza_y_falla() -> None:
+        lifecycle._connections[path_str] = conn_reemplazo
+        raise sqlite3.OperationalError("fallo de rollback")
+
+    monkeypatch.setattr(conn_afectada, "commit", commit_fallido)
+    monkeypatch.setattr(conn_afectada, "rollback", rollback_reemplaza_y_falla)
+
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="fallo de rollback"):
+            async with lifecycle.transaction(db_path) as transaction_conn:
+                await transaction_conn.execute(
+                    "INSERT INTO writes (value) VALUES (?)",
+                    ("no_confirmada",),
+                )
+
+        assert await lifecycle.get_connection(db_path) is conn_reemplazo
+        async with conn_reemplazo.execute("SELECT 1") as cursor:
+            assert await cursor.fetchone() == (1,)
+
+        with pytest.raises(ValueError, match="no active connection"):
+            await conn_afectada.execute("SELECT 1")
+    finally:
+        await conn_afectada.close()

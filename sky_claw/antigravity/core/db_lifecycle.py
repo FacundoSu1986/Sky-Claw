@@ -595,10 +595,8 @@ class DatabaseLifecycleManager:
         """Retira y cierra una conexión dañada sin tocar su reemplazo."""
         path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
         path_str = str(path_obj.resolve())
-        if self._connections.get(path_str) is not conn:
-            return None
-
-        self._connections.pop(path_str)
+        if self._connections.get(path_str) is conn:
+            self._connections.pop(path_str)
         try:
             await self._await_db_operation(conn.close())
         except _DatabaseOperationFailedAfterCancellation as error:
