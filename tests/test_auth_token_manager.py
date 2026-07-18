@@ -12,12 +12,15 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
 import time
 from typing import TYPE_CHECKING
 from unittest.mock import patch
+
+import pytest
 
 from sky_claw.antigravity.security.auth_token_manager import _TOKEN_TTL, AuthTokenManager
 
@@ -461,3 +464,45 @@ class TestAtomicWrite:
 
         read_back = AuthTokenManager.read_token_file(token_dir=str(tmp_path / "tokens"))
         assert read_back == token
+
+
+# ===========================================================================
+#  F3 — la rotación no debe bloquear el event loop
+# ===========================================================================
+
+
+class TestRotationLoopOffloading:
+    async def test_rotation_offloads_generate_to_thread(self, tmp_path, monkeypatch):
+        """F3: generate() hace I/O de archivo (+ subprocess icacls en Windows vía
+        restrict_to_owner). Corriéndolo directo en el loop de rotación congela todo
+        el event loop; debe delegarse en asyncio.to_thread."""
+        mgr = _make_manager(tmp_path)
+        offloaded: list = []
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            offloaded.append(fn)
+            return fn(*args, **kwargs)
+
+        sleep_calls = {"n": 0}
+
+        async def fake_sleep(_seconds):
+            # Una sola iteración: el primer sleep pasa, el segundo corta el loop.
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(
+            "sky_claw.antigravity.security.auth_token_manager.asyncio.to_thread",
+            fake_to_thread,
+        )
+        monkeypatch.setattr(
+            "sky_claw.antigravity.security.auth_token_manager.asyncio.sleep",
+            fake_sleep,
+        )
+        with (
+            patch("sky_claw.antigravity.security.auth_token_manager.restrict_to_owner"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await mgr._rotation_loop()
+
+        assert mgr.generate in offloaded, "generate() debe ejecutarse vía asyncio.to_thread"

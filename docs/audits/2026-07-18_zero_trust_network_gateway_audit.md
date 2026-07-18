@@ -21,6 +21,29 @@ ausentes*. La severidad de esos hallazgos refleja "el control que creés tener n
 
 ---
 
+## ✅ Remediación aplicada (follow-up en esta misma rama)
+
+Tras la auditoría (entregada como documento), se aplicó un subconjunto **acotado, de bajo
+riesgo y sobre caminos vivos** de las correcciones, con TDD (test rojo → fix → verde) y
+pasando los gates de CI (`ruff check`, `ruff format --check`, `mypy sky_claw/`, suite
+completa). Se eligió un subconjunto coherente en vez de tocar todo, para mantener un cambio
+revisable y sin roce con la remediación de la TANDA 1 (núcleo async, `codex/*`), con la que
+**no hay solapamiento de archivos**.
+
+| Hallazgo | Estado | Cambio |
+|----------|--------|--------|
+| **F3** | ✔ Corregido | `auth_token_manager._rotation_loop` delega `generate()` en `asyncio.to_thread` (saca el I/O de archivo + `icacls` del event loop). Test: `TestRotationLoopOffloading`. |
+| **n1** | ✔ Corregido | `network_gateway.request()` elimina cabeceras sensibles (`Authorization`/`Cookie`/`apikey`/`x-api-key`) al redirigir a otro host, sin mutar el dict del caller. Tests: `test_sensitive_headers_stripped_on_cross_host_redirect`, `test_headers_preserved_on_same_host_redirect`. |
+| **F4** | ✔ Corregido | Nuevo `TelegramSender.answer_callback_query` (por `gateway.request` + `async with`); `_handle_callback_query` deja de usar `self._session.post` (fin del bypass + fuga). Tests: `TestTelegramSender::test_answer_callback_query_goes_through_gateway`, `TestCallbackQueryEgress`. |
+
+**Diferidos a propósito** (con motivo): **F1** (cablear `CredentialVault` exige decidir la
+procedencia del master-key — cambio de diseño; además toca `app_context.py`, el único punto
+de roce potencial con la TANDA 1), **F2/F6** (`ws_daemon` es experimental y con import roto —
+arreglarlo aislado no aporta valor vivo), **F7** (depende del despliegue del gateway Node),
+**n2/n3** (no son bugs vivos; n3 rompería la API síncrona del field-validator pydantic).
+
+---
+
 ## 🎯 1. Espacio de trabajo — prueba de escritorio (dry-run)
 
 Antes de los hallazgos, la ejecución mental de los tres escenarios de estrés obligatorios,
@@ -523,8 +546,10 @@ de amenazas.
   durmiente (webhook no montado, polling descarta callbacks → F4 MEDIO, no crítico), y el
   "leak-on-redirect" resultó latente (ningún caller filtra un secreto por esa vía hoy → n1
   MENOR). Se reportan igual, con su alcance real, en lugar de inflarlos.
-- **No se tocó código de producción.** Los fragmentos de refactor son propuestas; este
-  documento es el entregable.
+- **Entregable inicial = documento; remediación posterior acotada.** Los fragmentos de
+  refactor de §2 son propuestas. En un follow-up sobre esta misma rama se aplicó el
+  subconjunto vivo/bajo-riesgo (F3, n1, F4) con TDD y gates verdes — ver "Remediación
+  aplicada" arriba. El resto queda diferido con motivo.
 - **Sin cierre de T-XX del backlog.** Es una auditoría nueva; no modifica
   `docs/pending_ooda_status.md` (aunque F1 coincide con su residual §2.3 de consolidación de
   secretos).

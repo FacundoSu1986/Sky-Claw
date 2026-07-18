@@ -156,6 +156,36 @@ class TelegramSender:
 
         return chunks
 
+    async def answer_callback_query(
+        self,
+        callback_query_id: str,
+        text: str | None = None,
+        show_alert: bool = False,
+    ) -> None:
+        """Responde a un ``callback_query`` (botón inline) vía el NetworkGateway.
+
+        Cierra el estado de carga del botón en el cliente de Telegram. Como todo el
+        egress, pasa por ``gateway.request`` (allow-list/SSRF/timeout/re-auth de
+        redirects) y libera la respuesta con ``async with`` para no fugar la conexión.
+        """
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text is not None:
+            payload["text"] = text
+        if show_alert:
+            payload["show_alert"] = True
+
+        url = self._url + "answerCallbackQuery"
+        resp = await self._gateway.request(
+            "POST",
+            url,
+            self._session,
+            json=payload,
+        )
+        async with resp:
+            if resp.status != 200:
+                body = await resp.text()
+                logger.error("Failed to answer callback query: %s", body)
+
     async def edit_message(
         self,
         chat_id: int,

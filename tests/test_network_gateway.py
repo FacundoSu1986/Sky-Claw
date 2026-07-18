@@ -137,6 +137,59 @@ class TestRedirectValidation:
             await gw.request("GET", asset_url, session, allowed_redirect_hosts=GITHUB_RELEASE_ASSET_REDIRECT_HOSTS)
         redirect_response.release.assert_called_once_with()
 
+    @pytest.mark.asyncio
+    async def test_sensitive_headers_stripped_on_cross_host_redirect(self, gw: NetworkGateway) -> None:
+        """n1: al redirigir a OTRO host, las credenciales del host original no se
+        reenvían. aiohttp elimina ``Authorization`` cross-host pero NO las cabeceras
+        custom (``apikey``); como el bucle re-emite hop_kwargs manualmente, el saneo
+        es responsabilidad del gateway."""
+        asset_url = "https://api.github.com/repos/loot/loot/releases/assets/1001"
+        cdn_url = "https://objects.githubusercontent.com/github-production-release-asset-2e65be/loot.zip"
+        redirect_response = _GatewayResponse(302, {"Location": cdn_url})
+        final_response = _GatewayResponse(200)
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.request = AsyncMock(side_effect=[redirect_response, final_response])
+
+        original_headers = {
+            "Authorization": "token SECRET",
+            "apikey": "K",
+            "Accept": "application/octet-stream",
+        }
+        await gw.request(
+            "GET",
+            asset_url,
+            session,
+            headers=original_headers,
+            allowed_redirect_hosts=GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
+        )
+
+        first_headers = session.request.await_args_list[0].kwargs["headers"]
+        second_headers = session.request.await_args_list[1].kwargs["headers"]
+        # El primer salto (host original) conserva las credenciales.
+        assert first_headers["Authorization"] == "token SECRET"
+        assert first_headers["apikey"] == "K"
+        # El segundo salto (CDN, otro host) las pierde, pero mantiene lo inocuo.
+        assert "Authorization" not in second_headers
+        assert "apikey" not in second_headers
+        assert second_headers.get("Accept") == "application/octet-stream"
+        # No se muta el dict del caller (aliasing).
+        assert original_headers["Authorization"] == "token SECRET"
+
+    @pytest.mark.asyncio
+    async def test_headers_preserved_on_same_host_redirect(self, gw: NetworkGateway) -> None:
+        """n1: un redirect dentro del MISMO host conserva las credenciales."""
+        url = "https://www.nexusmods.com/skyrimspecialedition/mods/1"
+        same_host_redirect = "https://www.nexusmods.com/skyrimspecialedition/mods/1/files"
+        redirect_response = _GatewayResponse(302, {"Location": same_host_redirect})
+        final_response = _GatewayResponse(200)
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.request = AsyncMock(side_effect=[redirect_response, final_response])
+
+        await gw.request("GET", url, session, headers={"Authorization": "Bearer T"})
+
+        second_headers = session.request.await_args_list[1].kwargs["headers"]
+        assert second_headers["Authorization"] == "Bearer T"
+
 
 # ------------------------------------------------------------------
 # Method restrictions

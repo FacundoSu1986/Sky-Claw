@@ -135,7 +135,10 @@ class AuthTokenManager:
             await asyncio.sleep(_TOKEN_TTL / 2)
             try:
                 logger.info("Rotating auth token...")
-                self.generate()
+                # generate() hace I/O de archivo y, en Windows, un subprocess icacls
+                # (restrict_to_owner). Ejecutarlo directo en el event loop lo congela;
+                # se delega en un hilo para no bloquear el resto de coroutines.
+                await asyncio.to_thread(self.generate)
             except Exception:
                 # Log and continue — a single rotation failure must not kill
                 # the loop and leave tokens permanently stale.
