@@ -10,12 +10,13 @@ serialización, igual que en ``LootSortingService``.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.db.locks import DistributedLockManager
+from sky_claw.antigravity.db.locks import DistributedLockManager, LockLeaseLostError
 from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools.pandora_runner import PandoraExecutionError, PandoraResult
 from sky_claw.local.tools.pandora_service import (
@@ -500,8 +501,9 @@ async def test_manifest_fail_closed_aborta_sin_correr_pandora(
 async def test_sin_journal_no_emite_manifest_pero_corre(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
 ) -> None:
-    """Path del agente (sin journal): Pandora corre normal, sin caja negra
-    (honesto — no hay journal cableado que emitir)."""
+    """Sin journal (callers legacy / tests), Pandora corre normal sin emitir la caja
+    negra — el gating es por presencia del journal, no por path. En producción AMBOS
+    paths (GUI y agente) lo cablean vía app_context (review Codex #318)."""
     runner = _runner_returning()
     svc = _make_service(lock_manager, snapshot_manager, runner)  # sin journal
 
@@ -598,3 +600,61 @@ async def test_manifest_rollback_falla_igual_devuelve_dict(
     assert result["success"] is False
     assert result["reason"] == "ActionManifestFailed"
     runner.run_pandora.assert_not_awaited()
+
+
+class _LeaseLostLock:
+    """Lock de frontera: en un clean-exit (el body no lanzó) ``__aexit__`` se comporta
+    como una lease perdida — mismo contrato que ``SnapshotTransactionLock`` real (review
+    Codex #318: el heartbeat pudo perder el lease DURANTE el run aunque el body haya
+    terminado con éxito). ``snapshots=[]`` porque Pandora corre con snapshot diferido."""
+
+    snapshots: list[object] = []
+
+    def __init__(self, **_kwargs: object) -> None:
+        pass
+
+    async def __aenter__(self) -> _LeaseLostLock:
+        return self
+
+    async def __aexit__(self, exc_type: type[BaseException] | None, exc: object, tb: object) -> bool:
+        if exc_type is None:
+            raise LockLeaseLostError("lease perdida durante el run (simulado)")
+        return False
+
+
+@pytest.mark.asyncio
+async def test_lease_perdida_devuelve_dict_y_marca_rolled_back(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """Si el heartbeat pierde el lease en un clean-exit (LockLeaseLostError en
+    __aexit__), generate_animations devuelve el dict de error (no propaga) y cierra la
+    TX rolled-back (no queda PENDING) — la exclusividad no estuvo garantizada."""
+    runner = _runner_returning()  # el run "termina con éxito" antes del __aexit__
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    with patch("sky_claw.local.tools.pandora_service.SnapshotTransactionLock", _LeaseLostLock):
+        result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert "lease" in result["message"].lower()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.commit_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_marca_rolled_back_y_propaga(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """Una cancelación (shutdown/timeout) mientras corre Pandora cierra la TX
+    rolled-back (no PENDING) y re-lanza la CancelledError (review Codex #318)."""
+    runner = MagicMock()
+    runner.run_pandora = AsyncMock(side_effect=asyncio.CancelledError())
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    with pytest.raises(asyncio.CancelledError):
+        await svc.generate_animations()
+
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.commit_transaction.assert_not_called()
+    # El lock se liberó pese a la cancelación.
+    assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None

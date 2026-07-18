@@ -463,6 +463,7 @@ async def run_pandora(
     *,
     lock_manager: Any | None = None,
     snapshot_manager: Any | None = None,
+    journal: Any | None = None,
 ) -> str:
     """Execute Pandora Behavior Engine in auto mode (Skyrim SE) via PandoraRunner.
 
@@ -476,6 +477,13 @@ async def run_pandora(
     lock as the GUI Ritual — the cross-process lock only protects if every mutator
     participates. Without a lock manager (legacy callers / tests) Pandora runs
     directly, preserving prior behavior.
+
+    T-26/T-28 (ADR 0002, review Codex #318): cuando ``journal`` está cableado (via
+    ``app_context``) este path del agente TAMBIÉN emite la caja negra de vuelo —
+    igual que ``run_loot_sort``. Sin cablearlo, un run de Pandora por Telegram/LLM
+    mutaría los behavior graphs sin ``ActionManifest``/``FlightReport`` y T-26/T-28
+    no estarían cubiertos para todos los callers de producción. Con ``journal=None``
+    (callers legacy / tests) el comportamiento no cambia.
     """
     if pandora_runner is None:
         return json.dumps(
@@ -489,6 +497,7 @@ async def run_pandora(
             lock_manager=lock_manager,
             snapshot_manager=snapshot_manager,
             pandora_runner=pandora_runner,
+            journal=journal,
         )
         # The service serializes on the behavior-graphs lock and converts lock
         # contention / execution failures to a dict; map it to the tool's JSON

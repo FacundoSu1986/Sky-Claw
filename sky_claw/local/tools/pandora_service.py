@@ -14,6 +14,7 @@ protección que aplica con certeza ahora es la *serialización*.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 from typing import TYPE_CHECKING, Any
@@ -375,6 +376,10 @@ class PandoraPipelineService:
             metadata={"source": "pandora_animations"},
         )
         journal_tx_id: int | None = None
+        # Una vez commiteada la TX, ninguna ruta posterior debe re-marcarla rolled-back:
+        # una cancelación mientras se compone/persiste el informe (post-commit)
+        # corrompería el audit trail de una TX ya exitosa (review Codex #249/#318).
+        journal_committed = False
         try:
             async with tx:
                 # T-26 (ADR 0002): emitir la caja negra ANTES de mutar. Si el journal
@@ -392,6 +397,7 @@ class PandoraPipelineService:
                     # el contrato "siempre devolver dict"). Espejo de loot_service.
                     try:
                         await self._journal.commit_transaction(journal_tx_id)
+                        journal_committed = True
                     except Exception:  # noqa: BLE001 — boundary best-effort del journal
                         logger.error(
                             "Fallo al commitear la TX del journal %d tras Pandora exitoso",
@@ -431,6 +437,29 @@ class PandoraPipelineService:
             # El runner lanzó DENTRO del lock: marcar la TX rolled-back (no PENDING).
             await self._mark_journal_rolled_back(journal_tx_id)
             logger.error("Pandora execution failed: %s", exc)
+            return _attach_preflight(
+                {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}, preflight_report
+            )
+        except asyncio.CancelledError:
+            # Cancelación (shutdown / timeout del task) mientras corría run_pandora o
+            # se cerraba la caja negra: cerrar la TX del journal para no dejarla PENDING
+            # (review Codex #318). Si ya se commiteó (cancelación durante el informe
+            # post-vuelo) NO se revierte — la TX fue exitosa y el audit trail no debe
+            # mentir (#249). El __aexit__ del lock ya liberó; se re-lanza la cancelación.
+            if not journal_committed:
+                await self._mark_journal_rolled_back(journal_tx_id)
+            raise
+        except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
+            # Red de seguridad final: incluye LockLeaseLostError que __aexit__ del lock
+            # puede lanzar en una salida limpia si el heartbeat perdió el lease durante
+            # el run (renovación fallida / otro agente reclamó el lock). No es
+            # LockAcquisitionError ni PandoraExecutionError, así que sin este catch
+            # burbujearía rompiendo el contrato y dejaría la TX PENDING (review Codex
+            # #318). Si no se commiteó, marcar rolled-back (la exclusividad no estuvo
+            # garantizada — reportar éxito mentiría).
+            if not journal_committed:
+                await self._mark_journal_rolled_back(journal_tx_id)
+            logger.error("Error inesperado en Pandora: %s", exc, exc_info=True)
             return _attach_preflight(
                 {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}, preflight_report
             )
