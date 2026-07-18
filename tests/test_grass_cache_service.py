@@ -506,6 +506,41 @@ async def test_generate_keyboardinterrupt_cierra_journal_y_propaga(tmp_path: pat
     journal.commit_transaction.assert_not_awaited()
 
 
+async def test_generate_cancelacion_en_cierre_final_del_journal_reintenta_rollback(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Auditoría hostil (V-1): el cierre final del journal corre DESPUÉS de
+    soltar los locks, fuera del ``except`` de cancelación de arriba. Una
+    cancelación exacta durante ese commit no debe dejar la TX sin intentar
+    cerrarla: se reintenta un rollback best-effort antes de propagar."""
+    journal = _journal_con_loot_completado()
+    journal.commit_transaction.side_effect = asyncio.CancelledError
+    service, colab = _servicio(tmp_path, journal=journal)  # runner exitoso por default
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.generate(_PAYLOAD)
+
+    journal.commit_transaction.assert_awaited_once_with(77)
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    colab["profile_manager"].teardown.assert_awaited()
+
+
+async def test_journal_close_fallo_de_bd_se_loguea(tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Auditoría hostil (A-1): el cierre best-effort del journal no debe
+    tragar un fallo de BD en silencio — sin log, un commit/rollback roto
+    desincroniza el journal sin dejar rastro."""
+    import logging
+
+    journal = _journal_con_loot_completado()
+    journal.commit_transaction.side_effect = RuntimeError("constraint violation")
+    service, _ = _servicio(tmp_path, journal=journal)
+
+    with caplog.at_level(logging.WARNING, logger="sky_claw.local.tools.grass_cache_service"):
+        await service._journal_close(77, exito=True)
+
+    assert any("journal" in registro.message.lower() for registro in caplog.records)
+
+
 async def test_generate_expone_teardown_failures(tmp_path: pathlib.Path) -> None:
     """§1.6: si el teardown no pudo borrar el clon/mod, el resultado lo EXPONE
     (no se traga): el operador debe limpiar a mano o el próximo run fallará."""
