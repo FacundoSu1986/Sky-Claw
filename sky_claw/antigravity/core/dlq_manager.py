@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("SkyClaw.DLQ")
 
-_DDL = """
+_CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS dead_letter_events (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     topic         TEXT    NOT NULL,
@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS dead_letter_events (
     updated_at    INTEGER NOT NULL,
     CHECK(status IN ('pending', 'in_progress', 'dead'))
 );
+"""
+
+_CREATE_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_dlq_status_retry
     ON dead_letter_events(status, next_retry_at);
 """
@@ -202,7 +205,9 @@ class DLQManager:
             return
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         async with self._write_transaction() as db:
-            await db.executescript(_DDL)
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(_CREATE_TABLE)
+            await db.execute(_CREATE_INDEX)
         self._schema_ensured = True
 
     async def _recover_stale_rows(self) -> None:
@@ -254,11 +259,10 @@ class DLQManager:
         async with self._connect() as db:
             try:
                 yield db
+                await db.commit()
             except BaseException:
                 await db.rollback()
                 raise
-            else:
-                await db.commit()
 
     # ------------------------------------------------------------------
     # Internal — retry loop

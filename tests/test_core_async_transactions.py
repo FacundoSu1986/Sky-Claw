@@ -87,6 +87,76 @@ async def test_database_y_dlq_comparten_dueno_transaccional(
         await database.close()
 
 
+async def test_schema_dlq_revierte_tabla_si_falla_creacion_de_indice(
+    tmp_path: Path,
+) -> None:
+    """El schema DLQ completo es una sola unidad DDL rollbackable."""
+    db_path = tmp_path / "schema-rollback.db"
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.execute("CREATE TABLE idx_dlq_status_retry (id INTEGER)")
+        await conn.commit()
+
+    dlq = DLQManager(db_path, lambda _name: None)
+    with pytest.raises(sqlite3.OperationalError):
+        await dlq._ensure_schema()
+
+    async with (
+        aiosqlite.connect(db_path) as conn,
+        conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dead_letter_events'") as cursor,
+    ):
+        tabla_dlq = await cursor.fetchone()
+
+    assert tabla_dlq is None
+    assert not dlq._schema_ensured
+
+
+async def test_fallback_revierte_si_commit_falla(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El fallback ejecuta rollback explicito si falla su commit."""
+    db_path = tmp_path / "fallback-commit.db"
+    conn = await aiosqlite.connect(db_path)
+    await conn.execute("CREATE TABLE writes (value TEXT NOT NULL)")
+    await conn.commit()
+    commit_original = conn.commit
+    rollback_original = conn.rollback
+    rollbacks = 0
+
+    @asynccontextmanager
+    async def conexion_persistente() -> AsyncGenerator[aiosqlite.Connection, None]:
+        yield conn
+
+    async def commit_fallido() -> None:
+        raise sqlite3.OperationalError("commit fallido")
+
+    async def rollback_espiado() -> None:
+        nonlocal rollbacks
+        rollbacks += 1
+        await rollback_original()
+
+    dlq = DLQManager(db_path, lambda _name: None)
+    monkeypatch.setattr(dlq, "_connect", conexion_persistente)
+    monkeypatch.setattr(conn, "commit", commit_fallido)
+    monkeypatch.setattr(conn, "rollback", rollback_espiado)
+
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="commit fallido"):
+            async with dlq._write_transaction() as transaction_conn:
+                await transaction_conn.execute(
+                    "INSERT INTO writes (value) VALUES (?)",
+                    ("no confirmada",),
+                )
+
+        assert rollbacks == 1
+        assert not conn.in_transaction
+        async with conn.execute("SELECT value FROM writes") as cursor:
+            assert await cursor.fetchall() == []
+    finally:
+        monkeypatch.setattr(conn, "commit", commit_original)
+        await conn.close()
+
+
 @pytest.fixture
 async def base_transaccional(
     tmp_path: Path,
