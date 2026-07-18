@@ -52,7 +52,12 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from sky_claw.antigravity.security.hitl import HITLGuard
-    from sky_claw.local.mo2.profile_sandbox import ProfileSandbox, SandboxClone, SandboxDiff
+    from sky_claw.local.mo2.profile_sandbox import (
+        ProfileSandbox,
+        PromoteResult,
+        SandboxClone,
+        SandboxDiff,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +139,11 @@ class SandboxPromotionFlow:
     def __init__(self, *, sandbox: ProfileSandbox, hitl_guard: HITLGuard | None) -> None:
         self._sandbox = sandbox
         self._hitl_guard = hitl_guard
+        # Referencias fuertes a los cleanups post-cancelación: el loop solo
+        # guarda referencias débiles a las tasks (ver docs de asyncio.shield),
+        # así que sin esto un cleanup que quedó corriendo en background podría
+        # ser recolectado por GC antes de terminar (review Codex PR #320).
+        self._cleanup_tasks: set[asyncio.Task[None]] = set()
 
     async def run(
         self,
@@ -258,9 +268,30 @@ class SandboxPromotionFlow:
         diff: SandboxDiff,
         result: dict[str, Any],
     ) -> dict[str, Any]:
-        """Promueve el clon aprobado; drift y rollback fallido son fail-closed."""
+        """Promueve el clon aprobado; drift y rollback fallido son fail-closed.
+
+        F2 (auditoría 2026-07-18): ``promote()`` muta el árbol REAL dentro de
+        ``asyncio.to_thread`` y cancelar la task no interrumpe ese hilo. Sin
+        shield, la cancelación dejaba un hilo zombie escribiendo el perfil real
+        sin observador y el clon (con los backups de su rollback interno)
+        huérfano en disco. El promote corre como task shieldeada: ante una
+        cancelación se espera su desenlace real y recién entonces se limpia.
+        """
+        promote_task = asyncio.ensure_future(self._sandbox.promote(clone))
         try:
-            promocion = await self._sandbox.promote(clone)
+            promocion = await asyncio.shield(promote_task)
+        except asyncio.CancelledError:
+            # Descartar el clon con el promote aún en vuelo rompería su
+            # rollback (los backups viven en el árbol del clon): primero se
+            # observa el desenlace, después se limpia. El cleanup va en su
+            # propia task shieldeada para que una segunda cancelación tampoco
+            # lo interrumpa a él (termina en background si eso pasa).
+            cleanup = asyncio.ensure_future(self._finalizar_promote_cancelado(ritual_name, promote_task, clone))
+            self._cleanup_tasks.add(cleanup)
+            cleanup.add_done_callback(self._cleanup_tasks.discard)
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(cleanup)
+            raise
         except SandboxDriftError as exc:
             # El árbol real cambió en la ventana de aprobación: promover
             # pisaría cambios vivos. El propio promote ya cortó; descartar.
@@ -314,3 +345,70 @@ class SandboxPromotionFlow:
             files_deleted=promocion.files_deleted,
         )
         return result
+
+    async def _finalizar_promote_cancelado(
+        self,
+        ritual_name: str,
+        promote_task: asyncio.Task[PromoteResult],
+        clone: SandboxClone,
+    ) -> None:
+        """Observa el desenlace real de un promote cancelado y limpia el clon.
+
+        Espeja los contratos de la rama no cancelada: tras un
+        :class:`SandboxRollbackError` el clon NO se descarta (su árbol contiene
+        el backup de restauración manual); en cualquier otro desenlace el clon
+        se descarta best-effort. Corre bajo ``asyncio.shield`` y su única misión
+        es dejar el filesystem en un estado explicable. Única excepción que
+        propaga: su PROPIA cancelación con el promote aún en vuelo — ahí no es
+        seguro tocar el clon y el leak es preferible a la corrupción.
+        """
+        try:
+            # Shield también acá: si el teardown cancela a ESTA task de cleanup,
+            # el promote sigue vivo en su hilo — y esa cancelación propia no es
+            # prueba de que el promote paró (review Codex PR #320).
+            promocion = await asyncio.shield(promote_task)
+        except SandboxRollbackError:
+            logger.critical(
+                "SandboxPromotionFlow: cancelado durante el promote de '%s' y el promote "
+                "terminó en rollback fallido; el clon %s se preserva con el backup manual.",
+                ritual_name,
+                clone.root,
+            )
+            return
+        except asyncio.CancelledError:
+            if not promote_task.cancelled():
+                # Cancelaron al PROPIO cleanup (p. ej. teardown del loop) con el
+                # promote posiblemente aún en vuelo: descartar acá borraría los
+                # backups que ese hilo todavía necesita. Propagar sin limpiar —
+                # un clon huérfano es recuperable; un perfil corrupto no.
+                logger.critical(
+                    "SandboxPromotionFlow: cleanup de '%s' cancelado con el promote aún en vuelo; "
+                    "el clon %s NO se descarta (contiene los backups del promote).",
+                    ritual_name,
+                    clone.root,
+                )
+                raise
+            logger.warning(
+                "SandboxPromotionFlow: el promote de '%s' terminó cancelado antes de mutar; descartando el clon.",
+                ritual_name,
+            )
+        except Exception:
+            logger.warning(
+                "SandboxPromotionFlow: el promote de '%s' falló tras la cancelación "
+                "(su rollback interno restauró el árbol real); descartando el clon.",
+                ritual_name,
+                exc_info=True,
+            )
+        else:
+            # El hilo del promote completó pese a la cancelación: los cambios
+            # YA están aplicados al perfil real aunque el caller reciba
+            # CancelledError — dejar constancia explícita para el operador.
+            logger.warning(
+                "SandboxPromotionFlow: '%s' fue cancelado pero el promote COMPLETÓ — "
+                "%d escrito(s), %d borrado(s) ya aplicados al perfil real.",
+                ritual_name,
+                promocion.files_written,
+                promocion.files_deleted,
+            )
+        with contextlib.suppress(Exception):
+            await self._sandbox.discard(clone)
