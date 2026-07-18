@@ -273,6 +273,121 @@ class TestSandboxPromotionFlow:
         assert _sin_clones_colgados(tmp_path)
 
 
+class TestCancelacionDurantePromote:
+    """F2 (auditoría 2026-07-18): ``promote()`` muta el árbol REAL dentro de
+    ``asyncio.to_thread`` — cancelar la task no interrumpe ese hilo. El flow
+    debe observar el desenlace real del promote antes de limpiar: descartar el
+    clon con el promote aún corriendo rompería su rollback interno (los
+    backups viven en el árbol del clon)."""
+
+    class _SandboxPromoteLento:
+        """Sandbox fake: promote bloqueante y observable, resto delega al real.
+
+        ``promote_iniciado``/``liberar_promote`` simulan la ventana en la que
+        el "hilo" de promote sigue vivo tras la cancelación del caller.
+        """
+
+        def __init__(self, real: ProfileSandbox, resultado_promote: Any) -> None:
+            self._real = real
+            self._resultado_promote = resultado_promote
+            self.descartes = 0
+            self.promote_iniciado = asyncio.Event()
+            self.liberar_promote = asyncio.Event()
+            self.promote_completado = False
+
+        async def clone(self) -> SandboxClone:
+            return await self._real.clone()
+
+        async def diff(self, clone: SandboxClone) -> SandboxDiff:
+            return await self._real.diff(clone)
+
+        async def promote(self, clone: SandboxClone) -> Any:
+            self.promote_iniciado.set()
+            await self.liberar_promote.wait()
+            self.promote_completado = True
+            if isinstance(self._resultado_promote, Exception):
+                raise self._resultado_promote
+            return self._resultado_promote
+
+        async def discard(self, clone: SandboxClone) -> None:
+            self.descartes += 1
+            await self._real.discard(clone)
+
+    async def _correr_y_cancelar_en_promote(self, sandbox: _SandboxPromoteLento) -> asyncio.Task[dict[str, Any]]:
+        """Lanza el flow, espera a que el promote arranque y cancela la task."""
+        guard = _GuardFake(Decision.APPROVED)
+        flow = SandboxPromotionFlow(sandbox=sandbox, hitl_guard=guard)  # type: ignore[arg-type]
+        task = asyncio.create_task(flow.run(ritual_name="synthesis", ritual=_ritual_escribe_esp))
+        await asyncio.wait_for(sandbox.promote_iniciado.wait(), timeout=2.0)
+        task.cancel()
+        return task
+
+    async def _esperar(self, condicion: Any, timeout: float = 2.0) -> None:
+        """Drena el loop hasta que ``condicion()`` sea verdadera (cleanup shieldeado)."""
+        async with asyncio.timeout(timeout):
+            while not condicion():
+                await asyncio.sleep(0)
+
+    async def test_cancelacion_espera_el_desenlace_del_promote_y_descarta(self, tmp_path: pathlib.Path) -> None:
+        """La cancelación propaga, pero recién después de observar que el
+        promote terminó; el clon se descarta y no queda huérfano."""
+        from sky_claw.local.mo2.profile_sandbox import PromoteResult
+
+        sandbox = self._SandboxPromoteLento(
+            _sandbox(tmp_path), resultado_promote=PromoteResult(files_written=1, files_deleted=0)
+        )
+        task = await self._correr_y_cancelar_en_promote(sandbox)
+        # El promote "sigue corriendo en el hilo": liberar su desenlace.
+        sandbox.liberar_promote.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert sandbox.promote_completado is True  # el desenlace fue observado
+        await self._esperar(lambda: sandbox.descartes == 1)
+        assert _sin_clones_colgados(tmp_path)
+
+    async def test_cancelacion_no_descarta_mientras_el_promote_sigue_vivo(self, tmp_path: pathlib.Path) -> None:
+        """El discard NO puede correr con el promote todavía en vuelo: borraría
+        los backups del rollback interno que viven en el árbol del clon."""
+        from sky_claw.local.mo2.profile_sandbox import PromoteResult
+
+        sandbox = self._SandboxPromoteLento(
+            _sandbox(tmp_path), resultado_promote=PromoteResult(files_written=1, files_deleted=0)
+        )
+        task = await self._correr_y_cancelar_en_promote(sandbox)
+        # Darle varios ciclos al loop SIN liberar el promote.
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+        assert sandbox.descartes == 0  # el clon sigue intacto bajo el promote vivo
+        assert not task.done()  # la cancelación espera el desenlace real
+
+        sandbox.liberar_promote.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await self._esperar(lambda: sandbox.descartes == 1)
+
+    async def test_cancelacion_con_rollback_fallido_preserva_el_clon(self, tmp_path: pathlib.Path) -> None:
+        """Mismo contrato que la rama no cancelada: tras SandboxRollbackError el
+        clon NO se descarta — su árbol contiene el backup manual."""
+        sandbox = self._SandboxPromoteLento(
+            _sandbox(tmp_path),
+            resultado_promote=SandboxRollbackError("Backup para restauración manual en: rollback-x"),
+        )
+        task = await self._correr_y_cancelar_en_promote(sandbox)
+        sandbox.liberar_promote.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        await self._esperar(lambda: sandbox.promote_completado)
+        for _ in range(20):  # chance de que un discard indebido corra
+            await asyncio.sleep(0)
+        assert sandbox.descartes == 0
+        assert not _sin_clones_colgados(tmp_path)  # el backup queda en disco
+
+
 class TestFormatDiffDetail:
     def test_resume_conteo_y_lista_los_primeros_paths(self) -> None:
         diff = SandboxDiff(
