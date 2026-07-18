@@ -383,3 +383,145 @@ async def test_exito_message_vacio(lock_manager: DistributedLockManager, snapsho
 
     assert result["success"] is True
     assert result["message"] == ""
+
+
+# =============================================================================
+# PR B (T-16c) — gate de preflight antes de generar el Bashed Patch
+# =============================================================================
+
+from sky_claw.local.validators.preflight import (  # noqa: E402
+    PreflightCheck,
+    PreflightReport,
+    PreflightStatus,
+)
+
+
+class _FakePreflight:
+    """Preflight inyectable: ``run()`` devuelve un reporte fijo."""
+
+    def __init__(self, report: PreflightReport) -> None:
+        self._report = report
+
+    async def run(self) -> PreflightReport:
+        return self._report
+
+
+def _report(status: PreflightStatus, summary: str) -> PreflightReport:
+    """Reporte con un solo check (p. ej. permisos sobre el destino del Bashed Patch)."""
+    return PreflightReport(
+        status=status,
+        checks=(PreflightCheck(name="write_permissions", status=status, summary=summary, details=()),),
+    )
+
+
+def _svc_with_preflight(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    runner: MagicMock,
+    preflight: object,
+) -> WryeBashPipelineService:
+    return WryeBashPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=MagicMock(),
+        wrye_bash_runner=runner,
+        preflight=preflight,  # type: ignore[arg-type]  # fake duck-typed en tests
+    )
+
+
+@pytest.mark.asyncio
+async def test_preflight_red_bloquea_sin_correr(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """Un preflight ROJO (destino del Bashed Patch sin permisos / master faltante) frena
+    Wrye Bash ANTES de tocar nada: no corre el subproceso ni toma el lock."""
+    runner = _runner_returning()
+    red = _report(PreflightStatus.RED, "Data/overwrite sin permisos de escritura.")
+    svc = _svc_with_preflight(lock_manager, snapshot_manager, runner, _FakePreflight(red))
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    assert result["reason"] == "PreflightBlocked"
+    assert result["preflight"]["status"] == "red"
+    runner.generate_bashed_patch.assert_not_awaited()
+    assert await lock_manager.get_lock_info(BASHED_PATCH_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_preflight_red_no_llama_al_guard_m04(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """El gate rojo corta ANTES del guard M-04 (preflight brutal primero)."""
+    runner = _runner_returning()
+    guard = AsyncMock(return_value={"valid": True})
+    red = _report(PreflightStatus.RED, "master faltante")
+    svc = WryeBashPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=MagicMock(),
+        wrye_bash_runner=runner,
+        plugin_limit_guard=guard,
+        preflight=_FakePreflight(red),  # type: ignore[arg-type]
+    )
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["reason"] == "PreflightBlocked"
+    guard.assert_not_awaited()
+    runner.generate_bashed_patch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_preflight_yellow_no_bloquea_pero_surface(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """Amarillo (p. ej. overwrite sucio) NO bloquea; el reporte viaja en el result."""
+    runner = _runner_returning()
+    yellow = _report(PreflightStatus.YELLOW, "overwrite con residuos.")
+    svc = _svc_with_preflight(lock_manager, snapshot_manager, runner, _FakePreflight(yellow))
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is True
+    assert result["preflight"]["status"] == "yellow"
+    runner.generate_bashed_patch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_preflight_green_no_ensucia_el_result(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """Verde: no bloquea y NO adjunta la clave ``preflight`` (mismo criterio que hermanos)."""
+    runner = _runner_returning()
+    green = _report(PreflightStatus.GREEN, "Escritura verificada.")
+    svc = _svc_with_preflight(lock_manager, snapshot_manager, runner, _FakePreflight(green))
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is True
+    assert "preflight" not in result
+    runner.generate_bashed_patch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sin_fuentes_resolubles_no_gatea(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """Sin game/MO2 resoluble (resolver devuelve no-Path), _ensure_preflight → None: sin gate."""
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=None)
+    resolver.get_mo2_path = MagicMock(return_value=None)
+    runner = _runner_returning()
+    svc = WryeBashPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=resolver,
+        wrye_bash_runner=runner,
+    )
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is True
+    assert "preflight" not in result
+    runner.generate_bashed_patch.assert_awaited_once()
