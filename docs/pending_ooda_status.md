@@ -373,3 +373,203 @@ Por valor/riesgo, en orden:
    existiría para la mayoría de los Rituales sería peor que no mostrarlo.
 5. Todo lo demás (T-12/T-10/T-11 continuos, Oleada 5, residuales del OODA) es
    deuda de fondo o requiere un humano — no urgente para el próximo PR.
+
+---
+
+## Addendum (2026-07-16, tarde) — Wrye Bash bajo el lock `load-order` + snapshot
+
+**Cerrado** (§2.1 del reporte de consistencia de la auditoría — era el ÚNICO
+mutador de plugins fuera de la disciplina lock+snapshot):
+
+- `SupervisorAgent.execute_wrye_bash_pipeline` (GUI/dispatcher) y el tool del
+  agente `system_tools.generate_bashed_patch` (LLM/Telegram) corren ahora bajo
+  `SnapshotTransactionLock` sobre el MISMO recurso que LOOT
+  (`LOAD_ORDER_RESOURCE_ID`): un sort concurrente ya no puede correr mientras
+  se construye el Bashed Patch (que lee el load order completo), y viceversa.
+- El `Bashed Patch, 0.esp` previo se snapshotea antes de regenerar: un
+  timeout/fallo a mitad de escritura restaura el patch anterior en vez de
+  dejar el `.esp` corrupto persistente. `rolled_back` se reporta honesto vía
+  `rollback_completed` (False en la primera generación — nada que restaurar).
+- Nombre canónico `BASHED_PATCH_NAME` extraído a `wrye_bash_runner.py` y
+  anclado contra `DelegateToBashedPatch.BASHED_PATCH_NAME` (ADR 0001).
+- Anclado en `tests/test_wrye_bash_lock.py` (ambos paths + rollback + ancla).
+
+**Sigue abierto del reporte de consistencia** (candidatos para PRs separados):
+VRAMr con lock custom sin heartbeat (TTL 10 min < duración del run), identidad
+de PID por `create_time` en `grass_cache_runner` (réplica del patrón #302), y
+`rglob("*.cgid")` + `to_json` atómico en `patcher_pipeline`. Este addendum no
+cambia el ranking del "Decide" de arriba — Wrye Bash entra como serialización
+correcta, no como preflight (T-16c·3) ni caja negra (T-26), que siguen
+pendientes para este runner.
+
+---
+
+## Addendum (2026-07-16, noche) — VRAMr bajo SnapshotTransactionLock
+
+**Cerrado** (fix #5 del reporte de consistencia — "reemplazar el lock custom
+de VRAMr con SnapshotTransactionLock"):
+
+- `vramr_service.execute_pipeline` dejó de tomar el lock con `acquire_lock`
+  crudo (vía el `_lock_scope` custom, ahora eliminado) y usa
+  `SnapshotTransactionLock` con `target_files=[]` — el mismo patrón "serializar
+  sin snapshotear" de `pandora_service`. VRAMr no muta entrada, así que no hay
+  snapshot que restaurar; su rollback propio (`_cleanup_output_dir` de los
+  artefactos nuevos) se conserva intacto.
+- El punto del fix: un run de VRAMr dura horas (default 1 h) y el lease del
+  lock expira a los 10 min (`DEFAULT_LOCK_TTL_SECONDS`). Con `acquire_lock`
+  crudo el lease moría a mitad de run y la serialización desaparecía en
+  silencio; `SnapshotTransactionLock` trae el heartbeat + auto-renew que
+  mantiene el lease vivo. Anclado en `tests/test_vramr_service.py`
+  (`test_lease_sobrevive_al_ttl_gracias_al_heartbeat` con TTL 0.3s vs run 0.9s,
+  y `test_lock_tomado_con_target_files_vacio`).
+- **Matiz de severidad (verificado):** `VRAMrPipelineService` solo se construye
+  en tests — no está cableado a producción todavía. El bug era LATENTE (no
+  activo): el fix es correcto y future-proof, pero no había un camino de
+  usuario expuesto. El reporte lo etiquetó BLOQUEANTE sin verificar el
+  cableado; la etiqueta sobre-estimaba la severidad activa.
+
+**Estado del reporte de consistencia tras este PR** (los BLOQUEANTES/mejoras
+verificables-por-agente): Wrye Bash ✅ (serialización), VRAMr ✅ (heartbeat).
+Quedan dos ítems menores y de bajo riesgo, candidatos para un PR chico:
+`patcher_pipeline.to_json` atómico (config de patchers, escritura no atómica —
+Media) e identidad de PID por `create_time` en `grass_cache_runner._kill_game_tree_sync`
+(IMPORTANTE-baja, mitigada porque `_scan_for_game_sync` ya valida create_time+exe
+al ATRIBUIR el juego). El `glob("*.cgid")` no-recursivo NO se toca sin el smoke
+real de NGIO (probable no-bug: NGIO escribe planos con worldspace en el nombre).
+
+**Techo alcanzado:** con Wrye Bash + VRAMr cerrados, el pozo de bugs de
+concurrencia verificables-por-agente de alto valor está agotado. Lo que queda
+de VALOR real (bot de Telegram end-to-end, GUI de instalación/FOMOD, smoke E2E
+T-25, smoke de `dump_record_detail.pas` contra xEdit real) requiere un rig
+humano con Skyrim/MO2 real — no ejecutable por un agente en CI.
+
+---
+
+## Addendum (2026-07-16, cierre) — patcher_pipeline atómico + identidad de PID en grass
+
+**Cerrados** (los dos ítems menores restantes del reporte de consistencia):
+
+- **`PatcherPipeline.to_json` escritura atómica.** Escribía con `open(w)` +
+  `json.dump` directo: un crash a mitad del dump dejaba el JSON de config
+  truncado y el próximo `from_json`/`__init__` fallaba con pipeline corrupto.
+  Ahora escribe a un tmp único en el mismo dir y hace `os.replace` atómico
+  (patrón de `vfs._write_modlist_atomic`); el tmp huérfano se limpia si falla.
+  Anclado en `tests/test_patcher_pipeline_atomic.py` (incluye el caso de crash
+  a mitad del dump que preserva el config previo byte a byte).
+- **Identidad de PID en `grass_cache_runner._kill_game_tree_sync`.** El kill
+  directo del juego reparentado (D7b) mataba por PID sin revalidar identidad:
+  entre la atribución y el kill el SO puede reusar el PID para otro proceso
+  (Steam/Discord/otro Skyrim), y matar su árbol cerraría una sesión ajena.
+  Ahora revalida name ∈ `game_exe_names` + exe bajo `game_path` (helper
+  `_es_proceso_del_juego`, misma verificación que `_scan_for_game_sync` usa al
+  atribuir) antes de matar; fail-closed si el exe es ilegible. Anclado en
+  `test_pid_reusado_por_otro_proceso_no_se_mata`. El mundo de procesos falso
+  del test se hizo fiel (`Process(pid)` devuelve el proc registrado con su
+  name/exe reales) para poder ejercitar el revalidado.
+
+**Reporte de consistencia de la auditoría: CERRADO** salvo el `glob("*.cgid")`
+no-recursivo, que se deja a propósito — probable no-bug (NGIO escribe los
+`.cgid` planos con el worldspace en el nombre) y no verificable sin el smoke
+real de NGIO en un rig con Skyrim. Todo lo demás (Wrye Bash lock, VRAMr
+heartbeat, patcher atómico, grass PID, más los del PR #304: parche placebo,
+rollback honesto de Synthesis, advisor Fase 1) está cerrado y anclado.
+
+**Frente verificable-por-agente: agotado.** El trabajo de valor restante
+(Telegram end-to-end, GUI/FOMOD, smoke E2E T-25, smoke de los `.pas` contra
+xEdit real) requiere un rig humano con Skyrim/MO2 — no ejecutable en CI.
+
+---
+
+## Addendum (2026-07-17) — 4 hallazgos de Codex en el review del PR #316
+
+El review automático de Codex sobre el PR #316 (2026-07-17) encontró 4
+gaps reales en los fixes de ese mismo PR — verificados uno por uno contra el
+código antes de aplicar el fix (protocolo del repo: nunca confiar ciegamente
+en un hallazgo externo). Los 4 eran correctos:
+
+- **`grass_cache_runner._kill_game_tree_sync` no comparaba `create_time`.**
+  El fix anterior (mismo PR) revalidaba nombre+exe antes de matar, pero un PID
+  reusado por OTRO `SkyrimSE.exe` de la MISMA instalación (el usuario relanza
+  el juego a mano entre la atribución y el kill) pasaba ese chequeo igual —
+  mismo nombre, mismo exe, distinto proceso. Fix: `_scan_for_game_sync` ahora
+  captura `create_time` en el momento de la ATRIBUCIÓN (nuevo tipo `_GamePid`
+  que viaja pid+create_time por todo `run()`, en vez de un `int` pelado) y
+  `_kill_game_tree_sync`/`_es_proceso_del_juego` lo comparan contra el del
+  proceso vivo antes de matar. Mismo patrón que `vfs.py` #302. Anclado en
+  `test_pid_reusado_por_el_mismo_juego_relanzado_no_se_mata`.
+- **`LockLeaseLostError` sin capturar en Wrye Bash y VRAMr.** Ambos usan
+  `SnapshotTransactionLock` (nuevo en este PR); su `__aexit__` puede relanzar
+  `LockLeaseLostError` en un CLEAN exit si el heartbeat perdió el lease
+  durante un run largo — ninguno de los dos tenía un `except` para esa clase
+  (Wrye Bash: solo `LockAcquisitionError`/`_WryeBashFailedError`/
+  `WryeBashExecutionError`; VRAMr: el `except Exception` estaba DENTRO del
+  `async with`, no cubre lo que lanza `__aexit__` al salir). Sin el fix,
+  ambos violaban el contrato "siempre devolver dict" y propagaban. Fix:
+  `except LockLeaseLostError` explícito en los tres call sites (pipeline del
+  supervisor, handler del agente ya lo cubría por su `except Exception`
+  genérico — se dejó el comentario aclarando por qué, VRAMr). Se reporta como
+  fallo con `rolled_back=False` (la exclusividad no estuvo garantizada, no se
+  puede declarar éxito ni intentar limpiar sin arriesgar clobberear a otro
+  agente).
+- **Bashed Patch corrupto no se limpiaba en la primera generación.** Cuando
+  `target_files=[]` (no hay `.esp` previo que snapshotear), un fallo dentro
+  del lock no tenía nada que restaurar — el `.esp` truncado que Wrye Bash dejó
+  a medio escribir quedaba persistente en `Data/`. Fix: en ambos paths
+  (pipeline + handler del agente), si `target_files` estaba vacío y el run
+  falló, se borra el artefacto nuevo (best-effort). Mismo patrón que
+  `vramr_service._cleanup_output_dir`.
+
+Los 4 fixes están en el mismo PR #316 (no un PR separado — eran defectos
+introducidos por ese PR, corregidos antes de merge). Gates verdes, suite
+completa passing.
+
+---
+
+## Addendum (2026-07-17) — rebase de PR #316 sobre PR #315 (colisión resuelta)
+
+Mientras el PR #316 (este) esperaba review, se mergeó el **PR #315** —
+trabajo independiente de otro agente en la misma rama de la auditoría, que
+resuelve el mismo hueco de concurrencia de Wrye Bash (§2.1) con un diseño
+superior: extracción Strangler-Fig (`WryeBashPipelineService`, el mismo
+patrón que ya tenían LOOT/xEdit/Synthesis/DynDOLOD/Pandora) más un **lock
+anidado** (`Bashed Patch, 0.esp` externo + `load-order` interno) que
+serializa Wrye Bash tanto contra un sort de LOOT concurrente como contra
+otra corrida propia — el fix inline de este PR (un solo lock `load-order`
+con snapshot condicional del `.esp`) solo cubría el primer caso.
+
+Al rebasear #316 sobre `main` (ya con #315 mergeado):
+
+- **Se descartó por completo la porción de `supervisor.py`** de este PR
+  (`execute_wrye_bash_pipeline` inline + `_WryeBashFailedError`): #315 ya
+  la reemplazó con el delegador fino a `WryeBashPipelineService`. Cero
+  diff contra `main` en ese archivo tras el rebase.
+- **`system_tools.generate_bashed_patch` (el path del agente LLM/Telegram,
+  que #315 NO tocaba) se reescribió para delegar al mismo
+  `WryeBashPipelineService`** en vez de mantener una segunda
+  implementación del lock con supuestos distintos (este PR asumía que el
+  `.esp` vive en una ruta conocida — `game_path/Data/<nombre>` — y lo
+  snapshoteaba condicionalmente; #315 decidió deliberadamente
+  `target_files=[]` siempre porque la salida sale vía la VFS de MO2 con
+  `cwd` y su ubicación real es dependiente del entorno). Mantener las dos
+  implementaciones habría reintroducido la "asimetría entre gemelos
+  arquitecturales" que el reporte de consistencia original señaló como
+  causa raíz de proceso (§4.4). El handler ahora espeja el patrón ya usado
+  por `run_pandora`/`run_bodyslide_batch`: delega al servicio, mapea su
+  dict al contrato JSON de la tool (con `sanitize_for_prompt` aplicado a
+  stdout/stderr, que el servicio no hace por ser agnóstico de LLM), y
+  preserva el path sin lock manager (legacy/tests) sin cambios.
+- `tests/test_wrye_bash_lock.py` se reescribió: los tests que cubrían el
+  pipeline inline del supervisor se eliminaron (esa lógica ahora vive en
+  `test_wrye_bash_service.py`, del propio #315, que ya la cubre en
+  detalle — lock anidado, contención, lease perdida, message canónico).
+  Quedan solo los tests del contrato de delegación del handler del agente
+  (8 tests: serialización en el lock anidado, bloqueo por el lock propio Y
+  por `load-order`, sanitización del stderr, lease perdida, path directo
+  sin lock, runner `None`, y el ancla de nombre canónico — extendida para
+  incluir `BASHED_PATCH_RESOURCE_ID` de #315).
+- Las otras 3 piezas de este PR (VRAMr, `patcher_pipeline` atómico, PID de
+  grass) son ortogonales a Wrye Bash — no tuvieron conflicto y salieron
+  del rebase sin cambios.
+
+Gates verdes (`ruff check` + `ruff format --check` + `mypy sky_claw/`),
+suite completa passing tras el rebase.

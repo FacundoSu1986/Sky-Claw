@@ -394,19 +394,59 @@ async def close_game(mo2: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def generate_bashed_patch(wrye_bash_runner: Any) -> str:
+async def generate_bashed_patch(
+    wrye_bash_runner: Any,
+    *,
+    lock_manager: Any | None = None,
+    snapshot_manager: Any | None = None,
+) -> str:
     """Generate 'Bashed Patch, 0.esp' using WryeBashRunner.
 
     NOTE: Plugin limit validation (M-04) is handled at the Supervisor level
     (execute_wrye_bash_pipeline). Here we only execute the runner.
     This handler is used when AsyncToolRegistry invokes the tool directly.
+
+    #315 (PR A) extrajo :class:`WryeBashPipelineService`, el mismo servicio que
+    usa el Ritual de la GUI/dispatcher, con lock ANIDADO (``Bashed Patch, 0.esp``
+    + ``load-order``): serializa contra otra corrida de Wrye Bash y contra un
+    sort de LOOT concurrente — el lock cross-process solo protege si TODOS los
+    mutadores participan. Este path del agente delega al mismo servicio en vez
+    de mantener una segunda implementación del lock (§2.1 auditoría original:
+    mismo vector P1 que ``run_loot_sort``/``run_pandora``). Sin lock manager
+    (callers legacy / tests) corre directo, preservando el comportamiento
+    anterior.
     """
     if wrye_bash_runner is None:
         return json.dumps({"error": "WryeBashRunner is not configured. Set WRYE_BASH_PATH."})
+
+    if lock_manager is not None and snapshot_manager is not None:
+        from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
+
+        service = WryeBashPipelineService(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            wrye_bash_runner=wrye_bash_runner,
+        )
+        # El servicio siempre devuelve un dict serializable (guard M-04, lock
+        # contention, LockLeaseLostError, error de ejecución) — nunca propaga.
+        # validate_limit=False: M-04 se valida a nivel Supervisor para este path.
+        res = await service.execute_pipeline(profile="agent-tool", validate_limit=False)
+        out: dict[str, Any] = {
+            "success": res.get("success", False),
+            "return_code": res.get("return_code", -1),
+            "stdout": sanitize_for_prompt(str(res.get("stdout", ""))) if res.get("stdout") else "",
+            "stderr": sanitize_for_prompt(str(res.get("stderr", ""))) if res.get("stderr") else "",
+            "duration_seconds": res.get("duration_seconds", 0.0),
+        }
+        if not out["success"] and res.get("message"):
+            out["error"] = res["message"]
+        return json.dumps(out)
+
     try:
         result = await wrye_bash_runner.generate_bashed_patch()
     except Exception as exc:
         return json.dumps({"error": str(exc)})
+
     return json.dumps(
         {
             "success": result.success,

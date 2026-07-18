@@ -559,7 +559,14 @@ class AsyncToolRegistry:
                 "Runs validate_load_order_limit (M-04) first and aborts if the 254-plugin limit is exceeded."
             ),
             params_model=None,
-            fn=lambda: generate_bashed_patch(self._wrye_bash_runner),
+            # #315: delega a WryeBashPipelineService (lock anidado Bashed
+            # Patch + load-order) cuando el lock manager está cableado — mismo
+            # servicio que usa el Ritual de la GUI/dispatcher.
+            fn=lambda: generate_bashed_patch(
+                self._wrye_bash_runner,
+                lock_manager=self._lock_manager,
+                snapshot_manager=self._snapshot_manager,
+            ),
         )
         self._tools["uninstall_mod"] = ToolDescriptor(
             name="uninstall_mod",

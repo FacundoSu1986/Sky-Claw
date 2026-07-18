@@ -10,8 +10,11 @@ Reference:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -443,8 +446,21 @@ class PatcherPipeline:
         # Crear directorio padre si no existe
         json_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        # Escritura atómica tmp->rename: un crash a mitad del dump dejaba el
+        # JSON de config truncado/corrupto y el próximo from_json fallaba
+        # (§2.1 reporte de consistencia). Se escribe a un tmp único en el mismo
+        # dir (para que os.replace sea atómico — mismo filesystem) y se renombra
+        # sobre el destino. Mismo patrón que vfs._write_modlist_atomic.
+        tmp = json_path.parent / f".{json_path.name}.{uuid.uuid4().hex}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, json_path)
+        except Exception:
+            # Limpiar el tmp huérfano si el dump o el rename fallan.
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            raise
 
         logger.info(
             "Pipeline guardado en %s: %d patchers",
