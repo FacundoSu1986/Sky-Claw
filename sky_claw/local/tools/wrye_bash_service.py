@@ -40,8 +40,11 @@ from sky_claw.local.tools.wrye_bash_runner import (
 )
 
 if TYPE_CHECKING:
+    import pathlib
+
     from sky_claw.antigravity.core.path_resolver import PathResolutionService
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+    from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,18 @@ logger = logging.getLogger(__name__)
 #: Wrye Bash. Además se anida el lock ``load-order`` (ver ``execute_pipeline``) porque
 #: el Bashed Patch se arma del orden activo que LOOT reescribe.
 BASHED_PATCH_RESOURCE_ID = "Bashed Patch, 0.esp"
+
+
+def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
+    """Adjunta el reporte de preflight al ``result`` cuando no está verde.
+
+    Mismo criterio que ``loot_service``/``xedit_service``/``dyndolod_service``/
+    ``pandora_service`` (T-16b/T-16c): un semáforo verde no ensucia el dict;
+    amarillo/rojo viajan como ``result["preflight"]`` para que el panel lo renderice.
+    """
+    if report is not None and report.status.value != "green":
+        result["preflight"] = report.to_dict()
+    return result
 
 
 class WryeBashPipelineService:
@@ -73,12 +88,102 @@ class WryeBashPipelineService:
         path_resolver: PathResolutionService | None = None,
         wrye_bash_runner: WryeBashRunner | None = None,
         plugin_limit_guard: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+        preflight: PreflightService | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
         self._path_resolver = path_resolver
         self._wrye_bash_runner = wrye_bash_runner
         self._plugin_limit_guard = plugin_limit_guard
+        # Preflight inyectable (tests) o construido perezosamente en el primer uso.
+        self._preflight = preflight
+
+    def _ensure_preflight(self) -> PreflightService | None:
+        """Construye perezosamente el preflight de Wrye Bash (T-16c, PR B, FASE 6).
+
+        Wrye Bash arma el Bashed Patch leyendo TODO el load order activo y escribe
+        ``Bashed Patch, 0.esp`` (vía la VFS de MO2). Sensores relevantes — el mismo
+        set que DynDOLOD/Synthesis, porque es un ritual plugin-based: **permisos de
+        escritura** sobre el destino del Bashed Patch (``Data`` del juego y el
+        ``overwrite`` de MO2 — el destino real es dependiente del entorno, así que se
+        sondean ambos), **símbolos/junctions** en las rutas crudas, **masters
+        faltantes** y **límites full/light** del perfil MO2 activo, y **overwrite
+        sucio** (el Bashed Patch aterriza ahí; uno sucio hace el diff inatribuible).
+        NO cablea la versión de LOOT (irrelevante). Reusa las primitivas compartidas
+        (T-16d). Sensores no resolubles → ``None`` (omitidos con ``omit_unconfigured``).
+        Sin game/MO2 resoluble → ``None`` (sin gate, mismo criterio que sus hermanos).
+        """
+        if self._preflight is not None:
+            return self._preflight
+        if self._path_resolver is None:
+            return None
+
+        import pathlib
+
+        game = self._path_resolver.get_skyrim_path()
+        mo2 = self._path_resolver.get_mo2_path()
+        if not isinstance(game, pathlib.Path) or not isinstance(mo2, pathlib.Path):
+            return None
+
+        # Imports perezosos (anti-ciclo: validators.preflight llega a tools._process).
+        from sky_claw.local.validators.preflight import PreflightService
+        from sky_claw.local.validators.preflight_sensors import (
+            build_mo2_profile_sources_resolver,
+            build_modlist_sensors,
+            build_overwrite_sensor,
+            build_vfs_sensor,
+        )
+        from sky_claw.local.validators.write_permissions import WritePermissionsChecker
+
+        # vfs sobre rutas CRUDAS (las resueltas ya siguieron los symlinks).
+        vfs_checker = build_vfs_sensor(
+            raw_game=self._path_resolver.get_skyrim_path_raw(),
+            raw_mo2=self._path_resolver.get_mo2_path_raw(),
+            scan_mods_dir=False,
+        )
+
+        # Permisos: targets recalculados POR CORRIDA dentro del closure (freshness,
+        # patrón #252/#311) — un destino creado read-only entre corridas debe verse.
+        def _permissions() -> Any:
+            return WritePermissionsChecker(targets=self._permission_targets()).check()
+
+        overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
+
+        resolver = build_mo2_profile_sources_resolver(
+            game=game, mo2=mo2, profile=self._path_resolver.get_active_profile()
+        )
+        masters_check, limits_check = build_modlist_sensors(resolver) if resolver is not None else (None, None)
+
+        self._preflight = PreflightService(
+            vfs_checker=vfs_checker,
+            permissions_check=_permissions,
+            overwrite_check=overwrite_check,
+            masters_check=masters_check,
+            limits_check=limits_check,
+            omit_unconfigured=True,
+        )
+        return self._preflight
+
+    def _permission_targets(self) -> list[pathlib.Path]:
+        """Rutas candidatas donde aterriza ``Bashed Patch, 0.esp``, por corrida.
+
+        El destino real es dependiente del entorno: lanzado vía la VFS de MO2 (con
+        ``cwd`` en el juego) el plugin se redirige al ``overwrite`` de MO2; en un
+        setup sin VFS iría al ``Data`` del juego. Se sondean ambos; el
+        ``WritePermissionsChecker`` se salta los inexistentes y se resuelve por
+        corrida (freshness), así que incluir rutas aún ausentes es seguro.
+        """
+        import pathlib
+
+        candidates: list[pathlib.Path] = []
+        game = self._path_resolver.get_skyrim_path() if self._path_resolver is not None else None
+        if isinstance(game, pathlib.Path):
+            candidates.append(game / "Data")
+        mo2 = self._path_resolver.get_mo2_path() if self._path_resolver is not None else None
+        if isinstance(mo2, pathlib.Path):
+            candidates.append(mo2 / "overwrite")
+        seen: set[pathlib.Path] = set()
+        return [p for p in candidates if not (p in seen or seen.add(p))]
 
     def ensure_runner(self) -> WryeBashRunner:
         """Asegura el ``WryeBashRunner`` (construcción perezosa desde el resolver).
@@ -131,20 +236,42 @@ class WryeBashPipelineService:
         """Genera el Bashed Patch con Wrye Bash bajo el lock de behavior/load-order.
 
         Flujo:
+        0. Preflight brutal (T-16c, PR B): un semáforo ROJO cancela sin tocar nada.
         1. [M-04] Validación de límite de plugins (guard compartido inyectado).
         2. Ejecutar ``WryeBashRunner.generate_bashed_patch()`` **bajo el lock**.
         3. Observabilidad vía logging estructurado.
 
         Siempre devuelve un ``dict`` serializable para los modos de fallo conocidos
-        (guard M-04, runner no disponible, contención de lock, error de ejecución) en
-        vez de propagar la excepción, para que el dispatcher lo reenvíe verbatim.
+        (preflight rojo, guard M-04, runner no disponible, contención de lock, error de
+        ejecución) en vez de propagar la excepción, para que el dispatcher lo reenvíe
+        verbatim.
         """
         logger.info(
             "[FASE-6] Iniciando generación de Bashed Patch para perfil '%s'.",
             profile,
         )
 
-        # PASO 0: Gate preventivo M-04 — guard compartido inyectado por el supervisor.
+        # PASO 0: Preflight brutal ANTES de tocar nada (T-16c, PR B, FASE 6). Un
+        # semáforo ROJO (p. ej. el destino del Bashed Patch sin permisos, un master
+        # faltante o el límite de plugins excedido) cancela Wrye Bash sin correr el
+        # subproceso ni tomar el lock. Amarillo/verde no bloquean; el reporte se
+        # surface al panel en todos los retornos.
+        preflight = self._ensure_preflight()
+        preflight_report: PreflightReport | None = None
+        if preflight is not None:
+            preflight_report = await preflight.run()
+            if preflight_report.blocks_mutations:
+                red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
+                logger.warning("Wrye Bash (fase 6) bloqueado por preflight en rojo: %s", red)
+                return {
+                    "success": False,
+                    "reason": "PreflightBlocked",
+                    "message": f"Preflight en rojo, Bashed Patch cancelado: {red}",
+                    "error": red,
+                    "preflight": preflight_report.to_dict(),
+                }
+
+        # PASO 1: Gate preventivo M-04 — guard compartido inyectado por el supervisor.
         if validate_limit and self._plugin_limit_guard is not None:
             guard_result = await self._plugin_limit_guard(profile)
             if not guard_result.get("valid", True):
@@ -152,22 +279,25 @@ class WryeBashPipelineService:
                     "[FASE-6] Abortando Bashed Patch: validación M-04 falló. %s",
                     guard_result.get("error"),
                 )
-                return {
-                    "success": False,
-                    "aborted_by": "plugin_limit_guard",
-                    "plugin_count": guard_result.get("plugin_count"),
-                    "error": guard_result.get("error"),
-                    "message": guard_result.get("error") or "",
-                }
+                return _attach_preflight(
+                    {
+                        "success": False,
+                        "aborted_by": "plugin_limit_guard",
+                        "plugin_count": guard_result.get("plugin_count"),
+                        "error": guard_result.get("error"),
+                        "message": guard_result.get("error") or "",
+                    },
+                    preflight_report,
+                )
 
-        # PASO 1: Asegurar runner inicializado.
+        # PASO 2: Asegurar runner inicializado.
         try:
             runner = self.ensure_runner()
         except WryeBashExecutionError as exc:
             logger.error("[FASE-6] Error inicializando WryeBashRunner: %s", exc)
-            return {"success": False, "error": str(exc), "message": str(exc)}
+            return _attach_preflight({"success": False, "error": str(exc), "message": str(exc)}, preflight_report)
 
-        # PASO 2: Ejecutar la generación BAJO lock anidado — Wrye Bash era el único
+        # PASO 3: Ejecutar la generación BAJO lock anidado — Wrye Bash era el único
         # ritual mutante sin serializar (hueco de concurrencia).
         #  - EXTERNO 'Bashed Patch, 0.esp': serializa contra otra corrida de Wrye Bash.
         #  - INTERNO 'load-order': el Bashed Patch se arma del orden ACTIVO que LOOT
@@ -202,7 +332,7 @@ class WryeBashPipelineService:
         except LockAcquisitionError as exc:
             logger.warning("Lock contention (bashed-patch/load-order): %s", exc)
             detail = f"Could not acquire bashed-patch/load-order lock: {exc}"
-            return {"success": False, "error": detail, "message": detail}
+            return _attach_preflight({"success": False, "error": detail, "message": detail}, preflight_report)
         except LockError as exc:
             # __aexit__ del lock puede lanzar LockLeaseLostError (renovación fallida /
             # lease expirado durante una corrida larga) u otros errores de la capa de
@@ -212,12 +342,12 @@ class WryeBashPipelineService:
             # exclusividad → reportar éxito mentiría: devolvemos success=False honesto.
             logger.error("[FASE-6] Error de la capa de lock durante Wrye Bash: %s", exc)
             detail = f"Lock error durante la generación del Bashed Patch: {exc}"
-            return {"success": False, "error": detail, "message": detail}
+            return _attach_preflight({"success": False, "error": detail, "message": detail}, preflight_report)
         except WryeBashExecutionError as exc:
             logger.error("[FASE-6] WryeBashExecutionError: %s", exc)
-            return {"success": False, "error": str(exc), "message": str(exc)}
+            return _attach_preflight({"success": False, "error": str(exc), "message": str(exc)}, preflight_report)
 
-        # PASO 3: Observabilidad vía logging estructurado. Este flujo AÚN no usa
+        # PASO 4: Observabilidad vía logging estructurado. Este flujo AÚN no usa
         # OperationJournal; el ActionManifest/FlightReport llega en el PR C.
         logger.info(
             "[FASE-6] Bashed Patch result logged",
@@ -249,11 +379,14 @@ class WryeBashPipelineService:
         # cuando el subproceso salió non-zero. Sin esto, StateGraphIntegration lee
         # error→reason→message y reportaría "falló sin detalle" (review Codex #315).
         message = "" if result.success else (result.stderr or result.stdout or "")
-        return {
-            "success": result.success,
-            "message": message,
-            "return_code": result.return_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "duration_seconds": result.duration_seconds,
-        }
+        return _attach_preflight(
+            {
+                "success": result.success,
+                "message": message,
+                "return_code": result.return_code,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "duration_seconds": result.duration_seconds,
+            },
+            preflight_report,
+        )
