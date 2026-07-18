@@ -149,6 +149,30 @@ class TestRollbackAnteCancelacion:
 
         assert rm.stats_consultado is False
 
+    async def test_shutdown_espera_los_rollbacks_en_vuelo(self, tmp_path: pathlib.Path) -> None:
+        """Review Codex #321: tras una doble cancelación el cleanup sigue en
+        background — shutdown() debe ESPERARLO (no cancelarlo) antes de que el
+        caller cierre journal/snapshots, o el undo quedaría a medias igual."""
+        rm = _RollbackManagerObservador()
+        engine = _engine(rm)
+        task, arranco = _lanzar_operacion_bloqueada(engine, tmp_path)
+        await asyncio.wait_for(arranco.wait(), timeout=2.0)
+
+        task.cancel()  # 1ª cancelación → entra al rollback
+        await asyncio.wait_for(rm.undo_iniciado.wait(), timeout=2.0)
+        task.cancel()  # 2ª cancelación: el caller se va, el cleanup queda vivo
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        shutdown_task = asyncio.create_task(engine.shutdown())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not shutdown_task.done()  # bloqueado esperando el undo en vuelo
+
+        rm.liberar_undo.set()
+        await asyncio.wait_for(shutdown_task, timeout=2.0)
+        assert rm.undo_completado is True
+
     async def test_pruning_sigue_corriendo_en_el_camino_normal(self, tmp_path: pathlib.Path) -> None:
         """Regresión: el skip es SOLO para cancelación; éxito y fallo común
         siguen ejecutando el pruning pasivo del finally."""

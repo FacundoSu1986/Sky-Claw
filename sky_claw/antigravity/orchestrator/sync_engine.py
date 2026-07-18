@@ -227,6 +227,13 @@ class SyncEngine:
         self._hitl = hitl
         self._rollback_manager = rollback_manager  # FASE 1.5
         self._download_tasks: set[asyncio.Task[Any]] = set()
+        # F3 (review Codex #321): referencias fuertes a los rollbacks de
+        # operaciones canceladas. El loop solo guarda referencias débiles a las
+        # tasks (ver docs de asyncio.shield): sin esto, un cleanup que siguió
+        # corriendo tras una segunda cancelación podría ser recolectado por GC,
+        # y shutdown() no tendría cómo esperarlo antes de que el caller cierre
+        # journal/snapshots.
+        self._rollback_cleanup_tasks: set[asyncio.Task[None]] = set()
         # CONCURRENCY: Limit simultaneous downloads to 3 to avoid saturating
         # bandwidth, exhausting file descriptors, and triggering Nexus Mods
         # rate-limiting / IP bans.
@@ -257,6 +264,17 @@ class SyncEngine:
 
             await asyncio.gather(*self._download_tasks, return_exceptions=True)
             self._download_tasks.clear()
+
+        # F3 (review Codex #321): ESPERAR (no cancelar) los rollbacks de
+        # operaciones canceladas todavía en vuelo — el caller cierra journal y
+        # snapshots después de shutdown(), y un undo interrumpido por ese cierre
+        # dejaría el archivo a medias con el asiento en FAILED.
+        if self._rollback_cleanup_tasks:
+            logger.info(
+                "Esperando %d rollback(s) de operaciones canceladas...",
+                len(self._rollback_cleanup_tasks),
+            )
+            await asyncio.gather(*self._rollback_cleanup_tasks, return_exceptions=True)
 
         logger.info("SyncEngine shutdown complete.")
 
@@ -370,7 +388,10 @@ class SyncEngine:
                 # señal llega, este await propaga CancelledError igual, pero la
                 # task shieldeada completa el rollback en background.
                 logger.warning("Operación cancelada; ejecutando rollback automático")
-                await asyncio.shield(self._rollback_operacion_cancelada(rm, entry_id))
+                cleanup = asyncio.ensure_future(self._rollback_operacion_cancelada(rm, entry_id))
+                self._rollback_cleanup_tasks.add(cleanup)
+                cleanup.add_done_callback(self._rollback_cleanup_tasks.discard)
+                await asyncio.shield(cleanup)
                 raise
 
             except Exception as exc:
