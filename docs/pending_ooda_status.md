@@ -522,3 +522,54 @@ en un hallazgo externo). Los 4 eran correctos:
 Los 4 fixes están en el mismo PR #316 (no un PR separado — eran defectos
 introducidos por ese PR, corregidos antes de merge). Gates verdes, suite
 completa passing.
+
+---
+
+## Addendum (2026-07-17) — rebase de PR #316 sobre PR #315 (colisión resuelta)
+
+Mientras el PR #316 (este) esperaba review, se mergeó el **PR #315** —
+trabajo independiente de otro agente en la misma rama de la auditoría, que
+resuelve el mismo hueco de concurrencia de Wrye Bash (§2.1) con un diseño
+superior: extracción Strangler-Fig (`WryeBashPipelineService`, el mismo
+patrón que ya tenían LOOT/xEdit/Synthesis/DynDOLOD/Pandora) más un **lock
+anidado** (`Bashed Patch, 0.esp` externo + `load-order` interno) que
+serializa Wrye Bash tanto contra un sort de LOOT concurrente como contra
+otra corrida propia — el fix inline de este PR (un solo lock `load-order`
+con snapshot condicional del `.esp`) solo cubría el primer caso.
+
+Al rebasear #316 sobre `main` (ya con #315 mergeado):
+
+- **Se descartó por completo la porción de `supervisor.py`** de este PR
+  (`execute_wrye_bash_pipeline` inline + `_WryeBashFailedError`): #315 ya
+  la reemplazó con el delegador fino a `WryeBashPipelineService`. Cero
+  diff contra `main` en ese archivo tras el rebase.
+- **`system_tools.generate_bashed_patch` (el path del agente LLM/Telegram,
+  que #315 NO tocaba) se reescribió para delegar al mismo
+  `WryeBashPipelineService`** en vez de mantener una segunda
+  implementación del lock con supuestos distintos (este PR asumía que el
+  `.esp` vive en una ruta conocida — `game_path/Data/<nombre>` — y lo
+  snapshoteaba condicionalmente; #315 decidió deliberadamente
+  `target_files=[]` siempre porque la salida sale vía la VFS de MO2 con
+  `cwd` y su ubicación real es dependiente del entorno). Mantener las dos
+  implementaciones habría reintroducido la "asimetría entre gemelos
+  arquitecturales" que el reporte de consistencia original señaló como
+  causa raíz de proceso (§4.4). El handler ahora espeja el patrón ya usado
+  por `run_pandora`/`run_bodyslide_batch`: delega al servicio, mapea su
+  dict al contrato JSON de la tool (con `sanitize_for_prompt` aplicado a
+  stdout/stderr, que el servicio no hace por ser agnóstico de LLM), y
+  preserva el path sin lock manager (legacy/tests) sin cambios.
+- `tests/test_wrye_bash_lock.py` se reescribió: los tests que cubrían el
+  pipeline inline del supervisor se eliminaron (esa lógica ahora vive en
+  `test_wrye_bash_service.py`, del propio #315, que ya la cubre en
+  detalle — lock anidado, contención, lease perdida, message canónico).
+  Quedan solo los tests del contrato de delegación del handler del agente
+  (8 tests: serialización en el lock anidado, bloqueo por el lock propio Y
+  por `load-order`, sanitización del stderr, lease perdida, path directo
+  sin lock, runner `None`, y el ancla de nombre canónico — extendida para
+  incluir `BASHED_PATCH_RESOURCE_ID` de #315).
+- Las otras 3 piezas de este PR (VRAMr, `patcher_pipeline` atómico, PID de
+  grass) son ortogonales a Wrye Bash — no tuvieron conflicto y salieron
+  del rebase sin cambios.
+
+Gates verdes (`ruff check` + `ruff format --check` + `mypy sky_claw/`),
+suite completa passing tras el rebase.

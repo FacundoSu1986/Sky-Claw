@@ -10,7 +10,6 @@ via the tool's ``params_model``.  Handlers receive pre-validated arguments.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import pathlib
@@ -24,15 +23,6 @@ logger = logging.getLogger(__name__)
 #: Lock resource id para BodySlide (genera meshes en el overwrite/output). Serializa el
 #: tool del agente contra otros mutadores, igual que LOAD_ORDER / BEHAVIOR_GRAPHS.
 BODYSLIDE_MESHES_RESOURCE_ID = "bodyslide-meshes"
-
-
-class _BashedPatchFailedError(Exception):
-    """Interno: transporta el WryeBashResult fallido fuera del lock para que
-    ``__aexit__`` restaure el snapshot del Bashed Patch previo."""
-
-    def __init__(self, result: Any) -> None:
-        super().__init__(f"Wrye Bash exit {result.return_code}")
-        self.result = result
 
 
 async def check_load_order(mo2: Any, profile: str) -> str:
@@ -416,72 +406,46 @@ async def generate_bashed_patch(
     (execute_wrye_bash_pipeline). Here we only execute the runner.
     This handler is used when AsyncToolRegistry invokes the tool directly.
 
-    §2.1 auditoría (mismo vector P1 que ``run_loot_sort``/``run_pandora``/
-    ``run_bodyslide_batch``): Wrye Bash reescribe el Bashed Patch leyendo el
-    load order completo, así que cuando el lock distribuido está cableado
-    (producción vía ``app_context``) este path del agente serializa en el
-    MISMO lock ``load-order`` que LOOT y el Ritual de la GUI — el lock
-    cross-process solo protege si TODOS los mutadores participan. El ``.esp``
-    previo se snapshotea para rollback si la generación muere a mitad de
-    escritura. Sin lock manager (callers legacy / tests) corre directo,
-    preservando el comportamiento anterior.
+    #315 (PR A) extrajo :class:`WryeBashPipelineService`, el mismo servicio que
+    usa el Ritual de la GUI/dispatcher, con lock ANIDADO (``Bashed Patch, 0.esp``
+    + ``load-order``): serializa contra otra corrida de Wrye Bash y contra un
+    sort de LOOT concurrente — el lock cross-process solo protege si TODOS los
+    mutadores participan. Este path del agente delega al mismo servicio en vez
+    de mantener una segunda implementación del lock (§2.1 auditoría original:
+    mismo vector P1 que ``run_loot_sort``/``run_pandora``). Sin lock manager
+    (callers legacy / tests) corre directo, preservando el comportamiento
+    anterior.
     """
     if wrye_bash_runner is None:
         return json.dumps({"error": "WryeBashRunner is not configured. Set WRYE_BASH_PATH."})
 
     if lock_manager is not None and snapshot_manager is not None:
-        from sky_claw.antigravity.db.locks import LockAcquisitionError, SnapshotTransactionLock
-        from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
-        from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
+        from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
 
-        # Snapshot del .esp previo si existe (regeneración). getattr defensivo:
-        # el runner llega tipado Any desde el registry. bashed_patch queda None
-        # si no se pudo resolver game_path — guarda explícita para el cleanup
-        # de más abajo (no asumir que "target_files vacío" implica el path resuelto).
-        target_files: list[Any] = []
-        bashed_patch: pathlib.Path | None = None
-        config = getattr(wrye_bash_runner, "config", None)
-        game_path = getattr(config, "game_path", None)
-        if game_path is not None:
-            bashed_patch = game_path / "Data" / BASHED_PATCH_NAME
-            if bashed_patch.is_file():
-                target_files = [bashed_patch]
+        service = WryeBashPipelineService(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            wrye_bash_runner=wrye_bash_runner,
+        )
+        # El servicio siempre devuelve un dict serializable (guard M-04, lock
+        # contention, LockLeaseLostError, error de ejecución) — nunca propaga.
+        # validate_limit=False: M-04 se valida a nivel Supervisor para este path.
+        res = await service.execute_pipeline(profile="agent-tool", validate_limit=False)
+        out: dict[str, Any] = {
+            "success": res.get("success", False),
+            "return_code": res.get("return_code", -1),
+            "stdout": sanitize_for_prompt(str(res.get("stdout", ""))) if res.get("stdout") else "",
+            "stderr": sanitize_for_prompt(str(res.get("stderr", ""))) if res.get("stderr") else "",
+            "duration_seconds": res.get("duration_seconds", 0.0),
+        }
+        if not out["success"] and res.get("message"):
+            out["error"] = res["message"]
+        return json.dumps(out)
 
-        try:
-            async with SnapshotTransactionLock(
-                lock_manager=lock_manager,
-                snapshot_manager=snapshot_manager,
-                resource_id=LOAD_ORDER_RESOURCE_ID,
-                agent_id="wrye-bash-tool",
-                target_files=target_files,
-                metadata={"source": "generate_bashed_patch"},
-            ):
-                result = await wrye_bash_runner.generate_bashed_patch()
-                if not result.success:
-                    # Lanzar DENTRO del lock: __aexit__ restaura el Bashed
-                    # Patch previo en vez de dejar el .esp a medio escribir.
-                    raise _BashedPatchFailedError(result)
-        except LockAcquisitionError as exc:
-            return json.dumps({"error": f"Could not acquire '{LOAD_ORDER_RESOURCE_ID}' lock: {exc}"})
-        except _BashedPatchFailedError as exc:
-            result = exc.result
-            if not target_files and bashed_patch is not None:
-                # Primera generación: sin .esp previo que snapshotear, así que
-                # __aexit__ no restauró nada — el .esp corrupto/truncado que el
-                # runner dejó a medio escribir quedaría persistente en Data/
-                # (review Codex #316, mismo gap que el pipeline del supervisor).
-                with contextlib.suppress(OSError):
-                    bashed_patch.unlink(missing_ok=True)
-        except Exception as exc:
-            # Incluye LockLeaseLostError (heartbeat perdió el lease durante la
-            # generación): __aexit__ no revierte ante lease loss, así que el
-            # .esp queda en estado incierto — se reporta como error, no éxito.
-            return json.dumps({"error": str(exc)})
-    else:
-        try:
-            result = await wrye_bash_runner.generate_bashed_patch()
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
+    try:
+        result = await wrye_bash_runner.generate_bashed_patch()
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
 
     return json.dumps(
         {
