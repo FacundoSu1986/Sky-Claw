@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from sky_claw.antigravity.db.journal import OperationStatus
+from sky_claw.antigravity.db.journal import OperationStatus, TransactionStatus
 from sky_claw.antigravity.db.journal_contracts import is_flight_report_committed
 from sky_claw.antigravity.db.locks import LockAcquisitionError, SnapshotTransactionLock
 from sky_claw.local.tools.grass_cache_runner import (
@@ -344,11 +344,8 @@ class GrassCacheService:
             # Auditoría hostil (V-1): este cierre corre DESPUÉS de soltar los
             # locks, fuera del except de cancelación de arriba — sin este
             # reintento, una cancelación exacta durante el commit dejaría la
-            # TX sin ningún intento de cierre. La cancelación ya se entregó
-            # una vez (semántica single-shot de asyncio): el reintento con
-            # exito=False corre sin que nada la vuelva a interrumpir, salvo
-            # una cancelación nueva y genuina, que sí debe propagar.
-            await self._journal_close(journal_tx, exito=False)
+            # TX sin ningún intento de cierre.
+            await self._journal_rollback_si_sigue_pendiente(journal_tx)
             raise
         resultado = self._componer_resultado(run_result, error_msg, inicio)
         if teardown_failures:
@@ -462,6 +459,34 @@ class GrassCacheService:
                 exito,
                 exc_info=True,
             )
+
+    async def _journal_rollback_si_sigue_pendiente(self, journal_tx: int | None) -> None:
+        """Reintento de cierre tras una cancelación en la ventana post-lock.
+
+        ``mark_transaction_rolled_back`` no valida el estado (mismo gap que
+        ``loot_service.py`` resolvió con un flag local — review Codex #249);
+        acá no alcanza un flag local porque la cancelación puede llegar
+        DESPUÉS de que el UPDATE de ``commit_transaction`` ya corrió en la
+        BD, aunque el `await` de Python la reciba como interrumpida (Codex
+        #317, review de este mismo PR). Rollback ciego sobre una TX ya
+        COMMITTED corrompería el audit trail de un ritual exitoso. Se
+        confirma el estado real antes de decidir.
+        """
+        if self._journal is None or journal_tx is None:
+            return
+        try:
+            tx = await self._journal.get_transaction(journal_tx)
+        except Exception:  # noqa: BLE001 — best-effort: no relanzar por sobre la cancelación real
+            logger.warning(
+                "No se pudo confirmar el estado del journal de grass tras la cancelación (tx=%s)",
+                journal_tx,
+                exc_info=True,
+            )
+            return
+        if tx is not None and tx.status is not TransactionStatus.PENDING:
+            # Ya COMMITTED (o ROLLED_BACK) por otra vía: no sobre-escribir.
+            return
+        await self._journal_close(journal_tx, exito=False)
 
     def _componer_resultado(
         self, run_result: GrassCacheRunResult | None, error_msg: str | None, inicio: float
