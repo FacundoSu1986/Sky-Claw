@@ -405,3 +405,196 @@ def test_preflight_standalone_sin_mo2(
     assert game / "Data" in targets
     assert exe.parent in targets
     assert not any("overwrite" in str(t) for t in targets)  # sin MO2 → sin overwrite
+
+
+# =============================================================================
+# T-26/T-28 (ADR 0002): caja negra de vuelo — ActionManifest + FlightReport.
+# Espeja la disciplina de loot_service (journal OPCIONAL: el path del agente
+# construye el servicio sin journal y NO emite; el path GUI/dispatcher lo cablea).
+# =============================================================================
+
+
+@pytest.fixture
+def mock_journal() -> AsyncMock:
+    """Journal mockeado: begin_transaction devuelve un tx id fijo (77)."""
+    journal = AsyncMock()
+    journal.begin_transaction = AsyncMock(return_value=77)
+    journal.commit_transaction = AsyncMock()
+    journal.mark_transaction_rolled_back = AsyncMock()
+    journal.persist_action_manifest = AsyncMock()
+    journal.persist_flight_report = AsyncMock()
+    return journal
+
+
+def _svc_with_journal(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    runner: MagicMock,
+    journal: AsyncMock,
+) -> PandoraPipelineService:
+    return PandoraPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=MagicMock(),
+        pandora_runner=runner,
+        journal=journal,
+    )
+
+
+@pytest.mark.asyncio
+async def test_emite_manifest_antes_de_correr_y_flight_report_tras_commit(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """T-26/T-28: con journal cableado, el manifiesto se persiste ANTES de correr
+    Pandora y el informe de vuelo tras el commit (éxito)."""
+    orden: list[str] = []
+
+    async def _persist_manifest(*_a: object, **_k: object) -> None:
+        orden.append("manifest")
+
+    async def on_run() -> PandoraResult:
+        orden.append("run")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=0.1)
+
+    mock_journal.persist_action_manifest = AsyncMock(side_effect=_persist_manifest)
+    runner = MagicMock()
+    runner.run_pandora = AsyncMock(side_effect=on_run)
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    with patch(
+        "sky_claw.antigravity.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        result = await svc.generate_animations()
+
+    assert result["success"] is True
+    assert orden == ["manifest", "run"]  # caja negra ANTES de mutar
+    mock_journal.begin_transaction.assert_awaited_once()
+    mock_journal.commit_transaction.assert_awaited_once_with(77)
+    mock_journal.persist_flight_report.assert_awaited_once()
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manifest_fail_closed_aborta_sin_correr_pandora(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """T-26 fail-closed: si el manifiesto no se puede persistir, Pandora NO corre —
+    la caja negra no es opcional cuando el journal está cableado."""
+    mock_journal.persist_action_manifest = AsyncMock(side_effect=RuntimeError("journal DB locked"))
+    runner = _runner_returning()
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert result["reason"] == "ActionManifestFailed"
+    runner.run_pandora.assert_not_awaited()  # no mutó
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)  # TX no queda PENDING
+    mock_journal.commit_transaction.assert_not_called()
+    # El lock se liberó pese al abort.
+    assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_sin_journal_no_emite_manifest_pero_corre(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    """Path del agente (sin journal): Pandora corre normal, sin caja negra
+    (honesto — no hay journal cableado que emitir)."""
+    runner = _runner_returning()
+    svc = _make_service(lock_manager, snapshot_manager, runner)  # sin journal
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is True
+    runner.run_pandora.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_flight_report_best_effort_no_rompe_el_exito(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """T-28 best-effort: un fallo al persistir el informe NO tumba un run exitoso."""
+    mock_journal.persist_flight_report = AsyncMock(side_effect=RuntimeError("journal caído"))
+    runner = _runner_returning()
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    with patch(
+        "sky_claw.antigravity.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        result = await svc.generate_animations()
+
+    assert result["success"] is True  # el informe no rompe el contrato
+    mock_journal.commit_transaction.assert_awaited_once_with(77)
+
+
+@pytest.mark.asyncio
+async def test_fallo_de_ejecucion_marca_la_tx_rolled_back(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """Un PandoraExecutionError tras emitir el manifiesto marca la TX rolled-back
+    (no queda PENDING) y no commitea."""
+    runner = MagicMock()
+    runner.run_pandora = AsyncMock(side_effect=PandoraExecutionError("boom"))
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.commit_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resultado_non_zero_marca_la_tx_rolled_back(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """Un PandoraResult con success=False (timeout/exit non-zero) también cierra
+    la TX como rolled-back en vez de dejarla PENDING."""
+    runner = _runner_returning(
+        PandoraResult(success=False, return_code=-1, stdout="", stderr="timeout", duration_seconds=2.0)
+    )
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.commit_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_lock_contention_no_abre_transaccion(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """La emisión del manifiesto ocurre DENTRO del lock: si no se pudo tomar,
+    el journal ni se toca."""
+    await lock_manager.acquire_lock(BEHAVIOR_GRAPHS_RESOURCE_ID, "other-runner", ttl=30.0)
+    runner = _runner_returning()
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    mock_journal.begin_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manifest_rollback_falla_igual_devuelve_dict(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+) -> None:
+    """Si marcar la TX rolled-back falla tras el fallo del manifiesto, el servicio
+    igual devuelve un dict serializable (no propaga — contrato T11)."""
+    mock_journal.persist_action_manifest = AsyncMock(side_effect=RuntimeError("persist falló"))
+    mock_journal.mark_transaction_rolled_back = AsyncMock(side_effect=OSError("journal DB locked"))
+    runner = _runner_returning()
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert result["reason"] == "ActionManifestFailed"
+    runner.run_pandora.assert_not_awaited()

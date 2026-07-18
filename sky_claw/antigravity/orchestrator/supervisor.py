@@ -229,11 +229,14 @@ class SupervisorAgent:
 
         # Follow-up A: Pandora regenera behavior graphs, así que la corrida real va
         # bajo el lock de behavior-graphs (runner construido perezosamente desde el
-        # resolver, igual que los otros servicios de tools).
+        # resolver, igual que los otros servicios de tools). T-26/T-28 (ADR 0002):
+        # el journal se cablea acá (path GUI/dispatcher) para emitir la caja negra de
+        # vuelo — el path del agente (system_tools.run_pandora) NO lo cablea (honesto).
         self._pandora_service = PandoraPipelineService(
             lock_manager=self._lock_manager,
             snapshot_manager=self.snapshot_manager,
             path_resolver=self._path_resolver,
+            journal=self.journal,
         )
 
         # Grass cache: orquestador del Stage 8 (NGIO). El runner de xEdit de la
