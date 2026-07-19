@@ -24,16 +24,9 @@ dependencies = [
     "keyring>=24.0",
     "psutil>=5.8",
     "websockets>=14.0",
-    "langchain-core>=1.0,<2",
-    "langgraph>=1.0.10,<3",
-    # Floor at >=4.1.1 to fix CVE-2026-48775 (4.0.3 was flagged by pip-audit).
-    "langgraph-checkpoint>=4.1.1,<5",
-    # Transitive (via langgraph); floor at >=0.3.15 to fix CVE-2026-48776
-    # (0.3.14 was flagged by pip-audit, same coordinated langgraph disclosure).
-    "langgraph-sdk>=0.3.15",
-    # Transitive (via langchain-core); floor at >=0.8.18 to fix
-    # GHSA-f4xh-w4cj-qxq8.
-    "langsmith>=0.8.18",
+    # F1b (informe #319): langgraph / langchain-core / langsmith se retiraron
+    # con el SupervisorStateGraph muerto — no se importaban en ningún otro
+    # módulo. Ver docs/adr/0006.
     "nicegui>=3.9,<4",
     "pyyaml>=6.0,<7",
     "prometheus-client>=0.20,<1",

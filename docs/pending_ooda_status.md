@@ -617,3 +617,31 @@ Al rebasear #316 sobre `main` (ya con #315 mergeado):
 
 Gates verdes (`ruff check` + `ruff format --check` + `mypy sky_claw/`),
 suite completa passing tras el rebase.
+
+## Addendum (2026-07-19) — auditoría de resiliencia del orquestador (#319): F1–F3 cerrados
+
+Auditoría adversarial del orquestador asíncrono
+(`docs/audits/2026-07-18_orchestrator_resilience_audit.md`, #319). Cierres:
+
+- **F2** (#320) — cancelación durante `SandboxPromotionFlow._promote`: el
+  `promote()` corre bajo `asyncio.shield`; se observa su desenlace terminal
+  antes de descartar el clon (sus backups viven en el árbol del clon).
+- **F3** (#321) — rollback post-cancelación de
+  `SyncEngine.execute_file_operation` blindado con `asyncio.shield` + tracking
+  fuerte esperado en `shutdown()`; pruning salteado en ruta de cancelación.
+- **Follow-up F2** (#322) — resolución de la TX diferida del `StagingJournal`
+  ante cancelación de Synthesis: `desenlace_promocion()` de tres valores
+  (`aplicada`/`no_aplicada`/`rollback_fallido`) + `drain()` del dispatcher en
+  el shutdown del supervisor.
+- **F1** (#328 F1a + este PR F1b) — el `SupervisorStateGraph` (LangGraph) era
+  un motor muerto (nada lo ejecutaba; fallaría estructuralmente si corriera).
+  Se movió el `AgenticLoopGuardrail` a `LoopGuardrailMiddleware` (global del
+  `OrchestrationToolDispatcher`, el camino real) y se **retiró el grafo
+  completo** + `LangGraphEventStreamer` + las 5 dependencias
+  langgraph/langchain/langsmith de `pyproject.toml`. Decisión en
+  **ADR 0006**.
+
+Pendientes de la auditoría (no bloqueantes): F4 (idempotencia sin cablear),
+F5 (TOCTOU del drift-gate de `promote()`), F6 (race del timeout de
+`HITLGuard`), F7 (prompts HITL concurrentes en `check_for_updates`), F9
+(composition root del god object).

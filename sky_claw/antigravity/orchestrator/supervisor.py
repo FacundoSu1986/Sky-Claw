@@ -20,10 +20,6 @@ from sky_claw.antigravity.orchestrator.rollback_factory import (
     RollbackComponents,
     create_rollback_components,
 )
-from sky_claw.antigravity.orchestrator.state_graph import (
-    StateGraphIntegration,
-    create_supervisor_state_graph,
-)
 from sky_claw.antigravity.orchestrator.telemetry_daemon import TelemetryDaemon
 from sky_claw.antigravity.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
@@ -31,7 +27,6 @@ from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
     LoopGuardrailMiddleware,
 )
 from sky_claw.antigravity.orchestrator.watcher_daemon import WatcherDaemon
-from sky_claw.antigravity.orchestrator.ws_event_streamer import LangGraphEventStreamer
 from sky_claw.antigravity.scraper.scraper_agent import ScraperAgent
 from sky_claw.antigravity.security.hitl import HITLGuard
 from sky_claw.antigravity.security.network_gateway import NetworkGateway
@@ -153,8 +148,6 @@ class SupervisorAgent:
         # M-01.1: lifecycle compartido para journal/locks/DLQ (DI opcional;
         # None conserva los fallbacks directos pre-M-01 en tests/standalone).
         self._db_lifecycle = lifecycle
-        self.state_graph = create_supervisor_state_graph(profile_name=self.profile_name)
-        self.event_streamer = LangGraphEventStreamer(self.state_graph, self.interface)
 
         # FASE 1.5: Inicializar componentes de rollback (también inicializa _path_validator)
         self._init_rollback_components()
@@ -297,11 +290,6 @@ class SupervisorAgent:
             hitl_gate=HitlGateMiddleware(hitl_guard=hitl_guard),
             loop_guardrail=self._loop_guardrail_middleware,
         )
-
-        # M-1 FIX: Wire StateGraphIntegration para activar cortacircuitos cognitivo y HITL.
-        # Los callbacks se registran en el grafo y los nodos los invocan vía wrapper.
-        self._graph_integration = StateGraphIntegration(self.state_graph)
-        self._graph_integration.connect_supervisor(self)
 
     def _make_path_resolver(self, sandbox_validator: PathValidatorProtocol | None) -> PathResolutionService:
         """Build the MO2 path resolver.
@@ -508,14 +496,15 @@ class SupervisorAgent:
         self._loop_guardrail_middleware.reset()
 
     def _create_hitl_request(self, hitl_request: dict[str, Any]) -> HitlApprovalRequest:
-        """Convierte un dict de HITL del grafo de estados a un HitlApprovalRequest.
+        """Convierte un dict de HITL plano a un HitlApprovalRequest validado.
 
-        Bridge entre el ``StateGraphState.hitl_request`` (dict plano del grafo)
-        y el contrato Pydantic que espera :meth:`InterfaceAgent.request_hitl`.
+        Bridge entre un ``hitl_request`` (dict plano con ``action_type`` /
+        ``reason`` / ``context_data``) y el contrato Pydantic que espera
+        :meth:`InterfaceAgent.request_hitl`. Seam puro y testeado (VULN-1).
 
         Args:
             hitl_request: Dict con ``action_type``, ``reason`` y metadatos
-                opcionales como ``context_data`` inyectados por los callbacks
+                opcionales como ``context_data`` inyectados por el llamador
                 del grafo (``_on_dispatching``, etc.).
 
         Returns:
