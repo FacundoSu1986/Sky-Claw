@@ -13,7 +13,10 @@ from sky_claw.antigravity.scraper.masterlist import (
     MasterlistFetchError,
     _CircuitBreaker,
 )
-from sky_claw.antigravity.security.network_gateway import NetworkGateway
+from sky_claw.antigravity.security.network_gateway import (
+    NetworkGateway,
+    NetworkGatewayTimeoutError,
+)
 
 
 class TestCircuitBreaker:
@@ -56,10 +59,10 @@ class TestMasterlistClientCircuitBreaker:
         client = MasterlistClient(gw, "fake-key", failure_threshold=1)
 
         # Simulate a failure to trip the breaker.
-        mock_resp = AsyncMock()
+        mock_resp = MagicMock()
         mock_resp.status = 500
         mock_resp.text = AsyncMock(return_value="Server Error")
-        mock_resp.release = AsyncMock()
+        mock_resp.release = MagicMock()
         gw.request = AsyncMock(return_value=mock_resp)
 
         session = AsyncMock(spec=aiohttp.ClientSession)
@@ -77,10 +80,10 @@ class TestMasterlistClientCircuitBreaker:
         gw = MagicMock(spec=NetworkGateway)
         client = MasterlistClient(gw, "fake-key", failure_threshold=3)
 
-        mock_resp = AsyncMock()
+        mock_resp = MagicMock()
         mock_resp.status = 200
         mock_resp.json = AsyncMock(return_value={"mod_id": 42, "name": "TestMod"})
-        mock_resp.release = AsyncMock()
+        mock_resp.release = MagicMock()
         gw.request = AsyncMock(return_value=mock_resp)
 
         session = AsyncMock(spec=aiohttp.ClientSession)
@@ -88,3 +91,22 @@ class TestMasterlistClientCircuitBreaker:
         result = await client.fetch_mod_info(42, session)
         assert result["mod_id"] == 42
         assert client.circuit_state == "closed"
+
+    @pytest.mark.asyncio
+    async def test_timeout_gateway_incrementa_contador_y_abre_circuito(self) -> None:
+        """Un timeout autorizado cuenta exactamente como un fallo del breaker."""
+        gw = MagicMock(spec=NetworkGateway)
+        gw.request = AsyncMock(side_effect=NetworkGatewayTimeoutError("timeout seguro"))
+        client = MasterlistClient(
+            gw,
+            "fake-key",
+            failure_threshold=1,
+            recovery_timeout=60,
+        )
+        session = AsyncMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(NetworkGatewayTimeoutError, match="timeout seguro"):
+            await client.fetch_mod_info(1234, session)
+
+        assert client.circuit_state == "open"
+        gw.request.assert_awaited_once()
