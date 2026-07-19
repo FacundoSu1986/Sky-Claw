@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock
 
@@ -451,7 +452,8 @@ async def test_stop_aborta_publisher_bloqueado_si_dispatcher_muere(
 
         done, _ = await asyncio.wait({publisher}, timeout=0.2)
         assert publisher in done
-        assert publisher.cancelled()
+        with pytest.raises(RuntimeError, match="dispatcher"):
+            await publisher
         with pytest.raises(RuntimeError, match="dispatcher sin drenaje"):
             await stop_task
 
@@ -468,3 +470,84 @@ async def test_stop_aborta_publisher_bloqueado_si_dispatcher_muere(
         _drenar_cola_de_prueba(bus)
         await _cancelar_tareas(stop_task)
         _drenar_cola_de_prueba(bus)
+
+
+@pytest.mark.asyncio
+async def test_publish_falla_rapido_si_dispatcher_ya_murio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un dispatcher terminado impide admitir otro put aunque la cola esté llena."""
+    bus = CoreEventBus(max_queue_size=1)
+    dispatcher_en_get = asyncio.Event()
+    liberar_fallo = asyncio.Event()
+
+    async def get_fallido() -> Event | None:
+        dispatcher_en_get.set()
+        await liberar_fallo.wait()
+        raise RuntimeError("dispatcher muerto al publicar")
+
+    monkeypatch.setattr(bus._queue, "get", get_fallido)
+    await bus.start()
+    try:
+        await asyncio.wait_for(dispatcher_en_get.wait(), timeout=1)
+        await bus.publish(Event(topic="test", payload={"seq": 1}))
+        liberar_fallo.set()
+        assert bus._dispatch_task is not None
+        await asyncio.gather(bus._dispatch_task, return_exceptions=True)
+
+        with pytest.raises(RuntimeError, match="dispatcher") as exc_info:
+            await asyncio.wait_for(
+                bus.publish(Event(topic="test", payload={"seq": 2})),
+                timeout=0.2,
+            )
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        assert "dispatcher muerto al publicar" in str(exc_info.value.__cause__)
+
+        assert bus._admitted_publishers == 0
+        assert not bus._publisher_tasks
+        assert bus._publishers_drained.is_set()
+        assert bus._queue.qsize() == 1
+    finally:
+        liberar_fallo.set()
+        with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+            await bus.stop()
+        _drenar_cola_de_prueba(bus)
+
+
+@pytest.mark.asyncio
+async def test_enqueue_autocancelado_no_cancela_fallo_normal_del_handler() -> None:
+    """CancelledError interno de DLQ es pérdida durable, no cancelación del handler."""
+    dlq = _crear_dlq_mock()
+    dlq.enqueue.side_effect = asyncio.CancelledError("cancelación interna DLQ")
+    bus = CoreEventBus(dlq=dlq)
+
+    async def handler_fallido(event: Event) -> None:  # noqa: ARG001
+        raise RuntimeError("fallo normal")
+
+    await bus._safe_execute(handler_fallido, Event(topic="test", payload={}))
+    await asyncio.sleep(0)
+
+    assert bus.events_lost == 1
+    assert dlq.enqueue.await_count == 1
+    assert not bus._dlq_tasks
+
+
+@pytest.mark.asyncio
+async def test_enqueue_autocancelado_preserva_cancelacion_original_del_handler() -> None:
+    """La cancelación interna de DLQ no sustituye la cancelación del handler."""
+    dlq = _crear_dlq_mock()
+    dlq.enqueue.side_effect = asyncio.CancelledError("cancelación interna DLQ")
+    bus = CoreEventBus(dlq=dlq)
+    cancelacion_original = asyncio.CancelledError("cancelación original handler")
+
+    async def handler_cancelado(event: Event) -> None:  # noqa: ARG001
+        raise cancelacion_original
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await bus._safe_execute(handler_cancelado, Event(topic="test", payload={}))
+    await asyncio.sleep(0)
+
+    assert exc_info.value is cancelacion_original
+    assert bus.events_lost == 1
+    assert dlq.enqueue.await_count == 1
+    assert not bus._dlq_tasks

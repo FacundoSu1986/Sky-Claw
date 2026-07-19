@@ -22,7 +22,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.core.dlq_manager import DLQManager
@@ -219,6 +219,10 @@ class CoreEventBus:
         """Publica un evento en la cola para dispatch asíncrono."""
         if self._state is not _LifecycleState.RUNNING or not self._running:
             raise RuntimeError("bus is not running")
+        dispatch_task = self._dispatch_task
+        if dispatch_task is None or dispatch_task.done():
+            self._raise_dispatcher_unavailable(dispatch_task)
+
         publisher_task = asyncio.create_task(
             self._queue.put(event),
             name=f"core-event-bus-publish-{event.topic}",
@@ -227,7 +231,22 @@ class CoreEventBus:
         self._publisher_tasks.add(publisher_task)
         self._publishers_drained.clear()
         try:
-            await publisher_task
+            done, _ = await asyncio.wait(
+                {publisher_task, dispatch_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if publisher_task in done:
+                await publisher_task
+                return
+
+            publisher_task.cancel()
+            await asyncio.gather(publisher_task, return_exceptions=True)
+            self._raise_dispatcher_unavailable(dispatch_task)
+        except BaseException:
+            if not publisher_task.done():
+                publisher_task.cancel()
+                await asyncio.gather(publisher_task, return_exceptions=True)
+            raise
         finally:
             self._publisher_tasks.discard(publisher_task)
             self._admitted_publishers -= 1
@@ -331,6 +350,14 @@ class CoreEventBus:
             return
         try:
             await dlq.enqueue(event, callback, exc)
+        except asyncio.CancelledError:
+            self._events_lost += 1
+            logger.critical(
+                "DLQ enqueue se canceló para evento '%s' handler '%s' — evento perdido",
+                event.topic,
+                self._handler_name(callback),
+                exc_info=True,
+            )
         except Exception:
             self._events_lost += 1
             logger.critical(
@@ -528,6 +555,20 @@ class CoreEventBus:
         except BaseException as exc:
             return exc
         return None
+
+    @classmethod
+    def _raise_dispatcher_unavailable(
+        cls,
+        dispatch_task: asyncio.Task[None] | None,
+    ) -> NoReturn:
+        """Falla publish conservando la causa terminal del dispatcher."""
+        error = RuntimeError("event bus dispatcher is not running")
+        if dispatch_task is None:
+            raise error
+        cause = cls._task_error(dispatch_task)
+        if cause is not None:
+            raise error from cause
+        raise error
 
     @staticmethod
     async def _observe_task(task: asyncio.Task[None]) -> None:
