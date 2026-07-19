@@ -80,9 +80,10 @@ def test_committed_report_populates_all_sections() -> None:
     assert conflict["losers"] == ["A.esp", "B.esp"]
     assert conflict["record_type"] == "LVLI"
 
-    # "cómo revertir"
+    # "cómo revertir" — incluye el snapshot_path accionable, no solo el id opaco
     assert len(vm["rollback"]) == 1
     assert vm["rollback"][0]["snapshot_id"] == "snap-1"
+    assert vm["rollback"][0]["snapshot_path"] == "snaps/bp.bak"
     assert "overwrite/Bashed Patch, 0.esp" in vm["rollback"][0]["original_path"]
 
 
@@ -125,16 +126,29 @@ def test_post_run_validation_none_declared_unavailable() -> None:
     """Sin post-run validator (T-21), el slot queda ``None`` — el renderer lo
     declara 'no disponible' en vez de omitirlo (honestidad, no vacío silencioso)."""
     vm = build_flight_report_view_model(_committed_report())
-    assert vm["post_run_validation"] is None
+    assert vm["post_run"] is None
 
+
+def test_post_run_validation_enumera_el_payload_real() -> None:
+    """El payload real (PostRunValidationReport.to_dict, T-21) NO trae ``status`` de
+    tope: kind/has_findings/preflight/... Se enumera clave:valor para que los
+    hallazgos le lleguen al operador (review Codex #326)."""
     con_validacion = FlightReport(
         ritual_id="loot-2",
         tool="LOOT",
         transaction_status="committed",
-        post_run_validation={"status": "green", "checks": []},
+        post_run_validation={
+            "kind": "post_run_validation",
+            "has_findings": True,
+            "headers_checked": True,
+            "preflight": {"status": "yellow"},
+        },
     ).model_dump(mode="json")
-    vm2 = build_flight_report_view_model(con_validacion)
-    assert vm2["post_run_validation"] == {"status": "green", "checks": []}
+    vm = build_flight_report_view_model(con_validacion)
+
+    assert vm["post_run"] is not None
+    assert "has_findings: True" in vm["post_run"]
+    assert "kind: post_run_validation" in vm["post_run"]
 
 
 def test_committed_sin_cambios_reporta_has_changes_false() -> None:
@@ -144,6 +158,26 @@ def test_committed_sin_cambios_reporta_has_changes_false() -> None:
     assert vm["changed"]["files_touched"] == []
     assert vm["changed"]["moves"] == []
     assert vm["changed"]["has_changes"] is False
+
+
+def test_load_order_alta_baja_cuenta_como_cambio() -> None:
+    """Un plugin agregado/quitado NO aparece en ``moves`` (from_orders solo registra
+    los presentes en ambos órdenes), pero before != after → has_changes True y el
+    alta/baja se surface (review Codex #326)."""
+    report = FlightReport(
+        ritual_id="loot-3",
+        tool="LOOT",
+        transaction_status="committed",
+        load_order_diff=LoadOrderDiff.from_orders(["A.esp"], ["A.esp", "B.esp"]),
+    ).model_dump(mode="json")
+
+    vm = build_flight_report_view_model(report)
+
+    assert vm["changed"]["moves"] == []  # B es nuevo; A no se movió
+    assert vm["changed"]["added"] == ["B.esp"]
+    assert vm["changed"]["removed"] == []
+    assert vm["changed"]["order_changed"] is True
+    assert vm["changed"]["has_changes"] is True
 
 
 def test_partial_dict_does_not_crash() -> None:
