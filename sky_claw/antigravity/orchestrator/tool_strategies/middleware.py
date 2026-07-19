@@ -143,9 +143,8 @@ class LoopGuardrailMiddleware:
     también las read-only: un loop de queries sigue siendo un loop.
 
     Ante un trip devuelve el error dict canónico (``reason:
-    "CircuitBreakerTripped"``) SIN invocar la cadena; el propio guardrail
-    limpia su historial al tripear, así que un reintento posterior distinto
-    (p. ej. iniciado por un humano) procede sin quedar bloqueado.
+    "CircuitBreakerTripped"``) SIN invocar la cadena; el middleware mantiene
+    el circuito abierto hasta que una intervención humana lo rearma explícitamente.
 
     Args:
         guardrail: Instancia a compartir; ``None`` crea una con los mismos
@@ -155,6 +154,7 @@ class LoopGuardrailMiddleware:
 
     def __init__(self, guardrail: AgenticLoopGuardrail | None = None) -> None:
         self._guardrail = guardrail if guardrail is not None else AgenticLoopGuardrail(max_repeats=3, window_size=6)
+        self._open_details: str | None = None
 
     async def __call__(
         self,
@@ -162,6 +162,13 @@ class LoopGuardrailMiddleware:
         payload_dict: dict[str, Any],
         next_call: NextCall,
     ) -> dict[str, Any]:
+        if self._open_details is not None:
+            return {
+                "status": "error",
+                "reason": "CircuitBreakerTripped",
+                "details": self._open_details,
+            }
+
         try:
             self._guardrail.register_and_check(strategy.name, payload_dict)
         except CircuitBreakerTrippedError as exc:
@@ -170,15 +177,17 @@ class LoopGuardrailMiddleware:
                 exc.tool_name,
                 exc.occurrences,
             )
+            self._open_details = str(exc)
             return {
                 "status": "error",
                 "reason": "CircuitBreakerTripped",
-                "details": str(exc),
+                "details": self._open_details,
             }
         return await next_call()
 
     def reset(self) -> None:
         """Rearme manual del historial (p. ej. tras intervención humana)."""
+        self._open_details = None
         self._guardrail.reset()
 
 
