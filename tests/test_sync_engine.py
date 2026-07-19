@@ -20,9 +20,17 @@ from sky_claw.antigravity.orchestrator.sync_engine import (
     _extract_nexus_id,
     _update_available,
 )
-from sky_claw.antigravity.scraper.masterlist import MasterlistClient, MasterlistFetchError
+from sky_claw.antigravity.scraper.masterlist import (
+    CircuitOpenError,
+    MasterlistClient,
+    MasterlistFetchError,
+    MasterlistHTTPError,
+)
 from sky_claw.antigravity.security.hitl import Decision
-from sky_claw.antigravity.security.network_gateway import NetworkGateway
+from sky_claw.antigravity.security.network_gateway import (
+    NetworkGateway,
+    NetworkGatewayTimeoutError,
+)
 from sky_claw.antigravity.security.path_validator import PathValidator
 from sky_claw.local.mo2.vfs import MO2Controller
 
@@ -49,6 +57,26 @@ def _fake_mod_info(mod_id: int, name: str = "TestMod") -> dict[str, Any]:
         "author": "author",
         "category_id": "5",
     }
+
+
+def _make_retry_engine(
+    error: BaseException,
+    *,
+    max_retries: int = 3,
+) -> tuple[SyncEngine, AsyncMock, MagicMock]:
+    """Construye un engine sin esperas reales y expone sus observadores."""
+    fetch = AsyncMock(side_effect=error)
+    masterlist = MagicMock(spec=MasterlistClient)
+    masterlist.fetch_mod_info = fetch
+    wait_probe = MagicMock(return_value=0)
+    engine = SyncEngine(
+        mo2=MagicMock(spec=MO2Controller),
+        masterlist=masterlist,
+        registry=AsyncMock(spec=AsyncModRegistry),
+        config=SyncConfig(max_retries=max_retries),
+        fetch_retry_wait=wait_probe,
+    )
+    return engine, fetch, wait_probe
 
 
 # ------------------------------------------------------------------
@@ -154,6 +182,90 @@ async def adb(tmp_path: pathlib.Path) -> AsyncModRegistry:
 # ------------------------------------------------------------------
 # SyncEngine — ciclo run() (producer-consumer)
 # ------------------------------------------------------------------
+
+
+class TestMasterlistRetryPolicy:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 403, 404])
+    async def test_http_permanente_hace_un_intento_sin_backoff(self, status: int) -> None:
+        error = MasterlistHTTPError(status=status, mod_id=42, body="permanente")
+        engine, fetch, wait_probe = _make_retry_engine(error)
+
+        with pytest.raises(MasterlistHTTPError):
+            await engine._safe_fetch_info(
+                42,
+                MagicMock(spec=aiohttp.ClientSession),
+                asyncio.Semaphore(1),
+            )
+
+        assert fetch.await_count == 1
+        wait_probe.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [429, 500, 503])
+    async def test_http_transitorio_respeta_max_retries(self, status: int) -> None:
+        error = MasterlistHTTPError(status=status, mod_id=42, body="transitorio")
+        engine, fetch, _ = _make_retry_engine(error, max_retries=3)
+
+        with pytest.raises(MasterlistHTTPError):
+            await engine._safe_fetch_info(
+                42,
+                MagicMock(spec=aiohttp.ClientSession),
+                asyncio.Semaphore(1),
+            )
+
+        assert fetch.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_circuito_abierto_hace_un_intento_sin_backoff(self) -> None:
+        engine, fetch, wait_probe = _make_retry_engine(CircuitOpenError("abierto"))
+
+        with pytest.raises(CircuitOpenError):
+            await engine._safe_fetch_info(
+                42,
+                MagicMock(spec=aiohttp.ClientSession),
+                asyncio.Semaphore(1),
+            )
+
+        assert fetch.await_count == 1
+        wait_probe.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_timeout_gateway_hace_un_intento_sin_backoff(self) -> None:
+        engine, fetch, wait_probe = _make_retry_engine(
+            NetworkGatewayTimeoutError("timeout seguro"),
+        )
+
+        with pytest.raises(NetworkGatewayTimeoutError):
+            await engine._safe_fetch_info(
+                42,
+                MagicMock(spec=aiohttp.ClientSession),
+                asyncio.Semaphore(1),
+            )
+
+        assert fetch.await_count == 1
+        wait_probe.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error",
+        [
+            aiohttp.ClientConnectionError("sin conexión"),
+            OSError("fallo DNS"),
+        ],
+        ids=["conexion", "dns"],
+    )
+    async def test_transporte_transitorio_respeta_max_retries(self, error: BaseException) -> None:
+        engine, fetch, _ = _make_retry_engine(error, max_retries=3)
+
+        with pytest.raises(type(error)):
+            await engine._safe_fetch_info(
+                42,
+                MagicMock(spec=aiohttp.ClientSession),
+                asyncio.Semaphore(1),
+            )
+
+        assert fetch.await_count == 3
 
 
 class TestSyncEngineRun:
@@ -280,7 +392,7 @@ class TestSyncEngineRun:
     async def test_network_error_degrades_gracefully(self, tmp_path: pathlib.Path, adb: AsyncModRegistry) -> None:
         """Errores de red en un mod no impiden el procesamiento de los demás.
 
-        El mod 5001 agota 5 reintentos con ``wait_none()`` (reraise=True) →
+        El mod 5001 agota 1 intento con ``wait_none()`` (reraise=True) →
         ``_process_batch`` lo captura por-mod → continúa con los siguientes.
         ``result.failed == 1``, ``result.processed == 2``.
         """
@@ -1166,6 +1278,21 @@ class TestDetectPendingUpdates:
         assert [u["name"] for u in result.updates] == ["Bueno"]
         assert len(result.failed) == 1
         assert result.failed[0]["nexus_id"] == 1
+
+    @pytest.mark.asyncio
+    async def test_timeout_gateway_se_aisla_como_fallo_del_mod(self) -> None:
+        engine = self._engine(
+            [{"name": "SinRed", "nexus_id": 77, "version": "1.0", "installed": True}],
+            AsyncMock(side_effect=NetworkGatewayTimeoutError("timeout seguro")),
+        )
+
+        result = await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
+
+        assert result.checked == 1
+        assert result.updates == []
+        assert len(result.failed) == 1
+        assert result.failed[0]["nexus_id"] == 77
+        assert result.failed[0]["error"] == "timeout seguro"
 
     def test_set_nexus_api_key_propaga_al_masterlist(self) -> None:
         """Refrescar la key la delega al MasterlistClient (review Codex #228)."""

@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from tenacity import (
     AsyncRetrying,
     RetryError,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -47,8 +47,10 @@ from sky_claw.antigravity.scraper.masterlist import (
     CircuitOpenError,
     MasterlistClient,
     MasterlistFetchError,
+    MasterlistHTTPError,
 )
 from sky_claw.antigravity.security.hitl import Decision, HITLGuard
+from sky_claw.antigravity.security.network_gateway import NetworkGatewayTimeoutError
 from sky_claw.antigravity.security.path_validator import (
     PathViolationError,
     assert_safe_component,
@@ -73,6 +75,23 @@ _POISON = None
 # because all workers died without consuming, the put would block forever
 # without this bound.
 _POISON_DELIVERY_TIMEOUT: float = 5.0
+
+
+def _should_retry_masterlist_fetch(exc: BaseException) -> bool:
+    """Decide explícitamente si un fallo de Masterlist se reintenta."""
+    if isinstance(exc, (CircuitOpenError, NetworkGatewayTimeoutError)):
+        return False
+    if isinstance(exc, MasterlistHTTPError):
+        return exc.retryable
+    return isinstance(
+        exc,
+        (
+            aiohttp.ClientError,
+            OSError,
+            TimeoutError,
+            MasterlistFetchError,
+        ),
+    )
 
 # FASE 1.5: Constante para directorio de staging de backups
 BACKUP_STAGING_DIR = pathlib.Path(".skyclaw_backups/")
@@ -518,7 +537,14 @@ class SyncEngine:
         async def _detect(idx: int, mod: dict[str, Any]) -> None:
             try:
                 info = await self._safe_fetch_info(mod["nexus_id"], session, api_semaphore)
-            except (MasterlistFetchError, CircuitOpenError, RetryError, aiohttp.ClientError, OSError) as exc:
+            except (
+                MasterlistFetchError,
+                CircuitOpenError,
+                RetryError,
+                aiohttp.ClientError,
+                NetworkGatewayTimeoutError,
+                OSError,
+            ) as exc:
                 outcomes[idx] = exc
                 return
             outcomes[idx] = info
@@ -771,7 +797,13 @@ class SyncEngine:
                 result["rollback_transaction_id"] = transaction_id
             return result
 
-        except (MasterlistFetchError, CircuitOpenError, RetryError, aiohttp.ClientError) as exc:
+        except (
+            MasterlistFetchError,
+            CircuitOpenError,
+            RetryError,
+            aiohttp.ClientError,
+            NetworkGatewayTimeoutError,
+        ) as exc:
             # Expected network failure — graceful degradation, no re-raise.
             # No file operations were recorded under this transaction, so
             # mark_transaction_rolled_back (journal-only) is correct here.
@@ -826,11 +858,11 @@ class SyncEngine:
         session: aiohttp.ClientSession,
         semaphore: asyncio.Semaphore,
     ) -> dict[str, Any] | None:
-        """Envuelve la consulta a Nexus API con un semáforo de concurrencia y backoff."""
+        """Envuelve la consulta a Nexus API con semáforo y retry explícito."""
         result: dict[str, Any] | None = None
         async for attempt in AsyncRetrying(
-            retry=retry_if_exception_type((aiohttp.ClientError, MasterlistFetchError)),
-            stop=stop_after_attempt(5),
+            retry=retry_if_exception(_should_retry_masterlist_fetch),
+            stop=stop_after_attempt(self._cfg.max_retries),
             wait=self._fetch_retry_wait,
             reraise=True,
         ):
@@ -1016,6 +1048,9 @@ class SyncEngine:
                     CircuitOpenError,
                     RetryError,
                     aiohttp.ClientError,
+                    NetworkGatewayTimeoutError,
+                    OSError,
+                    TimeoutError,
                 ) as exc:
                     logger.warning("Skipping mod %r: %s", mod_name, exc)
                     result.failed += 1
