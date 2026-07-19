@@ -204,6 +204,16 @@ class AsyncModRegistry:
                 try:
                     await corrupt_conn.close()
                 except asyncio.CancelledError as error:
+                    current_task = asyncio.current_task()
+                    # CancelledError tambien puede originarse dentro de close().
+                    # cancelling() > 0 es la evidencia de que la cancelacion fue
+                    # solicitada sobre la tarea actual: debe conservar identidad.
+                    if current_task is not None and current_task.cancelling() > 0:
+                        self._conn = None
+                        logger.warning(
+                            "Closing corrupt database was cancelled externally; lifecycle ownership retained"
+                        )
+                        raise
                     close_error = error
                 except Exception as error:
                     close_error = error
@@ -221,7 +231,15 @@ class AsyncModRegistry:
                     )
                     raise corruption_error from close_error
 
-                self._lifecycle.evict_connection(self._db_path)
+                evicted = self._lifecycle.evict_connection(
+                    self._db_path,
+                    expected_connection=corrupt_conn,
+                )
+                if not evicted:
+                    logger.error(
+                        "Corrupt database connection was replaced before eviction; replacement ownership retained"
+                    )
+                    raise
 
                 db_file = pathlib.Path(self._db_path)
                 if db_file.exists():

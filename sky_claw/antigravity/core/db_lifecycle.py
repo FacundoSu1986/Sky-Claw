@@ -94,6 +94,14 @@ class _DatabaseOperationFailedAfterCancellation(asyncio.CancelledError):
         self.operation_error = operation_error
 
 
+class DatabaseShutdownIncompleteError(RuntimeError):
+    """Shutdown reintentable porque aun quedan conexiones gestionadas."""
+
+    def __init__(self, retained_paths: tuple[str, ...]) -> None:
+        self.retained_paths = retained_paths
+        super().__init__("Database shutdown incomplete; retained managed connections: " + ", ".join(retained_paths))
+
+
 # ---------------------------------------------------------------------------
 # DatabaseLifecycleManager
 # ---------------------------------------------------------------------------
@@ -435,6 +443,8 @@ class DatabaseLifecycleManager:
 
         if first_close_error is not None:
             raise first_close_error
+        if self._connections:
+            raise DatabaseShutdownIncompleteError(tuple(self._connections))
 
     # ------------------------------------------------------------------
     # Health Check
@@ -742,7 +752,11 @@ class DatabaseLifecycleManager:
             self._write_locks[path_str] = lock
         return lock
 
-    def evict_connection(self, db_path: Path | str) -> None:
+    def evict_connection(
+        self,
+        db_path: Path | str,
+        expected_connection: aiosqlite.Connection | None = None,
+    ) -> bool:
         """Remove a connection from the managed pool without closing it.
 
         Intended for recovery paths where the caller has already closed the
@@ -750,15 +764,30 @@ class DatabaseLifecycleManager:
         After eviction, the next ``get_connection()`` call for the same path
         will open a fresh connection.
 
+        Cuando ``expected_connection`` se proporciona, la entrada se elimina
+        solo si todavia apunta a esa misma instancia. Esto evita expulsar una
+        conexion reemplazada concurrentemente.
+
         The path remains registered in ``_db_paths`` so health_check and
         shutdown verification still track it.
 
         Args:
             db_path: Path to the database whose connection should be evicted.
+            expected_connection: Instancia que el caller cerro y espera retirar.
+
+        Returns:
+            ``True`` si se retiro una entrada; ``False`` si no existia o habia
+            sido reemplazada.
         """
         path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
         path_str = str(path_obj.resolve())
-        self._connections.pop(path_str, None)
+        current_connection = self._connections.get(path_str)
+        if current_connection is None:
+            return False
+        if expected_connection is not None and current_connection is not expected_connection:
+            return False
+        self._connections.pop(path_str)
+        return True
 
     @property
     def managed_paths(self) -> list[str]:

@@ -25,6 +25,7 @@ from pydantic import ValidationError
 from sky_claw.antigravity.core.db_lifecycle import (
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
+    DatabaseShutdownIncompleteError,
     WALHealth,
 )
 
@@ -343,7 +344,7 @@ class TestShutdown:
         assert conn_fallida.close.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_shutdown_no_retira_un_reemplazo_registrado_durante_close(
+    async def test_shutdown_reemplazado_falla_y_conserva_reemplazo_para_reintento(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -361,8 +362,10 @@ class TestShutdown:
         manager._connections = {"compartida.db": conn_original}
         monkeypatch.setattr(manager, "checkpoint_all", AsyncMock(return_value={}))
 
-        await manager.shutdown_all()
+        with pytest.raises(DatabaseShutdownIncompleteError) as exc_info:
+            await manager.shutdown_all()
 
+        assert exc_info.value.retained_paths == ("compartida.db",)
         assert manager._connections == {"compartida.db": conn_reemplazo}
         conn_reemplazo.close.assert_not_awaited()
 
