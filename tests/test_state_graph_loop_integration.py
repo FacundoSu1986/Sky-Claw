@@ -114,6 +114,7 @@ class TestDispatchingLoopDetection:
         sup.interface = MagicMock()
         sup.interface.request_hitl = AsyncMock(return_value="approved")
         sup._create_hitl_request = MagicMock(side_effect=lambda req: req)
+        sup.reset_loop_guardrail = MagicMock()
         integration.connect_supervisor(sup)
 
         state = _base_state()
@@ -131,6 +132,7 @@ class TestDispatchingLoopDetection:
         assert state["loop_detected"] is False
         assert state["loop_context"] is None
         assert graph.loop_guardrail.snapshot() == ()
+        sup.reset_loop_guardrail.assert_called_once_with()
 
     async def test_hitl_denied_does_not_reset_guardrail(self) -> None:
         graph = SupervisorStateGraph(profile_name="Test")
@@ -139,6 +141,7 @@ class TestDispatchingLoopDetection:
         sup.interface = MagicMock()
         sup.interface.request_hitl = AsyncMock(return_value="denied")
         sup._create_hitl_request = MagicMock(side_effect=lambda req: req)
+        sup.reset_loop_guardrail = MagicMock()
         integration.connect_supervisor(sup)
 
         state = _base_state()
@@ -156,6 +159,7 @@ class TestDispatchingLoopDetection:
         assert state["hitl_response"] == "denied"
         assert state["loop_detected"] is True  # unchanged
         assert len(graph.loop_guardrail.snapshot()) == 1
+        sup.reset_loop_guardrail.assert_not_called()
 
     async def test_dispatch_without_supervisor_is_noop(self) -> None:
         graph = SupervisorStateGraph(profile_name="Test")
