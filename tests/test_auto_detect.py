@@ -200,6 +200,72 @@ class TestAsyncIoIsolation:
             temporizador.cancel()
             temporizador.join(timeout=1.0)
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("detector", "inner_name"),
+        (
+            (AutoDetector.find_mo2, "_find_mo2_inner"),
+            (AutoDetector.find_skyrim, "_find_skyrim_inner"),
+            (AutoDetector.find_loot, "_find_loot_inner"),
+            (AutoDetector.find_xedit, "_find_xedit_inner"),
+        ),
+    )
+    async def test_el_probe_corre_en_un_hilo_daemon(
+        self,
+        detector: Callable[[], Awaitable[pathlib.Path | None]],
+        inner_name: str,
+    ) -> None:
+        """El probe síncrono debe ejecutarse en un hilo *daemon*.
+
+        `asyncio.to_thread` despacha al default executor, cuyos hilos son
+        NON-daemon: `asyncio.run` los joinea sin timeout al cerrar, así que
+        una syscall de filesystem/registro colgada bloquearía el shutdown del
+        proceso pese al timeout. Un hilo daemon se abandona al salir el
+        intérprete y no retiene el cierre.
+        """
+        hilos: list[threading.Thread] = []
+
+        def _capturar() -> None:
+            hilos.append(threading.current_thread())
+            return None
+
+        with patch.object(AutoDetector, inner_name, side_effect=_capturar):
+            await detector()
+
+        assert hilos, "el probe no corrió fuera del event loop"
+        assert hilos[0].daemon is True
+
+    @pytest.mark.asyncio
+    async def test_worker_colgado_tras_timeout_es_daemon(self) -> None:
+        """Un probe que se cuelga tras el timeout no debe dejar vivo un hilo
+        non-daemon que bloquee el shutdown de ``asyncio.run``.
+
+        Verifica el núcleo del bug: el timeout NO cancela al worker (sigue
+        vivo en la syscall), pero al ser daemon no retiene el cierre.
+        """
+        liberar = threading.Event()
+        hilo_worker: list[threading.Thread] = []
+
+        def operacion_colgada() -> None:
+            hilo_worker.append(threading.current_thread())
+            liberar.wait(timeout=2.0)
+
+        try:
+            with (
+                patch.object(AutoDetector, "_find_mo2_inner", side_effect=operacion_colgada),
+                patch("sky_claw.local.auto_detect._SEARCH_TIMEOUT", 0.02),
+                pytest.raises(asyncio.TimeoutError),
+            ):
+                await AutoDetector.find_mo2()
+
+            assert hilo_worker, "el probe no llegó a correr"
+            assert hilo_worker[0].is_alive(), "el worker debería seguir colgado"
+            assert hilo_worker[0].daemon is True
+        finally:
+            liberar.set()
+            if hilo_worker:
+                hilo_worker[0].join(timeout=2.0)
+
 
 # ---------------------------------------------------------------------------
 # find_loot / find_xedit

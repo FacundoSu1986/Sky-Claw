@@ -8,9 +8,13 @@ has a hard timeout so the startup experience stays fast.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import logging
 import pathlib
-from typing import Any
+import threading
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from sky_claw.config import (
     LOOT_SEARCH_PATHS,
@@ -22,6 +26,49 @@ from sky_claw.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+async def _run_off_loop(fn: Callable[[], _T]) -> _T:
+    """Ejecuta ``fn()`` en un hilo *daemon* puenteado al event loop.
+
+    A diferencia de ``asyncio.to_thread`` —que despacha al default executor,
+    cuyos hilos son NON-daemon y ``asyncio.run`` joinea sin timeout al cerrar—
+    un hilo daemon no retiene el shutdown del loop ni del proceso: si una
+    syscall de filesystem o de registro se cuelga, el worker se abandona al
+    salir el intérprete en vez de colgarlo. El ``wait_for`` de cada detector
+    puede así vencer y liberar el arranque aunque el probe siga bloqueado.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[_T] = loop.create_future()
+    ctx = contextvars.copy_context()
+
+    def _resolver(valor: Any, es_error: bool) -> None:
+        # Corre en el hilo del loop: si el wait_for ya venció, el future está
+        # cancelado y no hay nada que resolver (set_* lanzaría InvalidStateError).
+        if future.cancelled():
+            return
+        if es_error:
+            future.set_exception(valor)
+        else:
+            future.set_result(valor)
+
+    def _worker() -> None:
+        try:
+            resultado = ctx.run(fn)
+        except BaseException as exc:  # noqa: BLE001 — se re-propaga vía el future
+            # Si el loop ya cerró (p. ej. tras el timeout), call_soon_threadsafe
+            # lanza RuntimeError; el worker daemon muere en silencio.
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(_resolver, exc, True)
+        else:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(_resolver, resultado, False)
+
+    threading.Thread(target=_worker, name="autodetect", daemon=True).start()
+    return await future
+
 
 # Module-level aliases — used directly by AutoDetector methods so that
 # tests can patch them via patch("sky_claw.local.auto_detect._MO2_COMMON", ...).
@@ -126,7 +173,7 @@ class AutoDetector:
     async def find_mo2() -> pathlib.Path | None:
         """Locate Mod Organizer 2 (portable install with profiles)."""
         return await asyncio.wait_for(
-            asyncio.to_thread(AutoDetector._find_mo2_inner),
+            _run_off_loop(AutoDetector._find_mo2_inner),
             timeout=_SEARCH_TIMEOUT,
         )
 
@@ -162,7 +209,7 @@ class AutoDetector:
     async def find_skyrim() -> pathlib.Path | None:
         """Locate Skyrim Special Edition."""
         return await asyncio.wait_for(
-            asyncio.to_thread(AutoDetector._find_skyrim_inner),
+            _run_off_loop(AutoDetector._find_skyrim_inner),
             timeout=_SEARCH_TIMEOUT,
         )
 
@@ -203,7 +250,7 @@ class AutoDetector:
     async def find_loot() -> pathlib.Path | None:
         """Locate the LOOT executable."""
         return await asyncio.wait_for(
-            asyncio.to_thread(AutoDetector._find_loot_inner),
+            _run_off_loop(AutoDetector._find_loot_inner),
             timeout=_SEARCH_TIMEOUT,
         )
 
@@ -230,7 +277,7 @@ class AutoDetector:
     async def find_xedit() -> pathlib.Path | None:
         """Locate the SSEEdit executable."""
         return await asyncio.wait_for(
-            asyncio.to_thread(AutoDetector._find_xedit_inner),
+            _run_off_loop(AutoDetector._find_xedit_inner),
             timeout=_SEARCH_TIMEOUT,
         )
 
