@@ -487,9 +487,15 @@ async def test_lease_sobrevive_al_ttl_gracias_al_heartbeat(
     """El bug §2.1: con ``acquire_lock`` crudo (TTL 10 min) un run largo perdía
     el lease en silencio. Con SnapshotTransactionLock el heartbeat lo renueva.
 
-    Se fuerza un TTL diminuto (0.3 s) y un run que dura más que eso; al terminar,
-    el lock sigue siendo del servicio (no expiró) y se libera limpio."""
-    mgr = DistributedLockManager(tmp_lock_db, default_ttl=0.3, max_retries=2, backoff_base=0.05, backoff_max=0.2)
+    Se fuerza un TTL chico (1.0 s) y un run que dura ~2× eso; al terminar, el lock
+    sigue siendo del servicio (no expiró) y se libera limpio.
+
+    El TTL no se baja más (p.ej. 0.3 s) a propósito: el heartbeat renueva cada
+    ``TTL/renew_divisor`` (divisor 3.0), así que con TTL 0.3 s la tolerancia a que
+    el scheduler starve la task de renovación es solo ~0.3 s → flaky bajo carga en
+    CI. Con TTL 1.0 s la ventana de supervivencia es ~1.0 s, holgada frente al
+    jitter de scheduling; el run de 2.0 s sigue forzando varias renovaciones."""
+    mgr = DistributedLockManager(tmp_lock_db, default_ttl=1.0, max_retries=2, backoff_base=0.05, backoff_max=0.2)
     await mgr.initialize()
     try:
         svc = make_service(
@@ -501,12 +507,12 @@ async def test_lease_sobrevive_al_ttl_gracias_al_heartbeat(
         )
 
         async def _proc_lento(*_a: object, **_k: object) -> MagicMock:
-            # El "run" dura ~3× el TTL: sin heartbeat el lease habría expirado.
+            # El "run" dura ~2× el TTL: sin heartbeat el lease habría expirado.
             proc = make_fake_proc(exit_code=0)
             original = proc.wait
 
             async def _wait_lento() -> int:
-                await asyncio.sleep(0.9)
+                await asyncio.sleep(2.0)
                 return await original()
 
             proc.wait = _wait_lento  # type: ignore[assignment]

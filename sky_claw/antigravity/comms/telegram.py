@@ -312,16 +312,8 @@ class TelegramWebhook:
             logger.warning("Intento de spoofing HITL detectado y bloqueado en callback_query.")
             callback_id = query.get("id")
             if callback_id:
-                # CORRECCIÓN: Garantizar correcta concatenación de la URL
-                url = self._sender._url.rstrip("/") + "/answerCallbackQuery"
-                await self._session.post(
-                    url,
-                    json={
-                        "callback_query_id": callback_id,
-                        "text": "Unauthorized",
-                        "show_alert": False,
-                    },
-                )
+                # Egress por el gateway (allow-list/SSRF/timeout) + async with → sin fuga.
+                await self._sender.answer_callback_query(callback_id, text="Unauthorized")
             return
 
         data = query.get("data", "")
@@ -350,9 +342,8 @@ class TelegramWebhook:
             # Answer callback to remove loading state in Telegram
             callback_id = query.get("id")
             if callback_id:
-                # CORRECCIÓN: Garantizar correcta concatenación de la URL
-                url = self._sender._url.rstrip("/") + "/answerCallbackQuery"
-                await self._session.post(url, json={"callback_query_id": callback_id})
+                # Egress por el gateway (allow-list/SSRF/timeout) + async with → sin fuga.
+                await self._sender.answer_callback_query(callback_id)
 
             if found:
                 text = f"Request '{request_id}' {verb.lower()} by operator."

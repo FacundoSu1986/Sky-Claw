@@ -12,12 +12,15 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
 import time
 from typing import TYPE_CHECKING
 from unittest.mock import patch
+
+import pytest
 
 from sky_claw.antigravity.security.auth_token_manager import _TOKEN_TTL, AuthTokenManager
 
@@ -461,3 +464,92 @@ class TestAtomicWrite:
 
         read_back = AuthTokenManager.read_token_file(token_dir=str(tmp_path / "tokens"))
         assert read_back == token
+
+
+# ===========================================================================
+#  F3 — la rotación no debe bloquear el event loop
+# ===========================================================================
+
+
+class TestRotationLoopOffloading:
+    async def test_rotation_offloads_generate_to_thread(self, tmp_path, monkeypatch):
+        """F3: generate() hace I/O de archivo (+ subprocess icacls en Windows vía
+        restrict_to_owner). Corriéndolo directo en el loop de rotación congela todo
+        el event loop; debe delegarse en asyncio.to_thread."""
+        mgr = _make_manager(tmp_path)
+        offloaded: list = []
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            offloaded.append(fn)
+            return fn(*args, **kwargs)
+
+        sleep_calls = {"n": 0}
+
+        async def fake_sleep(_seconds):
+            # Una sola iteración: el primer sleep pasa, el segundo corta el loop.
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 2:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(
+            "sky_claw.antigravity.security.auth_token_manager.asyncio.to_thread",
+            fake_to_thread,
+        )
+        monkeypatch.setattr(
+            "sky_claw.antigravity.security.auth_token_manager.asyncio.sleep",
+            fake_sleep,
+        )
+        with (
+            patch("sky_claw.antigravity.security.auth_token_manager.restrict_to_owner"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await mgr._rotation_loop()
+
+        assert mgr.generate in offloaded, "generate() debe ejecutarse vía asyncio.to_thread"
+
+    async def test_stop_rotation_waits_for_inflight_generate(self, tmp_path, monkeypatch):
+        """Si stop_rotation() cancela el loop mientras el hilo de generate() escribe el
+        token, debe esperar a que la escritura termine antes de retornar. Si no, un
+        revoke() posterior borra el archivo y el hilo huérfano lo re-crea → token
+        supuestamente revocado que sigue vivo.
+
+        Se usa un TTL diminuto (real) para disparar la rotación rápido y una cola
+        (``gate``) para mantener el generate 'en vuelo' de forma determinista — sin
+        parchear ``asyncio.sleep`` global (rompería el propio loop del test)."""
+        # TTL diminuto → el primer asyncio.sleep(TTL/2) real dura ~5 ms.
+        monkeypatch.setattr("sky_claw.antigravity.security.auth_token_manager._TOKEN_TTL", 0.01)
+
+        mgr = _make_manager(tmp_path)
+        gate = asyncio.Event()
+        started = asyncio.Event()
+        order: list[str] = []
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            started.set()
+            await gate.wait()  # simula generate() en curso (icacls lento)
+            order.append("generate_done")
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "sky_claw.antigravity.security.auth_token_manager.asyncio.to_thread",
+            fake_to_thread,
+        )
+
+        with patch("sky_claw.antigravity.security.auth_token_manager.restrict_to_owner"):
+            await mgr.start_rotation()
+            await asyncio.wait_for(started.wait(), timeout=2.0)  # generate en vuelo
+
+            async def _stop() -> None:
+                await mgr.stop_rotation()
+                order.append("stop_returned")
+
+            stop_task = asyncio.create_task(_stop())
+            # Damos varias vueltas al loop para que stop_rotation intente avanzar.
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert "stop_returned" not in order, "stop_rotation no debe retornar con generate en vuelo"
+
+            gate.set()  # dejamos que generate() termine su escritura
+            await asyncio.wait_for(stop_task, timeout=2.0)
+
+        assert order == ["generate_done", "stop_returned"]
