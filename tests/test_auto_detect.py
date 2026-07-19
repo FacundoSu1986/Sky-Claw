@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
+import threading
+import time
+from collections.abc import Awaitable, Callable
 from unittest.mock import patch
 
 import pytest
@@ -123,6 +127,81 @@ class TestFindSkyrim:
 
 
 # ---------------------------------------------------------------------------
+# aislamiento del I/O síncrono
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncIoIsolation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("detector", "inner_name"),
+        (
+            (AutoDetector.find_mo2, "_find_mo2_inner"),
+            (AutoDetector.find_skyrim, "_find_skyrim_inner"),
+            (AutoDetector.find_loot, "_find_loot_inner"),
+            (AutoDetector.find_xedit, "_find_xedit_inner"),
+        ),
+    )
+    async def test_la_deteccion_lenta_no_bloquea_el_event_loop(
+        self,
+        detector: Callable[[], Awaitable[pathlib.Path | None]],
+        inner_name: str,
+    ) -> None:
+        liberar = threading.Event()
+        latido_ejecutado = threading.Event()
+        latido_observado: list[bool] = []
+
+        def operacion_lenta() -> None:
+            liberar.wait(timeout=1.0)
+
+        def observar_latido() -> None:
+            latido_observado.append(latido_ejecutado.wait(timeout=0.30))
+            liberar.set()
+
+        async def latido() -> None:
+            await asyncio.sleep(0)
+            latido_ejecutado.set()
+
+        observador = threading.Thread(target=observar_latido, daemon=True)
+        observador.start()
+        try:
+            with patch.object(AutoDetector, inner_name, side_effect=operacion_lenta):
+                tarea = asyncio.create_task(detector())
+                await asyncio.gather(tarea, latido())
+        finally:
+            liberar.set()
+            observador.join(timeout=1.0)
+
+        assert latido_observado == [True]
+
+    @pytest.mark.asyncio
+    async def test_find_mo2_aplica_timeout_a_una_operacion_sincrona(self) -> None:
+        liberar = threading.Event()
+        operacion_finalizada = threading.Event()
+
+        def operacion_lenta() -> None:
+            try:
+                liberar.wait(timeout=1.0)
+            finally:
+                operacion_finalizada.set()
+
+        temporizador = threading.Timer(0.30, liberar.set)
+        temporizador.start()
+        try:
+            with (
+                patch.object(AutoDetector, "_find_mo2_inner", side_effect=operacion_lenta),
+                patch("sky_claw.local.auto_detect._SEARCH_TIMEOUT", 0.02),
+                pytest.raises(asyncio.TimeoutError),
+            ):
+                await AutoDetector.find_mo2()
+            assert not operacion_finalizada.is_set()
+        finally:
+            liberar.set()
+            temporizador.cancel()
+            temporizador.join(timeout=1.0)
+
+
+# ---------------------------------------------------------------------------
 # find_loot / find_xedit
 # ---------------------------------------------------------------------------
 
@@ -203,10 +282,9 @@ class TestDetectAll:
     @pytest.mark.asyncio
     async def test_detect_all_handles_timeout(self) -> None:
         """detect_all doesn't crash even if individual detectors time out."""
-        import asyncio
 
-        async def _slow() -> None:
-            await asyncio.sleep(100)
+        def _slow() -> None:
+            time.sleep(0.10)
 
         with (
             patch.object(AutoDetector, "_find_mo2_inner", side_effect=_slow),

@@ -125,10 +125,13 @@ class AutoDetector:
     @staticmethod
     async def find_mo2() -> pathlib.Path | None:
         """Locate Mod Organizer 2 (portable install with profiles)."""
-        return await asyncio.wait_for(AutoDetector._find_mo2_inner(), timeout=_SEARCH_TIMEOUT)
+        return await asyncio.wait_for(
+            asyncio.to_thread(AutoDetector._find_mo2_inner),
+            timeout=_SEARCH_TIMEOUT,
+        )
 
     @staticmethod
-    async def _find_mo2_inner() -> pathlib.Path | None:
+    def _find_mo2_inner() -> pathlib.Path | None:
         # 1. Common portable paths.
         for raw in _MO2_COMMON:
             p = pathlib.Path(raw)
@@ -158,10 +161,13 @@ class AutoDetector:
     @staticmethod
     async def find_skyrim() -> pathlib.Path | None:
         """Locate Skyrim Special Edition."""
-        return await asyncio.wait_for(AutoDetector._find_skyrim_inner(), timeout=_SEARCH_TIMEOUT)
+        return await asyncio.wait_for(
+            asyncio.to_thread(AutoDetector._find_skyrim_inner),
+            timeout=_SEARCH_TIMEOUT,
+        )
 
     @staticmethod
-    async def _find_skyrim_inner() -> pathlib.Path | None:
+    def _find_skyrim_inner() -> pathlib.Path | None:
         # 1. Windows registry
         reg_path = _read_registry_value(
             winreg.HKEY_LOCAL_MACHINE if _HAS_WINREG else 0,
@@ -196,10 +202,13 @@ class AutoDetector:
     @staticmethod
     async def find_loot() -> pathlib.Path | None:
         """Locate the LOOT executable."""
-        return await asyncio.wait_for(AutoDetector._find_loot_inner(), timeout=_SEARCH_TIMEOUT)
+        return await asyncio.wait_for(
+            asyncio.to_thread(AutoDetector._find_loot_inner),
+            timeout=_SEARCH_TIMEOUT,
+        )
 
     @staticmethod
-    async def _find_loot_inner() -> pathlib.Path | None:
+    def _find_loot_inner() -> pathlib.Path | None:
         for raw in _LOOT_COMMON:
             p = pathlib.Path(raw)
             exe = p / "LOOT.exe"
@@ -220,10 +229,13 @@ class AutoDetector:
     @staticmethod
     async def find_xedit() -> pathlib.Path | None:
         """Locate the SSEEdit executable."""
-        return await asyncio.wait_for(AutoDetector._find_xedit_inner(), timeout=_SEARCH_TIMEOUT)
+        return await asyncio.wait_for(
+            asyncio.to_thread(AutoDetector._find_xedit_inner),
+            timeout=_SEARCH_TIMEOUT,
+        )
 
     @staticmethod
-    async def _find_xedit_inner() -> pathlib.Path | None:
+    def _find_xedit_inner() -> pathlib.Path | None:
         for raw in _XEDIT_COMMON:
             p = pathlib.Path(raw)
             exe = p / "SSEEdit.exe"
