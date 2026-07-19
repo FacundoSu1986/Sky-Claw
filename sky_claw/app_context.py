@@ -604,9 +604,20 @@ class AppContext:
             self.sync_engine = SyncEngine(mo2, masterlist, self.database.registry, hitl=self.hitl)
 
             if await self.database.registry.is_empty():
-                logger.info("Database empty, initial Sync from MO2...")
+                enrich_remote = bool(nexus_key)
+                if enrich_remote:
+                    logger.info("Database empty, initial Sync from MO2 with Nexus enrichment")
+                else:
+                    logger.warning(
+                        "Database empty and Nexus API key missing; "
+                        "importing local MO2 identity without remote enrichment"
+                    )
                 try:
-                    await self.sync_engine.run(self.network.session, profile="Default")
+                    await self.sync_engine.run(
+                        self.network.session,
+                        profile="Default",
+                        enrich_remote=enrich_remote,
+                    )
                 except Exception as exc:
                     logger.exception("Initial synchronization failed: %s", exc)
 

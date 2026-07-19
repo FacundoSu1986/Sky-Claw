@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import logging
 import pathlib
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -106,6 +106,12 @@ class TestAppContextResilience:
 
             with pytest.raises(RuntimeError, match="forced router failure"):
                 await ctx._start_full_inner()
+
+        mock_sync.return_value.run.assert_awaited_once_with(
+            ANY,
+            profile="Default",
+            enrich_remote=False,
+        )
 
         # ARC-01 evidence: the teardown failure was logged but we continued
         assert any("Teardown previo falló" in r.message for r in caplog.records)
