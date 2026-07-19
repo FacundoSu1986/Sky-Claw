@@ -82,9 +82,8 @@ class TestLoopGuardrailMiddleware:
 
         assert strategy.ejecuciones == 5
 
-    async def test_tras_el_trip_el_siguiente_intento_procede(self) -> None:
-        """El trip limpia el historial del guardrail: un reintento posterior
-        (p. ej. iniciado por un humano) no queda bloqueado para siempre."""
+    async def test_tras_el_trip_sigue_bloqueado_hasta_reset_explicito(self) -> None:
+        """Un caller atascado no puede ejecutar de nuevo sin intervención humana."""
         strategy = _StrategyContadora("sort_load_order")
         dispatcher = _dispatcher_con_guardrail(strategy)
         payload = {"profile": "Default"}
@@ -94,8 +93,8 @@ class TestLoopGuardrailMiddleware:
         assert (await dispatcher.dispatch("sort_load_order", payload))["reason"] == "CircuitBreakerTripped"
 
         resultado = await dispatcher.dispatch("sort_load_order", payload)
-        assert resultado.get("success") is True
-        assert strategy.ejecuciones == 3
+        assert resultado["reason"] == "CircuitBreakerTripped"
+        assert strategy.ejecuciones == 2
 
     async def test_cubre_tools_registradas_sin_middleware_propio(self) -> None:
         """El middleware es GLOBAL: aplica aunque register() no reciba lista
@@ -111,8 +110,8 @@ class TestLoopGuardrailMiddleware:
         assert resultado["reason"] == "CircuitBreakerTripped"
         assert strategy.ejecuciones == 2
 
-    async def test_reset_manual_desarma_el_historial(self) -> None:
-        """reset() expone el rearme humano (mismo contrato que el guardrail)."""
+    async def test_reset_manual_rearma_el_circuito_abierto(self) -> None:
+        """reset() permite continuar únicamente después de que el circuito abrió."""
         middleware = LoopGuardrailMiddleware()
         strategy = _StrategyContadora("sort_load_order")
         dispatcher = OrchestrationToolDispatcher(global_middleware=[middleware])
@@ -120,10 +119,11 @@ class TestLoopGuardrailMiddleware:
 
         await dispatcher.dispatch("sort_load_order", {})
         await dispatcher.dispatch("sort_load_order", {})
+        assert (await dispatcher.dispatch("sort_load_order", {}))["reason"] == "CircuitBreakerTripped"
         middleware.reset()
         resultado = await dispatcher.dispatch("sort_load_order", {})
 
-        assert resultado.get("success") is True  # sin trip: el historial se limpió
+        assert resultado.get("success") is True
         assert strategy.ejecuciones == 3
 
     async def test_tool_no_registrada_conserva_el_contrato_legacy(self) -> None:

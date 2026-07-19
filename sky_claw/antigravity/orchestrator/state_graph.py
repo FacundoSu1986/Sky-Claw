@@ -1356,6 +1356,7 @@ class StateGraphIntegration:
             state["hitl_response"] = response
             if response == "approved" and state.get("loop_detected"):
                 self.state_graph.loop_guardrail.reset()
+                self._supervisor.reset_loop_guardrail()
                 state["loop_detected"] = False
                 state["loop_context"] = None
 
