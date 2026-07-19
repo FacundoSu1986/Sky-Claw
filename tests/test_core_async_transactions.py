@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -456,6 +456,208 @@ async def test_fallback_no_encadena_cancelacion_interna_consigo_misma(
             pass
 
     assert exc_info.value.__cause__ is not exc_info.value
+
+
+async def test_fallback_cierra_conexion_creada_tras_cancelar_adquisicion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Una adquisicion cancelada conserva ownership hasta cerrar su conexion."""
+    adquisicion_iniciada = asyncio.Event()
+    liberar_adquisicion = asyncio.Event()
+    close_iniciado = asyncio.Event()
+    liberar_close = asyncio.Event()
+    close_terminado = asyncio.Event()
+
+    class ConexionControlada:
+        def __await__(self) -> Generator[object, None, ConexionControlada]:
+            async def adquirir() -> ConexionControlada:
+                adquisicion_iniciada.set()
+                await asyncio.shield(liberar_adquisicion.wait())
+                return self
+
+            return adquirir().__await__()
+
+        async def __aenter__(self) -> ConexionControlada:
+            return await self
+
+        async def __aexit__(self, *_args: object) -> None:
+            await self.close()
+
+        async def execute(self, _sql: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            close_iniciado.set()
+            await liberar_close.wait()
+            close_terminado.set()
+
+    conn = ConexionControlada()
+    dlq = DLQManager(tmp_path / "fallback-acquire-cancel.db", lambda _name: None)
+    monkeypatch.setattr(aiosqlite, "connect", lambda _path: conn)
+
+    async def leer() -> None:
+        async with dlq._connect():
+            pytest.fail("no debe entregar una conexion adquirida tras cancelar")
+
+    tarea = asyncio.create_task(leer())
+    try:
+        await _esperar(adquisicion_iniciada)
+        tarea.cancel("cancelacion durante adquisicion")
+        liberar_adquisicion.set()
+        await _esperar(close_iniciado)
+        assert not tarea.done()
+
+        liberar_close.set()
+        with pytest.raises(asyncio.CancelledError, match="durante adquisicion"):
+            await tarea
+
+        assert close_terminado.is_set()
+    finally:
+        liberar_adquisicion.set()
+        liberar_close.set()
+        if not tarea.done():
+            tarea.cancel()
+            await asyncio.gather(tarea, return_exceptions=True)
+
+
+async def test_fallback_preserva_cancelacion_si_adquisicion_termina_en_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El fallo terminal de connect queda como causa de la cancelacion publica."""
+    adquisicion_iniciada = asyncio.Event()
+    liberar_adquisicion = asyncio.Event()
+
+    class ConexionFallida:
+        def __await__(self) -> Generator[object, None, ConexionFallida]:
+            async def adquirir() -> ConexionFallida:
+                adquisicion_iniciada.set()
+                await asyncio.shield(liberar_adquisicion.wait())
+                raise sqlite3.OperationalError("fallo connect tras cancelacion")
+
+            return adquirir().__await__()
+
+        async def __aenter__(self) -> ConexionFallida:
+            return await self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    dlq = DLQManager(tmp_path / "fallback-acquire-error.db", lambda _name: None)
+    monkeypatch.setattr(aiosqlite, "connect", lambda _path: ConexionFallida())
+
+    async def leer() -> None:
+        async with dlq._connect():
+            pytest.fail("una adquisicion fallida no entrega conexion")
+
+    tarea = asyncio.create_task(leer())
+    try:
+        await _esperar(adquisicion_iniciada)
+        tarea.cancel("cancelacion antes del fallo connect")
+        liberar_adquisicion.set()
+
+        with pytest.raises(asyncio.CancelledError, match="antes del fallo") as exc_info:
+            await tarea
+
+        assert type(exc_info.value) is asyncio.CancelledError
+        assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
+    finally:
+        liberar_adquisicion.set()
+        if not tarea.done():
+            tarea.cancel()
+            await asyncio.gather(tarea, return_exceptions=True)
+
+
+async def test_fallback_lectura_cancelada_observa_close_hasta_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Una lectura standalone no propaga cancelacion antes de completar close."""
+    lectura_iniciada = asyncio.Event()
+    liberar_lectura = asyncio.Event()
+    close_iniciado = asyncio.Event()
+    liberar_close = asyncio.Event()
+    close_terminado = asyncio.Event()
+    operaciones: list[str] = []
+
+    class ConexionControlada:
+        def __await__(self) -> Generator[object, None, ConexionControlada]:
+            async def adquirir() -> ConexionControlada:
+                return self
+
+            return adquirir().__await__()
+
+        async def __aenter__(self) -> ConexionControlada:
+            return await self
+
+        async def __aexit__(self, *_args: object) -> None:
+            await self.close()
+
+        async def execute(self, sql: str) -> None:
+            if sql == "SELECT 1":
+                operaciones.append("lectura_iniciada")
+                lectura_iniciada.set()
+                try:
+                    await liberar_lectura.wait()
+                except asyncio.CancelledError:
+                    operaciones.append("lectura_cancelada")
+                    raise
+
+        async def close(self) -> None:
+            operaciones.append("close_iniciado")
+            close_iniciado.set()
+            await liberar_close.wait()
+            operaciones.append("close_terminado")
+            close_terminado.set()
+            raise sqlite3.OperationalError("fallo close lectura")
+
+    conn = ConexionControlada()
+    dlq = DLQManager(tmp_path / "fallback-read-cancel.db", lambda _name: None)
+    monkeypatch.setattr(aiosqlite, "connect", lambda _path: conn)
+
+    async def leer() -> None:
+        async with dlq._connect() as db:
+            await db.execute("SELECT 1")
+
+    tarea = asyncio.create_task(leer())
+    try:
+        await _esperar(lectura_iniciada)
+        tarea.cancel("cancelacion durante lectura")
+        await _esperar(close_iniciado)
+        tarea.cancel("cancelacion repetida")
+        await asyncio.sleep(0)
+        assert not tarea.done()
+
+        liberar_close.set()
+        with pytest.raises(asyncio.CancelledError, match="durante lectura") as exc_info:
+            await tarea
+
+        assert close_terminado.is_set()
+        assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
+        assert str(exc_info.value.__cause__) == "fallo close lectura"
+        assert operaciones == [
+            "lectura_iniciada",
+            "lectura_cancelada",
+            "close_iniciado",
+            "close_terminado",
+        ]
+    finally:
+        liberar_lectura.set()
+        liberar_close.set()
+        if not tarea.done():
+            tarea.cancel()
+            await asyncio.gather(tarea, return_exceptions=True)
+
+
+def test_encadenar_no_crea_causa_circular() -> None:
+    """Encadenar un error consigo mismo conserva la causa previa."""
+    error = RuntimeError("mismo error")
+
+    resultado = DLQManager._encadenar(error, error)
+
+    assert resultado is error
+    assert resultado.__cause__ is None
 
 
 @pytest.fixture

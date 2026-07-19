@@ -14,7 +14,7 @@ import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 import aiosqlite
 
@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleManager
 
 logger = logging.getLogger("SkyClaw.DLQ")
+
+_T = TypeVar("_T")
 
 
 class _FinalizacionFallidaTrasCancelacion(asyncio.CancelledError):
@@ -262,13 +264,65 @@ class DLQManager:
             conn.row_factory = aiosqlite.Row
             yield conn
             return
-        async with aiosqlite.connect(self._db_path) as db:
+        try:
+            db, cancelacion_adquisicion = await self._observar_resultado(aiosqlite.connect(self._db_path))
+        except _FinalizacionFallidaTrasCancelacion as error:
+            raise error.cancelacion from error.error_operacion
+        except _FinalizacionCancelada as error:
+            raise error.causa from None
+        if cancelacion_adquisicion is not None:
+            error_close: BaseException | None = None
+            try:
+                await self._observar_finalizacion(db.close())
+            except _FinalizacionFallidaTrasCancelacion as error:
+                error_close = error.error_operacion
+            except _FinalizacionCancelada as error:
+                error_close = error.causa
+            except asyncio.CancelledError:
+                pass
+            except BaseException as error:
+                error_close = error
+            self._propagar_finalizacion(
+                cancelacion_adquisicion,
+                cancelacion_adquisicion,
+                None,
+                error_close,
+            )
+
+        error_primario: BaseException | None = None
+        cancelacion: asyncio.CancelledError | None = None
+        error_close = None
+        try:
             await db.execute("PRAGMA busy_timeout=5000")  # must be first: protects WAL mode switch
             await db.execute("PRAGMA journal_mode=WAL")
             await db.execute("PRAGMA foreign_keys=ON")
             await db.execute("PRAGMA synchronous=NORMAL")
             db.row_factory = aiosqlite.Row
             yield db
+        except BaseException as error:
+            error_primario = error
+            if isinstance(error, asyncio.CancelledError):
+                cancelacion = error
+        finally:
+            try:
+                await self._observar_finalizacion(db.close())
+            except _FinalizacionFallidaTrasCancelacion as error:
+                error_close = error.error_operacion
+                cancelacion = cancelacion or error.cancelacion
+            except _FinalizacionCancelada as error:
+                error_close = error.causa
+                cancelacion = cancelacion or error.causa
+            except asyncio.CancelledError as error:
+                cancelacion = cancelacion or error
+            except BaseException as error:
+                error_close = error
+
+        self._propagar_finalizacion(
+            error_primario,
+            cancelacion,
+            None,
+            error_close,
+        )
 
     @contextlib.asynccontextmanager
     async def _write_transaction(self) -> AsyncGenerator[aiosqlite.Connection, None]:
@@ -348,8 +402,10 @@ class DLQManager:
         )
 
     @staticmethod
-    async def _observar_finalizacion(awaitable: Awaitable[object]) -> None:
-        """Completa commit, rollback o close pese a cancelaciones repetidas."""
+    async def _observar_resultado(
+        awaitable: Awaitable[_T],
+    ) -> tuple[_T, asyncio.CancelledError | None]:
+        """Espera un resultado terminal y conserva la primera cancelacion externa."""
         task = asyncio.ensure_future(awaitable)
         cancelacion: asyncio.CancelledError | None = None
         current_task = asyncio.current_task()
@@ -369,7 +425,7 @@ class DLQManager:
                 raise
 
         try:
-            task.result()
+            resultado = task.result()
         except asyncio.CancelledError as error:
             if cancelacion is not None:
                 raise _FinalizacionFallidaTrasCancelacion(cancelacion, error) from error
@@ -379,12 +435,18 @@ class DLQManager:
                 raise _FinalizacionFallidaTrasCancelacion(cancelacion, error) from error
             raise
 
+        return resultado, cancelacion
+
+    @staticmethod
+    async def _observar_finalizacion(awaitable: Awaitable[object]) -> None:
+        """Completa commit, rollback o close pese a cancelaciones repetidas."""
+        _, cancelacion = await DLQManager._observar_resultado(awaitable)
         if cancelacion is not None:
             raise cancelacion
 
     @staticmethod
     def _encadenar(error: BaseException, causa: BaseException | None) -> BaseException:
-        if causa is None:
+        if causa is None or error is causa:
             return error
         try:
             raise error from causa
