@@ -58,6 +58,13 @@ async def _cancelar_tareas(*tasks: asyncio.Task[object] | None) -> None:
         await asyncio.gather(*activas, return_exceptions=True)
 
 
+def _drenar_cola_de_prueba(bus: CoreEventBus) -> None:
+    """Retira residuos para que un RED no contamine el event loop de pytest."""
+    while not bus._queue.empty():
+        bus._queue.get_nowait()
+        bus._queue.task_done()
+
+
 @pytest.mark.asyncio
 async def test_stop_drena_publisher_admitido_con_cola_llena(
     monkeypatch: pytest.MonkeyPatch,
@@ -337,3 +344,127 @@ async def test_stop_persiste_cancelacion_de_handler_antes_de_detener_dlq() -> No
         await _cancelar_tareas(stop_task)
         if bus._dispatch_task is not None:
             await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_stop_completa_cleanup_si_dispatcher_ya_fallo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El error del dispatcher se propaga solo después de todo el cleanup."""
+    dlq = _crear_dlq_mock()
+    bus = CoreEventBus(dlq=dlq)
+    handler_iniciado = asyncio.Event()
+    handler_finalizado = asyncio.Event()
+    liberar_handler = asyncio.Event()
+    dispatcher_en_segundo_get = asyncio.Event()
+    liberar_fallo = asyncio.Event()
+    llamadas_get = 0
+    get_original = bus._queue.get
+
+    async def get_controlado() -> Event | None:
+        nonlocal llamadas_get
+        llamadas_get += 1
+        if llamadas_get == 2:
+            dispatcher_en_segundo_get.set()
+            await liberar_fallo.wait()
+            raise RuntimeError("dispatcher roto")
+        return await get_original()
+
+    async def handler_bloqueado(event: Event) -> None:  # noqa: ARG001
+        handler_iniciado.set()
+        try:
+            await liberar_handler.wait()
+        finally:
+            handler_finalizado.set()
+
+    monkeypatch.setattr(bus._queue, "get", get_controlado)
+    bus.subscribe("test", handler_bloqueado)
+    await bus.start()
+    try:
+        await bus.publish(Event(topic="test", payload={}))
+        await asyncio.wait_for(handler_iniciado.wait(), timeout=1)
+        await asyncio.wait_for(dispatcher_en_segundo_get.wait(), timeout=1)
+        liberar_fallo.set()
+        assert bus._dispatch_task is not None
+        await asyncio.gather(bus._dispatch_task, return_exceptions=True)
+
+        with pytest.raises(RuntimeError, match="dispatcher roto"):
+            await bus.stop()
+
+        assert handler_finalizado.is_set()
+        assert dlq.stop.await_count == 1
+        assert bus._queue.empty()
+        assert bus._queue._unfinished_tasks == 0
+        assert bus._dispatch_task is None
+        assert not bus._pending_tasks
+        assert not bus._dlq_tasks
+        assert not bus._publisher_tasks
+    finally:
+        liberar_fallo.set()
+        liberar_handler.set()
+        for task in list(bus._pending_tasks):
+            task.cancel()
+        if bus._pending_tasks:
+            await asyncio.gather(*bus._pending_tasks, return_exceptions=True)
+        _drenar_cola_de_prueba(bus)
+
+
+@pytest.mark.asyncio
+async def test_stop_aborta_publisher_bloqueado_si_dispatcher_muere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """La muerte anormal del dispatcher no deja publishers admitidos colgados."""
+    bus = CoreEventBus(max_queue_size=1)
+    dispatcher_en_get = asyncio.Event()
+    liberar_fallo = asyncio.Event()
+    segundo_put_iniciado = asyncio.Event()
+    put_original = bus._queue.put
+    publisher: asyncio.Task[None] | None = None
+    stop_task: asyncio.Task[None] | None = None
+
+    async def get_fallido() -> Event | None:
+        dispatcher_en_get.set()
+        await liberar_fallo.wait()
+        raise RuntimeError("dispatcher sin drenaje")
+
+    async def put_controlado(item: Event | None) -> None:
+        if isinstance(item, Event) and item.payload.get("seq") == 2:
+            segundo_put_iniciado.set()
+        await put_original(item)
+
+    monkeypatch.setattr(bus._queue, "get", get_fallido)
+    monkeypatch.setattr(bus._queue, "put", put_controlado)
+    await bus.start()
+    try:
+        await asyncio.wait_for(dispatcher_en_get.wait(), timeout=1)
+        await bus.publish(Event(topic="test", payload={"seq": 1}))
+        publisher = asyncio.create_task(
+            bus.publish(Event(topic="test", payload={"seq": 2})),
+        )
+        await asyncio.wait_for(segundo_put_iniciado.wait(), timeout=1)
+        assert not publisher.done()
+
+        liberar_fallo.set()
+        assert bus._dispatch_task is not None
+        await asyncio.gather(bus._dispatch_task, return_exceptions=True)
+        stop_task = asyncio.create_task(bus.stop())
+
+        done, _ = await asyncio.wait({publisher}, timeout=0.2)
+        assert publisher in done
+        assert publisher.cancelled()
+        with pytest.raises(RuntimeError, match="dispatcher sin drenaje"):
+            await stop_task
+
+        assert bus._queue.empty()
+        assert bus._queue._unfinished_tasks == 0
+        assert bus._dispatch_task is None
+        assert not bus._pending_tasks
+        assert not bus._dlq_tasks
+        assert not bus._publisher_tasks
+        assert bus.events_lost == 1
+    finally:
+        liberar_fallo.set()
+        await _cancelar_tareas(publisher)
+        _drenar_cola_de_prueba(bus)
+        await _cancelar_tareas(stop_task)
+        _drenar_cola_de_prueba(bus)

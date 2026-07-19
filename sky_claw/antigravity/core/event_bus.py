@@ -128,6 +128,7 @@ class CoreEventBus:
         self._state = _LifecycleState.STOPPED
         self._state_lock = asyncio.Lock()
         self._admitted_publishers = 0
+        self._publisher_tasks: set[asyncio.Task[None]] = set()
         self._publishers_drained = asyncio.Event()
         self._publishers_drained.set()
         self._dlq = dlq
@@ -218,11 +219,17 @@ class CoreEventBus:
         """Publica un evento en la cola para dispatch asíncrono."""
         if self._state is not _LifecycleState.RUNNING or not self._running:
             raise RuntimeError("bus is not running")
+        publisher_task = asyncio.create_task(
+            self._queue.put(event),
+            name=f"core-event-bus-publish-{event.topic}",
+        )
         self._admitted_publishers += 1
+        self._publisher_tasks.add(publisher_task)
         self._publishers_drained.clear()
         try:
-            await self._queue.put(event)
+            await publisher_task
         finally:
+            self._publisher_tasks.discard(publisher_task)
             self._admitted_publishers -= 1
             if self._admitted_publishers == 0:
                 self._publishers_drained.set()
@@ -260,6 +267,15 @@ class CoreEventBus:
                         task = asyncio.create_task(self._safe_execute(callback, event))
                         self._pending_tasks.add(task)
                         task.add_done_callback(self._pending_tasks.discard)
+            except BaseException:
+                if event is not None:
+                    self._events_lost += 1
+                    logger.critical(
+                        "Dispatcher abortó procesando evento '%s' — evento perdido",
+                        event.topic,
+                        exc_info=True,
+                    )
+                raise
             finally:
                 self._queue.task_done()
 
@@ -376,12 +392,15 @@ class CoreEventBus:
 
     async def _stop_started_bus(self) -> None:
         """Completa el drenaje iniciado por ``stop`` aunque su caller sea cancelado."""
+        primary_error: BaseException | None = None
+        cleanup_error: BaseException | None = None
         try:
             dispatch_task = self._dispatch_task
             if dispatch_task is not None:
-                await self._publishers_drained.wait()
-                await self._queue.put(None)
-                await dispatch_task
+                try:
+                    primary_error = await self._finish_dispatch(dispatch_task)
+                except BaseException as exc:
+                    primary_error = exc
 
             for task in list(self._pending_tasks):
                 task.cancel()
@@ -393,14 +412,122 @@ class CoreEventBus:
                 await asyncio.gather(*self._dlq_tasks, return_exceptions=True)
             self._dlq_tasks.clear()
             if self._dlq is not None:
-                await self._dlq.stop()
+                try:
+                    await self._dlq.stop()
+                except BaseException as exc:
+                    cleanup_error = exc
         finally:
             self._dispatch_task = None
             self._pending_tasks.clear()
             self._dlq_tasks.clear()
+            self._publisher_tasks.clear()
             self._running = False
             self._state = _LifecycleState.STOPPED
         logger.info("CoreEventBus detenido")
+
+        if primary_error is not None:
+            if cleanup_error is not None:
+                logger.critical(
+                    "Falló cleanup de CoreEventBus tras error del dispatcher",
+                    exc_info=(
+                        type(cleanup_error),
+                        cleanup_error,
+                        cleanup_error.__traceback__,
+                    ),
+                )
+            raise primary_error
+        if cleanup_error is not None:
+            raise cleanup_error
+
+    async def _finish_dispatch(
+        self,
+        dispatch_task: asyncio.Task[None],
+    ) -> BaseException | None:
+        """Finaliza dispatcher y publishers sin abandonar trabajo en cola."""
+        if dispatch_task.done():
+            await self._abort_admitted_publishers()
+            self._drain_abandoned_queue()
+            return self._task_error(dispatch_task)
+
+        if self._admitted_publishers:
+            publishers_done = asyncio.create_task(
+                self._publishers_drained.wait(),
+                name="core-event-bus-publishers-drained",
+            )
+            done, _ = await asyncio.wait(
+                {publishers_done, dispatch_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if dispatch_task in done:
+                publishers_done.cancel()
+                await asyncio.gather(publishers_done, return_exceptions=True)
+                await self._abort_admitted_publishers()
+                self._drain_abandoned_queue()
+                return self._task_error(dispatch_task)
+            await publishers_done
+
+        if dispatch_task.done():
+            self._drain_abandoned_queue()
+            return self._task_error(dispatch_task)
+
+        sentinel_put = asyncio.create_task(
+            self._queue.put(None),
+            name="core-event-bus-sentinel-put",
+        )
+        done, _ = await asyncio.wait(
+            {sentinel_put, dispatch_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if dispatch_task in done:
+            if not sentinel_put.done():
+                sentinel_put.cancel()
+            await asyncio.gather(sentinel_put, return_exceptions=True)
+            error = self._task_error(dispatch_task)
+            self._drain_abandoned_queue()
+            return error
+
+        await sentinel_put
+        try:
+            await dispatch_task
+        except BaseException as exc:
+            self._drain_abandoned_queue()
+            return exc
+        return None
+
+    async def _abort_admitted_publishers(self) -> None:
+        """Cancela y observa publishers que un dispatcher muerto no puede drenar."""
+        tasks = list(self._publisher_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await self._publishers_drained.wait()
+
+    def _drain_abandoned_queue(self) -> None:
+        """Retira items sin consumidor y mantiene ``Queue.join`` consistente."""
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                if item is not None:
+                    self._events_lost += 1
+                    logger.error(
+                        "Evento '%s' abandonado por muerte del dispatcher — evento perdido",
+                        item.topic,
+                    )
+            finally:
+                self._queue.task_done()
+
+    @staticmethod
+    def _task_error(task: asyncio.Task[None]) -> BaseException | None:
+        """Obtiene el error terminal de una tarea ya finalizada."""
+        try:
+            task.result()
+        except BaseException as exc:
+            return exc
+        return None
 
     @staticmethod
     async def _observe_task(task: asyncio.Task[None]) -> None:
