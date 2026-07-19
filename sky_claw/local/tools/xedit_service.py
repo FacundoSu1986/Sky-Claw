@@ -633,9 +633,8 @@ class XEditPipelineService:
         Corre ``-quickclean`` sobre los masters oficiales presentes en el directorio
         ``Data`` del juego (Update/Dawnguard/HearthFires/Dragonborn) en secuencia,
         bajo un único :class:`SnapshotTransactionLock`: snapshotea los masters para
-        rollback automático y serializa contra otras corridas. Si la limpieza de
-        cualquiera falla, el ``__aexit__`` del lock restaura **todos** los masters
-        (operación atómica).
+        rollback automático y serializa contra otras corridas. Si una limpieza
+        falla, intenta restaurar todos los masters y reporta el resultado real.
 
         Nunca propaga: los modos de fallo conocidos (paths faltantes, contención de
         lock, fallo de xEdit) se devuelven como un ``dict`` serializable para que el
@@ -695,6 +694,7 @@ class XEditPipelineService:
 
         cleaned: list[str] = []
         tx_id: int | None = None
+        tx_lock: SnapshotTransactionLock | None = None
         try:
             async with SnapshotTransactionLock(
                 lock_manager=self._lock_manager,
@@ -757,16 +757,26 @@ class XEditPipelineService:
                 preflight_report,
             )
         except (PatchingError, XEditError) as exc:
-            # __aexit__ ya restauró los snapshots (rollback de todos los masters).
-            await self._mark_journal_rolled_back(tx_id)
-            logger.error("QuickAutoClean (stage 1) falló; rollback aplicado: %s", exc)
+            rolled_back = bool(tx_lock and tx_lock.rollback_completed)
+            if rolled_back:
+                await self._mark_journal_rolled_back(tx_id)
+                logger.error("QuickAutoClean (stage 1) falló; rollback aplicado: %s", exc)
+            else:
+                failures = tx_lock.rollback_failures if tx_lock is not None else []
+                logger.critical(
+                    "QuickAutoClean (stage 1) falló y el rollback quedó incompleto "
+                    "para TX %s; fallos=%s. Se requiere recuperación manual: %s",
+                    tx_id,
+                    failures,
+                    exc,
+                )
             return _attach_preflight(
                 {
                     "status": "error",
                     "success": False,
                     "message": str(exc),
                     "cleaned": [],
-                    "rolled_back": True,
+                    "rolled_back": rolled_back,
                     "logs": str(exc),
                 },
                 preflight_report,
