@@ -294,13 +294,11 @@ class OperationJournal:
             await self._db.executescript(self._SCHEMA_SQL)
             logger.info("Journal database opened", extra={"db_path": str(self._db_path)})
         except sqlite3.Error as e:
-            if self._db is not None:
-                if self._owns_conn:
-                    with contextlib.suppress(Exception):
-                        await self._db.close()
-                elif self._lifecycle is not None:
-                    with contextlib.suppress(Exception):
-                        self._lifecycle.evict_connection(self._db_path)
+            if self._db is not None and self._owns_conn:
+                with contextlib.suppress(Exception):
+                    await self._db.close()
+            # Con lifecycle externo, el manager conserva ownership y
+            # reintentara el cierre durante shutdown_all().
             self._db = None
             self._owns_conn = False
             raise JournalConnectionError(f"Failed to open journal database: {e}") from e

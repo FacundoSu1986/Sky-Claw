@@ -1,11 +1,15 @@
 # tests/test_journal.py
 
+import contextlib
 import pathlib
+import sqlite3
+from unittest.mock import AsyncMock
 
 import pytest
 
 from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
 from sky_claw.antigravity.db.journal import (
+    JournalConnectionError,
     OperationJournal,
     OperationStatus,
     OperationType,
@@ -89,6 +93,42 @@ class TestOperationJournal:
         entry = await journal.get_last_operation("test_agent")
         assert entry is not None
         assert entry.status == OperationStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_open_con_schema_fallido_conserva_conexion_hasta_shutdown(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "journal_schema_fallido.db"
+        lifecycle = DatabaseLifecycleManager(
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        conn = await lifecycle.get_connection(db_path)
+        path_key = str(db_path.resolve())
+        journal = OperationJournal(db_path, lifecycle=lifecycle)
+        error_schema = sqlite3.OperationalError("schema deliberadamente fallido")
+
+        try:
+            with monkeypatch.context() as patcher:
+                patcher.setattr(
+                    conn,
+                    "executescript",
+                    AsyncMock(side_effect=error_schema),
+                )
+
+                with pytest.raises(JournalConnectionError) as exc_info:
+                    await journal.open()
+
+            assert exc_info.value.__cause__ is error_schema
+            assert lifecycle._connections.get(path_key) is conn
+            assert journal._db is None
+
+            await lifecycle.shutdown_all()
+            assert lifecycle.managed_paths == []
+        finally:
+            with contextlib.suppress(Exception):
+                await conn.close()
 
 
 class TestFileSnapshotManager:

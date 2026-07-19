@@ -6,9 +6,38 @@ the centralized M-01-compliant registry setup pattern.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import pathlib
+import sqlite3
+from types import TracebackType
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
-from sky_claw.antigravity.db.async_registry import AsyncModRegistry
+from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
+from sky_claw.antigravity.db.async_registry import AsyncModRegistry, _DatabaseCorruptionError
+
+
+class _CursorConFallo:
+    """Cursor minimo para inyectar un fallo real durante quick_check."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    async def __aenter__(self) -> _CursorConFallo:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        return False
+
+    async def fetchone(self) -> None:
+        raise self._error
 
 
 class TestAsyncSchemaCreation:
@@ -86,3 +115,105 @@ class TestMicroBatching:
         async with async_registry._conn.execute("SELECT * FROM task_log") as cur:
             found = await cur.fetchall()
         assert len(found) == 2
+
+
+class TestOwnershipEnFallosDeArranque:
+    @pytest.mark.asyncio
+    async def test_quick_check_ordinario_conserva_conexion_hasta_shutdown(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db_path = tmp_path / "quick_check_fallido.db"
+        lifecycle = DatabaseLifecycleManager(
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        conn = await lifecycle.get_connection(db_path)
+        path_key = str(db_path.resolve())
+        registry = AsyncModRegistry(db_path, lifecycle=lifecycle)
+        error_quick_check = sqlite3.OperationalError("quick_check deliberadamente fallido")
+
+        try:
+            with monkeypatch.context() as patcher:
+                patcher.setattr(
+                    conn,
+                    "execute",
+                    MagicMock(return_value=_CursorConFallo(error_quick_check)),
+                )
+
+                with pytest.raises(sqlite3.OperationalError) as exc_info:
+                    await registry.open()
+
+            assert exc_info.value is error_quick_check
+            assert lifecycle._connections.get(path_key) is conn
+            assert registry._conn is None
+
+            await lifecycle.shutdown_all()
+            assert lifecycle.managed_paths == []
+        finally:
+            with contextlib.suppress(Exception):
+                await conn.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error_cierre",
+        [
+            pytest.param(OSError("close deliberadamente fallido"), id="error"),
+            pytest.param(asyncio.CancelledError("close deliberadamente cancelado"), id="cancelacion"),
+        ],
+    )
+    async def test_corrupcion_con_close_incompleto_conserva_owner_y_error_primario(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        error_cierre: BaseException,
+    ) -> None:
+        db_path = tmp_path / "corrupcion_close_fallido.db"
+        lifecycle = DatabaseLifecycleManager(
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        conn = await lifecycle.get_connection(db_path)
+        path_key = str(db_path.resolve())
+        registry = AsyncModRegistry(db_path, lifecycle=lifecycle)
+        error_corrupcion = _DatabaseCorruptionError("corrupcion deliberada")
+        cierre_intentos = 0
+        close_real = conn.close
+
+        async def cerrar_con_fallo_inicial() -> None:
+            nonlocal cierre_intentos
+            cierre_intentos += 1
+            if cierre_intentos == 1:
+                raise error_cierre
+            await close_real()
+
+        get_connection_spy = AsyncMock(wraps=lifecycle.get_connection)
+        rename_spy = MagicMock(side_effect=AssertionError("no debe renombrar"))
+        monkeypatch.setattr(conn, "close", cerrar_con_fallo_inicial)
+        monkeypatch.setattr(lifecycle, "get_connection", get_connection_spy)
+        monkeypatch.setattr(pathlib.Path, "rename", rename_spy)
+
+        try:
+            with monkeypatch.context() as patcher:
+                patcher.setattr(
+                    conn,
+                    "execute",
+                    MagicMock(return_value=_CursorConFallo(error_corrupcion)),
+                )
+
+                with pytest.raises(_DatabaseCorruptionError) as exc_info:
+                    await registry.open()
+
+            assert exc_info.value is error_corrupcion
+            assert exc_info.value.__cause__ is error_cierre
+            assert lifecycle._connections.get(path_key) is conn
+            assert registry._conn is None
+            get_connection_spy.assert_awaited_once_with(str(db_path))
+            rename_spy.assert_not_called()
+
+            await lifecycle.shutdown_all()
+
+            assert lifecycle.managed_paths == []
+            assert cierre_intentos == 2
+        finally:
+            with contextlib.suppress(Exception):
+                await close_real()

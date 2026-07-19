@@ -395,15 +395,21 @@ class DatabaseLifecycleManager:
         except Exception as e:
             logger.critical("DatabaseLifecycle: checkpoint during shutdown FAILED: %s", e)
 
-        # Step 2: Close all connections
+        # Step 2: Close all connections. Cada entrada se retira solamente si
+        # esa misma instancia termino de cerrar; un fallo conserva ownership
+        # para que un shutdown posterior pueda reintentarlo.
+        first_close_error: Exception | None = None
         for path_str, conn in list(self._connections.items()):
             try:
                 await conn.close()
                 logger.info("DatabaseLifecycle: closed %s", path_str)
             except Exception as e:
                 logger.error("Error closing %s: %s", path_str, e)
-
-        self._connections.clear()
+                if first_close_error is None:
+                    first_close_error = e
+            else:
+                if self._connections.get(path_str) is conn:
+                    self._connections.pop(path_str)
 
         # Step 3: Verify WAL/SHM elimination
         for db_path in self._db_paths:
@@ -419,7 +425,16 @@ class DatabaseLifecycleManager:
                     shm_path.exists(),
                 )
 
-        logger.info("DatabaseLifecycle: shutdown complete")
+        if self._connections:
+            logger.warning(
+                "DatabaseLifecycle: shutdown incomplete; %d connections retained",
+                len(self._connections),
+            )
+        else:
+            logger.info("DatabaseLifecycle: shutdown complete")
+
+        if first_close_error is not None:
+            raise first_close_error
 
     # ------------------------------------------------------------------
     # Health Check
