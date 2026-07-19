@@ -123,6 +123,12 @@ class DatabaseAgent:
 
     async def _get_conn(self) -> aiosqlite.Connection:
         """Devuelve la conexión persistente; lanza error si no fue inicializada."""
+        lifecycle = self._lifecycle
+        if lifecycle is not None:
+            conn = await lifecycle.get_connection(self.db_path)
+            conn.row_factory = aiosqlite.Row
+            self._conn = conn
+            return conn
         if self._conn is None:
             raise RuntimeError("DatabaseAgent not initialized. Await init_db() first.")
         return self._conn

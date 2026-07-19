@@ -240,6 +240,224 @@ async def test_init_database_crea_las_cinco_tablas(tmp_path: Path) -> None:
         await database.close()
 
 
+async def test_database_refresca_cache_tras_cuarentena(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Una lectura publica usa el reemplazo creado tras cuarentena."""
+    database = DatabaseAgent(str(tmp_path / "database-quarantine.db"))
+    await database.init_db()
+    conn_afectada = await database._get_conn()
+
+    async def commit_fallido() -> None:
+        raise sqlite3.OperationalError("fallo de commit")
+
+    async def rollback_fallido() -> None:
+        raise sqlite3.OperationalError("fallo de rollback")
+
+    monkeypatch.setattr(conn_afectada, "commit", commit_fallido)
+    monkeypatch.setattr(conn_afectada, "rollback", rollback_fallido)
+
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="fallo de rollback"):
+            await database.set_memory("fallida", "no persistir", 1.0)
+
+        await database.set_memory("clave", "valor", 2.0)
+        assert await database.get_memory("clave") == "valor"
+        assert await database._get_conn() is not conn_afectada
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("falla_en", ["cuerpo", "commit"])
+async def test_fallback_preserva_primario_si_rollback_falla(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    falla_en: str,
+) -> None:
+    """El error primario queda arriba y el rollback fallido encadenado."""
+    operaciones: list[str] = []
+
+    class ConexionControlada:
+        async def commit(self) -> None:
+            operaciones.append("commit")
+            if falla_en == "commit":
+                raise ValueError("fallo primario")
+
+        async def rollback(self) -> None:
+            operaciones.append("rollback")
+            raise sqlite3.OperationalError("fallo cleanup")
+
+        async def close(self) -> None:
+            operaciones.append("close")
+
+    conn = ConexionControlada()
+
+    @asynccontextmanager
+    async def conexion_controlada() -> AsyncGenerator[ConexionControlada, None]:
+        try:
+            yield conn
+        finally:
+            await conn.close()
+
+    dlq = DLQManager(tmp_path / "fallback-primary.db", lambda _name: None)
+    monkeypatch.setattr(dlq, "_connect", conexion_controlada)
+
+    with pytest.raises(ValueError, match="fallo primario") as exc_info:
+        async with dlq._write_transaction():
+            if falla_en == "cuerpo":
+                raise ValueError("fallo primario")
+
+    assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
+    assert str(exc_info.value.__cause__) == "fallo cleanup"
+    assert operaciones[-2:] == ["rollback", "close"]
+
+
+async def test_fallback_completa_rollback_tras_doble_cancelacion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Commit y rollback terminan antes de restaurar la cancelacion original."""
+    commit_iniciado = asyncio.Event()
+    liberar_commit = asyncio.Event()
+    rollback_iniciado = asyncio.Event()
+    liberar_rollback = asyncio.Event()
+    rollback_terminado = asyncio.Event()
+    close_terminado = asyncio.Event()
+
+    class ConexionControlada:
+        async def commit(self) -> None:
+            commit_iniciado.set()
+            await liberar_commit.wait()
+            raise sqlite3.OperationalError("fallo commit tras cancelacion")
+
+        async def rollback(self) -> None:
+            rollback_iniciado.set()
+            await liberar_rollback.wait()
+            rollback_terminado.set()
+
+        async def close(self) -> None:
+            close_terminado.set()
+
+    conn = ConexionControlada()
+
+    @asynccontextmanager
+    async def conexion_controlada() -> AsyncGenerator[ConexionControlada, None]:
+        try:
+            yield conn
+        finally:
+            await conn.close()
+
+    dlq = DLQManager(tmp_path / "fallback-cancel.db", lambda _name: None)
+    monkeypatch.setattr(dlq, "_connect", conexion_controlada)
+
+    async def escribir() -> None:
+        async with dlq._write_transaction():
+            pass
+
+    tarea = asyncio.create_task(escribir())
+    await _esperar(commit_iniciado)
+    tarea.cancel("cancelacion original")
+    liberar_commit.set()
+    await _esperar(rollback_iniciado)
+    tarea.cancel("segunda cancelacion")
+    await asyncio.sleep(0)
+    assert not tarea.done()
+
+    liberar_rollback.set()
+    with pytest.raises(asyncio.CancelledError, match="cancelacion original") as exc_info:
+        await tarea
+
+    assert rollback_terminado.is_set()
+    assert close_terminado.is_set()
+    assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
+
+
+async def test_fallback_observa_close_bajo_cancelacion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El close standalone termina aunque se cancele durante su espera."""
+    close_iniciado = asyncio.Event()
+    liberar_close = asyncio.Event()
+    close_terminado = asyncio.Event()
+
+    class ConexionControlada:
+        async def commit(self) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            pytest.fail("no corresponde rollback tras commit exitoso")
+
+        async def close(self) -> None:
+            close_iniciado.set()
+            await liberar_close.wait()
+            close_terminado.set()
+
+    conn = ConexionControlada()
+
+    @asynccontextmanager
+    async def conexion_controlada() -> AsyncGenerator[ConexionControlada, None]:
+        try:
+            yield conn
+        finally:
+            await conn.close()
+
+    dlq = DLQManager(tmp_path / "fallback-close.db", lambda _name: None)
+    monkeypatch.setattr(dlq, "_connect", conexion_controlada)
+
+    async def escribir() -> None:
+        async with dlq._write_transaction():
+            pass
+
+    tarea = asyncio.create_task(escribir())
+    await _esperar(close_iniciado)
+    tarea.cancel("cancelacion en close")
+    await asyncio.sleep(0)
+    assert not tarea.done()
+
+    liberar_close.set()
+    with pytest.raises(asyncio.CancelledError, match="cancelacion en close"):
+        await tarea
+
+    assert close_terminado.is_set()
+
+
+async def test_fallback_no_encadena_cancelacion_interna_consigo_misma(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Una cancelacion interna de close se propaga sin causa circular."""
+
+    class ConexionControlada:
+        async def commit(self) -> None:
+            return None
+
+        async def rollback(self) -> None:
+            pytest.fail("no corresponde rollback tras commit exitoso")
+
+        async def close(self) -> None:
+            raise asyncio.CancelledError("close cancelado internamente")
+
+    conn = ConexionControlada()
+
+    @asynccontextmanager
+    async def conexion_controlada() -> AsyncGenerator[ConexionControlada, None]:
+        try:
+            yield conn
+        finally:
+            await conn.close()
+
+    dlq = DLQManager(tmp_path / "fallback-close-interno.db", lambda _name: None)
+    monkeypatch.setattr(dlq, "_connect", conexion_controlada)
+
+    with pytest.raises(asyncio.CancelledError, match="close cancelado internamente") as exc_info:
+        async with dlq._write_transaction():
+            pass
+
+    assert exc_info.value.__cause__ is not exc_info.value
+
+
 @pytest.fixture
 async def base_transaccional(
     tmp_path: Path,

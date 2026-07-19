@@ -11,7 +11,7 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,6 +24,28 @@ if TYPE_CHECKING:
     from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleManager
 
 logger = logging.getLogger("SkyClaw.DLQ")
+
+
+class _FinalizacionFallidaTrasCancelacion(asyncio.CancelledError):
+    """Conserva cancelacion externa y fallo posterior del cleanup."""
+
+    def __init__(
+        self,
+        cancelacion: asyncio.CancelledError,
+        error_operacion: BaseException,
+    ) -> None:
+        super().__init__(*cancelacion.args)
+        self.cancelacion = cancelacion
+        self.error_operacion = error_operacion
+
+
+class _FinalizacionCancelada(asyncio.CancelledError):
+    """Distingue cancelacion interna de la operacion observada."""
+
+    def __init__(self, causa: asyncio.CancelledError) -> None:
+        super().__init__(*causa.args)
+        self.causa = causa
+
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS dead_letter_events (
@@ -256,13 +278,147 @@ class DLQManager:
                 yield db
             return
 
-        async with self._connect() as db:
+        contexto = self._connect()
+        db = await contexto.__aenter__()
+        error_primario: BaseException | None = None
+        cancelacion: asyncio.CancelledError | None = None
+        error_rollback: BaseException | None = None
+        error_close: BaseException | None = None
+        requiere_rollback = False
+
+        try:
             try:
                 yield db
-                await db.commit()
+            except BaseException as error:
+                error_primario = error
+                requiere_rollback = True
+                if isinstance(error, asyncio.CancelledError):
+                    cancelacion = error
+            else:
+                try:
+                    await self._observar_finalizacion(db.commit())
+                except _FinalizacionFallidaTrasCancelacion as error:
+                    error_primario = error.error_operacion
+                    cancelacion = error.cancelacion
+                    requiere_rollback = True
+                except _FinalizacionCancelada as error:
+                    error_primario = error.causa
+                    cancelacion = error.causa
+                    requiere_rollback = True
+                except asyncio.CancelledError as error:
+                    # El commit termino; solo resta restaurar la cancelacion.
+                    error_primario = error
+                    cancelacion = error
+                except BaseException as error:
+                    error_primario = error
+                    requiere_rollback = True
+
+            if requiere_rollback:
+                try:
+                    await self._observar_finalizacion(db.rollback())
+                except _FinalizacionFallidaTrasCancelacion as error:
+                    error_rollback = error.error_operacion
+                    cancelacion = cancelacion or error.cancelacion
+                except _FinalizacionCancelada as error:
+                    error_rollback = error.causa
+                    cancelacion = cancelacion or error.causa
+                except asyncio.CancelledError as error:
+                    cancelacion = cancelacion or error
+                except BaseException as error:
+                    error_rollback = error
+        finally:
+            try:
+                await self._observar_finalizacion(contexto.__aexit__(None, None, None))
+            except _FinalizacionFallidaTrasCancelacion as error:
+                error_close = error.error_operacion
+                cancelacion = cancelacion or error.cancelacion
+            except _FinalizacionCancelada as error:
+                error_close = error.causa
+                cancelacion = cancelacion or error.causa
+            except asyncio.CancelledError as error:
+                cancelacion = cancelacion or error
+            except BaseException as error:
+                error_close = error
+
+        self._propagar_finalizacion(
+            error_primario,
+            cancelacion,
+            error_rollback,
+            error_close,
+        )
+
+    @staticmethod
+    async def _observar_finalizacion(awaitable: Awaitable[object]) -> None:
+        """Completa commit, rollback o close pese a cancelaciones repetidas."""
+        task = asyncio.ensure_future(awaitable)
+        cancelacion: asyncio.CancelledError | None = None
+        current_task = asyncio.current_task()
+
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as error:
+                cancelacion_externa = not task.cancelled() or (
+                    current_task is not None and current_task.cancelling() > 0
+                )
+                if cancelacion_externa and cancelacion is None:
+                    cancelacion = error
             except BaseException:
-                await db.rollback()
+                if task.done():
+                    break
                 raise
+
+        try:
+            task.result()
+        except asyncio.CancelledError as error:
+            if cancelacion is not None:
+                raise _FinalizacionFallidaTrasCancelacion(cancelacion, error) from error
+            raise _FinalizacionCancelada(error) from error
+        except BaseException as error:
+            if cancelacion is not None:
+                raise _FinalizacionFallidaTrasCancelacion(cancelacion, error) from error
+            raise
+
+        if cancelacion is not None:
+            raise cancelacion
+
+    @staticmethod
+    def _encadenar(error: BaseException, causa: BaseException | None) -> BaseException:
+        if causa is None:
+            return error
+        try:
+            raise error from causa
+        except BaseException as error_encadenado:
+            return error_encadenado
+
+    @classmethod
+    def _propagar_finalizacion(
+        cls,
+        error_primario: BaseException | None,
+        cancelacion: asyncio.CancelledError | None,
+        error_rollback: BaseException | None,
+        error_close: BaseException | None,
+    ) -> None:
+        """Decide precedencia una vez observadas todas las finalizaciones."""
+        if cancelacion is not None:
+            diagnostico = None if error_primario is cancelacion else error_primario
+            if error_rollback is not None and error_rollback is not cancelacion:
+                diagnostico = cls._encadenar(error_rollback, diagnostico)
+            if error_close is not None and error_close is not cancelacion:
+                diagnostico = cls._encadenar(error_close, diagnostico)
+            if diagnostico is not None:
+                raise cancelacion from diagnostico
+            raise cancelacion
+
+        cleanup = error_rollback
+        if error_close is not None:
+            cleanup = cls._encadenar(error_close, cleanup)
+        if error_primario is not None:
+            if cleanup is not None:
+                raise error_primario from cleanup
+            raise error_primario
+        if cleanup is not None:
+            raise cleanup
 
     # ------------------------------------------------------------------
     # Internal — retry loop
