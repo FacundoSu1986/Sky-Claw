@@ -28,7 +28,9 @@ from sky_claw.antigravity.core.errors import (
     SecurityViolationError,
     VaultStorageError,
 )
+from sky_claw.antigravity.core.models import CircuitBreakerTrippedError
 from sky_claw.antigravity.core.schemas import RouteClassification
+from sky_claw.antigravity.security.loop_guardrail import AgenticLoopGuardrail
 from sky_claw.antigravity.security.sanitize import sanitize_for_prompt
 from sky_claw.antigravity.security.text_inspector import TextInspector
 
@@ -61,6 +63,29 @@ DEFAULT_TOOL_ROUND_TIMEOUT = 120.0
 # atributo público ``timeout`` que este módulo respeta — ver
 # _provider_chat_timeout().
 DEFAULT_PROVIDER_CHAT_TIMEOUT = 120.0
+
+_TOOL_LOOP_RESPONSE = (
+    "⚠️ Se detectó un bucle repetitivo de herramientas y se detuvo la ejecución. "
+    "Solicitá asistencia humana antes de reintentar."
+)
+
+
+def _check_tool_loop(
+    guardrail: AgenticLoopGuardrail,
+    tool_name: str,
+    tool_args: dict[str, Any],
+) -> str | None:
+    """Registra una acción LLM y devuelve feedback cuando abre el circuito."""
+    try:
+        guardrail.register_and_check(tool_name, tool_args)
+    except CircuitBreakerTrippedError as exc:
+        logger.critical(
+            "Bucle de tools LLM detectado en '%s' (%s ocurrencias); conversación detenida.",
+            exc.tool_name,
+            exc.occurrences,
+        )
+        return _TOOL_LOOP_RESPONSE
+    return None
 
 
 def _provider_chat_timeout(provider: LLMProvider) -> float:
@@ -478,6 +503,10 @@ class LLMRouter:
         messages = await self._load_context(chat_id)
 
         tool_schemas = self._tools.tool_schemas() if self._tools else []
+        # F1a: el historial pertenece a ESTA ejecución de chat. Mantenerlo local
+        # evita mezclar conversaciones concurrentes y rearma el circuito cuando
+        # un nuevo mensaje humano inicia otra ejecución.
+        tool_loop_guardrail = AgenticLoopGuardrail(max_repeats=3, window_size=6)
         consecutive_errors = 0
         # TASK-012: separate counters so a stream of malformed XML from the
         # model does not exhaust the budget reserved for legitimate execution
@@ -611,6 +640,9 @@ class LLMRouter:
                         for call in calls:
                             tool_name_h = call["name"]
                             tool_args_h = call["arguments"]
+                            loop_response = _check_tool_loop(tool_loop_guardrail, tool_name_h, tool_args_h)
+                            if loop_response is not None:
+                                return loop_response
                             try:
                                 result_str_h = await asyncio.wait_for(
                                     self._tools.execute(tool_name_h, tool_args_h),
@@ -703,6 +735,10 @@ class LLMRouter:
                             }
                         )
                         continue
+
+                    loop_response = _check_tool_loop(tool_loop_guardrail, tool_name, tool_input)
+                    if loop_response is not None:
+                        return loop_response
 
                     try:
                         # Ejecutar herramienta con compatibilidad AsyncToolRegistry
