@@ -95,7 +95,9 @@ def _is_blocked_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 # otro host tras un redirect. aiohttp elimina ``Authorization`` en redirects
 # cross-host, pero no toca las custom (``apikey``); como request() re-emite los
 # kwargs a mano con allow_redirects=False, el saneo lo hace el gateway.
-_SENSITIVE_REDIRECT_HEADERS = frozenset({"authorization", "proxy-authorization", "cookie", "apikey", "x-api-key"})
+_SENSITIVE_REDIRECT_HEADERS = frozenset(
+    {"authorization", "proxy-authorization", "cookie", "apikey", "x-api-key", "x-subscription-token"}
+)
 
 
 def _strip_sensitive_headers(headers: Any) -> Any:
@@ -302,7 +304,12 @@ class NetworkGateway:
         """
         kwargs["allow_redirects"] = False
 
-        original_host = (urlparse(url).hostname or "").lower()
+        try:
+            original_host = (urlparse(url).hostname or "").lower()
+        except ValueError:
+            # authorize() (hop 0) traduce la URL malformada a EgressViolationError; no
+            # dejamos que el ValueError crudo de urlparse escape y rompa el contrato de error.
+            original_host = ""
         current_url = url
         for hop in range(max_redirects + 1):
             # The initial URL always goes through full authorize().

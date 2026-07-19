@@ -153,6 +153,7 @@ class TestRedirectValidation:
         original_headers = {
             "Authorization": "token SECRET",
             "apikey": "K",
+            "X-Subscription-Token": "BRAVE_KEY",
             "Accept": "application/octet-stream",
         }
         await gw.request(
@@ -171,9 +172,22 @@ class TestRedirectValidation:
         # El segundo salto (CDN, otro host) las pierde, pero mantiene lo inocuo.
         assert "Authorization" not in second_headers
         assert "apikey" not in second_headers
+        # La API key de Brave (X-Subscription-Token) también debe eliminarse.
+        assert "X-Subscription-Token" not in second_headers
         assert second_headers.get("Accept") == "application/octet-stream"
         # No se muta el dict del caller (aliasing).
         assert original_headers["Authorization"] == "token SECRET"
+
+    @pytest.mark.asyncio
+    async def test_malformed_url_raises_egress_violation_not_valueerror(self, gw: NetworkGateway) -> None:
+        """request() debe preservar su contrato de error: una autoridad malformada
+        (IPv6 literal roto) sale como EgressViolationError, no como un ValueError crudo
+        de urlparse escapado por el pre-parse del host original."""
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.request = AsyncMock()
+        with pytest.raises(EgressViolationError):
+            await gw.request("GET", "http://[::1", session)
+        session.request.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_headers_preserved_on_same_host_redirect(self, gw: NetworkGateway) -> None:
