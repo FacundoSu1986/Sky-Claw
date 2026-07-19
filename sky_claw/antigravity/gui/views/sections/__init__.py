@@ -10,17 +10,20 @@ from __future__ import annotations
 from .chat_preview import create_chat_preview
 from .cta_section import create_cta_section
 from .features_section import create_features_section
+from .flight_report_panel import build_flight_report_view_model, create_flight_report_panel
 from .mods_preview import create_mods_preview
 from .preflight_panel import build_preflight_view_model, create_preflight_panel
 from .preview_manifest_panel import build_preview_view_model, create_preview_manifest_panel
 from .stats_section import create_stats_section
 
 __all__ = [
+    "build_flight_report_view_model",
     "build_preflight_view_model",
     "build_preview_view_model",
     "create_chat_preview",
     "create_cta_section",
     "create_features_section",
+    "create_flight_report_panel",
     "create_mods_preview",
     "create_preflight_panel",
     "create_preview_manifest_panel",
