@@ -44,6 +44,10 @@ class HITLRequest:
     category: str = "scope"
     _event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     decision: Decision = Decision.TIMEOUT
+    # F6 (auditoría 2026-07-18): marca de resolución terminal. La decisión se
+    # commitea una sola vez, bajo el lock del guard (primer escritor gana): una
+    # vez True, ni el timeout ni un respond tardío pueden pisar ``decision``.
+    _resolved: bool = field(default=False, repr=False)
 
 
 class HITLGuard:
@@ -133,27 +137,44 @@ class HITLGuard:
         try:
             await asyncio.wait_for(req._event.wait(), timeout=self._timeout)
         except TimeoutError:
-            req.decision = Decision.DENIED
-            logger.warning(
-                "HITL: timeout for %s — auto-denied (fail-secure policy)",
-                request_id,
-            )
+            # F6: commitear el auto-deny bajo el lock (primer escritor gana). Si
+            # un respond se coló en la ventana de la race y ya resolvió la
+            # request, ``_commit`` es no-op y se honra la decisión del operador.
+            if await self._commit(request_id, Decision.DENIED):
+                logger.warning(
+                    "HITL: timeout for %s — auto-denied (fail-secure policy)",
+                    request_id,
+                )
         finally:
             async with self._lock:
                 self._pending.pop(request_id, None)
 
         return req.decision
 
-    async def respond(self, request_id: str, approved: bool) -> bool:
-        """Deliver the operator's decision for *request_id*.
+    async def _commit(self, request_id: str, decision: Decision) -> bool:
+        """F6: commitea una decisión terminal de forma atómica (primer escritor gana).
 
-        Returns ``True`` if the request was still pending, ``False``
-        otherwise.
+        Bajo el lock del guard: si la request sigue pendiente y no fue resuelta,
+        fija ``decision``, marca ``_resolved`` y despierta al waiter. Devuelve
+        ``True`` si ESTA llamada resolvió la request, ``False`` si ya estaba
+        resuelta o ausente. Es el único punto donde se escribe ``decision``, así
+        que el timeout y ``respond`` no pueden pisarse entre sí.
         """
         async with self._lock:
             req = self._pending.get(request_id)
-            if req is None:
+            if req is None or req._resolved:
                 return False
-            req.decision = Decision.APPROVED if approved else Decision.DENIED
+            req.decision = decision
+            req._resolved = True
             req._event.set()
             return True
+
+    async def respond(self, request_id: str, approved: bool) -> bool:
+        """Deliver the operator's decision for *request_id*.
+
+        Returns ``True`` if this call committed the decision (the request was
+        still pending and unresolved), ``False`` otherwise — including when a
+        timeout already auto-denied it, so a late click never gets a false
+        "approved" ack (F6).
+        """
+        return await self._commit(request_id, Decision.APPROVED if approved else Decision.DENIED)

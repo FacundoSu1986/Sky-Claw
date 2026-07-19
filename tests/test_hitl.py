@@ -389,6 +389,62 @@ class TestTimeout:
 
 
 # ---------------------------------------------------------------------------
+# TestTimeoutRespondRace (F6, auditoría 2026-07-18)
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutRespondRace:
+    """La resolución de una request debe ser atómica: primer escritor gana bajo
+    el lock. Antes, ``request_approval`` seteaba ``req.decision = DENIED`` FUERA
+    del lock en el timeout mientras ``respond`` lo seteaba dentro — dos
+    escritores compitiendo. Un ``respond`` que llegaba en la ventana devolvía
+    ``True`` ("aprobación registrada") al operador aunque la request se
+    auto-denegara, o una aprobación tardía pisaba el fail-secure."""
+
+    @pytest.mark.asyncio
+    async def test_segundo_respond_no_pisa_la_decision_y_devuelve_false(self) -> None:
+        """Ancla de la race: una vez resuelta la request (primer respond gana),
+        un segundo respond NO puede cambiar la decisión y devuelve False. Es el
+        mismo mecanismo que protege contra el respond-tardío-vs-timeout."""
+        guard = HITLGuard(timeout=5)
+        req_id = str(uuid.uuid4())
+        fake = await _inject_pending(guard, req_id)
+
+        assert await guard.respond(req_id, approved=True) is True
+        assert fake.decision == Decision.APPROVED
+
+        # El operador (o una race) intenta denegar después: rechazado, sin pisar.
+        assert await guard.respond(req_id, approved=False) is False
+        assert fake.decision == Decision.APPROVED
+
+    @pytest.mark.asyncio
+    async def test_respond_tras_resolucion_por_timeout_es_rechazado(self) -> None:
+        """Fail-secure: tras el auto-deny por timeout, un respond tardío no
+        encuentra la request (ni la pisa) y devuelve False — sin ack falso."""
+        guard = HITLGuard(notify_fn=None, timeout=0)
+        decision = await guard.request_approval(request_id="r-late", reason="x")
+        assert decision == Decision.DENIED
+
+        assert await guard.respond("r-late", approved=True) is False
+
+    @pytest.mark.asyncio
+    async def test_respond_en_ventana_de_notify_se_honra(self) -> None:
+        """Un respond que llega ANTES de que expire el timeout (simulado dentro
+        de notify_fn, justo después del registro) se honra: la decisión del
+        operador gana y el waiter se despierta con APPROVED."""
+        acks: list[bool] = []
+
+        async def notify(req: HITLRequest) -> None:
+            acks.append(await guard.respond(req.request_id, approved=True))
+
+        guard = HITLGuard(notify_fn=notify, timeout=5)
+        decision = await guard.request_approval(request_id="r-intime", reason="x")
+
+        assert decision == Decision.APPROVED
+        assert acks == [True]
+
+
+# ---------------------------------------------------------------------------
 # TestNotifyFnFailure
 # ---------------------------------------------------------------------------
 
