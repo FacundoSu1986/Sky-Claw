@@ -1008,6 +1008,53 @@ async def test_quick_auto_clean_sin_manifiesto_no_limpia(
 
 
 @pytest.mark.asyncio
+async def test_quick_auto_clean_manifiesto_fallido_no_marca_rollback_si_restore_falla(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un restore fallido conserva PENDING aunque el manifiesto aborte el QAC."""
+    from sky_claw.antigravity.db.journal import TransactionStatus
+
+    master = _preparar_dirty_masters(mock_path_resolver)
+    service = _service_real_journal(
+        lock_manager,
+        snapshot_manager,
+        real_journal,
+        mock_path_resolver,
+        mock_event_bus,
+        preflight=_preflight_verde(),
+    )
+    runner = _runner_clean(success=True)
+
+    async def restore_falla(
+        _snapshot_path: str | pathlib.Path,
+        _target: pathlib.Path,
+        verify_checksum: bool = True,
+    ) -> bool:
+        del verify_checksum
+        raise OSError("restore bloqueado")
+
+    monkeypatch.setattr(snapshot_manager, "restore_snapshot", restore_falla)
+
+    with (
+        patch.object(service, "_ensure_xedit_runner", return_value=runner),
+        patch.object(real_journal, "persist_action_manifest", AsyncMock(side_effect=RuntimeError("boom"))),
+    ):
+        result = await service.quick_auto_clean()
+
+    assert result["success"] is False
+    assert master.read_bytes() == b"TES4"
+    runner.quick_auto_clean.assert_not_awaited()
+    (ultima,) = await real_journal.list_recent_transactions(limit=1)
+    assert ultima.status == TransactionStatus.PENDING
+    assert result["rolled_back"] is False
+
+
+@pytest.mark.asyncio
 async def test_quick_auto_clean_exit_uno_marca_rollback_completo(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,

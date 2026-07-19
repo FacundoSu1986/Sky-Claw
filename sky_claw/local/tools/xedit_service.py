@@ -734,10 +734,25 @@ class XEditPipelineService:
                 logger.error("Fallo al commitear la TX %s de QuickAutoClean", tx_id, exc_info=True)
             await self._emit_flight_report(tx_id)
         except _ActionManifestError as exc:
-            # La caja negra no se pudo emitir: no se limpió nada. __aexit__ ya
-            # restauró los snapshots; marcar la TX para no dejarla PENDING.
-            await self._mark_journal_rolled_back(tx_id)
-            logger.error("QuickAutoClean: no se pudo emitir el ActionManifest; abortado: %s", exc)
+            # La caja negra no se pudo emitir: no se limpió nada. El journal sólo
+            # puede cerrarse si __aexit__ restauró realmente todos los snapshots.
+            rolled_back = bool(tx_lock and tx_lock.rollback_completed)
+            if rolled_back:
+                await self._mark_journal_rolled_back(tx_id)
+                logger.error(
+                    "QuickAutoClean (stage 1): no se pudo emitir el ActionManifest; rollback aplicado: %s",
+                    exc,
+                )
+            else:
+                failures = tx_lock.rollback_failures if tx_lock is not None else []
+                logger.critical(
+                    "QuickAutoClean (stage 1): ActionManifest falló y el rollback "
+                    "quedó incompleto para TX %s; fallos=%s. Se requiere "
+                    "recuperación manual: %s",
+                    tx_id,
+                    failures,
+                    exc,
+                )
             detail = f"Manifiesto de vuelo requerido no emitido: {exc}"
             return _attach_preflight(
                 {
@@ -745,6 +760,7 @@ class XEditPipelineService:
                     "success": False,
                     "reason": "ActionManifestFailed",
                     "message": detail,
+                    "rolled_back": rolled_back,
                     "logs": detail,
                 },
                 preflight_report,
