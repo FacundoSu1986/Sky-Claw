@@ -91,6 +91,25 @@ def _is_blocked_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
+# Cabeceras que portan credenciales del host original y que NO deben viajar a
+# otro host tras un redirect. aiohttp elimina ``Authorization`` en redirects
+# cross-host, pero no toca las custom (``apikey``); como request() re-emite los
+# kwargs a mano con allow_redirects=False, el saneo lo hace el gateway.
+_SENSITIVE_REDIRECT_HEADERS = frozenset(
+    {"authorization", "proxy-authorization", "cookie", "apikey", "x-api-key", "x-subscription-token"}
+)
+
+
+def _strip_sensitive_headers(headers: Any) -> Any:
+    """Devuelve una copia de *headers* sin las cabeceras sensibles (case-insensitive).
+
+    Copia siempre (no muta el dict del caller). Preserva el resto de cabeceras.
+    """
+    if not headers:
+        return headers
+    return {k: v for k, v in headers.items() if k.lower() not in _SENSITIVE_REDIRECT_HEADERS}
+
+
 class SafeResolver(aiohttp.abc.AbstractResolver):
     """DNS resolver with IP validation and pinning against TOCTOU/rebinding.
 
@@ -285,6 +304,12 @@ class NetworkGateway:
         """
         kwargs["allow_redirects"] = False
 
+        try:
+            original_host = (urlparse(url).hostname or "").lower()
+        except ValueError:
+            # authorize() (hop 0) traduce la URL malformada a EgressViolationError; no
+            # dejamos que el ValueError crudo de urlparse escape y rompa el contrato de error.
+            original_host = ""
         current_url = url
         for hop in range(max_redirects + 1):
             # The initial URL always goes through full authorize().
@@ -320,6 +345,10 @@ class NetworkGateway:
                 hop_kwargs["timeout"] = safe_timeout
             if is_loopback and parsed.scheme == "http":
                 hop_kwargs["ssl"] = False
+            # Zero-Trust: un redirect a OTRO host no debe arrastrar las credenciales
+            # que el caller envió al host original.
+            if hop > 0 and (parsed.hostname or "").lower() != original_host and hop_kwargs.get("headers"):
+                hop_kwargs["headers"] = _strip_sensitive_headers(hop_kwargs["headers"])
 
             try:
                 response = await session.request(method, current_url, **hop_kwargs)

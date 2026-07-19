@@ -44,6 +44,7 @@ from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
     DictResultGuardMiddleware,
     ErrorWrappingMiddleware,
     HitlGateMiddleware,
+    LoopGuardrailMiddleware,
 )
 from sky_claw.antigravity.orchestrator.tool_strategies.preview_chain import (
     PreviewChainStrategy,
@@ -81,7 +82,12 @@ class OrchestrationToolDispatcher:
         contract preserved verbatim from supervisor.py:345-347).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, global_middleware: list[ToolMiddleware] | None = None) -> None:
+        # F1a: middleware GLOBAL aplicado OUTERMOST a todas las tools (antes de
+        # la cadena por-tool). Hoy lo usa el LoopGuardrailMiddleware: el
+        # cortacircuitos cognitivo debe cubrir también a las tools registradas
+        # sin middleware propio (un loop de queries sigue siendo un loop).
+        self._global_middleware: list[ToolMiddleware] = list(global_middleware) if global_middleware else []
         self._strategies: dict[str, ToolStrategy] = {}
         self._middleware: dict[str, list[ToolMiddleware]] = {}
 
@@ -112,7 +118,7 @@ class OrchestrationToolDispatcher:
             logger.error(f"RCA: LLM alucinó la herramienta '{tool_name}'.")
             return {"status": "error", "reason": "ToolNotFound"}
 
-        middlewares = self._middleware[tool_name]
+        middlewares = [*self._global_middleware, *self._middleware[tool_name]]
 
         async def innermost() -> dict[str, Any]:
             return await strategy.execute(payload_dict)
@@ -255,6 +261,7 @@ def build_orchestration_dispatcher(
     supervisor: SupervisorAgent,
     *,
     hitl_gate: HitlGateMiddleware | None = None,
+    loop_guardrail: LoopGuardrailMiddleware | None = None,
 ) -> OrchestrationToolDispatcher:
     """Wire all migrated tool strategies onto a fresh dispatcher.
 
@@ -269,7 +276,13 @@ def build_orchestration_dispatcher(
     destructive tools are denied (``HITLGateUnavailable``) until a
     HITLGuard-backed gate is injected.
     """
-    dispatcher = OrchestrationToolDispatcher()
+    # F1a (informe #319): el cortacircuitos cognitivo corre como middleware
+    # global del dispatcher — el ÚNICO camino real de ejecución de tools. Antes
+    # vivía en los callbacks del StateGraph, que nada ejecutaba en producción.
+    # El supervisor inyecta su instancia para poder rearmarla ante intervención
+    # humana (reset_loop_guardrail); None crea una propia (tests/standalone).
+    guardrail = loop_guardrail if loop_guardrail is not None else LoopGuardrailMiddleware()
+    dispatcher = OrchestrationToolDispatcher(global_middleware=[guardrail])
 
     # FASE 1.5.1: Shared HITL gate for destructive tools.
     # When hitl_gate is None, the default gate denies destructive tools

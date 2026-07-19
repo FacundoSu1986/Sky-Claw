@@ -168,6 +168,36 @@ class TestHermesToolExecution:
         assert result == "Found 0 results for SKSE."
         mock_exec.assert_called_once_with("search_mod", {"mod_name": "SKSE"})
 
+    @pytest.mark.asyncio
+    async def test_bucle_de_tool_hermes_se_corta_antes_de_la_tercera_ejecucion(self, hermes_router: LLMRouter) -> None:
+        """F1a: Hermes debe aplicar el mismo cortacircuitos que el protocolo nativo."""
+        provider_calls = 0
+
+        async def fake_chat(**kwargs: Any) -> dict[str, Any]:
+            nonlocal provider_calls
+            provider_calls += 1
+            return {
+                "stop_reason": "end_turn",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '<tool_call>{"name": "search_mod", "arguments": {"mod_name": "SKSE"}}</tool_call>',
+                    }
+                ],
+            }
+
+        hermes_router._provider.chat = fake_chat  # type: ignore[method-assign]
+        mock_session = MagicMock(spec=aiohttp.ClientSession)
+
+        with patch.object(hermes_router._tools, "execute", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = '{"matches": []}'
+            result = await hermes_router.chat("Buscá SKSE", mock_session, chat_id="loop-hermes")
+
+        assert "bucle" in result.lower()
+        assert "asistencia humana" in result.lower()
+        assert provider_calls == 3
+        assert mock_exec.call_count == 2
+
 
 # ------------------------------------------------------------------
 # Self-healing loop
@@ -213,12 +243,23 @@ class TestHermesSelfHealing:
 
     @pytest.mark.asyncio
     async def test_max_retries_exceeded_returns_error_message(self, hermes_router: LLMRouter) -> None:
-        """After MAX_HERMES_RETRIES consecutive failures, router returns an error string."""
+        """Errores con payloads distintos conservan el límite de autorreparación."""
+        attempt = 0
 
         async def fake_chat(**kwargs: Any) -> dict[str, Any]:
+            nonlocal attempt
+            attempt += 1
             return {
                 "stop_reason": "end_turn",
-                "content": [{"type": "text", "text": '<tool_call>{"name": "close_game"}</tool_call>'}],
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            '<tool_call>{"name": "search_mod", "arguments": '
+                            f'{{"mod_name": "fallo-{attempt}"}}}}</tool_call>'
+                        ),
+                    }
+                ],
             }
 
         hermes_router._provider.chat = fake_chat  # type: ignore[method-assign]

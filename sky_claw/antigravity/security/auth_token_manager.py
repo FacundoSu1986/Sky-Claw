@@ -56,6 +56,9 @@ class AuthTokenManager:
         restrict_to_owner(self._token_dir)
         self._token_path = self._token_dir / "ws_auth_token"
         self._rotation_task: asyncio.Task | None = None
+        # Handle del worker de generate() en vuelo. stop_rotation() lo espera para no
+        # retornar (y dejar que revoke() borre) mientras un hilo aún escribe el token.
+        self._generate_task: asyncio.Task | None = None
         self._rotation_callbacks: list[Callable[[], Awaitable[None]]] = []
 
     # ── Server Side ──────────────────────────────────────────────────
@@ -135,12 +138,26 @@ class AuthTokenManager:
             await asyncio.sleep(_TOKEN_TTL / 2)
             try:
                 logger.info("Rotating auth token...")
-                self.generate()
+                # generate() hace I/O de archivo y, en Windows, un subprocess icacls
+                # (restrict_to_owner). Se delega en un hilo para no bloquear el event loop.
+                # Se guarda el handle y se usa shield: si stop_rotation() cancela el loop
+                # mientras el hilo escribe, shield evita cancelar el hilo y se espera su fin
+                # antes de propagar — así stop_rotation() no retorna (ni revoke() borra) con
+                # una escritura en vuelo que re-crearía un token ya revocado (huérfano).
+                self._generate_task = asyncio.create_task(asyncio.to_thread(self.generate))
+                await asyncio.shield(self._generate_task)
+            except asyncio.CancelledError:
+                if self._generate_task is not None:
+                    with contextlib.suppress(Exception):
+                        await self._generate_task
+                raise
             except Exception:
                 # Log and continue — a single rotation failure must not kill
                 # the loop and leave tokens permanently stale.
                 logger.exception("Token rotation failed — will retry at next interval")
                 continue
+            finally:
+                self._generate_task = None
             for cb in self._rotation_callbacks:
                 try:
                     await cb()

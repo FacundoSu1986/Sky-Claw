@@ -361,6 +361,58 @@ class TestTelegramSender:
         assert mock_gateway.request.await_count == 5
         assert len(sender._send_times[789]) == 5
 
+    @pytest.mark.asyncio
+    async def test_answer_callback_query_goes_through_gateway(self) -> None:
+        """F4: answerCallbackQuery pasa por gateway.request (allow-list/SSRF/timeout)
+        y consume la respuesta con async with (sin fuga de conexión)."""
+        mock_gateway = MagicMock()
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+        mock_gateway.request = AsyncMock(return_value=mock_response)
+
+        mock_session = MagicMock(spec=aiohttp.ClientSession)
+
+        sender = TelegramSender(bot_token="123:ABC", gateway=mock_gateway, session=mock_session)
+        await sender.answer_callback_query("cbid-1", text="Unauthorized")
+
+        mock_gateway.request.assert_awaited_once()
+        call_args = mock_gateway.request.call_args
+        assert call_args[0][0] == "POST"
+        assert call_args[0][1].endswith("answerCallbackQuery")
+        assert call_args[1]["json"]["callback_query_id"] == "cbid-1"
+        assert call_args[1]["json"]["text"] == "Unauthorized"
+        # La respuesta se abre y cierra (async with) → sin fuga.
+        mock_response.__aenter__.assert_awaited_once()
+        mock_response.__aexit__.assert_awaited_once()
+        # No se toca la sesión cruda (bypass del gateway).
+        mock_session.post.assert_not_called()
+
+
+class TestCallbackQueryEgress:
+    """F4: el callback_query no debe bypassear el gateway ni fugar conexiones."""
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_callback_answers_via_sender_not_raw_session(self) -> None:
+        webhook, _router, mock_sender = _make_webhook(authorized_user_id=123)
+        mock_sender.answer_callback_query = AsyncMock()
+
+        # callback_query de un usuario NO autorizado (spoofing) → rama "Unauthorized".
+        callback = {
+            "id": "cb-1",
+            "from": {"id": 999},
+            "message": {"chat": {"id": 999}, "message_id": 5},
+            "data": "hitl:approve:req-1",
+        }
+        await webhook._handle_callback_query(callback)
+
+        mock_sender.answer_callback_query.assert_awaited_once()
+        _args, kwargs = mock_sender.answer_callback_query.call_args
+        assert kwargs.get("text") == "Unauthorized"
+        # No se usa la sesión aiohttp cruda (que salteaba el gateway y fugaba la respuesta).
+        webhook._session.post.assert_not_called()
+
 
 # ------------------------------------------------------------------
 # TelegramPolling — control de acceso por chat_id (C-2)

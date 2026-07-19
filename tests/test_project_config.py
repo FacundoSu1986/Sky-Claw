@@ -62,3 +62,22 @@ def test_conftest_has_session_finish_cleanup() -> None:
         "that cleans up .pytest-tmp with ACL-tolerant shutil.rmtree "
         "(onerror handler) to prevent PermissionError on consecutive Windows runs."
     )
+
+
+def test_locks_no_conservan_dependencias_del_stategraph_retirado() -> None:
+    """Los dos caminos de instalación deben retirar la familia LangGraph."""
+    dependencias_retiradas = {
+        "langchain-core",
+        "langgraph",
+        "langgraph-checkpoint",
+        "langgraph-sdk",
+        "langsmith",
+    }
+    requirements_lock = (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8")
+    uv_lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+
+    for dependencia in dependencias_retiradas:
+        assert not re.search(rf"(?m)^{re.escape(dependencia)}==", requirements_lock), (
+            f"requirements.lock todavía instala {dependencia}"
+        )
+        assert f'name = "{dependencia}"' not in uv_lock, f"uv.lock todavía instala {dependencia}"

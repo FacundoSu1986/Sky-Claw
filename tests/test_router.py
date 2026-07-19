@@ -259,6 +259,39 @@ class TestChatEndTurn:
         assert call_count == 2
 
     @pytest.mark.asyncio
+    async def test_bucle_de_tool_nativo_se_corta_antes_de_la_tercera_ejecucion(self, router: LLMRouter) -> None:
+        """F1a: el camino LLM nativo debe cortar A,A,A en la conversación real."""
+        tool_use_response = {
+            "stop_reason": "tool_use",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tool-loop",
+                    "name": "search_mod",
+                    "input": {"mod_name": "SKSE"},
+                }
+            ],
+        }
+        provider_calls = 0
+
+        async def fake_chat(**kwargs: Any) -> dict[str, Any]:
+            nonlocal provider_calls
+            provider_calls += 1
+            return tool_use_response
+
+        router._provider.chat = fake_chat  # type: ignore[method-assign]
+        mock_session = MagicMock(spec=aiohttp.ClientSession)
+
+        with patch.object(router._tools, "execute", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = '{"matches": []}'
+            result = await router.chat("Buscá SKSE", mock_session, chat_id="loop-nativo")
+
+        assert "bucle" in result.lower()
+        assert "asistencia humana" in result.lower()
+        assert provider_calls == 3
+        assert mock_exec.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_malformed_tool_use_block_does_not_abort_round(self, router: LLMRouter) -> None:
         """L-2: un tool_use sin 'name' no debe abortar el round entero.
 
@@ -378,22 +411,27 @@ class TestStructuredContent:
 class TestMaxToolRounds:
     @pytest.mark.asyncio
     async def test_exceeds_max_rounds_raises(self, router: LLMRouter) -> None:
-        """Mock API always returns tool_use → router must raise after MAX_TOOL_ROUNDS."""
-        tool_use_response = {
-            "stop_reason": "tool_use",
-            "content": [
-                {
-                    "type": "tool_use",
-                    "id": "tool-loop",
-                    "name": "search_mod",
-                    "input": {"mod_name": "SKSE"},
-                },
-            ],
-        }
+        """Payloads distintos aún alcanzan el límite duro de rondas del router."""
+        call_count = 0
+
+        async def fake_json() -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            return {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": f"tool-{call_count}",
+                        "name": "search_mod",
+                        "input": {"mod_name": f"SKSE-{call_count}"},
+                    },
+                ],
+            }
 
         mock_resp = MagicMock()
         mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value=tool_use_response)
+        mock_resp.json = fake_json
         mock_resp.raise_for_status = MagicMock()
         mock_resp.text = AsyncMock(return_value="")
 

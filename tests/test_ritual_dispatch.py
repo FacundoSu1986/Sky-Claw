@@ -272,6 +272,26 @@ async def test_auto_approve_armed_defaults_false_outside_ritual() -> None:
 
 
 # ── run_ritual dispatch flow ─────────────────────────────────────────────────────
+async def test_run_ritual_rearma_el_cortacircuitos_antes_de_despachar() -> None:
+    """F1a: el click del operador es intervención humana — run_ritual rearma el
+    guardrail del dispatcher ANTES de despachar, así repetir el mismo ritual a
+    mano no tripea el cortacircuitos cognitivo."""
+    eventos: list[str] = []
+
+    class _FakeSupervisorConGuardrail(_FakeSupervisor):
+        def reset_loop_guardrail(self) -> None:
+            eventos.append("reset")
+
+        async def dispatch_tool(self, tool_name: str, payload: dict) -> dict:
+            eventos.append("dispatch")
+            return await super().dispatch_tool(tool_name, payload)
+
+    store = ReactiveStore()
+    await run_ritual("loot", supervisor=_FakeSupervisorConGuardrail(), store=store)
+
+    assert eventos == ["reset", "dispatch"]
+
+
 async def test_run_ritual_dispatches_mapped_tool_and_publishes_feedback() -> None:
     store = ReactiveStore()
     sup = _FakeSupervisor({"status": "success"})
