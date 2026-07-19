@@ -302,6 +302,47 @@ class TestLOOTRunner:
         assert "wait secundario" in caplog.text
 
     @pytest.mark.asyncio
+    async def test_sort_reap_vencido_advierte_proceso_no_reapeado(
+        self,
+        tmp_path: pathlib.Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Si el reap no termina dentro del deadline, se advierte que LOOT
+        puede seguir vivo — sin ocultar el error primario.
+
+        Antes, ``_reap_process`` retornaba en silencio al vencer el deadline,
+        así que el path de cleanup "parecía exitoso" justo en el escenario que
+        fue agregado para diagnosticar (proceso posiblemente sin reapear).
+        """
+        config = self._make_config(tmp_path)
+        runner = LOOTRunner(config)
+        error_primario = OSError("pipe rota")
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=error_primario)
+        mock_proc.returncode = None
+        mock_proc.kill = MagicMock()
+        # El reap vence: proc.wait() nunca termina dentro del deadline.
+        mock_proc.wait = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_proc.pid = 4242
+
+        with (
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            caplog.at_level(logging.WARNING, logger="sky_claw.local.loot.cli"),
+            pytest.raises(OSError) as capturada,
+        ):
+            await runner.sort()
+
+        # La excepción primaria se preserva intacta.
+        assert capturada.value is error_primario
+        mock_proc.kill.assert_called_once_with()
+        # Y queda constancia de que el proceso pudo no ser reapeado.
+        assert "no terminó" in caplog.text
+        assert "sin reapear" in caplog.text
+        assert "4242" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_sort_doble_cancelacion_espera_reap_y_preserva_primaria(
         self,
         tmp_path: pathlib.Path,

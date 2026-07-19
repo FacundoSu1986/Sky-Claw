@@ -13,7 +13,6 @@ TASK-011 enhancements:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import pathlib
 from asyncio.exceptions import TimeoutError as AsyncTimeoutError
@@ -55,8 +54,13 @@ class LOOTTimeoutError(RuntimeError):
         self.timeout = timeout
 
 
-async def _reap_process(proc: asyncio.subprocess.Process, *, timeout: float) -> None:
-    """Observa ``proc.wait()`` hasta terminal pese a cancelaciones repetidas."""
+async def _reap_process(proc: asyncio.subprocess.Process, *, timeout: float) -> bool:
+    """Observa ``proc.wait()`` hasta terminal pese a cancelaciones repetidas.
+
+    Devuelve ``True`` si el proceso fue reapeado dentro del deadline, o
+    ``False`` si el ``proc.wait()`` no completó a tiempo — en ese caso el
+    proceso puede seguir vivo sin reapear y el caller debe dejar constancia.
+    """
     reap_task = asyncio.create_task(asyncio.wait_for(proc.wait(), timeout=timeout))
 
     while not reap_task.done():
@@ -66,10 +70,13 @@ async def _reap_process(proc: asyncio.subprocess.Process, *, timeout: float) -> 
             if reap_task.cancelled():
                 raise
         except (AsyncTimeoutError, TimeoutError):
-            return
+            return False
 
-    with contextlib.suppress(AsyncTimeoutError, TimeoutError):
+    try:
         reap_task.result()
+    except (AsyncTimeoutError, TimeoutError):
+        return False
+    return True
 
 
 class LOOTRunner:
@@ -167,7 +174,7 @@ class LOOTRunner:
                     )
 
                 try:
-                    await _reap_process(proc, timeout=3.0)
+                    reaped = await _reap_process(proc, timeout=3.0)
                 except asyncio.CancelledError as cleanup_error:
                     logger.warning(
                         "LOOT cleanup: proc.wait() fue cancelado: %s",
@@ -180,6 +187,13 @@ class LOOTRunner:
                         cleanup_error,
                         exc_info=True,
                     )
+                else:
+                    if not reaped:
+                        logger.warning(
+                            "LOOT cleanup: proc.wait() no terminó dentro de 3.0s; "
+                            "LOOT puede seguir corriendo sin reapear (pid=%s)",
+                            proc.pid,
+                        )
 
         assert proc is not None
 
