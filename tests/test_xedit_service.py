@@ -1129,3 +1129,99 @@ async def test_quick_auto_clean_no_marca_rollback_si_restore_falla(
     assert master.read_bytes() == b"MUTATED"
     (ultima,) = await real_journal.list_recent_transactions(limit=1)
     assert ultima.status == TransactionStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_quick_auto_clean_restore_fallido_reporta_masters_afectados(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un rollback incompleto nombra los master(s) sin restaurar en el payload
+    y en ``message`` (el único canal que llega al toast del operador)."""
+    master = _preparar_dirty_masters(mock_path_resolver)
+    service = _service_real_journal(
+        lock_manager,
+        snapshot_manager,
+        real_journal,
+        mock_path_resolver,
+        mock_event_bus,
+        preflight=_preflight_verde(),
+    )
+    resultado = MagicMock(success=False, exit_code=1)
+
+    async def limpiar_y_fallar(_plugin: str) -> MagicMock:
+        master.write_bytes(b"MUTATED")
+        return resultado
+
+    async def restore_falla(
+        _snapshot_path: str | pathlib.Path,
+        _target: pathlib.Path,
+        verify_checksum: bool = True,
+    ) -> bool:
+        del verify_checksum
+        raise OSError("restore bloqueado")
+
+    runner = MagicMock()
+    runner.quick_auto_clean = AsyncMock(side_effect=limpiar_y_fallar)
+    monkeypatch.setattr(snapshot_manager, "restore_snapshot", restore_falla)
+
+    with patch.object(service, "_ensure_xedit_runner", return_value=runner):
+        result = await service.quick_auto_clean()
+
+    assert result["success"] is False
+    assert result["rolled_back"] is False
+    # El payload expone los masters oficiales que quedaron sin restaurar.
+    assert "rollback_failures" in result
+    assert any(str(p).endswith("Update.esm") for p in result["rollback_failures"])
+    # Y el message pide recuperación manual nombrando el master afectado.
+    assert "recuperación manual" in result["message"]
+    assert "Update.esm" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_quick_auto_clean_manifiesto_rollback_fallido_reporta_masters(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    real_journal,  # noqa: ANN001
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Igual que arriba pero cuando el fallo es del ActionManifest: el rollback
+    incompleto también debe nombrar los masters afectados en el payload."""
+    _preparar_dirty_masters(mock_path_resolver)
+    service = _service_real_journal(
+        lock_manager,
+        snapshot_manager,
+        real_journal,
+        mock_path_resolver,
+        mock_event_bus,
+        preflight=_preflight_verde(),
+    )
+    runner = _runner_clean(success=True)
+
+    async def restore_falla(
+        _snapshot_path: str | pathlib.Path,
+        _target: pathlib.Path,
+        verify_checksum: bool = True,
+    ) -> bool:
+        del verify_checksum
+        raise OSError("restore bloqueado")
+
+    monkeypatch.setattr(snapshot_manager, "restore_snapshot", restore_falla)
+
+    with (
+        patch.object(service, "_ensure_xedit_runner", return_value=runner),
+        patch.object(real_journal, "persist_action_manifest", AsyncMock(side_effect=RuntimeError("boom"))),
+    ):
+        result = await service.quick_auto_clean()
+
+    assert result["success"] is False
+    assert result["rolled_back"] is False
+    assert "rollback_failures" in result
+    assert any(str(p).endswith("Update.esm") for p in result["rollback_failures"])
+    assert "recuperación manual" in result["message"]

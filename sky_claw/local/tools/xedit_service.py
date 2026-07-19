@@ -62,6 +62,18 @@ def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) ->
     return result
 
 
+def _mensaje_rollback_incompleto(base: str, failures: list[str]) -> str:
+    """Enriquece ``base`` nombrando los masters que quedaron sin restaurar.
+
+    ``message`` es la única clave que el GUI muestra en el toast (vía
+    ``normalize_tool_result``); sin los paths, el operador no sabría qué
+    master(s) oficial(es) recuperar a mano tras un rollback incompleto.
+    """
+    if not failures:
+        return base
+    return f"{base} Rollback incompleto: recuperación manual requerida para {', '.join(failures)}."
+
+
 _BACKUP_STAGING_DIR = ".skyclaw_backups/"
 
 #: Lock resource id para la limpieza QuickAutoClean (serializa contra otras corridas).
@@ -737,14 +749,16 @@ class XEditPipelineService:
             # La caja negra no se pudo emitir: no se limpió nada. El journal sólo
             # puede cerrarse si __aexit__ restauró realmente todos los snapshots.
             rolled_back = bool(tx_lock and tx_lock.rollback_completed)
+            failures = list(tx_lock.rollback_failures) if tx_lock is not None else []
+            detail = f"Manifiesto de vuelo requerido no emitido: {exc}"
             if rolled_back:
                 await self._mark_journal_rolled_back(tx_id)
                 logger.error(
                     "QuickAutoClean (stage 1): no se pudo emitir el ActionManifest; rollback aplicado: %s",
                     exc,
                 )
+                message = detail
             else:
-                failures = tx_lock.rollback_failures if tx_lock is not None else []
                 logger.critical(
                     "QuickAutoClean (stage 1): ActionManifest falló y el rollback "
                     "quedó incompleto para TX %s; fallos=%s. Se requiere "
@@ -753,18 +767,18 @@ class XEditPipelineService:
                     failures,
                     exc,
                 )
-            detail = f"Manifiesto de vuelo requerido no emitido: {exc}"
-            return _attach_preflight(
-                {
-                    "status": "error",
-                    "success": False,
-                    "reason": "ActionManifestFailed",
-                    "message": detail,
-                    "rolled_back": rolled_back,
-                    "logs": detail,
-                },
-                preflight_report,
-            )
+                message = _mensaje_rollback_incompleto(detail, failures)
+            error: dict[str, Any] = {
+                "status": "error",
+                "success": False,
+                "reason": "ActionManifestFailed",
+                "message": message,
+                "rolled_back": rolled_back,
+                "logs": detail,
+            }
+            if failures:
+                error["rollback_failures"] = failures
+            return _attach_preflight(error, preflight_report)
         except LockAcquisitionError as exc:
             logger.warning("Lock contention on '%s' (stage 1): %s", XEDIT_CLEAN_RESOURCE_ID, exc)
             detail = f"No se pudo adquirir el lock '{XEDIT_CLEAN_RESOURCE_ID}': {exc}"
@@ -774,11 +788,12 @@ class XEditPipelineService:
             )
         except (PatchingError, XEditError) as exc:
             rolled_back = bool(tx_lock and tx_lock.rollback_completed)
+            failures = list(tx_lock.rollback_failures) if tx_lock is not None else []
             if rolled_back:
                 await self._mark_journal_rolled_back(tx_id)
                 logger.error("QuickAutoClean (stage 1) falló; rollback aplicado: %s", exc)
+                message = str(exc)
             else:
-                failures = tx_lock.rollback_failures if tx_lock is not None else []
                 logger.critical(
                     "QuickAutoClean (stage 1) falló y el rollback quedó incompleto "
                     "para TX %s; fallos=%s. Se requiere recuperación manual: %s",
@@ -786,17 +801,21 @@ class XEditPipelineService:
                     failures,
                     exc,
                 )
-            return _attach_preflight(
-                {
-                    "status": "error",
-                    "success": False,
-                    "message": str(exc),
-                    "cleaned": [],
-                    "rolled_back": rolled_back,
-                    "logs": str(exc),
-                },
-                preflight_report,
-            )
+                # `message` es la única clave que llega al toast del GUI vía
+                # normalize_tool_result: sin nombrar los masters, el operador no
+                # sabría cuáles recuperar a mano.
+                message = _mensaje_rollback_incompleto(str(exc), failures)
+            error: dict[str, Any] = {
+                "status": "error",
+                "success": False,
+                "message": message,
+                "cleaned": [],
+                "rolled_back": rolled_back,
+                "logs": str(exc),
+            }
+            if failures:
+                error["rollback_failures"] = failures
+            return _attach_preflight(error, preflight_report)
 
         logger.info("QuickAutoClean exitoso: %s", cleaned)
         return _attach_preflight(
