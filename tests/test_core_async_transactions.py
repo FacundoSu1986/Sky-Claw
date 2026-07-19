@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Awaitable, Generator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -83,6 +84,68 @@ async def test_database_y_dlq_comparten_dueno_transaccional(
         assert lifecycle.maximo_activas == 1
         assert await database.get_memory("clave") == "valor"
         assert len(await dlq.list_pending()) == 1
+    finally:
+        await database.close()
+
+
+async def test_stress_database_y_dlq_comparten_lifecycle_sin_perder_filas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cincuenta escrituras concurrentes preservan ambas tablas completas."""
+    db_path = tmp_path / "core-shared-stress.db"
+    lifecycle = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+    )
+    monkeypatch.setattr(
+        "sky_claw.antigravity.core.database.DatabaseLifecycleManager",
+        lambda **_kwargs: lifecycle,
+    )
+    database = DatabaseAgent(str(db_path))
+
+    async def handler(_event: Event) -> None:
+        return None
+
+    dlq = DLQManager(db_path, lambda _name: handler, lifecycle=lifecycle)
+    try:
+        await database.init_db()
+        await dlq._ensure_schema()
+
+        escrituras: list[Awaitable[None]] = []
+        for indice in range(25):
+            escrituras.extend(
+                (
+                    database.set_memory(
+                        f"clave-{indice}",
+                        json.dumps({"i": indice}, sort_keys=True),
+                        float(indice),
+                    ),
+                    dlq.enqueue(
+                        Event(topic="stress", payload={"i": indice}),
+                        handler,
+                        RuntimeError(str(indice)),
+                    ),
+                )
+            )
+        await asyncio.gather(*escrituras)
+
+        conn = await lifecycle.get_connection(db_path)
+        async with conn.execute(
+            "SELECT key, value FROM agent_memory ORDER BY key",
+        ) as cursor:
+            memorias = await cursor.fetchall()
+        async with conn.execute(
+            "SELECT payload_json, error_message FROM dead_letter_events ORDER BY id",
+        ) as cursor:
+            eventos_dlq = await cursor.fetchall()
+
+        assert len(memorias) == 25
+        assert {row[0] for row in memorias} == {f"clave-{i}" for i in range(25)}
+        assert {json.loads(row[1])["i"] for row in memorias} == set(range(25))
+        assert len(eventos_dlq) == 25
+        assert {json.loads(row[0])["i"] for row in eventos_dlq} == set(range(25))
+        assert {int(row[1]) for row in eventos_dlq} == set(range(25))
     finally:
         await database.close()
 

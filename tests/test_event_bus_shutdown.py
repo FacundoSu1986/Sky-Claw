@@ -197,6 +197,47 @@ async def test_restart_procesa_eventos_sin_residuos() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stress_cinco_reinicios_entregan_cincuenta_eventos() -> None:
+    """Cinco ciclos reutilizan el bus sin residuos ni eventos omitidos."""
+    bus = CoreEventBus()
+    recibidos: list[int] = []
+    ciclo_completo = asyncio.Event()
+    esperados = 0
+
+    async def handler(event: Event) -> None:
+        recibidos.append(event.payload["seq"])
+        if len(recibidos) == esperados:
+            ciclo_completo.set()
+
+    bus.subscribe("stress", handler)
+    try:
+        for ciclo in range(5):
+            esperados = (ciclo + 1) * 10
+            ciclo_completo = asyncio.Event()
+            await bus.start()
+            for secuencia in range(ciclo * 10, esperados):
+                await bus.publish(Event(topic="stress", payload={"seq": secuencia}))
+
+            await asyncio.wait_for(bus._queue.join(), timeout=2)
+            await asyncio.wait_for(ciclo_completo.wait(), timeout=2)
+            await bus.stop()
+
+        assert recibidos == list(range(50))
+        assert bus._queue.empty()
+        assert bus._queue._unfinished_tasks == 0
+        assert bus._dispatch_task is None
+        assert not bus._pending_tasks
+        assert not bus._dlq_tasks
+        assert not bus._publisher_tasks
+        assert bus._admitted_publishers == 0
+        assert bus._state.name == "STOPPED"
+        assert not bus._running
+    finally:
+        if bus._dispatch_task is not None:
+            await bus.stop()
+
+
+@pytest.mark.asyncio
 async def test_start_fallido_restaura_estado_y_permite_reintento() -> None:
     """Un fallo de DLQ.start no publica un bus parcial ni impide reintentar."""
     dlq = _crear_dlq_mock()
