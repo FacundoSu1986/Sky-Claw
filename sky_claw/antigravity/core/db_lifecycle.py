@@ -196,14 +196,28 @@ class DatabaseLifecycleManager:
             )
             await self._recover_orphaned_wal(db_path, wal_path, shm_path)
 
-        # Step 2: Open connection and apply pragmas
+        # Step 2: Open connection and apply pragmas. Until registration succeeds,
+        # this local scope is the connection's only owner.
         conn = await aiosqlite.connect(path_str)
-        conn.row_factory = aiosqlite.Row
+        try:
+            conn.row_factory = aiosqlite.Row
+            await self._apply_pragmas(conn, path_str)
+        except BaseException:
+            # CancelledError is a BaseException on Python 3.11. The close must
+            # finish before the original startup failure is propagated.
+            close_error = await self._quarantine_connection(db_path, conn)
+            if close_error is not None and not isinstance(close_error, asyncio.CancelledError):
+                logger.critical(
+                    "DatabaseLifecycle: no se pudo cerrar la conexión no registrada para %s",
+                    path_str,
+                    exc_info=(
+                        type(close_error),
+                        close_error,
+                        close_error.__traceback__,
+                    ),
+                )
+            raise
 
-        # Apply all pragmas
-        await self._apply_pragmas(conn, path_str)
-
-        # Store connection
         self._connections[path_str] = conn
         logger.info("DatabaseLifecycle: initialized %s with WAL mode", path_str)
 
