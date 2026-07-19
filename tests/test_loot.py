@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 from typing import TYPE_CHECKING
@@ -135,6 +136,7 @@ class TestLOOTRunner:
         )
         mock_proc.returncode = 0
         mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=0)
 
         with (
             patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
@@ -144,57 +146,212 @@ class TestLOOTRunner:
 
         assert result.success is True
         assert result.sorted_plugins == ["Skyrim.esm", "Update.esm"]
+        mock_proc.kill.assert_not_called()
+        mock_proc.wait.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_sort_timeout(self, tmp_path: pathlib.Path) -> None:
-        config = self._make_config(tmp_path)
+    async def test_sort_timeout_mata_reapea_y_traduce_error(self, tmp_path: pathlib.Path) -> None:
+        base = self._make_config(tmp_path)
+        config = LOOTConfig(
+            loot_exe=base.loot_exe,
+            game_path=base.game_path,
+            timeout=0,
+        )
         runner = LOOTRunner(config)
 
+        async def communicate_bloqueado() -> tuple[bytes, bytes]:
+            await asyncio.Event().wait()
+            return b"", b""
+
         mock_proc = AsyncMock()
-        # First call (inside wait_for) never happens because wait_for is patched.
-        # Second call (cleanup after kill) should succeed.
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        mock_proc.communicate = AsyncMock(side_effect=communicate_bloqueado)
+        mock_proc.returncode = None
         mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=-9)
 
         with (
             patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.local.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
             patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
-            pytest.raises(LOOTTimeoutError, match="timed out"),
+            pytest.raises(LOOTTimeoutError, match="timed out after 0s"),
         ):
             await runner.sort()
 
+        mock_proc.kill.assert_called_once_with()
+        mock_proc.wait.assert_awaited_once_with()
+
     @pytest.mark.asyncio
     async def test_loot_timeout_kills_only_this_process(self, tmp_path: pathlib.Path) -> None:
-        """H-4 + review PR #257: en timeout se mata SÓLO este proceso (proc.kill()).
-
-        Ni /IM loot.exe (que mataba todas las instancias del host) ni
-        taskkill /PID <pid-linux> (que bajo WSL2 puede matar un proceso Windows
-        ajeno por colisión de PID). La garantía es proc.kill() + reap.
-        """
-        config = self._make_config(tmp_path)
+        """Timeout mata sólo el proceso representado por proc; nunca usa taskkill host-wide."""
+        base = self._make_config(tmp_path)
+        config = LOOTConfig(
+            loot_exe=base.loot_exe,
+            game_path=base.game_path,
+            timeout=0,
+        )
         runner = LOOTRunner(config)
 
+        async def communicate_bloqueado() -> tuple[bytes, bytes]:
+            await asyncio.Event().wait()
+            return b"", b""
+
         mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        mock_proc.communicate = AsyncMock(side_effect=communicate_bloqueado)
+        mock_proc.returncode = None
         mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=-9)
         mock_proc.pid = 4242
 
         with (
             patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.local.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
             patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
-            patch("sky_claw.local.loot.cli.pathlib.Path.exists", return_value=True),
-            pytest.raises(LOOTTimeoutError, match="timed out"),
+            pytest.raises(LOOTTimeoutError, match="timed out after 0s"),
         ):
             await runner.sort()
 
-        # La garantía dura: se mató este proceso.
-        mock_proc.kill.assert_called_once()
-        # El módulo ya no importa subprocess (no hay taskkill host-wide).
+        mock_proc.kill.assert_called_once_with()
+        mock_proc.wait.assert_awaited_once_with()
         import sky_claw.local.loot.cli as _cli
 
         assert not hasattr(_cli, "subprocess")
+
+    @pytest.mark.asyncio
+    async def test_sort_cancelado_mata_reapea_y_repropaga(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        config = self._make_config(tmp_path)
+        runner = LOOTRunner(config)
+        communicate_iniciado = asyncio.Event()
+
+        async def communicate_bloqueado() -> tuple[bytes, bytes]:
+            communicate_iniciado.set()
+            await asyncio.Event().wait()
+            return b"", b""
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=communicate_bloqueado)
+        mock_proc.returncode = None
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=-9)
+
+        with (
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+        ):
+            task = asyncio.create_task(runner.sort())
+            await asyncio.wait_for(communicate_iniciado.wait(), timeout=1.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        mock_proc.kill.assert_called_once_with()
+        mock_proc.wait.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_sort_error_de_pipe_tolera_proceso_terminado_y_reapea(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        config = self._make_config(tmp_path)
+        runner = LOOTRunner(config)
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=OSError("pipe rota"))
+        mock_proc.returncode = None
+        mock_proc.kill = MagicMock(side_effect=ProcessLookupError)
+        mock_proc.wait = AsyncMock(return_value=-9)
+
+        with (
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            pytest.raises(OSError, match="pipe rota"),
+        ):
+            await runner.sort()
+
+        mock_proc.kill.assert_called_once_with()
+        mock_proc.wait.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_sort_errores_de_cleanup_no_ocultan_error_primario(
+        self,
+        tmp_path: pathlib.Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        config = self._make_config(tmp_path)
+        runner = LOOTRunner(config)
+        error_primario = OSError("pipe primaria")
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=error_primario)
+        mock_proc.returncode = None
+        mock_proc.kill = MagicMock(side_effect=PermissionError("kill secundario"))
+        mock_proc.wait = AsyncMock(side_effect=OSError("wait secundario"))
+
+        with (
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            caplog.at_level(logging.WARNING, logger="sky_claw.local.loot.cli"),
+            pytest.raises(OSError) as capturada,
+        ):
+            await runner.sort()
+
+        assert capturada.value is error_primario
+        mock_proc.kill.assert_called_once_with()
+        mock_proc.wait.assert_awaited_once_with()
+        assert "kill secundario" in caplog.text
+        assert "wait secundario" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_sort_doble_cancelacion_espera_reap_y_preserva_primaria(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        config = self._make_config(tmp_path)
+        runner = LOOTRunner(config)
+        communicate_iniciado = asyncio.Event()
+        wait_iniciado = asyncio.Event()
+        liberar_wait = asyncio.Event()
+        wait_finalizado = asyncio.Event()
+
+        async def communicate_bloqueado() -> tuple[bytes, bytes]:
+            communicate_iniciado.set()
+            await asyncio.Event().wait()
+            return b"", b""
+
+        async def wait_bloqueado() -> int:
+            wait_iniciado.set()
+            await liberar_wait.wait()
+            wait_finalizado.set()
+            return -9
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=communicate_bloqueado)
+        mock_proc.returncode = None
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock(side_effect=wait_bloqueado)
+
+        with (
+            patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+        ):
+            task = asyncio.create_task(runner.sort())
+            await asyncio.wait_for(communicate_iniciado.wait(), timeout=1.0)
+            task.cancel("cancelación primaria")
+            await asyncio.wait_for(wait_iniciado.wait(), timeout=1.0)
+            mock_proc.kill.assert_called_once_with()
+
+            task.cancel("cancelación secundaria")
+            await asyncio.sleep(0)
+            termino_antes_del_reap = task.done()
+            liberar_wait.set()
+
+            with pytest.raises(asyncio.CancelledError) as capturada:
+                await task
+
+        assert termino_antes_del_reap is False
+        assert wait_finalizado.is_set()
+        assert capturada.value.args == ("cancelación primaria",)
+        mock_proc.wait.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_sort_with_errors(self, tmp_path: pathlib.Path) -> None:
