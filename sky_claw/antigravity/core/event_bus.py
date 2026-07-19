@@ -127,6 +127,9 @@ class CoreEventBus:
         self._running: bool = False
         self._state = _LifecycleState.STOPPED
         self._state_lock = asyncio.Lock()
+        self._admitted_publishers = 0
+        self._publishers_drained = asyncio.Event()
+        self._publishers_drained.set()
         self._dlq = dlq
         self._require_dlq = require_dlq
         self._handler_index: dict[str, Subscriber] = {}
@@ -152,12 +155,12 @@ class CoreEventBus:
                 return
 
             self._state = _LifecycleState.STARTING
-            dlq_iniciada = False
+            dlq_start_intentada = False
             dispatch_task: asyncio.Task[None] | None = None
             try:
                 if self._dlq is not None:
+                    dlq_start_intentada = True
                     await self._dlq.start()
-                    dlq_iniciada = True
                 dispatch_task = asyncio.create_task(
                     self._dispatch_loop(),
                     name="core-event-bus-dispatch",
@@ -167,7 +170,7 @@ class CoreEventBus:
                 self._running = True
             except BaseException:
                 cleanup = asyncio.create_task(
-                    self._rollback_failed_start(dispatch_task, dlq_iniciada),
+                    self._rollback_failed_start(dispatch_task, dlq_start_intentada),
                     name="core-event-bus-start-rollback",
                 )
                 try:
@@ -215,7 +218,14 @@ class CoreEventBus:
         """Publica un evento en la cola para dispatch asíncrono."""
         if self._state is not _LifecycleState.RUNNING or not self._running:
             raise RuntimeError("bus is not running")
-        await self._queue.put(event)
+        self._admitted_publishers += 1
+        self._publishers_drained.clear()
+        try:
+            await self._queue.put(event)
+        finally:
+            self._admitted_publishers -= 1
+            if self._admitted_publishers == 0:
+                self._publishers_drained.set()
 
     async def _dispatch_loop(self) -> None:
         """Extrae eventos de la cola y los enruta sin bloquear el hilo principal."""
@@ -350,14 +360,14 @@ class CoreEventBus:
     async def _rollback_failed_start(
         self,
         dispatch_task: asyncio.Task[None] | None,
-        dlq_iniciada: bool,
+        dlq_start_intentada: bool,
     ) -> None:
         """Revierte recursos parciales creados por ``start``."""
         try:
             if dispatch_task is not None:
                 dispatch_task.cancel()
                 await asyncio.gather(dispatch_task, return_exceptions=True)
-            if dlq_iniciada and self._dlq is not None:
+            if dlq_start_intentada and self._dlq is not None:
                 await self._dlq.stop()
         finally:
             self._dispatch_task = None
@@ -369,6 +379,7 @@ class CoreEventBus:
         try:
             dispatch_task = self._dispatch_task
             if dispatch_task is not None:
+                await self._publishers_drained.wait()
                 await self._queue.put(None)
                 await dispatch_task
 

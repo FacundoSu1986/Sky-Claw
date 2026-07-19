@@ -20,6 +20,35 @@ def _crear_dlq_mock() -> MagicMock:
     return dlq
 
 
+class _DLQStartParcial:
+    """DLQ falsa que puede fallar después de adquirir su recurso."""
+
+    def __init__(self) -> None:
+        self.recurso_adquirido = False
+        self.fallar_siguiente_start = True
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    async def start(self) -> None:
+        self.start_calls += 1
+        self.recurso_adquirido = True
+        if self.fallar_siguiente_start:
+            self.fallar_siguiente_start = False
+            raise RuntimeError("fallo tras adquirir recurso DLQ")
+
+    async def stop(self) -> None:
+        self.stop_calls += 1
+        self.recurso_adquirido = False
+
+    async def enqueue(
+        self,
+        event: Event,
+        callback: Callable[[Event], Awaitable[None]],
+        exc: BaseException,
+    ) -> None:
+        del event, callback, exc
+
+
 async def _cancelar_tareas(*tasks: asyncio.Task[object] | None) -> None:
     """Cancela y observa tareas auxiliares que hayan sobrevivido a un fallo."""
     activas = [task for task in tasks if task is not None and not task.done()]
@@ -81,6 +110,53 @@ async def test_stop_drena_publisher_admitido_con_cola_llena(
 
 
 @pytest.mark.asyncio
+async def test_stop_espera_publisher_pausado_despues_de_admision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stop no adelanta el sentinel a un publisher admitido antes de su put."""
+    bus = CoreEventBus()
+    put_iniciado = asyncio.Event()
+    liberar_put = asyncio.Event()
+    publisher: asyncio.Task[None] | None = None
+    stop_task: asyncio.Task[None] | None = None
+    put_original = bus._queue.put
+
+    async def put_controlado(item: Event | None) -> None:
+        if isinstance(item, Event) and item.payload.get("pausado"):
+            put_iniciado.set()
+            await liberar_put.wait()
+        await put_original(item)
+
+    monkeypatch.setattr(bus._queue, "put", put_controlado)
+    await bus.start()
+    try:
+        publisher = asyncio.create_task(
+            bus.publish(Event(topic="test", payload={"pausado": True})),
+        )
+        await asyncio.wait_for(put_iniciado.wait(), timeout=1)
+
+        stop_task = asyncio.create_task(bus.stop())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not stop_task.done()
+
+        liberar_put.set()
+        await asyncio.wait_for(
+            asyncio.gather(publisher, stop_task),
+            timeout=2,
+        )
+
+        assert bus._queue.empty()
+        assert bus._queue._unfinished_tasks == 0
+        assert bus._dispatch_task is None
+    finally:
+        liberar_put.set()
+        await _cancelar_tareas(publisher, stop_task)
+        if bus._dispatch_task is not None:
+            await bus.stop()
+
+
+@pytest.mark.asyncio
 async def test_restart_procesa_eventos_sin_residuos() -> None:
     """Dos ciclos completos entregan ambos eventos y dejan la cola limpia."""
     bus = CoreEventBus()
@@ -135,7 +211,37 @@ async def test_start_fallido_restaura_estado_y_permite_reintento() -> None:
             await bus.stop()
 
     assert dlq.start.await_count == 2
-    assert dlq.stop.await_count == 1
+    assert dlq.stop.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_start_parcial_fallido_libera_dlq_y_permite_reintento() -> None:
+    """Todo intento de DLQ.start se compensa si falla tras adquirir recursos."""
+    dlq = _DLQStartParcial()
+    bus = CoreEventBus(dlq=dlq)
+
+    with pytest.raises(RuntimeError, match="fallo tras adquirir recurso DLQ"):
+        await bus.start()
+
+    assert dlq.start_calls == 1
+    assert dlq.stop_calls == 1
+    assert not dlq.recurso_adquirido
+    assert bus._dispatch_task is None
+    assert not bus._running
+    with pytest.raises(RuntimeError, match="bus is not running"):
+        await bus.publish(Event(topic="test", payload={}))
+
+    try:
+        await bus.start()
+        assert dlq.recurso_adquirido
+        await bus.stop()
+    finally:
+        if bus._dispatch_task is not None:
+            await bus.stop()
+
+    assert dlq.start_calls == 2
+    assert dlq.stop_calls == 2
+    assert not dlq.recurso_adquirido
 
 
 @pytest.mark.asyncio
