@@ -22,6 +22,8 @@ import atexit
 import logging
 import sqlite3
 import time
+from collections.abc import AsyncGenerator, Awaitable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +71,27 @@ class WALHealth(BaseModel):
     wal_size_bytes: int
     status: str  # "healthy" | "warning" | "critical" | "unknown"
     message: str = ""
+
+
+class _DatabaseOperationCancelled(asyncio.CancelledError):
+    """Distingue una operación DB cancelada de la cancelación del llamador."""
+
+    def __init__(self, cause: asyncio.CancelledError) -> None:
+        super().__init__(*cause.args)
+        self.cause = cause
+
+
+class _DatabaseOperationFailedAfterCancellation(asyncio.CancelledError):
+    """Conserva cancelación externa y fallo posterior de la operación DB."""
+
+    def __init__(
+        self,
+        cancellation: asyncio.CancelledError,
+        operation_error: BaseException,
+    ) -> None:
+        super().__init__(*cancellation.args)
+        self.cancellation = cancellation
+        self.operation_error = operation_error
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +545,156 @@ class DatabaseLifecycleManager:
 
             await self._init_single(path_obj)
             return self._connections[path_str]
+
+    @staticmethod
+    async def _await_db_operation(awaitable: Awaitable[None]) -> None:
+        """Completa una operación SQLite aunque el llamador sea cancelado."""
+        task = asyncio.ensure_future(awaitable)
+        cancelación: asyncio.CancelledError | None = None
+        current_task = asyncio.current_task()
+
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as error:
+                cancelación_externa = not task.cancelled() or (
+                    current_task is not None and current_task.cancelling() > 0
+                )
+                if cancelación_externa and cancelación is None:
+                    cancelación = error
+            except BaseException:
+                if task.done():
+                    break
+                raise
+
+        try:
+            task.result()
+        except asyncio.CancelledError as error:
+            if cancelación is not None:
+                raise _DatabaseOperationFailedAfterCancellation(
+                    cancelación,
+                    error,
+                ) from error
+            raise _DatabaseOperationCancelled(error) from error
+        except BaseException as error:
+            if cancelación is not None:
+                raise _DatabaseOperationFailedAfterCancellation(
+                    cancelación,
+                    error,
+                ) from error
+            raise
+
+        if cancelación is not None:
+            raise cancelación
+
+    async def _quarantine_connection(
+        self,
+        db_path: Path | str,
+        conn: aiosqlite.Connection,
+    ) -> BaseException | None:
+        """Retira y cierra una conexión dañada sin tocar su reemplazo."""
+        path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
+        path_str = str(path_obj.resolve())
+        if self._connections.get(path_str) is conn:
+            self._connections.pop(path_str)
+        try:
+            await self._await_db_operation(conn.close())
+        except _DatabaseOperationFailedAfterCancellation as error:
+            return error.operation_error
+        except _DatabaseOperationCancelled as error:
+            return error.cause
+        except BaseException as error:
+            return error
+        return None
+
+    async def _rollback_after_failure(
+        self,
+        db_path: Path | str,
+        conn: aiosqlite.Connection,
+        operation_error: BaseException,
+        cancellation_to_restore: asyncio.CancelledError | None = None,
+    ) -> None:
+        """Observa rollback, cuarentena si falla y decide qué propagar."""
+        rollback_error: BaseException | None = None
+        rollback_cancellation: asyncio.CancelledError | None = None
+        try:
+            await self._await_db_operation(conn.rollback())
+        except _DatabaseOperationFailedAfterCancellation as error:
+            rollback_error = error.operation_error
+            rollback_cancellation = error.cancellation
+        except _DatabaseOperationCancelled as error:
+            rollback_error = error.cause
+        except asyncio.CancelledError:
+            if cancellation_to_restore is None:
+                raise
+        except BaseException as error:
+            rollback_error = error
+
+        if rollback_error is None:
+            if cancellation_to_restore is not None:
+                if cancellation_to_restore is operation_error:
+                    return
+                raise cancellation_to_restore from operation_error
+            return
+
+        close_error = await self._quarantine_connection(db_path, conn)
+        if cancellation_to_restore is operation_error:
+            diagnostic_error = rollback_error
+        else:
+            try:
+                raise rollback_error from operation_error
+            except BaseException as chained_rollback_error:
+                diagnostic_error = chained_rollback_error
+
+        if close_error is not None:
+            try:
+                raise close_error from diagnostic_error
+            except BaseException as chained_close_error:
+                diagnostic_error = chained_close_error
+
+        final_cancellation = cancellation_to_restore or rollback_cancellation
+        if final_cancellation is not None:
+            raise final_cancellation from diagnostic_error
+        raise diagnostic_error
+
+    @asynccontextmanager
+    async def transaction(
+        self,
+        db_path: Path | str,
+    ) -> AsyncGenerator[aiosqlite.Connection, None]:
+        """Serializa una transacción completa sobre la conexión compartida."""
+        async with self.get_write_lock(db_path):
+            conn = await self.get_connection(db_path)
+            try:
+                yield conn
+            except BaseException as error:
+                cancellation = error if isinstance(error, asyncio.CancelledError) else None
+                await self._rollback_after_failure(
+                    db_path,
+                    conn,
+                    error,
+                    cancellation,
+                )
+                raise
+
+            try:
+                await self._await_db_operation(conn.commit())
+            except _DatabaseOperationFailedAfterCancellation as error:
+                await self._rollback_after_failure(
+                    db_path,
+                    conn,
+                    error.operation_error,
+                    error.cancellation,
+                )
+            except _DatabaseOperationCancelled as error:
+                await self._rollback_after_failure(db_path, conn, error.cause)
+                raise error.cause from error
+            except asyncio.CancelledError:
+                # La cancelación se propaga después de completar el commit.
+                raise
+            except BaseException as error:
+                await self._rollback_after_failure(db_path, conn, error)
+                raise
 
     def get_write_lock(self, db_path: Path | str) -> asyncio.Lock:
         """Return the write lock bound to the connection for *db_path*.
