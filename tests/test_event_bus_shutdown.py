@@ -551,3 +551,71 @@ async def test_enqueue_autocancelado_preserva_cancelacion_original_del_handler()
     assert bus.events_lost == 1
     assert dlq.enqueue.await_count == 1
     assert not bus._dlq_tasks
+
+
+@pytest.mark.asyncio
+async def test_publish_prioriza_dispatcher_si_put_y_fallo_completan_juntos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """La terminación simultánea nunca confirma un evento sin consumidor."""
+    for intento in range(20):
+        bus = CoreEventBus()
+        liberar_ambos = asyncio.Event()
+        dispatcher_listo = asyncio.Event()
+        put_listo = asyncio.Event()
+        put_original = bus._queue.put
+        publisher: asyncio.Task[None] | None = None
+
+        async def get_fallido(
+            dispatcher_actual: asyncio.Event = dispatcher_listo,
+            liberar_actual: asyncio.Event = liberar_ambos,
+            intento_actual: int = intento,
+        ) -> Event | None:
+            dispatcher_actual.set()
+            await liberar_actual.wait()
+            raise RuntimeError(f"dispatcher simultáneo {intento_actual}")
+
+        async def put_sincronizado(
+            item: Event | None,
+            put_listo_actual: asyncio.Event = put_listo,
+            liberar_actual: asyncio.Event = liberar_ambos,
+            put_actual: Callable[[Event | None], Awaitable[None]] = put_original,
+        ) -> None:
+            if item is not None:
+                put_listo_actual.set()
+                await liberar_actual.wait()
+            await put_actual(item)
+
+        monkeypatch.setattr(bus._queue, "get", get_fallido)
+        monkeypatch.setattr(bus._queue, "put", put_sincronizado)
+        await bus.start()
+        try:
+            await asyncio.wait_for(dispatcher_listo.wait(), timeout=1)
+            publisher = asyncio.create_task(
+                bus.publish(Event(topic="test", payload={"intento": intento})),
+            )
+            await asyncio.wait_for(put_listo.wait(), timeout=1)
+            liberar_ambos.set()
+
+            with pytest.raises(RuntimeError, match="dispatcher") as exc_info:
+                await asyncio.wait_for(publisher, timeout=1)
+            assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+            assert bus._queue.empty()
+            assert bus._queue._unfinished_tasks == 0
+            assert bus.events_lost == 1
+            assert bus._admitted_publishers == 0
+            assert not bus._publisher_tasks
+            assert bus._publishers_drained.is_set()
+
+            with pytest.raises(RuntimeError, match="dispatcher simultáneo"):
+                await bus.stop()
+            assert bus.events_lost == 1
+            assert bus._queue.empty()
+            assert bus._queue._unfinished_tasks == 0
+        finally:
+            liberar_ambos.set()
+            await _cancelar_tareas(publisher)
+            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+                await bus.stop()
+            _drenar_cola_de_prueba(bus)

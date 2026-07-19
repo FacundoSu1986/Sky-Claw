@@ -235,13 +235,14 @@ class CoreEventBus:
                 {publisher_task, dispatch_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            if publisher_task in done:
-                await publisher_task
-                return
+            if dispatch_task in done:
+                if not publisher_task.done():
+                    publisher_task.cancel()
+                await asyncio.gather(publisher_task, return_exceptions=True)
+                self._drain_abandoned_queue()
+                self._raise_dispatcher_unavailable(dispatch_task)
 
-            publisher_task.cancel()
-            await asyncio.gather(publisher_task, return_exceptions=True)
-            self._raise_dispatcher_unavailable(dispatch_task)
+            await publisher_task
         except BaseException:
             if not publisher_task.done():
                 publisher_task.cancel()
