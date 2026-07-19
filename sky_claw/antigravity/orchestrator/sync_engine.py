@@ -93,6 +93,7 @@ def _should_retry_masterlist_fetch(exc: BaseException) -> bool:
         ),
     )
 
+
 # FASE 1.5: Constante para directorio de staging de backups
 BACKUP_STAGING_DIR = pathlib.Path(".skyclaw_backups/")
 
