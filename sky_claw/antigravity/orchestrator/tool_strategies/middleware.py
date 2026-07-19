@@ -1,6 +1,6 @@
 """Cross-cutting middleware for OrchestrationToolDispatcher.
 
-Today there are FIVE middlewares:
+Today there are SIX middlewares:
 
 1. **ErrorWrappingMiddleware** — catches uncaught exceptions → error dict.
 2. **DictResultGuardMiddleware** — verifies inner chain returned a dict.
@@ -10,6 +10,9 @@ Today there are FIVE middlewares:
    executions of the same tool+payload via IdempotencyGuard.
 5. **ProgressMiddleware** (FASE 1.5.4) — publishes granular tool lifecycle
    events (started/completed/failed) to CoreEventBus.
+6. **LoopGuardrailMiddleware** (F1a, informe #319) — cortacircuitos cognitivo
+   global: corta bucles de acción del agente (A,A,A y ciclos oscilantes)
+   antes de invocar la tool.
 
 Note on HITL: HitlGateMiddleware is the SINGLE approval point for
 destructive tools (PR #173 review: the strategy-internal gateway HITL was
@@ -24,6 +27,7 @@ import logging
 import uuid
 from typing import Any
 
+from sky_claw.antigravity.core.models import CircuitBreakerTrippedError
 from sky_claw.antigravity.orchestrator.tool_strategies.base import (
     ApprovalPayloadDescriber,
     ApprovalPayloadValidator,
@@ -31,6 +35,7 @@ from sky_claw.antigravity.orchestrator.tool_strategies.base import (
     ToolStrategy,
 )
 from sky_claw.antigravity.security.hitl import Decision, HITLGuard
+from sky_claw.antigravity.security.loop_guardrail import AgenticLoopGuardrail
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +126,60 @@ class DictResultGuardMiddleware:
             )
             return {"status": "error", "reason": self.reason_code}
         return result
+
+
+# ---------------------------------------------------------------------------
+# F1a (auditoría 2026-07-18): Cortacircuitos cognitivo en el dispatcher
+# ---------------------------------------------------------------------------
+
+
+class LoopGuardrailMiddleware:
+    """Cortacircuitos cognitivo del camino REAL de ejecución (F1a, informe #319).
+
+    El :class:`AgenticLoopGuardrail` vivía solo en los callbacks del StateGraph,
+    que nada en producción ejecuta: un agente en bucle podía repetir la misma
+    tool (o alternar dos) sin freno. Este middleware lo corre como capa GLOBAL
+    del :class:`OrchestrationToolDispatcher` — outermost, todas las tools,
+    también las read-only: un loop de queries sigue siendo un loop.
+
+    Ante un trip devuelve el error dict canónico (``reason:
+    "CircuitBreakerTripped"``) SIN invocar la cadena; el propio guardrail
+    limpia su historial al tripear, así que un reintento posterior distinto
+    (p. ej. iniciado por un humano) procede sin quedar bloqueado.
+
+    Args:
+        guardrail: Instancia a compartir; ``None`` crea una con los mismos
+            parámetros que usaba el grafo (max_repeats=3, window_size=6:
+            detecta A,A,A y ciclos oscilantes de período 2 y 3).
+    """
+
+    def __init__(self, guardrail: AgenticLoopGuardrail | None = None) -> None:
+        self._guardrail = guardrail if guardrail is not None else AgenticLoopGuardrail(max_repeats=3, window_size=6)
+
+    async def __call__(
+        self,
+        strategy: ToolStrategy,
+        payload_dict: dict[str, Any],
+        next_call: NextCall,
+    ) -> dict[str, Any]:
+        try:
+            self._guardrail.register_and_check(strategy.name, payload_dict)
+        except CircuitBreakerTrippedError as exc:
+            logger.critical(
+                "LoopGuardrailMiddleware: bucle detectado en '%s' (%d ocurrencias) — dispatch DENEGADO.",
+                exc.tool_name,
+                exc.occurrences,
+            )
+            return {
+                "status": "error",
+                "reason": "CircuitBreakerTripped",
+                "details": str(exc),
+            }
+        return await next_call()
+
+    def reset(self) -> None:
+        """Rearme manual del historial (p. ej. tras intervención humana)."""
+        self._guardrail.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -431,5 +490,6 @@ __all__ = [
     "ErrorWrappingMiddleware",
     "HitlGateMiddleware",
     "IdempotencyMiddleware",
+    "LoopGuardrailMiddleware",
     "ProgressMiddleware",
 ]

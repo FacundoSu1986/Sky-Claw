@@ -261,6 +261,14 @@ async def run_ritual(
         )
         return
     store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
+    # F1a: un click del operador ES intervención humana — rearmar el
+    # cortacircuitos cognitivo del dispatcher antes de despachar, para que
+    # repetir el mismo ritual a mano no se confunda con un bucle del agente
+    # (contrato reset() del AgenticLoopGuardrail). Duck-typed: supervisores
+    # fake sin el método simplemente no rearman.
+    reset_guardrail = getattr(supervisor, "reset_loop_guardrail", None)
+    if callable(reset_guardrail):
+        reset_guardrail()
     # M-9: armar auto-approve SÓLO para el árbol de tasks de ESTE dispatch, vía
     # ContextVar. No es un flag global: un tool_execution concurrente (Telegram/
     # LLM/API) corre en otra task cuya copia de contexto tiene el default False,

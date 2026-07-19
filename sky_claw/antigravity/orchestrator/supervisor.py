@@ -26,7 +26,10 @@ from sky_claw.antigravity.orchestrator.state_graph import (
 )
 from sky_claw.antigravity.orchestrator.telemetry_daemon import TelemetryDaemon
 from sky_claw.antigravity.orchestrator.tool_dispatcher import build_orchestration_dispatcher
-from sky_claw.antigravity.orchestrator.tool_strategies.middleware import HitlGateMiddleware
+from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
+    HitlGateMiddleware,
+    LoopGuardrailMiddleware,
+)
 from sky_claw.antigravity.orchestrator.watcher_daemon import WatcherDaemon
 from sky_claw.antigravity.orchestrator.ws_event_streamer import LangGraphEventStreamer
 from sky_claw.antigravity.scraper.scraper_agent import ScraperAgent
@@ -285,9 +288,14 @@ class SupervisorAgent:
         # T-27b·2: el flow de promoción del sandbox necesita el guard crudo
         # (no solo el middleware) para la aprobación post-run del diff.
         self._hitl_guard = hitl_guard
+        # F1a (informe #319): cortacircuitos cognitivo del camino real de
+        # dispatch. El supervisor retiene la instancia para rearmarla ante
+        # intervención humana (reset_loop_guardrail, invocado por la GUI).
+        self._loop_guardrail_middleware = LoopGuardrailMiddleware()
         self._tool_dispatcher = build_orchestration_dispatcher(
             self,
             hitl_gate=HitlGateMiddleware(hitl_guard=hitl_guard),
+            loop_guardrail=self._loop_guardrail_middleware,
         )
 
         # M-1 FIX: Wire StateGraphIntegration para activar cortacircuitos cognitivo y HITL.
@@ -488,6 +496,16 @@ class SupervisorAgent:
         legacy preservado verbatim: ``{"status": "error", "reason": "ToolNotFound"}``.
         """
         return await self._tool_dispatcher.dispatch(tool_name, payload_dict)
+
+    def reset_loop_guardrail(self) -> None:
+        """F1a: rearma el cortacircuitos cognitivo del dispatcher.
+
+        Lo invoca la GUI antes de un dispatch iniciado por el operador: un
+        click humano ES intervención humana (contrato ``reset()`` del
+        :class:`AgenticLoopGuardrail`), así que repetir el mismo ritual a mano
+        no debe confundirse con un bucle del agente.
+        """
+        self._loop_guardrail_middleware.reset()
 
     def _create_hitl_request(self, hitl_request: dict[str, Any]) -> HitlApprovalRequest:
         """Convierte un dict de HITL del grafo de estados a un HitlApprovalRequest.
