@@ -877,18 +877,23 @@ class SyncEngine:
     # Sync Local Load Order (Legacy Logic)
     # ------------------------------------------------------------------
 
-    async def run(self, session: aiohttp.ClientSession, profile: str = "Default") -> SyncResult:
-        """Sync local load order via producer-consumer pipeline.
+    async def run(
+        self,
+        session: aiohttp.ClientSession,
+        profile: str = "Default",
+        *,
+        enrich_remote: bool = True,
+    ) -> SyncResult:
+        """Sincroniza el load order local y opcionalmente consulta Nexus.
 
-        Uses ``asyncio.TaskGroup`` so an unexpected worker crash cancels the
-        producer and all peers cooperatively (fail-fast), while the narrowed
-        ``except`` clause in ``_consume`` still absorbs expected network errors.
-        POISON pills are guaranteed via ``_produce_then_poison``'s ``finally``
-        block even if the producer itself fails mid-stream.
+        ``enrich_remote=False`` importa identidad MO2 sin requests Masterlist.
+        Los callers existentes conservan el enriquecimiento remoto por default.
         """
         queue: asyncio.Queue[list[tuple[str, bool]] | None] = asyncio.Queue(maxsize=self._cfg.queue_maxsize)
         semaphore = asyncio.Semaphore(self._cfg.api_semaphore_limit)
         result = SyncResult()
+        if not enrich_remote:
+            logger.warning("Nexus enrichment disabled; importing local MO2 identity only")
 
         async def _produce_then_poison() -> None:
             """Produce batches then send POISON pills — even on producer failure."""
@@ -909,7 +914,13 @@ class SyncEngine:
             tg.create_task(_produce_then_poison(), name="sync-producer")
             for i in range(self._cfg.worker_count):
                 tg.create_task(
-                    self._consume(queue, session, semaphore, result),
+                    self._consume(
+                        queue,
+                        session,
+                        semaphore,
+                        result,
+                        enrich_remote=enrich_remote,
+                    ),
                     name=f"sync-worker-{i}",
                 )
 
@@ -982,6 +993,8 @@ class SyncEngine:
         session: aiohttp.ClientSession,
         semaphore: asyncio.Semaphore,
         result: SyncResult,
+        *,
+        enrich_remote: bool = True,
     ) -> None:
         while True:
             batch = await queue.get()
@@ -992,7 +1005,13 @@ class SyncEngine:
             record_circuit_state("masterlist", self._masterlist.circuit_state)
             try:
                 with SYNC_DURATION_SECONDS.time():
-                    await self._process_batch(batch, session, semaphore, result)
+                    await self._process_batch(
+                        batch,
+                        session,
+                        semaphore,
+                        result,
+                        enrich_remote=enrich_remote,
+                    )
             except asyncio.CancelledError:
                 raise
             except (MasterlistFetchError, CircuitOpenError, RetryError, aiohttp.ClientError) as exc:
@@ -1019,9 +1038,17 @@ class SyncEngine:
         session: aiohttp.ClientSession,
         semaphore: asyncio.Semaphore,
         result: SyncResult,
+        *,
+        enrich_remote: bool = True,
     ) -> None:
         with _tracer.start_as_current_span("sync.batch", attributes={"batch_size": len(batch)}):
-            await self._process_batch_inner(batch, session, semaphore, result)
+            await self._process_batch_inner(
+                batch,
+                session,
+                semaphore,
+                result,
+                enrich_remote=enrich_remote,
+            )
 
     async def _process_batch_inner(
         self,
@@ -1029,6 +1056,8 @@ class SyncEngine:
         session: aiohttp.ClientSession,
         semaphore: asyncio.Semaphore,
         result: SyncResult,
+        *,
+        enrich_remote: bool = True,
     ) -> None:
         mod_rows: list[tuple[int, str, str, str, str, str, bool, bool]] = []
         log_rows: list[tuple[int | None, str, str, str]] = []
@@ -1041,27 +1070,36 @@ class SyncEngine:
                     result.skipped += 1
                     continue
 
-                try:
-                    info = await self._safe_fetch_info(nexus_id, session, semaphore)
-                except (
-                    MasterlistFetchError,
-                    CircuitOpenError,
-                    RetryError,
-                    aiohttp.ClientError,
-                    NetworkGatewayTimeoutError,
-                    OSError,
-                    TimeoutError,
-                ) as exc:
-                    logger.warning("Skipping mod %r: %s", mod_name, exc)
-                    result.failed += 1
-                    record_sync_failure(1)
-                    result.errors.append(f"{mod_name}: {exc}")
-                    log_rows.append((None, "sync", "error", f"{mod_name}: {exc}"))
-                    continue
-
-                if not info or "mod_id" not in info:
-                    result.skipped += 1
-                    continue
+                if enrich_remote:
+                    try:
+                        info = await self._safe_fetch_info(nexus_id, session, semaphore)
+                    except (
+                        MasterlistFetchError,
+                        CircuitOpenError,
+                        RetryError,
+                        aiohttp.ClientError,
+                        NetworkGatewayTimeoutError,
+                        OSError,
+                        TimeoutError,
+                    ) as exc:
+                        logger.warning("Skipping mod %r: %s", mod_name, exc)
+                        result.failed += 1
+                        record_sync_failure(1)
+                        result.errors.append(f"{mod_name}: {exc}")
+                        log_rows.append((None, "sync", "error", f"{mod_name}: {exc}"))
+                        continue
+                    if not info or "mod_id" not in info:
+                        result.skipped += 1
+                        continue
+                    sync_status = "ok"
+                    sync_detail = mod_name
+                else:
+                    info = {
+                        "mod_id": nexus_id,
+                        "name": mod_name,
+                    }
+                    sync_status = "degraded"
+                    sync_detail = f"{mod_name}: identidad local importada sin metadatos Nexus"
 
                 mod_rows.append(
                     (
@@ -1075,9 +1113,10 @@ class SyncEngine:
                         bool(enabled),
                     )
                 )
-                log_rows.append((None, "sync", "ok", mod_name))
+                log_rows.append((None, "sync", sync_status, sync_detail))
                 result.processed += 1
-                batch_success_count += 1
+                if enrich_remote:
+                    batch_success_count += 1
 
         await self._registry.upsert_mods_batch(mod_rows)
         await self._registry.log_tasks_batch(log_rows)

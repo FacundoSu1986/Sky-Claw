@@ -425,6 +425,97 @@ class TestSyncEngineRun:
         assert len(result.errors) >= 1
 
 
+class TestSyncEngineLocalOnly:
+    @pytest.mark.asyncio
+    async def test_sin_enriquecimiento_persiste_identidad_y_no_llama_masterlist(
+        self,
+        tmp_path: pathlib.Path,
+        adb: AsyncModRegistry,
+    ) -> None:
+        mo2 = _make_mo2(
+            tmp_path,
+            "+LocalUno-9001-v1\n-LocalDos-9002-v1\n",
+        )
+        masterlist = MasterlistClient(gateway=NetworkGateway(), api_key="")
+        fetch = AsyncMock(side_effect=AssertionError("Masterlist no debe ejecutarse"))
+        engine = SyncEngine(
+            mo2=mo2,
+            masterlist=masterlist,
+            registry=adb,
+            config=SyncConfig(worker_count=1, batch_size=10, max_retries=1),
+            fetch_retry_wait=wait_none(),
+        )
+
+        with patch.object(masterlist, "fetch_mod_info", fetch):
+            result = await engine.run(
+                MagicMock(spec=aiohttp.ClientSession),
+                profile="Default",
+                enrich_remote=False,
+            )
+
+        fetch.assert_not_awaited()
+        assert result.processed == 2
+        assert result.failed == 0
+        assert result.skipped == 0
+        mods = {mod["nexus_id"]: mod for mod in await adb.search_mods("")}
+        assert mods[9001]["name"] == "LocalUno-9001-v1"
+        assert mods[9001]["version"] == ""
+        assert mods[9001]["installed"] is True
+        assert mods[9001]["enabled_in_vfs"] is True
+        assert mods[9002]["name"] == "LocalDos-9002-v1"
+        assert mods[9002]["enabled_in_vfs"] is False
+        task_log = await adb.get_task_log()
+        assert len(task_log) == 2
+        assert all(row["action"] == "sync" for row in task_log)
+        assert all(row["status"] == "degraded" for row in task_log)
+
+    @pytest.mark.asyncio
+    async def test_batch_local_sobrevive_fallo_remoto_y_se_enriquece_despues(
+        self,
+        tmp_path: pathlib.Path,
+        adb: AsyncModRegistry,
+    ) -> None:
+        mo2 = _make_mo2(tmp_path, "+Reanudable-9101-v1\n")
+        masterlist = MasterlistClient(gateway=NetworkGateway(), api_key="fake")
+        fetch = AsyncMock(side_effect=AssertionError("Masterlist no debe ejecutarse"))
+        engine = SyncEngine(
+            mo2=mo2,
+            masterlist=masterlist,
+            registry=adb,
+            config=SyncConfig(worker_count=1, batch_size=10, max_retries=1),
+            fetch_retry_wait=wait_none(),
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with patch.object(masterlist, "fetch_mod_info", fetch):
+            local_result = await engine.run(
+                session,
+                profile="Default",
+                enrich_remote=False,
+            )
+            assert local_result.processed == 1
+            fetch.assert_not_awaited()
+
+            fetch.side_effect = MasterlistFetchError("Nexus no disponible")
+            remote_failure = await engine.run(session, profile="Default")
+            assert remote_failure.failed == 1
+
+            persisted = await adb.search_mods("")
+            assert len(persisted) == 1
+            assert persisted[0]["name"] == "Reanudable-9101-v1"
+            assert persisted[0]["version"] == ""
+
+            fetch.side_effect = None
+            fetch.return_value = _fake_mod_info(9101, "Reanudable remoto")
+            remote_success = await engine.run(session, profile="Default")
+
+        assert remote_success.processed == 1
+        enriched = await adb.search_mods("")
+        assert len(enriched) == 1
+        assert enriched[0]["name"] == "Reanudable remoto"
+        assert enriched[0]["version"] == "1.0"
+
+
 # ------------------------------------------------------------------
 # Fail-fast: TaskGroup propagation (lines 664-676)
 # ------------------------------------------------------------------
