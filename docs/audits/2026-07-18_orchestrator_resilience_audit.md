@@ -372,13 +372,24 @@ middleware del dispatcher, que es el único camino de ejecución real.
 
 ---
 
+## Estado de resolución (2026-07-19)
+
+- **F1 — RESUELTO** (#328 F1a + F1b, ADR 0006): guardrail movido a
+  `LoopGuardrailMiddleware` del dispatcher; StateGraph + deps langgraph
+  retirados.
+- **F2 — RESUELTO** (#320, follow-up #322): `promote()` shieldeado con
+  desenlace terminal observado; TX diferida de Synthesis resuelta ante cancel.
+- **F3 — RESUELTO** (#321): rollback post-cancelación shieldeado + drain en
+  shutdown.
+- **F4, F5, F6, F7, F9 — pendientes** (no bloqueantes).
+
 ## Anexo: matriz de hallazgos
 
 | ID | Severidad | Estado | Ubicación | Resumen |
 |----|-----------|--------|-----------|---------|
-| F1 | Crítica | Confirmado | `state_graph.py`, `supervisor.py:154`, `ritual_runner.py:270` | Grafo nunca ejecutado; mutaciones in-place descartadas; self-loops → `GraphRecursionError`; `submit_event` resetea estado |
-| F2 | Alta | Confirmado | `sandbox_promotion.py:262-292`, `profile_sandbox.py:265-267` | Cancelación en promote: thread zombie muta el perfil real + clon filtrado |
-| F3 | Alta | Confirmado | `sync_engine.py:362-380` | Rollback post-cancelación interrumpible (sin `shield`) |
+| F1 | Crítica | RESUELTO (#328) | `state_graph.py`, `supervisor.py:154`, `ritual_runner.py:270` | Grafo nunca ejecutado; mutaciones in-place descartadas; self-loops → `GraphRecursionError`; `submit_event` resetea estado |
+| F2 | Alta | RESUELTO (#320/#322) | `sandbox_promotion.py:262-292`, `profile_sandbox.py:265-267` | Cancelación en promote: thread zombie muta el perfil real + clon filtrado |
+| F3 | Alta | RESUELTO (#321) | `sync_engine.py:362-380` | Rollback post-cancelación interrumpible (sin `shield`) |
 | F4 | Media | Confirmado | `middleware.py:339-347`, `tool_dispatcher.py` | Key de idempotencia bloqueada 1h ante cancelación; middleware sin cablear |
 | F5 | Media | Confirmado | `profile_sandbox.py:265-267` | Drift-gate TOCTOU (check y apply en `to_thread` separados) |
 | F6 | Media | Confirmado | `hitl.py:133-159` | Race timeout/respond: ack falso de aprobación |
