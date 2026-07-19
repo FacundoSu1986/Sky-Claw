@@ -114,7 +114,7 @@ class ScriptExecutionResult:
     """Resultado de ejecución de script xEdit.
 
     Attributes:
-        success: Si la ejecución fue exitosa (exit_code == 0).
+        success: Si la ejecución terminó con exit code 0 y sin errores parseados.
         exit_code: Código de salida del proceso xEdit.
         stdout: Salida estándar capturada.
         stderr: Salida de error capturada.
@@ -834,7 +834,8 @@ class XEditRunner:
                 command injection before reaching the subprocess.
 
         Returns:
-            ScriptExecutionResult with ``success`` (exit code 0) and parsed output.
+            ScriptExecutionResult con el exit code original, la salida parseada y
+            ``success=True`` sólo cuando el código es cero y no hay errores.
 
         Raises:
             XEditValidationError: If the plugin name fails validation.
@@ -871,7 +872,7 @@ class XEditRunner:
             logger.warning("QuickAutoClean for %s exited with code %d: %s", plugin, return_code, stderr_text)
 
         return ScriptExecutionResult(
-            success=return_code == 0,
+            success=(return_code == 0 and not errors),
             exit_code=return_code,
             stdout=stdout_text,
             stderr=stderr_text,

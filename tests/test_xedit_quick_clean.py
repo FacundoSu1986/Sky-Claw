@@ -147,6 +147,32 @@ async def test_runner_quick_auto_clean_builds_quickclean_command(
 
 
 @pytest.mark.asyncio
+async def test_runner_quick_auto_clean_exit_cero_con_error_parseado_falla(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    xedit = tmp_path / "SSEEdit.exe"
+    xedit.touch()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+    runner = XEditRunner(xedit_path=xedit, game_path=game)
+
+    async def fake_run_capture(
+        _args: list[str],
+        **_kwargs: object,
+    ) -> tuple[bytes, bytes, int]:
+        return b"Error: fallo al guardar Update.esm\n", b"", 0
+
+    monkeypatch.setattr("sky_claw.local.xedit.runner.run_capture", fake_run_capture)
+
+    result = await runner.quick_auto_clean("Update.esm")
+
+    assert result.exit_code == 0
+    assert result.errors == ["fallo al guardar Update.esm"]
+    assert result.success is False
+
+
+@pytest.mark.asyncio
 async def test_runner_quick_auto_clean_rejects_bad_plugin_name(tmp_path: pathlib.Path) -> None:
     xedit = tmp_path / "SSEEdit.exe"
     xedit.touch()
