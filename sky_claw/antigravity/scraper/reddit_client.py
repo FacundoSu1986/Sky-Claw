@@ -34,6 +34,7 @@ from tenacity import (
 
 from sky_claw.antigravity.security.network_gateway import (
     EgressViolationError,
+    GatewayTCPConnector,
     NetworkGateway,
     NetworkGatewayTimeoutError,
 )
@@ -192,7 +193,13 @@ class RedditKnowledgeResolver:
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
+            # F5a (auditoría Zero-Trust 2026-07-18): montar la sesión propia
+            # sobre el GatewayTCPConnector para heredar el SafeResolver del
+            # gateway (bloqueo de IP privada tras DNS + pin anti-rebinding).
+            # Sin él, un rebinding de www.reddit.com a una IP privada no se
+            # cortaría a nivel resolver aunque el host esté en la allow-list.
             self._session = aiohttp.ClientSession(
+                connector=GatewayTCPConnector(self._gateway, limit=10),
                 headers={"User-Agent": self._config.user_agent},
                 timeout=aiohttp.ClientTimeout(total=self._config.timeout_seconds),
             )
