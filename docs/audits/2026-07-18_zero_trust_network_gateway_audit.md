@@ -35,12 +35,15 @@ revisable y sin roce con la remediación de la TANDA 1 (núcleo async, `codex/*`
 | **F3** | ✔ Corregido | `auth_token_manager._rotation_loop` delega `generate()` en `asyncio.to_thread` (saca el I/O de archivo + `icacls` del event loop). Test: `TestRotationLoopOffloading`. |
 | **n1** | ✔ Corregido | `network_gateway.request()` elimina cabeceras sensibles (`Authorization`/`Cookie`/`apikey`/`x-api-key`) al redirigir a otro host, sin mutar el dict del caller. Tests: `test_sensitive_headers_stripped_on_cross_host_redirect`, `test_headers_preserved_on_same_host_redirect`. |
 | **F4** | ✔ Corregido | Nuevo `TelegramSender.answer_callback_query` (por `gateway.request` + `async with`); `_handle_callback_query` deja de usar `self._session.post` (fin del bypass + fuga). Tests: `TestTelegramSender::test_answer_callback_query_goes_through_gateway`, `TestCallbackQueryEgress`. |
+| **F2** | ✔ Corregido (follow-up, rama `claude/f6-ws-daemon-hardening`) | `ws_daemon.py` elimina el `sys.path.append` + `import ast_guardian` a nivel de módulo (ruta inexistente, superficie de inyección) y lo reemplaza por un import **lazy fail-closed** dentro de `TelegramDaemon.__init__` (`RuntimeError` claro si falta el guardrail). `UIBroadcastServer` deja de pagar el import roto que no usaba. Tests: `test_ui_broadcast_no_depende_de_ast_guardian`, `test_telegram_daemon_sin_ast_guardian_falla_ruidoso`; el stub de `test_ws_auth_close_code.py` se eliminó como prueba viva. |
+| **F6** | ✔ Corregido (follow-up, rama `claude/f6-ws-daemon-hardening`) | `UIBroadcastServer` registra `_close_all_clients` como callback de rotación (cierre 1008, no 4001; paridad con `WebApp`), con `_clients_lock` + `_token_rotating` para rechazar handshakes durante la rotación y serializar add/discard. `broadcast()` itera un snapshot `list(self._clients)` (fin del `RuntimeError: Set changed size`). Tests: `test_ui_broadcast_rotation.py`. Sigue siendo experimental (solo instanciado en tests). |
 
 **Diferidos a propósito** (con motivo): **F1** (cablear `CredentialVault` exige decidir la
 procedencia del master-key — cambio de diseño; además toca `app_context.py`, el único punto
-de roce potencial con la TANDA 1), **F2/F6** (`ws_daemon` es experimental y con import roto —
-arreglarlo aislado no aporta valor vivo), **F7** (depende del despliegue del gateway Node),
+de roce potencial con la TANDA 1), **F7** (depende del despliegue del gateway Node),
 **n2/n3** (no son bugs vivos; n3 rompería la API síncrona del field-validator pydantic).
+**F2/F6** (`ws_daemon`, experimental) se remediaron en el follow-up de arriba: el import
+roto se volvió lazy fail-closed y la rotación WS ahora invalida los sockets vivos.
 
 ---
 

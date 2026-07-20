@@ -3,11 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sys
 import time
 import uuid
 from collections import defaultdict, deque
-from pathlib import Path
 
 import websockets
 from websockets.exceptions import (
@@ -21,15 +19,7 @@ from sky_claw.antigravity.comms._transport import (
     assert_safe_ws_url,
     authenticated_connect,
 )
-
-# Zero Trust AST Import (Local Repo Resolution)
-WORK_DIR = Path(__file__).resolve().parent.parent.parent
-AST_SKILLS_PATH = WORK_DIR / ".agents" / "skills" / "skyclaw-purple-auditor" / "scripts"
-if str(AST_SKILLS_PATH) not in sys.path:
-    sys.path.append(str(AST_SKILLS_PATH))
-import ast_guardian  # noqa: E402
-
-from sky_claw.antigravity.security.auth_token_manager import AuthTokenManager  # noqa: E402
+from sky_claw.antigravity.security.auth_token_manager import AuthTokenManager
 
 # Set-up standard 2026 logging
 logger = logging.getLogger("SkyClaw.TelegramDaemon")
@@ -61,7 +51,20 @@ class TelegramDaemon:
         self._running_lock = asyncio.Lock()
         self.ui_broadcast = ui_broadcast
 
-        # Instanciando el guardián de seguridad (AST Purple Auditor)
+        # F2 (auditoría Zero-Trust 2026-07-18): el guardrail AST se importa de
+        # forma lazy y FAIL-CLOSED. Antes se hacía un `sys.path.append` de una
+        # ruta derivada del árbol de instalación + `import ast_guardian` a nivel
+        # de módulo: la ruta no existe en el checkout, así que TODO import de
+        # ws_daemon reventaba (incluido UIBroadcastServer, que no lo usa). Ahora
+        # solo TelegramDaemon lo exige, y si falta aborta con un error claro en
+        # vez de dejar el canal WS de Telegram sin auditar el payload.
+        try:
+            import ast_guardian
+        except ImportError as exc:
+            raise RuntimeError(
+                "TelegramDaemon requiere el guardrail AST (ast_guardian); "
+                "sin él el canal WS de Telegram queda deshabilitado por seguridad."
+            ) from exc
         self.guardian = ast_guardian.ASTGuardian()
 
         # T1-01: Tracking de tasks de dispatch para evitar GC silencioso.
@@ -335,6 +338,12 @@ class UIBroadcastServer:
     # limiting — which must NOT count toward the auth lockout.
     _AUTH_REJECTION_CLOSE_CODE: int = 4001
 
+    # F6a: código de cierre en la rotación del token. 1008 (POLICY_VIOLATION) y
+    # NO 4001: el 4001 alimenta el lockout de brute-force del cliente GUI, y una
+    # rotación no es un rechazo de credenciales — el cliente debe releer el
+    # token y reconectar. Paridad con WebApp.close_all_ws_ui_clients.
+    _ROTATION_CLOSE_CODE: int = 1008
+
     def __init__(self, host: str = "127.0.0.1", port: int = 8765):
         self.host = host
         self.port = port
@@ -345,6 +354,11 @@ class UIBroadcastServer:
         # H-03: per-client message timestamps for rate limiting.
         # DT-01: deque gives O(1) popleft vs list.pop(0) O(n).
         self._client_timestamps: defaultdict[int, deque[float]] = defaultdict(deque)
+        # F6: serializa el acceso a _clients (add/discard del handler vs cierre
+        # en rotación) y señaliza una rotación en curso para rechazar handshakes
+        # que lleguen en la ventana. Espejo de WebApp._ws_ui_lock/_token_rotating.
+        self._clients_lock = asyncio.Lock()
+        self._token_rotating = False
 
     @staticmethod
     def _request_header(websocket, name: str) -> str:
@@ -361,12 +375,38 @@ class UIBroadcastServer:
         """Generate auth token and start the WS server."""
         self._auth.generate()
         await self._auth.start_rotation()
+        # F6a: al rotar el token, invalidar los sockets vivos (si no, sobreviven
+        # con el token viejo). Paridad con WebApp.create_app().
+        self._auth.register_rotation_callback(self._close_all_clients)
         self._server = await websockets.serve(
             self._handler,
             self.host,
             self.port,
         )
         self._logger.info(f"🌐 UIBroadcastServer listening on ws://{self.host}:{self.port}/ws/ui")
+
+    async def _close_all_clients(self) -> None:
+        """Cierra todo cliente vivo con 1008 (callback de rotación de token, F6a).
+
+        ``_token_rotating`` se setea dentro del lock antes de vaciar el set: un
+        handshake concurrente que tome el lock después ve el flag y se rechaza
+        en vez de sobrevivir a la ventana de rotación. El close() corre FUERA
+        del lock — un cliente que no ACKea el frame no debe congelar la cola.
+        """
+        async with self._clients_lock:
+            self._token_rotating = True
+            stale = list(self._clients)
+            self._clients.clear()
+        try:
+            for ws in stale:
+                try:
+                    await ws.close(self._ROTATION_CLOSE_CODE, "Token rotated -- reconnect required")
+                except (ConnectionClosed, ConnectionClosedError, OSError) as exc:
+                    self._logger.warning("Cierre de cliente en rotación falló: %s", exc)
+        finally:
+            async with self._clients_lock:
+                self._token_rotating = False
+        self._logger.info("Cerrados %d cliente(s) UI por rotación de token.", len(stale))
 
     async def stop(self) -> None:
         """Shutdown the server and revoke the token."""
@@ -385,7 +425,10 @@ class UIBroadcastServer:
         payload = json.dumps(message)
         disconnected = set()
 
-        for ws in self._clients:
+        # F6b: iterar sobre un snapshot inmutable. `await ws.send` cede el loop
+        # y el handler puede add/discard sobre _clients en ese punto → mutar el
+        # set vivo durante la iteración lanza "Set changed size during iteration".
+        for ws in list(self._clients):
             try:
                 await ws.send(payload)
             except (ConnectionClosed, ConnectionClosedError):
@@ -411,7 +454,15 @@ class UIBroadcastServer:
             return
 
         client_id = id(websocket)
-        self._clients.add(websocket)
+        # F6a: registrar bajo lock y rechazar si hay una rotación en curso — un
+        # socket que valida con el token viejo justo cuando rota no debe quedar
+        # en el set (cierra la carrera validate-viejo → rotación → add). El
+        # rechazo usa 1008 (rotación), no 4001 (lockout).
+        async with self._clients_lock:
+            if self._token_rotating:
+                await websocket.close(self._ROTATION_CLOSE_CODE, "Token rotated -- reconnect required")
+                return
+            self._clients.add(websocket)
         self._logger.info(f"✅ UI client connected ({len(self._clients)} total)")
 
         try:
@@ -460,6 +511,7 @@ class UIBroadcastServer:
         except (ConnectionClosed, ConnectionClosedError):
             pass
         finally:
-            self._clients.discard(websocket)
+            async with self._clients_lock:
+                self._clients.discard(websocket)
             self._client_timestamps.pop(client_id, None)
             self._logger.info(f"UI client disconnected ({len(self._clients)} remaining)")
