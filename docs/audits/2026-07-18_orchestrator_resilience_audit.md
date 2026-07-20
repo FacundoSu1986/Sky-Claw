@@ -381,7 +381,22 @@ middleware del dispatcher, que es el único camino de ejecución real.
   desenlace terminal observado; TX diferida de Synthesis resuelta ante cancel.
 - **F3 — RESUELTO** (#321): rollback post-cancelación shieldeado + drain en
   shutdown.
-- **F4, F5, F6, F7, F9 — pendientes** (no bloqueantes).
+- **F5 — RESUELTO** (#332): drift-gate atómico — check y apply fusionados en
+  un solo `to_thread` de `_promote_sync`.
+- **F6 — RESUELTO** (#331): resolución atómica de la decisión HITL — cierra
+  la race timeout/respond.
+- **F4 — RESUELTO** (rama `claude/sky-claw-audit-review-rbuwfy`):
+  `IdempotencyMiddleware` ahora captura `CancelledError` explícitamente
+  (no hereda de `Exception`, así que el `except` genérico la dejaba pasar
+  sin liberar la key) y `build_orchestration_dispatcher` la registra como
+  middleware GLOBAL — mismo patrón de F1a — así que corre en el único camino
+  real de dispatch en vez de quedar sin cablear.
+- **F7, F8, F9 — pendientes** (no bloqueantes).
+
+**Nota de higiene** (2026-07-20): esta sección estaba desactualizada respecto
+del código — F5/F6 llevaban ya mergeados varios días (#331, #332) sin que se
+reflejara acá, exactamente el patrón de doc-drift que `AGENTS.md` advierte
+tras #290. Verificar siempre contra el código, no contra esta tabla.
 
 ## Anexo: matriz de hallazgos
 
@@ -390,9 +405,9 @@ middleware del dispatcher, que es el único camino de ejecución real.
 | F1 | Crítica | RESUELTO (#328) | `state_graph.py`, `supervisor.py:154`, `ritual_runner.py:270` | Grafo nunca ejecutado; mutaciones in-place descartadas; self-loops → `GraphRecursionError`; `submit_event` resetea estado |
 | F2 | Alta | RESUELTO (#320/#322) | `sandbox_promotion.py:262-292`, `profile_sandbox.py:265-267` | Cancelación en promote: thread zombie muta el perfil real + clon filtrado |
 | F3 | Alta | RESUELTO (#321) | `sync_engine.py:362-380` | Rollback post-cancelación interrumpible (sin `shield`) |
-| F4 | Media | Confirmado | `middleware.py:339-347`, `tool_dispatcher.py` | Key de idempotencia bloqueada 1h ante cancelación; middleware sin cablear |
-| F5 | Media | Confirmado | `profile_sandbox.py:265-267` | Drift-gate TOCTOU (check y apply en `to_thread` separados) |
-| F6 | Media | Confirmado | `hitl.py:133-159` | Race timeout/respond: ack falso de aprobación |
+| F4 | Media | RESUELTO (rama audit-review) | `middleware.py:339-347`, `tool_dispatcher.py` | Key de idempotencia bloqueada 1h ante cancelación; middleware sin cablear |
+| F5 | Media | RESUELTO (#332) | `profile_sandbox.py:265-267` | Drift-gate TOCTOU (check y apply en `to_thread` separados) |
+| F6 | Media | RESUELTO (#331) | `hitl.py:133-159` | Race timeout/respond: ack falso de aprobación |
 | F7 | Media | Confirmado | `sync_engine.py:534,679` | 15 prompts HITL concurrentes vs 1 slot en GUI |
 | F8 | Baja | Confirmado | `sync_engine.py:819-832` | `TimeoutError` desde `finally` pisa la `CancelledError` |
 | F9 | Estructural | Confirmado | `supervisor.py:117-291` | God object de composición; plan de desacople en §3 |

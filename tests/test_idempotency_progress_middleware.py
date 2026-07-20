@@ -144,6 +144,30 @@ class TestIdempotencyMiddleware:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
+    async def test_cancelacion_libera_la_key_en_vez_de_dejarla_1h_bloqueada(self) -> None:
+        """F4 (auditoría 2026-07-18, orchestrator_resilience): ``CancelledError``
+        no hereda de ``Exception`` — el ``except Exception`` original lo dejaba
+        pasar sin transicionar la task a FAILED, así que ``IdempotencyGuard``
+        seguía viendo la key como activa hasta que expirara su TTL (1h por
+        defecto). Cualquier cancelación (timeout del cliente, shutdown parcial)
+        bloqueaba reintentos del mismo tool+payload durante una hora entera."""
+        sm = ToolStateMachine()
+        mw = IdempotencyMiddleware(state_machine=sm)
+        strategy = _make_strategy("generate_lods")
+        payload = {"profile": "Default"}
+
+        async def cancelled_call() -> dict[str, Any]:
+            raise asyncio.CancelledError()
+
+        with pytest.raises(asyncio.CancelledError):
+            await mw(strategy, payload, cancelled_call)
+
+        # La key debe quedar liberada de inmediato — no recién tras el TTL.
+        next_call = await _make_next_call({"status": "success"})
+        result = await mw(strategy, payload, next_call)
+        assert result["status"] == "success"
+
+    @pytest.mark.asyncio
     async def test_state_machine_tracks_task_lifecycle(self) -> None:
         sm = ToolStateMachine()
         mw = IdempotencyMiddleware(state_machine=sm)
