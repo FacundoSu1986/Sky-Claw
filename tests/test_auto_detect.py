@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
+import threading
+import time
+from collections.abc import Awaitable, Callable
 from unittest.mock import patch
 
 import pytest
@@ -123,6 +127,147 @@ class TestFindSkyrim:
 
 
 # ---------------------------------------------------------------------------
+# aislamiento del I/O síncrono
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncIoIsolation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("detector", "inner_name"),
+        (
+            (AutoDetector.find_mo2, "_find_mo2_inner"),
+            (AutoDetector.find_skyrim, "_find_skyrim_inner"),
+            (AutoDetector.find_loot, "_find_loot_inner"),
+            (AutoDetector.find_xedit, "_find_xedit_inner"),
+        ),
+    )
+    async def test_la_deteccion_lenta_no_bloquea_el_event_loop(
+        self,
+        detector: Callable[[], Awaitable[pathlib.Path | None]],
+        inner_name: str,
+    ) -> None:
+        liberar = threading.Event()
+        latido_ejecutado = threading.Event()
+        latido_observado: list[bool] = []
+
+        def operacion_lenta() -> None:
+            liberar.wait(timeout=1.0)
+
+        def observar_latido() -> None:
+            latido_observado.append(latido_ejecutado.wait(timeout=0.30))
+            liberar.set()
+
+        async def latido() -> None:
+            await asyncio.sleep(0)
+            latido_ejecutado.set()
+
+        observador = threading.Thread(target=observar_latido, daemon=True)
+        observador.start()
+        try:
+            with patch.object(AutoDetector, inner_name, side_effect=operacion_lenta):
+                tarea = asyncio.create_task(detector())
+                await asyncio.gather(tarea, latido())
+        finally:
+            liberar.set()
+            observador.join(timeout=1.0)
+
+        assert latido_observado == [True]
+
+    @pytest.mark.asyncio
+    async def test_find_mo2_aplica_timeout_a_una_operacion_sincrona(self) -> None:
+        liberar = threading.Event()
+        operacion_finalizada = threading.Event()
+
+        def operacion_lenta() -> None:
+            try:
+                liberar.wait(timeout=1.0)
+            finally:
+                operacion_finalizada.set()
+
+        temporizador = threading.Timer(0.30, liberar.set)
+        temporizador.start()
+        try:
+            with (
+                patch.object(AutoDetector, "_find_mo2_inner", side_effect=operacion_lenta),
+                patch("sky_claw.local.auto_detect._SEARCH_TIMEOUT", 0.02),
+                pytest.raises(asyncio.TimeoutError),
+            ):
+                await AutoDetector.find_mo2()
+            assert not operacion_finalizada.is_set()
+        finally:
+            liberar.set()
+            temporizador.cancel()
+            temporizador.join(timeout=1.0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("detector", "inner_name"),
+        (
+            (AutoDetector.find_mo2, "_find_mo2_inner"),
+            (AutoDetector.find_skyrim, "_find_skyrim_inner"),
+            (AutoDetector.find_loot, "_find_loot_inner"),
+            (AutoDetector.find_xedit, "_find_xedit_inner"),
+        ),
+    )
+    async def test_el_probe_corre_en_un_hilo_daemon(
+        self,
+        detector: Callable[[], Awaitable[pathlib.Path | None]],
+        inner_name: str,
+    ) -> None:
+        """El probe síncrono debe ejecutarse en un hilo *daemon*.
+
+        `asyncio.to_thread` despacha al default executor, cuyos hilos son
+        NON-daemon: `asyncio.run` los joinea sin timeout al cerrar, así que
+        una syscall de filesystem/registro colgada bloquearía el shutdown del
+        proceso pese al timeout. Un hilo daemon se abandona al salir el
+        intérprete y no retiene el cierre.
+        """
+        hilos: list[threading.Thread] = []
+
+        def _capturar() -> None:
+            hilos.append(threading.current_thread())
+            return None
+
+        with patch.object(AutoDetector, inner_name, side_effect=_capturar):
+            await detector()
+
+        assert hilos, "el probe no corrió fuera del event loop"
+        assert hilos[0].daemon is True
+
+    @pytest.mark.asyncio
+    async def test_worker_colgado_tras_timeout_es_daemon(self) -> None:
+        """Un probe que se cuelga tras el timeout no debe dejar vivo un hilo
+        non-daemon que bloquee el shutdown de ``asyncio.run``.
+
+        Verifica el núcleo del bug: el timeout NO cancela al worker (sigue
+        vivo en la syscall), pero al ser daemon no retiene el cierre.
+        """
+        liberar = threading.Event()
+        hilo_worker: list[threading.Thread] = []
+
+        def operacion_colgada() -> None:
+            hilo_worker.append(threading.current_thread())
+            liberar.wait(timeout=2.0)
+
+        try:
+            with (
+                patch.object(AutoDetector, "_find_mo2_inner", side_effect=operacion_colgada),
+                patch("sky_claw.local.auto_detect._SEARCH_TIMEOUT", 0.02),
+                pytest.raises(asyncio.TimeoutError),
+            ):
+                await AutoDetector.find_mo2()
+
+            assert hilo_worker, "el probe no llegó a correr"
+            assert hilo_worker[0].is_alive(), "el worker debería seguir colgado"
+            assert hilo_worker[0].daemon is True
+        finally:
+            liberar.set()
+            if hilo_worker:
+                hilo_worker[0].join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
 # find_loot / find_xedit
 # ---------------------------------------------------------------------------
 
@@ -203,10 +348,9 @@ class TestDetectAll:
     @pytest.mark.asyncio
     async def test_detect_all_handles_timeout(self) -> None:
         """detect_all doesn't crash even if individual detectors time out."""
-        import asyncio
 
-        async def _slow() -> None:
-            await asyncio.sleep(100)
+        def _slow() -> None:
+            time.sleep(0.10)
 
         with (
             patch.object(AutoDetector, "_find_mo2_inner", side_effect=_slow),
