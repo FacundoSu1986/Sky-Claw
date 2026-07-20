@@ -676,6 +676,40 @@ class TestCheckForUpdates:
         assert payload.total_checked == 1
 
     @pytest.mark.asyncio
+    async def test_mod_degradado_version_desconocida_no_se_actualiza(self) -> None:
+        """Una fila degradada (version='') no debe descargarse en el ciclo
+        completo: sin versión local conocida se trata como al-día, no como
+        update pendiente (evita re-descargas de mods ya vigentes)."""
+        mock_registry = AsyncMock()
+        mock_registry.search_mods.return_value = [
+            {"name": "SkyUI", "nexus_id": 12021, "version": "", "installed": True},
+        ]
+        mock_masterlist = AsyncMock()
+        mock_masterlist.fetch_mod_info = AsyncMock(
+            return_value={
+                "mod_id": 12021,
+                "name": "SkyUI",
+                "version": "5.2",
+                "author": "schlangster",
+                "category_id": "2",
+                "download_url": None,
+            }
+        )
+
+        engine = SyncEngine(
+            mo2=AsyncMock(),
+            masterlist=mock_masterlist,
+            registry=mock_registry,
+            fetch_retry_wait=wait_none(),
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+        payload = await engine.check_for_updates(session)
+
+        assert "SkyUI" in payload.up_to_date_mods
+        assert payload.updated_mods == []
+        assert payload.failed_mods == []
+
+    @pytest.mark.asyncio
     async def test_newer_version_no_downloader_goes_to_failed(self) -> None:
         """Versión nueva sin downloader configurado → failed_mods."""
         mock_registry = AsyncMock()
@@ -1275,6 +1309,12 @@ class TestUpdateAvailable:
     def test_nexus_none_no_es_update(self) -> None:
         assert _update_available("1.0", None) is False
 
+    def test_version_local_desconocida_no_es_update(self) -> None:
+        # Fila degradada (import local-only sin Nexus): version='' es
+        # "desconocida", no un update disponible aunque Nexus publique versión.
+        assert _update_available("", "5.2") is False
+        assert _update_available(None, "5.2") is False
+
 
 class TestDetectPendingUpdates:
     """Detección read-only de updates disponibles (sin descargar), para el badge."""
@@ -1343,6 +1383,19 @@ class TestDetectPendingUpdates:
         engine = self._engine(
             [{"name": "SkyUI", "nexus_id": 12021, "version": "5.1", "installed": True}],
             AsyncMock(return_value={"mod_id": 12021, "name": "SkyUI", "version": None}),
+        )
+        result = await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
+        assert result.checked == 1
+        assert result.updates == []
+
+    @pytest.mark.asyncio
+    async def test_mod_degradado_version_desconocida_no_aparece_en_updates(self) -> None:
+        """Una fila importada en modo degradado (version='') no debe reportarse
+        como update aunque Nexus publique versión: sin versión local conocida no
+        se puede afirmar que esté desactualizada."""
+        engine = self._engine(
+            [{"name": "SkyUI", "nexus_id": 12021, "version": "", "installed": True}],
+            AsyncMock(return_value=_fake_mod_info(12021, "SkyUI") | {"version": "5.2"}),
         )
         result = await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
         assert result.checked == 1

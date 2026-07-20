@@ -613,11 +613,28 @@ class AppContext:
                         "importing local MO2 identity without remote enrichment"
                     )
                 try:
-                    await self.sync_engine.run(
+                    result = await self.sync_engine.run(
                         self.network.session,
                         profile="Default",
                         enrich_remote=enrich_remote,
                     )
+                    # Fallback: si el enriquecimiento remoto no persistió NINGUNA
+                    # fila pero hubo fallos (Nexus offline/timeout en el primer
+                    # arranque), los errores de red se absorben por-mod dentro de
+                    # run() y no propagan, así que el except de abajo no corre y el
+                    # registry quedaría vacío. Reimportamos la identidad local de
+                    # MO2 sin requests a Nexus. Condición estrecha: excluye éxito
+                    # parcial (processed>0, esos fallos se reintentan en el próximo
+                    # check) y MO2 vacío (failed==0).
+                    if enrich_remote and result.processed == 0 and result.failed > 0:
+                        logger.warning(
+                            "Enriquecimiento remoto falló para todos los mods; reintentando import local-only sin Nexus"
+                        )
+                        await self.sync_engine.run(
+                            self.network.session,
+                            profile="Default",
+                            enrich_remote=False,
+                        )
                 except Exception as exc:
                     logger.exception("Initial synchronization failed: %s", exc)
 

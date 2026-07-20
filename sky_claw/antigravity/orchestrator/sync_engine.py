@@ -171,8 +171,12 @@ def _update_available(local_version: str | None, nexus_version: str | None) -> b
     Misma regla que ``_check_and_update_mod`` (no inventar updates cuando Nexus no
     devuelve versión). Comparación por string exacto — la fuente de verdad es que
     Nexus publicó una etiqueta distinta a la instalada.
+
+    Una versión local vacía/ausente es "desconocida" (fila importada en modo
+    degradado sin Nexus), no un update disponible: sin saber qué está instalado no
+    se puede afirmar que esté desactualizada.
     """
-    return bool(nexus_version) and nexus_version != local_version
+    return bool(nexus_version) and bool(local_version) and nexus_version != local_version
 
 
 # BUG-001 FIX: SyncMetrics refactorizado como dataclass con asyncio.Lock
@@ -717,8 +721,10 @@ class SyncEngine:
                 }
 
             nexus_version = str(info.get("version", ""))
-            # 2. Version comparison
-            if not nexus_version or nexus_version == local_version:
+            # 2. Version comparison. Una versión local vacía es "desconocida"
+            # (fila importada en modo degradado): sin ella no se puede afirmar que
+            # haya update, así que se trata como al-día en vez de re-descargar.
+            if not nexus_version or not local_version or nexus_version == local_version:
                 if rm is not None and transaction_id is not None:
                     await rm.commit_transaction(transaction_id)
                 return {"status": "up_to_date", "name": mod_name}
