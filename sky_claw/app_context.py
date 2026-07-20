@@ -6,7 +6,9 @@ import os
 import pathlib
 import queue
 import tempfile
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
+from typing import Any, TypeVar
 
 import aiohttp
 import keyring
@@ -48,6 +50,9 @@ from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
 _LOCK_STAGING_DIR = pathlib.Path(".skyclaw_backups")
 
 logger = logging.getLogger("sky_claw")
+
+_T = TypeVar("_T")
+_CleanupCallback = Callable[[], Awaitable[None]]
 
 
 SYSTEM_PROMPT = (
@@ -182,9 +187,22 @@ class AppContext:
 
         # ARC-02: AsyncExitStack para compensación atómica ante fallos
         self._exit_stack = AsyncExitStack()
+        self._cleanup_lock = asyncio.Lock()
+        self._cleanup_collector: list[_CleanupCallback] | None = None
+        self._cleanup_task: asyncio.Task[None] | None = None
 
-        # R-06: Lock to prevent re-entrant calls to start_full()
-        self._start_full_lock = asyncio.Lock()
+        # Un solo owner muta el lifecycle. stop() invalida/cancela al owner
+        # antes de esperar este lock para no quedar detrás de un I/O colgado.
+        self._lifecycle_lock = asyncio.Lock()
+        self._stop_lock = asyncio.Lock()
+        self._active_startup_task: asyncio.Task[Any] | None = None
+        self._active_startup_epoch: int | None = None
+        self._active_stop_task: asyncio.Task[Any] | None = None
+        self._stop_epoch = 0
+        self._stopping = False
+        self._startup_shutdown_timeout_s = 5.0
+        self._minimal_started_epoch: int | None = None
+        self._full_start_committed = False
 
         # Background task tracking for proper cleanup
         self._background_tasks: set[asyncio.Task] = set()
@@ -196,7 +214,7 @@ class AppContext:
     @property
     def is_configured(self) -> bool:
         """True when the full stack (provider + router) is ready."""
-        return self.router is not None
+        return self._full_start_committed and not self._stopping and self.router is not None
 
     async def reload_llm_provider(self, provider_name: str, api_key: str = "") -> bool:
         """Hot-swap del proveedor LLM del router vivo. Devuelve True si se aplicó.
@@ -328,57 +346,255 @@ class AppContext:
             # Not iterable — treat as no restriction.
             return None
 
-    async def start_minimal(self) -> None:
-        """Phase 1: resolve config path, migrate legacy JSON, create HTTP session."""
+    def _is_reentrant_startup(self) -> bool:
+        return asyncio.current_task() is self._active_startup_task
+
+    def _assert_startup_current(self) -> None:
+        task = asyncio.current_task()
+        if (
+            task is None
+            or task is not self._active_startup_task
+            or self._active_startup_epoch != self._stop_epoch
+            or self._stopping
+        ):
+            raise asyncio.CancelledError("startup superseded by stop()")
+
+    async def _await_startup(self, awaitable: Awaitable[_T]) -> _T:
+        result = await awaitable
+        self._assert_startup_current()
+        return result
+
+    def _push_startup_cleanup(
+        self,
+        callback: Callable[..., Awaitable[object]],
+        /,
+        *args: object,
+    ) -> None:
+        """Registra un callback que conserva ownership si su cierre falla."""
+
+        async def _retained_cleanup() -> None:
+            try:
+                await callback(*args)
+            except BaseException:
+                collector = self._cleanup_collector
+                if collector is not None:
+                    collector.append(_retained_cleanup)
+                raise
+
+        self._exit_stack.push_async_callback(_retained_cleanup)
+
+    async def _await_cleanup_terminal(
+        self,
+        task: asyncio.Task[None],
+        *,
+        timeout_s: float | None = None,
+    ) -> None:
+        """Espera cleanup sin cancelarlo y preserva la primera cancelación externa."""
+        outer = asyncio.current_task()
+        cancellation: asyncio.CancelledError | None = None
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout_s is None else loop.time() + max(0.0, timeout_s)
+        timed_out = False
+
+        while not task.done():
+            remaining = None if deadline is None else deadline - loop.time()
+            if remaining is not None and remaining <= 0:
+                timed_out = True
+                break
+            try:
+                if remaining is None:
+                    await asyncio.shield(task)
+                else:
+                    done, _ = await asyncio.wait({task}, timeout=remaining)
+                    if task not in done:
+                        timed_out = True
+                        break
+            except asyncio.CancelledError as exc:
+                if outer is not None and outer.cancelling():
+                    if cancellation is None:
+                        cancellation = exc
+                    continue
+                break
+            except BaseException:
+                break
+
+        if cancellation is not None:
+            raise cancellation
+        if timed_out:
+            raise TimeoutError(f"cleanup did not stop within {timeout_s:.3f}s")
+
+    @staticmethod
+    def _observe_cleanup_task(task: asyncio.Task[None]) -> None:
+        """Consume la excepción sin alterar el resultado que drenará el owner."""
+        if not task.cancelled():
+            task.exception()
+
+    def _finalize_cleanup_generation(self, task: asyncio.Task[None]) -> BaseException | None:
+        if task is not self._cleanup_task or not task.done():
+            return None
+
+        retained = self._cleanup_collector or []
+        self._cleanup_task = None
+        self._cleanup_collector = None
+        for callback in reversed(retained):
+            self._exit_stack.push_async_callback(callback)
+
+        try:
+            task.result()
+        except BaseException as exc:
+            return exc
+        return None
+
+    async def _close_cleanup_generation(self, *, timeout_s: float | None = None) -> None:
+        """Drena una única generación y conserva ownership si no termina."""
+        async with self._cleanup_lock:
+            if self._cleanup_task is None:
+                closing_stack = self._exit_stack
+                self._exit_stack = AsyncExitStack()
+                self._cleanup_collector = []
+                self._cleanup_task = asyncio.create_task(
+                    closing_stack.aclose(),
+                    name="app-context-cleanup-generation",
+                )
+                self._cleanup_task.add_done_callback(self._observe_cleanup_task)
+
+            cleanup_task = self._cleanup_task
+            wait_error: BaseException | None = None
+            try:
+                await self._await_cleanup_terminal(cleanup_task, timeout_s=timeout_s)
+            except BaseException as exc:
+                wait_error = exc
+
+            cleanup_error = self._finalize_cleanup_generation(cleanup_task)
+            if wait_error is not None:
+                if isinstance(wait_error, asyncio.CancelledError) and cleanup_error is not None:
+                    logger.error(
+                        "Cleanup falló durante una cancelación; se preserva la cancelación",
+                        exc_info=(
+                            type(cleanup_error),
+                            cleanup_error,
+                            cleanup_error.__traceback__,
+                        ),
+                    )
+                raise wait_error
+            if cleanup_error is not None:
+                raise cleanup_error
+
+    def _sanitize_full_references(self) -> None:
+        self._full_start_committed = False
+        self.sandbox_validator = None
+        self.install_dir = None
+        self.router = None
+        self.polling = None
+        self.hitl = None
+        self.sender = None
+        self.sync_engine = None
+        self.tools_installer = None
+
+    async def _rollback_startup(self) -> None:
+        try:
+            await self._close_cleanup_generation(
+                timeout_s=self._startup_shutdown_timeout_s,
+            )
+        except BaseException:
+            logger.exception("Rollback de startup incompleto; cleanup retenido para retry")
+        finally:
+            self._sanitize_full_references()
+
+    async def _run_startup(
+        self,
+        operation: Callable[[], Awaitable[None]],
+        *,
+        publishes_full: bool,
+    ) -> None:
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("AppContext startup requiere un asyncio.Task")
+        if task is self._active_startup_task:
+            await operation()
+            return
+
+        requested_epoch = self._stop_epoch
+        if self._stopping:
+            raise asyncio.CancelledError("startup requested while stop() is active")
+
+        async with self._lifecycle_lock:
+            if requested_epoch != self._stop_epoch or self._stopping:
+                raise asyncio.CancelledError("startup superseded before ownership")
+
+            self._active_startup_task = task
+            self._active_startup_epoch = requested_epoch
+            self._minimal_started_epoch = None
+            self._full_start_committed = False
+            try:
+                # Preflight queda fuera de la frontera que compensa adquisiciones
+                # nuevas: un callback retenido se intenta una sola vez por start.
+                try:
+                    await self._close_cleanup_generation(
+                        timeout_s=self._startup_shutdown_timeout_s,
+                    )
+                except BaseException:
+                    self._sanitize_full_references()
+                    raise
+                self._sanitize_full_references()
+                self._assert_startup_current()
+
+                try:
+                    await operation()
+                    self._assert_startup_current()
+                except BaseException:
+                    logger.critical(
+                        "startup FAILED — rolling back initialized services",
+                        exc_info=True,
+                    )
+                    await self._rollback_startup()
+                    raise
+
+                if publishes_full:
+                    self._full_start_committed = True
+            finally:
+                if self._active_startup_task is task:
+                    self._active_startup_task = None
+                    self._active_startup_epoch = None
+
+    async def _start_minimal_inner(self) -> None:
+        if self._minimal_started_epoch == self._active_startup_epoch:
+            return
         self._resolve_config_path()
         self._migrate_legacy_json()
-        # M-01: lifecycle se inicializa ANTES que red y base de datos.
-        # Cierra ÚLTIMO en LIFO order (registrado primero).
-        await self.lifecycle.initialize()
-        self._exit_stack.push_async_callback(self.lifecycle.close)
-        await self.network.initialize("", None)  # Init base session
-        self._exit_stack.push_async_callback(self.network.close)
+        # Registrar antes del primer await cubre adquisiciones parciales.
+        self._push_startup_cleanup(self.lifecycle.close)
+        await self._await_startup(self.lifecycle.initialize())
+        self._push_startup_cleanup(self.network.close)
+        await self._await_startup(self.network.initialize("", None))
+        self._minimal_started_epoch = self._active_startup_epoch
         logger.info(
             "start_minimal complete — config_path=%s, session ready",
             self.config_path,
         )
 
+    async def start_minimal(self) -> None:
+        """Phase 1: resolve config path, migrate legacy JSON, create HTTP session."""
+        if self._is_reentrant_startup():
+            await self._start_minimal_inner()
+            return
+        await self._run_startup(self._start_minimal_inner, publishes_full=False)
+
+    async def _start_full_with_base(self) -> None:
+        if self._minimal_started_epoch != self._active_startup_epoch:
+            await self._start_minimal_inner()
+        await self._start_full_inner()
+
     async def start_full(self) -> None:
-        """Phase 2: load config, inject env vars, create provider + router.
-
-        Uses AsyncExitStack for atomic rollback: if any service fails to
-        initialize, all previously started services are shut down in LIFO
-        order, preventing zombie processes and leaked resources (ARC-02).
-
-        R-06: Protected by asyncio.Lock to prevent re-entrant calls
-        (e.g. concurrent hot-reload from external triggers).
-        """
-        async with self._start_full_lock:
-            await self._start_full_inner()
+        """Phase 2: rebuild the full provider/router stack atomically."""
+        if self._is_reentrant_startup():
+            await self._start_full_with_base()
+            return
+        await self._run_startup(self._start_full_with_base, publishes_full=True)
 
     async def _start_full_inner(self) -> None:
         """Internal implementation of start_full (lock-free)."""
         assert self.config_path is not None, "start_minimal() must run first"
-
-        # ARC-01: Teardown previo envuelto en try/except para garantizar
-        # que la reconstrucción del exit stack ocurra incluso si el cierre
-        # de recursos previos falla.
-        try:
-            if self.polling is not None:
-                await self.polling.stop()
-                self.polling = None
-            if self.router is not None:
-                await self.router.close()
-                self.router = None
-            await self.database.close()
-        except Exception:
-            logger.exception("Teardown previo falló; continuando con fresh init")
-
-        # Reset the exit stack for a fresh initialization cycle.
-        # Re-register lifecycle (closes last = registered first) and network.
-        self._exit_stack = AsyncExitStack()
-        self._exit_stack.push_async_callback(self.lifecycle.close)
-        self._exit_stack.push_async_callback(self.network.close)
 
         try:
             config_path = self.config_path
@@ -406,7 +622,7 @@ class AppContext:
                     logger.info("Using mo2_root from config (exists): %s", mo2_root)
 
             if not mo2_root.exists():
-                detected_mo2 = await AutoDetector.find_mo2()
+                detected_mo2 = await self._await_startup(AutoDetector.find_mo2())
                 if detected_mo2 is not None:
                     mo2_root = detected_mo2
                     local_cfg.mo2_root = str(detected_mo2)
@@ -414,7 +630,7 @@ class AppContext:
                     logger.info("Zero-config: MO2 detected at %s", detected_mo2)
 
             if not local_cfg.skyrim_path:
-                detected_skyrim = await AutoDetector.find_skyrim()
+                detected_skyrim = await self._await_startup(AutoDetector.find_skyrim())
                 if detected_skyrim is not None:
                     local_cfg.skyrim_path = str(detected_skyrim)
                     config_changed = True
@@ -474,8 +690,8 @@ class AppContext:
                 except ValueError:
                     logger.warning("Invalid telegram_chat_id in config (must be int)")
 
-            await self.database.initialize()
-            self._exit_stack.push_async_callback(self.database.close)
+            self._push_startup_cleanup(self.database.close)
+            await self._await_startup(self.database.initialize())
 
             # M-01 PR C: inyectar lifecycle al singleton GovernanceManager
             # para que is_scanned_and_clean / update_scan_result usen el
@@ -501,9 +717,6 @@ class AppContext:
             install_dir = getattr(self._args, "install_dir", None)
             if local_cfg.install_dir:
                 install_dir = pathlib.Path(local_cfg.install_dir)
-            # Expose the resolved tools install dir so the GUI "Instalar" button can
-            # reach it without re-resolving config (Follow-up C).
-            self.install_dir = install_dir
 
             sandbox_roots: list[pathlib.Path] = [
                 mo2_root,
@@ -515,22 +728,26 @@ class AppContext:
             # Solo definir las carpetas estrictamente necesarias
             # Se elimina explícitamente mo2_parent para evitar Path Traversal encubierto
             validator = PathValidator(roots=sandbox_roots)
-            self.sandbox_validator = validator
             mo2 = MO2Controller(mo2_root, validator)
 
-            await self.network.initialize(nexus_key, self._args.staging_dir)
+            await self._await_startup(self.network.initialize(nexus_key, self._args.staging_dir))
 
             masterlist = MasterlistClient(gateway=self.network.gateway, api_key=nexus_key)
 
+            sender: TelegramSender | None = None
             if bot_token:
-                self.sender = TelegramSender(
+                sender = TelegramSender(
                     bot_token=bot_token,
                     gateway=self.network.gateway,
                     session=self.network.session,
                 )
 
+            hitl: HITLGuard
+            full_published = False
+
             async def _hitl_notify(req: HITLRequest) -> None:
-                if self.sender is None or operator_chat_id is None:
+                active_sender = self.sender if full_published else sender
+                if active_sender is None or operator_chat_id is None:
                     if req.category in ("tool_execution", "sandbox_promotion"):
                         # Fail-closed: destructive tool executions and sandbox
                         # promotions (T-27b·2: promover un diff sin revisión
@@ -544,15 +761,15 @@ class AppContext:
                             req.request_id,
                             req.reason,
                         )
-                        await self.hitl.respond(req.request_id, False)
+                        await hitl.respond(req.request_id, False)
                         return
                     logger.info("HITL auto-approving: %s", req.request_id)
-                    await self.hitl.respond(req.request_id, True)
+                    await hitl.respond(req.request_id, True)
                     return
                 msg = f"🛡️ *HITL Approval Required*\n\nID: `{req.request_id}`\nReason: {req.reason}\n\n{req.detail}"
                 # Send using sender directly
                 try:
-                    await self.sender.send(
+                    await active_sender.send(
                         operator_chat_id,
                         msg,
                         reply_markup={
@@ -573,7 +790,7 @@ class AppContext:
                 except Exception:
                     logger.exception("Failed to send HITL notification")
 
-            self.hitl = HITLGuard(notify_fn=_hitl_notify)
+            hitl = HITLGuard(notify_fn=_hitl_notify)
 
             # Observability: configure distributed tracing first so spans from the
             # metrics server startup are captured.  NoOp when no OTLP endpoint is set.
@@ -582,7 +799,7 @@ class AppContext:
             async def _shutdown_tracing_async() -> None:
                 shutdown_tracing()
 
-            self._exit_stack.push_async_callback(_shutdown_tracing_async)
+            self._push_startup_cleanup(_shutdown_tracing_async)
 
             # Observability: best-effort Prometheus /metrics endpoint on 127.0.0.1.
             # Wrapped because a port collision must NOT abort the main app.
@@ -590,10 +807,10 @@ class AppContext:
                 metrics_token_dir = pathlib.Path.home() / ".sky_claw" / "tokens" / "metrics"
                 metrics_auth = AuthTokenManager(token_dir=str(metrics_token_dir))
                 metrics_auth.generate()
-                await metrics_auth.start_rotation()
-                self._exit_stack.push_async_callback(metrics_auth.stop_rotation)
-                metrics_runner = await start_metrics_server(validator=metrics_auth.validate)
-                self._exit_stack.push_async_callback(stop_metrics_server, metrics_runner)
+                await self._await_startup(metrics_auth.start_rotation())
+                self._push_startup_cleanup(metrics_auth.stop_rotation)
+                metrics_runner = await self._await_startup(start_metrics_server(validator=metrics_auth.validate))
+                self._push_startup_cleanup(stop_metrics_server, metrics_runner)
                 logger.info("metrics_endpoint_enabled")
             except Exception:
                 logger.warning("metrics_endpoint_disabled", exc_info=True)
@@ -601,9 +818,9 @@ class AppContext:
             # Guardado en self para que la GUI lo alcance (botón "Buscar
             # actualizaciones" → runtime.app_context.sync_engine), sin el
             # reach-around privado que usa Telegram (_router._tools._sync_engine).
-            self.sync_engine = SyncEngine(mo2, masterlist, self.database.registry, hitl=self.hitl)
+            sync_engine = SyncEngine(mo2, masterlist, self.database.registry, hitl=hitl)
 
-            if await self.database.registry.is_empty():
+            if await self._await_startup(self.database.registry.is_empty()):
                 enrich_remote = bool(nexus_key)
                 if enrich_remote:
                     logger.info("Database empty, initial Sync from MO2 with Nexus enrichment")
@@ -613,10 +830,12 @@ class AppContext:
                         "importing local MO2 identity without remote enrichment"
                     )
                 try:
-                    result = await self.sync_engine.run(
-                        self.network.session,
-                        profile="Default",
-                        enrich_remote=enrich_remote,
+                    result = await self._await_startup(
+                        sync_engine.run(
+                            self.network.session,
+                            profile="Default",
+                            enrich_remote=enrich_remote,
+                        )
                     )
                     # Fallback: si el enriquecimiento remoto no persistió NINGUNA
                     # fila pero hubo fallos (Nexus offline/timeout en el primer
@@ -630,16 +849,18 @@ class AppContext:
                         logger.warning(
                             "Enriquecimiento remoto falló para todos los mods; reintentando import local-only sin Nexus"
                         )
-                        await self.sync_engine.run(
-                            self.network.session,
-                            profile="Default",
-                            enrich_remote=False,
+                        await self._await_startup(
+                            sync_engine.run(
+                                self.network.session,
+                                profile="Default",
+                                enrich_remote=False,
+                            )
                         )
                 except Exception as exc:
                     logger.exception("Initial synchronization failed: %s", exc)
 
-            self.tools_installer = ToolsInstaller(
-                hitl=self.hitl,
+            tools_installer = ToolsInstaller(
+                hitl=hitl,
                 gateway=self.network.gateway,
                 path_validator=validator,
             )
@@ -650,7 +871,13 @@ class AppContext:
                 if cfg_loot.exists():
                     loot_exe = cfg_loot
             if loot_exe is None or not loot_exe.exists():
-                found = scan_common_paths(LOOT_COMMON_PATHS, "loot.exe")
+                found = await self._await_startup(
+                    asyncio.to_thread(
+                        scan_common_paths,
+                        LOOT_COMMON_PATHS,
+                        "loot.exe",
+                    )
+                )
                 if found:
                     loot_exe = found
                     local_cfg.loot_exe = str(found)
@@ -662,7 +889,13 @@ class AppContext:
                 if cfg_xedit.exists():
                     xedit_exe = cfg_xedit
             if xedit_exe is None or not xedit_exe.exists():
-                found = scan_common_paths(XEDIT_COMMON_PATHS, "SSEEdit.exe")
+                found = await self._await_startup(
+                    asyncio.to_thread(
+                        scan_common_paths,
+                        XEDIT_COMMON_PATHS,
+                        "SSEEdit.exe",
+                    )
+                )
                 if found:
                     xedit_exe = found
                     local_cfg.xedit_exe = str(found)
@@ -687,10 +920,10 @@ class AppContext:
             _LOCK_STAGING_DIR.mkdir(parents=True, exist_ok=True)
             (_LOCK_STAGING_DIR / "snapshots").mkdir(parents=True, exist_ok=True)
             lock_manager = DistributedLockManager(db_path=_LOCK_STAGING_DIR / "locks.db")
-            await lock_manager.initialize()
-            self._exit_stack.push_async_callback(lock_manager.close)
+            self._push_startup_cleanup(lock_manager.close)
+            await self._await_startup(lock_manager.initialize())
             snapshot_manager = FileSnapshotManager(snapshot_dir=_LOCK_STAGING_DIR / "snapshots")
-            await snapshot_manager.initialize()
+            await self._await_startup(snapshot_manager.initialize())
 
             # T-26 (ADR 0002, follow-up de #243): journal para que run_loot_sort
             # de este path del agente también emita+persista el ActionManifest
@@ -704,17 +937,17 @@ class AppContext:
                 db_path=_LOCK_STAGING_DIR / "journal.db",
                 lifecycle=self.lifecycle.manager,
             )
-            await journal.open()
-            self._exit_stack.push_async_callback(journal.close)
+            self._push_startup_cleanup(journal.close)
+            await self._await_startup(journal.open())
 
             tool_registry = AsyncToolRegistry(
                 registry=self.database.registry,
                 mo2=mo2,
-                sync_engine=self.sync_engine,
+                sync_engine=sync_engine,
                 loot_exe=loot_exe,
-                hitl=self.hitl,
+                hitl=hitl,
                 downloader=self.network.downloader,
-                tools_installer=self.tools_installer,
+                tools_installer=tools_installer,
                 install_dir=install_dir,
                 # Consolidation (obs #187): AnimationHub was removed. run_pandora /
                 # run_bodyslide resolve their M-02/M-03 runners lazily from
@@ -740,7 +973,7 @@ class AppContext:
             mo2_root = local_cfg.mo2_root or "."
             mo2_profile = os.path.join(mo2_root, "profiles", "Default")
 
-            self.router = LLMRouter(
+            router = LLMRouter(
                 provider=provider,
                 tool_registry=tool_registry,
                 db_path=history_db,
@@ -752,69 +985,138 @@ class AppContext:
                 # hardened pragmas, coordinated shutdown_all checkpoint).
                 lifecycle=self.lifecycle.manager,
             )
-            await self.router.open()
-            self._exit_stack.push_async_callback(self._close_router)
+            self._push_startup_cleanup(self._close_router, router)
+            await self._await_startup(router.open())
 
+            polling: TelegramPolling | None = None
             if bot_token and getattr(self._args, "mode", "cli") != "telegram":
                 webhook_handler = TelegramWebhook(
-                    router=self.router,
-                    sender=self.sender,
+                    router=router,
+                    sender=sender,
                     session=self.network.session,
-                    hitl=self.hitl,
+                    hitl=hitl,
                     authorized_user_id=operator_chat_id,
                 )
-                self.polling = TelegramPolling(
+                polling = TelegramPolling(
                     token=bot_token,
                     webhook_handler=webhook_handler,
                     gateway=self.network.gateway,
                     session=self.network.session,
                     authorized_chat_id=operator_chat_id,
                 )
-                await self.polling.start()
-                self._exit_stack.push_async_callback(self._stop_polling)
+                self._push_startup_cleanup(self._stop_polling, polling)
+                await self._await_startup(polling.start())
                 logger.info("Telegram polling started")
 
             logger.info("start_full complete")
+            self.sandbox_validator = validator
+            self.install_dir = install_dir
+            self.sender = sender
+            self.hitl = hitl
+            self.sync_engine = sync_engine
+            self.tools_installer = tools_installer
+            self.router = router
+            self.polling = polling
+            self._full_start_committed = True
+            full_published = True
 
-        except Exception:
-            logger.critical(
-                "start_full FAILED — rolling back all initialized services",
-                exc_info=True,
-            )
-            await self._exit_stack.aclose()
-            # ARC-03: Sanitizar referencias para evitar zombie state tras rollback fallido
-            self.router = self.polling = self.hitl = self.sender = None
-            self.tools_installer = None
+        except BaseException:
             raise
 
-    async def start(self) -> None:
-        """Initialize all components."""
+    async def _start_all_inner(self) -> None:
+        # Estas llamadas públicas son parte del contrato observable. Al correr
+        # desde el owner son reentrantes y no vuelven a tomar el lock.
         await self.start_minimal()
         await self.start_full()
 
-    async def _stop_polling(self) -> None:
-        """Callback for AsyncExitStack: stop Telegram polling."""
-        if self.polling is not None:
-            await self.polling.stop()
-            self.polling = None
+    async def start(self) -> None:
+        """Initialize all components."""
+        if self._is_reentrant_startup():
+            await self._start_all_inner()
+            return
+        await self._run_startup(self._start_all_inner, publishes_full=True)
 
-    async def _close_router(self) -> None:
+    async def _stop_polling(self, polling: TelegramPolling) -> None:
+        """Callback for AsyncExitStack: stop Telegram polling."""
+        try:
+            await polling.stop()
+        finally:
+            if self.polling is polling:
+                self.polling = None
+
+    async def _close_router(self, router: LLMRouter) -> None:
         """Callback for AsyncExitStack: close LLM router."""
-        if self.router is not None:
-            await self.router.close()
-            self.router = None
+        try:
+            await router.close()
+        finally:
+            if self.router is router:
+                self.router = None
 
     async def stop(self) -> None:
-        """Gracefully shutdown all resources via AsyncExitStack (LIFO order)."""
-        # Cancel all tracked background tasks first
-        for task in list(self._background_tasks):
-            task.cancel()
-        if self._background_tasks:
-            await asyncio.gather(*self._background_tasks, return_exceptions=True)
-            self._background_tasks.clear()
+        """Invalida el startup activo y cierra recursos sin esperar I/O infinito."""
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("AppContext stop requiere un asyncio.Task")
+        if task is self._active_stop_task:
+            return
+        if task is self._active_startup_task:
+            raise RuntimeError("stop() no puede ejecutarse desde el startup owner")
 
-        # AsyncExitStack tears down all registered services in reverse order
-        await self._exit_stack.aclose()
+        async with self._stop_lock:
+            self._active_stop_task = task
+            self._stopping = True
+            self._full_start_committed = False
+            self._stop_epoch += 1
+            active_startup = self._active_startup_task
+            try:
+                if active_startup is not None and not active_startup.done():
+                    active_startup.cancel()
+                    done, _ = await asyncio.wait(
+                        {active_startup},
+                        timeout=self._startup_shutdown_timeout_s,
+                    )
+                    if active_startup not in done:
+                        raise TimeoutError(f"startup did not stop within {self._startup_shutdown_timeout_s:.3f}s")
+
+                if active_startup is not None and active_startup.done():
+                    try:
+                        active_startup.result()
+                    except asyncio.CancelledError:
+                        pass
+                    except BaseException:
+                        logger.warning(
+                            "Startup terminó con error durante stop(); se continúa el cleanup",
+                            exc_info=True,
+                        )
+
+                async with self._lifecycle_lock:
+                    background_tasks = set(self._background_tasks)
+                    for background_task in background_tasks:
+                        background_task.cancel()
+                    if background_tasks:
+                        done, pending = await asyncio.wait(
+                            background_tasks,
+                            timeout=self._startup_shutdown_timeout_s,
+                        )
+                        if pending:
+                            raise TimeoutError(
+                                f"background tasks did not stop within {self._startup_shutdown_timeout_s:.3f}s"
+                            )
+                        await asyncio.gather(*done, return_exceptions=True)
+                        self._background_tasks.difference_update(done)
+
+                    try:
+                        await self._close_cleanup_generation(
+                            timeout_s=self._startup_shutdown_timeout_s,
+                        )
+                    finally:
+                        self._sanitize_full_references()
+
+                    self._minimal_started_epoch = None
+                    self._stopping = False
+            finally:
+                if self._active_stop_task is task:
+                    self._active_stop_task = None
 
     def _resolve_config_path(self) -> None:
         """Always resolves to the canonical TOML config path."""

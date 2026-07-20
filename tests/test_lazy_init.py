@@ -28,13 +28,22 @@ class TestIsConfigured:
         ctx = AppContext(args)
         assert ctx.is_configured is False
 
-    def test_true_after_router_set(self) -> None:
-        """is_configured is True when router is assigned."""
+    def test_router_sin_commit_no_publica_contexto_configurado(self) -> None:
+        """Un router parcial no publica readiness antes del commit full."""
         from sky_claw.__main__ import AppContext
 
         args = MagicMock()
         ctx = AppContext(args)
         ctx.router = MagicMock()
+        assert ctx.is_configured is False
+
+    def test_true_after_router_and_full_commit(self) -> None:
+        from sky_claw.__main__ import AppContext
+
+        args = MagicMock()
+        ctx = AppContext(args)
+        ctx.router = MagicMock()
+        ctx._full_start_committed = True
         assert ctx.is_configured is True
 
 
@@ -240,3 +249,9 @@ class TestStartShortcut:
             ctx.router = MagicMock()
 
         ctx.start_minimal = mock_minimal
+        ctx.start_full = mock_full
+
+        await ctx.start()
+
+        assert calls == ["minimal", "full"]
+        assert ctx.is_configured is True

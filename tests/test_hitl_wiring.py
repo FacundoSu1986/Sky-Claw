@@ -332,11 +332,20 @@ class TestHITLNotifyFn:
         guard = HITLGuard(notify_fn=_hitl_notify, timeout=5)
 
         async def _respond() -> None:
-            await notify_done.wait()
+            await asyncio.wait_for(notify_done.wait(), timeout=2.0)
             await guard.respond("req-notify-test", approved=True)
 
-        asyncio.create_task(_respond())
-        await guard.request_approval(reason="Download mod X", detail="file.zip", request_id="req-notify-test")
+        responder = asyncio.create_task(_respond())
+        try:
+            await guard.request_approval(
+                reason="Download mod X",
+                detail="file.zip",
+                request_id="req-notify-test",
+            )
+        finally:
+            if not responder.done():
+                responder.cancel()
+            await asyncio.gather(responder, return_exceptions=True)
 
         sender.send.assert_awaited_once()
         call = sender.send.call_args
@@ -363,11 +372,16 @@ class TestHITLNotifyFn:
         guard = HITLGuard(notify_fn=_hitl_notify, timeout=5)
 
         async def _respond() -> None:
-            await notify_done.wait()
+            await asyncio.wait_for(notify_done.wait(), timeout=2.0)
             await guard.respond("safe-req", approved=False)
 
-        asyncio.create_task(_respond())
-        decision = await guard.request_approval(reason="test", request_id="safe-req")
+        responder = asyncio.create_task(_respond())
+        try:
+            decision = await guard.request_approval(reason="test", request_id="safe-req")
+        finally:
+            if not responder.done():
+                responder.cancel()
+            await asyncio.gather(responder, return_exceptions=True)
         assert decision is Decision.DENIED
 
     @pytest.mark.asyncio
@@ -388,11 +402,16 @@ class TestHITLNotifyFn:
         guard = HITLGuard(notify_fn=_hitl_notify, timeout=5)
 
         async def _respond() -> None:
-            await notify_done.wait()
+            await asyncio.wait_for(notify_done.wait(), timeout=2.0)
             await guard.respond("no-chat-req", approved=True)
 
-        asyncio.create_task(_respond())
-        decision = await guard.request_approval(reason="test", request_id="no-chat-req")
+        responder = asyncio.create_task(_respond())
+        try:
+            decision = await guard.request_approval(reason="test", request_id="no-chat-req")
+        finally:
+            if not responder.done():
+                responder.cancel()
+            await asyncio.gather(responder, return_exceptions=True)
 
         assert decision is Decision.APPROVED
         sender.send.assert_not_awaited()
