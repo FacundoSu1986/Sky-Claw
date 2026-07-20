@@ -176,6 +176,36 @@ async def test_promote_aplica_los_cambios_al_perfil_real(mo2_root: pathlib.Path)
     assert len((await sandbox.diff(clone)).changes) == 3
 
 
+async def test_promote_corre_gate_y_apply_en_un_solo_to_thread(
+    mo2_root: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F5 (auditoría 2026-07-18): el drift-gate y la mutación deben correr en UN
+    solo ``to_thread``. Antes ``promote`` hacía ``_check_drift`` / ``_compute_diff``
+    / ``_apply_changes`` en tres ``to_thread`` separados, con vueltas al event
+    loop entre medio: una escritura del real en esa ventana se pisaba en silencio
+    (TOCTOU asyncio). Fusionadas en un hilo no hay ventana para intercalar."""
+    import asyncio
+
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    clone = await sandbox.clone()
+    (clone.overwrite_copy / "SkyClaw_Patch.esp").write_bytes(b"TES4")
+
+    real_to_thread = asyncio.to_thread
+    zambullidas: list[str] = []
+
+    async def _spy(fn, /, *args, **kwargs):  # type: ignore[no-untyped-def]
+        zambullidas.append(getattr(fn, "__name__", repr(fn)))
+        return await real_to_thread(fn, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _spy)
+
+    resultado = await sandbox.promote(clone)
+
+    assert resultado.files_written == 1
+    # Una única zambullida al hilo para TODO el gate+apply (antes eran 3).
+    assert zambullidas == ["_promote_sync"]
+
+
 # ---------------------------------------------------------------------------
 # Errores tipados y ubicación del sandbox
 # ---------------------------------------------------------------------------

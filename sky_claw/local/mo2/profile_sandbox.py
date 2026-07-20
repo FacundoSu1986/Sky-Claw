@@ -262,9 +262,7 @@ class ProfileSandbox:
             SandboxRollbackError: Si el promote falló Y el rollback también;
                 el backup se preserva para restauración manual.
         """
-        await asyncio.to_thread(self._check_drift, clone)
-        changes = await asyncio.to_thread(self._compute_diff, clone)
-        written, deleted = await asyncio.to_thread(self._apply_changes, clone, changes)
+        written, deleted = await asyncio.to_thread(self._promote_sync, clone)
         logger.info(
             "Sandbox promovido al perfil '%s': %d archivo(s) escritos, %d borrado(s)",
             self._profile,
@@ -272,6 +270,22 @@ class ProfileSandbox:
             deleted,
         )
         return PromoteResult(files_written=written, files_deleted=deleted)
+
+    def _promote_sync(self, clone: SandboxClone) -> tuple[int, int]:
+        """F5 (auditoría 2026-07-18): drift-gate + diff + apply en UN solo hilo.
+
+        Antes ``promote`` corría ``_check_drift`` / ``_compute_diff`` /
+        ``_apply_changes`` en tres ``asyncio.to_thread`` separados, con vueltas al
+        event loop entre medio: una escritura de MO2/usuario en la ventana entre
+        el gate y el apply se pisaba en silencio — justo lo que el drift-gate
+        promete cortar. Fusionadas en una única función sync (un solo
+        ``to_thread``), no hay scheduling del loop entre verificar y mutar, así
+        que la ventana TOCTOU a nivel asyncio desaparece. Las tres siguen siendo
+        sync e intactas; solo dejan de ser awaited por separado.
+        """
+        self._check_drift(clone)
+        changes = self._compute_diff(clone)
+        return self._apply_changes(clone, changes)
 
     async def discard(self, clone: SandboxClone) -> None:
         """Descarta el clon (borra su árbol completo)."""
