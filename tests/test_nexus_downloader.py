@@ -134,9 +134,14 @@ def _make_aiohttp_response(
 
 
 def _make_session(*responses: MagicMock) -> AsyncMock:
-    """Return a mock ClientSession whose .get() returns responses in order."""
+    """Return a mock ClientSession whose .request() yields responses in order.
+
+    El egress de NexusDownloader pasa por ``gateway.request()`` (F5b), que
+    internamente hace ``await session.request(...)`` — por eso el harness sirve
+    las respuestas por ``.request`` en lugar del viejo ``.get``.
+    """
     session = AsyncMock(spec=aiohttp.ClientSession)
-    session.get = MagicMock(side_effect=iter(responses))
+    session.request = AsyncMock(side_effect=list(responses))
     return session
 
 
@@ -1129,6 +1134,118 @@ class TestNetworkGatewayCDN:
         gw = NetworkGateway(EgressPolicy(block_private_ips=False))
         with pytest.raises(EgressViolationError):
             await gw.authorize("POST", "https://cf-files.nexusmods.com/file.zip")
+
+
+# ---------------------------------------------------------------------------
+# F5b — todo el egress de Nexus pasa por gateway.request()
+# ---------------------------------------------------------------------------
+
+
+class TestGatewayRequestRouting:
+    """F5b (auditoría Zero-Trust 2026-07-18): ``NexusDownloader`` enrutaba su
+    egress con ``session.get()`` crudo (``allow_redirects=True`` por defecto),
+    saltándose la re-autorización de host por salto y reenviando el header
+    secreto ``apikey`` a cualquier host destino de un redirect. Debe pasar por
+    ``gateway.request()`` — que fuerza ``allow_redirects=False``, re-autoriza
+    cada ``Location`` y elimina las cabeceras sensibles en saltos cross-host.
+    """
+
+    @staticmethod
+    def _routing_session(*responses: MagicMock) -> AsyncMock:
+        """Sesión mock que sirve las respuestas tanto por ``request`` (camino
+        nuevo, vía gateway) como por ``get`` (camino viejo), para que el test
+        falle limpio en rojo antes del fix y en verde después."""
+        session = AsyncMock(spec=aiohttp.ClientSession)
+        session.request = AsyncMock(side_effect=list(responses))
+        session.get = MagicMock(side_effect=list(responses))
+        return session
+
+    @pytest.mark.asyncio
+    async def test_list_files_routes_through_gateway_request(self, tmp_path: pathlib.Path) -> None:
+        resp = _make_aiohttp_response(json_data={"files": [{"file_id": 1}]})
+        session = self._routing_session(resp)
+        d = _make_downloader(tmp_path)
+        await d.list_files(100, session)
+        assert session.request.called
+        assert not session.get.called
+
+    @pytest.mark.asyncio
+    async def test_get_file_info_routes_through_gateway_request(self, tmp_path: pathlib.Path) -> None:
+        meta = _make_aiohttp_response(json_data={"file_name": "m.zip", "size_in_bytes": 1, "md5": ""})
+        link = _make_aiohttp_response(json_data=[{"URI": "https://premium-files.nexusmods.com/m.zip"}])
+        session = self._routing_session(meta, link)
+        d = _make_downloader(tmp_path)
+        await d.get_file_info(1, 2, session)
+        assert session.request.call_count == 2
+        assert not session.get.called
+
+    @pytest.mark.asyncio
+    async def test_get_download_url_routes_through_gateway_request(self, tmp_path: pathlib.Path) -> None:
+        resp = _make_aiohttp_response(json_data=[{"URI": "https://premium-files.nexusmods.com/x"}])
+        session = self._routing_session(resp)
+        d = _make_downloader(tmp_path)
+        await d._get_download_url(1, 2, session)
+        assert session.request.called
+        assert not session.get.called
+
+    @pytest.mark.asyncio
+    async def test_download_routes_through_gateway_request(self, tmp_path: pathlib.Path) -> None:
+        content = b"payload"
+        resp = _make_aiohttp_response(content=content)
+        session = self._routing_session(resp)
+        d = _make_downloader(tmp_path)
+        fi = _make_file_info(
+            file_name="r.zip",
+            size_bytes=len(content),
+            md5="",
+            download_url="https://premium-files.nexusmods.com/r.zip",
+        )
+        await d.download(fi, session)
+        assert session.request.called
+        assert not session.get.called
+
+    @pytest.mark.asyncio
+    async def test_redirect_to_unlisted_host_is_blocked(self, tmp_path: pathlib.Path) -> None:
+        """Corazón de F5b: un redirect del CDN a un host NO permitido debe
+        cortarse porque el gateway re-autoriza cada salto. Con ``session.get``
+        crudo, aiohttp seguía el redirect sin re-auth."""
+        redirect = _make_aiohttp_response(status=302, headers={"Location": "https://evil.example.com/x"})
+        session = self._routing_session(redirect)
+        d = _make_downloader(tmp_path)
+        fi = _make_file_info(
+            file_name="r.zip",
+            md5="",
+            download_url="https://premium-files.nexusmods.com/r.zip",
+        )
+        with pytest.raises(EgressViolationError):
+            await d.download(fi, session)
+
+    @pytest.mark.asyncio
+    async def test_apikey_stripped_on_cross_host_redirect(self, tmp_path: pathlib.Path) -> None:
+        """La ``apikey`` no debe viajar a otro host tras un redirect, aunque el
+        destino esté permitido. aiohttp no elimina headers custom; el gateway sí."""
+        redirect = _make_aiohttp_response(status=302, headers={"Location": "https://cf-files.nexusmods.com/x"})
+        final = _make_aiohttp_response(content=b"ok")
+        seen: list[tuple[str, dict[str, str]]] = []
+
+        async def _req(method: str, url: str, **kwargs: Any) -> MagicMock:
+            seen.append((url, dict(kwargs.get("headers") or {})))
+            return redirect if len(seen) == 1 else final
+
+        session = AsyncMock(spec=aiohttp.ClientSession)
+        session.request = AsyncMock(side_effect=_req)
+        session.get = MagicMock(side_effect=[redirect, final])
+        d = _make_downloader(tmp_path)
+        fi = _make_file_info(
+            file_name="r.zip",
+            md5="",
+            size_bytes=2,
+            download_url="https://premium-files.nexusmods.com/r.zip",
+        )
+        await d.download(fi, session)
+        assert len(seen) == 2  # se re-emitió la request tras el redirect
+        second_hop_headers = {k.lower() for k in seen[1][1]}
+        assert "apikey" not in second_hop_headers
 
 
 # ---------------------------------------------------------------------------

@@ -679,26 +679,25 @@ class TestSetupToolsNgio:
 
 class TestListFiles:
     async def test_list_files_devuelve_files_crudos(self, tmp_path: pathlib.Path) -> None:
-        """list_files pega a files.json vía gateway.authorize y devuelve la lista cruda."""
+        """list_files pega a files.json vía gateway.request (F5b) y devuelve la lista cruda."""
         from sky_claw.antigravity.scraper.nexus_downloader import NexusDownloader
-
-        gateway = MagicMock()
-        gateway.authorize = AsyncMock()
-        downloader = NexusDownloader(api_key="fake", gateway=gateway, staging_dir=tmp_path / "staging")
 
         resp = AsyncMock()
         resp.status = 200
         resp.raise_for_status = MagicMock()
+        resp.release = MagicMock()
         resp.json = AsyncMock(return_value={"files": list(_ADDRLIB_FILES)})
-        cm = MagicMock()
-        cm.__aenter__ = AsyncMock(return_value=resp)
-        cm.__aexit__ = AsyncMock(return_value=False)
+
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        downloader = NexusDownloader(api_key="fake", gateway=gateway, staging_dir=tmp_path / "staging")
+
         session = MagicMock(spec=aiohttp.ClientSession)
-        session.get = MagicMock(return_value=cm)
 
         files = await downloader.list_files(32444, session)
 
         assert files == _ADDRLIB_FILES
-        gateway.authorize.assert_awaited_once()
-        url_pedida = session.get.call_args.args[0]
+        gateway.request.assert_awaited_once()
+        # request(method, url, session, ...) → args[1] es la URL.
+        url_pedida = gateway.request.await_args.args[1]
         assert "/mods/32444/files.json" in url_pedida

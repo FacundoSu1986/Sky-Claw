@@ -463,3 +463,32 @@ class TestObservability:
         assert records
         assert hasattr(records[0], "latency_ms")
         assert records[0].latency_ms >= 0
+
+
+# ---------------------------------------------------------------------------
+# F5a — la sesión propia hereda el SafeResolver del gateway (anti-rebinding)
+# ---------------------------------------------------------------------------
+
+
+class TestOwnedSessionConnector:
+    """F5a (auditoría Zero-Trust 2026-07-18): cuando el resolver crea su propia
+    ``ClientSession`` debe montarla sobre un ``GatewayTCPConnector`` para heredar
+    el ``SafeResolver`` (bloqueo de IP privada tras DNS + pin anti-rebinding).
+    Sin el connector, aunque ``www.reddit.com`` esté en la allow-list, un
+    rebinding de DNS a una IP privada no se cortaría a nivel resolver.
+    """
+
+    @pytest.mark.asyncio
+    async def test_owned_session_uses_gateway_connector(self) -> None:
+        from sky_claw.antigravity.security.network_gateway import (
+            EgressPolicy,
+            GatewayTCPConnector,
+        )
+
+        gw = NetworkGateway(EgressPolicy(block_private_ips=False))
+        r = RedditKnowledgeResolver(user_agent=VALID_UA, gateway=gw)  # sin session inyectada
+        try:
+            session = await r._ensure_session()
+            assert isinstance(session.connector, GatewayTCPConnector)
+        finally:
+            await r.close()

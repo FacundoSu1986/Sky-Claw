@@ -17,7 +17,10 @@ from tenacity import (
     wait_exponential,
 )
 
-from sky_claw.antigravity.security.network_gateway import NetworkGateway
+from sky_claw.antigravity.security.network_gateway import (
+    NetworkGateway,
+    NetworkGatewayTimeoutError,
+)
 from sky_claw.antigravity.security.path_validator import (
     PathViolationError,
     assert_safe_component,
@@ -121,6 +124,9 @@ def _should_retry_nexus(exc: BaseException) -> bool:
             asyncio.TimeoutError,
             OSError,
             MD5ValidationError,
+            # F5b: gateway.request traduce los timeouts de red a este tipo; se
+            # reintenta igual que un asyncio.TimeoutError crudo.
+            NetworkGatewayTimeoutError,
         ),
     ):
         return True
@@ -209,14 +215,19 @@ class NexusDownloader:
                     meta_timeout = aiohttp.ClientTimeout(total=30)
 
                     files_url = f"{_NEXUS_API_BASE}/games/{self._game_domain}/mods/{nexus_id}/files.json"
-                    await self._gateway.authorize("GET", files_url)
-                    async with session.get(files_url, headers=headers, timeout=meta_timeout) as resp:
+                    # F5b: gateway.request() re-autoriza cada redirect y elimina la
+                    # apikey en saltos cross-host (session.get crudo no hacía ninguna
+                    # de las dos).
+                    resp = await self._gateway.request("GET", files_url, session, headers=headers, timeout=meta_timeout)
+                    try:
                         if resp.status in (401, 403):
                             raise DownloadError("Invalid or missing Nexus API key")
                         if resp.status == 404:
                             raise DownloadError(f"Mod {nexus_id} not found")
                         resp.raise_for_status()  # Dispara ClientResponseError en 429 para activar el reintento
                         files_data = await resp.json()
+                    finally:
+                        resp.release()
 
                     result = files_data.get("files", [])
         return result
@@ -246,14 +257,19 @@ class NexusDownloader:
 
                     if file_id is None:
                         files_url = f"{_NEXUS_API_BASE}/games/{self._game_domain}/mods/{nexus_id}/files.json"
-                        await self._gateway.authorize("GET", files_url)
-                        async with session.get(files_url, headers=headers, timeout=meta_timeout) as resp:
+                        # F5b: egress por el gateway (re-auth de redirect + saneo de apikey).
+                        resp = await self._gateway.request(
+                            "GET", files_url, session, headers=headers, timeout=meta_timeout
+                        )
+                        try:
                             if resp.status in (401, 403):
                                 raise DownloadError("Invalid or missing Nexus API key")
                             if resp.status == 404:
                                 raise DownloadError(f"Mod {nexus_id} not found")
                             resp.raise_for_status()  # Dispara ClientResponseError en 429 para activar el reintento
                             files_data = await resp.json()
+                        finally:
+                            resp.release()
 
                         files_list = files_data.get("files", [])
                         if not files_list:
@@ -266,9 +282,9 @@ class NexusDownloader:
                             file_id = target_file["file_id"][1]
 
                 meta_url = f"{_NEXUS_API_BASE}/games/{self._game_domain}/mods/{nexus_id}/files/{file_id}.json"
-                await self._gateway.authorize("GET", meta_url)
-
-                async with session.get(meta_url, headers=headers, timeout=meta_timeout) as resp:
+                # F5b: egress por el gateway (re-auth de redirect + saneo de apikey).
+                resp = await self._gateway.request("GET", meta_url, session, headers=headers, timeout=meta_timeout)
+                try:
                     if resp.status == 401:
                         raise DownloadError("Invalid or missing Nexus API key")
                     if resp.status == 403:
@@ -277,6 +293,8 @@ class NexusDownloader:
                         raise DownloadError(f"File {file_id} not found for mod {nexus_id}")
                     resp.raise_for_status()
                     data = await resp.json()
+                finally:
+                    resp.release()
 
                 size_bytes: int = int(data.get("size_in_bytes") or data.get("size", 0) * 1024)
                 md5: str = str(data.get("md5") or "")
@@ -342,8 +360,6 @@ class NexusDownloader:
                     self._staging_dir.mkdir(parents=True, exist_ok=True)
                     dest = safe_join(self._staging_dir, file_info.file_name)
 
-                await self._gateway.authorize("GET", file_info.download_url)
-
                 progress = DownloadProgress(
                     file_name=file_info.file_name,
                     total_bytes=file_info.size_bytes,
@@ -354,8 +370,14 @@ class NexusDownloader:
                 md5_hash = hashlib.md5(usedforsecurity=False)  # nosec B324 - used for file integrity checksum, not security
                 sha256_hash = hashlib.sha256()
 
+                # F5b: la descarga del CDN también va por el gateway. authorize()
+                # ocurre dentro de request() (hop 0); un redirect a un host no
+                # permitido se corta y la apikey no viaja a otro host.
+                resp = await self._gateway.request(
+                    "GET", file_info.download_url, session, headers=headers, timeout=timeout
+                )
                 try:
-                    async with session.get(file_info.download_url, headers=headers, timeout=timeout) as resp:
+                    async with resp:
                         resp.raise_for_status()
 
                         if progress.total_bytes == 0:
@@ -594,18 +616,21 @@ class NexusDownloader:
             DownloadError: When the API returns an error or no links.
         """
         url = f"{_NEXUS_API_BASE}/games/{self._game_domain}/mods/{nexus_id}/files/{file_id}/download_link.json"
-        await self._gateway.authorize("GET", url)
 
         headers = {"apikey": self._api_key, "Accept": "application/json"}
         meta_timeout = aiohttp.ClientTimeout(total=30)
 
-        async with session.get(url, headers=headers, timeout=meta_timeout) as resp:
+        # F5b: egress por el gateway (re-auth de redirect + saneo de apikey).
+        resp = await self._gateway.request("GET", url, session, headers=headers, timeout=meta_timeout)
+        try:
             if resp.status in (401, 403):
                 raise PremiumRequiredError("Premium API key required to generate download links")
             if resp.status == 404:
                 raise DownloadError(f"Download link not found for file {file_id} of mod {nexus_id}")
             resp.raise_for_status()
             links = await resp.json()
+        finally:
+            resp.release()
 
         if not links:
             raise DownloadError(f"No CDN download links available for file {file_id}")
