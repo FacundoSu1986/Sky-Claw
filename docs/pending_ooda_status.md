@@ -248,7 +248,12 @@ contenido de abajo):
    permitido" — no es urgente, pero sigue sin fecha.
 2. **Consolidar secretos en `CredentialVault.get_key(name)` con backend
    keyring.** No existe: `grep -rn "def get_key" credential_vault.py` no
-   encuentra nada. Sin empezar.
+   encuentra nada. Parcial: el `CredentialVault` **ya está cableado** al
+   `LLMRouter` (F1 de la auditoría Zero-Trust 2026-07-18 — master-key desde
+   `SKYCLAW_VAULT_MASTER_KEY`, ver `tests/test_credential_vault_wiring.py`), así
+   que el hot-swap de credenciales dejó de ser código muerto; falta todavía el
+   método `get_key(name)` con backend keyring y la consolidación del resto de
+   los secretos (hoy en `Config`/keyring por separado).
 
 Nota al margen: `ritual_runner.py:342` escribe (`os.environ[env_name] = ...`,
 no lee) fuera del punto centralizado — sembrando la var justo tras instalar

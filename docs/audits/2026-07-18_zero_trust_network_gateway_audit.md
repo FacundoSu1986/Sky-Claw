@@ -38,13 +38,15 @@ revisable y sin roce con la remediación de la TANDA 1 (núcleo async, `codex/*`
 | **F2** | ✔ Corregido (follow-up, rama `claude/f6-ws-daemon-hardening`) | `ws_daemon.py` elimina el `sys.path.append` + `import ast_guardian` a nivel de módulo (ruta inexistente, superficie de inyección) y lo reemplaza por un import **lazy fail-closed** dentro de `TelegramDaemon.__init__` (`RuntimeError` claro si falta el guardrail). `UIBroadcastServer` deja de pagar el import roto que no usaba. Tests: `test_ui_broadcast_no_depende_de_ast_guardian`, `test_telegram_daemon_sin_ast_guardian_falla_ruidoso`; el stub de `test_ws_auth_close_code.py` se eliminó como prueba viva. |
 | **F6** | ✔ Corregido (follow-up, rama `claude/f6-ws-daemon-hardening`) | `UIBroadcastServer` registra `_close_all_clients` como callback de rotación (cierre 1008, no 4001; paridad con `WebApp`), con `_clients_lock` + `_token_rotating` para rechazar handshakes durante la rotación y serializar add/discard. `broadcast()` itera un snapshot `list(self._clients)` (fin del `RuntimeError: Set changed size`). Tests: `test_ui_broadcast_rotation.py`. Sigue siendo experimental (solo instanciado en tests). |
 | **F5** | ✔ Corregido (follow-up, rama `claude/f6-ws-daemon-hardening`) | **5b (vivo):** `nexus_downloader` enruta sus 5 llamadas de egress por `gateway.request()` en vez de `session.get()` crudo — ahora cada redirect se re-autoriza por salto (`allow_redirects=False`) y la `apikey` se elimina en saltos cross-host (aiohttp no la tocaba). `NetworkGatewayTimeoutError` se suma al predicado de reintento para no cambiar la semántica de timeouts. **5a (durmiente):** `reddit_client._ensure_session` monta la sesión propia sobre `GatewayTCPConnector` (hereda el `SafeResolver` → bloqueo de IP privada tras DNS + pin anti-rebinding). Tests: `TestGatewayRequestRouting` (nexus: routing + redirect a host no permitido bloqueado + `apikey` saneada), `TestOwnedSessionConnector` (reddit); `test_list_files_devuelve_files_crudos` reescrito al contrato `gateway.request`. |
+| **F1** | ✔ Corregido (follow-up, rama `claude/f6-ws-daemon-hardening`) | `app_context._start_full_inner` provisiona el `CredentialVault` y lo inyecta al `LLMRouter` (`vault=`), habilitando el hot-swap Zero-Trust que antes quedaba inerte (`reload_provider` daba siempre `False` por `_vault is None`). **Master-key desde env var** `SKYCLAW_VAULT_MASTER_KEY`, leída una sola vez en el boundary (directiva H-04, no `os.environ` en capas profundas). Si la env var no está, `vault=None` y el comportamiento actual se preserva (backward-compatible). La clave del provider activo se **siembra** en el vault al arranque para que el hot-swap sea funcional, no solo alcanzable. Tests: `tests/test_credential_vault_wiring.py` (lectura del master-key, build+roundtrip, provisión env-gated, cleanup, `reload_provider` verde con vault sembrado y `False` sin vault). |
 
-**Diferidos a propósito** (con motivo): **F1** (cablear `CredentialVault` exige decidir la
-procedencia del master-key — cambio de diseño; además toca `app_context.py`, el único punto
-de roce potencial con la TANDA 1), **F7** (depende del despliegue del gateway Node),
+**Diferidos a propósito** (con motivo): **F7** (depende del despliegue del gateway Node),
 **n2/n3** (no son bugs vivos; n3 rompería la API síncrona del field-validator pydantic).
 **F2/F6** (`ws_daemon`, experimental) se remediaron en el follow-up de arriba: el import
-roto se volvió lazy fail-closed y la rotación WS ahora invalida los sockets vivos.
+roto se volvió lazy fail-closed y la rotación WS ahora invalida los sockets vivos. **F1**
+(hot-swap de credenciales) se cableó en el follow-up de arriba con master-key desde env var
+y sembrado del provider activo. **F5** (dos consumidores que se saltaban una capa del gateway)
+también quedó cerrado.
 
 ---
 

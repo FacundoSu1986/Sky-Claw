@@ -32,6 +32,7 @@ from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
 from sky_claw.antigravity.scraper.masterlist import MasterlistClient
 from sky_claw.antigravity.scraper.nexus_downloader import NexusDownloader
 from sky_claw.antigravity.security.auth_token_manager import AuthTokenManager
+from sky_claw.antigravity.security.credential_vault import CredentialVault
 from sky_claw.antigravity.security.hitl import HITLGuard, HITLRequest
 from sky_claw.antigravity.security.network_gateway import GatewayTCPConnector, NetworkGateway
 from sky_claw.antigravity.security.path_validator import PathValidator
@@ -175,6 +176,10 @@ class AppContext:
 
         self.hitl: HITLGuard | None = None
         self.router: LLMRouter | None = None
+        # F1 (auditoría Zero-Trust 2026-07-18): bóveda de credenciales para el
+        # hot-swap Zero-Trust del router. None hasta que start_full la provisione
+        # (solo si SKYCLAW_VAULT_MASTER_KEY está configurada).
+        self.credential_vault: CredentialVault | None = None
         self.sender: TelegramSender | None = None
         self.polling: TelegramPolling | None = None
         # Motor de sincronización — lo consume el botón "Buscar actualizaciones"
@@ -973,6 +978,15 @@ class AppContext:
             mo2_root = local_cfg.mo2_root or "."
             mo2_profile = os.path.join(mo2_root, "profiles", "Default")
 
+            # F1: provisionar el vault (si SKYCLAW_VAULT_MASTER_KEY está seteada)
+            # y cablearlo al router para habilitar el hot-swap Zero-Trust de
+            # credenciales. Sin la env var, vault=None y el router se comporta
+            # como hasta ahora (reload_provider → False).
+            vault_db = str(self._args.db_path).replace(".db", "_vault.db")
+            credential_vault = await self._await_startup(
+                self._provision_credential_vault(provider_name, api_key or "", vault_db)
+            )
+
             router = LLMRouter(
                 provider=provider,
                 tool_registry=tool_registry,
@@ -981,6 +995,7 @@ class AppContext:
                 registry_db=str(self._args.db_path),
                 mo2_profile=mo2_profile,
                 gateway=self.network.gateway,
+                vault=credential_vault,
                 # M-01.1: history DB via DatabaseLifecycleManager (WAL recovery,
                 # hardened pragmas, coordinated shutdown_all checkpoint).
                 lifecycle=self.lifecycle.manager,
@@ -1051,6 +1066,57 @@ class AppContext:
         finally:
             if self.router is router:
                 self.router = None
+
+    # ------------------------------------------------------------------
+    # F1 — CredentialVault: hot-swap Zero-Trust de credenciales LLM
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _read_vault_master_key() -> str:
+        """Master-key del vault, leído UNA vez en el boundary (directiva H-04).
+
+        Fuente: env var ``SKYCLAW_VAULT_MASTER_KEY`` (prefijo ``SKYCLAW_``, no
+        ``SKY_CLAW_``, para no ser barrido por los overrides de ``Config``).
+        Vacío/whitespace ⇒ ausente (hot-swap deshabilitado, backward-compatible).
+        """
+        return (os.environ.get("SKYCLAW_VAULT_MASTER_KEY") or "").strip()
+
+    async def _build_credential_vault(self, master_key: str, db_path: str) -> CredentialVault:
+        """Construye e inicializa el vault (salt colocado junto al DB para aislar)."""
+        salt_dir = pathlib.Path(db_path).parent / "vault_salt"
+        vault = CredentialVault(db_path=db_path, master_key=master_key, salt_dir=salt_dir)
+        await vault.initialize()
+        return vault
+
+    async def _provision_credential_vault(
+        self, provider_name: str, api_key: str, db_path: str
+    ) -> CredentialVault | None:
+        """Provisiona el vault si hay master-key; None si no (comportamiento actual).
+
+        Cuando se provisiona: registra el cierre ordenado y **siembra** la clave
+        del provider activo bajo ``{provider}_api_key`` para que ``reload_provider``
+        sea funcional (no solo alcanzable) — sin la semilla, ``get_secret`` daría
+        ``None`` y el hot-swap seguiría devolviendo ``False``.
+        """
+        master_key = self._read_vault_master_key()
+        if not master_key:
+            logger.info("Hot-swap de credenciales Zero-Trust deshabilitado: SKYCLAW_VAULT_MASTER_KEY no configurada.")
+            return None
+        vault = await self._build_credential_vault(master_key, db_path)
+        self._push_startup_cleanup(self._close_vault, vault)
+        if api_key:
+            await vault.set_secret(f"{provider_name}_api_key", api_key)
+        self.credential_vault = vault
+        logger.info("🔐 CredentialVault cableado al router — hot-swap Zero-Trust habilitado.")
+        return vault
+
+    async def _close_vault(self, vault: CredentialVault) -> None:
+        """Callback para AsyncExitStack: cierra el vault y nulea la referencia."""
+        try:
+            await vault.close()
+        finally:
+            if self.credential_vault is vault:
+                self.credential_vault = None
 
     async def stop(self) -> None:
         """Invalida el startup activo y cierra recursos sin esperar I/O infinito."""
