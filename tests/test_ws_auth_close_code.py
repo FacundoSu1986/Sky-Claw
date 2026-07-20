@@ -13,21 +13,16 @@ apart again.
 
 from __future__ import annotations
 
-import sys
-import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# ws_daemon.py imports the agent-side ``ast_guardian`` module, resolved via a
-# runtime sys.path append to an agent skills directory that is not present in
-# the test/CI checkout.  Stub it so ws_daemon is importable.  The class under
-# test (UIBroadcastServer) never touches it — only the unrelated
-# TelegramDaemon does.
-sys.modules.setdefault("ast_guardian", types.ModuleType("ast_guardian"))
-
-from sky_claw.antigravity.comms.ws_daemon import UIBroadcastServer  # noqa: E402
-from sky_claw.antigravity.gui.agent_communication import AgentCommunicationClient  # noqa: E402
+# F2 (auditoría Zero-Trust 2026-07-18): ws_daemon ya NO importa ``ast_guardian``
+# a nivel de módulo, así que UIBroadcastServer se importa SIN stub — la ausencia
+# del `sys.modules.setdefault` de antes es la prueba viva de que la clase bajo
+# test no depende del guardrail (solo TelegramDaemon lo importa, lazy).
+from sky_claw.antigravity.comms.ws_daemon import UIBroadcastServer
+from sky_claw.antigravity.gui.agent_communication import AgentCommunicationClient
 
 
 def _make_server() -> UIBroadcastServer:
