@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -26,6 +26,19 @@ if TYPE_CHECKING:
 _ENV = "SKYCLAW_VAULT_MASTER_KEY"
 _MASTER = "clave-maestra-de-prueba-0123456789"
 _API_KEY = "sk-deepseek-test-key-0123456789"
+
+
+@pytest.fixture(autouse=True)
+def _sin_icacls():
+    """Neutraliza el hardening de permisos del salt (icacls en Windows).
+
+    En el runner de Windows de CI, ``restrict_to_owner`` (icacls) falla y el
+    vault se niega — por diseño — a usar un salt débil (`RuntimeError`). Estos
+    tests ejercitan el *cableado* del vault, no el hardening de permisos del SO;
+    lo parcheamos como ya hace ``tests/test_credential_vault_sec02.py``.
+    """
+    with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        yield
 
 
 def _make_args(tmp_path: pathlib.Path) -> argparse.Namespace:
