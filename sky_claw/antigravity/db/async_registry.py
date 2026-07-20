@@ -193,12 +193,53 @@ class AsyncModRegistry:
                         # DB-004: Use specific exception to avoid catching unrelated RuntimeErrors
                         raise _DatabaseCorruptionError(f"SQLite integrity check failed for {self._db_path}")
 
-            except _DatabaseCorruptionError:
-                # Evict the corrupt connection from the lifecycle and rename the file
-                with contextlib.suppress(Exception):
-                    await self._conn.close()
+            except _DatabaseCorruptionError as corruption_error:
+                # El lifecycle conserva ownership hasta que el cierre de la
+                # conexion corrupta termine con exito.
+                corrupt_conn = self._conn
+                if corrupt_conn is None:
+                    raise
+
+                close_error: BaseException | None = None
+                try:
+                    await corrupt_conn.close()
+                except asyncio.CancelledError as error:
+                    current_task = asyncio.current_task()
+                    # CancelledError tambien puede originarse dentro de close().
+                    # cancelling() > 0 es la evidencia de que la cancelacion fue
+                    # solicitada sobre la tarea actual: debe conservar identidad.
+                    if current_task is not None and current_task.cancelling() > 0:
+                        self._conn = None
+                        logger.warning(
+                            "Closing corrupt database was cancelled externally; lifecycle ownership retained"
+                        )
+                        raise
+                    close_error = error
+                except Exception as error:
+                    close_error = error
+
                 self._conn = None
-                self._lifecycle.evict_connection(self._db_path)
+                if close_error is not None:
+                    logger.error(
+                        "Failed to close corrupt database; lifecycle ownership retained: %s",
+                        close_error,
+                        exc_info=(
+                            type(close_error),
+                            close_error,
+                            close_error.__traceback__,
+                        ),
+                    )
+                    raise corruption_error from close_error
+
+                evicted = self._lifecycle.evict_connection(
+                    self._db_path,
+                    expected_connection=corrupt_conn,
+                )
+                if not evicted:
+                    logger.error(
+                        "Corrupt database connection was replaced before eviction; replacement ownership retained"
+                    )
+                    raise
 
                 db_file = pathlib.Path(self._db_path)
                 if db_file.exists():
@@ -225,10 +266,8 @@ class AsyncModRegistry:
                 self._conn.row_factory = aiosqlite.Row
 
             except Exception as exc:
-                # Evict stale reference if a connection was obtained before the error
-                if self._conn is not None:
-                    with contextlib.suppress(Exception):
-                        self._lifecycle.evict_connection(self._db_path)
+                # El lifecycle sigue siendo propietario de cualquier conexion
+                # obtenida antes del fallo y la cerrara durante shutdown_all().
                 self._conn = None
                 logger.error("Failed to open async registry: %s", exc)
                 raise

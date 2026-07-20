@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import sqlite3
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
 import pytest
@@ -24,6 +25,7 @@ from pydantic import ValidationError
 from sky_claw.antigravity.core.db_lifecycle import (
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
+    DatabaseShutdownIncompleteError,
     WALHealth,
 )
 
@@ -98,6 +100,122 @@ class TestInit:
             assert row[0] == 2  # MEMORY = 2
 
         await lifecycle.shutdown_all()
+
+    @pytest.mark.asyncio
+    async def test_init_single_cierra_conexion_si_pragmas_fallan(
+        self,
+        db_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        manager = DatabaseLifecycleManager(
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        conn = MagicMock(name="conexion_sin_registrar")
+        conn.close = AsyncMock()
+        error_pragmas = RuntimeError("fallo deliberado de pragmas")
+
+        async def conectar(_path: str) -> MagicMock:
+            return conn
+
+        monkeypatch.setattr(aiosqlite, "connect", conectar)
+        monkeypatch.setattr(
+            manager,
+            "_apply_pragmas",
+            AsyncMock(side_effect=error_pragmas),
+        )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await manager._init_single(db_path)
+
+        assert exc_info.value is error_pragmas
+        conn.close.assert_awaited_once_with()
+        assert manager.managed_paths == []
+
+    @pytest.mark.asyncio
+    async def test_init_single_preserva_error_pragmas_si_close_falla(
+        self,
+        db_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        manager = DatabaseLifecycleManager(
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        conn = MagicMock(name="conexion_con_close_fallido")
+        conn.close = AsyncMock(side_effect=OSError("close deliberadamente fallido"))
+        error_pragmas = RuntimeError("pragmas deliberadamente fallidos")
+
+        async def conectar(_path: str) -> MagicMock:
+            return conn
+
+        monkeypatch.setattr(aiosqlite, "connect", conectar)
+        monkeypatch.setattr(
+            manager,
+            "_apply_pragmas",
+            AsyncMock(side_effect=error_pragmas),
+        )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await manager._init_single(db_path)
+
+        assert exc_info.value is error_pragmas
+        conn.close.assert_awaited_once_with()
+        assert "no se pudo cerrar la conexión no registrada" in caplog.text
+        assert "close deliberadamente fallido" in caplog.text
+        assert manager.managed_paths == []
+
+    @pytest.mark.asyncio
+    async def test_init_single_cancelado_espera_close_y_preserva_cancelacion_original(
+        self,
+        db_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        manager = DatabaseLifecycleManager(
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        pragmas_iniciados = asyncio.Event()
+        cierre_iniciado = asyncio.Event()
+        liberar_cierre = asyncio.Event()
+
+        conn = MagicMock(name="conexion_cancelada_sin_registrar")
+
+        async def conectar(_path: str) -> MagicMock:
+            return conn
+
+        async def aplicar_pragmas_bloqueados(
+            _conn: MagicMock,
+            _path: str,
+        ) -> None:
+            pragmas_iniciados.set()
+            await asyncio.Event().wait()
+
+        async def cerrar_bloqueado() -> None:
+            cierre_iniciado.set()
+            await liberar_cierre.wait()
+
+        conn.close = AsyncMock(side_effect=cerrar_bloqueado)
+        monkeypatch.setattr(aiosqlite, "connect", conectar)
+        monkeypatch.setattr(manager, "_apply_pragmas", aplicar_pragmas_bloqueados)
+
+        task = asyncio.create_task(manager._init_single(db_path))
+        await pragmas_iniciados.wait()
+        task.cancel("cancelación inicial")
+
+        try:
+            await asyncio.wait_for(cierre_iniciado.wait(), timeout=0.5)
+            task.cancel("cancelación repetida")
+            await asyncio.sleep(0)
+            assert not task.done()
+
+            liberar_cierre.set()
+            with pytest.raises(asyncio.CancelledError) as exc_info:
+                await task
+            assert exc_info.value.args == ("cancelación inicial",)
+            conn.close.assert_awaited_once_with()
+            assert manager.managed_paths == []
+        finally:
+            liberar_cierre.set()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +311,115 @@ class TestCheckpoint:
 
 
 class TestShutdown:
+    @pytest.mark.asyncio
+    async def test_shutdown_conserva_fallida_cierra_vecina_y_reintenta(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        manager = DatabaseLifecycleManager(
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        error_cierre = RuntimeError("cierre deliberadamente fallido")
+        conn_fallida = MagicMock(name="conexion_fallida")
+        conn_fallida.close = AsyncMock(side_effect=[error_cierre, None])
+        conn_vecina = MagicMock(name="conexion_vecina")
+        conn_vecina.close = AsyncMock()
+        manager._connections = {
+            "fallida.db": conn_fallida,
+            "vecina.db": conn_vecina,
+        }
+        monkeypatch.setattr(manager, "checkpoint_all", AsyncMock(return_value={}))
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await manager.shutdown_all()
+
+        assert exc_info.value is error_cierre
+        assert manager._connections == {"fallida.db": conn_fallida}
+        conn_fallida.close.assert_awaited_once_with()
+        conn_vecina.close.assert_awaited_once_with()
+
+        await manager.shutdown_all()
+
+        assert manager.managed_paths == []
+        assert conn_fallida.close.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_shutdown_reemplazado_falla_y_conserva_reemplazo_para_reintento(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        manager = DatabaseLifecycleManager(
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        conn_original = MagicMock(name="conexion_original")
+        conn_reemplazo = MagicMock(name="conexion_reemplazo")
+        conn_reemplazo.close = AsyncMock()
+
+        async def cerrar_y_reemplazar() -> None:
+            manager._connections["compartida.db"] = conn_reemplazo
+
+        conn_original.close = AsyncMock(side_effect=cerrar_y_reemplazar)
+        manager._connections = {"compartida.db": conn_original}
+        monkeypatch.setattr(manager, "checkpoint_all", AsyncMock(return_value={}))
+
+        with pytest.raises(DatabaseShutdownIncompleteError) as exc_info:
+            await manager.shutdown_all()
+
+        assert exc_info.value.retained_paths == ("compartida.db",)
+        assert manager._connections == {"compartida.db": conn_reemplazo}
+        conn_reemplazo.close.assert_not_awaited()
+
+        await manager.shutdown_all()
+        assert manager.managed_paths == []
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancelado_conserva_conexiones_y_permite_reintento(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        manager = DatabaseLifecycleManager(
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        cierre_iniciado = asyncio.Event()
+        intentos_cierre = 0
+        conn_actual = MagicMock(name="conexion_actual")
+        conn_restante = MagicMock(name="conexion_restante")
+        conn_restante.close = AsyncMock()
+
+        async def cerrar_actual() -> None:
+            nonlocal intentos_cierre
+            intentos_cierre += 1
+            if intentos_cierre == 1:
+                cierre_iniciado.set()
+                await asyncio.Event().wait()
+
+        conn_actual.close = AsyncMock(side_effect=cerrar_actual)
+        manager._connections = {
+            "actual.db": conn_actual,
+            "restante.db": conn_restante,
+        }
+        monkeypatch.setattr(manager, "checkpoint_all", AsyncMock(return_value={}))
+
+        shutdown_task = asyncio.create_task(manager.shutdown_all())
+        await cierre_iniciado.wait()
+        shutdown_task.cancel("cancelacion deliberada")
+
+        with pytest.raises(asyncio.CancelledError) as exc_info:
+            await shutdown_task
+
+        assert exc_info.value.args == ("cancelacion deliberada",)
+        assert manager._connections == {
+            "actual.db": conn_actual,
+            "restante.db": conn_restante,
+        }
+        conn_restante.close.assert_not_awaited()
+
+        await manager.shutdown_all()
+
+        assert manager.managed_paths == []
+        assert intentos_cierre == 2
+        conn_restante.close.assert_awaited_once_with()
+
     @pytest.mark.asyncio
     async def test_shutdown_no_orphan_wal(self, lifecycle: DatabaseLifecycleManager, db_path: Path) -> None:
         """After shutdown, WAL and SHM files should be eliminated."""

@@ -94,6 +94,14 @@ class _DatabaseOperationFailedAfterCancellation(asyncio.CancelledError):
         self.operation_error = operation_error
 
 
+class DatabaseShutdownIncompleteError(RuntimeError):
+    """Shutdown reintentable porque aun quedan conexiones gestionadas."""
+
+    def __init__(self, retained_paths: tuple[str, ...]) -> None:
+        self.retained_paths = retained_paths
+        super().__init__("Database shutdown incomplete; retained managed connections: " + ", ".join(retained_paths))
+
+
 # ---------------------------------------------------------------------------
 # DatabaseLifecycleManager
 # ---------------------------------------------------------------------------
@@ -196,14 +204,28 @@ class DatabaseLifecycleManager:
             )
             await self._recover_orphaned_wal(db_path, wal_path, shm_path)
 
-        # Step 2: Open connection and apply pragmas
+        # Step 2: Open connection and apply pragmas. Until registration succeeds,
+        # this local scope is the connection's only owner.
         conn = await aiosqlite.connect(path_str)
-        conn.row_factory = aiosqlite.Row
+        try:
+            conn.row_factory = aiosqlite.Row
+            await self._apply_pragmas(conn, path_str)
+        except BaseException:
+            # CancelledError is a BaseException on Python 3.11. The close must
+            # finish before the original startup failure is propagated.
+            close_error = await self._quarantine_connection(db_path, conn)
+            if close_error is not None and not isinstance(close_error, asyncio.CancelledError):
+                logger.critical(
+                    "DatabaseLifecycle: no se pudo cerrar la conexión no registrada para %s",
+                    path_str,
+                    exc_info=(
+                        type(close_error),
+                        close_error,
+                        close_error.__traceback__,
+                    ),
+                )
+            raise
 
-        # Apply all pragmas
-        await self._apply_pragmas(conn, path_str)
-
-        # Store connection
         self._connections[path_str] = conn
         logger.info("DatabaseLifecycle: initialized %s with WAL mode", path_str)
 
@@ -381,15 +403,21 @@ class DatabaseLifecycleManager:
         except Exception as e:
             logger.critical("DatabaseLifecycle: checkpoint during shutdown FAILED: %s", e)
 
-        # Step 2: Close all connections
+        # Step 2: Close all connections. Cada entrada se retira solamente si
+        # esa misma instancia termino de cerrar; un fallo conserva ownership
+        # para que un shutdown posterior pueda reintentarlo.
+        first_close_error: Exception | None = None
         for path_str, conn in list(self._connections.items()):
             try:
                 await conn.close()
                 logger.info("DatabaseLifecycle: closed %s", path_str)
             except Exception as e:
                 logger.error("Error closing %s: %s", path_str, e)
-
-        self._connections.clear()
+                if first_close_error is None:
+                    first_close_error = e
+            else:
+                if self._connections.get(path_str) is conn:
+                    self._connections.pop(path_str)
 
         # Step 3: Verify WAL/SHM elimination
         for db_path in self._db_paths:
@@ -405,7 +433,18 @@ class DatabaseLifecycleManager:
                     shm_path.exists(),
                 )
 
-        logger.info("DatabaseLifecycle: shutdown complete")
+        if self._connections:
+            logger.warning(
+                "DatabaseLifecycle: shutdown incomplete; %d connections retained",
+                len(self._connections),
+            )
+        else:
+            logger.info("DatabaseLifecycle: shutdown complete")
+
+        if first_close_error is not None:
+            raise first_close_error
+        if self._connections:
+            raise DatabaseShutdownIncompleteError(tuple(self._connections))
 
     # ------------------------------------------------------------------
     # Health Check
@@ -713,7 +752,11 @@ class DatabaseLifecycleManager:
             self._write_locks[path_str] = lock
         return lock
 
-    def evict_connection(self, db_path: Path | str) -> None:
+    def evict_connection(
+        self,
+        db_path: Path | str,
+        expected_connection: aiosqlite.Connection | None = None,
+    ) -> bool:
         """Remove a connection from the managed pool without closing it.
 
         Intended for recovery paths where the caller has already closed the
@@ -721,15 +764,30 @@ class DatabaseLifecycleManager:
         After eviction, the next ``get_connection()`` call for the same path
         will open a fresh connection.
 
+        Cuando ``expected_connection`` se proporciona, la entrada se elimina
+        solo si todavia apunta a esa misma instancia. Esto evita expulsar una
+        conexion reemplazada concurrentemente.
+
         The path remains registered in ``_db_paths`` so health_check and
         shutdown verification still track it.
 
         Args:
             db_path: Path to the database whose connection should be evicted.
+            expected_connection: Instancia que el caller cerro y espera retirar.
+
+        Returns:
+            ``True`` si se retiro una entrada; ``False`` si no existia o habia
+            sido reemplazada.
         """
         path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
         path_str = str(path_obj.resolve())
-        self._connections.pop(path_str, None)
+        current_connection = self._connections.get(path_str)
+        if current_connection is None:
+            return False
+        if expected_connection is not None and current_connection is not expected_connection:
+            return False
+        self._connections.pop(path_str)
+        return True
 
     @property
     def managed_paths(self) -> list[str]:
