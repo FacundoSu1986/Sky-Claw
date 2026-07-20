@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from sky_claw.antigravity.security.network_gateway import NetworkGatewayTimeoutError
+
 if TYPE_CHECKING:
     from sky_claw.antigravity.security.network_gateway import NetworkGateway
 
@@ -30,6 +32,15 @@ _CB_RECOVERY_TIMEOUT = 60  # seconds
 
 class MasterlistFetchError(Exception):
     """Raised when a masterlist / mod-info fetch fails."""
+
+
+class MasterlistHTTPError(MasterlistFetchError):
+    """Fallo HTTP con clasificación de retry legible por máquina."""
+
+    def __init__(self, *, status: int, mod_id: int, body: str) -> None:
+        self.status = status
+        self.retryable = status == 429 or status >= 500
+        super().__init__(f"HTTP {status} for mod {mod_id}: {body[:200]}")
 
 
 class CircuitOpenError(MasterlistFetchError):
@@ -147,8 +158,8 @@ class MasterlistClient:
 
         Returns the parsed JSON response dict.
 
-        Raises :class:`CircuitOpenError` if the breaker is open.
-        Raises :class:`MasterlistFetchError` on HTTP errors.
+        Lanza :class:`CircuitOpenError` si el circuit breaker está abierto.
+        Lanza :class:`MasterlistHTTPError` para respuestas HTTP no exitosas.
         """
         if not self._cb.allow_request():
             raise CircuitOpenError("Circuit breaker is open — Nexus API calls are temporarily blocked")
@@ -166,14 +177,23 @@ class MasterlistClient:
             try:
                 if resp.status != 200:
                     body = await resp.text()
-                    raise MasterlistFetchError(f"HTTP {resp.status} for mod {mod_id}: {body[:200]}")
+                    raise MasterlistHTTPError(
+                        status=resp.status,
+                        mod_id=mod_id,
+                        body=body,
+                    )
                 data: dict[str, Any] = await resp.json()
             finally:
-                await resp.release()
+                resp.release()
         except MasterlistFetchError:
             self._cb.record_failure()
             raise
-        except (aiohttp.ClientError, OSError, TimeoutError):
+        except (
+            aiohttp.ClientError,
+            NetworkGatewayTimeoutError,
+            OSError,
+            TimeoutError,
+        ):
             self._cb.record_failure()
             raise
 

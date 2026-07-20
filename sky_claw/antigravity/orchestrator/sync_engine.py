@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from tenacity import (
     AsyncRetrying,
     RetryError,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -47,8 +47,10 @@ from sky_claw.antigravity.scraper.masterlist import (
     CircuitOpenError,
     MasterlistClient,
     MasterlistFetchError,
+    MasterlistHTTPError,
 )
 from sky_claw.antigravity.security.hitl import Decision, HITLGuard
+from sky_claw.antigravity.security.network_gateway import NetworkGatewayTimeoutError
 from sky_claw.antigravity.security.path_validator import (
     PathViolationError,
     assert_safe_component,
@@ -73,6 +75,24 @@ _POISON = None
 # because all workers died without consuming, the put would block forever
 # without this bound.
 _POISON_DELIVERY_TIMEOUT: float = 5.0
+
+
+def _should_retry_masterlist_fetch(exc: BaseException) -> bool:
+    """Decide explícitamente si un fallo de Masterlist se reintenta."""
+    if isinstance(exc, (CircuitOpenError, NetworkGatewayTimeoutError)):
+        return False
+    if isinstance(exc, MasterlistHTTPError):
+        return exc.retryable
+    return isinstance(
+        exc,
+        (
+            aiohttp.ClientError,
+            OSError,
+            TimeoutError,
+            MasterlistFetchError,
+        ),
+    )
+
 
 # FASE 1.5: Constante para directorio de staging de backups
 BACKUP_STAGING_DIR = pathlib.Path(".skyclaw_backups/")
@@ -151,8 +171,12 @@ def _update_available(local_version: str | None, nexus_version: str | None) -> b
     Misma regla que ``_check_and_update_mod`` (no inventar updates cuando Nexus no
     devuelve versión). Comparación por string exacto — la fuente de verdad es que
     Nexus publicó una etiqueta distinta a la instalada.
+
+    Una versión local vacía/ausente es "desconocida" (fila importada en modo
+    degradado sin Nexus), no un update disponible: sin saber qué está instalado no
+    se puede afirmar que esté desactualizada.
     """
-    return bool(nexus_version) and nexus_version != local_version
+    return bool(nexus_version) and bool(local_version) and nexus_version != local_version
 
 
 # BUG-001 FIX: SyncMetrics refactorizado como dataclass con asyncio.Lock
@@ -518,7 +542,14 @@ class SyncEngine:
         async def _detect(idx: int, mod: dict[str, Any]) -> None:
             try:
                 info = await self._safe_fetch_info(mod["nexus_id"], session, api_semaphore)
-            except (MasterlistFetchError, CircuitOpenError, RetryError, aiohttp.ClientError, OSError) as exc:
+            except (
+                MasterlistFetchError,
+                CircuitOpenError,
+                RetryError,
+                aiohttp.ClientError,
+                NetworkGatewayTimeoutError,
+                OSError,
+            ) as exc:
                 outcomes[idx] = exc
                 return
             outcomes[idx] = info
@@ -690,8 +721,10 @@ class SyncEngine:
                 }
 
             nexus_version = str(info.get("version", ""))
-            # 2. Version comparison
-            if not nexus_version or nexus_version == local_version:
+            # 2. Version comparison. Una versión local vacía es "desconocida"
+            # (fila importada en modo degradado): sin ella no se puede afirmar que
+            # haya update, así que se trata como al-día en vez de re-descargar.
+            if not nexus_version or not local_version or nexus_version == local_version:
                 if rm is not None and transaction_id is not None:
                     await rm.commit_transaction(transaction_id)
                 return {"status": "up_to_date", "name": mod_name}
@@ -771,7 +804,13 @@ class SyncEngine:
                 result["rollback_transaction_id"] = transaction_id
             return result
 
-        except (MasterlistFetchError, CircuitOpenError, RetryError, aiohttp.ClientError) as exc:
+        except (
+            MasterlistFetchError,
+            CircuitOpenError,
+            RetryError,
+            aiohttp.ClientError,
+            NetworkGatewayTimeoutError,
+        ) as exc:
             # Expected network failure — graceful degradation, no re-raise.
             # No file operations were recorded under this transaction, so
             # mark_transaction_rolled_back (journal-only) is correct here.
@@ -826,11 +865,11 @@ class SyncEngine:
         session: aiohttp.ClientSession,
         semaphore: asyncio.Semaphore,
     ) -> dict[str, Any] | None:
-        """Envuelve la consulta a Nexus API con un semáforo de concurrencia y backoff."""
+        """Envuelve la consulta a Nexus API con semáforo y retry explícito."""
         result: dict[str, Any] | None = None
         async for attempt in AsyncRetrying(
-            retry=retry_if_exception_type((aiohttp.ClientError, MasterlistFetchError)),
-            stop=stop_after_attempt(5),
+            retry=retry_if_exception(_should_retry_masterlist_fetch),
+            stop=stop_after_attempt(self._cfg.max_retries),
             wait=self._fetch_retry_wait,
             reraise=True,
         ):
@@ -845,18 +884,23 @@ class SyncEngine:
     # Sync Local Load Order (Legacy Logic)
     # ------------------------------------------------------------------
 
-    async def run(self, session: aiohttp.ClientSession, profile: str = "Default") -> SyncResult:
-        """Sync local load order via producer-consumer pipeline.
+    async def run(
+        self,
+        session: aiohttp.ClientSession,
+        profile: str = "Default",
+        *,
+        enrich_remote: bool = True,
+    ) -> SyncResult:
+        """Sincroniza el load order local y opcionalmente consulta Nexus.
 
-        Uses ``asyncio.TaskGroup`` so an unexpected worker crash cancels the
-        producer and all peers cooperatively (fail-fast), while the narrowed
-        ``except`` clause in ``_consume`` still absorbs expected network errors.
-        POISON pills are guaranteed via ``_produce_then_poison``'s ``finally``
-        block even if the producer itself fails mid-stream.
+        ``enrich_remote=False`` importa identidad MO2 sin requests Masterlist.
+        Los callers existentes conservan el enriquecimiento remoto por default.
         """
         queue: asyncio.Queue[list[tuple[str, bool]] | None] = asyncio.Queue(maxsize=self._cfg.queue_maxsize)
         semaphore = asyncio.Semaphore(self._cfg.api_semaphore_limit)
         result = SyncResult()
+        if not enrich_remote:
+            logger.warning("Nexus enrichment disabled; importing local MO2 identity only")
 
         async def _produce_then_poison() -> None:
             """Produce batches then send POISON pills — even on producer failure."""
@@ -877,7 +921,13 @@ class SyncEngine:
             tg.create_task(_produce_then_poison(), name="sync-producer")
             for i in range(self._cfg.worker_count):
                 tg.create_task(
-                    self._consume(queue, session, semaphore, result),
+                    self._consume(
+                        queue,
+                        session,
+                        semaphore,
+                        result,
+                        enrich_remote=enrich_remote,
+                    ),
                     name=f"sync-worker-{i}",
                 )
 
@@ -950,6 +1000,8 @@ class SyncEngine:
         session: aiohttp.ClientSession,
         semaphore: asyncio.Semaphore,
         result: SyncResult,
+        *,
+        enrich_remote: bool = True,
     ) -> None:
         while True:
             batch = await queue.get()
@@ -960,7 +1012,13 @@ class SyncEngine:
             record_circuit_state("masterlist", self._masterlist.circuit_state)
             try:
                 with SYNC_DURATION_SECONDS.time():
-                    await self._process_batch(batch, session, semaphore, result)
+                    await self._process_batch(
+                        batch,
+                        session,
+                        semaphore,
+                        result,
+                        enrich_remote=enrich_remote,
+                    )
             except asyncio.CancelledError:
                 raise
             except (MasterlistFetchError, CircuitOpenError, RetryError, aiohttp.ClientError) as exc:
@@ -987,9 +1045,17 @@ class SyncEngine:
         session: aiohttp.ClientSession,
         semaphore: asyncio.Semaphore,
         result: SyncResult,
+        *,
+        enrich_remote: bool = True,
     ) -> None:
         with _tracer.start_as_current_span("sync.batch", attributes={"batch_size": len(batch)}):
-            await self._process_batch_inner(batch, session, semaphore, result)
+            await self._process_batch_inner(
+                batch,
+                session,
+                semaphore,
+                result,
+                enrich_remote=enrich_remote,
+            )
 
     async def _process_batch_inner(
         self,
@@ -997,6 +1063,8 @@ class SyncEngine:
         session: aiohttp.ClientSession,
         semaphore: asyncio.Semaphore,
         result: SyncResult,
+        *,
+        enrich_remote: bool = True,
     ) -> None:
         mod_rows: list[tuple[int, str, str, str, str, str, bool, bool]] = []
         log_rows: list[tuple[int | None, str, str, str]] = []
@@ -1009,24 +1077,36 @@ class SyncEngine:
                     result.skipped += 1
                     continue
 
-                try:
-                    info = await self._safe_fetch_info(nexus_id, session, semaphore)
-                except (
-                    MasterlistFetchError,
-                    CircuitOpenError,
-                    RetryError,
-                    aiohttp.ClientError,
-                ) as exc:
-                    logger.warning("Skipping mod %r: %s", mod_name, exc)
-                    result.failed += 1
-                    record_sync_failure(1)
-                    result.errors.append(f"{mod_name}: {exc}")
-                    log_rows.append((None, "sync", "error", f"{mod_name}: {exc}"))
-                    continue
-
-                if not info or "mod_id" not in info:
-                    result.skipped += 1
-                    continue
+                if enrich_remote:
+                    try:
+                        info = await self._safe_fetch_info(nexus_id, session, semaphore)
+                    except (
+                        MasterlistFetchError,
+                        CircuitOpenError,
+                        RetryError,
+                        aiohttp.ClientError,
+                        NetworkGatewayTimeoutError,
+                        OSError,
+                        TimeoutError,
+                    ) as exc:
+                        logger.warning("Skipping mod %r: %s", mod_name, exc)
+                        result.failed += 1
+                        record_sync_failure(1)
+                        result.errors.append(f"{mod_name}: {exc}")
+                        log_rows.append((None, "sync", "error", f"{mod_name}: {exc}"))
+                        continue
+                    if not info or "mod_id" not in info:
+                        result.skipped += 1
+                        continue
+                    sync_status = "ok"
+                    sync_detail = mod_name
+                else:
+                    info = {
+                        "mod_id": nexus_id,
+                        "name": mod_name,
+                    }
+                    sync_status = "degraded"
+                    sync_detail = f"{mod_name}: identidad local importada sin metadatos Nexus"
 
                 mod_rows.append(
                     (
@@ -1040,9 +1120,10 @@ class SyncEngine:
                         bool(enabled),
                     )
                 )
-                log_rows.append((None, "sync", "ok", mod_name))
+                log_rows.append((None, "sync", sync_status, sync_detail))
                 result.processed += 1
-                batch_success_count += 1
+                if enrich_remote:
+                    batch_success_count += 1
 
         await self._registry.upsert_mods_batch(mod_rows)
         await self._registry.log_tasks_batch(log_rows)

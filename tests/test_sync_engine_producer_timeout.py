@@ -51,8 +51,16 @@ async def test_poison_delivery_doesnt_deadlock_when_workers_die() -> None:
         await queue.put([("mod-b", True)])  # queue now full (maxsize=2)
         raise RuntimeError("producer failed")
 
-    async def _dying_consume(queue, session, semaphore, result) -> None:  # noqa: ANN001
-        """Worker that crashes immediately without reading anything."""
+    async def _dying_consume(
+        queue,
+        session,
+        semaphore,
+        result,
+        *,
+        enrich_remote: bool = True,
+    ) -> None:  # noqa: ANN001
+        """Worker que falla sin drenar la cola."""
+        assert enrich_remote is True
         raise RuntimeError("worker died")
 
     engine._produce = _filling_produce  # type: ignore[method-assign]
@@ -82,7 +90,15 @@ async def test_poison_delivery_succeeds_when_queue_has_space() -> None:
     async def _empty_produce(queue: asyncio.Queue, profile: str) -> None:
         pass  # produce nothing
 
-    async def _draining_consume(queue, session, semaphore, result) -> None:  # noqa: ANN001
+    async def _draining_consume(
+        queue,
+        session,
+        semaphore,
+        result,
+        *,
+        enrich_remote: bool = True,
+    ) -> None:  # noqa: ANN001
+        assert enrich_remote is True
         item = await queue.get()
         poison_received.append(item)  # should be None (_POISON)
 

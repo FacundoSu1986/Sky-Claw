@@ -60,16 +60,17 @@ def mock_network_gateway() -> MagicMock:
     """NetworkGateway stub for tests that should NOT hit the real network.
 
     Matches the real API: ``resp = await gateway.request(method, url, session, ...)``.
-    The stub returns a 200-OK mock response with async ``text()``, ``json()``,
-    and ``release()`` methods. Override ``mock_network_gateway.request.return_value``
-    in your test to simulate specific status codes or response bodies.
+    The stub returns a 200-OK mock response with async ``text()``/``json()``
+    and synchronous ``release()``, matching ``aiohttp.ClientResponse``.
+    Override ``mock_network_gateway.request.return_value`` in a test to simulate
+    specific status codes or response bodies.
     """
     mock_resp = MagicMock()
     mock_resp.status = 200
     mock_resp.raise_for_status = MagicMock()
     mock_resp.text = AsyncMock(return_value="")
     mock_resp.json = AsyncMock(return_value={})
-    mock_resp.release = AsyncMock()
+    mock_resp.release = MagicMock()
 
     gateway = MagicMock(spec=NetworkGateway)
     gateway.request = AsyncMock(return_value=mock_resp)

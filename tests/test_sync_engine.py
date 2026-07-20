@@ -20,9 +20,17 @@ from sky_claw.antigravity.orchestrator.sync_engine import (
     _extract_nexus_id,
     _update_available,
 )
-from sky_claw.antigravity.scraper.masterlist import MasterlistClient, MasterlistFetchError
+from sky_claw.antigravity.scraper.masterlist import (
+    CircuitOpenError,
+    MasterlistClient,
+    MasterlistFetchError,
+    MasterlistHTTPError,
+)
 from sky_claw.antigravity.security.hitl import Decision
-from sky_claw.antigravity.security.network_gateway import NetworkGateway
+from sky_claw.antigravity.security.network_gateway import (
+    NetworkGateway,
+    NetworkGatewayTimeoutError,
+)
 from sky_claw.antigravity.security.path_validator import PathValidator
 from sky_claw.local.mo2.vfs import MO2Controller
 
@@ -49,6 +57,26 @@ def _fake_mod_info(mod_id: int, name: str = "TestMod") -> dict[str, Any]:
         "author": "author",
         "category_id": "5",
     }
+
+
+def _make_retry_engine(
+    error: BaseException,
+    *,
+    max_retries: int = 3,
+) -> tuple[SyncEngine, AsyncMock, MagicMock]:
+    """Construye un engine sin esperas reales y expone sus observadores."""
+    fetch = AsyncMock(side_effect=error)
+    masterlist = MagicMock(spec=MasterlistClient)
+    masterlist.fetch_mod_info = fetch
+    wait_probe = MagicMock(return_value=0)
+    engine = SyncEngine(
+        mo2=MagicMock(spec=MO2Controller),
+        masterlist=masterlist,
+        registry=AsyncMock(spec=AsyncModRegistry),
+        config=SyncConfig(max_retries=max_retries),
+        fetch_retry_wait=wait_probe,
+    )
+    return engine, fetch, wait_probe
 
 
 # ------------------------------------------------------------------
@@ -154,6 +182,90 @@ async def adb(tmp_path: pathlib.Path) -> AsyncModRegistry:
 # ------------------------------------------------------------------
 # SyncEngine — ciclo run() (producer-consumer)
 # ------------------------------------------------------------------
+
+
+class TestMasterlistRetryPolicy:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [401, 403, 404])
+    async def test_http_permanente_hace_un_intento_sin_backoff(self, status: int) -> None:
+        error = MasterlistHTTPError(status=status, mod_id=42, body="permanente")
+        engine, fetch, wait_probe = _make_retry_engine(error)
+
+        with pytest.raises(MasterlistHTTPError):
+            await engine._safe_fetch_info(
+                42,
+                MagicMock(spec=aiohttp.ClientSession),
+                asyncio.Semaphore(1),
+            )
+
+        assert fetch.await_count == 1
+        wait_probe.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [429, 500, 503])
+    async def test_http_transitorio_respeta_max_retries(self, status: int) -> None:
+        error = MasterlistHTTPError(status=status, mod_id=42, body="transitorio")
+        engine, fetch, _ = _make_retry_engine(error, max_retries=3)
+
+        with pytest.raises(MasterlistHTTPError):
+            await engine._safe_fetch_info(
+                42,
+                MagicMock(spec=aiohttp.ClientSession),
+                asyncio.Semaphore(1),
+            )
+
+        assert fetch.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_circuito_abierto_hace_un_intento_sin_backoff(self) -> None:
+        engine, fetch, wait_probe = _make_retry_engine(CircuitOpenError("abierto"))
+
+        with pytest.raises(CircuitOpenError):
+            await engine._safe_fetch_info(
+                42,
+                MagicMock(spec=aiohttp.ClientSession),
+                asyncio.Semaphore(1),
+            )
+
+        assert fetch.await_count == 1
+        wait_probe.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_timeout_gateway_hace_un_intento_sin_backoff(self) -> None:
+        engine, fetch, wait_probe = _make_retry_engine(
+            NetworkGatewayTimeoutError("timeout seguro"),
+        )
+
+        with pytest.raises(NetworkGatewayTimeoutError):
+            await engine._safe_fetch_info(
+                42,
+                MagicMock(spec=aiohttp.ClientSession),
+                asyncio.Semaphore(1),
+            )
+
+        assert fetch.await_count == 1
+        wait_probe.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error",
+        [
+            aiohttp.ClientConnectionError("sin conexión"),
+            OSError("fallo DNS"),
+        ],
+        ids=["conexion", "dns"],
+    )
+    async def test_transporte_transitorio_respeta_max_retries(self, error: BaseException) -> None:
+        engine, fetch, _ = _make_retry_engine(error, max_retries=3)
+
+        with pytest.raises(type(error)):
+            await engine._safe_fetch_info(
+                42,
+                MagicMock(spec=aiohttp.ClientSession),
+                asyncio.Semaphore(1),
+            )
+
+        assert fetch.await_count == 3
 
 
 class TestSyncEngineRun:
@@ -280,7 +392,7 @@ class TestSyncEngineRun:
     async def test_network_error_degrades_gracefully(self, tmp_path: pathlib.Path, adb: AsyncModRegistry) -> None:
         """Errores de red en un mod no impiden el procesamiento de los demás.
 
-        El mod 5001 agota 5 reintentos con ``wait_none()`` (reraise=True) →
+        El mod 5001 agota 1 intento con ``wait_none()`` (reraise=True) →
         ``_process_batch`` lo captura por-mod → continúa con los siguientes.
         ``result.failed == 1``, ``result.processed == 2``.
         """
@@ -311,6 +423,97 @@ class TestSyncEngineRun:
         assert result.failed == 1
         assert result.processed == 2
         assert len(result.errors) >= 1
+
+
+class TestSyncEngineLocalOnly:
+    @pytest.mark.asyncio
+    async def test_sin_enriquecimiento_persiste_identidad_y_no_llama_masterlist(
+        self,
+        tmp_path: pathlib.Path,
+        adb: AsyncModRegistry,
+    ) -> None:
+        mo2 = _make_mo2(
+            tmp_path,
+            "+LocalUno-9001-v1\n-LocalDos-9002-v1\n",
+        )
+        masterlist = MasterlistClient(gateway=NetworkGateway(), api_key="")
+        fetch = AsyncMock(side_effect=AssertionError("Masterlist no debe ejecutarse"))
+        engine = SyncEngine(
+            mo2=mo2,
+            masterlist=masterlist,
+            registry=adb,
+            config=SyncConfig(worker_count=1, batch_size=10, max_retries=1),
+            fetch_retry_wait=wait_none(),
+        )
+
+        with patch.object(masterlist, "fetch_mod_info", fetch):
+            result = await engine.run(
+                MagicMock(spec=aiohttp.ClientSession),
+                profile="Default",
+                enrich_remote=False,
+            )
+
+        fetch.assert_not_awaited()
+        assert result.processed == 2
+        assert result.failed == 0
+        assert result.skipped == 0
+        mods = {mod["nexus_id"]: mod for mod in await adb.search_mods("")}
+        assert mods[9001]["name"] == "LocalUno-9001-v1"
+        assert mods[9001]["version"] == ""
+        assert mods[9001]["installed"] is True
+        assert mods[9001]["enabled_in_vfs"] is True
+        assert mods[9002]["name"] == "LocalDos-9002-v1"
+        assert mods[9002]["enabled_in_vfs"] is False
+        task_log = await adb.get_task_log()
+        assert len(task_log) == 2
+        assert all(row["action"] == "sync" for row in task_log)
+        assert all(row["status"] == "degraded" for row in task_log)
+
+    @pytest.mark.asyncio
+    async def test_batch_local_sobrevive_fallo_remoto_y_se_enriquece_despues(
+        self,
+        tmp_path: pathlib.Path,
+        adb: AsyncModRegistry,
+    ) -> None:
+        mo2 = _make_mo2(tmp_path, "+Reanudable-9101-v1\n")
+        masterlist = MasterlistClient(gateway=NetworkGateway(), api_key="fake")
+        fetch = AsyncMock(side_effect=AssertionError("Masterlist no debe ejecutarse"))
+        engine = SyncEngine(
+            mo2=mo2,
+            masterlist=masterlist,
+            registry=adb,
+            config=SyncConfig(worker_count=1, batch_size=10, max_retries=1),
+            fetch_retry_wait=wait_none(),
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with patch.object(masterlist, "fetch_mod_info", fetch):
+            local_result = await engine.run(
+                session,
+                profile="Default",
+                enrich_remote=False,
+            )
+            assert local_result.processed == 1
+            fetch.assert_not_awaited()
+
+            fetch.side_effect = MasterlistFetchError("Nexus no disponible")
+            remote_failure = await engine.run(session, profile="Default")
+            assert remote_failure.failed == 1
+
+            persisted = await adb.search_mods("")
+            assert len(persisted) == 1
+            assert persisted[0]["name"] == "Reanudable-9101-v1"
+            assert persisted[0]["version"] == ""
+
+            fetch.side_effect = None
+            fetch.return_value = _fake_mod_info(9101, "Reanudable remoto")
+            remote_success = await engine.run(session, profile="Default")
+
+        assert remote_success.processed == 1
+        enriched = await adb.search_mods("")
+        assert len(enriched) == 1
+        assert enriched[0]["name"] == "Reanudable remoto"
+        assert enriched[0]["version"] == "1.0"
 
 
 # ------------------------------------------------------------------
@@ -471,6 +674,40 @@ class TestCheckForUpdates:
 
         assert "SkyUI" in payload.up_to_date_mods
         assert payload.total_checked == 1
+
+    @pytest.mark.asyncio
+    async def test_mod_degradado_version_desconocida_no_se_actualiza(self) -> None:
+        """Una fila degradada (version='') no debe descargarse en el ciclo
+        completo: sin versión local conocida se trata como al-día, no como
+        update pendiente (evita re-descargas de mods ya vigentes)."""
+        mock_registry = AsyncMock()
+        mock_registry.search_mods.return_value = [
+            {"name": "SkyUI", "nexus_id": 12021, "version": "", "installed": True},
+        ]
+        mock_masterlist = AsyncMock()
+        mock_masterlist.fetch_mod_info = AsyncMock(
+            return_value={
+                "mod_id": 12021,
+                "name": "SkyUI",
+                "version": "5.2",
+                "author": "schlangster",
+                "category_id": "2",
+                "download_url": None,
+            }
+        )
+
+        engine = SyncEngine(
+            mo2=AsyncMock(),
+            masterlist=mock_masterlist,
+            registry=mock_registry,
+            fetch_retry_wait=wait_none(),
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+        payload = await engine.check_for_updates(session)
+
+        assert "SkyUI" in payload.up_to_date_mods
+        assert payload.updated_mods == []
+        assert payload.failed_mods == []
 
     @pytest.mark.asyncio
     async def test_newer_version_no_downloader_goes_to_failed(self) -> None:
@@ -1072,6 +1309,12 @@ class TestUpdateAvailable:
     def test_nexus_none_no_es_update(self) -> None:
         assert _update_available("1.0", None) is False
 
+    def test_version_local_desconocida_no_es_update(self) -> None:
+        # Fila degradada (import local-only sin Nexus): version='' es
+        # "desconocida", no un update disponible aunque Nexus publique versión.
+        assert _update_available("", "5.2") is False
+        assert _update_available(None, "5.2") is False
+
 
 class TestDetectPendingUpdates:
     """Detección read-only de updates disponibles (sin descargar), para el badge."""
@@ -1146,6 +1389,19 @@ class TestDetectPendingUpdates:
         assert result.updates == []
 
     @pytest.mark.asyncio
+    async def test_mod_degradado_version_desconocida_no_aparece_en_updates(self) -> None:
+        """Una fila importada en modo degradado (version='') no debe reportarse
+        como update aunque Nexus publique versión: sin versión local conocida no
+        se puede afirmar que esté desactualizada."""
+        engine = self._engine(
+            [{"name": "SkyUI", "nexus_id": 12021, "version": "", "installed": True}],
+            AsyncMock(return_value=_fake_mod_info(12021, "SkyUI") | {"version": "5.2"}),
+        )
+        result = await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
+        assert result.checked == 1
+        assert result.updates == []
+
+    @pytest.mark.asyncio
     async def test_fallo_de_fetch_se_aisla_en_failed(self) -> None:
         """Un mod que falla en Nexus va a `failed` sin abortar el resto."""
 
@@ -1166,6 +1422,21 @@ class TestDetectPendingUpdates:
         assert [u["name"] for u in result.updates] == ["Bueno"]
         assert len(result.failed) == 1
         assert result.failed[0]["nexus_id"] == 1
+
+    @pytest.mark.asyncio
+    async def test_timeout_gateway_se_aisla_como_fallo_del_mod(self) -> None:
+        engine = self._engine(
+            [{"name": "SinRed", "nexus_id": 77, "version": "1.0", "installed": True}],
+            AsyncMock(side_effect=NetworkGatewayTimeoutError("timeout seguro")),
+        )
+
+        result = await engine.detect_pending_updates(MagicMock(spec=aiohttp.ClientSession))
+
+        assert result.checked == 1
+        assert result.updates == []
+        assert len(result.failed) == 1
+        assert result.failed[0]["nexus_id"] == 77
+        assert result.failed[0]["error"] == "timeout seguro"
 
     def test_set_nexus_api_key_propaga_al_masterlist(self) -> None:
         """Refrescar la key la delega al MasterlistClient (review Codex #228)."""

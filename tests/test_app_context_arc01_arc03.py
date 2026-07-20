@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import logging
 import pathlib
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -107,10 +107,81 @@ class TestAppContextResilience:
             with pytest.raises(RuntimeError, match="forced router failure"):
                 await ctx._start_full_inner()
 
+        mock_sync.return_value.run.assert_awaited_once_with(
+            ANY,
+            profile="Default",
+            enrich_remote=False,
+        )
+
         # ARC-01 evidence: the teardown failure was logged but we continued
         assert any("Teardown previo falló" in r.message for r in caplog.records)
         # Exit stack must have been rebuilt (not None and push_async_callback works)
         assert ctx._exit_stack is not None
+
+    @pytest.mark.asyncio
+    async def test_cold_boot_con_key_cae_a_local_only_si_enriquecimiento_falla_total(self, mock_args):
+        """Con API key pero Nexus caído en el primer arranque, el sync enriquecido
+        falla para todos los mods (processed=0, failed>0) y el cold boot reintenta
+        en modo local-only para no dejar el registry vacío."""
+        from sky_claw.antigravity.orchestrator.sync_engine import SyncResult
+
+        ctx = AppContext(mock_args)
+        ctx.config_path = pathlib.Path(mock_args.db_path).parent / "config.toml"
+        ctx.config_path.parent.mkdir(parents=True, exist_ok=True)
+        ctx.config_path.write_text("", encoding="utf-8")
+
+        with patch.object(ctx.network, "initialize", new_callable=AsyncMock):
+            await ctx.start_minimal()
+
+        with (
+            patch("sky_claw.app_context.Config") as mock_config,
+            patch("sky_claw.app_context.AutoDetector") as mock_auto,
+            patch("sky_claw.app_context.MO2Controller"),
+            patch("sky_claw.app_context.MasterlistClient"),
+            patch("sky_claw.app_context.TelegramSender"),
+            patch("sky_claw.app_context.HITLGuard"),
+            patch("sky_claw.app_context.SyncEngine") as mock_sync,
+            patch("sky_claw.app_context.ToolsInstaller"),
+            patch("sky_claw.app_context.AsyncToolRegistry"),
+            patch("sky_claw.app_context.LLMRouter") as mock_router,
+        ):
+            mock_config.return_value = MagicMock(
+                mo2_root="",
+                skyrim_path="",
+                llm_provider="ollama",
+                llm_model="",
+                llm_api_key="",
+                nexus_api_key="fake",
+                telegram_bot_token="",
+                telegram_chat_id="",
+                loot_exe="",
+                xedit_exe="",
+                pandora_exe="",
+                bodyslide_exe="",
+                install_dir="",
+                save=MagicMock(),
+            )
+            mock_auto.find_mo2 = AsyncMock(return_value=None)
+            mock_auto.find_skyrim = AsyncMock(return_value=None)
+            # 1er run enriquecido: 0 procesados, 2 fallidos → gatilla el fallback
+            # local-only; 2do run local: 2 procesados.
+            mock_sync.return_value.run = AsyncMock(
+                side_effect=[
+                    SyncResult(processed=0, failed=2),
+                    SyncResult(processed=2),
+                ]
+            )
+            # Cortamos el arranque justo después del cold boot (router.open va
+            # después) para no montar el resto del stack.
+            mock_router.return_value.open = AsyncMock(side_effect=RuntimeError("stop"))
+
+            with pytest.raises(RuntimeError, match="stop"):
+                await ctx._start_full_inner()
+
+        run = mock_sync.return_value.run
+        assert run.await_count == 2
+        assert run.await_args_list[0].kwargs["enrich_remote"] is True
+        assert run.await_args_list[1].kwargs["enrich_remote"] is False
 
     @pytest.mark.asyncio
     async def test_references_nulled_after_failed_start_full(self, mock_args):
