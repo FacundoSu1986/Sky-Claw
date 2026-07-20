@@ -7,13 +7,12 @@ directory (where ``SkyrimSE.exe`` lives).
 TASK-011 enhancements:
 - WSL2 conditional path translation via :func:`translate_path_if_wsl`.
 - Full async subprocess with ``asyncio.wait_for`` timeout.
-- Zombie process prevention: ``proc.kill()`` + ``proc.wait()`` on timeout.
+- Zombie prevention after timeout, cancellation, or pipe failure: ``kill()`` + ``wait()``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import pathlib
 from asyncio.exceptions import TimeoutError as AsyncTimeoutError
@@ -53,6 +52,31 @@ class LOOTTimeoutError(RuntimeError):
     def __init__(self, timeout: int) -> None:
         super().__init__(f"LOOT timed out after {timeout}s")
         self.timeout = timeout
+
+
+async def _reap_process(proc: asyncio.subprocess.Process, *, timeout: float) -> bool:
+    """Observa ``proc.wait()`` hasta terminal pese a cancelaciones repetidas.
+
+    Devuelve ``True`` si el proceso fue reapeado dentro del deadline, o
+    ``False`` si el ``proc.wait()`` no completó a tiempo — en ese caso el
+    proceso puede seguir vivo sin reapear y el caller debe dejar constancia.
+    """
+    reap_task = asyncio.create_task(asyncio.wait_for(proc.wait(), timeout=timeout))
+
+    while not reap_task.done():
+        try:
+            await asyncio.shield(reap_task)
+        except asyncio.CancelledError:
+            if reap_task.cancelled():
+                raise
+        except (AsyncTimeoutError, TimeoutError):
+            return False
+
+    try:
+        reap_task.result()
+    except (AsyncTimeoutError, TimeoutError):
+        return False
+    return True
 
 
 class LOOTRunner:
@@ -118,6 +142,8 @@ class LOOTRunner:
 
         logger.info("Running LOOT: %s", " ".join(args))
 
+        proc: asyncio.subprocess.Process | None = None
+        completed = False
         try:
             proc = await asyncio.create_subprocess_exec(
                 *args,
@@ -128,26 +154,48 @@ class LOOTRunner:
                 proc.communicate(),
                 timeout=self._config.timeout,
             )
+            completed = True
         except FileNotFoundError:
             raise LOOTNotFoundError(f"LOOT executable not found at {loot_path}") from None
         except (AsyncTimeoutError, TimeoutError):
-            # TASK-011: Zombie prevention -- kill + reap.
-            # H-4 + review PR #257: NO se usa taskkill.exe en el path WSL2.
-            #  - /IM loot.exe (versión original) mataba TODAS las instancias de
-            #    loot.exe del host (LOOT GUI abierta, otro sky-claw), destruyendo
-            #    trabajo del usuario.
-            #  - /PID str(proc.pid) es peor aún: bajo WSL2 proc.pid es el PID de
-            #    Linux (el proceso interop), NO el de Windows; taskkill /PID con ese
-            #    número puede no matar el loot.exe colgado y, si colisiona con un
-            #    PID real de Windows, mata un proceso ajeno arbitrario.
-            # La garantía correcta es proc.kill() + reap: al matar el proceso Linux,
-            # la interop de WSL2 termina el proceso Windows asociado.
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-
-            with contextlib.suppress(AsyncTimeoutError, TimeoutError):
-                await asyncio.wait_for(proc.wait(), timeout=3.0)
             raise LOOTTimeoutError(self._config.timeout) from None
+        finally:
+            if proc is not None and not completed:
+                # Bajo WSL2 proc.pid es el PID Linux de interop: nunca usar taskkill.
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                except Exception as cleanup_error:
+                    logger.warning(
+                        "LOOT cleanup: proc.kill() falló: %s",
+                        cleanup_error,
+                        exc_info=True,
+                    )
+
+                try:
+                    reaped = await _reap_process(proc, timeout=3.0)
+                except asyncio.CancelledError as cleanup_error:
+                    logger.warning(
+                        "LOOT cleanup: proc.wait() fue cancelado: %s",
+                        cleanup_error,
+                        exc_info=True,
+                    )
+                except Exception as cleanup_error:
+                    logger.warning(
+                        "LOOT cleanup: proc.wait() falló: %s",
+                        cleanup_error,
+                        exc_info=True,
+                    )
+                else:
+                    if not reaped:
+                        logger.warning(
+                            "LOOT cleanup: proc.wait() no terminó dentro de 3.0s; "
+                            "LOOT puede seguir corriendo sin reapear (pid=%s)",
+                            proc.pid,
+                        )
+
+        assert proc is not None
 
         stdout_text = stdout.decode("utf-8", errors="replace")
         stderr_text = stderr.decode("utf-8", errors="replace")
