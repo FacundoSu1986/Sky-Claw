@@ -220,10 +220,14 @@ dominio, follow-up separado.
 
 ### 2.1 T-12 — mypy estricto módulo a módulo
 
-`pyproject.toml:213` sigue con `ignore_errors = true` para el grueso del
+`pyproject.toml` sigue con `ignore_errors = true` para el grueso del
 árbol: *"Currently 1,684 mypy errors across ~30 modules"* (comentario
 desactualizado en número exacto, pero la exención sigue activa). Se migra de
-a un módulo por PR; sin fecha límite.
+a un módulo por PR; sin fecha límite. **Avance 2026-07-21:** `local/fomod/*`
+migrado a `strict = true` (ver addendum del 2026-07-21). Candidato trivial
+para el próximo commit: `local/loot/*` ya pasa `strict` sin cambios de código
+(probado — 0 errores), solo falta moverlo de la lista `ignore_errors` a la
+`strict = true`.
 
 ### 2.2 T-10/T-11 — BLE001 (except genérico) sin activar en la mayoría del árbol
 
@@ -673,3 +677,40 @@ Continuación del addendum anterior. Cierres adicionales:
 god object de `SupervisorAgent`) sigue abierto — cedido al trabajo paralelo de
 cold-boot/lifecycle sobre `app_context.py` (#333/#338 y sucesivos); no
 verificado end-to-end desde esta auditoría.
+
+## Addendum (2026-07-21) — T-12: `local/fomod/*` migrado a mypy strict
+
+Continuación del sprint de type-coverage (§2.1). Con la auditoría de
+resiliencia (#319) cerrada salvo F9 (cedido al trabajo de lifecycle del otro
+agente), y el pozo de bugs de concurrencia agotado, el frente limpio de mayor
+valor sin colisión pasa a ser la deuda estructural de tipos.
+
+**Cerrado:** `sky_claw.local.fomod.*` sale de la lista `ignore_errors = true`
+y entra a `strict = true` (patrón "nace estricto"). Los 4 errores que exponía
+`strict` eran genuinos, no ruido — se anotaron con narrowing/anotaciones
+reales, sin `Any` ni `# type: ignore` de silencio:
+
+- `parser.py` (×2) — `operator` leído de un atributo XML (`str`) se estrecha a
+  `Literal["And", "Or"]` que exige `CompositeDependency.operator`. El patrón
+  previo (`if operator not in ("And","Or"): operator = "And"`) no narrowa en
+  mypy; se reemplazó por `"Or" if attr == "Or" else "And"`, comportamiento
+  idéntico (inválido → "And").
+- `parser.py` (×1) — `conditions` de `ConditionalPattern` es no-opcional; un
+  `<dependencies>` ausente o que parsea a `None` ahora cae a un
+  `CompositeDependency()` vacío en vez de pasar `None`.
+- `resolver.py` (×1) — `plugins: list` → `list[Plugin]` en `_resolve_group`
+  (el caller pasa `group.plugins`, que ya es `list[Plugin]`).
+
+Gates verdes: `mypy sky_claw/` (240 archivos, 0 issues), `ruff check` +
+`ruff format --check`, suite completa (3387 passed, 13 skipped). Sin cambio de
+comportamiento — anclado por los 51 tests de `fomod` existentes, que siguen
+verdes.
+
+**Próximo candidato (trivial):** `local/loot/*` ya pasa `strict` con 0 errores
+(probado con el mismo probe); su migración es solo mover la entrada en
+`pyproject.toml`, sin tocar código.
+
+**Nota de alcance:** la exención `BLE001` de `local/fomod/**`
+(`pyproject.toml`, per-file-ignores) es de T-10/T-11, un frente distinto de
+T-12 — no se toca acá (un cambio, un PR). `fomod/parser.py` conserva su
+`except Exception` de boundary de parsing.
