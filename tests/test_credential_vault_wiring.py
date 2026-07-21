@@ -167,29 +167,50 @@ class TestProvisionVault:
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Hallazgo A: la bóveda es la fuente de verdad del secreto vivo. Si ya
-        tiene ``{provider}_api_key`` (p. ej. tras una rotación en caliente), un
-        arranque posterior NO la sobrescribe con la clave de ``Config`` — antes el
-        ``set_secret`` incondicional (INSERT OR REPLACE) clobbeaba la credencial
-        rotada, pudiendo re-inyectar incluso una revocada."""
+        tiene ``{provider}_api_key`` (p. ej. tras una rotación en caliente), la
+        provisión NO debe llamar ``set_secret`` (seed-if-absent), así no pisa la
+        credencial rotada — antes el ``set_secret`` incondicional (INSERT OR
+        REPLACE) la clobbeaba, pudiendo re-inyectar incluso una revocada.
+
+        Se mockea el vault para ejercitar la rama de decisión de forma
+        determinista: sin depender del cifrado/salt reales cruzando instancias
+        (frágil en el runner de Windows)."""
         monkeypatch.setenv(_ENV, _MASTER)
-        db_path = str(tmp_path / "reg_vault.db")
-        rotada = "sk-deepseek-ROTADA-en-caliente-9999"
+        ctx = _ctx(tmp_path)
 
-        # Arranque 1: siembra la clave de Config y luego se rota en caliente.
-        ctx1 = _ctx(tmp_path)
-        vault1 = await ctx1._provision_credential_vault("deepseek", _API_KEY, db_path)
-        try:
-            await vault1.set_secret("deepseek_api_key", rotada)
-        finally:
-            await vault1.close()
+        vault = MagicMock()
+        vault.initialize = AsyncMock()
+        # La bóveda ya tiene la clave (rotación en caliente previa).
+        vault.get_secret = AsyncMock(return_value="sk-deepseek-ROTADA-en-caliente-9999")
+        vault.set_secret = AsyncMock()
+        vault.close = AsyncMock()
 
-        # Arranque 2: misma Config (clave vieja); la bóveda ya tiene la rotada.
-        ctx2 = _ctx(tmp_path)
-        vault2 = await ctx2._provision_credential_vault("deepseek", _API_KEY, db_path)
-        try:
-            assert await vault2.get_secret("deepseek_api_key") == rotada
-        finally:
-            await vault2.close()
+        with patch.object(ctx, "_construct_credential_vault", return_value=vault):
+            result = await ctx._provision_credential_vault("deepseek", _API_KEY, str(tmp_path / "reg_vault.db"))
+
+        assert result is vault
+        vault.get_secret.assert_awaited_once_with("deepseek_api_key")
+        # seed-if-absent: al existir ya la clave, NO se re-siembra desde Config.
+        vault.set_secret.assert_not_awaited()
+
+    async def test_siembra_si_la_boveda_no_tiene_la_clave(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Complemento seed-if-absent: si la bóveda NO tiene la clave (arranque
+        limpio), se siembra la de Config exactamente una vez."""
+        monkeypatch.setenv(_ENV, _MASTER)
+        ctx = _ctx(tmp_path)
+
+        vault = MagicMock()
+        vault.initialize = AsyncMock()
+        vault.get_secret = AsyncMock(return_value=None)  # bóveda vacía
+        vault.set_secret = AsyncMock()
+        vault.close = AsyncMock()
+
+        with patch.object(ctx, "_construct_credential_vault", return_value=vault):
+            await ctx._provision_credential_vault("deepseek", _API_KEY, str(tmp_path / "reg_vault.db"))
+
+        vault.set_secret.assert_awaited_once_with("deepseek_api_key", _API_KEY)
 
 
 # ---------------------------------------------------------------------------
