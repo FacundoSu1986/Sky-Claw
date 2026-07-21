@@ -1131,18 +1131,18 @@ class AppContext:
             # la de Config en cada arranque — pudiendo re-inyectar una revocada,
             # que es justo lo que el hot-swap Zero-Trust existe para evitar.
             secret_name = f"{provider_name}_api_key"
-            existente = await vault.get_secret(secret_name)
-            if existente is None:
+            if await vault.get_secret(secret_name) is None:
                 await vault.set_secret(secret_name, api_key)
-            elif existente != api_key:
-                # Transparencia (sin loguear el valor): si Config difiere de la
-                # bóveda, gana la bóveda. Para que Config imponga una clave nueva,
-                # rotá vía la bóveda o limpiá el secreto.
+            else:
+                # La bóveda ya tiene la credencial: es la fuente de verdad, no se
+                # re-siembra desde Config (una rotación en caliente sobrevive al
+                # reinicio). Se loguea SOLO el provider — nunca el nombre del
+                # secreto ni su valor — para no exponer datos sensibles.
                 logger.info(
-                    "La bóveda ya tiene '%s' y difiere de Config; se conserva el valor de la "
-                    "bóveda (fuente de verdad). Para imponer la clave de Config, rotá vía la "
+                    "La bóveda ya tiene la credencial de '%s'; se conserva (fuente de verdad) y "
+                    "no se re-siembra desde Config. Para imponer una clave nueva, rotá vía la "
                     "bóveda o limpiá el secreto.",
-                    secret_name,
+                    provider_name,
                 )
         self.credential_vault = vault
         logger.info("🔐 CredentialVault cableado al router — hot-swap Zero-Trust habilitado.")
