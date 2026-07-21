@@ -1106,6 +1106,11 @@ class AppContext:
         del provider activo bajo ``{provider}_api_key`` para que ``reload_provider``
         sea funcional (no solo alcanzable) — sin la semilla, ``get_secret`` daría
         ``None`` y el hot-swap seguiría devolviendo ``False``.
+
+        La siembra es **seed-if-absent**: la bóveda es la fuente de verdad del
+        secreto vivo, así que una clave rotada en caliente sobrevive a los
+        reinicios en vez de ser pisada por la de ``Config`` (que solo bootstrapea
+        la primera vez).
         """
         master_key = self._read_vault_master_key()
         if not master_key:
@@ -1120,7 +1125,25 @@ class AppContext:
         self._push_startup_cleanup(self._close_vault, vault)
         await vault.initialize()
         if api_key:
-            await vault.set_secret(f"{provider_name}_api_key", api_key)
+            # La bóveda es la fuente de verdad del secreto vivo: solo se siembra
+            # si NO existe (seed-if-absent). Un set_secret incondicional
+            # (INSERT OR REPLACE) pisaría una credencial rotada en caliente con
+            # la de Config en cada arranque — pudiendo re-inyectar una revocada,
+            # que es justo lo que el hot-swap Zero-Trust existe para evitar.
+            secret_name = f"{provider_name}_api_key"
+            existente = await vault.get_secret(secret_name)
+            if existente is None:
+                await vault.set_secret(secret_name, api_key)
+            elif existente != api_key:
+                # Transparencia (sin loguear el valor): si Config difiere de la
+                # bóveda, gana la bóveda. Para que Config imponga una clave nueva,
+                # rotá vía la bóveda o limpiá el secreto.
+                logger.info(
+                    "La bóveda ya tiene '%s' y difiere de Config; se conserva el valor de la "
+                    "bóveda (fuente de verdad). Para imponer la clave de Config, rotá vía la "
+                    "bóveda o limpiá el secreto.",
+                    secret_name,
+                )
         self.credential_vault = vault
         logger.info("🔐 CredentialVault cableado al router — hot-swap Zero-Trust habilitado.")
         return vault

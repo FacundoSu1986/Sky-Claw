@@ -163,6 +163,34 @@ class TestProvisionVault:
             await ctx._exit_stack.aclose()
         mock_close.assert_awaited_once()
 
+    async def test_no_re_siembra_si_la_boveda_ya_tiene_la_clave(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hallazgo A: la bóveda es la fuente de verdad del secreto vivo. Si ya
+        tiene ``{provider}_api_key`` (p. ej. tras una rotación en caliente), un
+        arranque posterior NO la sobrescribe con la clave de ``Config`` — antes el
+        ``set_secret`` incondicional (INSERT OR REPLACE) clobbeaba la credencial
+        rotada, pudiendo re-inyectar incluso una revocada."""
+        monkeypatch.setenv(_ENV, _MASTER)
+        db_path = str(tmp_path / "reg_vault.db")
+        rotada = "sk-deepseek-ROTADA-en-caliente-9999"
+
+        # Arranque 1: siembra la clave de Config y luego se rota en caliente.
+        ctx1 = _ctx(tmp_path)
+        vault1 = await ctx1._provision_credential_vault("deepseek", _API_KEY, db_path)
+        try:
+            await vault1.set_secret("deepseek_api_key", rotada)
+        finally:
+            await vault1.close()
+
+        # Arranque 2: misma Config (clave vieja); la bóveda ya tiene la rotada.
+        ctx2 = _ctx(tmp_path)
+        vault2 = await ctx2._provision_credential_vault("deepseek", _API_KEY, db_path)
+        try:
+            assert await vault2.get_secret("deepseek_api_key") == rotada
+        finally:
+            await vault2.close()
+
 
 # ---------------------------------------------------------------------------
 # End-to-end: el hot-swap del router funciona con el vault cableado
