@@ -606,6 +606,12 @@ class SyncEngine:
         # Outer concurrency limiter — never more than 15 simultaneous lifecycles
         concurrency_limit = asyncio.Semaphore(15)
         api_semaphore = asyncio.Semaphore(self._cfg.api_semaphore_limit)
+        # F7 (auditoría 2026-07-18): serializar SOLO la fase de aprobación HITL.
+        # request_approval bloquea hasta HITL_TIMEOUT_SECONDS y la GUI parquea un
+        # único prompt pendiente; con 15 lifecycles en paralelo, 14 aprobaciones
+        # expiraban sin que el operador las viera. El fetch/descarga siguen
+        # concurrentes — solo la decisión humana se hace de a una.
+        hitl_semaphore = asyncio.Semaphore(1)
 
         logger.info(
             "Iniciando verificación de actualizaciones para %d mods...",
@@ -625,7 +631,7 @@ class SyncEngine:
             """
             async with concurrency_limit:
                 try:
-                    results[idx] = await self._check_and_update_mod(mod, session, api_semaphore)
+                    results[idx] = await self._check_and_update_mod(mod, session, api_semaphore, hitl_semaphore)
                 except (
                     MasterlistFetchError,
                     CircuitOpenError,
@@ -677,6 +683,7 @@ class SyncEngine:
         mod: dict[str, Any],
         session: aiohttp.ClientSession,
         semaphore: asyncio.Semaphore,
+        hitl_semaphore: asyncio.Semaphore | None = None,
     ) -> dict[str, Any]:
         """Worker for checking and optionally updating a single mod.
 
@@ -751,12 +758,24 @@ class SyncEngine:
 
             if self._hitl:
                 desc = f"Update for {mod_name} ({local_version} -> {nexus_version})"
-                decision = await self._hitl.request_approval(
-                    request_id=f"update_{nexus_id}",
-                    reason="Automatic Mod Update",
-                    url=file_info.download_url,
-                    detail=desc,
-                )
+                # F7: la aprobación humana se serializa (semáforo de a uno) para
+                # no solapar prompts contra el único slot de la GUI. Envuelve
+                # SOLO request_approval — la descarga posterior sigue concurrente.
+                if hitl_semaphore is not None:
+                    async with hitl_semaphore:
+                        decision = await self._hitl.request_approval(
+                            request_id=f"update_{nexus_id}",
+                            reason="Automatic Mod Update",
+                            url=file_info.download_url,
+                            detail=desc,
+                        )
+                else:
+                    decision = await self._hitl.request_approval(
+                        request_id=f"update_{nexus_id}",
+                        reason="Automatic Mod Update",
+                        url=file_info.download_url,
+                        detail=desc,
+                    )
                 if decision != Decision.APPROVED:
                     logger.warning("Descarga abortada por HITL para %s", mod_name)
                     if rm is not None and transaction_id is not None:
@@ -907,7 +926,19 @@ class SyncEngine:
             try:
                 await self._produce(queue, profile)
             finally:
+                # F8 (auditoría 2026-07-18): si el producer está siendo cancelado
+                # (crash de un worker → el TaskGroup cancela al resto), NO bloquear
+                # en wait_for ni re-lanzar TimeoutError desde el finally: eso
+                # pisaría la CancelledError en vuelo y demoraría el shutdown hasta
+                # 5s×worker. Los workers cancelados no necesitan el pill; se entrega
+                # best-effort con put_nowait.
+                current = asyncio.current_task()
+                cancelando = current is not None and current.cancelling() > 0
                 for _ in range(self._cfg.worker_count):
+                    if cancelando:
+                        with contextlib.suppress(asyncio.QueueFull):
+                            queue.put_nowait(_POISON)
+                        continue
                     try:
                         await asyncio.wait_for(queue.put(_POISON), timeout=_POISON_DELIVERY_TIMEOUT)
                     except TimeoutError:

@@ -872,6 +872,71 @@ class TestCheckForUpdates:
         assert "HITL" in payload.failed_mods[0]["error"]
 
     @pytest.mark.asyncio
+    async def test_las_aprobaciones_hitl_no_se_solapan(self) -> None:
+        """F7 (auditoría 2026-07-18): las aprobaciones HITL del ciclo de updates
+        deben serializarse. Antes, Semaphore(15) dejaba hasta 15
+        ``request_approval`` bloqueantes en vuelo a la vez, pero la GUI tiene un
+        único slot pendiente: 14 prompts expiraban sin que nadie los viera. El
+        fetch/descarga mantiene su concurrencia; solo la fase humana se serializa."""
+
+        class _HitlConcurrenciaSpy:
+            def __init__(self) -> None:
+                self.en_vuelo = 0
+                self.max_en_vuelo = 0
+
+            async def request_approval(self, **kwargs: object) -> Decision:
+                self.en_vuelo += 1
+                self.max_en_vuelo = max(self.max_en_vuelo, self.en_vuelo)
+                try:
+                    # Ceder varias veces: si NO estuvieran serializadas, los otros
+                    # lifecycles llegarían a este punto y en_vuelo subiría.
+                    for _ in range(5):
+                        await asyncio.sleep(0)
+                finally:
+                    self.en_vuelo -= 1
+                return Decision.APPROVED
+
+        mods = [{"name": f"Mod{i}", "nexus_id": 1000 + i, "version": "1.0", "installed": True} for i in range(3)]
+        mock_registry = AsyncMock()
+        mock_registry.search_mods.return_value = mods
+        mock_registry.upsert_mod = AsyncMock()
+        mock_registry.log_tasks_batch = AsyncMock()
+
+        mock_masterlist = AsyncMock()
+        mock_masterlist.fetch_mod_info = AsyncMock(
+            side_effect=lambda nexus_id, _session: {
+                "mod_id": nexus_id,
+                "name": f"Mod{nexus_id - 1000}",
+                "version": "2.0",
+                "author": "dev",
+                "category_id": "1",
+                "download_url": f"https://example.com/{nexus_id}.7z",
+            }
+        )
+        mock_downloader = AsyncMock()
+        mock_downloader.get_file_info = AsyncMock(
+            side_effect=lambda nexus_id, _v, _s: MagicMock(download_url=f"https://example.com/{nexus_id}.7z")
+        )
+        mock_downloader.download = AsyncMock(return_value=pathlib.Path("x.7z"))
+
+        spy = _HitlConcurrenciaSpy()
+        engine = SyncEngine(
+            mo2=AsyncMock(),
+            masterlist=mock_masterlist,
+            registry=mock_registry,
+            downloader=mock_downloader,
+            hitl=spy,  # type: ignore[arg-type]
+            fetch_retry_wait=wait_none(),
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+        payload = await engine.check_for_updates(session)
+
+        assert payload.total_checked == 3
+        assert len(payload.updated_mods) == 3  # los tres se aprueban y actualizan
+        # Nunca dos prompts al operador a la vez.
+        assert spy.max_en_vuelo == 1
+
+    @pytest.mark.asyncio
     async def test_updated_mod_in_updated_mods(self) -> None:
         """Mod con versión nueva + downloader → updated_mods (line 439).
 
