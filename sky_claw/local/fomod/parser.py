@@ -8,7 +8,7 @@ are logged and skipped rather than crashing the entire parse.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import defusedxml.ElementTree as DefusedElementTree
 from defusedxml import (
@@ -261,9 +261,11 @@ def _parse_composite_dependency(
     if deps_el is None:
         deps_el = element
 
-    operator = deps_el.get("operator", "And")
-    if operator not in ("And", "Or"):
-        operator = "And"
+    # El atributo XML es un `str` arbitrario; lo estrechamos al Literal que
+    # exige `CompositeDependency.operator`. Cualquier valor distinto de "Or"
+    # (inválido incluido) cae a "And", preservando el comportamiento previo.
+    operator_attr = deps_el.get("operator", "And")
+    operator: Literal["And", "Or"] = "Or" if operator_attr == "Or" else "And"
 
     flag_deps: list[FlagDependency] = []
     file_deps: list[FileDependency] = []
@@ -301,9 +303,9 @@ def _parse_composite_dependency_direct(
     element: _stdlib_ET.Element,
 ) -> CompositeDependency | None:
     """Parse a <dependencies> element directly (for nesting)."""
-    operator = element.get("operator", "And")
-    if operator not in ("And", "Or"):
-        operator = "And"
+    # Mismo estrechamiento str → Literal que en `_parse_composite_dependency`.
+    operator_attr = element.get("operator", "And")
+    operator: Literal["And", "Or"] = "Or" if operator_attr == "Or" else "And"
 
     flag_deps: list[FlagDependency] = []
     file_deps: list[FileDependency] = []
@@ -351,7 +353,11 @@ def _parse_conditional_installs(
     for pattern_el in patterns_el.findall("pattern"):
         try:
             deps_el = pattern_el.find("dependencies")
-            conditions = _parse_composite_dependency_direct(deps_el) if deps_el is not None else CompositeDependency()
+            parsed = _parse_composite_dependency_direct(deps_el) if deps_el is not None else None
+            # `conditions` de `ConditionalPattern` es no-opcional: un
+            # `<dependencies>` ausente o que parsea a None cae a un composite
+            # vacío (mismo default que el campo del modelo).
+            conditions = parsed if parsed is not None else CompositeDependency()
             files = _parse_file_list(pattern_el.find("files"))
             patterns.append(ConditionalPattern(conditions=conditions, files=files))
         except Exception:

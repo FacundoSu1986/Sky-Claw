@@ -16,6 +16,7 @@ from sky_claw.local.fomod.models import (
     FomodConfig,
     GroupType,
     InstallStep,
+    Plugin,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ class FomodResolver:
         step_name: str,
         group_name: str,
         group_type: GroupType,
-        plugins: list,
+        plugins: list[Plugin],
         step_selections: list[str],
         result: ResolveResult,
     ) -> set[str]:

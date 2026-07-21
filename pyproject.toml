@@ -189,7 +189,6 @@ module = [
     "sky_claw.antigravity.security.*",
     "sky_claw.antigravity.core.*",
     "sky_claw.local.tools.*",
-    "sky_claw.local.fomod.*",
     "sky_claw.local.xedit.*",
     "sky_claw.local.loot.*",
     "sky_claw.local.mo2.*",
@@ -253,6 +252,7 @@ module = [
     "sky_claw.local.ai.recommendation",  # Fase 1 AI-assisted: modelos de datos, nace estricto
     "sky_claw.local.xedit.ai_assisted_strategy",  # Fase 1 AI-assisted: strategy catch-all, estricto
     "sky_claw.local.xedit.record_dump_parser",  # Fase 1 AI-assisted: parser del dump, estricto
+    "sky_claw.local.fomod.*",  # T-12: instalador FOMOD anotado a strict (parser/resolver/models/installer)
 ]
 strict = true
 ignore_errors = false
