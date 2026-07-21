@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -140,6 +140,28 @@ class TestProvisionVault:
         assert ctx.credential_vault is vault
         await ctx._close_vault(vault)
         assert ctx.credential_vault is None
+
+    async def test_initialize_fallido_deja_el_vault_registrado_para_cierre(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """X-2: si ``initialize()`` falla tras abrir la conexión del pool, el vault
+        ya debe estar registrado en el exit stack para que el rollback de startup
+        lo cierre (invariante de #338: registrar la compensación ANTES del primer
+        await de adquisición). Antes del fix, el cleanup se registraba DESPUÉS de
+        ``initialize`` → la conexión quedaba filtrada ante un init parcial."""
+        monkeypatch.setenv(_ENV, _MASTER)
+        ctx = _ctx(tmp_path)
+        db_path = str(tmp_path / "reg_vault.db")
+        with (
+            patch.object(CredentialVault, "initialize", AsyncMock(side_effect=RuntimeError("init boom"))),
+            patch.object(CredentialVault, "close", AsyncMock()) as mock_close,
+        ):
+            with pytest.raises(RuntimeError, match="init boom"):
+                await ctx._provision_credential_vault("deepseek", _API_KEY, db_path)
+            # El rollback de startup drena el exit stack: el vault DEBE estar
+            # registrado para que su cierre corra pese al init fallido.
+            await ctx._exit_stack.aclose()
+        mock_close.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
