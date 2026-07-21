@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import pathlib
@@ -39,7 +40,7 @@ from sky_claw.antigravity.security.path_validator import PathValidator
 from sky_claw.antigravity.security.prompt_armor import build_system_header
 from sky_claw.config import LOOT_COMMON_PATHS, XEDIT_COMMON_PATHS, Config, SystemPaths
 from sky_claw.local.ai.patch_advisor_llm import LLMCallable
-from sky_claw.local.auto_detect import AutoDetector
+from sky_claw.local.auto_detect import AutoDetector, run_off_loop
 from sky_claw.local.local_config import load as _load_legacy_json
 from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
@@ -368,6 +369,18 @@ class AppContext:
         result = await awaitable
         self._assert_startup_current()
         return result
+
+    async def _scan_tool_paths(self, common_paths: tuple[pathlib.Path, ...], exe_name: str) -> pathlib.Path | None:
+        """Escanea rutas comunes por un ejecutable FUERA del event loop.
+
+        Usa el offload a hilo *daemon* compartido (``run_off_loop``), NUNCA
+        ``asyncio.to_thread``: el executor por defecto usa hilos non-daemon que
+        ``asyncio.run`` joinea sin timeout al cerrar, así que un scan colgado
+        sobre un VFS/unidad lenta bloquearía el shutdown pese a la cancelación
+        del arranque. Un hilo daemon se abandona al salir el intérprete (mismo
+        invariante que ``AutoDetector``, hazard cerrado en #337).
+        """
+        return await run_off_loop(functools.partial(scan_common_paths, common_paths, exe_name))
 
     def _push_startup_cleanup(
         self,
@@ -876,13 +889,7 @@ class AppContext:
                 if cfg_loot.exists():
                     loot_exe = cfg_loot
             if loot_exe is None or not loot_exe.exists():
-                found = await self._await_startup(
-                    asyncio.to_thread(
-                        scan_common_paths,
-                        LOOT_COMMON_PATHS,
-                        "loot.exe",
-                    )
-                )
+                found = await self._await_startup(self._scan_tool_paths(LOOT_COMMON_PATHS, "loot.exe"))
                 if found:
                     loot_exe = found
                     local_cfg.loot_exe = str(found)
@@ -894,13 +901,7 @@ class AppContext:
                 if cfg_xedit.exists():
                     xedit_exe = cfg_xedit
             if xedit_exe is None or not xedit_exe.exists():
-                found = await self._await_startup(
-                    asyncio.to_thread(
-                        scan_common_paths,
-                        XEDIT_COMMON_PATHS,
-                        "SSEEdit.exe",
-                    )
-                )
+                found = await self._await_startup(self._scan_tool_paths(XEDIT_COMMON_PATHS, "SSEEdit.exe"))
                 if found:
                     xedit_exe = found
                     local_cfg.xedit_exe = str(found)

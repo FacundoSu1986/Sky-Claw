@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
-async def _run_off_loop(fn: Callable[[], _T]) -> _T:
+async def run_off_loop(fn: Callable[[], _T]) -> _T:
     """Ejecuta ``fn()`` en un hilo *daemon* puenteado al event loop.
 
     A diferencia de ``asyncio.to_thread`` —que despacha al default executor,
@@ -173,7 +173,7 @@ class AutoDetector:
     async def find_mo2() -> pathlib.Path | None:
         """Locate Mod Organizer 2 (portable install with profiles)."""
         return await asyncio.wait_for(
-            _run_off_loop(AutoDetector._find_mo2_inner),
+            run_off_loop(AutoDetector._find_mo2_inner),
             timeout=_SEARCH_TIMEOUT,
         )
 
@@ -209,7 +209,7 @@ class AutoDetector:
     async def find_skyrim() -> pathlib.Path | None:
         """Locate Skyrim Special Edition."""
         return await asyncio.wait_for(
-            _run_off_loop(AutoDetector._find_skyrim_inner),
+            run_off_loop(AutoDetector._find_skyrim_inner),
             timeout=_SEARCH_TIMEOUT,
         )
 
@@ -250,7 +250,7 @@ class AutoDetector:
     async def find_loot() -> pathlib.Path | None:
         """Locate the LOOT executable."""
         return await asyncio.wait_for(
-            _run_off_loop(AutoDetector._find_loot_inner),
+            run_off_loop(AutoDetector._find_loot_inner),
             timeout=_SEARCH_TIMEOUT,
         )
 
@@ -277,7 +277,7 @@ class AutoDetector:
     async def find_xedit() -> pathlib.Path | None:
         """Locate the SSEEdit executable."""
         return await asyncio.wait_for(
-            _run_off_loop(AutoDetector._find_xedit_inner),
+            run_off_loop(AutoDetector._find_xedit_inner),
             timeout=_SEARCH_TIMEOUT,
         )
 
