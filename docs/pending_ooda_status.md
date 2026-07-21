@@ -650,3 +650,26 @@ Pendientes de la auditoría (no bloqueantes): F4 (idempotencia sin cablear),
 F5 (TOCTOU del drift-gate de `promote()`), F6 (race del timeout de
 `HITLGuard`), F7 (prompts HITL concurrentes en `check_for_updates`), F9
 (composition root del god object).
+
+## Addendum (2026-07-21) — auditoría de resiliencia del orquestador (#319): cierre F4–F8
+
+Continuación del addendum anterior. Cierres adicionales:
+
+- **F5** (#332) — drift-gate atómico: `_check_drift`/`_compute_diff`/
+  `_apply_changes` fusionados en `_promote_sync`, un solo `to_thread` (elimina
+  la ventana TOCTOU entre el gate y la mutación).
+- **F6** (#331) — resolución atómica de la decisión de `HITLGuard`: cierra la
+  race entre el timeout y `respond()` que podía dar un ack de aprobación falso.
+- **F4** (#342) — `IdempotencyMiddleware` captura `CancelledError`
+  explícitamente (antes quedaba la key bloqueada 1h ante cancelación) y se
+  cablea como middleware global del `OrchestrationToolDispatcher` — antes
+  existía pero no corría en el camino real de dispatch.
+- **F7 + F8** (#343) — `check_for_updates` serializa la fase de aprobación
+  HITL con `Semaphore(1)` propio (el fetch/descarga sigue concurrente); el
+  poison delivery de `SyncEngine.run` deja de re-lanzar `TimeoutError` cuando
+  el producer está siendo cancelado (antes pisaba la `CancelledError` real).
+
+**F1–F8 de la auditoría #319 quedan cerrados.** Solo **F9** (composition root /
+god object de `SupervisorAgent`) sigue abierto — cedido al trabajo paralelo de
+cold-boot/lifecycle sobre `app_context.py` (#333/#338 y sucesivos); no
+verificado end-to-end desde esta auditoría.
