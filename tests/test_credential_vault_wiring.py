@@ -163,6 +163,55 @@ class TestProvisionVault:
             await ctx._exit_stack.aclose()
         mock_close.assert_awaited_once()
 
+    async def test_no_re_siembra_si_la_boveda_ya_tiene_la_clave(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hallazgo A: la bóveda es la fuente de verdad del secreto vivo. Si ya
+        tiene ``{provider}_api_key`` (p. ej. tras una rotación en caliente), la
+        provisión NO debe llamar ``set_secret`` (seed-if-absent), así no pisa la
+        credencial rotada — antes el ``set_secret`` incondicional (INSERT OR
+        REPLACE) la clobbeaba, pudiendo re-inyectar incluso una revocada.
+
+        Se mockea el vault para ejercitar la rama de decisión de forma
+        determinista: sin depender del cifrado/salt reales cruzando instancias
+        (frágil en el runner de Windows)."""
+        monkeypatch.setenv(_ENV, _MASTER)
+        ctx = _ctx(tmp_path)
+
+        vault = MagicMock()
+        vault.initialize = AsyncMock()
+        # La bóveda ya tiene la clave (rotación en caliente previa).
+        vault.get_secret = AsyncMock(return_value="sk-deepseek-ROTADA-en-caliente-9999")
+        vault.set_secret = AsyncMock()
+        vault.close = AsyncMock()
+
+        with patch.object(ctx, "_construct_credential_vault", return_value=vault):
+            result = await ctx._provision_credential_vault("deepseek", _API_KEY, str(tmp_path / "reg_vault.db"))
+
+        assert result is vault
+        vault.get_secret.assert_awaited_once_with("deepseek_api_key")
+        # seed-if-absent: al existir ya la clave, NO se re-siembra desde Config.
+        vault.set_secret.assert_not_awaited()
+
+    async def test_siembra_si_la_boveda_no_tiene_la_clave(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Complemento seed-if-absent: si la bóveda NO tiene la clave (arranque
+        limpio), se siembra la de Config exactamente una vez."""
+        monkeypatch.setenv(_ENV, _MASTER)
+        ctx = _ctx(tmp_path)
+
+        vault = MagicMock()
+        vault.initialize = AsyncMock()
+        vault.get_secret = AsyncMock(return_value=None)  # bóveda vacía
+        vault.set_secret = AsyncMock()
+        vault.close = AsyncMock()
+
+        with patch.object(ctx, "_construct_credential_vault", return_value=vault):
+            await ctx._provision_credential_vault("deepseek", _API_KEY, str(tmp_path / "reg_vault.db"))
+
+        vault.set_secret.assert_awaited_once_with("deepseek_api_key", _API_KEY)
+
 
 # ---------------------------------------------------------------------------
 # End-to-end: el hot-swap del router funciona con el vault cableado
