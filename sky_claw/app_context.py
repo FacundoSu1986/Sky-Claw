@@ -1081,10 +1081,19 @@ class AppContext:
         """
         return (os.environ.get("SKYCLAW_VAULT_MASTER_KEY") or "").strip()
 
+    def _construct_credential_vault(self, master_key: str, db_path: str) -> CredentialVault:
+        """Construye el vault SIN inicializar (salt junto al DB para aislar).
+
+        No adquiere conexión: el constructor solo hace el hardening del salt y
+        arma el pool (lazy — la conexión se crea en el primer ``acquire``). Esto
+        permite registrar la compensación de cierre ANTES de ``initialize()``.
+        """
+        salt_dir = pathlib.Path(db_path).parent / "vault_salt"
+        return CredentialVault(db_path=db_path, master_key=master_key, salt_dir=salt_dir)
+
     async def _build_credential_vault(self, master_key: str, db_path: str) -> CredentialVault:
         """Construye e inicializa el vault (salt colocado junto al DB para aislar)."""
-        salt_dir = pathlib.Path(db_path).parent / "vault_salt"
-        vault = CredentialVault(db_path=db_path, master_key=master_key, salt_dir=salt_dir)
+        vault = self._construct_credential_vault(master_key, db_path)
         await vault.initialize()
         return vault
 
@@ -1102,8 +1111,14 @@ class AppContext:
         if not master_key:
             logger.info("Hot-swap de credenciales Zero-Trust deshabilitado: SKYCLAW_VAULT_MASTER_KEY no configurada.")
             return None
-        vault = await self._build_credential_vault(master_key, db_path)
+        vault = self._construct_credential_vault(master_key, db_path)
+        # Registrar la compensación ANTES del primer await de adquisición:
+        # initialize() abre una conexión en el pool, así que si falla a mitad
+        # (DB read-only/locked, o salt débil en Windows) el rollback de startup
+        # debe poder cerrar el vault igual. Invariante de #338 (registrar antes
+        # de adquirir); antes se registraba después de initialize → fuga.
         self._push_startup_cleanup(self._close_vault, vault)
+        await vault.initialize()
         if api_key:
             await vault.set_secret(f"{provider_name}_api_key", api_key)
         self.credential_vault = vault
