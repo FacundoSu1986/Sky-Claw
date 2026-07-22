@@ -15,6 +15,12 @@ PROTOCOL_VERSION = 1
 _LAUNCH_FIELDS = frozenset({"protocol_version", "type", "job_id", "profile", "manifest_path", "overwrite_mod"})
 
 
+def ascii_safe_message(message: object) -> str:
+    """Evita que el logger ASCII del Python embebido de MO2 mate un thread."""
+
+    return str(message).encode("ascii", errors="backslashreplace").decode("ascii")
+
+
 class BridgeCommandError(RuntimeError):
     """Comando del daemon no permitido por el bridge mínimo."""
 
@@ -33,6 +39,24 @@ class JobObject(Protocol):
     def terminate(self) -> None: ...
 
     def close(self) -> None: ...
+
+
+class CommandQueue(Protocol):
+    def put(self, item: dict[str, object]) -> None: ...
+
+
+class BridgeCommandInbox:
+    """Encola un comando y despierta al consumidor del hilo Qt."""
+
+    def __init__(self, *, commands: CommandQueue, notify: Callable[[], None]) -> None:
+        self._commands = commands
+        self._notify = notify
+
+    def deliver(self, message: Mapping[str, object], *, jobs_root: pathlib.Path) -> None:
+        command = dict(message)
+        command["_jobs_root"] = str(jobs_root.resolve())
+        self._commands.put(command)
+        self._notify()
 
 
 def _safe_component(value: object, *, field: str) -> str:
@@ -116,6 +140,37 @@ def build_worker_arguments(
     ]
 
 
+def wait_for_process_handle(process_handle: int) -> tuple[bool, int]:
+    """Espera y cierra el HANDLE nativo sin entrar al runner Qt de MO2."""
+
+    if sys.platform != "win32":
+        raise BridgeCommandError("la espera de procesos del bridge requiere Windows")
+    from ctypes import wintypes as win_types
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.WaitForSingleObject.argtypes = [win_types.HANDLE, win_types.DWORD]
+    kernel32.WaitForSingleObject.restype = win_types.DWORD
+    kernel32.GetExitCodeProcess.argtypes = [win_types.HANDLE, ctypes.POINTER(win_types.DWORD)]
+    kernel32.GetExitCodeProcess.restype = win_types.BOOL
+    kernel32.CloseHandle.argtypes = [win_types.HANDLE]
+    kernel32.CloseHandle.restype = win_types.BOOL
+    wait_object_0 = 0x00000000
+    infinite = 0xFFFFFFFF
+    try:
+        wait_result = kernel32.WaitForSingleObject(process_handle, infinite)
+        if wait_result != wait_object_0:
+            raise BridgeCommandError(
+                f"WaitForSingleObject falló: result={wait_result}, error={ctypes.get_last_error()}"
+            )
+        exit_code = win_types.DWORD()
+        if not kernel32.GetExitCodeProcess(process_handle, ctypes.byref(exit_code)):
+            raise BridgeCommandError(f"GetExitCodeProcess falló: {ctypes.get_last_error()}")
+        return True, int(exit_code.value)
+    finally:
+        if not kernel32.CloseHandle(process_handle):
+            raise BridgeCommandError(f"CloseHandle falló: {ctypes.get_last_error()}")
+
+
 @dataclass(slots=True)
 class _RunningJob:
     request: LaunchRequest
@@ -137,6 +192,7 @@ class BridgeLaunchController:
         jobs_root: pathlib.Path,
         send_event: Callable[[dict[str, object]], None],
         job_factory: Callable[[], JobObject] | None = None,
+        process_waiter: Callable[[int], tuple[bool, int]] | None = None,
     ) -> None:
         worker = worker_executable.resolve()
         if not worker.is_file() or worker.is_symlink():
@@ -148,6 +204,7 @@ class BridgeLaunchController:
         self._jobs_root = jobs_root.resolve()
         self._send_event = send_event
         self._job_factory = job_factory or Win32JobObject
+        self._process_waiter = process_waiter or wait_for_process_handle
         self._jobs: dict[str, _RunningJob] = {}
         self._lock = threading.Lock()
 
@@ -224,9 +281,9 @@ class BridgeLaunchController:
         exit_code = -1
         wait_error: str | None = None
         try:
-            wait_ok, exit_code = self._organizer.waitForApplication(running.process_handle, False)
+            wait_ok, exit_code = self._process_waiter(running.process_handle)
         except Exception as exc:
-            wait_error = f"waitForApplication falló: {exc}"
+            wait_error = f"espera Win32 del worker falló: {exc}"
         finally:
             running.job_object.close()
             with self._lock:

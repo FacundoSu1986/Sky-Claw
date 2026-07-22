@@ -102,7 +102,21 @@ considera correcto ocultar esa deuda detras de que LOOT ya este protegido.
 - Se distribuye y versiona un plugin MO2 adicional.
 - Mover o reemplazar el executable de Sky-Claw exige reinstalar el bridge para
   actualizar el worker fijo.
-- La compatibilidad de `startApplication`, espera y Job Objects requiere smoke
-  sobre la version real de MO2/USVFS; CI solo valida contratos y lifecycle con
-  fakes y sockets locales.
+- La compatibilidad debe revalidarse por version de MO2/USVFS; CI solo valida
+  contratos y lifecycle con fakes y sockets locales.
 - `moshortcut://` no forma parte del backend de produccion.
+
+## Verificacion runtime
+
+El 2026-07-22 se ejecuto `vfs-health` contra MO2 2.5.2 (`9c130cbf`) y USVFS
+0.5.6.1, perfil `Default`, en Windows. Paso con exit code 0 tanto con el broker
+arrancado antes de MO2 como con MO2 ya abierto. Worker y nieto leyeron el mismo
+canary de `Realistic Water Two SE`, ausente del `Data` fisico, y no quedaron
+procesos al cerrar.
+
+El primer smoke detecto y este PR corrigio tres defectos que los fakes no
+reproducian: `QTimer` creado desde el thread de carga del plugin, logging Unicode
+que mataba el thread de reconexion del Python embebido y
+`waitForApplication` invocado desde un `threading.Thread`. El bridge ahora usa
+una senal Qt encolada, mensajes ASCII-safe y espera Win32 directa con cierre del
+HANDLE propiedad del plugin.

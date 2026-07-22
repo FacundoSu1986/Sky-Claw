@@ -20,20 +20,27 @@ autenticado, manifests firmados, plugin MO2, worker descartable, attestation de
 worker+nieto, perfil explicito, serializacion por instancia, cancelacion con
 Win32 Job Object e instalador transaccional. El bundle entra en PyInstaller.
 
-**Cobertura productiva actual:** `health` y LOOT. Los dos entry points de LOOT
-(agente lock-only y Supervisor GUI/HITL) usan el broker y fallan cerrados sin
-USVFS; no reconstruyen un subprocess standalone. El preview calcula el
+**Cobertura productiva actual:** `health` y dos entry points de LOOT (agente
+lock-only y Supervisor GUI/HITL) usan el broker y fallan cerrados sin USVFS; no
+reconstruyen un subprocess standalone. El preview calcula el
 fingerprint sin mantener un worker vivo y la ejecucion lo revalida tras HITL.
 Cada preview queda ligado a su propia invocacion async; resultados y
 cancelaciones esperan confirmacion terminal del Job Object antes de permitir
 rollback o liberar el lock. La entrega del resultado usa ACK causal antes de que
 el worker salga y el cierre concurrente del broker esta serializado.
 
-**Pendiente para cerrar F8 de forma transversal:** migrar xEdit, Wrye Bash,
-Synthesis, DynDOLOD y los demas runners externos al mismo contrato. Tambien
-queda el smoke Windows con la instalacion/version real de MO2/USVFS: probe,
-perfil incorrecto, LOOT representativo, timeout/cancelacion y rollback byte a
-byte. CI no prueba inyeccion USVFS real.
+**Smoke real 2026-07-22:** `vfs-health` paso con exit code 0 sobre MO2 2.5.2 y
+USVFS 0.5.6.1, perfil `Default`, con ambos ordenes de arranque. Worker y nieto
+validaron un canary habilitado ausente del `Data` fisico y el cierre no dejo
+procesos. El smoke descubrio tres defectos de frontera (despacho Qt, Unicode del
+logger embebido y espera del HANDLE fuera de Qt), corregidos y anclados en este
+PR.
+
+**Pendiente para cerrar F8 de forma transversal:** migrar el tercer caller de
+LOOT del preview chain, xEdit, Wrye Bash, Synthesis, DynDOLOD y los demas runners
+externos al mismo contrato. Tambien faltan los smokes de perfil incorrecto,
+LOOT representativo, timeout/cancelacion y rollback byte a byte. CI no prueba
+inyeccion USVFS real.
 
 ## Resumen ejecutivo
 

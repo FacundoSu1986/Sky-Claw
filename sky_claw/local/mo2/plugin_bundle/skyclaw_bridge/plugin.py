@@ -14,16 +14,41 @@ import time
 from collections.abc import Iterator
 
 import mobase
-from PyQt6.QtCore import QCoreApplication, QTimer, qInfo, qWarning
+from PyQt6.QtCore import QCoreApplication, QObject, Qt, pyqtSignal, pyqtSlot, qInfo, qWarning
 
 from .protocol import (
     VfsFrameError,
     recv_authenticated_message,
     send_authenticated_message,
 )
-from .runtime import PROTOCOL_VERSION, BridgeCommandError, BridgeLaunchController
+from .runtime import (
+    PROTOCOL_VERSION,
+    BridgeCommandError,
+    BridgeCommandInbox,
+    BridgeLaunchController,
+    ascii_safe_message,
+)
 
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
+
+
+def _qt_warning(message: object) -> None:
+    qWarning(ascii_safe_message(message))
+
+
+class _QtCommandDispatcher(QObject):
+    """Entrega comandos al hilo de la aplicación mediante una señal encolada."""
+
+    command_ready = pyqtSignal()
+
+    def __init__(self, handler) -> None:
+        super().__init__()
+        self._handler = handler
+        self.command_ready.connect(self._dispatch, Qt.ConnectionType.QueuedConnection)
+
+    @pyqtSlot()
+    def _dispatch(self) -> None:
+        self._handler()
 
 
 class _BridgeClient:
@@ -34,12 +59,12 @@ class _BridgeClient:
         *,
         descriptor_path: pathlib.Path,
         instance_id: str,
-        commands: queue.Queue[dict[str, object]],
+        inbox: BridgeCommandInbox,
         outgoing: queue.Queue[dict[str, object]],
     ) -> None:
         self._descriptor_path = descriptor_path
         self._instance_id = instance_id
-        self._commands = commands
+        self._inbox = inbox
         self._outgoing = outgoing
         self._stop = threading.Event()
         self._connection_lock = threading.Lock()
@@ -137,7 +162,7 @@ class _BridgeClient:
                     self._connected_loop(connection, secret, jobs_root)
             except (OSError, ValueError, json.JSONDecodeError, VfsFrameError, BridgeCommandError) as exc:
                 if not self._stop.wait(delay):
-                    qWarning(f"Sky-Claw bridge desconectado: {exc}")
+                    _qt_warning(f"Sky-Claw bridge desconectado: {exc}")
                 delay = min(delay * 2, 5.0)
 
     def _connected_loop(
@@ -163,8 +188,7 @@ class _BridgeClient:
             if not readable:
                 continue
             message = recv_authenticated_message(connection, secret)
-            message["_jobs_root"] = str(jobs_root)
-            self._commands.put(message)
+            self._inbox.deliver(message, jobs_root=jobs_root)
 
 
 class SkyClawBridgePlugin(mobase.IPlugin):
@@ -173,7 +197,7 @@ class SkyClawBridgePlugin(mobase.IPlugin):
     def __init__(self) -> None:
         super().__init__()
         self._organizer = None
-        self._timer: QTimer | None = None
+        self._dispatcher: _QtCommandDispatcher | None = None
         self._client: _BridgeClient | None = None
         self._controller: BridgeLaunchController | None = None
         self._commands: queue.Queue[dict[str, object]] = queue.Queue()
@@ -206,24 +230,29 @@ class SkyClawBridgePlugin(mobase.IPlugin):
             if not worker_prefix or any(not isinstance(arg, str) or not arg for arg in worker_prefix):
                 raise BridgeCommandError("worker_prefix inválido")
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, BridgeCommandError) as exc:
-            qWarning(f"Sky-Claw VFS Bridge no pudo cargar bridge_config.json: {exc}")
+            _qt_warning(f"Sky-Claw VFS Bridge no pudo cargar bridge_config.json: {exc}")
             return False
 
         # jobs_root llega en el descriptor de sesión. Se actualiza en el primer
         # launch antes de crear el controller, siempre en el hilo Qt.
+        app = QCoreApplication.instance()
+        if app is None:
+            _qt_warning("Sky-Claw VFS Bridge requiere una aplicación Qt activa")
+            return False
+        self._dispatcher = _QtCommandDispatcher(self._drain_commands)
+        self._dispatcher.moveToThread(app.thread())
+        inbox = BridgeCommandInbox(
+            commands=self._commands,
+            notify=self._dispatcher.command_ready.emit,
+        )
         self._bridge_config = (descriptor, worker, instance_id, worker_prefix)
         self._client = _BridgeClient(
             descriptor_path=descriptor,
             instance_id=instance_id,
-            commands=self._commands,
+            inbox=inbox,
             outgoing=self._outgoing,
         )
-        self._timer = QTimer()
-        self._timer.timeout.connect(self._drain_commands)
-        self._timer.start(50)
-        app = QCoreApplication.instance()
-        if app is not None:
-            app.aboutToQuit.connect(self._shutdown)
+        app.aboutToQuit.connect(self._shutdown)
         self._client.start()
         qInfo("Sky-Claw VFS Bridge iniciado")
         return True
@@ -262,7 +291,7 @@ class SkyClawBridgePlugin(mobase.IPlugin):
                 else:
                     raise BridgeCommandError(f"operación no permitida: {message_type!r}")
             except (OSError, RuntimeError, ValueError) as exc:
-                qWarning(f"Sky-Claw bridge rechazó comando: {exc}")
+                _qt_warning(f"Sky-Claw bridge rechazó comando: {exc}")
                 self._outgoing.put(
                     {
                         "protocol_version": PROTOCOL_VERSION,
@@ -275,8 +304,6 @@ class SkyClawBridgePlugin(mobase.IPlugin):
                 )
 
     def _shutdown(self) -> None:
-        if self._timer is not None:
-            self._timer.stop()
         if self._controller is not None:
             self._controller.stop()
         if self._client is not None:
