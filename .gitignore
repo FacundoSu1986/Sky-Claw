@@ -1,128 +1,40 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-dist/
-build/
-*.egg
+```
+# Dependencies
+node_modules/
 
-# Virtual environments
-.venv/
-venv/
-env/
+# Logs and temp files
+*.log
+*.tmp
 
-# IDE
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# Database
-*.db
-config.toml
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+.env
 
-# OS
+# Build artifacts
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+
+# System files
 .DS_Store
 Thumbs.db
-
-# Testing
-.pytest_cache/
-.pytest-tmp*/
-htmlcov/
-.coverage
-coverage.xml
-
-# Temp
-/tmp/
-
-# Logs
-logs/
-local_logs/
-
-# From architectural review
-*.log
-*.db-shm
-*.db-wal
-# Agent State (PID Locks)
-.run/
-
-# Node.js
-node_modules/
-sky_claw/antigravity/comms/telegram_gateway_node/node_modules/
-# Note: package-lock.json IS committed (P0.5 supply-chain reproducibility).
-
-# Gateway secrets (nunca commitear)
-sky_claw/antigravity/comms/telegram_gateway_node/.env
-*.token
-.env
-.skyclaw_backups/
-
-# Debug and test artifacts (may contain secrets)
-debug_llm.py
-dummy_malicious.py
-dummy_*.py
-
-# Generated and accidental Windows output
-nul
-.kilo/
-# Scratch / temporary exploration directories (not part of the project)
-scratch/
-autoskills_tmp/
-scrapskyclaw/
-plans/
-
-# Git worktrees (isolated workspaces)
-.worktrees/
-
-# Environments and Secrets
-**/.env
-
-# Serena MCP data (memories, caches, logs)
-.serena/
-
-# Roo Code project config (local IDE configuration)
-.roo/
-
-# Antigravity metadata (session state, caches, plans)
-.antigravity/*
-!/.antigravity/config.json
-!/.antigravity/settings.json
-
-# Python tooling caches (must never be tracked — bloat the IDE file-watcher)
-.mypy_cache/
-.ruff_cache/
-
-# Local-only worktrees (live on disk only; not part of project history)
-.claude/worktrees/
-
-# Local agent artifacts (skills/cache/state — keep on disk, untrack from git)
-.agents/
-
-# Auditoría y extracción
-skyscraping/
-project_scrape/
-Auditorias/
-
-# Informes y reportes residuales (no código fuente)
-INFORME_ANALISIS_ESTATICO.md
-informe_revision.md
-CODE_REVIEW_RESOLUTION.md
-SYNC_PROTOCOL_REPORT.md
-REFACTOR-VALIDATION.md
-IMPLEMENTATION-SUMMARY.txt
-"plan KIMI fase2.txt"
-
-# Kimi agent config
-.kimi/
-
-# Agent metadata inside source tree
-sky_claw/.kilocode/
-sky_claw/.llm-chat-history/
-
-# Backup files
-*.backup
-
-# Reporte de auditoría — mantener fuera del repo
-AUDIT_PANEL_REPORT.md
+```

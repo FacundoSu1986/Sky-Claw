@@ -1,0 +1,205 @@
+name: Qween PR Reviewer
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, master]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  qween-review:
+    name: "🤖 Qween Code Review"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+
+      - name: Get PR diff
+        id: pr_diff
+        run: |
+          git diff origin/${{ github.base_ref }}..${{ github.sha }} > pr_diff.txt
+          echo "diff_size=$(wc -c < pr_diff.txt)" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Run Ruff lint on changed files
+        id: ruff_review
+        run: |
+          echo "## 🔍 Ruff Lint Review" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if ruff check . --output-format=github >> ruff_output.txt 2>&1; then
+            echo "✅ No lint issues found" >> $GITHUB_STEP_SUMMARY
+            echo "RUFF_STATUS=success" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Lint issues detected:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat ruff_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "RUFF_STATUS=failure" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: Run Ruff format check
+        id: ruff_format
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📐 Code Format Review" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if ruff format --check . >> format_output.txt 2>&1; then
+            echo "✅ Code is properly formatted" >> $GITHUB_STEP_SUMMARY
+            echo "FORMAT_STATUS=success" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Format issues detected:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat format_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "Run \`ruff format .\` to fix these issues." >> $GITHUB_STEP_SUMMARY
+            echo "FORMAT_STATUS=failure" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: Run Mypy type check
+        id: mypy_review
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🏷️ Type Safety Review (Mypy)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if python -m mypy sky_claw/ --ignore-missing-imports --no-error-summary >> mypy_output.txt 2>&1; then
+            echo "✅ No type errors found" >> $GITHUB_STEP_SUMMARY
+            echo "MYPY_STATUS=success" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Type issues detected:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat mypy_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "MYPY_STATUS=failure" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: Run security scan
+        id: security_review
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🛡️ Security Review" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          pip install bandit
+          if bandit -r sky_claw/ -ll --format txt >> bandit_output.txt 2>&1; then
+            echo "✅ No security issues found" >> $GITHUB_STEP_SUMMARY
+            echo "SECURITY_STATUS=success" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Security issues detected:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat bandit_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "SECURITY_STATUS=failure" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: Post review summary
+        uses: actions/github-script@60a0d83039c74a4aee543517507435357264baaf # v7.0.1
+        if: always()
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            
+            // Read the step summary
+            const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+            let summaryContent = '';
+            try {
+              summaryContent = fs.readFileSync(summaryPath, 'utf8');
+            } catch (e) {
+              summaryContent = '# Qween Review Summary\n\n⚠️ Unable to generate full summary.';
+            }
+            
+            // Determine overall status
+            const ruffStatus = '${{ steps.ruff_review.outputs.RUFF_STATUS }}';
+            const formatStatus = '${{ steps.ruff_format.outputs.FORMAT_STATUS }}';
+            const mypyStatus = '${{ steps.mypy_review.outputs.MYPY_STATUS }}';
+            const securityStatus = '${{ steps.security_review.outputs.SECURITY_STATUS }}';
+            
+            const hasIssues = [ruffStatus, formatStatus, mypyStatus, securityStatus].some(s => s === 'failure');
+            const statusEmoji = hasIssues ? '⚠️' : '✅';
+            const statusText = hasIssues ? 'Issues Found' : 'All Checks Passed';
+            
+            // Create comment body
+            const commentBody = `
+            ## ${statusEmoji} Qween Code Review — ${statusText}
+            
+            ${summaryContent}
+            
+            ---
+            *Generated by Qween Bot • Sky-Claw CI/CD*
+            `;
+            
+            // Find existing Qween comments to avoid duplicates
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            
+            const qweenComment = comments.find(c => 
+              c.body.includes('Qween Code Review') && c.user.type === 'Bot'
+            );
+            
+            if (qweenComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: qweenComment.id,
+                body: commentBody
+              });
+              console.log('Updated existing Qween review comment');
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: commentBody
+              });
+              console.log('Created new Qween review comment');
+            }
+
+      - name: Set conclusion status
+        if: always()
+        run: |
+          ruff_status="${{ steps.ruff_review.outputs.RUFF_STATUS }}"
+          format_status="${{ steps.ruff_format.outputs.FORMAT_STATUS }}"
+          mypy_status="${{ steps.mypy_review.outputs.MYPY_STATUS }}"
+          security_status="${{ steps.security_review.outputs.SECURITY_STATUS }}"
+          
+          if [[ "$ruff_status" == "failure" || "$format_status" == "failure" || "$mypy_status" == "failure" || "$security_status" == "failure" ]]; then
+            echo "❌ Qween review completed with issues"
+            exit 1
+          else
+            echo "✅ Qween review completed successfully"
+            exit 0
+          fi
