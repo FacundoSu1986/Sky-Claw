@@ -32,6 +32,8 @@ from sky_claw.antigravity.core.models import CircuitBreakerTrippedError
 from sky_claw.antigravity.orchestrator.tool_strategies.base import (
     ApprovalPayloadDescriber,
     ApprovalPayloadValidator,
+    ApprovalPreparationCleaner,
+    ApprovalPreparer,
     NextCall,
     ToolStrategy,
 )
@@ -273,47 +275,62 @@ class HitlGateMiddleware:
         # concurrentes de la MISMA tool destructiva con payloads distintos
         # llegan al gate (FASE 1.5.4 hardening: HITL key collision fix).
         _validate_for_approval(strategy, payload_dict)
-        detail = _describe_for_approval(strategy, payload_dict)
+        await _prepare_for_approval(strategy, payload_dict)
+        try:
+            detail = _describe_for_approval(strategy, payload_dict)
 
-        request_id = f"tool-{strategy.name}-{uuid.uuid4().hex[:12]}"
-        logger.info(
-            "HitlGateMiddleware: tool '%s' requires human approval (request_id=%s).",
-            strategy.name,
-            request_id,
-        )
-
-        decision = await self._guard.request_approval(
-            request_id=request_id,
-            reason=f"Tool '{strategy.name}' requires human approval before execution.",
-            detail=detail,
-            category="tool_execution",
-        )
-
-        if decision is not Decision.APPROVED:
-            logger.warning(
-                "HitlGateMiddleware: tool '%s' NOT approved (decision=%s, request_id=%s).",
+            request_id = f"tool-{strategy.name}-{uuid.uuid4().hex[:12]}"
+            logger.info(
+                "HitlGateMiddleware: tool '%s' requires human approval (request_id=%s).",
                 strategy.name,
-                decision.value,
                 request_id,
             )
-            return {
-                "status": "error",
-                "reason": "HITLApprovalDenied",
-                "details": (
-                    f"Human approval for '{strategy.name}' resolved as '{decision.value}' (request_id={request_id})."
-                ),
-            }
 
-        logger.info(
-            "HitlGateMiddleware: tool '%s' APPROVED by human operator.",
-            strategy.name,
-        )
-        return await next_call()
+            decision = await self._guard.request_approval(
+                request_id=request_id,
+                reason=f"Tool '{strategy.name}' requires human approval before execution.",
+                detail=detail,
+                category="tool_execution",
+            )
+
+            if decision is not Decision.APPROVED:
+                logger.warning(
+                    "HitlGateMiddleware: tool '%s' NOT approved (decision=%s, request_id=%s).",
+                    strategy.name,
+                    decision.value,
+                    request_id,
+                )
+                return {
+                    "status": "error",
+                    "reason": "HITLApprovalDenied",
+                    "details": (
+                        f"Human approval for '{strategy.name}' resolved as '{decision.value}' "
+                        f"(request_id={request_id})."
+                    ),
+                }
+
+            logger.info(
+                "HitlGateMiddleware: tool '%s' APPROVED by human operator.",
+                strategy.name,
+            )
+            return await next_call()
+        finally:
+            _clear_approval_preparation(strategy, payload_dict)
 
 
 def _validate_for_approval(strategy: ToolStrategy, payload_dict: dict[str, Any]) -> None:
     if isinstance(strategy, ApprovalPayloadValidator):
         strategy.validate_for_approval(payload_dict)
+
+
+async def _prepare_for_approval(strategy: ToolStrategy, payload_dict: dict[str, Any]) -> None:
+    if isinstance(strategy, ApprovalPreparer):
+        await strategy.prepare_for_approval(payload_dict)
+
+
+def _clear_approval_preparation(strategy: ToolStrategy, payload_dict: dict[str, Any]) -> None:
+    if isinstance(strategy, ApprovalPreparationCleaner):
+        strategy.clear_approval_preparation(payload_dict)
 
 
 def _describe_for_approval(strategy: ToolStrategy, payload_dict: dict[str, Any]) -> str:

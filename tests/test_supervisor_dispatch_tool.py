@@ -138,6 +138,25 @@ async def test_execute_loot_sorting_propagates_update_masterlist_true(supervisor
     assert loot_params.update_masterlist is True
 
 
+async def test_execute_loot_sorting_envuelve_fallo_vfs_previo_a_hitl(supervisor):
+    supervisor._loot_service.prepare_vfs_attestation = AsyncMock(side_effect=RuntimeError("perfil sin canary VFS"))
+    supervisor._tool_dispatcher = build_orchestration_dispatcher(
+        supervisor,
+        hitl_gate=HitlGateMiddleware(hitl_guard=MagicMock()),
+    )
+
+    result = await supervisor.dispatch_tool(
+        "execute_loot_sorting",
+        {"profile_name": "Default", "update_masterlist": False},
+    )
+
+    assert result == {
+        "status": "error",
+        "reason": "LootExecutionFailed",
+        "details": "perfil sin canary VFS",
+    }
+
+
 # ---------------------------------------------------------------------------
 # execute_synthesis_pipeline (sandbox flow + try/except + dict guard — T-27b·2)
 # ---------------------------------------------------------------------------

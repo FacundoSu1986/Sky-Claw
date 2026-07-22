@@ -314,6 +314,10 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
             # C2: compartir el único NetworkGateway del AppContext (misma caché DNS
             # pinning + reglas de egress que el router/tools), sin duplicar política.
             gateway=ctx.network.gateway,
+            loot_runner=ctx.vfs_loot_runner,
+            # La GUI es el path productivo: nunca degrada a un subprocess LOOT
+            # standalone si el bridge/broker no quedo disponible.
+            require_vfs=True,
             # Fase 1 AI-assisted: callable lazy que resuelve router/sesión del
             # AppContext EN CADA llamada (el router se monta en start_full,
             # después de construir el supervisor; el hot-swap de provider se ve

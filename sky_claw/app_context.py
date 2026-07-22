@@ -42,7 +42,13 @@ from sky_claw.config import LOOT_COMMON_PATHS, XEDIT_COMMON_PATHS, Config, Syste
 from sky_claw.local.ai.patch_advisor_llm import LLMCallable
 from sky_claw.local.auto_detect import AutoDetector, run_off_loop
 from sky_claw.local.local_config import load as _load_legacy_json
+from sky_claw.local.mo2.brokered_loot import (
+    BrokeredLootRunner,
+    VfsRequiredLootRunner,
+    build_vfs_loot_runner,
+)
 from sky_claw.local.mo2.vfs import MO2Controller
+from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker, vfs_instance_id
 from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
 
 # Audit #190: shared lock-DB staging dir. MUST match the orchestrator's
@@ -174,6 +180,9 @@ class AppContext:
         # injected into SupervisorAgent so MO2 path resolution validates
         # against the right roots instead of the backup-only rollback validator.
         self.sandbox_validator: PathValidator | None = None
+        self.vfs_broker: VfsExecutionBroker | None = None
+        self.vfs_instance_id: str | None = None
+        self.vfs_loot_runner: BrokeredLootRunner | VfsRequiredLootRunner | None = None
 
         self.hitl: HITLGuard | None = None
         self.router: LLMRouter | None = None
@@ -501,6 +510,9 @@ class AppContext:
     def _sanitize_full_references(self) -> None:
         self._full_start_committed = False
         self.sandbox_validator = None
+        self.vfs_broker = None
+        self.vfs_instance_id = None
+        self.vfs_loot_runner = None
         self.install_dir = None
         self.router = None
         self.polling = None
@@ -907,6 +919,35 @@ class AppContext:
                     local_cfg.xedit_exe = str(found)
                     config_changed = True
 
+            instance_id = vfs_instance_id(mo2_root)
+            broker: VfsExecutionBroker | None = None
+            if (mo2_root / "ModOrganizer.exe").is_file():
+                broker = VfsExecutionBroker(
+                    instance_id=instance_id,
+                    state_dir=Config.DEFAULT_CONFIG_DIR / "vfs_bridge" / instance_id,
+                )
+                self._push_startup_cleanup(self._close_vfs_broker, broker)
+                await self._await_startup(broker.start())
+                logger.info("VFS execution broker iniciado para la instancia %s", instance_id)
+            else:
+                logger.warning(
+                    "F8 guard activo: no se inicio el broker porque falta ModOrganizer.exe bajo %s",
+                    mo2_root,
+                )
+
+            configured_game = pathlib.Path(local_cfg.skyrim_path) if local_cfg.skyrim_path else None
+            vfs_loot_runner = build_vfs_loot_runner(
+                broker=broker,
+                instance_id=instance_id if broker is not None else None,
+                mo2_root=mo2_root,
+                game_path=configured_game,
+                loot_exe=loot_exe,
+                profile="Default",
+            )
+            self.vfs_broker = broker
+            self.vfs_instance_id = instance_id
+            self.vfs_loot_runner = vfs_loot_runner
+
             if config_changed:
                 local_cfg.save()
 
@@ -951,6 +992,7 @@ class AppContext:
                 mo2=mo2,
                 sync_engine=sync_engine,
                 loot_exe=loot_exe,
+                loot_runner=vfs_loot_runner,
                 hitl=hitl,
                 downloader=self.network.downloader,
                 tools_installer=tools_installer,
@@ -1059,6 +1101,16 @@ class AppContext:
         finally:
             if self.polling is polling:
                 self.polling = None
+
+    async def _close_vfs_broker(self, broker: VfsExecutionBroker) -> None:
+        """Cierra IPC VFS y retira referencias publicadas por esta generacion."""
+        try:
+            await broker.close()
+        finally:
+            if self.vfs_broker is broker:
+                self.vfs_broker = None
+                self.vfs_instance_id = None
+                self.vfs_loot_runner = None
 
     async def _close_router(self, router: LLMRouter) -> None:
         """Callback for AsyncExitStack: close LLM router."""

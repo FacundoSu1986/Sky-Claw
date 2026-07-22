@@ -304,7 +304,11 @@ def build_orchestration_dispatcher(
         ExecuteLootSortingStrategy(
             service=supervisor._loot_service,
         ),
-        middleware=[gate],
+        middleware=[
+            ErrorWrappingMiddleware("LootExecutionFailed"),
+            DictResultGuardMiddleware("InvalidLootResult"),
+            gate,
+        ],
     )
 
     # T-27b·2: Synthesis corre SIEMPRE en sandbox — el flow resuelve

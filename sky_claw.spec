@@ -113,6 +113,7 @@ datas = [
     ("sky_claw/antigravity/gui/styles.css", "sky_claw/antigravity/gui"),
     ("sky_claw/antigravity/gui/assets", "sky_claw/antigravity/gui/assets"),
     ("sky_claw/local/xedit/scripts", "sky_claw/local/xedit/scripts"),
+    ("sky_claw/local/mo2/plugin_bundle/skyclaw_bridge", "sky_claw/local/mo2/plugin_bundle/skyclaw_bridge"),
     ("sky_claw/antigravity/security/security_policy.yaml", "sky_claw/antigravity/security"),
 ]
 
@@ -157,6 +158,8 @@ hiddenimports = [
     "sky_claw.local.fomod.resolver",
     "sky_claw.local.loot.cli",
     "sky_claw.local.mo2.vfs",
+    "sky_claw.local.mo2.vfs_worker",
+    "sky_claw.local.mo2.vfs_broker",
     "sky_claw.antigravity.orchestrator.sync_engine",
     "sky_claw.antigravity.scraper.masterlist",
     "sky_claw.antigravity.scraper.nexus_downloader",

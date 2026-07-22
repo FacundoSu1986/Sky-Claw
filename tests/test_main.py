@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.__main__ import AppContext, _main, _parse_args
+from sky_claw.__main__ import AppContext, _install_vfs_bridge, _main, _parse_args
 
 # ------------------------------------------------------------------
 # Argument parsing
@@ -26,6 +26,15 @@ class TestParseArgs:
     def test_mode_cli_explicit(self) -> None:
         args = _parse_args(["--mode", "cli"])
         assert args.mode == "cli"
+
+    def test_mode_install_vfs_bridge(self) -> None:
+        args = _parse_args(["--mode", "install-vfs-bridge"])
+        assert args.mode == "install-vfs-bridge"
+
+    def test_mode_vfs_health_con_perfil(self) -> None:
+        args = _parse_args(["--mode", "vfs-health", "--vfs-profile", "Alternate"])
+        assert args.mode == "vfs-health"
+        assert args.vfs_profile == "Alternate"
 
     def test_mode_telegram(self) -> None:
         args = _parse_args(["--mode", "telegram"])
@@ -143,6 +152,56 @@ class TestOneshot:
             mock_instance.start.assert_awaited_once()
             mock_router.chat.assert_awaited_once_with("search Requiem", mock_instance.session, chat_id="oneshot")
             mock_instance.stop.assert_awaited_once()
+
+
+class TestInstallVfsBridge:
+    @pytest.mark.asyncio
+    async def test_instala_sin_arrancar_app_context(self, tmp_path: pathlib.Path) -> None:
+        with (
+            patch("sky_claw.__main__._install_vfs_bridge", new_callable=AsyncMock) as install,
+            patch("sky_claw.__main__.AppContext") as app_context,
+        ):
+            await _main(["--mode", "install-vfs-bridge", "--mo2-root", str(tmp_path)])
+
+        install.assert_awaited_once()
+        assert install.await_args.args[0].mo2_root == tmp_path
+        app_context.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rechaza_instalacion_desde_wsl_antes_de_escribir_config(self, tmp_path: pathlib.Path) -> None:
+        from sky_claw.local.mo2.vfs_broker import VfsBrokerError
+
+        args = MagicMock(mo2_root=tmp_path)
+        with (
+            patch("sky_claw.__main__.sys.platform", "linux"),
+            patch("sky_claw.local.mo2.bridge_installer.MO2BridgeInstaller.install") as install,
+            pytest.raises(VfsBrokerError, match="Windows"),
+        ):
+            await _install_vfs_bridge(args)
+
+        install.assert_not_called()
+
+
+class TestVfsHealth:
+    @pytest.mark.asyncio
+    async def test_probe_no_arranca_app_context(self, tmp_path: pathlib.Path) -> None:
+        with (
+            patch("sky_claw.__main__._run_vfs_health", new_callable=AsyncMock) as health,
+            patch("sky_claw.__main__.AppContext") as app_context,
+        ):
+            await _main(
+                [
+                    "--mode",
+                    "vfs-health",
+                    "--mo2-root",
+                    str(tmp_path / "MO2"),
+                    "--skyrim-path",
+                    str(tmp_path / "Skyrim"),
+                ]
+            )
+
+        health.assert_awaited_once()
+        app_context.assert_not_called()
 
 
 class TestTelegram:

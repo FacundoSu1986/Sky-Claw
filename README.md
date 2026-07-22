@@ -36,7 +36,7 @@ Usuario (GUI / CLI / Telegram)
    |-- search_mod        -> AsyncModRegistry (SQLite)
    |-- check_load_order  -> MO2Controller (modlist.txt)
    |-- detect_conflicts  -> SQL JOIN sobre dependencias
-   |-- run_loot_sort     -> LOOTRunner
+   |-- run_loot_sort     -> VfsExecutionBroker -> worker LOOT bajo MO2/USVFS
    |-- run_xedit_script  -> XEditRunner
    |-- download_mod      -> NexusDownloader + HITLGuard
          |
