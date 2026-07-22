@@ -381,18 +381,44 @@ middleware del dispatcher, que es el único camino de ejecución real.
   desenlace terminal observado; TX diferida de Synthesis resuelta ante cancel.
 - **F3 — RESUELTO** (#321): rollback post-cancelación shieldeado + drain en
   shutdown.
-- **F4, F5, F6, F7, F9 — pendientes** (no bloqueantes).
+- **F5 — RESUELTO** (#332): drift-gate atómico — check y apply fusionados en
+  un solo `to_thread` de `_promote_sync`.
+- **F6 — RESUELTO** (#331): resolución atómica de la decisión HITL — cierra
+  la race timeout/respond.
+- **F4 — RESUELTO** (#342): `IdempotencyMiddleware` ahora captura
+  `CancelledError` explícitamente (no hereda de `Exception`, así que el
+  `except` genérico la dejaba pasar sin liberar la key) y
+  `build_orchestration_dispatcher` la registra como middleware GLOBAL —
+  mismo patrón de F1a — así que corre en el único camino real de dispatch
+  en vez de quedar sin cablear.
+- **F7 — RESUELTO** (#343): `check_for_updates` serializa la fase de
+  aprobación HITL con un `Semaphore(1)` propio (envuelve solo
+  `request_approval`, no el fetch/descarga); ya no hay más de un prompt en
+  vuelo contra el único slot de la GUI.
+- **F8 — RESUELTO** (#343): el poison delivery de `run()` deja de bloquear/
+  re-lanzar `TimeoutError` cuando el producer está siendo cancelado
+  (`current_task().cancelling() > 0`); la entrega pasa a ser best-effort
+  (`put_nowait`) en ese caso, sin pisar la `CancelledError` en vuelo.
+- **F9 — cedido**: el god object de composición de `SupervisorAgent` no se
+  atacó desde esta auditoría. Su remediación quedó a cargo del trabajo
+  paralelo de cold-boot/lifecycle sobre `app_context.py` (ver commits
+  `#333`/`#338` y sucesivos); no verificado end-to-end desde este documento.
+
+**Nota de higiene** (2026-07-20): esta sección estaba desactualizada respecto
+del código — F5/F6 llevaban ya mergeados varios días (#331, #332) sin que se
+reflejara acá, exactamente el patrón de doc-drift que `AGENTS.md` advierte
+tras #290. Verificar siempre contra el código, no contra esta tabla.
 
 ## Anexo: matriz de hallazgos
 
 | ID | Severidad | Estado | Ubicación | Resumen |
 |----|-----------|--------|-----------|---------|
-| F1 | Crítica | RESUELTO (#328) | `state_graph.py`, `supervisor.py:154`, `ritual_runner.py:270` | Grafo nunca ejecutado; mutaciones in-place descartadas; self-loops → `GraphRecursionError`; `submit_event` resetea estado |
-| F2 | Alta | RESUELTO (#320/#322) | `sandbox_promotion.py:262-292`, `profile_sandbox.py:265-267` | Cancelación en promote: thread zombie muta el perfil real + clon filtrado |
-| F3 | Alta | RESUELTO (#321) | `sync_engine.py:362-380` | Rollback post-cancelación interrumpible (sin `shield`) |
-| F4 | Media | Confirmado | `middleware.py:339-347`, `tool_dispatcher.py` | Key de idempotencia bloqueada 1h ante cancelación; middleware sin cablear |
-| F5 | Media | Confirmado | `profile_sandbox.py:265-267` | Drift-gate TOCTOU (check y apply en `to_thread` separados) |
-| F6 | Media | Confirmado | `hitl.py:133-159` | Race timeout/respond: ack falso de aprobación |
-| F7 | Media | Confirmado | `sync_engine.py:534,679` | 15 prompts HITL concurrentes vs 1 slot en GUI |
-| F8 | Baja | Confirmado | `sync_engine.py:819-832` | `TimeoutError` desde `finally` pisa la `CancelledError` |
-| F9 | Estructural | Confirmado | `supervisor.py:117-291` | God object de composición; plan de desacople en §3 |
+| F1 | Crítica | RESUELTO (#328/#329) | `state_graph.py` (retirado), `supervisor.py`, `tool_dispatcher.py` | Grafo nunca ejecutado; mutaciones in-place descartadas; self-loops → `GraphRecursionError`; `submit_event` resetea estado |
+| F2 | Alta | RESUELTO (#320/#322) | `sandbox_promotion.py`, `profile_sandbox.py` | Cancelación en promote: thread zombie muta el perfil real + clon filtrado |
+| F3 | Alta | RESUELTO (#321) | `sync_engine.py` | Rollback post-cancelación interrumpible (sin `shield`) |
+| F4 | Media | RESUELTO (#342) | `tool_strategies/middleware.py`, `tool_dispatcher.py` | Key de idempotencia bloqueada 1h ante cancelación; middleware sin cablear |
+| F5 | Media | RESUELTO (#332) | `profile_sandbox.py` | Drift-gate TOCTOU (check y apply en `to_thread` separados) |
+| F6 | Media | RESUELTO (#331) | `security/hitl.py` | Race timeout/respond: ack falso de aprobación |
+| F7 | Media | RESUELTO (#343) | `sync_engine.py` (`check_for_updates`) | 15 prompts HITL concurrentes vs 1 slot en GUI |
+| F8 | Baja | RESUELTO (#343) | `sync_engine.py` (`_produce_then_poison`) | `TimeoutError` desde `finally` pisa la `CancelledError` |
+| F9 | Estructural | Cedido (no verificado) | `supervisor.py:117-291` | God object de composición; remediación delegada al trabajo de cold-boot en `app_context.py` |

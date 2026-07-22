@@ -220,10 +220,14 @@ dominio, follow-up separado.
 
 ### 2.1 T-12 — mypy estricto módulo a módulo
 
-`pyproject.toml:213` sigue con `ignore_errors = true` para el grueso del
+`pyproject.toml` sigue con `ignore_errors = true` para el grueso del
 árbol: *"Currently 1,684 mypy errors across ~30 modules"* (comentario
 desactualizado en número exacto, pero la exención sigue activa). Se migra de
-a un módulo por PR; sin fecha límite.
+a un módulo por PR; sin fecha límite. **Avance 2026-07-21:** `local/fomod/*`
+migrado a `strict = true` (ver addendum del 2026-07-21). Candidato trivial
+para el próximo commit: `local/loot/*` ya pasa `strict` sin cambios de código
+(probado — 0 errores), solo falta moverlo de la lista `ignore_errors` a la
+`strict = true`.
 
 ### 2.2 T-10/T-11 — BLE001 (except genérico) sin activar en la mayoría del árbol
 
@@ -650,6 +654,66 @@ Pendientes de la auditoría (no bloqueantes): F4 (idempotencia sin cablear),
 F5 (TOCTOU del drift-gate de `promote()`), F6 (race del timeout de
 `HITLGuard`), F7 (prompts HITL concurrentes en `check_for_updates`), F9
 (composition root del god object).
+
+## Addendum (2026-07-21) — auditoría de resiliencia del orquestador (#319): cierre F4–F8
+
+Continuación del addendum anterior. Cierres adicionales:
+
+- **F5** (#332) — drift-gate atómico: `_check_drift`/`_compute_diff`/
+  `_apply_changes` fusionados en `_promote_sync`, un solo `to_thread` (elimina
+  la ventana TOCTOU entre el gate y la mutación).
+- **F6** (#331) — resolución atómica de la decisión de `HITLGuard`: cierra la
+  race entre el timeout y `respond()` que podía dar un ack de aprobación falso.
+- **F4** (#342) — `IdempotencyMiddleware` captura `CancelledError`
+  explícitamente (antes quedaba la key bloqueada 1h ante cancelación) y se
+  cablea como middleware global del `OrchestrationToolDispatcher` — antes
+  existía pero no corría en el camino real de dispatch.
+- **F7 + F8** (#343) — `check_for_updates` serializa la fase de aprobación
+  HITL con `Semaphore(1)` propio (el fetch/descarga sigue concurrente); el
+  poison delivery de `SyncEngine.run` deja de re-lanzar `TimeoutError` cuando
+  el producer está siendo cancelado (antes pisaba la `CancelledError` real).
+
+**F1–F8 de la auditoría #319 quedan cerrados.** Solo **F9** (composition root /
+god object de `SupervisorAgent`) sigue abierto — cedido al trabajo paralelo de
+cold-boot/lifecycle sobre `app_context.py` (#333/#338 y sucesivos); no
+verificado end-to-end desde esta auditoría.
+
+## Addendum (2026-07-21) — T-12: `local/fomod/*` migrado a mypy strict
+
+Continuación del sprint de type-coverage (§2.1). Con la auditoría de
+resiliencia (#319) cerrada salvo F9 (cedido al trabajo de lifecycle del otro
+agente), y el pozo de bugs de concurrencia agotado, el frente limpio de mayor
+valor sin colisión pasa a ser la deuda estructural de tipos.
+
+**Cerrado:** `sky_claw.local.fomod.*` sale de la lista `ignore_errors = true`
+y entra a `strict = true` (patrón "nace estricto"). Los 4 errores que exponía
+`strict` eran genuinos, no ruido — se anotaron con narrowing/anotaciones
+reales, sin `Any` ni `# type: ignore` de silencio:
+
+- `parser.py` (×2) — `operator` leído de un atributo XML (`str`) se estrecha a
+  `Literal["And", "Or"]` que exige `CompositeDependency.operator`. El patrón
+  previo (`if operator not in ("And","Or"): operator = "And"`) no narrowa en
+  mypy; se reemplazó por `"Or" if attr == "Or" else "And"`, comportamiento
+  idéntico (inválido → "And").
+- `parser.py` (×1) — `conditions` de `ConditionalPattern` es no-opcional; un
+  `<dependencies>` ausente o que parsea a `None` ahora cae a un
+  `CompositeDependency()` vacío en vez de pasar `None`.
+- `resolver.py` (×1) — `plugins: list` → `list[Plugin]` en `_resolve_group`
+  (el caller pasa `group.plugins`, que ya es `list[Plugin]`).
+
+Gates verdes: `mypy sky_claw/` (240 archivos, 0 issues), `ruff check` +
+`ruff format --check`, suite completa (3387 passed, 13 skipped). Sin cambio de
+comportamiento — anclado por los 51 tests de `fomod` existentes, que siguen
+verdes.
+
+**Próximo candidato (trivial):** `local/loot/*` ya pasa `strict` con 0 errores
+(probado con el mismo probe); su migración es solo mover la entrada en
+`pyproject.toml`, sin tocar código.
+
+**Nota de alcance:** la exención `BLE001` de `local/fomod/**`
+(`pyproject.toml`, per-file-ignores) es de T-10/T-11, un frente distinto de
+T-12 — no se toca acá (un cambio, un PR). `fomod/parser.py` conserva su
+`except Exception` de boundary de parsing.
 
 ## Addendum — Auditoría 03 (Pipeline): backlog consolidado U-01…U-12
 

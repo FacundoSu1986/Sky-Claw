@@ -22,8 +22,10 @@ from sky_claw.antigravity.orchestrator.rollback_factory import (
 )
 from sky_claw.antigravity.orchestrator.telemetry_daemon import TelemetryDaemon
 from sky_claw.antigravity.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+from sky_claw.antigravity.orchestrator.tool_state_machine import ToolStateMachine
 from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
     HitlGateMiddleware,
+    IdempotencyMiddleware,
     LoopGuardrailMiddleware,
 )
 from sky_claw.antigravity.orchestrator.watcher_daemon import WatcherDaemon
@@ -285,10 +287,16 @@ class SupervisorAgent:
         # dispatch. El supervisor retiene la instancia para rearmarla ante
         # intervención humana (reset_loop_guardrail, invocado por la GUI).
         self._loop_guardrail_middleware = LoopGuardrailMiddleware()
+        # F4 (auditoría 2026-07-18): la protección anti-duplicados de FASE
+        # 1.5.4 existía pero nunca se cableaba en el dispatcher real — la
+        # misma laguna que F1a documentó para el loop guardrail. El supervisor
+        # retiene el ToolStateMachine para introspección futura (GUI/telemetría).
+        self._tool_state_machine = ToolStateMachine()
         self._tool_dispatcher = build_orchestration_dispatcher(
             self,
             hitl_gate=HitlGateMiddleware(hitl_guard=hitl_guard),
             loop_guardrail=self._loop_guardrail_middleware,
+            idempotency=IdempotencyMiddleware(state_machine=self._tool_state_machine),
         )
 
     def _make_path_resolver(self, sandbox_validator: PathValidatorProtocol | None) -> PathResolutionService:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import pathlib
@@ -39,7 +40,7 @@ from sky_claw.antigravity.security.path_validator import PathValidator
 from sky_claw.antigravity.security.prompt_armor import build_system_header
 from sky_claw.config import LOOT_COMMON_PATHS, XEDIT_COMMON_PATHS, Config, SystemPaths
 from sky_claw.local.ai.patch_advisor_llm import LLMCallable
-from sky_claw.local.auto_detect import AutoDetector
+from sky_claw.local.auto_detect import AutoDetector, run_off_loop
 from sky_claw.local.local_config import load as _load_legacy_json
 from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
@@ -368,6 +369,18 @@ class AppContext:
         result = await awaitable
         self._assert_startup_current()
         return result
+
+    async def _scan_tool_paths(self, common_paths: tuple[pathlib.Path, ...], exe_name: str) -> pathlib.Path | None:
+        """Escanea rutas comunes por un ejecutable FUERA del event loop.
+
+        Usa el offload a hilo *daemon* compartido (``run_off_loop``), NUNCA
+        ``asyncio.to_thread``: el executor por defecto usa hilos non-daemon que
+        ``asyncio.run`` joinea sin timeout al cerrar, así que un scan colgado
+        sobre un VFS/unidad lenta bloquearía el shutdown pese a la cancelación
+        del arranque. Un hilo daemon se abandona al salir el intérprete (mismo
+        invariante que ``AutoDetector``, hazard cerrado en #337).
+        """
+        return await run_off_loop(functools.partial(scan_common_paths, common_paths, exe_name))
 
     def _push_startup_cleanup(
         self,
@@ -876,13 +889,7 @@ class AppContext:
                 if cfg_loot.exists():
                     loot_exe = cfg_loot
             if loot_exe is None or not loot_exe.exists():
-                found = await self._await_startup(
-                    asyncio.to_thread(
-                        scan_common_paths,
-                        LOOT_COMMON_PATHS,
-                        "loot.exe",
-                    )
-                )
+                found = await self._await_startup(self._scan_tool_paths(LOOT_COMMON_PATHS, "loot.exe"))
                 if found:
                     loot_exe = found
                     local_cfg.loot_exe = str(found)
@@ -894,13 +901,7 @@ class AppContext:
                 if cfg_xedit.exists():
                     xedit_exe = cfg_xedit
             if xedit_exe is None or not xedit_exe.exists():
-                found = await self._await_startup(
-                    asyncio.to_thread(
-                        scan_common_paths,
-                        XEDIT_COMMON_PATHS,
-                        "SSEEdit.exe",
-                    )
-                )
+                found = await self._await_startup(self._scan_tool_paths(XEDIT_COMMON_PATHS, "SSEEdit.exe"))
                 if found:
                     xedit_exe = found
                     local_cfg.xedit_exe = str(found)
@@ -1081,10 +1082,19 @@ class AppContext:
         """
         return (os.environ.get("SKYCLAW_VAULT_MASTER_KEY") or "").strip()
 
+    def _construct_credential_vault(self, master_key: str, db_path: str) -> CredentialVault:
+        """Construye el vault SIN inicializar (salt junto al DB para aislar).
+
+        No adquiere conexión: el constructor solo hace el hardening del salt y
+        arma el pool (lazy — la conexión se crea en el primer ``acquire``). Esto
+        permite registrar la compensación de cierre ANTES de ``initialize()``.
+        """
+        salt_dir = pathlib.Path(db_path).parent / "vault_salt"
+        return CredentialVault(db_path=db_path, master_key=master_key, salt_dir=salt_dir)
+
     async def _build_credential_vault(self, master_key: str, db_path: str) -> CredentialVault:
         """Construye e inicializa el vault (salt colocado junto al DB para aislar)."""
-        salt_dir = pathlib.Path(db_path).parent / "vault_salt"
-        vault = CredentialVault(db_path=db_path, master_key=master_key, salt_dir=salt_dir)
+        vault = self._construct_credential_vault(master_key, db_path)
         await vault.initialize()
         return vault
 
@@ -1097,15 +1107,44 @@ class AppContext:
         del provider activo bajo ``{provider}_api_key`` para que ``reload_provider``
         sea funcional (no solo alcanzable) — sin la semilla, ``get_secret`` daría
         ``None`` y el hot-swap seguiría devolviendo ``False``.
+
+        La siembra es **seed-if-absent**: la bóveda es la fuente de verdad del
+        secreto vivo, así que una clave rotada en caliente sobrevive a los
+        reinicios en vez de ser pisada por la de ``Config`` (que solo bootstrapea
+        la primera vez).
         """
         master_key = self._read_vault_master_key()
         if not master_key:
             logger.info("Hot-swap de credenciales Zero-Trust deshabilitado: SKYCLAW_VAULT_MASTER_KEY no configurada.")
             return None
-        vault = await self._build_credential_vault(master_key, db_path)
+        vault = self._construct_credential_vault(master_key, db_path)
+        # Registrar la compensación ANTES del primer await de adquisición:
+        # initialize() abre una conexión en el pool, así que si falla a mitad
+        # (DB read-only/locked, o salt débil en Windows) el rollback de startup
+        # debe poder cerrar el vault igual. Invariante de #338 (registrar antes
+        # de adquirir); antes se registraba después de initialize → fuga.
         self._push_startup_cleanup(self._close_vault, vault)
+        await vault.initialize()
         if api_key:
-            await vault.set_secret(f"{provider_name}_api_key", api_key)
+            # La bóveda es la fuente de verdad del secreto vivo: solo se siembra
+            # si NO existe (seed-if-absent). Un set_secret incondicional
+            # (INSERT OR REPLACE) pisaría una credencial rotada en caliente con
+            # la de Config en cada arranque — pudiendo re-inyectar una revocada,
+            # que es justo lo que el hot-swap Zero-Trust existe para evitar.
+            secret_name = f"{provider_name}_api_key"
+            if await vault.get_secret(secret_name) is None:
+                await vault.set_secret(secret_name, api_key)
+            else:
+                # La bóveda ya tiene la credencial: es la fuente de verdad, no se
+                # re-siembra desde Config (una rotación en caliente sobrevive al
+                # reinicio). Se loguea SOLO el provider — nunca el nombre del
+                # secreto ni su valor — para no exponer datos sensibles.
+                logger.info(
+                    "La bóveda ya tiene la credencial de '%s'; se conserva (fuente de verdad) y "
+                    "no se re-siembra desde Config. Para imponer una clave nueva, rotá vía la "
+                    "bóveda o limpiá el secreto.",
+                    provider_name,
+                )
         self.credential_vault = vault
         logger.info("🔐 CredentialVault cableado al router — hot-swap Zero-Trust habilitado.")
         return vault

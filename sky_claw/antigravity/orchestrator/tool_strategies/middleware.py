@@ -23,6 +23,7 @@ validation (``validate_for_approval``) and operator-facing summaries
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -406,6 +407,17 @@ class IdempotencyMiddleware:
         self._sm.transition(task.task_id, "RUNNING")
         try:
             result = await next_call()
+        except asyncio.CancelledError:
+            # F4 (auditoría 2026-07-18): CancelledError NO hereda de Exception,
+            # así que el `except Exception` de abajo lo dejaba pasar sin
+            # liberar la key — quedaba "activa" hasta su TTL de 1h ante
+            # cualquier cancelación (timeout de cliente, shutdown parcial).
+            self._sm.transition(
+                task.task_id,
+                "FAILED",
+                error_message="cancelled",
+            )
+            raise
         except Exception as exc:
             self._sm.transition(
                 task.task_id,

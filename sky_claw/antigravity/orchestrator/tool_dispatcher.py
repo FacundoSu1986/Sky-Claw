@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from sky_claw.antigravity.orchestrator.tool_state_machine import ToolStateMachine
 from sky_claw.antigravity.orchestrator.tool_strategies.analyze_grass_prerequisites import (
     AnalyzeGrassPrerequisitesStrategy,
 )
@@ -44,6 +45,7 @@ from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
     DictResultGuardMiddleware,
     ErrorWrappingMiddleware,
     HitlGateMiddleware,
+    IdempotencyMiddleware,
     LoopGuardrailMiddleware,
 )
 from sky_claw.antigravity.orchestrator.tool_strategies.preview_chain import (
@@ -262,6 +264,7 @@ def build_orchestration_dispatcher(
     *,
     hitl_gate: HitlGateMiddleware | None = None,
     loop_guardrail: LoopGuardrailMiddleware | None = None,
+    idempotency: IdempotencyMiddleware | None = None,
 ) -> OrchestrationToolDispatcher:
     """Wire all migrated tool strategies onto a fresh dispatcher.
 
@@ -282,7 +285,12 @@ def build_orchestration_dispatcher(
     # El supervisor inyecta su instancia para poder rearmarla ante intervención
     # humana (reset_loop_guardrail); None crea una propia (tests/standalone).
     guardrail = loop_guardrail if loop_guardrail is not None else LoopGuardrailMiddleware()
-    dispatcher = OrchestrationToolDispatcher(global_middleware=[guardrail])
+    # F4 (auditoría 2026-07-18): IdempotencyMiddleware (FASE 1.5.4) existía y
+    # estaba testeado en aislamiento, pero nunca se registraba acá — la misma
+    # laguna que F1a documentó para el loop guardrail. Mismo patrón de
+    # inyección: el supervisor retiene su instancia, None arma una propia.
+    dedupe = idempotency if idempotency is not None else IdempotencyMiddleware(ToolStateMachine())
+    dispatcher = OrchestrationToolDispatcher(global_middleware=[guardrail, dedupe])
 
     # FASE 1.5.1: Shared HITL gate for destructive tools.
     # When hitl_gate is None, the default gate denies destructive tools
