@@ -361,8 +361,9 @@ class VfsExecutionBroker:
         # Fence acotado que SÍ propaga la cancelación: si el caller cancela acá,
         # submit la enruta por _send_cancel (que corre su propio fence protegido
         # y avisa al bridge). La gracia de bridge muerto igual acota la espera.
+        deadline = asyncio.get_running_loop().time() + self._fence_grace
         while not exit_future.done():
-            await self._await_exit_or_bridge_loss(exit_future)
+            await self._await_exit_or_bridge_loss(exit_future, deadline)
         exit_future.result()
         return result
 
@@ -375,19 +376,31 @@ class VfsExecutionBroker:
         worker muerto. El Job Object es kill-on-close: si MO2 (el bridge) murió,
         el worker murió con él, así que romper el fence acá evita la inanición
         indefinida del lock ``load-order`` que sostiene el caller.
+
+        La ventana de gracia es un deadline ABSOLUTO fijado antes del loop: una
+        ``CancelledError`` absorbida no lo reinicia, así que ni siquiera
+        cancelaciones repetidas extienden el fence más allá de ``_fence_grace``
+        (review CodeRabbit PR #352).
         """
         cancelled = False
+        deadline = asyncio.get_running_loop().time() + self._fence_grace
         while not exit_future.done():
             try:
-                await self._await_exit_or_bridge_loss(exit_future)
+                await self._await_exit_or_bridge_loss(exit_future, deadline)
             except asyncio.CancelledError:
                 cancelled = True
         exit_future.result()
         if cancelled:
             raise asyncio.CancelledError
 
-    async def _await_exit_or_bridge_loss(self, exit_future: asyncio.Future[int | None]) -> None:
-        """Una espera acotada: worker_exit, o pérdida terminal del bridge."""
+    async def _await_exit_or_bridge_loss(self, exit_future: asyncio.Future[int | None], deadline: float) -> None:
+        """Una espera acotada: worker_exit, o pérdida terminal del bridge.
+
+        ``deadline`` es el instante absoluto (loop clock) tras el cual, si el
+        bridge sigue caído, se asume el worker muerto. Sólo acota la espera
+        mientras el bridge está desconectado; con el bridge vivo se espera el
+        ``worker_exit`` sin tope.
+        """
         exit_wait: asyncio.Future[Any] = asyncio.ensure_future(asyncio.shield(exit_future))
         try:
             if self._bridge_ready.is_set():
@@ -397,21 +410,30 @@ class VfsExecutionBroker:
                     await asyncio.wait({exit_wait, lost_wait}, return_when=asyncio.FIRST_COMPLETED)
                 finally:
                     await _cancel_and_join(lost_wait)
-            else:
-                # Bridge caído: ventana acotada para reconectar y reenviar worker_exit.
-                ready_wait: asyncio.Future[Any] = asyncio.ensure_future(self._bridge_ready.wait())
-                grace: asyncio.Future[Any] = asyncio.ensure_future(asyncio.sleep(self._fence_grace))
-                try:
-                    await asyncio.wait({exit_wait, ready_wait, grace}, return_when=asyncio.FIRST_COMPLETED)
-                    if grace.done() and not ready_wait.done() and not exit_future.done():
-                        logger.warning(
-                            "El bridge MO2 no reconectó en %.1fs; se asume el worker muerto para liberar el fence",
-                            self._fence_grace,
-                        )
-                        exit_future.set_result(None)
-                finally:
-                    await _cancel_and_join(ready_wait)
-                    await _cancel_and_join(grace)
+                return
+            # Bridge caído: sólo el tiempo que reste hasta el deadline absoluto.
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                if not exit_future.done():
+                    logger.warning(
+                        "El bridge MO2 no reconectó en %.1fs; se asume el worker muerto para liberar el fence",
+                        self._fence_grace,
+                    )
+                    exit_future.set_result(None)
+                return
+            ready_wait: asyncio.Future[Any] = asyncio.ensure_future(self._bridge_ready.wait())
+            grace: asyncio.Future[Any] = asyncio.ensure_future(asyncio.sleep(remaining))
+            try:
+                await asyncio.wait({exit_wait, ready_wait, grace}, return_when=asyncio.FIRST_COMPLETED)
+                if grace.done() and not ready_wait.done() and not exit_future.done():
+                    logger.warning(
+                        "El bridge MO2 no reconectó en %.1fs; se asume el worker muerto para liberar el fence",
+                        self._fence_grace,
+                    )
+                    exit_future.set_result(None)
+            finally:
+                await _cancel_and_join(ready_wait)
+                await _cancel_and_join(grace)
         finally:
             await _cancel_and_join(exit_wait)
 
