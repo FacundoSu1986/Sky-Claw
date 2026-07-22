@@ -605,9 +605,8 @@ class VfsExecutionBroker:
         for job_id in active_jobs:
             await self._send_cancel(job_id)
         self._closing = True
-        self._server.close()
-        await self._server.wait_closed()
-        self._server = None
+        server = self._server
+        server.close()
         writer = self._bridge_writer
         if writer is not None:
             writer.close()
@@ -633,6 +632,8 @@ class VfsExecutionBroker:
         for client_task in client_tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await client_task
+        await server.wait_closed()
+        self._server = None
         self._worker_writers.clear()
         self._worker_by_job.clear()
         self._client_tasks.clear()

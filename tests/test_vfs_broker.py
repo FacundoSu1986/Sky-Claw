@@ -604,6 +604,40 @@ async def test_cancelacion_durante_fence_de_error_no_libera_antes_de_worker_exit
         await broker.close()
 
 
+async def test_close_cierra_conexiones_antes_de_esperar_listener(tmp_path: pathlib.Path) -> None:
+    broker = VfsExecutionBroker(
+        instance_id="portable-main",
+        state_dir=tmp_path / "state",
+        secret=b"x" * 32,
+        descriptor_hardener=lambda _path: None,
+    )
+    await broker.start()
+    _reader, writer, _secret = await _conectar_bridge(broker)
+    servidor_real = broker._server
+    assert servidor_real is not None
+
+    class ServidorQueVerificaOrden:
+        def close(self) -> None:
+            servidor_real.close()
+
+        async def wait_closed(self) -> None:
+            bridge_writer = broker._bridge_writer
+            assert bridge_writer is None or bridge_writer.is_closing(), (
+                "las conexiones deben cerrarse antes de esperar el listener"
+            )
+            await servidor_real.wait_closed()
+
+    broker._server = ServidorQueVerificaOrden()
+    try:
+        await broker.close()
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        if broker._server is not None:
+            broker._server = servidor_real
+            await broker.close()
+
+
 async def test_close_con_job_activo_espera_terminacion_y_resuelve_submit(tmp_path: pathlib.Path) -> None:
     mo2, data, challenge, job = _entorno(tmp_path)
     broker = VfsExecutionBroker(
