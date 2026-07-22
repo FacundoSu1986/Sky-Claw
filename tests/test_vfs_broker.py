@@ -676,3 +676,95 @@ async def test_close_concurrente_es_idempotente(tmp_path: pathlib.Path) -> None:
     await asyncio.gather(broker.close(), broker.close())
 
     assert not broker.descriptor_path.exists()
+
+
+async def test_fence_se_rompe_si_el_bridge_no_reconecta(tmp_path: pathlib.Path) -> None:
+    """F-1: si el bridge MO2 muere y no reconecta, el fence terminal no puede
+    colgar para siempre reteniendo el lock — degrada tras la ventana de gracia."""
+    mo2, data, challenge, _job = _entorno(tmp_path)
+    job = VfsJob.create(
+        instance_id="portable-main",
+        profile="Default",
+        tool_id="health",
+        payload={},
+        timeout_seconds=0.1,
+        expected_fingerprint=challenge.profile_fingerprint,
+        mutation_targets=(),
+    )
+    broker = VfsExecutionBroker(
+        instance_id="portable-main",
+        state_dir=tmp_path / "state",
+        secret=b"x" * 32,
+        descriptor_hardener=lambda _path: None,
+        fence_grace_seconds=0.2,
+    )
+    await broker.start()
+    reader, writer, secret = await _conectar_bridge(broker)
+    try:
+        pending = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+        await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=1)
+        # MO2 muere: cerramos el socket del bridge y nunca reconectamos. Sin
+        # worker_exit, el diseño previo esperaba exit_future sin cota (hang).
+        writer.close()
+        await writer.wait_closed()
+        with pytest.raises(VfsJobTimeoutError):
+            await asyncio.wait_for(pending, timeout=3)
+    finally:
+        await broker.close()
+
+
+async def test_resultado_sobrevive_desconexion_transitoria_del_bridge(tmp_path: pathlib.Path) -> None:
+    """F-2: una caída transitoria del socket del bridge no debe descartar un
+    resultado válido que el worker entrega por su propio socket."""
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = VfsExecutionBroker(
+        instance_id="portable-main",
+        state_dir=tmp_path / "state",
+        secret=b"x" * 32,
+        descriptor_hardener=lambda _path: None,
+        fence_grace_seconds=5.0,
+    )
+    await broker.start()
+    reader, writer, secret = await _conectar_bridge(broker)
+    try:
+        pending = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+        await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=1)
+        # Caída transitoria del bridge ANTES de que llegue el resultado.
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.sleep(0.2)  # el broker procesa la desconexión
+        # El worker sigue vivo y entrega su resultado por su propio socket.
+        await _reportar_como_worker(broker, job_id=job.job_id, result=_resultado(job.job_id, challenge))
+        # El bridge reconecta (misma sesión) y confirma worker_exit.
+        reader2, writer2, secret2 = await _conectar_bridge(broker)
+        try:
+            await _reportar_salida_bridge(writer2, secret2, job_id=job.job_id)
+            result = await asyncio.wait_for(pending, timeout=3)
+            assert result.success is True
+        finally:
+            writer2.close()
+            await writer2.wait_closed()
+    finally:
+        await broker.close()
+
+
+async def test_eventos_no_crecen_sin_limite(tmp_path: pathlib.Path) -> None:
+    """F-3: la cola de eventos de lifecycle está acotada (sin consumidor en
+    producción no puede crecer indefinidamente)."""
+    broker = VfsExecutionBroker(
+        instance_id="portable-main",
+        state_dir=tmp_path / "state",
+        secret=b"x" * 32,
+        descriptor_hardener=lambda _path: None,
+    )
+    for i in range(5000):
+        broker._emit_event(
+            {"protocol_version": VFS_PROTOCOL_VERSION, "type": "event", "event": "worker_exit", "seq": i}
+        )
+    maxsize = broker._events.maxsize
+    assert maxsize > 0
+    assert broker._events.qsize() <= maxsize
+    last: dict[str, Any] | None = None
+    while not broker._events.empty():
+        last = broker._events.get_nowait()
+    assert last is not None and last["seq"] == 4999
