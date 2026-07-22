@@ -88,7 +88,10 @@ nunca `<MO2>/overwrite` como path.
 - Infraestructura completa del broker, worker, plugin, instalador y empaquetado.
 - Operaciones worker `health` y `loot_sort`.
 - Modos de operador `install-vfs-bridge` y `vfs-health` sin arrancar el daemon
-  completo.
+  completo. `install-vfs-bridge` exige correr desde el Python/ejecutable de
+  Windows: en WSL2/Linux `sys.executable` es un binario que MO2 no puede
+  lanzar, y escribirlo en `bridge_config.json` dejaría el bridge muerto con
+  LOOT bloqueado por el guard F8 (fail-closed en el instalador).
 - LOOT es el primer ritual productivo migrado en sus dos entry points: agente
   lock-only y Supervisor GUI con preview pre-HITL.
 - El guard evita que esos paths reconstruyan un `LOOTRunner` standalone.

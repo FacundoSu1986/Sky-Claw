@@ -5,8 +5,10 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import pathlib
+import queue
 import sys
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -116,6 +118,30 @@ def build_worker_arguments(
     ]
 
 
+def flush_pending_events(
+    pending: queue.Queue[dict[str, object]],
+    *,
+    timeout: float,
+    still_running: Callable[[], bool],
+    poll_interval: float = 0.02,
+) -> bool:
+    """Espera acotado a que el consumidor marque ``task_done`` sobre todo lo encolado.
+
+    ``unfinished_tasks`` cubre también el evento ya sacado de la cola pero aún
+    no escrito al socket — ``empty()`` mentiría en esa ventana. El corte por
+    ``still_running`` evita esperar el timeout completo cuando el hilo
+    consumidor ya murió y nada va a drenar la cola.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not pending.unfinished_tasks:
+            return True
+        if not still_running():
+            return False
+        time.sleep(poll_interval)
+    return not pending.unfinished_tasks
+
+
 @dataclass(slots=True)
 class _RunningJob:
     request: LaunchRequest
@@ -149,6 +175,7 @@ class BridgeLaunchController:
         self._send_event = send_event
         self._job_factory = job_factory or Win32JobObject
         self._jobs: dict[str, _RunningJob] = {}
+        self._monitors: list[threading.Thread] = []
         self._lock = threading.Lock()
 
     def launch(self, message: Mapping[str, object]) -> None:
@@ -218,6 +245,8 @@ class BridgeLaunchController:
                 self._organizer.waitForApplication(handle, False)
             job_object.close()
             raise
+        with self._lock:
+            self._monitors.append(monitor)
 
     def _monitor(self, running: _RunningJob) -> None:
         wait_ok = False
@@ -263,10 +292,15 @@ class BridgeLaunchController:
             job.job_object.terminate()
 
     def wait_for_monitors(self, *, timeout: float) -> None:
+        # Join sobre los threads reales, no sobre ``_jobs``: el monitor
+        # des-registra el job ANTES de emitir worker_exit, así que mirar el
+        # dict corre la carrera y puede devolver con el evento aún sin encolar.
         with self._lock:
-            monitors = tuple(job.monitor for job in self._jobs.values() if job.monitor is not None)
+            monitors = tuple(self._monitors)
         for monitor in monitors:
             monitor.join(timeout=timeout)
+        with self._lock:
+            self._monitors = [monitor for monitor in self._monitors if monitor.is_alive()]
 
 
 if sys.platform == "win32":

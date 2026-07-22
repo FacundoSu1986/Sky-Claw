@@ -156,6 +156,70 @@ class TestOneshot:
 
 class TestInstallVfsBridge:
     @pytest.mark.asyncio
+    async def test_rechaza_instalar_desde_host_no_windows(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """En WSL2/Linux, sys.executable es un binario que el Python de Windows
+        embebido en MO2 no puede lanzar: escribirlo en bridge_config.json deja
+        el bridge muerto y LOOT inutilizable por el guard F8 (review Codex #350).
+        La instalación debe fallar cerrada con un mensaje accionable."""
+        import sys as sys_module
+
+        from sky_claw.__main__ import _install_vfs_bridge
+        from sky_claw.local.mo2.bridge_installer import MO2BridgeInstallError
+
+        monkeypatch.setattr(sys_module, "platform", "linux")
+        args = _parse_args(["--mode", "install-vfs-bridge", "--mo2-root", str(tmp_path)])
+
+        with (
+            patch("sky_claw.local.mo2.bridge_installer.MO2BridgeInstaller") as installer_cls,
+            pytest.raises(MO2BridgeInstallError, match="Windows"),
+        ):
+            await _install_vfs_bridge(args)
+
+        installer_cls.return_value.install.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_en_windows_sin_congelar_usa_el_worker_en_modulo(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys as sys_module
+
+        from sky_claw.__main__ import _install_vfs_bridge
+
+        monkeypatch.setattr(sys_module, "platform", "win32")
+        monkeypatch.delattr(sys_module, "frozen", raising=False)
+        args = _parse_args(["--mode", "install-vfs-bridge", "--mo2-root", str(tmp_path)])
+
+        with patch("sky_claw.local.mo2.bridge_installer.MO2BridgeInstaller") as installer_cls:
+            installer_cls.return_value.install.return_value = tmp_path / "plugins" / "skyclaw_bridge"
+            await _install_vfs_bridge(args)
+
+        kwargs = installer_cls.return_value.install.call_args.kwargs
+        assert kwargs["worker_executable"] == pathlib.Path(sys_module.executable)
+        assert kwargs["worker_prefix"] == ("-m", "sky_claw.local.mo2.vfs_worker")
+
+    @pytest.mark.asyncio
+    async def test_en_windows_congelado_usa_el_ejecutable_con_flag_worker(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys as sys_module
+
+        from sky_claw.__main__ import _install_vfs_bridge
+
+        monkeypatch.setattr(sys_module, "platform", "win32")
+        monkeypatch.setattr(sys_module, "frozen", True, raising=False)
+        args = _parse_args(["--mode", "install-vfs-bridge", "--mo2-root", str(tmp_path)])
+
+        with patch("sky_claw.local.mo2.bridge_installer.MO2BridgeInstaller") as installer_cls:
+            installer_cls.return_value.install.return_value = tmp_path / "plugins" / "skyclaw_bridge"
+            await _install_vfs_bridge(args)
+
+        kwargs = installer_cls.return_value.install.call_args.kwargs
+        assert kwargs["worker_executable"] == pathlib.Path(sys_module.executable)
+        assert kwargs["worker_prefix"] == ("--vfs-worker",)
+
+    @pytest.mark.asyncio
     async def test_instala_sin_arrancar_app_context(self, tmp_path: pathlib.Path) -> None:
         with (
             patch("sky_claw.__main__._install_vfs_bridge", new_callable=AsyncMock) as install,

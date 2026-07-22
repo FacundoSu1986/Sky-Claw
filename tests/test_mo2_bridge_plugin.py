@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import pathlib
+import queue
 import threading
+import time
 
 import pytest
 
@@ -11,6 +13,7 @@ from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import (
     BridgeCommandError,
     BridgeLaunchController,
     build_worker_arguments,
+    flush_pending_events,
     validate_launch_request,
 )
 
@@ -298,6 +301,98 @@ def test_monitor_emite_worker_exit_si_wait_for_application_falla(tmp_path: pathl
     assert events[-1]["event"] == "worker_exit"
     assert events[-1]["wait_ok"] is False
     assert "waitForApplication" in str(events[-1]["message"])
+
+
+def test_wait_for_monitors_espera_el_worker_exit_aunque_el_job_ya_se_desregistro(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El monitor des-registra el job ANTES de emitir worker_exit: el join del
+    shutdown debe ser sobre los threads reales, no sobre el dict de jobs, o el
+    drenaje corre la carrera y el broker se queda esperando el fence terminal."""
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    manifest = jobs / "job-1.json"
+    manifest.write_text("{}", encoding="utf-8")
+    worker = tmp_path / "SkyClawApp.exe"
+    worker.write_bytes(b"exe")
+    descriptor = tmp_path / "descriptor.json"
+    descriptor.write_text("{}", encoding="utf-8")
+    organizer = _Organizer()
+    emision = threading.Event()
+    events: list[dict[str, object]] = []
+
+    def _send_event(event: dict[str, object]) -> None:
+        if event.get("type") == "event":
+            emision.wait(timeout=2)
+        events.append(event)
+
+    controller = BridgeLaunchController(
+        organizer=organizer,
+        worker_executable=worker,
+        worker_prefix=("--vfs-worker",),
+        descriptor_path=descriptor,
+        jobs_root=jobs,
+        send_event=_send_event,
+        job_factory=_JobObject,
+    )
+    controller.launch(
+        {
+            "protocol_version": 1,
+            "type": "launch_worker",
+            "job_id": "job-1",
+            "profile": "Default",
+            "manifest_path": str(manifest),
+            "overwrite_mod": None,
+        }
+    )
+
+    organizer.release.set()
+    vacio = False
+    for _ in range(200):
+        with controller._lock:
+            vacio = not controller._jobs
+        if vacio:
+            break
+        time.sleep(0.01)
+    assert vacio, "el monitor nunca des-registró el job"
+
+    threading.Timer(0.05, emision.set).start()
+    controller.wait_for_monitors(timeout=2)
+
+    assert events[-1]["event"] == "worker_exit"
+
+
+def test_flush_pending_events_espera_el_task_done_del_consumidor() -> None:
+    pendientes: queue.Queue[dict[str, object]] = queue.Queue()
+    pendientes.put({"type": "event", "event": "worker_exit"})
+
+    def _consumidor() -> None:
+        time.sleep(0.05)
+        pendientes.get_nowait()
+        pendientes.task_done()
+
+    hilo = threading.Thread(target=_consumidor)
+    hilo.start()
+    try:
+        assert flush_pending_events(pendientes, timeout=2, still_running=hilo.is_alive) is True
+    finally:
+        hilo.join(timeout=2)
+
+
+def test_flush_pending_events_no_bloquea_si_el_consumidor_murio() -> None:
+    pendientes: queue.Queue[dict[str, object]] = queue.Queue()
+    pendientes.put({"type": "event", "event": "worker_exit"})
+
+    inicio = time.monotonic()
+    assert flush_pending_events(pendientes, timeout=5, still_running=lambda: False) is False
+    assert time.monotonic() - inicio < 1
+
+
+def test_flush_pending_events_expira_con_eventos_sin_enviar() -> None:
+    pendientes: queue.Queue[dict[str, object]] = queue.Queue()
+    pendientes.put({"type": "event", "event": "worker_exit"})
+
+    assert flush_pending_events(pendientes, timeout=0.1, still_running=lambda: True) is False
 
 
 def test_controller_cancel_termina_job_object_completo(tmp_path: pathlib.Path) -> None:

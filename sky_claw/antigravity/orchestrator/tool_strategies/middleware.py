@@ -275,8 +275,11 @@ class HitlGateMiddleware:
         # concurrentes de la MISMA tool destructiva con payloads distintos
         # llegan al gate (FASE 1.5.4 hardening: HITL key collision fix).
         _validate_for_approval(strategy, payload_dict)
-        await _prepare_for_approval(strategy, payload_dict)
         try:
+            # prepare corre DENTRO del try: si la preparación falla a mitad de
+            # camino (attestation VFS sin canary, MO2 movido) el finally limpia
+            # el estado parcial del preview igual que en el resto de salidas.
+            await _prepare_for_approval(strategy, payload_dict)
             detail = _describe_for_approval(strategy, payload_dict)
 
             request_id = f"tool-{strategy.name}-{uuid.uuid4().hex[:12]}"

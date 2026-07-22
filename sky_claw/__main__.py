@@ -160,9 +160,20 @@ _install_loop_exception_handler = install_loop_exception_handler
 
 async def _install_vfs_bridge(args: argparse.Namespace) -> pathlib.Path:
     """Instala/actualiza el plugin MO2 sin iniciar el daemon completo."""
-    from sky_claw.local.mo2.bridge_installer import MO2BridgeInstaller
+    from sky_claw.local.mo2.bridge_installer import MO2BridgeInstaller, MO2BridgeInstallError
     from sky_claw.local.mo2.vfs_broker import vfs_instance_id
 
+    if sys.platform != "win32":
+        # bridge_config.json lo consume el Python de Windows embebido en MO2:
+        # el sys.executable de este host (WSL2/Linux/macOS) es un binario que
+        # MO2 no puede lanzar, y con el guard F8 fail-closed eso deja LOOT
+        # inutilizable. Mejor rechazar acá que instalar un bridge muerto.
+        raise MO2BridgeInstallError(
+            "install-vfs-bridge debe ejecutarse con el Sky-Claw del lado Windows: "
+            f"el worker configurado sería {sys.executable!r}, que MO2 (Windows) "
+            "no puede ejecutar. En WSL2, corré la instalación con el python.exe "
+            "o el SkyClaw.exe congelado de Windows."
+        )
     root = pathlib.Path(args.mo2_root).resolve()
     instance_id = vfs_instance_id(root)
     descriptor = Config.DEFAULT_CONFIG_DIR / "vfs_bridge" / instance_id / f"{instance_id}.json"

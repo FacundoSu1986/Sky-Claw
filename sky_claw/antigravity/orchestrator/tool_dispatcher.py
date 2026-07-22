@@ -299,12 +299,21 @@ def build_orchestration_dispatcher(
 
     dispatcher.register(QueryModMetadataStrategy(scraper=supervisor.scraper))
 
-    # FASE 1.5.1: execute_loot_sorting is destructive → HITL gate
+    # FASE 1.5.1: execute_loot_sorting is destructive → HITL gate. El gate corre
+    # INNERMOST (mismo patrón que resolve_conflict_with_patch): los fallos
+    # pre-prompt de validate/prepare — en particular la attestation VFS del
+    # broker USVFS (perfil sin canary, MO2 movido) — vuelven como el error dict
+    # legacy en lugar de escapar de dispatch_tool hacia la GUI/agente
+    # (review Codex PR #350).
     dispatcher.register(
         ExecuteLootSortingStrategy(
             service=supervisor._loot_service,
         ),
-        middleware=[gate],
+        middleware=[
+            ErrorWrappingMiddleware("LootSortingExecutionFailed"),
+            DictResultGuardMiddleware("InvalidLootSortingResult"),
+            gate,
+        ],
     )
 
     # T-27b·2: Synthesis corre SIEMPRE en sandbox — el flow resuelve

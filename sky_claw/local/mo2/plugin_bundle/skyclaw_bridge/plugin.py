@@ -21,7 +21,12 @@ from .protocol import (
     recv_authenticated_message,
     send_authenticated_message,
 )
-from .runtime import PROTOCOL_VERSION, BridgeCommandError, BridgeLaunchController
+from .runtime import (
+    PROTOCOL_VERSION,
+    BridgeCommandError,
+    BridgeLaunchController,
+    flush_pending_events,
+)
 
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
 
@@ -53,7 +58,16 @@ class _BridgeClient:
     def start(self) -> None:
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, *, flush_timeout: float = 2.0) -> None:
+        # Drenaje acotado ANTES de señalizar el cierre: worker_exit puede estar
+        # encolado sin enviar y sin él el broker nunca libera el fence terminal
+        # (lock de LOOT / rollback). Con el daemon inalcanzable se corta igual
+        # al vencer el timeout — MO2 está saliendo y no puede quedar colgado.
+        flush_pending_events(
+            self._outgoing,
+            timeout=flush_timeout,
+            still_running=self._thread.is_alive,
+        )
         self._stop.set()
         with self._connection_lock:
             connection = self._connection
@@ -157,8 +171,12 @@ class _BridgeClient:
                 except (OSError, VfsFrameError):
                     # El evento terminal no puede perderse: tras reconectar el
                     # broker lo necesita para habilitar rollback/liberar locks.
+                    # El re-put va antes del task_done para que unfinished_tasks
+                    # nunca toque cero con el evento sin entregar.
                     self._outgoing.put(outgoing)
+                    self._outgoing.task_done()
                     raise
+                self._outgoing.task_done()
             readable, _, _ = select.select([connection], [], [], 0.1)
             if not readable:
                 continue
@@ -278,7 +296,12 @@ class SkyClawBridgePlugin(mobase.IPlugin):
         if self._timer is not None:
             self._timer.stop()
         if self._controller is not None:
+            # Terminar el Job Object y esperar (acotado) a que cada monitor
+            # encole su worker_exit; recién entonces el cliente puede drenar y
+            # cortar. Si el socket muere antes, el broker del daemon queda
+            # esperando el fence terminal indefinidamente.
             self._controller.stop()
+            self._controller.wait_for_monitors(timeout=2.0)
         if self._client is not None:
             self._client.stop()
 
