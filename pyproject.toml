@@ -224,6 +224,16 @@ ignore_errors = false
 [[tool.mypy.overrides]]
 module = [
     "sky_claw.antigravity.orchestrator.sync_engine",
+    "sky_claw.local.mo2.vfs_contracts",
+    "sky_claw.local.mo2.vfs_attestation",
+    "sky_claw.local.mo2.vfs_ipc",
+    "sky_claw.local.mo2.vfs_manifest",
+    "sky_claw.local.mo2.vfs_broker",
+    "sky_claw.local.mo2.vfs_worker",
+    "sky_claw.local.mo2.brokered_loot",
+    "sky_claw.local.mo2.bridge_installer",
+    "sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.protocol",
+    "sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime",
     "sky_claw.local.mo2.ini_editor",  # PR-1 grass cache: módulo nuevo, nace estricto
     "sky_claw.local.mo2.grass_profile",  # PR-3 grass cache: módulo nuevo, nace estricto
     "sky_claw.local.mo2.profile_sandbox",  # T-27: módulo nuevo, nace estricto (patrón T-12)

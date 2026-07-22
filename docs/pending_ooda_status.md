@@ -11,6 +11,30 @@ Este documento es un **snapshot**, no una fuente viva — quedará desactualizad
 a medida que se mergeen PRs. Reverificar contra el código antes de actuar sobre
 cualquier ítem, como pide `AGENTS.md`.
 
+## Addendum (2026-07-21) - F8 USVFS de la auditoria externa
+
+Este item es distinto del F8 de resiliencia #319 que aparece mas abajo.
+
+**Infraestructura aceptada e implementada (ADR 0007):** broker async loopback
+autenticado, manifests firmados, plugin MO2, worker descartable, attestation de
+worker+nieto, perfil explicito, serializacion por instancia, cancelacion con
+Win32 Job Object e instalador transaccional. El bundle entra en PyInstaller.
+
+**Cobertura productiva actual:** `health` y LOOT. Los dos entry points de LOOT
+(agente lock-only y Supervisor GUI/HITL) usan el broker y fallan cerrados sin
+USVFS; no reconstruyen un subprocess standalone. El preview calcula el
+fingerprint sin mantener un worker vivo y la ejecucion lo revalida tras HITL.
+Cada preview queda ligado a su propia invocacion async; resultados y
+cancelaciones esperan confirmacion terminal del Job Object antes de permitir
+rollback o liberar el lock. La entrega del resultado usa ACK causal antes de que
+el worker salga y el cierre concurrente del broker esta serializado.
+
+**Pendiente para cerrar F8 de forma transversal:** migrar xEdit, Wrye Bash,
+Synthesis, DynDOLOD y los demas runners externos al mismo contrato. Tambien
+queda el smoke Windows con la instalacion/version real de MO2/USVFS: probe,
+perfil incorrecto, LOOT representativo, timeout/cancelacion y rollback byte a
+byte. CI no prueba inyeccion USVFS real.
+
 ## Resumen ejecutivo
 
 - **Arbitraje de bugs (OODA analysis, 34 hallazgos):** completo. Todos los

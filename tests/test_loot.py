@@ -676,6 +676,33 @@ class TestRunLootSortLock:
             await lm.close()
 
     @pytest.mark.asyncio
+    async def test_locked_path_preserva_el_perfil_solicitado(self, tmp_path: pathlib.Path) -> None:
+        lm, sm = await self._managers(tmp_path)
+        try:
+            profiled = MagicMock()
+            profiled.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+
+            class _ProfileFactory:
+                def __init__(self) -> None:
+                    self.profiles: list[str] = []
+
+                def for_profile(self, profile: str):
+                    self.profiles.append(profile)
+                    return profiled
+
+            runner = _ProfileFactory()
+
+            result = json.loads(
+                await run_loot_sort(MagicMock(), runner, None, "Alternate", lock_manager=lm, snapshot_manager=sm)
+            )
+
+            assert result["success"] is True
+            assert runner.profiles == ["Alternate"]
+            profiled.sort.assert_awaited_once()
+        finally:
+            await lm.close()
+
+    @pytest.mark.asyncio
     async def test_serializes_when_load_order_lock_held(self, tmp_path: pathlib.Path) -> None:
         """A LOOT sort held elsewhere (e.g. the orchestrator/preview) blocks this one."""
         lm, sm = await self._managers(tmp_path)

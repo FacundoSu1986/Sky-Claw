@@ -37,6 +37,20 @@ class ApprovalPayloadDescriber(Protocol):
     def describe_for_approval(self, payload_dict: dict[str, Any]) -> str: ...
 
 
+@runtime_checkable
+class ApprovalPreparer(Protocol):
+    """Preparación async completada antes de abrir la espera humana."""
+
+    async def prepare_for_approval(self, payload_dict: dict[str, Any]) -> None: ...
+
+
+@runtime_checkable
+class ApprovalPreparationCleaner(Protocol):
+    """Limpia estado efímero del preview al cerrar la invocación HITL."""
+
+    def clear_approval_preparation(self, payload_dict: dict[str, Any]) -> None: ...
+
+
 NextCall = Callable[[], Awaitable[dict[str, Any]]]
 
 

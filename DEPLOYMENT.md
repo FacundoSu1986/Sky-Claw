@@ -29,6 +29,53 @@ failure handling and the pre-flight checklist for a real end-to-end run.
 ```bat
 build.bat              :: crea venv\ e instala dependencias
 ```
+
+### Bridge MO2/USVFS (obligatorio para LOOT productivo)
+
+Instala o actualiza el plugin antes del primer run. El comando no arranca el
+daemon ni ejecuta herramientas:
+
+```bat
+python -m sky_claw --mode install-vfs-bridge --mo2-root "D:\MO2Portable"
+```
+
+Con el build empaquetado:
+
+```bat
+SkyClawApp.exe --mode install-vfs-bridge --mo2-root "D:\MO2Portable"
+```
+
+El instalador hace staging + swap con rollback y deja el bundle en
+`<MO2>\plugins\skyclaw_bridge`. No guarda el token IPC en el plugin: solo fija
+el executable del worker, su prefijo y la ruta del descriptor efimero bajo
+`~\.sky_claw\vfs_bridge\<instance-id>`. Reinicia MO2 para que cargue un plugin
+nuevo. Si el executable de Sky-Claw cambia de ubicacion, reinstala el bridge.
+
+Al iniciar Sky-Claw, el broker publica una sesion owner-only en loopback. El
+plugin reconecta cuando el descriptor aparece. Cada ejecucion usa un perfil
+explicito y falla cerrada si el bridge no conecta, si el perfil cambia o si no
+hay un canary elegible: al menos un archivo de un mod habilitado que no exista
+en el `Data` fisico.
+
+Smoke obligatorio en la instalacion real (primero un perfil descartable):
+
+1. Abrir MO2 y confirmar en su log que `Sky-Claw VFS Bridge` cargo.
+2. Con MO2 abierto y el daemon Sky-Claw detenido, ejecutar
+   `python -m sky_claw --mode vfs-health --mo2-root "D:\MO2Portable"`
+   (agregar `--skyrim-path` y `--vfs-profile` si no estan en config). Worker y
+   nieto deben ver el mismo canary/hash.
+3. Cambiar al perfil incorrecto y comprobar que no se lanza la tool.
+4. Ejecutar LOOT con un snapshot conocido, comprobar stdout/stderr, exit code y
+   que el load order real corresponde al perfil.
+5. Forzar timeout/cancelacion y verificar que `worker_exit` llega antes del
+   rollback y que no quedan worker ni nietos.
+6. Inyectar un fallo despues de escritura y comparar byte a byte el target
+   restaurado.
+
+Este smoke no se sustituye por pytest/PyInstaller: depende de la version real
+de MO2 y USVFS. La decision completa esta en
+[`docs/adr/0007-mo2-broker-usvfs.md`](docs/adr/0007-mo2-broker-usvfs.md).
+
 Lockfiles reproducibles: `requirements.lock` (pip) y `uv.lock` (uv). Para un
 entorno bloqueado: `uv sync --locked --extra dev`.
 

@@ -27,6 +27,15 @@ class TestParseArgs:
         args = _parse_args(["--mode", "cli"])
         assert args.mode == "cli"
 
+    def test_mode_install_vfs_bridge(self) -> None:
+        args = _parse_args(["--mode", "install-vfs-bridge"])
+        assert args.mode == "install-vfs-bridge"
+
+    def test_mode_vfs_health_con_perfil(self) -> None:
+        args = _parse_args(["--mode", "vfs-health", "--vfs-profile", "Alternate"])
+        assert args.mode == "vfs-health"
+        assert args.vfs_profile == "Alternate"
+
     def test_mode_telegram(self) -> None:
         args = _parse_args(["--mode", "telegram"])
         assert args.mode == "telegram"
@@ -143,6 +152,42 @@ class TestOneshot:
             mock_instance.start.assert_awaited_once()
             mock_router.chat.assert_awaited_once_with("search Requiem", mock_instance.session, chat_id="oneshot")
             mock_instance.stop.assert_awaited_once()
+
+
+class TestInstallVfsBridge:
+    @pytest.mark.asyncio
+    async def test_instala_sin_arrancar_app_context(self, tmp_path: pathlib.Path) -> None:
+        with (
+            patch("sky_claw.__main__._install_vfs_bridge", new_callable=AsyncMock) as install,
+            patch("sky_claw.__main__.AppContext") as app_context,
+        ):
+            await _main(["--mode", "install-vfs-bridge", "--mo2-root", str(tmp_path)])
+
+        install.assert_awaited_once()
+        assert install.await_args.args[0].mo2_root == tmp_path
+        app_context.assert_not_called()
+
+
+class TestVfsHealth:
+    @pytest.mark.asyncio
+    async def test_probe_no_arranca_app_context(self, tmp_path: pathlib.Path) -> None:
+        with (
+            patch("sky_claw.__main__._run_vfs_health", new_callable=AsyncMock) as health,
+            patch("sky_claw.__main__.AppContext") as app_context,
+        ):
+            await _main(
+                [
+                    "--mode",
+                    "vfs-health",
+                    "--mo2-root",
+                    str(tmp_path / "MO2"),
+                    "--skyrim-path",
+                    str(tmp_path / "Skyrim"),
+                ]
+            )
+
+        health.assert_awaited_once()
+        app_context.assert_not_called()
 
 
 class TestTelegram:

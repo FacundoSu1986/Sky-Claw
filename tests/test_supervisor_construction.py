@@ -65,3 +65,17 @@ def test_supervisor_creates_own_gateway_by_default(mo2_root, tmp_path):
     sup = SupervisorAgent(path_validator=sandbox)
 
     assert isinstance(sup.gateway, NetworkGateway)
+
+
+def test_supervisor_inyecta_runner_vfs_y_guard_f8(mo2_root, tmp_path):
+    sandbox = PathValidator(roots=[mo2_root, tmp_path])
+    runner = object()
+
+    sup = SupervisorAgent(
+        path_validator=sandbox,
+        loot_runner=runner,
+        require_vfs=True,
+    )
+
+    assert sup._loot_service._loot_runner is runner
+    assert sup._loot_service._require_vfs is True

@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from sky_claw.antigravity.db.locks import (
     DistributedLockManager,
@@ -38,7 +38,7 @@ from sky_claw.local.loot.cli import (
     LOOTRunner,
     LOOTTimeoutError,
 )
-from sky_claw.local.mo2.load_order import LoadOrderFileResolver
+from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
 
 if TYPE_CHECKING:
     from sky_claw.antigravity.core.models import LootExecutionParams
@@ -47,6 +47,8 @@ if TYPE_CHECKING:
     from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
     from sky_claw.antigravity.security.path_validator import PathValidator
     from sky_claw.local.loot.parser import LOOTResult
+    from sky_claw.local.mo2.brokered_loot import VfsBrokerProtocol
+    from sky_claw.local.mo2.vfs_attestation import VfsAttestationChallenge
     from sky_claw.local.validators.preflight import (
         PermissionsCheck,
         PreflightReport,
@@ -55,6 +57,11 @@ if TYPE_CHECKING:
     from sky_claw.local.validators.write_permissions import WriteAccessReport
 
 logger = logging.getLogger(__name__)
+
+
+class LootRunnerProtocol(Protocol):
+    async def sort(self, *, update_masterlist: bool = False) -> LOOTResult: ...
+
 
 #: Shared lock resource id for the Skyrim load order (``plugins.txt`` /
 #: ``loadorder.txt``). Used by this service AND the dry-run preview chain so a
@@ -144,11 +151,14 @@ class LootSortingService:
         path_validator: PathValidator | None = None,
         loot_exe: pathlib.Path | None = None,
         timeout: int = _DEFAULT_LOOT_TIMEOUT_SECONDS,
-        loot_runner: LOOTRunner | None = None,
+        loot_runner: LootRunnerProtocol | None = None,
         load_order_resolver: LoadOrderFileResolver | None = None,
         preflight: PreflightService | None = None,
         mo2_root: pathlib.Path | None = None,
         journal: OperationJournal | None = None,
+        vfs_broker: VfsBrokerProtocol | None = None,
+        vfs_instance_id: str = "portable-main",
+        require_vfs: bool = False,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -165,6 +175,10 @@ class LootSortingService:
         # T-26 (ADR 0002): cuando el journal está cableado, el sort emite un
         # ActionManifest ANTES de mutar. Opcional para no romper callers legacy.
         self._journal = journal
+        self._vfs_broker = vfs_broker
+        self._vfs_instance_id = vfs_instance_id
+        self._require_vfs = require_vfs
+        self._brokered_runners: dict[str, LootRunnerProtocol] = {}
         # T-21: resolver de fuentes compartido con el validador post-run; lo
         # setea _ensure_preflight (None hasta entonces o con preflight inyectado).
         self._sources_resolver = None
@@ -352,7 +366,7 @@ class LootSortingService:
         self._load_order_resolver = LoadOrderFileResolver(mo2_root=mo2_root, profile=profile)
         return self._load_order_resolver
 
-    def _ensure_loot_runner(self) -> LOOTRunner:
+    def _ensure_loot_runner(self, profile: str = "Default") -> LootRunnerProtocol:
         """Lazily build the LOOTRunner, resolving the LOOT exe + game path on first use.
 
         The LOOT executable is taken from (in order) the injected ``loot_exe``,
@@ -361,7 +375,50 @@ class LootSortingService:
         ``loot.exe`` is on the cwd/PATH.
         """
         if self._loot_runner is not None:
-            return self._loot_runner
+            # MagicMock fabrica atributos arbitrarios: detectar el factory en
+            # la clase evita confundir un mock/runner legacy con esta extension.
+            declared_factory = getattr(type(self._loot_runner), "for_profile", None)
+            for_profile = getattr(self._loot_runner, "for_profile", None)
+            if not callable(declared_factory) or not callable(for_profile):
+                return self._loot_runner
+            cached = self._brokered_runners.get(profile)
+            if cached is None:
+                cached = for_profile(profile)
+                self._brokered_runners[profile] = cached
+            return cached
+
+        if self._vfs_broker is not None:
+            cached = self._brokered_runners.get(profile)
+            if cached is not None:
+                return cached
+            if self._path_resolver is None:
+                raise LOOTNotFoundError("Cannot run LOOT under USVFS: no path_resolver configured.")
+            game_path = self._path_resolver.get_skyrim_path()
+            mo2_root = self._path_resolver.get_mo2_path()
+            loot_exe = self._loot_exe or self._path_resolver.get_loot_exe()
+            if game_path is None or mo2_root is None or loot_exe is None:
+                raise LOOTNotFoundError("Cannot run LOOT under USVFS: MO2, Skyrim or LOOT path is not configured.")
+            from sky_claw.local.mo2.brokered_loot import BrokeredLootRunner
+
+            resolver = LoadOrderFileResolver(mo2_root=mo2_root, profile=profile)
+            runner = BrokeredLootRunner(
+                broker=self._vfs_broker,
+                instance_id=self._vfs_instance_id,
+                mo2_root=mo2_root,
+                profile=profile,
+                game_data_dir=game_path / "Data",
+                loot_exe=loot_exe,
+                timeout=self._timeout,
+                mutation_targets=lambda: tuple(resolver.resolve().files),
+            )
+            self._brokered_runners[profile] = runner
+            return runner
+
+        if self._require_vfs:
+            raise LOOTNotFoundError(
+                "F8 guard: LOOT requiere un VfsExecutionBroker conectado a MO2/USVFS; "
+                "se rechazó el subprocess standalone."
+            )
 
         if self._path_resolver is None:
             raise LOOTNotFoundError("Cannot run LOOT: no loot_runner injected and no path_resolver configured.")
@@ -377,6 +434,47 @@ class LootSortingService:
             path_validator=self._path_validator,
         )
         return self._loot_runner
+
+    async def prepare_vfs_attestation(
+        self,
+        params: LootExecutionParams | None = None,
+    ) -> VfsAttestationChallenge | None:
+        """Captura el fingerprint antes del HITL sin mantener un worker vivo."""
+        profile = str(getattr(params, "profile_name", "Default"))
+        runner = self._ensure_loot_runner(profile)
+        prepare = getattr(runner, "prepare_attestation", None)
+        if prepare is None:
+            return None
+        challenge = await prepare()
+        return challenge
+
+    def clear_vfs_attestation(self, params: LootExecutionParams | None = None) -> None:
+        """Descarta el preview de esta invocación, incluso si HITL deniega o cancela."""
+        profile = str(getattr(params, "profile_name", "Default"))
+        runner = self._brokered_runners.get(profile)
+        if runner is None and self._loot_runner is not None:
+            declared_factory = getattr(type(self._loot_runner), "for_profile", None)
+            if not callable(declared_factory):
+                runner = self._loot_runner
+        if runner is None:
+            return
+        clear = getattr(runner, "clear_prepared_attestation", None)
+        if callable(clear):
+            clear()
+
+    async def _resolve_load_order_for_runner(self, runner: LootRunnerProtocol) -> LoadOrderPaths:
+        """Usa los targets del perfil VFS; runners legacy conservan el resolver actual."""
+        declared_provider = getattr(type(runner), "mutation_targets", None)
+        provider = getattr(runner, "mutation_targets", None)
+        if callable(declared_provider) and callable(provider):
+            targets = await asyncio.to_thread(provider)
+            if not isinstance(targets, tuple) or any(not isinstance(path, pathlib.Path) for path in targets):
+                raise TypeError("mutation_targets del runner VFS debe devolver tuple[Path, ...]")
+            return LoadOrderPaths(
+                files=tuple(path.resolve() for path in targets),
+                sources=("vfs_profile",),
+            )
+        return self._ensure_load_order_resolver().resolve()
 
     async def sort_load_order(
         self,
@@ -424,7 +522,8 @@ class LootSortingService:
                 }
 
         try:
-            runner = self._ensure_loot_runner()
+            profile = str(getattr(params, "profile_name", "Default"))
+            runner = self._ensure_loot_runner(profile)
         except LOOTNotFoundError as exc:
             logger.error("LOOT runner unavailable: %s", exc)
             return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
@@ -432,7 +531,7 @@ class LootSortingService:
         # T-06: snapshotear lo que LOOT realmente puede reescribir. Sin
         # candidatos (entorno no configurado) se degrada a serialización-sola,
         # el comportamiento previo — el resolver ya lo dejó logueado.
-        load_order = self._ensure_load_order_resolver().resolve()
+        load_order = await self._resolve_load_order_for_runner(runner)
         target_files = list(load_order.files)
         rolled_back = False
         # T-21: se llena solo en el path de éxito (el validador es post-vuelo).
@@ -591,6 +690,9 @@ class LootSortingService:
         # limpio (misma lección que el surfacing amarillo del preflight, #254).
         if post_run_payload is not None and post_run_payload.get("has_findings"):
             response["post_run"] = post_run_payload
+        vfs_result = getattr(runner, "last_vfs_result", None)
+        if vfs_result is not None and vfs_result.attestation is not None:
+            response["vfs_attestation"] = vfs_result.attestation
         return response
 
     async def _emit_action_manifest(

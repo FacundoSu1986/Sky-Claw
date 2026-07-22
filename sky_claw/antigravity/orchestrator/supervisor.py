@@ -122,6 +122,8 @@ class SupervisorAgent:
         lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
         path_validator: PathValidatorProtocol | None = None,
         gateway: NetworkGateway | None = None,
+        loot_runner: object | None = None,
+        require_vfs: bool = False,
         # Fase 1 AI-assisted: callable (system, user) -> respuesta para el
         # PatchAdvisorLLM. Lo arma AppContext.make_patch_advisor_llm() (resuelve
         # router/sesión perezosamente — el supervisor se construye antes de que
@@ -219,6 +221,8 @@ class SupervisorAgent:
             snapshot_manager=self.snapshot_manager,
             path_resolver=self._path_resolver,
             path_validator=self._path_validator,
+            loot_runner=loot_runner,
+            require_vfs=require_vfs,
             # T-26 (review Codex PR #243): cablear el journal de producción para
             # que el Ritual de LOOT emita el ActionManifest antes de mutar —
             # sin esto el guard era test-only. Espeja los servicios hermanos.

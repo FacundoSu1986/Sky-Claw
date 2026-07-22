@@ -15,6 +15,7 @@ import logging
 import pathlib
 from typing import Any
 
+from sky_claw.antigravity.core.models import LootExecutionParams
 from sky_claw.antigravity.security.hitl import Decision
 from sky_claw.antigravity.security.sanitize import sanitize_for_prompt
 
@@ -121,7 +122,7 @@ async def run_loot_sort(
         # the tool keeps its "always return JSON" contract (the lock is still
         # released by SnapshotTransactionLock.__aexit__ before the exception).
         try:
-            res = await service.sort_load_order(update_masterlist=False)
+            res = await service.sort_load_order(LootExecutionParams(profile_name=profile, update_masterlist=False))
         except Exception as exc:
             return json.dumps({"error": str(exc)})
         out: dict[str, Any] = {

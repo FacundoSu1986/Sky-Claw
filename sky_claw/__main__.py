@@ -46,7 +46,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["cli", "telegram", "oneshot", "gui", "security"],
+        choices=[
+            "cli",
+            "telegram",
+            "oneshot",
+            "gui",
+            "security",
+            "install-vfs-bridge",
+            "vfs-health",
+        ],
         default="cli",
         help="Operation mode (default: cli)",
     )
@@ -67,6 +75,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=pathlib.Path,
         default=pathlib.Path(config.mo2_root or str(SystemPaths.get_base_drive() / "MO2Portable")),
         help="Path to the MO2 portable instance",
+    )
+    parser.add_argument(
+        "--skyrim-path",
+        type=pathlib.Path,
+        default=pathlib.Path(config.skyrim_path) if config.skyrim_path else None,
+        help="Path to the Skyrim installation (required by vfs-health)",
+    )
+    parser.add_argument(
+        "--vfs-profile",
+        default="Default",
+        help="MO2 profile used by the vfs-health probe (default: Default)",
+    )
+    parser.add_argument(
+        "--vfs-timeout",
+        type=float,
+        default=30.0,
+        help="Timeout in seconds for the vfs-health worker (default: 30)",
     )
     parser.add_argument(
         "--db-path",
@@ -133,6 +158,83 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 _install_loop_exception_handler = install_loop_exception_handler
 
 
+async def _install_vfs_bridge(args: argparse.Namespace) -> pathlib.Path:
+    """Instala/actualiza el plugin MO2 sin iniciar el daemon completo."""
+    from sky_claw.local.mo2.bridge_installer import MO2BridgeInstaller
+    from sky_claw.local.mo2.vfs_broker import vfs_instance_id
+
+    root = pathlib.Path(args.mo2_root).resolve()
+    instance_id = vfs_instance_id(root)
+    descriptor = Config.DEFAULT_CONFIG_DIR / "vfs_bridge" / instance_id / f"{instance_id}.json"
+    if getattr(sys, "frozen", False):
+        worker_executable = pathlib.Path(sys.executable)
+        worker_prefix = ("--vfs-worker",)
+    else:
+        worker_executable = pathlib.Path(sys.executable)
+        worker_prefix = ("-m", "sky_claw.local.mo2.vfs_worker")
+    installer = MO2BridgeInstaller()
+    installed = await asyncio.to_thread(
+        installer.install,
+        mo2_root=root,
+        worker_executable=worker_executable,
+        worker_prefix=worker_prefix,
+        descriptor_path=descriptor,
+        instance_id=instance_id,
+    )
+    logger.info("Bridge MO2/USVFS instalado en %s", installed)
+    return installed
+
+
+async def _run_vfs_health(args: argparse.Namespace) -> None:
+    """Ejecuta worker+nieto bajo USVFS sin arrancar el resto del daemon."""
+    from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
+    from sky_claw.local.mo2.vfs_broker import VfsBrokerError, VfsExecutionBroker, vfs_instance_id
+    from sky_claw.local.mo2.vfs_contracts import VfsJob
+
+    root = pathlib.Path(args.mo2_root).resolve()
+    game = None if args.skyrim_path is None else pathlib.Path(args.skyrim_path).resolve()
+    if not (root / "ModOrganizer.exe").is_file():
+        raise VfsBrokerError(f"ModOrganizer.exe no existe bajo {root}")
+    if game is None or not (game / "Data").is_dir():
+        raise VfsBrokerError("--skyrim-path debe apuntar a una instalacion con Data")
+    instance_id = vfs_instance_id(root)
+    broker = VfsExecutionBroker(
+        instance_id=instance_id,
+        state_dir=Config.DEFAULT_CONFIG_DIR / "vfs_bridge" / instance_id,
+    )
+    await broker.start()
+    try:
+        challenge = await asyncio.to_thread(
+            build_attestation_challenge,
+            mo2_root=root,
+            profile=args.vfs_profile,
+            physical_data_dir=game / "Data",
+        )
+        job = VfsJob.create(
+            instance_id=instance_id,
+            profile=args.vfs_profile,
+            tool_id="health",
+            payload={},
+            timeout_seconds=args.vfs_timeout,
+            expected_fingerprint=challenge.profile_fingerprint,
+            mutation_targets=(),
+        )
+        result = await broker.submit(
+            job,
+            challenge=challenge,
+            mo2_root=root,
+            virtual_data_dir=game / "Data",
+        )
+        if not result.success:
+            raise VfsBrokerError(result.message or "el probe VFS fallo")
+        logger.info(
+            "Probe VFS correcto para perfil %s; worker y nieto validaron el canary",
+            args.vfs_profile,
+        )
+    finally:
+        await broker.close()
+
+
 async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> None:
     """Asynchronous runner for CLI, Telegram, oneshot and security modes.
 
@@ -144,6 +246,12 @@ async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> N
     _install_loop_exception_handler()
 
     logger.info("Sky-Claw starting in %s mode", args.mode)
+    if args.mode == "install-vfs-bridge":
+        await _install_vfs_bridge(args)
+        return
+    if args.mode == "vfs-health":
+        await _run_vfs_health(args)
+        return
     if args.mode == "oneshot" and not args.command:
         logger.error("Oneshot mode requires a command argument.")
         sys.exit(1)
@@ -208,7 +316,15 @@ def _ensure_std_streams() -> None:
 def main(argv: list[str] | None = None) -> None:
     """Unified entry point controller."""
     _ensure_std_streams()
-    args = _parse_args(argv)
+    effective_argv = list(sys.argv[1:] if argv is None else argv)
+    if effective_argv and effective_argv[0] in ("--vfs-worker", "--vfs-probe-child"):
+        from sky_claw.local.mo2.vfs_worker import worker_main
+
+        worker_argv = effective_argv[1:]
+        if effective_argv[0] == "--vfs-probe-child":
+            worker_argv = ["--probe-child", *worker_argv]
+        raise SystemExit(worker_main(worker_argv))
+    args = _parse_args(effective_argv)
 
     # P0: SIGTERM (Unix/WSL2) must trigger graceful shutdown in EVERY mode so
     # in-flight external processes are killed, not orphaned. In GUI mode NiceGUI/

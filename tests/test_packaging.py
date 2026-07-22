@@ -43,3 +43,14 @@ def test_xedit_scripts_en_pyinstaller_datas() -> None:
     spec = Path("sky_claw.spec").read_text(encoding="utf-8")
 
     assert '("sky_claw/local/xedit/scripts", "sky_claw/local/xedit/scripts")' in spec
+
+
+def test_bridge_mo2_en_pyinstaller_datas() -> None:
+    """El instalador runtime necesita archivos físicos del plugin, no solo PYZ."""
+    spec = Path("sky_claw.spec").read_text(encoding="utf-8")
+
+    assert (
+        '("sky_claw/local/mo2/plugin_bundle/skyclaw_bridge", "sky_claw/local/mo2/plugin_bundle/skyclaw_bridge")'
+    ) in spec
+    assert '"sky_claw.local.mo2.vfs_worker"' in spec
+    assert '"sky_claw.local.mo2.vfs_broker"' in spec
