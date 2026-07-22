@@ -650,3 +650,25 @@ Pendientes de la auditoría (no bloqueantes): F4 (idempotencia sin cablear),
 F5 (TOCTOU del drift-gate de `promote()`), F6 (race del timeout de
 `HITLGuard`), F7 (prompts HITL concurrentes en `check_for_updates`), F9
 (composition root del god object).
+
+## Addendum — Auditoría 03 (Pipeline): backlog consolidado U-01…U-12
+
+Backlog de la auditoría del dominio de orquestación + herramientas externas
+(subprocesos/zombies, integridad VFS, teardown/rollback), fusionado y
+verificado línea por línea contra el árbol vivo:
+[`docs/audits/auditoria_03_pipeline_consolidada.md`](audits/auditoria_03_pipeline_consolidada.md).
+Se enlaza acá para que este inventario canónico siga siendo el punto único de
+triage (regla de `AGENTS.md`) — los ítems U-01…U-12 se triagean desde ese
+documento y se marcan cerrados acá a medida que se implementen (ninguno
+implementado todavía):
+
+- **Alto:** U-01 (precondición VFS/USVFS no enforced → falso-verde standalone),
+  U-02 (sin Job Object en Windows → huérfanos por muerte dura), U-03
+  (`PrecacheGrass.txt` persistente), U-04 (Wrye Bash/Pandora sin rollback de
+  salida), U-05 (VRAMr `proc.kill()` pelado orfana nietos).
+- **Medio:** U-06 (falso verde por exit-code), U-07 (nieto TexGen huérfano en
+  salida normal), U-08 (sin reconciliación de arranque / clon parcial), U-09
+  (journal de grass commitea éxito pese a fallo de teardown), U-10 (timeout sin
+  excepción dedicada).
+- **Bajo:** U-11 (`returncode is None` enmascarado como 0), U-12 (leak de `.pas`
+  temporal).

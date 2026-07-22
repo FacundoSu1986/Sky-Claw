@@ -34,8 +34,13 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
 
 - **Archivos:** `local/loot/cli.py:131-151`, `local/xedit/runner.py:792-806`,
   `local/tools/wrye_bash_runner.py:59-71`, `local/tools/dyndolod_runner.py:457`,
-  `local/tools/synthesis_runner.py:214-216`. Sensor romo: `dyndolod_service.py:193-197`
-  (`build_vfs_sensor(..., scan_mods_dir=False)`).
+  `local/tools/synthesis_runner.py:214-216`. **Sensor romo — TODOS los rituales, no
+  solo DynDOLOD** (mismo `build_vfs_sensor(..., scan_mods_dir=False)`, verificado en el
+  árbol vivo tras el review de Codex #349): `dyndolod_service.py:193-196`,
+  `xedit_service.py:617-620`, `synthesis_service.py:237-240`, `pandora_service.py:173`,
+  `wrye_bash_service.py:154-157`. Único que ya escapa al patrón:
+  `loot_service.py:221` usa `scan_mods_dir=mo2_validated` (condicional al perfil MO2
+  validado) — ese es el comportamiento a replicar.
 - **Mecanismo:** todos los tools externos se spawnean **directo** (no vía
   `ModOrganizer.exe`; solo el juego usa el proxy, `vfs.py:353`). Corriendo standalone,
   ninguno hereda la USVFS de MO2. El pipeline depende de un árbol de mods **materializado
@@ -45,9 +50,12 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   la ENTRADA se asume materializada.
 - **Fix:** (1) guard de VFS-health bloqueante en el preflight ANTES de todo ritual mutante
   — reforzar `build_vfs_sensor` con `scan_mods_dir=True` y verificar que los mods del perfil
-  activo estén visibles en el path que los tools leen; fail-closed si no. (2) Reconciliar el
-  modelo de salida (`overwrite` vs `Data`/`mods`) en `_find_*_output`/`_permission_targets`.
-  (3) Documentar la invariante de deployment.
+  activo estén visibles en el path que los tools leen; fail-closed si no. **Aplicar de forma
+  CENTRAL a los 5 callers listados arriba (no solo DynDOLOD)** — o mejor, mover el default a
+  `scan_mods_dir` derivado de la validación del perfil (como ya hace `loot_service.py:221`)
+  para no dejar rituales atrás; parchear un solo sensor deja los otros 4 en falso-verde.
+  (2) Reconciliar el modelo de salida (`overwrite` vs `Data`/`mods`) en
+  `_find_*_output`/`_permission_targets`. (3) Documentar la invariante de deployment.
 
 ### U-02 — Sin Job Object en Windows: la muerte dura de Python orfana todo el árbol externo · `[A+Z]` · Subprocesos/Zombies
 
@@ -60,6 +68,14 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
 - **Fix (corregido):** asignar cada hijo a un **Job Object** con
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (pywin32/ctypes) en `_process` (+ el lanzamiento de
   MO2). El SO mata el árbol al cerrarse el handle del padre, incluso en muerte dura.
+  > **Alcance ampliado (review de Codex #349, verificado en el árbol vivo):** el Job Object
+  > en `_process` NO cubre los spawns que hacen `create_subprocess_exec` **directo**, sin
+  > pasar por `run_capture`: `local/loot/cli.py:148`, `local/tools/dyndolod_runner.py:457`,
+  > `local/tools/vramr_service.py:305` (y `vfs.py:358`/`launch_game`, ya listado). Si el fix
+  > se implementa solo en `_process`, esos tools siguen fuera del Job Object y una muerte dura
+  > de Python los orfana igual. Hay que (a) enrolarlos en el Job Object en cada call site, o
+  > (b) primero rutearlos por el helper compartido `_process` y aplicar el Job Object ahí una
+  > sola vez. El inventario de spawns directos es el criterio de completitud de U-02.
   > **Corrección al fix de ZAI (su Finding 9):** `atexit` **NO** corre en los escenarios que
   > la propia ZAI lista (OOM kill, `os._exit()`, corte de luz, SIGKILL) — solo en salida
   > normal / excepción no atrapada. El Job Object es la única solución OS-enforced.
@@ -89,6 +105,16 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   `SnapshotTransactionLock` (el path ya se computa para el manifiesto,
   `wrye_bash_service.py:249-259`). **Ojo:** el path de salida depende del modelo VFS (U-01) —
   cerrar U-01 primero para snapshotear la ubicación correcta.
+  > **`target_files` NO alcanza por sí solo (review de Codex #349, verificado):** el timeout
+  > de Wrye Bash y Pandora se traduce a `result.success == False` **sin elevar excepción**
+  > (`wrye_bash_runner.py:72-80` retorna el struct; ver U-10), así que el `async with
+  > SnapshotTransactionLock(...)`/`DirectoryRollback` **sale limpio** y esos helpers restauran
+  > solo ante excepción (o force-rollback explícito) — el backup se descarta y el output
+  > parcial persiste. El fix debe además **disparar el rollback ante un resultado fallido**
+  > (elevar dentro del context, o forzar el rollback cuando `result.success is False`).
+  > Por eso **U-10 (elevar `WryeBashTimeoutError`/`BodySlideTimeoutError`) es prerequisito** de
+  > este remedio: sin la excepción dedicada, agregar `target_files` da una falsa sensación de
+  > rollback.
 
 ### U-05 — VRAMr: timeout orfana nietos (usa `proc.kill()` pelado, no el tree-kill) · `[Z]` · Subprocesos/Zombies
 
@@ -146,6 +172,16 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   impacto era leak de disco, no bloqueo). (2) Reconciliador de arranque que barra
   `*.rollback-*` / `.skyclaw_sandbox/*/rollback-*` y complete/revierta según marcador durable;
   como piso, GC de backups huérfanos. Comparte hook con U-03.
+  > **El `try/except` in-thread NO cubre la cancelación (review de Codex #349, verificado):**
+  > `clone()` corre `_materialize` vía `await asyncio.to_thread(self._materialize, clone)`
+  > (`profile_sandbox.py:226`). Cancelar la corrutina `clone()` **no inyecta `BaseException`
+  > en el hilo worker** — el `except BaseException` de dentro de `_materialize` nunca se
+  > dispara, el `copytree` sigue corriendo en background y puede dejar un clon parcial tras
+  > propagarse la cancelación. Mismo patrón que F2/F5 de la auditoría de resiliencia (#319).
+  > El remedio (1) por lo tanto debe: **o** limitarse explícitamente a fallos SÍNCRONOS de
+  > copia (documentándolo), **o** observar/`shield`-ear el worker y limpiar DESPUÉS de que el
+  > hilo termine ante cancelación (patrón de F2, `asyncio.shield` + desenlace observado). El
+  > reconciliador de arranque (2) es la red que cubre el clon parcial que la cancelación deja.
   > **Corrección a ZAI Finding 2:** la consecuencia "próxima invocación falla con 'el clon ya
   > existe'" es **falsa** — eso es de `GrassProfileManager` (nombre fijo), no de `ProfileSandbox`
   > (`profile_sandbox.py:216`, dir con UUID → no colisiona). Impacto real = leak de disco.
