@@ -33,6 +33,21 @@ logger = logging.getLogger(__name__)
 _BRIDGE_CONNECT_TIMEOUT = 10.0
 _DESCRIPTOR_TTL_SECONDS = 24 * 60 * 60
 _COOPERATIVE_CANCEL_GRACE_SECONDS = 0.5
+# Si el bridge (MO2) se desconecta con un job en vuelo, el fence terminal espera
+# su reconexión para recibir el worker_exit; pasada esta ventana sin reconectar
+# se asume el worker muerto (el Job Object es kill-on-close: un MO2 caído mata al
+# worker) para que el fence NUNCA cuelgue indefinidamente reteniendo el lock.
+_BRIDGE_LOSS_FENCE_GRACE_SECONDS = 30.0
+# La cola de eventos de lifecycle no tiene consumidor obligatorio; se acota para
+# que no crezca sin límite durante la vida del daemon (drop-oldest).
+_MAX_BUFFERED_EVENTS = 256
+
+
+async def _cancel_and_join(task: asyncio.Future[Any]) -> None:
+    """Cancela una future auxiliar del fence y absorbe su ``CancelledError``."""
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 def vfs_instance_id(mo2_root: pathlib.Path) -> str:
@@ -76,6 +91,7 @@ class VfsExecutionBroker:
         state_dir: pathlib.Path,
         secret: bytes | None = None,
         descriptor_hardener: Callable[[pathlib.Path], None] = restrict_to_owner,
+        fence_grace_seconds: float = _BRIDGE_LOSS_FENCE_GRACE_SECONDS,
     ) -> None:
         try:
             self._instance_id = assert_safe_component(instance_id, field="instance_id")
@@ -89,6 +105,7 @@ class VfsExecutionBroker:
         if len(self._secret) < 32:
             raise VfsBrokerError("el secreto del broker debe tener al menos 32 bytes")
         self._hardener = descriptor_hardener
+        self._fence_grace = fence_grace_seconds
         self._session_id = str(uuid.uuid4())
         self._server: asyncio.AbstractServer | None = None
         self._bridge_writer: asyncio.StreamWriter | None = None
@@ -97,6 +114,9 @@ class VfsExecutionBroker:
         self._worker_by_job: dict[str, asyncio.StreamWriter] = {}
         self._client_tasks: set[asyncio.Task[None]] = set()
         self._bridge_ready = asyncio.Event()
+        # Se activa cuando el bridge se desconecta y se limpia al (re)conectar;
+        # el fence terminal lo usa para acotar la espera de worker_exit.
+        self._bridge_lost = asyncio.Event()
         self._instance_lock = asyncio.Lock()
         self._close_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
@@ -104,7 +124,7 @@ class VfsExecutionBroker:
         self._pending_context: dict[str, tuple[VfsJob, VfsAttestationChallenge]] = {}
         self._worker_exit: dict[str, asyncio.Future[int | None]] = {}
         self._termination_tasks: dict[str, asyncio.Task[None]] = {}
-        self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_MAX_BUFFERED_EVENTS)
         self._closing = False
         self._owns_instance_file_lock = False
 
@@ -299,7 +319,7 @@ class VfsExecutionBroker:
                 except Exception:
                     # Un resultado inválido o un fallo de lifecycle tampoco
                     # habilita rollback mientras el árbol siga ejecutándose.
-                    await self._await_terminal_fence(exit_future)
+                    await self._await_worker_exit(exit_future)
                     raise
             finally:
                 self._pending.pop(job.job_id, None)
@@ -338,20 +358,62 @@ class VfsExecutionBroker:
         timeout: float,
     ) -> VfsJobResult:
         result = await asyncio.wait_for(asyncio.shield(result_future), timeout=timeout)
-        await asyncio.shield(exit_future)
+        # Fence acotado que SÍ propaga la cancelación: si el caller cancela acá,
+        # submit la enruta por _send_cancel (que corre su propio fence protegido
+        # y avisa al bridge). La gracia de bridge muerto igual acota la espera.
+        while not exit_future.done():
+            await self._await_exit_or_bridge_loss(exit_future)
+        exit_future.result()
         return result
 
-    @staticmethod
-    async def _await_terminal_fence(exit_future: asyncio.Future[int | None]) -> None:
+    async def _await_worker_exit(self, exit_future: asyncio.Future[int | None]) -> None:
+        """Espera el ``worker_exit`` del bridge sin poder colgar para siempre.
+
+        Resiste la cancelación externa —rollback no puede empezar antes de la
+        confirmación terminal— pero si el bridge se desconecta y no reconecta
+        dentro de ``_fence_grace`` segundos, resuelve el fence asumiendo el
+        worker muerto. El Job Object es kill-on-close: si MO2 (el bridge) murió,
+        el worker murió con él, así que romper el fence acá evita la inanición
+        indefinida del lock ``load-order`` que sostiene el caller.
+        """
         cancelled = False
         while not exit_future.done():
             try:
-                await asyncio.shield(exit_future)
+                await self._await_exit_or_bridge_loss(exit_future)
             except asyncio.CancelledError:
                 cancelled = True
         exit_future.result()
         if cancelled:
             raise asyncio.CancelledError
+
+    async def _await_exit_or_bridge_loss(self, exit_future: asyncio.Future[int | None]) -> None:
+        """Una espera acotada: worker_exit, o pérdida terminal del bridge."""
+        exit_wait: asyncio.Future[Any] = asyncio.ensure_future(asyncio.shield(exit_future))
+        try:
+            if self._bridge_ready.is_set():
+                # Bridge vivo: despertar ante worker_exit o ante su desconexión.
+                lost_wait: asyncio.Future[Any] = asyncio.ensure_future(self._bridge_lost.wait())
+                try:
+                    await asyncio.wait({exit_wait, lost_wait}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    await _cancel_and_join(lost_wait)
+            else:
+                # Bridge caído: ventana acotada para reconectar y reenviar worker_exit.
+                ready_wait: asyncio.Future[Any] = asyncio.ensure_future(self._bridge_ready.wait())
+                grace: asyncio.Future[Any] = asyncio.ensure_future(asyncio.sleep(self._fence_grace))
+                try:
+                    await asyncio.wait({exit_wait, ready_wait, grace}, return_when=asyncio.FIRST_COMPLETED)
+                    if grace.done() and not ready_wait.done() and not exit_future.done():
+                        logger.warning(
+                            "El bridge MO2 no reconectó en %.1fs; se asume el worker muerto para liberar el fence",
+                            self._fence_grace,
+                        )
+                        exit_future.set_result(None)
+                finally:
+                    await _cancel_and_join(ready_wait)
+                    await _cancel_and_join(grace)
+        finally:
+            await _cancel_and_join(exit_wait)
 
     async def _request_termination_and_wait(self, job_id: str) -> None:
         message = {
@@ -378,8 +440,9 @@ class VfsExecutionBroker:
         if exit_future is None:
             raise VfsBrokerError(f"no existe tracking terminal para job {job_id}")
         # No se permite rollback ni liberación del lock hasta que el monitor del
-        # bridge confirme que el Job Object completo dejó de ejecutar.
-        await asyncio.shield(exit_future)
+        # bridge confirme que el Job Object completo dejó de ejecutar — o hasta
+        # que se agote la gracia de reconexión si el bridge murió (fence acotado).
+        await self._await_worker_exit(exit_future)
 
     async def _send_bridge(self, message: Mapping[str, object]) -> None:
         writer = self._bridge_writer
@@ -431,6 +494,7 @@ class VfsExecutionBroker:
             )
             if role == "bridge":
                 self._bridge_ready.set()
+                self._bridge_lost.clear()
                 while not self._closing:
                     message = await read_authenticated_message(reader, self._secret)
                     self._handle_bridge_message(message)
@@ -458,7 +522,14 @@ class VfsExecutionBroker:
                 self._bridge_writer = None
                 self._bridge_task = None
                 self._bridge_ready.clear()
-                self._fail_pending(VfsBridgeDisconnectedError("MO2 bridge desconectado"))
+                self._bridge_lost.set()
+                # Una desconexión transitoria NO invalida jobs en vuelo: el
+                # resultado llega por el socket del worker (independiente) y el
+                # bridge reconecta reenviando el worker_exit. Sólo el cierre real
+                # del broker (_closing) falla los pendientes; el fence acotado
+                # (_await_worker_exit) cubre el caso de bridge muerto sin retorno.
+                if self._closing:
+                    self._fail_pending(VfsBridgeDisconnectedError("MO2 bridge desconectado"))
             self._worker_writers.discard(writer)
             if worker_job_id is not None and self._worker_by_job.get(worker_job_id) is writer:
                 self._worker_by_job.pop(worker_job_id, None)
@@ -515,7 +586,7 @@ class VfsExecutionBroker:
                             f"worker {job_id} termino sin resultado (exit_code={parsed_exit_code!r})"
                         )
                     )
-            self._events.put_nowait(dict(message))
+            self._emit_event(message)
             return
         raise VfsBrokerError(f"tipo de mensaje del bridge no permitido: {message_type!r}")
 
@@ -531,7 +602,7 @@ class VfsExecutionBroker:
         if message_type == "event":
             if message.get("job_id") != expected_job_id:
                 raise VfsBrokerError("evento del worker atribuido a otro job")
-            self._events.put_nowait(dict(message))
+            self._emit_event(message)
             return False
         if message_type != "job_result":
             raise VfsBrokerError(f"tipo de mensaje del worker no permitido: {message_type!r}")
@@ -587,6 +658,14 @@ class VfsExecutionBroker:
         for future in self._pending.values():
             if not future.done():
                 future.set_exception(error)
+
+    def _emit_event(self, message: Mapping[str, object]) -> None:
+        """Encola un evento de lifecycle sin crecer sin límite (drop-oldest)."""
+        if self._events.full():
+            with contextlib.suppress(asyncio.QueueEmpty):
+                self._events.get_nowait()
+        with contextlib.suppress(asyncio.QueueFull):
+            self._events.put_nowait(dict(message))
 
     async def next_event(self) -> dict[str, Any]:
         """Devuelve el siguiente evento de lifecycle reportado por el bridge."""
