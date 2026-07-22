@@ -5,8 +5,10 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import pathlib
+import queue
 import sys
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -23,6 +25,20 @@ def ascii_safe_message(message: object) -> str:
 
 class BridgeCommandError(RuntimeError):
     """Comando del daemon no permitido por el bridge mínimo."""
+
+
+class BridgeEventOutbox(queue.Queue[dict[str, object]]):
+    """Cola con espera acotada hasta confirmar el envío de sus eventos."""
+
+    def wait_until_drained(self, *, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        with self.all_tasks_done:
+            while self.unfinished_tasks:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self.all_tasks_done.wait(remaining)
+        return True
 
 
 class OrganizerApi(Protocol):

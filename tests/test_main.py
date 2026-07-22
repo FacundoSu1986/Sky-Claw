@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.__main__ import AppContext, _main, _parse_args
+from sky_claw.__main__ import AppContext, _install_vfs_bridge, _main, _parse_args
 
 # ------------------------------------------------------------------
 # Argument parsing
@@ -166,6 +166,20 @@ class TestInstallVfsBridge:
         install.assert_awaited_once()
         assert install.await_args.args[0].mo2_root == tmp_path
         app_context.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rechaza_instalacion_desde_wsl_antes_de_escribir_config(self, tmp_path: pathlib.Path) -> None:
+        from sky_claw.local.mo2.vfs_broker import VfsBrokerError
+
+        args = MagicMock(mo2_root=tmp_path)
+        with (
+            patch("sky_claw.__main__.sys.platform", "linux"),
+            patch("sky_claw.local.mo2.bridge_installer.MO2BridgeInstaller.install") as install,
+            pytest.raises(VfsBrokerError, match="Windows"),
+        ):
+            await _install_vfs_bridge(args)
+
+        install.assert_not_called()
 
 
 class TestVfsHealth:

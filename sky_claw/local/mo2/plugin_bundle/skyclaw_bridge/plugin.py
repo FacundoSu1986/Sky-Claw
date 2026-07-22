@@ -25,6 +25,7 @@ from .runtime import (
     PROTOCOL_VERSION,
     BridgeCommandError,
     BridgeCommandInbox,
+    BridgeEventOutbox,
     BridgeLaunchController,
     ascii_safe_message,
 )
@@ -60,7 +61,7 @@ class _BridgeClient:
         descriptor_path: pathlib.Path,
         instance_id: str,
         inbox: BridgeCommandInbox,
-        outgoing: queue.Queue[dict[str, object]],
+        outgoing: BridgeEventOutbox,
     ) -> None:
         self._descriptor_path = descriptor_path
         self._instance_id = instance_id
@@ -78,7 +79,8 @@ class _BridgeClient:
     def start(self) -> None:
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, *, drain_timeout: float = 2.0) -> None:
+        self._outgoing.wait_until_drained(timeout=drain_timeout)
         self._stop.set()
         with self._connection_lock:
             connection = self._connection
@@ -183,7 +185,9 @@ class _BridgeClient:
                     # El evento terminal no puede perderse: tras reconectar el
                     # broker lo necesita para habilitar rollback/liberar locks.
                     self._outgoing.put(outgoing)
+                    self._outgoing.task_done()
                     raise
+                self._outgoing.task_done()
             readable, _, _ = select.select([connection], [], [], 0.1)
             if not readable:
                 continue
@@ -201,7 +205,7 @@ class SkyClawBridgePlugin(mobase.IPlugin):
         self._client: _BridgeClient | None = None
         self._controller: BridgeLaunchController | None = None
         self._commands: queue.Queue[dict[str, object]] = queue.Queue()
-        self._outgoing: queue.Queue[dict[str, object]] = queue.Queue()
+        self._outgoing = BridgeEventOutbox()
 
     def init(self, organizer: mobase.IOrganizer) -> bool:
         self._organizer = organizer
@@ -306,8 +310,9 @@ class SkyClawBridgePlugin(mobase.IPlugin):
     def _shutdown(self) -> None:
         if self._controller is not None:
             self._controller.stop()
+            self._controller.wait_for_monitors(timeout=2.0)
         if self._client is not None:
-            self._client.stop()
+            self._client.stop(drain_timeout=2.0)
 
     def name(self) -> str:
         return "Sky-Claw VFS Bridge"

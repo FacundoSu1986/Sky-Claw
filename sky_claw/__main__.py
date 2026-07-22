@@ -161,7 +161,13 @@ _install_loop_exception_handler = install_loop_exception_handler
 async def _install_vfs_bridge(args: argparse.Namespace) -> pathlib.Path:
     """Instala/actualiza el plugin MO2 sin iniciar el daemon completo."""
     from sky_claw.local.mo2.bridge_installer import MO2BridgeInstaller
-    from sky_claw.local.mo2.vfs_broker import vfs_instance_id
+    from sky_claw.local.mo2.vfs_broker import VfsBrokerError, vfs_instance_id
+
+    if sys.platform != "win32":
+        raise VfsBrokerError(
+            "La instalación del bridge MO2/USVFS debe ejecutarse desde Windows; "
+            "un intérprete Linux/WSL no puede ser lanzado por MO2."
+        )
 
     root = pathlib.Path(args.mo2_root).resolve()
     instance_id = vfs_instance_id(root)

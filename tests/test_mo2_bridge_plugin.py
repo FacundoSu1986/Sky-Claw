@@ -13,10 +13,22 @@ import pytest
 from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge import runtime as bridge_runtime
 from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import (
     BridgeCommandError,
+    BridgeEventOutbox,
     BridgeLaunchController,
     build_worker_arguments,
     validate_launch_request,
 )
+
+
+def test_outbox_espera_hasta_que_evento_terminal_fue_enviado() -> None:
+    outbox = BridgeEventOutbox()
+    outbox.put({"event": "worker_exit"})
+
+    assert outbox.wait_until_drained(timeout=0.01) is False
+
+    assert outbox.get_nowait() == {"event": "worker_exit"}
+    outbox.task_done()
+    assert outbox.wait_until_drained(timeout=0.01) is True
 
 
 def test_inbox_notifica_despues_de_encolar_comando(tmp_path: pathlib.Path) -> None:
@@ -61,6 +73,25 @@ def test_plugin_despacha_por_senal_qt_sin_qtimer() -> None:
 
     assert "QTimer" not in imported_names
     assert {"QObject", "Qt", "pyqtSignal", "pyqtSlot"} <= imported_names
+
+
+def test_shutdown_drena_monitor_y_outbox_antes_de_cerrar_socket() -> None:
+    plugin_path = (
+        pathlib.Path(__file__).parents[1]
+        / "sky_claw"
+        / "local"
+        / "mo2"
+        / "plugin_bundle"
+        / "skyclaw_bridge"
+        / "plugin.py"
+    )
+    source = plugin_path.read_text(encoding="utf-8")
+
+    stop_job = source.index("self._controller.stop()")
+    drain_monitor = source.index("self._controller.wait_for_monitors", stop_job)
+    stop_client = source.index("self._client.stop", drain_monitor)
+
+    assert stop_job < drain_monitor < stop_client
 
 
 def test_mensaje_qt_convierte_unicode_a_ascii_seguro() -> None:
