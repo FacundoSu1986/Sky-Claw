@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import errno
 import hashlib
 import json
 import logging
@@ -16,6 +15,8 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from typing import Any
+
+import psutil
 
 from sky_claw.antigravity.security.file_permissions import restrict_to_owner
 from sky_claw.antigravity.security.path_validator import PathViolationError, assert_safe_component
@@ -169,8 +170,18 @@ class VfsExecutionBroker:
                     self._instance_lock_path.unlink()
                 continue
             try:
+                # create_time del dueño: identidad estable contra reuso de PID del SO,
+                # verificada en _instance_lock_owner_alive (mismo criterio que vfs.py #302).
+                try:
+                    own_create_time: float | None = psutil.Process(os.getpid()).create_time()
+                except psutil.Error:
+                    own_create_time = None
                 payload = json.dumps(
-                    {"pid": os.getpid(), "session_id": self._session_id},
+                    {
+                        "pid": os.getpid(),
+                        "session_id": self._session_id,
+                        "create_time": own_create_time,
+                    },
                     sort_keys=True,
                 ).encode("utf-8")
                 os.write(descriptor, payload)
@@ -188,22 +199,30 @@ class VfsExecutionBroker:
     def _instance_lock_owner_alive(self) -> bool:
         try:
             raw = json.loads(self._instance_lock_path.read_text(encoding="utf-8"))
-            pid = raw.get("pid") if isinstance(raw, dict) else None
         except (OSError, UnicodeError, json.JSONDecodeError):
             return True
+        pid = raw.get("pid") if isinstance(raw, dict) else None
         if type(pid) is not int or pid <= 0:
             return True
         if pid == os.getpid():
             return True
+        expected_create_time = raw.get("create_time") if isinstance(raw, dict) else None
+        # Liveness vía psutil + create_time, NO os.kill(pid, 0): en Windows os.kill
+        # sobre un PID reciclado por un proceso protegido del SO lanza un SystemError
+        # irrecuperable (OSError con excepción C sin traducir), y un PID simplemente
+        # reusado se leería como "vivo" y el lock jamás se reclamaría (deadlock de
+        # arranque tras un crash del broker). create_time da la identidad estable del
+        # proceso, mismo patrón que vfs.MO2Controller._kill_process_tree (review #302).
         try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except (OSError, OverflowError) as exc:
-            return not (getattr(exc, "errno", None) == errno.ESRCH or getattr(exc, "winerror", None) == 87)
-        return True
+            create_time = psutil.Process(pid).create_time()
+        except psutil.NoSuchProcess:
+            return False  # el dueño murió: PID libre → lock reclamable
+        except psutil.Error:
+            return True  # no verificable (AccessDenied/…): conservador, no robar el lock
+        # Vivo salvo que el create_time registrado no coincida (PID reusado por otro
+        # proceso ⇒ el dueño original ya murió). Un lock antiguo sin create_time
+        # (None) no dispara la reclamación: se trata como vivo (conservador).
+        return not (isinstance(expected_create_time, (int, float)) and create_time != expected_create_time)
 
     def _release_instance_file_lock(self) -> None:
         if not self._owns_instance_file_lock:

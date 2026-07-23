@@ -181,6 +181,44 @@ class TestInstallVfsBridge:
 
         install.assert_not_called()
 
+    async def test_rechaza_worker_de_venv_no_congelado_fail_closed(self, tmp_path: pathlib.Path) -> None:
+        """Un intérprete de venv (trampoline) no puede ser inyectado por USVFS (Error 5).
+        En Windows y sin el flag de dev, install-vfs-bridge falla cerrado y no escribe
+        config (guard derivado del smoke real del PR #350)."""
+        from sky_claw.local.mo2.vfs_broker import VfsBrokerError
+
+        args = MagicMock(mo2_root=tmp_path)
+        with (
+            patch("sky_claw.__main__.sys.platform", "win32"),
+            patch.dict("sky_claw.__main__.os.environ", {"SKYCLAW_ALLOW_DEV_WORKER": ""}, clear=False),
+            patch("sky_claw.local.mo2.bridge_installer.MO2BridgeInstaller.install") as install,
+            pytest.raises(VfsBrokerError, match="congelado"),
+        ):
+            await _install_vfs_bridge(args)
+
+        install.assert_not_called()
+
+    async def test_allow_dev_worker_habilita_worker_no_congelado(self, tmp_path: pathlib.Path) -> None:
+        """El escape hatch SKYCLAW_ALLOW_DEV_WORKER=1 permite un worker no congelado
+        (solo pruebas locales) sin fallar cerrado."""
+        args = MagicMock(mo2_root=tmp_path)
+        with (
+            patch("sky_claw.__main__.sys.platform", "win32"),
+            patch.dict("sky_claw.__main__.os.environ", {"SKYCLAW_ALLOW_DEV_WORKER": "1"}, clear=False),
+            patch(
+                "sky_claw.local.mo2.bridge_installer.MO2BridgeInstaller.install",
+                return_value=tmp_path,
+            ) as install,
+        ):
+            result = await _install_vfs_bridge(args)
+
+        install.assert_called_once()
+        assert install.call_args.kwargs["worker_prefix"] == (
+            "-m",
+            "sky_claw.local.mo2.vfs_worker",
+        )
+        assert result == tmp_path
+
 
 class TestVfsHealth:
     @pytest.mark.asyncio
