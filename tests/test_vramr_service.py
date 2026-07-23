@@ -379,6 +379,49 @@ async def test_timeout_kills_process_and_cleans_up(
     assert not (output_dir / "pending.dds").exists()
 
 
+async def test_timeout_mata_el_arbol_de_procesos_no_solo_el_hijo(
+    lock_manager: DistributedLockManager,
+    mock_journal: AsyncMock,
+    mock_event_bus: AsyncMock,
+    path_validator: PathValidator,
+    vramr_exe: pathlib.Path,
+    output_dir: pathlib.Path,
+) -> None:
+    """En timeout se invoca kill_and_reap (taskkill /F /T del árbol) y no un
+    proc.kill() pelado, que dejaría huérfanos los nietos (workers de compresión
+    de texturas). Regresión de U-05: el test de timeout previo pasa
+    incidentalmente porque kill_and_reap TAMBIÉN llama proc.kill(), así que no
+    ancla este comportamiento; acá espiamos el helper directamente."""
+    svc = make_service(
+        lock_manager=lock_manager,
+        mock_journal=mock_journal,
+        path_validator=path_validator,
+        event_bus=mock_event_bus,
+        default_timeout=0.5,
+    )
+    fake = make_fake_proc(exit_code=0)
+
+    async def _fake_create(*a, **kw):
+        return fake
+
+    kill_and_reap_spy = AsyncMock()
+    with (
+        patch.object(vramr_mod.asyncio, "create_subprocess_exec", AsyncMock(side_effect=_fake_create)),
+        patch.object(vramr_mod.asyncio, "wait_for", AsyncMock(side_effect=TimeoutError())),
+        patch.object(vramr_mod, "kill_and_reap", kill_and_reap_spy),
+    ):
+        result = await svc.execute_pipeline(
+            vramr_exe=vramr_exe,
+            args=[],
+            output_dir=output_dir,
+            timeout=0.25,
+        )
+
+    kill_and_reap_spy.assert_awaited_once_with(fake)
+    assert result["success"] is False
+    assert "timed out" in result["error"]
+
+
 # =============================================================================
 # 6. Lock contention
 # =============================================================================
