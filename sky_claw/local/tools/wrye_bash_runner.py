@@ -40,7 +40,7 @@ class WryeBashTimeoutError(WryeBashExecutionError):
 
     def __init__(self, timeout_seconds: float) -> None:
         self.timeout_seconds = timeout_seconds
-        super().__init__(f"Wrye Bash excedió el timeout de {timeout_seconds:.0f}s generando el Bashed Patch")
+        super().__init__(f"Wrye Bash excedió el timeout de {timeout_seconds:g}s generando el Bashed Patch")
 
 
 @dataclass(frozen=True, slots=True)

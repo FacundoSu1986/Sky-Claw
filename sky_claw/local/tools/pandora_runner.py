@@ -34,7 +34,7 @@ class PandoraTimeoutError(PandoraExecutionError):
 
     def __init__(self, timeout_seconds: float) -> None:
         self.timeout_seconds = timeout_seconds
-        super().__init__(f"Pandora excedió el timeout de {timeout_seconds:.0f}s ejecutando el Behavior Engine")
+        super().__init__(f"Pandora excedió el timeout de {timeout_seconds:g}s ejecutando el Behavior Engine")
 
 
 @dataclass(frozen=True, slots=True)

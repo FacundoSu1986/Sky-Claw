@@ -34,7 +34,7 @@ class BodySlideTimeoutError(BodySlideExecutionError):
 
     def __init__(self, timeout_seconds: float) -> None:
         self.timeout_seconds = timeout_seconds
-        super().__init__(f"BodySlide excedió el timeout de {timeout_seconds:.0f}s durante la generación batch")
+        super().__init__(f"BodySlide excedió el timeout de {timeout_seconds:g}s durante la generación batch")
 
 
 @dataclass(frozen=True, slots=True)

@@ -113,23 +113,28 @@ def test_timeout_errors_derivan_de_su_execution_error() -> None:
 
 @pytest.mark.parametrize("factory", [_bodyslide, _pandora, _wrye])
 async def test_runner_kills_process_on_timeout(tmp_path, factory):
-    """On timeout the runner must kill + reap the child process AND raise a
-    dedicated timeout exception (U-10).
+    """En timeout, el runner debe matar+reapear el proceso hijo Y elevar su
+    excepción de timeout dedicada (U-10).
 
-    Antes el ``except TimeoutError`` retornaba un ``*Result`` con ``success=False``,
+    Antes el ``except TimeoutError`` retornaba un ``*Result`` con ``success=False``
     y el ``async with`` del lock/rollback salía limpio (el rollback nunca se
     disparaba). Ahora eleva su ``*TimeoutError``, que se propaga por el context
-    manager — sin dejar de matar el proceso colgado (kill+reap sigue en el
-    ``finally`` de ``run_capture``, antes de que el runner eleve).
+    manager — sin dejar de matar el proceso colgado (el kill+reap sigue en el
+    ``finally`` de ``run_capture``, antes de que el runner eleve). Se verifica
+    además que se preservan la causa original (``TimeoutError``) y el
+    ``timeout_seconds`` configurado.
     """
     proc = _hanging_proc()
     runner, args = factory(tmp_path, 0.05)
     call = _CALLS[type(runner)]
     exc_type = _TIMEOUT_EXC[type(runner)]
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc), pytest.raises(exc_type):
+    with patch("asyncio.create_subprocess_exec", return_value=proc), pytest.raises(exc_type) as exc_info:
         await call(runner, args)
 
+    # Payload y cadena de causa preservados (raise ... from exc), no solo el tipo.
+    assert exc_info.value.timeout_seconds == 0.05
+    assert isinstance(exc_info.value.__cause__, TimeoutError)
     proc.kill.assert_called_once()
     proc.wait.assert_awaited()
 
