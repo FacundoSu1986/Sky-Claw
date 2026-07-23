@@ -216,6 +216,13 @@ def assign_kill_on_close_job(pid: int) -> int | None:
     """
     if sys.platform != "win32":
         return None
+    # Defensivo: un pid inválido (None / no-int / ≤0) NUNCA debe tocar Win32.
+    # ``OpenProcess`` con basura lanza ``ctypes.ArgumentError`` —que NO es
+    # ``OSError``— y escaparía el best-effort, abortando el run (o colgándolo si el
+    # caller quedó esperando un evento que ya no se setea). Además blinda los unit
+    # tests que ejercitan ``_execute_process`` con procesos ``MagicMock``.
+    if not isinstance(pid, int) or pid <= 0:
+        return None
     import ctypes
     from ctypes import wintypes
 
@@ -257,6 +264,7 @@ def assign_kill_on_close_job(pid: int) -> int | None:
             ("PeakJobMemoryUsed", ctypes.c_size_t),
         ]
 
+    job: int | None = None
     try:
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
@@ -277,21 +285,32 @@ def assign_kill_on_close_job(pid: int) -> int | None:
         info = _ExtendedLimit()
         info.BasicLimitInformation.LimitFlags = kill_on_close
         if not k32.SetInformationJobObject(job, extended_limit_class, ctypes.byref(info), ctypes.sizeof(info)):
+            logger.debug("assign_kill_on_close_job: SetInformationJobObject falló (err=%s)", ctypes.get_last_error())
             k32.CloseHandle(job)
             return None
         hproc = k32.OpenProcess(process_terminate | process_set_quota, False, pid)
         if not hproc:
+            logger.debug("assign_kill_on_close_job: OpenProcess(PID %s) falló (err=%s)", pid, ctypes.get_last_error())
             k32.CloseHandle(job)
             return None
         try:
             if not k32.AssignProcessToJobObject(job, hproc):
+                logger.debug(
+                    "assign_kill_on_close_job: AssignProcessToJobObject falló (err=%s)", ctypes.get_last_error()
+                )
                 k32.CloseHandle(job)
                 return None
         finally:
             k32.CloseHandle(hproc)
         return int(job)
-    except OSError as exc:
+    except (OSError, ctypes.ArgumentError, ValueError) as exc:
+        # Best-effort: cualquier fallo —incluido el marshalling de argumentos, que
+        # NO es OSError (ctypes.ArgumentError deriva de Exception)— deja el cleanup
+        # en manos de kill_and_reap sin abortar el run. Si el job alcanzó a crearse,
+        # lo cerramos para no filtrar el handle.
         logger.debug("assign_kill_on_close_job: no disponible para PID %s (no-op): %s", pid, exc)
+        if job:
+            close_job(int(job))
         return None
 
 
