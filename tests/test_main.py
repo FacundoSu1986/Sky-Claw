@@ -181,7 +181,6 @@ class TestInstallVfsBridge:
 
         install.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_rechaza_worker_de_venv_no_congelado_fail_closed(self, tmp_path: pathlib.Path) -> None:
         """Un intérprete de venv (trampoline) no puede ser inyectado por USVFS (Error 5).
         En Windows y sin el flag de dev, install-vfs-bridge falla cerrado y no escribe
@@ -199,7 +198,6 @@ class TestInstallVfsBridge:
 
         install.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_allow_dev_worker_habilita_worker_no_congelado(self, tmp_path: pathlib.Path) -> None:
         """El escape hatch SKYCLAW_ALLOW_DEV_WORKER=1 permite un worker no congelado
         (solo pruebas locales) sin fallar cerrado."""
