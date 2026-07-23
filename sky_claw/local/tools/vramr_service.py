@@ -27,7 +27,6 @@ devuelve un ``dict[str, Any]`` serializable.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import pathlib
 import shutil
@@ -54,7 +53,6 @@ logger = logging.getLogger(__name__)
 _CREATE_NO_WINDOW = 0x08000000
 _TAIL_LINES = 20
 _DEFAULT_TIMEOUT_SECONDS = 3600.0
-_KILL_GRACE_SECONDS = 3.0
 # S-4: cota para drenar buffers residuales tras la salida normal del proceso. Sin
 # ella, un nieto que heredó el pipe (write-end sin cerrar) dejaría el gather del
 # path de éxito colgado indefinidamente.
@@ -326,9 +324,11 @@ class VRAMrPipelineService:
             await asyncio.gather(drain_out, drain_err, return_exceptions=True)
             raise
         except TimeoutError:
-            proc.kill()
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_SECONDS)
+            # kill_and_reap mata el ÁRBOL (taskkill /F /T en Windows) ANTES del
+            # proc.kill(): un proc.kill() pelado terminaba solo el hijo directo y
+            # dejaba huérfanos los nietos (workers de compresión de texturas)
+            # reteniendo file locks del output. Espeja el path de cancelación (arriba).
+            await kill_and_reap(proc)
             drain_out.cancel()
             drain_err.cancel()
             # gather(return_exceptions=True) sobre tasks ya canceladas captura sus
