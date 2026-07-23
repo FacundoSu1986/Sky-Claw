@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from sky_claw.local.tools._process import kill_and_reap
+from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 
 logger = logging.getLogger(__name__)
 
@@ -470,6 +470,12 @@ class DynDOLODRunner:
                 stderr=str(e),
             ) from e
 
+        # U-07/U-02: meter el proceso (y sus descendientes) en un Job Object
+        # kill-on-close. Cerrarlo (close_job, en TODA salida) aniquila cualquier
+        # nieto que sobreviva —incluso reparentado tras la salida del padre—, el
+        # hueco que kill_and_reap no cubre en la salida normal. No-op fuera de Windows.
+        job = assign_kill_on_close_job(proc.pid)
+
         stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []
 
@@ -510,6 +516,7 @@ class DynDOLODRunner:
             drain_out.cancel()
             drain_err.cancel()
             await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
+            close_job(job)
             raise
         except TimeoutError:
             # Global timeout exceeded — kill process tree (evita nietos como
@@ -520,6 +527,7 @@ class DynDOLODRunner:
             drain_err.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
+            close_job(job)
             raise DynDOLODTimeoutError(effective_timeout, tool_name) from None
         except Exception as e:
             await kill_and_reap(proc)
@@ -528,6 +536,7 @@ class DynDOLODRunner:
             drain_err.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
+            close_job(job)
             raise DynDOLODExecutionError(
                 f"Unexpected error during {tool_name} execution: {e}",
                 return_code=proc.returncode,
@@ -569,6 +578,10 @@ class DynDOLODRunner:
                         tool_name,
                         r,
                     )
+            # U-07: salida normal. Cerrar el job mata el nieto que sobrevivió
+            # heredando el pipe (el mismo que dispara el drain-timeout de arriba) —
+            # ya no es alcanzable por PID porque su padre salió, pero el job lo retiene.
+            close_job(job)
 
         duration = time.monotonic() - start_time
         stdout_text = b"".join(stdout_chunks).decode(errors="replace")
