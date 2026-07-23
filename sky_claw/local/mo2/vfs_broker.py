@@ -170,7 +170,7 @@ class VfsExecutionBroker:
                     self._instance_lock_path.unlink()
                 continue
             try:
-                # create_time del owner: identidad estable contra reuso de PID del SO,
+                # create_time del dueño: identidad estable contra reuso de PID del SO,
                 # verificada en _instance_lock_owner_alive (mismo criterio que vfs.py #302).
                 try:
                     own_create_time: float | None = psutil.Process(os.getpid()).create_time()
@@ -216,11 +216,11 @@ class VfsExecutionBroker:
         try:
             create_time = psutil.Process(pid).create_time()
         except psutil.NoSuchProcess:
-            return False  # el owner murió: PID libre → lock reclamable
+            return False  # el dueño murió: PID libre → lock reclamable
         except psutil.Error:
             return True  # no verificable (AccessDenied/…): conservador, no robar el lock
         # Vivo salvo que el create_time registrado no coincida (PID reusado por otro
-        # proceso ⇒ el owner original ya murió). Un lock legacy sin create_time
+        # proceso ⇒ el dueño original ya murió). Un lock antiguo sin create_time
         # (None) no dispara la reclamación: se trata como vivo (conservador).
         return not (isinstance(expected_create_time, (int, float)) and create_time != expected_create_time)
 

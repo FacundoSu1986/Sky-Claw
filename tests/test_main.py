@@ -215,6 +215,10 @@ class TestInstallVfsBridge:
             result = await _install_vfs_bridge(args)
 
         install.assert_called_once()
+        assert install.call_args.kwargs["worker_prefix"] == (
+            "-m",
+            "sky_claw.local.mo2.vfs_worker",
+        )
         assert result == tmp_path
 
 

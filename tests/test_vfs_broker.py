@@ -112,7 +112,7 @@ async def test_broker_reclama_lock_de_pid_inexistente(tmp_path: pathlib.Path) ->
 
 async def test_broker_reclama_lock_de_pid_reusado(tmp_path: pathlib.Path) -> None:
     """PID vivo pero con create_time distinto (PID reciclado por el SO tras morir el
-    owner) → reclamable. Antes, os.kill(pid, 0) lo veía "vivo" y el lock jamás se
+    dueño) → reclamable. Antes, os.kill(pid, 0) lo veía "vivo" y el lock jamás se
     liberaba: deadlock de arranque tras un crash del broker (smoke real PR #350)."""
     state = tmp_path / "state"
     state.mkdir()
@@ -141,7 +141,7 @@ async def test_broker_reclama_lock_de_pid_reusado(tmp_path: pathlib.Path) -> Non
 
 
 async def test_broker_no_roba_lock_de_owner_vivo(tmp_path: pathlib.Path) -> None:
-    """PID vivo y create_time coincidente → el owner sigue vivo, no se reclama el lock
+    """PID vivo y create_time coincidente → el dueño sigue vivo, no se reclama el lock
     (no robar la instancia de otro broker realmente activo)."""
     state = tmp_path / "state"
     state.mkdir()
