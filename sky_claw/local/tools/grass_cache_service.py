@@ -49,6 +49,7 @@ from sky_claw.antigravity.db.journal import OperationStatus, TransactionStatus
 from sky_claw.antigravity.db.journal_contracts import is_flight_report_committed
 from sky_claw.antigravity.db.locks import LockAcquisitionError, SnapshotTransactionLock
 from sky_claw.local.tools.grass_cache_runner import (
+    _PRECACHE_FLAG,  # fuente de verdad del nombre del flag (evita duplicar el string mágico)
     GrassCacheConfig,
     GrassCacheProgress,
     GrassCacheRunner,
@@ -73,6 +74,59 @@ logger = logging.getLogger(__name__)
 
 #: Recurso del lock distribuido: un solo ritual de grass a la vez.
 GRASS_CACHE_RESOURCE_ID = "grass-cache"
+
+
+async def reconcile_orphan_precache_flag(
+    game_path: pathlib.Path,
+    lock_manager: DistributedLockManager,
+) -> bool:
+    """Barre un ``PrecacheGrass.txt`` huérfano de una muerte dura previa (U-03).
+
+    Una muerte dura del proceso Python (SIGKILL/OOM/corte de luz) durante el
+    precache evade el ``finally`` que borra el flag en :class:`GrassCacheRunner`,
+    dejando ``PrecacheGrass.txt`` junto a ``SkyrimSE.exe``. Si el usuario abre el
+    juego con NGIO activo, ese flag lo re-mete en modo precache (800x400,
+    crash-loop) — corrupción silenciosa de la experiencia de juego, sin rastro en
+    el pipeline. Este hook idempotente de arranque lo detecta y lo borra.
+
+    **Seguro ante concurrencia:** si el lock ``grass-cache`` está vivo (un ritual
+    en curso, posiblemente en OTRA instancia de Sky-Claw), el flag es legítimo y
+    NO se toca. Solo se borra cuando no hay lock vivo — ninguno, o vencido (su
+    dueño murió sin liberar; el lock TTL se auto-recupera, esta promesa de FS no,
+    de ahí el barrido explícito).
+
+    Returns:
+        ``True`` si se borró un flag huérfano; ``False`` si no había nada que
+        hacer (sin flag, o hay un ritual activo que lo posee legítimamente).
+    """
+    flag = game_path / _PRECACHE_FLAG
+    if not await asyncio.to_thread(flag.exists):
+        return False
+
+    info = await lock_manager.get_lock_info(GRASS_CACHE_RESOURCE_ID)
+    if info is not None and not info.is_expired:
+        logger.info(
+            "PrecacheGrass.txt presente pero el lock '%s' sigue vivo (ritual en curso); no se toca el flag.",
+            GRASS_CACHE_RESOURCE_ID,
+        )
+        return False
+
+    def _unlink() -> bool:
+        try:
+            flag.unlink(missing_ok=True)
+            return True
+        except OSError:
+            logger.warning("No se pudo borrar el PrecacheGrass.txt huérfano en %s", flag, exc_info=True)
+            return False
+
+    removed = await asyncio.to_thread(_unlink)
+    if removed:
+        logger.info(
+            "PrecacheGrass.txt huérfano barrido de %s (sin ritual de grass activo): "
+            "evita que el juego arranque en modo precache tras una muerte dura previa.",
+            game_path,
+        )
+    return removed
 
 
 class GrassCacheServiceError(Exception):

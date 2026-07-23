@@ -680,3 +680,96 @@ async def test_generate_progreso_del_runner_se_publica_al_bus(tmp_path: pathlib.
     )
     topics = [c.args[0].topic for c in colab["event_bus"].publish.await_args_list]
     assert "pipeline.grass_cache.progress" in topics
+
+
+# =============================================================================
+# U-03 — Reconciliación de arranque: barrer PrecacheGrass.txt huérfano
+# =============================================================================
+#
+# Muerte dura (SIGKILL/OOM/corte de luz) durante el precache: el `finally` del
+# runner no corre, así que `PrecacheGrass.txt` queda junto a SkyrimSE.exe. La
+# próxima vez que el usuario abra el juego, NGIO ve el flag y re-entra en modo
+# precache (crash-loop 800x400). El hook de arranque lo barre — pero NUNCA si hay
+# un ritual de grass EN CURSO (lock `grass-cache` vivo, posiblemente en otra
+# instancia): ese flag es legítimo.
+
+
+def _lock_manager_con_info(info: Any) -> AsyncMock:
+    """LockManager falso cuyo ``get_lock_info`` devuelve *info*."""
+    mgr = AsyncMock()
+    mgr.get_lock_info = AsyncMock(return_value=info)
+    return mgr
+
+
+async def test_reconcilia_flag_huerfano_sin_lock_lo_borra(tmp_path: pathlib.Path) -> None:
+    from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
+
+    flag = tmp_path / "PrecacheGrass.txt"
+    flag.write_text("", encoding="utf-8")
+    mgr = _lock_manager_con_info(None)  # sin lock → no hay ritual activo
+
+    removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
+
+    assert removed is True
+    assert not flag.exists(), "el flag huérfano debe borrarse cuando no hay ritual activo"
+
+
+async def test_no_toca_flag_con_ritual_activo(tmp_path: pathlib.Path) -> None:
+    import time
+
+    from sky_claw.antigravity.db.locks import LockInfo
+    from sky_claw.local.tools.grass_cache_service import (
+        GRASS_CACHE_RESOURCE_ID,
+        reconcile_orphan_precache_flag,
+    )
+
+    flag = tmp_path / "PrecacheGrass.txt"
+    flag.write_text("", encoding="utf-8")
+    vivo = LockInfo(
+        resource_id=GRASS_CACHE_RESOURCE_ID,
+        agent_id="grass-cache-service",
+        acquired_at=time.time(),
+        expires_at=time.time() + 600.0,  # no expirado → ritual en curso
+    )
+    mgr = _lock_manager_con_info(vivo)
+
+    removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
+
+    assert removed is False
+    assert flag.exists(), "un flag de un ritual EN CURSO jamás debe borrarse"
+
+
+async def test_lock_expirado_se_trata_como_huerfano(tmp_path: pathlib.Path) -> None:
+    import time
+
+    from sky_claw.antigravity.db.locks import LockInfo
+    from sky_claw.local.tools.grass_cache_service import (
+        GRASS_CACHE_RESOURCE_ID,
+        reconcile_orphan_precache_flag,
+    )
+
+    flag = tmp_path / "PrecacheGrass.txt"
+    flag.write_text("", encoding="utf-8")
+    expirado = LockInfo(
+        resource_id=GRASS_CACHE_RESOURCE_ID,
+        agent_id="grass-cache-service",
+        acquired_at=time.time() - 1200.0,
+        expires_at=time.time() - 1.0,  # ya vencido → el dueño murió sin liberar
+    )
+    mgr = _lock_manager_con_info(expirado)
+
+    removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
+
+    assert removed is True
+    assert not flag.exists(), "un lock vencido no protege el flag: es huérfano"
+
+
+async def test_sin_flag_es_noop(tmp_path: pathlib.Path) -> None:
+    from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
+
+    mgr = _lock_manager_con_info(None)
+
+    removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
+
+    assert removed is False
+    assert not (tmp_path / "PrecacheGrass.txt").exists()
