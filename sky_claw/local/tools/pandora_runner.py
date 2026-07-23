@@ -22,6 +22,21 @@ class PandoraExecutionError(Exception):
     pass
 
 
+class PandoraTimeoutError(PandoraExecutionError):
+    """Elevada cuando Pandora excede su timeout (U-10).
+
+    Dedicada (en vez de un ``PandoraResult`` con ``success=False``) para que el
+    timeout se PROPAGUE por el context manager del lock/rollback en lugar de salir
+    limpio: prerequisito del rollback transaccional de salida (U-04). Deriva de
+    :class:`PandoraExecutionError`, así que los callers que ya capturan la base la
+    traducen al contrato ``success=False`` sin cambios.
+    """
+
+    def __init__(self, timeout_seconds: float) -> None:
+        self.timeout_seconds = timeout_seconds
+        super().__init__(f"Pandora excedió el timeout de {timeout_seconds:.0f}s ejecutando el Behavior Engine")
+
+
 @dataclass(frozen=True, slots=True)
 class PandoraConfig:
     pandora_exe: pathlib.Path
@@ -57,15 +72,9 @@ class PandoraRunner:
                 timeout=self.config.timeout_seconds,
                 cwd=str(self.config.game_path),
             )
-        except TimeoutError:
+        except TimeoutError as exc:
             logger.error("Pandora execution timed out.")
-            return PandoraResult(
-                success=False,
-                return_code=-1,
-                stdout="",
-                stderr="Timeout during Pandora execution",
-                duration_seconds=time.monotonic() - start_time,
-            )
+            raise PandoraTimeoutError(self.config.timeout_seconds) from exc
         except Exception as e:
             logger.error(f"Pandora execution failed: {e}")
             raise PandoraExecutionError(f"Failed to execute Pandora: {e}") from e
