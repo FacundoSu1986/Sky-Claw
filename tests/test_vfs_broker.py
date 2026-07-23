@@ -6,8 +6,11 @@ import asyncio
 import base64
 import json
 import pathlib
+import subprocess
+import sys
 from typing import Any
 
+import psutil
 import pytest
 
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
@@ -105,6 +108,61 @@ async def test_broker_reclama_lock_de_pid_inexistente(tmp_path: pathlib.Path) ->
         await broker.close()
 
     assert not lock.exists()
+
+
+async def test_broker_reclama_lock_de_pid_reusado(tmp_path: pathlib.Path) -> None:
+    """PID vivo pero con create_time distinto (PID reciclado por el SO tras morir el
+    owner) → reclamable. Antes, os.kill(pid, 0) lo veía "vivo" y el lock jamás se
+    liberaba: deadlock de arranque tras un crash del broker (smoke real PR #350)."""
+    state = tmp_path / "state"
+    state.mkdir()
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        real_ct = psutil.Process(proc.pid).create_time()
+        lock = state / ".portable-main.lock"
+        lock.write_text(
+            json.dumps({"pid": proc.pid, "session_id": "crashed", "create_time": real_ct - 5000.0}),
+            encoding="utf-8",
+        )
+        broker = VfsExecutionBroker(
+            instance_id="portable-main",
+            state_dir=state,
+            descriptor_hardener=lambda _path: None,
+        )
+        await broker.start()
+        try:
+            assert broker.descriptor_path.is_file()
+        finally:
+            await broker.close()
+        assert not lock.exists()
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+async def test_broker_no_roba_lock_de_owner_vivo(tmp_path: pathlib.Path) -> None:
+    """PID vivo y create_time coincidente → el owner sigue vivo, no se reclama el lock
+    (no robar la instancia de otro broker realmente activo)."""
+    state = tmp_path / "state"
+    state.mkdir()
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        real_ct = psutil.Process(proc.pid).create_time()
+        lock = state / ".portable-main.lock"
+        lock.write_text(
+            json.dumps({"pid": proc.pid, "session_id": "vivo", "create_time": real_ct}),
+            encoding="utf-8",
+        )
+        broker = VfsExecutionBroker(
+            instance_id="portable-main",
+            state_dir=state,
+            descriptor_hardener=lambda _path: None,
+        )
+        with pytest.raises(VfsBrokerError, match="ya esta poseida"):
+            await broker.start()
+    finally:
+        proc.kill()
+        proc.wait()
 
 
 async def _conectar_bridge(broker: VfsExecutionBroker):

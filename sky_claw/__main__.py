@@ -175,9 +175,29 @@ async def _install_vfs_bridge(args: argparse.Namespace) -> pathlib.Path:
     if getattr(sys, "frozen", False):
         worker_executable = pathlib.Path(sys.executable)
         worker_prefix = ("--vfs-worker",)
-    else:
+    elif os.environ.get("SKYCLAW_ALLOW_DEV_WORKER") == "1":
+        # Escape hatch SOLO para pruebas locales: un intérprete de venv (el
+        # python.exe de uv/venv es un trampoline/reparse point) es rechazado por
+        # la inyección de USVFS con Error 5 (ERROR_ACCESS_DENIED). No usar en
+        # producción — validado en el smoke real del PR #350.
+        logger.warning(
+            "install-vfs-bridge: worker NO congelado por SKYCLAW_ALLOW_DEV_WORKER=1. "
+            "USVFS puede rechazar la inyección de un intérprete de venv (Error 5)."
+        )
         worker_executable = pathlib.Path(sys.executable)
         worker_prefix = ("-m", "sky_claw.local.mo2.vfs_worker")
+    else:
+        # Fail-closed: el worker en producción DEBE ser el binario congelado
+        # (PyInstaller). USVFS no puede inyectar el trampoline python.exe de un
+        # venv y falla con Error 5 — un fallo opaco que costó una tarde de debug
+        # en el smoke del PR #350. Rechazamos temprano con un mensaje accionable.
+        raise VfsBrokerError(
+            "install-vfs-bridge debe ejecutarse desde el ejecutable congelado "
+            "(PyInstaller): USVFS no puede inyectar un intérprete de venv/trampoline "
+            "y falla con Error 5 (ERROR_ACCESS_DENIED). Empaquetá con "
+            "`pyinstaller sky_claw.spec` y corré este comando desde el .exe "
+            "resultante. Para pruebas locales, exportá SKYCLAW_ALLOW_DEV_WORKER=1."
+        )
     installer = MO2BridgeInstaller()
     installed = await asyncio.to_thread(
         installer.install,
