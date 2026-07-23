@@ -28,6 +28,21 @@ class WryeBashExecutionError(Exception):
     pass
 
 
+class WryeBashTimeoutError(WryeBashExecutionError):
+    """Elevada cuando Wrye Bash excede su timeout (U-10).
+
+    Dedicada (en vez de un ``WryeBashResult`` con ``success=False``) para que el
+    timeout se PROPAGUE por el context manager del lock/rollback en lugar de salir
+    limpio: es el prerequisito del rollback transaccional de salida (U-04). Deriva
+    de :class:`WryeBashExecutionError`, así que los callers que ya capturan la base
+    la traducen al contrato ``success=False`` sin cambios.
+    """
+
+    def __init__(self, timeout_seconds: float) -> None:
+        self.timeout_seconds = timeout_seconds
+        super().__init__(f"Wrye Bash excedió el timeout de {timeout_seconds:g}s generando el Bashed Patch")
+
+
 @dataclass(frozen=True, slots=True)
 class WryeBashConfig:
     wrye_bash_path: pathlib.Path
@@ -69,15 +84,9 @@ class WryeBashRunner:
                 timeout=self.config.timeout_seconds,
                 cwd=str(self.config.game_path),
             )
-        except TimeoutError:
+        except TimeoutError as exc:
             logger.error("Wrye Bash generation timed out.")
-            return WryeBashResult(
-                success=False,
-                return_code=-1,
-                stdout="",
-                stderr="Timeout during Bashed Patch generation",
-                duration_seconds=time.monotonic() - start_time,
-            )
+            raise WryeBashTimeoutError(self.config.timeout_seconds) from exc
         except Exception as e:
             logger.error(f"Wrye Bash execution failed: {e}")
             raise WryeBashExecutionError(f"Failed to execute Wrye Bash: {e}") from e

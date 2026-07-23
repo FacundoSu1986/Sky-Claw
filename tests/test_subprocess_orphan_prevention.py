@@ -17,9 +17,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunner
-from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
-from sky_claw.local.tools.wrye_bash_runner import WryeBashConfig, WryeBashRunner
+from sky_claw.local.tools.bodyslide_runner import (
+    BodySlideConfig,
+    BodySlideExecutionError,
+    BodySlideRunner,
+    BodySlideTimeoutError,
+)
+from sky_claw.local.tools.pandora_runner import (
+    PandoraConfig,
+    PandoraExecutionError,
+    PandoraRunner,
+    PandoraTimeoutError,
+)
+from sky_claw.local.tools.wrye_bash_runner import (
+    WryeBashConfig,
+    WryeBashExecutionError,
+    WryeBashRunner,
+    WryeBashTimeoutError,
+)
 
 
 def _hanging_proc() -> AsyncMock:
@@ -74,18 +89,52 @@ _CALLS = {
     WryeBashRunner: lambda r, a: r.generate_bashed_patch(*a),
 }
 
+#: U-10: cada runner eleva SU excepción de timeout dedicada (ya no traga struct).
+_TIMEOUT_EXC = {
+    BodySlideRunner: BodySlideTimeoutError,
+    PandoraRunner: PandoraTimeoutError,
+    WryeBashRunner: WryeBashTimeoutError,
+}
+
+
+def test_timeout_errors_derivan_de_su_execution_error() -> None:
+    """U-10: la Timeout dedicada deriva de la ExecutionError base del runner.
+
+    Así los callers que ya capturan la base (``wrye_bash_service`` /
+    ``pandora_service`` con ``except *ExecutionError``; ``system_tools`` con
+    ``except Exception``) la traducen al contrato ``success=False`` sin cambios,
+    mientras el tipo dedicado permite distinguir el timeout y —al PROPAGARSE en
+    vez de retornar struct— habilita el rollback transaccional de U-04.
+    """
+    assert issubclass(WryeBashTimeoutError, WryeBashExecutionError)
+    assert issubclass(BodySlideTimeoutError, BodySlideExecutionError)
+    assert issubclass(PandoraTimeoutError, PandoraExecutionError)
+
 
 @pytest.mark.parametrize("factory", [_bodyslide, _pandora, _wrye])
 async def test_runner_kills_process_on_timeout(tmp_path, factory):
-    """On timeout the runner must kill + reap the child process."""
+    """En timeout, el runner debe matar+reapear el proceso hijo Y elevar su
+    excepción de timeout dedicada (U-10).
+
+    Antes el ``except TimeoutError`` retornaba un ``*Result`` con ``success=False``
+    y el ``async with`` del lock/rollback salía limpio (el rollback nunca se
+    disparaba). Ahora eleva su ``*TimeoutError``, que se propaga por el context
+    manager — sin dejar de matar el proceso colgado (el kill+reap sigue en el
+    ``finally`` de ``run_capture``, antes de que el runner eleve). Se verifica
+    además que se preservan la causa original (``TimeoutError``) y el
+    ``timeout_seconds`` configurado.
+    """
     proc = _hanging_proc()
     runner, args = factory(tmp_path, 0.05)
     call = _CALLS[type(runner)]
+    exc_type = _TIMEOUT_EXC[type(runner)]
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
-        result = await call(runner, args)
+    with patch("asyncio.create_subprocess_exec", return_value=proc), pytest.raises(exc_type) as exc_info:
+        await call(runner, args)
 
-    assert result.success is False
+    # Payload y cadena de causa preservados (raise ... from exc), no solo el tipo.
+    assert exc_info.value.timeout_seconds == 0.05
+    assert isinstance(exc_info.value.__cause__, TimeoutError)
     proc.kill.assert_called_once()
     proc.wait.assert_awaited()
 
