@@ -661,6 +661,41 @@ class TestExecuteProcessDrainGrace:
         assert stdout == ""  # EOF inmediato
         assert stderr == ""  # drain cancelado tras el grace → output parcial
 
+    async def test_salida_normal_con_nieto_cierra_el_job(self) -> None:
+        """U-07: en la salida NORMAL con un nieto que heredó el pipe (drain colgado),
+        el proceso se mete en un Job Object kill-on-close y se CIERRA (``close_job``)
+        tras drenar. En Windows eso aniquila al nieto huérfano que ``kill_and_reap``
+        ya no alcanza (el padre salió y el nieto se reparentó). Espiamos ambos helpers;
+        contra el código previo (sin job) el patch de estos símbolos ni existía."""
+        from sky_claw.local.tools import dyndolod_runner as ddl
+
+        proc = MagicMock()
+        proc.stdout = _EOFStream()
+        proc.stderr = _HangingStream()  # nieto que sobrevive al padre
+        proc.returncode = 0
+        proc.wait = AsyncMock(return_value=0)  # el proceso "salió" con éxito
+
+        config = MagicMock()
+        config.timeout_seconds = 3600
+        config.heartbeat_interval = 60
+        runner = ddl.DynDOLODRunner(config)
+
+        assign_spy = MagicMock(return_value=4242)
+        close_spy = MagicMock()
+        with (
+            patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)),
+            patch.object(ddl, "_DRAIN_GRACE_SECONDS", 0.1),
+            patch.object(ddl, "assign_kill_on_close_job", assign_spy),
+            patch.object(ddl, "close_job", close_spy),
+        ):
+            await asyncio.wait_for(
+                runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "DynDOLOD"),
+                timeout=5.0,
+            )
+
+        assign_spy.assert_called_once_with(proc.pid)
+        close_spy.assert_called_once_with(4242)
+
 
 # =============================================================================
 # Cancelación externa — limpieza de proceso y drains

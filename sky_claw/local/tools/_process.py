@@ -191,3 +191,120 @@ async def spawn_detached(
         kwargs["cwd"] = cwd
 
     return await asyncio.create_subprocess_exec(*args, **kwargs)
+
+
+def assign_kill_on_close_job(pid: int) -> int | None:
+    """Windows: mete *pid* en un Job Object con ``KILL_ON_JOB_CLOSE`` y devuelve su handle.
+
+    Cerrar ese handle (:func:`close_job`) mata el árbol completo — **incluidos
+    nietos reparentados cuyo padre ya salió**, el caso que ``proc.kill()`` /
+    ``taskkill /T`` NO cubren en la salida normal del proceso (U-07/U-02): una vez
+    que el padre murió no hay forma de enumerar al nieto desde su PID. El job sí lo
+    retiene por membresía, no por relación padre-hijo.
+
+    Fuera de Windows, o ante cualquier fallo, devuelve ``None`` (no-op): la garantía
+    dura sigue siendo :func:`kill_and_reap`. Best-effort a propósito — un fallo acá
+    nunca debe romper el run.
+
+    Espeja el ``Win32JobObject`` (validado en el smoke real del PR #350) del bundle
+    del bridge MO2; no se puede importar ese porque el bundle debe ser autocontenido
+    (se copia dentro de MO2) y su ``assign`` toma un HANDLE, no un pid.
+
+    Caveat: hay una micro-ventana entre el spawn y esta asignación donde el hijo
+    podría crear descendientes antes de entrar al job (lo ideal sería spawn
+    suspendido, que asyncio no expone). Aceptable para el uso actual.
+    """
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kill_on_close = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    extended_limit_class = 9  # JobObjectExtendedLimitInformation
+    process_terminate = 0x0001
+    process_set_quota = 0x0100
+
+    class _BasicLimit(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class _ExtendedLimit(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _BasicLimit),
+            ("IoInfo", _IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        k32.SetInformationJobObject.restype = wintypes.BOOL
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k32.AssignProcessToJobObject.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
+
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            logger.debug("assign_kill_on_close_job: CreateJobObjectW falló (err=%s)", ctypes.get_last_error())
+            return None
+        info = _ExtendedLimit()
+        info.BasicLimitInformation.LimitFlags = kill_on_close
+        if not k32.SetInformationJobObject(job, extended_limit_class, ctypes.byref(info), ctypes.sizeof(info)):
+            k32.CloseHandle(job)
+            return None
+        hproc = k32.OpenProcess(process_terminate | process_set_quota, False, pid)
+        if not hproc:
+            k32.CloseHandle(job)
+            return None
+        try:
+            if not k32.AssignProcessToJobObject(job, hproc):
+                k32.CloseHandle(job)
+                return None
+        finally:
+            k32.CloseHandle(hproc)
+        return int(job)
+    except OSError as exc:
+        logger.debug("assign_kill_on_close_job: no disponible para PID %s (no-op): %s", pid, exc)
+        return None
+
+
+def close_job(job_handle: int | None) -> None:
+    """Cierra el handle del Job Object → el SO mata el árbol (``KILL_ON_JOB_CLOSE``).
+
+    No-op si *job_handle* es ``None`` (fuera de Windows o creación fallida). Cerrar
+    tras una salida NORMAL en la que un nieto sobrevivió (heredó el pipe) es lo que
+    aniquila a ese huérfano que ``kill_and_reap`` ya no alcanza (el padre murió).
+    """
+    if job_handle is None or sys.platform != "win32":
+        return
+    import ctypes
+
+    with contextlib.suppress(OSError):
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(ctypes.c_void_p(job_handle))
