@@ -694,10 +694,36 @@ async def test_generate_progreso_del_runner_se_publica_al_bus(tmp_path: pathlib.
 # instancia): ese flag es legítimo.
 
 
-def _lock_manager_con_info(info: Any) -> AsyncMock:
-    """LockManager falso cuyo ``get_lock_info`` devuelve *info*."""
+def _lock_info_vivo(offset_s: float) -> Any:
+    """LockInfo de `grass-cache` cuyo vencimiento está a *offset_s* de ahora."""
+    import time
+
+    from sky_claw.antigravity.db.locks import LockInfo
+    from sky_claw.local.tools.grass_cache_service import GRASS_CACHE_RESOURCE_ID
+
+    now = time.time()
+    return LockInfo(
+        resource_id=GRASS_CACHE_RESOURCE_ID,
+        agent_id="grass-cache-service",
+        acquired_at=now,
+        expires_at=now + offset_s,
+    )
+
+
+def _lock_manager(info: Any = None, *, acquire_falla: bool = False) -> AsyncMock:
+    """LockManager falso: ``get_lock_info``→*info*; ``acquire_lock`` opcionalmente falla.
+
+    ``acquire_falla=True`` modela la intercalación del TOCTOU: otra instancia gana
+    el lock entre el chequeo inicial y la adquisición, así que ``acquire_lock``
+    lanza ``LockAcquisitionError``.
+    """
     mgr = AsyncMock()
     mgr.get_lock_info = AsyncMock(return_value=info)
+    if acquire_falla:
+        mgr.acquire_lock = AsyncMock(side_effect=LockAcquisitionError("grass-cache", "otra-instancia", "ocupado"))
+    else:
+        mgr.acquire_lock = AsyncMock(return_value=MagicMock())
+    mgr.release_lock = AsyncMock(return_value=True)
     return mgr
 
 
@@ -706,57 +732,57 @@ async def test_reconcilia_flag_huerfano_sin_lock_lo_borra(tmp_path: pathlib.Path
 
     flag = tmp_path / "PrecacheGrass.txt"
     flag.write_text("", encoding="utf-8")
-    mgr = _lock_manager_con_info(None)  # sin lock → no hay ritual activo
+    mgr = _lock_manager(None)  # sin lock → no hay ritual activo
 
     removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
 
     assert removed is True
     assert not flag.exists(), "el flag huérfano debe borrarse cuando no hay ritual activo"
+    # El borrado se hizo bajo el lock, adquirido y liberado (atómico, no un simple check).
+    mgr.acquire_lock.assert_awaited_once()
+    mgr.release_lock.assert_awaited_once()
 
 
 async def test_no_toca_flag_con_ritual_activo(tmp_path: pathlib.Path) -> None:
-    import time
-
-    from sky_claw.antigravity.db.locks import LockInfo
-    from sky_claw.local.tools.grass_cache_service import (
-        GRASS_CACHE_RESOURCE_ID,
-        reconcile_orphan_precache_flag,
-    )
+    from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
 
     flag = tmp_path / "PrecacheGrass.txt"
     flag.write_text("", encoding="utf-8")
-    vivo = LockInfo(
-        resource_id=GRASS_CACHE_RESOURCE_ID,
-        agent_id="grass-cache-service",
-        acquired_at=time.time(),
-        expires_at=time.time() + 600.0,  # no expirado → ritual en curso
-    )
-    mgr = _lock_manager_con_info(vivo)
+    mgr = _lock_manager(_lock_info_vivo(600.0))  # lock no expirado → ritual en curso
 
     removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
 
     assert removed is False
     assert flag.exists(), "un flag de un ritual EN CURSO jamás debe borrarse"
+    # Fast-path: ni siquiera intenta adquirir (evita el backoff ante un lock tomado).
+    mgr.acquire_lock.assert_not_awaited()
 
 
-async def test_lock_expirado_se_trata_como_huerfano(tmp_path: pathlib.Path) -> None:
-    import time
-
-    from sky_claw.antigravity.db.locks import LockInfo
-    from sky_claw.local.tools.grass_cache_service import (
-        GRASS_CACHE_RESOURCE_ID,
-        reconcile_orphan_precache_flag,
-    )
+async def test_race_ritual_gana_el_lock_no_borra(tmp_path: pathlib.Path) -> None:
+    """TOCTOU: el chequeo inicial no ve lock, pero otra instancia lo adquiere antes
+    del borrado. ``acquire_lock`` falla → NO se borra el flag legítimo del ritual."""
+    from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
 
     flag = tmp_path / "PrecacheGrass.txt"
     flag.write_text("", encoding="utf-8")
-    expirado = LockInfo(
-        resource_id=GRASS_CACHE_RESOURCE_ID,
-        agent_id="grass-cache-service",
-        acquired_at=time.time() - 1200.0,
-        expires_at=time.time() - 1.0,  # ya vencido → el dueño murió sin liberar
-    )
-    mgr = _lock_manager_con_info(expirado)
+    # get_lock_info=None (al chequear no había lock) pero acquire_lock falla:
+    # el ritual ganó la carrera entre el chequeo y la adquisición.
+    mgr = _lock_manager(None, acquire_falla=True)
+
+    removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
+
+    assert removed is False
+    assert flag.exists(), "si el ritual ganó el lock, su flag no se borra pese al chequeo previo"
+    mgr.acquire_lock.assert_awaited_once()
+    mgr.release_lock.assert_not_awaited()  # nunca adquirimos → nada que liberar
+
+
+async def test_lock_expirado_se_trata_como_huerfano(tmp_path: pathlib.Path) -> None:
+    from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
+
+    flag = tmp_path / "PrecacheGrass.txt"
+    flag.write_text("", encoding="utf-8")
+    mgr = _lock_manager(_lock_info_vivo(-1.0))  # ya vencido → el dueño murió sin liberar
 
     removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
 
@@ -767,9 +793,10 @@ async def test_lock_expirado_se_trata_como_huerfano(tmp_path: pathlib.Path) -> N
 async def test_sin_flag_es_noop(tmp_path: pathlib.Path) -> None:
     from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
 
-    mgr = _lock_manager_con_info(None)
+    mgr = _lock_manager(None)
 
     removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
 
     assert removed is False
     assert not (tmp_path / "PrecacheGrass.txt").exists()
+    mgr.acquire_lock.assert_not_awaited()  # sin flag → ni consulta el lock
