@@ -972,6 +972,26 @@ class AppContext:
             snapshot_manager = FileSnapshotManager(snapshot_dir=_LOCK_STAGING_DIR / "snapshots")
             await self._await_startup(snapshot_manager.initialize())
 
+            # U-03: barrer un PrecacheGrass.txt huérfano de una muerte dura previa
+            # (SIGKILL/OOM/corte de luz durante un precache). El finally del runner de
+            # grass no corre en esos casos y el flag persistente hace que NGIO re-entre
+            # en modo precache (800x400, crash-loop) la próxima vez que el usuario abra
+            # el juego. Best-effort — NO debe abortar el arranque — e idempotente: respeta
+            # el lock grass-cache, así que un ritual EN CURSO (aun en otra instancia) queda
+            # intacto. Reusa el mismo lock_manager que serializa el ritual.
+            if configured_game is not None:
+                try:
+                    from sky_claw.local.tools.grass_cache_service import (
+                        reconcile_orphan_precache_flag,
+                    )
+
+                    await self._await_startup(reconcile_orphan_precache_flag(configured_game, lock_manager))
+                except Exception:
+                    logger.warning(
+                        "Reconciliación de PrecacheGrass.txt huérfano falló (no bloquea el arranque)",
+                        exc_info=True,
+                    )
+
             # T-26 (ADR 0002, follow-up de #243): journal para que run_loot_sort
             # de este path del agente también emita+persista el ActionManifest
             # ("caja negra de vuelo") antes de mutar — cerrando el hueco donde la

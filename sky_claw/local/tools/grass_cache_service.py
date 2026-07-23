@@ -47,8 +47,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from sky_claw.antigravity.db.journal import OperationStatus, TransactionStatus
 from sky_claw.antigravity.db.journal_contracts import is_flight_report_committed
-from sky_claw.antigravity.db.locks import LockAcquisitionError, SnapshotTransactionLock
+from sky_claw.antigravity.db.locks import (
+    LockAcquisitionError,
+    LockReleaseError,
+    SnapshotTransactionLock,
+)
 from sky_claw.local.tools.grass_cache_runner import (
+    _PRECACHE_FLAG,  # fuente de verdad del nombre del flag (evita duplicar el string mágico)
     GrassCacheConfig,
     GrassCacheProgress,
     GrassCacheRunner,
@@ -73,6 +78,98 @@ logger = logging.getLogger(__name__)
 
 #: Recurso del lock distribuido: un solo ritual de grass a la vez.
 GRASS_CACHE_RESOURCE_ID = "grass-cache"
+
+#: Agente del reconciliador de arranque — distinto del servicio de grass, así el
+#: lock que toma para barrer el flag no se confunde con el del ritual en sí.
+_RECONCILE_AGENT_ID = "precache-flag-reconciler"
+#: TTL corto: el lock solo cubre un exists()+unlink(). Si el proceso muere con él
+#: tomado, expira solo (el TTL se auto-recupera; no wedgea el próximo ritual).
+_RECONCILE_TTL_SECONDS = 30.0
+
+
+async def reconcile_orphan_precache_flag(
+    game_path: pathlib.Path,
+    lock_manager: DistributedLockManager,
+) -> bool:
+    """Barre un ``PrecacheGrass.txt`` huérfano de una muerte dura previa (U-03).
+
+    Una muerte dura del proceso Python (SIGKILL/OOM/corte de luz) durante el
+    precache evade el ``finally`` que borra el flag en :class:`GrassCacheRunner`,
+    dejando ``PrecacheGrass.txt`` junto a ``SkyrimSE.exe``. Si el usuario abre el
+    juego con NGIO activo, ese flag lo re-mete en modo precache (800x400,
+    crash-loop) — corrupción silenciosa de la experiencia de juego, sin rastro en
+    el pipeline. Este hook idempotente de arranque lo detecta y lo borra.
+
+    **Seguro ante concurrencia (atómico):** el borrado se hace bajo el MISMO lock
+    ``grass-cache`` que serializa el ritual, adquirido de forma atómica. Si un
+    ritual está en curso (aun en OTRA instancia de Sky-Claw) el flag es legítimo y
+    no se toca. Un simple ``get_lock_info`` no alcanzaría: entre el chequeo y el
+    ``unlink`` otra instancia podría arrancar el ritual y escribir el flag, que
+    este proceso borraría (TOCTOU). Adquirir el lock cierra esa ventana — el que
+    lo posee gana, y el perdedor no borra nada. El ``get_lock_info`` previo es solo
+    un fast-path para no pagar el backoff de ``acquire_lock`` cuando ya hay dueño.
+
+    Returns:
+        ``True`` si se borró un flag huérfano; ``False`` si no había nada que
+        hacer (sin flag, o hay un ritual activo que lo posee legítimamente).
+    """
+    flag = game_path / _PRECACHE_FLAG
+    if not await asyncio.to_thread(flag.exists):
+        return False
+
+    # Fast-path: si el ritual ya está en curso, ni intentamos adquirir (evita el
+    # backoff/retry de acquire_lock ante un lock tomado, que colgaría el arranque).
+    info = await lock_manager.get_lock_info(GRASS_CACHE_RESOURCE_ID)
+    if info is not None and not info.is_expired:
+        logger.info(
+            "PrecacheGrass.txt presente pero el lock '%s' sigue vivo (ritual en curso); no se toca el flag.",
+            GRASS_CACHE_RESOURCE_ID,
+        )
+        return False
+
+    # Cierre del TOCTOU: adquirimos el lock del ritual de forma atómica. Si otra
+    # instancia arrancó un precache entre el chequeo de arriba y este punto,
+    # acquire_lock falla (el ritual ya lo posee) y NO tocamos su flag legítimo.
+    try:
+        await lock_manager.acquire_lock(GRASS_CACHE_RESOURCE_ID, _RECONCILE_AGENT_ID, ttl=_RECONCILE_TTL_SECONDS)
+    except LockAcquisitionError:
+        logger.info(
+            "No se pudo adquirir '%s' para reconciliar (ritual activo); no se toca el flag.",
+            GRASS_CACHE_RESOURCE_ID,
+        )
+        return False
+
+    try:
+        # Re-chequeo bajo el lock: entre el primer exists() y la adquisición el
+        # estado pudo cambiar; solo borramos un flag que sigue presente.
+        if not await asyncio.to_thread(flag.exists):
+            return False
+
+        def _unlink() -> bool:
+            try:
+                flag.unlink(missing_ok=True)
+                return True
+            except OSError:
+                logger.warning("No se pudo borrar el PrecacheGrass.txt huérfano en %s", flag, exc_info=True)
+                return False
+
+        removed = await asyncio.to_thread(_unlink)
+        if removed:
+            logger.info(
+                "PrecacheGrass.txt huérfano barrido de %s (sin ritual de grass activo): "
+                "evita que el juego arranque en modo precache tras una muerte dura previa.",
+                game_path,
+            )
+        return removed
+    finally:
+        try:
+            await lock_manager.release_lock(GRASS_CACHE_RESOURCE_ID, _RECONCILE_AGENT_ID)
+        except LockReleaseError:
+            logger.warning(
+                "Fallo al liberar '%s' tras reconciliar (el TTL lo recupera).",
+                GRASS_CACHE_RESOURCE_ID,
+                exc_info=True,
+            )
 
 
 class GrassCacheServiceError(Exception):
