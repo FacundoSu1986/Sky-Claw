@@ -214,10 +214,10 @@ class TestXEditRunnerExecution:
         assert list(output_dir.glob("*.pas")) == [], "el .pas temporal debe borrarse tras el run"
 
     async def test_run_dynamic_script_limpia_el_pas_temporal_en_timeout(self, tmp_path: pathlib.Path) -> None:
-        """U-12: el ``finally`` limpia el .pas también cuando el run falla (no solo en éxito).
+        """U-12: el ``finally`` limpia el .pas también cuando la ejecución falla (no solo en éxito).
 
-        El fix vive en un ``finally``, así que el caso de éxito no basta para
-        probarlo: hay que confirmar que también corre cuando ``run_dynamic_script``
+        El cambio vive en un ``finally``, así que el caso de éxito no basta para
+        probarlo: hay que confirmar que también se ejecuta cuando ``run_dynamic_script``
         eleva (aquí, timeout) y que la excepción original no se pierde.
         """
         xedit = tmp_path / "SSEEdit.exe"
@@ -239,7 +239,7 @@ class TestXEditRunnerExecution:
         ):
             await runner.run_dynamic_script(script, ["Skyrim.esm"], flags=["-IKnowWhatImDoing"], script_name="test.pas")
 
-        assert list(output_dir.glob("*.pas")) == [], "el .pas temporal debe borrarse aun si el run falla"
+        assert list(output_dir.glob("*.pas")) == [], "el .pas temporal debe borrarse aun si la ejecución falla"
 
 
 # ------------------------------------------------------------------
