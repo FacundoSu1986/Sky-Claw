@@ -255,6 +255,31 @@ async def test_run_capture_cierra_el_job_en_timeout():
     close_spy.assert_called_once_with(99)
 
 
+async def test_run_capture_cierra_el_job_aunque_kill_and_reap_falle():
+    """CodeRabbit (PR #360): si ``kill_and_reap(proc)`` lanza (o es cancelado)
+    durante el cleanup de una salida no-normal, ``close_job(job)`` NO debe
+    omitirse — si no, el job queda abierto y el árbol que debía aniquilar sigue
+    vivo, contradiciendo la garantía de "cerrar el job en TODA salida"."""
+    import sky_claw.local.tools._process as _process
+
+    async def _hang(*_a, **_k):
+        await asyncio.sleep(3600)
+
+    proc = _proc(communicate=AsyncMock(side_effect=_hang))
+    proc.pid = 4242
+    close_spy = MagicMock()
+    with (
+        patch("asyncio.create_subprocess_exec", return_value=proc),
+        patch.object(_process, "assign_kill_on_close_job", MagicMock(return_value=99)),
+        patch.object(_process, "close_job", close_spy),
+        patch.object(_process, "kill_and_reap", AsyncMock(side_effect=OSError("reap boom"))),
+        pytest.raises(OSError, match="reap boom"),
+    ):
+        await asyncio.wait_for(run_capture(["tool.exe"], timeout=0.05), timeout=2.0)
+
+    close_spy.assert_called_once_with(99)
+
+
 async def test_run_capture_kills_and_reraises_on_cancel():
     async def _hang(*_a, **_k):
         await asyncio.sleep(3600)

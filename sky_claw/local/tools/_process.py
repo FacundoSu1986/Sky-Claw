@@ -158,15 +158,21 @@ async def run_capture(
         completed = True
         return stdout, stderr, proc.returncode
     finally:
-        # Any non-normal exit — timeout, cancellation, or an I/O/pipe error after
-        # spawn — must not leave the child running. The original exception (if
-        # any) propagates unchanged; the caller maps it to a domain error.
-        if not completed:
-            await kill_and_reap(proc)
-        # Cerrar el job en TODA salida (éxito incluido, espejo de U-07/DynDOLOD):
-        # evita filtrar el handle en un proceso Python de larga vida y aniquila
-        # cualquier nieto que sobreviva al padre (ya no alcanzable por PID).
-        close_job(job)
+        try:
+            # Any non-normal exit — timeout, cancellation, or an I/O/pipe error
+            # after spawn — must not leave the child running. The original
+            # exception (if any) propagates unchanged; the caller maps it to a
+            # domain error.
+            if not completed:
+                await kill_and_reap(proc)
+        finally:
+            # Cerrar el job en TODA salida (éxito incluido, espejo de
+            # U-07/DynDOLOD), incluso si kill_and_reap arriba lanzó o fue
+            # cancelado: de lo contrario el job queda abierto y el árbol que
+            # debía aniquilar sigue vivo — contradice la garantía de "toda
+            # salida". Evita además filtrar el handle en un proceso Python de
+            # larga vida.
+            close_job(job)
 
 
 async def spawn_detached(
