@@ -20,7 +20,9 @@ Este archivo fija (1) y (2). (3) quedó cerrado en #361.
 from __future__ import annotations
 
 import atexit
+import gc
 import pathlib
+import weakref
 from collections.abc import Callable
 from typing import Any
 
@@ -77,9 +79,38 @@ async def test_init_all_arma_la_red_de_atexit(monkeypatch: pytest.MonkeyPatch) -
     manager = DatabaseLifecycleManager(db_paths=[])
     await manager.init_all()
 
-    assert manager._sync_shutdown in registrados, (
+    assert registrados, (
         "init_all no armó la red de atexit: sin caller, register_atexit_handler "
         "es código muerto y un exit duro deja el WAL sin truncar"
+    )
+
+    # Lo registrado debe delegar en el checkpoint sincrónico del manager.
+    llamadas: list[bool] = []
+    monkeypatch.setattr(manager, "_sync_shutdown", lambda: llamadas.append(True))
+    registrados[0]()
+    assert llamadas == [True], "el handler registrado no dispara el checkpoint del manager"
+
+
+async def test_init_all_no_extiende_la_vida_del_manager() -> None:
+    """El registro de ``atexit`` NO debe mantener vivo al manager.
+
+    Un bound method (``self._sync_shutdown``) en el registro de ``atexit``
+    ancla ``self`` con una referencia fuerte, y con él ``self._connections``:
+    las conexiones ``aiosqlite`` dejan de recolectarse, su ``__del__`` —que es
+    quien llama a ``stop()``— nunca corre, y sus worker threads NO-daemon
+    sobreviven al proceso. Ese es exactamente el modo de falla que vigila
+    ``pytest_unconfigure`` (y que en producción sería una fuga de por vida).
+    """
+    manager = DatabaseLifecycleManager(db_paths=[])
+    await manager.init_all()
+    ref = weakref.ref(manager)
+
+    del manager
+    gc.collect()
+
+    assert ref() is None, (
+        "la red de atexit ancló al manager: sus conexiones aiosqlite nunca se "
+        "recolectan y sus worker threads non-daemon sobreviven al proceso"
     )
 
 

@@ -22,6 +22,7 @@ import atexit
 import logging
 import sqlite3
 import time
+import weakref
 from collections.abc import AsyncGenerator, Awaitable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -510,7 +511,21 @@ class DatabaseLifecycleManager:
         if self._registered_signals:
             return
 
-        atexit.register(self._sync_shutdown)
+        # Vía weakref, NO ``atexit.register(self._sync_shutdown)``: un bound
+        # method ancla ``self`` con una referencia fuerte que el registro de
+        # atexit conserva hasta el final del proceso, y con ella
+        # ``self._connections``. Las conexiones aiosqlite dejarían de
+        # recolectarse, su ``__del__`` —que es quien llama a ``stop()``— nunca
+        # correría, y sus worker threads NO-daemon sobrevivirían. La red de
+        # seguridad debe checkpointear un manager vivo, no mantenerlo vivo.
+        ref = weakref.ref(self)
+
+        def _checkpoint_si_sigue_vivo() -> None:
+            manager = ref()
+            if manager is not None:
+                manager._sync_shutdown()
+
+        atexit.register(_checkpoint_si_sigue_vivo)
         self._registered_signals = True
         logger.info("DatabaseLifecycle: registered atexit handler for WAL checkpoint")
 
