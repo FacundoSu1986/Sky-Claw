@@ -120,6 +120,9 @@ async def run_capture(
         If the executable does not exist (caller maps to a domain error).
     TimeoutError
         If execution exceeds *timeout* (the process is killed first).
+    OSError
+        If ``communicate()`` returns without setting ``returncode`` — an
+        indeterminate state that must never be reported as success.
     """
     kwargs: dict[str, Any] = {}
     if sys.platform == "win32":
@@ -137,8 +140,15 @@ async def run_capture(
             **kwargs,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if proc.returncode is None:
+            # No debería pasar nunca en asyncio real (communicate() espera a que
+            # el proceso salga antes de retornar); si pasa, es un estado
+            # indeterminado y NO se reporta como éxito (return_code=0 sería el
+            # mismo falso verde por exit-code que F5 marca en otros rituales).
+            # completed sigue False → el finally hace kill+reap por las dudas.
+            raise OSError(f"{args[0]}: proceso terminó sin returncode tras communicate()")
         completed = True
-        return stdout, stderr, proc.returncode if proc.returncode is not None else 0
+        return stdout, stderr, proc.returncode
     finally:
         # Any non-normal exit — timeout, cancellation, or an I/O/pipe error after
         # spawn — must not leave the child running. The original exception (if

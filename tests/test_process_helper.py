@@ -185,6 +185,22 @@ async def test_run_capture_kills_on_unexpected_error():
     proc.kill.assert_called_once()
 
 
+async def test_run_capture_returncode_none_no_se_enmascara_como_exito():
+    """U-11: si ``communicate()`` vuelve OK pero ``returncode`` queda ``None``
+    (no debería pasar en asyncio real — ``communicate()`` espera a que el
+    proceso salga — pero el tipo lo permite), ``run_capture`` debe fallar
+    fuerte en vez de mentir con ``return_code=0``: un caller que solo mira
+    ``return_code == 0`` reportaría éxito sobre un estado indeterminado
+    (el mismo patrón de falso verde que F5 marca para exit-codes).
+    """
+    proc = _proc(communicate=AsyncMock(return_value=(b"out", b"err")), returncode=None)
+    with patch("asyncio.create_subprocess_exec", return_value=proc), pytest.raises(OSError, match="returncode"):
+        await run_capture(["tool.exe"], timeout=5.0)
+    # Estado indeterminado → se trata como salida no-normal: kill+reap igual.
+    proc.kill.assert_called_once()
+    proc.wait.assert_awaited()
+
+
 async def test_run_capture_kills_and_reraises_on_cancel():
     async def _hang(*_a, **_k):
         await asyncio.sleep(3600)
