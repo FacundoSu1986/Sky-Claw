@@ -238,7 +238,10 @@ async def _gui_logic_loop(ctx: AppContext) -> None:
     consecutive_errors = 0
     while True:
         try:
-            item = await asyncio.to_thread(ctx.logic_queue.get)
+            # asyncio.Queue → cancelable de forma nativa. No usar
+            # ``to_thread(ctx.logic_queue.get)``: bloquearía un worker no-daemon
+            # del pool que nadie despierta, congelando el apagado (P0-1).
+            item = await ctx.logic_queue.get()
             if not isinstance(item, (tuple, list)) or len(item) < 2:
                 logger.warning("Malformed item in logic_queue: %r", item)
                 continue
@@ -258,7 +261,9 @@ async def _gui_logic_loop(ctx: AppContext) -> None:
                 await _dispatch_chat_to_router(ctx, text)
                 consecutive_errors = 0
         except asyncio.CancelledError:
-            break
+            # Re-lanzar (no ``break``) para que la task quede realmente
+            # cancelled() y el apagado la vea drenada, no completada por azar.
+            raise
         except Exception as e:
             consecutive_errors += 1
             backoff = min(2**consecutive_errors, 30)
