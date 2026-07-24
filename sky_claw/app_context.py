@@ -222,7 +222,7 @@ class AppContext:
         # Background task tracking for proper cleanup
         self._background_tasks: set[asyncio.Task] = set()
 
-        # GUI communication queues. logic_queue es asyncio.Queue para que el
+        # Colas de comunicación de la GUI. logic_queue es asyncio.Queue para que el
         # loop de lógica de la GUI la consuma con ``await get()`` (cancelable de
         # forma nativa); un queue.Queue obligaría a ``to_thread(get)``, que
         # bloquea un worker NO-daemon del pool sin salida y congela el apagado

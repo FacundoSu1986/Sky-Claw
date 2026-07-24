@@ -51,7 +51,6 @@ def test_logic_queue_es_asyncio_queue(mock_args: argparse.Namespace) -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_logic_loop_consume_via_await_y_es_cancelable(monkeypatch) -> None:
     """El loop consume un ítem de chat con ``await get()`` y lo despacha; al
     cancelar, la task queda ``cancelled()`` sin dejar hilos del pool vivos."""
@@ -60,7 +59,7 @@ async def test_logic_loop_consume_via_await_y_es_cancelable(monkeypatch) -> None
     from sky_claw.antigravity.gui import _bootloader
 
     ctx = MagicMock()
-    ctx.router = MagicMock()  # truthy → el loop despacha en vez de avisar "no inicializado"
+    ctx.router = MagicMock()  # evaluado como verdadero → el loop despacha, no avisa "no inicializado"
     ctx.logic_queue = asyncio.Queue()
 
     despachos: list[str] = []
