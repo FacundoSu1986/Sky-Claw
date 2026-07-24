@@ -947,8 +947,8 @@ class XEditRunner:
                 delete=False,
                 dir=str(self._output_dir),
             ) as script_file:
-                script_file.write(script_content)
                 script_path = pathlib.Path(script_file.name)
+                script_file.write(script_content)
 
             logger.info("Created dynamic script: %s", script_path)
             logger.debug(
