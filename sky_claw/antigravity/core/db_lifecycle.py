@@ -182,7 +182,16 @@ class DatabaseLifecycleManager:
         1. Check for orphaned WAL/SHM files → recover if found.
         2. Open connection with WAL mode and hardened pragmas.
         3. Verify pragmas are correctly applied.
+
+        P0-3: además arma acá la red de ``atexit``, para que la garantía viaje
+        con el objeto que la necesita en vez de depender de que cada caller se
+        acuerde de registrarla (que es exactamente cómo
+        ``register_atexit_handler`` terminó sin un solo caller en el árbol).
+        Se registra aunque ``_db_paths`` esté vacío: ``get_connection`` da de
+        alta los paths on-demand y ``_sync_shutdown`` los lee recién al salir.
         """
+        if self._config.enable_auto_checkpoint:
+            self.register_atexit_handler()
         for db_path in self._db_paths:
             await self._init_single(db_path)
 
@@ -516,6 +525,12 @@ class DatabaseLifecycleManager:
         start = _time.monotonic()
         for db_path in self._db_paths:
             path_str = str(db_path)
+            # ``sqlite3.connect`` CREA el archivo si falta: sin este guard, un
+            # path dado de alta cuya DB ya no existe (DB efímera, tmpdir de un
+            # test) deja un .db vacío al salir del proceso. Checkpointear algo
+            # que no está tampoco tiene sentido.
+            if not Path(path_str).exists():
+                continue
             try:
                 conn = sqlite3.connect(path_str, timeout=2)
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")

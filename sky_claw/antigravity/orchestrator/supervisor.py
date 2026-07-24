@@ -173,8 +173,12 @@ class SupervisorAgent:
         # instead of silently dropping events under backpressure.
         self._event_bus = create_bus_with_dlq(lifecycle=self._db_lifecycle)
         # ARC-01: Demonios extraídos del Supervisor
+        # P0-3: el lifecycle inyectado también va al daemon. Sin él,
+        # ``_checkpoint_tick`` retorna en su primera línea y el checkpoint
+        # WAL periódico nunca corre (el WAL crece sin cota).
         self._maintenance_daemon = MaintenanceDaemon(
             snapshot_manager=self.snapshot_manager,
+            lifecycle_manager=self._db_lifecycle,
         )
         self._telemetry_daemon = TelemetryDaemon(
             event_bus=self._event_bus,
