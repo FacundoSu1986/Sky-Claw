@@ -183,6 +183,64 @@ class TestXEditRunnerExecution:
 
         mock_proc.kill.assert_called_once()
 
+    async def test_run_dynamic_script_limpia_el_pas_temporal(self, tmp_path: pathlib.Path) -> None:
+        """U-12: el .pas temporal se borra tras el run (evita el leak de disco no acotado).
+
+        ``run_dynamic_script`` crea el script con ``NamedTemporaryFile(delete=False)``;
+        el "paso 6" del docstring ("Limpiar script temporal") no estaba implementado,
+        así que cada patch/dynamic-run dejaba un ``.pas`` huérfano en ``output_dir``.
+        """
+        xedit = tmp_path / "SSEEdit.exe"
+        xedit.touch()
+        game = tmp_path / "Skyrim"
+        game.mkdir()
+        output_dir = tmp_path / "scripts_out"
+        runner = XEditRunner(xedit_path=xedit, game_path=game, output_dir=output_dir, timeout=5)
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"[00:01] Processing: Skyrim.esm\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.kill = MagicMock()
+
+        # Script SIN mteFunctions → no dispara el guard de _assert_mte_functions_available.
+        script = "unit Test;\nbegin\nend."
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await runner.run_dynamic_script(
+                script, ["Skyrim.esm"], flags=["-IKnowWhatImDoing"], script_name="test.pas"
+            )
+
+        assert result.success is True
+        # U-12: no debe quedar NINGÚN .pas temporal en el output_dir tras el run.
+        assert list(output_dir.glob("*.pas")) == [], "el .pas temporal debe borrarse tras el run"
+
+    async def test_run_dynamic_script_limpia_el_pas_temporal_en_timeout(self, tmp_path: pathlib.Path) -> None:
+        """U-12: el ``finally`` limpia el .pas también cuando la ejecución falla (no solo en éxito).
+
+        El cambio vive en un ``finally``, así que el caso de éxito no basta para
+        probarlo: hay que confirmar que también se ejecuta cuando ``run_dynamic_script``
+        eleva (aquí, timeout) y que la excepción original no se pierde.
+        """
+        xedit = tmp_path / "SSEEdit.exe"
+        xedit.touch()
+        game = tmp_path / "Skyrim"
+        game.mkdir()
+        output_dir = tmp_path / "scripts_out"
+        runner = XEditRunner(xedit_path=xedit, game_path=game, output_dir=output_dir, timeout=5)
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=TimeoutError)
+        mock_proc.wait = AsyncMock(return_value=-1)
+        mock_proc.kill = MagicMock()
+
+        script = "unit Test;\nbegin\nend."
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            pytest.raises(XEditTimeoutError, match="timed out"),
+        ):
+            await runner.run_dynamic_script(script, ["Skyrim.esm"], flags=["-IKnowWhatImDoing"], script_name="test.pas")
+
+        assert list(output_dir.glob("*.pas")) == [], "el .pas temporal debe borrarse aun si la ejecución falla"
+
 
 # ------------------------------------------------------------------
 # XEditRunner — lanzamiento interactivo (T-29)

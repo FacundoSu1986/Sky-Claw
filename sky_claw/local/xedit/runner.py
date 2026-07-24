@@ -14,6 +14,7 @@ Phase 2 Extensions:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import pathlib
 import re
@@ -946,8 +947,8 @@ class XEditRunner:
                 delete=False,
                 dir=str(self._output_dir),
             ) as script_file:
-                script_file.write(script_content)
                 script_path = pathlib.Path(script_file.name)
+                script_file.write(script_content)
 
             logger.info("Created dynamic script: %s", script_path)
             logger.debug(
@@ -995,6 +996,14 @@ class XEditRunner:
         except Exception as e:
             logger.exception("Error executing dynamic script")
             raise XEditScriptError(f"Failed to execute dynamic script: {e}") from e
+        finally:
+            # U-12: limpiar el .pas temporal (el "paso 6" del docstring que faltaba).
+            # Sin esto cada patch/dynamic-run deja un .pas huérfano en output_dir →
+            # crecimiento de disco no acotado. El contenido del script ya quedó en los
+            # logs (debug) para forense, y ningún caller lee el archivo del result.
+            if script_path is not None:
+                with contextlib.suppress(OSError):
+                    script_path.unlink(missing_ok=True)
 
     async def execute_patch(
         self,
