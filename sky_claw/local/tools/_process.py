@@ -132,6 +132,7 @@ async def run_capture(
 
     proc: asyncio.subprocess.Process | None = None
     completed = False
+    job: int | None = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -139,6 +140,13 @@ async def run_capture(
             stderr=asyncio.subprocess.PIPE,
             **kwargs,
         )
+        # U-02: meter el hijo en un Job Object kill-on-close ANTES de esperarlo.
+        # Sin esto, la muerte DURA de Python (SIGKILL/OOM/corte de luz) orfana el
+        # árbol completo — toda la garantía anti-huérfano vive en este `finally`,
+        # que una muerte dura no ejecuta (F1). Con el job, el propio Windows mata
+        # el árbol al cerrar los handles del proceso, incluso si Python nunca
+        # llega a este `finally`. No-op fuera de Windows.
+        job = assign_kill_on_close_job(proc.pid)
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         if proc.returncode is None:
             # No debería pasar nunca en asyncio real (communicate() espera a que
@@ -155,6 +163,10 @@ async def run_capture(
         # any) propagates unchanged; the caller maps it to a domain error.
         if not completed:
             await kill_and_reap(proc)
+        # Cerrar el job en TODA salida (éxito incluido, espejo de U-07/DynDOLOD):
+        # evita filtrar el handle en un proceso Python de larga vida y aniquila
+        # cualquier nieto que sobreviva al padre (ya no alcanzable por PID).
+        close_job(job)
 
 
 async def spawn_detached(

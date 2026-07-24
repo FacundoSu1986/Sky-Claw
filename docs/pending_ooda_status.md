@@ -754,16 +754,40 @@ verificado línea por línea contra el árbol vivo:
 [`docs/audits/auditoria_03_pipeline_consolidada.md`](audits/auditoria_03_pipeline_consolidada.md).
 Se enlaza acá para que este inventario canónico siga siendo el punto único de
 triage (regla de `AGENTS.md`) — los ítems U-01…U-12 se triagean desde ese
-documento y se marcan cerrados acá a medida que se implementen (ninguno
-implementado todavía):
+documento y se marcan cerrados acá a medida que se implementen:
 
-- **Alto:** U-01 (precondición VFS/USVFS no enforced → falso-verde standalone),
-  U-02 (sin Job Object en Windows → huérfanos por muerte dura), U-03
-  (`PrecacheGrass.txt` persistente), U-04 (Wrye Bash/Pandora sin rollback de
-  salida), U-05 (VRAMr `proc.kill()` pelado orfana nietos).
-- **Medio:** U-06 (falso verde por exit-code), U-07 (nieto TexGen huérfano en
-  salida normal), U-08 (sin reconciliación de arranque / clon parcial), U-09
-  (journal de grass commitea éxito pese a fallo de teardown), U-10 (timeout sin
-  excepción dedicada).
-- **Bajo:** U-11 (`returncode is None` enmascarado como 0), U-12 (leak de `.pas`
-  temporal).
+- **Alto:** U-01 (precondición VFS/USVFS no enforced → falso-verde standalone,
+  abierto), **U-02 cerrado** (#360 — ver addendum abajo), **U-03 cerrado**
+  (#356 — `PrecacheGrass.txt` huérfano se barre en el arranque), U-04 (Wrye
+  Bash/Pandora sin rollback de salida, abierto), **U-05 cerrado** (#354 — VRAMr
+  usa `kill_and_reap`/tree-kill en vez de `proc.kill()` pelado en timeout).
+- **Medio:** U-06 (falso verde por exit-code, abierto), **U-07 cerrado** (#355
+  — Job Object kill-on-close en DynDOLOD, base de U-02), U-08 (sin
+  reconciliación de arranque / clon parcial, abierto), U-09 (journal de grass
+  commitea éxito pese a fallo de teardown, abierto), **U-10 cerrado** (#357 —
+  `*TimeoutError` dedicadas en Wrye Bash/BodySlide/Pandora).
+- **Bajo:** **U-11 cerrado** (#359 — `run_capture` ya no enmascara
+  `returncode is None` como éxito 0), **U-12 cerrado** (#358 — `.pas` temporal
+  de `run_dynamic_script` se limpia en `finally`).
+
+**Nota de proceso:** los cierres de U-03/U-05/U-07/U-10/U-11/U-12 (#354–#359)
+no actualizaron este addendum en su propio PR, violando la regla explícita de
+`AGENTS.md` ("actualizar `docs/pending_ooda_status.md` en el mismo PR"). Puesto
+al día acá retroactivamente junto con el cierre de U-02, verificado contra
+`git log --oneline origin/main` (no contra los títulos de PR únicamente).
+
+### Addendum (U-02) — Job Object kill-on-close centralizado en `run_capture`
+
+U-07 (#355) ya había construido el primitivo (`assign_kill_on_close_job`/
+`close_job`, `local/tools/_process.py`) y lo cableó a mano en
+`dyndolod_runner.py`. U-02 pedía extenderlo al resto de los spawns directos;
+en vez de repetir el cableado runner por runner, se centralizó en
+`run_capture` — el helper compartido por xEdit, Wrye Bash, Pandora,
+BodySlide, Synthesis y la detección de versión de LOOT (`grep -rn
+"run_capture" sky_claw/` confirma los 6 callers) — cubriéndolos todos de una
+misma PR, como sugería la auditoría original ("Centralizarlo en `_process`
+cubre a xEdit/Wrye Bash/DynDOLOD/TexGen de una"). DynDOLOD/TexGen ya estaban
+cubiertos aparte por U-07 (no pasa por `run_capture`: tiene su propio spawn
+con drain de pipes). El juego (`vfs.launch_game`, vía `ModOrganizer.exe`) y
+el crash-loop de grass quedan **fuera** de este cierre — lanzamiento vía GUI
+de MO2, con su propio ciclo de vida; follow-up si se decide extender ahí.

@@ -201,6 +201,60 @@ async def test_run_capture_returncode_none_no_se_enmascara_como_exito():
     proc.wait.assert_awaited()
 
 
+async def test_run_capture_asigna_job_object_y_lo_cierra_en_exito():
+    """U-02: ``run_capture`` es el helper compartido por xEdit, Wrye Bash, Pandora,
+    BodySlide, Synthesis y la detección de versión de LOOT — cablear el Job Object
+    ACÁ (en vez de por-runner) cubre los 6 de una, como ya hizo U-07 para DynDOLOD
+    (que no pasa por ``run_capture``, tiene su propio spawn con drain de pipes).
+
+    Sin Job Object, la muerte DURA del proceso Python (SIGKILL/OOM/corte de luz)
+    orfana el árbol completo porque toda la garantía anti-huérfano vive en
+    ``finally``/``kill_and_reap``, que una muerte dura no ejecuta (F1 de la
+    auditoría). Meter el hijo en un job kill-on-close ANTES de esperarlo cierra
+    ese hueco: si Python muere duro, Windows cierra sus handles —incluido el del
+    job— y el propio SO mata el árbol. Cerrar el job explícitamente en éxito
+    también aniquila cualquier nieto que sobreviva al padre (mismo patrón que
+    U-07/F3 para DynDOLOD)."""
+    import sky_claw.local.tools._process as _process
+
+    proc = _proc(communicate=AsyncMock(return_value=(b"out", b"")), returncode=0)
+    proc.pid = 4242
+    assign_spy = MagicMock(return_value=99)
+    close_spy = MagicMock()
+    with (
+        patch("asyncio.create_subprocess_exec", return_value=proc),
+        patch.object(_process, "assign_kill_on_close_job", assign_spy),
+        patch.object(_process, "close_job", close_spy),
+    ):
+        await run_capture(["tool.exe"], timeout=5.0)
+
+    assign_spy.assert_called_once_with(4242)
+    close_spy.assert_called_once_with(99)
+
+
+async def test_run_capture_cierra_el_job_en_timeout():
+    """El job debe cerrarse también en el path de timeout — no solo en éxito —
+    para no filtrar el handle y para que el cierre aniquile cualquier nieto que
+    ``kill_and_reap`` no alcance."""
+    import sky_claw.local.tools._process as _process
+
+    async def _hang(*_a, **_k):
+        await asyncio.sleep(3600)
+
+    proc = _proc(communicate=AsyncMock(side_effect=_hang))
+    proc.pid = 4242
+    close_spy = MagicMock()
+    with (
+        patch("asyncio.create_subprocess_exec", return_value=proc),
+        patch.object(_process, "assign_kill_on_close_job", MagicMock(return_value=99)),
+        patch.object(_process, "close_job", close_spy),
+        pytest.raises(TimeoutError),
+    ):
+        await asyncio.wait_for(run_capture(["tool.exe"], timeout=0.05), timeout=2.0)
+
+    close_spy.assert_called_once_with(99)
+
+
 async def test_run_capture_kills_and_reraises_on_cancel():
     async def _hang(*_a, **_k):
         await asyncio.sleep(3600)
