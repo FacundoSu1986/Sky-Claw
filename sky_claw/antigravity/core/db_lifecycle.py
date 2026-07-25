@@ -186,6 +186,9 @@ class DatabaseLifecycleManager:
         for db_path in self._db_paths:
             await self._init_single(db_path)
 
+        if self._config.enable_auto_checkpoint:
+            self.register_atexit_handler()
+
     async def _init_single(self, db_path: Path) -> None:
         """Initialize a single database with recovery and pragmas."""
         # Usar la misma clave canonizada que get_connection para consistencia
@@ -517,7 +520,8 @@ class DatabaseLifecycleManager:
         for db_path in self._db_paths:
             path_str = str(db_path)
             try:
-                conn = sqlite3.connect(path_str, timeout=2)
+                uri = f"{Path(path_str).as_uri()}?mode=rw"
+                conn = sqlite3.connect(uri, uri=True, timeout=2)
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 conn.close()
                 elapsed = _time.monotonic() - start
