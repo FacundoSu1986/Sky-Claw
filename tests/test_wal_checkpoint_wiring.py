@@ -28,7 +28,10 @@ from typing import Any
 
 import pytest
 
-from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleManager
+from sky_claw.antigravity.core.db_lifecycle import (
+    DatabaseLifecycleConfig,
+    DatabaseLifecycleManager,
+)
 from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
 from sky_claw.antigravity.security.path_validator import PathValidator
 
@@ -89,6 +92,23 @@ async def test_init_all_arma_la_red_de_atexit(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(manager, "_sync_shutdown", lambda: llamadas.append(True))
     registrados[0]()
     assert llamadas == [True], "el handler registrado no dispara el checkpoint del manager"
+
+
+async def test_init_all_no_arma_la_red_de_atexit_si_esta_deshabilitado(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cuando ``enable_auto_checkpoint=False``, ``init_all`` NO debe registrar nada en ``atexit``."""
+    registrados: list[Callable[..., Any]] = []
+
+    def _fake_register(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Callable[..., Any]:
+        registrados.append(fn)
+        return fn
+
+    monkeypatch.setattr(atexit, "register", _fake_register)
+
+    config = DatabaseLifecycleConfig(enable_auto_checkpoint=False)
+    manager = DatabaseLifecycleManager(db_paths=[], config=config)
+    await manager.init_all()
+
+    assert not registrados, "init_all registró en atexit pese a tener enable_auto_checkpoint=False"
 
 
 async def test_init_all_no_extiende_la_vida_del_manager() -> None:

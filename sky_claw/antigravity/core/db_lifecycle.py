@@ -540,14 +540,12 @@ class DatabaseLifecycleManager:
         start = _time.monotonic()
         for db_path in self._db_paths:
             path_str = str(db_path)
-            # ``sqlite3.connect`` CREA el archivo si falta: sin este guard, un
-            # path dado de alta cuya DB ya no existe (DB efímera, tmpdir de un
-            # test) deja un .db vacío al salir del proceso. Checkpointear algo
-            # que no está tampoco tiene sentido.
-            if not Path(path_str).exists():
-                continue
             try:
-                conn = sqlite3.connect(path_str, timeout=2)
+                uri = f"{Path(path_str).as_uri()}?mode=rw"
+                try:
+                    conn = sqlite3.connect(uri, uri=True, timeout=2)
+                except sqlite3.OperationalError:
+                    continue
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 conn.close()
                 elapsed = _time.monotonic() - start
