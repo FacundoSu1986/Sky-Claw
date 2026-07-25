@@ -541,7 +541,16 @@ class DatabaseLifecycleManager:
         for db_path in self._db_paths:
             path_str = str(db_path)
             try:
-                uri = f"{Path(path_str).as_uri()}?mode=rw"
+                # ``Path.as_uri()`` exige una ruta ABSOLUTA. ``_db_paths`` puede
+                # contener rutas relativas: tanto ``add_db_path`` como el
+                # registro perezoso de ``get_connection`` guardan el ``Path``
+                # tal cual llega, sin ``.resolve()``, y ``DatabaseAgent()`` usa
+                # ``"sky_claw_state.db"`` (relativo) por defecto — el path que
+                # usan tanto la GUI como el SupervisorAgent. Sin ``.resolve()``
+                # acá, ``as_uri()`` levanta ``ValueError`` para ese caso y el
+                # ``except Exception`` de abajo lo traga: la red de atexit para
+                # la DB de producción nunca checkpointearía nada.
+                uri = f"{Path(path_str).resolve().as_uri()}?mode=rw"
                 try:
                     conn = sqlite3.connect(uri, uri=True, timeout=2)
                 except sqlite3.OperationalError:

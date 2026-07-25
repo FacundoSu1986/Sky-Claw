@@ -147,3 +147,49 @@ def test_sync_shutdown_no_materializa_dbs_inexistentes(tmp_path: pathlib.Path) -
     manager._sync_shutdown()
 
     assert not fantasma.exists(), "_sync_shutdown materializó una DB vacía en un path inexistente"
+
+
+def test_sync_shutdown_checkpointea_paths_relativos(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``_sync_shutdown`` debe funcionar con paths relativos, no solo absolutos.
+
+    ``DatabaseAgent`` — el que usan la GUI (``sky_claw_gui.py``) y el
+    ``SupervisorAgent``, ambos vía ``DatabaseAgent()`` sin argumentos — abre
+    ``"sky_claw_state.db"`` por defecto: un path RELATIVO. Un fix posterior de
+    revisión reemplazó ``sqlite3.connect(path_str)`` por una URI construida con
+    ``Path(path_str).as_uri()`` para cerrar el TOCTOU de
+    ``test_sync_shutdown_no_materializa_dbs_inexistentes``. Pero
+    ``Path.as_uri()`` exige una ruta ABSOLUTA — con una relativa levanta
+    ``ValueError``, que el ``except Exception`` genérico traga en silencio.
+    Resultado: la red de atexit para el path por defecto de PRODUCCIÓN nunca
+    checkpointea nada, sin ningún error visible salvo el log.
+    """
+    monkeypatch.chdir(tmp_path)
+    relativo = pathlib.Path("sky_claw_state.db")
+    manager = DatabaseLifecycleManager(db_paths=[relativo])
+
+    import sqlite3
+
+    # La conexión de setup se mantiene ABIERTA a propósito: cerrar la última
+    # conexión de una DB en WAL dispara un auto-checkpoint de SQLite que ya
+    # truncaría el -wal, invalidando la premisa del test (WAL con contenido
+    # antes de que corra ``_sync_shutdown``).
+    conn = sqlite3.connect(str(relativo))
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE t (x INT)")
+        conn.execute("INSERT INTO t VALUES (1)")
+        conn.commit()
+        wal = tmp_path / "sky_claw_state.db-wal"
+        assert wal.exists() and wal.stat().st_size > 0, (
+            "setup del test: el WAL debería tener contenido antes del checkpoint"
+        )
+
+        with caplog.at_level("ERROR"):
+            manager._sync_shutdown()
+
+        assert not caplog.records, f"_sync_shutdown falló en silencio para un path relativo: {caplog.text}"
+        assert wal.stat().st_size == 0, "el WAL no se truncó: el checkpoint para el path relativo no corrió"
+    finally:
+        conn.close()
