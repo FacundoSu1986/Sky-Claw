@@ -4,7 +4,7 @@
 >
 > **Audiencia:** usuarios, operadores, desarrolladores y agentes.
 >
-> **Fuentes canónicas:** índices de este directorio y documentación raíz.
+> **Fuentes de navegación:** índices de este directorio y documentación raíz.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

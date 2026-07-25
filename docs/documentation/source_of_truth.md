@@ -8,15 +8,21 @@
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 
-## Precedencia
+## Precedencia de instrucciones para agentes
 
-1. Código ejecutable y tests del árbol actual.
+Dentro del repositorio, el `AGENTS.md` aplicable es la fuente canónica de
+instrucciones para agentes. Se leen desde la raíz hasta el subárbol concreto;
+un archivo más profundo añade o especializa reglas dentro de su alcance. Ninguna
+guía derivada, auditoría o comentario de PR puede sustituir esas invariantes.
+
+## Precedencia para describir el runtime
+
+1. Código ejecutable del árbol actual y comportamiento ejercitado por tests.
 2. ADR aceptado para intención y decisión arquitectónica.
-3. `AGENTS.md` aplicable al subárbol para invariantes operativas.
-4. Referencia técnica verificada en `docs/api/`.
-5. Guías de arquitectura, usuario y operación.
-6. Estado OODA y backlogs.
-7. Auditorías, especificaciones y comentarios de PR históricos.
+3. Referencia técnica verificada en `docs/api/`.
+4. Guías de arquitectura, usuario y operación.
+5. Estado OODA y backlogs.
+6. Auditorías, especificaciones y comentarios de PR históricos.
 
 Los tests prueban el comportamiento que ejercitan; no convierten una afirmación
 de smoke real en verdadera.

@@ -9,17 +9,17 @@
 | Pregunta | Primera fuente |
 |---|---|
 | ¿Cómo arranca y termina? | `sky_claw/__main__.py`, `sky_claw/app_context.py` |
-| ¿Cuáles son los contratos comunes? | `antigravity/core/contracts.py`, `schemas.py`, `errors.py` |
-| ¿Cómo vive SQLite? | `antigravity/core/db_lifecycle.py`, `antigravity/db/` |
-| ¿Cómo publica el core? | `antigravity/core/event_bus.py` |
-| ¿Cómo reacciona la GUI? | `antigravity/gui/gui_event_adapter.py`, `state/`, `controllers/` |
-| ¿Cómo invoca tools el LLM? | `antigravity/agent/tools/`, `agent/router.py` |
-| ¿Cómo ejecuta rituales el orquestador? | `orchestrator/tool_dispatcher.py`, `tool_strategies/` |
-| ¿Dónde se normalizan resultados? | `local/tools/tool_result.py`; caller GUI en `ritual_runner.py` |
-| ¿Dónde están HITL y seguridad? | `antigravity/security/hitl.py`, `antigravity/security/` |
-| ¿Cómo se resuelven paths? | `antigravity/core/path_resolver.py`, `config.py` |
-| ¿Cómo se integra MO2? | `local/mo2/` |
-| ¿Cómo se prueba USVFS? | `local/mo2/vfs_broker.py`, `vfs_worker.py`, `vfs_attestation.py` |
+| ¿Cuáles son los contratos comunes? | `sky_claw/antigravity/core/contracts.py`, `sky_claw/antigravity/core/schemas.py`, `sky_claw/antigravity/core/errors.py` |
+| ¿Cómo vive SQLite? | `sky_claw/antigravity/core/db_lifecycle.py`, `sky_claw/antigravity/db/` |
+| ¿Cómo publica el core? | `sky_claw/antigravity/core/event_bus.py` |
+| ¿Cómo reacciona la GUI? | `sky_claw/antigravity/gui/gui_event_adapter.py`, `sky_claw/antigravity/gui/state/`, `sky_claw/antigravity/gui/controllers/` |
+| ¿Cómo invoca tools el LLM? | `sky_claw/antigravity/agent/tools/`, `sky_claw/antigravity/agent/router.py` |
+| ¿Cómo ejecuta rituales el orquestador? | `sky_claw/antigravity/orchestrator/tool_dispatcher.py`, `sky_claw/antigravity/orchestrator/tool_strategies/` |
+| ¿Dónde se normalizan resultados? | `sky_claw/local/tools/tool_result.py`; caller GUI en `sky_claw/antigravity/gui/controllers/ritual_runner.py` |
+| ¿Dónde están HITL y seguridad? | `sky_claw/antigravity/security/hitl.py`, `sky_claw/antigravity/security/` |
+| ¿Cómo se resuelven paths? | `sky_claw/antigravity/core/path_resolver.py`, `sky_claw/config.py` |
+| ¿Cómo se integra MO2? | `sky_claw/local/mo2/` |
+| ¿Cómo se prueba USVFS? | `sky_claw/local/mo2/vfs_broker.py`, `sky_claw/local/mo2/vfs_worker.py`, `sky_claw/local/mo2/vfs_attestation.py` |
 | ¿Cuál es el DAG de modding? | `sky_claw/local/AGENTS.md` |
 | ¿Qué está pendiente? | `docs/pending_ooda_status.md`, reverificado contra código |
 

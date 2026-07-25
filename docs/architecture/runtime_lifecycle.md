@@ -39,8 +39,12 @@ sequenceDiagram
 ## Cierre
 
 `AppContext.stop()` es idempotente y coordina cleanups del generation stack.
-El orden importa: trabajo en background y dependientes deben drenar antes de
-cerrar journal, locks, DB y sesiones de red.
+Cancela las tareas en background y espera su drenaje como máximo
+`_startup_shutdown_timeout_s`. Si alguna sigue pendiente, ejecuta igualmente
+`_close_cleanup_generation()` con un timeout acotado y después propaga el
+`TimeoutError` de las tareas; por tanto, el drenaje completo no es una garantía.
+El orden importa: el cierre intenta detener trabajo en background y dependientes
+antes de cerrar journal, locks, DB y sesiones de red.
 
 Los modos no GUI instalan el handler de excepciones del loop desde `__main__`.
 NiceGUI/uvicorn administra su propio loop y logging; no se debe extrapolar el

@@ -24,8 +24,9 @@ el orden canónico de herramientas.
 
 ## Límites
 
-- Sky-Claw es un plano de control con aprobación humana, no un agente autónomo
-  irrestricto.
+- Sky-Claw es un plano de control, no un agente autónomo irrestricto. La
+  aprobación humana depende de la operación y de la ruta concreta; consultar
+  el [flujo seguro](safe_workflows.md) antes de ejecutar una mutación.
 - Una ejecución desde fuente o un test con subprocess mockeado no demuestra
   visibilidad USVFS.
 - El primer uso de herramientas externas debe hacerse sobre un perfil

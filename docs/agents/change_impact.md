@@ -13,7 +13,7 @@
 | Contrato o schema | `docs/api/contracts_ref.md`, `docs/agents/schema_validation.md`, callers |
 | Excepción pública | `docs/api/errors_ref.md`, troubleshooting aplicable |
 | Tool LLM | `docs/api/tools_ref.md`, `docs/agents/tool_creation.md` |
-| Tool de orquestación | `tools_ref.md`, arquitectura de routing, SOP si cambia pipeline |
+| Tool de orquestación | `docs/api/tools_ref.md`, arquitectura de routing, SOP si cambia pipeline |
 | Topic o `EventType` | `docs/api/events_ref.md`, arquitectura async/UI |
 | Flag CLI | QUICKSTART, DEPLOYMENT, `docs/api/cli_ref.md` |
 | Config o secreto | guía de configuración, referencia, SECURITY |

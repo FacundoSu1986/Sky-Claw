@@ -14,7 +14,8 @@ raíz.
 - El canary debe probar visibilidad virtual, no sólo el directorio físico.
 - La promoción usa baseline, backup, escritura transaccional y rollback.
 - Si falla el rollback, preservar el backup.
-- Timeout/cancelación termina y reapea worker y descendientes.
+- Timeout/cancelación termina y recolecta (`reap`) el worker y todo su árbol de
+  procesos descendientes.
 
 ## Verificación segura
 

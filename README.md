@@ -125,7 +125,7 @@ Sky-Claw es un ecosistema asíncrono complejo. Si deseas contribuir, añadir nue
 - [x] Interfaz Gráfica Moderna (NiceGUI)
 - [x] Configuración centralizada TOML
 - [x] Asistente interactivo de primera ejecución
-- [x] HITL con botones interactivos en Telegram
+- [x] HITL en handlers y rituales cableados a un gate humano
 - [x] Base de datos async distribuida
 - [x] Wrapper xEdit y LOOT headless
 - [x] Parser y resolución FOMOD

@@ -29,11 +29,13 @@ falla cerrada ante handshake, perfil o canary inválidos.
 
 Los runners deben:
 
+- validar el ejecutable y los paths de entrada/salida contra las raíces
+  autorizadas antes de iniciar el proceso;
 - construir argumentos sin `shell=True`;
 - capturar stdout, stderr y return code;
 - imponer timeout;
-- matar el árbol en Windows cuando haya nietos;
-- recolectar el proceso;
+- ante timeout o cancelación, terminar y recolectar (`reap`) el proceso y todo
+  su árbol antes de devolver o propagar el resultado;
 - verificar el artefacto esperado.
 
 La implementación común está en `local/tools/_process.py`, pero algunos

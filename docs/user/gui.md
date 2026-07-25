@@ -37,12 +37,18 @@ una tarjeta visible como prueba de que el ejecutable o el perfil sean válidos.
 1. Seleccionar una acción.
 2. Revisar el preflight y la tool detectada.
 3. Examinar el preview cuando exista.
-4. Aprobar explícitamente la solicitud HITL.
+4. Si la ruta incluye un gate HITL, aprobar o denegar la solicitud. Los cinco
+   rituales actualmente expuestos por el Panel están cableados a ese gate; si
+   el gate no está disponible, fallan cerrados.
 5. Esperar el resultado normalizado y revisar la evidencia.
 
 `ritual_runner.py` consume `normalize_tool_result()` para presentar una vista
 común. El resultado visual no sustituye la revisión del journal, logs o
 artefactos cuando la operación cambia archivos.
+
+La ruta LLM general es `lock-only` y no muestra este gate por herencia; sólo los
+handlers que inyectan `HITLGuard`, como ciertas descargas e instalaciones,
+solicitan aprobación propia.
 
 ## Seguridad operativa
 
