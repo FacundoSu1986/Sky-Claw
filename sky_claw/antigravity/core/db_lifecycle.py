@@ -22,6 +22,7 @@ import atexit
 import logging
 import sqlite3
 import time
+import weakref
 from collections.abc import AsyncGenerator, Awaitable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -182,7 +183,16 @@ class DatabaseLifecycleManager:
         1. Check for orphaned WAL/SHM files → recover if found.
         2. Open connection with WAL mode and hardened pragmas.
         3. Verify pragmas are correctly applied.
+
+        P0-3: además arma acá la red de ``atexit``, para que la garantía viaje
+        con el objeto que la necesita en vez de depender de que cada caller se
+        acuerde de registrarla (que es exactamente cómo
+        ``register_atexit_handler`` terminó sin un solo caller en el árbol).
+        Se registra aunque ``_db_paths`` esté vacío: ``get_connection`` da de
+        alta los paths on-demand y ``_sync_shutdown`` los lee recién al salir.
         """
+        if self._config.enable_auto_checkpoint:
+            self.register_atexit_handler()
         for db_path in self._db_paths:
             await self._init_single(db_path)
 
@@ -501,7 +511,21 @@ class DatabaseLifecycleManager:
         if self._registered_signals:
             return
 
-        atexit.register(self._sync_shutdown)
+        # Vía weakref, NO ``atexit.register(self._sync_shutdown)``: un bound
+        # method ancla ``self`` con una referencia fuerte que el registro de
+        # atexit conserva hasta el final del proceso, y con ella
+        # ``self._connections``. Las conexiones aiosqlite dejarían de
+        # recolectarse, su ``__del__`` —que es quien llama a ``stop()``— nunca
+        # correría, y sus worker threads NO-daemon sobrevivirían. La red de
+        # seguridad debe checkpointear un manager vivo, no mantenerlo vivo.
+        ref = weakref.ref(self)
+
+        def _checkpoint_si_sigue_vivo() -> None:
+            manager = ref()
+            if manager is not None:
+                manager._sync_shutdown()
+
+        atexit.register(_checkpoint_si_sigue_vivo)
         self._registered_signals = True
         logger.info("DatabaseLifecycle: registered atexit handler for WAL checkpoint")
 
@@ -517,7 +541,11 @@ class DatabaseLifecycleManager:
         for db_path in self._db_paths:
             path_str = str(db_path)
             try:
-                conn = sqlite3.connect(path_str, timeout=2)
+                uri = f"{Path(path_str).as_uri()}?mode=rw"
+                try:
+                    conn = sqlite3.connect(uri, uri=True, timeout=2)
+                except sqlite3.OperationalError:
+                    continue
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 conn.close()
                 elapsed = _time.monotonic() - start
