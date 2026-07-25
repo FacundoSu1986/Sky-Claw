@@ -1,7 +1,10 @@
 # Contribuir a Sky-Claw
 
 > **Audiencia:** Desarrolladores humanos y agentes de IA que deseen modificar el código fuente, añadir funcionalidades o reportar defectos.
+> **Estado:** guía vigente de contribución.
+> **Fuentes canónicas:** `AGENTS.md`, `pyproject.toml` y `.github/workflows/ci.yml`.
 > **Pre-requisito:** Leer [ARCHITECTURE.md](ARCHITECTURE.md) para comprender la topología del sistema.
+> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 
 ---
 
@@ -48,7 +51,9 @@ Sky-Claw adhiere estrictamente a **Test-Driven Development (TDD)**. No se acepta
 ### 2.2 Convenciones de Testing
 
 - **Framework:** `pytest` exclusivamente.
-- **Idioma:** Los nombres de tests, docstrings y comentarios **deben estar en español** (convención del repositorio).
+- **Idioma:** Los tests y comentarios de código **deben estar en español**
+  (convención del repositorio). Los docstrings siguen el idioma y terminología
+  del módulo existente.
 - **Naming:**
   - Archivos: `test_<modulo>.py`
   - Funciones: `test_<metodo>_<escenario>_<esperado>` (ej. `test_normalize_tool_result_success_false_retorna_error_desconocido`).
@@ -165,6 +170,8 @@ Si buscas extender el sistema (ej. añadir soporte para una nueva herramienta de
 1.  Lee `sky_claw/local/AGENTS.md` para entender el **Pipeline de Modding** y las reglas inmutables de las herramientas.
 2.  Lee [docs/agents/tool_creation.md](docs/agents/tool_creation.md) para un tutorial paso a paso sobre cómo registrar un nuevo Tool Runner respetando los contratos.
 3.  Familiarízate con el sistema de validación de contratos en [docs/agents/schema_validation.md](docs/agents/schema_validation.md).
+4.  Consulta [docs/documentation/standards.md](docs/documentation/standards.md)
+    antes de añadir o cambiar documentación.
 
 ---
 

@@ -4,6 +4,11 @@ Fuente canónica de instrucciones para cualquier agente (Claude Code, Codex, Cop
 `CLAUDE.md` solo importa este archivo. El detalle de invariantes y patrones de código está
 en [.github/coding_conventions.md](.github/coding_conventions.md).
 
+Para descubrir documentación por audiencia y conocer qué fuente domina ante
+drift, leer [docs/README.md](docs/README.md) y
+[docs/documentation/source_of_truth.md](docs/documentation/source_of_truth.md).
+Los `AGENTS.md` de subárbol son punteros de alcance y no reemplazan esta guía.
+
 ## Stack real (verificado contra el código)
 
 - **Python ≥ 3.11** (`pyproject.toml`; CI corre 3.11 y 3.12 en `windows-latest`).
@@ -47,6 +52,7 @@ en [.github/coding_conventions.md](.github/coding_conventions.md).
 | `sky_claw/app_context.py` | `AppContext.start_full()` — inicialización protegida con `asyncio.Lock` |
 | `tests/conftest.py` | Fixtures compartidas (DB en memoria, LLM mockeado) |
 | `.github/workflows/ci.yml` | CI de 5 gates (Lint / Mypy / Tests / Security / Build) |
+| `docs/README.md` | Portal documental para usuarios, operadores, desarrolladores y agentes |
 
 ## Contratos vigentes
 
@@ -59,7 +65,9 @@ y `tests/test_tool_result_contract.py` (retorno de error por servicio). *Histori
 servicio reportaba errores bajo claves distintas y el summarizer adivinaba — parcheado dos
 veces (#214, #216) antes del fix de raíz.*
 
-**Capa del agente LLM**: lock-only, **sin HITL** (decisión documentada en #217).
+**Capa del agente LLM**: política base lock-only, **sin middleware HITL
+general** (decisión documentada en #217). Los handlers que reciben un
+`HITLGuard` explícito, como `download_mod`, conservan su aprobación específica.
 
 ## Pendientes conocidos
 

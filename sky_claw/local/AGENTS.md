@@ -11,6 +11,9 @@
 
 > **READ THIS BEFORE touching any file under `sky_claw/local/tools/`, `sky_claw/antigravity/orchestrator/tool_strategies/`, or `sky_claw/local/xedit/`.**
 > Violating the pipeline order below will corrupt load orders, break patches, and silently desync the VFS.
+>
+> Human-readable companion: [`../../docs/pipeline/skyrim_sop.md`](../../docs/pipeline/skyrim_sop.md).
+> This file remains the only canonical source for the complete pipeline DAG.
 
 ---
 
@@ -290,7 +293,7 @@ To escape the paralyzing effect of the Rule of One, two patchers are used and th
 | Wrye Bash: "FILE NOT FOUND" | Master moved/deleted between runs | Re-run LOOT, then rebuild |
 | Wrye Bash: "Unrecognized version" / CTD on Header 1.71 | Native incompatibility with 1.71 | Inject BEES mod before rebuild |
 | Magic overhaul: mana costs multiplied | Wrye Bash merged magic effects | Rebuild patch with Leveled Lists ONLY; NEVER merge magic |
-| Synthesis: "DotNet SDK Not Detected" | x86 dotnet vestiges on Windows | Delete `/Program Files (x86)/dotnet`, reinstall x64 SDK |
+| Synthesis: "DotNet SDK Not Detected" | x86 dotnet vestiges on Windows | Use the official uninstall tool or Apps & Features, then reinstall the x64 SDK; do not delete managed folders by hand |
 | Synthesis: "Max Masters Exceeded" | Output `.esp` exceeds 254 masters | Enable `Split Files if Max Masters Exceeded` |
 | xEdit QAC: hang on NavMesh | Heavily corrupted NavMesh | Kill process, isolate plugin, skip with logged warning |
 | Dawnguard: residual dirty edits after QAC | Single-pass cleaning insufficient | Run QAC TWICE + manual cleanup of CELL 00016BCF, 0001FA4C, 0006C3B6 |
@@ -305,7 +308,7 @@ To escape the paralyzing effect of the Rule of One, two patchers are used and th
 
 When modifying pipeline code in this repository, the following rules apply ON TOP of `../../AGENTS.md`:
 
-1. **NEVER** assume the strategy registration order in `build_default_tool_dispatcher()` (`sky_claw/antigravity/orchestrator/tool_dispatcher.py`) mirrors the pipeline order in §1. It does NOT — strategies are registered as LLM-callable tools, not executed in pipeline order. The §1 order is enforced by the agent's tool-call sequence, not by the dispatcher. Do not "fix" the registration order to match §1; that would be a regression.
+1. **NEVER** assume the strategy registration order in `build_orchestration_dispatcher()` (`sky_claw/antigravity/orchestrator/tool_dispatcher.py`) mirrors the pipeline order in §1. It does NOT — strategies are registered as callable orchestration tools, not executed in pipeline order. The §1 order is enforced by the caller's tool sequence, not by registration order. Do not "fix" the registration order to match §1; that would be a regression.
 2. **NEVER** introduce a code path that invokes DynDOLOD before Wrye Bash + Synthesis have completed. The current `GenerateLodsStrategy.execute()` (see `sky_claw/antigravity/orchestrator/tool_strategies/generate_lods.py`) does NOT check upstream completion — a runtime guard is still needed and any new LOD-invocation path MUST add one.
 3. **NEVER** allow Wrye Bash strategy to merge categories beyond Leveled Lists without an explicit user override flag. Default scope = Leveled Lists ONLY.
 4. **ALWAYS** emit a `success: bool` + `message: str` from any new tool runner (see `tool_result.py` contract in `../../AGENTS.md`).

@@ -6,27 +6,28 @@
   failure-mode rules that affect tool_strategies/.
 -->
 
-# AGENTS.md — orchestrator pointer
+# AGENTS.md — orquestación
 
-This subtree (`sky_claw/antigravity/orchestrator/`) governs how the LLM
-agent *calls* the Skyrim-modding tools. It does **not** re-state the
-pipeline rules — those live in the canonical SOP and apply to every
-strategy under `tool_strategies/`.
+Este subárbol coordina estrategias, middleware, supervisor, daemons, preview,
+HITL y promoción. No reescribe el pipeline: sus reglas viven en el SOP
+canónico y aplican a `tool_strategies/`.
 
-## Read this first
+## Leer primero
 
-**`sky_claw/local/AGENTS.md`** — the canonical Skyrim modding pipeline
-SOP. If you are editing any file under
-`sky_claw/antigravity/orchestrator/tool_strategies/`, the §5
-"AGENT CODE-EDITING RULES" block applies to your change.
+**`sky_claw/local/AGENTS.md`** y
+[`../../../docs/architecture/agent_tool_routing.md`](../../../docs/architecture/agent_tool_routing.md).
 
-## What this pointer is NOT
+## Invariantes locales
 
-It is **not** a duplicate of the SOP. Do not paste pipeline rules here:
-the SOP is the single source of truth and duplicating them creates
-drift. Update the SOP, not this file.
+- `OrchestrationToolDispatcher` y `build_orchestration_dispatcher()` son la
+  ruta implementada; no inventar factories alternativas.
+- Middleware global envuelve al middleware por tool.
+- HITL destructivo falla cerrado sin gate disponible.
+- Shutdown drena trabajo pendiente antes de cerrar journal y DB.
+- Un dict de estrategia no es automáticamente un `ToolResult` normalizado.
 
-## Repo-wide conventions
+## Verificación segura
 
-For coding conventions, contracts, and CI gates, see
-[`../../../AGENTS.md`](../../../AGENTS.md).
+Cubrir dispatcher, middleware, supervisor y cancelación con tests focalizados.
+Para reglas del dominio o ejecución real, aplicar además el SOP y el rig real.
+Las convenciones raíz están en [`../../../AGENTS.md`](../../../AGENTS.md).

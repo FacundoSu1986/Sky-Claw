@@ -1,178 +1,93 @@
-# Sky-Claw Architecture
+# Arquitectura de Sky-Claw
 
-> **Audiencia:** Desarrolladores humanos y agentes de IA que necesitan comprender la topología del sistema, el flujo de datos y las capas de responsabilidad.
-> **Documento hermano:** [CONTRIBUTING.md](CONTRIBUTING.md) para flujo de trabajo y setup.
+> **Audiencia:** desarrolladores, operadores y agentes de IA.
+> **Estado:** implementado con áreas parciales señaladas en cada documento.
+> **Fuentes canónicas:** `sky_claw/__main__.py`, `sky_claw/app_context.py`,
+> `sky_claw/antigravity/`, `sky_claw/local/` y ADR aprobados.
+> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 
----
+Sky-Claw es un plano de control local para operar flujos de modding de Skyrim
+SE/AE sobre Mod Organizer 2. Combina interfaces GUI, CLI y Telegram con dos
+rutas de herramientas, servicios asíncronos, persistencia SQLite y procesos
+externos. El norte del producto es una **caja negra de vuelo con controles
+humanos**, no un agente autónomo irrestricto; véase
+[ADR 0002](docs/adr/0002-norte-caja-negra.md).
 
-## 1. Visión General del Sistema
+## Mapa de documentación
 
-Sky-Claw no es un simple script de automatización; es un **ecosistema de orquestación asíncrono** diseñado para gestionar el ciclo de vida completo del modding en Skyrim SE/AE. Actúa como una capa de inteligencia artificial que opera sobre el Virtual File System (VFS) de Mod Organizer 2 (MO2), coordinando herramientas externas (LOOT, xEdit, Synthesis), interactuando con APIs web (Nexus Mods, LLMs) y proveyendo interfaces de usuario (GUI, Telegram, CLI).
+- [Contexto y límites del sistema](docs/architecture/system_context.md)
+- [Ciclo de vida de runtime](docs/architecture/runtime_lifecycle.md)
+- [Concurrencia y cancelación](docs/architecture/async_concurrency.md)
+- [Rutas de agentes y herramientas](docs/architecture/agent_tool_routing.md)
+- [Datos, locks, journal y recuperación](docs/architecture/data_persistence_recovery.md)
+- [Fronteras de seguridad](docs/architecture/security_boundaries.md)
+- [MO2, USVFS y subprocesos](docs/architecture/mo2_vfs_subprocesses.md)
+- [GUI y comunicaciones](docs/architecture/ui_comms.md)
+- [ADRs vigentes](docs/adr/README.md)
 
-El sistema está diseñado bajo una arquitectura dirigida por eventos y agentes, donde múltiples componentes autónomos colaboran bajo un modelo de seguridad "Zero-Trust".
-
-### 1.1 Principios de Diseño Fundamentales
-
-- **Asincronía Estricta:** Toda I/O (disco, red, subprocesos) es no bloqueante. El event loop de `asyncio` es el corazón del sistema.
-- **Seguridad Zero-Trust:** Las operaciones de archivo están estrictamente limitadas al sandbox de MO2. Las descargas externas requieren intervención humana (HITL) o listas blancas de dominios.
-- **Orientación a Contratos:** Los agentes y herramientas se comunican mediante interfaces estrictamente tipadas y validadas en tiempo de ejecución (Pydantic).
-- **Inversión de Dependencias:** Las capas superiores no dependen de implementaciones concretas de las capas inferiores, sino de `Protocol`s definidos en el núcleo.
-
----
-
-## 2. Topología de Capas
-
-El código fuente en `sky_claw/` se divide conceptualmente en cuatro capas arquitectónicas.
-
-```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          CAPA DE PRESENTACIÓN                           │
-│  GUI (NiceGUI)  │  Telegram Gateway (Node.js)  │  CLI (Argumentos)     │
-└────────┬────────┴──────────────┬───────────────┴────────┬───────────────┘
-         │                       │                        │
-         ▼                       ▼                        ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        CAPA DE ORQUESTACIÓN                             │
-│                  (antigravity/orchestrator/)                            │
-│  ┌──────────────┐  ┌───────────────┐  ┌────────────────┐               │
-│  │ Tool Dispatcher│  │ Sync Engine   │  │ Supervisor     │               │
-│  └──────────────┘  └───────────────┘  └────────────────┘               │
-└───────────────────────────────┬─────────────────────────────────────────┘
-                                │ (Llamadas a Tools / Contratos)
-                                ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         CAPA DE DOMINIO (LOCAL)                         │
-│                      (local/tools/, local/mo2/)                         │
-│  ┌────────────┐ ┌───────────┐ ┌──────────┐ ┌───────────┐               │
-│  │ LOOT Runner│ │ xEdit Svc │ │ Wrye Bash│ │ VFS Mount │               │
-│  └────────────┘ └───────────┘ └──────────┘ └───────────┘               │
-└───────────────────────────────┬─────────────────────────────────────────┘
-                                │ (Lectura/Escritura en Disco VFS)
-                                ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        CAPA DE INFRAESTRUCTURA                          │
-│            (antigravity/core/, antigravity/security/)                   │
-│  ┌──────────────┐  ┌───────────────┐  ┌────────────────┐               │
-│  │ DatabaseAgent│  │ PathValidator │  │ LLM Providers  │               │
-│  └──────────────┘  └───────────────┘  └────────────────┘               │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### 2.1 Capa de Presentación
-Responsable de la interacción con el usuario. Traduce las intenciones humanas (o de bots) en comandos para el orquestador.
-- **`antigravity/gui/`:** Interfaz gráfica Web/Desktop construida con **NiceGUI**. Mantiene su propio event loop que debe sincronizarse con el loop principal de `asyncio`.
-- **`antigravity/comms/`:** Provee interfaces conversacionales. Incluye el gateway de Telegram (un proceso Node.js separado que se comunica con el core Python) y clientes web.
-- **`__main__.py`:** El punto de entrada CLI que parsea argumentos e inicializa el `AppContext`.
-
-### 2.2 Capa de Orquestación
-El cerebro operativo. Maneja el estado global, el ciclo de vida de las tareas y el despacho de herramientas.
-- **`antigravity/orchestrator/supervisor.py`:** El agente supervisor que delega tareas.
-- **`antigravity/orchestrator/tool_dispatcher.py`:** Registra y expone las herramientas locales como funciones ejecutables por el LLM.
-- **`antigravity/orchestrator/sync_engine.py`:** Gestiona la cola de descargas y operaciones de I/O de larga duración.
-- **`antigravity/agent/`:** Contiene la lógica de los agentes LLM y el enrutamiento de mensajes.
-
-### 2.3 Capa de Dominio (Local)
-Implementa la lógica específica del modding de Skyrim. Cada herramienta externa (LOOT, xEdit, etc.) tiene un "Runner" o "Service" aquí.
-- **`local/tools/`:** Wrappers asíncronos para ejecutables externos. Retornan un **diccionario crudo** con claves canónicas (`success`, `message`, `return_code`, `warnings`) y/o campos legacy (`error`, `stderr`, `logs`). El orquestador es la **única** frontera de normalización a `ToolResult` mediante `normalize_tool_result()` (`local/tools/tool_result.py`).
-- **`local/mo2/`:** Lógica para interactuar con perfiles, `modlist.txt` y el entorno de Mod Organizer 2.
-- **`local/fomod/`:** Parser y resolvedor de instaladores FOMOD.
-
-### 2.4 Capa de Infraestructura
-Servicios transversales y de bajo nivel que soportan al resto del sistema.
-- **`antigravity/core/`:** El núcleo del sistema.
-  - `contracts.py`: Registro de esquemas Pydantic y decoradores de validación (`@validate_contract`).
-  - `database.py`: `DatabaseAgent`, encargado de todas las operaciones SQLite (WAL, transacciones batch).
-  - `errors.py`: Jerarquía de excepciones tipadas `AppNexusError`.
-- **`antigravity/security/`:** Implementación del modelo Zero-Trust.
-  - `path_validator.py`: Valida que ninguna ruta escape del sandbox autorizado (protección contra TOCTOU y symlink attacks).
-- **`config.py`:** Definición de `SystemPaths` y carga de configuración global desde TOML.
-
----
-
-## 3. Flujo de Datos Asíncrono
-
-La comunicación entre componentes sigue un patrón de despacho de eventos y llamadas RPC internas validadas por contratos.
-
-### 3.1 Ciclo de Vida de una Petición (Ej. "Ordenar Load Order")
+## Vista de componentes
 
 ```mermaid
-sequenceDiagram
-    participant User as Usuario (GUI/Telegram)
-    participant LLM as LLMRouter
-    participant Orchestrator as ToolDispatcher
-    participant Domain as LOOTService
-    participant Infra as PathValidator
-
-    User->>LLM: "Ordena los mods"
-    LLM->>LLM: Traduce a ToolCall: run_loot_sort(profile="Default")
-    LLM->>Orchestrator: dispatch_tool(ToolRequest)
-    Orchestrator->>Orchestrator: Valida input vs SchemaRegistry (@validate_contract)
-    Orchestrator->>Domain: run_loot_sort(profile="Default")
-    Domain->>Infra: validate(game_path)
-    Infra-->>Domain: Retorna Path validada o lanza SecurityError
-    Domain->>Domain: Ejecuta LOOT.exe vía asyncio.create_subprocess_exec
-    Domain-->>Orchestrator: Retorna dict crudo
-    Orchestrator->>Orchestrator: Normaliza con normalize_tool_result()
-    Orchestrator->>Orchestrator: Valida output vs SchemaRegistry
-    Orchestrator-->>LLM: ToolResponse(success=True, message="...")
-    LLM-->>User: "Load order ordenado exitosamente."
+flowchart TD
+    U["Usuario"] --> UI["GUI / CLI / Telegram"]
+    UI --> AC["AppContext y modos"]
+    AC --> LR["LLMRouter"]
+    LR --> ATR["AsyncToolRegistry<br/>ruta LLM"]
+    UI --> SA["SupervisorAgent"]
+    SA --> OTD["OrchestrationToolDispatcher<br/>ruta de rituales"]
+    ATR --> LT["Servicios y runners locales"]
+    OTD --> LT
+    LT --> MO2["MO2 / broker USVFS / herramientas externas"]
+    AC --> DB["SQLite / lifecycle / journal / locks"]
+    SA --> CEB["CoreEventBus"]
+    UI --> GEB["EventBus de GUI"]
 ```
 
-### 3.2 Concurrencia y el Event Loop
+### Dos rutas de herramientas
 
-Sky-Claw corre sobre un único event loop de `asyncio` (por proceso).
-- **I/O Bound:** Llamadas a red (LLM, Nexus) y disco usan `await`.
-- **CPU Bound / Bloqueante:** Ejecución de herramientas externas (LOOT, xEdit) usa `asyncio.create_subprocess_exec`. Operaciones de la GUI NiceGUI deben evitar bloquear este loop; se recomienda `asyncio.to_thread` para I/O síncrona heredada.
-- **EventBus:** La GUI utiliza un bus de eventos interno que **debe** inicializarse en el `app.on_startup` para garantizar que el loop esté corriendo, de lo contrario los eventos se descartan silenciosamente (ver bug histórico #201).
+1. `AsyncToolRegistry`, construido en `AppContext`, valida parámetros Pydantic
+   y ejecuta handlers invocados por el loop de herramientas del `LLMRouter`.
+2. `OrchestrationToolDispatcher`, construido por
+   `build_orchestration_dispatcher()`, registra `ToolStrategy` y middleware
+   para rituales del `SupervisorAgent`.
 
----
+No son alias ni comparten la misma API. El detalle está en
+[agent_tool_routing.md](docs/architecture/agent_tool_routing.md).
 
-## 4. Modelo de Seguridad
+### Resultados de tools
 
-El diseño de seguridad es "Zero-Trust" por defecto, asumiendo que las herramientas externas o los outputs del LLM pueden ser comprometidos.
+Los servicios emiten diccionarios crudos que incluyen `success: bool` y
+`message: str`. `normalize_tool_result()` es la única función que interpreta
+claves legacy. En el camino productivo actual la usa
+`gui/controllers/ritual_runner.py`; otros consumidores deben utilizarla si
+necesitan la vista común `ToolResult`.
 
-1.  **Sandboxing de Rutas (LAY-03):** Ninguna herramienta puede leer/escribir fuera de las rutas autorizadas por `SystemPaths`. El `PathValidator` resuelve symlinks y rechaza escapes de directorio (TOCTOU).
-2.  **Validación de Contratos (LAY-01):** Todo input y output de agente está tipado. Se prohíbe el parseo libre con regex; se exige Pydantic. Si un LLM alucina un JSON malformado, el `SchemaRegistry` lo rechaza antes de que alcance la lógica de dominio.
-3.  **Guardia de Red:** Un `NetworkGateway` restringe el egress a dominios en lista blanca (`*.nexusmods.com`, `api.telegram.org`, proveedores LLM).
-4.  **HITL (Human-in-the-Loop) — dos ámbitos distintos:**
-    - **Descargas desde hosts externos no whitelisted** (GitHub, Patreon, Mega): el `SyncEngine` pausa la operación y exige aprobación explícita vía botones de Telegram (`HITLGuard`). Este es el único punto de *pausa obligatoria* del sistema — sin configuración que lo desactive.
-    - **Capa del agente LLM central:** es **lock-only, sin HITL propio** (decisión documentada en #217). Si una configuración específica requiere intervención humana adicional (ej. aprobar un Ritual que modifica el perfil real), el HITL se implementa por encima del agente vía `approval_gate` del preview, no dentro del flujo del agente.
+### Dos buses de eventos
 
----
+- `CoreEventBus` es el bus asíncrono del core/orquestador, con backpressure,
+  DLQ y lifecycle explícito.
+- `gui.gui_event_adapter.EventBus` adapta eventos al loop de NiceGUI.
 
-## 5. Contratos de Interfaces
+Compartir el nombre conceptual no los convierte en la misma instancia ni les
+da el mismo contrato de arranque y cierre.
 
-La comunicación entre la capa de Orquestación y la de Dominio está mediada por el contrato `ToolResult`. Históricamente, cada service retornaba diccionarios con claves inconsistentes (`error`, `stderr`, `logs`), y el consumidor tenía que reimplementar fallbacks — reintroduciendo el toast opaco "error desconocido" (parcheado dos veces: #214, #216).
+## Principios verificables
 
-Desde la resolución de raíz, el **contrato vigente** es:
+- El runtime es prioritariamente asíncrono; I/O síncrona heredada se deriva a
+  threads donde el código lo implementa. No se afirma que toda I/O del árbol
+  sea no bloqueante.
+- Las operaciones de archivo y egress deben atravesar las validaciones
+  inyectadas en su camino productivo; los límites y excepciones vigentes están
+  documentados en [security_boundaries.md](docs/architecture/security_boundaries.md).
+- Las mutaciones críticas usan locks, snapshots, journal y, cuando corresponde,
+  sandbox de perfil y aprobación HITL.
+- Los tests con subprocess mockeado no prueban MO2/USVFS ni herramientas reales.
+  Los smokes pendientes se registran en
+  [real_rig_validation.md](docs/operations/real_rig_validation.md).
 
-- **Capa de Dominio (Services/Runners):** retorna un diccionario crudo que contiene al menos `success: bool` y `message: str` (canónico), junto con `return_code` y `warnings`, y opcionalmente claves legacy. El dominio **no** conoce `ToolResult`.
-- **Capa de Orquestación:** es la **única frontera** de normalización — invoca `normalize_tool_result(raw)` y propaga un `ToolResult` tipado aguas arriba.
+## Estado documental
 
-La definición canónica:
-
-```python
-class ToolResult(TypedDict):
-    success: bool
-    message: str
-    return_code: int | None
-    warnings: list[str]
-```
-
-Cualquier consumidor debe utilizar `normalize_tool_result(raw_dict)` para obtener esta vista normalizada, aislando al sistema de las claves legacy.
-
----
-
-## 6. Mapas de Código Clave
-
-Para navegar el código, los siguientes archivos son los mejores puntos de partida:
-
-| Concepto | Archivo Principal |
-| :--- | :--- |
-| Punto de Entrada | `sky_claw/__main__.py` |
-| Inicialización App | `sky_claw/app_context.py` |
-| Contratos y Validación | `sky_claw/antigravity/core/contracts.py` |
-| Pipeline de Modding (Reglas) | `sky_claw/local/AGENTS.md` |
-| Normalización de Tools | `sky_claw/local/tools/tool_result.py` |
-| Seguridad de Rutas | `sky_claw/antigravity/security/path_validator.py` |
-| Despachador de Tools | `sky_claw/antigravity/orchestrator/tool_dispatcher.py` |
+`ARCHITECTURE.md` es el portal ejecutivo. Las firmas, campos y estados exactos
+pertenecen a [docs/api](docs/api/README.md); las decisiones a
+[docs/adr](docs/adr/README.md); los hallazgos históricos a
+[docs/audits](docs/audits/README.md).

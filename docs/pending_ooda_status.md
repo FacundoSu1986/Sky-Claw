@@ -1,5 +1,14 @@
 # OODA — inventario de pendientes (2026-07-13)
 
+> **Tipo:** estado operativo vivo, no referencia arquitectónica autónoma.
+> **Fuente de verdad:** código y tests del árbol actual; los addenda conservan
+> evidencia histórica y pueden describir estados ya superados.
+> **Uso documental:** confirmar cada pendiente contra `origin/main` antes de
+> abrir o cerrar trabajo.
+> **Audiencia:** maintainers, reviewers y agentes.
+> **Estado:** snapshot sujeto a reverificación.
+> **Última verificación general:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+
 **Snapshot contra:** `main @ b00d403`.
 **Método:** Observe/Orient — se verificó cada ítem contra el **código actual**
 (no solo contra los docs de backlog, que están desactualizados en varios

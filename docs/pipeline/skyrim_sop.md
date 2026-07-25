@@ -2,6 +2,9 @@
 
 > **Audiencia:** Usuarios avanzados, modders y desarrolladores que necesitan comprender la lógica de dominio y el orden de operaciones del pipeline de modding que Sky-Claw orquesta.
 > **Nota Técnica:** Este documento extrae el conocimiento de dominio del [AGENTS.md operativo](../../sky_claw/local/AGENTS.md). Para reglas de edición de código y directivas de agentes IA, consultar ese archivo directamente.
+> **Estado:** SOP humano; `sky_claw/local/AGENTS.md` conserva el orden canónico.
+> **Fuente canónica:** `sky_claw/local/AGENTS.md`.
+> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 
 ---
 
@@ -23,11 +26,38 @@ El proceso de modding no es una colección de scripts aislados; es un **Grafo Di
 | **8** | **No Grass In Objects** | Precacheo de métricas espaciales para prevenir que el pasto atraviese caminos y ruinas. | Caché de pasto (`\Grass\`). |
 | **9** | **TexGen ➔ DynDOLOD 3** | Generación paramétrica de LODs (Level of Detail) dinámicos para el horizonte geográfico. | Paquetes de LOD, plugins `.esp`/`.esm` espaciales. |
 
+> **CAO no es una barrera global:** la numeración lo ubica en la secuencia de
+> dominio, pero cada mod se procesa de forma independiente. CAO no requiere
+> completar xEdit y no bloquea globalmente las demás etapas.
+
 ### 1.2 Matriz de Dependencias Críticas
 
 - **LOOT (Etapa 5) es el prerrequisito universal:** Ningún generador de parches (Wrye Bash, Synthesis) ni generador de LODs (DynDOLOD) puede ejecutarse antes de que LOOT haya estabilizado el orden. Un parche construido sobre un orden inestable es basura.
 - **TexGen/DynDOLOD (Etapa 9) es el nodo sumidero:** Debe ejecutarse **ABSOLUTAMENTE AL FINAL**. Requiere que Wrye Bash, Synthesis y No Grass In Objects hayan completado sus tareas. Si DynDOLOD corre antes, los LODs generados ignorarán los parches dinámicos, causando "pop-in" y referencias faltantes.
 - **No Grass In Objects (Etapa 8) precede a DynDOLOD:** Revertir este orden causa que el pasto se renderice incorrectamente sobre geometría de LOD.
+
+### 1.3 Contrato de sandbox y promoción
+
+`ProfileSandbox` clona dos áreas: el perfil completo
+`<MO2>/profiles/<nombre>` y el overwrite compartido `<MO2>/overwrite`. También
+crea baselines byte-fieles para calcular qué cambió el ritual y detectar drift
+del estado real durante la aprobación.
+
+La promoción:
+
+1. falla cerrada si el perfil/overwrite reales cambiaron o apareció un symlink;
+2. recalcula el diff dentro de la misma operación síncrona derivada a thread;
+3. respalda los targets afectados antes de aplicar cambios;
+4. revierte en orden inverso ante un fallo intermedio;
+5. preserva el backup y el clon si también falla el rollback, para recuperación manual.
+
+`SandboxPromotionFlow` presenta el diff mediante HITL. Sólo
+`Decision.APPROVED` promueve; fallo del ritual, diff vacío, denegación o timeout
+descartan el clon. Esta protección está cableada actualmente para el ritual de
+Synthesis, no debe extrapolarse a todos los runners sin verificar sus callers.
+
+Fuentes: `local/mo2/profile_sandbox.py`,
+`orchestrator/sandbox_promotion.py`, ADR 0005 y ADR 0007.
 
 ---
 
