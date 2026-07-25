@@ -92,6 +92,17 @@ Sky-Claw aplica una política de seguridad estricta:
 
 ---
 
+## 👨‍💻 Para Desarrolladores
+
+Sky-Claw es un ecosistema asíncrono complejo. Si deseas contribuir, añadir nuevas herramientas o entender cómo funciona el orquestador por dentro, consulta la siguiente documentación:
+
+- **[Arquitectura del Sistema](ARCHITECTURE.md):** Topología de capas, flujo de datos asíncrono y modelo de seguridad.
+- **[Guía de Contribución](CONTRIBUTING.md):** Setup del entorno de desarrollo, flujo de trabajo TDD, convenciones de código y proceso de PRs.
+- **[Manual de Agentes y Tools](docs/agents/tool_creation.md):** Tutorial para extender el sistema con nuevos Tool Runners y proveedores LLM.
+- **[SOP del Pipeline de Modding](sky_claw/local/AGENTS.md):** Reglas de negocio inmutables para la orquestación de herramientas de Skyrim.
+
+---
+
 ## ✅ Roadmap (Estado Actual)
 
 - [x] Soporte Multi-LLM (OpenAI, Anthropic, DeepSeek, Ollama)

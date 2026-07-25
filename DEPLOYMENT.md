@@ -276,3 +276,49 @@ Honestidad operativa — esto sigue abierto y conviene saberlo antes de producci
 - **Features incompletas** (roadmap PR-6..PR-10): respond del ops-hub web es stub, wiring de `event_bus` en GUI incompleto, masterlist del scraper stub, `path_resolver` aún lee `os.environ` (excepción documentada, pendiente migrar a `config.toml`).
 - **Docs**: `QUICKSTART.md` apunta a `scripts/first_run.py` (la ruta real es `local_scripts/scripts/first_run.py`) y dice Python "3.14+" (real: 3.11/3.12) — pendientes de corregir.
 - **`os._exit(3)` del fail-fast de tests** (PR #179): vigilar las primeras corridas de CI por un posible hard-kill ante un hilo non-daemon lento de dependencia.
+
+---
+
+## 10. Proceso de Release y Empaquetado Final
+
+Workflow estándar para publicar una nueva versión de Sky-Claw. El empaquetado se realiza con PyInstaller usando el spec `sky_claw.spec` (que autoderiva el `VERSIONINFO` de la versión del paquete en `pyproject.toml`).
+
+> **Estado actual:** Sin tag de versión, CHANGELOG en `[Unreleased]`. Este proceso está documentado para futuras releases GA; la sección 9 lista las limitaciones pendientes (sin binario firmado/validado).
+
+### 10.1 Checklist de Release
+
+Antes de invocar el empaquetado, **todos** los gates de CI deben estar en verde y la pre-flight checklist (§8) validada en una instalación real:
+
+1.  **Verificar versión del paquete:** Bump de `version` en `pyproject.toml` (semver: `MAJOR.MINOR.PATCH`).
+2.  **Actualizar CHANGELOG:** Mover los cambios de `[Unreleased]` a la nueva sección de versión con fecha.
+3.  **Gates locales:**
+    - `ruff check sky_claw/ tests/` (sin errores).
+    - `ruff format --check sky_claw/ tests/`.
+    - `mypy sky_claw/` (bloqueante).
+    - `pytest -q` (cobertura ≥ 60%).
+4.  **Smoke del VFS Bridge:** Ejecutar el flujo de la sección §2 (Bridge MO2/USVFS) en un perfil descartable para confirmar que el bridge funciona con el binario empaquetado.
+
+### 10.2 Empaquetado con PyInstaller
+
+El script `build.bat` orquesta la construcción del entorno y el binario. Para invocar PyInstaller directamente (debug):
+
+```bash
+# Asegurar venv activo y dependencias instaladas
+pyinstaller sky_claw.spec --noconfirm --clean
+```
+
+El binario resultante se deposita en `dist/SkyClawApp/` (o equivalente según el spec). El `.spec` maneja:
+- Inclusión de assets (plantillas, recursos estáticos de NiceGUI).
+- Autoderivación del `VERSIONINFO` de Windows desde `pyproject.toml`.
+- Hidden imports de dependencias dinámicas (ej. plugins de Pydantic).
+
+### 10.3 Post-Build y Validación
+
+Tras generar el `.exe`:
+
+1.  **Arranque en modo GUI:** Ejecutar `SkyClawApp.exe` en una máquina limpia (sin Python instalado). Debe arrancar en modo GUI por defecto (`sys.frozen`).
+2.  **Arranque en modo CLI:** Probar `SkyClawApp.exe --mode cli -v` para verificar logs y que el handler de excepciones del loop funciona.
+3.  **Validación de Bridge:** Correr `SkyClawApp.exe --mode install-vfs-bridge --mo2-root "D:\MO2Portable"` y validar el smoke de §2.
+4.  **Artifact Tagging:** Crear el tag de git (`git tag -a v0.x.0 -m "Release v0.x.0"`) y pushear (`git push origin v0.x.0`). Subir el binario (o el instalador Inno Setup si se genera) al release de GitHub.
+
+> **Firma pendiente:** Actualmente no se firma el `.exe` con un certificado Authenticode. Los usuarios pueden encontrar advertencias de SmartScreen; documentar el workaround (Advanced → Continue) en el README de la release.
