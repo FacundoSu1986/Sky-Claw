@@ -1,5 +1,9 @@
 # Sky-Claw — Deployment & Operations Runbook
 
+> **Audiencia:** operadores y responsables de release.
+> **Fuente canónica:** runtime, CI y packaging del árbol actual.
+> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+
 Operational guide for deploying, running and recovering Sky-Claw. For the
 quick-start install flow see [QUICKSTART.md](QUICKSTART.md); this document
 covers the production/operations gap: configuration, secrets, observability,
@@ -15,10 +19,10 @@ failure handling and the pre-flight checklist for a real end-to-end run.
 
 | Componente | Versión / nota |
 |---|---|
-| Python | **3.11 – 3.12** (lo que valida CI; `pyproject.toml` exige `>=3.11`). El entorno de desarrollo corre 3.11.15. ⚠️ `QUICKSTART.md` dice "3.14+" — **es inexacto**, usar 3.11/3.12. |
+| Python | **3.11 – 3.12** (versiones validadas por CI; `pyproject.toml` exige `>=3.11`). |
 | OS | Windows 10/11 (target primario; `file_permissions.py` usa DACL de Windows). Linux/WSL2 corre el core async pero no es la plataforma de entrega. |
 | MO2 | Mod Organizer 2 instalado y configurado para Skyrim Special Edition. |
-| Node.js | Solo para el modo Telegram (gateway en `sky_claw/antigravity/comms/telegram_gateway_node/`). |
+| Node.js | Sólo para desplegar el gateway Node opcional en `sky_claw/antigravity/comms/telegram_gateway_node/`; el modo `telegram` de Python usa polling. |
 | Red | Salida a Nexus / proveedor LLM. El egress está restringido por allowlist (`config.py:ALLOWED_HOSTS`). |
 
 ---
@@ -27,7 +31,7 @@ failure handling and the pre-flight checklist for a real end-to-end run.
 
 ### Ejecución desde fuente (desarrollo / operador)
 ```bat
-build.bat              :: crea venv\ e instala dependencias
+build.bat              :: crea .venv\ e instala dependencias
 ```
 
 ### Bridge MO2/USVFS (obligatorio para LOOT productivo)
@@ -91,13 +95,13 @@ arranca en **modo GUI por defecto** (`__main__.py` fija `mode=gui` cuando
 
 ## 3. Configuración
 
-La config se carga desde **`~/.sky_claw/config.toml`** (`config.py:58-59`,
-`DEFAULT_CONFIG_DIR = Path.home() / ".sky_claw"`). Se permite override por
-variables de entorno.
+La config se carga desde **`~/.sky_claw/config.toml`**
+(`Config.DEFAULT_CONFIG_FILE`). `Config` combina defaults, TOML y keyring; no
+implementa un override genérico `SKY_CLAW_*`. Las variables de rutas que se
+enumeran abajo pertenecen a `PathResolver`.
 
-> El asistente interactivo existe en **`local_scripts/scripts/first_run.py`**
-> (no en `scripts/first_run.py`, que es la ruta equivocada que indica
-> `QUICKSTART.md`). Corré `python local_scripts/scripts/first_run.py`, o editá
+> El asistente interactivo existe en **`local_scripts/scripts/first_run.py`**.
+> Corré `python local_scripts/scripts/first_run.py`, editá
 > `~/.sky_claw/config.toml` a mano / usá las env vars de abajo.
 
 ### Paths de herramientas (excepción Zero-Trust documentada)
@@ -181,9 +185,10 @@ python -m sky_claw --mode security "<comando>"# utilidades de seguridad
 python -m sky_claw --mode cli -v              # -v / --verbose → logging DEBUG
 python -m sky_claw --provider anthropic       # anthropic | deepseek | openai | ollama
 ```
-`command` es un argumento **posicional** (`__main__.py:58-62`, `nargs="?"`) — **no
-existe `--command`**. El modo Telegram requiere el gateway Node corriendo
-(`telegram_gateway_node/`, `npm install` + arranque del server).
+`command` es un argumento **posicional** (`__main__.py::_parse_args`,
+`nargs="?"`) — **no existe `--command`**. El modo Telegram vigente construye
+`TelegramPolling`; el gateway Node es una superficie separada y no es
+precondición de `_run_telegram()`.
 
 ---
 
@@ -244,7 +249,7 @@ grep '<correlation_id>' logs/sky_claw.log
 | **Locks distribuidos** | TTL con heartbeat (renovación a TTL/3). Si se pierde el lease mid-operación, `LockLeaseLostError` aborta en salida limpia en vez de competir con otro escritor. |
 | **Procesos externos huérfanos** | Los runners (xEdit/DynDOLOD/BodySlide/Pandora/Wrye Bash) hacen `kill()` + reap en timeout — no quedan procesos reteniendo handles del VFS/Data. |
 | **Shutdown graceful** | `SIGTERM` se traduce a `KeyboardInterrupt` (`__main__.py:178`) → `AppContext.stop()` corre el cleanup y cancela runners. No matar con `kill -9` salvo último recurso. |
-| **Gate HITL** | Operaciones destructivas y descargas desde hosts externos requieren aprobación humana (fail-closed). |
+| **Gate HITL** | Los handlers y middleware que reciben `HITLGuard` requieren aprobación y fallan cerrados; no es una garantía implícita de toda ruta. |
 
 ---
 
@@ -257,10 +262,10 @@ MO2 descartable la primera vez):
 - [ ] Secretos en **keyring** (`service="sky_claw"`): `llm_api_key` o `<provider>_api_key`; `nexus_api_key`; `telegram_bot_token` si usás Telegram. (Cargar en `CredentialVault` NO los expone al arranque.)
 - [ ] Proveedor LLM elegido entre los soportados: `anthropic` / `deepseek` / `openai` / `ollama`.
 - [ ] Suite local en verde: `pytest -q`.
-- [ ] Gates: `ruff check sky_claw/ tests/` y `python -m mypy sky_claw/ --ignore-missing-imports`.
+- [ ] Gates: `ruff check sky_claw/ tests/`, `ruff format --check sky_claw/ tests/` y `mypy sky_claw/`.
 - [ ] `logs/` escribible; correr con `-v` la primera vez.
 - [ ] Perfil de MO2 respaldado (el rollback cubre operaciones del agente, pero un backup externo es barato).
-- [ ] Validar el chain de preview/dry-run (LOOT→xEdit→DynDOLOD con HITL) **antes** de un run con mutaciones reales.
+- [ ] Validar preview y dry-run siguiendo el orden canónico de `sky_claw/local/AGENTS.md` **antes** de un run con mutaciones reales.
 - [ ] Tras el run: revisar `logs/sky_claw.log` por `ERROR`; en el journal, `transactions` con estado `pending`/`rolled_back` (transacción no confirmada) y `journal_entries` con estado `failed` (operación caída).
 
 ---
@@ -269,10 +274,61 @@ MO2 descartable la primera vez):
 
 Honestidad operativa — esto sigue abierto y conviene saberlo antes de producción:
 
-- **Sin validación end-to-end en rig real documentada** — la cobertura es unit/integration (~2050 tests, ~65%).
+- **Validación de rig real parcial** — existe evidencia histórica del canary
+  brokerizado, pero no cubre todos los runners ni todos los escenarios; ver
+  `docs/operations/real_rig_validation.md`.
 - **Sin tag de release ni binario firmado/validado** (CHANGELOG `[Unreleased]`).
 - **Frontera de tipos parcial** — el override de mypy con `ignore_errors=true` cubre **prácticamente todo `sky_claw.*` / `sky_claw.antigravity.*`**, con re-habilitación puntual de checks en un subconjunto de `core.*` y en `orchestrator.sync_engine`. El grueso del código no está type-checked aún.
 - **Loop-exception handler solo en modos no-GUI** — en GUI la captura de excepciones del loop depende de NiceGUI/uvicorn, no del handler de `__main__`.
-- **Features incompletas** (roadmap PR-6..PR-10): respond del ops-hub web es stub, wiring de `event_bus` en GUI incompleto, masterlist del scraper stub, `path_resolver` aún lee `os.environ` (excepción documentada, pendiente migrar a `config.toml`).
-- **Docs**: `QUICKSTART.md` apunta a `scripts/first_run.py` (la ruta real es `local_scripts/scripts/first_run.py`) y dice Python "3.14+" (real: 3.11/3.12) — pendientes de corregir.
-- **`os._exit(3)` del fail-fast de tests** (PR #179): vigilar las primeras corridas de CI por un posible hard-kill ante un hilo non-daemon lento de dependencia.
+- **Estado vivo** — consultar `docs/pending_ooda_status.md` y reverificar cada
+  ítem contra el árbol actual; un roadmap o auditoría fechada no sustituye esa
+  comprobación.
+
+---
+
+## 10. Proceso de Release y Empaquetado Final
+
+Workflow estándar para publicar una nueva versión de Sky-Claw. El empaquetado se realiza con PyInstaller usando el spec `sky_claw.spec` (que autoderiva el `VERSIONINFO` de la versión del paquete en `pyproject.toml`).
+
+> **Estado actual:** Sin tag de versión, CHANGELOG en `[Unreleased]`. Este proceso está documentado para futuras releases GA; la sección 9 lista las limitaciones pendientes (sin binario firmado/validado).
+
+### 10.1 Checklist de Release
+
+Antes de invocar el empaquetado, **todos** los gates de CI deben estar en verde y la pre-flight checklist (§8) validada en una instalación real:
+
+1.  **Verificar versión del paquete:** Bump de `version` en `pyproject.toml` (semver: `MAJOR.MINOR.PATCH`).
+2.  **Actualizar CHANGELOG:** Mover los cambios de `[Unreleased]` a la nueva sección de versión con fecha.
+3.  **Gates locales:**
+    - `ruff check sky_claw/ tests/` (sin errores).
+    - `ruff format --check sky_claw/ tests/`.
+    - `mypy sky_claw/` (bloqueante).
+    - `pytest -q` (cobertura ≥ 60%).
+4.  **Smoke del VFS Bridge:** Ejecutar el flujo de la sección §2 (Bridge MO2/USVFS) en un perfil descartable para confirmar que el bridge funciona con el binario empaquetado.
+
+### 10.2 Empaquetado con PyInstaller
+
+El script `build.bat` orquesta la construcción del entorno y el binario. Para invocar PyInstaller directamente (debug):
+
+```bash
+# Asegurar venv activo y dependencias instaladas
+pyinstaller sky_claw.spec --noconfirm --clean
+```
+
+El binario resultante se deposita en `dist/SkyClawApp/` (o equivalente según el spec). El `.spec` maneja:
+- Inclusión de assets (plantillas, recursos estáticos de NiceGUI).
+- Autoderivación del `VERSIONINFO` de Windows desde `pyproject.toml`.
+- Hidden imports de dependencias dinámicas (ej. plugins de Pydantic).
+
+### 10.3 Post-Build y Validación
+
+Tras generar el `.exe`:
+
+1.  **Arranque en modo GUI:** Ejecutar `SkyClawApp.exe` en una máquina limpia (sin Python instalado). Debe arrancar en modo GUI por defecto (`sys.frozen`).
+2.  **Arranque en modo CLI:** Probar `SkyClawApp.exe --mode cli -v` para verificar logs y que el handler de excepciones del loop funciona.
+3.  **Validación de Bridge:** Correr `SkyClawApp.exe --mode install-vfs-bridge --mo2-root "D:\MO2Portable"` y validar el smoke de §2.
+4.  **Artifact Tagging:** Crear el tag de git (`git tag -a v0.x.0 -m "Release v0.x.0"`) y pushear (`git push origin v0.x.0`). Subir el binario (o el instalador Inno Setup si se genera) al release de GitHub.
+
+> **Firma pendiente:** Actualmente no se firma el `.exe` con un certificado Authenticode. Los usuarios pueden encontrar advertencias de SmartScreen; documentar el workaround (Advanced → Continue) en el README de la release.
+
+La separación entre operación diaria, observabilidad, recuperación, release y
+smoke real se mantiene en [docs/operations](docs/operations/README.md).

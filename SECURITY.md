@@ -1,8 +1,16 @@
 # Política de Seguridad / Security Policy
 
+> **Audiencia:** usuarios, investigadores de seguridad y maintainers.
+> **Fuente canónica:** controles del runtime, workflows y releases publicadas.
+>
 > **English summary:** please report vulnerabilities privately via **GitHub → Security →
 > Advisories → "Report a vulnerability"**. Do not disclose exploit details in public
-> issues. Only the latest 0.2.x release receives security fixes.
+> issues. No distributed release is currently verified; once releases exist,
+> only the latest 0.2.x release will receive security fixes.
+>
+> **Estado:** controles de runtime verificados leyendo código;
+> publicación, firma y SBOM no verificados como release distribuida.
+> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 
 ## Versiones soportadas
 
@@ -10,7 +18,7 @@ Solo la última release publicada recibe correcciones de seguridad.
 
 | Versión | Soportada |
 | ------- | --------- |
-| 0.2.x (última release) | ✅ |
+| 0.2.x (cuando exista una release publicada) | ✅ |
 | < 0.2 | ❌ |
 
 ## Cómo reportar una vulnerabilidad
@@ -44,10 +52,17 @@ Sky-Claw invoca (SSEEdit, LOOT, DynDOLOD, MO2, etc.): reportalas a sus proyectos
 
 - CI con **Bandit** (SAST) y **pip-audit --strict** sobre `requirements.lock` con hashes
   enforced; `npm audit` para el gateway de Telegram.
-- Releases firmadas con **cosign** + **SBOM** publicado.
-- Secretos vía keyring del sistema (DPAPI en Windows); directorios de estado con DACLs
-  restrictivas (`.sky_claw/`).
+- El workflow construye un artefacto PyInstaller en CI. No hay evidencia
+  vigente de tag de release, firma Authenticode/cosign ni SBOM publicado; no
+  deben anunciarse como garantías hasta validarlos en una release real.
+- Secretos vía el backend de keyring del sistema; directorios de estado con
+  DACLs restrictivas (`.sky_claw/`) donde el control está cableado.
 - Sandboxing de rutas con `PathValidator`
   (`sky_claw/antigravity/security/path_validator.py`) relativo a `SystemPaths`.
 - Guardrails del agente LLM: sanitización de historial, detección de prompt injection y
   de PII.
+
+Los límites implementados y parciales se detallan en
+[security_boundaries.md](docs/architecture/security_boundaries.md). El estado
+de empaquetado y release vive en [DEPLOYMENT.md](DEPLOYMENT.md) y
+[release.md](docs/operations/release.md).
