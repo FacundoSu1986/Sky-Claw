@@ -1274,13 +1274,20 @@ class AppContext:
                     background_tasks = set(self._background_tasks)
                     for background_task in background_tasks:
                         background_task.cancel()
+                    # P0-2: el timeout NO puede abortar acá. Con un raise directo,
+                    # UNA sola task que tarda en morir salteaba
+                    # _close_cleanup_generation() y el AsyncExitStack entero quedaba
+                    # sin desenrollar: WAL sin checkpoint, locks distribuidos sin
+                    # liberar, broker / sesión HTTP / vault abiertos. Se difiere:
+                    # primero se libera lo que sí se puede, después se propaga.
+                    tasks_timeout: TimeoutError | None = None
                     if background_tasks:
                         done, pending = await asyncio.wait(
                             background_tasks,
                             timeout=self._startup_shutdown_timeout_s,
                         )
                         if pending:
-                            raise TimeoutError(
+                            tasks_timeout = TimeoutError(
                                 f"background tasks did not stop within {self._startup_shutdown_timeout_s:.3f}s"
                             )
                         await asyncio.gather(*done, return_exceptions=True)
@@ -1290,8 +1297,19 @@ class AppContext:
                         await self._close_cleanup_generation(
                             timeout_s=self._startup_shutdown_timeout_s,
                         )
+                    except BaseException:
+                        if tasks_timeout is not None:
+                            logger.warning(
+                                "El cleanup también falló durante stop(); el timeout de tasks "
+                                "de fondo queda solo en el log: %s",
+                                tasks_timeout,
+                            )
+                        raise
                     finally:
                         self._sanitize_full_references()
+
+                    if tasks_timeout is not None:
+                        raise tasks_timeout
 
                     self._minimal_started_epoch = None
                     self._stopping = False
