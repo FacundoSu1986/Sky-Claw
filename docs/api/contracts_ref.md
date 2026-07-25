@@ -64,7 +64,7 @@ class PathValidatorProtocol(Protocol):
 
 ## 3. Catálogo de Contratos de Agentes (`CONTRACT_SCHEMAS`)
 
-El diccionario global `CONTRACT_SCHEMAS` mapea métodos de agentes a sus respectivos schemas Pydantic de Input y Output. Estos schemas se resuelven en O(1) desde el `SchemaRegistry`.
+El diccionario global `CONTRACT_SCHEMAS` mapea métodos de agentes a sus respectivos schemas Pydantic de Input y Output. Estos schemas se resuelven en O(1) desde el `SchemaRegistry` después de su primera inicialización lazy (la primera invocación carga e indexa todos los modelos de `core/schemas.py`; ver `contracts.py:_ensure_registry`).
 
 *(Nota: Esta es una referencia estática. Los schemas exactos pueden expandirse. Consultar `sky_claw/antigravity/core/contracts.py` para la lista actualizada).*
 
@@ -129,10 +129,13 @@ class AgentToolResponse(BaseModel):
 Requerimiento para validar un archivo local.
 
 ```python
+from pydantic import BaseModel, Field
+import pathlib
+
 class SecurityAuditRequest(BaseModel):
-    file_path: pathlib.Path
-    check_hashes: bool = False
-    max_size_mb: int = 500
+    file_path: pathlib.Path = Field(..., description="Ruta absoluta al archivo a auditar.")
+    check_hashes: bool = Field(False, description="Verificar integridad con hashes.")
+    max_size_mb: int = Field(500, ge=1, le=5000, description="Tamaño máximo permitido (MB).")
 ```
 
 ### 4.4 SecurityAuditResponse

@@ -33,7 +33,15 @@ class MeshOptimizerRequest(BaseModel):
     create_backup: bool = Field(True, description="Crear un .bak antes de sobrescribir.")
 
 class MeshOptimizerResponse(BaseModel):
-    """Output del Mesh Optimizer."""
+    """Output canónico del Mesh Optimizer.
+
+    Incluye los campos base del contrato ``ToolResult`` para que el dict retornado
+    pueda normalizarse con ``normalize_tool_result`` sin perder información.
+    """
+    success: bool = True
+    message: str = ""
+    return_code: int | None = 0
+    warnings: list[str] = Field(default_factory=list)
     optimized_files: list[str] = Field(default_factory=list)
     skipped_files: int = 0
 ```
@@ -69,6 +77,7 @@ import pathlib
 from typing import Any
 
 from sky_claw.antigravity.core.contracts import validate_contract
+from sky_claw.antigravity.core.contracts import PathValidatorProtocol
 from sky_claw.local.tools.tool_result import ToolResult, normalize_tool_result
 
 logger = logging.getLogger(__name__)
@@ -76,8 +85,13 @@ logger = logging.getLogger(__name__)
 class MeshOptimizerService:
     """Servicio asíncrono para la optimización de meshes."""
 
-    def __init__(self, executable_path: pathlib.Path):
+    def __init__(
+        self,
+        executable_path: pathlib.Path,
+        path_validator: PathValidatorProtocol,
+    ):
         self.executable_path = executable_path
+        self.path_validator = path_validator
 
     @validate_contract("optimize_mod")
     async def optimize_mod(
@@ -91,29 +105,38 @@ class MeshOptimizerService:
 
         ### 📋 Contrato
         - **Input:** mod_path (Path), target_polygons (int), create_backup (bool).
-        - **Output:** MeshOptimizerResponse (optimizados y omitidos).
+        - **Output:** MeshOptimizerResponse (campos canónicos + optimizados y omitidos).
         
         ### ⚠️ Failure Modes
         - `FileNotFoundError`: Si el ejecutable o el mod_path no existen.
         - `TimeoutError`: Si el proceso tarda más de 1 hora.
+        - `SecurityValidationError`: Si `mod_path` escapa del sandbox autorizado.
         """
+        # 1) Sandbox validation ANTES de tocar disco o lanzar subprocess.
+        try:
+            safe_mod_path = self.path_validator.validate(mod_path)
+        except Exception as exc:
+            logger.error("Ruta rechazada por el sandbox: %s", mod_path)
+            raise ValueError(f"Ruta de mod inválida o fuera del sandbox: {mod_path}") from exc
+
+        if not safe_mod_path.is_dir():
+            return {"success": False, "error": f"La ruta no es un directorio: {safe_mod_path}"}
+
         if not self.executable_path.exists():
             # Se retorna un diccionario crudo que será normalizado y validado por el decorador
             return {"success": False, "error": f"Ejecutable no encontrado en {self.executable_path}"}
-        
-        if not mod_path.exists():
-            return {"success": False, "error": f"Directorio de mod inexistente: {mod_path}"}
 
         command = [
             str(self.executable_path),
             "--target", str(target_polygons),
-            "--input", str(mod_path),
+            "--input", str(safe_mod_path),
         ]
         if create_backup:
             command.append("--backup")
 
         logger.info("Iniciando Mesh Optimizer: %s", " ".join(command))
 
+        process: asyncio.subprocess.Process | None = None
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -127,6 +150,7 @@ class MeshOptimizerService:
                 return {
                     "success": False,
                     "return_code": process.returncode,
+                    "message": "El proceso retornó código de error.",
                     "stderr": stderr.decode("utf-8", errors="ignore")
                 }
 
@@ -142,7 +166,9 @@ class MeshOptimizerService:
 
         except asyncio.TimeoutError:
             logger.error("Timeout ejecutando Mesh Optimizer")
-            process.kill()
+            if process is not None:
+                process.kill()
+                await process.wait()
             return {"success": False, "error": "Timeout tras 3600s"}
         except Exception as exc:
             logger.exception("Error inesperado durante la optimización")
@@ -224,11 +250,21 @@ from sky_claw.local.tools.mesh_optimizer_service import MeshOptimizerService
 
 pytestmark = pytest.mark.asyncio
 
+
+class DummyPathValidator:
+    """PathValidator stub que permite cualquier ruta dentro del test."""
+
+    def validate(self, path: pathlib.Path, *, strict_symlink: bool = True) -> pathlib.Path:
+        return pathlib.Path(path).resolve()
+
+
 @pytest.fixture
 def mock_service(tmp_path):
     exe = tmp_path / "optimizer.exe"
     exe.touch()
-    return MeshOptimizerService(exe), tmp_path
+    validator = DummyPathValidator()
+    return MeshOptimizerService(exe, validator), tmp_path
+
 
 async def test_optimize_mod_exito(mock_service):
     """Verifica que un run exitoso retorna success=True y los archivos optimizados."""
@@ -247,6 +283,7 @@ async def test_optimize_mod_exito(mock_service):
         assert resultado["success"] is True
         assert "optimized_files" in resultado
         assert len(resultado["optimized_files"]) > 0
+
 
 async def test_optimize_mod_ejecutable_faltante(mock_service):
     """Verifica que la ausencia del binario retorna success=False y mensaje claro."""

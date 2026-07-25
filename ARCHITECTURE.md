@@ -73,7 +73,7 @@ El cerebro operativo. Maneja el estado global, el ciclo de vida de las tareas y 
 
 ### 2.3 Capa de Dominio (Local)
 Implementa la lógica específica del modding de Skyrim. Cada herramienta externa (LOOT, xEdit, etc.) tiene un "Runner" o "Service" aquí.
-- **`local/tools/`:** Wrappers asíncronos para ejecutables externos. Todos emiten un resultado normalizado bajo el contrato `ToolResult` (ver `local/tools/tool_result.py`).
+- **`local/tools/`:** Wrappers asíncronos para ejecutables externos. Retornan un **diccionario crudo** con claves canónicas (`success`, `message`, `return_code`, `warnings`) y/o campos legacy (`error`, `stderr`, `logs`). El orquestador es la **única** frontera de normalización a `ToolResult` mediante `normalize_tool_result()` (`local/tools/tool_result.py`).
 - **`local/mo2/`:** Lógica para interactuar con perfiles, `modlist.txt` y el entorno de Mod Organizer 2.
 - **`local/fomod/`:** Parser y resolvedor de instaladores FOMOD.
 
@@ -134,15 +134,22 @@ El diseño de seguridad es "Zero-Trust" por defecto, asumiendo que las herramien
 1.  **Sandboxing de Rutas (LAY-03):** Ninguna herramienta puede leer/escribir fuera de las rutas autorizadas por `SystemPaths`. El `PathValidator` resuelve symlinks y rechaza escapes de directorio (TOCTOU).
 2.  **Validación de Contratos (LAY-01):** Todo input y output de agente está tipado. Se prohíbe el parseo libre con regex; se exige Pydantic. Si un LLM alucina un JSON malformado, el `SchemaRegistry` lo rechaza antes de que alcance la lógica de dominio.
 3.  **Guardia de Red:** Un `NetworkGateway` restringe el egress a dominios en lista blanca (`*.nexusmods.com`, `api.telegram.org`, proveedores LLM).
-4.  **HITL (Human-in-the-Loop):** Descargas de orígenes no confiables (GitHub, Patreon) pausan la ejecución y requieren aprobación explícita vía botones de Telegram. La capa del agente central es, sin embargo, "lock-only" y no interrumpe el flujo sin intervención configuada.
+4.  **HITL (Human-in-the-Loop) — dos ámbitos distintos:**
+    - **Descargas desde hosts externos no whitelisted** (GitHub, Patreon, Mega): el `SyncEngine` pausa la operación y exige aprobación explícita vía botones de Telegram (`HITLGuard`). Este es el único punto de *pausa obligatoria* del sistema — sin configuración que lo desactive.
+    - **Capa del agente LLM central:** es **lock-only, sin HITL propio** (decisión documentada en #217). Si una configuración específica requiere intervención humana adicional (ej. aprobar un Ritual que modifica el perfil real), el HITL se implementa por encima del agente vía `approval_gate` del preview, no dentro del flujo del agente.
 
 ---
 
 ## 5. Contratos de Interfaces
 
-La comunicación entre la capa de Orquestación y la de Dominio está mediada por el contrato `ToolResult`. Históricamente, las herramientas retornaban diccionarios con claves inconsistentes (`error`, `stderr`, `logs`).
+La comunicación entre la capa de Orquestación y la de Dominio está mediada por el contrato `ToolResult`. Históricamente, cada service retornaba diccionarios con claves inconsistentes (`error`, `stderr`, `logs`), y el consumidor tenía que reimplementar fallbacks — reintroduciendo el toast opaco "error desconocido" (parcheado dos veces: #214, #216).
 
-Desde la resolución de la deuda técnica (#214, #216), **todas** las herramientas deben emitir:
+Desde la resolución de raíz, el **contrato vigente** es:
+
+- **Capa de Dominio (Services/Runners):** retorna un diccionario crudo que contiene al menos `success: bool` y `message: str` (canónico), junto con `return_code` y `warnings`, y opcionalmente claves legacy. El dominio **no** conoce `ToolResult`.
+- **Capa de Orquestación:** es la **única frontera** de normalización — invoca `normalize_tool_result(raw)` y propaga un `ToolResult` tipado aguas arriba.
+
+La definición canónica:
 
 ```python
 class ToolResult(TypedDict):

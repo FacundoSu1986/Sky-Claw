@@ -14,7 +14,7 @@ Para mitigar esto, el sistema implementa una capa de validación estricta basada
 ### 1.1 Reglas Inmutables de los Contratos
 1.  **Prohibido el parseo libre:** No se permite usar expresiones regulares (`re`) o manipulación manual de strings para extraer datos de un response LLM. Todo debe pasar por `model_validate_json` o `model_validate`.
 2.  **Validación Bidireccional:** Se valida tanto lo que *entra* al Tool (Input) como lo que *sale* de él (Output).
-3.  **Lookup O(1):** Los esquemas se resuelven en tiempo de ejecución desde un registro global en memoria (`SchemaRegistry`), sin incurrir en costos de importación dinámica repetida.
+3.  **Lookup O(1) tras la primera llamada:** Los esquemas se resuelven en tiempo de ejecución desde un registro global en memoria (`SchemaRegistry`). La primera invocación por proceso paga una exploración de módulo (`importlib.import_module` + escaneo de `dir()`, O(N) con N = número de schemas); toda llamada posterior es una búsqueda directa en el diccionario poblado (O(1) sin lock).
 
 ---
 
@@ -79,7 +79,7 @@ Valida el valor de retorno de la función contra el esquema `output`.
 
 ### 3.3 `@validate_contract(method_name: str)`
 
-Es el decorador recomendado. Combina la validación de entrada y salida en una sola pasada, evitando la doble ejecución que ocurriría al apilar `@validate_input` y `@validate_output`.
+Es el decorador recomendado. Combina la validación de entrada y salida en una sola pasada. Apilar `@validate_input` y `@validate_output` no ejecutaría el método subyacente dos veces (cada decorador delega a `func` una sola vez), pero duplicaría la lógica de los wrappers y las transformaciones de datos; `@validate_contract` evita esa duplicación y mantiene el método una sola ejecución.
 
 **Fases Internas:**
 1.  **Fase 1:** Valida Input.

@@ -50,10 +50,12 @@ Para escapar de la "Regla del Uno", se utilizan dos herramientas que **no deben 
 > **Advertencia de Wrye Bash:** Jamás utilizar Wrye Bash para fusionar efectos mágicos, parámetros acústicos o costes de hechizos. Hacerlo multiplicará los costos de maná en overhauls de magia. **Solo Leveled Lists.**
 
 ### Capa 3: Gestión de Assets Físicos (Archivos Sueltos y BSAs)
-Los conflictos gráficos (ej. dos texturas para el mismo ladrillo) se resuelven **EXCLUSIVAMENTE** manipulando la jerarquía de prioridad en el panel izquierdo del Mod Organizer 2 (VFS). 
+Los conflictos gráficos (ej. dos texturas para el mismo ladrillo) se resuelven **en runtime** manipulando la jerarquía de prioridad en el panel izquierdo del Mod Organizer 2 (VFS).
 - En `modlist.txt`, el mod listado **AL FINAL** (más abajo en el panel) tiene la **mayor prioridad** de archivos sueltos (se lee de abajo hacia arriba).
 - No existe fusión a nivel de registros para assets.
 - **Recomendación:** Usar Cathedral Assets Optimizer (CAO) para comprimir archivos sueltos en `.bsa`. Esto previene lecturas de disco innecesarias. Cargas con archivos sueltos sin comprimir son un defecto de rendimiento.
+
+> **Promoción de perfil vs. prioridad en runtime (caja negra de vuelo):** La prioridad del panel izquierdo afecta **qué assets se cargan en runtime**, pero no modifica el perfil real de MO2. Los archivos que determinan el perfil real (`plugins.txt`, `modlist.txt`, `overwrite`) solo se tocan al **promover un diff aprobado** tras el preview HITL. `overwrite` no es un path filesystem `<MO2>/overwrite`; en el broker USVFS debe proporcionarse como el **nombre validado del mod** de overwrite, nunca como ruta absoluta. No mutar el perfil real directamente.
 
 ---
 
@@ -85,6 +87,7 @@ Documentación de los modos de fallo conocidos y reglas operativas específicas.
 ### 3.6 No Grass In Objects (Precache)
 - **Fallo "Zero-bounds":** Carpetas de salida vacías. Un mod de terceros contiene registros con límites nulos `(0,0,0)`. Purgar la dependencia de mesh rota vía Creation Kit antes de reintentar.
 - **Tolerancia Térmica:** Limitar temporalmente la resolución a 800x400 y desactivar ENB/Shaders durante el precacheo para tolerar los escaneos reiterados de celdas sin colgar la GPU.
+- **Muerte dura del proceso y `PrecacheGrass.txt` huérfano:** Un hard-kill (p. ej. `kill -9` o cierre forzoso) durante el precache puede dejar el flag `PrecacheGrass.txt` junto a `SkyrimSE.exe`. Si el juego se lanza con ese flag presente, entrará de nuevo en modo precache y puede entrar en un crash-loop. **Regla idempotente de arranque:** antes de iniciar o reintentar un ritual de grass, Sky-Claw barre el flag `PrecacheGrass.txt` si no hay un ritual de grass activo (lock).
 
 ---
 
