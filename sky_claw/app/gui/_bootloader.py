@@ -76,10 +76,10 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
     the fail-closed auto-deny when nobody answers.
     """
     from sky_claw.app.gui.controllers.ritual_runner import (
+        STORE_KEY_PENDING_HITL,
         make_gui_hitl_notify,
-        pending_hitl_key,
         ritual_auto_approve_armed,
-        ritual_client_id,
+        ritual_tab_id,
     )
 
     guard = ctx.hitl
@@ -92,15 +92,18 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
     # no un flag global del store, así que la aprobación automática queda acotada a
     # exactamente la task del ritual que la armó — nunca un tool_execution
     # concurrente de Telegram/LLM/API.
-    # P1-7: la aprobación se parkea bajo el cliente que lanzó el Ritual
-    # (ritual_client_id, mismo ContextVar-por-task que el auto-approve), no en una
-    # clave global que cualquier pestaña abierta podría accionar.
+    # P1-7: el bridge estampa en el payload la pestaña que lanzó el Ritual
+    # (ritual_tab_id, mismo ContextVar-por-task que el auto-approve), y el panel
+    # solo renderiza la suya. Antes cualquier pestaña abierta podía accionar la
+    # aprobación de una operación destructiva que no inició. El dueño va en el
+    # payload y NO en la clave: los subscribers del store son por clave exacta,
+    # así que una clave por pestaña no dispararía el refresh de la página.
     original_notify = guard._notify
     guard._notify = make_gui_hitl_notify(
         respond=guard.respond,
-        set_pending=lambda client_id, payload: store.set(pending_hitl_key(client_id), payload),
+        set_pending=lambda payload: store.set(STORE_KEY_PENDING_HITL, payload),
         auto_approve_getter=ritual_auto_approve_armed,
-        client_id_getter=ritual_client_id,
+        tab_id_getter=ritual_tab_id,
         delegate=original_notify,
     )
 

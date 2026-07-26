@@ -61,7 +61,7 @@ from sky_claw.app.gui.views.forge_dashboard import (
     _hitl_modal_panel,
     _ritual_feedback_panel,
     _ritual_preflight_panel,
-    current_client_id,
+    current_tab_id,
     modo_local_enabled,
 )
 from sky_claw.config import Config
@@ -706,7 +706,7 @@ def main_page() -> None:
             supervisor=runtime.supervisor,
             store=get_store(),
             auto_approve=modo_local_enabled(),
-            client_id=current_client_id(),
+            tab_id=current_tab_id(),
         ),
         name="gui-ritual-run",
     )

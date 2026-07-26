@@ -199,7 +199,7 @@ async def test_bridge_parks_download_modal_and_never_auto_approves() -> None:
     # Modo local ON: una descarga de red SIEMPRE se confirma a mano (egress).
     notify = make_gui_hitl_notify(
         respond=_respond,
-        set_pending=lambda _cid, payload: pending.append(payload),
+        set_pending=pending.append,
         auto_approve_getter=lambda: True,
         delegate=None,
     )
@@ -214,5 +214,6 @@ async def test_bridge_parks_download_modal_and_never_auto_approves() -> None:
             "reason": "Install LOOT?",
             "detail": "Asset…",
             "url": "https://x/y.zip",
+            "owner_tab": None,
         }
     ]
