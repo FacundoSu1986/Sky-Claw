@@ -341,3 +341,34 @@ def test_el_clear_tolera_que_no_haya_nada_pendiente() -> None:
     clear_answered_hitl(store, "req-A")
 
     assert store.get(STORE_KEY_PENDING_HITL) is None
+
+
+async def test_el_ritual_de_instalacion_tambien_marca_su_dueno() -> None:
+    """El botón "Instalar" despacha un HITL ``download`` y también debe scoparse.
+
+    Es egress de red y por eso NUNCA se auto-aprueba: es de las aprobaciones más
+    sensibles que hay. Sin armar el ContextVar en este camino, la solicitud
+    quedaba sin dueño y era accionable desde cualquier pestaña — el mismo
+    defecto P1-7, entrando por la puerta de instalación.
+    """
+    from sky_claw.app.gui.controllers.ritual_runner import run_ritual_install
+
+    store = ReactiveStore()
+    visto: list[str | None] = []
+
+    class _Installer:
+        async def ensure_loot(self, _install_dir: Any, _session: Any) -> object:
+            # Acá corre el gate HITL del installer, inline en esta misma task.
+            visto.append(ritual_tab_id())
+            raise RuntimeError("corta acá: solo interesa el contexto")
+
+    class _Ctx:
+        tools_installer = _Installer()
+        install_dir = None
+        session = None
+
+    await run_ritual_install("loot", app_context=_Ctx(), store=store, tab_id="tab-A")
+
+    assert visto == ["tab-A"], (
+        "el Ritual de instalación no armó el dueño: la aprobación de descarga queda accionable desde cualquier pestaña"
+    )

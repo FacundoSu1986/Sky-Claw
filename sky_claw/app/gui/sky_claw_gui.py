@@ -719,6 +719,10 @@ def main_page() -> None:
             tool_key,
             app_context=runtime.app_context,
             store=get_store(),
+            # P1-7: la descarga es egress de red y nunca se auto-aprueba, así que
+            # su aprobación también tiene que quedar marcada con la pestaña que
+            # la pidió — si no, era accionable desde cualquier otra.
+            tab_id=current_tab_id(),
         ),
         name="gui-ritual-install",
     )

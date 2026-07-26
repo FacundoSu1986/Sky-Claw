@@ -394,6 +394,7 @@ async def run_ritual_install(
     *,
     app_context: Any,
     store: ReactiveStore,
+    tab_id: str | None = None,
 ) -> None:
     """Install a Ritual's tool via ``ToolsInstaller`` and publish feedback to the store.
 
@@ -403,6 +404,11 @@ async def run_ritual_install(
     ``pending_hitl`` modal slot). The download's HITL approval is requested by the
     installer with ``category="download"`` and routed to the GUI modal by
     :func:`make_gui_hitl_notify` — it is never auto-approved by "Modo local".
+
+    P1-7: ``tab_id`` arma el mismo ContextVar que :func:`run_ritual`, así que la
+    aprobación de descarga queda marcada con la pestaña que apretó "Instalar".
+    Sin esto quedaba sin dueño y era accionable desde cualquier pestaña — y
+    justamente es egress de red, de las aprobaciones más sensibles que hay.
 
     Never raises: a missing installer and any download/extraction failure are turned
     into a ``ritual_feedback`` entry so the click handler (a fire-and-forget task)
@@ -435,6 +441,10 @@ async def run_ritual_install(
     ensure = getattr(installer, method_name)
 
     store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
+    # P1-7: mismo scoping por task que run_ritual. El gate HITL del installer
+    # corre inline en esta misma task, así que ve el ContextVar y marca la
+    # aprobación de descarga con la pestaña que apretó "Instalar".
+    tab_token = _ritual_tab_id.set(tab_id)
     try:
         result = await ensure(install_dir, session)
     except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
@@ -445,6 +455,7 @@ async def run_ritual_install(
         )
         return
     finally:
+        _ritual_tab_id.reset(tab_token)
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
         # Drop the approval prompt tied to this install so no stale modal lingers on
         # the denied/timed-out path where the operator never clicked.
