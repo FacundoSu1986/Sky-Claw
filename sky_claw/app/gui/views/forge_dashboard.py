@@ -38,6 +38,14 @@ from .sections import create_preflight_panel
 # the global store). Keyed to keep the indirection explicit.
 _HITL_CALLBACKS: dict[str, Callable] = {}
 
+# Guard en app.storage.client (P1-7): render_forge_dashboard puede re-ejecutarse
+# muchas veces en la vida de una pestaña — main_page es @ui.refreshable y hay
+# ~10 claves del store suscriptas a su refresh (active_section, mods_list, etc).
+# Sin este guard, cada re-render apilaba otro handler de on_connect que nunca se
+# libera, y una reconexión terminaba disparando _hitl_modal_panel.refresh una
+# vez por cada render que hubo en vez de una sola (review de PR #373).
+_HITL_RECONNECT_HOOK_KEY = "hitl_reconnect_hook_armado"
+
 ACCENT = "#c8a86a"
 ACCENT_BRIGHT = "#ecd9a8"
 GLOW = "rgba(200,168,106,.45)"
@@ -506,7 +514,8 @@ def current_tab_id() -> str | None:
 
     P1-7: identifica al dueño de una aprobación HITL. Mismo patrón defensivo que
     :func:`modo_local_enabled` — sin contexto (tests unitarios, task de fondo)
-    devuelve ``None``, que :func:`pending_hitl_key` mapea a la clave global.
+    devuelve ``None``, que :func:`resolve_pending_hitl` mapea a «visible para
+    todas».
     """
     try:
         return tab_id_de(ui.context.client)
@@ -604,9 +613,18 @@ def _refrescar_hitl_al_conectar() -> None:
     a aparecer nunca — el store no cambia, y es su cambio lo que dispara el
     refresh.
 
+    Se registra UNA sola vez por cliente (``app.storage.client``): un handler
+    de ``on_connect`` que se apila en cada re-render nunca se libera solo, y
+    ``main_page`` (``@ui.refreshable``) re-ejecuta este render en cada cambio de
+    ~10 claves distintas del store durante la vida de la pestaña.
+
     Suprime: sin contexto de cliente (tests unitarios) no hay nada que enganchar.
     """
     with contextlib.suppress(Exception):
+        client_storage = app.storage.client
+        if client_storage.get(_HITL_RECONNECT_HOOK_KEY):
+            return
+        client_storage[_HITL_RECONNECT_HOOK_KEY] = True
         ui.context.client.on_connect(_hitl_modal_panel.refresh)
 
 

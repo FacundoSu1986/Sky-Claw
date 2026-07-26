@@ -40,6 +40,7 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     HITL_OWNER_TAB,
     STORE_KEY_PENDING_HITL,
     clear_answered_hitl,
+    clear_owned_hitl,
     make_gui_hitl_notify,
     resolve_pending_hitl,
     ritual_tab_id,
@@ -254,18 +255,44 @@ async def test_un_dispatch_concurrente_no_hereda_el_cliente() -> None:
     assert ajeno == [None], "una task concurrente heredó la pestaña del Ritual"
 
 
-async def test_el_finally_limpia_la_clave_del_cliente() -> None:
-    """Al terminar el dispatch no puede quedar un modal stale."""
+async def test_el_finally_limpia_la_pendiente_de_este_mismo_dispatch() -> None:
+    """Al terminar el dispatch no puede quedar un modal stale — si es el propio."""
     store = ReactiveStore()
 
     class _Supervisor:
         async def dispatch_tool(self, _name: str, _args: dict) -> dict:
-            store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-A"})
+            store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-A", HITL_OWNER_TAB: "tab-A"})
             return {"success": True}
 
     await run_ritual("loot", supervisor=_Supervisor(), store=store, tab_id="tab-A")
 
     assert not store.get(STORE_KEY_PENDING_HITL), "quedó un modal colgado tras terminar el Ritual"
+
+
+async def test_el_finally_no_desaloja_una_pendiente_ajena() -> None:
+    """Una aprobación de OTRO origen no puede desaparecer al terminar este Ritual.
+
+    ``STORE_KEY_RITUAL_IN_FLIGHT`` solo serializa entre Rituales/instalaciones;
+    no bloquea un ``tool_execution`` concurrente disparado por el agente LLM o
+    Telegram, que comparte la misma clave global del store. Si el `finally` de
+    tab-A limpia a ciegas, esa otra aprobación —que nadie respondió todavía—
+    desaparece de la vista sin que nadie pudiera contestarla, hasta su propio
+    timeout fail-closed.
+    """
+    store = ReactiveStore()
+
+    class _Supervisor:
+        async def dispatch_tool(self, _name: str, _args: dict) -> dict:
+            # Simula al agente concurrente parkeando SU pendiente mientras el
+            # Ritual de tab-A sigue en vuelo.
+            store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-ajena", HITL_OWNER_TAB: "tab-B"})
+            return {"success": True}
+
+    await run_ritual("loot", supervisor=_Supervisor(), store=store, tab_id="tab-A")
+
+    assert store.get(STORE_KEY_PENDING_HITL) == {"request_id": "req-ajena", HITL_OWNER_TAB: "tab-B"}, (
+        "el finally de un Ritual desalojó una aprobación ajena que nadie respondió"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +370,20 @@ def test_el_clear_tolera_que_no_haya_nada_pendiente() -> None:
     assert store.get(STORE_KEY_PENDING_HITL) is None
 
 
+def test_clear_owned_borra_solo_si_el_dueno_coincide() -> None:
+    """``clear_owned_hitl`` es el guard que usa el ``finally`` de cada dispatch."""
+    store = ReactiveStore()
+    store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-A", HITL_OWNER_TAB: "tab-A"})
+
+    clear_owned_hitl(store, "tab-B")
+    assert store.get(STORE_KEY_PENDING_HITL) == {"request_id": "req-A", HITL_OWNER_TAB: "tab-A"}, (
+        "clear_owned_hitl borró una pendiente de OTRA pestaña"
+    )
+
+    clear_owned_hitl(store, "tab-A")
+    assert not store.get(STORE_KEY_PENDING_HITL), "clear_owned_hitl no borró la pendiente de su propio dueño"
+
+
 async def test_el_ritual_de_instalacion_tambien_marca_su_dueno() -> None:
     """El botón "Instalar" despacha un HITL ``download`` y también debe scoparse.
 
@@ -371,4 +412,32 @@ async def test_el_ritual_de_instalacion_tambien_marca_su_dueno() -> None:
 
     assert visto == ["tab-A"], (
         "el Ritual de instalación no armó el dueño: la aprobación de descarga queda accionable desde cualquier pestaña"
+    )
+
+
+async def test_el_finally_de_la_instalacion_no_desaloja_una_pendiente_ajena() -> None:
+    """El mismo cuidado del ``finally`` de ``run_ritual`` aplica a la instalación.
+
+    ``run_ritual`` y ``run_ritual_install`` comparten ``STORE_KEY_RITUAL_IN_FLIGHT``
+    entre sí, pero ninguno de los dos bloquea un ``tool_execution`` concurrente
+    del agente/Telegram, que parkea bajo la misma clave global.
+    """
+    from sky_claw.app.gui.controllers.ritual_runner import run_ritual_install
+
+    store = ReactiveStore()
+
+    class _Installer:
+        async def ensure_loot(self, _install_dir: Any, _session: Any) -> object:
+            store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-ajena", HITL_OWNER_TAB: "tab-B"})
+            return {"success": True}
+
+    class _Ctx:
+        tools_installer = _Installer()
+        install_dir = None
+        session = None
+
+    await run_ritual_install("loot", app_context=_Ctx(), store=store, tab_id="tab-A")
+
+    assert store.get(STORE_KEY_PENDING_HITL) == {"request_id": "req-ajena", HITL_OWNER_TAB: "tab-B"}, (
+        "el finally de la instalación desalojó una aprobación ajena que nadie respondió"
     )

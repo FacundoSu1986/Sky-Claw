@@ -99,6 +99,22 @@ def clear_answered_hitl(store: ReactiveStore, request_id: str) -> None:
         store.set(STORE_KEY_PENDING_HITL, None)
 
 
+def clear_owned_hitl(store: ReactiveStore, tab_id: str | None) -> None:
+    """Limpia la pendiente SOLO si su ``owner_tab`` coincide con ``tab_id``.
+
+    El ``finally`` de ``run_ritual``/``run_ritual_install`` necesita descartar
+    SU PROPIA aprobación si quedó sin responder (denegada/timeout), para no
+    dejar un modal stale — pero un clear incondicional podía desalojar una
+    pendiente AJENA: ``STORE_KEY_RITUAL_IN_FLIGHT`` solo serializa entre
+    Rituales/instalaciones entre sí, no bloquea un ``tool_execution``
+    concurrente del agente LLM o Telegram, que parkea bajo la misma clave
+    global (review de PR #373).
+    """
+    pending = store.get(STORE_KEY_PENDING_HITL)
+    if isinstance(pending, dict) and pending.get(HITL_OWNER_TAB) == tab_id:
+        store.set(STORE_KEY_PENDING_HITL, None)
+
+
 def resolve_pending_hitl(store: ReactiveStore, tab_id: str | None) -> dict[str, Any] | None:
     """La aprobación que ESTA pestaña debe renderizar, o ``None``.
 
@@ -377,10 +393,11 @@ async def run_ritual(
         _ritual_auto_approve.reset(cv_token)  # disarm (scoped a esta task)
         _ritual_tab_id.reset(cid_token)
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
-        # Drop the approval prompt tied to this run so no stale modal lingers on
-        # the timeout/denied path where the operator never clicked (Codex #211).
-        # Se limpia la clave de ESTE cliente (P1-7), no solo la global.
-        store.set(STORE_KEY_PENDING_HITL, None)
+        # Drop the approval prompt tied to THIS run so no stale modal lingers on
+        # the timeout/denied path where the operator never clicked (Codex #211)
+        # — pero solo si es la propia: nunca una ajena que nadie respondió
+        # todavía (review de PR #373).
+        clear_owned_hitl(store, tab_id)
     text, kind = summarize_ritual_result(tool_key, result if isinstance(result, dict) else {})
     store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": text, "type": kind})
     # Surface del reporte de preflight que el dispatch adjuntó (hoy solo LOOT): el
@@ -457,9 +474,10 @@ async def run_ritual_install(
     finally:
         _ritual_tab_id.reset(tab_token)
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
-        # Drop the approval prompt tied to this install so no stale modal lingers on
-        # the denied/timed-out path where the operator never clicked.
-        store.set(STORE_KEY_PENDING_HITL, None)
+        # Drop the approval prompt tied to this install so no stale modal lingers
+        # on the denied/timed-out path — pero solo la propia (mismo cuidado que
+        # run_ritual, review de PR #373).
+        clear_owned_hitl(store, tab_id)
 
     # Seed the resolver env var so the just-installed tool can run immediately,
     # without waiting for the next environment scan to refresh the snapshot.
