@@ -281,6 +281,44 @@ def test_la_gracia_sale_de_config_y_no_esta_hardcodeada() -> None:
     assert isinstance(config.GUI_EXIT_WATCHDOG_GRACE_SECONDS, (int, float))
     assert isinstance(config.GUI_EXIT_WATCHDOG_FIRST_CONNECT_SECONDS, (int, float))
     assert _bootloader._EXIT_WATCHDOG_GRACE_SECONDS == config.GUI_EXIT_WATCHDOG_GRACE_SECONDS
+    # Sin esta segunda igualdad, hardcodear el plazo inicial en _bootloader.py
+    # pasaría sin que nadie se entere: el isinstance de arriba mira config, no
+    # el módulo que la consume.
+    assert _bootloader._EXIT_WATCHDOG_FIRST_CONNECT_SECONDS == config.GUI_EXIT_WATCHDOG_FIRST_CONNECT_SECONDS
+
+
+@pytest.mark.parametrize("crudo", ["nan", "NaN", "inf", "Infinity", "-inf", "1e400"])
+def test_umbral_env_rechaza_valores_no_finitos(crudo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un umbral no finito desactiva el watchdog EN SILENCIO.
+
+    ``float("nan") <= 0`` y ``float("inf") <= 0`` son ambos ``False`` (las
+    comparaciones con NaN siempre lo son, e ``inf`` sí es > 0), así que un
+    ``SKY_CLAW_GUI_EXIT_GRACE_SECONDS=nan`` pasaba el guard y llegaba a
+    ``asyncio.sleep``. Verificado empíricamente: tanto ``sleep(nan)`` como
+    ``sleep(inf)`` NUNCA retornan — la cuenta regresiva no se dispara jamás y
+    el watchdog queda desactivado sin un solo error a la vista, devolviendo
+    justo el bug que este PR viene a cerrar.
+    """
+    from sky_claw.config import _umbral_env
+
+    monkeypatch.setenv("SKY_CLAW_UMBRAL_DE_PRUEBA", crudo)
+
+    assert _umbral_env("SKY_CLAW_UMBRAL_DE_PRUEBA", 15.0) == 15.0, (
+        f"aceptó el umbral no finito '{crudo}': el watchdog queda desactivado en silencio"
+    )
+
+
+@pytest.mark.parametrize(
+    ("crudo", "esperado"),
+    [("30", 30.0), ("7.5", 7.5), ("  20  ", 20.0)],
+)
+def test_umbral_env_acepta_valores_validos(crudo: str, esperado: float, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Guard de no-regresión: el override legítimo tiene que seguir funcionando."""
+    from sky_claw.config import _umbral_env
+
+    monkeypatch.setenv("SKY_CLAW_UMBRAL_DE_PRUEBA", crudo)
+
+    assert _umbral_env("SKY_CLAW_UMBRAL_DE_PRUEBA", 15.0) == esperado
 
 
 # ---------------------------------------------------------------------------

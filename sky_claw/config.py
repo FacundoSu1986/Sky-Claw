@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import pathlib
 import sys
@@ -405,8 +406,18 @@ def _umbral_env(nombre: str, defecto: float) -> float:
     except ValueError:
         logger.warning("%s='%s' no es un número; se usa el default %.1f", nombre, crudo, defecto)
         return defecto
-    if valor <= 0:
-        logger.warning("%s=%.1f debe ser > 0; se usa el default %.1f", nombre, valor, defecto)
+    # ``isfinite`` y no solo ``<= 0``: NaN e infinito ESQUIVAN esa comparación
+    # (con NaN toda comparación es False, e inf sí es > 0) y llegan intactos a
+    # ``asyncio.sleep``, que con cualquiera de los dos NUNCA retorna. Un
+    # ``=nan`` desactivaría el umbral en silencio en vez de fallar ruidoso.
+    # También cubre el desborde: "1e400" parsea a inf sin parecerse a "inf".
+    if not math.isfinite(valor) or valor <= 0:
+        logger.warning(
+            "%s='%s' debe ser un número finito > 0; se usa el default %.1f",
+            nombre,
+            crudo,
+            defecto,
+        )
         return defecto
     return valor
 
