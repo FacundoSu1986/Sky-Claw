@@ -96,6 +96,11 @@ class WebApp:
         self._ws_ui_clients: set[web.WebSocketResponse] = set()
         self._ws_ui_lock = asyncio.Lock()
         self._token_rotating = False
+        # Código/mensaje para un handshake que corre la carrera contra
+        # ``_close_ws_ui_clients`` (rotación o apagado): default = rotación,
+        # que es el único caller hasta que algo más setee ``_token_rotating``.
+        self._ws_ui_reject_code: int = aiohttp.WSCloseCode.POLICY_VIOLATION
+        self._ws_ui_reject_message: bytes = b"Token rotation in progress -- reconnect shortly"
 
     @web.middleware
     async def _correlation_middleware(
@@ -206,21 +211,37 @@ class WebApp:
 
         ``_token_rotating`` actúa acá como "no aceptar handshakes nuevos": la
         rotación lo baja al terminar (``reabrir=True``), el apagado lo deja
-        arriba.
+        arriba. ``_ws_ui_reject_code``/``_ws_ui_reject_message`` viajan con él
+        para que un handshake que corra la carrera contra ESTA llamada (no
+        contra la rotación) reciba el código de cierre correcto — antes
+        estaba hardcodeado a ``POLICY_VIOLATION`` en ``_handle_ws_ui``, así
+        que un handshake que corría contra un apagado igual recibía "reconectá
+        pronto" en vez de "adiós".
+
+        Los sockets ``stale`` se cierran CONCURRENTEMENTE: cerrarlos uno por
+        uno con su propio ``wait_for`` secuencial significa que N clientes
+        colgados multiplican el tiempo total por N × timeout — el apagado
+        seguía siendo efectivamente ilimitado con varios clientes sin ACKear
+        a la vez, aunque cada cierre individual esté acotado.
         """
         async with self._ws_ui_lock:
             self._token_rotating = True
+            self._ws_ui_reject_code = code
+            self._ws_ui_reject_message = message
             stale = list(self._ws_ui_clients)
             self._ws_ui_clients.clear()
+
+        async def _cerrar_uno(ws: web.WebSocketResponse) -> None:
+            try:
+                await asyncio.wait_for(
+                    ws.close(code=code, message=message),
+                    timeout=ROTATION_CLOSE_TIMEOUT_SECONDS,
+                )
+            except (TimeoutError, ConnectionResetError, OSError, RuntimeError) as exc:
+                logger.warning("/ws/ui close durante %s falló: %s", motivo, exc)
+
         try:
-            for ws in stale:
-                try:
-                    await asyncio.wait_for(
-                        ws.close(code=code, message=message),
-                        timeout=ROTATION_CLOSE_TIMEOUT_SECONDS,
-                    )
-                except (TimeoutError, ConnectionResetError, OSError, RuntimeError) as exc:
-                    logger.warning("/ws/ui close durante %s falló: %s", motivo, exc)
+            await asyncio.gather(*(_cerrar_uno(ws) for ws in stale))
         finally:
             if reabrir:
                 async with self._ws_ui_lock:
@@ -256,9 +277,15 @@ class WebApp:
         rotating = False
         async with self._ws_ui_lock:
             if self._token_rotating:
-                # Rotación en curso: admitirlo dejaría vivo un socket con el
-                # token viejo; se rechaza y el cliente reconecta con el nuevo.
+                # Rechazo en curso (rotación o apagado): admitirlo dejaría vivo
+                # un socket con el token viejo, o vivo contra un server que se
+                # está muriendo. El código de cierre viaja con el flag —no
+                # hardcodeado— para que un handshake que corra la carrera
+                # contra un APAGADO reciba GOING_AWAY y no el POLICY_VIOLATION
+                # de la rotación.
                 rotating = True
+                reject_code = self._ws_ui_reject_code
+                reject_message = self._ws_ui_reject_message
             else:
                 self._ws_ui_clients.add(ws)
         if rotating:
@@ -267,10 +294,7 @@ class WebApp:
             # el finally de close_all_ws_ui_clients, otros handshakes
             # concurrentes y los discards del set (un solo cliente colgado
             # congelaría toda la cola).
-            await ws.close(
-                code=aiohttp.WSCloseCode.POLICY_VIOLATION,
-                message=b"Token rotation in progress -- reconnect shortly",
-            )
+            await ws.close(code=reject_code, message=reject_message)
             return ws
         try:
             async for msg in ws:
