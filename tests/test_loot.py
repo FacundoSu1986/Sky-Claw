@@ -407,6 +407,7 @@ class TestLOOTRunner:
         mock_proc.communicate = AsyncMock(return_value=(b"", b"Error: Game path invalid\n"))
         mock_proc.returncode = 1
         mock_proc.kill = MagicMock()
+        mock_proc.pid = 4242
 
         with (
             patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
@@ -421,7 +422,7 @@ class TestLOOTRunner:
         assert record.operation == "loot_sort"
         assert record.tool == "LOOT"
         assert record.exit_code == 1
-        assert record.child_pid == mock_proc.pid
+        assert record.child_pid == 4242
         assert record.stderr == "Error: Game path invalid\n"
         assert record.pipeline_stage == 5
 
