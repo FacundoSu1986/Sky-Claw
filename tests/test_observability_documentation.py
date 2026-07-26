@@ -66,11 +66,19 @@ def test_observabilidad_declara_saturacion_acotada() -> None:
 
 
 def test_deployment_delimita_evidencia_de_release() -> None:
-    _assert_contrato_release(_leer_documento("DEPLOYMENT.md"))
+    deployment = _leer_documento("DEPLOYMENT.md")
+
+    _assert_contrato_release(deployment)
+    assert "SBOM" in deployment
+    assert "SkyClawApp.exe.bundle.json" in deployment
 
 
 def test_release_delimita_evidencia_de_release() -> None:
-    _assert_contrato_release(_leer_documento("docs/operations/release.md"))
+    release = _leer_documento("docs/operations/release.md")
+
+    _assert_contrato_release(release)
+    assert "SBOM" in release
+    assert "SkyClawApp.exe.bundle.json" in release
 
 
 def test_diseno_delimita_evidencia_de_release() -> None:
