@@ -159,7 +159,15 @@ async def test_bridge_opens_modal_when_toggle_off() -> None:
     )
     await notify(_FakeReq("r2", reason="Tool 'execute_loot_sorting'…", detail="payload: <empty>"))
     assert responded == []
-    assert pending == [{"request_id": "r2", "reason": "Tool 'execute_loot_sorting'…", "detail": "payload: <empty>"}]
+    assert pending == [
+        {
+            "request_id": "r2",
+            "reason": "Tool 'execute_loot_sorting'…",
+            "detail": "payload: <empty>",
+            # P1-7: la solicitud viaja marcada con la pestaña dueña (acá, ninguna).
+            "owner_tab": None,
+        }
+    ]
 
 
 async def test_bridge_parks_sandbox_promotion_even_with_auto_approve_on() -> None:
@@ -194,6 +202,7 @@ async def test_bridge_parks_sandbox_promotion_even_with_auto_approve_on() -> Non
             "request_id": "s1",
             "reason": "El ritual 'synthesis' terminó en sandbox",
             "detail": "+ overwrite/Synthesis.esp",
+            "owner_tab": None,
         }
     ]
 

@@ -24,9 +24,10 @@ from nicegui import app, ui
 from sky_claw.app.gui.controllers.ritual_runner import (
     CLIENT_KEY_AUTO_APPROVE,
     RITUAL_INSTALLER_MAP,
-    STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
     STORE_KEY_RITUAL_PREFLIGHT,
+    clear_answered_hitl,
+    resolve_pending_hitl,
 )
 from sky_claw.app.gui.state import get_store
 
@@ -36,6 +37,14 @@ from .sections import create_preflight_panel
 # reach it (set per render in render_forge_dashboard, like the live panels read
 # the global store). Keyed to keep the indirection explicit.
 _HITL_CALLBACKS: dict[str, Callable] = {}
+
+# Guard en app.storage.client (P1-7): render_forge_dashboard puede re-ejecutarse
+# muchas veces en la vida de una pestaña — main_page es @ui.refreshable y hay
+# ~10 claves del store suscriptas a su refresh (active_section, mods_list, etc).
+# Sin este guard, cada re-render apilaba otro handler de on_connect que nunca se
+# libera, y una reconexión terminaba disparando _hitl_modal_panel.refresh una
+# vez por cada render que hubo en vez de una sola (review de PR #373).
+_HITL_RECONNECT_HOOK_KEY = "hitl_reconnect_hook_armado"
 
 ACCENT = "#c8a86a"
 ACCENT_BRIGHT = "#ecd9a8"
@@ -268,6 +277,12 @@ def render_forge_dashboard(
         )
         # Overlays driven by the store (own refreshables → never reset the chat).
         _hitl_modal_panel()
+        # Tras un F5 con una aprobación pendiente, el primer render corre ANTES
+        # del handshake, así que todavía no hay tab_id y el modal no se dibuja.
+        # Nada más lo despertaría: el store no cambia, y es su cambio lo que
+        # dispara el refresh. Re-renderizar al conectar recupera el modal en vez
+        # de dejar la aprobación huérfana hasta su timeout.
+        _refrescar_hitl_al_conectar()
         _ritual_feedback_panel()
         _ritual_preflight_panel()
         _sidebar(active, conflicts, pending, active_section, callbacks, connected)
@@ -477,6 +492,37 @@ def modo_local_enabled() -> bool:
         return False
 
 
+def tab_id_de(client: object) -> str | None:
+    """Identidad ESTABLE de la pestaña de ``client``, o ``None`` sin handshake.
+
+    ``tab_id`` y NO ``client.id``: este último es un ``uuid4()`` por instancia y
+    cada carga de página crea un Client nuevo, así que scopear por él hacía
+    desaparecer el modal al apretar F5 y dejaba la aprobación huérfana en el
+    backend hasta su timeout. El ``tab_id`` lo manda el navegador en el
+    handshake —por eso NiceGUI tiene ``old_tab_id`` + ``copy_tab`` para migrar
+    el storage de la pestaña— y sobrevive la recarga.
+
+    Devuelve ``None`` antes del handshake: no hay identidad todavía y no se
+    inventa una. Seam puro para poder testear sin NiceGUI.
+    """
+    tab_id = getattr(client, "tab_id", None)
+    return str(tab_id) if tab_id else None
+
+
+def current_tab_id() -> str | None:
+    """Identidad de ESTA pestaña, o ``None`` sin contexto de cliente.
+
+    P1-7: identifica al dueño de una aprobación HITL. Mismo patrón defensivo que
+    :func:`modo_local_enabled` — sin contexto (tests unitarios, task de fondo)
+    devuelve ``None``, que :func:`resolve_pending_hitl` mapea a «visible para
+    todas».
+    """
+    try:
+        return tab_id_de(ui.context.client)
+    except Exception:
+        return None
+
+
 def _set_modo_local(value: bool) -> None:
     # Suppress: no client context (unit tests / background) — nothing to persist.
     with contextlib.suppress(Exception):
@@ -536,8 +582,12 @@ def _modo_local_panel() -> None:
 
 # ── HITL APPROVAL MODAL + RITUAL FEEDBACK (store-driven overlays) ─────────────────
 def _respond_hitl(request_id: str, approved: bool) -> None:
-    """Clear the pending prompt and forward the decision to the HITL guard."""
-    get_store().set(STORE_KEY_PENDING_HITL, None)
+    """Clear the pending prompt and forward the decision to the HITL guard.
+
+    P1-7: limpia la pendiente SOLO si es esta misma solicitud (compara
+    ``request_id``). Un clear incondicional desalojaba una que nadie respondió.
+    """
+    clear_answered_hitl(get_store(), request_id)
     fn = _HITL_CALLBACKS.get("respond")
     if callable(fn):
         fn(request_id, approved)
@@ -553,6 +603,31 @@ def _hitl_modal_visible(pending: dict[str, Any] | None, active_section: str) -> 
     return bool(pending) and active_section != "Downloads"
 
 
+def _refrescar_hitl_al_conectar() -> None:
+    """Re-renderiza el modal HITL cuando la pestaña completa su handshake.
+
+    ``tab_id`` recién existe después del handshake (NiceGUI lo setea con el
+    valor que manda el navegador), pero el contenido de la página se construye
+    antes. Sin este re-render, un F5 con una aprobación pendiente resolvía la
+    identidad como ``None`` en el único render que ocurre, y el modal no volvía
+    a aparecer nunca — el store no cambia, y es su cambio lo que dispara el
+    refresh.
+
+    Se registra UNA sola vez por cliente (``app.storage.client``): un handler
+    de ``on_connect`` que se apila en cada re-render nunca se libera solo, y
+    ``main_page`` (``@ui.refreshable``) re-ejecuta este render en cada cambio de
+    ~10 claves distintas del store durante la vida de la pestaña.
+
+    Suprime: sin contexto de cliente (tests unitarios) no hay nada que enganchar.
+    """
+    with contextlib.suppress(Exception):
+        client_storage = app.storage.client
+        if client_storage.get(_HITL_RECONNECT_HOOK_KEY):
+            return
+        client_storage[_HITL_RECONNECT_HOOK_KEY] = True
+        ui.context.client.on_connect(_hitl_modal_panel.refresh)
+
+
 @ui.refreshable
 def _hitl_modal_panel() -> None:
     """Overlay asking the operator to approve/deny a destructive Ritual.
@@ -562,7 +637,9 @@ def _hitl_modal_panel() -> None:
     there the inline gate takes over. Buttons forward the decision through the
     ``on_hitl_respond`` callback; the guard's timeout still auto-denies.
     """
-    pending = get_store().get(STORE_KEY_PENDING_HITL)
+    # P1-7: la aprobación de ESTE cliente (la del Ritual que él lanzó), o una sin
+    # dueño. Nunca la de otra pestaña: era accionable desde cualquier sesión.
+    pending = resolve_pending_hitl(get_store(), current_tab_id())
     if not _hitl_modal_visible(pending, str(get_store().get("active_section") or "")):
         return
     request_id = str(pending.get("request_id", ""))
