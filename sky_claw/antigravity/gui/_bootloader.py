@@ -22,6 +22,10 @@ from sky_claw.antigravity.gui.views.forge_dashboard import (
 )
 from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
 from sky_claw.app_context import AppContext, _resolve_config_path_static, start_full
+from sky_claw.config import (
+    GUI_EXIT_WATCHDOG_FIRST_CONNECT_SECONDS,
+    GUI_EXIT_WATCHDOG_GRACE_SECONDS,
+)
 from sky_claw.logging_config import correlation_id_var, install_loop_exception_handler
 
 logger = logging.getLogger("sky_claw")
@@ -29,6 +33,12 @@ logger = logging.getLogger("sky_claw")
 # P1 §3.2 — bounded LLM call. The GUI shows a snappy error rather than
 # hanging on an unresponsive provider.
 _GUI_CHAT_TIMEOUT_SECONDS: float = 30.0
+
+# Umbrales del watchdog de cierre. Viven en config.py (convención §3: nada de
+# umbrales hardcodeados) y se pueden subir por variable de entorno cuando un
+# reconnect legítimo tarda más de la cuenta.
+_EXIT_WATCHDOG_GRACE_SECONDS: float = GUI_EXIT_WATCHDOG_GRACE_SECONDS
+_EXIT_WATCHDOG_FIRST_CONNECT_SECONDS: float = GUI_EXIT_WATCHDOG_FIRST_CONNECT_SECONDS
 
 
 def _make_telemetry_store_bridge(store: ReactiveStore):
@@ -292,6 +302,132 @@ async def _gui_mod_update_loop(ctx: AppContext) -> None:
             await asyncio.sleep(5)
 
 
+def contar_clientes_con_socket_vivo(instances: Mapping[str, Any]) -> int:
+    """Cuenta clientes NiceGUI con al menos un socket realmente vivo.
+
+    NO alcanza con ``Client.has_socket_connection``: en NiceGUI 3.12.1 es
+    literalmente ``tab_id is not None``, y ``Client.handle_disconnect`` hace
+    ``self.tab_id = None`` INCONDICIONALMENTE. En un reconnect solapado —el
+    socket de reemplazo completa el handshake antes de que se procese la
+    desconexión del viejo— ``_num_connections`` sigue positivo (hay socket
+    vivo) pero ``tab_id`` ya quedó en None, y ``handle_handshake`` nunca lo
+    restaura. Contar por esa propiedad daría CERO y el watchdog apagaría la app
+    con el usuario conectado.
+
+    ``_num_connections`` es privado, así que se degrada a la propiedad pública
+    si una versión futura de NiceGUI lo saca.
+    """
+    total = 0
+    for cliente in instances.values():
+        conexiones = getattr(cliente, "_num_connections", None)
+        if conexiones is not None:
+            if any(n > 0 for n in conexiones.values()):
+                total += 1
+        elif getattr(cliente, "has_socket_connection", False):
+            total += 1
+    return total
+
+
+class ExitWatchdog:
+    """Apaga la app cuando el último cliente se va y no vuelve.
+
+    Cierra el círculo del post-mortem del WinError 10048. Las PRs #361→#367
+    hicieron que el proceso PUEDA morir limpio; faltaba qué se lo pide. En el
+    ``.exe`` no hay nada:
+
+    - ``sky_claw.spec`` compila con ``console=False`` (subsystem
+      ``WINDOWS_GUI``): sin consola adjunta no existe ``CTRL_CLOSE_EVENT``, así
+      que ``SetConsoleCtrlHandler`` no tiene a qué engancharse.
+    - ``ui.run`` corre con ``show=True`` y SIN ``native=True``: abre el
+      navegador del sistema, y cerrar esa pestaña no le manda nada al proceso.
+
+    Sin este watchdog ``app.on_shutdown`` nunca corre en el ``.exe``: el
+    proceso queda vivo reteniendo 8080/8765 y el arranque siguiente falla con
+    ``WinError 10048``.
+
+    El período de gracia es imprescindible: un F5, una reconexión de socket o
+    navegar entre páginas desconectan al cliente momentáneamente, y apagar al
+    primer disconnect cerraría la app cada vez que el usuario refresca.
+
+    Dependencias inyectadas (``contar_clientes``/``apagar``) para que la lógica
+    sea testeable sin levantar NiceGUI.
+    """
+
+    def __init__(
+        self,
+        *,
+        grace_seconds: float,
+        contar_clientes: Callable[[], int],
+        apagar: Callable[[], None],
+    ) -> None:
+        self._grace_seconds = grace_seconds
+        self._contar_clientes = contar_clientes
+        self._apagar = apagar
+        self._cuenta_regresiva: asyncio.Task[None] | None = None
+
+    def iniciar(self, *, plazo_primera_conexion: float) -> None:
+        """Arma el plazo para la PRIMERA conexión.
+
+        Si el usuario cierra el navegador mientras la página todavía carga —
+        antes de que complete el handshake de Socket.IO— nunca hubo socket, así
+        que nunca hay ``on_disconnect`` y sin esto no se programaría NADA: el
+        proceso quedaría vivo para siempre con 8080/8765 tomados. El plazo es
+        generoso porque cubre el arranque en frío del ``.exe``, el escaneo del
+        antivirus y el lanzamiento del navegador.
+        """
+        self._programar(plazo_primera_conexion, "nadie llegó a conectarse")
+
+    def cliente_conectado(self, _client: object = None) -> None:
+        """Volvió alguien: cancela la cuenta regresiva en curso, si la hay."""
+        self.cancelar()
+
+    def cliente_desconectado(self, _client: object = None) -> None:
+        """Arranca la cuenta regresiva si se fue el ÚLTIMO cliente.
+
+        El chequeo del conteo no es redundante con el re-chequeo al vencer: sin
+        él, con dos pestañas abiertas la cuenta arrancaría cuando se va la
+        PRIMERA, y al irse la segunda ya quedaría casi agotada — el usuario
+        perdería la ventana de gracia que se le promete.
+        """
+        if self._contar_clientes() > 0:
+            return
+        self._programar(self._grace_seconds, "se fue el último cliente")
+
+    def cancelar(self) -> None:
+        """Detiene la cuenta regresiva (reconexión, o apagado ya iniciado por otra vía)."""
+        if self._cuenta_regresiva is not None:
+            self._cuenta_regresiva.cancel()
+            self._cuenta_regresiva = None
+
+    def _programar(self, espera: float, motivo: str) -> None:
+        """Programa el apagado (idempotente: no apila cuentas regresivas)."""
+        if self._cuenta_regresiva is not None and not self._cuenta_regresiva.done():
+            return
+        self._cuenta_regresiva = asyncio.create_task(self._esperar_y_apagar(espera, motivo), name="gui-exit-watchdog")
+
+    async def _esperar_y_apagar(self, espera: float, motivo: str) -> None:
+        try:
+            await asyncio.sleep(espera)
+            # Re-chequeo AUTORITATIVO: el conteo al vencer es el que manda. Si
+            # un cliente se reconectó sin que cliente_conectado() llegara a
+            # cancelar (carrera), esto lo salva. Importa especialmente desde
+            # NiceGUI 3.0, cuyo on_disconnect también corre en las reconexiones.
+            if self._contar_clientes() > 0:
+                logger.debug("Watchdog de cierre: hay clientes vivos al vencer el plazo, no se apaga")
+                return
+            logger.info("Watchdog de cierre: %s tras %.1fs, apagando la app", motivo, espera)
+            self._apagar()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Convención §2.5: loguear y RE-LANZAR lo desconocido. Tragarlo
+            # dejaría el proceso vivo con los puertos tomados —el fallo que
+            # esto viene a evitar— y sin más rastro que una línea de log; el
+            # loop-exception-handler del proceso sí lo hace visible.
+            logger.exception("Watchdog de cierre falló: el proceso puede quedar vivo con los puertos tomados")
+            raise
+
+
 async def _teardown_runtime(runtime: Mapping[str, Any]) -> None:
     """Cierra el runtime de la GUI. Cada paso corre aunque el anterior falle.
 
@@ -331,8 +467,22 @@ async def _teardown_runtime(runtime: Mapping[str, Any]) -> None:
             logger.exception("Paso de apagado '%s' falló; se continúa con los siguientes", nombre)
 
 
-def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
-    """Start the NiceGUI server. Bootstraps AppContext and calls ui.run()."""
+def run_nicegui(
+    args,
+    *,
+    port: int,
+    title: str,
+    show: bool = True,
+    exit_on_last_client: bool = False,
+) -> None:
+    """Start the NiceGUI server. Bootstraps AppContext and calls ui.run().
+
+    ``exit_on_last_client`` arma el :class:`ExitWatchdog`: al irse el último
+    cliente y no volver dentro del período de gracia, se dispara
+    ``app.shutdown()``. Default ``False`` a propósito — el modo web es un
+    SERVIDOR y no puede morirse porque se fue el último navegador; solo el
+    modo GUI (el .exe de escritorio) lo activa.
+    """
     from nicegui import app, ui
 
     config_path = _resolve_config_path_static(args)
@@ -420,7 +570,37 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
 
     app.on_startup(_bootstrap)
 
+    if exit_on_last_client:
+        from nicegui import Client
+
+        watchdog = ExitWatchdog(
+            grace_seconds=_EXIT_WATCHDOG_GRACE_SECONDS,
+            contar_clientes=lambda: contar_clientes_con_socket_vivo(Client.instances),
+            apagar=app.shutdown,
+        )
+        _runtime["exit_watchdog"] = watchdog
+        app.on_connect(watchdog.cliente_conectado)
+        app.on_disconnect(watchdog.cliente_desconectado)
+
+        async def _armar_plazo_primera_conexion() -> None:
+            # Dentro de on_startup: necesita el loop corriendo para crear la task.
+            watchdog.iniciar(plazo_primera_conexion=_EXIT_WATCHDOG_FIRST_CONNECT_SECONDS)
+
+        app.on_startup(_armar_plazo_primera_conexion)
+        logger.info(
+            "Watchdog de cierre armado: %.0fs tras irse el último cliente, %.0fs si nadie se conecta",
+            _EXIT_WATCHDOG_GRACE_SECONDS,
+            _EXIT_WATCHDOG_FIRST_CONNECT_SECONDS,
+        )
+
     async def _shutdown() -> None:
+        # Frena la cuenta regresiva antes del teardown: si el apagado lo
+        # disparó otra vía, una task del watchdog viva sería una task de fondo
+        # más que drenar (y llamaría app.shutdown() sobre un server que ya está
+        # cerrando).
+        reloj = _runtime.get("exit_watchdog")
+        if isinstance(reloj, ExitWatchdog):
+            reloj.cancelar()
         await _teardown_runtime(_runtime)
 
     app.on_shutdown(_shutdown)
