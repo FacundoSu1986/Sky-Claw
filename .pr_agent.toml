@@ -1,7 +1,9 @@
 [config]
-# Configuración del motor para usar Google Gemini Flash (15 RPM / 1500 RPD en nivel gratuito)
-model = "gemini/gemini-1.5-flash"
-fallback_models = ["gemini/gemini-2.0-flash", "gemini/gemini-1.5-pro"]
+# Configuración del motor para usar Google Gemini (Modelos activos 2026 en Nivel Gratuito Flash)
+model = "gemini/gemini-3.5-flash"
+fallback_models = ["gemini/gemini-3.6-flash", "gemini/gemini-3.5-flash-lite"]
+# Obligamos a que cualquier error en la API o modelo se propague y falle en rojo con traza en GitHub Actions
+propagate_tool_errors = true
 
 [pr_reviewer]
 # Desactivamos sugerencias estéticas y análisis de tickets externos que causan crash al referenciar PRs
