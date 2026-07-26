@@ -134,3 +134,7 @@ sky_claw/.llm-chat-history/
 
 # Reporte de auditoría — mantener fuera del repo
 AUDIT_PANEL_REPORT.md
+
+# Artefactos locales de auditoría y extracción
+/auditorias_preparadas/
+/export_script.py

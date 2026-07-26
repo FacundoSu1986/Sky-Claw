@@ -1,0 +1,42 @@
+name: "Adversarial PR Reviewer (Gemini AI)"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write # Permiso necesario para publicar revisiones en el PR
+  contents: read       # Permiso necesario para leer datos del repositorio
+
+jobs:
+  adversarial_review:
+    runs-on: ubuntu-latest
+    # Evitamos ejecutar el bot en borradores (drafts) para ahorrar tokens
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Checkout del código y scripts
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias del bot
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r adversarial-pr-reviewer/requirements.txt
+
+      - name: Ejecutar Revisor Adversarial con Gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Puedes cambiar el modelo en cualquier momento sin tocar el código:
+          # Opciones: gemini-3.1-pro-preview, gemini-3.6-flash-preview, gemini-2.5-pro, etc.
+          GEMINI_MODEL: "gemini-3.1-pro-preview"
+          # Configura en "true" si deseas que el bot bloquee (Request Changes) al encontrar defectos de ALTA gravedad
+          BLOCK_PR_ON_HIGH_SEVERITY: "false"
+        run: |
+          python adversarial-pr-reviewer/pr_reviewer.py
