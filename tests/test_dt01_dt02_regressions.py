@@ -29,7 +29,7 @@ def _import_broadcast_server():
     The stub lets the import succeed without that filesystem dependency.
     """
     with patch.dict(sys.modules, {"ast_guardian": MagicMock()}):
-        from sky_claw.antigravity.comms.ws_daemon import UIBroadcastServer
+        from sky_claw.app.comms.ws_daemon import UIBroadcastServer
 
         return UIBroadcastServer
 
@@ -43,7 +43,7 @@ class TestUIBroadcastRateLimiter:
         # __init__ never touches real token files.  Patching at instantiation
         # time (not import time) keeps this robust regardless of whether
         # another test imported ws_daemon first.
-        with patch("sky_claw.antigravity.comms.ws_daemon.AuthTokenManager", return_value=MagicMock()):
+        with patch("sky_claw.app.comms.ws_daemon.AuthTokenManager", return_value=MagicMock()):
             return cls()
 
     def test_client_timestamps_uses_deque(self):
@@ -134,7 +134,7 @@ class TestAgentCommDispatchQueue:
 
     def _make_client(self, on_message=None):
         """Build a minimal AgentCommunicationClient."""
-        from sky_claw.antigravity.gui.agent_communication import (
+        from sky_claw.app.gui.agent_communication import (
             AgentCommunicationClient,
         )
 
@@ -152,8 +152,8 @@ class TestAgentCommDispatchQueue:
 
     def test_daemon_url_rejects_plaintext_non_loopback(self):
         """SEC-WS: NiceGUI clients must enforce the shared WS URL policy."""
-        from sky_claw.antigravity.comms._transport import InsecureTransportError
-        from sky_claw.antigravity.gui.agent_communication import AgentCommunicationClient
+        from sky_claw.app.comms._transport import InsecureTransportError
+        from sky_claw.app.gui.agent_communication import AgentCommunicationClient
 
         with pytest.raises(InsecureTransportError):
             AgentCommunicationClient(daemon_url="ws://evil.example.com/ws")
@@ -257,7 +257,7 @@ class TestScraperAgentGatewayBoundary:
     @pytest.mark.asyncio
     async def test_api_request_without_gateway_fails_closed(self):
         """Verify that ScraperAgent constructor rejects None gateway (fail-closed)."""
-        from sky_claw.antigravity.scraper.scraper_agent import ScraperAgent
+        from sky_claw.app.scraper.scraper_agent import ScraperAgent
 
         db = MagicMock()
         # Gateway is now mandatory; None is rejected at construction time.

@@ -315,10 +315,10 @@ class TestXEditRunnerInteractiveLaunch:
 class TestXEditTool:
     @pytest.mark.asyncio
     async def test_tool_no_runner_configured(self, tmp_path: pathlib.Path) -> None:
-        from sky_claw.antigravity.agent.tools import AsyncToolRegistry
-        from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-        from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
-        from sky_claw.antigravity.security.path_validator import PathValidator
+        from sky_claw.app.agent.tools import AsyncToolRegistry
+        from sky_claw.app.db.async_registry import AsyncModRegistry
+        from sky_claw.app.orchestrator.sync_engine import SyncEngine
+        from sky_claw.app.security.path_validator import PathValidator
         from sky_claw.local.mo2.vfs import MO2Controller
 
         profile_dir = tmp_path / "profiles" / "Default"
@@ -349,10 +349,10 @@ class TestXEditTool:
 
     @pytest.mark.asyncio
     async def test_tool_with_runner(self, tmp_path: pathlib.Path) -> None:
-        from sky_claw.antigravity.agent.tools import AsyncToolRegistry
-        from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-        from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
-        from sky_claw.antigravity.security.path_validator import PathValidator
+        from sky_claw.app.agent.tools import AsyncToolRegistry
+        from sky_claw.app.db.async_registry import AsyncModRegistry
+        from sky_claw.app.orchestrator.sync_engine import SyncEngine
+        from sky_claw.app.security.path_validator import PathValidator
         from sky_claw.local.mo2.vfs import MO2Controller
 
         profile_dir = tmp_path / "profiles" / "Default"

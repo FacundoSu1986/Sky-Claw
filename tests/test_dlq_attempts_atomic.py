@@ -28,8 +28,8 @@ from typing import Any
 import aiosqlite
 import pytest
 
-from sky_claw.antigravity.core.dlq_manager import DLQManager, DLQRow
-from sky_claw.antigravity.core.event_bus import Event
+from sky_claw.app.core.dlq_manager import DLQManager, DLQRow
+from sky_claw.app.core.event_bus import Event
 
 
 def _make_failing_handler() -> Callable[[Event], Awaitable[None]]:

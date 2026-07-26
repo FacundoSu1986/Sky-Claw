@@ -30,7 +30,7 @@ import asyncio
 
 import pytest
 
-from sky_claw.antigravity.gui._bootloader import ExitWatchdog
+from sky_claw.app.gui._bootloader import ExitWatchdog
 
 GRACIA = 0.05
 
@@ -181,7 +181,7 @@ async def test_una_falla_del_apagado_no_se_traga_en_silencio() -> None:
     vivo con los puertos tomados —justo el fallo que esto viene a evitar— y sin
     rastro más allá de una línea de log.
     """
-    from sky_claw.antigravity.gui._bootloader import ExitWatchdog
+    from sky_claw.app.gui._bootloader import ExitWatchdog
 
     def _apagar_roto() -> None:
         raise RuntimeError("shutdown explotó")
@@ -211,7 +211,7 @@ async def test_cuenta_clientes_con_socket_vivo_pese_al_reconnect_solapado() -> N
     en None. Contar por ``has_socket_connection`` daría CERO y el watchdog
     apagaría la app con el usuario conectado.
     """
-    from sky_claw.antigravity.gui._bootloader import contar_clientes_con_socket_vivo
+    from sky_claw.app.gui._bootloader import contar_clientes_con_socket_vivo
 
     class _ClienteReconnectSolapado:
         has_socket_connection = False  # tab_id quedó en None
@@ -229,7 +229,7 @@ async def test_cuenta_clientes_con_socket_vivo_pese_al_reconnect_solapado() -> N
 
 def test_cuenta_clientes_degrada_a_has_socket_connection() -> None:
     """Si una versión futura de NiceGUI saca ``_num_connections``, no romper."""
-    from sky_claw.antigravity.gui._bootloader import contar_clientes_con_socket_vivo
+    from sky_claw.app.gui._bootloader import contar_clientes_con_socket_vivo
 
     class _ClienteSinPrivado:
         has_socket_connection = True
@@ -276,7 +276,7 @@ async def test_la_primera_conexion_cancela_el_plazo_inicial() -> None:
 def test_la_gracia_sale_de_config_y_no_esta_hardcodeada() -> None:
     """Convención §3: nada de umbrales hardcodeados — deben salir de ``config.py``."""
     from sky_claw import config
-    from sky_claw.antigravity.gui import _bootloader
+    from sky_claw.app.gui import _bootloader
 
     assert isinstance(config.GUI_EXIT_WATCHDOG_GRACE_SECONDS, (int, float))
     assert isinstance(config.GUI_EXIT_WATCHDOG_FIRST_CONNECT_SECONDS, (int, float))
@@ -328,7 +328,7 @@ def test_umbral_env_acepta_valores_validos(crudo: str, esperado: float, monkeypa
 
 def test_gui_mode_arma_el_watchdog(monkeypatch) -> None:
     """El modo GUI (el .exe de escritorio) debe cerrarse al cerrar la ventana."""
-    from sky_claw.antigravity.modes import gui_mode
+    from sky_claw.app.modes import gui_mode
 
     capturado: dict[str, object] = {}
     monkeypatch.setattr(gui_mode, "run_nicegui", lambda args, **kw: capturado.update(kw))
@@ -342,7 +342,7 @@ def test_gui_mode_arma_el_watchdog(monkeypatch) -> None:
 
 def test_web_mode_no_arma_el_watchdog(monkeypatch) -> None:
     """El modo web es un SERVIDOR: no puede morirse porque se fue el último navegador."""
-    from sky_claw.antigravity.modes import web_mode
+    from sky_claw.app.modes import web_mode
 
     capturado: dict[str, object] = {}
     monkeypatch.setattr(web_mode, "run_nicegui", lambda args, **kw: capturado.update(kw))

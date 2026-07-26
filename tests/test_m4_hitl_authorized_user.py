@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 class TestTelegramModeAuthorizedUser:
     async def test_run_telegram_pasa_authorized_user_id(self) -> None:
-        from sky_claw.antigravity.modes import telegram_mode
+        from sky_claw.app.modes import telegram_mode
 
         ctx = MagicMock()
         ctx.router = MagicMock()
@@ -40,7 +40,7 @@ class TestTelegramModeAuthorizedUser:
 
 class TestReloadTelegramAuthorizedUser:
     async def test_reload_pasa_authorized_user_id_como_int(self) -> None:
-        from sky_claw.antigravity.comms.frontend_bridge import FrontendBridge
+        from sky_claw.app.comms.frontend_bridge import FrontendBridge
 
         bridge = FrontendBridge.__new__(FrontendBridge)
         ctx = MagicMock()
@@ -55,9 +55,9 @@ class TestReloadTelegramAuthorizedUser:
         fake_polling.start = AsyncMock()
 
         with (
-            patch("sky_claw.antigravity.comms.telegram.TelegramWebhook") as mock_webhook,
-            patch("sky_claw.antigravity.comms.telegram_polling.TelegramPolling", return_value=fake_polling),
-            patch("sky_claw.antigravity.comms.telegram_sender.TelegramSender"),
+            patch("sky_claw.app.comms.telegram.TelegramWebhook") as mock_webhook,
+            patch("sky_claw.app.comms.telegram_polling.TelegramPolling", return_value=fake_polling),
+            patch("sky_claw.app.comms.telegram_sender.TelegramSender"),
         ):
             ok = await bridge._reload_telegram(token="123:ABC", chat_id="55501")
 
@@ -66,7 +66,7 @@ class TestReloadTelegramAuthorizedUser:
         assert mock_webhook.call_args.kwargs["authorized_user_id"] == 55501
 
     async def test_reload_sin_chat_id_usa_none(self) -> None:
-        from sky_claw.antigravity.comms.frontend_bridge import FrontendBridge
+        from sky_claw.app.comms.frontend_bridge import FrontendBridge
 
         bridge = FrontendBridge.__new__(FrontendBridge)
         ctx = MagicMock()
@@ -77,9 +77,9 @@ class TestReloadTelegramAuthorizedUser:
         fake_polling.start = AsyncMock()
 
         with (
-            patch("sky_claw.antigravity.comms.telegram.TelegramWebhook") as mock_webhook,
-            patch("sky_claw.antigravity.comms.telegram_polling.TelegramPolling", return_value=fake_polling),
-            patch("sky_claw.antigravity.comms.telegram_sender.TelegramSender"),
+            patch("sky_claw.app.comms.telegram.TelegramWebhook") as mock_webhook,
+            patch("sky_claw.app.comms.telegram_polling.TelegramPolling", return_value=fake_polling),
+            patch("sky_claw.app.comms.telegram_sender.TelegramSender"),
         ):
             ok = await bridge._reload_telegram(token="123:ABC", chat_id="")
 

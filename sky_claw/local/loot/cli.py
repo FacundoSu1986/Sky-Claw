@@ -19,13 +19,13 @@ from asyncio.exceptions import TimeoutError as AsyncTimeoutError
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sky_claw.antigravity.core.windows_interop import translate_path_if_wsl
+from sky_claw.app.core.windows_interop import translate_path_if_wsl
 from sky_claw.local.loot.parser import LOOTOutputParser, LOOTResult
 
 if TYPE_CHECKING:
     import pathlib
 
-    from sky_claw.antigravity.security.path_validator import PathValidator
+    from sky_claw.app.security.path_validator import PathValidator
 
 logger = logging.getLogger(__name__)
 

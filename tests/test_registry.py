@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.db.registry."""
+"""Tests for sky_claw.app.db.registry."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from sky_claw.antigravity.db.registry import ModRegistry
+from sky_claw.app.db.registry import ModRegistry
 
 if TYPE_CHECKING:
     import pathlib

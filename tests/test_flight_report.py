@@ -17,13 +17,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sky_claw.antigravity.orchestrator.preview.flight_report import (
+from sky_claw.app.orchestrator.preview.flight_report import (
     FlightReport,
     build_flight_report,
     compose_flight_report_from_journal,
     render_flight_report_markdown,
 )
-from sky_claw.antigravity.orchestrator.preview.manifest import (
+from sky_claw.app.orchestrator.preview.manifest import (
     ActionManifest,
     ConflictPair,
     LoadOrderDiff,
@@ -33,7 +33,7 @@ from sky_claw.antigravity.orchestrator.preview.manifest import (
 if TYPE_CHECKING:
     import pathlib
 
-    from sky_claw.antigravity.db.journal import OperationJournal
+    from sky_claw.app.db.journal import OperationJournal
 
 
 def _manifiesto() -> ActionManifest:
@@ -58,7 +58,7 @@ def _manifiesto() -> ActionManifest:
 
 
 async def _journal_abierto(tmp_path: pathlib.Path) -> OperationJournal:
-    from sky_claw.antigravity.db.journal import OperationJournal
+    from sky_claw.app.db.journal import OperationJournal
 
     journal = OperationJournal(tmp_path / "journal.db")
     await journal.open()
@@ -165,7 +165,7 @@ class TestPersistencia:
     async def test_round_trip_sobre_reinicio_del_journal(self, tmp_path: pathlib.Path) -> None:
         """Persistir → recuperar tras 'reinicio' (nueva instancia de journal
         sobre la misma DB) → el informe se reconstruye idéntico."""
-        from sky_claw.antigravity.db.journal import OperationJournal
+        from sky_claw.app.db.journal import OperationJournal
 
         db_path = tmp_path / "journal.db"
         report = build_flight_report(manifest=_manifiesto(), transaction_status="committed")

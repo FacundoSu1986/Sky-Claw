@@ -5,7 +5,7 @@
 > **Estado:** Implementado.
 >
 > **Fuentes canónicas:** `sky_claw/config.py`,
-> `sky_claw/antigravity/core/path_resolver.py` y
+> `sky_claw/app/core/path_resolver.py` y
 > `local_scripts/scripts/first_run.py`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.

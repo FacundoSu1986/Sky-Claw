@@ -7,16 +7,16 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
-from sky_claw.antigravity.db.journal import (
+from sky_claw.app.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
+from sky_claw.app.db.journal import (
     JournalConnectionError,
     OperationJournal,
     OperationStatus,
     OperationType,
     TransactionStatus,
 )
-from sky_claw.antigravity.db.rollback_manager import RollbackManager
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.db.rollback_manager import RollbackManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 
 
 @pytest.fixture

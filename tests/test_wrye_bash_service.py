@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.db.locks import DistributedLockManager, LockLeaseLostError
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.db.locks import DistributedLockManager, LockLeaseLostError
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools.wrye_bash_runner import WryeBashExecutionError, WryeBashResult
 from sky_claw.local.tools.wrye_bash_service import (
     BASHED_PATCH_RESOURCE_ID,
@@ -228,7 +228,7 @@ async def test_lock_contention_devuelve_error(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
 ) -> None:
     """Contención de lock (LockAcquisitionError) → dict de error serializable."""
-    from sky_claw.antigravity.db.locks import LockAcquisitionError
+    from sky_claw.app.db.locks import LockAcquisitionError
 
     runner = _runner_returning()
     svc = _make_service(lock_manager, snapshot_manager, runner)
@@ -333,7 +333,7 @@ async def test_lease_perdido_al_cerrar_devuelve_error(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
 ) -> None:
     """Un LockLeaseLostError en __aexit__ (renovación fallida) no crashea el dispatch."""
-    from sky_claw.antigravity.db.locks import LockLeaseLostError
+    from sky_claw.app.db.locks import LockLeaseLostError
 
     class _LeaseLostLock:
         def __init__(self, **kwargs: object) -> None:
@@ -583,7 +583,7 @@ async def test_cn_emite_manifest_antes_de_correr_y_flight_report_tras_commit(
     svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
 
     with patch(
-        "sky_claw.antigravity.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        "sky_claw.app.orchestrator.preview.flight_report.compose_flight_report_from_journal",
         AsyncMock(return_value=MagicMock()),
     ):
         result = await svc.execute_pipeline(profile="Default")
@@ -639,7 +639,7 @@ async def test_cn_flight_report_best_effort_no_rompe_exito(
     svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
 
     with patch(
-        "sky_claw.antigravity.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        "sky_claw.app.orchestrator.preview.flight_report.compose_flight_report_from_journal",
         AsyncMock(return_value=MagicMock()),
     ):
         result = await svc.execute_pipeline(profile="Default")

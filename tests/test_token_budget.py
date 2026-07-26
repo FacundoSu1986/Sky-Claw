@@ -17,12 +17,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from sky_claw.antigravity.agent.token_budget import (
+from sky_claw.app.agent.token_budget import (
     BudgetVerdict,
     TokenBudgetConfig,
     TokenBudgetManager,
 )
-from sky_claw.antigravity.agent.token_circuit_breaker import (
+from sky_claw.app.agent.token_circuit_breaker import (
     TokenCircuitBreaker,
     TokenCircuitBreakerConfig,
 )

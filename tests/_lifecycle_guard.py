@@ -14,7 +14,7 @@ import time
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleManager
+    from sky_claw.app.core.db_lifecycle import DatabaseLifecycleManager
 
 logger = logging.getLogger(__name__)
 

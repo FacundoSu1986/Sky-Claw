@@ -21,8 +21,8 @@ from unittest.mock import patch
 import aiosqlite
 import pytest
 
-from sky_claw.antigravity.core.errors import VaultStorageError
-from sky_claw.antigravity.security.credential_vault import CredentialVault
+from sky_claw.app.core.errors import VaultStorageError
+from sky_claw.app.security.credential_vault import CredentialVault
 
 
 async def _wait_for_semaphore_waiter(sem: asyncio.Semaphore) -> None:
@@ -61,7 +61,7 @@ class TestCredentialVaultDynamicSalt:
 
     def test_init_succeeds_with_dynamic_salt(self, vault_factory) -> None:
         """CredentialVault initialises without error using os.urandom-backed salt."""
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = vault_factory()
         assert vault.fernet is not None
         assert vault.db_path is not None
@@ -78,7 +78,7 @@ class TestCredentialVaultDynamicSalt:
                 "_get_or_create_salt",
                 return_value=fixed_salt,
             ),
-            patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"),
+            patch("sky_claw.app.security.credential_vault.restrict_to_owner"),
         ):
             vault = CredentialVault(db_path=db_path, master_key="key")
             # If the salt were NOT 32 bytes PBKDF2HMAC would raise; reaching here
@@ -93,7 +93,7 @@ class TestCredentialVaultDynamicSalt:
         salt_a = b"\x01" * 32
         salt_b = b"\x02" * 32
 
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             with patch.object(CredentialVault, "_get_or_create_salt", return_value=salt_a):
                 vault_a = CredentialVault(db_path=db_path, master_key=master_key)
 
@@ -111,7 +111,7 @@ class TestCredentialVaultDynamicSalt:
         """Ensure the old static salt constant is NOT present in the vault module."""
         import inspect
 
-        import sky_claw.antigravity.security.credential_vault as vault_module
+        import sky_claw.app.security.credential_vault as vault_module
 
         source = inspect.getsource(vault_module)
         assert "sky_claw_static_salt_for_vault" not in source, (
@@ -144,7 +144,7 @@ class TestCredentialVaultConnectionPool:
     @pytest.mark.asyncio
     async def test_concurrent_reads_succeed(self, vault_factory, tmp_path) -> None:
         """Multiple concurrent get_secret calls must not deadlock or raise."""
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = vault_factory(pool_size=3)
         await vault.initialize()
         await vault.set_secret("svc", "value")
@@ -160,7 +160,7 @@ class TestCredentialVaultConnectionPool:
     async def test_pool_timeout_raises_storage_error(self, tmp_path) -> None:
         """Exhausting the pool without releasing must trigger VaultStorageError."""
         db_path = str(tmp_path / "timeout.db")
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = CredentialVault(
                 db_path=db_path,
                 master_key="key",
@@ -182,7 +182,7 @@ class TestCredentialVaultConnectionPool:
     @pytest.mark.asyncio
     async def test_pool_closes_connections(self, vault_factory, tmp_path) -> None:
         """close() must drain and close all pooled connections."""
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = vault_factory(pool_size=2)
         await vault.initialize()
         # Warm up the pool by creating a couple of connections.
@@ -195,7 +195,7 @@ class TestCredentialVaultConnectionPool:
         """pool_size <= 0 must raise ValueError before touching salt files."""
         with (
             patch(
-                "sky_claw.antigravity.security.credential_vault.CredentialVault._get_or_create_salt",
+                "sky_claw.app.security.credential_vault.CredentialVault._get_or_create_salt",
                 side_effect=AssertionError("salt should not be read"),
             ),
             pytest.raises(ValueError, match="pool_size must be a positive integer"),
@@ -209,10 +209,10 @@ class TestCredentialVaultConnectionPool:
     def test_salt_dir_is_injected_without_reading_home(self, tmp_path, monkeypatch) -> None:
         """Tests and sandboxed deployments must avoid implicit writes to home."""
         monkeypatch.setattr(
-            "sky_claw.antigravity.security.credential_vault.Path.home",
+            "sky_claw.app.security.credential_vault.Path.home",
             lambda: (_ for _ in ()).throw(AssertionError("Path.home must not be used")),
         )
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = CredentialVault(
                 db_path=str(tmp_path / "vault.db"),
                 master_key="key",
@@ -225,7 +225,7 @@ class TestCredentialVaultConnectionPool:
     @pytest.mark.asyncio
     async def test_set_secret_storage_error_raises_vault_storage_error(self, vault_factory) -> None:
         """set_secret must not hide SQLite/storage faults behind False."""
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = vault_factory()
 
         @asynccontextmanager
@@ -241,7 +241,7 @@ class TestCredentialVaultConnectionPool:
     @pytest.mark.asyncio
     async def test_pool_reuses_connections(self, vault_factory, tmp_path) -> None:
         """Sequential operations should reuse connections from the pool."""
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = vault_factory(pool_size=1)
         await vault.initialize()
         await vault.set_secret("reuse", "yes")
@@ -253,7 +253,7 @@ class TestCredentialVaultConnectionPool:
     async def test_acquire_suspended_on_close_fails_closed(self, vault_factory) -> None:
         """Audit #2: a task suspended on the semaphore when close() runs must
         raise VaultStorageError, not receive a connection from a closed pool."""
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = vault_factory(pool_size=1)
         await vault.initialize()
         pool = vault._pool
@@ -293,7 +293,7 @@ class TestCredentialVaultConnectionPool:
     async def test_close_wakes_semaphore_waiters_promptly(self, vault_factory) -> None:
         """Audit #4: close() must wake tasks blocked on the semaphore instead of
         leaving them stalled until the full pool timeout elapses."""
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = vault_factory(pool_size=1)
         await vault.initialize()
         pool = vault._pool
@@ -345,7 +345,7 @@ class TestCierreEstrictoDelPool:
     @pytest.mark.asyncio
     async def test_close_espera_a_conexiones_prestadas(self, vault_factory) -> None:
         """close() no retorna con una conexión prestada; al devolverse queda cerrada."""
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = vault_factory(pool_size=1)
         await vault.initialize()
         pool = vault._pool
@@ -381,7 +381,7 @@ class TestCierreEstrictoDelPool:
     async def test_close_hace_force_close_tras_timeout(self, vault_factory, caplog) -> None:
         """Si una conexión prestada no se devuelve dentro del presupuesto del pool,
         close() la cierra a la fuerza, deja un warning y retorna igual."""
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = vault_factory(pool_size=1)
         await vault.initialize()
         pool = vault._pool
@@ -420,7 +420,7 @@ class TestCierreEstrictoDelPool:
         creando su conexión mientras close() corre debe fallar cerrado — la
         conexión recién creada muere antes del yield, nunca se entrega ni se
         re-encola en el pool."""
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = vault_factory(pool_size=1)
         # Sin initialize(): el pool arranca vacío y fuerza _create_connection.
         pool = vault._pool
@@ -469,7 +469,7 @@ class TestCierreEstrictoDelPool:
         """Review PR #263: si close() expira su espera mientras un acquire sigue
         dentro de _create_connection, la conexión que nazca después NO debe
         entregarse ni quedar viva — el borrower falla cerrado."""
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             vault = vault_factory(pool_size=1)
         # Sin initialize(): el pool arranca vacío y fuerza _create_connection.
         pool = vault._pool

@@ -169,7 +169,7 @@ class TestChatNotConfigured:
     @pytest.mark.asyncio
     async def test_chat_returns_503_without_router(self, aiohttp_client) -> None:
         """POST /api/chat returns 503 when router is None."""
-        from sky_claw.antigravity.web.app import WebApp
+        from sky_claw.app.web.app import WebApp
 
         web_app = WebApp(
             router=None,
@@ -187,7 +187,7 @@ class TestChatNotConfigured:
     @pytest.mark.asyncio
     async def test_chat_works_with_router(self, aiohttp_client) -> None:
         """POST /api/chat returns 200 when router is available."""
-        from sky_claw.antigravity.web.app import WebApp
+        from sky_claw.app.web.app import WebApp
 
         mock_router = AsyncMock()
         mock_router.chat = AsyncMock(return_value="Hola, soy Sky-Claw")
@@ -214,7 +214,7 @@ class TestChatNotConfigured:
 class TestWebAppNullRouter:
     def test_constructor_accepts_none_router(self) -> None:
         """WebApp can be constructed with router=None."""
-        from sky_claw.antigravity.web.app import WebApp
+        from sky_claw.app.web.app import WebApp
 
         web_app = WebApp(
             router=None,

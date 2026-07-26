@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.scraper.reddit_client.RedditKnowledgeResolver."""
+"""Tests for sky_claw.app.scraper.reddit_client.RedditKnowledgeResolver."""
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
-from sky_claw.antigravity.scraper.reddit_client import (
+from sky_claw.app.scraper.reddit_client import (
     RedditClientConfig,
     RedditKnowledgeResolver,
 )
-from sky_claw.antigravity.security.network_gateway import NetworkGateway
+from sky_claw.app.security.network_gateway import NetworkGateway
 
 VALID_UA = "script:sky_claw:v0.1.0 (by /u/tester)"
 
@@ -480,7 +480,7 @@ class TestOwnedSessionConnector:
 
     @pytest.mark.asyncio
     async def test_owned_session_uses_gateway_connector(self) -> None:
-        from sky_claw.antigravity.security.network_gateway import (
+        from sky_claw.app.security.network_gateway import (
             EgressPolicy,
             GatewayTCPConnector,
         )

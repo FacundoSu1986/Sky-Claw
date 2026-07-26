@@ -6,7 +6,7 @@
 > requieren evidencia local.
 >
 > **Fuentes canónicas:** `sky_claw/logging_config.py`,
-> `sky_claw/app_context.py`, `sky_claw/antigravity/db/` y
+> `sky_claw/app_context.py`, `sky_claw/app/db/` y
 > `sky_claw/local/mo2/`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.

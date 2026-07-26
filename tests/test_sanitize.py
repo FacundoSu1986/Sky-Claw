@@ -1,4 +1,4 @@
-"""Comprehensive tests for sky_claw.antigravity.security.sanitize.
+"""Comprehensive tests for sky_claw.app.security.sanitize.
 
 Covers:
 - sanitize_for_prompt: control character stripping, prompt injection patterns,
@@ -17,8 +17,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sky_claw.antigravity.security import sanitize as sanitize_module
-from sky_claw.antigravity.security.sanitize import (
+from sky_claw.app.security import sanitize as sanitize_module
+from sky_claw.app.security.sanitize import (
     _MAX_JSON_SIZE,
     DEFAULT_MAX_LENGTH,
     load_injection_patterns,

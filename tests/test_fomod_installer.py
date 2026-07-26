@@ -7,7 +7,7 @@ import zipfile
 
 import pytest
 
-from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.fomod.installer import (
     FomodInstaller,
     _is_safe_path,

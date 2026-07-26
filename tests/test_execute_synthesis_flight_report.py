@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.preview.action_manifest import build_action_manifest
-from sky_claw.antigravity.orchestrator.tool_strategies.execute_synthesis import (
+from sky_claw.app.orchestrator.preview.action_manifest import build_action_manifest
+from sky_claw.app.orchestrator.tool_strategies.execute_synthesis import (
     ExecuteSynthesisPipelineStrategy,
 )
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 async def real_journal(tmp_path: pathlib.Path):  # noqa: ANN201
-    from sky_claw.antigravity.db.journal import OperationJournal
+    from sky_claw.app.db.journal import OperationJournal
 
     j = OperationJournal(tmp_path / "flight_journal.db")
     await j.open()
@@ -94,7 +94,7 @@ def _manifest_writing_factory(clone: SimpleNamespace):  # noqa: ANN202
 
 
 async def _flight_reports_ultima_tx(journal: Any) -> list[Any]:
-    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+    from sky_claw.app.orchestrator.preview.flight_report import FlightReport
 
     (ultima,) = await journal.list_recent_transactions(limit=1)
     ops = await journal.get_operations_by_transaction(ultima.transaction_id)

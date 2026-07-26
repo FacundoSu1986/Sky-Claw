@@ -1,0 +1,517 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import uuid
+from collections import defaultdict, deque
+
+import websockets
+from websockets.exceptions import (
+    ConnectionClosed,
+    ConnectionClosedError,
+    InvalidMessage,
+)
+
+from sky_claw.app.comms._transport import (
+    AuthError,
+    assert_safe_ws_url,
+    authenticated_connect,
+)
+from sky_claw.app.security.auth_token_manager import AuthTokenManager
+
+# Set-up standard 2026 logging
+logger = logging.getLogger("SkyClaw.TelegramDaemon")
+
+
+class TelegramDaemon:
+    """
+    TELEGRAM WS DAEMON (STANDARD 2026)
+
+    Asynchronous client for the Telegram Gateway.
+    Orchestrates command injection into the LLM Router.
+    """
+
+    def __init__(
+        self,
+        router,
+        session,
+        gateway_url="ws://localhost:8080",
+        ui_broadcast: UIBroadcastServer | None = None,
+        *,
+        token_dir: str | None = None,
+    ):
+        self.router = router
+        self.session = session
+        self.gateway_url = assert_safe_ws_url(gateway_url)
+        self._token_dir = token_dir
+        self.ws = None
+        self._is_running = False
+        self._running_lock = asyncio.Lock()
+        self.ui_broadcast = ui_broadcast
+
+        # F2 (auditoría Zero-Trust 2026-07-18): el guardrail AST se importa de
+        # forma lazy y FAIL-CLOSED. Antes se hacía un `sys.path.append` de una
+        # ruta derivada del árbol de instalación + `import ast_guardian` a nivel
+        # de módulo: la ruta no existe en el checkout, así que TODO import de
+        # ws_daemon reventaba (incluido UIBroadcastServer, que no lo usa). Ahora
+        # solo TelegramDaemon lo exige, y si falta aborta con un error claro en
+        # vez de dejar el canal WS de Telegram sin auditar el payload.
+        try:
+            import ast_guardian
+        except ImportError as exc:
+            raise RuntimeError(
+                "TelegramDaemon requiere el guardrail AST (ast_guardian); "
+                "sin él el canal WS de Telegram queda deshabilitado por seguridad."
+            ) from exc
+        self.guardian = ast_guardian.ASTGuardian()
+
+        # T1-01: Tracking de tasks de dispatch para evitar GC silencioso.
+        # asyncio.create_task() no mantiene referencias fuertes, asi que sin
+        # este set el GC puede recolectar la task mientras esta pendiente
+        # ("Task was destroyed but it is pending") y las excepciones del
+        # handler desaparecen sin loggearse.
+        self._pending_dispatch: set[asyncio.Task[None]] = set()
+
+    async def start(self):
+        """Infinite reconnection loop with exponential backoff."""
+        async with self._running_lock:
+            self._is_running = True
+        backoff = 2.0
+        logger.info(f"🚀 Iniciando TelegramDaemon (Cliente WS) -> {self.gateway_url}")
+
+        while self._is_running:
+            try:
+                # Use a custom connection timeout to prevent hanging
+                async with authenticated_connect(self.gateway_url, token_dir=self._token_dir, open_timeout=10) as ws:
+                    self.ws = ws
+                    logger.info("✅ Enlace establecido con Telegram Gateway (Stateless Perimeter Layer).")
+                    backoff = 2.0  # Reset backoff upon successful connection
+                    await self._listen_loop()
+            except (
+                AuthError,
+                ConnectionClosed,
+                ConnectionClosedError,
+                ConnectionRefusedError,
+                OSError,
+            ) as e:
+                if not self._is_running:
+                    break
+                logger.warning(f"⚠️ Enlace perdido con Gateway ({type(e).__name__}). Reconectando en {backoff:.1f}s...")
+                self.ws = None
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 1.5, 60.0)
+            except Exception as e:
+                logger.error(f"❌ Fallo fatal en TelegramDaemon: {e}")
+                await asyncio.sleep(5)
+
+    async def stop(self):
+        """Graceful shutdown of the daemon.
+
+        T1-01: cancela las tasks de dispatch pendientes y las awaitea para que
+        sus excepciones se loggeen via ``_on_dispatch_done`` antes de cerrar.
+
+        **PR #142 review fix**: el orden importa. Antes drenabamos pending y
+        DESPUES cerrabamos el ws — pero un comando frame entrante mientras
+        ``ws.close()`` await-eaba podia agregar una task nueva a
+        ``_pending_dispatch`` post-gather, dejandola viva al retornar stop().
+
+        Ahora:
+          1. ``_is_running = False`` (guard para que ``_listen_loop`` no acepte
+             commands nuevos — defense in depth).
+          2. ``ws.close()`` PRIMERO: fuerza la salida del ``_listen_loop``
+             (async for termina al recibir el close frame). Despues de esto
+             es imposible que se creen tasks de dispatch nuevas.
+          3. Drain pending: cancela y await-ea cualquier task que ya estaba
+             en vuelo (incluido lo que se haya creado entre el ultimo yield
+             del loop y el close).
+        """
+        async with self._running_lock:
+            self._is_running = False
+
+        # Close ws FIRST para forzar salida del _listen_loop y prevenir
+        # creacion de tasks nuevas mientras drenamos.
+        if self.ws:
+            await self.ws.close()
+            logger.info("🛑 TelegramDaemon detenido de forma segura.")
+
+        # Drain pending DESPUES del close — captura cualquier task que se
+        # haya creado durante el ultimo yield del loop antes del close.
+        if self._pending_dispatch:
+            pending = list(self._pending_dispatch)
+            for task in pending:
+                task.cancel()
+            # asyncio.gather con return_exceptions=True garantiza que ninguna
+            # CancelledError aborte el drenaje completo.
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _listen_loop(self):
+        """Main listening loop for incoming Telegram messages.
+
+        M-01: Exception handling is split into three tiers:
+        1. ``json.JSONDecodeError`` — transient, logged and skipped.
+        2. ``InvalidMessage`` — fatal protocol violation, triggers immediate
+           shutdown to prevent processing corrupted frames.
+        3. Generic ``Exception`` — unexpected, logged with full traceback
+           but does not kill the loop (data-plane resilience).
+        """
+        async for message in self.ws:
+            try:
+                data = json.loads(message)
+                msg_id = data.get("id")
+
+                # Zero Trust ACK (Mandatory by standard 2026)
+                ack = {
+                    "id": msg_id,
+                    "type": "ack",
+                    "status": "received",
+                    "timestamp": time.time(),
+                }
+                await self.ws.send(json.dumps(ack))
+
+                # Command injection for asynchronous processing
+                if data.get("type") == "command":
+                    # PR #142 review: guard defensivo — si stop() ya inicio
+                    # shutdown, no aceptar tasks nuevas. La race principal la
+                    # resuelve cerrar ws antes del drain en stop(), pero este
+                    # check elimina la ventana entre el ultimo message frame
+                    # y la efectiva propagacion del close.
+                    if not self._is_running:
+                        logger.debug("Comando descartado: daemon en shutdown")
+                        continue
+                    # T1-01: añadir la task al set para mantener una referencia
+                    # fuerte hasta que termine. El callback discard + log errors.
+                    task = asyncio.create_task(
+                        self._inject_to_router(data),
+                        name=f"ws-dispatch-{msg_id}",
+                    )
+                    self._pending_dispatch.add(task)
+                    task.add_done_callback(self._on_dispatch_done)
+
+            except asyncio.CancelledError:
+                # T1-07: shutdown ordenado — propagar sin loggear como error.
+                raise
+            except json.JSONDecodeError:
+                logger.error("🚫 Recibido JSON malformado desde el Gateway.")
+            except InvalidMessage as e:
+                # M-01: Fatal protocol violation — the WS frame is structurally
+                # corrupt. Continuing would risk processing garbage data.
+                logger.critical(
+                    "FATAL: Invalid WebSocket message from Gateway — "
+                    "shutting down listen loop to prevent corrupt processing: %s",
+                    e,
+                )
+                break
+            except Exception as e:
+                logger.exception(f"⚠️ Error procesando flujo de WebSocket: {e}")
+
+    def _on_dispatch_done(self, task: asyncio.Task[None]) -> None:
+        """Callback ejecutado cuando una task de dispatch termina.
+
+        T1-01: liberar la referencia en ``_pending_dispatch`` y loggear cualquier
+        excepción no manejada del handler. Sin esto, el task podía ser GC'd
+        mientras estaba pendiente y las excepciones se perderían silenciosamente.
+        """
+        self._pending_dispatch.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "Error no manejado en _inject_to_router: %s",
+                exc,
+                exc_info=exc,
+            )
+
+    async def _inject_to_router(self, data):
+        """Dispatches the command to the LLM agent and relays response via WS."""
+        payload = data.get("payload", {})
+        text = payload.get("text")
+        msg_id = data.get("id")
+
+        if not text:
+            logger.debug(f"Payload vacío en mensaje {msg_id}. Ignorando.")
+            return
+
+        # Standardized chat session for Telegram bridge
+        chat_id = f"tg-{data.get('metadata', {}).get('user_id', 'standard')}"
+
+        try:
+            logger.debug(f"📥 Procesando comando [Telegram]: '{text[:60]}...'")
+
+            # Misión 2: Auditoría Zero-Trust Async
+            is_safe = await self.guardian.execute_audit("telegram_payload", text)
+            if not is_safe:
+                logger.warning("🚫 Auditoría AST falló. Comando descartado por políticas Zero-Trust.")
+                if self.ws and getattr(self.ws, "open", False):
+                    err_msg = json.dumps(
+                        {
+                            "id": str(uuid.uuid4()),
+                            "type": "error",
+                            "payload": {"text": "🛡️ Sistema: Payload inyectado fue bloqueado preventivamente."},
+                        }
+                    )
+                    await self.ws.send(err_msg)
+                return
+
+            # 100% async non-blocking injection with telemetry
+            async def _progress_callback(status: str, progress: int):
+                if self.ws and self.ws.open:
+                    telemetry = {
+                        "id": str(uuid.uuid4()),
+                        "type": "telemetry",
+                        "status": status,
+                        "progress": progress,
+                        "metadata": {"reply_to": msg_id},
+                    }
+                    await self.ws.send(json.dumps(telemetry))
+
+            response = await self.router.chat(
+                text,
+                self.session,
+                chat_id=chat_id,
+                metadata=data.get("metadata", {}),
+                progress_callback=_progress_callback,
+            )
+
+            # Construct standard 2026 response payload
+            if self.ws and self.ws.open:
+                res_payload = {
+                    "id": str(uuid.uuid4()),
+                    "type": "response",
+                    "action": "reply",
+                    "payload": {"text": response},
+                    "metadata": {
+                        "reply_to": msg_id,
+                        "channel": "telegram",
+                        "processed_at": time.time(),
+                    },
+                }
+                await self.ws.send(json.dumps(res_payload))
+                logger.info(f"📤 Respuesta enviada al Gateway (ID Relacionado: {msg_id})")
+
+            # ── NEW: Broadcast to NiceGUI UI clients ──
+            if self.ui_broadcast:
+                await self.ui_broadcast.broadcast(
+                    {
+                        "type": "agent_result",
+                        "action": "chat_response",
+                        "payload": {"text": response},
+                        "metadata": {"channel": "telegram", "reply_to": msg_id},
+                    }
+                )
+
+        except Exception as e:
+            logger.exception(f"❌ Error en Bridge Agent (Injection Layer): {e}")
+            if self.ws and self.ws.open:
+                err_payload = {
+                    "type": "error",
+                    "payload": {"text": f"SISTEMA: Error en procesamiento del comando: {e!s}"},
+                }
+                await self.ws.send(json.dumps(err_payload))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UI BROADCAST SERVER — WebSocket endpoint for NiceGUI clients
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class UIBroadcastServer:
+    """
+    Lightweight WS server that NiceGUI's AgentCommunicationClient connects to.
+
+    Validates X-Auth-Token on upgrade, then pushes AGENT_RESULT / BROADCAST
+    events to all connected UI clients.
+
+    H-03: Per-client rate limiting via sliding-window timestamp tracking.
+    Each client is allowed ``_RATE_LIMIT_MAX`` messages per
+    ``_RATE_LIMIT_WINDOW`` seconds.  Exceeding clients are disconnected.
+    """
+
+    _RATE_LIMIT_WINDOW: float = 10.0  # seconds
+    _RATE_LIMIT_MAX: int = 60  # max messages per window
+    # Close code sent when the X-Auth-Token check fails.  Must stay in sync
+    # with AgentCommunicationClient._AUTH_REJECTION_CLOSE_CODES so the client
+    # recognises the rejection and drives its 5-minute brute-force lockout.
+    # Deliberately distinct from 1008 (POLICY_VIOLATION) — used for rate
+    # limiting — which must NOT count toward the auth lockout.
+    _AUTH_REJECTION_CLOSE_CODE: int = 4001
+
+    # F6a: código de cierre en la rotación del token. 1008 (POLICY_VIOLATION) y
+    # NO 4001: el 4001 alimenta el lockout de brute-force del cliente GUI, y una
+    # rotación no es un rechazo de credenciales — el cliente debe releer el
+    # token y reconectar. Paridad con WebApp.close_all_ws_ui_clients.
+    _ROTATION_CLOSE_CODE: int = 1008
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 8765):
+        self.host = host
+        self.port = port
+        self._clients: set = set()
+        self._server = None
+        self._auth = AuthTokenManager()
+        self._logger = logging.getLogger("SkyClaw.UIBroadcast")
+        # H-03: per-client message timestamps for rate limiting.
+        # DT-01: deque gives O(1) popleft vs list.pop(0) O(n).
+        self._client_timestamps: defaultdict[int, deque[float]] = defaultdict(deque)
+        # F6: serializa el acceso a _clients (add/discard del handler vs cierre
+        # en rotación) y señaliza una rotación en curso para rechazar handshakes
+        # que lleguen en la ventana. Espejo de WebApp._ws_ui_lock/_token_rotating.
+        self._clients_lock = asyncio.Lock()
+        self._token_rotating = False
+
+    @staticmethod
+    def _request_header(websocket, name: str) -> str:
+        """Read a handshake header across websockets legacy and 16.x APIs."""
+        headers = getattr(websocket, "request_headers", None)
+        if headers is None:
+            request = getattr(websocket, "request", None)
+            headers = getattr(request, "headers", None)
+        if headers is None:
+            return ""
+        return headers.get(name, "")
+
+    async def start(self) -> None:
+        """Generate auth token and start the WS server."""
+        self._auth.generate()
+        await self._auth.start_rotation()
+        # F6a: al rotar el token, invalidar los sockets vivos (si no, sobreviven
+        # con el token viejo). Paridad con WebApp.create_app().
+        self._auth.register_rotation_callback(self._close_all_clients)
+        self._server = await websockets.serve(
+            self._handler,
+            self.host,
+            self.port,
+        )
+        self._logger.info(f"🌐 UIBroadcastServer listening on ws://{self.host}:{self.port}/ws/ui")
+
+    async def _close_all_clients(self) -> None:
+        """Cierra todo cliente vivo con 1008 (callback de rotación de token, F6a).
+
+        ``_token_rotating`` se setea dentro del lock antes de vaciar el set: un
+        handshake concurrente que tome el lock después ve el flag y se rechaza
+        en vez de sobrevivir a la ventana de rotación. El close() corre FUERA
+        del lock — un cliente que no ACKea el frame no debe congelar la cola.
+        """
+        async with self._clients_lock:
+            self._token_rotating = True
+            stale = list(self._clients)
+            self._clients.clear()
+        try:
+            for ws in stale:
+                try:
+                    await ws.close(self._ROTATION_CLOSE_CODE, "Token rotated -- reconnect required")
+                except (ConnectionClosed, ConnectionClosedError, OSError) as exc:
+                    self._logger.warning("Cierre de cliente en rotación falló: %s", exc)
+        finally:
+            async with self._clients_lock:
+                self._token_rotating = False
+        self._logger.info("Cerrados %d cliente(s) UI por rotación de token.", len(stale))
+
+    async def stop(self) -> None:
+        """Shutdown the server and revoke the token."""
+        if self._server:
+            self._server.close()
+            await self._server.wait_closed()
+        await self._auth.stop_rotation()
+        self._auth.revoke()
+        self._logger.info("🛑 UIBroadcastServer stopped.")
+
+    async def broadcast(self, message: dict) -> None:
+        """Send a JSON message to all connected UI clients."""
+        if not self._clients:
+            return
+
+        payload = json.dumps(message)
+        disconnected = set()
+
+        # F6b: iterar sobre un snapshot inmutable. `await ws.send` cede el loop
+        # y el handler puede add/discard sobre _clients en ese punto → mutar el
+        # set vivo durante la iteración lanza "Set changed size during iteration".
+        for ws in list(self._clients):
+            try:
+                await ws.send(payload)
+            except (ConnectionClosed, ConnectionClosedError):
+                disconnected.add(ws)
+            except Exception as e:
+                self._logger.error(f"Broadcast error: {e}")
+                disconnected.add(ws)
+
+        self._clients -= disconnected
+
+    async def _handler(self, websocket, path: str = "") -> None:
+        """Handle incoming UI client connections with token validation.
+
+        H-03: Each inbound message is rate-checked.  If the client exceeds
+        ``_RATE_LIMIT_MAX`` messages within the sliding ``_RATE_LIMIT_WINDOW``,
+        the connection is terminated with code 1008 (POLICY_VIOLATION).
+        """
+        # ── Auth gate ──
+        token = self._request_header(websocket, "X-Auth-Token")
+        if not self._auth.validate(token):
+            self._logger.warning(f"🚫 Rejected UI client — invalid token from {websocket.remote_address}")
+            await websocket.close(self._AUTH_REJECTION_CLOSE_CODE, "Unauthorized")
+            return
+
+        client_id = id(websocket)
+        # F6a: registrar bajo lock y rechazar si hay una rotación en curso — un
+        # socket que valida con el token viejo justo cuando rota no debe quedar
+        # en el set (cierra la carrera validate-viejo → rotación → add). El
+        # rechazo usa 1008 (rotación), no 4001 (lockout).
+        async with self._clients_lock:
+            if self._token_rotating:
+                await websocket.close(self._ROTATION_CLOSE_CODE, "Token rotated -- reconnect required")
+                return
+            self._clients.add(websocket)
+        self._logger.info(f"✅ UI client connected ({len(self._clients)} total)")
+
+        try:
+            # Listen for commands from the UI (chat messages, etc.)
+            async for raw in websocket:
+                # ── H-03: Per-client rate limiting (sliding window) ──
+                now = time.monotonic()
+                timestamps = self._client_timestamps[client_id]
+                # Prune entries outside the window
+                cutoff = now - self._RATE_LIMIT_WINDOW
+                while timestamps and timestamps[0] < cutoff:
+                    timestamps.popleft()
+                if len(timestamps) >= self._RATE_LIMIT_MAX:
+                    self._logger.warning(
+                        "🚫 Rate limit exceeded for UI client %s (%d msgs in %.0fs). Disconnecting.",
+                        websocket.remote_address,
+                        len(timestamps),
+                        self._RATE_LIMIT_WINDOW,
+                    )
+                    await websocket.close(1008, "Rate limit exceeded")
+                    return
+                timestamps.append(now)
+
+                try:
+                    data = json.loads(raw)
+                    msg_type = data.get("type", "")
+
+                    if msg_type == "command":
+                        # Forward to router via an event or direct call
+                        self._logger.debug(f"📥 UI command received: {data.get('command')}")
+                        # Emit ack
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    "id": data.get("id", str(uuid.uuid4())),
+                                    "type": "ack",
+                                    "status": "received",
+                                    "timestamp": time.time(),
+                                }
+                            )
+                        )
+
+                except json.JSONDecodeError:
+                    self._logger.error("Malformed JSON from UI client.")
+
+        except (ConnectionClosed, ConnectionClosedError):
+            pass
+        finally:
+            async with self._clients_lock:
+                self._clients.discard(websocket)
+            self._client_timestamps.pop(client_id, None)
+            self._logger.info(f"UI client disconnected ({len(self._clients)} remaining)")

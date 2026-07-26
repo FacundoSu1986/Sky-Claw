@@ -28,12 +28,12 @@ from typing import Any
 
 import pytest
 
-from sky_claw.antigravity.core.db_lifecycle import (
+from sky_claw.app.core.db_lifecycle import (
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
 )
-from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
-from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+from sky_claw.app.security.path_validator import PathValidator
 
 
 @pytest.fixture

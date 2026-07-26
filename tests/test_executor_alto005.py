@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.agent.executor import ManagedToolExecutor
-from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+from sky_claw.app.agent.executor import ManagedToolExecutor
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 
 
 class TestManagedToolExecutorPathValidator:
@@ -28,7 +28,7 @@ class TestManagedToolExecutorPathValidator:
         modding_root = tmp_path / "Modding"
         modding_root.mkdir()
         with patch(
-            "sky_claw.antigravity.agent.executor.SystemPaths.modding_root",
+            "sky_claw.app.agent.executor.SystemPaths.modding_root",
             return_value=modding_root,
         ):
             executor = ManagedToolExecutor()
@@ -40,7 +40,7 @@ class TestManagedToolExecutorPathValidator:
         modding_root = tmp_path / "Modding"
         modding_root.mkdir()
         with patch(
-            "sky_claw.antigravity.agent.executor.SystemPaths.modding_root",
+            "sky_claw.app.agent.executor.SystemPaths.modding_root",
             return_value=modding_root,
         ):
             executor = ManagedToolExecutor()
@@ -73,11 +73,11 @@ class TestManagedToolExecutorPathValidator:
         translated = "C:\\Modding\\test"
         with (
             patch(
-                "sky_claw.antigravity.agent.executor.ModdingToolsAgent.translate_path_wsl_to_win",
+                "sky_claw.app.agent.executor.ModdingToolsAgent.translate_path_wsl_to_win",
                 new=AsyncMock(return_value=translated),
             ),
             patch(
-                "sky_claw.antigravity.agent.executor.asyncio.create_subprocess_exec",
+                "sky_claw.app.agent.executor.asyncio.create_subprocess_exec",
                 return_value=mock_proc,
             ),
         ):
@@ -97,11 +97,11 @@ class TestManagedToolExecutorPathValidator:
         translated = "C:\\Modding\\test"
         with (
             patch(
-                "sky_claw.antigravity.agent.executor.ModdingToolsAgent.translate_path_wsl_to_win",
+                "sky_claw.app.agent.executor.ModdingToolsAgent.translate_path_wsl_to_win",
                 new=AsyncMock(return_value=translated),
             ),
             patch(
-                "sky_claw.antigravity.agent.executor.asyncio.create_subprocess_exec",
+                "sky_claw.app.agent.executor.asyncio.create_subprocess_exec",
             ) as mock_subproc,
         ):
             result = await executor.execute("bin", [wsl_arg])

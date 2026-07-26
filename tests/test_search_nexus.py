@@ -29,7 +29,7 @@ def test_search_api_key_is_a_known_secret(tmp_path, monkeypatch):
 
 
 def test_search_params_defaults_and_validation():
-    from sky_claw.antigravity.agent.tools.schemas import SearchNexusParams
+    from sky_claw.app.agent.tools.schemas import SearchNexusParams
 
     p = SearchNexusParams.model_validate({"query": "armor"}, strict=True)
     assert p.query == "armor"
@@ -44,7 +44,7 @@ def test_search_params_defaults_and_validation():
 def test_search_params_limit_capped_and_query_required():
     import pydantic
 
-    from sky_claw.antigravity.agent.tools.schemas import SearchNexusParams
+    from sky_claw.app.agent.tools.schemas import SearchNexusParams
 
     with pytest.raises(pydantic.ValidationError):
         SearchNexusParams.model_validate({"query": "armor", "limit": 99}, strict=True)  # > 10
@@ -94,7 +94,7 @@ def _gw_for_search(brave_payload, mod_payloads):
 
 
 def test_extract_mod_id():
-    from sky_claw.antigravity.agent.tools.nexus_tools import _extract_mod_id
+    from sky_claw.app.agent.tools.nexus_tools import _extract_mod_id
 
     assert _extract_mod_id("https://www.nexusmods.com/skyrimspecialedition/mods/12345") == 12345
     assert _extract_mod_id("https://www.nexusmods.com/skyrimspecialedition/mods/12345?tab=files") == 12345
@@ -107,7 +107,7 @@ def test_extract_mod_id():
 
 
 async def test_brave_search_returns_result_urls():
-    from sky_claw.antigravity.agent.tools.nexus_tools import _brave_search
+    from sky_claw.app.agent.tools.nexus_tools import _brave_search
 
     payload = {
         "web": {
@@ -130,7 +130,7 @@ async def test_brave_search_returns_result_urls():
 
 
 async def test_brave_search_empty_on_error():
-    from sky_claw.antigravity.agent.tools.nexus_tools import _brave_search
+    from sky_claw.app.agent.tools.nexus_tools import _brave_search
 
     gw = MagicMock()
     gw.request = AsyncMock(side_effect=RuntimeError("brave down"))
@@ -142,7 +142,7 @@ async def test_brave_search_empty_on_error():
 
 
 async def test_fetch_nexus_mod_json_success():
-    from sky_claw.antigravity.agent.tools.nexus_tools import _fetch_nexus_mod_json
+    from sky_claw.app.agent.tools.nexus_tools import _fetch_nexus_mod_json
 
     payload = {
         "mod_id": 7,
@@ -162,7 +162,7 @@ async def test_fetch_nexus_mod_json_success():
 
 
 async def test_fetch_nexus_mod_json_none_on_error():
-    from sky_claw.antigravity.agent.tools.nexus_tools import _fetch_nexus_mod_json
+    from sky_claw.app.agent.tools.nexus_tools import _fetch_nexus_mod_json
 
     gw = MagicMock()
     gw.request = AsyncMock(side_effect=RuntimeError("404"))
@@ -173,7 +173,7 @@ async def test_fetch_nexus_mod_json_none_on_error():
 
 
 async def test_search_nexus_filters_and_sorts_by_downloads():
-    from sky_claw.antigravity.agent.tools.nexus_tools import search_nexus
+    from sky_claw.app.agent.tools.nexus_tools import search_nexus
 
     brave = {
         "web": {
@@ -197,7 +197,7 @@ async def test_search_nexus_filters_and_sorts_by_downloads():
 
 
 async def test_search_nexus_sanitizes_malicious_title():
-    from sky_claw.antigravity.agent.tools.nexus_tools import search_nexus
+    from sky_claw.app.agent.tools.nexus_tools import search_nexus
 
     brave = {"web": {"results": [{"url": "https://www.nexusmods.com/skyrimspecialedition/mods/1"}]}}
     mods = {
@@ -216,7 +216,7 @@ async def test_search_nexus_sanitizes_malicious_title():
 
 
 async def test_search_nexus_url_shortcut_skips_brave():
-    from sky_claw.antigravity.agent.tools.nexus_tools import search_nexus
+    from sky_claw.app.agent.tools.nexus_tools import search_nexus
 
     mods = {
         42: {"mod_id": 42, "name": "Direct", "summary": "x", "mod_downloads": 5, "category_id": 4, "available": True}
@@ -237,7 +237,7 @@ async def test_search_nexus_url_shortcut_skips_brave():
 
 
 async def test_search_nexus_no_key_returns_guidance():
-    from sky_claw.antigravity.agent.tools.nexus_tools import search_nexus
+    from sky_claw.app.agent.tools.nexus_tools import search_nexus
 
     gw = MagicMock()
     gw.request = AsyncMock()
@@ -247,7 +247,7 @@ async def test_search_nexus_no_key_returns_guidance():
 
 
 async def test_search_nexus_brave_empty_returns_message():
-    from sky_claw.antigravity.agent.tools.nexus_tools import search_nexus
+    from sky_claw.app.agent.tools.nexus_tools import search_nexus
 
     gw = _gw_for_search({"web": {"results": []}}, {})
     out = json.loads(await search_nexus(gw, "nonexistent", None, 5, search_api_key="B", nexus_api_key="N"))
@@ -255,7 +255,7 @@ async def test_search_nexus_brave_empty_returns_message():
 
 
 async def test_search_nexus_aborts_without_gateway():
-    from sky_claw.antigravity.agent.tools.nexus_tools import search_nexus
+    from sky_claw.app.agent.tools.nexus_tools import search_nexus
 
     out = json.loads(await search_nexus(None, "armor", None, 5, search_api_key="B", nexus_api_key="N"))
     assert "gateway" in out["error"].lower()

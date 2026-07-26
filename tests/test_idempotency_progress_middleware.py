@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
-from sky_claw.antigravity.orchestrator.tool_state_machine import ToolStateMachine
-from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
+from sky_claw.app.core.event_bus import CoreEventBus, Event
+from sky_claw.app.orchestrator.tool_state_machine import ToolStateMachine
+from sky_claw.app.orchestrator.tool_strategies.middleware import (
     IdempotencyMiddleware,
     ProgressMiddleware,
 )

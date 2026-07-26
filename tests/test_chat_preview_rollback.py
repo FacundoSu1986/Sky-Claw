@@ -29,7 +29,7 @@ import asyncio
 
 import pytest
 
-from sky_claw.antigravity.gui.views.sections.chat_preview import (
+from sky_claw.app.gui.views.sections.chat_preview import (
     _try_send_with_rollback,
 )
 

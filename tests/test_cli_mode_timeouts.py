@@ -22,7 +22,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_run_oneshot_times_out_and_exits() -> None:
     """_run_oneshot must surface a chat timeout as a clean SystemExit, not hang."""
-    from sky_claw.antigravity.modes import cli_mode
+    from sky_claw.app.modes import cli_mode
 
     ctx = MagicMock()
     ctx.router = MagicMock()
@@ -62,7 +62,7 @@ async def test_run_cli_repl_logs_timeout_then_continues() -> None:
     an EOFError (clean Ctrl-D exit). The loop should log the timeout error
     and then exit cleanly via the EOFError branch — no propagated exception.
     """
-    from sky_claw.antigravity.modes import cli_mode
+    from sky_claw.app.modes import cli_mode
 
     ctx = MagicMock()
     ctx.router = MagicMock()
@@ -107,7 +107,7 @@ async def test_run_cli_repl_logs_timeout_then_continues() -> None:
 @pytest.mark.asyncio
 async def test_run_oneshot_completes_on_fast_response() -> None:
     """Happy path: a quick chat response must not be affected by the wait_for wrapper."""
-    from sky_claw.antigravity.modes import cli_mode
+    from sky_claw.app.modes import cli_mode
 
     ctx = MagicMock()
     ctx.router = MagicMock()

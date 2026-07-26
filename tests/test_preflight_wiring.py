@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.core.path_resolver import PathResolutionService
+from sky_claw.app.core.path_resolver import PathResolutionService
 from sky_claw.local.mo2.load_order import LoadOrderPaths
 from sky_claw.local.tools.loot_service import LootSortingService
 from sky_claw.local.validators.preflight import PreflightService
@@ -78,7 +78,7 @@ class TestAccessorsCrudos:
         resolver = PathResolutionService(path_validator=MagicMock())
 
         with patch(
-            "sky_claw.antigravity.core.path_resolver.os.environ.get",
+            "sky_claw.app.core.path_resolver.os.environ.get",
             return_value="C:\\Juegos\x00\\Skyrim",
         ):
             assert resolver.get_skyrim_path_raw() is None
@@ -121,8 +121,8 @@ class TestCableadoPerezoso:
         assert resultado["preflight"]["status"] == "red"
 
     async def test_rutas_crudas_limpias_no_bloquean(self, tmp_path: pathlib.Path) -> None:
-        from sky_claw.antigravity.db.locks import DistributedLockManager
-        from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+        from sky_claw.app.db.locks import DistributedLockManager
+        from sky_claw.app.db.snapshot_manager import FileSnapshotManager
         from sky_claw.local.loot.parser import LOOTResult
 
         game = tmp_path / "Skyrim"

@@ -56,7 +56,7 @@ async def test_logic_loop_consume_via_await_y_es_cancelable(monkeypatch) -> None
     cancelar, la task queda ``cancelled()`` sin dejar hilos del pool vivos."""
     from unittest.mock import MagicMock
 
-    from sky_claw.antigravity.gui import _bootloader
+    from sky_claw.app.gui import _bootloader
 
     ctx = MagicMock()
     ctx.router = MagicMock()  # evaluado como verdadero → el loop despacha, no avisa "no inicializado"

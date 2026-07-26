@@ -21,13 +21,13 @@ import pytest
 # a nivel de módulo, así que UIBroadcastServer se importa SIN stub — la ausencia
 # del `sys.modules.setdefault` de antes es la prueba viva de que la clase bajo
 # test no depende del guardrail (solo TelegramDaemon lo importa, lazy).
-from sky_claw.antigravity.comms.ws_daemon import UIBroadcastServer
-from sky_claw.antigravity.gui.agent_communication import AgentCommunicationClient
+from sky_claw.app.comms.ws_daemon import UIBroadcastServer
+from sky_claw.app.gui.agent_communication import AgentCommunicationClient
 
 
 def _make_server() -> UIBroadcastServer:
     """Build a UIBroadcastServer with a mocked AuthTokenManager."""
-    with patch("sky_claw.antigravity.comms.ws_daemon.AuthTokenManager"):
+    with patch("sky_claw.app.comms.ws_daemon.AuthTokenManager"):
         return UIBroadcastServer()
 
 

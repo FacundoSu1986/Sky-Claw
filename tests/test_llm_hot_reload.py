@@ -29,7 +29,7 @@ class _FakeProvider:
 
 def _make_router() -> Any:
     """Construye un LLMRouter mínimo sin abrir DB ni red (solo el lock + provider)."""
-    from sky_claw.antigravity.agent.router import LLMRouter
+    from sky_claw.app.agent.router import LLMRouter
 
     router = LLMRouter.__new__(LLMRouter)
     router._provider = _FakeProvider("viejo")
@@ -181,7 +181,7 @@ async def test_reload_respeta_el_modelo_por_provider(monkeypatch: pytest.MonkeyP
 
 # ── Seam puro del feedback del toast (GUI) ──────────────────────────────────────
 def test_feedback_ok_es_positivo() -> None:
-    from sky_claw.antigravity.gui.sky_claw_gui import _llm_reload_feedback
+    from sky_claw.app.gui.sky_claw_gui import _llm_reload_feedback
 
     fb = _llm_reload_feedback(True, "anthropic")
     assert fb["type"] == "positive"
@@ -189,7 +189,7 @@ def test_feedback_ok_es_positivo() -> None:
 
 
 def test_feedback_fallo_es_warning_y_menciona_reinicio() -> None:
-    from sky_claw.antigravity.gui.sky_claw_gui import _llm_reload_feedback
+    from sky_claw.app.gui.sky_claw_gui import _llm_reload_feedback
 
     fb = _llm_reload_feedback(False, "deepseek")
     assert fb["type"] == "warning"

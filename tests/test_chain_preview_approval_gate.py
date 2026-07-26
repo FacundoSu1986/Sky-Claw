@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.preview.approval_gate import ChainPreviewApprovalGate
-from sky_claw.antigravity.orchestrator.preview.manifest import PreviewManifest, StageChangeSet
-from sky_claw.antigravity.security.hitl import Decision
+from sky_claw.app.orchestrator.preview.approval_gate import ChainPreviewApprovalGate
+from sky_claw.app.orchestrator.preview.manifest import PreviewManifest, StageChangeSet
+from sky_claw.app.security.hitl import Decision
 
 
 def _manifest() -> PreviewManifest:

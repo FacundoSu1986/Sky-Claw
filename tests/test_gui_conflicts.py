@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pathlib
 
-from sky_claw.antigravity.core.database import DatabaseAgent
-from sky_claw.antigravity.gui.models.app_state import enrich_conflicts
+from sky_claw.app.core.database import DatabaseAgent
+from sky_claw.app.gui.models.app_state import enrich_conflicts
 
 # ── enrich_conflicts (seam puro) ────────────────────────────────────────────────
 _MODS = [
@@ -70,7 +70,7 @@ def test_enrich_conflicts_listas_vacias() -> None:
 
 # ── _resolved_row_html (seam puro de la sección "Resueltas") ─────────────────────
 def test_resolved_row_html_muestra_mods_y_nota() -> None:
-    from sky_claw.antigravity.gui.views.forge_dashboard import _resolved_row_html
+    from sky_claw.app.gui.views.forge_dashboard import _resolved_row_html
 
     html = _resolved_row_html(
         {"mod_a": "Immersive Armors", "mod_b": "Ordinator", "type": "record", "resolution": "orden ajustado con LOOT"}
@@ -81,14 +81,14 @@ def test_resolved_row_html_muestra_mods_y_nota() -> None:
 
 
 def test_resolved_row_html_sin_nota_usa_placeholder() -> None:
-    from sky_claw.antigravity.gui.views.forge_dashboard import _resolved_row_html
+    from sky_claw.app.gui.views.forge_dashboard import _resolved_row_html
 
     html = _resolved_row_html({"mod_a": "A", "mod_b": "B", "type": "asset", "resolution": None})
     assert "Sin nota" in html
 
 
 def test_resolved_row_html_escapa_contenido() -> None:
-    from sky_claw.antigravity.gui.views.forge_dashboard import _resolved_row_html
+    from sky_claw.app.gui.views.forge_dashboard import _resolved_row_html
 
     html = _resolved_row_html({"mod_a": "<script>", "mod_b": "B", "type": "x", "resolution": "a & b"})
     assert "<script>" not in html
@@ -167,9 +167,9 @@ class _StubDB:
 
 
 def _make_state(tmp_path: pathlib.Path) -> tuple:
-    from sky_claw.antigravity.gui import sky_claw_gui as gui
-    from sky_claw.antigravity.gui.models.app_state import AppState
-    from sky_claw.antigravity.gui.state.reactive_store import ReactiveStore
+    from sky_claw.app.gui import sky_claw_gui as gui
+    from sky_claw.app.gui.models.app_state import AppState
+    from sky_claw.app.gui.state.reactive_store import ReactiveStore
 
     store = ReactiveStore()
     state = gui.ReactiveState(app_state=AppState(config_path=tmp_path / "c.json"), store=store)
@@ -195,8 +195,8 @@ async def test_conflict_detected_refresca_la_lista(tmp_path: pathlib.Path, monke
     """El evento CONFLICT_DETECTED debe dejar contador y lista consistentes."""
     import asyncio
 
-    from sky_claw.antigravity.gui import task_tracking
-    from sky_claw.antigravity.gui.gui_event_adapter import EventType, SkyClawEvent
+    from sky_claw.app.gui import task_tracking
+    from sky_claw.app.gui.gui_event_adapter import EventType, SkyClawEvent
 
     gui, state, store = _make_state(tmp_path)
     monkeypatch.setattr(gui, "get_db_agent", lambda: _StubDB())

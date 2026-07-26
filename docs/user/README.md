@@ -6,7 +6,7 @@
 > dependen de la instalación local de Skyrim, MO2 y sus herramientas.
 >
 > **Fuentes canónicas:** `sky_claw/__main__.py`,
-> `sky_claw/antigravity/gui/` y `sky_claw/local/AGENTS.md`.
+> `sky_claw/app/gui/` y `sky_claw/local/AGENTS.md`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

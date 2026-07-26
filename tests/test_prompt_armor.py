@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from sky_claw.antigravity.security.prompt_armor import (
+from sky_claw.app.security.prompt_armor import (
     PromptArmor,
     PromptArmorConfig,
     build_system_header,

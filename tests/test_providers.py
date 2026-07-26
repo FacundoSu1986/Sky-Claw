@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 import aiohttp
 import pytest
 
-from sky_claw.antigravity.agent.providers import (
+from sky_claw.app.agent.providers import (
     AnthropicProvider,
     DeepSeekProvider,
     OllamaProvider,

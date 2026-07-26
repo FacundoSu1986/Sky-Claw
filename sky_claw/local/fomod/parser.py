@@ -18,7 +18,7 @@ from defusedxml import (
     ExternalReferenceForbidden,
 )
 
-from sky_claw.antigravity.core.errors import FomodParserSecurityError
+from sky_claw.app.core.errors import FomodParserSecurityError
 from sky_claw.local.fomod.models import (
     CompositeDependency,
     ConditionalPattern,

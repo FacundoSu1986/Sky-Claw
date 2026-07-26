@@ -30,7 +30,7 @@ import pathlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from sky_claw.antigravity.db.locks import (
+from sky_claw.app.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
     LockError,
@@ -45,9 +45,9 @@ from sky_claw.local.tools.wrye_bash_runner import (
 )
 
 if TYPE_CHECKING:
-    from sky_claw.antigravity.core.path_resolver import PathResolutionService
-    from sky_claw.antigravity.db.journal import OperationJournal
-    from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+    from sky_claw.app.core.path_resolver import PathResolutionService
+    from sky_claw.app.db.journal import OperationJournal
+    from sky_claw.app.db.snapshot_manager import FileSnapshotManager
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
 logger = logging.getLogger(__name__)
@@ -272,7 +272,7 @@ class WryeBashPipelineService:
                 debe proceder sin la caja negra emitida. La TX recién abierta se marca
                 rolled-back para no dejarla PENDING (espejo de loot_service).
         """
-        from sky_claw.antigravity.orchestrator.preview.action_manifest import build_action_manifest
+        from sky_claw.app.orchestrator.preview.action_manifest import build_action_manifest
 
         assert self._journal is not None  # cableado verificado por el caller
         journal_tx_id: int | None = None
@@ -305,7 +305,7 @@ class WryeBashPipelineService:
         Post-vuelo y best-effort: lee la caja negra del journal (manifiesto + estado
         REAL de la TX). Un fallo se loguea y NO rompe un run ya exitoso.
         """
-        from sky_claw.antigravity.orchestrator.preview.flight_report import (
+        from sky_claw.app.orchestrator.preview.flight_report import (
             compose_flight_report_from_journal,
         )
 

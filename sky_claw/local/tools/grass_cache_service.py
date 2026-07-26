@@ -45,9 +45,9 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from sky_claw.antigravity.db.journal import OperationStatus, TransactionStatus
-from sky_claw.antigravity.db.journal_contracts import is_flight_report_committed
-from sky_claw.antigravity.db.locks import (
+from sky_claw.app.db.journal import OperationStatus, TransactionStatus
+from sky_claw.app.db.journal_contracts import is_flight_report_committed
+from sky_claw.app.db.locks import (
     LockAcquisitionError,
     LockReleaseError,
     SnapshotTransactionLock,
@@ -66,10 +66,10 @@ if TYPE_CHECKING:
     import pathlib
     from collections.abc import Callable
 
-    from sky_claw.antigravity.core.event_bus import CoreEventBus
-    from sky_claw.antigravity.db.journal import OperationJournal
-    from sky_claw.antigravity.db.locks import DistributedLockManager
-    from sky_claw.antigravity.db.snapshots import FileSnapshotManager
+    from sky_claw.app.core.event_bus import CoreEventBus
+    from sky_claw.app.db.journal import OperationJournal
+    from sky_claw.app.db.locks import DistributedLockManager
+    from sky_claw.app.db.snapshots import FileSnapshotManager
     from sky_claw.local.mo2.grass_profile import GrassProfileManager
     from sky_claw.local.mo2.vfs import MO2Controller
     from sky_claw.local.xedit.runner import XEditRunner
@@ -617,7 +617,7 @@ class GrassCacheService:
         if self._event_bus is None:
             return
         try:
-            from sky_claw.antigravity.core.event_bus import Event
+            from sky_claw.app.core.event_bus import Event
 
             await self._event_bus.publish(Event(topic=topic, payload=payload, source=self.AGENT_ID))
         except Exception:  # noqa: BLE001 — un bus roto no corta el ritual

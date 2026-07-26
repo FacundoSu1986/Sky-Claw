@@ -21,11 +21,11 @@ from typing import Any
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.sandbox_promotion import (
+from sky_claw.app.orchestrator.sandbox_promotion import (
     SandboxPromotionFlow,
     format_diff_detail,
 )
-from sky_claw.antigravity.security.hitl import Decision
+from sky_claw.app.security.hitl import Decision
 from sky_claw.local.mo2.profile_sandbox import (
     FileChange,
     ProfileSandbox,

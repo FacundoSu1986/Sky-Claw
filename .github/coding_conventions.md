@@ -42,14 +42,14 @@ Si dos reglas colisionan, obedecé este orden:
 - Todo output de LLM se valida con Pydantic (`model_validate_json`) — **prohibido**
   parsear texto libre con regex.
 - Operaciones de archivo confinadas al sandbox: validar con `PathValidator.validate()`
-  (`sky_claw/antigravity/security/path_validator.py`) relativo a `SystemPaths`
+  (`sky_claw/app/security/path_validator.py`) relativo a `SystemPaths`
   (`sky_claw/config.py`).
 - Tools nuevos emiten `success: bool` + `message: str` (contrato completo en `AGENTS.md`).
 - La capa del agente es lock-only, sin HITL (#217).
 
 ### 2.4 Testing y calidad
 
-- Inyección de dependencias con `Protocol`s (`sky_claw/antigravity/core/contracts.py`) —
+- Inyección de dependencias con `Protocol`s (`sky_claw/app/core/contracts.py`) —
   obligatorio para mockear I/O externa.
 - Pytest exclusivamente; fixtures compartidas en `tests/conftest.py` (DB en memoria, LLM
   mockeado, `AsyncMock` para corrutinas); `asyncio_mode=auto`.
@@ -59,7 +59,7 @@ Si dos reglas colisionan, obedecé este orden:
 
 ### 2.5 Errores y logging
 
-- Jerarquía tipada `AppNexusError` (`sky_claw/antigravity/core/errors.py`). **Prohibido**
+- Jerarquía tipada `AppNexusError` (`sky_claw/app/core/errors.py`). **Prohibido**
   `except Exception` desnudo; re-lanzar excepciones desconocidas tras loggear.
 - `logging` exclusivamente, un logger por módulo (`logging.getLogger(__name__)`);
   prohibido `print()`.

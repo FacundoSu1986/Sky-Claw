@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.agent.tools.system_tools import run_loot_sort
-from sky_claw.antigravity.db.locks import DistributedLockManager
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.agent.tools.system_tools import run_loot_sort
+from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.loot.cli import (
     LOOTConfig,
     LOOTNotFoundError,
@@ -554,10 +554,10 @@ class TestLootSortTool:
     @pytest.mark.asyncio
     async def test_loot_sort_no_runner_configured(self, tmp_path: pathlib.Path) -> None:
         """When no LOOTRunner is provided, tool returns error JSON."""
-        from sky_claw.antigravity.agent.tools import AsyncToolRegistry
-        from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-        from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
-        from sky_claw.antigravity.security.path_validator import PathValidator
+        from sky_claw.app.agent.tools import AsyncToolRegistry
+        from sky_claw.app.db.async_registry import AsyncModRegistry
+        from sky_claw.app.orchestrator.sync_engine import SyncEngine
+        from sky_claw.app.security.path_validator import PathValidator
         from sky_claw.local.mo2.vfs import MO2Controller
 
         profile_dir = tmp_path / "profiles" / "Default"
@@ -587,10 +587,10 @@ class TestLootSortTool:
     @pytest.mark.asyncio
     async def test_loot_sort_with_runner(self, tmp_path: pathlib.Path) -> None:
         """When LOOTRunner is provided, tool delegates to it."""
-        from sky_claw.antigravity.agent.tools import AsyncToolRegistry
-        from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-        from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
-        from sky_claw.antigravity.security.path_validator import PathValidator
+        from sky_claw.app.agent.tools import AsyncToolRegistry
+        from sky_claw.app.db.async_registry import AsyncModRegistry
+        from sky_claw.app.orchestrator.sync_engine import SyncEngine
+        from sky_claw.app.security.path_validator import PathValidator
         from sky_claw.local.mo2.vfs import MO2Controller
 
         profile_dir = tmp_path / "profiles" / "Default"
@@ -758,8 +758,8 @@ class TestRunLootSortLock:
         servicio, pero el path del agente (Telegram / /api/chat) nunca le pasaba
         journal, así que ahí la caja negra era un no-op (review Codex #243 P1).
         """
-        from sky_claw.antigravity.db.journal import OperationJournal
-        from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
+        from sky_claw.app.db.journal import OperationJournal
+        from sky_claw.app.orchestrator.preview.action_manifest import ActionManifest
         from sky_claw.local.tools.loot_service import LootSortingService
 
         lm, sm = await self._managers(tmp_path)

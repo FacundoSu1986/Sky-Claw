@@ -14,13 +14,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
-from sky_claw.antigravity.core.event_payloads import (
+from sky_claw.app.core.event_bus import CoreEventBus, Event
+from sky_claw.app.core.event_payloads import (
     XEditPatchCompletedPayload,
     XEditPatchStartedPayload,
 )
-from sky_claw.antigravity.db.locks import DistributedLockManager
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools import xedit_service as xedit_service_mod
 from sky_claw.local.tools.xedit_service import XEditPipelineService
 from sky_claw.local.xedit.conflict_analyzer import (
@@ -713,7 +713,7 @@ async def test_execute_patch_dry_run_merged_patch_when_no_critical(
 @pytest.fixture
 async def real_journal(tmp_path: pathlib.Path):  # noqa: ANN201
     """OperationJournal real sobre una DB temporal (espejo de test_loot_service)."""
-    from sky_claw.antigravity.db.journal import OperationJournal
+    from sky_claw.app.db.journal import OperationJournal
 
     j = OperationJournal(tmp_path / "xedit_journal.db")
     await j.open()
@@ -728,7 +728,7 @@ async def _ops_ultima_tx(journal):  # noqa: ANN001, ANN202
 
 async def _manifiesto_ultima_tx(journal):  # noqa: ANN001, ANN202
     """El op del ActionManifest (no el del FlightReport, discriminado por ``kind``)."""
-    from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
+    from sky_claw.app.orchestrator.preview.action_manifest import ActionManifest
 
     metas = [
         e.metadata
@@ -740,7 +740,7 @@ async def _manifiesto_ultima_tx(journal):  # noqa: ANN001, ANN202
 
 
 async def _informe_ultima_tx(journal):  # noqa: ANN001, ANN202
-    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+    from sky_claw.app.orchestrator.preview.flight_report import FlightReport
 
     informes = [
         FlightReport.model_validate(e.metadata)
@@ -825,7 +825,7 @@ async def test_execute_patch_sin_manifiesto_no_muta(
 ) -> None:
     """Si la emisión del manifiesto falla, xEdit no se ejecuta (fail-closed T-26)
     y la TX no queda PENDING."""
-    from sky_claw.antigravity.db.journal import TransactionStatus
+    from sky_claw.app.db.journal import TransactionStatus
 
     orch = _orchestrator_exitoso(target_plugin)
     service = _service_real_journal(lock_manager, snapshot_manager, real_journal, mock_path_resolver, mock_event_bus)
@@ -1017,7 +1017,7 @@ async def test_quick_auto_clean_manifiesto_fallido_no_marca_rollback_si_restore_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Un restore fallido conserva PENDING aunque el manifiesto aborte el QAC."""
-    from sky_claw.antigravity.db.journal import TransactionStatus
+    from sky_claw.app.db.journal import TransactionStatus
 
     master = _preparar_dirty_masters(mock_path_resolver)
     service = _service_real_journal(
@@ -1063,7 +1063,7 @@ async def test_quick_auto_clean_exit_uno_marca_rollback_completo(
     mock_event_bus: AsyncMock,
 ) -> None:
     """Exit 1 falla, restaura todos los snapshots y cierra la TX como rolled-back."""
-    from sky_claw.antigravity.db.journal import TransactionStatus
+    from sky_claw.app.db.journal import TransactionStatus
 
     _preparar_dirty_masters(mock_path_resolver)
     service = _service_real_journal(
@@ -1091,7 +1091,7 @@ async def test_quick_auto_clean_no_marca_rollback_si_restore_falla(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Filesystem, respuesta y journal reflejan el restore fallido."""
-    from sky_claw.antigravity.db.journal import TransactionStatus
+    from sky_claw.app.db.journal import TransactionStatus
 
     master = _preparar_dirty_masters(mock_path_resolver)
     service = _service_real_journal(

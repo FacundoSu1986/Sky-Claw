@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
+from sky_claw.app.orchestrator.supervisor import SupervisorAgent
 
 
 def _bare_supervisor(connect_mock: AsyncMock) -> SupervisorAgent:
@@ -177,7 +177,7 @@ async def test_daemon_run_propaga_excepcion_del_loop() -> None:
     """run() await-ea el loop directamente: sus excepciones se propagan (H-2)."""
     from unittest.mock import MagicMock, patch
 
-    from sky_claw.antigravity.orchestrator.maintenance_daemon import MaintenanceDaemon
+    from sky_claw.app.orchestrator.maintenance_daemon import MaintenanceDaemon
 
     daemon = MaintenanceDaemon(snapshot_manager=MagicMock())
 

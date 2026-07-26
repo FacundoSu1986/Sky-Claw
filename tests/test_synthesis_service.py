@@ -13,11 +13,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
-from sky_claw.antigravity.db.locks import (
+from sky_claw.app.core.event_bus import CoreEventBus, Event
+from sky_claw.app.db.locks import (
     DistributedLockManager,
 )
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools.synthesis_runner import (
     SynthesisResult,
     SynthesisRunner,
@@ -1046,7 +1046,7 @@ def test_build_modlist_checks_ignores_localappdata_without_mo2_profile(
 @pytest.fixture
 async def real_journal(tmp_path: pathlib.Path):  # noqa: ANN201
     """OperationJournal real sobre una DB temporal (espejo de test_xedit_service)."""
-    from sky_claw.antigravity.db.journal import OperationJournal
+    from sky_claw.app.db.journal import OperationJournal
 
     j = OperationJournal(tmp_path / "synthesis_journal.db")
     await j.open()
@@ -1061,7 +1061,7 @@ async def _ops_ultima_tx(journal):  # noqa: ANN001, ANN202
 
 async def _manifiesto_ultima_tx(journal):  # noqa: ANN001, ANN202
     """El op del ActionManifest (no el del FlightReport, discriminado por ``kind``)."""
-    from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
+    from sky_claw.app.orchestrator.preview.action_manifest import ActionManifest
 
     metas = [
         e.metadata
@@ -1073,7 +1073,7 @@ async def _manifiesto_ultima_tx(journal):  # noqa: ANN001, ANN202
 
 
 async def _informe_ultima_tx(journal):  # noqa: ANN001, ANN202
-    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+    from sky_claw.app.orchestrator.preview.flight_report import FlightReport
 
     return [
         FlightReport.model_validate(e.metadata)

@@ -34,7 +34,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal
 
-from sky_claw.antigravity.security.path_validator import assert_safe_component
+from sky_claw.app.security.path_validator import assert_safe_component
 
 logger = logging.getLogger(__name__)
 

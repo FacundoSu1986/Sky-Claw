@@ -33,7 +33,7 @@ if not hasattr(_ast_module, "ASTGuardian"):
     _ast_module.ASTGuardian = MagicMock  # type: ignore[attr-defined]
 sys.modules["ast_guardian"] = _ast_module
 
-from sky_claw.antigravity.comms.ws_daemon import TelegramDaemon  # noqa: E402
+from sky_claw.app.comms.ws_daemon import TelegramDaemon  # noqa: E402
 
 
 def _make_daemon() -> TelegramDaemon:

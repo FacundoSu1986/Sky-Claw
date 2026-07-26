@@ -22,7 +22,7 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-from sky_claw.antigravity.orchestrator.tool_state_machine import IdempotencyGuard
+from sky_claw.app.orchestrator.tool_state_machine import IdempotencyGuard
 
 
 class TestIdempotencyGuardTtl:
@@ -42,7 +42,7 @@ class TestIdempotencyGuardTtl:
         # Simulate time passing past TTL.
         future = time.monotonic() + 1.0
         with patch(
-            "sky_claw.antigravity.orchestrator.tool_state_machine.time.monotonic",
+            "sky_claw.app.orchestrator.tool_state_machine.time.monotonic",
             return_value=future,
         ):
             # is_active must now report False — TTL elapsed.
@@ -57,7 +57,7 @@ class TestIdempotencyGuardTtl:
 
         future = time.monotonic() + 1_000_000
         with patch(
-            "sky_claw.antigravity.orchestrator.tool_state_machine.time.monotonic",
+            "sky_claw.app.orchestrator.tool_state_machine.time.monotonic",
             return_value=future,
         ):
             assert guard.is_active("k1") is True
@@ -80,7 +80,7 @@ class TestIdempotencyGuardTtl:
 
         future = time.monotonic() + 1.0
         with patch(
-            "sky_claw.antigravity.orchestrator.tool_state_machine.time.monotonic",
+            "sky_claw.app.orchestrator.tool_state_machine.time.monotonic",
             return_value=future,
         ):
             assert guard.active_count == 0
@@ -99,7 +99,7 @@ class TestIdempotencyGuardTtl:
 
         future = time.monotonic() + 1.0
         with patch(
-            "sky_claw.antigravity.orchestrator.tool_state_machine.time.monotonic",
+            "sky_claw.app.orchestrator.tool_state_machine.time.monotonic",
             return_value=future,
         ):
             assert guard.active_count == 0
@@ -121,7 +121,7 @@ class TestIdempotencyGuardTtl:
 
         future = time.monotonic() + 1.0
         with patch(
-            "sky_claw.antigravity.orchestrator.tool_state_machine.time.monotonic",
+            "sky_claw.app.orchestrator.tool_state_machine.time.monotonic",
             return_value=future,
         ):
             # B reclaims the stale key.

@@ -4,8 +4,8 @@
 >
 > **Estado:** Implementado.
 >
-> **Fuentes canónicas:** `sky_claw/antigravity/core/event_bus.py`,
-> `sky_claw/antigravity/gui/gui_event_adapter.py` y publishers del árbol.
+> **Fuentes canónicas:** `sky_claw/app/core/event_bus.py`,
+> `sky_claw/app/gui/gui_event_adapter.py` y publishers del árbol.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

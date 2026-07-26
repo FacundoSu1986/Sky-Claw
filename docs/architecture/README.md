@@ -5,7 +5,7 @@
 > **Estado:** índice de explicación del sistema implementado.
 >
 > **Fuentes canónicas:** `sky_claw/__main__.py`, `sky_claw/app_context.py`,
-> `sky_claw/antigravity/` y `sky_claw/local/`.
+> `sky_claw/app/` y `sky_claw/local/`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

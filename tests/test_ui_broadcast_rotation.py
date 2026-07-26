@@ -19,13 +19,13 @@ import pytest
 
 # F2: tras el fix, ws_daemon ya NO importa ast_guardian a nivel de módulo, así
 # que UIBroadcastServer se importa sin stub. (TelegramDaemon lo importa lazy.)
-from sky_claw.antigravity.comms.ws_daemon import UIBroadcastServer
+from sky_claw.app.comms.ws_daemon import UIBroadcastServer
 
 _ROTATION_CLOSE_CODE = 1008  # POLICY_VIOLATION — NO 4001 (lockout de auth)
 
 
 def _make_server() -> UIBroadcastServer:
-    with patch("sky_claw.antigravity.comms.ws_daemon.AuthTokenManager"):
+    with patch("sky_claw.app.comms.ws_daemon.AuthTokenManager"):
         return UIBroadcastServer()
 
 
@@ -54,7 +54,7 @@ async def test_start_registra_callback_de_rotacion() -> None:
     server = _make_server()
     server._auth.start_rotation = AsyncMock()
     server._auth.register_rotation_callback = MagicMock()
-    with patch("sky_claw.antigravity.comms.ws_daemon.websockets.serve", new=AsyncMock()):
+    with patch("sky_claw.app.comms.ws_daemon.websockets.serve", new=AsyncMock()):
         await server.start()
     server._auth.register_rotation_callback.assert_called_once_with(server._close_all_clients)
 
@@ -129,7 +129,7 @@ def test_ui_broadcast_no_depende_de_ast_guardian() -> None:
 
 def test_telegram_daemon_sin_ast_guardian_falla_ruidoso() -> None:
     """Sin el guardrail AST, TelegramDaemon aborta con RuntimeError claro (fail-closed)."""
-    from sky_claw.antigravity.comms.ws_daemon import TelegramDaemon
+    from sky_claw.app.comms.ws_daemon import TelegramDaemon
 
     saved = sys.modules.pop("ast_guardian", None)
     try:
@@ -145,7 +145,7 @@ def test_telegram_daemon_sin_ast_guardian_falla_ruidoso() -> None:
 
 def test_telegram_daemon_con_ast_guardian_construye() -> None:
     """Con el guardrail presente, TelegramDaemon se construye y expone el guardian."""
-    from sky_claw.antigravity.comms.ws_daemon import TelegramDaemon
+    from sky_claw.app.comms.ws_daemon import TelegramDaemon
 
     stub = types.ModuleType("ast_guardian")
     stub.ASTGuardian = MagicMock  # type: ignore[attr-defined]

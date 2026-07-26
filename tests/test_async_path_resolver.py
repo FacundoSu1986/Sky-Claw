@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.core.async_path_resolver import AsyncPathResolutionError, AsyncPathResolver
+from sky_claw.app.core.async_path_resolver import AsyncPathResolutionError, AsyncPathResolver
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -153,7 +153,7 @@ class TestSlowPath:
         expected = existing_path.resolve()
 
         with patch(
-            "sky_claw.antigravity.core.async_path_resolver.asyncio.to_thread",
+            "sky_claw.app.core.async_path_resolver.asyncio.to_thread",
             new_callable=AsyncMock,
             return_value=expected,
         ) as mock_thread:
@@ -195,7 +195,7 @@ class TestErrorHandling:
 
         with (
             patch(
-                "sky_claw.antigravity.core.async_path_resolver.asyncio.to_thread",
+                "sky_claw.app.core.async_path_resolver.asyncio.to_thread",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("simulated runtime failure"),
             ),
@@ -214,7 +214,7 @@ class TestErrorHandling:
 
         with (
             patch(
-                "sky_claw.antigravity.core.async_path_resolver.asyncio.to_thread",
+                "sky_claw.app.core.async_path_resolver.asyncio.to_thread",
                 new_callable=AsyncMock,
                 side_effect=ValueError("bug upstream inesperado"),
             ),
@@ -232,7 +232,7 @@ class TestErrorHandling:
 
         with (
             patch(
-                "sky_claw.antigravity.core.async_path_resolver.asyncio.to_thread",
+                "sky_claw.app.core.async_path_resolver.asyncio.to_thread",
                 new_callable=AsyncMock,
                 side_effect=OSError("disco lleno"),
             ),

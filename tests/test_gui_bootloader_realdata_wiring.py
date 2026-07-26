@@ -10,16 +10,21 @@ the event/scanner so no live daemon or disk scan is required.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
-from sky_claw.antigravity.core.event_bus import Event
-from sky_claw.antigravity.gui._bootloader import (
+import pytest
+
+from sky_claw.app.core.event_bus import Event
+from sky_claw.app.gui._bootloader import (
     _hydrate_tool_env_from_snapshot,
     _make_telemetry_store_bridge,
     _run_environment_scan,
 )
-from sky_claw.antigravity.gui.state.reactive_store import ReactiveStore
-from sky_claw.antigravity.gui.views.forge_dashboard import (
+from sky_claw.app.gui.state.reactive_store import ReactiveStore
+from sky_claw.app.gui.views.forge_dashboard import (
     STORE_KEY_CPU,
     STORE_KEY_ENV,
     STORE_KEY_GPU,
@@ -85,6 +90,54 @@ async def test_environment_scan_swallows_errors() -> None:
     # A failed scan must not crash startup; the store key simply stays unset.
     await _run_environment_scan(_BoomScanner(), store)
     assert store.get(STORE_KEY_ENV) is None
+
+
+def test_environment_scan_cancelado_no_retiene_el_proceso() -> None:
+    """Cancelar un probe bloqueado no debe impedir que termine el intérprete."""
+    script = textwrap.dedent(
+        """
+        import asyncio
+        import threading
+
+        from sky_claw.app.gui._bootloader import _run_environment_scan
+
+
+        class ScannerBloqueado:
+            async def scan(self):
+                threading.Event().wait()
+
+
+        class Store:
+            def set(self, _key, _value):
+                raise AssertionError("el scan bloqueado no debe publicar")
+
+
+        async def main():
+            task = asyncio.create_task(_run_environment_scan(ScannerBloqueado(), Store()))
+            await asyncio.sleep(0.1)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
+        asyncio.run(main())
+        """
+    )
+
+    try:
+        resultado = subprocess.run(
+            [sys.executable, "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("el worker del scan retuvo el intérprete después de cancelar la task")
+
+    assert resultado.returncode == 0, resultado.stderr
 
 
 def test_hydrate_tool_env_from_snapshot_seeds_resolver_env(monkeypatch) -> None:

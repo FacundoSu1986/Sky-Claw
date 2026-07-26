@@ -12,10 +12,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.tool_strategies.generate_animations import (
+from sky_claw.app.orchestrator.tool_strategies.generate_animations import (
     GenerateAnimationsStrategy,
 )
-from sky_claw.antigravity.orchestrator.tool_strategies.middleware import DESTRUCTIVE_TOOL_PATTERNS
+from sky_claw.app.orchestrator.tool_strategies.middleware import DESTRUCTIVE_TOOL_PATTERNS
 
 
 # ── Estrategia ───────────────────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ def test_generate_animations_is_destructive() -> None:
 
 # ── Registro en el dispatcher ────────────────────────────────────────────────────
 def test_dispatcher_registers_generate_animations() -> None:
-    from sky_claw.antigravity.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+    from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 
     # build_orchestration_dispatcher solo accede a atributos del supervisor en la
     # construcción de las estrategias (los lambdas son perezosos), así que un
@@ -68,7 +68,7 @@ def test_dispatcher_registers_generate_animations() -> None:
 def test_get_pandora_exe_resolves_env(monkeypatch: pytest.MonkeyPatch) -> None:
     import pathlib
 
-    from sky_claw.antigravity.core.path_resolver import PathResolutionService
+    from sky_claw.app.core.path_resolver import PathResolutionService
 
     monkeypatch.setenv("PANDORA_EXE", r"C:\Tools\Pandora\Pandora.exe")
     validator = MagicMock()
@@ -81,7 +81,7 @@ def test_get_pandora_exe_resolves_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_get_pandora_exe_none_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    from sky_claw.antigravity.core.path_resolver import PathResolutionService
+    from sky_claw.app.core.path_resolver import PathResolutionService
 
     monkeypatch.delenv("PANDORA_EXE", raising=False)
     resolver = PathResolutionService(path_validator=MagicMock())

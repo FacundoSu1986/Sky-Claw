@@ -48,7 +48,7 @@ async def test_write_lock_is_shared_per_connection_path(tmp_path):
     SAME lock. The lifecycle keys connections by resolved path, so its write
     lock must be keyed identically (a per-wrapper lock would leave the race open).
     """
-    from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleManager
+    from sky_claw.app.core.db_lifecycle import DatabaseLifecycleManager
 
     mgr = DatabaseLifecycleManager()
     db_a = tmp_path / "mods.db"

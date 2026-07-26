@@ -33,8 +33,8 @@ from sky_claw.local.xedit.conflict_analyzer import DEFAULT_CRITICAL_TYPES
 from sky_claw.local.xedit.script_staging import BUNDLED_SCRIPTS_DIR
 
 if TYPE_CHECKING:
-    from sky_claw.antigravity.db.rollback_manager import RollbackManager
-    from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+    from sky_claw.app.db.rollback_manager import RollbackManager
+    from sky_claw.app.db.snapshot_manager import FileSnapshotManager
     from sky_claw.local.xedit.conflict_analyzer import ConflictReport, RecordConflict
     from sky_claw.local.xedit.runner import XEditRunner
 

@@ -21,7 +21,7 @@ redirigible hoy — corría **sin sandbox y sin gate HITL** (no está en
 
 Hallazgo que reencuadró el problema: el backlog decía que "el único gate HITL
 existente aprueba ANTES de ejecutar" (`ChainPreviewApprovalGate`). Es
-incompleto — existe `HITLGuard` (`sky_claw/antigravity/security/hitl.py`), el
+incompleto — existe `HITLGuard` (`sky_claw/app/security/hitl.py`), el
 "single approval backbone" del proyecto: una primitiva **genérica y
 bloqueante** (`request_approval(request_id, reason, detail, category)` →
 bloquea hasta `respond()` o timeout de `HITL_TIMEOUT_SECONDS = 300` con
@@ -67,7 +67,7 @@ orquestarlo.
 
 ## Decisión
 
-`SandboxPromotionFlow` (`sky_claw/antigravity/orchestrator/sandbox_promotion.py`,
+`SandboxPromotionFlow` (`sky_claw/app/orchestrator/sandbox_promotion.py`,
 ritual-agnóstico, mypy-estricto) es el dueño de producción del ciclo
 clonar → correr → diff → HITL → promote/discard:
 

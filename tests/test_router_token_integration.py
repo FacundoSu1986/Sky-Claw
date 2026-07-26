@@ -15,19 +15,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.agent.providers import AnthropicProvider
-from sky_claw.antigravity.agent.router import LLMRouter
-from sky_claw.antigravity.agent.token_budget import TokenBudgetConfig, TokenBudgetManager
-from sky_claw.antigravity.agent.token_circuit_breaker import (
+from sky_claw.app.agent.providers import AnthropicProvider
+from sky_claw.app.agent.router import LLMRouter
+from sky_claw.app.agent.token_budget import TokenBudgetConfig, TokenBudgetManager
+from sky_claw.app.agent.token_circuit_breaker import (
     TokenCircuitBreaker,
     TokenCircuitBreakerConfig,
 )
-from sky_claw.antigravity.agent.tools import AsyncToolRegistry
-from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
-from sky_claw.antigravity.scraper.masterlist import MasterlistClient
-from sky_claw.antigravity.security.network_gateway import EgressPolicy, NetworkGateway
-from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.app.agent.tools import AsyncToolRegistry
+from sky_claw.app.db.async_registry import AsyncModRegistry
+from sky_claw.app.orchestrator.sync_engine import SyncEngine
+from sky_claw.app.scraper.masterlist import MasterlistClient
+from sky_claw.app.security.network_gateway import EgressPolicy, NetworkGateway
+from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.mo2.vfs import MO2Controller
 
 # ------------------------------------------------------------------
@@ -466,7 +466,7 @@ class TestToolRoundTimeout:
         r._tools.execute = _slow_execute
 
         # Use a very short timeout for testing
-        with patch("sky_claw.antigravity.agent.router.DEFAULT_TOOL_ROUND_TIMEOUT", 0.1):
+        with patch("sky_claw.app.agent.router.DEFAULT_TOOL_ROUND_TIMEOUT", 0.1):
             session = MagicMock()
             # The timeout error should be caught by the existing OSError handler
             # (asyncio.TimeoutError is a subclass of TimeoutError → OSError in 3.11+)
@@ -589,7 +589,7 @@ class TestHermesToolTimeout:
 
         r._tools.execute = _slow_execute
 
-        with patch("sky_claw.antigravity.agent.router.DEFAULT_TOOL_ROUND_TIMEOUT", 0.1):
+        with patch("sky_claw.app.agent.router.DEFAULT_TOOL_ROUND_TIMEOUT", 0.1):
             session = MagicMock()
             result = await r.chat("run hermes tool", session, chat_id="hermes_timeout")
 

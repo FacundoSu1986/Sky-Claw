@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 
 async def test_phase_resolve_lee_archivos_en_thread(tmp_path: pathlib.Path, monkeypatch) -> None:
-    from sky_claw.antigravity.security.metacognitive_logic import SecurityMetacognition
+    from sky_claw.app.security.metacognitive_logic import SecurityMetacognition
 
     archivo = tmp_path / "modulo.py"
     archivo.write_text("import os\nprint('hola')\n", encoding="utf-8")
@@ -40,13 +40,13 @@ async def test_phase_resolve_lee_archivos_en_thread(tmp_path: pathlib.Path, monk
     monkeypatch.setattr(asyncio, "to_thread", _spy)
 
     with patch(
-        "sky_claw.antigravity.security.metacognitive_logic.GovernanceManager.get_instance",
+        "sky_claw.app.security.metacognitive_logic.GovernanceManager.get_instance",
         return_value=gov,
     ):
         await engine._phase_resolve()
 
     # La lectura del archivo pasó por un thread.
-    from sky_claw.antigravity.security.metacognitive_logic import _read_text_file_blocking
+    from sky_claw.app.security.metacognitive_logic import _read_text_file_blocking
 
     assert _read_text_file_blocking in calls, f"to_thread no usado para el read: {calls}"
     # Regresión funcional: el escaneo corrió y persistió su resultado.

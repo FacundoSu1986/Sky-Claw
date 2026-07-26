@@ -16,13 +16,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pydantic
 import pytest
 
-from sky_claw.antigravity.agent.router import _format_validation_feedback
-from sky_claw.antigravity.agent.tools import (
+from sky_claw.app.agent.router import _format_validation_feedback
+from sky_claw.app.agent.tools import (
     AsyncToolRegistry,
     ProfileParams,
     SearchModParams,
 )
-from sky_claw.antigravity.agent.tools.descriptor import ToolDescriptor
+from sky_claw.app.agent.tools.descriptor import ToolDescriptor
 
 
 @pytest.fixture()
@@ -235,7 +235,7 @@ class TestHermesCounterIndependence:
         only the parse budget and a subsequent valid tool_use must still
         be processed.
         """
-        from sky_claw.antigravity.agent.router import LLMRouter
+        from sky_claw.app.agent.router import LLMRouter
 
         mo2 = MagicMock()
         mo2.root = tmp_path

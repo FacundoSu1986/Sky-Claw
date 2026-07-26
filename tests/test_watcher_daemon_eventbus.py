@@ -13,9 +13,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
-from sky_claw.antigravity.core.event_payloads import ModlistChangedPayload
-from sky_claw.antigravity.orchestrator.watcher_daemon import WatcherDaemon
+from sky_claw.app.core.event_bus import CoreEventBus, Event
+from sky_claw.app.core.event_payloads import ModlistChangedPayload
+from sky_claw.app.orchestrator.watcher_daemon import WatcherDaemon
 
 if TYPE_CHECKING:
     import pathlib

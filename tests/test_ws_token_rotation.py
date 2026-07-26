@@ -18,8 +18,8 @@ import aiohttp
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from sky_claw.antigravity.security.auth_token_manager import AuthTokenManager
-from sky_claw.antigravity.web.app import WebApp
+from sky_claw.app.security.auth_token_manager import AuthTokenManager
+from sky_claw.app.web.app import WebApp
 
 # ---------------------------------------------------------------------------
 # AuthTokenManager — callback registry
@@ -29,7 +29,7 @@ from sky_claw.antigravity.web.app import WebApp
 class TestRotationCallbackRegistry:
     @pytest.fixture(autouse=True)
     def bypass_token_dir_permissions(self):
-        with patch("sky_claw.antigravity.security.auth_token_manager.restrict_to_owner"):
+        with patch("sky_claw.app.security.auth_token_manager.restrict_to_owner"):
             yield
 
     def test_register_single_callback(self, tmp_path):

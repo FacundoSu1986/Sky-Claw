@@ -50,11 +50,11 @@ local_logs/
 
 # Node.js
 node_modules/
-sky_claw/antigravity/comms/telegram_gateway_node/node_modules/
+sky_claw/app/comms/telegram_gateway_node/node_modules/
 # Note: package-lock.json IS committed (P0.5 supply-chain reproducibility).
 
 # Gateway secrets (nunca commitear)
-sky_claw/antigravity/comms/telegram_gateway_node/.env
+sky_claw/app/comms/telegram_gateway_node/.env
 *.token
 .env
 .skyclaw_backups/

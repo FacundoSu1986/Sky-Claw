@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.tool_strategies.execute_synthesis import (
+from sky_claw.app.orchestrator.tool_strategies.execute_synthesis import (
     ExecuteSynthesisPipelineStrategy,
 )
 
@@ -177,7 +177,7 @@ class TestDrainDePendientes:
     async def test_dispatcher_drain_invoca_a_las_strategies_que_lo_exponen(self) -> None:
         """El supervisor llama dispatcher.drain() en su shutdown; toda strategy
         con drain_pendientes() debe ser esperada (duck-typed)."""
-        from sky_claw.antigravity.orchestrator.tool_dispatcher import OrchestrationToolDispatcher
+        from sky_claw.app.orchestrator.tool_dispatcher import OrchestrationToolDispatcher
 
         drenados: list[str] = []
 

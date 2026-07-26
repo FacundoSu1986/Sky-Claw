@@ -135,7 +135,7 @@ async def test_runner_ensure_scripts_staged_valida_xedit_path_antes_de_escribir(
     # staging debia hacer lo mismo. Sin este guard, un xedit_path fuera del
     # sandbox (config mala o comprometida) crea/sobreescribe "Edit Scripts/"
     # fuera de los roots permitidos antes de que el validator diga que no.
-    from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+    from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 
     fuera_del_sandbox = tmp_path / "fuera"
     fuera_del_sandbox.mkdir()

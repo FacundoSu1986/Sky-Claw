@@ -3,7 +3,7 @@
 > **Audiencia:** desarrolladores, operadores y agentes de IA.
 > **Estado:** implementado con áreas parciales señaladas en cada documento.
 > **Fuentes canónicas:** `sky_claw/__main__.py`, `sky_claw/app_context.py`,
-> `sky_claw/antigravity/`, `sky_claw/local/` y ADR aprobados.
+> `sky_claw/app/`, `sky_claw/local/` y ADR aprobados.
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 
 Sky-Claw es un plano de control local para operar flujos de modding de Skyrim

@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sky_claw.antigravity.gui.models.app_state import AppState
-from sky_claw.antigravity.gui.views.forge_dashboard import _identity_html, _initials
-from sky_claw.antigravity.gui.views.mod_list import _filter_mods
+from sky_claw.app.gui.models.app_state import AppState
+from sky_claw.app.gui.views.forge_dashboard import _identity_html, _initials
+from sky_claw.app.gui.views.mod_list import _filter_mods
 
 
 # ── A3: iniciales derivadas del nombre ──────────────────────────────────────────

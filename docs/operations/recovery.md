@@ -6,8 +6,8 @@
 > **Estado:** Implementado con límites específicos por runner.
 >
 > **Fuentes canónicas:** `sky_claw/app_context.py`,
-> `sky_claw/antigravity/core/db_lifecycle.py`,
-> `sky_claw/antigravity/db/`, `sky_claw/local/mo2/profile_sandbox.py` y
+> `sky_claw/app/core/db_lifecycle.py`,
+> `sky_claw/app/db/`, `sky_claw/local/mo2/profile_sandbox.py` y
 > `sky_claw/local/mo2/vfs_broker.py`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.

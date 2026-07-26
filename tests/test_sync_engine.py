@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.orchestrator.sync_engine."""
+"""Tests for sky_claw.app.orchestrator.sync_engine."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import aiohttp
 import pytest
 from tenacity import wait_none
 
-from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-from sky_claw.antigravity.orchestrator.sync_engine import (
+from sky_claw.app.db.async_registry import AsyncModRegistry
+from sky_claw.app.orchestrator.sync_engine import (
     SyncConfig,
     SyncEngine,
     SyncMetrics,
@@ -20,18 +20,18 @@ from sky_claw.antigravity.orchestrator.sync_engine import (
     _extract_nexus_id,
     _update_available,
 )
-from sky_claw.antigravity.scraper.masterlist import (
+from sky_claw.app.scraper.masterlist import (
     CircuitOpenError,
     MasterlistClient,
     MasterlistFetchError,
     MasterlistHTTPError,
 )
-from sky_claw.antigravity.security.hitl import Decision
-from sky_claw.antigravity.security.network_gateway import (
+from sky_claw.app.security.hitl import Decision
+from sky_claw.app.security.network_gateway import (
     NetworkGateway,
     NetworkGatewayTimeoutError,
 )
-from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.mo2.vfs import MO2Controller
 
 # ------------------------------------------------------------------
@@ -117,7 +117,7 @@ class TestExtractNexusIdMeta:
         meta_dir.mkdir(parents=True)
         (meta_dir / "meta.ini").write_text("[General]\nmodid=42001\n", encoding="utf-8")
 
-        with patch("sky_claw.antigravity.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
+        with patch("sky_claw.app.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
             result = _extract_nexus_id(mod_name)
 
         assert result == 42001
@@ -129,7 +129,7 @@ class TestExtractNexusIdMeta:
         meta_dir.mkdir(parents=True)
         (meta_dir / "meta.ini").write_text("[General]\nmodid=0\n", encoding="utf-8")
 
-        with patch("sky_claw.antigravity.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
+        with patch("sky_claw.app.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
             result = _extract_nexus_id(mod_name)
 
         assert result is None
@@ -141,7 +141,7 @@ class TestExtractNexusIdMeta:
         meta_dir.mkdir(parents=True)
         (meta_dir / "meta.ini").write_text("[OtherSection]\nkey=value\n", encoding="utf-8")
 
-        with patch("sky_claw.antigravity.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
+        with patch("sky_claw.app.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
             result = _extract_nexus_id(mod_name)
 
         assert result is None
@@ -160,7 +160,7 @@ class TestExtractNexusIdMeta:
         # Sin section header → MissingSectionHeaderError al parsear
         (meta_dir / "meta.ini").write_text("key = value_without_section\n", encoding="utf-8")
 
-        with patch("sky_claw.antigravity.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
+        with patch("sky_claw.app.orchestrator.sync_engine.SystemPaths.modding_root", return_value=tmp_path):
             result = _extract_nexus_id(mod_name)
 
         assert result is None

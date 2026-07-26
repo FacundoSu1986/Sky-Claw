@@ -6,7 +6,7 @@
 >
 > **Fuentes canónicas:** `sky_claw/config.py`,
 > `sky_claw/local/local_config.py` y
-> `sky_claw/antigravity/core/path_resolver.py`.
+> `sky_claw/app/core/path_resolver.py`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

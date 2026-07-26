@@ -4,7 +4,7 @@
 >
 > **Audiencia:** desarrolladores, operadores y agentes.
 >
-> **Fuentes canónicas:** `sky_claw/antigravity/security/`, `sky_claw/config.py`
+> **Fuentes canónicas:** `sky_claw/app/security/`, `sky_claw/config.py`
 > y callers productivos.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.

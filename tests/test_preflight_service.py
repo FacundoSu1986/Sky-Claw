@@ -152,7 +152,7 @@ class TestBloqueoDeMutantes:
     """El primer mutante cableado: LootSortingService respeta el semáforo."""
 
     def _loot_service(self, reporte: PreflightReport):
-        from sky_claw.antigravity.db.locks import DistributedLockManager
+        from sky_claw.app.db.locks import DistributedLockManager
         from sky_claw.local.mo2.load_order import LoadOrderPaths
         from sky_claw.local.tools.loot_service import LootSortingService
 

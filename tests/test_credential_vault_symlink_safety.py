@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sky_claw.antigravity.security.credential_vault import CredentialVault
+from sky_claw.app.security.credential_vault import CredentialVault
 
 _VALID_SALT = b"\x00" * 32
 
@@ -70,7 +70,7 @@ class TestWriteSaltAtomicSymlinkRejection:
         # La escritura debe completarse exitosamente, escribiendo en el target
         # real (no en el víctima). Patch restrict_to_owner para evitar la
         # llamada a icacls (que falla con error 1332 en algunos entornos).
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             CredentialVault._write_salt_atomic(target, _VALID_SALT)
 
         # Verificar que escribimos al target real, no al víctima.
@@ -81,7 +81,7 @@ class TestWriteSaltAtomicSymlinkRejection:
     def test_o_nofollow_present_in_open_flags(self, tmp_path: Path) -> None:
         """Verificación structural: O_NOFOLLOW está en las flags si el OS lo soporta."""
         target = tmp_path / "salt.bin"
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             CredentialVault._write_salt_atomic(target, _VALID_SALT)
         assert target.read_bytes() == _VALID_SALT
         # El helper estático ahora usa O_NOFOLLOW si está disponible.
@@ -101,7 +101,7 @@ class TestWriteSaltAtomicHappyPath:
 
     def test_writes_target_with_owner_only_permissions(self, tmp_path: Path) -> None:
         target = tmp_path / "vault_salt.bin"
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             CredentialVault._write_salt_atomic(target, _VALID_SALT)
         assert target.exists()
         assert target.read_bytes() == _VALID_SALT
@@ -109,7 +109,7 @@ class TestWriteSaltAtomicHappyPath:
     def test_overwrites_existing_regular_file(self, tmp_path: Path) -> None:
         target = tmp_path / "vault_salt.bin"
         target.write_bytes(b"old-salt" + b"\x00" * 24)
-        with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+        with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
             CredentialVault._write_salt_atomic(target, _VALID_SALT)
         assert target.read_bytes() == _VALID_SALT
 
@@ -118,7 +118,7 @@ class TestWriteSaltAtomicHappyPath:
         target = tmp_path / "vault_salt.bin"
 
         # Monkey-patch restrict_to_owner para que lance en este test.
-        import sky_claw.antigravity.security.credential_vault as cv_mod
+        import sky_claw.app.security.credential_vault as cv_mod
 
         def _raise(p: Path) -> None:
             raise PermissionError("forced failure")

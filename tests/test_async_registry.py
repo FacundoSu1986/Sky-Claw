@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.db.async_registry.
+"""Tests for sky_claw.app.db.async_registry.
 
 Uses the global `async_registry` fixture from conftest.py — demonstrates
 the centralized M-01-compliant registry setup pattern.
@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
-from sky_claw.antigravity.db.async_registry import AsyncModRegistry, _DatabaseCorruptionError
+from sky_claw.app.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
+from sky_claw.app.db.async_registry import AsyncModRegistry, _DatabaseCorruptionError
 
 
 class _CursorConFallo:

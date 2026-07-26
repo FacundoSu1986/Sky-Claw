@@ -11,7 +11,7 @@ import pathlib
 
 import pytest
 
-from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.validators.safe_save_validator import (
     _DANGER_MESSAGE,
     _DANGEROUS_KEYS,

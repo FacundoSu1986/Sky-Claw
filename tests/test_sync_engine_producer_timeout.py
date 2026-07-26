@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.sync_engine import SyncConfig, SyncEngine
+from sky_claw.app.orchestrator.sync_engine import SyncConfig, SyncEngine
 
 
 def _make_engine(worker_count: int = 2, queue_maxsize: int = 2) -> SyncEngine:
@@ -67,7 +67,7 @@ async def test_poison_delivery_doesnt_deadlock_when_workers_die() -> None:
     engine._consume = _dying_consume  # type: ignore[method-assign]
 
     # Patch timeout to 50ms so the test runs fast.
-    with patch("sky_claw.antigravity.orchestrator.sync_engine._POISON_DELIVERY_TIMEOUT", 0.05):
+    with patch("sky_claw.app.orchestrator.sync_engine._POISON_DELIVERY_TIMEOUT", 0.05):
         try:
             await asyncio.wait_for(engine.run(session, profile="Default"), timeout=3.0)
         except TimeoutError:
@@ -149,7 +149,7 @@ async def test_poison_delivery_cancelado_no_pisa_cancellederror_con_timeout() ->
     engine._consume = _dying_consume  # type: ignore[method-assign]
 
     errores: list[BaseException] = []
-    with patch("sky_claw.antigravity.orchestrator.sync_engine._POISON_DELIVERY_TIMEOUT", 0.05):
+    with patch("sky_claw.app.orchestrator.sync_engine._POISON_DELIVERY_TIMEOUT", 0.05):
         try:
             await asyncio.wait_for(engine.run(session, profile="Default"), timeout=3.0)
         except TimeoutError:

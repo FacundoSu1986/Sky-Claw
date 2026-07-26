@@ -12,9 +12,9 @@ import asyncio
 import logging
 import pathlib
 
-from sky_claw.antigravity.gui.task_tracking import _BACKGROUND_TASKS, create_tracked_task
+from sky_claw.app.gui.task_tracking import _BACKGROUND_TASKS, create_tracked_task
 
-_GUI_DIR = pathlib.Path("sky_claw/antigravity/gui")
+_GUI_DIR = pathlib.Path("sky_claw/app/gui")
 
 #: Files migrated in PR-4 — bare create_task must not reappear in them.
 _MIGRATED_FILES = [
@@ -47,7 +47,7 @@ async def test_tracked_task_logs_exception(caplog):
     async def _boom() -> None:
         raise RuntimeError("button handler exploded")
 
-    with caplog.at_level(logging.ERROR, logger="sky_claw.antigravity.gui.task_tracking"):
+    with caplog.at_level(logging.ERROR, logger="sky_claw.app.gui.task_tracking"):
         task = create_tracked_task(_boom(), name="gui-test-boom")
         with contextlib_suppress_runtime():
             await task
@@ -62,7 +62,7 @@ async def test_tracked_task_cancellation_is_silent(caplog):
     async def _sleepy() -> None:
         await asyncio.sleep(3600)
 
-    with caplog.at_level(logging.ERROR, logger="sky_claw.antigravity.gui.task_tracking"):
+    with caplog.at_level(logging.ERROR, logger="sky_claw.app.gui.task_tracking"):
         task = create_tracked_task(_sleepy(), name="gui-test-cancel")
         await asyncio.sleep(0)
         task.cancel()
@@ -72,7 +72,7 @@ async def test_tracked_task_cancellation_is_silent(caplog):
 
     # Cancellation is normal shutdown, not an error — assert on THIS module's
     # logger only (caplog.text could capture unrelated loggers' records).
-    module_records = [r for r in caplog.records if r.name == "sky_claw.antigravity.gui.task_tracking"]
+    module_records = [r for r in caplog.records if r.name == "sky_claw.app.gui.task_tracking"]
     assert module_records == []
     assert task not in _BACKGROUND_TASKS
 

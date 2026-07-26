@@ -121,10 +121,10 @@ jobs:
         with:
           node-version: "24"
       - name: NPM ci (Telegram gateway)
-        working-directory: sky_claw/antigravity/comms/telegram_gateway_node
+        working-directory: sky_claw/app/comms/telegram_gateway_node
         run: npm ci
       - name: NPM audit (Telegram gateway)
-        working-directory: sky_claw/antigravity/comms/telegram_gateway_node
+        working-directory: sky_claw/app/comms/telegram_gateway_node
         run: npm audit --audit-level=high
 
   # ── Summary jobs: exact names required by branch protection ──────────────

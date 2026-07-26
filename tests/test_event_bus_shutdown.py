@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
+from sky_claw.app.core.event_bus import CoreEventBus, Event
 
 
 def _crear_dlq_mock() -> MagicMock:

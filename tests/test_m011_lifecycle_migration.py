@@ -11,11 +11,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleManager
-from sky_claw.antigravity.core.dlq_manager import DLQManager
-from sky_claw.antigravity.core.event_bus import create_bus_with_dlq
-from sky_claw.antigravity.db.locks import DistributedLockManager
-from sky_claw.antigravity.orchestrator.rollback_factory import create_rollback_components
+from sky_claw.app.core.db_lifecycle import DatabaseLifecycleManager
+from sky_claw.app.core.dlq_manager import DLQManager
+from sky_claw.app.core.event_bus import create_bus_with_dlq
+from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.orchestrator.rollback_factory import create_rollback_components
 
 
 async def test_locks_uses_lifecycle_connection_and_does_not_close_it(tmp_path):
@@ -62,7 +62,7 @@ async def test_dlq_reuses_lifecycle_connection_across_operations(tmp_path):
 
 
 async def test_router_uses_lifecycle_connection_and_does_not_close_it(tmp_path):
-    from sky_claw.antigravity.agent.router import LLMRouter
+    from sky_claw.app.agent.router import LLMRouter
 
     mgr = DatabaseLifecycleManager()
     try:
@@ -108,7 +108,7 @@ async def test_dlq_rolls_back_dangling_transaction_on_shared_connection(tmp_path
 
     import pytest
 
-    from sky_claw.antigravity.core.event_bus import Event
+    from sky_claw.app.core.event_bus import Event
 
     mgr = DatabaseLifecycleManager()
     try:

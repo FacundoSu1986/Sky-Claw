@@ -4,9 +4,9 @@
 >
 > **Estado:** Implementado.
 >
-> **Fuentes canónicas:** `sky_claw/antigravity/agent/tools/`,
-> `sky_claw/antigravity/orchestrator/tool_dispatcher.py`,
-> `sky_claw/antigravity/orchestrator/tool_strategies/` y
+> **Fuentes canónicas:** `sky_claw/app/agent/tools/`,
+> `sky_claw/app/orchestrator/tool_dispatcher.py`,
+> `sky_claw/app/orchestrator/tool_strategies/` y
 > `sky_claw/local/tools/tool_result.py`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.

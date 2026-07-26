@@ -18,12 +18,12 @@ import pathlib
 import time
 from typing import TYPE_CHECKING, Any
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
-from sky_claw.antigravity.core.event_payloads import (
+from sky_claw.app.core.event_bus import CoreEventBus, Event
+from sky_claw.app.core.event_payloads import (
     XEditPatchCompletedPayload,
     XEditPatchStartedPayload,
 )
-from sky_claw.antigravity.db.locks import (
+from sky_claw.app.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
     SnapshotTransactionLock,
@@ -41,9 +41,9 @@ from sky_claw.local.xedit.record_dump_parser import RecordDump, normalize_form_i
 from sky_claw.local.xedit.runner import ScriptExecutionResult, XEditError, XEditRunner
 
 if TYPE_CHECKING:
-    from sky_claw.antigravity.core.path_resolver import PathResolutionService
-    from sky_claw.antigravity.db.journal import OperationJournal
-    from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+    from sky_claw.app.core.path_resolver import PathResolutionService
+    from sky_claw.app.db.journal import OperationJournal
+    from sky_claw.app.db.snapshot_manager import FileSnapshotManager
     from sky_claw.local.ai.recommendation import PatchRecommendation
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
@@ -194,7 +194,7 @@ class XEditPipelineService:
 
         self._ensure_xedit_runner()
 
-        from sky_claw.antigravity.db.rollback_manager import RollbackManager
+        from sky_claw.app.db.rollback_manager import RollbackManager
 
         self._patch_orchestrator = PatchOrchestrator(
             xedit_runner=self._xedit_runner,
@@ -842,7 +842,7 @@ class XEditPipelineService:
         preview must not.
         """
         # Local import to avoid an import-time cycle (local.tools -> orchestrator).
-        from sky_claw.antigravity.orchestrator.preview.manifest import (
+        from sky_claw.app.orchestrator.preview.manifest import (
             ConflictPair,
             ConflictPreview,
             StageChangeSet,
@@ -897,7 +897,7 @@ class XEditPipelineService:
         """Pares de conflicto críticos para el ActionManifest (T-26): qué records
         forwardeó el parche. Best-effort — un report sin pares no aporta ninguno
         (mismo criterio de criticidad que ``_preview_patch``)."""
-        from sky_claw.antigravity.orchestrator.preview.manifest import ConflictPair
+        from sky_claw.app.orchestrator.preview.manifest import ConflictPair
 
         pares: list[Any] = []
         for pair in report.plugin_pairs:
@@ -930,7 +930,7 @@ class XEditPipelineService:
         :class:`_ActionManifestError` para que el caller aborte el Ritual sin
         mutar (la caja negra no es opcional cuando el journal está cableado).
         """
-        from sky_claw.antigravity.orchestrator.preview.action_manifest import build_action_manifest
+        from sky_claw.app.orchestrator.preview.action_manifest import build_action_manifest
 
         try:
             manifest = build_action_manifest(
@@ -957,7 +957,7 @@ class XEditPipelineService:
         manifiesto persistido + el estado REAL de la TX) y la persiste. Un fallo
         se loguea y NO rompe un Ritual ya exitoso (misma disciplina que LOOT).
         """
-        from sky_claw.antigravity.orchestrator.preview.flight_report import (
+        from sky_claw.app.orchestrator.preview.flight_report import (
             compose_flight_report_from_journal,
         )
 

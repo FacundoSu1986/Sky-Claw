@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.maintenance_daemon import MaintenanceDaemon
+from sky_claw.app.orchestrator.maintenance_daemon import MaintenanceDaemon
 
 
 def _make_snapshot_manager(hang: bool = False) -> MagicMock:

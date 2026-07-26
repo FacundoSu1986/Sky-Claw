@@ -20,8 +20,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
-from sky_claw.antigravity.agent.executor import ManagedToolExecutor
-from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.app.agent.executor import ManagedToolExecutor
+from sky_claw.app.security.path_validator import PathValidator
 
 
 class TestDrenajeAcotadoDeTelemetria:
@@ -46,7 +46,7 @@ class TestDrenajeAcotadoDeTelemetria:
         mock_proc.returncode = 0
 
         with patch(
-            "sky_claw.antigravity.agent.executor.asyncio.create_subprocess_exec",
+            "sky_claw.app.agent.executor.asyncio.create_subprocess_exec",
             return_value=mock_proc,
         ):
             # Guarda de test: sin el fix, execute() cuelga en ``await monitor_task``
@@ -70,7 +70,7 @@ class TestDrenajeAcotadoDeTelemetria:
         mock_proc.returncode = 0
 
         with patch(
-            "sky_claw.antigravity.agent.executor.asyncio.create_subprocess_exec",
+            "sky_claw.app.agent.executor.asyncio.create_subprocess_exec",
             return_value=mock_proc,
         ):
             result = await asyncio.wait_for(executor.execute("bin", []), timeout=2.0)
@@ -105,11 +105,11 @@ class TestDrenajeAcotadoDeTelemetria:
 
         with (
             patch(
-                "sky_claw.antigravity.agent.executor.asyncio.create_subprocess_exec",
+                "sky_claw.app.agent.executor.asyncio.create_subprocess_exec",
                 return_value=mock_proc,
             ),
             patch(
-                "sky_claw.antigravity.agent.executor.asyncio.create_task",
+                "sky_claw.app.agent.executor.asyncio.create_task",
                 side_effect=_spy_create_task,
             ),
         ):

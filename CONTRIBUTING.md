@@ -132,7 +132,7 @@ Consulta [.github/coding_conventions.md](.github/coding_conventions.md) para el 
 - Los Tools nuevos emiten `success: bool` + `message: str` (ver contrato en `AGENTS.md`).
 
 ### 4.4 Errores y Logging
-- Usa la jerarquía `AppNexusError` (`sky_claw/antigravity/core/errors.py`).
+- Usa la jerarquía `AppNexusError` (`sky_claw/app/core/errors.py`).
 - **Prohibido** `except Exception` desnudo; re-lanzar excepciones desconocidas tras loggear.
 - Usa `logging.getLogger(__name__)`. **Prohibido** `print()`.
 

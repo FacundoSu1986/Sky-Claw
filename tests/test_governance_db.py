@@ -15,11 +15,11 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from sky_claw.antigravity.core.db_lifecycle import (
+from sky_claw.app.core.db_lifecycle import (
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
 )
-from sky_claw.antigravity.security.governance import GovernanceManager
+from sky_claw.app.security.governance import GovernanceManager
 
 
 @pytest_asyncio.fixture
@@ -100,7 +100,7 @@ def test_save_whitelist_propagates_persistence_failures(tmp_path: Path, monkeypa
         raise PermissionError("acl hardening failed")
 
     monkeypatch.setattr(
-        "sky_claw.antigravity.security.governance.restrict_to_owner",
+        "sky_claw.app.security.governance.restrict_to_owner",
         _deny_owner_restriction,
     )
 

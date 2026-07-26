@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import psutil
 
-from sky_claw.antigravity.orchestrator.telemetry_daemon import (
+from sky_claw.app.orchestrator.telemetry_daemon import (
     TelemetryDaemon,
     TelemetryMetrics,
     _read_gpu_percent,

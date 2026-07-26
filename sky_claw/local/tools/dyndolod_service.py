@@ -17,19 +17,19 @@ import pathlib
 import time
 from typing import TYPE_CHECKING, Any
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
-from sky_claw.antigravity.core.event_payloads import (
+from sky_claw.app.core.event_bus import CoreEventBus, Event
+from sky_claw.app.core.event_payloads import (
     DynDOLODPipelineCompletedPayload,
     DynDOLODPipelineStartedPayload,
 )
-from sky_claw.antigravity.core.path_resolver import PathResolutionService
-from sky_claw.antigravity.db.journal import OperationJournal
-from sky_claw.antigravity.db.locks import (
+from sky_claw.app.core.path_resolver import PathResolutionService
+from sky_claw.app.db.journal import OperationJournal
+from sky_claw.app.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
     SnapshotTransactionLock,
 )
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools._dir_rollback import DirectoryRollback
 from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODConfig,
@@ -276,7 +276,7 @@ class DynDOLODPipelineService:
         ``rollback_plan`` del manifiesto queda vacío por diseño (``snapshots=[]``).
         Un plan de rollback consciente del move-aside es follow-up.
         """
-        from sky_claw.antigravity.orchestrator.preview.action_manifest import build_action_manifest
+        from sky_claw.app.orchestrator.preview.action_manifest import build_action_manifest
 
         try:
             manifest = build_action_manifest(
@@ -302,7 +302,7 @@ class DynDOLODPipelineService:
         manifiesto persistido + el estado REAL de la TX) y la persiste. Un fallo
         se loguea y NO rompe un pipeline ya exitoso (misma disciplina que LOOT/xEdit).
         """
-        from sky_claw.antigravity.orchestrator.preview.flight_report import (
+        from sky_claw.app.orchestrator.preview.flight_report import (
             compose_flight_report_from_journal,
         )
 
@@ -754,7 +754,7 @@ class DynDOLODPipelineService:
         resolver alone, so no DynDOLOD binary is required to preview.
         """
         # Local import to avoid an import-time cycle (local.tools -> orchestrator).
-        from sky_claw.antigravity.orchestrator.preview.manifest import LODPlan, StageChangeSet
+        from sky_claw.app.orchestrator.preview.manifest import LODPlan, StageChangeSet
 
         mo2_mods_path = self._path_resolver.get_mo2_mods_path()
         dyndolod_dir = str(mo2_mods_path / "DynDOLOD Output") if mo2_mods_path else "DynDOLOD Output"

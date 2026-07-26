@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.comms.telegram and sky_claw.antigravity.comms.telegram_sender."""
+"""Tests for sky_claw.app.comms.telegram and sky_claw.app.comms.telegram_sender."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ import aiohttp
 import pytest
 from aiohttp import web
 
-from sky_claw.antigravity.comms.telegram import _DEDUP_MAX_SIZE, TelegramWebhook
-from sky_claw.antigravity.comms.telegram_sender import (
+from sky_claw.app.comms.telegram import _DEDUP_MAX_SIZE, TelegramWebhook
+from sky_claw.app.comms.telegram_sender import (
     MAX_MESSAGE_LENGTH,
     TelegramSender,
     TelegramSendError,
@@ -423,7 +423,7 @@ class TestTelegramPollingFailClosed:
     """Verifica el fail-closed del polling cuando no hay chat_id autorizado (C-2)."""
 
     def _make_polling(self, authorized_chat_id):
-        from sky_claw.antigravity.comms.telegram_polling import TelegramPolling
+        from sky_claw.app.comms.telegram_polling import TelegramPolling
 
         handler = MagicMock()
         handler.process_update = AsyncMock()

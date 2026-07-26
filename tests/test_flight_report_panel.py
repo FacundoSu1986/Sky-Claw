@@ -2,15 +2,15 @@
 
 El panel NiceGUI es glue fino de browser; la lógica de display vive en el helper
 puro ``build_flight_report_view_model``, que es lo que fijamos acá. La entrada es
-el contrato estable de :class:`~sky_claw.antigravity.orchestrator.preview.manifest.FlightReport`
+el contrato estable de :class:`~sky_claw.app.orchestrator.preview.manifest.FlightReport`
 (el mismo modelo que los 6 rituales persisten en el journal, T-26/T-28), así que
 los tests construyen informes de dominio REALES y serializan — no un dict inventado.
 """
 
 from __future__ import annotations
 
-from sky_claw.antigravity.gui.views.sections.flight_report_panel import build_flight_report_view_model
-from sky_claw.antigravity.orchestrator.preview.manifest import (
+from sky_claw.app.gui.views.sections.flight_report_panel import build_flight_report_view_model
+from sky_claw.app.orchestrator.preview.manifest import (
     ConflictPair,
     FlightReport,
     LoadOrderDiff,

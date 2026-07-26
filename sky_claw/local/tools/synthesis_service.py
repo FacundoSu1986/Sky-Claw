@@ -30,12 +30,12 @@ import pathlib
 import time
 from typing import TYPE_CHECKING, Any
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
-from sky_claw.antigravity.core.event_payloads import (
+from sky_claw.app.core.event_bus import CoreEventBus, Event
+from sky_claw.app.core.event_payloads import (
     SynthesisPipelineCompletedPayload,
     SynthesisPipelineStartedPayload,
 )
-from sky_claw.antigravity.db.locks import (
+from sky_claw.app.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
     SnapshotTransactionLock,
@@ -50,9 +50,9 @@ from sky_claw.local.tools.synthesis_runner import (
 )
 
 if TYPE_CHECKING:
-    from sky_claw.antigravity.core.path_resolver import PathResolutionService
-    from sky_claw.antigravity.db.journal import OperationJournal
-    from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+    from sky_claw.app.core.path_resolver import PathResolutionService
+    from sky_claw.app.db.journal import OperationJournal
+    from sky_claw.app.db.snapshot_manager import FileSnapshotManager
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
 logger = logging.getLogger(__name__)
@@ -601,7 +601,7 @@ class SynthesisPipelineService:
         reales del overwrite tras la promoción pertenece al promotion flow
         (dueño del mapeo clon→real) — follow-up documentado.
         """
-        from sky_claw.antigravity.orchestrator.preview.action_manifest import build_action_manifest
+        from sky_claw.app.orchestrator.preview.action_manifest import build_action_manifest
 
         try:
             manifest = build_action_manifest(

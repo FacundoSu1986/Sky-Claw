@@ -13,10 +13,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.agent.tools import AsyncToolRegistry
-from sky_claw.antigravity.scraper.nexus_downloader import FileInfo, NexusDownloader
-from sky_claw.antigravity.security.hitl import Decision, HITLGuard
-from sky_claw.antigravity.security.network_gateway import EgressPolicy, NetworkGateway
+from sky_claw.app.agent.tools import AsyncToolRegistry
+from sky_claw.app.scraper.nexus_downloader import FileInfo, NexusDownloader
+from sky_claw.app.security.hitl import Decision, HITLGuard
+from sky_claw.app.security.network_gateway import EgressPolicy, NetworkGateway
 
 
 class TestLootAutoInit:
@@ -178,7 +178,7 @@ class TestDownloadModFreshUrl:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.closed = False
 
-        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession", return_value=mock_session):
+        with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession", return_value=mock_session):
             # Call _download_mod
             asyncio.run(registry._download_mod(nexus_id=1234, file_id=5678))
 
@@ -189,7 +189,7 @@ class TestDownloadModFreshUrl:
         enqueued_coro = mock_sync_engine.enqueue_download.call_args[0][0]
 
         # Run the coroutine to verify it works (mock session for the closure's own session)
-        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession", return_value=mock_session):
+        with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession", return_value=mock_session):
             asyncio.run(enqueued_coro)
 
         # Verify fresh URL was fetched (get_file_info called twice: once for HITL, once in closure)

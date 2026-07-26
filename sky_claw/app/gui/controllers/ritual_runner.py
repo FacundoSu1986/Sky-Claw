@@ -1,0 +1,371 @@
+"""Fase 2 — wire the Panel's Rituales to the real destructive-tool dispatcher.
+
+The Ritual cards (Ordenar Mods / Crear Parche / Optimizar Gráficos) dispatch the
+matching tool through :meth:`SupervisorAgent.dispatch_tool`, reusing the existing
+HITL gate, load-order locks and sandbox. Approval is routed to the GUI via
+:func:`make_gui_hitl_notify`: a "Modo local" toggle auto-approves
+``tool_execution`` requests when the operator is at the PC, otherwise the bridge
+parks the request in the store so the page can show an Aprobar/Denegar modal.
+
+This module deliberately imports no NiceGUI so the logic stays unit-testable; the
+view/bootloader own the actual element wiring and the store keys.
+"""
+
+from __future__ import annotations
+
+import contextvars
+import logging
+import os
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
+
+from sky_claw.local.tools.tool_result import normalize_tool_result
+
+if TYPE_CHECKING:
+    from sky_claw.app.gui.state.reactive_store import ReactiveStore
+
+logger = logging.getLogger(__name__)
+
+#: M-9: auto-approve armado SÓLO para el árbol de tasks del dispatch en curso.
+#: Un ContextVar (no un flag global del store) garantiza que la aprobación
+#: automática quede scoped a exactamente la task de ``run_ritual`` que lo armó:
+#: ``HITLGuard.request_approval`` invoca ``notify_fn`` inline dentro de esa misma
+#: task, mientras que un ``tool_execution`` concurrente de Telegram/LLM/API corre
+#: en OTRA task cuya copia de contexto tiene el default ``False`` → nunca se
+#: auto-aprueba. Antes esto era un bool global del store, armado por toda la
+#: duración del dispatch del GUI, que auto-aprobaba cualquier tool_execution de
+#: cualquier source concurrente (bypass del gate HITL).
+_ritual_auto_approve: contextvars.ContextVar[bool] = contextvars.ContextVar("ritual_auto_approve", default=False)
+
+
+def ritual_auto_approve_armed() -> bool:
+    """True si el dispatch de la task actual armó auto-approve (Modo local).
+
+    Getter que el bootloader pasa a :func:`make_gui_hitl_notify`; lee el
+    ContextVar scoped a la task, no un flag global.
+    """
+    return _ritual_auto_approve.get()
+
+
+# Store key the bridge parks a pending tool_execution approval under, and the key
+# the run flow publishes its result feedback under (both consumed by refreshable
+# panels in forge_dashboard so the chat input is never reset).
+STORE_KEY_PENDING_HITL = "pending_hitl"
+STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
+#: Per-client "Modo local" toggle, stored in ``app.storage.client`` (server-side,
+#: one entry per browser connection, auto-cleared on disconnect) — NOT the global
+#: store. So one window's choice never enables auto-approval for another client
+#: (Codex review on #211).
+CLIENT_KEY_AUTO_APPROVE = "modo_local"
+#: Single-flight guard: a ritual is dispatching or awaiting approval right now.
+STORE_KEY_RITUAL_IN_FLIGHT = "ritual_in_flight"
+#: Último reporte de preflight (``PreflightReport.to_dict()``) que un dispatch
+#: adjuntó — hoy solo el sort de LOOT lo produce. El panel refrescable
+#: ``_ritual_preflight_panel`` lo renderiza con ``create_preflight_panel`` (T-16b).
+STORE_KEY_RITUAL_PREFLIGHT = "ritual_preflight"
+
+# Los 5 Rituales del Panel, cada uno con su estrategia HITL-gated en el dispatcher.
+RITUAL_TOOL_MAP: dict[str, str] = {
+    "loot": "execute_loot_sorting",
+    "wrye_bash": "generate_bashed_patch",
+    "dyndolod": "generate_lods",
+    "pandora": "generate_animations",
+    "xedit": "quick_auto_clean",
+}
+
+
+def ritual_tool_name(tool_key: str) -> str | None:
+    """Map a Ritual's scanner tool key to its dispatcher tool name, or ``None``."""
+    return RITUAL_TOOL_MAP.get(tool_key)
+
+
+# Follow-up C: Ritual tool key → ``ToolsInstaller`` method for the "Instalar" button.
+# Only the GitHub-release-backed tools have an auto-installer; Wrye Bash and DynDOLOD
+# are not on GitHub releases, so they stay out of the map (the card keeps its interim
+# "manual install" notice).
+RITUAL_INSTALLER_MAP: dict[str, str] = {
+    "loot": "ensure_loot",
+    "xedit": "ensure_xedit",
+    "pandora": "ensure_pandora",
+}
+
+#: Ritual tool key → the resolver env var seeded with the freshly installed exe path,
+#: so a just-installed tool can run without waiting for the next environment scan.
+#: Mirrors the var names in :class:`PathResolutionService` / ``_SNAPSHOT_TOOL_ENV``.
+RITUAL_INSTALL_ENV: dict[str, str] = {
+    "loot": "LOOT_EXE",
+    "xedit": "XEDIT_PATH",
+    "pandora": "PANDORA_EXE",
+}
+
+
+def ritual_installer_name(tool_key: str) -> str | None:
+    """Map a Ritual's scanner tool key to its ``ToolsInstaller`` method, or ``None``."""
+    return RITUAL_INSTALLER_MAP.get(tool_key)
+
+
+def summarize_ritual_result(tool_key: str, result: dict[str, Any]) -> tuple[str, str]:
+    """Build a (message, kind) pair from a dispatcher result dict.
+
+    ``kind`` is one of NiceGUI's notify types ("positive"/"negative"/"warning").
+    Denied/timed-out HITL approvals get a friendly Spanish hint instead of the
+    raw reason code.
+
+    Contrato compartido (deuda #5 cerrada): los servicios emiten ``success`` +
+    ``message``; :func:`normalize_tool_result` absorbe las shapes legacy
+    (``logs``/``errors``/``error``/``stderr``/``details``), así que acá ya no se
+    adivina inspeccionando claves.
+    """
+    normalized = normalize_tool_result(result)
+    if normalized["success"]:
+        return (f"Ritual «{tool_key}» completado.", "positive")
+
+    reason = str(result.get("reason", "") or "")
+    if reason in {"HITLApprovalDenied", "HITLGateUnavailable"}:
+        return (
+            "Ejecución no aprobada. Activá «Modo local» o aprobá la acción para continuar.",
+            "negative",
+        )
+    return (f"El ritual «{tool_key}» falló: {normalized['message']}", "negative")
+
+
+def preflight_from_result(result: Any) -> dict[str, Any] | None:
+    """Extrae el reporte de preflight de un result de dispatch, o ``None``.
+
+    Hoy solo el sort de LOOT corre preflight y adjunta
+    ``result["preflight"] = PreflightReport.to_dict()`` cuando el semáforo no está
+    verde o bloquea la mutación (``loot_service``). Defensivo: solo devuelve un
+    dict; cualquier otra shape (sin la clave, o un valor no-dict) → ``None``.
+    """
+    if isinstance(result, dict):
+        preflight = result.get("preflight")
+        if isinstance(preflight, dict):
+            return preflight
+    return None
+
+
+def make_gui_hitl_notify(
+    *,
+    respond: Callable[[str, bool], Awaitable[None]],
+    set_pending: Callable[[dict[str, Any]], None],
+    auto_approve_getter: Callable[[], bool],
+    delegate: Callable[[Any], Awaitable[None]] | None,
+) -> Callable[[Any], Awaitable[None]]:
+    """Build the GUI's HITL ``notify_fn`` (composes over the original closure).
+
+    For ``category == "tool_execution"`` the GUI owns the decision:
+    auto-approve when the toggle is on, otherwise park the request via
+    ``set_pending`` so the page renders an Aprobar/Denegar modal.
+
+    For ``category == "download"`` (the "Instalar" button — Follow-up C) the GUI
+    also parks an Aprobar/Denegar modal, but it is **never** auto-approved by
+    "Modo local": a network download is egress and is always confirmed by hand.
+    The parked entry carries the asset ``url`` so the modal can show its origin.
+
+    For ``category == "sandbox_promotion"`` (T-27b·2, ADR 0005) the modal is
+    also parked and **never** auto-approved: es la decisión post-run de
+    promover el diff de un sandbox al perfil real — revisar ese diff es el
+    propósito del sandbox, así que «Modo local» no la salta.
+
+    Every other category falls through to ``delegate`` (the original Telegram
+    closure), so scope approvals keep their existing behaviour.
+    """
+
+    async def _notify(req: Any) -> None:
+        category = getattr(req, "category", "")
+        if category == "tool_execution":
+            if auto_approve_getter():
+                logger.info("HITL(GUI): auto-approving %s (Modo local ON)", req.request_id)
+                await respond(req.request_id, True)
+            else:
+                set_pending(
+                    {
+                        "request_id": req.request_id,
+                        "reason": getattr(req, "reason", ""),
+                        "detail": getattr(req, "detail", ""),
+                    }
+                )
+            return
+        if category == "sandbox_promotion":
+            # Promoción post-run del sandbox (T-27b·2): siempre modal, nunca
+            # auto-aprobada — el operador decide sobre el diff real.
+            set_pending(
+                {
+                    "request_id": req.request_id,
+                    "reason": getattr(req, "reason", ""),
+                    "detail": getattr(req, "detail", ""),
+                }
+            )
+            return
+        if category == "download":
+            # Egress: never auto-approved — always parks a manual Aprobar/Denegar.
+            set_pending(
+                {
+                    "request_id": req.request_id,
+                    "reason": getattr(req, "reason", ""),
+                    "detail": getattr(req, "detail", ""),
+                    "url": getattr(req, "url", "") or "",
+                }
+            )
+            return
+        if delegate is not None:
+            await delegate(req)
+
+    return _notify
+
+
+async def run_ritual(
+    tool_key: str,
+    *,
+    supervisor: Any,
+    store: ReactiveStore,
+    auto_approve: bool = False,
+) -> None:
+    """Dispatch a Ritual's tool and publish a feedback message to the store.
+
+    ``auto_approve`` is the launching client's "Modo local" preference, read in
+    the click handler (the only place with client context). It is armed in the
+    store for this single dispatch so the HITL bridge can auto-grant *this*
+    request — and disarmed afterwards — instead of consulting a process-global
+    flag that would also affect other clients/agent calls.
+
+    Never raises: dispatch failures and a missing supervisor are converted into
+    a ``ritual_feedback`` entry so the click handler (a fire-and-forget task)
+    cannot crash the loop. The HITL gate inside ``dispatch_tool`` is what asks
+    for approval — see :func:`make_gui_hitl_notify`.
+    """
+    # Limpiar el semáforo de preflight de cualquier run anterior: cada invocación
+    # arranca sin panel stale (T-16b). Se re-puebla al final si el dispatch adjunta
+    # un reporte (hoy solo el sort de LOOT lo hace).
+    store.set(STORE_KEY_RITUAL_PREFLIGHT, None)
+    tool_name = ritual_tool_name(tool_key)
+    if tool_name is None:
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": f"El ritual «{tool_key}» aún no está cableado.", "type": "info"},
+        )
+        return
+    if supervisor is None:
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": "El daemon todavía no está listo. Probá de nuevo en un momento.", "type": "negative"},
+        )
+        return
+    # Single-flight: refuse a second launch while one is dispatching or awaiting
+    # approval. Otherwise a second request would overwrite the single pending_hitl
+    # entry and orphan the first prompt until its fail-closed timeout (Codex #211).
+    if store.get(STORE_KEY_RITUAL_IN_FLIGHT):
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": "Ya hay un ritual en curso o esperando aprobación. Esperá a que termine.", "type": "warning"},
+        )
+        return
+    store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
+    # F1a: un click del operador ES intervención humana — rearmar el
+    # cortacircuitos cognitivo del dispatcher antes de despachar, para que
+    # repetir el mismo ritual a mano no se confunda con un bucle del agente
+    # (contrato reset() del AgenticLoopGuardrail). Duck-typed: supervisores
+    # fake sin el método simplemente no rearman.
+    reset_guardrail = getattr(supervisor, "reset_loop_guardrail", None)
+    if callable(reset_guardrail):
+        reset_guardrail()
+    # M-9: armar auto-approve SÓLO para el árbol de tasks de ESTE dispatch, vía
+    # ContextVar. No es un flag global: un tool_execution concurrente (Telegram/
+    # LLM/API) corre en otra task cuya copia de contexto tiene el default False,
+    # así que NUNCA se auto-aprueba por el Modo local de este ritual.
+    cv_token = _ritual_auto_approve.set(bool(auto_approve))
+    try:
+        result = await supervisor.dispatch_tool(tool_name, {})
+    except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
+        logger.exception("Ritual %s (%s) dispatch failed", tool_key, tool_name)
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": f"El ritual «{tool_key}» falló: {type(exc).__name__}", "type": "negative"},
+        )
+        return
+    finally:
+        _ritual_auto_approve.reset(cv_token)  # disarm (scoped a esta task)
+        store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
+        # Drop the approval prompt tied to this run so no stale modal lingers on
+        # the timeout/denied path where the operator never clicked (Codex #211).
+        store.set(STORE_KEY_PENDING_HITL, None)
+    text, kind = summarize_ritual_result(tool_key, result if isinstance(result, dict) else {})
+    store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": text, "type": kind})
+    # Surface del reporte de preflight que el dispatch adjuntó (hoy solo LOOT): el
+    # panel refrescable lo renderiza con create_preflight_panel (T-16b). Rojo = el
+    # gate de loot_service ya frenó el sort; el panel lo hace visible al operador.
+    store.set(STORE_KEY_RITUAL_PREFLIGHT, preflight_from_result(result))
+
+
+async def run_ritual_install(
+    tool_key: str,
+    *,
+    app_context: Any,
+    store: ReactiveStore,
+) -> None:
+    """Install a Ritual's tool via ``ToolsInstaller`` and publish feedback to the store.
+
+    Wired to the "Instalar" button of a Ritual card in the ``missing`` state. Reuses
+    the same single-flight guard as :func:`run_ritual` so an install and a run can
+    never overlap (both serialize on ``STORE_KEY_RITUAL_IN_FLIGHT`` and share the one
+    ``pending_hitl`` modal slot). The download's HITL approval is requested by the
+    installer with ``category="download"`` and routed to the GUI modal by
+    :func:`make_gui_hitl_notify` — it is never auto-approved by "Modo local".
+
+    Never raises: a missing installer and any download/extraction failure are turned
+    into a ``ritual_feedback`` entry so the click handler (a fire-and-forget task)
+    cannot crash the loop.
+    """
+    method_name = ritual_installer_name(tool_key)
+    if method_name is None:
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": f"«{tool_key}» no tiene instalación automática; instalalo manualmente.", "type": "info"},
+        )
+        return
+    installer = getattr(app_context, "tools_installer", None) if app_context is not None else None
+    if installer is None:
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": "El daemon todavía no está listo. Probá de nuevo en un momento.", "type": "negative"},
+        )
+        return
+    # Single-flight: an install or a ritual run is already dispatching/awaiting approval.
+    if store.get(STORE_KEY_RITUAL_IN_FLIGHT):
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": "Ya hay un ritual o instalación en curso. Esperá a que termine.", "type": "warning"},
+        )
+        return
+
+    install_dir = getattr(app_context, "install_dir", None)
+    session = getattr(app_context, "session", None)
+    ensure = getattr(installer, method_name)
+
+    store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
+    try:
+        result = await ensure(install_dir, session)
+    except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
+        logger.exception("Ritual install %s (%s) failed", tool_key, method_name)
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {"text": f"No se pudo instalar «{tool_key}»: {exc}", "type": "negative"},
+        )
+        return
+    finally:
+        store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
+        # Drop the approval prompt tied to this install so no stale modal lingers on
+        # the denied/timed-out path where the operator never clicked.
+        store.set(STORE_KEY_PENDING_HITL, None)
+
+    # Seed the resolver env var so the just-installed tool can run immediately,
+    # without waiting for the next environment scan to refresh the snapshot.
+    env_name = RITUAL_INSTALL_ENV.get(tool_key)
+    exe_path = getattr(result, "exe_path", None)
+    if env_name and exe_path:
+        os.environ[env_name] = str(exe_path)
+
+    store.set(
+        STORE_KEY_RITUAL_FEEDBACK,
+        {"text": f"«{tool_key}» instalado correctamente.", "type": "positive"},
+    )

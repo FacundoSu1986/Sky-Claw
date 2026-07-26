@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.core.windows_interop import (
+from sky_claw.app.core.windows_interop import (
     is_wsl2,
     is_wsl2_cached,
     translate_path_if_wsl,
@@ -42,7 +42,7 @@ from sky_claw.local.mo2.vfs import (
 @pytest.fixture()
 def _reset_wsl2_cache() -> None:
     """Reset the module-level WSL2 detection cache between tests."""
-    import sky_claw.antigravity.core.windows_interop as _mod
+    import sky_claw.app.core.windows_interop as _mod
 
     _mod._WSL2_ACTIVE = None
 
@@ -334,9 +334,9 @@ class TestWSL2PathTranslation:
     async def test_wsl2_translates_path(self, *, _reset_wsl2_cache: None) -> None:
         """Under WSL2, path is translated via wslpath."""
         with (
-            patch("sky_claw.antigravity.core.windows_interop.is_wsl2_cached", return_value=True),
+            patch("sky_claw.app.core.windows_interop.is_wsl2_cached", return_value=True),
             patch(
-                "sky_claw.antigravity.core.windows_interop._translate_wsl_to_win",
+                "sky_claw.app.core.windows_interop._translate_wsl_to_win",
                 return_value=r"C:\Modding\MO2",
             ) as mock_translate,
         ):
@@ -348,7 +348,7 @@ class TestWSL2PathTranslation:
     @pytest.mark.asyncio
     async def test_native_windows_passes_through(self, *, _reset_wsl2_cache: None) -> None:
         """On native Windows, a valid Windows path passes through unchanged."""
-        with patch("sky_claw.antigravity.core.windows_interop.is_wsl2_cached", return_value=False):
+        with patch("sky_claw.app.core.windows_interop.is_wsl2_cached", return_value=False):
             result = await translate_path_if_wsl(r"C:\Modding\MO2")
 
         assert result == r"C:\Modding\MO2"
@@ -357,7 +357,7 @@ class TestWSL2PathTranslation:
     async def test_native_windows_rejects_linux_path(self, *, _reset_wsl2_cache: None) -> None:
         """On native Windows, a Linux-style /mnt/ path raises ValueError."""
         with (
-            patch("sky_claw.antigravity.core.windows_interop.is_wsl2_cached", return_value=False),
+            patch("sky_claw.app.core.windows_interop.is_wsl2_cached", return_value=False),
             pytest.raises(ValueError, match="Linux-style path"),
         ):
             await translate_path_if_wsl("/mnt/c/Modding/MO2")
@@ -366,7 +366,7 @@ class TestWSL2PathTranslation:
     async def test_native_windows_rejects_unix_absolute(self, *, _reset_wsl2_cache: None) -> None:
         """On native Windows, a Unix absolute path raises ValueError."""
         with (
-            patch("sky_claw.antigravity.core.windows_interop.is_wsl2_cached", return_value=False),
+            patch("sky_claw.app.core.windows_interop.is_wsl2_cached", return_value=False),
             pytest.raises(ValueError, match="Linux-style path"),
         ):
             await translate_path_if_wsl("/home/user/mods")
@@ -375,9 +375,9 @@ class TestWSL2PathTranslation:
     async def test_custom_timeout_forwarded(self, *, _reset_wsl2_cache: None) -> None:
         """Custom timeout is forwarded to _translate_wsl_to_win."""
         with (
-            patch("sky_claw.antigravity.core.windows_interop.is_wsl2_cached", return_value=True),
+            patch("sky_claw.app.core.windows_interop.is_wsl2_cached", return_value=True),
             patch(
-                "sky_claw.antigravity.core.windows_interop._translate_wsl_to_win",
+                "sky_claw.app.core.windows_interop._translate_wsl_to_win",
                 return_value="C:\\test",
             ) as mock_translate,
         ):
@@ -396,14 +396,14 @@ class TestIsWSL2Detection:
 
     def test_win32_returns_false(self, *, _reset_wsl2_cache: None) -> None:
         """On win32 platform, is_wsl2() always returns False."""
-        with patch("sky_claw.antigravity.core.windows_interop.sys") as mock_sys:
+        with patch("sky_claw.app.core.windows_interop.sys") as mock_sys:
             mock_sys.platform = "win32"
             assert is_wsl2() is False
 
     def test_linux_with_proc_version_wsl(self, *, _reset_wsl2_cache: None) -> None:
         """On Linux with WSL signature in /proc/version, returns True."""
         with (
-            patch("sky_claw.antigravity.core.windows_interop.sys") as mock_sys,
+            patch("sky_claw.app.core.windows_interop.sys") as mock_sys,
             patch(
                 "pathlib.Path.read_text",
                 return_value="Linux version 5.15 microsoft-standard-WSL2",
@@ -415,22 +415,22 @@ class TestIsWSL2Detection:
     def test_linux_without_wsl(self, *, _reset_wsl2_cache: None) -> None:
         """On Linux without WSL, returns False."""
         with (
-            patch("sky_claw.antigravity.core.windows_interop.sys") as mock_sys,
+            patch("sky_claw.app.core.windows_interop.sys") as mock_sys,
             patch(
                 "pathlib.Path.read_text",
                 return_value="Linux version 5.15 generic",
             ),
-            patch("sky_claw.antigravity.core.windows_interop.os.path.isdir", return_value=False),
+            patch("sky_claw.app.core.windows_interop.os.path.isdir", return_value=False),
         ):
             mock_sys.platform = "linux"
             assert is_wsl2() is False
 
     def test_cached_flag_persists(self, *, _reset_wsl2_cache: None) -> None:
         """is_wsl2_cached() returns the same value on repeated calls."""
-        import sky_claw.antigravity.core.windows_interop as _mod
+        import sky_claw.app.core.windows_interop as _mod
 
         _mod._WSL2_ACTIVE = None
-        with patch("sky_claw.antigravity.core.windows_interop.is_wsl2", return_value=True):
+        with patch("sky_claw.app.core.windows_interop.is_wsl2", return_value=True):
             result1 = asyncio.run(is_wsl2_cached())
             result2 = asyncio.run(is_wsl2_cached())
 
@@ -480,7 +480,7 @@ class TestLOOTRunnerWSL2Integration:
         config = _make_loot_config(tmp_path)
         runner = LOOTRunner(config)
 
-        from sky_claw.antigravity.core.models import WSLInteropError
+        from sky_claw.app.core.models import WSLInteropError
 
         with (
             patch(

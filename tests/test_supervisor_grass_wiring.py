@@ -15,8 +15,8 @@ from __future__ import annotations
 import pathlib
 from unittest.mock import MagicMock
 
-from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
-from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.mo2.grass_profile import GrassProfileManager
 from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local.tools.grass_cache_service import GrassRuntimeDeps

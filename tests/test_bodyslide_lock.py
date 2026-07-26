@@ -18,12 +18,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.agent.tools.system_tools import (
+from sky_claw.app.agent.tools.system_tools import (
     BODYSLIDE_MESHES_RESOURCE_ID,
     run_bodyslide_batch,
 )
-from sky_claw.antigravity.db.locks import DistributedLockManager
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 
 if TYPE_CHECKING:
     import pathlib

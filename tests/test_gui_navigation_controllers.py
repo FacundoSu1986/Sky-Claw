@@ -11,15 +11,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sky_claw.antigravity.gui.controllers.mod_controller import ModController
-from sky_claw.antigravity.gui.controllers.navigation_controller import (
+from sky_claw.app.gui.controllers.mod_controller import ModController
+from sky_claw.app.gui.controllers.navigation_controller import (
     CTA_PRIMARY_SECTION,
     CTA_SECONDARY_SECTION,
     FEATURE_SECTIONS,
     NavigationController,
 )
-from sky_claw.antigravity.gui.gui_event_adapter import EventType
-from sky_claw.antigravity.gui.models.app_state import NAV_SECTIONS, AppState
+from sky_claw.app.gui.gui_event_adapter import EventType
+from sky_claw.app.gui.models.app_state import NAV_SECTIONS, AppState
 
 
 class _RecorderBus:
@@ -117,7 +117,7 @@ def test_view_all_mods_navigates_to_mods_section():
 def test_dashboard_section_dispatch_data_is_consistent():
     """The content dispatcher's placeholder set and the mods adapter must stay
     aligned with the canonical sections / build_mod_list contract."""
-    from sky_claw.antigravity.gui.views.pages.dashboard_page import (
+    from sky_claw.app.gui.views.pages.dashboard_page import (
         _PLACEHOLDER_SECTIONS,
         mods_for_list,
     )

@@ -32,11 +32,11 @@ de smoke real en verdadera.
 | Tema | Fuente principal |
 |---|---|
 | Arranque, composición y cierre | `sky_claw/app_context.py`, `sky_claw/__main__.py` |
-| Contratos Pydantic | `antigravity/core/contracts.py`, `core/schemas.py` |
+| Contratos Pydantic | `app/core/contracts.py`, `core/schemas.py` |
 | Resultado común | `local/tools/tool_result.py` y tests ancla |
-| Ruta LLM | `antigravity/agent/router.py`, `agent/tools/` |
+| Ruta LLM | `app/agent/router.py`, `agent/tools/` |
 | Ruta de rituales | `orchestrator/supervisor.py`, `tool_dispatcher.py`, `tool_strategies/` |
-| DB y lifecycle | `core/db_lifecycle.py`, `core/database.py`, `antigravity/db/` |
+| DB y lifecycle | `core/db_lifecycle.py`, `core/database.py`, `app/db/` |
 | Buses | `core/event_bus.py`, `gui/gui_event_adapter.py` |
 | Seguridad | `security/`, `config.py`, callers productivos |
 | MO2/USVFS | `local/mo2/`, ADR 0007 |

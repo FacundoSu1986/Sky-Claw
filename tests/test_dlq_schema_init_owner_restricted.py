@@ -24,9 +24,9 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from sky_claw.antigravity.core.db_lifecycle import DatabaseLifecycleManager
-from sky_claw.antigravity.core.dlq_manager import DLQManager
-from sky_claw.antigravity.core.event_bus import create_bus_with_dlq
+from sky_claw.app.core.db_lifecycle import DatabaseLifecycleManager
+from sky_claw.app.core.dlq_manager import DLQManager
+from sky_claw.app.core.event_bus import create_bus_with_dlq
 
 
 @pytest.mark.asyncio
@@ -58,7 +58,7 @@ async def test_dlq_schema_init_under_owner_restricted_parent(tmp_path: Path) -> 
     inheritable-grant fix the ``dlq`` child inherited only a non-writable ACE and
     this raised ``OperationalError: unable to open database file``.
     """
-    from sky_claw.antigravity.security.file_permissions import restrict_to_owner
+    from sky_claw.app.security.file_permissions import restrict_to_owner
 
     sky_claw_dir = tmp_path / ".sky_claw"
     sky_claw_dir.mkdir()

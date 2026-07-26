@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from sky_claw.antigravity.core.models import CircuitBreakerTrippedError
-from sky_claw.antigravity.security.loop_guardrail import AgenticLoopGuardrail
+from sky_claw.app.core.models import CircuitBreakerTrippedError
+from sky_claw.app.security.loop_guardrail import AgenticLoopGuardrail
 
 
 class TestAgenticLoopGuardrail:

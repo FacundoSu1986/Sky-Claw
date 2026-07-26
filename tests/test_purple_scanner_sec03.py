@@ -6,7 +6,7 @@ tainted source, so downstream flow into exec()/eval() is flagged.
 
 from __future__ import annotations
 
-from sky_claw.antigravity.security.purple_scanner import run_scan
+from sky_claw.app.security.purple_scanner import run_scan
 
 
 class TestPurpleScannerTaintTracking:

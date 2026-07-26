@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.web.app.WebApp — security-focused.
+"""Tests for sky_claw.app.web.app.WebApp — security-focused.
 
 Covers:
 - /api/chat 500 must NOT leak exception details
@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 
-from sky_claw.antigravity.security.auth_token_manager import AuthTokenManager
-from sky_claw.antigravity.web.app import WebApp
+from sky_claw.app.security.auth_token_manager import AuthTokenManager
+from sky_claw.app.web.app import WebApp
 
 if TYPE_CHECKING:
     import pathlib
@@ -269,21 +269,21 @@ class TestDevNoAuthFrozenGuard:
     entorno esté a ``"1"`` — un .exe distribuido no puede desactivar auth."""
 
     def test_helper_activo_desde_fuente(self, monkeypatch):
-        import sky_claw.antigravity.web.app as app_mod
+        import sky_claw.app.web.app as app_mod
 
         monkeypatch.setattr(app_mod.sys, "frozen", False, raising=False)
         monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
         assert app_mod._dev_no_auth_enabled() is True
 
     def test_helper_ignorado_en_exe(self, monkeypatch):
-        import sky_claw.antigravity.web.app as app_mod
+        import sky_claw.app.web.app as app_mod
 
         monkeypatch.setattr(app_mod.sys, "frozen", True, raising=False)
         monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
         assert app_mod._dev_no_auth_enabled() is False
 
     def test_helper_falso_sin_env(self, monkeypatch):
-        import sky_claw.antigravity.web.app as app_mod
+        import sky_claw.app.web.app as app_mod
 
         monkeypatch.setattr(app_mod.sys, "frozen", False, raising=False)
         monkeypatch.delenv("SKY_CLAW_DEV_NO_AUTH", raising=False)
@@ -292,7 +292,7 @@ class TestDevNoAuthFrozenGuard:
     @pytest.mark.asyncio
     async def test_chat_bypass_ignorado_en_exe(self, aiohttp_client, mock_session, monkeypatch):
         """En .exe, /api/chat sin auth_manager devuelve 401 aunque el flag esté a 1."""
-        import sky_claw.antigravity.web.app as app_mod
+        import sky_claw.app.web.app as app_mod
 
         monkeypatch.setattr(app_mod.sys, "frozen", True, raising=False)
         monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")
@@ -304,7 +304,7 @@ class TestDevNoAuthFrozenGuard:
 
     def test_ws_bypass_ignorado_en_exe(self, monkeypatch, mock_session):
         """En .exe, la validación WS también rechaza aunque el flag esté a 1."""
-        import sky_claw.antigravity.web.app as app_mod
+        import sky_claw.app.web.app as app_mod
 
         monkeypatch.setattr(app_mod.sys, "frozen", True, raising=False)
         monkeypatch.setenv("SKY_CLAW_DEV_NO_AUTH", "1")

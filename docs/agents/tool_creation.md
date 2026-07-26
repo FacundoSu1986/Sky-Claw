@@ -2,8 +2,8 @@
 
 > **Audiencia:** desarrolladores y agentes de IA.
 > **Estado:** guía de extensibilidad basada en rutas implementadas.
-> **Fuentes canónicas:** `antigravity/agent/tools/`,
-> `antigravity/orchestrator/tool_dispatcher.py`, `orchestrator/tool_strategies/`
+> **Fuentes canónicas:** `app/agent/tools/`,
+> `app/orchestrator/tool_dispatcher.py`, `orchestrator/tool_strategies/`
 > y `local/tools/`.
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 
@@ -17,7 +17,7 @@ la vaya a consumir.
 
 Usar `AsyncToolRegistry` cuando el `LLMRouter` deba anunciar un JSON schema,
 validar parámetros y ejecutar un handler. Los descriptores viven en
-`sky_claw/antigravity/agent/tools/` y el registry se construye en
+`sky_claw/app/agent/tools/` y el registry se construye en
 `AppContext.start_full()`.
 
 Puntos de referencia:

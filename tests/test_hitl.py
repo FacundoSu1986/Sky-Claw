@@ -1,4 +1,4 @@
-"""Comprehensive tests for sky_claw.antigravity.security.hitl.HITLGuard.
+"""Comprehensive tests for sky_claw.app.security.hitl.HITLGuard.
 
 Covers:
 - requires_approval: pattern matching for out-of-scope hosts (exact, wildcard,
@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sky_claw.antigravity.security.hitl import Decision, HITLGuard, HITLRequest
+from sky_claw.app.security.hitl import Decision, HITLGuard, HITLRequest
 
 # ---------------------------------------------------------------------------
 # Helpers / factories

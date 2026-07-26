@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import pytest
 from pydantic import ValidationError
 
-from sky_claw.antigravity.core.schemas import (
+from sky_claw.app.core.schemas import (
     AgentToolRequest,
     AgentToolResponse,
     ModMetadata,

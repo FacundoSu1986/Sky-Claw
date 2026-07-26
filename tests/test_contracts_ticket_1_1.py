@@ -7,7 +7,7 @@ from datetime import UTC
 
 def main():
     # Test 1: SchemaRegistry population
-    from sky_claw.antigravity.core.contracts import get_schema_class, list_registered_schemas
+    from sky_claw.app.core.contracts import get_schema_class, list_registered_schemas
 
     schemas = list_registered_schemas()
     assert len(schemas) == 7, f"Expected 7 schemas, got {len(schemas)}"
@@ -22,7 +22,7 @@ def main():
     print(f"[TEST 2 PASS] O(1) lookup: AgentToolRequest={atr.__name__}, NonExistent={none_result}")
 
     # Test 3: validate_input with valid data
-    from sky_claw.antigravity.core.contracts import validate_input
+    from sky_claw.app.core.contracts import validate_input
 
     class SupervisorAgent:
         @validate_input("dispatch_tool")
@@ -54,7 +54,7 @@ def main():
     # Test 5: validate_output
     from datetime import datetime
 
-    from sky_claw.antigravity.core.contracts import validate_output
+    from sky_claw.app.core.contracts import validate_output
 
     class SupervisorAgent2:
         @validate_output("dispatch_tool")
@@ -74,7 +74,7 @@ def main():
     asyncio.run(test_valid_output())
 
     # Test 6: validate_contract (combined, single execution)
-    from sky_claw.antigravity.core.contracts import validate_contract
+    from sky_claw.app.core.contracts import validate_contract
 
     call_count = 0
 

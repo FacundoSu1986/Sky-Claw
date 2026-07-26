@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import pathlib
 
-from sky_claw.antigravity.core.conflict_persistence import (
+from sky_claw.app.core.conflict_persistence import (
     pair_asset_conflicts,
     persist_asset_conflicts,
 )
-from sky_claw.antigravity.core.database import DatabaseAgent
+from sky_claw.app.core.database import DatabaseAgent
 from sky_claw.local.assets.asset_scanner import AssetConflictReport, AssetType
 
 
@@ -61,7 +61,7 @@ async def test_persiste_pares_y_enriquece_con_nombres(tmp_path: pathlib.Path) ->
     assert pendientes[0]["conflict_type"] == "asset:mesh"
 
     # Los ids apuntan a mods reales de la DB GUI (contrato de enrich_conflicts).
-    from sky_claw.antigravity.gui.models.app_state import enrich_conflicts
+    from sky_claw.app.gui.models.app_state import enrich_conflicts
 
     mods = await db.get_mods()
     enriquecido = enrich_conflicts(pendientes, mods)[0]
@@ -107,7 +107,7 @@ class _StoreFalso:
 
 
 def test_claim_scan_slot_es_single_flight() -> None:
-    from sky_claw.antigravity.core.conflict_persistence import claim_scan_slot, release_scan_slot
+    from sky_claw.app.core.conflict_persistence import claim_scan_slot, release_scan_slot
 
     store = _StoreFalso()
     assert claim_scan_slot(store) is True

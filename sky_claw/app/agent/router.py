@@ -1,0 +1,882 @@
+"""LLM Router – conversation loop with pluggable LLM providers.
+
+Maintains chat history in SQLite, calls the configured LLM provider
+(Anthropic, DeepSeek, or Ollama), and executes tools through the
+:class:`AsyncToolRegistry` until the model signals ``end_turn``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import uuid
+from typing import TYPE_CHECKING, Any
+
+import aiosqlite
+import pydantic
+
+from sky_claw.app.agent.context_manager import ContextManager
+from sky_claw.app.agent.hermes_parser import extract_tool_calls, has_tool_calls
+from sky_claw.app.agent.providers import LLMProvider, create_provider
+from sky_claw.app.agent.semantic_router import SemanticRouter
+from sky_claw.app.agent.token_budget import TokenBudgetManager
+from sky_claw.app.agent.token_circuit_breaker import TokenCircuitBreaker
+from sky_claw.app.core.errors import (
+    AgentOrchestrationError,
+    SecurityViolationError,
+    VaultStorageError,
+)
+from sky_claw.app.core.models import CircuitBreakerTrippedError
+from sky_claw.app.core.schemas import RouteClassification
+from sky_claw.app.security.loop_guardrail import AgenticLoopGuardrail
+from sky_claw.app.security.sanitize import sanitize_for_prompt
+from sky_claw.app.security.text_inspector import TextInspector
+
+# S5: detector de inyección (frases OWASP LLM01, ES+EN) reutilizado para revalidar
+# el historial recargado. Stateless → una instancia compartida a nivel módulo.
+_HISTORY_INSPECTOR = TextInspector()
+_HISTORY_BLOCK_SEVERITIES = frozenset({"CRITICAL", "HIGH"})
+
+if TYPE_CHECKING:
+    import aiohttp
+
+    from sky_claw.app.agent.tools_facade import AsyncToolRegistry
+    from sky_claw.app.security.agent_guardrail import AgentGuardrail
+    from sky_claw.app.security.credential_vault import CredentialVault
+
+logger = logging.getLogger(__name__)
+
+# FASE 1.5.3: Legacy constants kept for backward compatibility with tests.
+# Actual budget management is delegated to TokenBudgetManager.
+MAX_CONTEXT_MESSAGES = 20
+MAX_TOOL_ROUNDS = 10
+MAX_HERMES_RETRIES = 3
+
+# FASE 1.5.3: Default tool round timeout
+DEFAULT_TOOL_ROUND_TIMEOUT = 120.0
+
+# RND-01: timeout por defecto para la llamada de chat al provider, para no
+# colgar ante un provider mudo. Providers con presupuesto propio más largo
+# (p. ej. OllamaProvider, inferencia local legítima >120s) lo exponen vía un
+# atributo público ``timeout`` que este módulo respeta — ver
+# _provider_chat_timeout().
+DEFAULT_PROVIDER_CHAT_TIMEOUT = 120.0
+
+_TOOL_LOOP_RESPONSE = (
+    "⚠️ Se detectó un bucle repetitivo de herramientas y se detuvo la ejecución. "
+    "Solicitá asistencia humana antes de reintentar."
+)
+
+
+def _check_tool_loop(
+    guardrail: AgenticLoopGuardrail,
+    tool_name: str,
+    tool_args: dict[str, Any],
+) -> str | None:
+    """Registra una acción LLM y devuelve feedback cuando abre el circuito."""
+    try:
+        guardrail.register_and_check(tool_name, tool_args)
+    except CircuitBreakerTrippedError as exc:
+        logger.critical(
+            "Bucle de tools LLM detectado en '%s' (%s ocurrencias); conversación detenida.",
+            exc.tool_name,
+            exc.occurrences,
+        )
+        return _TOOL_LOOP_RESPONSE
+    return None
+
+
+def _provider_chat_timeout(provider: LLMProvider) -> float:
+    """Presupuesto de tiempo para una llamada ``provider.chat(...)``.
+
+    Usa el atributo público ``timeout`` del provider si lo expone y es mayor
+    al default (p. ej. OllamaProvider para inferencia local legítima); si no,
+    cae al default conservador RND-01. No se acorta nunca por debajo del
+    default: un provider remoto sin timeout propio no debe volverse más lento.
+    """
+    provider_timeout = getattr(provider, "timeout", None)
+    if isinstance(provider_timeout, (int, float)) and provider_timeout > DEFAULT_PROVIDER_CHAT_TIMEOUT:
+        return float(provider_timeout)
+    return DEFAULT_PROVIDER_CHAT_TIMEOUT
+
+
+_HERMES_TOOL_INSTRUCTIONS = (
+    "\n\nYou have access to the following tools. To call a tool, respond with a "
+    '<tool_call> block containing a JSON object with "name" and "arguments" keys. '
+    "Wait for the tool result before continuing. If no tool is needed, reply normally.\n\n"
+)
+
+
+def _format_validation_feedback(tool_name: str, exc: pydantic.ValidationError) -> dict[str, Any]:
+    """Convert a Pydantic ValidationError into a structured feedback dict for the LLM.
+
+    TASK-012: When the model emits a ``tool_use`` block with arguments that
+    fail strict-mode validation, we surface the per-field errors so the
+    model can self-correct on the next turn instead of giving up.
+    """
+    return {
+        "error": "Invalid arguments for tool — please retry with corrected types/values.",
+        "tool": tool_name,
+        "validation_errors": [
+            {
+                "field": ".".join(str(p) for p in err.get("loc", ())) or "<root>",
+                "issue": err.get("msg", ""),
+                "input": err.get("input"),
+            }
+            for err in exc.errors()
+        ],
+        "instruction": (
+            "Re-emit the tool_use block respecting the input_schema field types, "
+            "constraints (min/max length, regex pattern, gt/lt) and required fields."
+        ),
+    }
+
+
+# BUG-002 FIX: Función de validación de API keys
+def _is_valid_api_key(key: str | None) -> bool:
+    """Valida que una API key sea válida y no un placeholder.
+
+    BUG-002 FIX: Previene el uso de API keys placeholder o inválidas.
+
+    Args:
+        key: API key a validar
+
+    Returns:
+        True si la key parece válida, False si es placeholder o inválida
+    """
+    if not key or not isinstance(key, str):
+        return False
+    stripped = key.strip()
+    if not stripped or len(stripped) < 8:
+        return False
+    # Placeholders comunes que deben ser rechazados
+    placeholders = {
+        "your_api_key_here",
+        "insert_your_key",
+        "xxx",
+        "sk-xxx",
+        "sk-...",
+        "your-api-key",
+        "change_me",
+        "api_key_here",
+        "paste_your_key",
+        "sk-test",
+        "sk-placeholder",
+        "sk-your-key-here",
+    }
+    if len(set(stripped)) <= 2:
+        return False
+    return stripped.lower() not in placeholders
+
+
+_HISTORY_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS chat_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     TEXT    NOT NULL,
+    role        TEXT    NOT NULL,
+    content     TEXT    NOT NULL,
+    timestamp   REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_history_chat_id
+    ON chat_history (chat_id, id);
+"""
+
+
+class LLMRouter:
+    """Conversation router backed by a pluggable LLM provider.
+
+    Args:
+        provider: LLM provider instance (Anthropic, DeepSeek, Ollama).
+        tool_registry: Async tool registry for tool execution.
+        db_path: Path to the SQLite database for chat history.
+        model: Model identifier override (provider-specific).
+        system_prompt: Optional system prompt prepended to every request.
+        max_context: Maximum messages sent per API request (sliding window).
+        api_key: Deprecated — use ``provider`` instead.  Kept for
+            backwards compatibility with existing call-sites.
+    """
+
+    def __init__(
+        self,
+        provider: LLMProvider | None = None,
+        tool_registry: AsyncToolRegistry | None = None,
+        db_path: str = "",
+        model: str = "",
+        system_prompt: str = "",
+        max_context: int = MAX_CONTEXT_MESSAGES,
+        *,
+        # Legacy parameter — ignored when ``provider`` is given.
+        api_key: str = "",
+        registry_db: str = "mod_registry.db",
+        mo2_profile: str = "",
+        vault: CredentialVault | None = None,
+        gateway: Any | None = None,
+        guardrail: AgentGuardrail | None = None,
+        hermes_mode: bool = False,
+        lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
+    ) -> None:
+        if provider is None and not vault:
+            # BUG-002 FIX: Validar API key antes de instanciar provider
+            if not _is_valid_api_key(api_key):
+                raise ValueError(
+                    "Se requiere provider, vault, o api_key válido para inicializar LLMRouter. "
+                    "Complete la configuración inicial. "
+                    "La API key proporcionada está vacía, es muy corta, o es un placeholder."
+                )
+            # Legacy fallback pattern, removed 'os.environ' dependency per SRE directives.
+            from sky_claw.app.agent.providers import DeepSeekProvider
+
+            # Instantiating locally if api_key passed directly, otherwise vault is required
+            provider = DeepSeekProvider(api_key)
+
+        self._provider = provider
+        self._vault = vault
+        self._provider_lock = asyncio.Lock()
+        self._tools = tool_registry
+        self._db_path = db_path
+        self._model = model
+        self._system_prompt = system_prompt
+        self._max_context = max_context
+        self._lifecycle = lifecycle  # DatabaseLifecycleManager | None (M-01.1 DI)
+        self._owns_conn: bool = False  # True when we opened the connection directly (no lifecycle)
+        self._conn: aiosqlite.Connection | None = None
+        # R-2: serializa el acceso a la conexión de historial. Sin él, un close()
+        # en shutdown podía nular self._conn entre el execute() y el commit() de
+        # _save_message (o cerrar la conexión durante un _load_context en vuelo),
+        # produciendo AttributeError / uso de conexión cerrada.
+        self._conn_lock: asyncio.Lock = asyncio.Lock()
+
+        # Standard 2026 Orchestration Layers
+        self._semantic_router = SemanticRouter()
+        self._context_manager = ContextManager(registry_db, mo2_profile)
+        self._gateway = gateway
+        self._guardrail = guardrail
+        self._hermes_mode = hermes_mode
+        if hermes_mode and tool_registry is None:
+            raise ValueError("hermes_mode=True requires a tool_registry")
+
+        # FASE 1.5.3: Token budget management and circuit breaker
+        self._token_budget = TokenBudgetManager()
+        self._circuit_breaker = TokenCircuitBreaker()
+
+        # PR-F (RUF006): mantener referencias fuertes a las tasks de
+        # progress_callback fire-and-forget. Sin esto, asyncio.create_task
+        # puede ser GC-recolectado mientras esta pendiente ("Task was
+        # destroyed but it is pending") y las excepciones del callback
+        # desaparecen silenciosamente — mismo patron del bug T1-01 en
+        # ws_daemon que arreglamos.
+        self._pending_telemetry: set[asyncio.Task[None]] = set()
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def _spawn_telemetry_task(self, coro: Any) -> None:
+        """Fire-and-forget helper que mantiene referencia fuerte a la task.
+
+        PR-F (RUF006 enforcement): los progress_callbacks son telemetry
+        async; no queremos await-earlos en el hot path del LLM. Pero
+        ``asyncio.create_task`` sin guardar referencia permite GC silencioso
+        de la task pendiente. Este helper:
+          1. Agrega la task al set ``_pending_telemetry``.
+          2. ``add_done_callback`` la quita del set y loggea excepciones.
+
+        Mismo patron que ``ws_daemon._pending_dispatch`` (T1-01 fix).
+        """
+        task = asyncio.create_task(coro, name="telemetry-progress")
+        self._pending_telemetry.add(task)
+
+        def _on_done(t: asyncio.Task[Any]) -> None:
+            self._pending_telemetry.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.error("Telemetry callback failed: %s", exc, exc_info=(type(exc), exc, exc.__traceback__))
+
+        task.add_done_callback(_on_done)
+
+    async def open(self) -> None:
+        """Open the history database and ensure schema exists.
+
+        M-01.1: If a DatabaseLifecycleManager was injected, the connection is
+        requested from it (WAL recovery + hardened pragmas already applied).
+        Otherwise falls back to a direct ``aiosqlite.connect`` (pre-M-01).
+        """
+        async with self._conn_lock:
+            if self._conn is not None:
+                return
+            if self._lifecycle is not None:
+                self._owns_conn = False
+                self._conn = await self._lifecycle.get_connection(self._db_path)
+            else:
+                self._owns_conn = True
+                self._conn = await aiosqlite.connect(self._db_path)
+                await self._conn.execute("PRAGMA journal_mode=WAL")
+            await self._conn.executescript(_HISTORY_SCHEMA)
+
+    async def close(self) -> None:
+        """Close the history database (lifecycle-owned connections stay open)."""
+        # R-2: bajo el lock, para no cerrar la conexión mientras _save_message /
+        # _load_context la están usando.
+        async with self._conn_lock:
+            if self._conn is not None:
+                if self._owns_conn:
+                    await self._conn.close()
+                    self._owns_conn = False
+                # Si el lifecycle es externo, el propietario cierra en shutdown_all().
+                self._conn = None
+
+    # ------------------------------------------------------------------
+    # LLM Hot-Swapping Factory Pattern (SRE Phase 1)
+    # ------------------------------------------------------------------
+
+    async def set_provider(self, provider: Any) -> None:
+        """Intercambia el provider ya construido en caliente, bajo lock.
+
+        Seam público del hot-swap: quien arma el provider (``AppContext``,
+        vault, tests) hace el intercambio atómico sin tocar ``_provider``
+        directamente. ``chat`` toma un *snapshot* de ``_provider`` bajo el mismo
+        lock y hace la llamada HTTP fuera de él: una query en vuelo termina
+        contra su snapshot (el provider anterior no se cierra) y el swap solo
+        afecta a las consultas siguientes — sin serializar las llamadas LLM.
+        """
+        async with self._provider_lock:
+            self._provider = provider
+
+    async def complete_simple(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        session: aiohttp.ClientSession,
+    ) -> str:
+        """Completion one-shot: sin historial, sin tools, sin persistencia.
+
+        Seam para consumidores que necesitan UNA respuesta de texto del
+        provider activo (p. ej. el ``PatchAdvisorLLM`` de Fase 1 AI-assisted)
+        sin arrastrar el loop de tool-use ni la historia de chat. Respeta la
+        misma disciplina que ``chat``: snapshot del provider bajo lock
+        (hot-swap seguro), llamada HTTP fuera del lock, timeout provider-aware
+        (RND-01).
+
+        Raises:
+            RuntimeError: Si no hay provider activo — el caller decide su
+                fail-closed (el advisor degrada a manual_only).
+            TimeoutError: Si el provider no responde dentro del presupuesto.
+        """
+        async with self._provider_lock:
+            provider_snapshot = self._provider
+        if provider_snapshot is None:
+            raise RuntimeError("SISTEMA: LLM Provider nulo. Iniciar Hot-Swap o configurar API Key primaria.")
+
+        chat_kwargs: dict[str, Any] = {
+            "messages": [{"role": "user", "content": user_prompt}],
+            "tools": [],
+            "session": session,
+            "gateway": self._gateway,
+            "system_prompt": system_prompt,
+        }
+        if self._model:
+            chat_kwargs["model"] = self._model
+        response_data = await asyncio.wait_for(
+            provider_snapshot.chat(**chat_kwargs),
+            timeout=_provider_chat_timeout(provider_snapshot),
+        )
+        if not isinstance(response_data, dict):
+            raise RuntimeError("El proveedor de IA no devolvió datos.")
+        blocks = response_data.get("content", [])
+        texts = [
+            str(block.get("text", "")) for block in blocks if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return "\n".join(text for text in texts if text)
+
+    async def reload_provider(self, new_provider_name: str) -> bool:
+        """Cambia el LLM subyacente en caliente extrayendo llaves Zero-Trust del Vault."""
+        logger.info(f"🔄 Iniciando secuencia de Hot-Swap hacia [{new_provider_name}]...")
+        if not self._vault:
+            logger.error("RCA: Bóveda criptográfica (Vault) no asginada. Fallo de Hot-Swap.")
+            return False
+
+        # Las llaves deben guardarse en la Bóveda como '{provider}_api_key'
+        try:
+            api_key = await self._vault.get_secret(f"{new_provider_name}_api_key")
+        except VaultStorageError:
+            logger.exception(
+                "RCA: Vault storage failure during Hot-Swap for %s. Transient fault — retry recommended.",
+                new_provider_name,
+            )
+            return False
+        if not api_key:
+            logger.error(f"RCA: Clave maestra no hallada en SQLite WAL para {new_provider_name}.")
+            return False
+
+        async with self._provider_lock:
+            # Fábrica estática instanciada de providers.py - Inyección de dependencia
+            try:
+                self._provider = create_provider(provider_name=new_provider_name, api_key=api_key)
+                logger.info(f"🚀 Hot-Swap finalizado: LLM Router ahora utilizando {type(self._provider).__name__}.")
+                return True
+            except Exception as e:
+                logger.error(f"RCA Crítico: El patrón de fábrica devolvió un Provider defectuoso: {e}")
+                return False
+
+    # ------------------------------------------------------------------
+    # Public entry-point
+    # ------------------------------------------------------------------
+
+    async def chat(
+        self,
+        user_message: str,
+        session: aiohttp.ClientSession,
+        chat_id: str | None = None,
+        *,
+        metadata: dict | None = None,
+        progress_callback: Any | None = None,
+    ) -> str:
+        """Send a user message and return the final assistant text.
+
+        Handles the full tool-use loop: call the provider, execute any
+        requested tools, re-send with ``tool_result``, repeat until
+        the model returns ``stop_reason == "end_turn"``.
+
+        Args:
+            user_message: The user's input text.
+            session: An ``aiohttp.ClientSession`` for HTTP calls.
+            chat_id: Optional conversation identifier.
+
+        Returns:
+            The assistant's final text response.
+        """
+        if not chat_id:
+            raise ValueError(
+                "Strict session handling enforced. chat_id cannot be null. "
+                "The integration layer must explicitly initialize the session context."
+            )
+
+        # 1. Semantic Routing con RouteClassification (LCEL Integration)
+        routing_data = {"payload": {"text": user_message}, "metadata": metadata or {}}
+        routed = self._semantic_router.route(routing_data)
+
+        # Convertir a RouteClassification schema para validación
+        route_classification = RouteClassification(
+            intent=routed.get("intent", "CHAT_GENERAL"),
+            confidence=routed.get("confidence", 0.7),
+            target_agent=routed.get("target_agent"),
+            tool_name=routed.get("tool_name"),
+            parameters=routed.get("parameters", {}),
+            requires_context=routed.get("intent") in ["CONSULTA_MODDING", "RAG_CONSULTA"],
+            metadata=metadata or {},
+        )
+
+        logger.info(
+            f"🎯 RouteClassification: intent={route_classification.intent}, confidence={route_classification.confidence}"
+        )
+
+        # Branch: Contextual Modding Query (RAG) usando LCEL
+        injected_context = ""
+        if route_classification.intent == "CONSULTA_MODDING":
+            if progress_callback:
+                self._spawn_telemetry_task(progress_callback("searching_registry", 20))
+            injected_context = await self._context_manager.build_prompt_context(user_message)
+            # TASK-013 P0: sanitize RAG context to prevent prompt-injection via
+            # poisoned mod metadata scraped from Nexus Mods.
+            injected_context = sanitize_for_prompt(injected_context)
+
+        # Input gate — guardrail (Titan v7.0) or legacy sanitize_for_prompt
+        if self._guardrail:
+            try:
+                user_message = await self._guardrail.before_model_callback(user_message)
+            except SecurityViolationError as exc:
+                logger.warning("Guardrail blocked input: %s", exc)
+                return (
+                    "\u26a0\ufe0f Tu mensaje fue bloqueado por una pol\u00edtica de seguridad. Por favor reformulalo."
+                )
+            except AgentOrchestrationError as exc:
+                logger.error("Orchestration error on input: %s", exc)
+                return "\u26a0\ufe0f Error de orquestaci\u00f3n en la entrada."
+        else:
+            user_message = sanitize_for_prompt(user_message)
+
+        await self._save_message(chat_id, "user", user_message)
+        messages = await self._load_context(chat_id)
+
+        tool_schemas = self._tools.tool_schemas() if self._tools else []
+        # F1a: el historial pertenece a ESTA ejecución de chat. Mantenerlo local
+        # evita mezclar conversaciones concurrentes y rearma el circuito cuando
+        # un nuevo mensaje humano inicia otra ejecución.
+        tool_loop_guardrail = AgenticLoopGuardrail(max_repeats=3, window_size=6)
+        consecutive_errors = 0
+        # TASK-012: separate counters so a stream of malformed XML from the
+        # model does not exhaust the budget reserved for legitimate execution
+        # retries (and vice versa).
+        hermes_parse_error_count = 0
+        hermes_exec_error_count = 0
+
+        for _round in range(MAX_TOOL_ROUNDS):
+            try:
+                # ── FASE 1.5.3: Pre-call budget check ──────────────────────
+                # Handles context growth from accumulated tool results.
+                budget_verdict = self._token_budget.check_budget(messages)
+                if budget_verdict.action == "reject":
+                    logger.warning(
+                        "TokenBudget: context rejected at %.1f%% utilization (%d/%d tokens)",
+                        budget_verdict.utilization_pct,
+                        budget_verdict.current_tokens,
+                        budget_verdict.max_tokens,
+                    )
+                    return (
+                        "\u26a0\ufe0f El contexto de la conversaci\u00f3n excede el presupuesto de tokens. "
+                        "Inicia una nueva conversaci\u00f3n."
+                    )
+                if budget_verdict.action == "truncate":
+                    messages = self._token_budget.truncate_older_messages(messages)
+                    logger.info("TokenBudget: truncated context to fit budget")
+                elif budget_verdict.action == "summarize":
+                    messages = self._token_budget.summarize_older_messages(messages)
+                    logger.info("TokenBudget: summarized older context")
+
+                # Re-estimate after potential summarization/truncation
+                # Construir effective_system ANTES del circuit-breaker para incluir su
+                # costo en pre_call_tokens. Evita bypass del límite cuando system_prompt
+                # o injected_context (RAG) son grandes y messages solos no exceden el umbral.
+                effective_system = f"{self._system_prompt}\n\n{injected_context}"
+                system_tokens = self._token_budget.estimate_tokens(effective_system)
+                pre_call_tokens = self._token_budget._estimate_messages_tokens(messages) + system_tokens
+
+                # ── FASE 1.5.3: Circuit breaker pre-check ──────────────────
+                if not self._circuit_breaker.check_request(pre_call_tokens):
+                    logger.warning(
+                        "TokenCircuitBreaker: request rejected (state=%s, est=%d tokens incl. system)",
+                        self._circuit_breaker.state,
+                        pre_call_tokens,
+                    )
+                    return (
+                        "\u26a0\ufe0f Circuit breaker activado \u2014 consumo de tokens excesivo. Espera y reintenta."
+                    )
+                effective_tools = tool_schemas
+                if self._hermes_mode and self._tools:
+                    effective_system = (
+                        effective_system + _HERMES_TOOL_INSTRUCTIONS + self._tools.hermes_system_prompt_block()
+                    )
+                    effective_tools = []
+
+                chat_kwargs = {
+                    "messages": messages,
+                    "tools": effective_tools,
+                    "session": session,
+                    "gateway": self._gateway,
+                    "system_prompt": effective_system,
+                }
+                if self._model:
+                    chat_kwargs["model"] = self._model
+
+                # C1: snapshot del provider bajo lock (hot-swap seguro) + llamada
+                # HTTP FUERA del lock. Retener el lock durante los 120s de la
+                # llamada serializaba TODAS las consultas LLM concurrentes y
+                # bloqueaba cualquier hot-swap en vuelo. Como ni set_provider ni
+                # reload_provider cierran el provider anterior, una query en vuelo
+                # termina de forma segura contra su snapshot aunque ocurra un swap
+                # en paralelo (el swap solo afecta a las consultas siguientes).
+                # RND-01: timeout para no colgar ante un provider mudo. Provider-
+                # aware (ver _provider_chat_timeout): un provider con presupuesto
+                # propio mayor al default (p. ej. OllamaProvider, inferencia
+                # local legítima >120s) no queda cortado artificialmente acá.
+                async with self._provider_lock:
+                    provider_snapshot = self._provider
+                if provider_snapshot is None:
+                    raise RuntimeError("SISTEMA: LLM Provider nulo. Iniciar Hot-Swap o configurar API Key primaria.")
+                try:
+                    response_data = await asyncio.wait_for(
+                        provider_snapshot.chat(**chat_kwargs),
+                        timeout=_provider_chat_timeout(provider_snapshot),
+                    )
+                except BaseException:
+                    # H-3: la llamada consumió el probe de HALF_OPEN (check_request
+                    # arriba). Si falla (TimeoutError u otra excepción), record_response
+                    # nunca corre y el breaker quedaría atascado en HALF_OPEN rechazando
+                    # todo. record_failure lo devuelve a OPEN para re-armar el recovery.
+                    self._circuit_breaker.record_failure()
+                    raise
+
+                if response_data is None or not isinstance(response_data, dict):
+                    return "Error: El proveedor de IA no devolvió datos."
+
+                stop_reason = response_data.get("stop_reason", "end_turn")
+                content_blocks: list[dict[str, Any]] = response_data.get("content", [])
+
+                # ── FASE 1.5.3: Record token usage after LLM response ──────
+                response_tokens = self._token_budget.estimate_tokens(json.dumps(content_blocks, default=str))
+                self._token_budget.record_usage(pre_call_tokens + response_tokens)
+                self._circuit_breaker.record_response(pre_call_tokens + response_tokens)
+
+                await self._save_message(chat_id, "assistant", json.dumps(content_blocks))
+                messages.append({"role": "assistant", "content": content_blocks})
+
+                # ── Hermes mode: detect <tool_call> tags in plain text ──────────────
+                if self._hermes_mode:
+                    full_text = "\n".join(
+                        block.get("text", "") for block in content_blocks if block.get("type") == "text"
+                    )
+                    if has_tool_calls(full_text):
+                        try:
+                            calls = extract_tool_calls(full_text)
+                        except ValueError as exc:
+                            hermes_parse_error_count += 1
+                            if hermes_parse_error_count >= MAX_HERMES_RETRIES:
+                                return "Error: max self-healing retries exceeded (parse error)."
+                            # role="user" — Hermes mode has no native tool_call_id contract
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": sanitize_for_prompt(f"[Tool Error] Error parsing tool call: {exc}"),
+                                }
+                            )
+                            continue
+                        # Successful parse resets the parse-error budget so the
+                        # next malformed block gets a fresh allowance.
+                        hermes_parse_error_count = 0
+                        for call in calls:
+                            tool_name_h = call["name"]
+                            tool_args_h = call["arguments"]
+                            loop_response = _check_tool_loop(tool_loop_guardrail, tool_name_h, tool_args_h)
+                            if loop_response is not None:
+                                return loop_response
+                            try:
+                                result_str_h = await asyncio.wait_for(
+                                    self._tools.execute(tool_name_h, tool_args_h),
+                                    timeout=DEFAULT_TOOL_ROUND_TIMEOUT,
+                                )
+                                hermes_exec_error_count = 0
+                            except (asyncio.CancelledError, KeyboardInterrupt):
+                                raise
+                            except pydantic.ValidationError as ve:
+                                hermes_exec_error_count += 1
+                                if hermes_exec_error_count >= MAX_HERMES_RETRIES:
+                                    return "Error: max self-healing retries exceeded (execution error)."
+                                feedback = _format_validation_feedback(tool_name_h, ve)
+                                error_content = sanitize_for_prompt(
+                                    f"[Tool Error] {json.dumps(feedback, ensure_ascii=False, default=str)}"
+                                )
+                                await self._save_message(chat_id, "user", error_content)
+                                messages.append({"role": "user", "content": error_content})
+                                continue
+                            except (KeyError, ValueError, TypeError, RuntimeError, OSError) as exc:
+                                hermes_exec_error_count += 1
+                                if hermes_exec_error_count >= MAX_HERMES_RETRIES:
+                                    return "Error: max self-healing retries exceeded (execution error)."
+                                error_content = sanitize_for_prompt(
+                                    f"[Tool Error] Error executing {tool_name_h}: {exc}"
+                                )
+                                await self._save_message(chat_id, "user", error_content)
+                                messages.append({"role": "user", "content": error_content})
+                                continue  # give every call its own error response; don't drop the rest
+                            if len(result_str_h) > 4000:
+                                result_str_h = result_str_h[:4000] + "\n\n[... truncated ...]"
+                            tool_content = sanitize_for_prompt(f"[Tool Result] {result_str_h}")
+                            await self._save_message(chat_id, "user", tool_content)
+                            messages.append({"role": "user", "content": tool_content})
+                        messages = messages[-self._max_context :]
+                        continue
+                    else:
+                        hermes_parse_error_count = 0
+                        hermes_exec_error_count = 0
+                        # Output gate — apply same guardrail as non-Hermes path
+                        if self._guardrail:
+                            try:
+                                await self._guardrail.after_model_callback(full_text)
+                            except SecurityViolationError as exc:
+                                logger.warning("Guardrail blocked Hermes output: %s", exc)
+                                return "\u26a0\ufe0f La respuesta fue bloqueada por una pol\u00edtica de seguridad."
+                            except AgentOrchestrationError as exc:
+                                logger.error("Schema violation in Hermes output: %s", exc)
+                                return "\u26a0\ufe0f La respuesta del modelo no cumple el esquema esperado."
+                        return full_text
+                # ── end Hermes branch ────────────────────────────────────────────────
+
+                if stop_reason != "tool_use":
+                    text_parts = [block.get("text", "") for block in content_blocks if block.get("type") == "text"]
+                    final_text = "\n".join(text_parts)
+
+                    # Output gate — guardrail (Titan v7.0)
+                    if self._guardrail:
+                        try:
+                            await self._guardrail.after_model_callback(final_text)
+                        except SecurityViolationError as exc:
+                            logger.warning("Guardrail blocked output: %s", exc)
+                            return "\u26a0\ufe0f La respuesta fue bloqueada por una pol\u00edtica de seguridad."
+                        except AgentOrchestrationError as exc:
+                            logger.error("Schema violation in output: %s", exc)
+                            return "\u26a0\ufe0f La respuesta del modelo no cumple el esquema esperado."
+
+                    return final_text
+
+                # Execute requested tools con integración LCEL.
+                tool_results: list[dict[str, Any]] = []
+                for block in content_blocks:
+                    if block.get("type") != "tool_use":
+                        continue
+                    # L-2: acceso defensivo. Antes block["id"]/block["name"] con
+                    # subscript FUERA del try lanzaba KeyError ante un tool_use
+                    # malformado (response truncada/bug de API/MITM), que caía al
+                    # except externo y abortaba el round de chat ENTERO (otros
+                    # tool_use válidos nunca se ejecutaban). Ahora se aísla por bloque.
+                    tool_id: str = block.get("id") or uuid.uuid4().hex
+                    tool_name = block.get("name", "")
+                    tool_input: dict[str, Any] = block.get("input", {})
+                    if not tool_name:
+                        logger.warning("tool_use block sin 'name' (id=%s); se ignora ese bloque", tool_id)
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": sanitize_for_prompt("[Tool Error] tool_use block sin 'name'."),
+                            }
+                        )
+                        continue
+
+                    loop_response = _check_tool_loop(tool_loop_guardrail, tool_name, tool_input)
+                    if loop_response is not None:
+                        return loop_response
+
+                    try:
+                        # Ejecutar herramienta con compatibilidad AsyncToolRegistry
+                        result_str = await asyncio.wait_for(
+                            self._tools.execute(tool_name, tool_input),
+                            timeout=DEFAULT_TOOL_ROUND_TIMEOUT,
+                        )
+                        consecutive_errors = 0
+                        if progress_callback:
+                            self._spawn_telemetry_task(progress_callback(f"executed_{tool_name}", 100))
+                    except pydantic.ValidationError as ve:
+                        # TASK-012: hallucinated arguments — return structured
+                        # feedback so the model can self-correct on the next round.
+                        # MUST come before the ValueError branch since
+                        # ``pydantic.ValidationError`` subclasses ``ValueError``.
+                        consecutive_errors += 1
+                        backoff = min(2**consecutive_errors, 16)
+                        logger.warning(
+                            "Tool argument validation failed for %s (%d errors, attempt %d). Backing off %ds...",
+                            tool_name,
+                            len(ve.errors()),
+                            consecutive_errors,
+                            backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        feedback = _format_validation_feedback(tool_name, ve)
+                        result_str = json.dumps(feedback, ensure_ascii=False, default=str)
+                    except (
+                        KeyError,
+                        ValueError,
+                        TypeError,
+                        RuntimeError,
+                        OSError,
+                    ) as exc:
+                        # Broadened exception handling for system/runtime errors (xEdit/LOOT zombies)
+                        consecutive_errors += 1
+                        backoff = min(2**consecutive_errors, 16)
+                        logger.warning(
+                            "Tool execution error (%s): %s (attempt %d). Backing off %ds...",
+                            type(exc).__name__,
+                            exc,
+                            consecutive_errors,
+                            backoff,
+                        )
+                        await asyncio.sleep(backoff)
+
+                        feedback = {
+                            "error": "Critical tool execution failure.",
+                            "exception_type": type(exc).__name__,
+                            "details": sanitize_for_prompt(str(exc)),
+                            "instruction": "Verify that requirements are met and that external processes (LOOT/xEdit) are not blocked.",
+                        }
+                        result_str = json.dumps(feedback)
+
+                    if len(result_str) > 4000:
+                        result_str = result_str[:4000] + "\n\n[... truncated ...]"
+
+                    # TASK-013 P0: sanitize tool output before injecting back into
+                    # the LLM context — prevents indirect prompt injection via
+                    # adversarial mod metadata, file paths, or HTTP responses.
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": sanitize_for_prompt(result_str),
+                        }
+                    )
+
+                await self._save_message(chat_id, "user", json.dumps(tool_results))
+                messages.append({"role": "user", "content": tool_results})
+                messages = messages[-self._max_context :]
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except (MemoryError, SystemError, RecursionError, AttributeError, ImportError, SyntaxError) as fatal:
+                logger.critical("Fatal router error, cannot continue: %s", fatal, exc_info=True)
+                raise
+            except Exception as outer_exc:
+                logger.exception("System-level router failure: %s", outer_exc)
+                return "Error Critico: El ciclo de herramientas fallo por una excepcion interna. Consulta los logs del servidor."
+        else:
+            raise RuntimeError(f"Agent exceeded {MAX_TOOL_ROUNDS} tool rounds")
+
+    # ------------------------------------------------------------------
+    # History persistence
+    # ------------------------------------------------------------------
+
+    async def _save_message(self, chat_id: str, role: str, content: str) -> None:
+        """Persist a message to the history database immediately."""
+        # R-2: bajo el lock, para que un close() concurrente no nule self._conn
+        # entre el execute() y el commit().
+        async with self._conn_lock:
+            if self._conn is None:
+                raise RuntimeError("Router database is not open")
+            await self._conn.execute(
+                "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                (chat_id, role, content, time.time()),
+            )
+            await self._conn.commit()
+
+    async def _load_context(self, chat_id: str) -> list[dict[str, Any]]:
+        # R-2: la lectura de filas va bajo el lock (la conexión no se cierra a
+        # mitad de query); el parseo posterior no lo necesita.
+        async with self._conn_lock:
+            if self._conn is None:
+                raise RuntimeError("Router database is not open")
+            async with self._conn.execute(
+                "SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+                (chat_id, self._max_context),
+            ) as cur:
+                rows = await cur.fetchall()
+
+        messages: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            role = str(row[0])
+            raw_content = str(row[1])
+            try:
+                parsed = json.loads(raw_content)
+                if isinstance(parsed, list):
+                    messages.append({"role": role, "content": parsed})
+                    continue
+            except (json.JSONDecodeError, TypeError):
+                pass
+            # S5 (Zero-Trust): la DB chat_history es data en reposo; si fuera
+            # manipulada (ej. mod maliciosa con acceso al sandbox escribe una
+            # inyección en un user row), se re-inyectaría al LLM sin filtrar.
+            # - Filas 'user': además de sanitizar delimitadores, se corre el detector
+            #   de inyección de FRASES (sanitize_for_prompt NO lo hace) y se DESCARTA
+            #   la fila si dispara CRITICAL/HIGH (review Codex/Copilot en #251).
+            # - sanitize_for_prompt es idempotente → no-op para data ya limpia.
+            # Los bloques JSON-list (output estructurado del modelo, con tool_use IDs)
+            # se dejan intactos arriba.
+            if role == "user":
+                findings = _HISTORY_INSPECTOR.inspect(raw_content)
+                if any(f["severity"] in _HISTORY_BLOCK_SEVERITIES for f in findings):
+                    logger.warning(
+                        "S5: fila de historial 'user' descartada por inyección detectada (chat_id=%s)",
+                        chat_id,
+                    )
+                    continue
+            messages.append({"role": role, "content": sanitize_for_prompt(raw_content)})
+        return messages

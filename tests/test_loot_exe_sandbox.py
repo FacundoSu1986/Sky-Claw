@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.agent.tools import AsyncToolRegistry
+from sky_claw.app.agent.tools import AsyncToolRegistry
 
 
 def _make_registry(

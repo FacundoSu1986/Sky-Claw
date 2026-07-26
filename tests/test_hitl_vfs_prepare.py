@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from sky_claw.antigravity.orchestrator.tool_strategies.middleware import HitlGateMiddleware
-from sky_claw.antigravity.security.hitl import HITLGuard
+from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
+from sky_claw.app.security.hitl import HITLGuard
 
 
 async def test_prepare_for_approval_termina_antes_de_notificar_hitl() -> None:

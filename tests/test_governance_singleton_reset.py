@@ -7,7 +7,7 @@ for every consumer of ``GovernanceManager.get_instance()``.
 
 from __future__ import annotations
 
-from sky_claw.antigravity.security.governance import GovernanceManager
+from sky_claw.app.security.governance import GovernanceManager
 
 
 def test_pollute_governance_singleton() -> None:

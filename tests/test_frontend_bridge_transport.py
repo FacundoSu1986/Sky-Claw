@@ -13,8 +13,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from sky_claw.antigravity.comms import frontend_bridge as fb
-from sky_claw.antigravity.comms._transport import DEFAULT_MAX_MESSAGE_BYTES
+from sky_claw.app.comms import frontend_bridge as fb
+from sky_claw.app.comms._transport import DEFAULT_MAX_MESSAGE_BYTES
 from tests.polling_utils import poll_until
 
 

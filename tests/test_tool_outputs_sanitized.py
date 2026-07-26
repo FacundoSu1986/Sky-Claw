@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.agent.tools.db_tools import search_mod
-from sky_claw.antigravity.agent.tools.nexus_tools import download_mod
+from sky_claw.app.agent.tools.db_tools import search_mod
+from sky_claw.app.agent.tools.nexus_tools import download_mod
 
 # Patrones adversariales que la sanitización debe neutralizar.
 _PROMPT_INJECTION_PAYLOADS = [

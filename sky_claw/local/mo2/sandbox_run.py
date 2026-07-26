@@ -20,7 +20,7 @@ El ritual es un callable inyectado (``local/mo2/`` no importa
 ``local/tools/``: sin acople ni ciclo de imports).
 
 El dueño de producción de este ciclo es
-``sky_claw.antigravity.orchestrator.sandbox_promotion.SandboxPromotionFlow``
+``sky_claw.app.orchestrator.sandbox_promotion.SandboxPromotionFlow``
 (T-27b·2, ADR 0005): corre el ritual acá, presenta el diff al operador vía
 HITL y resuelve promote/discard según la decisión.
 

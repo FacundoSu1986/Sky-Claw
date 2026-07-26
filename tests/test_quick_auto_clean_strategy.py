@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.gui.controllers.ritual_runner import RITUAL_TOOL_MAP, ritual_tool_name
-from sky_claw.antigravity.orchestrator.tool_strategies.middleware import DESTRUCTIVE_TOOL_PATTERNS
-from sky_claw.antigravity.orchestrator.tool_strategies.quick_auto_clean import (
+from sky_claw.app.gui.controllers.ritual_runner import RITUAL_TOOL_MAP, ritual_tool_name
+from sky_claw.app.orchestrator.tool_strategies.middleware import DESTRUCTIVE_TOOL_PATTERNS
+from sky_claw.app.orchestrator.tool_strategies.quick_auto_clean import (
     QuickAutoCleanStrategy,
 )
 
@@ -62,7 +62,7 @@ def test_quick_auto_clean_is_destructive() -> None:
 
 # ── Registro en el dispatcher ────────────────────────────────────────────────────
 def test_dispatcher_registers_quick_auto_clean() -> None:
-    from sky_claw.antigravity.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+    from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 
     dispatcher = build_orchestration_dispatcher(MagicMock())
     assert "quick_auto_clean" in dispatcher.registered_tools()

@@ -9,12 +9,13 @@ Verifica el contrato de durabilidad end-to-end:
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from sky_claw.antigravity.core.dlq_manager import DLQManager, DLQRow
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event, create_bus_with_dlq
+from sky_claw.app.core.dlq_manager import DLQManager, DLQRow
+from sky_claw.app.core.event_bus import CoreEventBus, Event, create_bus_with_dlq
 from tests.polling_utils import poll_until
 
 
@@ -34,6 +35,96 @@ async def _poll_pending(dlq: DLQManager, *, min_count: int = 1, timeout: float =
 
     await poll_until(_check, timeout=timeout, msg=f"DLQ no alcanzó {min_count} filas pending")
     return rows
+
+
+def test_handler_resolver_prioriza_la_identidad_exacta() -> None:
+    """Un match exacto conserva precedencia aunque el qualname no sea único."""
+    bus = CoreEventBus()
+
+    async def handler_a(event: Event) -> None:
+        pass
+
+    async def handler_b(event: Event) -> None:
+        pass
+
+    handler_a.__module__ = "package_a"
+    handler_b.__module__ = "package_b"
+    handler_a.__qualname__ = handler_b.__qualname__ = "shared_handler"
+    bus.subscribe("a", handler_a)
+    bus.subscribe("b", handler_b)
+
+    assert bus._resolve_handler("package_a.shared_handler") is handler_a
+
+
+def test_handler_resolver_acepta_prefijo_distinto_con_qualname_unico() -> None:
+    """Una identidad persistida sobrevive a un rename de módulo no ambiguo."""
+    bus = CoreEventBus()
+
+    async def unique_handler(event: Event) -> None:
+        pass
+
+    bus.subscribe("topic", unique_handler)
+
+    persisted_name = f"legacy.package.{unique_handler.__qualname__}"
+    assert bus._resolve_handler(persisted_name) is unique_handler
+
+
+def test_handler_resolver_rechaza_qualname_ambiguo() -> None:
+    """Dos candidatos equivalentes mantienen el replay en modo fail-closed."""
+    bus = CoreEventBus()
+
+    async def handler_a(event: Event) -> None:
+        pass
+
+    async def handler_b(event: Event) -> None:
+        pass
+
+    handler_a.__module__ = "package_a"
+    handler_b.__module__ = "package_b"
+    handler_a.__qualname__ = handler_b.__qualname__ = "shared_handler"
+    bus.subscribe("a", handler_a)
+    bus.subscribe("b", handler_b)
+
+    assert bus._resolve_handler("legacy.package.shared_handler") is None
+
+
+@pytest.mark.asyncio
+async def test_dlq_reproduce_fila_persistida_antes_del_rename(tmp_path: Path) -> None:
+    """El worker entrega una fila previa cuyo prefijo de módulo ya no coincide."""
+    db_path = tmp_path / "legacy-replay.db"
+    bus = create_bus_with_dlq(db_path=db_path)
+    assert bus._dlq is not None
+    received: list[Event] = []
+
+    async def renamed_handler(event: Event) -> None:
+        received.append(event)
+
+    bus.subscribe("legacy.*", renamed_handler)
+    event = Event(topic="legacy.replay", payload={"source": "old-module"})
+    await bus._dlq.enqueue(event, renamed_handler, RuntimeError("fallo previo"))
+
+    persisted_name = f"legacy.package.{renamed_handler.__qualname__}"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE dead_letter_events
+            SET handler_name = ?, next_retry_at = 0
+            """,
+            (persisted_name,),
+        )
+
+    await bus.start()
+    try:
+        await poll_until(
+            lambda: len(received) == 1,
+            timeout=3.0,
+            msg="La fila persistida no fue entregada al handler renombrado",
+        )
+    finally:
+        await bus.stop()
+
+    assert received == [event]
+    assert await bus._dlq.list_pending() == []
 
 
 @pytest.mark.asyncio

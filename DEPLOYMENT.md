@@ -22,7 +22,7 @@ failure handling and the pre-flight checklist for a real end-to-end run.
 | Python | **3.11 – 3.12** (versiones validadas por CI; `pyproject.toml` exige `>=3.11`). |
 | OS | Windows 10/11 (target primario; `file_permissions.py` usa DACL de Windows). Linux/WSL2 corre el core async pero no es la plataforma de entrega. |
 | MO2 | Mod Organizer 2 instalado y configurado para Skyrim Special Edition. |
-| Node.js | Sólo para desplegar el gateway Node opcional en `sky_claw/antigravity/comms/telegram_gateway_node/`; el modo `telegram` de Python usa polling. |
+| Node.js | Sólo para desplegar el gateway Node opcional en `sky_claw/app/comms/telegram_gateway_node/`; el modo `telegram` de Python usa polling. |
 | Red | Salida a Nexus / proveedor LLM. El egress está restringido por allowlist (`config.py:ALLOWED_HOSTS`). |
 
 ---
@@ -108,7 +108,7 @@ enumeran abajo pertenecen a `PathResolver`.
 `path_resolver.py` es el **único** punto que lee estas variables de entorno
 (ver `docs/pending_ooda_status.md` §2.3 — migración a `config.toml` pendiente,
 sin fecha); ningún otro módulo debe leerlas directo. Nombres
-reales según `sky_claw/antigravity/core/path_resolver.py`:
+reales según `sky_claw/app/core/path_resolver.py`:
 
 | Variable de entorno | Uso |
 |---|---|
@@ -166,7 +166,7 @@ claro (se loguea) y elegís otro.
    con TTL/rotación. La rotación es del archivo, no del keyring.
 
 ### CredentialVault (almacén cifrado, separado)
-`sky_claw/antigravity/security/credential_vault.py` es un almacén **cifrado con
+`sky_claw/app/security/credential_vault.py` es un almacén **cifrado con
 Fernet** (clave derivada por PBKDF2 desde un salt por máquina en
 `~/.sky_claw/vault_salt.bin` + backup), ciphertext en SQLite. API
 `get_secret(name)` / `set_secret(name, value)`. Es una facilidad aparte — **no es
@@ -219,7 +219,7 @@ Garantías relevantes para un run real:
   stack y `correlation_id`. **En modo GUI este handler NO se instala** — NiceGUI/
   uvicorn manejan su propio loop; ahí confiá en el log + el handler de uvicorn.
 - **Audit trail en SQLite** (aparte de los logs de texto), en
-  `sky_claw/antigravity/db/journal.py`: la tabla `journal_entries` registra cada
+  `sky_claw/app/db/journal.py`: la tabla `journal_entries` registra cada
   operación con estado `started/completed/failed/rolled_back`; la tabla
   `transactions` agrupa con estado `pending/committed/rolled_back`. El registry
   además anota tareas vía `log_tasks_batch`.
@@ -278,7 +278,7 @@ Honestidad operativa — esto sigue abierto y conviene saberlo antes de producci
   brokerizado, pero no cubre todos los runners ni todos los escenarios; ver
   `docs/operations/real_rig_validation.md`.
 - **Sin tag de release ni binario firmado/validado** (CHANGELOG `[Unreleased]`).
-- **Frontera de tipos parcial** — el override de mypy con `ignore_errors=true` cubre **prácticamente todo `sky_claw.*` / `sky_claw.antigravity.*`**, con re-habilitación puntual de checks en un subconjunto de `core.*` y en `orchestrator.sync_engine`. El grueso del código no está type-checked aún.
+- **Frontera de tipos parcial** — el override de mypy con `ignore_errors=true` cubre **prácticamente todo `sky_claw.*` / `sky_claw.app.*`**, con re-habilitación puntual de checks en un subconjunto de `core.*` y en `orchestrator.sync_engine`. El grueso del código no está type-checked aún.
 - **Loop-exception handler solo en modos no-GUI** — en GUI la captura de excepciones del loop depende de NiceGUI/uvicorn, no del handler de `__main__`.
 - **Estado vivo** — consultar `docs/pending_ooda_status.md` y reverificar cada
   ítem contra el árbol actual; un roadmap o auditoría fechada no sustituye esa

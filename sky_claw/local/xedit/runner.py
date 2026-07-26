@@ -29,7 +29,7 @@ from sky_claw.local.xedit.script_staging import StagedScript, stage_scripts
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from sky_claw.antigravity.security.path_validator import PathValidator
+    from sky_claw.app.security.path_validator import PathValidator
     from sky_claw.local.xedit.patch_orchestrator import PatchPlan
 
 logger = logging.getLogger(__name__)

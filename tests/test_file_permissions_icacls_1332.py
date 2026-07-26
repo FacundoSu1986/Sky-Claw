@@ -32,8 +32,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import sky_claw.antigravity.security.file_permissions as fp_mod
-from sky_claw.antigravity.security.file_permissions import restrict_to_owner
+import sky_claw.app.security.file_permissions as fp_mod
+from sky_claw.app.security.file_permissions import restrict_to_owner
 
 # Well-known SIDs that always resolve regardless of OS display language.
 _EVERYONE = "*S-1-1-0"

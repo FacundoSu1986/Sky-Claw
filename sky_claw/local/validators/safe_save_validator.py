@@ -11,7 +11,7 @@ import logging
 import pathlib
 from dataclasses import dataclass
 
-from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 
 logger = logging.getLogger("SkyClaw.Validators.SafeSave")
 

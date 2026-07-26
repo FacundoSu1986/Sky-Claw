@@ -22,11 +22,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
+from sky_claw.app.orchestrator.tool_strategies.middleware import (
     DESTRUCTIVE_TOOL_PATTERNS,
     HitlGateMiddleware,
 )
-from sky_claw.antigravity.security.hitl import HITLGuard
+from sky_claw.app.security.hitl import HITLGuard
 
 # ---------------------------------------------------------------------------
 # Stubs
@@ -305,10 +305,10 @@ class TestPayloadHandling:
     def test_describe_for_approval_does_not_warn_on_unexpected_keys(self, caplog) -> None:
         """Prompt-time description must not duplicate the unexpected-key warning
         that execute() already emits (Copilot review, PR #175)."""
-        from sky_claw.antigravity.orchestrator.tool_strategies.generate_bashed_patch import (
+        from sky_claw.app.orchestrator.tool_strategies.generate_bashed_patch import (
             GenerateBashedPatchStrategy,
         )
-        from sky_claw.antigravity.orchestrator.tool_strategies.generate_lods import (
+        from sky_claw.app.orchestrator.tool_strategies.generate_lods import (
             GenerateLodsStrategy,
         )
 
@@ -403,7 +403,7 @@ class TestHitlConcurrentRequests:
 class TestDispatcherGateWiring:
     @staticmethod
     def _make_supervisor() -> Any:
-        from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
+        from sky_claw.app.orchestrator.supervisor import SupervisorAgent
 
         sup = SupervisorAgent.__new__(SupervisorAgent)
         sup.scraper = MagicMock()
@@ -419,7 +419,7 @@ class TestDispatcherGateWiring:
         return sup
 
     def test_gate_wraps_exactly_the_destructive_tools(self) -> None:
-        from sky_claw.antigravity.orchestrator.tool_dispatcher import (
+        from sky_claw.app.orchestrator.tool_dispatcher import (
             build_orchestration_dispatcher,
         )
 
@@ -432,8 +432,8 @@ class TestDispatcherGateWiring:
 
     @pytest.mark.asyncio
     async def test_execute_loot_sorting_uses_shared_gate_without_legacy_gateway_hitl(self) -> None:
-        from sky_claw.antigravity.core.models import LootExecutionParams
-        from sky_claw.antigravity.orchestrator.tool_dispatcher import (
+        from sky_claw.app.core.models import LootExecutionParams
+        from sky_claw.app.orchestrator.tool_dispatcher import (
             build_orchestration_dispatcher,
         )
 

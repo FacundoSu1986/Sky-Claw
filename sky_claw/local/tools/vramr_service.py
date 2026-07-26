@@ -34,19 +34,19 @@ import sys
 import time
 from typing import TYPE_CHECKING, Any
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
-from sky_claw.antigravity.db.locks import (
+from sky_claw.app.core.event_bus import CoreEventBus, Event
+from sky_claw.app.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
     LockLeaseLostError,
     SnapshotTransactionLock,
 )
-from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.tools._process import kill_and_reap
 
 if TYPE_CHECKING:
-    from sky_claw.antigravity.db.journal import OperationJournal
-    from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+    from sky_claw.app.db.journal import OperationJournal
+    from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 
 logger = logging.getLogger(__name__)
 

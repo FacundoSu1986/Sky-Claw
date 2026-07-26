@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.db.journal import OperationType
-from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
+from sky_claw.app.db.journal import OperationType
+from sky_claw.app.orchestrator.sync_engine import SyncEngine
 
 
 class _RollbackManagerObservador:

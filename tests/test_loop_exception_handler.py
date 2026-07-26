@@ -47,7 +47,7 @@ def test_main_alias_apunta_al_helper_compartido():
 def test_gui_bootstrap_instala_el_handler():
     """Ítem 4 sub-3: el bootstrap de la GUI (que corre dentro del loop de NiceGUI)
     debe instalar el loop-exception-handler — la ruta GUI no pasa por _main."""
-    from sky_claw.antigravity.gui import _bootloader
+    from sky_claw.app.gui import _bootloader
 
     src = inspect.getsource(_bootloader.run_nicegui)
     assert "install_loop_exception_handler" in src
@@ -57,10 +57,10 @@ def test_entry_points_propagan_correlation_id():
     """Ítem 4 sub-2 (ancla de regresión): cada entry point debe setear
     correlation_id_var para que los flujos por-request sean trazables end-to-end.
     Previene que un nuevo entry point olvide propagar el correlation_id."""
-    from sky_claw.antigravity.comms import telegram
-    from sky_claw.antigravity.gui import _bootloader
-    from sky_claw.antigravity.modes import cli_mode
-    from sky_claw.antigravity.web import app
+    from sky_claw.app.comms import telegram
+    from sky_claw.app.gui import _bootloader
+    from sky_claw.app.modes import cli_mode
+    from sky_claw.app.web import app
 
     for modulo in (app, telegram, cli_mode, _bootloader):
         src = inspect.getsource(modulo)

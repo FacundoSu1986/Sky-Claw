@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.db.locks import DistributedLockManager, LockLeaseLostError
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.db.locks import DistributedLockManager, LockLeaseLostError
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools.pandora_runner import PandoraExecutionError, PandoraResult
 from sky_claw.local.tools.pandora_service import (
     BEHAVIOR_GRAPHS_RESOURCE_ID,
@@ -463,7 +463,7 @@ async def test_emite_manifest_antes_de_correr_y_flight_report_tras_commit(
     svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
 
     with patch(
-        "sky_claw.antigravity.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        "sky_claw.app.orchestrator.preview.flight_report.compose_flight_report_from_journal",
         AsyncMock(return_value=MagicMock()),
     ):
         result = await svc.generate_animations()
@@ -523,7 +523,7 @@ async def test_flight_report_best_effort_no_rompe_el_exito(
     svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
 
     with patch(
-        "sky_claw.antigravity.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        "sky_claw.app.orchestrator.preview.flight_report.compose_flight_report_from_journal",
         AsyncMock(return_value=MagicMock()),
     ):
         result = await svc.generate_animations()

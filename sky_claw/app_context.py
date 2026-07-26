@@ -14,30 +14,30 @@ from typing import Any, TypeVar
 import aiohttp
 import keyring
 
-from sky_claw.antigravity.agent.providers import ProviderConfigError, create_provider
-from sky_claw.antigravity.agent.router import LLMRouter
-from sky_claw.antigravity.agent.tools_facade import AsyncToolRegistry
-from sky_claw.antigravity.comms.telegram import TelegramWebhook
-from sky_claw.antigravity.comms.telegram_polling import TelegramPolling
-from sky_claw.antigravity.comms.telegram_sender import TelegramSender
-from sky_claw.antigravity.core.metrics_server import (
+from sky_claw.app.agent.providers import ProviderConfigError, create_provider
+from sky_claw.app.agent.router import LLMRouter
+from sky_claw.app.agent.tools_facade import AsyncToolRegistry
+from sky_claw.app.comms.telegram import TelegramWebhook
+from sky_claw.app.comms.telegram_polling import TelegramPolling
+from sky_claw.app.comms.telegram_sender import TelegramSender
+from sky_claw.app.core.metrics_server import (
     start_metrics_server,
     stop_metrics_server,
 )
-from sky_claw.antigravity.core.tracing import configure_tracing, shutdown_tracing
-from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-from sky_claw.antigravity.db.journal import OperationJournal
-from sky_claw.antigravity.db.locks import DistributedLockManager
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
-from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
-from sky_claw.antigravity.scraper.masterlist import MasterlistClient
-from sky_claw.antigravity.scraper.nexus_downloader import NexusDownloader
-from sky_claw.antigravity.security.auth_token_manager import AuthTokenManager
-from sky_claw.antigravity.security.credential_vault import CredentialVault
-from sky_claw.antigravity.security.hitl import HITLGuard, HITLRequest
-from sky_claw.antigravity.security.network_gateway import GatewayTCPConnector, NetworkGateway
-from sky_claw.antigravity.security.path_validator import PathValidator
-from sky_claw.antigravity.security.prompt_armor import build_system_header
+from sky_claw.app.core.tracing import configure_tracing, shutdown_tracing
+from sky_claw.app.db.async_registry import AsyncModRegistry
+from sky_claw.app.db.journal import OperationJournal
+from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.orchestrator.sync_engine import SyncEngine
+from sky_claw.app.scraper.masterlist import MasterlistClient
+from sky_claw.app.scraper.nexus_downloader import NexusDownloader
+from sky_claw.app.security.auth_token_manager import AuthTokenManager
+from sky_claw.app.security.credential_vault import CredentialVault
+from sky_claw.app.security.hitl import HITLGuard, HITLRequest
+from sky_claw.app.security.network_gateway import GatewayTCPConnector, NetworkGateway
+from sky_claw.app.security.path_validator import PathValidator
+from sky_claw.app.security.prompt_armor import build_system_header
 from sky_claw.config import LOOT_COMMON_PATHS, XEDIT_COMMON_PATHS, Config, SystemPaths
 from sky_claw.local.ai.patch_advisor_llm import LLMCallable
 from sky_claw.local.auto_detect import AutoDetector, run_off_loop
@@ -52,7 +52,7 @@ from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker, vfs_instance_id
 from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
 
 # Audit #190: shared lock-DB staging dir. MUST match the orchestrator's
-# BACKUP_STAGING_DIR (sky_claw.antigravity.orchestrator.supervisor) so the
+# BACKUP_STAGING_DIR (sky_claw.app.orchestrator.supervisor) so the
 # agent-tools world (LLMRouter / Telegram / /api/chat) and the GUI
 # SupervisorAgent serialize LOOT load-order sorts on the SAME locks.db.
 _LOCK_STAGING_DIR = pathlib.Path(".skyclaw_backups")
@@ -90,7 +90,7 @@ class LifecycleContext:
     """
 
     def __init__(self) -> None:
-        from sky_claw.antigravity.core.db_lifecycle import (
+        from sky_claw.app.core.db_lifecycle import (
             DatabaseLifecycleConfig,
             DatabaseLifecycleManager,
         )
@@ -708,7 +708,7 @@ class AppContext:
                 )
             except ProviderConfigError as exc:
                 logger.warning("LLM provider config error: %s — falling back to Ollama", exc)
-                from sky_claw.antigravity.agent.providers import OllamaProvider
+                from sky_claw.app.agent.providers import OllamaProvider
 
                 # Honor the configured Ollama model even on the fallback path.
                 provider = OllamaProvider(model=getattr(local_cfg, "ollama_model", "") or "")
@@ -737,7 +737,7 @@ class AppContext:
             # continuamos: los security flows operarán fail-closed
             # (is_scanned_and_clean → False) en lugar de impedir el arranque
             # de modos no-seguridad.
-            from sky_claw.antigravity.security.governance import GovernanceManager
+            from sky_claw.app.security.governance import GovernanceManager
 
             try:
                 GovernanceManager.get_instance().set_lifecycle(self.lifecycle.manager)

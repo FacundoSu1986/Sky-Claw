@@ -13,9 +13,9 @@ from __future__ import annotations
 import logging
 import pathlib
 
-from sky_claw.antigravity.gui.models.app_state import AppState
-from sky_claw.antigravity.gui.setup_wizard import validate_credentials
-from sky_claw.antigravity.gui.sky_claw_gui import save_settings
+from sky_claw.app.gui.models.app_state import AppState
+from sky_claw.app.gui.setup_wizard import validate_credentials
+from sky_claw.app.gui.sky_claw_gui import save_settings
 
 
 # ── validate_credentials (seam puro compartido wizard/Ajustes) ──────────────────
@@ -196,7 +196,7 @@ def test_save_settings_loguea_si_falla_la_lectura_del_provider_persistido(
     registrar el fallo. El fallback a current_provider="" se mantiene igual
     que antes (sigue bloqueando, ya que sin provider persistido no hay forma
     de confirmar que la genérica pertenece al provider actual)."""
-    import sky_claw.antigravity.gui.sky_claw_gui as gui_module
+    import sky_claw.app.gui.sky_claw_gui as gui_module
 
     _patch_keyring(monkeypatch)  # sin slot propio ni genérica
     cfg_path = tmp_path / "sky_claw_config.json"
@@ -284,7 +284,7 @@ def test_badge_llm_reconoce_el_slot_del_provider(tmp_path: pathlib.Path, monkeyp
     """El resto del sistema considera configurado {provider}_api_key: si solo
     existe ese slot (sin llm_api_key genérica), el badge debe decir Configurada.
     """
-    from sky_claw.antigravity.gui.sky_claw_gui import _build_settings_data
+    from sky_claw.app.gui.sky_claw_gui import _build_settings_data
     from sky_claw.config import Config
 
     fake = _patch_keyring(monkeypatch)

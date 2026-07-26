@@ -928,7 +928,7 @@ class TestAppContextPartialFullAcquisition:
         """Con API key pero Nexus caído en el primer arranque, el sync enriquecido
         falla para todos los mods (processed=0, failed>0) y el cold boot reintenta
         en modo local-only para no dejar el registry vacío."""
-        from sky_claw.antigravity.orchestrator.sync_engine import SyncResult
+        from sky_claw.app.orchestrator.sync_engine import SyncResult
 
         ctx = AppContext(mock_args)
         ctx.config_path = tmp_path / "config.toml"

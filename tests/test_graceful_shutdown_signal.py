@@ -43,9 +43,9 @@ def test_sigterm_handler_installed_for_gui_mode(monkeypatch):
     signal.signal(signal.SIGTERM, signal.SIG_DFL)  # reset so we detect the install
     launched: dict[str, bool] = {}
 
-    fake_gui = types.ModuleType("sky_claw.antigravity.modes.gui_mode")
+    fake_gui = types.ModuleType("sky_claw.app.modes.gui_mode")
     fake_gui.run_gui_mode = lambda _args: launched.setdefault("gui", True)  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "sky_claw.antigravity.modes.gui_mode", fake_gui)
+    monkeypatch.setitem(sys.modules, "sky_claw.app.modes.gui_mode", fake_gui)
     monkeypatch.setattr(main_mod, "setup_logging", lambda **_kw: None)
 
     try:

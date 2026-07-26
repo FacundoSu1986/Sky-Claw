@@ -94,7 +94,7 @@ repitiendo la sobre-declaración que este doc advierte.
 
 ```
 $ grep -rln "persist_action_manifest\|persist_flight_report" sky_claw/ | grep -v test
-sky_claw/antigravity/db/journal.py       # la definición
+sky_claw/app/db/journal.py       # la definición
 sky_claw/local/tools/loot_service.py     # productor (T-26/T-28 v1)
 sky_claw/local/tools/xedit_service.py    # productor (2026-07-15, ambos entry points)
 sky_claw/local/tools/synthesis_service.py # productor de T-26 (2026-07-16, PR #309)
@@ -190,7 +190,7 @@ lock). Con PR B + PR C, Wrye Bash queda al día con la disciplina de sus hermano
 ### 1.2 T-27 — Synthesis sandboxeado con promote/discard real (2026-07-14); Pandora/DynDOLOD/Wrye Bash siguen fuera
 
 **Actualización 2026-07-14 (cierre PARCIAL — no declarar T-27 "cerrado"):**
-`SandboxPromotionFlow` (`sky_claw/antigravity/orchestrator/sandbox_promotion.py`,
+`SandboxPromotionFlow` (`sky_claw/app/orchestrator/sandbox_promotion.py`,
 ADR 0005) es ahora el dueño de producción del ciclo clonar → correr → diff →
 HITL → promote/discard, y `execute_synthesis_pipeline` corre **siempre** por
 él (strategy + builders lazy en `tool_dispatcher.py`). El bucle de decisión
@@ -273,7 +273,7 @@ para el próximo commit: `local/loot/*` ya pasa `strict` sin cambios de código
 
 Cerrados solo `local/tools/` (T-10) y `local/xedit/` (T-11). La lista de
 exenciones en `pyproject.toml:130-142` sigue cubriendo, entre otros:
-**todo `sky_claw/antigravity/**`** (el árbol más grande del repo — orchestrator,
+**todo `sky_claw/app/**`** (el árbol más grande del repo — orchestrator,
 gui, agent, security, comms, core, db), más `local/mo2/`, `local/validators/`,
 `local/discovery/`, `local/loot/`, `local/fomod/`, `local/assets/`. Es la
 exención más grande que queda del backlog original.

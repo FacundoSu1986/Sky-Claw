@@ -23,12 +23,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.core.db_lifecycle import (
+from sky_claw.app.core.db_lifecycle import (
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
 )
-from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-from sky_claw.antigravity.security.network_gateway import NetworkGateway
+from sky_claw.app.db.async_registry import AsyncModRegistry
+from sky_claw.app.security.network_gateway import NetworkGateway
 from sky_claw.logging_config import correlation_id_var
 from tests._lifecycle_guard import close_registry_then_lifecycle, find_leaked_threads
 
@@ -86,7 +86,7 @@ def _reset_governance_singleton() -> Iterator[None]:
     Mutates under the same class lock ``get_instance()`` uses, so a background
     thread mid-``get_instance()`` never observes a torn singleton.
     """
-    from sky_claw.antigravity.security.governance import GovernanceManager
+    from sky_claw.app.security.governance import GovernanceManager
 
     with GovernanceManager._lock:
         GovernanceManager._instance = None

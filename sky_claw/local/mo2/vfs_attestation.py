@@ -8,7 +8,7 @@ import pathlib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
-from sky_claw.antigravity.security.path_validator import PathViolationError, assert_safe_component
+from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 
 _PROFILE_STATE_FILES = ("modlist.txt", "plugins.txt", "loadorder.txt", "settings.ini", "settings.txt")
 _IGNORED_ROOT_FILES = frozenset({"meta.ini"})
