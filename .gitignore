@@ -105,9 +105,11 @@ plans/
 
 # Auditoría y extracción
 extract_audit.py
+export_script.py
 skyscraping/
 project_scrape/
 Auditorias/
+auditorias_preparadas/
 
 # Informes y reportes residuales (no código fuente)
 INFORME_ANALISIS_ESTATICO.md
