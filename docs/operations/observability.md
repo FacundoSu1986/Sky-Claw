@@ -34,7 +34,7 @@ degradan el logging sin derribar la aplicación.
 La degradación admite pérdida finita: cuando la cola principal está llena, los
 eventos `WARNING` y menores pueden perderse. Un deque de emergencia conserva
 como máximo 256 eventos `ERROR/CRITICAL`; al llenarse también, expulsa la
-evidencia crítica más antigua. No existe fallback síncrono desde asyncio.
+evidencia `ERROR/CRITICAL` más antigua. No existe fallback síncrono desde asyncio.
 Cualquier health-check o recuperación futura debe mantener el I/O bloqueante
 fuera del event loop.
 

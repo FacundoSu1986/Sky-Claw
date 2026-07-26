@@ -306,10 +306,10 @@ Honestidad operativa — esto sigue abierto y conviene saberlo antes de producci
 - **Validación de rig real parcial** — existe evidencia histórica del canary
   brokerizado, pero no cubre todos los runners ni todos los escenarios; ver
   `docs/operations/real_rig_validation.md`.
-- **Firma de editor de Windows pendiente** — `v0.2.4` incluye firma de blob
-  keyless de Cosign y `SkyClawApp.exe.bundle.json`, pero el ejecutable no lleva
-  firma Authenticode de un publisher. Los cambios actuales siguen en
-  `[Unreleased]` y no se verificaron aquí mediante cold boot.
+- **Evidencia de publisher de Windows pendiente** — Cosign no equivale a
+  Authenticode. El workflow incluye `Cosign sign-blob`, pero no un paso de
+  Authenticode ni `signtool`; esta tarea no inspeccionó la firma PE histórica.
+  Los cambios actuales siguen en `[Unreleased]`.
 - **Frontera de tipos parcial** — el override de mypy con `ignore_errors=true` cubre **prácticamente todo `sky_claw.*` / `sky_claw.app.*`**, con re-habilitación puntual de checks en un subconjunto de `core.*` y en `orchestrator.sync_engine`. El grueso del código no está type-checked aún.
 - **Estado vivo** — consultar `docs/pending_ooda_status.md` y reverificar cada
   ítem contra el árbol actual; un roadmap o auditoría fechada no sustituye esa
@@ -325,8 +325,8 @@ Workflow estándar para publicar una nueva versión de Sky-Claw. El empaquetado 
 > publicado construyó `SkyClawApp.exe`, generó un SBOM SPDX, ejecutó
 > `Cosign sign-blob` keyless y adjuntó `SkyClawApp.exe.bundle.json`; su ejecución
 > para `v0.2.4` terminó correctamente. Los cambios del árbol actual siguen en
-> `[Unreleased]`. Esta tarea no verificó criptográficamente el bundle ni hizo
-> cold boot del ejecutable.
+> `[Unreleased]`. Esta tarea no verificó criptográficamente el bundle, no hizo
+> cold boot del ejecutable ni inspeccionó la firma PE del artefacto histórico.
 
 ### 10.1 Checklist de Release
 
@@ -364,11 +364,11 @@ Tras generar el `.exe`:
 3.  **Validación de Bridge:** Correr `SkyClawApp.exe --mode install-vfs-bridge --mo2-root "D:\MO2Portable"` y validar el smoke de §2.
 4.  **Artifact Tagging:** Crear el tag de git (`git tag -a v0.x.0 -m "Release v0.x.0"`) y pushear (`git push origin v0.x.0`). El push dispara `.github/workflows/release.yml`, que publica el ejecutable, el bundle Cosign y el SBOM en GitHub Releases.
 
-> **Firmas distintas:** Cosign firma el blob y publica el material de
-> verificación en `SkyClawApp.exe.bundle.json`. `sky_claw.spec` mantiene
-> `codesign_identity=None`, por lo que el `.exe` no tiene una firma de publisher
-> Authenticode. Los usuarios pueden encontrar advertencias de SmartScreen;
-> documentar el workaround (Advanced → Continue) en el README de la release.
+> **Firmas distintas:** Cosign no equivale a Authenticode. El workflow firma el
+> blob y publica el material en `SkyClawApp.exe.bundle.json`, pero no incluye un
+> paso de Authenticode ni `signtool`. Esta tarea no inspeccionó la firma PE del
+> artefacto histórico; la identidad de publisher y SmartScreen permanecen sin
+> verificación independiente.
 
 La separación entre operación diaria, observabilidad, recuperación, release y
 smoke real se mantiene en [docs/operations](docs/operations/README.md).

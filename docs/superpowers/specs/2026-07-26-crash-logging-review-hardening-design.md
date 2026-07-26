@@ -36,11 +36,14 @@ La documentación de despliegue y release reflejará el estado comprobado:
 - existen releases y tags hasta `v0.2.4`;
 - el workflow de release genera un ejecutable, un SBOM y una firma Cosign
   keyless en forma de bundle;
-- el binario no usa una identidad Authenticode de Windows;
+- Cosign no equivale a Authenticode: el workflow no incluye un paso de
+  Authenticode ni `signtool`, pero esta tarea no inspeccionó la firma PE del
+  artefacto histórico;
 - los cambios de esta rama continúan en `[Unreleased]` hasta que se publique una
   release nueva;
-- la presencia de un bundle no sustituye la verificación criptográfica ni el
-  cold boot del artefacto concreto.
+- esta tarea no verificó criptográficamente el bundle ni hizo cold boot del
+  artefacto concreto; identidad de publisher y SmartScreen permanecen sin
+  verificación independiente.
 
 ### Frontera estricta de mypy
 

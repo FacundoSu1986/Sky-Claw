@@ -23,19 +23,20 @@
 - `.github/workflows/release.yml` ejecuta `Cosign sign-blob` keyless mediante
   OIDC y publica el bundle junto con el ejecutable y el SBOM.
 
-## Cosign no es Authenticode
+## Cosign no equivale a Authenticode
 
-El bundle Cosign aporta material para verificar la firma del blob descargado.
-No equivale a una firma de publisher de Windows: `sky_claw.spec` mantiene
-`codesign_identity=None`, por lo que `SkyClawApp.exe` no lleva Authenticode y
-puede seguir mostrando advertencias de SmartScreen.
+El bundle Cosign aporta material para verificar la firma del blob descargado,
+pero no establece una identidad de publisher de Windows. El workflow contiene
+`Cosign sign-blob`, pero no incluye un paso de Authenticode ni `signtool`; esa
+ausencia describe el pipeline actual, no la firma PE del artefacto histórico.
 
 ## Qué no debe afirmarse todavía
 
-Esta actualización documental no verificó de forma independiente la firma
-criptográfica de `v0.2.4`, no ejecutó un cold boot de `SkyClawApp.exe` y no
-validó un instalador GA en un host limpio. La existencia del workflow, sus
-assets y una ejecución exitosa no sustituye esos smokes.
+Esta actualización documental no verificó criptográficamente el bundle de
+`v0.2.4`, no hizo cold boot de `SkyClawApp.exe` y no inspeccionó la firma PE del
+artefacto histórico. Authenticode, identidad de publisher y comportamiento de
+SmartScreen permanecen sin verificación independiente aquí. La existencia del
+workflow, sus assets y una ejecución exitosa no sustituye esos smokes.
 
 ## Gate documental previo
 
