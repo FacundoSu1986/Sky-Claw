@@ -20,6 +20,50 @@ Este documento es un **snapshot**, no una fuente viva — quedará desactualizad
 a medida que se mergeen PRs. Reverificar contra el código antes de actuar sobre
 cualquier ítem, como pide `AGENTS.md`.
 
+## Addendum (2026-07-26) — la cadena de `app.on_shutdown` no puede truncarse
+
+Revisión adversarial del PR #370 (rename `antigravity` → `app`, ya mergeado en
+`6cb4024`). El rename en sí quedó limpio: `sky_claw.spec`, `pyproject.toml`,
+`ci.yml`, `.gitignore` y los overrides de mypy son renombres 1:1 fieles y no
+sobrevive ninguna referencia viva al namespace retirado. Lo que sí apareció es
+una regresión de lifecycle en el hardening de shutdown que viajó en ese PR.
+
+**Causa raíz — contrato de terceros mal asumido.** NiceGUI 3.12.1 despacha los
+handlers de `app.on_shutdown` en un bucle secuencial **sin `try/except`**
+(`nicegui/app/app.py`, `App.stop`); `normalize_lifecycle_handler` devuelve el
+callable tal cual, no lo envuelve. Una excepción en un handler trunca todos los
+siguientes. Es el mismo modo de falla que P1-1 (#367) blindó **dentro** de
+`_teardown_runtime`, pero un nivel más arriba, donde ese blindaje no llegaba.
+
+Orden real: `run_nicegui` llama `setup_app()` (que registra `_cleanup`) antes de
+registrar `_shutdown`, así que **`_cleanup` es el handler #1**. Como
+`AgentCommunicationClient.stop()` no atrapa nada, un WebSocket roto al apagar
+bastaba para que nunca corrieran `runner.cleanup()` (libera el 8765) ni
+`ctx.stop()` (DB, journal, locks) → WinError 10048 al reabrir.
+
+Cerrado en la rama `fix/gui-shutdown-handler-chain`:
+
+1. `_cleanup` pasa a pasos resilientes; el handler siempre retorna normalmente.
+2. `drain_tracked_tasks()` nuevo en `task_tracking`: las tasks de
+   `create_tracked_task` viven en un set propio que no drenaba nadie, así que un
+   "Análisis profundo (xEdit)" en vuelo perdía su escritura en silencio contra
+   una DB ya cerrada. Ahora se drenan (5.0 s) antes de cerrar nada.
+3. El cierre del `DatabaseAgent` de la UI pasa a ser el **último** paso de
+   `_teardown_runtime`: la GUI y el `SupervisorAgent` abren dos agentes sobre el
+   mismo `sky_claw_state.db` y SQLite solo borra `-wal`/`-shm` al cerrar la
+   última conexión, así que el orden anterior dejaba los sidecars y disparaba un
+   "checkpoint incompleto" falso en todo apagado limpio.
+
+**Gotcha operativo de la migración:** en un working tree que existía antes del
+rename, `sky_claw/antigravity/` sobrevive como `__pycache__` huérfano (untracked).
+Python lo resuelve como namespace package y `tests/test_namespace_migration.py`
+falla localmente aunque el árbol esté correcto. Borrar el directorio; no es un
+defecto del código.
+
+**Pendiente:** el smoke real del `.exe` de este fix (cierre, 8765 libre, ausencia
+del warning de WAL/SHM y reapertura sin WinError 10048) — ningún test lo cubre
+porque `run.tear_down()` hace `if helpers.is_pytest(): return`.
+
 ## Addendum (2026-07-21) - F8 USVFS de la auditoria externa
 
 Este item es distinto del F8 de resiliencia #319 que aparece mas abajo.
