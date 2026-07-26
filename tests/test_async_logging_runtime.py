@@ -259,8 +259,12 @@ async def test_shutdown_acotado_puede_reintentarse_tras_sink_bloqueado(
     assert await asyncio.to_thread(entered.wait, 1)
 
     assert shutdown_logging(timeout_s=0.01) is False
+    logging.getLogger("test.runtime").error("registro posterior al timeout")
     release.set()
     assert await asyncio.to_thread(_wait_for_shutdown)
+
+    contents = (tmp_path / "sky_claw.log").read_text(encoding="utf-8")
+    assert "registro posterior al timeout" in contents
 
 
 def _wait_for_shutdown() -> bool:

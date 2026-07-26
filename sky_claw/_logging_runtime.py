@@ -175,6 +175,7 @@ class _SafeQueueListener(logging.handlers.QueueListener):
         health: LoggingHealth,
     ) -> None:
         super().__init__(records, *handlers, respect_handler_level=True)
+        self._records = records
         self._health = health
 
     def stop_with_timeout(self, timeout_s: float) -> bool:
@@ -197,18 +198,21 @@ class _SafeQueueListener(logging.handlers.QueueListener):
                     return False
                 time.sleep(min(0.01, remaining))
 
-        while True:
-            try:
-                self.enqueue_sentinel()
-                break
-            except queue.Full:
+        with self._records.all_tasks_done:
+            while self._records.unfinished_tasks:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     self._health.record_listener_error()
                     return False
-                time.sleep(min(0.01, remaining))
+                self._records.all_tasks_done.wait(remaining)
 
-        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            self._health.record_listener_error()
+            return False
+
+        self.enqueue_sentinel()
+        thread.join(timeout=remaining)
         if thread.is_alive():
             self._health.record_listener_error()
             return False
@@ -264,14 +268,21 @@ class LoggingRuntime:
                 return True
             root_logger = logging.getLogger()
             root_logger.removeHandler(self.queue_handler)
+            temporary_null_handler: logging.NullHandler | None = None
             if not root_logger.handlers:
-                root_logger.addHandler(logging.NullHandler())
-            self.queue_handler.close()
+                temporary_null_handler = logging.NullHandler()
+                root_logger.addHandler(temporary_null_handler)
             stopped = self._listener.stop_with_timeout(timeout_s)
             if stopped:
+                self.queue_handler.close()
                 for handler in self.handlers:
                     handler.close()
                 self._closed = True
+            else:
+                if temporary_null_handler is not None:
+                    root_logger.removeHandler(temporary_null_handler)
+                    temporary_null_handler.close()
+                root_logger.addHandler(self.queue_handler)
             return stopped
 
 
