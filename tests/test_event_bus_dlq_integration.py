@@ -57,15 +57,16 @@ def test_handler_resolver_prioriza_la_identidad_exacta() -> None:
 
 
 def test_handler_resolver_acepta_prefijo_distinto_con_qualname_unico() -> None:
-    """Una identidad persistida sobrevive a un rename de módulo no ambiguo."""
+    """Una identidad persistida sobrevive al cambio del segmento de namespace."""
     bus = CoreEventBus()
 
     async def unique_handler(event: Event) -> None:
         pass
 
+    unique_handler.__module__ = "sky_claw.app.handlers"
     bus.subscribe("topic", unique_handler)
 
-    persisted_name = f"legacy.package.{unique_handler.__qualname__}"
+    persisted_name = f"sky_claw.antigravity.handlers.{unique_handler.__qualname__}"
     assert bus._resolve_handler(persisted_name) is unique_handler
 
 
@@ -88,6 +89,21 @@ def test_handler_resolver_rechaza_qualname_ambiguo() -> None:
     assert bus._resolve_handler("legacy.package.shared_handler") is None
 
 
+def test_handler_resolver_no_confunde_un_handler_obsoleto_por_sufijo() -> None:
+    """Un qualname coincidente no autoriza cambiar también el módulo del handler."""
+    bus = CoreEventBus()
+
+    async def handle(event: Event) -> None:
+        pass
+
+    handle.__module__ = "sky_claw.app.current_consumer"
+    handle.__qualname__ = "handle"
+    bus.subscribe("topic", handle)
+
+    assert bus._resolve_handler("legacy.Foo.handle") is None
+    assert bus._resolve_handler("sky_claw.antigravity.other_consumer.handle") is None
+
+
 @pytest.mark.asyncio
 async def test_dlq_reproduce_fila_persistida_antes_del_rename(tmp_path: Path) -> None:
     """El worker entrega una fila previa cuyo prefijo de módulo ya no coincide."""
@@ -99,11 +115,12 @@ async def test_dlq_reproduce_fila_persistida_antes_del_rename(tmp_path: Path) ->
     async def renamed_handler(event: Event) -> None:
         received.append(event)
 
+    renamed_handler.__module__ = "sky_claw.app.replay_handlers"
     bus.subscribe("legacy.*", renamed_handler)
     event = Event(topic="legacy.replay", payload={"source": "old-module"})
     await bus._dlq.enqueue(event, renamed_handler, RuntimeError("fallo previo"))
 
-    persisted_name = f"legacy.package.{renamed_handler.__qualname__}"
+    persisted_name = f"sky_claw.antigravity.replay_handlers.{renamed_handler.__qualname__}"
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             """

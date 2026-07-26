@@ -1068,7 +1068,9 @@ def setup_app() -> None:
             if db_agent is not None:
                 try:
                     await db_agent.close()
-                finally:
+                except Exception:
+                    logger.exception("No se pudo cerrar DatabaseAgent de la UI; se conserva para reintento")
+                else:
                     if _db_agent is db_agent:
                         _db_agent = None
 

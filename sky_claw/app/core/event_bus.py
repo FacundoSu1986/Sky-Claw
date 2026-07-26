@@ -615,11 +615,35 @@ class CoreEventBus:
         candidates = [
             callback
             for callback in self._handler_index.values()
-            if (qualname := getattr(callback, "__qualname__", None)) and handler_name.endswith(f".{qualname}")
+            if self._matches_namespace_rename(handler_name, callback)
         ]
         if len(candidates) == 1:
             return candidates[0]
         return None
+
+    @staticmethod
+    def _matches_namespace_rename(handler_name: str, callback: Subscriber) -> bool:
+        """Acepta únicamente identidades cuyo módulo cambió en el segmento de namespace."""
+        module = getattr(callback, "__module__", None)
+        qualname = getattr(callback, "__qualname__", None)
+        if not module or not qualname:
+            return False
+
+        suffix = f".{qualname}"
+        if not handler_name.endswith(suffix):
+            return False
+
+        persisted_module = handler_name[: -len(suffix)]
+        current_parts = module.split(".")
+        persisted_parts = persisted_module.split(".")
+        return (
+            len(current_parts) >= 2
+            and current_parts[:2] == ["sky_claw", "app"]
+            and len(persisted_parts) == len(current_parts)
+            and persisted_parts[0] == current_parts[0]
+            and persisted_parts[1] != current_parts[1]
+            and persisted_parts[2:] == current_parts[2:]
+        )
 
 
 def create_bus_with_dlq(db_path: Path | None = None, *, lifecycle=None) -> CoreEventBus:

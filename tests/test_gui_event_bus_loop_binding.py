@@ -192,3 +192,29 @@ async def test_setup_app_cierra_database_aunque_falle_el_cliente(monkeypatch) ->
 
     db_agent.close.assert_awaited_once()
     assert gui._db_agent is None
+
+
+async def test_setup_app_no_aborta_shutdown_si_falla_database_close(monkeypatch, caplog) -> None:
+    """Un cierre SQLite fallido conserva ownership sin bloquear handlers posteriores."""
+    import sky_claw.app.gui.sky_claw_gui as gui
+
+    fake_app = MagicMock(name="nicegui.app")
+    db_agent = MagicMock(name="DatabaseAgent")
+    db_agent.close = AsyncMock(side_effect=RuntimeError("fallo de cierre SQLite"))
+
+    monkeypatch.setattr(gui, "app", fake_app)
+    monkeypatch.setattr(gui, "event_bus", MagicMock(name="event_bus"))
+    monkeypatch.setattr(gui, "agent_client", None)
+    monkeypatch.setattr(gui, "_db_agent", db_agent)
+    monkeypatch.setattr(gui, "get_app_state_instance", lambda: MagicMock(name="AppState"))
+    monkeypatch.setattr(gui, "get_store", lambda: MagicMock(name="ReactiveStore"))
+
+    gui.setup_app()
+    handler = fake_app.on_shutdown.call_args_list[0].args[0]
+
+    with caplog.at_level(logging.ERROR):
+        await handler()
+
+    db_agent.close.assert_awaited_once()
+    assert gui._db_agent is db_agent
+    assert "No se pudo cerrar DatabaseAgent de la UI" in caplog.text
