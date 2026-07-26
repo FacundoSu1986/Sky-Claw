@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Mapping
 from contextvars import ContextVar
+from types import ModuleType
 from typing import Any, TextIO, cast
 
 from pythonjsonlogger import json
@@ -43,9 +44,11 @@ _USERNAME_LOOKUP_ERRORS = (OSError, KeyError, ImportError)
 _NO_TRACE_ID = "0" * 32
 
 try:
-    from opentelemetry import trace as _otel_trace
+    from opentelemetry import trace as _imported_otel_trace
 except ImportError:
-    _otel_trace = None
+    _otel_trace: ModuleType | None = None
+else:
+    _otel_trace = _imported_otel_trace
 
 
 def _resolve_current_user() -> str:
@@ -226,7 +229,7 @@ class CorrelationFilter(logging.Filter):
     """Filter that adds correlation_id and trace_id from context to each record."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.correlation_id = correlation_id_var.get()  # type: ignore[attr-defined]
+        record.correlation_id = correlation_id_var.get()
         trace_id = _NO_TRACE_ID
         if _otel_trace is not None:
             try:
@@ -236,7 +239,7 @@ class CorrelationFilter(logging.Filter):
                     trace_id = format(ctx.trace_id, "032x")
             except AttributeError:
                 pass
-        record.trace_id = trace_id  # type: ignore[attr-defined]
+        record.trace_id = trace_id
         return True
 
 
@@ -253,11 +256,11 @@ class RuntimeContextFilter(logging.Filter):
             task = asyncio.current_task()
             if task is not None:
                 task_name = task.get_name()
-        record.process_role = self._process_role  # type: ignore[attr-defined]
+        record.process_role = self._process_role
         if not hasattr(record, "task_name"):
-            record.task_name = task_name  # type: ignore[attr-defined]
+            record.task_name = task_name
         if not hasattr(record, "event"):
-            record.event = "log"  # type: ignore[attr-defined]
+            record.event = "log"
         return True
 
 

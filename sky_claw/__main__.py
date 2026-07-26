@@ -177,6 +177,7 @@ async def _install_vfs_bridge(args: argparse.Namespace) -> pathlib.Path:
     root = pathlib.Path(args.mo2_root).resolve()
     instance_id = vfs_instance_id(root)
     descriptor = Config.DEFAULT_CONFIG_DIR / "vfs_bridge" / instance_id / f"{instance_id}.json"
+    worker_prefix: tuple[str, ...]
     if getattr(sys, "frozen", False):
         worker_executable = pathlib.Path(sys.executable)
         worker_prefix = ("--vfs-worker",)
