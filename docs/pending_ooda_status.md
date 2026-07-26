@@ -49,10 +49,28 @@ Cerrado en la rama `fix/gui-shutdown-handler-chain`:
    "Análisis profundo (xEdit)" en vuelo perdía su escritura en silencio contra
    una DB ya cerrada. Ahora se drenan (5.0 s) antes de cerrar nada.
 3. El cierre del `DatabaseAgent` de la UI pasa a ser el **último** paso de
-   `_teardown_runtime`: la GUI y el `SupervisorAgent` abren dos agentes sobre el
-   mismo `sky_claw_state.db` y SQLite solo borra `-wal`/`-shm` al cerrar la
-   última conexión, así que el orden anterior dejaba los sidecars y disparaba un
-   "checkpoint incompleto" falso en todo apagado limpio.
+   `_teardown_runtime`, después de `ctx.stop()`.
+
+**Corrección tras la review de Codex (3 hallazgos, todos válidos):**
+
+- *(P1)* El drenado sacaba su foto de `_BACKGROUND_TASKS` **antes** de parar el
+  `event_bus` y el cliente. Un evento entregado en esa ventana ejecuta
+  `handle_conflict_detected`, que crea `gui-conflicts-refresh` — una task que el
+  drenado nunca vio, y que reabría la pérdida de escrituras. Ahora se acallan los
+  productores primero (cliente → bus → tick del loop para las callbacks ya
+  encoladas por `call_soon_threadsafe`) y recién después se drena.
+- *(P1)* La espera post-cancelación era un `gather` sin deadline: una task que
+  tragara `CancelledError` colgaba el handler para siempre. Ahora está acotada
+  (`_CANCEL_GRACE_S`) y las rebeldes se abandonan con un ERROR que las nombra.
+  El drenado además re-mira el set en bucle, porque una task puede encolar otra.
+- *(P2)* **El reordenamiento por sí solo NO eliminaba el warning de "checkpoint
+  incompleto": lo mudaba de manager.** Verificado con dos `DatabaseAgent` sobre
+  el mismo archivo: SQLite borra `-wal`/`-shm` solo al cerrar la **última**
+  conexión, así que el warning lo emite *el primero que cierra*, sea quien sea.
+  El arreglo real fue en `db_lifecycle.shutdown_all` paso 3: si el checkpoint
+  TRUNCATE reportó `busy == 0`, los datos ya son durables y los sidecars que
+  quedan los explica el otro owner → INFO con la causa real, no WARNING. El
+  WARNING queda reservado para cuando el checkpoint efectivamente no completó.
 
 **Gotcha operativo de la migración:** en un working tree que existía antes del
 rename, `sky_claw/antigravity/` sobrevive como `__pycache__` huérfano (untracked).

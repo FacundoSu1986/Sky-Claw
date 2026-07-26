@@ -241,29 +241,6 @@ async def test_cleanup_no_propaga_si_falla_el_event_bus(monkeypatch, caplog) -> 
     assert "fallo del bus" in caplog.text
 
 
-async def test_cleanup_drena_las_tasks_antes_de_parar_el_cliente(monkeypatch) -> None:
-    """El drenado corre PRIMERO: la DB sigue abierta y las escrituras en vuelo aterrizan."""
-    import sky_claw.app.gui.sky_claw_gui as gui
-
-    orden: list[str] = []
-
-    async def _drain(*_args, **_kwargs) -> None:
-        orden.append("drain")
-
-    async def _client_stop() -> None:
-        orden.append("client.stop")
-
-    client = MagicMock(name="AgentClient")
-    client.stop = _client_stop
-
-    handler = _cleanup_handler(gui, monkeypatch, client=client)
-    monkeypatch.setattr(gui, "drain_tracked_tasks", _drain)
-
-    await handler()
-
-    assert orden == ["drain", "client.stop"]
-
-
 async def test_cleanup_no_cierra_el_database_agent(monkeypatch) -> None:
     """El cierre de la DB se movió a ``_teardown_runtime``, después de ``ctx.stop()``.
 
@@ -295,3 +272,41 @@ async def test_close_db_agent_sin_agente_es_un_noop(monkeypatch) -> None:
     await gui.close_db_agent()
 
     assert gui._db_agent is None
+
+
+async def test_cleanup_acalla_los_productores_antes_de_drenar(monkeypatch) -> None:
+    """Codex P1 en #371: hay que quiesce a los productores ANTES de la foto del drenado.
+
+    ``ReactiveState.handle_conflict_detected`` crea ``gui-conflicts-refresh``
+    (que toca la DB). Si el drenado saca su foto de ``_BACKGROUND_TASKS`` antes
+    de parar el ``event_bus`` y el cliente, un evento entregado en esa ventana
+    crea una task que el drenado nunca vio: ``_cleanup`` retorna,
+    ``_teardown_runtime`` cierra la DB y vuelve la pérdida de escrituras que
+    este cambio venía a arreglar.
+    """
+    import sky_claw.app.gui.sky_claw_gui as gui
+
+    orden: list[str] = []
+
+    async def _drain(*_args, **_kwargs) -> None:
+        orden.append("drain")
+
+    async def _client_stop() -> None:
+        orden.append("client.stop")
+
+    client = MagicMock(name="AgentClient")
+    client.stop = _client_stop
+
+    handler = _cleanup_handler(gui, monkeypatch, client=client)
+
+    bus = MagicMock(name="event_bus")
+    bus.stop.side_effect = lambda: orden.append("event_bus.stop")
+    monkeypatch.setattr(gui, "event_bus", bus)
+    monkeypatch.setattr(gui, "drain_tracked_tasks", _drain)
+
+    await handler()
+
+    assert orden == ["client.stop", "event_bus.stop", "drain"], (
+        "el drenado sacó su foto antes de acallar a los productores: un evento "
+        f"en esa ventana crea una task que nadie espera. Orden real: {orden}"
+    )

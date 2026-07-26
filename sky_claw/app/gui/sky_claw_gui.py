@@ -21,6 +21,7 @@ path).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from dataclasses import dataclass
@@ -1101,25 +1102,39 @@ def setup_app() -> None:
 
         El ``DatabaseAgent`` de la UI **no** se cierra acá a propósito: es el
         último paso de ``_teardown_runtime``. Ver ``close_db_agent``.
+
+        El ORDEN importa (Codex P1 en #371): los productores se acallan **antes**
+        de drenar. ``ReactiveState.handle_conflict_detected`` crea
+        ``gui-conflicts-refresh`` (que toca la DB), así que un evento entregado
+        después de la foto del drenado dejaría una task que nadie espera y
+        ``_teardown_runtime`` cerraría la DB debajo suyo. Primero el cliente
+        (productor aguas arriba, que publica en el bus), después el bus (join de
+        su hilo despachador) y recién entonces el drenado.
         """
-        try:
-            # Primero, para que las escrituras en vuelo aterricen mientras la DB
-            # sigue abierta (el cierre llega recién en _teardown_runtime).
-            await drain_tracked_tasks()
-        except Exception:
-            logger.exception("Apagado: el drenado de tasks de la GUI falló; se continúa")
-
-        try:
-            event_bus.stop()
-        except Exception:
-            logger.exception("Apagado: event_bus.stop() falló; se continúa")
-
         client = agent_client
         if client is not None:
             try:
                 await client.stop()
             except Exception:
                 logger.exception("Apagado: AgentCommunicationClient.stop() falló; se continúa")
+
+        try:
+            event_bus.stop()
+        except Exception:
+            logger.exception("Apagado: event_bus.stop() falló; se continúa")
+
+        # ``_process_events`` despacha con ``loop.call_soon_threadsafe``: al
+        # volver el join puede quedar una tanda de callbacks ya encolada en el
+        # loop y todavía sin correr. Un tick los ejecuta, de modo que las tasks
+        # que creen existan ANTES de que el drenado saque su foto.
+        await asyncio.sleep(0)
+
+        try:
+            # Con la DB todavía abierta (el cierre llega en _teardown_runtime),
+            # así las escrituras en vuelo aterrizan.
+            await drain_tracked_tasks()
+        except Exception:
+            logger.exception("Apagado: el drenado de tasks de la GUI falló; se continúa")
 
     app.on_shutdown(_cleanup)
 

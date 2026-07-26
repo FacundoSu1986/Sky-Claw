@@ -33,6 +33,10 @@ _BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
 #: ``AppContext._startup_shutdown_timeout_s``.
 _DRAIN_TIMEOUT_S = 5.0
 
+#: Gracia para que una task cancelada termine de morir. Vencida, se la abandona:
+#: el apagado no puede quedar rehén de una task que traga ``CancelledError``.
+_CANCEL_GRACE_S = 1.0
+
 
 def create_tracked_task(coro: Coroutine[Any, Any, Any], *, name: str = "") -> asyncio.Task[Any]:
     """Schedule *coro* with a strong reference and immediate failure logging.
@@ -69,11 +73,24 @@ async def drain_tracked_tasks(timeout_s: float = _DRAIN_TIMEOUT_S) -> None:
         timeout_s: Espera máxima antes de cancelar. El default sigue la
             convención de ``AppContext._startup_shutdown_timeout_s``.
     """
-    pendientes = {task for task in _BACKGROUND_TASKS if not task.done()}
-    if not pendientes:
-        return
+    loop = asyncio.get_running_loop()
+    vencimiento = loop.time() + timeout_s
 
-    _, sobrantes = await asyncio.wait(pendientes, timeout=timeout_s)
+    # Una foto sola no alcanza: una task drenada puede encolar otra (los
+    # handlers del ``event_bus`` crean ``gui-conflicts-refresh``), así que se
+    # vuelve a mirar el set hasta vaciarlo o agotar el plazo.
+    while True:
+        pendientes = {task for task in _BACKGROUND_TASKS if not task.done()}
+        if not pendientes:
+            return
+        restante = vencimiento - loop.time()
+        if restante <= 0:
+            break
+        _, sobrantes = await asyncio.wait(pendientes, timeout=restante)
+        if sobrantes:
+            break
+
+    sobrantes = {task for task in _BACKGROUND_TASKS if not task.done()}
     if not sobrantes:
         return
 
@@ -85,9 +102,19 @@ async def drain_tracked_tasks(timeout_s: float = _DRAIN_TIMEOUT_S) -> None:
     )
     for task in sobrantes:
         task.cancel()
-    # ``return_exceptions`` para que un fallo de una no impida cancelar el resto;
-    # ``_on_task_done`` ya lo logueó con su traceback.
-    await asyncio.gather(*sobrantes, return_exceptions=True)
+
+    # La espera post-cancelación TAMBIÉN va acotada: una task que traga
+    # ``CancelledError`` (un ``finally`` lento, un awaitable de terceros) dejaría
+    # este handler colgado para siempre, y NiceGUI nunca llegaría al handler que
+    # libera el runner, el AppContext y la DB.
+    _, rebeldes = await asyncio.wait(sobrantes, timeout=_CANCEL_GRACE_S)
+    if rebeldes:
+        logger.error(
+            "Apagado: %d task(s) ignoraron la cancelación tras %.1fs y se abandonan: %s",
+            len(rebeldes),
+            _CANCEL_GRACE_S,
+            ", ".join(sorted(task.get_name() for task in rebeldes)),
+        )
 
 
 def _on_task_done(task: asyncio.Task[Any]) -> None:

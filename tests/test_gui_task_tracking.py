@@ -158,3 +158,61 @@ def contextlib_suppress_cancelled():
     import contextlib
 
     return contextlib.suppress(asyncio.CancelledError)
+
+
+async def test_drain_no_se_cuelga_si_una_task_ignora_la_cancelacion(caplog) -> None:
+    """Una task que traga ``CancelledError`` no puede bloquear el apagado.
+
+    Codex P1 en #371: tras el timeout, un ``gather`` sin deadline dejaba al
+    handler colgado para siempre y NiceGUI nunca llegaba al handler que libera
+    el runner, el contexto y la DB.
+    """
+    liberar = asyncio.Event()
+
+    async def _rebelde() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Traga la cancelación y sigue viva hasta que el test la suelte.
+            await liberar.wait()
+
+    task = create_tracked_task(_rebelde(), name="gui-test-rebelde")
+    await asyncio.sleep(0)
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="sky_claw.app.gui.task_tracking"):
+            # Con la espera post-cancelación sin acotar, esto expira.
+            await asyncio.wait_for(drain_tracked_tasks(timeout_s=0.05), timeout=2.0)
+
+        assert "gui-test-rebelde" in caplog.text
+        assert not task.done(), "el apagado debe abandonar la task, no esperarla"
+    finally:
+        liberar.set()
+        with contextlib_suppress_cancelled():
+            await asyncio.wait_for(task, timeout=2.0)
+
+
+async def test_drain_alcanza_las_tasks_que_encola_otra_task() -> None:
+    """Una sola foto de ``_BACKGROUND_TASKS`` no alcanza: hay tasks en cascada.
+
+    Los handlers del ``event_bus`` de la GUI encolan tasks nuevas
+    (``gui-conflicts-refresh``), así que el drenado tiene que volver a mirar el
+    set hasta vaciarlo o agotar el plazo.
+    """
+    escrituras: list[str] = []
+
+    async def _segunda() -> None:
+        await asyncio.sleep(0.02)
+        escrituras.append("segunda")
+
+    async def _primera() -> None:
+        await asyncio.sleep(0.02)
+        escrituras.append("primera")
+        create_tracked_task(_segunda(), name="gui-test-cascada-2")
+
+    create_tracked_task(_primera(), name="gui-test-cascada-1")
+
+    await drain_tracked_tasks(timeout_s=5.0)
+
+    assert escrituras == ["primera", "segunda"]
+    assert not _BACKGROUND_TASKS
