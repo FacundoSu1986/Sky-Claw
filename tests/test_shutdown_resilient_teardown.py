@@ -186,7 +186,7 @@ async def test_rotacion_sigue_usando_policy_violation() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Hallazgos de review (Codex) sobre P1-4
+# Hallazgos de revisión (Codex) sobre P1-4
 # ---------------------------------------------------------------------------
 
 
