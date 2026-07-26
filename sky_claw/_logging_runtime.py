@@ -247,6 +247,17 @@ class LoggingRuntime:
         thread = self._listener._thread
         return self.health.snapshot(listener_alive=bool(thread and thread.is_alive()))
 
+    def wait_until_idle(self, *, timeout_s: float) -> bool:
+        """Espera acotadamente el drenado; debe invocarse fuera del event loop."""
+        deadline = time.monotonic() + max(timeout_s, 0.0)
+        with self.records.all_tasks_done:
+            while self.records.unfinished_tasks:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self.records.all_tasks_done.wait(remaining)
+        return True
+
     def shutdown(self, *, timeout_s: float = 2.0) -> bool:
         with self._shutdown_lock:
             if self._closed:

@@ -423,6 +423,7 @@ class TestLOOTRunner:
         assert record.exit_code == 1
         assert record.child_pid == mock_proc.pid
         assert record.stderr == "Error: Game path invalid\n"
+        assert record.pipeline_stage == 5
 
     @pytest.mark.asyncio
     async def test_sort_appends_update_masterlist_flag(self, tmp_path: pathlib.Path) -> None:

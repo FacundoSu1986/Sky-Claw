@@ -105,6 +105,50 @@ async def test_run_cli_repl_logs_timeout_then_continues() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_cli_drena_respuesta_antes_del_siguiente_prompt() -> None:
+    """La respuesta encolada debe llegar a consola antes del prompt siguiente."""
+    from sky_claw.app.modes import cli_mode
+
+    ctx = MagicMock()
+    ctx.router = MagicMock()
+    ctx.session = MagicMock()
+    ctx.router.chat = AsyncMock(return_value="respuesta")
+    orden: list[str] = []
+    entradas = iter(["hola"])
+
+    def _input(_prompt: str) -> str:
+        orden.append("prompt")
+        try:
+            return next(entradas)
+        except StopIteration:
+            raise EOFError from None
+
+    async def _to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return func(*args, **kwargs)
+
+    def _info(message: str, *args: object, **_kwargs: object) -> None:
+        if message.startswith("sky-claw>"):
+            orden.append(f"respuesta:{args[0]}")
+
+    with (
+        patch.object(cli_mode.asyncio, "to_thread", side_effect=_to_thread),
+        patch.object(cli_mode, "input", create=True, side_effect=_input),
+        patch.object(cli_mode, "flush_logging", side_effect=lambda **_kwargs: orden.append("flush") or True),
+        patch.object(cli_mode.logger, "info", side_effect=_info),
+    ):
+        await cli_mode._run_cli(ctx)
+
+    assert orden.index("respuesta:respuesta") < orden.index(
+        "flush",
+        orden.index("respuesta:respuesta"),
+    )
+    assert orden.index("flush", orden.index("respuesta:respuesta")) < orden.index(
+        "prompt",
+        orden.index("respuesta:respuesta"),
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_oneshot_completes_on_fast_response() -> None:
     """Happy path: a quick chat response must not be affected by the wait_for wrapper."""
     from sky_claw.app.modes import cli_mode

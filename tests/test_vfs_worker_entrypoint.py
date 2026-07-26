@@ -141,6 +141,9 @@ def test_worker_registra_excepcion_inesperada_en_log_del_job(
     tmp_path: pathlib.Path,
 ) -> None:
     from sky_claw.local.mo2 import vfs_worker
+    from sky_claw.logging_config import shutdown_logging
+
+    shutdown_logging()
 
     def _raise_assertion(coro) -> None:  # noqa: ANN001
         coro.close()

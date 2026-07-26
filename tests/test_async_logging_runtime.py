@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import io
 import json
 import logging
 import queue
@@ -17,8 +18,10 @@ from sky_claw._logging_runtime import (
     LoggingHealth,
     NonBlockingQueueHandler,
 )
+from sky_claw.config import Config
 from sky_claw.logging_config import (
     default_log_dir,
+    flush_logging,
     install_missing_std_stream_adapters,
     setup_logging,
     shutdown_logging,
@@ -437,3 +440,52 @@ def test_reconfigurar_tras_adaptar_stdout_no_crea_recursion(
         json.loads(line) for line in (tmp_path / "second" / "sky_claw.log").read_text(encoding="utf-8").splitlines()
     ]
     assert sum(record["message"] == "registro-unico" for record in records) == 1
+
+
+def test_stderr_windowed_no_convierte_inicio_normal_en_crash(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("sys.stderr", None)
+    setup_logging(log_dir=tmp_path, process_role="test", console_stream=None)
+    install_missing_std_stream_adapters()
+
+    assert isinstance(sys.stderr, LoggerStream)
+    sys.stderr.write("INFO: Uvicorn running\n")
+    assert shutdown_logging() is True
+
+    main_records = [json.loads(line) for line in (tmp_path / "sky_claw.log").read_text(encoding="utf-8").splitlines()]
+    stdio = next(record for record in main_records if record.get("message") == "INFO: Uvicorn running")
+    assert stdio["level"] == "INFO"
+    assert not (tmp_path / "crash.log").exists() or "INFO: Uvicorn running" not in (tmp_path / "crash.log").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_flush_logging_confirma_salida_de_consola_antes_de_continuar(
+    tmp_path,
+) -> None:
+    stream = io.StringIO()
+    setup_logging(log_dir=tmp_path, process_role="test", console_stream=stream)
+
+    logging.getLogger("test.runtime").info("respuesta ordenada")
+
+    assert flush_logging(timeout_s=1.0) is True
+    assert "respuesta ordenada" in stream.getvalue()
+
+
+def test_guardar_config_actualiza_chat_id_redactado_sin_reiniciar(
+    tmp_path,
+) -> None:
+    chat_id = "123456789012"
+    setup_logging(log_dir=tmp_path / "logs", process_role="test", console_stream=None)
+    config = Config(tmp_path / "config.toml")
+    config._data["telegram_chat_id"] = chat_id
+    config.save()
+
+    logging.getLogger("test.runtime").error("destino telegram=%s", chat_id)
+    assert shutdown_logging() is True
+
+    raw_log = (tmp_path / "logs" / "crash.log").read_text(encoding="utf-8")
+    assert chat_id not in raw_log
+    assert "[REDACTED]" in raw_log

@@ -200,6 +200,7 @@ async def test_runner_quick_auto_clean_nonzero_registra_stderr(
     assert record.operation == "xedit_quick_auto_clean"
     assert record.exit_code == 5
     assert record.stderr == "Fatal: archivo bloqueado\n"
+    assert record.pipeline_stage == 1
 
 
 @pytest.mark.asyncio

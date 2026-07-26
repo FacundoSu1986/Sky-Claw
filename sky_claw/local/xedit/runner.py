@@ -889,6 +889,7 @@ class XEditRunner:
                     tool="xEdit",
                     exit_code=return_code,
                     stderr=stderr_text,
+                    pipeline_stage=1,
                 ),
             )
 

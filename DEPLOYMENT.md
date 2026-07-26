@@ -362,7 +362,13 @@ Tras generar el `.exe`:
 1.  **Arranque en modo GUI:** Ejecutar `SkyClawApp.exe` en una máquina limpia (sin Python instalado). Debe arrancar en modo GUI por defecto (`sys.frozen`).
 2.  **Arranque en modo CLI:** Probar `SkyClawApp.exe --mode cli -v` para verificar logs y que el handler de excepciones del loop funciona.
 3.  **Validación de Bridge:** Correr `SkyClawApp.exe --mode install-vfs-bridge --mo2-root "D:\MO2Portable"` y validar el smoke de §2.
-4.  **Artifact Tagging:** Crear el tag de git (`git tag -a v0.x.0 -m "Release v0.x.0"`) y pushear (`git push origin v0.x.0`). El push dispara `.github/workflows/release.yml`, que publica el ejecutable, el bundle Cosign y el SBOM en GitHub Releases.
+4.  **Artifact Tagging:** Sustituir `<version>` por la versión SemVer ya
+    declarada en `pyproject.toml`; crear el tag
+    (`git tag -a "v<version>" -m "Release v<version>"`) y pushearlo
+    (`git push origin "v<version>"`). El push dispara
+    `.github/workflows/release.yml`, que publica el ejecutable, el bundle Cosign
+    y el SBOM en GitHub Releases. Los comandos con `<version>` son plantillas,
+    no deben ejecutarse literalmente.
 
 > **Firmas distintas:** Cosign no equivale a Authenticode. El workflow firma el
 > blob y publica el material en `SkyClawApp.exe.bundle.json`, pero no incluye un

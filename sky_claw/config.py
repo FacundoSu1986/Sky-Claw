@@ -233,6 +233,14 @@ class Config:
         with open(self._config_path, "wb") as f:
             tomli_w.dump(save_data, f)
 
+        # La actualización es solo en memoria: evita releer TOML/keyring desde
+        # el filtro que corre en productores asyncio.
+        from sky_claw.logging_config import update_logging_redaction_context
+
+        update_logging_redaction_context(
+            telegram_chat_id=str(self._data.get("telegram_chat_id") or ""),
+        )
+
     @property
     def as_dict(self) -> dict[str, Any]:
         return dict(self._data)

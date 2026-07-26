@@ -317,6 +317,38 @@ def test_main_configura_logging_antes_del_loop_y_lo_cierra() -> None:
     assert orden == ["setup", "parse", "run", "shutdown"]
 
 
+def test_main_help_no_contamina_argparse_con_evento_de_logging(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from sky_claw import __main__ as main_module
+    from sky_claw.logging_config import setup_logging as real_setup
+
+    config = MagicMock(
+        telegram_chat_id="",
+        llm_provider="deepseek",
+        mo2_root=str(tmp_path / "MO2Portable"),
+        skyrim_path="",
+        loot_exe="loot.exe",
+    )
+
+    def _setup(*, level: int):
+        return real_setup(level=level, log_dir=tmp_path)
+
+    with (
+        patch.object(main_module, "setup_logging", side_effect=_setup),
+        patch.object(main_module, "Config", return_value=config),
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main_module.main(["--help"])
+
+    captured = capsys.readouterr()
+    assert exit_info.value.code == 0
+    assert "usage: sky_claw" in captured.out
+    assert "Logging async-safe inicializado" not in captured.out
+    assert captured.err == ""
+
+
 def test_main_gui_drena_evento_watchdog_antes_de_cerrar_listener(
     tmp_path: pathlib.Path,
 ) -> None:

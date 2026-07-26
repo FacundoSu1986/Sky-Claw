@@ -9,7 +9,7 @@ import re
 import sys
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Protocol, TextIO, cast
 
@@ -151,16 +151,22 @@ class SecurityRedactionFilter(logging.Filter):
 
     _MAX_DEPTH: int = 64  # Guard against pathologically deep (non-cyclic) structures.
 
-    def __init__(self, *, telegram_chat_id: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        telegram_chat_id: str = "",
+        chat_id_provider: Callable[[], str] | None = None,
+    ) -> None:
         super().__init__()
         self._telegram_chat_id = telegram_chat_id
+        self._chat_id_provider = chat_id_provider
 
     def _redact(self, text: str) -> str:
         if not isinstance(text, str):
             return text
 
         # Mask Telegram Chat ID if configured
-        chat_id = self._telegram_chat_id
+        chat_id = self._chat_id_provider() if self._chat_id_provider is not None else self._telegram_chat_id
         if chat_id and len(chat_id) > 5:
             text = text.replace(chat_id, "[REDACTED]")
 
@@ -324,6 +330,15 @@ class _LoggerPrefixFilter(logging.Filter):
         return record.name.startswith(self._prefix)
 
 
+class _ExcludeEventFilter(logging.Filter):
+    def __init__(self, event: str) -> None:
+        super().__init__()
+        self._event = event
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return getattr(record, "event", "") != self._event
+
+
 _QUEUE_CAPACITY = 8192
 _MAX_BYTES = 10 * 1024 * 1024
 _BACKUP_COUNT = 5
@@ -331,6 +346,7 @@ _CONSOLE_DEFAULT = object()
 _MAX_STDERR_BYTES = 64 * 1024
 _runtime: LoggingRuntime | None = None
 _runtime_lock = threading.Lock()
+_telegram_chat_id_for_redaction = ""
 
 
 def default_log_dir() -> pathlib.Path:
@@ -346,6 +362,7 @@ def subprocess_error_extra(
     stderr: str,
     job_id: str | None = None,
     child_pid: int | None = None,
+    pipeline_stage: int | None = None,
 ) -> dict[str, object]:
     """Normaliza evidencia terminal sin permitir logs de tamaño ilimitado."""
     stderr_bytes = stderr.encode("utf-8", errors="replace")
@@ -374,6 +391,8 @@ def subprocess_error_extra(
         extra["job_id"] = job_id
     if child_pid is not None:
         extra["child_pid"] = child_pid
+    if pipeline_stage is not None:
+        extra["pipeline_stage"] = pipeline_stage
     return extra
 
 
@@ -385,6 +404,17 @@ def _resolve_telegram_chat_id() -> str:
         return str(Config().telegram_chat_id or "")
     except Exception:
         return ""
+
+
+def _current_telegram_chat_id() -> str:
+    """Lectura en memoria usada por el filtro productor; nunca realiza I/O."""
+    return _telegram_chat_id_for_redaction
+
+
+def update_logging_redaction_context(*, telegram_chat_id: str) -> None:
+    """Actualiza valores redactables tras guardar configuración, sin reiniciar."""
+    global _telegram_chat_id_for_redaction
+    _telegram_chat_id_for_redaction = str(telegram_chat_id or "")
 
 
 def _json_formatter() -> json.JsonFormatter:
@@ -448,7 +478,8 @@ def setup_logging(
         queue_handler = NonBlockingQueueHandler(records, health)
         queue_handler.addFilter(CorrelationFilter())
         queue_handler.addFilter(RuntimeContextFilter(process_role))
-        queue_handler.addFilter(SecurityRedactionFilter(telegram_chat_id=_resolve_telegram_chat_id()))
+        update_logging_redaction_context(telegram_chat_id=_resolve_telegram_chat_id())
+        queue_handler.addFilter(SecurityRedactionFilter(chat_id_provider=_current_telegram_chat_id))
 
         handlers: list[logging.Handler] = []
         stream = sys.stdout if console_stream is _CONSOLE_DEFAULT else cast(TextIO | None, console_stream)
@@ -457,6 +488,7 @@ def setup_logging(
             console_handler.setFormatter(
                 logging.Formatter("%(asctime)s [%(levelname)s] [%(correlation_id)s] %(name)s: %(message)s")
             )
+            console_handler.addFilter(_ExcludeEventFilter("logging_initialized"))
             handlers.append(console_handler)
 
         if file_ready:
@@ -538,9 +570,20 @@ def shutdown_logging(timeout_s: float = 2.0) -> bool:
         return stopped
 
 
+def flush_logging(timeout_s: float = 1.0) -> bool:
+    """Espera el drenado de la cola; en async debe llamarse con ``to_thread``."""
+    with _runtime_lock:
+        runtime = _runtime
+    if runtime is None:
+        return True
+    return runtime.wait_until_idle(timeout_s=timeout_s)
+
+
 def install_missing_std_stream_adapters() -> None:
     """En builds windowed, convierte salida de terceros en records estructurados."""
     if sys.stdout is None:
         sys.stdout = LoggerStream(logging.getLogger("SkyClaw.Stdout"), logging.INFO)
     if sys.stderr is None:
-        sys.stderr = LoggerStream(logging.getLogger("SkyClaw.Stderr"), logging.ERROR)
+        # stderr es el stream normal de Uvicorn incluso para mensajes INFO; el
+        # stream físico no determina por sí solo la severidad del evento.
+        sys.stderr = LoggerStream(logging.getLogger("SkyClaw.Stderr"), logging.INFO)

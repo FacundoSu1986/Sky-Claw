@@ -167,8 +167,8 @@ class TestWindowedStdStreams:
 
         assert sys.stdout is not None
         assert sys.stderr is not None
-        # The repaired streams must be writable without raising (this is the
-        # banner path that killed the windowed exe).
+        # Los streams reparados deben aceptar escritura sin lanzar; esta era la
+        # ruta del banner que cerraba el ejecutable windowed.
         sys.stdout.write("startup-banner-probe\n")
         sys.stderr.write("err-probe\n")
         assert sys.stdout.isatty() is False

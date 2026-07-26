@@ -211,6 +211,7 @@ class LOOTRunner:
                     exit_code=proc.returncode,
                     child_pid=proc.pid,
                     stderr=stderr_text,
+                    pipeline_stage=5,
                 ),
             )
 
