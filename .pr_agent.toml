@@ -4,9 +4,11 @@ model = "gemini/gemini-3.1-pro-preview"
 fallback_models = ["gemini/gemini-1.5-pro", "gemini/gemini-1.5-flash"]
 
 [pr_reviewer]
-# Desactivamos sugerencias estéticas de estilo/nombres y activamos el modo adversarial
+# Desactivamos sugerencias estéticas y análisis de tickets externos que causan crash al referenciar PRs
 require_score_review = false
 require_tests_review = false
+require_ticket_analysis_review = false
+require_security_review = false
 num_code_suggestions = 0
 inline_code_comments = true
 
