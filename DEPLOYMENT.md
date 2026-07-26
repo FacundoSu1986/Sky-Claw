@@ -2,14 +2,16 @@
 
 > **Audiencia:** operadores y responsables de release.
 > **Fuente canónica:** runtime, CI y packaging del árbol actual.
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación:** 2026-07-26 sobre
+> `codex/crash-logging-async-safe` `74bdb8f`.
 
 Operational guide for deploying, running and recovering Sky-Claw. For the
 quick-start install flow see [QUICKSTART.md](QUICKSTART.md); this document
 covers the production/operations gap: configuration, secrets, observability,
 failure handling and the pre-flight checklist for a real end-to-end run.
 
-> **Estado:** release-candidate, no GA. Los cimientos (locks, rollback, redacción,
+> **Estado:** existen releases publicadas hasta `v0.2.4`; los cambios del árbol
+> actual siguen bajo `[Unreleased]`. Los cimientos (locks, rollback, redacción,
 > SSRF, HITL) son de grado producción; lo que sigue abierto está en
 > [Limitaciones conocidas](#9-limitaciones-conocidas).
 
@@ -88,8 +90,9 @@ entorno bloqueado: `uv sync --locked --extra dev`.
 arranca en **modo GUI por defecto** (`__main__.py` fija `mode=gui` cuando
 `sys.frozen`).
 
-> ⚠️ **Pendiente de release:** no hay tag de versión (CHANGELOG está en
-> `[Unreleased]`) ni binario firmado/validado. Ver [Limitaciones](#9-limitaciones-conocidas).
+> La release `v0.2.4` publicó `SkyClawApp.exe`, su SBOM y el bundle de firma
+> Cosign `SkyClawApp.exe.bundle.json`. Los cambios del árbol actual permanecen
+> en `[Unreleased]`; no forman parte de esa release.
 
 ---
 
@@ -210,11 +213,15 @@ query-strings) ocurre antes de cruzar al listener.
 | `~/.sky_claw/logs/watcher_security.log` | Eventos de `SkyClaw.Security`. |
 | `~/.sky_claw/logs/workers/vfs-worker-<job_id>.log` | Evidencia y traceback del worker VFS aislado por job. |
 
-Si la cola se satura, los productores nunca esperan: se contabilizan pérdidas
-y hasta 256 eventos `ERROR/CRITICAL` quedan en un buffer de emergencia para
-reinyección. Un fallo de permisos, disco lleno, apertura o rotación marca el
-runtime de logging como degradado y aplica reintentos espaciados; no se escribe
-un fallback síncrono desde asyncio ni se propaga el fallo a la aplicación.
+La cola principal admite 8192 eventos. Si se satura, los productores nunca
+esperan: los eventos `WARNING` y menores pueden perderse y la pérdida se
+contabiliza. Un deque de emergencia conserva como máximo 256 eventos
+`ERROR/CRITICAL` para reinyección; si también se llena, expulsa el evento
+`ERROR/CRITICAL` más antiguo. Un fallo de permisos, disco lleno, apertura o
+rotación marca el runtime de logging como degradado y aplica reintentos
+espaciados; no se escribe un fallback síncrono desde asyncio ni se propaga el
+fallo a la aplicación. Cualquier mecanismo futuro de health-check o
+recuperación debe mantener el I/O bloqueante fuera del event loop.
 Si Windows bloquea el renombrado de una rotación (`WinError 32/5`), el rollover
 se difiere y el listener continúa escribiendo en el archivo base hasta el
 siguiente intento.
@@ -299,7 +306,10 @@ Honestidad operativa — esto sigue abierto y conviene saberlo antes de producci
 - **Validación de rig real parcial** — existe evidencia histórica del canary
   brokerizado, pero no cubre todos los runners ni todos los escenarios; ver
   `docs/operations/real_rig_validation.md`.
-- **Sin tag de release ni binario firmado/validado** (CHANGELOG `[Unreleased]`).
+- **Firma de editor de Windows pendiente** — `v0.2.4` incluye firma de blob
+  keyless de Cosign y `SkyClawApp.exe.bundle.json`, pero el ejecutable no lleva
+  firma Authenticode de un publisher. Los cambios actuales siguen en
+  `[Unreleased]` y no se verificaron aquí mediante cold boot.
 - **Frontera de tipos parcial** — el override de mypy con `ignore_errors=true` cubre **prácticamente todo `sky_claw.*` / `sky_claw.app.*`**, con re-habilitación puntual de checks en un subconjunto de `core.*` y en `orchestrator.sync_engine`. El grueso del código no está type-checked aún.
 - **Estado vivo** — consultar `docs/pending_ooda_status.md` y reverificar cada
   ítem contra el árbol actual; un roadmap o auditoría fechada no sustituye esa
@@ -311,7 +321,12 @@ Honestidad operativa — esto sigue abierto y conviene saberlo antes de producci
 
 Workflow estándar para publicar una nueva versión de Sky-Claw. El empaquetado se realiza con PyInstaller usando el spec `sky_claw.spec` (que autoderiva el `VERSIONINFO` de la versión del paquete en `pyproject.toml`).
 
-> **Estado actual:** Sin tag de versión, CHANGELOG en `[Unreleased]`. Este proceso está documentado para futuras releases GA; la sección 9 lista las limitaciones pendientes (sin binario firmado/validado).
+> **Estado actual:** GitHub contiene releases hasta `v0.2.4`. El workflow
+> publicado construyó `SkyClawApp.exe`, generó un SBOM SPDX, ejecutó
+> `Cosign sign-blob` keyless y adjuntó `SkyClawApp.exe.bundle.json`; su ejecución
+> para `v0.2.4` terminó correctamente. Los cambios del árbol actual siguen en
+> `[Unreleased]`. Esta tarea no verificó criptográficamente el bundle ni hizo
+> cold boot del ejecutable.
 
 ### 10.1 Checklist de Release
 
@@ -347,9 +362,13 @@ Tras generar el `.exe`:
 1.  **Arranque en modo GUI:** Ejecutar `SkyClawApp.exe` en una máquina limpia (sin Python instalado). Debe arrancar en modo GUI por defecto (`sys.frozen`).
 2.  **Arranque en modo CLI:** Probar `SkyClawApp.exe --mode cli -v` para verificar logs y que el handler de excepciones del loop funciona.
 3.  **Validación de Bridge:** Correr `SkyClawApp.exe --mode install-vfs-bridge --mo2-root "D:\MO2Portable"` y validar el smoke de §2.
-4.  **Artifact Tagging:** Crear el tag de git (`git tag -a v0.x.0 -m "Release v0.x.0"`) y pushear (`git push origin v0.x.0`). Subir el binario (o el instalador Inno Setup si se genera) al release de GitHub.
+4.  **Artifact Tagging:** Crear el tag de git (`git tag -a v0.x.0 -m "Release v0.x.0"`) y pushear (`git push origin v0.x.0`). El push dispara `.github/workflows/release.yml`, que publica el ejecutable, el bundle Cosign y el SBOM en GitHub Releases.
 
-> **Firma pendiente:** Actualmente no se firma el `.exe` con un certificado Authenticode. Los usuarios pueden encontrar advertencias de SmartScreen; documentar el workaround (Advanced → Continue) en el README de la release.
+> **Firmas distintas:** Cosign firma el blob y publica el material de
+> verificación en `SkyClawApp.exe.bundle.json`. `sky_claw.spec` mantiene
+> `codesign_identity=None`, por lo que el `.exe` no tiene una firma de publisher
+> Authenticode. Los usuarios pueden encontrar advertencias de SmartScreen;
+> documentar el workaround (Advanced → Continue) en el README de la release.
 
 La separación entre operación diaria, observabilidad, recuperación, release y
 smoke real se mantiene en [docs/operations](docs/operations/README.md).

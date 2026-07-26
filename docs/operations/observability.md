@@ -9,8 +9,8 @@
 > `sky_claw/app/core/tracing.py` y
 > `sky_claw/app/db/journal.py`.
 >
-> **Última verificación:** 2026-07-26 sobre una rama basada en
-> `origin/main` `6cb4024`.
+> **Última verificación:** 2026-07-26 sobre
+> `codex/crash-logging-async-safe` `74bdb8f`.
 
 ## Señales
 
@@ -26,10 +26,17 @@
 | Tracing | exporter OTLP opcional | Trazas cuando existe collector |
 
 El logging JSON rota a 10 MB con cinco backups y aplica redacción antes de
-encolar. El productor usa una cola no bloqueante; el listener dedicado concentra
-todo I/O. Cada evento incluye `correlation_id`, `trace_id`, PID, hilo, rol del
-proceso y task. Permisos, `ENOSPC` o fallos de rotación degradan el logging sin
-derribar la aplicación.
+encolar. El productor usa una cola no bloqueante de 8192 eventos; el listener
+dedicado concentra todo I/O. Cada evento incluye `correlation_id`, `trace_id`,
+PID, hilo, rol del proceso y task. Permisos, `ENOSPC` o fallos de rotación
+degradan el logging sin derribar la aplicación.
+
+La degradación admite pérdida finita: cuando la cola principal está llena, los
+eventos `WARNING` y menores pueden perderse. Un deque de emergencia conserva
+como máximo 256 eventos `ERROR/CRITICAL`; al llenarse también, expulsa la
+evidencia crítica más antigua. No existe fallback síncrono desde asyncio.
+Cualquier health-check o recuperación futura debe mantener el I/O bloqueante
+fuera del event loop.
 
 En Windows, un `WinError 32/5` durante el renombrado de rotación aplaza el
 rollover sin descartar el evento: el listener sigue escribiendo en el archivo
