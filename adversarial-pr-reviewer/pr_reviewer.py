@@ -104,12 +104,7 @@ def analyze_with_gemini(diff_text: str, system_prompt: str, model_name: str, api
     try:
         response = client.models.generate_content(
             model=model_name,
-            contents=[
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(user_prompt)]
-                )
-            ],
+            contents=user_prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 temperature=0.2,  # Baja temperatura para maximizar rigor lógico y evitar creatividad inventada
