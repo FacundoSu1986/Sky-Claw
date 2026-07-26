@@ -408,8 +408,9 @@ class DatabaseLifecycleManager:
         )
 
         # Step 1: TRUNCATE checkpoint
+        checkpoints: dict[str, dict[str, Any]] = {}
         try:
-            await self.checkpoint_all(mode="TRUNCATE")
+            checkpoints = await self.checkpoint_all(mode="TRUNCATE")
         except Exception as e:
             logger.critical("DatabaseLifecycle: checkpoint during shutdown FAILED: %s", e)
 
@@ -429,19 +430,48 @@ class DatabaseLifecycleManager:
                 if self._connections.get(path_str) is conn:
                     self._connections.pop(path_str)
 
-        # Step 3: Verify WAL/SHM elimination
+        # Step 3: Verify WAL/SHM elimination.
+        #
+        # SQLite borra ``-wal``/``-shm`` solo al cerrar la ULTIMA conexion al
+        # archivo. Si otro owner sigue abierto (la GUI y el SupervisorAgent
+        # tienen cada uno su DatabaseAgent sobre el mismo sky_claw_state.db),
+        # el que cierra primero SIEMPRE los ve presentes: avisar ahi de
+        # "checkpoint incompleto" es un falso positivo garantizado en todo
+        # apagado limpio, y envenena el triage real de WAL.
+        #
+        # El checkpoint TRUNCATE del paso 1 es el que decide: si reporto
+        # ``busy == 0`` los datos ya estan en el archivo principal y los
+        # sidecars restantes los explica el otro owner. Solo cuando el
+        # checkpoint no pudo completarse hay motivo de alarma.
         for db_path in self._db_paths:
-            path_str = str(db_path)
+            # Canonizar: ``get_connection`` indexa ``_connections`` con
+            # ``str(path.resolve())`` y ``checkpoint_all`` hereda esa clave,
+            # pero ``_db_paths`` guarda la ruta tal cual se pasó — y el default
+            # de ``DatabaseAgent`` es la relativa "sky_claw_state.db". Sin
+            # resolver, el lookup de abajo falla siempre justo en producción.
+            path_str = str(db_path.resolve())
             wal_path = Path(path_str + "-wal")
             shm_path = Path(path_str + "-shm")
-            if wal_path.exists() or shm_path.exists():
-                logger.warning(
-                    "Post-shutdown: WAL/SHM files still present for %s "
-                    "(wal=%s, shm=%s). This may indicate incomplete checkpoint.",
+            if not (wal_path.exists() or shm_path.exists()):
+                continue
+            checkpoint = checkpoints.get(path_str)
+            if checkpoint is not None and checkpoint.get("busy") == 0:
+                logger.info(
+                    "Post-shutdown: WAL/SHM siguen presentes para %s (wal=%s, shm=%s), "
+                    "pero el checkpoint TRUNCATE completo: otra conexion sigue abierta "
+                    "sobre el archivo y SQLite los borrara al cerrarse la ultima.",
                     path_str,
                     wal_path.exists(),
                     shm_path.exists(),
                 )
+                continue
+            logger.warning(
+                "Post-shutdown: WAL/SHM files still present for %s "
+                "(wal=%s, shm=%s). This may indicate incomplete checkpoint.",
+                path_str,
+                wal_path.exists(),
+                shm_path.exists(),
+            )
 
         if self._connections:
             logger.warning(

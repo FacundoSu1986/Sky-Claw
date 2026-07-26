@@ -696,3 +696,85 @@ class TestGetConnection:
             assert str(db_path) in lifecycle.managed_paths
         finally:
             await lifecycle.shutdown_all()
+
+
+async def test_sidecars_de_otro_owner_no_se_reportan_como_checkpoint_incompleto(tmp_path, caplog) -> None:
+    """Con dos owners sobre el mismo archivo, el primero en cerrar no debe alarmar.
+
+    Codex P2 en #371. SQLite solo borra ``-wal``/``-shm`` al cerrar la ÚLTIMA
+    conexión, así que el manager que cierra primero SIEMPRE los ve presentes.
+    Emitir ahí "This may indicate incomplete checkpoint" es un falso positivo
+    permanente en todo apagado limpio de la GUI (la UI y el SupervisorAgent
+    abren dos ``DatabaseAgent`` sobre el mismo ``sky_claw_state.db``), y
+    envenena cualquier triage real de WAL.
+
+    Si el checkpoint TRUNCATE reportó éxito, los datos ya son durables: los
+    sidecars que quedan los explica el otro owner, no un checkpoint a medias.
+    """
+    import logging
+
+    db_path = tmp_path / "compartida.db"
+
+    primero = DatabaseLifecycleManager(db_paths=[db_path])
+    await primero.init_all()
+    await primero.get_connection(str(db_path))
+
+    segundo = DatabaseLifecycleManager(db_paths=[db_path])
+    await segundo.init_all()
+    await segundo.get_connection(str(db_path))
+
+    try:
+        with caplog.at_level(logging.DEBUG, logger="SkyClaw.DatabaseLifecycle"):
+            await primero.shutdown_all()
+
+        # Los sidecars siguen ahí porque el segundo owner tiene el archivo abierto.
+        assert (tmp_path / "compartida.db-wal").exists()
+
+        avisos = [r for r in caplog.records if r.levelno >= logging.WARNING and "WAL/SHM" in r.getMessage()]
+        assert avisos == [], (
+            "el primer owner en cerrar reportó 'checkpoint incompleto' por sidecars "
+            f"que explica el segundo owner: {[r.getMessage() for r in avisos]}"
+        )
+    finally:
+        await segundo.shutdown_all()
+
+    # Cerrada la última conexión, SQLite sí eliminó los sidecars.
+    assert not (tmp_path / "compartida.db-wal").exists()
+    assert not (tmp_path / "compartida.db-shm").exists()
+
+
+async def test_sidecars_con_ruta_relativa_tambien_consultan_el_checkpoint(tmp_path, monkeypatch, caplog) -> None:
+    """El caso de PRODUCCIÓN usa una ruta relativa: la clave debe canonizarse.
+
+    CodeRabbit en #371. ``get_connection`` indexa ``_connections`` con
+    ``str(path.resolve())`` y ``checkpoint_all`` hereda esa clave, pero
+    ``_db_paths`` guarda la ruta tal cual se pasó. ``DatabaseAgent`` usa
+    ``db_path="sky_claw_state.db"`` (relativa) por defecto, así que sin
+    canonizar, el ``checkpoints.get(...)`` del paso 3 falla siempre y vuelve el
+    falso warning justo en el único caso que importa.
+    """
+    import logging
+
+    monkeypatch.chdir(tmp_path)
+    relativa = Path("sky_claw_state.db")
+
+    primero = DatabaseLifecycleManager(db_paths=[relativa])
+    await primero.init_all()
+    await primero.get_connection(str(relativa))
+
+    segundo = DatabaseLifecycleManager(db_paths=[relativa])
+    await segundo.init_all()
+    await segundo.get_connection(str(relativa))
+
+    try:
+        with caplog.at_level(logging.DEBUG, logger="SkyClaw.DatabaseLifecycle"):
+            await primero.shutdown_all()
+
+        assert Path("sky_claw_state.db-wal").exists()
+        avisos = [r for r in caplog.records if r.levelno >= logging.WARNING and "WAL/SHM" in r.getMessage()]
+        assert avisos == [], (
+            "con ruta relativa la clave del checkpoint no matcheó y volvió el falso "
+            f"warning: {[r.getMessage() for r in avisos]}"
+        )
+    finally:
+        await segundo.shutdown_all()

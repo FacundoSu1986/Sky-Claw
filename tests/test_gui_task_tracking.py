@@ -12,7 +12,11 @@ import asyncio
 import logging
 import pathlib
 
-from sky_claw.app.gui.task_tracking import _BACKGROUND_TASKS, create_tracked_task
+from sky_claw.app.gui.task_tracking import (
+    _BACKGROUND_TASKS,
+    create_tracked_task,
+    drain_tracked_tasks,
+)
 
 _GUI_DIR = pathlib.Path("sky_claw/app/gui")
 
@@ -77,6 +81,63 @@ async def test_tracked_task_cancellation_is_silent(caplog):
     assert task not in _BACKGROUND_TASKS
 
 
+async def test_drain_espera_a_las_tasks_en_vuelo() -> None:
+    """El apagado debe dejar aterrizar las escrituras cortas que ya están corriendo.
+
+    Sin drenado, ``_cleanup`` seguía de largo y la task retomaba contra una DB ya
+    cerrada: la escritura se perdía en silencio (la traga el ``except Exception``
+    del handler que la lanzó).
+    """
+    escrituras: list[str] = []
+
+    async def _escritura() -> None:
+        await asyncio.sleep(0.05)
+        escrituras.append("ok")
+
+    create_tracked_task(_escritura(), name="gui-test-escritura")
+    await drain_tracked_tasks(timeout_s=5.0)
+
+    assert escrituras == ["ok"]
+    assert not _BACKGROUND_TASKS
+
+
+async def test_drain_cancela_las_que_exceden_el_timeout(caplog) -> None:
+    """El apagado no puede quedar rehén de una task que no termina."""
+
+    async def _colgada() -> None:
+        await asyncio.Event().wait()
+
+    task = create_tracked_task(_colgada(), name="gui-test-colgada")
+    await asyncio.sleep(0)
+
+    with caplog.at_level(logging.WARNING, logger="sky_claw.app.gui.task_tracking"):
+        await drain_tracked_tasks(timeout_s=0.05)
+
+    assert task.cancelled()
+    # Sin truncado silencioso: el apagado nombra lo que canceló.
+    assert "gui-test-colgada" in caplog.text
+    assert task not in _BACKGROUND_TASKS
+
+
+async def test_drain_sin_tasks_es_un_noop() -> None:
+    """``asyncio.wait`` con un set vacío lanza ValueError — hay que cortar antes."""
+    assert not _BACKGROUND_TASKS
+    await drain_tracked_tasks(timeout_s=0.01)
+
+
+async def test_drain_no_propaga_el_fallo_de_una_task() -> None:
+    """Una task que revienta ya la loguea ``_on_task_done``; el drenado no debe relanzar."""
+
+    async def _boom() -> None:
+        raise RuntimeError("escritura explotó")
+
+    create_tracked_task(_boom(), name="gui-test-drain-boom")
+
+    await drain_tracked_tasks(timeout_s=5.0)  # no debe lanzar
+
+    assert not _BACKGROUND_TASKS
+
+
 def test_no_bare_create_task_in_migrated_gui_files():
     """Regression guard: RUF006 does not flag ``create_task`` inside lambdas,
     so this enforces the helper in the files PR-4 migrated."""
@@ -97,3 +158,61 @@ def contextlib_suppress_cancelled():
     import contextlib
 
     return contextlib.suppress(asyncio.CancelledError)
+
+
+async def test_drain_no_se_cuelga_si_una_task_ignora_la_cancelacion(caplog) -> None:
+    """Una task que traga ``CancelledError`` no puede bloquear el apagado.
+
+    Codex P1 en #371: tras el timeout, un ``gather`` sin deadline dejaba al
+    handler colgado para siempre y NiceGUI nunca llegaba al handler que libera
+    el runner, el contexto y la DB.
+    """
+    liberar = asyncio.Event()
+
+    async def _rebelde() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Traga la cancelación y sigue viva hasta que el test la suelte.
+            await liberar.wait()
+
+    task = create_tracked_task(_rebelde(), name="gui-test-rebelde")
+    await asyncio.sleep(0)
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="sky_claw.app.gui.task_tracking"):
+            # Con la espera post-cancelación sin acotar, esto expira.
+            await asyncio.wait_for(drain_tracked_tasks(timeout_s=0.05), timeout=2.0)
+
+        assert "gui-test-rebelde" in caplog.text
+        assert not task.done(), "el apagado debe abandonar la task, no esperarla"
+    finally:
+        liberar.set()
+        with contextlib_suppress_cancelled():
+            await asyncio.wait_for(task, timeout=2.0)
+
+
+async def test_drain_alcanza_las_tasks_que_encola_otra_task() -> None:
+    """Una sola foto de ``_BACKGROUND_TASKS`` no alcanza: hay tasks en cascada.
+
+    Los handlers del ``event_bus`` de la GUI encolan tasks nuevas
+    (``gui-conflicts-refresh``), así que el drenado tiene que volver a mirar el
+    set hasta vaciarlo o agotar el plazo.
+    """
+    escrituras: list[str] = []
+
+    async def _segunda() -> None:
+        await asyncio.sleep(0.02)
+        escrituras.append("segunda")
+
+    async def _primera() -> None:
+        await asyncio.sleep(0.02)
+        escrituras.append("primera")
+        create_tracked_task(_segunda(), name="gui-test-cascada-2")
+
+    create_tracked_task(_primera(), name="gui-test-cascada-1")
+
+    await drain_tracked_tasks(timeout_s=5.0)
+
+    assert escrituras == ["primera", "segunda"]
+    assert not _BACKGROUND_TASKS
