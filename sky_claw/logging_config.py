@@ -11,10 +11,12 @@ import threading
 import time
 from collections.abc import Mapping
 from contextvars import ContextVar
-from types import ModuleType
-from typing import Any, TextIO, cast
+from typing import TYPE_CHECKING, Any, Protocol, TextIO, cast
 
 from pythonjsonlogger import json
+
+if TYPE_CHECKING:
+    from opentelemetry.context import Context as _OtelContext
 
 from sky_claw._logging_runtime import (
     FailSafeRotatingFileHandler,
@@ -43,12 +45,30 @@ _JSON_LOG_FORMAT = (
 _USERNAME_LOOKUP_ERRORS = (OSError, KeyError, ImportError)
 _NO_TRACE_ID = "0" * 32
 
+
+class _SpanContext(Protocol):
+    @property
+    def is_valid(self) -> bool: ...
+
+    @property
+    def trace_id(self) -> int: ...
+
+
+class _Span(Protocol):
+    def get_span_context(self) -> _SpanContext: ...
+
+
+class _GetCurrentSpan(Protocol):
+    def __call__(self, context: "_OtelContext | None" = None) -> _Span: ...
+
+
+_get_current_span: _GetCurrentSpan | None
 try:
-    from opentelemetry import trace as _imported_otel_trace
+    from opentelemetry.trace import get_current_span as _imported_get_current_span
 except ImportError:
-    _otel_trace: ModuleType | None = None
+    _get_current_span = None
 else:
-    _otel_trace = _imported_otel_trace
+    _get_current_span = _imported_get_current_span
 
 
 def _resolve_current_user() -> str:
@@ -231,9 +251,9 @@ class CorrelationFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.correlation_id = correlation_id_var.get()
         trace_id = _NO_TRACE_ID
-        if _otel_trace is not None:
+        if _get_current_span is not None:
             try:
-                span = _otel_trace.get_current_span()
+                span = _get_current_span()
                 ctx = span.get_span_context()
                 if ctx.is_valid:
                     trace_id = format(ctx.trace_id, "032x")

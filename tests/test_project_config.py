@@ -95,4 +95,6 @@ def test_modulos_de_logging_tienen_override_mypy_strict() -> None:
     for override in pyproject["tool"]["mypy"]["overrides"]:
         if override.get("strict") is True and override.get("ignore_errors") is False:
             strict_modules.update(override["module"])
+        if override.get("ignore_errors") is True:
+            assert target_modules.isdisjoint(override["module"])
     assert target_modules <= strict_modules
