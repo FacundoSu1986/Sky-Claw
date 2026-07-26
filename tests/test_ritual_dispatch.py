@@ -135,7 +135,7 @@ async def test_bridge_auto_approves_tool_execution_when_toggle_on() -> None:
 
     notify = make_gui_hitl_notify(
         respond=_respond,
-        set_pending=pending.append,
+        set_pending=lambda _cid, payload: pending.append(payload),
         auto_approve_getter=lambda: True,
         delegate=None,
     )
@@ -153,7 +153,7 @@ async def test_bridge_opens_modal_when_toggle_off() -> None:
 
     notify = make_gui_hitl_notify(
         respond=_respond,
-        set_pending=pending.append,
+        set_pending=lambda _cid, payload: pending.append(payload),
         auto_approve_getter=lambda: False,
         delegate=None,
     )
@@ -176,7 +176,7 @@ async def test_bridge_parks_sandbox_promotion_even_with_auto_approve_on() -> Non
 
     notify = make_gui_hitl_notify(
         respond=_respond,
-        set_pending=pending.append,
+        set_pending=lambda _cid, payload: pending.append(payload),
         auto_approve_getter=lambda: True,
         delegate=_delegate,
     )
@@ -210,7 +210,7 @@ async def test_bridge_delegates_non_tool_execution_to_original() -> None:
 
     notify = make_gui_hitl_notify(
         respond=_respond,
-        set_pending=pending.append,
+        set_pending=lambda _cid, payload: pending.append(payload),
         auto_approve_getter=lambda: True,
         delegate=_delegate,
     )
@@ -234,7 +234,7 @@ async def test_auto_approve_scoped_to_ritual_task_not_concurrent() -> None:
     # Bridge cableado con el getter REAL (ContextVar), como en el bootloader.
     notify = make_gui_hitl_notify(
         respond=_respond,
-        set_pending=pending.append,
+        set_pending=lambda _cid, payload: pending.append(payload),
         auto_approve_getter=ritual_auto_approve_armed,
         delegate=None,
     )

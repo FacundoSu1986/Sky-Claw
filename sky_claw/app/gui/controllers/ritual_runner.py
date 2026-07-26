@@ -47,11 +47,57 @@ def ritual_auto_approve_armed() -> bool:
     return _ritual_auto_approve.get()
 
 
+#: P1-7: identidad del cliente que lanzó el Ritual en curso. Mismo mecanismo y
+#: mismo motivo que ``_ritual_auto_approve``: la aprobación de una operación
+#: DESTRUCTIVA se parkeaba en una única clave del store, y ``get_store()`` es un
+#: singleton de proceso — con dos pestañas (o un F5 sin cerrar la anterior) el
+#: modal se renderizaba y era accionable en AMBAS, así que cualquier sesión podía
+#: aprobar un Ritual que no inició. El ContextVar lleva el dueño hasta el bridge
+#: HITL, que corre inline dentro de la misma task del dispatch.
+_ritual_client_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("ritual_client_id", default=None)
+
+
+def ritual_client_id() -> str | None:
+    """Id del cliente que lanzó el dispatch de la task actual, o ``None``.
+
+    ``None`` significa que la solicitud no vino de un Ritual del GUI (agente
+    LLM, Telegram, backend): no tiene dueño al que scopearla.
+    """
+    return _ritual_client_id.get()
+
+
 # Store key the bridge parks a pending tool_execution approval under, and the key
 # the run flow publishes its result feedback under (both consumed by refreshable
 # panels in forge_dashboard so the chat input is never reset).
 STORE_KEY_PENDING_HITL = "pending_hitl"
 STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
+
+
+def pending_hitl_key(client_id: str | None) -> str:
+    """Clave del store donde vive la aprobación pendiente de ``client_id``.
+
+    Sin cliente lanzador se conserva la clave global histórica, que
+    :func:`resolve_pending_hitl` muestra a todos: una solicitud sin dueño debe
+    poder aprobarse desde cualquier sesión, no quedar colgada hasta el timeout.
+    """
+    if client_id is None:
+        return STORE_KEY_PENDING_HITL
+    return f"{STORE_KEY_PENDING_HITL}:{client_id}"
+
+
+def resolve_pending_hitl(store: ReactiveStore, client_id: str | None) -> dict[str, Any] | None:
+    """La aprobación que ESTE cliente debe renderizar.
+
+    Primero la suya —la del Ritual que él lanzó— y si no tiene, una sin dueño.
+    Seam puro, para que el panel refrescable sea testeable sin NiceGUI.
+    """
+    if client_id is not None:
+        propia = store.get(pending_hitl_key(client_id))
+        if propia:
+            return propia  # type: ignore[no-any-return]
+    return store.get(STORE_KEY_PENDING_HITL)  # type: ignore[no-any-return]
+
+
 #: Per-client "Modo local" toggle, stored in ``app.storage.client`` (server-side,
 #: one entry per browser connection, auto-cleared on disconnect) — NOT the global
 #: store. So one window's choice never enables auto-approval for another client
@@ -147,8 +193,9 @@ def preflight_from_result(result: Any) -> dict[str, Any] | None:
 def make_gui_hitl_notify(
     *,
     respond: Callable[[str, bool], Awaitable[None]],
-    set_pending: Callable[[dict[str, Any]], None],
+    set_pending: Callable[[str | None, dict[str, Any]], None],
     auto_approve_getter: Callable[[], bool],
+    client_id_getter: Callable[[], str | None] = ritual_client_id,
     delegate: Callable[[Any], Awaitable[None]] | None,
 ) -> Callable[[Any], Awaitable[None]]:
     """Build the GUI's HITL ``notify_fn`` (composes over the original closure).
@@ -169,43 +216,54 @@ def make_gui_hitl_notify(
 
     Every other category falls through to ``delegate`` (the original Telegram
     closure), so scope approvals keep their existing behaviour.
+
+    P1-7: las tres categorías que parkean modal se scopean al cliente que lanzó
+    el Ritual (``client_id_getter``). Sin él, la aprobación de una operación
+    destructiva era accionable desde CUALQUIER sesión abierta. Una solicitud sin
+    cliente lanzador (agente LLM, Telegram, backend) conserva la clave global:
+    no tiene dueño al que scoparla, y descartarla la dejaría colgada hasta su
+    timeout fail-closed.
     """
 
     async def _notify(req: Any) -> None:
         category = getattr(req, "category", "")
+        client_id = client_id_getter()
         if category == "tool_execution":
             if auto_approve_getter():
                 logger.info("HITL(GUI): auto-approving %s (Modo local ON)", req.request_id)
                 await respond(req.request_id, True)
             else:
                 set_pending(
+                    client_id,
                     {
                         "request_id": req.request_id,
                         "reason": getattr(req, "reason", ""),
                         "detail": getattr(req, "detail", ""),
-                    }
+                    },
                 )
             return
         if category == "sandbox_promotion":
             # Promoción post-run del sandbox (T-27b·2): siempre modal, nunca
             # auto-aprobada — el operador decide sobre el diff real.
             set_pending(
+                client_id,
                 {
                     "request_id": req.request_id,
                     "reason": getattr(req, "reason", ""),
                     "detail": getattr(req, "detail", ""),
-                }
+                },
             )
             return
         if category == "download":
             # Egress: never auto-approved — always parks a manual Aprobar/Denegar.
             set_pending(
+                client_id,
                 {
                     "request_id": req.request_id,
                     "reason": getattr(req, "reason", ""),
                     "detail": getattr(req, "detail", ""),
                     "url": getattr(req, "url", "") or "",
-                }
+                },
             )
             return
         if delegate is not None:
@@ -220,6 +278,7 @@ async def run_ritual(
     supervisor: Any,
     store: ReactiveStore,
     auto_approve: bool = False,
+    client_id: str | None = None,
 ) -> None:
     """Dispatch a Ritual's tool and publish a feedback message to the store.
 
@@ -228,6 +287,10 @@ async def run_ritual(
     store for this single dispatch so the HITL bridge can auto-grant *this*
     request — and disarmed afterwards — instead of consulting a process-global
     flag that would also affect other clients/agent calls.
+
+    ``client_id`` viaja por el mismo camino y por el mismo motivo (P1-7): la
+    aprobación de esta operación destructiva se parkea bajo ESE cliente, para
+    que no sea accionable desde otra pestaña que no lanzó el Ritual.
 
     Never raises: dispatch failures and a missing supervisor are converted into
     a ``ritual_feedback`` entry so the click handler (a fire-and-forget task)
@@ -274,6 +337,8 @@ async def run_ritual(
     # LLM/API) corre en otra task cuya copia de contexto tiene el default False,
     # así que NUNCA se auto-aprueba por el Modo local de este ritual.
     cv_token = _ritual_auto_approve.set(bool(auto_approve))
+    # P1-7: mismo scoping por task para el dueño de la aprobación.
+    cid_token = _ritual_client_id.set(client_id)
     try:
         result = await supervisor.dispatch_tool(tool_name, {})
     except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
@@ -285,10 +350,12 @@ async def run_ritual(
         return
     finally:
         _ritual_auto_approve.reset(cv_token)  # disarm (scoped a esta task)
+        _ritual_client_id.reset(cid_token)
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
         # Drop the approval prompt tied to this run so no stale modal lingers on
         # the timeout/denied path where the operator never clicked (Codex #211).
-        store.set(STORE_KEY_PENDING_HITL, None)
+        # Se limpia la clave de ESTE cliente (P1-7), no solo la global.
+        store.set(pending_hitl_key(client_id), None)
     text, kind = summarize_ritual_result(tool_key, result if isinstance(result, dict) else {})
     store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": text, "type": kind})
     # Surface del reporte de preflight que el dispatch adjuntó (hoy solo LOOT): el

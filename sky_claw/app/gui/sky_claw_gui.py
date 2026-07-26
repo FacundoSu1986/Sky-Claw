@@ -61,6 +61,7 @@ from sky_claw.app.gui.views.forge_dashboard import (
     _hitl_modal_panel,
     _ritual_feedback_panel,
     _ritual_preflight_panel,
+    current_client_id,
     modo_local_enabled,
 )
 from sky_claw.config import Config
@@ -695,12 +696,17 @@ def main_page() -> None:
     # answered from the GUI modal. Both are fire-and-forget tracked tasks.
     # Read THIS client's Modo local toggle at click time (the click handler has
     # client context); run_ritual arms it for just this dispatch.
+    # P1-7: el client id se lee acá por el mismo motivo que el Modo local — es el
+    # único punto con contexto de cliente. run_ritual lo arma para este dispatch
+    # y la aprobación queda parkeada bajo ESTE cliente, no en una clave global
+    # que cualquier otra pestaña abierta podría accionar.
     callbacks["on_ritual_run"] = lambda tool_key: create_tracked_task(
         run_ritual(
             tool_key,
             supervisor=runtime.supervisor,
             store=get_store(),
             auto_approve=modo_local_enabled(),
+            client_id=current_client_id(),
         ),
         name="gui-ritual-run",
     )

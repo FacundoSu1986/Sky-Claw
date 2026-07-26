@@ -27,6 +27,8 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
     STORE_KEY_RITUAL_PREFLIGHT,
+    pending_hitl_key,
+    resolve_pending_hitl,
 )
 from sky_claw.app.gui.state import get_store
 
@@ -477,6 +479,19 @@ def modo_local_enabled() -> bool:
         return False
 
 
+def current_client_id() -> str | None:
+    """Id de ESTE cliente NiceGUI, o ``None`` sin contexto de cliente.
+
+    P1-7: identifica al dueño de una aprobación HITL. Mismo patrón defensivo que
+    :func:`modo_local_enabled` — sin contexto (tests unitarios, task de fondo)
+    devuelve ``None``, que :func:`pending_hitl_key` mapea a la clave global.
+    """
+    try:
+        return str(ui.context.client.id)
+    except Exception:
+        return None
+
+
 def _set_modo_local(value: bool) -> None:
     # Suppress: no client context (unit tests / background) — nothing to persist.
     with contextlib.suppress(Exception):
@@ -536,8 +551,17 @@ def _modo_local_panel() -> None:
 
 # ── HITL APPROVAL MODAL + RITUAL FEEDBACK (store-driven overlays) ─────────────────
 def _respond_hitl(request_id: str, approved: bool) -> None:
-    """Clear the pending prompt and forward the decision to the HITL guard."""
-    get_store().set(STORE_KEY_PENDING_HITL, None)
+    """Clear the pending prompt and forward the decision to the HITL guard.
+
+    P1-7: limpia la clave de ESTE cliente. Una solicitud sin dueño vive en la
+    clave global, así que se limpian ambas: la del cliente por si él la lanzó, y
+    la global por si atendió una del agente/backend.
+    """
+    store = get_store()
+    client_id = current_client_id()
+    if client_id is not None:
+        store.set(pending_hitl_key(client_id), None)
+    store.set(STORE_KEY_PENDING_HITL, None)
     fn = _HITL_CALLBACKS.get("respond")
     if callable(fn):
         fn(request_id, approved)
@@ -562,7 +586,9 @@ def _hitl_modal_panel() -> None:
     there the inline gate takes over. Buttons forward the decision through the
     ``on_hitl_respond`` callback; the guard's timeout still auto-denies.
     """
-    pending = get_store().get(STORE_KEY_PENDING_HITL)
+    # P1-7: la aprobación de ESTE cliente (la del Ritual que él lanzó), o una sin
+    # dueño. Nunca la de otra pestaña: era accionable desde cualquier sesión.
+    pending = resolve_pending_hitl(get_store(), current_client_id())
     if not _hitl_modal_visible(pending, str(get_store().get("active_section") or "")):
         return
     request_id = str(pending.get("request_id", ""))
