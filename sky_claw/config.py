@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 import sys
 import tomllib
@@ -392,3 +393,29 @@ AE_MIN_SIZE_MB: int = 60
 AE_MIN_MINOR_VERSION: int = 6
 PROCESS_KILL_TIMEOUT_SECONDS: float = 3.0
 CREATE_NO_WINDOW: int = 0x08000000
+
+
+def _umbral_env(nombre: str, defecto: float) -> float:
+    """Lee un umbral de entorno, cayendo al default si no es un número válido."""
+    crudo = os.getenv(nombre)
+    if not crudo:
+        return defecto
+    try:
+        valor = float(crudo)
+    except ValueError:
+        logger.warning("%s='%s' no es un número; se usa el default %.1f", nombre, crudo, defecto)
+        return defecto
+    if valor <= 0:
+        logger.warning("%s=%.1f debe ser > 0; se usa el default %.1f", nombre, valor, defecto)
+        return defecto
+    return valor
+
+
+# ── Watchdog de cierre de la GUI (post-mortem WinError 10048) ────────
+# Ajustables por entorno: un reconnect legítimo del navegador puede pasarse de
+# la gracia tras una suspensión del equipo, carga alta o antivirus agresivo, y
+# el operador necesita poder subirlos sin recompilar.
+GUI_EXIT_WATCHDOG_GRACE_SECONDS: float = _umbral_env("SKY_CLAW_GUI_EXIT_GRACE_SECONDS", 15.0)
+# Plazo para la PRIMERA conexión: cubre el arranque en frío del .exe + el
+# escaneo del antivirus + el lanzamiento del navegador, así que es generoso.
+GUI_EXIT_WATCHDOG_FIRST_CONNECT_SECONDS: float = _umbral_env("SKY_CLAW_GUI_EXIT_FIRST_CONNECT_SECONDS", 90.0)

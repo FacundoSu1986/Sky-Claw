@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from sky_claw.antigravity.gui._bootloader import ExitWatchdog
 
 GRACIA = 0.05
@@ -53,9 +55,13 @@ async def test_no_apaga_antes_de_que_expire_la_gracia() -> None:
     watchdog, apagados = _hacer_watchdog([0])
 
     watchdog.cliente_desconectado()
-    await asyncio.sleep(GRACIA / 5)
-
-    assert apagados == [], "apagó antes de agotar el período de gracia: un F5 cerraría la app"
+    try:
+        await asyncio.sleep(GRACIA / 5)
+        assert apagados == [], "apagó antes de agotar el período de gracia: un F5 cerraría la app"
+    finally:
+        # La cuenta regresiva sigue viva: cancelarla acá y no depender del
+        # teardown del event loop (que dejaría una task pendiente).
+        watchdog.cancelar()
 
 
 async def test_apaga_cuando_expira_la_gracia_sin_clientes() -> None:
@@ -121,6 +127,160 @@ async def test_cancelar_detiene_el_watchdog() -> None:
     await asyncio.sleep(GRACIA * 4)
 
     assert apagados == [], "cancelar() no detuvo la cuenta regresiva"
+
+
+# ---------------------------------------------------------------------------
+# Hallazgos de revisión
+# ---------------------------------------------------------------------------
+
+
+async def test_la_gracia_se_cuenta_desde_la_ultima_desconexion() -> None:
+    """Con varios clientes, la gracia corre desde que se va el ÚLTIMO, no el primero.
+
+    Con dos pestañas abiertas: A se va en t=0 y arranca la cuenta regresiva; B
+    se va en t=0.8·gracia. Si la cuenta sigue siendo la de A, el proceso se
+    apaga 0.2·gracia después de que B se fue — el usuario pierde casi toda la
+    ventana que el período de gracia le promete.
+    """
+    clientes = [2]
+    watchdog, apagados = _hacer_watchdog(clientes)
+
+    clientes[0] = 1  # se fue A, queda B
+    watchdog.cliente_desconectado()
+    await asyncio.sleep(GRACIA * 0.8)
+
+    clientes[0] = 0  # ahora sí se fue B
+    watchdog.cliente_desconectado()
+    try:
+        await asyncio.sleep(GRACIA * 0.5)
+        assert apagados == [], (
+            "apagó a mitad de la gracia del último cliente: la cuenta regresiva seguía siendo la del primero en irse"
+        )
+        await asyncio.sleep(GRACIA)
+        assert apagados == [True], "nunca apagó tras irse el último cliente"
+    finally:
+        watchdog.cancelar()
+
+
+async def test_no_arranca_la_cuenta_si_quedan_clientes() -> None:
+    """Una desconexión con otros clientes vivos no debe programar nada."""
+    watchdog, apagados = _hacer_watchdog([1])
+
+    watchdog.cliente_desconectado()
+    try:
+        await asyncio.sleep(GRACIA * 4)
+        assert apagados == [], "apagó pese a que quedaba un cliente conectado"
+    finally:
+        watchdog.cancelar()
+
+
+async def test_una_falla_del_apagado_no_se_traga_en_silencio() -> None:
+    """Convención §2.5: re-lanzar las excepciones desconocidas tras loggear.
+
+    Si ``app.shutdown()`` explota y el watchdog se lo traga, el proceso queda
+    vivo con los puertos tomados —justo el fallo que esto viene a evitar— y sin
+    rastro más allá de una línea de log.
+    """
+    from sky_claw.antigravity.gui._bootloader import ExitWatchdog
+
+    def _apagar_roto() -> None:
+        raise RuntimeError("shutdown explotó")
+
+    watchdog = ExitWatchdog(
+        grace_seconds=GRACIA,
+        contar_clientes=lambda: 0,
+        apagar=_apagar_roto,
+    )
+
+    watchdog.cliente_desconectado()
+    tarea = watchdog._cuenta_regresiva
+    assert tarea is not None
+
+    with pytest.raises(RuntimeError, match="shutdown explotó"):
+        await tarea
+
+
+async def test_cuenta_clientes_con_socket_vivo_pese_al_reconnect_solapado() -> None:
+    """El conteo no puede basarse solo en ``has_socket_connection``.
+
+    En NiceGUI 3.12.1 ``Client.handle_disconnect`` hace ``self.tab_id = None``
+    INCONDICIONALMENTE, y ``has_socket_connection`` es literalmente
+    ``tab_id is not None``. En un reconnect solapado —el socket nuevo completa
+    el handshake antes de que se procese la desconexión del viejo—
+    ``_num_connections`` sigue en 1 (hay socket vivo) pero ``tab_id`` ya quedó
+    en None. Contar por ``has_socket_connection`` daría CERO y el watchdog
+    apagaría la app con el usuario conectado.
+    """
+    from sky_claw.antigravity.gui._bootloader import contar_clientes_con_socket_vivo
+
+    class _ClienteReconnectSolapado:
+        has_socket_connection = False  # tab_id quedó en None
+        _num_connections = {"doc-1": 1}  # pero el socket de reemplazo sigue vivo
+
+    class _ClienteRealmenteIdo:
+        has_socket_connection = False
+        _num_connections = {"doc-2": 0}
+
+    assert contar_clientes_con_socket_vivo({"a": _ClienteReconnectSolapado()}) == 1, (
+        "contó 0 durante un reconnect solapado: el watchdog apagaría la app mientras el socket de reemplazo sigue vivo"
+    )
+    assert contar_clientes_con_socket_vivo({"b": _ClienteRealmenteIdo()}) == 0
+
+
+def test_cuenta_clientes_degrada_a_has_socket_connection() -> None:
+    """Si una versión futura de NiceGUI saca ``_num_connections``, no romper."""
+    from sky_claw.antigravity.gui._bootloader import contar_clientes_con_socket_vivo
+
+    class _ClienteSinPrivado:
+        has_socket_connection = True
+
+    assert contar_clientes_con_socket_vivo({"a": _ClienteSinPrivado()}) == 1
+
+
+async def test_apaga_si_nadie_llega_a_conectarse_nunca() -> None:
+    """El navegador se cerró antes de completar el handshake.
+
+    Sin socket nunca hay ``on_disconnect``, así que sin un plazo inicial no se
+    programa NADA y el proceso queda vivo para siempre con 8080/8765 tomados —
+    exactamente el modo de falla que el watchdog viene a cerrar.
+    """
+    watchdog, apagados = _hacer_watchdog([0])
+
+    watchdog.iniciar(plazo_primera_conexion=GRACIA)
+    try:
+        await asyncio.sleep(GRACIA * 4)
+        assert apagados == [True], (
+            "nadie se conectó nunca y el watchdog no armó el plazo inicial: "
+            "el proceso queda vivo con los puertos tomados"
+        )
+    finally:
+        watchdog.cancelar()
+
+
+async def test_la_primera_conexion_cancela_el_plazo_inicial() -> None:
+    """Si el usuario sí llega a conectarse, el plazo inicial no debe matarlo."""
+    clientes = [0]
+    watchdog, apagados = _hacer_watchdog(clientes)
+
+    watchdog.iniciar(plazo_primera_conexion=GRACIA)
+    await asyncio.sleep(GRACIA / 5)
+    clientes[0] = 1
+    watchdog.cliente_conectado()
+    try:
+        await asyncio.sleep(GRACIA * 4)
+        assert apagados == [], "el plazo inicial mató la app pese a que el usuario se conectó"
+    finally:
+        watchdog.cancelar()
+
+
+def test_la_gracia_sale_de_config_y_no_esta_hardcodeada() -> None:
+    """Convención §3: nada de umbrales hardcodeados — deben salir de ``config.py``."""
+    from sky_claw import config
+    from sky_claw.antigravity.gui import _bootloader
+
+    assert isinstance(config.GUI_EXIT_WATCHDOG_GRACE_SECONDS, (int, float))
+    assert isinstance(config.GUI_EXIT_WATCHDOG_FIRST_CONNECT_SECONDS, (int, float))
+    assert _bootloader._EXIT_WATCHDOG_GRACE_SECONDS == config.GUI_EXIT_WATCHDOG_GRACE_SECONDS
 
 
 # ---------------------------------------------------------------------------
