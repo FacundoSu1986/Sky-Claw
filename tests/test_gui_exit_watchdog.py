@@ -27,6 +27,7 @@ disconnect cerraría la app cada vez que el usuario refresca.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -64,17 +65,23 @@ async def test_no_apaga_antes_de_que_expire_la_gracia() -> None:
         watchdog.cancelar()
 
 
-async def test_apaga_cuando_expira_la_gracia_sin_clientes() -> None:
+async def test_apaga_cuando_expira_la_gracia_sin_clientes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """El caso que cierra el post-mortem: el usuario cerró la ventana y no volvió."""
     watchdog, apagados = _hacer_watchdog([0])
 
-    watchdog.cliente_desconectado()
-    await asyncio.sleep(GRACIA * 4)
+    with caplog.at_level(logging.INFO, logger="sky_claw"):
+        watchdog.cliente_desconectado()
+        await asyncio.sleep(GRACIA * 4)
 
     assert apagados == [True], (
         "el watchdog no disparó el apagado: sin esto el proceso queda vivo "
         "reteniendo 8080/8765 y el arranque siguiente da WinError 10048"
     )
+    record = next(item for item in caplog.records if getattr(item, "event", "") == "gui_watchdog_shutdown")
+    assert record.shutdown_reason == "se fue el último cliente"
+    assert record.grace_seconds == GRACIA
 
 
 async def test_reconectar_dentro_de_la_gracia_cancela_el_apagado() -> None:

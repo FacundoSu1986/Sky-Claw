@@ -621,7 +621,25 @@ class VfsExecutionBroker:
                 if exit_future is not None and not exit_future.done():
                     exit_future.set_result(parsed_exit_code)
                 future = self._pending.get(job_id) if isinstance(job_id, str) else None
-                if future is not None and not future.done() and job_id not in self._termination_tasks:
+                if (
+                    isinstance(job_id, str)
+                    and future is not None
+                    and not future.done()
+                    and job_id not in self._termination_tasks
+                ):
+                    pending_context = self._pending_context.get(job_id)
+                    tool_id = pending_context[0].tool_id if pending_context is not None else "unknown"
+                    logger.error(
+                        "VFS worker %s termino sin resultado",
+                        job_id,
+                        extra={
+                            "event": "worker_exit",
+                            "operation": "vfs_worker",
+                            "tool": tool_id,
+                            "job_id": job_id,
+                            "exit_code": parsed_exit_code,
+                        },
+                    )
                     future.set_exception(
                         VfsWorkerDisconnectedError(
                             f"worker {job_id} termino sin resultado (exit_code={parsed_exit_code!r})"

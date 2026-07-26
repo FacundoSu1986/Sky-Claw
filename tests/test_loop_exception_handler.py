@@ -20,6 +20,9 @@ async def test_loop_exception_handler_logs_via_logger(caplog):
     assert "Unhandled event-loop exception" in caplog.text
     assert "kaboom" in caplog.text  # exception rendered via exc_info
     assert any(record.name == "sky_claw" for record in caplog.records)
+    record = next(record for record in caplog.records if record.name == "sky_claw")
+    assert record.event == "event_loop_exception"
+    assert record.exc_info is not None
 
 
 async def test_install_handler_desde_logging_config(caplog):

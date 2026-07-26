@@ -418,6 +418,15 @@ class SupervisorAgent:
                     continue
                 exc = task.exception()
                 if exc is not None:
+                    logger.critical(
+                        "Supervisor task %s failed; propagating",
+                        task.get_name(),
+                        exc_info=(type(exc), exc, exc.__traceback__),
+                        extra={
+                            "event": "supervisor_task_failed",
+                            "task_name": task.get_name(),
+                        },
+                    )
                     raise exc
         finally:
             for task in all_tasks:

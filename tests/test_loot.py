@@ -395,7 +395,11 @@ class TestLOOTRunner:
         mock_proc.wait.assert_awaited_once_with()
 
     @pytest.mark.asyncio
-    async def test_sort_with_errors(self, tmp_path: pathlib.Path) -> None:
+    async def test_sort_with_errors(
+        self,
+        tmp_path: pathlib.Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
         config = self._make_config(tmp_path)
         runner = LOOTRunner(config)
 
@@ -407,11 +411,18 @@ class TestLOOTRunner:
         with (
             patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
+            caplog.at_level(logging.ERROR, logger="sky_claw.local.loot.cli"),
         ):
             result = await runner.sort()
 
         assert result.success is False
         assert len(result.errors) == 1
+        record = next(item for item in caplog.records if getattr(item, "event", "") == "external_process_failed")
+        assert record.operation == "loot_sort"
+        assert record.tool == "LOOT"
+        assert record.exit_code == 1
+        assert record.child_pid == mock_proc.pid
+        assert record.stderr == "Error: Game path invalid\n"
 
     @pytest.mark.asyncio
     async def test_sort_appends_update_masterlist_flag(self, tmp_path: pathlib.Path) -> None:

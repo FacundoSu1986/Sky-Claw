@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -164,6 +165,31 @@ class TestXEditRunnerExecution:
         assert result.success is True
         assert result.processed_plugins == ["Skyrim.esm"]
         assert len(result.conflicts) == 1
+
+    @pytest.mark.asyncio
+    async def test_nonzero_registra_stderr_estructurado(
+        self,
+        tmp_path: pathlib.Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        runner = self._make_runner(tmp_path)
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"Fatal: master ausente\n"))
+        mock_proc.returncode = 17
+        mock_proc.kill = MagicMock()
+
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            caplog.at_level(logging.ERROR, logger="sky_claw.local.xedit.runner"),
+        ):
+            result = await runner.run_script("list_conflicts.pas", ["Skyrim.esm"])
+
+        assert result.success is False
+        record = next(item for item in caplog.records if getattr(item, "event", "") == "external_process_failed")
+        assert record.operation == "xedit_read_only"
+        assert record.tool == "xEdit"
+        assert record.exit_code == 17
+        assert record.stderr == "Fatal: master ausente\n"
 
     @pytest.mark.asyncio
     async def test_timeout(self, tmp_path: pathlib.Path) -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -280,3 +282,105 @@ class TestCli:
     def test_cli_is_default_mode(self) -> None:
         args = _parse_args([])
         assert args.mode == "cli"
+
+
+def test_main_configura_logging_antes_del_loop_y_lo_cierra() -> None:
+    from sky_claw import __main__ as main_module
+
+    orden: list[str] = []
+    parse = main_module._parse_args
+
+    def _parse(argv):  # noqa: ANN001, ANN202
+        orden.append("parse")
+        return parse(argv)
+
+    def _run(coro) -> None:  # noqa: ANN001
+        orden.append("run")
+        coro.close()
+
+    with (
+        patch.object(
+            main_module,
+            "setup_logging",
+            side_effect=lambda **_kwargs: orden.append("setup"),
+        ),
+        patch.object(main_module, "_parse_args", side_effect=_parse),
+        patch.object(
+            main_module,
+            "shutdown_logging",
+            side_effect=lambda: orden.append("shutdown") or True,
+        ),
+        patch.object(main_module.asyncio, "run", side_effect=_run),
+    ):
+        main_module.main(["--mode", "cli"])
+
+    assert orden == ["setup", "parse", "run", "shutdown"]
+
+
+def test_main_gui_drena_evento_watchdog_antes_de_cerrar_listener(
+    tmp_path: pathlib.Path,
+) -> None:
+    from sky_claw import __main__ as main_module
+    from sky_claw.logging_config import setup_logging as real_setup
+
+    def _setup(*, level: int):
+        return real_setup(
+            level=level,
+            log_dir=tmp_path,
+            console_stream=None,
+        )
+
+    def _run_gui(_args) -> None:  # noqa: ANN001
+        logging.getLogger("SkyClaw.GUI.Watchdog").info(
+            "cierre limpio por watchdog",
+            extra={"event": "gui_watchdog_shutdown"},
+        )
+
+    with (
+        patch.object(main_module, "setup_logging", side_effect=_setup),
+        patch("sky_claw.app.modes.gui_mode.run_gui_mode", side_effect=_run_gui),
+        patch(
+            "sky_claw.logging_config._resolve_telegram_chat_id",
+            return_value="",
+        ),
+    ):
+        main_module.main(["--mode", "gui"])
+
+    records = [json.loads(line) for line in (tmp_path / "sky_claw.log").read_text(encoding="utf-8").splitlines()]
+    assert any(
+        record["event"] == "gui_watchdog_shutdown" and record["message"] == "cierre limpio por watchdog"
+        for record in records
+    )
+
+
+def test_main_loggea_crash_superior_y_preserva_excepcion(caplog) -> None:
+    from sky_claw import __main__ as main_module
+
+    def _run(coro) -> None:  # noqa: ANN001
+        coro.close()
+        raise RuntimeError("boom superior")
+
+    with (
+        patch.object(main_module, "setup_logging"),
+        patch.object(main_module, "shutdown_logging", return_value=True) as shutdown,
+        patch.object(main_module.asyncio, "run", side_effect=_run),
+        caplog.at_level(logging.CRITICAL, logger="sky_claw"),
+        pytest.raises(RuntimeError, match="boom superior"),
+    ):
+        main_module.main(["--mode", "cli"])
+
+    assert "Fallo no manejado en el proceso principal" in caplog.text
+    shutdown.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_main_async_no_configura_handlers_dentro_del_loop() -> None:
+    from sky_claw import __main__ as main_module
+
+    with (
+        patch.object(main_module, "setup_logging") as setup,
+        pytest.raises(SystemExit),
+    ):
+        await main_module._main(["--mode", "oneshot"])
+
+    setup.assert_not_called()

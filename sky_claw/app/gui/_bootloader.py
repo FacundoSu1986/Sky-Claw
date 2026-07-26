@@ -417,7 +417,16 @@ class ExitWatchdog:
             if self._contar_clientes() > 0:
                 logger.debug("Watchdog de cierre: hay clientes vivos al vencer el plazo, no se apaga")
                 return
-            logger.info("Watchdog de cierre: %s tras %.1fs, apagando la app", motivo, espera)
+            logger.info(
+                "Watchdog de cierre: %s tras %.1fs, apagando la app",
+                motivo,
+                espera,
+                extra={
+                    "event": "gui_watchdog_shutdown",
+                    "shutdown_reason": motivo,
+                    "grace_seconds": espera,
+                },
+            )
             self._apagar()
         except asyncio.CancelledError:
             raise

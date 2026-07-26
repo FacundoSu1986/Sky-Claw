@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import pathlib
 import re
@@ -167,9 +168,18 @@ class TestWindowedStdStreams:
         assert sys.stdout is not None
         assert sys.stderr is not None
         # The repaired streams must be writable without raising (this is the
-        # bare-print path that killed the windowed exe).
-        print("startup-banner-probe")  # noqa: T201
+        # banner path that killed the windowed exe).
+        sys.stdout.write("startup-banner-probe\n")
         sys.stderr.write("err-probe\n")
+        assert sys.stdout.isatty() is False
+        assert sys.stderr.isatty() is False
+        assert sys.stdout.writable() is True
+        assert sys.stderr.writable() is True
+        with pytest.raises(io.UnsupportedOperation):
+            sys.stdout.fileno()
+        with pytest.raises(io.UnsupportedOperation):
+            sys.stderr.fileno()
+        assert not (tmp_path / "sky_claw_startup.log").exists()
 
 
 # ---------------------------------------------------------------------------

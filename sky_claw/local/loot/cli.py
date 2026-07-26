@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from sky_claw.app.core.windows_interop import translate_path_if_wsl
 from sky_claw.local.loot.parser import LOOTOutputParser, LOOTResult
+from sky_claw.logging_config import subprocess_error_extra
 
 if TYPE_CHECKING:
     import pathlib
@@ -201,7 +202,17 @@ class LOOTRunner:
         stderr_text = stderr.decode("utf-8", errors="replace")
 
         if proc.returncode != 0:
-            logger.warning("LOOT exited with code %d: %s", proc.returncode, stderr_text)
+            logger.error(
+                "LOOT exited with code %d",
+                proc.returncode,
+                extra=subprocess_error_extra(
+                    operation="loot_sort",
+                    tool="LOOT",
+                    exit_code=proc.returncode,
+                    child_pid=proc.pid,
+                    stderr=stderr_text,
+                ),
+            )
 
         return LOOTOutputParser.parse(
             stdout=stdout_text,

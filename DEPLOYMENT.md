@@ -194,30 +194,49 @@ precondición de `_run_telegram()`.
 
 ## 6. Observabilidad — ¿dónde queda registrado si algo falla?
 
-`setup_logging()` (`logging_config.py:208`) se invoca en todos los modos al
-arranque. Produce **logs JSON rotativos (10 MB × 5 backups)** en `logs/`, con
-`correlation_id` por línea y **redacción de secretos** (API keys, tokens, Bearer,
-PII, query-strings) ya aplicada en disco:
+`setup_logging()` se invoca antes de crear el event loop en todos los modos.
+El productor sólo redacta, enriquece y usa `put_nowait()` sobre una cola
+acotada; un listener dedicado realiza la apertura, escritura, flush y rotación.
+Produce **logs JSON rotativos (10 MB × 5 backups)** bajo
+`~/.sky_claw/logs/`, con `correlation_id`, `trace_id`, PID, hilo, rol de proceso
+y task por línea. La **redacción de secretos** (API keys, tokens, Bearer, PII y
+query-strings) ocurre antes de cruzar al listener.
 
 | Archivo | Contenido |
 |---|---|
-| `logs/sky_claw.log` | App principal — **todos los niveles, incluido ERROR**. Es el log a mirar primero. |
-| `logs/watcher.log` | Subsistema watcher (`SkyClaw.Watcher`, `propagate=False`). |
-| `logs/watcher_security.log` | Eventos de seguridad. |
+| `~/.sky_claw/logs/sky_claw.log` | App principal: todos los niveles, incluido `ERROR`. Es el log a mirar primero. |
+| `~/.sky_claw/logs/crash.log` | Todos los eventos `ERROR+`, incluidos watcher y seguridad. |
+| `~/.sky_claw/logs/watcher.log` | Subsistema `SkyClaw.Watcher`. |
+| `~/.sky_claw/logs/watcher_security.log` | Eventos de `SkyClaw.Security`. |
+| `~/.sky_claw/logs/workers/vfs-worker-<job_id>.log` | Evidencia y traceback del worker VFS aislado por job. |
 
-> Nota: `CorrelationFilter` calcula un `trace_id` de OTEL en el record, pero el
-> formatter JSON actual solo emite `correlation_id` (no `trace_id`). Para
-> correlacionar con un trace de OTEL hay que agregar `trace_id` al formatter.
+Si la cola se satura, los productores nunca esperan: se contabilizan pérdidas
+y hasta 256 eventos `ERROR/CRITICAL` quedan en un buffer de emergencia para
+reinyección. Un fallo de permisos, disco lleno, apertura o rotación marca el
+runtime de logging como degradado y aplica reintentos espaciados; no se escribe
+un fallback síncrono desde asyncio ni se propaga el fallo a la aplicación.
+Si Windows bloquea el renombrado de una rotación (`WinError 32/5`), el rollover
+se difiere y el listener continúa escribiendo en el archivo base hasta el
+siguiente intento.
 
 Garantías relevantes para un run real:
-- **Excepciones no manejadas del event loop (modos no-GUI)**:
-  `_install_loop_exception_handler()` (`__main__.py:129`) se instala en la rama
-  `asyncio.run` de `_main()` — es decir **cli / oneshot / telegram / security**.
-  Enruta a `logger.error(..., exc_info=exc)`; pasar la **instancia** de excepción
-  sí adjunta el traceback (logging la convierte a `(type, exc, exc.__traceback__)`),
-  así que la tarea fire-and-forget que falle queda en `logs/sky_claw.log` con
-  stack y `correlation_id`. **En modo GUI este handler NO se instala** — NiceGUI/
-  uvicorn manejan su propio loop; ahí confiá en el log + el handler de uvicorn.
+- **Excepciones no manejadas del event loop (incluida GUI)**:
+  `install_loop_exception_handler()` se instala en `_main()` y también en el
+  bootstrap del loop de NiceGUI. Las tasks creadas por `AppContext._track_task()`
+  consumen inmediatamente su excepción y registran nombre, contexto y traceback;
+  las tasks huérfanas caen al handler del loop. La cancelación normal no se
+  registra como crash.
+- **Subprocesos y VFS**: LOOT y xEdit registran los non-zero como `ERROR` con
+  `exit_code` y `stderr`. Hasta 64 KiB se conserva completo; para salidas mayores
+  se guarda el tail, tamaño original, SHA-256 y `stderr_truncated=true`. Un
+  `worker_exit` sin `job_result` queda atribuido al job y tool en el broker.
+- **GUI empaquetada**: si `stdout`/`stderr` son `None`, se conectan a adaptadores
+  de texto del pipeline con `write()`, `flush()`, `isatty()`, `writable()` y
+  `fileno()` compatibles con `TextIOBase`. Ya no se crea el archivo lateral
+  `sky_claw_startup.log`. El watchdog registra `gui_watchdog_shutdown` antes de
+  solicitar `app.shutdown`; el `finally` exterior drena y cierra el listener
+  después de los hooks de NiceGUI y `AppContext.stop()`. El stdout del probe VFS
+  sigue reservado exclusivamente para su hash de protocolo.
 - **Audit trail en SQLite** (aparte de los logs de texto), en
   `sky_claw/app/db/journal.py`: la tabla `journal_entries` registra cada
   operación con estado `started/completed/failed/rolled_back`; la tabla
@@ -231,10 +250,10 @@ Garantías relevantes para un run real:
 # correr con DEBUG
 python -m sky_claw --mode cli -v
 # filtrar errores del log JSON
-grep '"levelname": "ERROR"' logs/sky_claw.log            # bash/WSL
-Select-String '"levelname": "ERROR"' logs\sky_claw.log   # PowerShell
+grep '"level": "ERROR"' ~/.sky_claw/logs/sky_claw.log
+Select-String '"level": "ERROR"' "$HOME\.sky_claw\logs\sky_claw.log"
 # seguir el hilo de una operación por su correlation_id
-grep '<correlation_id>' logs/sky_claw.log
+grep '<correlation_id>' ~/.sky_claw/logs/sky_claw.log
 ```
 
 ---
@@ -263,10 +282,13 @@ MO2 descartable la primera vez):
 - [ ] Proveedor LLM elegido entre los soportados: `anthropic` / `deepseek` / `openai` / `ollama`.
 - [ ] Suite local en verde: `pytest -q`.
 - [ ] Gates: `ruff check sky_claw/ tests/`, `ruff format --check sky_claw/ tests/` y `mypy sky_claw/`.
-- [ ] `logs/` escribible; correr con `-v` la primera vez.
+- [ ] `~/.sky_claw/logs/` escribible; correr con `-v` la primera vez. Si no lo
+  está, Sky-Claw debe continuar y el logging queda degradado.
 - [ ] Perfil de MO2 respaldado (el rollback cubre operaciones del agente, pero un backup externo es barato).
 - [ ] Validar preview y dry-run siguiendo el orden canónico de `sky_claw/local/AGENTS.md` **antes** de un run con mutaciones reales.
-- [ ] Tras el run: revisar `logs/sky_claw.log` por `ERROR`; en el journal, `transactions` con estado `pending`/`rolled_back` (transacción no confirmada) y `journal_entries` con estado `failed` (operación caída).
+- [ ] Tras el run: revisar `~/.sky_claw/logs/crash.log`; en el journal,
+  `transactions` con estado `pending`/`rolled_back` (transacción no confirmada)
+  y `journal_entries` con estado `failed` (operación caída).
 
 ---
 
@@ -279,7 +301,6 @@ Honestidad operativa — esto sigue abierto y conviene saberlo antes de producci
   `docs/operations/real_rig_validation.md`.
 - **Sin tag de release ni binario firmado/validado** (CHANGELOG `[Unreleased]`).
 - **Frontera de tipos parcial** — el override de mypy con `ignore_errors=true` cubre **prácticamente todo `sky_claw.*` / `sky_claw.app.*`**, con re-habilitación puntual de checks en un subconjunto de `core.*` y en `orchestrator.sync_engine`. El grueso del código no está type-checked aún.
-- **Loop-exception handler solo en modos no-GUI** — en GUI la captura de excepciones del loop depende de NiceGUI/uvicorn, no del handler de `__main__`.
 - **Estado vivo** — consultar `docs/pending_ooda_status.md` y reverificar cada
   ítem contra el árbol actual; un roadmap o auditoría fechada no sustituye esa
   comprobación.

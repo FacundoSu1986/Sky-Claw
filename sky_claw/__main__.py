@@ -30,7 +30,12 @@ from sky_claw.app.modes.security_mode import _run_security  # noqa: E402
 from sky_claw.app.modes.telegram_mode import _run_telegram  # noqa: E402
 from sky_claw.app_context import AppContext  # noqa: E402
 from sky_claw.config import Config, SystemPaths  # noqa: E402
-from sky_claw.logging_config import install_loop_exception_handler, setup_logging  # noqa: E402
+from sky_claw.logging_config import (  # noqa: E402
+    install_loop_exception_handler,
+    install_missing_std_stream_adapters,
+    setup_logging,
+    shutdown_logging,
+)
 
 logger = logging.getLogger("sky_claw")
 
@@ -267,8 +272,6 @@ async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> N
     Accepts either raw argv strings (for testing) or a pre-parsed Namespace.
     """
     args = argv_or_args if isinstance(argv_or_args, argparse.Namespace) else _parse_args(argv_or_args)
-    log_level = logging.DEBUG if args.verbose else logging.INFO
-    setup_logging(level=log_level)
     _install_loop_exception_handler()
 
     logger.info("Sky-Claw starting in %s mode", args.mode)
@@ -322,26 +325,14 @@ def _ensure_std_streams() -> None:
     then raises ``AttributeError: 'NoneType' object has no attribute 'write'``
     and tears the GUI process down before the server can bind its port.
 
-    Point the missing streams at a startup log next to the executable so the
-    app survives (structured logs still go to ``logs/`` via ``setup_logging``).
-    Best-effort: falls back to ``os.devnull`` if the log file can't be opened.
+    Route missing streams through the queue-backed logger. This keeps all I/O
+    on the listener thread and avoids a separate unstructured startup file.
     """
-    if sys.stdout is not None and sys.stderr is not None:
-        return
-    try:
-        log_path = pathlib.Path(sys.executable).parent / "sky_claw_startup.log"
-        stream = open(log_path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
-    except OSError:
-        stream = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
-    if sys.stdout is None:
-        sys.stdout = stream
-    if sys.stderr is None:
-        sys.stderr = stream
+    install_missing_std_stream_adapters()
 
 
 def main(argv: list[str] | None = None) -> None:
     """Unified entry point controller."""
-    _ensure_std_streams()
     effective_argv = list(sys.argv[1:] if argv is None else argv)
     if effective_argv and effective_argv[0] in ("--vfs-worker", "--vfs-probe-child"):
         from sky_claw.local.mo2.vfs_worker import worker_main
@@ -350,23 +341,34 @@ def main(argv: list[str] | None = None) -> None:
         if effective_argv[0] == "--vfs-probe-child":
             worker_argv = ["--probe-child", *worker_argv]
         raise SystemExit(worker_main(worker_argv))
-    args = _parse_args(effective_argv)
+    log_level = logging.DEBUG if "--verbose" in effective_argv or "-v" in effective_argv else logging.INFO
+    setup_logging(level=log_level)
 
-    # P0: SIGTERM (Unix/WSL2) must trigger graceful shutdown in EVERY mode so
-    # in-flight external processes are killed, not orphaned. In GUI mode NiceGUI/
-    # uvicorn install their own handlers once running; this covers the startup
-    # window plus the non-GUI asyncio.run loop.
-    _install_sigterm_handler()
+    try:
+        _ensure_std_streams()
+        args = _parse_args(effective_argv)
 
-    if args.mode == "gui":
-        log_level = logging.DEBUG if args.verbose else logging.INFO
-        setup_logging(level=log_level)
-        from sky_claw.app.modes.gui_mode import run_gui_mode  # lazy: pulls NiceGUI
+        # P0: SIGTERM (Unix/WSL2) must trigger graceful shutdown in EVERY mode
+        # so in-flight external processes are killed, not orphaned. In GUI mode
+        # NiceGUI/uvicorn install their own handlers once running; this covers
+        # the startup window plus the non-GUI asyncio.run loop.
+        _install_sigterm_handler()
 
-        run_gui_mode(args)
-    else:
-        with contextlib.suppress(KeyboardInterrupt):
+        if args.mode == "gui":
+            from sky_claw.app.modes.gui_mode import run_gui_mode  # lazy: pulls NiceGUI
+
+            run_gui_mode(args)
+        else:
             asyncio.run(_main(args))
+    except KeyboardInterrupt:
+        logger.info("Apagado solicitado por interrupción de teclado")
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.critical("Fallo no manejado en el proceso principal", exc_info=True)
+        raise
+    finally:
+        shutdown_logging()
 
 
 if __name__ == "__main__":

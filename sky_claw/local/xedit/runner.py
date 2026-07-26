@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from sky_claw.local.tools._process import run_capture, spawn_detached
 from sky_claw.local.xedit.output_parser import XEditOutputParser, XEditResult
 from sky_claw.local.xedit.script_staging import StagedScript, stage_scripts
+from sky_claw.logging_config import subprocess_error_extra
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -807,7 +808,16 @@ class XEditRunner:
         stdout_text, stderr_text, return_code = await self._execute_process(args, timeout=timeout)
 
         if return_code != 0:
-            logger.warning("xEdit exited with code %d: %s", return_code, stderr_text)
+            logger.error(
+                "xEdit exited with code %d",
+                return_code,
+                extra=subprocess_error_extra(
+                    operation="xedit_read_only",
+                    tool="xEdit",
+                    exit_code=return_code,
+                    stderr=stderr_text,
+                ),
+            )
 
         return XEditOutputParser.parse(
             stdout=stdout_text,
@@ -870,7 +880,17 @@ class XEditRunner:
         records, errors, warnings = self._parse_script_output(stdout_text, stderr_text)
 
         if return_code != 0:
-            logger.warning("QuickAutoClean for %s exited with code %d: %s", plugin, return_code, stderr_text)
+            logger.error(
+                "QuickAutoClean for %s exited with code %d",
+                plugin,
+                return_code,
+                extra=subprocess_error_extra(
+                    operation="xedit_quick_auto_clean",
+                    tool="xEdit",
+                    exit_code=return_code,
+                    stderr=stderr_text,
+                ),
+            )
 
         return ScriptExecutionResult(
             success=(return_code == 0 and not errors),
@@ -982,7 +1002,18 @@ class XEditRunner:
                 execution_time=execution_time,
             )
 
-            if not result.success:
+            if return_code != 0:
+                logger.error(
+                    "Dynamic script execution failed with code %d",
+                    return_code,
+                    extra=subprocess_error_extra(
+                        operation="xedit_dynamic_script",
+                        tool="xEdit",
+                        exit_code=return_code,
+                        stderr=stderr_text,
+                    ),
+                )
+            elif not result.success:
                 logger.warning(
                     "Dynamic script execution failed: exit_code=%d, errors=%d",
                     return_code,
