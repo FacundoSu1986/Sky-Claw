@@ -152,6 +152,12 @@ class WebApp:
         if self._auth_manager is not None:
             self._auth_manager.register_rotation_callback(self.close_all_ws_ui_clients)
 
+        # P1-4: aiohttp NO cierra los WebSockets en ``cleanup()`` — espera a que
+        # los handlers terminen, y el de /ws/ui vive en su ``async for``. Sin
+        # este hook, ``runner.cleanup()`` se bloquea hasta agotar su timeout de
+        # apagado con el proceso reteniendo el 8765.
+        app.on_shutdown.append(self.close_all_ws_ui_clients_on_shutdown)
+
         return app
 
     async def close_all_ws_ui_clients(self) -> None:
@@ -167,6 +173,41 @@ class WebApp:
         la conexión en vez de sobrevivir silenciosamente a la ventana de
         rotación (carrera señalada en el review de #104 del handler viejo).
         """
+        await self._close_ws_ui_clients(
+            code=aiohttp.WSCloseCode.POLICY_VIOLATION,
+            message=b"Token rotated -- reconnect required",
+            motivo="rotación de token",
+            reabrir=True,
+        )
+
+    async def close_all_ws_ui_clients_on_shutdown(self, _app: web.Application | None = None) -> None:
+        """P1-4: cierra todo socket /ws/ui al apagar el server (hook ``on_shutdown``).
+
+        ``GOING_AWAY`` (1001) y NO ``POLICY_VIOLATION``: el 1008 le dice al
+        cliente que relea el token y reconecte, que es correcto al rotar y
+        desastroso al apagar — una tormenta de reintentos contra un server que
+        se está muriendo.
+
+        ``reabrir=False`` deja la puerta cerrada a handshakes nuevos: a
+        diferencia de la rotación, acá no hay un "después" en el que aceptar
+        conexiones.
+
+        Acepta el ``app`` que aiohttp pasa a las señales y lo ignora.
+        """
+        await self._close_ws_ui_clients(
+            code=aiohttp.WSCloseCode.GOING_AWAY,
+            message=b"Server shutting down",
+            motivo="apagado del server",
+            reabrir=False,
+        )
+
+    async def _close_ws_ui_clients(self, *, code: int, message: bytes, motivo: str, reabrir: bool) -> None:
+        """Cierra los /ws/ui vivos. Compartido por rotación y apagado.
+
+        ``_token_rotating`` actúa acá como "no aceptar handshakes nuevos": la
+        rotación lo baja al terminar (``reabrir=True``), el apagado lo deja
+        arriba.
+        """
         async with self._ws_ui_lock:
             self._token_rotating = True
             stale = list(self._ws_ui_clients)
@@ -175,18 +216,16 @@ class WebApp:
             for ws in stale:
                 try:
                     await asyncio.wait_for(
-                        ws.close(
-                            code=aiohttp.WSCloseCode.POLICY_VIOLATION,
-                            message=b"Token rotated -- reconnect required",
-                        ),
+                        ws.close(code=code, message=message),
                         timeout=ROTATION_CLOSE_TIMEOUT_SECONDS,
                     )
                 except (TimeoutError, ConnectionResetError, OSError, RuntimeError) as exc:
-                    logger.warning("/ws/ui close durante rotación de token falló: %s", exc)
+                    logger.warning("/ws/ui close durante %s falló: %s", motivo, exc)
         finally:
-            async with self._ws_ui_lock:
-                self._token_rotating = False
-        logger.info("Cerrados %d socket(s) /ws/ui por rotación de token.", len(stale))
+            if reabrir:
+                async with self._ws_ui_lock:
+                    self._token_rotating = False
+        logger.info("Cerrados %d socket(s) /ws/ui por %s.", len(stale), motivo)
 
     def _validate_ws_auth(self, request: web.Request) -> bool:
         """X-Auth-Token check for /ws/ui (fail-closed when no auth_manager)."""
