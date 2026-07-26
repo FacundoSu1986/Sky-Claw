@@ -444,7 +444,12 @@ class DatabaseLifecycleManager:
         # sidecars restantes los explica el otro owner. Solo cuando el
         # checkpoint no pudo completarse hay motivo de alarma.
         for db_path in self._db_paths:
-            path_str = str(db_path)
+            # Canonizar: ``get_connection`` indexa ``_connections`` con
+            # ``str(path.resolve())`` y ``checkpoint_all`` hereda esa clave,
+            # pero ``_db_paths`` guarda la ruta tal cual se pasó — y el default
+            # de ``DatabaseAgent`` es la relativa "sky_claw_state.db". Sin
+            # resolver, el lookup de abajo falla siempre justo en producción.
+            path_str = str(db_path.resolve())
             wal_path = Path(path_str + "-wal")
             shm_path = Path(path_str + "-shm")
             if not (wal_path.exists() or shm_path.exists()):

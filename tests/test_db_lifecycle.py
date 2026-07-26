@@ -741,3 +741,40 @@ async def test_sidecars_de_otro_owner_no_se_reportan_como_checkpoint_incompleto(
     # Cerrada la última conexión, SQLite sí eliminó los sidecars.
     assert not (tmp_path / "compartida.db-wal").exists()
     assert not (tmp_path / "compartida.db-shm").exists()
+
+
+async def test_sidecars_con_ruta_relativa_tambien_consultan_el_checkpoint(tmp_path, monkeypatch, caplog) -> None:
+    """El caso de PRODUCCIÓN usa una ruta relativa: la clave debe canonizarse.
+
+    CodeRabbit en #371. ``get_connection`` indexa ``_connections`` con
+    ``str(path.resolve())`` y ``checkpoint_all`` hereda esa clave, pero
+    ``_db_paths`` guarda la ruta tal cual se pasó. ``DatabaseAgent`` usa
+    ``db_path="sky_claw_state.db"`` (relativa) por defecto, así que sin
+    canonizar, el ``checkpoints.get(...)`` del paso 3 falla siempre y vuelve el
+    falso warning justo en el único caso que importa.
+    """
+    import logging
+
+    monkeypatch.chdir(tmp_path)
+    relativa = Path("sky_claw_state.db")
+
+    primero = DatabaseLifecycleManager(db_paths=[relativa])
+    await primero.init_all()
+    await primero.get_connection(str(relativa))
+
+    segundo = DatabaseLifecycleManager(db_paths=[relativa])
+    await segundo.init_all()
+    await segundo.get_connection(str(relativa))
+
+    try:
+        with caplog.at_level(logging.DEBUG, logger="SkyClaw.DatabaseLifecycle"):
+            await primero.shutdown_all()
+
+        assert Path("sky_claw_state.db-wal").exists()
+        avisos = [r for r in caplog.records if r.levelno >= logging.WARNING and "WAL/SHM" in r.getMessage()]
+        assert avisos == [], (
+            "con ruta relativa la clave del checkpoint no matcheó y volvió el falso "
+            f"warning: {[r.getMessage() for r in avisos]}"
+        )
+    finally:
+        await segundo.shutdown_all()
