@@ -135,7 +135,10 @@ class TestRunDaemonsAndInterface:
         return d
 
     @pytest.mark.asyncio
-    async def test_daemon_crash_propaga_y_cancela_al_resto(self) -> None:
+    async def test_daemon_crash_propaga_y_cancela_al_resto(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
         """Si un loop de demonio explota, la excepción se propaga (fail-fast)."""
         import asyncio
 
@@ -153,8 +156,15 @@ class TestRunDaemonsAndInterface:
 
         sup = self._bare_supervisor_with_daemons(maintenance, telemetry, crashing, _interface_forever)
 
-        with pytest.raises(RuntimeError, match="watcher loop reventó"):
+        with (
+            caplog.at_level(logging.CRITICAL),
+            pytest.raises(RuntimeError, match="watcher loop reventó"),
+        ):
             await sup._run_daemons_and_interface()
+
+        record = next(item for item in caplog.records if getattr(item, "event", "") == "supervisor_task_failed")
+        assert record.task_name == "daemon-watcher"
+        assert record.exc_info is not None
 
     @pytest.mark.asyncio
     async def test_interface_retorna_apaga_con_gracia(self) -> None:

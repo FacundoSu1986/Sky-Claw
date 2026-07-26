@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import pathlib
 import subprocess
 import sys
@@ -538,7 +539,10 @@ async def test_cancelacion_despues_del_resultado_preserva_confirmacion_terminal(
         await broker.close()
 
 
-async def test_worker_exit_sin_resultado_falla_sin_esperar_timeout(tmp_path: pathlib.Path) -> None:
+async def test_worker_exit_sin_resultado_falla_sin_esperar_timeout(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     mo2, data, challenge, job = _entorno(tmp_path)
     broker = VfsExecutionBroker(
         instance_id="portable-main",
@@ -551,21 +555,27 @@ async def test_worker_exit_sin_resultado_falla_sin_esperar_timeout(tmp_path: pat
     try:
         pending = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
         await read_authenticated_message(reader, secret)
-        await write_authenticated_message(
-            writer,
-            {
-                "protocol_version": VFS_PROTOCOL_VERSION,
-                "type": "event",
-                "event": "worker_exit",
-                "job_id": job.job_id,
-                "wait_ok": True,
-                "exit_code": 70,
-            },
-            secret,
-        )
+        with caplog.at_level(logging.ERROR, logger="sky_claw.local.mo2.vfs_broker"):
+            await write_authenticated_message(
+                writer,
+                {
+                    "protocol_version": VFS_PROTOCOL_VERSION,
+                    "type": "event",
+                    "event": "worker_exit",
+                    "job_id": job.job_id,
+                    "wait_ok": True,
+                    "exit_code": 70,
+                },
+                secret,
+            )
 
-        with pytest.raises(VfsWorkerDisconnectedError, match="70"):
-            await asyncio.wait_for(pending, timeout=1)
+            with pytest.raises(VfsWorkerDisconnectedError, match="70"):
+                await asyncio.wait_for(pending, timeout=1)
+
+        record = next(item for item in caplog.records if getattr(item, "event", "") == "worker_exit")
+        assert record.job_id == job.job_id
+        assert record.tool == job.tool_id
+        assert record.exit_code == 70
     finally:
         writer.close()
         await writer.wait_closed()

@@ -2,14 +2,15 @@
 
 > **Audiencia:** maintainers y responsables de entrega.
 >
-> **Estado:** Parcial; existe packaging y CI, no una release GA firmada
-> verificada en el árbol actual.
+> **Estado:** Releases publicadas hasta `v0.2.4`; los cambios del árbol actual
+> permanecen en `[Unreleased]`.
 >
 > **Fuentes canónicas:** `.github/workflows/ci.yml`,
 > `.github/workflows/release.yml`, `sky_claw.spec`, `build.bat`,
 > `CHANGELOG.md` y `DEPLOYMENT.md`.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación:** 2026-07-26 sobre
+> `codex/crash-logging-async-safe` `74bdb8f`.
 
 ## Qué existe
 
@@ -17,19 +18,25 @@
 - Build PyInstaller y artifact de CI.
 - Lockfiles `requirements.lock` y `uv.lock`.
 - Runbook de deployment y checklist de rig real.
+- La release `v0.2.4`, cuyo workflow terminó correctamente, publicó
+  `SkyClawApp.exe`, el SBOM SPDX y `SkyClawApp.exe.bundle.json`.
+- `.github/workflows/release.yml` ejecuta `Cosign sign-blob` keyless mediante
+  OIDC y publica el bundle junto con el ejecutable y el SBOM.
+
+## Cosign no equivale a Authenticode
+
+El bundle Cosign aporta material para verificar la firma del blob descargado,
+pero no establece una identidad de publisher de Windows. El workflow contiene
+`Cosign sign-blob`, pero no incluye un paso de Authenticode ni `signtool`; esa
+ausencia describe el pipeline actual, no la firma PE del artefacto histórico.
 
 ## Qué no debe afirmarse todavía
 
-La documentación actual no aporta evidencia de:
-
-- tag de versión publicado;
-- binario firmado y validado;
-- firma cosign;
-- SBOM publicado como artefacto de release;
-- instalador GA validado en un host limpio.
-
-Estas capacidades deben figurar como pendientes hasta que el workflow y una
-release concreta produzcan evidencia inspeccionable.
+Esta actualización documental no verificó criptográficamente el bundle de
+`v0.2.4`, no hizo cold boot de `SkyClawApp.exe` y no inspeccionó la firma PE del
+artefacto histórico. Authenticode, identidad de publisher y comportamiento de
+SmartScreen permanecen sin verificación independiente aquí. La existencia del
+workflow, sus assets y una ejecución exitosa no sustituye esos smokes.
 
 ## Gate documental previo
 

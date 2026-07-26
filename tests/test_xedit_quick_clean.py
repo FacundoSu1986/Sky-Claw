@@ -8,6 +8,7 @@ rollback), serialización ante lock tomado y manejo de fallos.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -170,6 +171,36 @@ async def test_runner_quick_auto_clean_exit_cero_con_error_parseado_falla(
     assert result.exit_code == 0
     assert result.errors == ["fallo al guardar Update.esm"]
     assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_runner_quick_auto_clean_nonzero_registra_stderr(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    xedit = tmp_path / "SSEEdit.exe"
+    xedit.touch()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+    runner = XEditRunner(xedit_path=xedit, game_path=game)
+
+    async def fake_run_capture(
+        _args: list[str],
+        **_kwargs: object,
+    ) -> tuple[bytes, bytes, int]:
+        return b"", b"Fatal: archivo bloqueado\n", 5
+
+    monkeypatch.setattr("sky_claw.local.xedit.runner.run_capture", fake_run_capture)
+    with caplog.at_level(logging.ERROR, logger="sky_claw.local.xedit.runner"):
+        result = await runner.quick_auto_clean("Update.esm")
+
+    assert result.success is False
+    record = next(item for item in caplog.records if getattr(item, "event", "") == "external_process_failed")
+    assert record.operation == "xedit_quick_auto_clean"
+    assert record.exit_code == 5
+    assert record.stderr == "Fatal: archivo bloqueado\n"
+    assert record.pipeline_stage == 1
 
 
 @pytest.mark.asyncio

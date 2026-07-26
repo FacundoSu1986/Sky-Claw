@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import pathlib
+import re
 import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -22,12 +23,24 @@ from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, verify_vfs_a
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, JsonValue, VfsJobResult
 from sky_claw.local.mo2.vfs_ipc import read_authenticated_message, write_authenticated_message
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest, read_worker_manifest
+from sky_claw.logging_config import (
+    default_log_dir,
+    setup_logging,
+    shutdown_logging,
+    subprocess_error_extra,
+)
 
 logger = logging.getLogger(__name__)
 
 _GRANDCHILD_TIMEOUT_SECONDS = 10.0
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
 _RESULT_ACK_TIMEOUT_SECONDS = 5.0
+
+
+def _worker_log_name(job_id: str) -> str:
+    """Construye un nombre de log seguro y estable para el job."""
+    safe_job_id = re.sub(r"[^A-Za-z0-9_-]+", "-", job_id).strip("-_")
+    return f"vfs-worker-{safe_job_id or 'unknown'}.log"
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,6 +493,12 @@ def worker_main(argv: list[str] | None = None) -> int:
         return run_probe_child(args.probe_path, args.probe_sha256)
     if args.descriptor is None or not args.job_id:
         return 64
+    setup_logging(
+        log_dir=default_log_dir() / "workers",
+        log_file=_worker_log_name(args.job_id),
+        process_role="vfs_worker",
+        console_stream=None,
+    )
     try:
         result = asyncio.run(
             run_worker_session(
@@ -489,11 +508,48 @@ def worker_main(argv: list[str] | None = None) -> int:
             )
         )
     except (OSError, RuntimeError, ValueError) as exc:
-        logger.error("VFS worker bootstrap falló: %s", exc, exc_info=True)
-        return 70
-    if result is None:
-        return 2
-    return 0 if result.success else 1
+        logger.error(
+            "VFS worker bootstrap falló: %s",
+            exc,
+            exc_info=True,
+            extra={
+                "event": "vfs_worker_failed",
+                "operation": "vfs_worker",
+                "job_id": args.job_id,
+            },
+        )
+        result_code = 70
+    except Exception:
+        logger.critical(
+            "VFS worker terminó por una excepción no manejada",
+            exc_info=True,
+            extra={
+                "event": "vfs_worker_unhandled_exception",
+                "operation": "vfs_worker",
+                "job_id": args.job_id,
+            },
+        )
+        shutdown_logging()
+        raise
+    except BaseException:
+        shutdown_logging()
+        raise
+    else:
+        if result is not None and not result.success:
+            logger.error(
+                "VFS worker %s termino con fallo",
+                result.job_id,
+                extra=subprocess_error_extra(
+                    operation="vfs_worker",
+                    tool="VFS",
+                    job_id=result.job_id,
+                    exit_code=result.exit_code,
+                    stderr=result.stderr,
+                ),
+            )
+        result_code = 2 if result is None else (0 if result.success else 1)
+    shutdown_logging()
+    return result_code
 
 
 if __name__ == "__main__":

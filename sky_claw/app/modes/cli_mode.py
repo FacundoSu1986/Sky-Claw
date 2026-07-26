@@ -6,7 +6,7 @@ import sys
 import uuid
 from typing import TYPE_CHECKING
 
-from sky_claw.logging_config import correlation_id_var
+from sky_claw.logging_config import correlation_id_var, flush_logging
 
 if TYPE_CHECKING:
     from sky_claw.app_context import AppContext
@@ -24,6 +24,7 @@ async def _run_cli(ctx: AppContext) -> None:
     chat_id = "cli-session"
     while True:
         try:
+            await asyncio.to_thread(flush_logging, timeout_s=1.0)
             user_input = await asyncio.to_thread(input, "you> ")
         except (EOFError, KeyboardInterrupt):
             logger.info("Bye!")

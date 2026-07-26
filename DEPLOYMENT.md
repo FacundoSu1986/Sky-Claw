@@ -2,14 +2,16 @@
 
 > **Audiencia:** operadores y responsables de release.
 > **Fuente canónica:** runtime, CI y packaging del árbol actual.
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación:** 2026-07-26 sobre
+> `codex/crash-logging-async-safe` `74bdb8f`.
 
 Operational guide for deploying, running and recovering Sky-Claw. For the
 quick-start install flow see [QUICKSTART.md](QUICKSTART.md); this document
 covers the production/operations gap: configuration, secrets, observability,
 failure handling and the pre-flight checklist for a real end-to-end run.
 
-> **Estado:** release-candidate, no GA. Los cimientos (locks, rollback, redacción,
+> **Estado:** existen releases publicadas hasta `v0.2.4`; los cambios del árbol
+> actual siguen bajo `[Unreleased]`. Los cimientos (locks, rollback, redacción,
 > SSRF, HITL) son de grado producción; lo que sigue abierto está en
 > [Limitaciones conocidas](#9-limitaciones-conocidas).
 
@@ -88,8 +90,9 @@ entorno bloqueado: `uv sync --locked --extra dev`.
 arranca en **modo GUI por defecto** (`__main__.py` fija `mode=gui` cuando
 `sys.frozen`).
 
-> ⚠️ **Pendiente de release:** no hay tag de versión (CHANGELOG está en
-> `[Unreleased]`) ni binario firmado/validado. Ver [Limitaciones](#9-limitaciones-conocidas).
+> La release `v0.2.4` publicó `SkyClawApp.exe`, su SBOM y el bundle de firma
+> Cosign `SkyClawApp.exe.bundle.json`. Los cambios del árbol actual permanecen
+> en `[Unreleased]`; no forman parte de esa release.
 
 ---
 
@@ -194,30 +197,53 @@ precondición de `_run_telegram()`.
 
 ## 6. Observabilidad — ¿dónde queda registrado si algo falla?
 
-`setup_logging()` (`logging_config.py:208`) se invoca en todos los modos al
-arranque. Produce **logs JSON rotativos (10 MB × 5 backups)** en `logs/`, con
-`correlation_id` por línea y **redacción de secretos** (API keys, tokens, Bearer,
-PII, query-strings) ya aplicada en disco:
+`setup_logging()` se invoca antes de crear el event loop en todos los modos.
+El productor sólo redacta, enriquece y usa `put_nowait()` sobre una cola
+acotada; un listener dedicado realiza la apertura, escritura, flush y rotación.
+Produce **logs JSON rotativos (10 MB × 5 backups)** bajo
+`~/.sky_claw/logs/`, con `correlation_id`, `trace_id`, PID, hilo, rol de proceso
+y task por línea. La **redacción de secretos** (API keys, tokens, Bearer, PII y
+query-strings) ocurre antes de cruzar al listener.
 
 | Archivo | Contenido |
 |---|---|
-| `logs/sky_claw.log` | App principal — **todos los niveles, incluido ERROR**. Es el log a mirar primero. |
-| `logs/watcher.log` | Subsistema watcher (`SkyClaw.Watcher`, `propagate=False`). |
-| `logs/watcher_security.log` | Eventos de seguridad. |
+| `~/.sky_claw/logs/sky_claw.log` | App principal: todos los niveles, incluido `ERROR`. Es el log a mirar primero. |
+| `~/.sky_claw/logs/crash.log` | Todos los eventos `ERROR+`, incluidos watcher y seguridad. |
+| `~/.sky_claw/logs/watcher.log` | Subsistema `SkyClaw.Watcher`. |
+| `~/.sky_claw/logs/watcher_security.log` | Eventos de `SkyClaw.Security`. |
+| `~/.sky_claw/logs/workers/vfs-worker-<job_id>.log` | Evidencia y traceback del worker VFS aislado por job. |
 
-> Nota: `CorrelationFilter` calcula un `trace_id` de OTEL en el record, pero el
-> formatter JSON actual solo emite `correlation_id` (no `trace_id`). Para
-> correlacionar con un trace de OTEL hay que agregar `trace_id` al formatter.
+La cola principal admite 8192 eventos. Si se satura, los productores nunca
+esperan: los eventos `WARNING` y menores pueden perderse y la pérdida se
+contabiliza. Un deque de emergencia conserva como máximo 256 eventos
+`ERROR/CRITICAL` para reinyección; si también se llena, expulsa el evento
+`ERROR/CRITICAL` más antiguo. Un fallo de permisos, disco lleno, apertura o
+rotación marca el runtime de logging como degradado y aplica reintentos
+espaciados; no se escribe un fallback síncrono desde asyncio ni se propaga el
+fallo a la aplicación. Cualquier mecanismo futuro de health-check o
+recuperación debe mantener el I/O bloqueante fuera del event loop.
+Si Windows bloquea el renombrado de una rotación (`WinError 32/5`), el rollover
+se difiere y el listener continúa escribiendo en el archivo base hasta el
+siguiente intento.
 
 Garantías relevantes para un run real:
-- **Excepciones no manejadas del event loop (modos no-GUI)**:
-  `_install_loop_exception_handler()` (`__main__.py:129`) se instala en la rama
-  `asyncio.run` de `_main()` — es decir **cli / oneshot / telegram / security**.
-  Enruta a `logger.error(..., exc_info=exc)`; pasar la **instancia** de excepción
-  sí adjunta el traceback (logging la convierte a `(type, exc, exc.__traceback__)`),
-  así que la tarea fire-and-forget que falle queda en `logs/sky_claw.log` con
-  stack y `correlation_id`. **En modo GUI este handler NO se instala** — NiceGUI/
-  uvicorn manejan su propio loop; ahí confiá en el log + el handler de uvicorn.
+- **Excepciones no manejadas del event loop (incluida GUI)**:
+  `install_loop_exception_handler()` se instala en `_main()` y también en el
+  bootstrap del loop de NiceGUI. Las tasks creadas por `AppContext._track_task()`
+  consumen inmediatamente su excepción y registran nombre, contexto y traceback;
+  las tasks huérfanas caen al handler del loop. La cancelación normal no se
+  registra como crash.
+- **Subprocesos y VFS**: LOOT y xEdit registran los non-zero como `ERROR` con
+  `exit_code` y `stderr`. Hasta 64 KiB se conserva completo; para salidas mayores
+  se guarda el tail, tamaño original, SHA-256 y `stderr_truncated=true`. Un
+  `worker_exit` sin `job_result` queda atribuido al job y tool en el broker.
+- **GUI empaquetada**: si `stdout`/`stderr` son `None`, se conectan a adaptadores
+  de texto del pipeline con `write()`, `flush()`, `isatty()`, `writable()` y
+  `fileno()` compatibles con `TextIOBase`. Ya no se crea el archivo lateral
+  `sky_claw_startup.log`. El watchdog registra `gui_watchdog_shutdown` antes de
+  solicitar `app.shutdown`; el `finally` exterior drena y cierra el listener
+  después de los hooks de NiceGUI y `AppContext.stop()`. El stdout del probe VFS
+  sigue reservado exclusivamente para su hash de protocolo.
 - **Audit trail en SQLite** (aparte de los logs de texto), en
   `sky_claw/app/db/journal.py`: la tabla `journal_entries` registra cada
   operación con estado `started/completed/failed/rolled_back`; la tabla
@@ -231,10 +257,10 @@ Garantías relevantes para un run real:
 # correr con DEBUG
 python -m sky_claw --mode cli -v
 # filtrar errores del log JSON
-grep '"levelname": "ERROR"' logs/sky_claw.log            # bash/WSL
-Select-String '"levelname": "ERROR"' logs\sky_claw.log   # PowerShell
+grep '"level": "ERROR"' ~/.sky_claw/logs/sky_claw.log
+Select-String '"level": "ERROR"' "$HOME\.sky_claw\logs\sky_claw.log"
 # seguir el hilo de una operación por su correlation_id
-grep '<correlation_id>' logs/sky_claw.log
+grep '<correlation_id>' ~/.sky_claw/logs/sky_claw.log
 ```
 
 ---
@@ -263,10 +289,13 @@ MO2 descartable la primera vez):
 - [ ] Proveedor LLM elegido entre los soportados: `anthropic` / `deepseek` / `openai` / `ollama`.
 - [ ] Suite local en verde: `pytest -q`.
 - [ ] Gates: `ruff check sky_claw/ tests/`, `ruff format --check sky_claw/ tests/` y `mypy sky_claw/`.
-- [ ] `logs/` escribible; correr con `-v` la primera vez.
+- [ ] `~/.sky_claw/logs/` escribible; correr con `-v` la primera vez. Si no lo
+  está, Sky-Claw debe continuar y el logging queda degradado.
 - [ ] Perfil de MO2 respaldado (el rollback cubre operaciones del agente, pero un backup externo es barato).
 - [ ] Validar preview y dry-run siguiendo el orden canónico de `sky_claw/local/AGENTS.md` **antes** de un run con mutaciones reales.
-- [ ] Tras el run: revisar `logs/sky_claw.log` por `ERROR`; en el journal, `transactions` con estado `pending`/`rolled_back` (transacción no confirmada) y `journal_entries` con estado `failed` (operación caída).
+- [ ] Tras el run: revisar `~/.sky_claw/logs/crash.log`; en el journal,
+  `transactions` con estado `pending`/`rolled_back` (transacción no confirmada)
+  y `journal_entries` con estado `failed` (operación caída).
 
 ---
 
@@ -277,9 +306,11 @@ Honestidad operativa — esto sigue abierto y conviene saberlo antes de producci
 - **Validación de rig real parcial** — existe evidencia histórica del canary
   brokerizado, pero no cubre todos los runners ni todos los escenarios; ver
   `docs/operations/real_rig_validation.md`.
-- **Sin tag de release ni binario firmado/validado** (CHANGELOG `[Unreleased]`).
+- **Evidencia de publisher de Windows pendiente** — Cosign no equivale a
+  Authenticode. El workflow incluye `Cosign sign-blob`, pero no un paso de
+  Authenticode ni `signtool`; esta tarea no inspeccionó la firma PE histórica.
+  Los cambios actuales siguen en `[Unreleased]`.
 - **Frontera de tipos parcial** — el override de mypy con `ignore_errors=true` cubre **prácticamente todo `sky_claw.*` / `sky_claw.app.*`**, con re-habilitación puntual de checks en un subconjunto de `core.*` y en `orchestrator.sync_engine`. El grueso del código no está type-checked aún.
-- **Loop-exception handler solo en modos no-GUI** — en GUI la captura de excepciones del loop depende de NiceGUI/uvicorn, no del handler de `__main__`.
 - **Estado vivo** — consultar `docs/pending_ooda_status.md` y reverificar cada
   ítem contra el árbol actual; un roadmap o auditoría fechada no sustituye esa
   comprobación.
@@ -290,7 +321,12 @@ Honestidad operativa — esto sigue abierto y conviene saberlo antes de producci
 
 Workflow estándar para publicar una nueva versión de Sky-Claw. El empaquetado se realiza con PyInstaller usando el spec `sky_claw.spec` (que autoderiva el `VERSIONINFO` de la versión del paquete en `pyproject.toml`).
 
-> **Estado actual:** Sin tag de versión, CHANGELOG en `[Unreleased]`. Este proceso está documentado para futuras releases GA; la sección 9 lista las limitaciones pendientes (sin binario firmado/validado).
+> **Estado actual:** GitHub contiene releases hasta `v0.2.4`. El workflow
+> publicado construyó `SkyClawApp.exe`, generó un SBOM SPDX, ejecutó
+> `Cosign sign-blob` keyless y adjuntó `SkyClawApp.exe.bundle.json`; su ejecución
+> para `v0.2.4` terminó correctamente. Los cambios del árbol actual siguen en
+> `[Unreleased]`. Esta tarea no verificó criptográficamente el bundle, no hizo
+> cold boot del ejecutable ni inspeccionó la firma PE del artefacto histórico.
 
 ### 10.1 Checklist de Release
 
@@ -326,9 +362,19 @@ Tras generar el `.exe`:
 1.  **Arranque en modo GUI:** Ejecutar `SkyClawApp.exe` en una máquina limpia (sin Python instalado). Debe arrancar en modo GUI por defecto (`sys.frozen`).
 2.  **Arranque en modo CLI:** Probar `SkyClawApp.exe --mode cli -v` para verificar logs y que el handler de excepciones del loop funciona.
 3.  **Validación de Bridge:** Correr `SkyClawApp.exe --mode install-vfs-bridge --mo2-root "D:\MO2Portable"` y validar el smoke de §2.
-4.  **Artifact Tagging:** Crear el tag de git (`git tag -a v0.x.0 -m "Release v0.x.0"`) y pushear (`git push origin v0.x.0`). Subir el binario (o el instalador Inno Setup si se genera) al release de GitHub.
+4.  **Artifact Tagging:** Sustituir `<version>` por la versión SemVer ya
+    declarada en `pyproject.toml`; crear el tag
+    (`git tag -a "v<version>" -m "Release v<version>"`) y pushearlo
+    (`git push origin "v<version>"`). El push dispara
+    `.github/workflows/release.yml`, que publica el ejecutable, el bundle Cosign
+    y el SBOM en GitHub Releases. Los comandos con `<version>` son plantillas,
+    no deben ejecutarse literalmente.
 
-> **Firma pendiente:** Actualmente no se firma el `.exe` con un certificado Authenticode. Los usuarios pueden encontrar advertencias de SmartScreen; documentar el workaround (Advanced → Continue) en el README de la release.
+> **Firmas distintas:** Cosign no equivale a Authenticode. El workflow firma el
+> blob y publica el material en `SkyClawApp.exe.bundle.json`, pero no incluye un
+> paso de Authenticode ni `signtool`. Esta tarea no inspeccionó la firma PE del
+> artefacto histórico; la identidad de publisher y SmartScreen permanecen sin
+> verificación independiente.
 
 La separación entre operación diaria, observabilidad, recuperación, release y
 smoke real se mantiene en [docs/operations](docs/operations/README.md).

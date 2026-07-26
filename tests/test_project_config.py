@@ -81,3 +81,20 @@ def test_locks_no_conservan_dependencias_del_stategraph_retirado() -> None:
             f"requirements.lock todavía instala {dependencia}"
         )
         assert f'name = "{dependencia}"' not in uv_lock, f"uv.lock todavía instala {dependencia}"
+
+
+def test_modulos_de_logging_tienen_override_mypy_strict() -> None:
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+    target_modules = {
+        "sky_claw._logging_runtime",
+        "sky_claw.logging_config",
+        "sky_claw.__main__",
+    }
+    strict_modules: set[str] = set()
+    for override in pyproject["tool"]["mypy"]["overrides"]:
+        if override.get("strict") is True and override.get("ignore_errors") is False:
+            strict_modules.update(override["module"])
+        if override.get("ignore_errors") is True:
+            assert target_modules.isdisjoint(override["module"])
+    assert target_modules <= strict_modules

@@ -1,18 +1,30 @@
 import asyncio
 import contextlib
 import getpass
+import hashlib
 import logging
-import logging.handlers
-import os
+import pathlib
+import queue
 import re
 import sys
-from collections.abc import Mapping
+import threading
+import time
+from collections.abc import Callable, Mapping
 from contextvars import ContextVar
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol, TextIO, cast
 
 from pythonjsonlogger import json
 
-from sky_claw.config import Config
+if TYPE_CHECKING:
+    from opentelemetry.context import Context as _OtelContext
+
+from sky_claw._logging_runtime import (
+    FailSafeRotatingFileHandler,
+    LoggerStream,
+    LoggingHealth,
+    LoggingRuntime,
+    NonBlockingQueueHandler,
+)
 
 logger = logging.getLogger("sky_claw")
 
@@ -23,19 +35,40 @@ correlation_id_var: ContextVar[str] = ContextVar("correlation_id", default="")
 #: ``correlation_id``): ambos los setea CorrelationFilter, pero sin declararlo
 #: aquí quedaba a merced del extra-merge de pythonjsonlogger (que solo lo emite
 #: si el record ya trae el atributo). Como campo requerido, siempre aparece.
-_JSON_LOG_FORMAT = "%(asctime)s %(levelname)s %(correlation_id)s %(trace_id)s %(name)s %(message)s"
-
-# Get current configuration and user for redaction
-_GLOBAL_CFG = Config()
+_JSON_LOG_FORMAT = (
+    "%(asctime)s %(levelname)s %(correlation_id)s %(trace_id)s "
+    "%(process_role)s %(process)d %(threadName)s %(task_name)s "
+    "%(name)s %(message)s %(exc_text)s"
+)
 
 
 _USERNAME_LOOKUP_ERRORS = (OSError, KeyError, ImportError)
 _NO_TRACE_ID = "0" * 32
 
+
+class _SpanContext(Protocol):
+    @property
+    def is_valid(self) -> bool: ...
+
+    @property
+    def trace_id(self) -> int: ...
+
+
+class _Span(Protocol):
+    def get_span_context(self) -> _SpanContext: ...
+
+
+class _GetCurrentSpan(Protocol):
+    def __call__(self, context: "_OtelContext | None" = None) -> _Span: ...
+
+
+_get_current_span: _GetCurrentSpan | None
 try:
-    from opentelemetry import trace as _otel_trace
+    from opentelemetry.trace import get_current_span as _imported_get_current_span
 except ImportError:
-    _otel_trace = None
+    _get_current_span = None
+else:
+    _get_current_span = _imported_get_current_span
 
 
 def _resolve_current_user() -> str:
@@ -118,12 +151,22 @@ class SecurityRedactionFilter(logging.Filter):
 
     _MAX_DEPTH: int = 64  # Guard against pathologically deep (non-cyclic) structures.
 
+    def __init__(
+        self,
+        *,
+        telegram_chat_id: str = "",
+        chat_id_provider: Callable[[], str] | None = None,
+    ) -> None:
+        super().__init__()
+        self._telegram_chat_id = telegram_chat_id
+        self._chat_id_provider = chat_id_provider
+
     def _redact(self, text: str) -> str:
         if not isinstance(text, str):
             return text
 
         # Mask Telegram Chat ID if configured
-        chat_id = str(_GLOBAL_CFG.telegram_chat_id)
+        chat_id = self._chat_id_provider() if self._chat_id_provider is not None else self._telegram_chat_id
         if chat_id and len(chat_id) > 5:
             text = text.replace(chat_id, "[REDACTED]")
 
@@ -179,8 +222,7 @@ class SecurityRedactionFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         # Redact the main message
-        if isinstance(record.msg, str):
-            record.msg = self._redact(record.msg)
+        record.msg = self._redact_value(record.msg)
 
         # Redact any string arguments passed to the logger
         if record.args:
@@ -213,17 +255,38 @@ class CorrelationFilter(logging.Filter):
     """Filter that adds correlation_id and trace_id from context to each record."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.correlation_id = correlation_id_var.get()  # type: ignore[attr-defined]
+        record.correlation_id = correlation_id_var.get()
         trace_id = _NO_TRACE_ID
-        if _otel_trace is not None:
+        if _get_current_span is not None:
             try:
-                span = _otel_trace.get_current_span()
+                span = _get_current_span()
                 ctx = span.get_span_context()
                 if ctx.is_valid:
                     trace_id = format(ctx.trace_id, "032x")
             except AttributeError:
                 pass
-        record.trace_id = trace_id  # type: ignore[attr-defined]
+        record.trace_id = trace_id
+        return True
+
+
+class RuntimeContextFilter(logging.Filter):
+    """Captura contexto del productor antes de cruzar al hilo listener."""
+
+    def __init__(self, process_role: str) -> None:
+        super().__init__()
+        self._process_role = process_role
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        task_name = ""
+        with contextlib.suppress(RuntimeError):
+            task = asyncio.current_task()
+            if task is not None:
+                task_name = task.get_name()
+        record.process_role = self._process_role
+        if not hasattr(record, "task_name"):
+            record.task_name = task_name
+        if not hasattr(record, "event"):
+            record.event = "log"
         return True
 
 
@@ -242,66 +305,285 @@ def install_loop_exception_handler() -> None:
     def _handler(_loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
         exc = context.get("exception")
         exc_info = (type(exc), exc, exc.__traceback__) if isinstance(exc, BaseException) else None
+        task = context.get("task") or context.get("future")
+        task_name = task.get_name() if isinstance(task, asyncio.Task) else ""
         logger.error(
             "Unhandled event-loop exception: %s",
             context.get("message", ""),
             exc_info=exc_info,
+            extra={
+                "event": "event_loop_exception",
+                "task_name": task_name,
+            },
         )
 
     with contextlib.suppress(RuntimeError):
         asyncio.get_running_loop().set_exception_handler(_handler)
 
 
-def setup_logging(level: int = logging.INFO, log_file: str = "sky_claw.log"):
-    """Set up structured logging with rotation and specialized handlers."""
-    root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+class _LoggerPrefixFilter(logging.Filter):
+    def __init__(self, prefix: str) -> None:
+        super().__init__()
+        self._prefix = prefix
 
-    # Remove existing handlers to avoid duplication during re-config
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.name.startswith(self._prefix)
 
-    corr_filter = CorrelationFilter()
-    redact_filter = SecurityRedactionFilter()
 
-    # 10 MB per file, 5 backups
-    max_bytes = 10 * 1024 * 1024
-    backup_count = 5
+class _ExcludeEventFilter(logging.Filter):
+    def __init__(self, event: str) -> None:
+        super().__init__()
+        self._event = event
 
-    # --- Console Handler ---
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_formatter = logging.Formatter("%(asctime)s [%(levelname)s] [%(correlation_id)s] %(name)s: %(message)s")
-    console_handler.setFormatter(console_formatter)
-    console_handler.addFilter(corr_filter)
-    console_handler.addFilter(redact_filter)
-    root_logger.addHandler(console_handler)
+    def filter(self, record: logging.LogRecord) -> bool:
+        return getattr(record, "event", "") != self._event
 
-    # --- File Handlers (Rotating) ---
-    os.makedirs("logs", exist_ok=True)
 
-    json_formatter = json.JsonFormatter(_JSON_LOG_FORMAT)
+_QUEUE_CAPACITY = 8192
+_MAX_BYTES = 10 * 1024 * 1024
+_BACKUP_COUNT = 5
+_CONSOLE_DEFAULT = object()
+_MAX_STDERR_BYTES = 64 * 1024
+_runtime: LoggingRuntime | None = None
+_runtime_lock = threading.Lock()
+_telegram_chat_id_for_redaction = ""
 
-    def _add_rotating_handler(logger_obj, filename, propagate=True):
-        file_path = os.path.join("logs", filename)
-        handler = logging.handlers.RotatingFileHandler(
-            file_path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+
+def default_log_dir() -> pathlib.Path:
+    """Directorio persistente y estable para todos los modos de ejecución."""
+    return pathlib.Path.home() / ".sky_claw" / "logs"
+
+
+def subprocess_error_extra(
+    *,
+    operation: str,
+    tool: str,
+    exit_code: int | None,
+    stderr: str,
+    job_id: str | None = None,
+    child_pid: int | None = None,
+    pipeline_stage: int | None = None,
+) -> dict[str, object]:
+    """Normaliza evidencia terminal sin permitir logs de tamaño ilimitado."""
+    stderr_bytes = stderr.encode("utf-8", errors="replace")
+    truncated = len(stderr_bytes) > _MAX_STDERR_BYTES
+    if truncated:
+        rendered_stderr = stderr_bytes[-_MAX_STDERR_BYTES:].decode(
+            "utf-8",
+            errors="replace",
         )
-        handler.setFormatter(json_formatter)
-        handler.addFilter(corr_filter)
-        handler.addFilter(redact_filter)
-        logger_obj.addHandler(handler)
-        if not propagate:
-            logger_obj.propagate = False
+        while len(rendered_stderr.encode("utf-8")) > _MAX_STDERR_BYTES:
+            rendered_stderr = rendered_stderr[1:]
+    else:
+        rendered_stderr = stderr
 
-    # Main application log
-    _add_rotating_handler(root_logger, log_file)
+    extra: dict[str, object] = {
+        "event": "external_process_failed",
+        "operation": operation,
+        "tool": tool,
+        "exit_code": exit_code,
+        "stderr": rendered_stderr,
+        "stderr_size": len(stderr_bytes),
+        "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        "stderr_truncated": truncated,
+    }
+    if job_id is not None:
+        extra["job_id"] = job_id
+    if child_pid is not None:
+        extra["child_pid"] = child_pid
+    if pipeline_stage is not None:
+        extra["pipeline_stage"] = pipeline_stage
+    return extra
 
-    # Specialized Watcher Log
-    watcher_logger = logging.getLogger("SkyClaw.Watcher")
-    _add_rotating_handler(watcher_logger, "watcher.log", propagate=False)
 
-    # Specialized Security Log
-    security_logger = logging.getLogger("SkyClaw.Security")
-    _add_rotating_handler(security_logger, "watcher_security.log", propagate=False)
+def _resolve_telegram_chat_id() -> str:
+    """Carga lazy y fail-safe: importar logging nunca toca TOML ni keyring."""
+    try:
+        from sky_claw.config import Config
 
-    logging.info("Logging initialized (Rotating Enabled) - Core and Specialized Watchers")
+        return str(Config().telegram_chat_id or "")
+    except Exception:
+        return ""
+
+
+def _current_telegram_chat_id() -> str:
+    """Lectura en memoria usada por el filtro productor; nunca realiza I/O."""
+    return _telegram_chat_id_for_redaction
+
+
+def update_logging_redaction_context(*, telegram_chat_id: str) -> None:
+    """Actualiza valores redactables tras guardar configuración, sin reiniciar."""
+    global _telegram_chat_id_for_redaction
+    _telegram_chat_id_for_redaction = str(telegram_chat_id or "")
+
+
+def _json_formatter() -> json.JsonFormatter:
+    formatter = json.JsonFormatter(
+        _JSON_LOG_FORMAT,
+        datefmt="%Y-%m-%dT%H:%M:%SZ",
+        rename_fields={
+            "asctime": "timestamp",
+            "levelname": "level",
+            "name": "logger",
+            "process": "pid",
+            "threadName": "thread",
+            "exc_text": "exc_info",
+        },
+    )
+    formatter.converter = time.gmtime
+    return formatter
+
+
+def _file_handler(
+    path: pathlib.Path,
+    *,
+    health: LoggingHealth,
+    formatter: logging.Formatter,
+) -> FailSafeRotatingFileHandler:
+    handler = FailSafeRotatingFileHandler(
+        path,
+        max_bytes=_MAX_BYTES,
+        backup_count=_BACKUP_COUNT,
+        health=health,
+    )
+    handler.setFormatter(formatter)
+    return handler
+
+
+def setup_logging(
+    level: int = logging.INFO,
+    log_file: str = "sky_claw.log",
+    *,
+    log_dir: pathlib.Path | None = None,
+    process_role: str = "app",
+    console_stream: TextIO | None | object = _CONSOLE_DEFAULT,
+) -> LoggingRuntime:
+    """Configura un único pipeline no bloqueante para el proceso actual."""
+    global _runtime
+    with _runtime_lock:
+        if _runtime is not None:
+            logging.getLogger().setLevel(level)
+            return _runtime
+
+        target_dir = default_log_dir() if log_dir is None else pathlib.Path(log_dir)
+        health = LoggingHealth()
+        file_ready = True
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            health.record_file_error()
+            file_ready = False
+
+        records: queue.Queue[logging.LogRecord | None] = queue.Queue(maxsize=_QUEUE_CAPACITY)
+        queue_handler = NonBlockingQueueHandler(records, health)
+        queue_handler.addFilter(CorrelationFilter())
+        queue_handler.addFilter(RuntimeContextFilter(process_role))
+        update_logging_redaction_context(telegram_chat_id=_resolve_telegram_chat_id())
+        queue_handler.addFilter(SecurityRedactionFilter(chat_id_provider=_current_telegram_chat_id))
+
+        handlers: list[logging.Handler] = []
+        stream = sys.stdout if console_stream is _CONSOLE_DEFAULT else cast(TextIO | None, console_stream)
+        if stream is not None and not isinstance(stream, LoggerStream):
+            console_handler = logging.StreamHandler(stream)
+            console_handler.setFormatter(
+                logging.Formatter("%(asctime)s [%(levelname)s] [%(correlation_id)s] %(name)s: %(message)s")
+            )
+            console_handler.addFilter(_ExcludeEventFilter("logging_initialized"))
+            handlers.append(console_handler)
+
+        if file_ready:
+            formatter = _json_formatter()
+            main_handler = _file_handler(
+                target_dir / log_file,
+                health=health,
+                formatter=formatter,
+            )
+            handlers.append(main_handler)
+
+            if process_role != "vfs_worker":
+                crash_handler = _file_handler(
+                    target_dir / "crash.log",
+                    health=health,
+                    formatter=formatter,
+                )
+                crash_handler.setLevel(logging.ERROR)
+                handlers.append(crash_handler)
+
+            if process_role == "app":
+                watcher_handler = _file_handler(
+                    target_dir / "watcher.log",
+                    health=health,
+                    formatter=formatter,
+                )
+                watcher_handler.addFilter(_LoggerPrefixFilter("SkyClaw.Watcher"))
+                handlers.append(watcher_handler)
+
+                security_handler = _file_handler(
+                    target_dir / "watcher_security.log",
+                    health=health,
+                    formatter=formatter,
+                )
+                security_handler.addFilter(_LoggerPrefixFilter("SkyClaw.Security"))
+                handlers.append(security_handler)
+
+        root_logger = logging.getLogger()
+        root_logger.setLevel(level)
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+        root_logger.addHandler(queue_handler)
+        for name in ("SkyClaw.Watcher", "SkyClaw.Security"):
+            specialized = logging.getLogger(name)
+            specialized.handlers.clear()
+            specialized.propagate = True
+
+        runtime = LoggingRuntime(
+            records=records,
+            queue_handler=queue_handler,
+            handlers=tuple(handlers),
+            health=health,
+            log_dir=target_dir,
+        )
+        runtime.start()
+        _runtime = runtime
+
+    logging.getLogger("sky_claw").info(
+        "Logging async-safe inicializado en %s",
+        target_dir,
+        extra={"event": "logging_initialized"},
+    )
+    return runtime
+
+
+def shutdown_logging(timeout_s: float = 2.0) -> bool:
+    """Drena y detiene el listener fuera del event loop; es idempotente."""
+    global _runtime
+    with _runtime_lock:
+        if _runtime is None:
+            return True
+        try:
+            stopped = _runtime.shutdown(timeout_s=timeout_s)
+        except Exception:
+            _runtime.health.record_listener_error()
+            return False
+        if stopped:
+            _runtime = None
+        return stopped
+
+
+def flush_logging(timeout_s: float = 1.0) -> bool:
+    """Espera el drenado de la cola; en async debe llamarse con ``to_thread``."""
+    with _runtime_lock:
+        runtime = _runtime
+    if runtime is None:
+        return True
+    return runtime.wait_until_idle(timeout_s=timeout_s)
+
+
+def install_missing_std_stream_adapters() -> None:
+    """En builds windowed, convierte salida de terceros en records estructurados."""
+    if sys.stdout is None:
+        sys.stdout = LoggerStream(logging.getLogger("SkyClaw.Stdout"), logging.INFO)
+    if sys.stderr is None:
+        # stderr es el stream normal de Uvicorn incluso para mensajes INFO; el
+        # stream físico no determina por sí solo la severidad del evento.
+        sys.stderr = LoggerStream(logging.getLogger("SkyClaw.Stderr"), logging.INFO)

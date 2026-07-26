@@ -338,7 +338,25 @@ class AppContext:
         """Create a background task and track it for cleanup on shutdown."""
         task = asyncio.create_task(coro, name=name)
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+
+        def _consume_result(done: asyncio.Task) -> None:
+            self._background_tasks.discard(done)
+            if done.cancelled():
+                return
+            error = done.exception()
+            if error is None:
+                return
+            logger.error(
+                "Background task %s failed",
+                done.get_name(),
+                exc_info=(type(error), error, error.__traceback__),
+                extra={
+                    "event": "background_task_failed",
+                    "task_name": done.get_name(),
+                },
+            )
+
+        task.add_done_callback(_consume_result)
         return task
 
     @staticmethod
