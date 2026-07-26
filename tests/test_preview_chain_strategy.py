@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.preview.manifest import PreviewManifest, StageChangeSet
-from sky_claw.antigravity.orchestrator.tool_strategies.preview_chain import PreviewChainStrategy
+from sky_claw.app.orchestrator.preview.manifest import PreviewManifest, StageChangeSet
+from sky_claw.app.orchestrator.tool_strategies.preview_chain import PreviewChainStrategy
 
 
 def _manifest() -> PreviewManifest:

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from sky_claw.antigravity.agent.tools import AsyncToolRegistry
+from sky_claw.app.agent.tools import AsyncToolRegistry
 
 
 @pytest.fixture()

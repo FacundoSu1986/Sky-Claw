@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from sky_claw.antigravity.db.locks import (
+from sky_claw.app.db.locks import (
     DEFAULT_LOCK_TTL_SECONDS,
     DistributedLockManager,
     LockAcquisitionError,
@@ -22,7 +22,7 @@ from sky_claw.antigravity.db.locks import (
     LockLeaseLostError,
     SnapshotTransactionLock,
 )
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 
 if TYPE_CHECKING:
     import pathlib
@@ -388,7 +388,7 @@ async def test_snapshot_transaction_lock_releases_on_snapshot_failure(
     tmp_path: pathlib.Path,
 ) -> None:
     """If snapshot creation fails, the lock is still released."""
-    from sky_claw.antigravity.db.journal import JournalSnapshotError
+    from sky_claw.app.db.journal import JournalSnapshotError
 
     snap_mgr = FileSnapshotManager(snapshot_dir=tmp_path / "snaps")
     await snap_mgr.initialize()
@@ -566,7 +566,7 @@ async def test_force_rollback_raises_when_restore_fails(
     Otherwise a preview could leave a file mutated while reporting success —
     silently violating the no-mutation guarantee. The lock must still release.
     """
-    from sky_claw.antigravity.db.locks import SnapshotRollbackError
+    from sky_claw.app.db.locks import SnapshotRollbackError
 
     target = tmp_path / "preview.esp"
     target.write_text("original")

@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.agent.tools import AsyncToolRegistry
+from sky_claw.app.agent.tools import AsyncToolRegistry
 from sky_claw.local.tools.bodyslide_runner import BodySlideRunner
 from sky_claw.local.tools.pandora_runner import PandoraRunner
 
@@ -281,7 +281,7 @@ async def test_unconfigured_tools_return_structured_error(tmp_path: pathlib.Path
 def test_bodyslide_output_path_rejects_escapes(bad_path: str) -> None:
     """output_path feeds BodySlide.exe -o; absolute/traversal forms must fail
     central validation (TASK-011: execute() validates via params_model)."""
-    from sky_claw.antigravity.agent.tools.schemas import BodySlideBatchParams
+    from sky_claw.app.agent.tools.schemas import BodySlideBatchParams
 
     with pytest.raises(ValueError):
         BodySlideBatchParams(output_path=bad_path)
@@ -289,7 +289,7 @@ def test_bodyslide_output_path_rejects_escapes(bad_path: str) -> None:
 
 @pytest.mark.parametrize("good_path", ["meshes", "out/meshes", "calientetools\\output"])
 def test_bodyslide_output_path_accepts_relative(good_path: str) -> None:
-    from sky_claw.antigravity.agent.tools.schemas import BodySlideBatchParams
+    from sky_claw.app.agent.tools.schemas import BodySlideBatchParams
 
     params = BodySlideBatchParams(output_path=good_path)
     assert params.output_path == good_path

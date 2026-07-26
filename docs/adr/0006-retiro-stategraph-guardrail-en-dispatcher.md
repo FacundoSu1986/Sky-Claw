@@ -7,7 +7,7 @@ orquestador (`docs/audits/2026-07-18_orchestrator_resilience_audit.md`, PR #319)
 
 ## Contexto
 
-`SupervisorStateGraph` (`sky_claw/antigravity/orchestrator/state_graph.py`)
+`SupervisorStateGraph` (`sky_claw/app/orchestrator/state_graph.py`)
 implementaba, sobre LangGraph, un grafo de estados aspiracional para orquestar
 al `SupervisorAgent`: nodos `INIT/IDLE/ANALYZING/DISPATCHING/HITL_WAIT/...`,
 aristas condicionales, checkpointing, un `StateGraphValidator` de transiciones

@@ -10,7 +10,7 @@ antes de tocar (regla del arbitraje).
 ## Contexto
 
 Dos hallazgos del OODA analysis apuntan al mismo patrón en
-`sky_claw/antigravity/security/governance.py`:
+`sky_claw/app/security/governance.py`:
 
 - **G-1 [CRITICAL]:** `GovernanceManager.get_instance()` usa un
   `threading.Lock()` de clase (`_lock`) para el singleton. Riesgo señalado: si un

@@ -25,9 +25,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus
-from sky_claw.antigravity.db.locks import DistributedLockManager
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.core.event_bus import CoreEventBus
+from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools.xedit_service import XEditPipelineService
 from sky_claw.local.xedit.conflict_analyzer import (
     ConflictReport,

@@ -19,8 +19,8 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from sky_claw.antigravity.core.dlq_manager import DLQManager
-from sky_claw.antigravity.core.event_bus import Event
+from sky_claw.app.core.dlq_manager import DLQManager
+from sky_claw.app.core.event_bus import Event
 from tests.polling_utils import poll_until
 
 _TOPIC = "probe.double"

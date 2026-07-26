@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus, create_bus_with_dlq
+from sky_claw.app.core.event_bus import CoreEventBus, create_bus_with_dlq
 
 
 class TestRequireDlqConstruction:
@@ -78,7 +78,7 @@ class TestSupervisorProductionWiring:
     def test_supervisor_init_uses_dlq_factory_not_bare_constructor(self) -> None:
         import inspect
 
-        from sky_claw.antigravity.orchestrator import supervisor as supervisor_module
+        from sky_claw.app.orchestrator import supervisor as supervisor_module
 
         source = inspect.getsource(supervisor_module.SupervisorAgent.__init__)
         assert "create_bus_with_dlq(" in source, (

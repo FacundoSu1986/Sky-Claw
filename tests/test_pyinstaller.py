@@ -47,8 +47,8 @@ class TestSpec:
         directory that does not exist inside ``sys._MEIPASS``.
         (This is the bug that broke the 0.2.0 release exe.)"""
         source = pathlib.Path("sky_claw.spec").read_text(encoding="utf-8")
-        assert "sky_claw/antigravity/gui/styles.css" in source, "gui/styles.css not bundled in spec datas"
-        assert "sky_claw/antigravity/gui/assets" in source, "gui/assets not bundled in spec datas"
+        assert "sky_claw/app/gui/styles.css" in source, "gui/styles.css not bundled in spec datas"
+        assert "sky_claw/app/gui/assets" in source, "gui/assets not bundled in spec datas"
 
 
 # ---------------------------------------------------------------------------
@@ -98,17 +98,17 @@ class TestSkyClawAppBat:
 
 class TestFrozenPaths:
     def test_exe_dir_normal(self) -> None:
-        from sky_claw.antigravity.web.app import _get_exe_dir
+        from sky_claw.app.web.app import _get_exe_dir
 
-        with patch("sky_claw.antigravity.web.app.sys") as mock_sys:
+        with patch("sky_claw.app.web.app.sys") as mock_sys:
             mock_sys.frozen = False
             result = _get_exe_dir()
             assert result == pathlib.Path.cwd()
 
     def test_exe_dir_frozen(self) -> None:
-        from sky_claw.antigravity.web.app import _get_exe_dir
+        from sky_claw.app.web.app import _get_exe_dir
 
-        with patch("sky_claw.antigravity.web.app.sys") as mock_sys:
+        with patch("sky_claw.app.web.app.sys") as mock_sys:
             mock_sys.frozen = True
             mock_sys.executable = "/tmp/dist/SkyClawApp.exe"
             result = _get_exe_dir()
@@ -117,23 +117,23 @@ class TestFrozenPaths:
     # -- GUI module frozen-path resolution (regression for 0.2.0 crash) --
 
     def test_gui_dir_normal(self) -> None:
-        from sky_claw.antigravity.gui.sky_claw_gui import _gui_dir
+        from sky_claw.app.gui.sky_claw_gui import _gui_dir
 
-        with patch("sky_claw.antigravity.gui.sky_claw_gui.sys") as mock_sys:
+        with patch("sky_claw.app.gui.sky_claw_gui.sys") as mock_sys:
             mock_sys.frozen = False
             result = _gui_dir()
             assert result.name == "gui"
             assert (result / "styles.css").exists()
 
     def test_gui_dir_frozen(self) -> None:
-        from sky_claw.antigravity.gui.sky_claw_gui import _gui_dir
+        from sky_claw.app.gui.sky_claw_gui import _gui_dir
 
-        with patch("sky_claw.antigravity.gui.sky_claw_gui.sys") as mock_sys:
+        with patch("sky_claw.app.gui.sky_claw_gui.sys") as mock_sys:
             mock_sys.frozen = True
             mock_sys._MEIPASS = "/tmp/fake_meipass"
             result = _gui_dir()
             assert "fake_meipass" in str(result)
-            assert str(result).replace("\\", "/").endswith("sky_claw/antigravity/gui")
+            assert str(result).replace("\\", "/").endswith("sky_claw/app/gui")
 
 
 # ---------------------------------------------------------------------------

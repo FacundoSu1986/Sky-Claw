@@ -28,7 +28,7 @@ import tempfile
 
 import pytest
 
-from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.mo2.grass_profile import (
     GrassProfileError,
     GrassProfileManager,

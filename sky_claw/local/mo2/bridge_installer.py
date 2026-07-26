@@ -9,8 +9,8 @@ import shutil
 import uuid
 from collections.abc import Callable, Sequence
 
-from sky_claw.antigravity.security.file_permissions import restrict_to_owner
-from sky_claw.antigravity.security.path_validator import PathViolationError, assert_safe_component
+from sky_claw.app.security.file_permissions import restrict_to_owner
+from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION
 
 

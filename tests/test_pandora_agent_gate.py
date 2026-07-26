@@ -19,10 +19,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.agent.tools.system_tools import run_pandora
-from sky_claw.antigravity.db.locks import DistributedLockManager
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
-from sky_claw.antigravity.orchestrator.tool_strategies.generate_animations import (
+from sky_claw.app.agent.tools.system_tools import run_pandora
+from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.orchestrator.tool_strategies.generate_animations import (
     GenerateAnimationsStrategy,
 )
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
@@ -130,7 +130,7 @@ async def test_run_pandora_agent_path_emite_caja_negra_con_journal(
     runner.run_pandora = AsyncMock(return_value=_runner_result())
 
     with patch(
-        "sky_claw.antigravity.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        "sky_claw.app.orchestrator.preview.flight_report.compose_flight_report_from_journal",
         AsyncMock(return_value=MagicMock()),
     ):
         out = json.loads(

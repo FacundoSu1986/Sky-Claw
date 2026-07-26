@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from sky_claw.antigravity.orchestrator.preview.manifest import (
+from sky_claw.app.orchestrator.preview.manifest import (
     ConflictPair,
     ConflictPreview,
     LoadOrderDiff,

@@ -11,7 +11,7 @@ class TestTracingModule:
     def test_configure_returns_noop_when_no_endpoint(self, monkeypatch) -> None:
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
 
-        from sky_claw.antigravity.core import tracing as t
+        from sky_claw.app.core import tracing as t
 
         importlib.reload(t)
         provider = t.configure_tracing()
@@ -22,7 +22,7 @@ class TestTracingModule:
     def test_configure_returns_sdk_provider_when_endpoint_set(self, monkeypatch) -> None:
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
 
-        from sky_claw.antigravity.core import tracing as t
+        from sky_claw.app.core import tracing as t
 
         importlib.reload(t)
         provider = t.configure_tracing()
@@ -32,7 +32,7 @@ class TestTracingModule:
     def test_get_tracer_returns_tracer(self, monkeypatch) -> None:
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
 
-        from sky_claw.antigravity.core import tracing as t
+        from sky_claw.app.core import tracing as t
 
         importlib.reload(t)
         t.configure_tracing()
@@ -42,7 +42,7 @@ class TestTracingModule:
     def test_shutdown_is_idempotent(self, monkeypatch) -> None:
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
 
-        from sky_claw.antigravity.core import tracing as t
+        from sky_claw.app.core import tracing as t
 
         importlib.reload(t)
         t.configure_tracing()
@@ -52,7 +52,7 @@ class TestTracingModule:
     def test_configure_is_idempotent(self, monkeypatch) -> None:
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
 
-        from sky_claw.antigravity.core import tracing as t
+        from sky_claw.app.core import tracing as t
 
         importlib.reload(t)
         provider = t.configure_tracing()
@@ -61,7 +61,7 @@ class TestTracingModule:
     def test_service_version_falls_back_when_distribution_missing(self, monkeypatch) -> None:
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
 
-        from sky_claw.antigravity.core import tracing as t
+        from sky_claw.app.core import tracing as t
 
         importlib.reload(t)
 
@@ -80,7 +80,7 @@ class TestTracingLogCorrelation:
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
         import importlib
 
-        from sky_claw.antigravity.core import tracing as t
+        from sky_claw.app.core import tracing as t
 
         importlib.reload(t)
         t.configure_tracing()
@@ -133,7 +133,7 @@ class TestJsonFormatterTraceId:
 
 class TestSyncEngineSpans:
     def test_sync_engine_imports_get_tracer(self) -> None:
-        from sky_claw.antigravity.orchestrator import sync_engine
+        from sky_claw.app.orchestrator import sync_engine
 
         with open(sync_engine.__file__, encoding="utf-8") as fh:
             src = fh.read()

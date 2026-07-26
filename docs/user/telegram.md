@@ -5,9 +5,9 @@
 > **Estado:** Implementado mediante polling; existe además un gateway Node
 > separado para el bridge de frontend.
 >
-> **Fuentes canónicas:** `sky_claw/antigravity/modes/telegram_mode.py`,
-> `sky_claw/antigravity/comms/telegram_polling.py` y
-> `sky_claw/antigravity/comms/telegram_gateway_node/`.
+> **Fuentes canónicas:** `sky_claw/app/modes/telegram_mode.py`,
+> `sky_claw/app/comms/telegram_polling.py` y
+> `sky_claw/app/comms/telegram_gateway_node/`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

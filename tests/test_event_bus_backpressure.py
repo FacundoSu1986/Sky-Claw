@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.core.event_bus import BackpressureDroppedError, CoreEventBus, Event
+from sky_claw.app.core.event_bus import BackpressureDroppedError, CoreEventBus, Event
 from tests.polling_utils import poll_until
 
 

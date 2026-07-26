@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import pathlib
 
-from sky_claw.antigravity.core.conflict_persistence import (
+from sky_claw.app.core.conflict_persistence import (
     pair_record_conflicts,
     persist_record_conflicts,
 )
-from sky_claw.antigravity.core.database import DatabaseAgent
+from sky_claw.app.core.database import DatabaseAgent
 from sky_claw.local.xedit.conflict_analyzer import (
     ConflictReport,
     PluginConflictPair,
@@ -90,7 +90,7 @@ async def test_persiste_pares_y_enriquece_con_nombres(tmp_path: pathlib.Path) ->
     assert len(pendientes) == 1
     assert pendientes[0]["conflict_type"] == "record:critical"
 
-    from sky_claw.antigravity.gui.models.app_state import enrich_conflicts
+    from sky_claw.app.gui.models.app_state import enrich_conflicts
 
     mods = await db.get_mods()
     enriquecido = enrich_conflicts(pendientes, mods)[0]

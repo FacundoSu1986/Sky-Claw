@@ -6,7 +6,7 @@
 > **Audiencia:** desarrolladores y agentes.
 >
 > **Fuentes canónicas:** `sky_claw/app_context.py`,
-> `sky_claw/antigravity/core/`, `sky_claw/antigravity/orchestrator/` y runners.
+> `sky_claw/app/core/`, `sky_claw/app/orchestrator/` y runners.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

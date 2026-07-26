@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 
 
 @pytest.mark.asyncio

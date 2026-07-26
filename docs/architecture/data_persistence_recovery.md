@@ -4,8 +4,8 @@
 >
 > **Audiencia:** desarrolladores y operadores.
 >
-> **Fuentes canónicas:** `sky_claw/antigravity/core/db_lifecycle.py`,
-> `sky_claw/antigravity/db/` y `sky_claw/local/mo2/profile_sandbox.py`.
+> **Fuentes canónicas:** `sky_claw/app/core/db_lifecycle.py`,
+> `sky_claw/app/db/` y `sky_claw/local/mo2/profile_sandbox.py`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

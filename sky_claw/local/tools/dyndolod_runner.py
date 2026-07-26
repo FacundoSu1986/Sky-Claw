@@ -909,7 +909,7 @@ class DynDOLODRunner:
             mod_name: Nombre del mod.
         """
         # S2-FIX: Validate target path is within MO2 mods sandbox.
-        from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+        from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 
         meta_ini_path = mod_path / "meta.ini"
         validator = PathValidator(roots=[self._config.mo2_mods_path])

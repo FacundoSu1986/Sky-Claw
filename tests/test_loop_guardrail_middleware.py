@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from sky_claw.antigravity.orchestrator.tool_dispatcher import OrchestrationToolDispatcher
-from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
+from sky_claw.app.orchestrator.tool_dispatcher import OrchestrationToolDispatcher
+from sky_claw.app.orchestrator.tool_strategies.middleware import (
     LoopGuardrailMiddleware,
 )
 

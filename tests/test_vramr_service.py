@@ -23,10 +23,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
-from sky_claw.antigravity.db.locks import DistributedLockManager, LockLeaseLostError
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
-from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.app.core.event_bus import CoreEventBus, Event
+from sky_claw.app.db.locks import DistributedLockManager, LockLeaseLostError
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.tools import vramr_service as vramr_mod
 from sky_claw.local.tools.vramr_service import (
     VRAMrExecutionError,
@@ -1022,7 +1022,7 @@ async def test_release_lock_failure_is_swallowed(
     # Tras el swap a SnapshotTransactionLock, el fallo de release lo aísla y
     # loguea el _safe_release del propio lock (locks.py), no el VRAMr — el
     # comportamiento visible (swallowed, pipeline exitosa) se conserva.
-    caplog.set_level(logging.WARNING, logger="sky_claw.antigravity.db.locks")
+    caplog.set_level(logging.WARNING, logger="sky_claw.app.db.locks")
     svc = make_service(
         lock_manager=lock_manager,
         mock_journal=mock_journal,

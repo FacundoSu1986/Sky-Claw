@@ -17,9 +17,9 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
-from sky_claw.antigravity.orchestrator.tool_dispatcher import build_orchestration_dispatcher
-from sky_claw.antigravity.orchestrator.tool_strategies.middleware import HitlGateMiddleware
+from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
 
 
 def _supervisor_minimo() -> SupervisorAgent:
@@ -89,8 +89,8 @@ class TestIdempotencyWiringEnElDispatcherReal:
         instancia para poder introspeccionarla/rearmarla. Si la fábrica
         ignorara el parámetro y armara una interna, el ``ToolStateMachine``
         inyectado nunca vería la task."""
-        from sky_claw.antigravity.orchestrator.tool_state_machine import ToolStateMachine
-        from sky_claw.antigravity.orchestrator.tool_strategies.middleware import IdempotencyMiddleware
+        from sky_claw.app.orchestrator.tool_state_machine import ToolStateMachine
+        from sky_claw.app.orchestrator.tool_strategies.middleware import IdempotencyMiddleware
 
         sm = ToolStateMachine()
         sup = _supervisor_minimo()

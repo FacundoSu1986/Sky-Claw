@@ -17,8 +17,8 @@ from __future__ import annotations
 import datetime as _dt
 from typing import TYPE_CHECKING
 
-from sky_claw.antigravity.db.snapshot_manager import SnapshotInfo
-from sky_claw.antigravity.orchestrator.preview.action_manifest import (
+from sky_claw.app.db.snapshot_manager import SnapshotInfo
+from sky_claw.app.orchestrator.preview.action_manifest import (
     ActionManifest,
     RollbackStep,
     build_action_manifest,
@@ -103,7 +103,7 @@ class TestPersistencia:
     async def test_round_trip_sobre_reinicio_del_journal(self, tmp_path: pathlib.Path) -> None:
         """Persistir → recuperar tras 'reinicio' (nueva instancia de journal
         sobre la misma DB) → el manifiesto se reconstruye idéntico."""
-        from sky_claw.antigravity.db.journal import OperationJournal
+        from sky_claw.app.db.journal import OperationJournal
 
         db_path = tmp_path / "journal.db"
         manifest = build_action_manifest(

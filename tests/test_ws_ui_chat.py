@@ -11,7 +11,7 @@ import aiohttp
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from sky_claw.antigravity.web.app import WebApp
+from sky_claw.app.web.app import WebApp
 
 
 class _StubRouter:

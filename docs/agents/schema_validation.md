@@ -2,7 +2,7 @@
 
 > **Audiencia:** desarrolladores y agentes que modifican límites Pydantic.
 > **Estado:** implementado, con alcance limitado al registro documentado.
-> **Fuente canónica:** `sky_claw/antigravity/core/contracts.py`.
+> **Fuente canónica:** `sky_claw/app/core/contracts.py`.
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 
 ## Qué resuelve

@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.db.rollback_manager import RollbackResult
-from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
+from sky_claw.app.db.rollback_manager import RollbackResult
+from sky_claw.app.orchestrator.sync_engine import SyncEngine
 
 # ------------------------------------------------------------------
 # 1. RollbackResult frozen dataclass contract
@@ -204,7 +204,7 @@ class TestExecuteFileOperationRollbackNoMutation:
 
         with (
             pytest.raises(ValueError, match="boom"),
-            patch("sky_claw.antigravity.orchestrator.sync_engine.logger") as mock_logger,
+            patch("sky_claw.app.orchestrator.sync_engine.logger") as mock_logger,
         ):
             await engine.execute_file_operation(
                 operation_type=MagicMock(value="FILE_MODIFY"),

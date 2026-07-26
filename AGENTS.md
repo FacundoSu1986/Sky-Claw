@@ -12,7 +12,7 @@ Los `AGENTS.md` de subárbol son punteros de alcance y no reemplazan esta guía.
 ## Stack real (verificado contra el código)
 
 - **Python ≥ 3.11** (`pyproject.toml`; CI corre 3.11 y 3.12 en `windows-latest`).
-- **GUI: NiceGUI** (web/escritorio) en `sky_claw/antigravity/gui/`.
+- **GUI: NiceGUI** (web/escritorio) en `sky_claw/app/gui/`.
 - SQLite (WAL), multi-LLM (Anthropic / OpenAI / DeepSeek / Ollama), gateway de Telegram (Node).
 - Dominio: gestión de mods de Skyrim SE/AE vía Mod Organizer 2 (LOOT, xEdit, DynDOLOD…).
 
@@ -40,11 +40,11 @@ Los `AGENTS.md` de subárbol son punteros de alcance y no reemplazan esta guía.
 
 | Ruta | Qué es |
 |------|--------|
-| `sky_claw/antigravity/core/` | Núcleo: `database.py` (`DatabaseAgent`), `errors.py` (`AppNexusError`), `contracts.py` (Protocols) |
-| `sky_claw/antigravity/gui/` | GUI NiceGUI (vistas, controllers, `models/app_state.py`) |
-| `sky_claw/antigravity/web/` | App web / daemon |
-| `sky_claw/antigravity/security/` | `path_validator.py` (`PathValidator` — sandboxing de rutas) |
-| `sky_claw/antigravity/comms/` | Comunicaciones (Python) + gateway de Telegram (Node en `telegram_gateway_node/`) |
+| `sky_claw/app/core/` | Núcleo: `database.py` (`DatabaseAgent`), `errors.py` (`AppNexusError`), `contracts.py` (Protocols) |
+| `sky_claw/app/gui/` | GUI NiceGUI (vistas, controllers, `models/app_state.py`) |
+| `sky_claw/app/web/` | App web / daemon |
+| `sky_claw/app/security/` | `path_validator.py` (`PathValidator` — sandboxing de rutas) |
+| `sky_claw/app/comms/` | Comunicaciones (Python) + gateway de Telegram (Node en `telegram_gateway_node/`) |
 | `sky_claw/local/mo2/` | Integración con Mod Organizer 2 (perfiles, sandbox, modlist) |
 | `sky_claw/local/tools/` | Tools del agente (`tool_result.py`, runners de LOOT/xEdit/etc.) |
 | `sky_claw/local/AGENTS.md` | **SOP del pipeline de modding de Skyrim** (orden de stages, reglas por tool, failure modes) — leer antes de tocar `local/tools/`, `local/xedit/` u `orchestrator/tool_strategies/` |

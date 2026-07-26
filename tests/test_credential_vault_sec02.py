@@ -20,15 +20,15 @@ from unittest.mock import patch
 import aiosqlite
 import pytest
 
-from sky_claw.antigravity.core.errors import SecurityViolationError, VaultStorageError
-from sky_claw.antigravity.security.credential_vault import CredentialVault
+from sky_claw.app.core.errors import SecurityViolationError, VaultStorageError
+from sky_claw.app.security.credential_vault import CredentialVault
 
 
 @pytest.fixture
 def vault(tmp_path):
     """Return an initialised CredentialVault backed by a tmp DB."""
     db_path = str(tmp_path / "vault_sec02.db")
-    with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+    with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
         vault = CredentialVault(
             db_path=db_path,
             master_key="test-master-key",
@@ -62,7 +62,7 @@ class TestCredentialVaultGetSecret:
         """
         with (
             patch(
-                "sky_claw.antigravity.security.credential_vault.aiosqlite.connect",
+                "sky_claw.app.security.credential_vault.aiosqlite.connect",
                 side_effect=aiosqlite.Error("disk I/O error"),
             ),
             caplog.at_level(logging.ERROR, logger="SkyClaw.CredentialVault"),

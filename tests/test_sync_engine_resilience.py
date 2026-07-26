@@ -19,7 +19,7 @@ from tenacity import wait_none
 # Add path to sky_claw module
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from sky_claw.antigravity.orchestrator.sync_engine import SyncConfig, SyncEngine
+from sky_claw.app.orchestrator.sync_engine import SyncConfig, SyncEngine
 
 
 class TestSyncEngineResilience:

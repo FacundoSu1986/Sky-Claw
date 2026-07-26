@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.agent.router."""
+"""Tests for sky_claw.app.agent.router."""
 
 from __future__ import annotations
 
@@ -10,20 +10,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from sky_claw.antigravity.agent.providers import AnthropicProvider, OllamaProvider
-from sky_claw.antigravity.agent.router import (
+from sky_claw.app.agent.providers import AnthropicProvider, OllamaProvider
+from sky_claw.app.agent.router import (
     DEFAULT_PROVIDER_CHAT_TIMEOUT,
     MAX_CONTEXT_MESSAGES,
     MAX_TOOL_ROUNDS,
     LLMRouter,
     _provider_chat_timeout,
 )
-from sky_claw.antigravity.agent.tools import AsyncToolRegistry
-from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
-from sky_claw.antigravity.scraper.masterlist import MasterlistClient
-from sky_claw.antigravity.security.network_gateway import EgressPolicy, NetworkGateway
-from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.app.agent.tools import AsyncToolRegistry
+from sky_claw.app.db.async_registry import AsyncModRegistry
+from sky_claw.app.orchestrator.sync_engine import SyncEngine
+from sky_claw.app.scraper.masterlist import MasterlistClient
+from sky_claw.app.security.network_gateway import EgressPolicy, NetworkGateway
+from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.mo2.vfs import MO2Controller
 
 if TYPE_CHECKING:

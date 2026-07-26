@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus, Event
+from sky_claw.app.core.event_bus import CoreEventBus, Event
 from tests.polling_utils import poll_until
 
 # ---------------------------------------------------------------------------

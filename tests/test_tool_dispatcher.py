@@ -9,11 +9,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.tool_dispatcher import (
+from sky_claw.app.orchestrator.tool_dispatcher import (
     DuplicateToolError,
     OrchestrationToolDispatcher,
 )
-from sky_claw.antigravity.orchestrator.tool_strategies.base import NextCall, ToolStrategy
+from sky_claw.app.orchestrator.tool_strategies.base import NextCall, ToolStrategy
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -225,7 +225,7 @@ _CHAIN_PREVIEW_PATCHES = [
     "sky_claw.local.loot.cli.LOOTRunner",
     "sky_claw.local.xedit.runner.XEditRunner",
     "sky_claw.local.xedit.conflict_analyzer.ConflictAnalyzer",
-    "sky_claw.antigravity.orchestrator.preview.chain_preview_service.ChainPreviewService",
+    "sky_claw.app.orchestrator.preview.chain_preview_service.ChainPreviewService",
 ]
 
 
@@ -245,7 +245,7 @@ def test_build_chain_preview_loot_exe_resolution(
     resolved path; falls back to Path("loot.exe") when the resolver returns
     None (LOOT_EXE env var not set), preserving backward-compat behaviour.
     """
-    from sky_claw.antigravity.orchestrator.tool_dispatcher import _build_chain_preview_service
+    from sky_claw.app.orchestrator.tool_dispatcher import _build_chain_preview_service
 
     with ExitStack() as stack:
         mocks = [stack.enter_context(patch(p)) for p in _CHAIN_PREVIEW_PATCHES]

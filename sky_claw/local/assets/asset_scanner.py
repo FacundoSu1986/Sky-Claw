@@ -21,9 +21,9 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from sky_claw.antigravity.security.path_validator import PathValidator
+    from sky_claw.app.security.path_validator import PathValidator
 
-from sky_claw.antigravity.security.path_validator import (
+from sky_claw.app.security.path_validator import (
     PathViolationError,
     assert_safe_component,
 )

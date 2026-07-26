@@ -22,7 +22,7 @@ import aiosqlite
 import pytest
 from pydantic import ValidationError
 
-from sky_claw.antigravity.core.db_lifecycle import (
+from sky_claw.app.core.db_lifecycle import (
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
     DatabaseShutdownIncompleteError,

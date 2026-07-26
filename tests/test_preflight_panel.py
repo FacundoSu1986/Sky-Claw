@@ -9,7 +9,7 @@ serializan — no un dict inventado.
 
 from __future__ import annotations
 
-from sky_claw.antigravity.gui.views.sections.preflight_panel import build_preflight_view_model
+from sky_claw.app.gui.views.sections.preflight_panel import build_preflight_view_model
 from sky_claw.local.validators.preflight import (
     PreflightCheck,
     PreflightReport,

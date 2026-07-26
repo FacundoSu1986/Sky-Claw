@@ -11,12 +11,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.agent.tools.system_tools import (
+from sky_claw.app.agent.tools.system_tools import (
     generate_bashed_patch,
     run_bodyslide_batch,
     run_pandora,
 )
-from sky_claw.antigravity.security.sanitize import sanitize_for_prompt
+from sky_claw.app.security.sanitize import sanitize_for_prompt
 
 
 class TestSystemToolsSanitization:

@@ -13,7 +13,7 @@ import pathlib
 
 
 def test_setup_app_no_sirve_el_paquete_gui_por_static() -> None:
-    src = pathlib.Path("sky_claw/antigravity/gui/sky_claw_gui.py").read_text(encoding="utf-8")
+    src = pathlib.Path("sky_claw/app/gui/sky_claw_gui.py").read_text(encoding="utf-8")
     # No debe registrarse una ruta /static apuntando al directorio del paquete gui/.
     assert 'add_static_files("/static"' not in src, (
         "H-01: no reintroducir add_static_files('/static', ...) — expone el árbol source de gui/."
@@ -22,5 +22,5 @@ def test_setup_app_no_sirve_el_paquete_gui_por_static() -> None:
 
 def test_assets_route_sigue_presente() -> None:
     """/assets (fonts offline) debe seguir sirviéndose."""
-    src = pathlib.Path("sky_claw/antigravity/gui/sky_claw_gui.py").read_text(encoding="utf-8")
+    src = pathlib.Path("sky_claw/app/gui/sky_claw_gui.py").read_text(encoding="utf-8")
     assert 'add_static_files("/assets"' in src

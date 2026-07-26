@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.web.app import WebApp
+from sky_claw.app.web.app import WebApp
 
 
 @pytest.fixture

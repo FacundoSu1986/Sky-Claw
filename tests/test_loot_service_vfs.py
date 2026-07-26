@@ -6,7 +6,7 @@ import pathlib
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from sky_claw.antigravity.core.models import LootExecutionParams
+from sky_claw.app.core.models import LootExecutionParams
 from sky_claw.local.mo2.brokered_loot import BrokeredLootRunner
 from sky_claw.local.tools.loot_service import LootSortingService
 

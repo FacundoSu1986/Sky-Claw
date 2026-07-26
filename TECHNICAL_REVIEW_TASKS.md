@@ -144,7 +144,7 @@ Optimización: dentro de cada oleada las tareas sin flecha entre sí son **paral
 - **Dependencias:** T-13, T-14 (T-09 deseable).
 
 ### T-16 · Panel de preflight en GUI (M)
-- **Archivos:** `sky_claw/antigravity/gui/views/` (nueva sección).
+- **Archivos:** `sky_claw/app/gui/views/` (nueva sección).
 - **Test rojo:** test de UI (patrón de tests de GUI existente) — el semáforo y la lista de checks se renderizan desde el resultado del agregador.
 - **Aceptación:** visible antes de lanzar cualquier Ritual.
 - **Dependencias:** T-15.
@@ -193,7 +193,7 @@ Optimización: dentro de cada oleada las tareas sin flecha entre sí son **paral
 ## Oleada 5 — GUI / accesibilidad (paralelizable entre sí y con todo lo demás)
 
 ### T-22 · Transiciones específicas + `prefers-reduced-motion` (S)
-- **Archivos:** los 7 usos de `transition: all` en `sky_claw/antigravity/gui/`.
+- **Archivos:** los 7 usos de `transition: all` en `sky_claw/app/gui/`.
 - **Aceptación:** transiciones por propiedad; media query global de reduced motion.
 
 ### T-23 · Virtualización de listas de mods (M)
@@ -249,7 +249,7 @@ Oleada 4); T-28 y T-29 esperan sus dependencias. **T-27 y T-28 se suman al crite
 GA de T-25**: la matriz de smoke real debe ejercitar el flujo must-have completo.
 
 ### T-26 · `ActionManifest` por Ritual mutante (M)
-- **Archivos:** `sky_claw/antigravity/orchestrator/preview/manifest.py` (extender los modelos existentes) + `sky_claw/antigravity/db/journal.py` (persistencia).
+- **Archivos:** `sky_claw/app/orchestrator/preview/manifest.py` (extender los modelos existentes) + `sky_claw/app/db/journal.py` (persistencia).
 - **Cambio:** todo Ritual mutante produce, antes de ejecutar, un manifiesto inspeccionable: archivos que tocará, plugins/records que forwardea, herramienta + versión, y **plan de rollback** (qué snapshot restaura qué). Es el §4.6 del review (fases auditables) implementado sobre el contrato de preview existente, no un contrato paralelo.
 - **Test rojo:** un Ritual mutante (mock) ejecutado sin manifiesto previo falla; con manifiesto, el objeto persistido en el journal contiene archivos/herramienta/rollback y es recuperable tras reinicio (`model_validate_json` round-trip).
 - **Aceptación:** manifiesto persistido y consultable por Ritual; el approval gate muestra el manifiesto, no un resumen libre del LLM.
@@ -264,14 +264,14 @@ GA de T-25**: la matriz de smoke real debe ejercitar el flujo must-have completo
 - **Dependencias:** T-05 (cerrada). Definir en el diseño la interacción con el VFS (los clones viven fuera de `profiles/` activo o con nombre no cargado por MO2) y la redirección del overwrite para los runners que lo targetean.
 
 ### T-28 · Informe final de vuelo (M)
-- **Archivos:** nuevo composer sobre journal + T-26 + T-21; vista en `sky_claw/antigravity/gui/views/`.
+- **Archivos:** nuevo composer sobre journal + T-26 + T-21; vista en `sky_claw/app/gui/views/`.
 - **Cambio:** al terminar cada Ritual, un informe legible: qué cambió, por qué, quién ganó cada conflicto, qué validó el post-run, y cómo revertir (apuntando a los snapshots reales). Es la "caja negra" leída después del vuelo — ensambla datos existentes, no inventa nuevos.
 - **Test rojo:** tras un run simulado con manifiesto + resultado de validador, el informe generado contiene las cuatro secciones (cambios/razones/ganadores/rollback) con los datos del journal; un run sin manifiesto produce informe degradado explícito, nunca vacío silencioso.
 - **Aceptación:** informe persistido por Ritual y visible en GUI; exportable como Markdown.
 - **Dependencias:** T-26, T-21.
 
 ### T-29 · Panel de conflictos por subrecord + "abrir en xEdit" (M)
-- **Archivos:** `sky_claw/antigravity/gui/views/` (evolución del panel de conflictos) + datos de T-19a.
+- **Archivos:** `sky_claw/app/gui/views/` (evolución del panel de conflictos) + datos de T-19a.
 - **Cambio:** el §5.5 del review: record → subrecord → ganador → perdedores → por qué → qué se preserva/pierde → parche sugerido; botón "abrir en xEdit" (lanzar xEdit ya integrado, posicionado en el plugin del conflicto). Menos "launcher bonito", más "panel de cirugía".
 - **Test rojo:** patrón de tests de GUI existente — dado un reporte de conflictos con flags por override (T-19a), el panel renderiza ganador/perdedor por subrecord y la explicación de la regla; el botón invoca el runner de xEdit con los argumentos correctos (mock).
 - **Aceptación:** un conflicto SPEL con `Manual Cost Calc` en riesgo se entiende desde el panel sin abrir xEdit.

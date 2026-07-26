@@ -58,7 +58,7 @@ Sky-Claw invoca (SSEEdit, LOOT, DynDOLOD, MO2, etc.): reportalas a sus proyectos
 - Secretos vía el backend de keyring del sistema; directorios de estado con
   DACLs restrictivas (`.sky_claw/`) donde el control está cableado.
 - Sandboxing de rutas con `PathValidator`
-  (`sky_claw/antigravity/security/path_validator.py`) relativo a `SystemPaths`.
+  (`sky_claw/app/security/path_validator.py`) relativo a `SystemPaths`.
 - Guardrails del agente LLM: sanitización de historial, detección de prompt injection y
   de PII.
 

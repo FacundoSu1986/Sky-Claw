@@ -24,17 +24,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.core.db_lifecycle import (
+from sky_claw.app.core.db_lifecycle import (
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
 )
-from sky_claw.antigravity.db.journal import (
+from sky_claw.app.db.journal import (
     JournalSnapshotError,
     OperationJournal,
     OperationStatus,
     OperationType,
 )
-from sky_claw.antigravity.db.rollback_manager import RollbackManager
+from sky_claw.app.db.rollback_manager import RollbackManager
 
 
 @pytest.fixture

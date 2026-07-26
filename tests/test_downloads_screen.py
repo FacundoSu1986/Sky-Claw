@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-from sky_claw.antigravity.gui.views.forge_dashboard import (
+from sky_claw.app.db.async_registry import AsyncModRegistry
+from sky_claw.app.gui.views.forge_dashboard import (
     GREEN,
     RED,
     _hitl_modal_visible,
@@ -98,9 +98,9 @@ class TestLoadDownloadsHistory:
         import asyncio
         from types import SimpleNamespace
 
-        from sky_claw.antigravity.gui import sky_claw_gui as gui
-        from sky_claw.antigravity.gui import task_tracking
-        from sky_claw.antigravity.gui.state import get_store, reset_store_for_tests
+        from sky_claw.app.gui import sky_claw_gui as gui
+        from sky_claw.app.gui import task_tracking
+        from sky_claw.app.gui.state import get_store, reset_store_for_tests
 
         reset_store_for_tests()
         filas = [{"action": "sync", "status": "ok", "detail": "x", "mod_name": None, "created_at": "hoy"}]
@@ -122,8 +122,8 @@ class TestLoadDownloadsHistory:
     async def test_sin_registry_no_rompe_ni_toca_el_store(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from types import SimpleNamespace
 
-        from sky_claw.antigravity.gui import sky_claw_gui as gui
-        from sky_claw.antigravity.gui.state import get_store, reset_store_for_tests
+        from sky_claw.app.gui import sky_claw_gui as gui
+        from sky_claw.app.gui.state import get_store, reset_store_for_tests
 
         reset_store_for_tests()
         runtime = SimpleNamespace(app_context=SimpleNamespace(registry=None))

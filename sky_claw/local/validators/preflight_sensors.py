@@ -112,7 +112,7 @@ def build_mo2_profile_sources_resolver(
     """
     if not isinstance(profile, str):
         return None
-    from sky_claw.antigravity.security.path_validator import PathViolationError, assert_safe_component
+    from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
     from sky_claw.local.mo2.plugin_sources import resolve_plugin_sources
 
     try:

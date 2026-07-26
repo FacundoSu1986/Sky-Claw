@@ -27,7 +27,7 @@ import logging
 import pathlib
 from typing import TYPE_CHECKING, Any, Protocol
 
-from sky_claw.antigravity.db.locks import (
+from sky_claw.app.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
     SnapshotTransactionLock,
@@ -41,11 +41,11 @@ from sky_claw.local.loot.cli import (
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
 
 if TYPE_CHECKING:
-    from sky_claw.antigravity.core.models import LootExecutionParams
-    from sky_claw.antigravity.core.path_resolver import PathResolutionService
-    from sky_claw.antigravity.db.journal import OperationJournal
-    from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
-    from sky_claw.antigravity.security.path_validator import PathValidator
+    from sky_claw.app.core.models import LootExecutionParams
+    from sky_claw.app.core.path_resolver import PathResolutionService
+    from sky_claw.app.db.journal import OperationJournal
+    from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+    from sky_claw.app.security.path_validator import PathValidator
     from sky_claw.local.loot.parser import LOOTResult
     from sky_claw.local.mo2.brokered_loot import VfsBrokerProtocol
     from sky_claw.local.mo2.vfs_attestation import VfsAttestationChallenge
@@ -719,7 +719,7 @@ class LootSortingService:
                 recién abierta se marca rolled-back para no dejarla PENDING
                 (review Codex PR #243).
         """
-        from sky_claw.antigravity.orchestrator.preview.action_manifest import build_action_manifest
+        from sky_claw.app.orchestrator.preview.action_manifest import build_action_manifest
 
         assert self._journal is not None  # cableado verificado por el caller
         journal_tx_id: int | None = None
@@ -795,10 +795,10 @@ class LootSortingService:
         un fallo se loguea y NO rompe el contrato "siempre devolver dict" ni
         revierte el sort exitoso.
         """
-        from sky_claw.antigravity.orchestrator.preview.flight_report import (
+        from sky_claw.app.orchestrator.preview.flight_report import (
             compose_flight_report_from_journal,
         )
-        from sky_claw.antigravity.orchestrator.preview.manifest import LoadOrderDiff
+        from sky_claw.app.orchestrator.preview.manifest import LoadOrderDiff
 
         assert self._journal is not None  # cableado verificado por el caller
         try:

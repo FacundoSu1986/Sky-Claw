@@ -15,14 +15,14 @@ from dataclasses import dataclass
 
 import pytest
 
-from sky_claw.antigravity.gui.controllers.ritual_runner import (
+from sky_claw.app.gui.controllers.ritual_runner import (
     RITUAL_INSTALL_ENV,
     RITUAL_INSTALLER_MAP,
     make_gui_hitl_notify,
     ritual_installer_name,
     run_ritual_install,
 )
-from sky_claw.antigravity.gui.state.reactive_store import ReactiveStore
+from sky_claw.app.gui.state.reactive_store import ReactiveStore
 from sky_claw.local.tools_installer import ToolInstallError
 
 

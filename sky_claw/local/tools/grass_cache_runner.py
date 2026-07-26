@@ -41,13 +41,13 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import psutil  # import de módulo completo: los tests reemplazan el objeto entero
 
-from sky_claw.antigravity.security.path_validator import assert_safe_component
+from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.local.mo2.vfs import GameLaunchTimeoutError, MO2Controller
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from sky_claw.antigravity.security.path_validator import PathValidator
+    from sky_claw.app.security.path_validator import PathValidator
 
 logger = logging.getLogger(__name__)
 

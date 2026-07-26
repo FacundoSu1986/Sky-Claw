@@ -29,8 +29,8 @@ from unittest.mock import MagicMock
 import aiohttp
 from aiohttp.test_utils import TestClient, TestServer
 
-import sky_claw.antigravity.web.app as app_module
-from sky_claw.antigravity.web.app import WebApp
+import sky_claw.app.web.app as app_module
+from sky_claw.app.web.app import WebApp
 
 
 class _StubAuth:
@@ -59,7 +59,7 @@ async def test_teardown_corre_todos_los_pasos_aunque_revoke_falle() -> None:
     El caso real: ``revoke()`` levanta ``PermissionError`` al borrar el token
     y ``runner.cleanup()`` (que libera el 8765) jamás corre.
     """
-    from sky_claw.antigravity.gui import _bootloader
+    from sky_claw.app.gui import _bootloader
 
     pasos: list[str] = []
 
@@ -99,7 +99,7 @@ async def test_teardown_corre_todos_los_pasos_aunque_revoke_falle() -> None:
 
 async def test_teardown_tolera_un_runtime_vacio() -> None:
     """Si el bootstrap falló antes de poblar el runtime, el teardown no explota."""
-    from sky_claw.antigravity.gui import _bootloader
+    from sky_claw.app.gui import _bootloader
 
     await _bootloader._teardown_runtime({})
 

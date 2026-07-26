@@ -11,15 +11,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from sky_claw.antigravity.comms.telegram import TelegramWebhook, _parse_hitl_command
-from sky_claw.antigravity.comms.telegram_sender import TelegramSender
-from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
-from sky_claw.antigravity.scraper.masterlist import MasterlistClient
-from sky_claw.antigravity.scraper.nexus_downloader import FileInfo, NexusDownloader
-from sky_claw.antigravity.security.hitl import Decision, HITLGuard
-from sky_claw.antigravity.security.network_gateway import EgressPolicy, NetworkGateway
-from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.app.comms.telegram import TelegramWebhook, _parse_hitl_command
+from sky_claw.app.comms.telegram_sender import TelegramSender
+from sky_claw.app.db.async_registry import AsyncModRegistry
+from sky_claw.app.orchestrator.sync_engine import SyncEngine
+from sky_claw.app.scraper.masterlist import MasterlistClient
+from sky_claw.app.scraper.nexus_downloader import FileInfo, NexusDownloader
+from sky_claw.app.security.hitl import Decision, HITLGuard
+from sky_claw.app.security.network_gateway import EgressPolicy, NetworkGateway
+from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.mo2.vfs import MO2Controller
 
 # ---------------------------------------------------------------------------
@@ -541,7 +541,7 @@ class TestAppContextWiring:
         with (
             patch("keyring.get_password", side_effect=lambda _svc, key: keyring_store.get(key)),
             patch("keyring.set_password"),
-            patch("sky_claw.antigravity.comms.telegram_polling.TelegramPolling.start", new=AsyncMock()),
+            patch("sky_claw.app.comms.telegram_polling.TelegramPolling.start", new=AsyncMock()),
         ):
             ctx = AppContext(args)
             await ctx.start_minimal()
@@ -720,7 +720,7 @@ class TestEndToEndHITLFlow:
     @pytest.mark.asyncio
     async def test_download_request_then_approve_enqueues(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         """Full flow: tool calls request_approval → webhook delivers /approve → enqueued."""
-        from sky_claw.antigravity.agent.tools import AsyncToolRegistry
+        from sky_claw.app.agent.tools import AsyncToolRegistry
 
         # ---- Setup ----
         gw = NetworkGateway(EgressPolicy(block_private_ips=False))
@@ -789,7 +789,7 @@ class TestEndToEndHITLFlow:
         tool_result: dict[str, Any] = {}
 
         async def _run_tool() -> None:
-            with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
+            with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
                 mock_sess = AsyncMock()
                 mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
                 mock_sess.__aexit__ = AsyncMock(return_value=False)
@@ -839,7 +839,7 @@ class TestEndToEndHITLFlow:
     @pytest.mark.asyncio
     async def test_download_request_then_deny_returns_denied(self, tmp_path: pathlib.Path, aiohttp_client) -> None:
         """Flow: tool calls request_approval → /deny → tool returns denied status."""
-        from sky_claw.antigravity.agent.tools import AsyncToolRegistry
+        from sky_claw.app.agent.tools import AsyncToolRegistry
 
         gw = NetworkGateway(EgressPolicy(block_private_ips=False))
         validator = PathValidator(roots=[tmp_path])
@@ -886,7 +886,7 @@ class TestEndToEndHITLFlow:
         tool_result: dict[str, Any] = {}
 
         async def _run_tool() -> None:
-            with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
+            with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
                 mock_sess = AsyncMock()
                 mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
                 mock_sess.__aexit__ = AsyncMock(return_value=False)

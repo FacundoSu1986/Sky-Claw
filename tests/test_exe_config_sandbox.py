@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.local_config import LocalConfig, get_exe_dir, load, save
 
 # ---------------------------------------------------------------------------

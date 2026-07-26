@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from sky_claw.antigravity.agent.router import LLMRouter
+from sky_claw.app.agent.router import LLMRouter
 
 
 def _bare_router() -> LLMRouter:

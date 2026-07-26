@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.tool_dispatcher import OrchestrationToolDispatcher
-from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
+from sky_claw.app.orchestrator.tool_dispatcher import OrchestrationToolDispatcher
+from sky_claw.app.orchestrator.tool_strategies.middleware import (
     DictResultGuardMiddleware,
     ErrorWrappingMiddleware,
 )

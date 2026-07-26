@@ -12,17 +12,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.tool_strategies.analyze_grass_prerequisites import (
+from sky_claw.app.orchestrator.tool_strategies.analyze_grass_prerequisites import (
     AnalyzeGrassPrerequisitesStrategy,
 )
-from sky_claw.antigravity.orchestrator.tool_strategies.base import (
+from sky_claw.app.orchestrator.tool_strategies.base import (
     ApprovalPayloadDescriber,
     ApprovalPayloadValidator,
 )
-from sky_claw.antigravity.orchestrator.tool_strategies.generate_grass_cache import (
+from sky_claw.app.orchestrator.tool_strategies.generate_grass_cache import (
     GenerateGrassCacheStrategy,
 )
-from sky_claw.antigravity.orchestrator.tool_strategies.middleware import (
+from sky_claw.app.orchestrator.tool_strategies.middleware import (
     DESTRUCTIVE_TOOL_PATTERNS,
     HitlGateMiddleware,
 )
@@ -115,8 +115,8 @@ def test_dispatcher_registra_generate_gateada_y_analyze_libre() -> None:
     # Espejo del harness de tests/test_hitl_destructive_gate.py.
     from unittest.mock import MagicMock
 
-    from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
-    from sky_claw.antigravity.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+    from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+    from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 
     sup = SupervisorAgent.__new__(SupervisorAgent)
     sup.scraper = MagicMock()

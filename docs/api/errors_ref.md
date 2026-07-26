@@ -4,7 +4,7 @@
 >
 > **Estado:** Implementado; inventario por fronteras, no jerarquía global.
 >
-> **Fuentes canónicas:** `sky_claw/antigravity/core/errors.py` y módulos que
+> **Fuentes canónicas:** `sky_claw/app/core/errors.py` y módulos que
 > declaran excepciones locales.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.

@@ -21,7 +21,7 @@ import pathlib
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.sync_engine import _extract_nexus_id
+from sky_claw.app.orchestrator.sync_engine import _extract_nexus_id
 from sky_claw.config import SystemPaths
 
 

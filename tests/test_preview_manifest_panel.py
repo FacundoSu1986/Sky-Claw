@@ -6,8 +6,8 @@ pure ``build_preview_view_model`` helper, which is what we pin down here.
 
 from __future__ import annotations
 
-from sky_claw.antigravity.gui.views.sections.preview_manifest_panel import build_preview_view_model
-from sky_claw.antigravity.orchestrator.preview.manifest import (
+from sky_claw.app.gui.views.sections.preview_manifest_panel import build_preview_view_model
+from sky_claw.app.orchestrator.preview.manifest import (
     ConflictPair,
     ConflictPreview,
     LoadOrderDiff,

@@ -456,12 +456,12 @@ class TestConflictReportToDict:
 class TestAnalyzeEspConflictsTool:
     @pytest.mark.asyncio
     async def test_xedit_not_configured_returns_error(self, tmp_path: pathlib.Path) -> None:
-        from sky_claw.antigravity.agent.tools import AsyncToolRegistry
-        from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-        from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
-        from sky_claw.antigravity.scraper.masterlist import MasterlistClient
-        from sky_claw.antigravity.security.network_gateway import EgressPolicy, NetworkGateway
-        from sky_claw.antigravity.security.path_validator import PathValidator
+        from sky_claw.app.agent.tools import AsyncToolRegistry
+        from sky_claw.app.db.async_registry import AsyncModRegistry
+        from sky_claw.app.orchestrator.sync_engine import SyncEngine
+        from sky_claw.app.scraper.masterlist import MasterlistClient
+        from sky_claw.app.security.network_gateway import EgressPolicy, NetworkGateway
+        from sky_claw.app.security.path_validator import PathValidator
         from sky_claw.local.mo2.vfs import MO2Controller
 
         gw = NetworkGateway(EgressPolicy(block_private_ips=False))
@@ -492,12 +492,12 @@ class TestAnalyzeEspConflictsTool:
 
     @pytest.mark.asyncio
     async def test_with_specific_plugins(self, tmp_path: pathlib.Path) -> None:
-        from sky_claw.antigravity.agent.tools import AsyncToolRegistry
-        from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-        from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
-        from sky_claw.antigravity.scraper.masterlist import MasterlistClient
-        from sky_claw.antigravity.security.network_gateway import EgressPolicy, NetworkGateway
-        from sky_claw.antigravity.security.path_validator import PathValidator
+        from sky_claw.app.agent.tools import AsyncToolRegistry
+        from sky_claw.app.db.async_registry import AsyncModRegistry
+        from sky_claw.app.orchestrator.sync_engine import SyncEngine
+        from sky_claw.app.scraper.masterlist import MasterlistClient
+        from sky_claw.app.security.network_gateway import EgressPolicy, NetworkGateway
+        from sky_claw.app.security.path_validator import PathValidator
         from sky_claw.local.mo2.vfs import MO2Controller
         from sky_claw.local.xedit.runner import XEditRunner
 

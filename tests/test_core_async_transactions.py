@@ -12,13 +12,13 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from sky_claw.antigravity.core.database import DatabaseAgent
-from sky_claw.antigravity.core.db_lifecycle import (
+from sky_claw.app.core.database import DatabaseAgent
+from sky_claw.app.core.db_lifecycle import (
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
 )
-from sky_claw.antigravity.core.dlq_manager import DLQManager
-from sky_claw.antigravity.core.event_bus import Event
+from sky_claw.app.core.dlq_manager import DLQManager
+from sky_claw.app.core.event_bus import Event
 
 
 class LifecycleEspia(DatabaseLifecycleManager):
@@ -56,7 +56,7 @@ async def test_database_y_dlq_comparten_dueno_transaccional(
     db_path = tmp_path / "core-shared.db"
     lifecycle = LifecycleEspia(db_path)
     monkeypatch.setattr(
-        "sky_claw.antigravity.core.database.DatabaseLifecycleManager",
+        "sky_claw.app.core.database.DatabaseLifecycleManager",
         lambda **_kwargs: lifecycle,
     )
 
@@ -99,7 +99,7 @@ async def test_stress_database_y_dlq_comparten_lifecycle_sin_perder_filas(
         config=DatabaseLifecycleConfig(enable_signal_handlers=False),
     )
     monkeypatch.setattr(
-        "sky_claw.antigravity.core.database.DatabaseLifecycleManager",
+        "sky_claw.app.core.database.DatabaseLifecycleManager",
         lambda **_kwargs: lifecycle,
     )
     database = DatabaseAgent(str(db_path))
@@ -252,7 +252,7 @@ async def test_init_database_revierte_las_cinco_tablas_si_falla_schema(
 
     lifecycle = LifecycleConFalloDDL(db_paths=[db_path])
     monkeypatch.setattr(
-        "sky_claw.antigravity.core.database.DatabaseLifecycleManager",
+        "sky_claw.app.core.database.DatabaseLifecycleManager",
         lambda **_kwargs: lifecycle,
     )
 

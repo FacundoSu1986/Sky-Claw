@@ -15,11 +15,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus
-from sky_claw.antigravity.db.locks import DistributedLockManager
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
-from sky_claw.antigravity.orchestrator.preview.chain_preview_service import ChainPreviewService
-from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.app.core.event_bus import CoreEventBus
+from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.orchestrator.preview.chain_preview_service import ChainPreviewService
+from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.xedit.conflict_analyzer import (

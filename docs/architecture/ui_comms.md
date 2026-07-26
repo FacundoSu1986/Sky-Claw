@@ -4,8 +4,8 @@
 >
 > **Audiencia:** desarrolladores y operadores.
 >
-> **Fuentes canónicas:** `sky_claw/antigravity/gui/`,
-> `sky_claw/antigravity/comms/` y modos de ejecución.
+> **Fuentes canónicas:** `sky_claw/app/gui/`,
+> `sky_claw/app/comms/` y modos de ejecución.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

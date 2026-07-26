@@ -18,12 +18,12 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from sky_claw.antigravity.security.hitl import Decision, HITLGuard
-from sky_claw.antigravity.security.network_gateway import (
+from sky_claw.app.security.hitl import Decision, HITLGuard
+from sky_claw.app.security.network_gateway import (
     EgressViolationError,
     NetworkGatewayTimeoutError,
 )
-from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.config import (
     GITHUB_RELEASE_ASSET_REDIRECT_HOSTS,
     SystemPaths,
@@ -31,8 +31,8 @@ from sky_claw.config import (
 from sky_claw.local.discovery.environment import SkyrimEdition
 
 if TYPE_CHECKING:
-    from sky_claw.antigravity.scraper.nexus_downloader import NexusDownloader
-    from sky_claw.antigravity.security.network_gateway import NetworkGateway
+    from sky_claw.app.scraper.nexus_downloader import NexusDownloader
+    from sky_claw.app.security.network_gateway import NetworkGateway
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ class ToolInstallError(Exception):
 def _is_safe_path(member_path: str) -> bool:
     """Reject paths with traversal components."""
     try:
-        from sky_claw.antigravity.core.validators import validate_path_strict
+        from sky_claw.app.core.validators import validate_path_strict
 
         # Rechazar explícitamente rutas absolutas o con letra de unidad
         if pathlib.PureWindowsPath(member_path).is_absolute() or pathlib.PurePosixPath(member_path).is_absolute():

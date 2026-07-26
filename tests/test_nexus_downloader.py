@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.scraper.nexus_downloader and the download_mod tool."""
+"""Tests for sky_claw.app.scraper.nexus_downloader and the download_mod tool."""
 
 from __future__ import annotations
 
@@ -13,11 +13,11 @@ import aiohttp
 import pytest
 from tenacity import wait_none
 
-from sky_claw.antigravity.agent.tools import AsyncToolRegistry, DownloadModParams
-from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-from sky_claw.antigravity.orchestrator.sync_engine import SyncEngine
-from sky_claw.antigravity.scraper.masterlist import MasterlistClient
-from sky_claw.antigravity.scraper.nexus_downloader import (
+from sky_claw.app.agent.tools import AsyncToolRegistry, DownloadModParams
+from sky_claw.app.db.async_registry import AsyncModRegistry
+from sky_claw.app.orchestrator.sync_engine import SyncEngine
+from sky_claw.app.scraper.masterlist import MasterlistClient
+from sky_claw.app.scraper.nexus_downloader import (
     DownloadError,
     DownloadProgress,
     FileInfo,
@@ -27,13 +27,13 @@ from sky_claw.antigravity.scraper.nexus_downloader import (
     _cleanup,
     validate_sha256_format,
 )
-from sky_claw.antigravity.security.hitl import Decision, HITLGuard
-from sky_claw.antigravity.security.network_gateway import (
+from sky_claw.app.security.hitl import Decision, HITLGuard
+from sky_claw.app.security.network_gateway import (
     EgressPolicy,
     EgressViolationError,
     NetworkGateway,
 )
-from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.mo2.vfs import MO2Controller
 
 if TYPE_CHECKING:
@@ -866,7 +866,7 @@ class TestDownloadModMissingConfig:
 class TestDownloadModMetadataFailure:
     @pytest.mark.asyncio
     async def test_metadata_error_returns_error_json(self, tool_registry: AsyncToolRegistry) -> None:
-        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -911,7 +911,7 @@ class TestDownloadModHITLDenied:
 
         fi = _make_file_info(nexus_id=10, file_id=20, file_name="denied.zip")
 
-        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -951,7 +951,7 @@ class TestDownloadModHITLDenied:
         )
         fi = _make_file_info(nexus_id=11, file_id=21, file_name="timeout.zip")
 
-        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -1008,7 +1008,7 @@ class TestDownloadModApproved:
             enqueued.append(task)
             return task
 
-        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -1051,7 +1051,7 @@ class TestDownloadModApproved:
             coro.close()
             return MagicMock()
 
-        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
+        with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
             mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -1253,7 +1253,7 @@ class TestGatewayRequestRouting:
 # ---------------------------------------------------------------------------
 
 
-from sky_claw.antigravity.security.path_validator import PathViolationError  # noqa: E402
+from sky_claw.app.security.path_validator import PathViolationError  # noqa: E402
 
 
 class TestDownloadFilenameHardening:
@@ -1316,7 +1316,7 @@ class TestDownloadFilenameHardening:
         A MITM returning ``file_name: "../../evil.dll"`` must end up as
         ``"evil.dll"`` in the resulting FileInfo, or raise DownloadError.
         """
-        from sky_claw.antigravity.scraper.nexus_downloader import DownloadError
+        from sky_claw.app.scraper.nexus_downloader import DownloadError
 
         downloader = _make_downloader(tmp_path)
 

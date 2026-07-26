@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import BaseModel
 
-from sky_claw.antigravity.core.errors import AgentOrchestrationError, SecurityViolationError
-from sky_claw.antigravity.security.agent_guardrail import (
+from sky_claw.app.core.errors import AgentOrchestrationError, SecurityViolationError
+from sky_claw.app.security.agent_guardrail import (
     AgentGuardrail,
     AgentGuardrailConfig,
     secure_llm_call,

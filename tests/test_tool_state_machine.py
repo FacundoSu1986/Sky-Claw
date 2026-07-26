@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from sky_claw.antigravity.orchestrator.tool_state_machine import (
+from sky_claw.app.orchestrator.tool_state_machine import (
     IdempotencyGuard,
     InvalidTransitionError,
     TaskRecord,

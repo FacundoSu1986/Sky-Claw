@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from sky_claw.antigravity.security.governance import GovernanceManager
+from sky_claw.app.security.governance import GovernanceManager
 
 _FAKE_DIGEST = "a" * 64  # deterministic stand-in for SHA-256 hex
 

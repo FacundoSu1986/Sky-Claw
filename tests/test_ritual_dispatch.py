@@ -15,7 +15,7 @@ import asyncio
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from sky_claw.antigravity.gui.controllers.ritual_runner import (
+from sky_claw.app.gui.controllers.ritual_runner import (
     RITUAL_TOOL_MAP,
     STORE_KEY_RITUAL_PREFLIGHT,
     make_gui_hitl_notify,
@@ -25,7 +25,7 @@ from sky_claw.antigravity.gui.controllers.ritual_runner import (
     run_ritual,
     summarize_ritual_result,
 )
-from sky_claw.antigravity.gui.state.reactive_store import ReactiveStore
+from sky_claw.app.gui.state.reactive_store import ReactiveStore
 
 
 @dataclass

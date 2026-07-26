@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.scraper.masterlist."""
+"""Tests for sky_claw.app.scraper.masterlist."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 
-from sky_claw.antigravity.scraper.masterlist import (
+from sky_claw.app.scraper.masterlist import (
     MasterlistClient,
     MasterlistFetchError,
     MasterlistHTTPError,
 )
-from sky_claw.antigravity.security.network_gateway import (
+from sky_claw.app.security.network_gateway import (
     EgressPolicy,
     EgressViolationError,
     NetworkGateway,

@@ -17,11 +17,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.core.models import HitlApprovalRequest, LootExecutionParams
-from sky_claw.antigravity.core.schemas import ScrapingQuery
-from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
-from sky_claw.antigravity.orchestrator.tool_dispatcher import build_orchestration_dispatcher
-from sky_claw.antigravity.orchestrator.tool_strategies.middleware import HitlGateMiddleware
+from sky_claw.app.core.models import HitlApprovalRequest, LootExecutionParams
+from sky_claw.app.core.schemas import ScrapingQuery
+from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
 from sky_claw.local.xedit.conflict_analyzer import ConflictReport
 
 
@@ -188,7 +188,7 @@ def _wire_fake_synthesis_flow(monkeypatch, *, side_effect=None, return_value=Non
     """Monkeypatchea los builders lazy del dispatcher (se resuelven por-call)."""
     import pathlib
 
-    from sky_claw.antigravity.orchestrator import tool_dispatcher as td
+    from sky_claw.app.orchestrator import tool_dispatcher as td
 
     flow = _SynthesisFlowFake(overwrite_copy=pathlib.Path("clone") / "overwrite")
     service = MagicMock()

@@ -5,9 +5,9 @@
 > **Estado:** Implementado; exportación de métricas y traces es opcional.
 >
 > **Fuentes canónicas:** `sky_claw/logging_config.py`,
-> `sky_claw/antigravity/core/metrics_server.py`,
-> `sky_claw/antigravity/core/tracing.py` y
-> `sky_claw/antigravity/db/journal.py`.
+> `sky_claw/app/core/metrics_server.py`,
+> `sky_claw/app/core/tracing.py` y
+> `sky_claw/app/db/journal.py`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

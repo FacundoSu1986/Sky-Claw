@@ -4,7 +4,7 @@
 >
 > **Audiencia:** desarrolladores, operadores y agentes.
 >
-> **Fuentes:** `__main__.py`, `app_context.py`, `antigravity/` y `local/`.
+> **Fuentes:** `__main__.py`, `app_context.py`, `app/` y `local/`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

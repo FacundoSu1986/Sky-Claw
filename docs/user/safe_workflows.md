@@ -6,7 +6,7 @@
 > runner.
 >
 > **Fuentes canónicas:** `sky_claw/local/AGENTS.md`,
-> `sky_claw/antigravity/orchestrator/` y `sky_claw/local/mo2/`.
+> `sky_claw/app/orchestrator/` y `sky_claw/local/mo2/`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

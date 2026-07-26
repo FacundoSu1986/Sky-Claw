@@ -9,7 +9,7 @@
 
 # SKYRIM MODDING PIPELINE — AGENT OPERATING PROCEDURES
 
-> **READ THIS BEFORE touching any file under `sky_claw/local/tools/`, `sky_claw/antigravity/orchestrator/tool_strategies/`, or `sky_claw/local/xedit/`.**
+> **READ THIS BEFORE touching any file under `sky_claw/local/tools/`, `sky_claw/app/orchestrator/tool_strategies/`, or `sky_claw/local/xedit/`.**
 > Violating the pipeline order below will corrupt load orders, break patches, and silently desync the VFS.
 >
 > Human-readable companion: [`../../docs/pipeline/skyrim_sop.md`](../../docs/pipeline/skyrim_sop.md).
@@ -308,8 +308,8 @@ To escape the paralyzing effect of the Rule of One, two patchers are used and th
 
 When modifying pipeline code in this repository, the following rules apply ON TOP of `../../AGENTS.md`:
 
-1. **NEVER** assume the strategy registration order in `build_orchestration_dispatcher()` (`sky_claw/antigravity/orchestrator/tool_dispatcher.py`) mirrors the pipeline order in §1. It does NOT — strategies are registered as callable orchestration tools, not executed in pipeline order. The §1 order is enforced by the caller's tool sequence, not by registration order. Do not "fix" the registration order to match §1; that would be a regression.
-2. **NEVER** introduce a code path that invokes DynDOLOD before Wrye Bash + Synthesis have completed. The current `GenerateLodsStrategy.execute()` (see `sky_claw/antigravity/orchestrator/tool_strategies/generate_lods.py`) does NOT check upstream completion — a runtime guard is still needed and any new LOD-invocation path MUST add one.
+1. **NEVER** assume the strategy registration order in `build_orchestration_dispatcher()` (`sky_claw/app/orchestrator/tool_dispatcher.py`) mirrors the pipeline order in §1. It does NOT — strategies are registered as callable orchestration tools, not executed in pipeline order. The §1 order is enforced by the caller's tool sequence, not by registration order. Do not "fix" the registration order to match §1; that would be a regression.
+2. **NEVER** introduce a code path that invokes DynDOLOD before Wrye Bash + Synthesis have completed. The current `GenerateLodsStrategy.execute()` (see `sky_claw/app/orchestrator/tool_strategies/generate_lods.py`) does NOT check upstream completion — a runtime guard is still needed and any new LOD-invocation path MUST add one.
 3. **NEVER** allow Wrye Bash strategy to merge categories beyond Leveled Lists without an explicit user override flag. Default scope = Leveled Lists ONLY.
 4. **ALWAYS** emit a `success: bool` + `message: str` from any new tool runner (see `tool_result.py` contract in `../../AGENTS.md`).
 5. **ALWAYS** log the pipeline stage index when a tool fails. Stage index is the primary debugging signal.

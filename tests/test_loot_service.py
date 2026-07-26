@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.db.locks import DistributedLockManager
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.loot.cli import LOOTTimeoutError
 from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
@@ -239,7 +239,7 @@ async def test_builds_runner_from_resolver_with_preserved_timeout(
 def test_preview_chain_shares_load_order_resource_id() -> None:
     """The dry-run preview must lock the SAME resource id so a real sort and a
     preview serialize (preview's force-rollback can't clobber a concurrent sort)."""
-    from sky_claw.antigravity.orchestrator.preview import chain_preview_service
+    from sky_claw.app.orchestrator.preview import chain_preview_service
 
     assert chain_preview_service._RESOURCE_ID == LOAD_ORDER_RESOURCE_ID
 
@@ -378,7 +378,7 @@ async def test_sort_exitoso_conserva_los_cambios(
 @pytest.fixture
 async def journal(tmp_path: pathlib.Path):
     """OperationJournal real sobre una DB temporal."""
-    from sky_claw.antigravity.db.journal import OperationJournal
+    from sky_claw.app.db.journal import OperationJournal
 
     j = OperationJournal(tmp_path / "journal.db")
     await j.open()
@@ -414,7 +414,7 @@ async def _ops_de_la_ultima_tx(journal):  # noqa: ANN001, ANN202
 async def _manifiesto_de_la_ultima_tx(journal):  # noqa: ANN001, ANN202
     """El op del ActionManifest (no el del FlightReport, que también trae
     ritual_id — se discrimina por la clave ``kind`` del informe, T-28)."""
-    from sky_claw.antigravity.orchestrator.preview.action_manifest import ActionManifest
+    from sky_claw.app.orchestrator.preview.action_manifest import ActionManifest
 
     metadatas = [
         e.metadata
@@ -500,7 +500,7 @@ async def test_emit_failure_no_deja_transaccion_pending(
 ) -> None:
     """Si persist falla tras begin_transaction, la TX se marca rolled-back (no
     queda PENDING) y el sort no muta (review Codex PR #243)."""
-    from sky_claw.antigravity.db.journal import TransactionStatus
+    from sky_claw.app.db.journal import TransactionStatus
 
     resolver, _plugins = _preparar_load_order(tmp_path)
     runner = MagicMock()
@@ -526,7 +526,7 @@ async def test_error_inesperado_del_runner_devuelve_dict(
 ) -> None:
     """Un error del runner fuera de las excepciones LOOT-específicas no propaga:
     se devuelve dict y la TX del manifiesto no queda PENDING (review Codex #243)."""
-    from sky_claw.antigravity.db.journal import TransactionStatus
+    from sky_claw.app.db.journal import TransactionStatus
 
     resolver, _plugins = _preparar_load_order(tmp_path)
     runner = MagicMock()
@@ -550,7 +550,7 @@ async def test_error_del_journal_no_rompe_el_contrato_de_dict(
 ) -> None:
     """Un JournalTransactionError en la emisión se convierte en dict serializable,
     no propaga (review Copilot PR #243): sort_load_order siempre devuelve dict."""
-    from sky_claw.antigravity.db.journal import JournalTransactionError
+    from sky_claw.app.db.journal import JournalTransactionError
 
     resolver, _plugins = _preparar_load_order(tmp_path)
     runner = MagicMock()
@@ -619,7 +619,7 @@ async def test_sort_exitoso_persiste_informe_de_vuelo(
 ) -> None:
     """Tras un sort exitoso con journal cableado queda un FlightReport
     persistido en la misma TX, compuesto desde el manifiesto real (T-28)."""
-    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+    from sky_claw.app.orchestrator.preview.flight_report import FlightReport
 
     resolver, plugins = _preparar_load_order(tmp_path)
     runner = MagicMock()
@@ -678,7 +678,7 @@ async def test_cancelacion_durante_el_informe_no_revierte_la_tx_commiteada(
     """Una cancelación mientras se emite el informe (post-commit) NO debe
     re-marcar la TX ya commiteada como rolled-back: el sort fue exitoso y el
     audit trail no debe mentir (review Codex #249)."""
-    from sky_claw.antigravity.db.journal import TransactionStatus
+    from sky_claw.app.db.journal import TransactionStatus
 
     resolver, _plugins = _preparar_load_order(tmp_path)
     runner = MagicMock()
@@ -707,7 +707,7 @@ async def test_informe_registra_el_diff_real_de_orden(
     """El informe adjunta el diff REAL de orden (archivo antes vs
     result.sorted_plugins después), aunque el manifiesto pre-vuelo — emitido
     antes de mutar e inmutable — no lo tenga (review Codex #249)."""
-    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+    from sky_claw.app.orchestrator.preview.flight_report import FlightReport
 
     resolver, _plugins = _preparar_load_order(tmp_path)  # orden previo: Skyrim.esm, Original.esp
     runner = MagicMock()
@@ -762,7 +762,7 @@ async def test_sort_exitoso_llena_el_slot_post_run_del_informe(
 ) -> None:
     """El FlightReport persistido lleva el resultado del validador post-run en
     el slot que T-28 dejó esperando a T-21 (nunca más "T-21 pendiente")."""
-    from sky_claw.antigravity.orchestrator.preview.flight_report import FlightReport
+    from sky_claw.app.orchestrator.preview.flight_report import FlightReport
     from sky_claw.local.validators.preflight import PreflightService
 
     resolver, _plugins = _preparar_load_order(tmp_path)
@@ -909,7 +909,7 @@ async def test_post_run_corre_dentro_del_lock_del_load_order(
     load order antes de la lectura post-run y el reporte quedaría atribuido a
     este sort. El spy intenta tomar el MISMO lock durante la validación: debe
     fallar (el sort todavía lo tiene)."""
-    from sky_claw.antigravity.db.locks import LockAcquisitionError
+    from sky_claw.app.db.locks import LockAcquisitionError
     from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 
     resolver, _plugins = _preparar_load_order(tmp_path)

@@ -4,8 +4,8 @@
 >
 > **Audiencia:** desarrolladores y agentes.
 >
-> **Fuentes canónicas:** `sky_claw/antigravity/agent/tools/`,
-> `sky_claw/antigravity/orchestrator/tool_dispatcher.py` y sus callers.
+> **Fuentes canónicas:** `sky_claw/app/agent/tools/`,
+> `sky_claw/app/orchestrator/tool_dispatcher.py` y sus callers.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

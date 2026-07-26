@@ -31,7 +31,7 @@ import psutil as psutil_real
 import pytest
 
 import sky_claw.local.tools.grass_cache_runner as gcr_mod
-from sky_claw.antigravity.security.path_validator import PathViolationError
+from sky_claw.app.security.path_validator import PathViolationError
 from sky_claw.local.mo2.vfs import GameLaunchTimeoutError, MO2Controller
 from sky_claw.local.tools.grass_cache_runner import (
     GrassCacheConfig,

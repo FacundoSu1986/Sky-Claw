@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from sky_claw.antigravity.db.async_registry import AsyncModRegistry
-from sky_claw.antigravity.db.registry import ModRegistry
+from sky_claw.app.db.async_registry import AsyncModRegistry
+from sky_claw.app.db.registry import ModRegistry
 
 if TYPE_CHECKING:
     import pathlib

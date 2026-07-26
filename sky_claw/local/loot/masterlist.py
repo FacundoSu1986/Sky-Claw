@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import aiohttp
 
-    from sky_claw.antigravity.security.network_gateway import NetworkGateway
+    from sky_claw.app.security.network_gateway import NetworkGateway
 
 logger = logging.getLogger(__name__)
 

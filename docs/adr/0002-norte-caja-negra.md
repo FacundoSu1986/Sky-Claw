@@ -28,7 +28,7 @@ y registra las piezas genuinamente nuevas:
 | Motor de reglas de conflicto (no solo detector) | 🔶 En backlog: T-19a/T-19b (`Manual Cost Calc` como primera regla declarativa), T-20 (asistente de estrategia) |
 | UX de confianza ("panel de cirugía") | 🔶 Parcial: T-16/T-20/T-21; faltaba el panel por subrecord + "abrir en xEdit" (§5.5 del review, sin tarea) → **T-29** |
 | Menos deuda estructural antes de crecer | 🔶 Incremental: T-10/T-11 (BLE001 por carpeta), T-12 (mypy módulo a módulo) |
-| Manifiesto por acción con rollback | ❌ Solo existe el preview de la cadena (`sky_claw/antigravity/orchestrator/preview/manifest.py`); §4.6 del review no tenía tarea → **T-26** |
+| Manifiesto por acción con rollback | ❌ Solo existe el preview de la cadena (`sky_claw/app/orchestrator/preview/manifest.py`); §4.6 del review no tenía tarea → **T-26** |
 | Clonar el perfil MO2 antes de operar | ❌ No existe (`sky_claw/local/mo2/` no tiene clonado de profiles) → **T-27** |
 | Informe final por corrida | ❌ No existe como concepto → **T-28** |
 
@@ -51,7 +51,7 @@ proponer patch → aprobación humana → ejecutar → validar → informe final
 1. **Manifiesto por acción (T-26).** Todo Ritual mutante produce, antes de
    ejecutar, un manifiesto inspeccionable: qué archivos toca, qué plugins/
    records forwardea, con qué herramienta y versión, y cuál es el plan de
-   rollback. Se **extiende** `sky_claw/antigravity/orchestrator/preview/manifest.py`
+   rollback. Se **extiende** `sky_claw/app/orchestrator/preview/manifest.py`
    (hoy limitado al preview de la cadena LOOT→xEdit→DynDOLOD→bashed) y se persiste en el
    journal — no se crea un contrato paralelo.
 2. **ProfileSandbox (T-27).** Los rituales mutantes operan sobre un clon del

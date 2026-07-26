@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.supervisor import SupervisorAgent
-from sky_claw.antigravity.security.network_gateway import NetworkGateway
-from sky_claw.antigravity.security.path_validator import PathValidator
+from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+from sky_claw.app.security.network_gateway import NetworkGateway
+from sky_claw.app.security.path_validator import PathValidator
 
 
 @pytest.fixture

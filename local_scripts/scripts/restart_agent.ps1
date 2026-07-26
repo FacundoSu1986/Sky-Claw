@@ -61,7 +61,7 @@ Stop-SurgicalProcess -PidFile $GatewayPidFile -Name "Gateway (Node.js)"
 
 # 2. Arranque del Gateway (Node.js 24)
 Write-Host "[START] Levantando Gateway en Node.js..." -ForegroundColor Green
-$GatewayProc = Start-Process node -ArgumentList "$PSScriptRoot\..\sky_claw\antigravity\comms\telegram_gateway_node\server.js" -NoNewWindow -PassThru -ErrorAction SilentlyContinue
+$GatewayProc = Start-Process node -ArgumentList "$PSScriptRoot\..\sky_claw\app\comms\telegram_gateway_node\server.js" -NoNewWindow -PassThru -ErrorAction SilentlyContinue
 
 if (!$GatewayProc) {
     Write-Host "[CRITICAL] No se pudo iniciar Node.js. Asegúrate de tener Node.js 24+ en el PATH." -ForegroundColor Red

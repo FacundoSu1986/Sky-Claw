@@ -34,7 +34,7 @@ import pathlib
 import shutil
 from typing import TYPE_CHECKING
 
-from sky_claw.antigravity.security.path_validator import assert_safe_component
+from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.local.mo2.ini_editor import IniEditor
 from sky_claw.local.mo2.profile_sandbox import (
     ProfileNotFoundError,
@@ -46,7 +46,7 @@ from sky_claw.local.mo2.vfs import MO2Controller
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from sky_claw.antigravity.security.path_validator import PathValidator
+    from sky_claw.app.security.path_validator import PathValidator
 
 logger = logging.getLogger(__name__)
 

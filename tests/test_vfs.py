@@ -8,7 +8,7 @@ from typing import NamedTuple
 
 import pytest
 
-from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.mo2.vfs import MO2Controller
 
 

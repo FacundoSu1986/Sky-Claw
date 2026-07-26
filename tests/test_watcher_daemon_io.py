@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.orchestrator.watcher_daemon import WatcherDaemon
+from sky_claw.app.orchestrator.watcher_daemon import WatcherDaemon
 
 
 def _make_daemon(modlist_path: Path, interval: float = 0.05) -> WatcherDaemon:

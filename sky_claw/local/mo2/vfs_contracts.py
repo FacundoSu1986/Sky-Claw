@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TypeAlias
 
-from sky_claw.antigravity.security.path_validator import PathViolationError, assert_safe_component
+from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 
 VFS_PROTOCOL_VERSION = 1
 ALLOWED_VFS_TOOL_IDS = frozenset({"health", "loot_sort"})

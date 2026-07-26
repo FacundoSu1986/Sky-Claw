@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import aiofiles
 import aiofiles.os
 
-from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError, safe_join
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError, safe_join
 from sky_claw.local.fomod.parser import FomodParseError, parse_fomod
 from sky_claw.local.fomod.resolver import FomodResolver
 

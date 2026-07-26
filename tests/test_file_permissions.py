@@ -1,4 +1,4 @@
-"""Tests for sky_claw/antigravity/security/file_permissions.py.
+"""Tests for sky_claw/app/security/file_permissions.py.
 
 Covers the Windows ICACLS hardening path and its SID-based retry:
   1. Username-based icacls succeeds + post-validation passes → done.
@@ -24,8 +24,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import sky_claw.antigravity.security.file_permissions as fp_mod
-from sky_claw.antigravity.security.file_permissions import restrict_to_owner
+import sky_claw.app.security.file_permissions as fp_mod
+from sky_claw.app.security.file_permissions import restrict_to_owner
 
 # ---------------------------------------------------------------------------
 # Helpers

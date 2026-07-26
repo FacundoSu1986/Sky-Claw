@@ -124,7 +124,7 @@ ignore = [
 "sky_claw/compat.py" = ["BLE001"]
 "sky_claw/config.py" = ["BLE001"]
 "sky_claw/logging_config.py" = ["BLE001"]
-"sky_claw/antigravity/**" = ["BLE001"]
+"sky_claw/app/**" = ["BLE001"]
 "sky_claw/local/auto_detect.py" = ["BLE001"]
 "sky_claw/local/local_config.py" = ["BLE001"]
 "sky_claw/local/tools_installer.py" = ["BLE001"]
@@ -159,7 +159,7 @@ no_implicit_optional = true
 # Probed clean — 0 violations across the 196 checked files — so it's a free
 # regression guard. NOTE: warn_unreachable is deliberately NOT enabled: it
 # false-positives on the correct double-checked-locking idiom in
-# sky_claw/antigravity/core/contracts.py (mypy can't model cross-thread
+# sky_claw/app/core/contracts.py (mypy can't model cross-thread
 # mutation of the flag).
 strict_equality = true
 ignore_missing_imports = true
@@ -178,16 +178,16 @@ exclude = [
 # Modules with unresolved type errors — ignore until annotated
 [[tool.mypy.overrides]]
 module = [
-    "sky_claw.antigravity.gui.*",
-    "sky_claw.antigravity.comms.*",
-    "sky_claw.antigravity.agent.*",
-    "sky_claw.antigravity.modes.*",
-    "sky_claw.antigravity.orchestrator.*",
-    "sky_claw.antigravity.scraper.*",
-    "sky_claw.antigravity.web.*",
-    "sky_claw.antigravity.db.*",
-    "sky_claw.antigravity.security.*",
-    "sky_claw.antigravity.core.*",
+    "sky_claw.app.gui.*",
+    "sky_claw.app.comms.*",
+    "sky_claw.app.agent.*",
+    "sky_claw.app.modes.*",
+    "sky_claw.app.orchestrator.*",
+    "sky_claw.app.scraper.*",
+    "sky_claw.app.web.*",
+    "sky_claw.app.db.*",
+    "sky_claw.app.security.*",
+    "sky_claw.app.core.*",
     "sky_claw.local.tools.*",
     "sky_claw.local.xedit.*",
     "sky_claw.local.loot.*",
@@ -205,25 +205,25 @@ module = [
 ignore_errors = true  # TODO: Remove after type-coverage sprint. Currently 1,684 mypy errors across ~30 modules; re-enable incrementally per-module.
 
 # Wave-1 mypy sprint: core/ foundational modules enabled for checking.
-# These override the broad sky_claw.antigravity.core.* ignore above.
+# These override the broad sky_claw.app.core.* ignore above.
 [[tool.mypy.overrides]]
 module = [
-    "sky_claw.antigravity.core.errors",
-    "sky_claw.antigravity.core.contracts",
-    "sky_claw.antigravity.core.models",
-    "sky_claw.antigravity.core.schemas",
-    "sky_claw.antigravity.core.event_payloads",
-    "sky_claw.antigravity.core.metrics",
-    "sky_claw.antigravity.core.metrics_server",
-    "sky_claw.antigravity.core.tracing",
-    "sky_claw.antigravity.core.dlq_manager",
+    "sky_claw.app.core.errors",
+    "sky_claw.app.core.contracts",
+    "sky_claw.app.core.models",
+    "sky_claw.app.core.schemas",
+    "sky_claw.app.core.event_payloads",
+    "sky_claw.app.core.metrics",
+    "sky_claw.app.core.metrics_server",
+    "sky_claw.app.core.tracing",
+    "sky_claw.app.core.dlq_manager",
 ]
 ignore_errors = false
 
 # Strict mode for refactored modules — overrides the broad ignore above
 [[tool.mypy.overrides]]
 module = [
-    "sky_claw.antigravity.orchestrator.sync_engine",
+    "sky_claw.app.orchestrator.sync_engine",
     "sky_claw.local.mo2.vfs_contracts",
     "sky_claw.local.mo2.vfs_attestation",
     "sky_claw.local.mo2.vfs_ipc",
@@ -248,14 +248,14 @@ module = [
     "sky_claw.local.xedit.script_staging",  # PR-2 grass cache: módulo nuevo, nace estricto
     "sky_claw.local.tools.grass_cache_runner",  # PR-4 grass cache: módulo nuevo, nace estricto
     "sky_claw.local.tools.grass_cache_service",  # PR-5 grass cache: módulo nuevo, nace estricto
-    "sky_claw.antigravity.orchestrator.tool_strategies.analyze_grass_prerequisites",  # PR-5, estricto
-    "sky_claw.antigravity.orchestrator.tool_strategies.generate_grass_cache",  # PR-5, estricto
+    "sky_claw.app.orchestrator.tool_strategies.analyze_grass_prerequisites",  # PR-5, estricto
+    "sky_claw.app.orchestrator.tool_strategies.generate_grass_cache",  # PR-5, estricto
     "sky_claw.local.validators.post_run",  # T-21: validador post-run, estricto
     "sky_claw.local.validators.write_permissions",  # T-30·4: sensor de permisos de escritura, estricto
     "sky_claw.local.validators.preflight_sensors",  # T-16d: builders compartidos de sensores, estricto
     "sky_claw.local.xedit.patch_advisor",  # T-20: asistente de estrategia de parcheo, estricto
-    "sky_claw.antigravity.orchestrator.preview.flight_report",  # T-28: módulo nuevo, nace estricto
-    "sky_claw.antigravity.orchestrator.sandbox_promotion",  # T-27b·2: flujo promote/discard HITL, estricto
+    "sky_claw.app.orchestrator.preview.flight_report",  # T-28: módulo nuevo, nace estricto
+    "sky_claw.app.orchestrator.sandbox_promotion",  # T-27b·2: flujo promote/discard HITL, estricto
     "sky_claw.local.ai.conflict_prompt",  # Fase 1 AI-assisted: prompt builder, nace estricto
     "sky_claw.local.ai.forum_search",  # Fase 1 AI-assisted: forum search (stub), nace estricto
     "sky_claw.local.ai.patch_advisor_llm",  # Fase 1 AI-assisted: LLM advisor, nace estricto
@@ -274,7 +274,7 @@ source = "vcs"
 packages = ["sky_claw"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"sky_claw/antigravity/security/security_policy.yaml" = "sky_claw/antigravity/security/security_policy.yaml"
+"sky_claw/app/security/security_policy.yaml" = "sky_claw/app/security/security_policy.yaml"
 # PR-2 grass cache: los .pas bundleados se stagean a "Edit Scripts" en runtime;
 # sin ellos run_script falla con script-not-found (anclado en test_packaging.py).
 "sky_claw/local/xedit/scripts" = "sky_claw/local/xedit/scripts"

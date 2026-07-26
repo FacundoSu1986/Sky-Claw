@@ -15,7 +15,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sky_claw.antigravity.orchestrator.tool_strategies.scan_asset_conflicts import (
+from sky_claw.app.orchestrator.tool_strategies.scan_asset_conflicts import (
     ScanAssetConflictsJsonStrategy,
     ScanAssetConflictsStrategy,
 )

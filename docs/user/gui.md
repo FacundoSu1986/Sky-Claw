@@ -4,9 +4,9 @@
 >
 > **Estado:** Implementado con algunas capacidades dependientes del entorno.
 >
-> **Fuentes canónicas:** `sky_claw/antigravity/gui/sky_claw_gui.py`,
-> `sky_claw/antigravity/gui/views/forge_dashboard.py` y
-> `sky_claw/antigravity/gui/controllers/ritual_runner.py`.
+> **Fuentes canónicas:** `sky_claw/app/gui/sky_claw_gui.py`,
+> `sky_claw/app/gui/views/forge_dashboard.py` y
+> `sky_claw/app/gui/controllers/ritual_runner.py`.
 >
 > **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 

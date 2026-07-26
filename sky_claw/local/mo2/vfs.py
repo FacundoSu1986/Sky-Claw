@@ -29,9 +29,9 @@ import psutil
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from sky_claw.antigravity.security.path_validator import PathValidator
+    from sky_claw.app.security.path_validator import PathValidator
 
-from sky_claw.antigravity.security.path_validator import assert_safe_component
+from sky_claw.app.security.path_validator import assert_safe_component
 
 logger = logging.getLogger(__name__)
 

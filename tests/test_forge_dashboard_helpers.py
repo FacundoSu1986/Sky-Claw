@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sky_claw.antigravity.gui.state import get_store, reset_store_for_tests
-from sky_claw.antigravity.gui.views.forge_dashboard import (
+from sky_claw.app.gui.state import get_store, reset_store_for_tests
+from sky_claw.app.gui.views.forge_dashboard import (
     _RITUALS,
     STORE_KEY_CPU,
     STORE_KEY_GPU,

@@ -14,8 +14,8 @@ import logging
 
 import pytest
 
-from sky_claw.antigravity.comms import interface as interface_mod
-from sky_claw.antigravity.comms.interface import InterfaceAgent
+from sky_claw.app.comms import interface as interface_mod
+from sky_claw.app.comms.interface import InterfaceAgent
 
 
 class _EmptyWS:

@@ -23,7 +23,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_dispatch_chat_publishes_timeout_on_hang() -> None:
     """If router.chat hangs past _GUI_CHAT_TIMEOUT_SECONDS, an error event is emitted."""
-    from sky_claw.antigravity.gui import _bootloader
+    from sky_claw.app.gui import _bootloader
 
     ctx = MagicMock()
     ctx.router = MagicMock()
@@ -53,7 +53,7 @@ async def test_dispatch_chat_publishes_timeout_on_hang() -> None:
 @pytest.mark.asyncio
 async def test_dispatch_chat_publishes_response_on_success() -> None:
     """Happy path: a fast chat response flows into an LLM_RESPONSE event."""
-    from sky_claw.antigravity.gui import _bootloader
+    from sky_claw.app.gui import _bootloader
 
     ctx = MagicMock()
     ctx.router = MagicMock()

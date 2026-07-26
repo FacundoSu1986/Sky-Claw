@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from sky_claw.antigravity.core.validators.ssrf import SSRFValidator
+from sky_claw.app.core.validators.ssrf import SSRFValidator
 
 
 def _validator_for(ip: str) -> SSRFValidator:

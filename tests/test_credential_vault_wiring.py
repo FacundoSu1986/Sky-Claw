@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.agent.router import LLMRouter
-from sky_claw.antigravity.security.credential_vault import CredentialVault
+from sky_claw.app.agent.router import LLMRouter
+from sky_claw.app.security.credential_vault import CredentialVault
 from sky_claw.app_context import AppContext
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ def _sin_icacls():
     tests ejercitan el *cableado* del vault, no el hardening de permisos del SO;
     lo parcheamos como ya hace ``tests/test_credential_vault_sec02.py``.
     """
-    with patch("sky_claw.antigravity.security.credential_vault.restrict_to_owner"):
+    with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
         yield
 
 

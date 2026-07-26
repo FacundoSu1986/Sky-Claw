@@ -14,8 +14,8 @@ import pathlib
 
 import pytest
 
-from sky_claw.antigravity.db.journal import JournalSnapshotError
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.db.journal import JournalSnapshotError
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 
 
 @pytest.fixture

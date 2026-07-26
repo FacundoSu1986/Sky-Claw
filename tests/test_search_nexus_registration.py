@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from sky_claw.antigravity.agent.tools import AsyncToolRegistry
+from sky_claw.app.agent.tools import AsyncToolRegistry
 
 
 def _registry(**kwargs):

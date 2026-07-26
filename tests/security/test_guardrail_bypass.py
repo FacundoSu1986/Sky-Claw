@@ -23,10 +23,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.agent.router import LLMRouter
-from sky_claw.antigravity.agent.tools import AsyncToolRegistry
-from sky_claw.antigravity.agent.tools.external_tools import setup_tools
-from sky_claw.antigravity.agent.tools.nexus_tools import download_mod
+from sky_claw.app.agent.router import LLMRouter
+from sky_claw.app.agent.tools import AsyncToolRegistry
+from sky_claw.app.agent.tools.external_tools import setup_tools
+from sky_claw.app.agent.tools.nexus_tools import download_mod
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -260,7 +260,7 @@ class TestDownloadModZeroTrust:
     @pytest.mark.asyncio
     async def test_no_aiohttp_session_created_when_gateway_none(self) -> None:
         """No ClientSession must be instantiated when gateway is None — Zero-Trust abort."""
-        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
+        with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
             await download_mod(
                 downloader=MagicMock(),
                 hitl=MagicMock(),
@@ -274,7 +274,7 @@ class TestDownloadModZeroTrust:
     @pytest.mark.asyncio
     async def test_proceeds_normally_when_gateway_provided(self) -> None:
         """When a real gateway is available, download_mod must proceed (not abort)."""
-        from sky_claw.antigravity.security.network_gateway import NetworkGateway
+        from sky_claw.app.security.network_gateway import NetworkGateway
 
         gateway = NetworkGateway()
 
@@ -289,13 +289,13 @@ class TestDownloadModZeroTrust:
             )
         )
         mock_hitl = MagicMock()
-        from sky_claw.antigravity.security.hitl import Decision
+        from sky_claw.app.security.hitl import Decision
 
         mock_hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)
         mock_sync_engine = MagicMock()
         mock_sync_engine.enqueue_download = MagicMock()
 
-        with patch("sky_claw.antigravity.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
+        with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
             mock_cls.return_value.closed = False
@@ -343,7 +343,7 @@ class TestSetupToolsZeroTrust:
     @pytest.mark.asyncio
     async def test_no_aiohttp_session_created_when_gateway_none(self, tmp_path: pathlib.Path) -> None:
         """No ClientSession must be instantiated when gateway is None — Zero-Trust abort."""
-        with patch("sky_claw.antigravity.agent.tools.external_tools.aiohttp.ClientSession") as mock_cls:
+        with patch("sky_claw.app.agent.tools.external_tools.aiohttp.ClientSession") as mock_cls:
             await setup_tools(
                 tools_installer=MagicMock(),
                 install_dir=tmp_path,

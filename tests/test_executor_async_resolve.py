@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sky_claw.antigravity.agent.executor import ManagedToolExecutor
+from sky_claw.app.agent.executor import ManagedToolExecutor
 
 
 class TestResolveStrictFalseAsync:
@@ -98,7 +98,7 @@ class TestPathJailRegressionViaAsyncResolve:
 
         monkeypatch.setattr(SystemPaths, "modding_root", staticmethod(lambda: jail))
 
-        from sky_claw.antigravity.security.path_validator import PathValidator
+        from sky_claw.app.security.path_validator import PathValidator
 
         validator = PathValidator([jail])
         executor = ManagedToolExecutor(timeout=1.0, path_validator=validator)

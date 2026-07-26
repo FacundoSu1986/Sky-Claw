@@ -26,9 +26,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.agent.tools.system_tools import generate_bashed_patch
-from sky_claw.antigravity.db.locks import DistributedLockManager, LockLeaseLostError
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.agent.tools.system_tools import generate_bashed_patch
+from sky_claw.app.db.locks import DistributedLockManager, LockLeaseLostError
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME, WryeBashResult
 from sky_claw.local.tools.wrye_bash_service import BASHED_PATCH_RESOURCE_ID
 from sky_claw.local.xedit.patch_orchestrator import DelegateToBashedPatch
@@ -201,7 +201,7 @@ async def test_handler_con_journal_emite_caja_negra(
     runner = _runner()
 
     with patch(
-        "sky_claw.antigravity.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        "sky_claw.app.orchestrator.preview.flight_report.compose_flight_report_from_journal",
         AsyncMock(return_value=MagicMock()),
     ):
         out = json.loads(

@@ -19,8 +19,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import sky_claw.antigravity.security.file_permissions as fp_mod
-from sky_claw.antigravity.security.file_permissions import (
+import sky_claw.app.security.file_permissions as fp_mod
+from sky_claw.app.security.file_permissions import (
     _dacl_is_owner_only,
     restrict_to_owner,
     restrict_to_owner_async,

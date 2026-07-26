@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sky_claw.antigravity.core.async_path_resolver import (
+from sky_claw.app.core.async_path_resolver import (
     AsyncPathResolver,
 )
 

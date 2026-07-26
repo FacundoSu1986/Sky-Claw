@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.security.network_gateway."""
+"""Tests for sky_claw.app.security.network_gateway."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 
-from sky_claw.antigravity.security.network_gateway import (
+from sky_claw.app.security.network_gateway import (
     EgressPolicy,
     EgressViolationError,
     NetworkGateway,
@@ -352,7 +352,7 @@ class TestIsBlockedIP:
     def test_direcciones_peligrosas_bloqueadas(self, ip: str) -> None:
         import ipaddress
 
-        from sky_claw.antigravity.security.network_gateway import _is_blocked_ip
+        from sky_claw.app.security.network_gateway import _is_blocked_ip
 
         assert _is_blocked_ip(ipaddress.ip_address(ip)) is True
 
@@ -368,7 +368,7 @@ class TestIsBlockedIP:
     def test_direcciones_publicas_permitidas(self, ip: str) -> None:
         import ipaddress
 
-        from sky_claw.antigravity.security.network_gateway import _is_blocked_ip
+        from sky_claw.app.security.network_gateway import _is_blocked_ip
 
         assert _is_blocked_ip(ipaddress.ip_address(ip)) is False
 
@@ -381,7 +381,7 @@ class TestSafeResolverSSRF:
     async def test_resolver_bloquea_ipv4_mapped_loopback(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import socket
 
-        from sky_claw.antigravity.security.network_gateway import SafeResolver
+        from sky_claw.app.security.network_gateway import SafeResolver
 
         resolver = SafeResolver(EgressPolicy())
 
@@ -416,7 +416,7 @@ class TestSharedDNSPinCache:
         import socket
         from collections import OrderedDict
 
-        from sky_claw.antigravity.security.network_gateway import SafeResolver
+        from sky_claw.app.security.network_gateway import SafeResolver
 
         shared: OrderedDict = OrderedDict()
         policy = EgressPolicy(block_private_ips=False)
@@ -443,7 +443,7 @@ class TestSharedDNSPinCache:
     def test_gateway_exposes_shared_dns_pins(self) -> None:
         from collections import OrderedDict
 
-        from sky_claw.antigravity.security.network_gateway import SafeResolver
+        from sky_claw.app.security.network_gateway import SafeResolver
 
         gw = NetworkGateway()
         assert isinstance(gw._dns_pins, OrderedDict)
@@ -455,7 +455,7 @@ class TestSharedDNSPinCache:
     async def test_standalone_resolver_owns_and_clears_cache(self) -> None:
         import socket
 
-        from sky_claw.antigravity.security.network_gateway import SafeResolver
+        from sky_claw.app.security.network_gateway import SafeResolver
 
         resolver = SafeResolver(EgressPolicy())
         resolver._pinned[("h", 1, socket.AF_INET)] = [{"host": "1.2.3.4"}]
@@ -467,7 +467,7 @@ class TestSharedDNSPinCache:
         import socket
         from collections import OrderedDict
 
-        from sky_claw.antigravity.security.network_gateway import SafeResolver
+        from sky_claw.app.security.network_gateway import SafeResolver
 
         shared: OrderedDict = OrderedDict()
         key = ("h", 1, socket.AF_INET)
@@ -484,7 +484,7 @@ class TestSharedDNSPinCache:
         import socket
         from collections import OrderedDict
 
-        from sky_claw.antigravity.security.network_gateway import SafeResolver
+        from sky_claw.app.security.network_gateway import SafeResolver
 
         shared: OrderedDict = OrderedDict()
         resolver = SafeResolver(EgressPolicy(block_private_ips=False), shared)
@@ -534,8 +534,8 @@ class TestSafeResolverLRUEviction:
         import asyncio
         import socket
 
-        from sky_claw.antigravity.security import network_gateway
-        from sky_claw.antigravity.security.network_gateway import SafeResolver
+        from sky_claw.app.security import network_gateway
+        from sky_claw.app.security.network_gateway import SafeResolver
 
         monkeypatch.setattr(network_gateway, "_MAX_PINNED_ENTRIES", 3)
         resolver = SafeResolver(EgressPolicy(block_private_ips=False))
@@ -558,8 +558,8 @@ class TestSafeResolverLRUEviction:
         import asyncio
         import socket
 
-        from sky_claw.antigravity.security import network_gateway
-        from sky_claw.antigravity.security.network_gateway import SafeResolver
+        from sky_claw.app.security import network_gateway
+        from sky_claw.app.security.network_gateway import SafeResolver
 
         monkeypatch.setattr(network_gateway, "_MAX_PINNED_ENTRIES", 3)
         resolver = SafeResolver(EgressPolicy(block_private_ips=False))

@@ -22,11 +22,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.gui.gui_event_adapter import EventBus, EventType, SkyClawEvent
+from sky_claw.app.gui.gui_event_adapter import EventBus, EventType, SkyClawEvent
 
 
 @pytest.fixture
@@ -117,7 +117,7 @@ def test_setup_app_defers_event_bus_start_to_on_startup(monkeypatch):
     Pre-fix, setup_app called ``event_bus.start()`` eagerly (outside the loop) —
     this test fails against that and passes once it is deferred.
     """
-    import sky_claw.antigravity.gui.sky_claw_gui as gui
+    import sky_claw.app.gui.sky_claw_gui as gui
 
     fake_app = MagicMock(name="nicegui.app")
     monkeypatch.setattr(gui, "app", fake_app)
@@ -139,3 +139,82 @@ def test_setup_app_defers_event_bus_start_to_on_startup(monkeypatch):
         gui.event_bus._subscribers.clear()
         gui.event_bus._subscribers.update(saved_subs)
         gui.event_bus.stop()
+
+
+async def test_setup_app_cierra_el_database_agent_de_la_ui(monkeypatch) -> None:
+    """El shutdown debe cerrar y soltar la conexión SQLite propia de la GUI."""
+    import sky_claw.app.gui.sky_claw_gui as gui
+
+    fake_app = MagicMock(name="nicegui.app")
+    fake_bus = MagicMock(name="event_bus")
+    db_agent = MagicMock(name="DatabaseAgent")
+    db_agent.close = AsyncMock()
+
+    monkeypatch.setattr(gui, "app", fake_app)
+    monkeypatch.setattr(gui, "event_bus", fake_bus)
+    monkeypatch.setattr(gui, "agent_client", None)
+    monkeypatch.setattr(gui, "_db_agent", db_agent)
+    monkeypatch.setattr(gui, "get_app_state_instance", lambda: MagicMock(name="AppState"))
+    monkeypatch.setattr(gui, "get_store", lambda: MagicMock(name="ReactiveStore"))
+
+    gui.setup_app()
+    handlers = [call.args[0] for call in fake_app.on_shutdown.call_args_list if call.args]
+    assert len(handlers) == 1
+
+    await handlers[0]()
+
+    db_agent.close.assert_awaited_once()
+    assert gui._db_agent is None
+
+
+async def test_setup_app_cierra_database_aunque_falle_el_cliente(monkeypatch) -> None:
+    """Un fallo de cleanup previo no debe retener la conexión SQLite de la GUI."""
+    import sky_claw.app.gui.sky_claw_gui as gui
+
+    fake_app = MagicMock(name="nicegui.app")
+    client = MagicMock(name="AgentClient")
+    client.stop = AsyncMock(side_effect=RuntimeError("fallo del cliente"))
+    db_agent = MagicMock(name="DatabaseAgent")
+    db_agent.close = AsyncMock()
+
+    monkeypatch.setattr(gui, "app", fake_app)
+    monkeypatch.setattr(gui, "event_bus", MagicMock(name="event_bus"))
+    monkeypatch.setattr(gui, "agent_client", client)
+    monkeypatch.setattr(gui, "_db_agent", db_agent)
+    monkeypatch.setattr(gui, "get_app_state_instance", lambda: MagicMock(name="AppState"))
+    monkeypatch.setattr(gui, "get_store", lambda: MagicMock(name="ReactiveStore"))
+
+    gui.setup_app()
+    handler = fake_app.on_shutdown.call_args_list[0].args[0]
+
+    with pytest.raises(RuntimeError, match="fallo del cliente"):
+        await handler()
+
+    db_agent.close.assert_awaited_once()
+    assert gui._db_agent is None
+
+
+async def test_setup_app_no_aborta_shutdown_si_falla_database_close(monkeypatch, caplog) -> None:
+    """Un cierre SQLite fallido conserva ownership sin bloquear handlers posteriores."""
+    import sky_claw.app.gui.sky_claw_gui as gui
+
+    fake_app = MagicMock(name="nicegui.app")
+    db_agent = MagicMock(name="DatabaseAgent")
+    db_agent.close = AsyncMock(side_effect=RuntimeError("fallo de cierre SQLite"))
+
+    monkeypatch.setattr(gui, "app", fake_app)
+    monkeypatch.setattr(gui, "event_bus", MagicMock(name="event_bus"))
+    monkeypatch.setattr(gui, "agent_client", None)
+    monkeypatch.setattr(gui, "_db_agent", db_agent)
+    monkeypatch.setattr(gui, "get_app_state_instance", lambda: MagicMock(name="AppState"))
+    monkeypatch.setattr(gui, "get_store", lambda: MagicMock(name="ReactiveStore"))
+
+    gui.setup_app()
+    handler = fake_app.on_shutdown.call_args_list[0].args[0]
+
+    with caplog.at_level(logging.ERROR):
+        await handler()
+
+    db_agent.close.assert_awaited_once()
+    assert gui._db_agent is db_agent
+    assert "No se pudo cerrar DatabaseAgent de la UI" in caplog.text

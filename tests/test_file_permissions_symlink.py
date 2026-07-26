@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from sky_claw.antigravity.security.file_permissions import restrict_to_owner
+from sky_claw.app.security.file_permissions import restrict_to_owner
 
 
 def _try_symlink(src: Path, dst: Path) -> bool:

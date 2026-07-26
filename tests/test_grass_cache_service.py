@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.antigravity.db.journal import OperationStatus, TransactionStatus
-from sky_claw.antigravity.db.locks import LockAcquisitionError
+from sky_claw.app.db.journal import OperationStatus, TransactionStatus
+from sky_claw.app.db.locks import LockAcquisitionError
 from sky_claw.local.mo2.grass_profile import GrassProfileError
 from sky_claw.local.tools.grass_cache_runner import GrassCacheRunResult
 from sky_claw.local.tools.grass_cache_service import (
@@ -591,9 +591,9 @@ async def test_generate_sin_fallos_de_teardown_no_agrega_la_clave(tmp_path: path
 def test_contrato_flight_report_lectura_escritura() -> None:
     """§2.2: el helper de lectura (is_flight_report_committed) concuerda con lo
     que escribe el modelo FlightReport de LOOT — mismo kind y transaction_status."""
-    from sky_claw.antigravity.db.journal import TransactionStatus
-    from sky_claw.antigravity.db.journal_contracts import FLIGHT_REPORT_KIND, is_flight_report_committed
-    from sky_claw.antigravity.orchestrator.preview.manifest import FlightReport
+    from sky_claw.app.db.journal import TransactionStatus
+    from sky_claw.app.db.journal_contracts import FLIGHT_REPORT_KIND, is_flight_report_committed
+    from sky_claw.app.orchestrator.preview.manifest import FlightReport
 
     commiteado = FlightReport(transaction_status=TransactionStatus.COMMITTED.value).model_dump(mode="json")
     assert commiteado["kind"] == FLIGHT_REPORT_KIND
@@ -698,7 +698,7 @@ def _lock_info_vivo(offset_s: float) -> Any:
     """LockInfo de `grass-cache` cuyo vencimiento está a *offset_s* de ahora."""
     import time
 
-    from sky_claw.antigravity.db.locks import LockInfo
+    from sky_claw.app.db.locks import LockInfo
     from sky_claw.local.tools.grass_cache_service import GRASS_CACHE_RESOURCE_ID
 
     now = time.time()

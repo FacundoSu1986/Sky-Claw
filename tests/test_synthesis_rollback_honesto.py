@@ -13,9 +13,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.core.event_bus import CoreEventBus
-from sky_claw.antigravity.db.locks import DistributedLockManager
-from sky_claw.antigravity.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.core.event_bus import CoreEventBus
+from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools import synthesis_service as synthesis_service_mod
 from sky_claw.local.tools.synthesis_runner import SynthesisResult, SynthesisRunner
 from sky_claw.local.tools.synthesis_service import SynthesisPipelineService

@@ -24,10 +24,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from sky_claw.antigravity.scraper.nexus_downloader import FileInfo
-from sky_claw.antigravity.security.hitl import Decision, HITLGuard
-from sky_claw.antigravity.security.network_gateway import EgressPolicy, NetworkGateway
-from sky_claw.antigravity.security.path_validator import PathValidator, PathViolationError
+from sky_claw.app.scraper.nexus_downloader import FileInfo
+from sky_claw.app.security.hitl import Decision, HITLGuard
+from sky_claw.app.security.network_gateway import EgressPolicy, NetworkGateway
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.discovery.environment import SkyrimEdition
 from sky_claw.local.tools_installer import (
     ADDRESS_LIBRARY_MOD_NAME,
@@ -576,7 +576,7 @@ class TestSetupToolsNgio:
         self, gateway: NetworkGateway, tmp_path: pathlib.Path
     ) -> None:
         """setup_tools('ngio') detecta la edición desde skyrim_path, delega en ensure_ngio y persiste ngio_mods."""
-        from sky_claw.antigravity.agent.tools.external_tools import setup_tools
+        from sky_claw.app.agent.tools.external_tools import setup_tools
         from sky_claw.local.local_config import LocalConfig
         from sky_claw.local.tools_installer import ModInstallResult
 
@@ -638,7 +638,7 @@ class TestSetupToolsNgio:
         self, gateway: NetworkGateway, tmp_path: pathlib.Path
     ) -> None:
         """Sin mo2_root la rama devuelve {'error': ...} y normalize_tool_result nunca cae en 'error desconocido'."""
-        from sky_claw.antigravity.agent.tools.external_tools import setup_tools
+        from sky_claw.app.agent.tools.external_tools import setup_tools
         from sky_claw.local.local_config import LocalConfig
         from sky_claw.local.tools.tool_result import normalize_tool_result
 
@@ -667,7 +667,7 @@ class TestSetupToolsNgio:
 
     async def test_setup_tools_ngio_aparece_en_defaults(self) -> None:
         """El default de SetupToolsParams incluye 'ngio' (registro LLM-facing consistente)."""
-        from sky_claw.antigravity.agent.tools.schemas import SetupToolsParams
+        from sky_claw.app.agent.tools.schemas import SetupToolsParams
 
         assert "ngio" in SetupToolsParams().tools
 
@@ -680,7 +680,7 @@ class TestSetupToolsNgio:
 class TestListFiles:
     async def test_list_files_devuelve_files_crudos(self, tmp_path: pathlib.Path) -> None:
         """list_files pega a files.json vía gateway.request (F5b) y devuelve la lista cruda."""
-        from sky_claw.antigravity.scraper.nexus_downloader import NexusDownloader
+        from sky_claw.app.scraper.nexus_downloader import NexusDownloader
 
         resp = AsyncMock()
         resp.status = 200

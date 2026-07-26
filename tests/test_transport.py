@@ -1,4 +1,4 @@
-"""Tests for sky_claw.antigravity.comms._transport — Zero-Trust transport policy.
+"""Tests for sky_claw.app.comms._transport — Zero-Trust transport policy.
 
 Covers:
 - assert_safe_ws_url: accepted URLs, rejected URLs, hardened loopback policy
@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sky_claw.antigravity.comms._transport import (
+from sky_claw.app.comms._transport import (
     DEFAULT_MAX_MESSAGE_BYTES,
     AuthError,
     InsecureTransportError,
@@ -150,7 +150,7 @@ class TestAuthenticatedConnect:
 
     def test_token_attached_as_header(self):
         mock_connect = self._make_connect_mock()
-        with patch("sky_claw.antigravity.comms._transport.websockets.connect", mock_connect):
+        with patch("sky_claw.app.comms._transport.websockets.connect", mock_connect):
             authenticated_connect(
                 "ws://localhost:9000",
                 auth_token="tok-abc",
@@ -163,8 +163,8 @@ class TestAuthenticatedConnect:
     def test_file_token_used_when_no_explicit_token(self):
         mock_connect = self._make_connect_mock()
         with (
-            patch("sky_claw.antigravity.comms._transport.AuthTokenManager.read_token_file", return_value="file-tok"),
-            patch("sky_claw.antigravity.comms._transport.websockets.connect", mock_connect),
+            patch("sky_claw.app.comms._transport.AuthTokenManager.read_token_file", return_value="file-tok"),
+            patch("sky_claw.app.comms._transport.websockets.connect", mock_connect),
         ):
             authenticated_connect("ws://localhost:9000", token_dir="/tmp/tokens")
         _, kwargs = mock_connect.call_args
@@ -173,8 +173,8 @@ class TestAuthenticatedConnect:
     def test_explicit_token_overrides_file_token(self):
         mock_connect = self._make_connect_mock()
         with (
-            patch("sky_claw.antigravity.comms._transport.AuthTokenManager.read_token_file", return_value="file-tok"),
-            patch("sky_claw.antigravity.comms._transport.websockets.connect", mock_connect),
+            patch("sky_claw.app.comms._transport.AuthTokenManager.read_token_file", return_value="file-tok"),
+            patch("sky_claw.app.comms._transport.websockets.connect", mock_connect),
         ):
             authenticated_connect(
                 "ws://localhost:9000",
@@ -186,7 +186,7 @@ class TestAuthenticatedConnect:
 
     def test_missing_token_raises_auth_error_when_required(self):
         with (
-            patch("sky_claw.antigravity.comms._transport.AuthTokenManager.read_token_file", return_value=None),
+            patch("sky_claw.app.comms._transport.AuthTokenManager.read_token_file", return_value=None),
             pytest.raises(AuthError, match="No auth token"),
         ):
             authenticated_connect("ws://localhost:9000", require_auth=True)
@@ -194,8 +194,8 @@ class TestAuthenticatedConnect:
     def test_require_auth_false_allows_missing_token(self):
         mock_connect = self._make_connect_mock()
         with (
-            patch("sky_claw.antigravity.comms._transport.AuthTokenManager.read_token_file", return_value=None),
-            patch("sky_claw.antigravity.comms._transport.websockets.connect", mock_connect),
+            patch("sky_claw.app.comms._transport.AuthTokenManager.read_token_file", return_value=None),
+            patch("sky_claw.app.comms._transport.websockets.connect", mock_connect),
         ):
             authenticated_connect("ws://localhost:9000", require_auth=False)
         mock_connect.assert_called_once()
@@ -206,8 +206,8 @@ class TestAuthenticatedConnect:
     def test_caller_supplied_headers_preserved(self):
         mock_connect = self._make_connect_mock()
         with (
-            patch("sky_claw.antigravity.comms._transport.AuthTokenManager.read_token_file", return_value="tok"),
-            patch("sky_claw.antigravity.comms._transport.websockets.connect", mock_connect),
+            patch("sky_claw.app.comms._transport.AuthTokenManager.read_token_file", return_value="tok"),
+            patch("sky_claw.app.comms._transport.websockets.connect", mock_connect),
         ):
             authenticated_connect(
                 "ws://localhost:9000",
@@ -244,7 +244,7 @@ class TestDefaultMaxMessageSize:
 
     def test_default_max_size_applied(self):
         mock_connect = self._make_connect_mock()
-        with patch("sky_claw.antigravity.comms._transport.websockets.connect", mock_connect):
+        with patch("sky_claw.app.comms._transport.websockets.connect", mock_connect):
             authenticated_connect("ws://localhost:9000", auth_token="tok-abc")
         _, kwargs = mock_connect.call_args
         assert kwargs["max_size"] == DEFAULT_MAX_MESSAGE_BYTES
@@ -252,7 +252,7 @@ class TestDefaultMaxMessageSize:
 
     def test_caller_can_override_max_size(self):
         mock_connect = self._make_connect_mock()
-        with patch("sky_claw.antigravity.comms._transport.websockets.connect", mock_connect):
+        with patch("sky_claw.app.comms._transport.websockets.connect", mock_connect):
             authenticated_connect("ws://localhost:9000", auth_token="tok-abc", max_size=1024)
         _, kwargs = mock_connect.call_args
         assert kwargs["max_size"] == 1024

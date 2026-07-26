@@ -10,10 +10,10 @@ Design notes
 ------------
 - ``kill_and_reap`` suppresses ONLY ``TimeoutError`` during the reap; a shutdown
   ``CancelledError`` raised while reaping must propagate (the process is already
-  killed), matching the canonical ``antigravity.core.windows_interop._kill_and_reap``.
+  killed), matching the canonical ``app.core.windows_interop._kill_and_reap``.
 - This module lives in the ``local`` layer so the local runners share one copy
-  without importing it from ``antigravity`` (layering: ``local`` may depend on
-  ``antigravity``, not the reverse — so the antigravity layer keeps its own
+  without importing it from ``app`` (layering: ``local`` may depend on
+  ``app``, not the reverse — so the app layer keeps its own
   equivalent).
 """
 

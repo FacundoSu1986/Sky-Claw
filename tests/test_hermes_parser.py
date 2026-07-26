@@ -1,10 +1,10 @@
-"""Tests for sky_claw.antigravity.agent.hermes_parser — zero-trust XML tool-call extraction."""
+"""Tests for sky_claw.app.agent.hermes_parser — zero-trust XML tool-call extraction."""
 
 from __future__ import annotations
 
 import pytest
 
-from sky_claw.antigravity.agent.hermes_parser import extract_tool_calls, has_tool_calls
+from sky_claw.app.agent.hermes_parser import extract_tool_calls, has_tool_calls
 
 
 def test_has_tool_calls_true() -> None:
