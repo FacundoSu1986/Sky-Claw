@@ -399,7 +399,7 @@ def test_mensaje_mapping_redacta_secretos_anidados_y_conserva_estructura(
 
     logging.getLogger("test.runtime").error(
         # Credenciales sintéticas necesarias para verificar la redacción antes de persistir.
-        {  # codeql[py/clear-text-logging-sensitive-data]
+        {  # lgtm[py/clear-text-logging-sensitive-data]
             "access_token": access_token,
             "nested": {"client_secret": client_secret},
             "status": "failed",
