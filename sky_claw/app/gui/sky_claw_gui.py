@@ -53,7 +53,7 @@ from sky_claw.app.gui.gui_helpers import _load_css
 from sky_claw.app.gui.models.app_state import AppState, enrich_conflicts, get_app_state
 from sky_claw.app.gui.setup_wizard import SetupWizardModal
 from sky_claw.app.gui.state import ReactiveStore, get_store
-from sky_claw.app.gui.task_tracking import create_tracked_task
+from sky_claw.app.gui.task_tracking import create_tracked_task, drain_tracked_tasks
 from sky_claw.app.gui.views import render_dashboard
 from sky_claw.app.gui.views.forge_dashboard import (
     STORE_KEY_ENV,
@@ -129,6 +129,36 @@ def get_db_agent() -> DatabaseAgent:
     if _db_agent is None:
         _db_agent = DatabaseAgent()
     return _db_agent
+
+
+async def close_db_agent() -> None:
+    """Cierra la conexión SQLite de la UI y suelta el global si el cierre fue limpio.
+
+    Lo invoca ``_teardown_runtime`` como **último** paso del apagado, no
+    ``_cleanup``. El orden importa: la GUI y el ``SupervisorAgent`` abren dos
+    ``DatabaseAgent`` independientes sobre el MISMO ``sky_claw_state.db`` (el
+    default de ``DatabaseAgent.__init__``), y el del supervisor recién cierra
+    cuando ``ctx.stop()`` cancela la task ``supervisor-daemon``. SQLite solo
+    borra ``-wal``/``-shm`` al cerrar la última conexión, así que cerrar la de
+    la GUI antes dejaba los sidecars en disco y hacía que el paso 3 de
+    ``DatabaseLifecycleManager.shutdown_all`` avisara "checkpoint incompleto"
+    en todo apagado limpio — un falso positivo permanente.
+
+    No propaga: ``shutdown_all`` re-lanza ``first_close_error`` por diseño, y un
+    handler de apagado que lanza trunca la cadena. Si el cierre falla se conserva
+    el agente (ownership) para que un shutdown posterior pueda reintentarlo.
+    """
+    global _db_agent
+    db_agent = _db_agent
+    if db_agent is None:
+        return
+    try:
+        await db_agent.close()
+    except Exception:
+        logger.exception("No se pudo cerrar DatabaseAgent de la UI; se conserva para reintento")
+    else:
+        if _db_agent is db_agent:
+            _db_agent = None
 
 
 # ── Reactive proxies ──────────────────────────────────────────────────────────
@@ -1057,22 +1087,39 @@ def setup_app() -> None:
     app.on_startup(lambda: get_agent_client().start())
 
     async def _cleanup() -> None:
-        global _db_agent
-        db_agent = _db_agent
+        """Handler #1 de ``app.on_shutdown``: cada paso corre aunque el anterior falle.
+
+        NiceGUI 3.12.1 despacha los ``on_shutdown`` en un bucle secuencial **sin
+        ``try/except``** (``nicegui/app/app.py``, ``App.stop``; y
+        ``normalize_lifecycle_handler`` devuelve el callable tal cual, no lo
+        envuelve). Una excepción acá se lleva puestos todos los handlers
+        siguientes — incluido el que corre ``_teardown_runtime``, que libera el
+        8765 y llama ``ctx.stop()``. Es el mismo modo de falla que P1-1 blindó
+        DENTRO de ``_teardown_runtime``, pero un nivel más arriba, donde el
+        blindaje no llegaba. ``AgentCommunicationClient.stop()`` no atrapa nada,
+        así que un WebSocket ya roto al apagar bastaba para truncar la cadena.
+
+        El ``DatabaseAgent`` de la UI **no** se cierra acá a propósito: es el
+        último paso de ``_teardown_runtime``. Ver ``close_db_agent``.
+        """
+        try:
+            # Primero, para que las escrituras en vuelo aterricen mientras la DB
+            # sigue abierta (el cierre llega recién en _teardown_runtime).
+            await drain_tracked_tasks()
+        except Exception:
+            logger.exception("Apagado: el drenado de tasks de la GUI falló; se continúa")
+
         try:
             event_bus.stop()
-            client = agent_client
-            if client is not None:
+        except Exception:
+            logger.exception("Apagado: event_bus.stop() falló; se continúa")
+
+        client = agent_client
+        if client is not None:
+            try:
                 await client.stop()
-        finally:
-            if db_agent is not None:
-                try:
-                    await db_agent.close()
-                except Exception:
-                    logger.exception("No se pudo cerrar DatabaseAgent de la UI; se conserva para reintento")
-                else:
-                    if _db_agent is db_agent:
-                        _db_agent = None
+            except Exception:
+                logger.exception("Apagado: AgentCommunicationClient.stop() falló; se continúa")
 
     app.on_shutdown(_cleanup)
 

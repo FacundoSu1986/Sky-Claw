@@ -12,7 +12,11 @@ import asyncio
 import logging
 import pathlib
 
-from sky_claw.app.gui.task_tracking import _BACKGROUND_TASKS, create_tracked_task
+from sky_claw.app.gui.task_tracking import (
+    _BACKGROUND_TASKS,
+    create_tracked_task,
+    drain_tracked_tasks,
+)
 
 _GUI_DIR = pathlib.Path("sky_claw/app/gui")
 
@@ -75,6 +79,63 @@ async def test_tracked_task_cancellation_is_silent(caplog):
     module_records = [r for r in caplog.records if r.name == "sky_claw.app.gui.task_tracking"]
     assert module_records == []
     assert task not in _BACKGROUND_TASKS
+
+
+async def test_drain_espera_a_las_tasks_en_vuelo() -> None:
+    """El apagado debe dejar aterrizar las escrituras cortas que ya están corriendo.
+
+    Sin drenado, ``_cleanup`` seguía de largo y la task retomaba contra una DB ya
+    cerrada: la escritura se perdía en silencio (la traga el ``except Exception``
+    del handler que la lanzó).
+    """
+    escrituras: list[str] = []
+
+    async def _escritura() -> None:
+        await asyncio.sleep(0.05)
+        escrituras.append("ok")
+
+    create_tracked_task(_escritura(), name="gui-test-escritura")
+    await drain_tracked_tasks(timeout_s=5.0)
+
+    assert escrituras == ["ok"]
+    assert not _BACKGROUND_TASKS
+
+
+async def test_drain_cancela_las_que_exceden_el_timeout(caplog) -> None:
+    """El apagado no puede quedar rehén de una task que no termina."""
+
+    async def _colgada() -> None:
+        await asyncio.Event().wait()
+
+    task = create_tracked_task(_colgada(), name="gui-test-colgada")
+    await asyncio.sleep(0)
+
+    with caplog.at_level(logging.WARNING, logger="sky_claw.app.gui.task_tracking"):
+        await drain_tracked_tasks(timeout_s=0.05)
+
+    assert task.cancelled()
+    # Sin truncado silencioso: el apagado nombra lo que canceló.
+    assert "gui-test-colgada" in caplog.text
+    assert task not in _BACKGROUND_TASKS
+
+
+async def test_drain_sin_tasks_es_un_noop() -> None:
+    """``asyncio.wait`` con un set vacío lanza ValueError — hay que cortar antes."""
+    assert not _BACKGROUND_TASKS
+    await drain_tracked_tasks(timeout_s=0.01)
+
+
+async def test_drain_no_propaga_el_fallo_de_una_task() -> None:
+    """Una task que revienta ya la loguea ``_on_task_done``; el drenado no debe relanzar."""
+
+    async def _boom() -> None:
+        raise RuntimeError("escritura explotó")
+
+    create_tracked_task(_boom(), name="gui-test-drain-boom")
+
+    await drain_tracked_tasks(timeout_s=5.0)  # no debe lanzar
+
+    assert not _BACKGROUND_TASKS
 
 
 def test_no_bare_create_task_in_migrated_gui_files():

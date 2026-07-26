@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from sky_claw.app.gui import sky_claw_gui
 from sky_claw.app.gui.gui_event_adapter import EventType, SkyClawEvent
 from sky_claw.app.gui.gui_event_adapter import event_bus as gui_event_bus
 from sky_claw.app.gui.sky_claw_gui import get_state, set_runtime_context, setup_app
@@ -459,6 +460,13 @@ async def _teardown_runtime(runtime: Mapping[str, Any]) -> None:
         pasos.append(("aiohttp runner cleanup", runner.cleanup))
     if ctx is not None:
         pasos.append(("AppContext stop", ctx.stop))
+    # SIEMPRE último: la GUI y el SupervisorAgent abren dos DatabaseAgent
+    # independientes sobre el MISMO ``sky_claw_state.db``, y el del supervisor
+    # recién cierra cuando ``ctx.stop()`` cancela la task ``supervisor-daemon``.
+    # SQLite solo borra ``-wal``/``-shm`` al cerrar la última conexión: cerrar
+    # la de la GUI antes dejaba los sidecars en disco y hacía que
+    # ``shutdown_all`` avisara "checkpoint incompleto" en todo apagado limpio.
+    pasos.append(("cierre DatabaseAgent GUI", sky_claw_gui.close_db_agent))
 
     for nombre, paso in pasos:
         try:

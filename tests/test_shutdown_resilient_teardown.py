@@ -23,8 +23,12 @@ apagar. Para el apagado va ``GOING_AWAY`` (1001).
 from __future__ import annotations
 
 import asyncio
+import inspect
+import logging
 import time
-from unittest.mock import MagicMock
+from collections.abc import Callable
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 from aiohttp.test_utils import TestClient, TestServer
@@ -256,3 +260,142 @@ async def test_conexion_que_llega_durante_el_apagado_recibe_going_away() -> None
             )
     finally:
         await client.close()
+
+
+# ---------------------------------------------------------------------------
+# La cadena de ``app.on_shutdown`` no puede truncarse
+# ---------------------------------------------------------------------------
+
+
+async def test_teardown_cierra_el_database_agent_de_la_gui_al_final(monkeypatch) -> None:
+    """El cierre de la DB de la GUI va DESPUÉS de ``ctx.stop()``, nunca antes.
+
+    La GUI y el ``SupervisorAgent`` abren dos ``DatabaseAgent`` independientes
+    sobre el mismo ``sky_claw_state.db``; el del supervisor recién cierra cuando
+    ``ctx.stop()`` cancela ``supervisor-daemon``. SQLite solo borra ``-wal``/
+    ``-shm`` al cerrar la última conexión, así que invertir el orden deja los
+    sidecars en disco y hace que ``shutdown_all`` avise "checkpoint incompleto".
+    """
+    import sky_claw.app.gui.sky_claw_gui as gui
+    from sky_claw.app.gui import _bootloader
+
+    pasos: list[str] = []
+
+    ctx = MagicMock()
+    ctx.stop = AsyncMock(side_effect=lambda: pasos.append("ctx.stop"))
+
+    async def _close_db_agent() -> None:
+        pasos.append("close_db_agent")
+
+    monkeypatch.setattr(gui, "close_db_agent", _close_db_agent)
+
+    await _bootloader._teardown_runtime({"ctx": ctx})
+
+    assert pasos == ["ctx.stop", "close_db_agent"]
+
+
+async def test_cadena_de_on_shutdown_sobrevive_a_un_handler_que_falla(monkeypatch, caplog) -> None:
+    """Si ``_cleanup`` lanza, ``_teardown_runtime`` nunca corre y el 8765 queda retenido.
+
+    NiceGUI 3.12.1 despacha los ``on_shutdown`` en un bucle secuencial **sin**
+    ``try/except`` (``nicegui/app/app.py``, ``App.stop``), y
+    ``normalize_lifecycle_handler`` devuelve el callable tal cual. Este test
+    reproduce ese bucle con los handlers reales: ``_cleanup`` (registrado por
+    ``setup_app``) primero, el de ``_teardown_runtime`` después — el mismo orden
+    que arma ``run_nicegui`` (``setup_app()`` y luego ``app.on_shutdown``).
+    """
+    import sky_claw.app.gui.sky_claw_gui as gui
+    from sky_claw.app.gui import _bootloader
+
+    handlers: list[Callable[[], Any]] = []
+    fake_app = MagicMock(name="nicegui.app")
+    fake_app.on_shutdown = MagicMock(side_effect=handlers.append)
+
+    client = MagicMock(name="AgentClient")
+    client.stop = AsyncMock(side_effect=RuntimeError("fallo explosivo del cliente"))
+
+    monkeypatch.setattr(gui, "app", fake_app)
+    monkeypatch.setattr(gui, "event_bus", MagicMock(name="event_bus"))
+    monkeypatch.setattr(gui, "agent_client", client)
+    monkeypatch.setattr(gui, "get_app_state_instance", lambda: MagicMock(name="AppState"))
+    monkeypatch.setattr(gui, "get_store", lambda: MagicMock(name="ReactiveStore"))
+
+    gui.setup_app()
+    assert len(handlers) == 1, "setup_app debe registrar _cleanup como handler #1"
+
+    pasos: list[str] = []
+    runner = MagicMock()
+    runner.cleanup = AsyncMock(side_effect=lambda: pasos.append("runner.cleanup"))
+    ctx = MagicMock()
+    ctx.stop = AsyncMock(side_effect=lambda: pasos.append("ctx.stop"))
+
+    async def _close_db_agent() -> None:
+        pasos.append("close_db_agent")
+
+    monkeypatch.setattr(gui, "close_db_agent", _close_db_agent)
+
+    async def _shutdown() -> None:
+        await _bootloader._teardown_runtime({"aiohttp_runner": runner, "ctx": ctx})
+
+    handlers.append(_shutdown)
+
+    # El mismo bucle que nicegui/app/app.py: secuencial y sin try/except.
+    with caplog.at_level(logging.ERROR):
+        for handler in handlers:
+            resultado = handler()
+            if inspect.isawaitable(resultado):
+                await resultado
+
+    client.stop.assert_awaited_once()
+    assert pasos == ["runner.cleanup", "ctx.stop", "close_db_agent"], (
+        "_cleanup propagó y truncó la cadena: runner.cleanup() no libera el 8765 "
+        f"y ctx.stop() no suelta DB ni locks. Pasos ejecutados: {pasos}"
+    )
+
+
+async def test_escritura_en_vuelo_aterriza_antes_de_cerrar_la_db(tmp_path, monkeypatch) -> None:
+    """Una task de ``create_tracked_task`` en vuelo no puede perder su escritura.
+
+    Antes, ``_cleanup`` cerraba y reseteaba ``_db_agent`` sin drenar nada: la
+    task retomaba, ``get_db_agent()`` devolvía un agente nuevo SIN ``init_db()``
+    y el ``INSERT`` moría con ``DatabaseAgent not initialized``, tragado por el
+    ``except Exception`` del handler que la lanzó. Cero filas, en silencio.
+    """
+    import sky_claw.app.gui.sky_claw_gui as gui
+    from sky_claw.app.core.database import DatabaseAgent
+    from sky_claw.app.gui.task_tracking import create_tracked_task
+
+    db_path = str(tmp_path / "escritura_en_vuelo.db")
+    db = DatabaseAgent(db_path=db_path)
+    await db.init_db()
+
+    handlers: list[Callable[[], Any]] = []
+    fake_app = MagicMock(name="nicegui.app")
+    fake_app.on_shutdown = MagicMock(side_effect=handlers.append)
+
+    monkeypatch.setattr(gui, "app", fake_app)
+    monkeypatch.setattr(gui, "event_bus", MagicMock(name="event_bus"))
+    monkeypatch.setattr(gui, "agent_client", None)
+    monkeypatch.setattr(gui, "get_app_state_instance", lambda: MagicMock(name="AppState"))
+    monkeypatch.setattr(gui, "get_store", lambda: MagicMock(name="ReactiveStore"))
+    monkeypatch.setattr(gui, "_db_agent", db)
+
+    gui.setup_app()
+
+    async def _escritura_lenta() -> None:
+        await asyncio.sleep(0.05)
+        # Usa el getter real: si _cleanup reseteó el global, esto agarra un
+        # DatabaseAgent nuevo sin init_db() y la escritura se pierde.
+        await gui.get_db_agent().set_memory("clave_test", "valor_guardado", 12345.0)
+
+    create_tracked_task(_escritura_lenta(), name="gui-test-escritura-lenta")
+
+    await handlers[0]()  # _cleanup: drena y deja la DB abierta
+    await gui.close_db_agent()  # el paso real de _teardown_runtime
+
+    verificador = DatabaseAgent(db_path=db_path)
+    await verificador.init_db()
+    try:
+        assert await verificador.get_memory("clave_test") == "valor_guardado"
+    finally:
+        await verificador.close()

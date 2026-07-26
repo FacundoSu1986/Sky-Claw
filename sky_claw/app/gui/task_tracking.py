@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 #: Strong references to in-flight GUI tasks (discarded on completion).
 _BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
 
+#: Espera máxima del drenado de apagado, alineada con
+#: ``AppContext._startup_shutdown_timeout_s``.
+_DRAIN_TIMEOUT_S = 5.0
+
 
 def create_tracked_task(coro: Coroutine[Any, Any, Any], *, name: str = "") -> asyncio.Task[Any]:
     """Schedule *coro* with a strong reference and immediate failure logging.
@@ -44,6 +48,46 @@ def create_tracked_task(coro: Coroutine[Any, Any, Any], *, name: str = "") -> as
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_on_task_done)
     return task
+
+
+async def drain_tracked_tasks(timeout_s: float = _DRAIN_TIMEOUT_S) -> None:
+    """Espera a las tasks en vuelo al apagar y cancela las que no terminan.
+
+    Las tasks de ``create_tracked_task`` viven en un set propio: no son las de
+    ``nicegui.background_tasks`` ni las de ``AppContext._background_tasks``, así
+    que hasta acá **nadie las drenaba**. El caso real: un "Análisis profundo
+    (xEdit)" —que tarda minutos— sigue corriendo cuando el ``ExitWatchdog``
+    apaga la app; al terminar retomaba contra un ``DatabaseAgent`` ya cerrado y
+    su ``persist_record_conflicts`` moría con ``DatabaseAgent not initialized``,
+    tragado por el ``except Exception`` del handler. Cero filas, en silencio.
+
+    El apagado tampoco puede quedar rehén de una task colgada, así que el
+    drenado es acotado: se espera ``timeout_s`` y se cancela lo que sobre,
+    nombrando en el log qué se canceló (nunca un truncado silencioso).
+
+    Args:
+        timeout_s: Espera máxima antes de cancelar. El default sigue la
+            convención de ``AppContext._startup_shutdown_timeout_s``.
+    """
+    pendientes = {task for task in _BACKGROUND_TASKS if not task.done()}
+    if not pendientes:
+        return
+
+    _, sobrantes = await asyncio.wait(pendientes, timeout=timeout_s)
+    if not sobrantes:
+        return
+
+    logger.warning(
+        "Apagado: %d task(s) de la GUI no terminaron en %.1fs y se cancelan: %s",
+        len(sobrantes),
+        timeout_s,
+        ", ".join(sorted(task.get_name() for task in sobrantes)),
+    )
+    for task in sobrantes:
+        task.cancel()
+    # ``return_exceptions`` para que un fallo de una no impida cancelar el resto;
+    # ``_on_task_done`` ya lo logueó con su traceback.
+    await asyncio.gather(*sobrantes, return_exceptions=True)
 
 
 def _on_task_done(task: asyncio.Task[Any]) -> None:
