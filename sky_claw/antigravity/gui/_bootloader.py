@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import uuid
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any
 
 from sky_claw.antigravity.gui.gui_event_adapter import EventType, SkyClawEvent
 from sky_claw.antigravity.gui.gui_event_adapter import event_bus as gui_event_bus
@@ -289,6 +292,45 @@ async def _gui_mod_update_loop(ctx: AppContext) -> None:
             await asyncio.sleep(5)
 
 
+async def _teardown_runtime(runtime: Mapping[str, Any]) -> None:
+    """Cierra el runtime de la GUI. Cada paso corre aunque el anterior falle.
+
+    P1-1: esto era una cadena plana. ``AuthTokenManager.revoke()`` hace un
+    ``unlink`` desnudo —sin el ``suppress(OSError)`` que sí protege a su
+    ``generate()``— así que un ``PermissionError`` en Windows (antivirus,
+    handle abierto) se propagaba y se llevaba puestos los dos pasos que
+    realmente importan: ``runner.cleanup()``, que libera el 8765, y
+    ``ctx.stop()``, que suelta DB y locks. El resultado es el WinError 10048
+    del post-mortem entrando por otra puerta.
+
+    Cada fallo se loguea con stack trace: el apagado no puede abortar, pero
+    tampoco puede quedar en silencio.
+
+    Está a nivel de módulo, y no como closure de ``run_nicegui``, para que sea
+    importable desde los tests — la cadena vieja no tenía forma de probarse.
+    """
+    auth_manager = runtime.get("auth_manager")
+    runner = runtime.get("aiohttp_runner")
+    ctx = runtime.get("ctx")
+
+    pasos: list[tuple[str, Callable[[], Awaitable[None] | None]]] = []
+    if auth_manager is not None:
+        pasos.append(("stop_rotation", auth_manager.stop_rotation))
+        pasos.append(("revoke", auth_manager.revoke))
+    if runner is not None:
+        pasos.append(("aiohttp runner cleanup", runner.cleanup))
+    if ctx is not None:
+        pasos.append(("AppContext stop", ctx.stop))
+
+    for nombre, paso in pasos:
+        try:
+            resultado = paso()
+            if inspect.isawaitable(resultado):
+                await resultado
+        except Exception:
+            logger.exception("Paso de apagado '%s' falló; se continúa con los siguientes", nombre)
+
+
 def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
     """Start the NiceGUI server. Bootstraps AppContext and calls ui.run()."""
     from nicegui import app, ui
@@ -379,16 +421,7 @@ def run_nicegui(args, *, port: int, title: str, show: bool = True) -> None:
     app.on_startup(_bootstrap)
 
     async def _shutdown() -> None:
-        auth_manager = _runtime.get("auth_manager")
-        if auth_manager is not None:
-            await auth_manager.stop_rotation()
-            auth_manager.revoke()
-        runner = _runtime.get("aiohttp_runner")
-        if runner is not None:
-            await runner.cleanup()
-        ctx = _runtime.get("ctx")
-        if ctx is not None:
-            await ctx.stop()  # type: ignore[attr-defined]
+        await _teardown_runtime(_runtime)
 
     app.on_shutdown(_shutdown)
 
