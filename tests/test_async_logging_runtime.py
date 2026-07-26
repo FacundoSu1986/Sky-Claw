@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import queue
+import sys
 import threading
 from collections.abc import Iterator
 
@@ -12,11 +13,13 @@ import pytest
 
 from sky_claw._logging_runtime import (
     FailSafeRotatingFileHandler,
+    LoggerStream,
     LoggingHealth,
     NonBlockingQueueHandler,
 )
 from sky_claw.logging_config import (
     default_log_dir,
+    install_missing_std_stream_adapters,
     setup_logging,
     shutdown_logging,
 )
@@ -385,3 +388,52 @@ def test_fallo_de_filtro_productor_no_escapa_al_caller() -> None:
     handler.addFilter(_BrokenFilter())
     assert handler.handle(_record(logging.ERROR, "no propagar")) is False
     assert health.snapshot(listener_alive=False).degraded is True
+
+
+def test_mensaje_mapping_redacta_secretos_anidados_y_conserva_estructura(
+    tmp_path,
+) -> None:
+    access_token = "opaque-access-token"
+    client_secret = "opaque-client-secret"
+    setup_logging(log_dir=tmp_path, process_role="test", console_stream=None)
+
+    logging.getLogger("test.runtime").error(
+        {
+            "access_token": access_token,
+            "nested": {"client_secret": client_secret},
+            "status": "failed",
+        }
+    )
+    assert shutdown_logging() is True
+
+    raw_log = (tmp_path / "crash.log").read_text(encoding="utf-8")
+    record = json.loads(raw_log)
+    assert access_token not in raw_log
+    assert client_secret not in raw_log
+    assert record["access_token"] == "[REDACTED]"
+    assert record["nested"]["client_secret"] == "[REDACTED]"
+    assert record["status"] == "failed"
+
+
+def test_reconfigurar_tras_adaptar_stdout_no_crea_recursion(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("sys.stdout", None)
+    setup_logging(log_dir=tmp_path / "first", process_role="test")
+    install_missing_std_stream_adapters()
+    assert isinstance(sys.stdout, LoggerStream)
+    assert shutdown_logging() is True
+
+    runtime = setup_logging(log_dir=tmp_path / "second", process_role="test")
+    assert not any(
+        isinstance(handler, logging.StreamHandler) and isinstance(getattr(handler, "stream", None), LoggerStream)
+        for handler in runtime.handlers
+    )
+    logging.getLogger("test.runtime").error("registro-unico")
+    assert shutdown_logging() is True
+
+    records = [
+        json.loads(line) for line in (tmp_path / "second" / "sky_claw.log").read_text(encoding="utf-8").splitlines()
+    ]
+    assert sum(record["message"] == "registro-unico" for record in records) == 1

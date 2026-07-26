@@ -519,6 +519,18 @@ def worker_main(argv: list[str] | None = None) -> int:
             },
         )
         result_code = 70
+    except Exception:
+        logger.critical(
+            "VFS worker terminó por una excepción no manejada",
+            exc_info=True,
+            extra={
+                "event": "vfs_worker_unhandled_exception",
+                "operation": "vfs_worker",
+                "job_id": args.job_id,
+            },
+        )
+        shutdown_logging()
+        raise
     except BaseException:
         shutdown_logging()
         raise

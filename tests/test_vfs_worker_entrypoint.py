@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import pathlib
 from types import SimpleNamespace
@@ -134,3 +135,39 @@ def test_worker_registra_resultado_terminal_fallido(
     assert record.job_id == "job-err"
     assert record.exit_code == 9
     assert record.stderr == "xEdit termino abruptamente"
+
+
+def test_worker_registra_excepcion_inesperada_en_log_del_job(
+    tmp_path: pathlib.Path,
+) -> None:
+    from sky_claw.local.mo2 import vfs_worker
+
+    def _raise_assertion(coro) -> None:  # noqa: ANN001
+        coro.close()
+        raise AssertionError("invariante worker rota")
+
+    with (
+        patch.object(vfs_worker, "default_log_dir", return_value=tmp_path),
+        patch.object(vfs_worker.asyncio, "run", side_effect=_raise_assertion),
+        pytest.raises(AssertionError, match="invariante worker rota"),
+    ):
+        vfs_worker.worker_main(
+            [
+                "--manifest",
+                "job.json",
+                "--descriptor",
+                "descriptor.json",
+                "--job-id",
+                "job-assert",
+            ]
+        )
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "workers" / "vfs-worker-job-assert.log").read_text(encoding="utf-8").splitlines()
+    ]
+    failure = next(record for record in records if record.get("event") == "vfs_worker_unhandled_exception")
+    assert failure["level"] == "CRITICAL"
+    assert failure["operation"] == "vfs_worker"
+    assert failure["job_id"] == "job-assert"
+    assert "AssertionError: invariante worker rota" in failure["exc_info"]

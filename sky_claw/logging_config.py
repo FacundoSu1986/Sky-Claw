@@ -193,8 +193,7 @@ class SecurityRedactionFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         # Redact the main message
-        if isinstance(record.msg, str):
-            record.msg = self._redact(record.msg)
+        record.msg = self._redact_value(record.msg)
 
         # Redact any string arguments passed to the logger
         if record.args:
@@ -430,7 +429,7 @@ def setup_logging(
 
         handlers: list[logging.Handler] = []
         stream = sys.stdout if console_stream is _CONSOLE_DEFAULT else cast(TextIO | None, console_stream)
-        if stream is not None:
+        if stream is not None and not isinstance(stream, LoggerStream):
             console_handler = logging.StreamHandler(stream)
             console_handler.setFormatter(
                 logging.Formatter("%(asctime)s [%(levelname)s] [%(correlation_id)s] %(name)s: %(message)s")
