@@ -271,6 +271,37 @@ def _wait_for_shutdown() -> bool:
     return any(shutdown_logging(timeout_s=0.05) for _ in range(100))
 
 
+def test_shutdown_tolera_cola_llena_al_encolar_sentinel(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from sky_claw import _logging_runtime
+
+    original_enqueue_sentinel = _logging_runtime._SafeQueueListener.enqueue_sentinel
+    attempts = 0
+
+    def _raise_full_once(self):  # noqa: ANN001, ANN202
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise queue.Full
+        return original_enqueue_sentinel(self)
+
+    monkeypatch.setattr(
+        _logging_runtime._SafeQueueListener,
+        "enqueue_sentinel",
+        _raise_full_once,
+    )
+    setup_logging(log_dir=tmp_path, process_role="test", console_stream=None)
+
+    assert shutdown_logging(timeout_s=1.0) is False
+    logging.getLogger("test.runtime").error("registro tras carrera de sentinel")
+    assert shutdown_logging(timeout_s=1.0) is True
+
+    contents = (tmp_path / "sky_claw.log").read_text(encoding="utf-8")
+    assert "registro tras carrera de sentinel" in contents
+
+
 def test_setup_degrada_sin_crashear_si_directorio_no_es_escribible(tmp_path) -> None:
     blocker = tmp_path / "archivo"
     blocker.write_text("no es un directorio", encoding="utf-8")

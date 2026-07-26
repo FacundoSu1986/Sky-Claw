@@ -211,7 +211,11 @@ class _SafeQueueListener(logging.handlers.QueueListener):
             self._health.record_listener_error()
             return False
 
-        self.enqueue_sentinel()
+        try:
+            self.enqueue_sentinel()
+        except queue.Full:
+            self._health.record_listener_error()
+            return False
         thread.join(timeout=remaining)
         if thread.is_alive():
             self._health.record_listener_error()
