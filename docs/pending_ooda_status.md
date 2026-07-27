@@ -835,7 +835,7 @@ documento y se marcan cerrados acá a medida que se implementen:
 - **Medio:** **U-06 cerrado PARCIALMENTE** (#375 — solo DynDOLOD; Wrye Bash y
   BodySlide siguen abiertos, ver addendum abajo), **U-07 cerrado** (#355
   — Job Object kill-on-close en DynDOLOD, base de U-02), **U-08 cerrado
-  PARCIALMENTE** (#PENDIENTE_PR_U08 — `clone()`/`_materialize` autolimpian el
+  PARCIALMENTE** (#378 — `clone()`/`_materialize` autolimpian el
   parcial ante fallo sync y cancelación; el reconciliador de arranque sigue
   abierto, ver addendum abajo), **U-09 cerrado** (#376 —
   ver addendum abajo), **U-10 cerrado** (#357 —
@@ -916,7 +916,7 @@ U-08 lista dos mecanismos con la misma raíz (una cancelación/muerte durante
 que `_materialize` no se autolimpie, y (2) la falta de un reconciliador de
 arranque que barra lo que (1) no puede prevenir en origen.
 
-**Cerrado en #PENDIENTE_PR_U08 — mitad (1), las dos causas verificadas del clon parcial:**
+**Cerrado en #378 — mitad (1), las dos causas verificadas del clon parcial:**
 
 1. **`ProfileSandbox._materialize` (`profile_sandbox.py`) no tenía
    try/except.** Un `OSError` a mitad de cualquiera de los 4 `copytree`

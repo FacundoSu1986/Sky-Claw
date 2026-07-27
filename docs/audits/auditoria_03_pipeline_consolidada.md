@@ -208,7 +208,7 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > existe'" es **falsa** — eso es de `GrassProfileManager` (nombre fijo), no de `ProfileSandbox`
   > (`profile_sandbox.py:216`, dir con UUID → no colisiona). Impacto real = leak de disco.
   > Severidad ALTO → **Medio**.
-  > **Estado (#PENDIENTE_PR_U08): CERRADO PARCIALMENTE — solo (1).** Se tomó la segunda opción
+  > **Estado (#378): CERRADO PARCIALMENTE — solo (1).** Se tomó la segunda opción
   > que el remedio dejaba planteada: `_materialize` autolimpia fallos SÍNCRONOS
   > (`try/except BaseException` alrededor de los 4 `copytree`, `_rmtree_force` + re-raise), Y
   > `run_ritual_in_sandbox` shieldea `clone()` y observa su desenlace real ante cancelación
