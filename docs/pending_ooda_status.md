@@ -832,7 +832,7 @@ documento y se marcan cerrados acá a medida que se implementen:
   (#356 — `PrecacheGrass.txt` huérfano se barre en el arranque), U-04 (Wrye
   Bash/Pandora sin rollback de salida, abierto), **U-05 cerrado** (#354 — VRAMr
   usa `kill_and_reap`/tree-kill en vez de `proc.kill()` pelado en timeout).
-- **Medio:** **U-06 cerrado PARCIALMENTE** (#374 — solo DynDOLOD; Wrye Bash y
+- **Medio:** **U-06 cerrado PARCIALMENTE** (#375 — solo DynDOLOD; Wrye Bash y
   BodySlide siguen abiertos, ver addendum abajo), **U-07 cerrado** (#355
   — Job Object kill-on-close en DynDOLOD, base de U-02), U-08 (sin
   reconciliación de arranque / clon parcial, abierto), U-09 (journal de grass
@@ -872,7 +872,7 @@ U-01 todavía no resuelve. Solo DynDOLOD está libre de ese bloqueo, porque
 `_find_dyndolod_output()` (`dyndolod_runner.py`) **busca en disco** entre tres
 ubicaciones candidatas en vez de asumir una ruta.
 
-**Cerrado en #374 — dos falsos verdes, ambos anclados:**
+**Cerrado en #375 — dos falsos verdes, ambos anclados:**
 
 1. **`output_path is None` salteaba la validación entera** (hallazgo NUEVO, que la
    auditoría original no registró). El guard de `dyndolod_service` estaba
@@ -889,7 +889,7 @@ ubicaciones candidatas en vez de asumir una ruta.
    `False`.
 
 Los tests de servicio existentes mockean `validate_dyndolod_output` en sus 6 call
-sites, así que su cuerpo real **nunca se ejercía**; #374 agrega la primera
+sites, así que su cuerpo real **nunca se ejercía**; #375 agrega la primera
 cobertura directa del runner (incluidas las guardas previas como regresión).
 
 **Sigue ABIERTO de U-06, con motivo verificado:**

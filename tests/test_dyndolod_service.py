@@ -123,7 +123,7 @@ def _make_success_result(
     dyndolod_mod: pathlib.Path | None = None,
     dyndolod_output: pathlib.Path | None = pathlib.Path("/tmp/DynDOLOD_Output"),
 ) -> DynDOLODPipelineResult:
-    """Helper to build a successful DynDOLODPipelineResult.
+    """Construye un ``DynDOLODPipelineResult`` exitoso.
 
     ``dyndolod_output`` permite el caso U-06 de ``_find_dyndolod_output`` que no
     ubicó la salida (``None``); su default conserva el comportamiento previo.
@@ -503,6 +503,46 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     mock_journal.commit_transaction.assert_not_called()
     mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
     # Sin path no hay nada que validar: el fallo es anterior a la validación.
+    mock_runner.validate_dyndolod_output.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_exit_cero_sin_dyndolod_result_no_se_reporta_como_exito(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """U-06 (review Qodo): la otra mitad del guard encadenado.
+
+    Hoy ``run_full_pipeline`` computa ``success`` exigiendo ``dyndolod_result is
+    not None``, así que este estado NO es alcanzable — pero el tipo lo permite, y
+    el criterio del repo (U-11) es no reportar éxito sobre un estado indeterminado
+    solo porque "no debería pasar". Sin este guard, un ``dyndolod_result`` en
+    ``None`` volvería a saltear la validación entera y commitear como éxito.
+    """
+    mock_runner = AsyncMock(spec=DynDOLODRunner)
+    mock_runner.run_full_pipeline = AsyncMock(
+        return_value=DynDOLODPipelineResult(
+            success=True,
+            texgen_result=None,
+            dyndolod_result=None,
+            errors=[],
+        )
+    )
+    mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
+
+    mock_config = MagicMock()
+    mock_config.mo2_mods_path = tmp_path / "mods"
+    (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
+    mock_runner._config = mock_config
+
+    service._runner = mock_runner
+
+    result = await service.execute(preset="High", run_texgen=False, create_snapshot=False)
+
+    assert result["success"] is False
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
     mock_runner.validate_dyndolod_output.assert_not_awaited()
 
 
@@ -1239,6 +1279,21 @@ async def test_validate_output_acepta_salida_con_dyndolod_esp(tmp_path: pathlib.
     (output / "DynDOLOD.esp").touch()
 
     assert await _runner_para_validacion().validate_dyndolod_output(output) is True
+
+
+@pytest.mark.asyncio
+async def test_validate_output_rechaza_un_directorio_llamado_dyndolod_esp(tmp_path: pathlib.Path) -> None:
+    """Review CodeRabbit: ``exists()`` acepta un DIRECTORIO llamado ``DynDOLOD.esp``.
+
+    Ese output se validaría y empaquetaría sin contener el plugin, que es el mismo
+    falso verde que U-06 ataca. Hay que exigir un archivo regular (``is_file()``).
+    """
+    output = tmp_path / "DynDOLOD_Output"
+    output.mkdir()
+    (output / "Otro.esp").touch()  # pasa la guarda de "hay algún .esp"
+    (output / "DynDOLOD.esp").mkdir()  # ...pero el "plugin" es un directorio
+
+    assert await _runner_para_validacion().validate_dyndolod_output(output) is False
 
 
 @pytest.mark.asyncio

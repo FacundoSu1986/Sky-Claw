@@ -503,7 +503,18 @@ class DynDOLODPipelineService:
                 )
 
                 # Validar salida de DynDOLOD si fue exitoso
-                if result.success and result.dyndolod_result:
+                if result.success:
+                    if result.dyndolod_result is None:
+                        # U-06 (review Qodo): la otra mitad del guard encadenado. Hoy
+                        # ``run_full_pipeline`` computa ``success`` exigiendo
+                        # ``dyndolod_result is not None``, así que este estado NO es
+                        # alcanzable — pero el tipo lo permite y el criterio del repo
+                        # (U-11) es no reportar éxito sobre un estado indeterminado
+                        # solo porque "no debería pasar".
+                        msg = "DynDOLOD reportó éxito sin resultado de ejecución"
+                        logger.error(msg)
+                        raise DynDOLODExecutionError(msg)
+
                     output_path = result.dyndolod_result.output_path
                     if output_path is None:
                         # U-06: ``_find_dyndolod_output`` devuelve None cuando no
