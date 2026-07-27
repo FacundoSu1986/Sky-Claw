@@ -149,6 +149,42 @@ def test_el_detalle_nombra_los_plugins_invisibles(tmp_path: pathlib.Path) -> Non
     assert any("SomeMod.esp" in d for d in check.details)
 
 
+def test_nombre_con_traversal_no_cuenta_como_visible(tmp_path: pathlib.Path) -> None:
+    """``_parse_enabled`` devuelve las líneas de ``plugins.txt`` SIN sanear, así
+    que un nombre con ``..`` o separadores llegaría crudo a ``Data / nombre`` y
+    podría matchear un archivo de AFUERA → falso verde (review CodeRabbit #381).
+    Un nombre que no es un basename simple no puede contar como visible."""
+    afuera = tmp_path / "afuera.esp"
+    afuera.write_bytes(b"TES4")
+    checker = _entorno(
+        tmp_path,
+        habilitados=(*_VANILLA, "../afuera.esp"),
+        en_data=_VANILLA,
+    )
+
+    scan = checker.check()
+
+    assert scan.visible == (), "un nombre con traversal no puede contar como visible"
+    assert "../afuera.esp" not in scan.mod_plugins, "tampoco debe inflar el universo medido"
+
+
+def test_nombre_absoluto_no_cuenta_como_visible(tmp_path: pathlib.Path) -> None:
+    """Misma familia que el anterior: una ruta absoluta descarta el ``Data`` base
+    entero al concatenar (``Path('Data') / '/x.esp'`` == ``/x.esp``)."""
+    absoluto = tmp_path / "absoluto.esp"
+    absoluto.write_bytes(b"TES4")
+    checker = _entorno(
+        tmp_path,
+        habilitados=(*_VANILLA, str(absoluto)),
+        en_data=_VANILLA,
+    )
+
+    scan = checker.check()
+
+    assert scan.visible == ()
+    assert str(absoluto) not in scan.mod_plugins
+
+
 def test_scan_es_serializable_como_los_otros_sensores() -> None:
     """``VisibilityScan`` respeta la forma de ``OverwriteScan``: dataclass frozen
     de tuplas, para que el reporte del preflight siga siendo estable."""

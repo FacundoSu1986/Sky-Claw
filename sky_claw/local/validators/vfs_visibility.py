@@ -60,6 +60,28 @@ _REMEDIATION = (
 )
 
 
+def _es_basename_simple(nombre: str) -> bool:
+    """True si *nombre* es un nombre de archivo pelado, sin componentes de ruta.
+
+    ``_parse_enabled`` (``mo2/plugin_sources.py``) devuelve las líneas de
+    ``plugins.txt``/``loadorder.txt`` **sin sanear**: solo les quita el ``*`` y
+    los espacios. Un valor con ``..``, separadores o una ruta absoluta se
+    concatenaría a ``Data / nombre`` y el probe terminaría inspeccionando un
+    archivo de AFUERA — que existe y devuelve un **falso verde**, apagando el
+    gate justo cuando debería cortar (review CodeRabbit #381).
+
+    Se chequea contra ambos sabores de ruta: el load order lo escribe MO2 en
+    Windows, pero el preflight puede correr en POSIX (CI, tests), y cada uno
+    interpreta ``\\`` y ``C:`` distinto.
+    """
+    if not nombre or nombre in {".", ".."}:
+        return False
+    return all(
+        not tipo(nombre).is_absolute() and tipo(nombre).name == nombre
+        for tipo in (pathlib.PurePosixPath, pathlib.PureWindowsPath)
+    )
+
+
 def _es_plugin_de_mod(nombre: str) -> bool:
     """True si *nombre* es un plugin aportado por un mod (no contenido oficial)."""
     bajo = nombre.lower()
@@ -108,7 +130,20 @@ class VfsVisibilityChecker:
         if self._game_data_dir is None:
             return VisibilityScan(configured=False, mod_plugins=(), visible=())
 
-        mod_plugins = tuple(p for p in self._enabled_plugins if _es_plugin_de_mod(p))
+        # El filtro de basename va PRIMERO: un nombre inseguro no puede contar
+        # como visible (falso verde) ni engrosar el universo medido (rojo por un
+        # plugin que ni siquiera es un nombre de plugin).
+        seguros: list[str] = []
+        for nombre in self._enabled_plugins:
+            if _es_basename_simple(nombre):
+                seguros.append(nombre)
+            else:
+                logger.warning(
+                    "Entrada de load order descartada por no ser un nombre de plugin simple: %r",
+                    nombre,
+                )
+
+        mod_plugins = tuple(p for p in seguros if _es_plugin_de_mod(p))
         if not mod_plugins:
             # Perfil vainilla: no hay nada que afirmar sobre la virtualización.
             return VisibilityScan(configured=True, mod_plugins=(), visible=())

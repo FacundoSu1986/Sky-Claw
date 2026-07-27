@@ -264,9 +264,22 @@ class LootSortingService:
         # U-01: ¿el modlist del perfil se ve en el Data que LOOT va a leer? Sin
         # este sensor, un run standalone (sin heredar la USVFS de MO2) ordena el
         # juego base y reporta verde. Reusa el resolver de fuentes ya armado.
-        visibility_check = build_vfs_visibility_sensor(
-            game=self._path_resolver.get_skyrim_path() if self._path_resolver is not None else None,
-            sources_resolver=sources_resolver,
+        #
+        # SOLO aplica al lanzamiento STANDALONE: el sensor mide el Data FÍSICO, y
+        # con broker LOOT corre DENTRO de la USVFS (`BrokeredLootRunner`), donde
+        # ve los mods virtualizados que ese Data no tiene. Medirlo ahí daría un
+        # ROJO falso que bloquea un sort correcto — exactamente el falso positivo
+        # que este sensor existe para evitar (review CodeRabbit #381). El modo de
+        # lanzamiento es una PRECONDICIÓN del sensor, no un detalle del caller:
+        # sin él, la medición no significa nada. Con `None` el checkpoint sale
+        # "no configurado" — honesto: no se midió (lección #250).
+        visibility_check = (
+            build_vfs_visibility_sensor(
+                game=self._path_resolver.get_skyrim_path() if self._path_resolver is not None else None,
+                sources_resolver=sources_resolver,
+            )
+            if self._vfs_broker is None
+            else None
         )
 
         self._preflight = PreflightService(

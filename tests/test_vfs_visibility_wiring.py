@@ -188,3 +188,51 @@ async def test_el_modlist_visible_no_bloquea(servicio: str, tmp_path: pathlib.Pa
     # exigir que el verde venga de una MEDICIÓN real (los servicios con
     # omit_unconfigured=False emiten ese checkpoint igual).
     assert "no configurado" not in visibilidad.summary.lower()
+
+
+# ---------------------------------------------------------------------------
+# Modo de lanzamiento: el gate mide el Data FÍSICO (review CodeRabbit #381)
+# ---------------------------------------------------------------------------
+
+
+async def test_loot_con_broker_vfs_no_aplica_el_gate(tmp_path: pathlib.Path) -> None:
+    """Con broker, LOOT corre DENTRO de la USVFS vía ``BrokeredLootRunner`` y sí
+    ve los mods virtualizados. Medir el ``Data`` físico ahí daría un ROJO falso
+    que bloquea un sort correcto — el falso positivo que este sensor existe
+    para evitar. El modo de lanzamiento es precondición del sensor."""
+    from sky_claw.local.mo2.load_order import LoadOrderPaths
+    from sky_claw.local.tools.loot_service import LootSortingService
+
+    skyrim, mo2 = _instancia(tmp_path)  # Data pelado: el escenario que daría rojo
+    load_order = MagicMock()
+    load_order.resolve.return_value = LoadOrderPaths(
+        files=(mo2 / "profiles" / "Default" / "plugins.txt",), sources=("mo2_profile",)
+    )
+    svc = LootSortingService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=_resolver(skyrim=skyrim, mo2=mo2),
+        loot_runner=MagicMock(),
+        load_order_resolver=load_order,
+        vfs_broker=MagicMock(),  # ← corre dentro de la USVFS
+    )
+
+    reporte = await svc._ensure_preflight().run()
+
+    visibilidad = next(c for c in reporte.checks if c.name == "vfs_visibility")
+    assert visibilidad.status is PreflightStatus.GREEN
+    # No se midió: el checkpoint debe DECIRLO, no fingir un verde verificado.
+    assert "no configurado" in visibilidad.summary.lower()
+    assert reporte.blocks_mutations is False
+
+
+async def test_loot_sin_broker_sigue_aplicando_el_gate(tmp_path: pathlib.Path) -> None:
+    """Contracara del anterior: el fix del broker no debe apagar el gate en el
+    camino standalone, que es justo el que U-01 protege."""
+    skyrim, mo2 = _instancia(tmp_path)
+    svc = _construir("loot_service", resolver=_resolver(skyrim=skyrim, mo2=mo2), mo2=mo2)
+
+    reporte = await svc._ensure_preflight().run()
+
+    visibilidad = next(c for c in reporte.checks if c.name == "vfs_visibility")
+    assert visibilidad.status is PreflightStatus.RED
