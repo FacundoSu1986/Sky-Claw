@@ -208,6 +208,16 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > existe'" es **falsa** — eso es de `GrassProfileManager` (nombre fijo), no de `ProfileSandbox`
   > (`profile_sandbox.py:216`, dir con UUID → no colisiona). Impacto real = leak de disco.
   > Severidad ALTO → **Medio**.
+  > **Estado (#378): CERRADO PARCIALMENTE — solo (1).** Se tomó la segunda opción
+  > que el remedio dejaba planteada: `_materialize` autolimpia fallos SÍNCRONOS
+  > (`try/except BaseException` alrededor de los 4 `copytree`, `_rmtree_force` + re-raise), Y
+  > `run_ritual_in_sandbox` shieldea `clone()` y observa su desenlace real ante cancelación
+  > (`_finalizar_clone_cancelado`, mismo patrón que `SandboxPromotionFlow._promote` usa para
+  > `promote()`) — cubre las DOS causas del clon parcial en el punto de `clone()`, no solo la
+  > síncrona. El reconciliador de arranque (2) sigue abierto: su único wiring conocido
+  > (`app_context.py`, patrón `reconcile_orphan_precache_flag` de U-03) es dominio del otro
+  > agente en la coordinación de lifecycle/GUI vigente, no un bloqueo técnico — follow-up
+  > cuando se coordine. `_promote_sync`/backups de DynDOLOD/TexGen quedan fuera de este cierre.
 
 ### U-09 — Journal de grass se commitea como éxito pese a fallos de teardown · `[Z]` · Teardown/Rollback
 

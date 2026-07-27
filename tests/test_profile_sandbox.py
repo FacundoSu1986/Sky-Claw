@@ -115,6 +115,59 @@ async def test_mutar_el_clon_no_toca_el_original(mo2_root: pathlib.Path) -> None
 
 
 # ---------------------------------------------------------------------------
+# Self-cleaning ante fallos síncronos (U-08)
+# ---------------------------------------------------------------------------
+
+
+async def test_materialize_falla_a_mitad_no_deja_clon_parcial(mo2_root: pathlib.Path, monkeypatch) -> None:
+    """Un ``OSError`` a mitad de ``_materialize`` (disco lleno, permiso denegado)
+    no debe dejar un directorio de clon parcial huérfano en el sandbox_root.
+
+    Falla la 2ª llamada a ``copytree`` (el área overwrite, con el profile ya
+    copiado): antes del fix el directorio con el profile aplicado sobrevivía
+    para siempre, sin dueño ni referencia."""
+    import shutil as shutil_mod
+
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    sandbox_root = mo2_root / ".skyclaw_sandbox"
+
+    copytree_real = shutil_mod.copytree
+    llamadas = {"n": 0}
+
+    def copytree_con_fallo(*args, **kwargs):
+        llamadas["n"] += 1
+        if llamadas["n"] == 2:
+            raise OSError("disco lleno a mitad del clonado")
+        return copytree_real(*args, **kwargs)
+
+    monkeypatch.setattr(shutil_mod, "copytree", copytree_con_fallo)
+
+    with pytest.raises(OSError, match="disco lleno"):
+        await sandbox.clone()
+
+    assert not sandbox_root.exists() or list(sandbox_root.iterdir()) == []
+
+
+async def test_materialize_falla_en_la_primera_copia_tambien_limpia(mo2_root: pathlib.Path, monkeypatch) -> None:
+    """Mismo mecanismo, pero el fallo es en la 1ª copia (profile): el ``mkdir``
+    inicial del clon tampoco debe sobrevivir a la excepción."""
+    import shutil as shutil_mod
+
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+    sandbox_root = mo2_root / ".skyclaw_sandbox"
+
+    def copytree_con_fallo(*args, **kwargs):
+        raise OSError("permiso denegado en la primera copia")
+
+    monkeypatch.setattr(shutil_mod, "copytree", copytree_con_fallo)
+
+    with pytest.raises(OSError, match="permiso denegado"):
+        await sandbox.clone()
+
+    assert not sandbox_root.exists() or list(sandbox_root.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
 # Diff explicable
 # ---------------------------------------------------------------------------
 

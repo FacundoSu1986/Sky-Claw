@@ -44,6 +44,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Referencias fuertes a las tasks de clone()/cleanup en vuelo tras una
+#: cancelación: el loop solo guarda referencias DÉBILES a las tasks (ver docs
+#: de ``asyncio.shield``/``asyncio.ensure_future``), así que sin esto una task
+#: que sigue corriendo en background tras un `raise` (p. ej. una segunda
+#: cancelación que nos hizo dejar de esperarla) podría ser recolectada por GC
+#: antes de terminar, perdiendo el discard() pendiente (review CodeRabbit
+#: PR #378; mismo hallazgo que Codex PR #320 en ``SandboxPromotionFlow``, que
+#: usa ``self._cleanup_tasks`` porque ahí SÍ hay un objeto de vida larga donde
+#: anclarla — acá, función suelta sin instancia, el ancla es este set módulo).
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _track(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+    """Ancla ``task`` contra GC hasta que termine (ver ``_background_tasks``)."""
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 
 @dataclass(frozen=True, slots=True)
 class SandboxedRunResult:
@@ -82,7 +100,20 @@ async def run_ritual_in_sandbox(
         Lo que lance el ritual (el clon se descarta antes de propagar) o el
         propio sandbox (``ProfileNotFoundError``, ``SandboxSymlinkError``…).
     """
-    clone = await sandbox.clone()
+    # U-08: clone() corre _materialize vía asyncio.to_thread (profile_sandbox.py)
+    # — cancelar la corrutina que lo espera no interrumpe ese hilo. Sin shield,
+    # el hilo seguía escribiendo el clon en background sin que nadie lo limpie
+    # (el `try` de acá abajo, que sí maneja CancelledError, nunca se alcanza a
+    # tiempo). Se espera el desenlace REAL antes de decidir qué limpiar — mismo
+    # patrón F2 que SandboxPromotionFlow._promote usa para promote().
+    clone_task = _track(asyncio.ensure_future(sandbox.clone()))
+    try:
+        clone = await asyncio.shield(clone_task)
+    except asyncio.CancelledError:
+        cleanup = _track(asyncio.ensure_future(_finalizar_clone_cancelado(sandbox, clone_task)))
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(cleanup)
+        raise
     try:
         result = await ritual(clone)
         # El diff va dentro del mismo cleanup: si lanza (p. ej.
@@ -113,3 +144,21 @@ async def run_ritual_in_sandbox(
         clone.root,
     )
     return SandboxedRunResult(clone=clone, diff=diff, result=result)
+
+
+async def _finalizar_clone_cancelado(sandbox: ProfileSandbox, clone_task: asyncio.Task[SandboxClone]) -> None:
+    """Observa el desenlace real de un ``clone()`` cancelado y descarta si materializó.
+
+    Espeja ``SandboxPromotionFlow._finalizar_promote_cancelado`` (F2): el hilo
+    de ``_materialize`` sigue escribiendo tras la cancelación de la corrutina
+    que lo esperaba, así que hay que esperar su desenlace REAL (shieldeado)
+    antes de tocar el disco. Si terminó en excepción, ``_materialize`` ya se
+    autolimpió (o nunca llegó a crear nada) — nada que hacer acá. Si terminó
+    con éxito, el clon quedó materializado pero nadie lo pidió: se descarta.
+    """
+    try:
+        clone = await asyncio.shield(clone_task)
+    except (asyncio.CancelledError, Exception):
+        return
+    with contextlib.suppress(Exception):
+        await sandbox.discard(clone)
