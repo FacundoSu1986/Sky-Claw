@@ -1044,11 +1044,32 @@ pasada adversarial de refutación encima. **Verificado contra `origin/main`
 `67857c4`**; `_logging_runtime.py` y `logging_config.py` no cambiaron desde
 `c98409d`, así que todo lo de abajo sigue vigente.
 
-De siete sospechas iniciales, **tres quedaron refutadas con evidencia** y una
-bajó de crítica a baja. Lo único que resultó ser un defecto real se cerró en
-**#383**: `handleError` armaba la ventana de reintento del sink ante *cualquier*
-excepción, así que un `%` mal armado en un call site cegaba `crash.log` durante
-un segundo entero y descartaba los records sanos de esa ventana sin contarlos.
+Esta auditoría partió de **7 hallazgos numerados** (F1–F7) y sumó **3
+verificaciones adicionales** sobre detalles de implementación puntuales que se
+sospechaban falsos (R1–R3) — **10 ítems en total**, todos pasados por una ronda
+adversarial de refutación. De esos 10:
+
+- **2 resultaron ser defectos reales**, ambos cerrados en **#383**:
+  `handleError` armaba la ventana de reintento del sink ante *cualquier*
+  excepción, así que un `%` mal armado en un call site cegaba `crash.log`
+  durante un segundo entero y descartaba los records sanos de esa ventana sin
+  contarlos (F2); y `setup_logging` resolvía el chat id de Telegram —ocho
+  lecturas de keyring— en cada proceso worker VFS, sin necesitarlo (F1, cuya
+  severidad bajó de crítica a baja una vez refutada la sospecha de corrupción
+  de `config.toml`).
+- **2 sobrevivieron en forma reducida** —severidad bajada o reclasificados
+  como deuda declarada— y son los residuos #1 y #2 de abajo (F4, F7).
+- **6 quedaron refutados** tal como se habían planteado originalmente (F3, F5,
+  F6, R1, R2, R3). Refutar tres de esos seis —F5, F6 y R3— sacó a la luz, como
+  subproducto, los residuos #3, #4 y #5.
+
+La tabla de "falsos positivos" de abajo lista **9 filas**, no 6, porque F3, F5
+y F6 traían dos reclamos distintos cada uno —costo de CPU y comparabilidad del
+hash en F3; crecimiento sin cota y `fileno()` en F5; colisión de `job_id` y
+llegada a `crash.log` en F6— y cada reclamo se verificó y se refutó por
+separado. La novena fila es la parte de F1 que sí se refutó (la corrupción de
+`config.toml`), aunque F1 en su conjunto sobrevivió como el defecto de keyring
+recién descripto.
 
 **Esta nota existe por dos razones**, y la segunda importa tanto como la primera:
 dejar registrados los residuos reales que NO se arreglaron, y **blindar los
