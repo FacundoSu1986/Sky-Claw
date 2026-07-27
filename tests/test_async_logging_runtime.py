@@ -509,6 +509,27 @@ def test_flush_logging_confirma_salida_de_consola_antes_de_continuar(
     assert "respuesta ordenada" in stream.getvalue()
 
 
+def test_consola_con_encoding_limitado_no_pierde_el_registro(tmp_path) -> None:
+    """Una consola Windows con codepage limitado (cp1252, no UTF-8) no puede
+    codificar buena parte de los mensajes en español del repo (tildes, `→`,
+    emojis). Sin reconfigurar el stream, ``TextIOWrapper.write`` levanta
+    ``UnicodeEncodeError`` ANTES de escribir nada (el encode falla completo,
+    no parcial), `StreamHandler.emit` lo deriva a `handleError`, y la stdlib
+    imprime "--- Logging error ---" en vez del mensaje real: el registro se
+    pierde de la consola sin dejar rastro legible (reproducido en un run real
+    de `python -m sky_claw` bajo una terminal cp1252)."""
+    crudo = io.BytesIO()
+    consola = io.TextIOWrapper(crudo, encoding="cp1252", write_through=True)
+    setup_logging(log_dir=tmp_path, process_role="test", console_stream=consola)
+
+    logging.getLogger("test.runtime").info("paso-A %s paso-B", "→")
+
+    assert shutdown_logging() is True
+    salida = crudo.getvalue().decode("cp1252", errors="replace")
+    assert "paso-A" in salida
+    assert "paso-B" in salida
+
+
 def test_error_de_formateo_no_ciega_el_sink_de_archivo(tmp_path) -> None:
     """Un record malformado solo se pierde a sí mismo, no al siguiente.
 
