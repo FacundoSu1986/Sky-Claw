@@ -32,6 +32,7 @@ responderla.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -280,7 +281,13 @@ LANZADORES_QUE_PARKEAN_APROBACION = frozenset({"run_ritual", "run_ritual_install
 
 
 def _lanzadores_detectados() -> frozenset[str]:
-    """Corrutinas públicas de ``ritual_runner`` que reciben un ``tab_id``."""
+    """Corrutinas públicas DEFINIDAS en ``ritual_runner`` que reciben un ``tab_id``.
+
+    El filtro por ``__module__`` no es cosmético: ``getmembers`` también devuelve
+    lo que el módulo *importa*, así que una corrutina ajena con un parámetro
+    ``tab_id`` rompería el ancla sin que exista un lanzador nuevo. Un ancla que
+    grita en falso termina desactivada, y ahí deja de proteger.
+    """
     import inspect
 
     from sky_claw.app.gui.controllers import ritual_runner
@@ -288,11 +295,13 @@ def _lanzadores_detectados() -> frozenset[str]:
     return frozenset(
         nombre
         for nombre, fn in inspect.getmembers(ritual_runner, inspect.iscoroutinefunction)
-        if not nombre.startswith("_") and "tab_id" in inspect.signature(fn).parameters
+        if not nombre.startswith("_")
+        and fn.__module__ == ritual_runner.__name__
+        and "tab_id" in inspect.signature(fn).parameters
     )
 
 
-async def _invocar_run_ritual(store: ReactiveStore, tab_id: str | None, espia: Any) -> None:
+async def _invocar_run_ritual(store: ReactiveStore, tab_id: str | None, espia: Callable[[], None]) -> None:
     class _Supervisor:
         async def dispatch_tool(self, _name: str, _args: dict) -> dict:
             espia()  # acá corre el gate HITL, inline en esta misma task
@@ -301,7 +310,7 @@ async def _invocar_run_ritual(store: ReactiveStore, tab_id: str | None, espia: A
     await run_ritual("loot", supervisor=_Supervisor(), store=store, tab_id=tab_id)
 
 
-async def _invocar_run_ritual_install(store: ReactiveStore, tab_id: str | None, espia: Any) -> None:
+async def _invocar_run_ritual_install(store: ReactiveStore, tab_id: str | None, espia: Callable[[], None]) -> None:
     from sky_claw.app.gui.controllers.ritual_runner import run_ritual_install
 
     class _Installer:
@@ -375,12 +384,26 @@ async def test_ningun_lanzador_desaloja_una_aprobacion_ajena(nombre: str) -> Non
 
 @pytest.mark.parametrize("nombre", sorted(LANZADORES_QUE_PARKEAN_APROBACION))
 async def test_todo_lanzador_limpia_su_propia_aprobacion(nombre: str) -> None:
-    """El camino inverso: la propia sí se limpia, para no dejar un modal stale."""
+    """El camino inverso: la propia sí se limpia, para no dejar un modal stale.
+
+    A diferencia de sus dos hermanos, este test afirma una AUSENCIA, así que
+    pasaría en verde si la receta nunca llegara al punto de aprobación (un
+    early-return por ``STORE_KEY_RITUAL_IN_FLIGHT``, un installer ausente): no
+    se parkea nada y "está vacío" se cumple sin haber probado nada. El flag
+    corta ese falso verde.
+    """
     store = ReactiveStore()
     propia = {"request_id": "req-A", HITL_OWNER_TAB: "tab-A"}
+    parkeada = False
 
-    await RECETAS_DE_INVOCACION[nombre](store, "tab-A", lambda: store.set(STORE_KEY_PENDING_HITL, dict(propia)))
+    def _parkear() -> None:
+        nonlocal parkeada
+        parkeada = True
+        store.set(STORE_KEY_PENDING_HITL, dict(propia))
 
+    await RECETAS_DE_INVOCACION[nombre](store, "tab-A", _parkear)
+
+    assert parkeada, f"la receta de {nombre} nunca llegó al punto de aprobación: el test no probó nada"
     assert not store.get(STORE_KEY_PENDING_HITL), f"{nombre} dejó su propio modal colgado al terminar"
 
 
