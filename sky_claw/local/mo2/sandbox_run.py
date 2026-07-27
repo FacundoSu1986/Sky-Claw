@@ -44,6 +44,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Referencias fuertes a las tasks de clone()/cleanup en vuelo tras una
+#: cancelación: el loop solo guarda referencias DÉBILES a las tasks (ver docs
+#: de ``asyncio.shield``/``asyncio.ensure_future``), así que sin esto una task
+#: que sigue corriendo en background tras un `raise` (p. ej. una segunda
+#: cancelación que nos hizo dejar de esperarla) podría ser recolectada por GC
+#: antes de terminar, perdiendo el discard() pendiente (review CodeRabbit
+#: PR #378; mismo hallazgo que Codex PR #320 en ``SandboxPromotionFlow``, que
+#: usa ``self._cleanup_tasks`` porque ahí SÍ hay un objeto de vida larga donde
+#: anclarla — acá, función suelta sin instancia, el ancla es este set módulo).
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _track(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+    """Ancla ``task`` contra GC hasta que termine (ver ``_background_tasks``)."""
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 
 @dataclass(frozen=True, slots=True)
 class SandboxedRunResult:
@@ -88,11 +106,11 @@ async def run_ritual_in_sandbox(
     # (el `try` de acá abajo, que sí maneja CancelledError, nunca se alcanza a
     # tiempo). Se espera el desenlace REAL antes de decidir qué limpiar — mismo
     # patrón F2 que SandboxPromotionFlow._promote usa para promote().
-    clone_task = asyncio.ensure_future(sandbox.clone())
+    clone_task = _track(asyncio.ensure_future(sandbox.clone()))
     try:
         clone = await asyncio.shield(clone_task)
     except asyncio.CancelledError:
-        cleanup = asyncio.ensure_future(_finalizar_clone_cancelado(sandbox, clone_task))
+        cleanup = _track(asyncio.ensure_future(_finalizar_clone_cancelado(sandbox, clone_task)))
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.shield(cleanup)
         raise
