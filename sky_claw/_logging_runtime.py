@@ -58,10 +58,15 @@ class LoggingHealth:
             self._emergency.appendleft(record)
 
     def record_suppressed(self) -> None:
-        """Cuenta un record que el sink descartó por estar en ventana de reintento.
+        """Cuenta un record que el sink no llegó a escribir, por una causa
+        que NO es un error de disco/archivo: en ventana de reintento activa
+        (``FailSafeRotatingFileHandler.emit``), o un bug de formateo propio
+        del record (``handleError``, rama no-``OSError``).
 
-        Sin esto la degradación es medible solo en su causa (``file_errors``) y
-        no en su costo: cuántos eventos se perdieron mientras el sink esperaba.
+        Sin esto la pérdida de ese record es invisible: no es un file_error
+        (mentiría sobre la causa) y tampoco queda registrada en ningún otro
+        lado. ``suppressed_records`` es el costo medible de la degradación
+        que ``file_errors`` describe solo por su causa.
         """
         with self._lock:
             self._degraded = True
@@ -187,11 +192,19 @@ class FailSafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
         Ante un bug de formateo el sink está sano: cegarlo solo pierde los records
         sanos del segundo siguiente —incluido ``crash.log``—. Espeja el criterio
         que ``doRollover`` ya aplica con su ``except OSError``.
+
+        Por el mismo motivo, ``record_file_error`` (que marca ``file_errors`` y
+        alimenta el mensaje "problema de disco") solo se contabiliza para el
+        ``OSError`` real: atribuirle un bug de formateo mentiría sobre la causa
+        de la degradación. El record igual se perdió, así que esa rama cuenta
+        como ``suppressed_records`` — visible, pero sin culpar al disco.
         """
         del record
         if isinstance(sys.exc_info()[1], OSError):
             self._write_retry_at = time.monotonic() + self._RETRY_SECONDS
-        self._health.record_file_error()
+            self._health.record_file_error()
+        else:
+            self._health.record_suppressed()
 
 
 class _SafeQueueListener(logging.handlers.QueueListener):

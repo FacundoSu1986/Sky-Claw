@@ -518,7 +518,7 @@ def test_error_de_formateo_no_ciega_el_sink_de_archivo(tmp_path) -> None:
     formatea porque ``maxBytes > 0``). La ventana de reintento existe para un
     disco caído: armarla ante un bug de formateo ciega el sink un segundo entero.
     """
-    setup_logging(log_dir=tmp_path, process_role="test", console_stream=None)
+    runtime = setup_logging(log_dir=tmp_path, process_role="test", console_stream=None)
 
     logging.getLogger("test.runtime").error("%s %s", "un-solo-argumento")
     logging.getLogger("test.runtime").error("registro sano tras el malformado")
@@ -529,6 +529,14 @@ def test_error_de_formateo_no_ciega_el_sink_de_archivo(tmp_path) -> None:
     crash = (tmp_path / "crash.log").read_text(encoding="utf-8")
     assert "registro sano tras el malformado" in principal
     assert "registro sano tras el malformado" in crash
+
+    # Un bug de formateo no es un problema de disco: no debe contarse como
+    # file_error (mentiría sobre la causa) — pero el record SÍ se perdió, así
+    # que debe seguir siendo visible como supresión, no desaparecer sin rastro.
+    snapshot = runtime.health_snapshot()
+    assert snapshot.file_errors == 0
+    assert snapshot.suppressed_records >= 1
+    assert snapshot.degraded is True
 
 
 def test_oserror_de_escritura_ciega_el_sink_y_contabiliza_lo_suprimido(
