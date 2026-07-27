@@ -1,63 +1,164 @@
-name: "Qodo Merge (PR-Agent) - Revisor Adversarial Interactivo"
+name: "Qodo Merge - Revisor Adversarial Interactivo"
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
-    # Ahorro de costos: no activar la VM automática en cambios puros de documentación o imágenes
+    # Y-5: mismo conjunto que [github_action_config].pr_actions en .pr_agent.toml.
+    # 'synchronize' lo maneja handle_push_trigger, no pr_actions — se mantiene
+    # acá porque la Action necesita el evento en bruto para detectarlo.
+    types: [opened, reopened, ready_for_review, synchronize]
     paths-ignore:
-      - '**.md'
-      - '**.txt'
-      - 'docs/**'
-      - '**/*.png'
-      - '**/*.jpg'
-      - '**/*.svg'
+      # Y-6: docs/** y **/*.md salieron del ignore. Un PR que solo actualiza
+      # docs/pending_ooda_status.md (obligatorio al cerrar un ítem T-XX, por
+      # AGENTS.md) antes nunca disparaba revisión.
+      - "**/*.png"
+      - "**/*.jpg"
+      - "**/*.svg"
   issue_comment:
-    types: [created] # Evita relanzar al editar comentarios antiguos
+    types: [created]
 
-# Control de concurrencia: cancela revisiones en curso obsoletas si entra un nuevo commit o comando en el mismo PR
+# Y-4: concurrency separada por tipo de evento. Un push (pull_request) cancela
+# una revisión obsoleta; un comando humano (issue_comment) nunca se cancela —
+# se encola detrás del anterior del mismo PR en vez de perderse.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Y-7: statuses:write no lo usa /review, /describe ni /ask — pr-agent solo
+# publica como GitHub Check si publish_as_check_run=true, que no está seteado.
+# Permisos otorgados por job (mínimo privilegio), no a nivel workflow.
 permissions:
-  issues: write
-  pull-requests: write
   contents: read
-  statuses: write
 
 jobs:
-  pr_agent_job:
-    runs-on: ubuntu-latest
-    # 1. Evitar loops de bots
-    # 2. En PRs automáticos: no correr en forks externos para no exponer secretos ni permitir inyecciones
-    # 3. En comentarios: ejecuta SOLO en PRs (no Issues), si empieza con '/' Y el autor es miembro/colaborador confiable del repo
+  auto-review:
+    name: "Auto-revisión en PR interno"
+    # El gate de bots se movió por completo a .pr_agent.toml (github.ignore_bot_pr):
+    # filtrar acá con sender.type != 'Bot' bloqueaba el evento antes de que PR-Agent
+    # pudiera aplicar esa política, dejando ignore_bot_pr=false sin efecto para
+    # PRs de Dependabot/Renovate — justo la superficie de supply-chain que se
+    # buscaba habilitar.
     if: >-
-      github.event.sender.type != 'Bot' &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
-      (github.event_name != 'issue_comment' || (github.event.issue.pull_request != null && startsWith(github.event.comment.body, '/') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR')))
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.state == 'open' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      pull-requests: write
     steps:
-      # Seguridad SRE: resolvemos el branch base del PR cuando se ejecuta desde un comentario (issue_comment)
-      - name: Resolver rama base del PR en evento issue_comment
-        id: pr_base
-        if: github.event_name == 'issue_comment'
+      # Y-2: los pasos de checkout de configuración se eliminaron. Verificado
+      # contra GithubProvider.get_repo_settings() de pr-agent: .pr_agent.toml se
+      # lee por la API de GitHub, nunca desde el workspace del runner — el
+      # checkout no protegía nada, solo simulaba hacerlo. Sin CONFIG_BRANCH
+      # seteada, get_repo_settings() ya lee de la default branch por su cuenta
+      # (no hace falta fijarla explícitamente: sería el mismo valor).
+      - name: "Ejecutar Qodo Merge / PR-Agent"
+        uses: Codium-ai/pr-agent@570f67ed5fc8db5be74c18df070bc20079b64b0d # v0.41.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BASE_REF=$(gh pr view ${{ github.event.issue.number }} --repo ${{ github.repository }} --json baseRefName --jq '.baseRefName')
-          echo "sha=$BASE_REF" >> "$GITHUB_OUTPUT"
-
-      # Seguridad SRE: leemos la configuración (.pr_agent.toml) desde la rama base o default branch,
-      # impidiendo que un PR malicioso intente autoliberarse alterando las reglas adversariales en su diff.
-      - name: Checkout de configuración confiable (rama base / default)
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.sha || steps.pr_base.outputs.sha || github.event.repository.default_branch }}
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Ejecutar Qodo Merge (PR-Agent) con Google Gemini
-        uses: Codium-ai/pr-agent@main
-        env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+  comment-command:
+    name: "Comando seguro en comentario"
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      github.event.issue.state == 'open' &&
+      github.event.comment.user.type != 'Bot' &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pull-requests: read
+      issues: write
+    steps:
+      - name: "Validar comando permitido"
+        id: gate
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Y-1: pr-agent NO recibe solo la primera línea del comentario — recibe
+          # el body completo y lo tokeniza con shlex(posix=True, whitespace_split=True),
+          # donde los saltos de línea son separadores de token igual que los espacios.
+          # update_settings_from_args() aplica cada "--clave=valor" sin allowlist ni
+          # blocklist, incluyendo --config.extra_config_url=<URL> (carga una config
+          # TOML remota arbitraria antes de la del repo). Validar solo la línea 1
+          # deja pasar overrides de configuración escondidos en las líneas 2..N.
+          # Por eso acá se audita el body completo, no solo su primera línea.
+
+          body="${COMMENT_BODY//$'\r'/}"
+
+          deny() {
+            echo "gate: rechazado — $1" >&2
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          first_line="${body%%$'\n'*}"
+          first_line="${first_line#"${first_line%%[![:space:]]*}"}"
+          first_line="${first_line%"${first_line##*[![:space:]]}"}"
+
+          # Ninguna línea del comentario puede contener un flag "--..." — esa es
+          # la sintaxis que update_settings_from_args interpreta como override.
+          while IFS= read -r line; do
+            case "$line" in
+              *--*) deny "argumentos '--clave=valor' no permitidos (override de configuración)" ;;
+            esac
+          done <<< "$body"
+
+          case "$first_line" in
+            /review|/describe)
+              # Sin argumentos: exigir que sea la única línea con contenido real.
+              extra="$(printf '%s\n' "$body" | grep -c '[^[:space:]]' || true)"
+              if [ "$extra" -ne 1 ]; then
+                deny "$first_line debe ser la única línea del comentario"
+              fi
+              ;;
+            "/ask "*)
+              # /ask admite una pregunta multilínea; los '--' ya se bloquean arriba.
+              ;;
+            *)
+              deny "comando no permitido"
+              ;;
+          esac
+
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      # Y-3: el job de comentarios no verificaba que el PR fuera del propio
+      # repositorio (auto-review sí lo hace). Sin esto, un colaborador podía
+      # escribir /review en un PR de fork y correr el agente sobre un diff
+      # 100% controlado por un tercero — superficie de prompt-injection contra
+      # un bot con permisos de escritura en issues/pull-requests.
+      - name: "Verificar que el PR no es de un fork"
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD_REPO="$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json headRepositoryOwner,headRepository \
+            --jq '.headRepositoryOwner.login + "/" + .headRepository.name')"
+          if [[ "$HEAD_REPO" != "$REPO" ]]; then
+            echo "PR desde fork ($HEAD_REPO): revisión por comentario deshabilitada." >&2
+            exit 1
+          fi
+
+      # Y-2: mismo motivo que en auto-review — pr-agent lee .pr_agent.toml por
+      # la API de GitHub, no del workspace. El checkout de "rama base" que
+      # existía acá (incluyendo el paso "gh pr view --json baseRefName") no
+      # aportaba la protección que su comentario describía; se eliminó.
+      - name: "Ejecutar Qodo Merge / PR-Agent"
+        if: steps.gate.outputs.run == 'true'
+        uses: Codium-ai/pr-agent@570f67ed5fc8db5be74c18df070bc20079b64b0d # v0.41.0
+        env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
