@@ -45,8 +45,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from sky_claw.app.db.journal import OperationStatus, TransactionStatus
-from sky_claw.app.db.journal_contracts import is_flight_report_committed
+from sky_claw.app.db.journal import OperationStatus, OperationType, TransactionStatus
+from sky_claw.app.db.journal_contracts import TEARDOWN_INCOMPLETE_KIND, is_flight_report_committed
 from sky_claw.app.db.locks import (
     LockAcquisitionError,
     LockReleaseError,
@@ -435,6 +435,9 @@ class GrassCacheService:
         # invalida el éxito: la exclusividad no estuvo garantizada, así que el
         # journal NO se commitea aunque run_result diga success (Codex #291).
         exito = error_msg is None and run_result is not None and run_result.success
+        # U-09: la constancia del cleanup a medias va ANTES del cierre, para que
+        # la entrada quede dentro de la TX que se está por commitear.
+        await self._journalizar_teardown_incompleto(journal_tx, teardown_failures)
         try:
             await self._journal_close(journal_tx, exito=exito)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
@@ -554,6 +557,44 @@ class GrassCacheService:
                 "No se pudo cerrar la transacción del journal de grass (tx=%s, exito=%s)",
                 journal_tx,
                 exito,
+                exc_info=True,
+            )
+
+    async def _journalizar_teardown_incompleto(self, journal_tx: int | None, fallos: list[str]) -> None:
+        """Deja constancia de "producto OK, cleanup pendiente" en la TX (U-09).
+
+        El ritual puede terminar con el cache bien generado (y preservado en
+        ``overwrite/Grass``) pero con el clon de perfil o el mod de config sin
+        borrar. Antes eso solo viajaba en el dict de retorno: el journal
+        commiteaba un éxito limpio y el audit trail afirmaba que el FS había
+        quedado consistente.
+
+        Degradar la TX a ``ROLLED_BACK`` NO es la respuesta — mentiría sobre un
+        cache que sí existe y contradiría el ``success=True`` del resultado. Como
+        ``transactions`` solo admite ``pending``/``committed``/``rolled_back``, el
+        estado mixto se expresa con una operación **fallida dentro de la TX
+        commiteada**, marcada con :data:`TEARDOWN_INCOMPLETE_KIND`.
+
+        Best-effort, igual que :meth:`_journal_close`: el journal nunca enmascara
+        el resultado del ritual. La metadata estructurada va en
+        ``begin_operation`` porque ``fail_operation`` solo persiste ``$.error``.
+        """
+        if self._journal is None or journal_tx is None or not fallos:
+            return
+        try:
+            entry_id = await self._journal.begin_operation(
+                agent_id=self.AGENT_ID,
+                operation_type=OperationType.FILE_DELETE,  # lo que falló es borrar el clon/mod
+                target_path=fallos[0],
+                transaction_id=journal_tx,
+                metadata={"kind": TEARDOWN_INCOMPLETE_KIND, "paths": list(fallos)},
+            )
+            await self._journal.fail_operation(entry_id, error="; ".join(fallos))
+        except Exception:  # noqa: BLE001 — best-effort: perder la anotación no puede tumbar el run
+            logger.warning(
+                "No se pudo journalizar el teardown incompleto del ritual de grass (tx=%s, fallos=%s)",
+                journal_tx,
+                fallos,
                 exc_info=True,
             )
 

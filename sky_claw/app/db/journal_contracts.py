@@ -27,6 +27,15 @@ FLIGHT_REPORT_KIND = "flight_report"
 #: Se toma del enum canónico del journal para no desincronizar el string.
 TX_STATUS_COMMITTED = TransactionStatus.COMMITTED.value
 
+#: Discriminador de la operación que registra un teardown incompleto (U-09).
+#: El ritual de grass puede terminar con el PRODUCTO bien (el cache generado y
+#: preservado en ``overwrite/Grass``) pero el CLEANUP a medias (el clon de perfil
+#: o el mod de config sin borrar). Como ``transactions`` solo admite
+#: ``pending``/``committed``/``rolled_back``, ese estado mixto se expresa con una
+#: operación FALLIDA dentro de una TX COMMITEADA: marcar la TX entera como
+#: revertida mentiría sobre un cache que sí existe.
+TEARDOWN_INCOMPLETE_KIND = "teardown_incomplete"
+
 
 def is_flight_report_committed(metadata: Mapping[str, Any] | None) -> bool:
     """True si *metadata* es la de un ``FlightReport`` de una TX commiteada.
@@ -41,4 +50,23 @@ def is_flight_report_committed(metadata: Mapping[str, Any] | None) -> bool:
     return metadata.get("kind") == FLIGHT_REPORT_KIND and metadata.get("transaction_status") == TX_STATUS_COMMITTED
 
 
-__all__ = ["FLIGHT_REPORT_KIND", "TX_STATUS_COMMITTED", "is_flight_report_committed"]
+def is_teardown_incomplete(metadata: Mapping[str, Any] | None) -> bool:
+    """True si *metadata* marca un teardown que dejó residuos en disco (U-09).
+
+    Identifica la operación que el ritual de grass registra cuando el cache se
+    generó bien pero el clon/mod no se pudieron borrar. Leerlo permite distinguir
+    "TX commiteada y FS limpio" de "TX commiteada con cleanup pendiente" sin
+    inspeccionar los paths uno por uno.
+    """
+    if not isinstance(metadata, Mapping):
+        return False
+    return metadata.get("kind") == TEARDOWN_INCOMPLETE_KIND
+
+
+__all__ = [
+    "FLIGHT_REPORT_KIND",
+    "TEARDOWN_INCOMPLETE_KIND",
+    "TX_STATUS_COMMITTED",
+    "is_flight_report_committed",
+    "is_teardown_incomplete",
+]

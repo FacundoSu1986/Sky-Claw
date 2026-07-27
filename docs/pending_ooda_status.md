@@ -835,8 +835,8 @@ documento y se marcan cerrados acá a medida que se implementen:
 - **Medio:** **U-06 cerrado PARCIALMENTE** (#375 — solo DynDOLOD; Wrye Bash y
   BodySlide siguen abiertos, ver addendum abajo), **U-07 cerrado** (#355
   — Job Object kill-on-close en DynDOLOD, base de U-02), U-08 (sin
-  reconciliación de arranque / clon parcial, abierto), U-09 (journal de grass
-  commitea éxito pese a fallo de teardown, abierto), **U-10 cerrado** (#357 —
+  reconciliación de arranque / clon parcial, abierto), **U-09 cerrado** (#376 —
+  ver addendum abajo), **U-10 cerrado** (#357 —
   `*TimeoutError` dedicadas en Wrye Bash/BodySlide/Pandora).
 - **Bajo:** **U-11 cerrado** (#359 — `run_capture` ya no enmascara
   `returncode is None` como éxito 0), **U-12 cerrado** (#358 — `.pas` temporal
@@ -906,3 +906,40 @@ cobertura directa del runner (incluidas las guardas previas como regresión).
   más matizada (p. ej. existencia del plugin como condición dura y el mtime solo
   informativo) y tocar tests que hoy afirman `success=True` sin crear el plugin
   en disco. Follow-up en su propio PR.
+
+### Addendum (U-09) — el estado de éxito-parcial del ritual de grass
+
+El audit dejó U-09 abierto como **design-call**: `grass_cache_service` calculaba
+`exito` ignorando `teardown_failures`, así que si el clon de perfil o el mod de
+config no se podían borrar, la TX se commiteaba como éxito limpio y el audit
+trail afirmaba que el FS había quedado consistente. Las consecuencias eran
+reales: el propio código ya documentaba que el operador debe limpiar a mano *"o
+el próximo run fallará con «el clon ya existe»"* (fail-closed de
+`create_clone_profile`).
+
+**Lo que NO se hizo, y por qué.** El audit ya advertía que el fix de una línea
+(`exito = ... and not teardown_failures`) está roto, y el código lo confirma: el
+cache **sí se generó y se preserva** en `overwrite/Grass`. Degradar la TX a
+`ROLLED_BACK` mentiría en la dirección opuesta y dejaría `result["success"]=True`
+contra un journal revertido — una inconsistencia nueva.
+
+**La forma que tomó (#376).** `transactions` solo admite
+`pending`/`committed`/`rolled_back`, así que el estado mixto se expresa **sin
+tocar el schema**: la TX se commitea (el producto existe) y se registra dentro de
+ella una **operación fallida** marcada con `TEARDOWN_INCOMPLETE_KIND`, con los
+paths que quedaron sin borrar. "TX commiteada + operación de teardown fallida" es
+exactamente *producto OK, cleanup pendiente*.
+
+El marcador y su predicado (`is_teardown_incomplete`) viven en
+`app/db/journal_contracts.py` — el módulo que ya existía para el contrato
+LOOT↔grass justamente para que escritor y lector no se desincronicen con strings
+sueltos. El journalizado es **best-effort**, espejo de `_journal_close`: perder la
+anotación no puede tumbar un run exitoso.
+
+`exito`, `_componer_resultado` y el contrato del dict de retorno quedaron
+intactos — `result["teardown_failures"]` ya exponía el estado al operador; el bug
+estaba en el journal.
+
+*Detalle de implementación verificado:* `fail_operation` **no persiste** el
+`metadata` que recibe (solo lo usa como condición y escribe `$.error`), así que la
+metadata estructurada va en `begin_operation`.
