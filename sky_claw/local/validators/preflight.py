@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from sky_claw.local.validators.missing_masters import MasterIssue
     from sky_claw.local.validators.overwrite_health import OverwriteScan
     from sky_claw.local.validators.plugin_limits import LoadOrderLimits
+    from sky_claw.local.validators.vfs_visibility import VisibilityScan
     from sky_claw.local.validators.write_permissions import WriteAccessReport
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,10 @@ OverwriteCheck = Callable[[], "OverwriteScan"]
 #: Sensor de permisos de escritura inyectable (T-30·4): closure sobre
 #: WritePermissionsChecker (write-probe en las rutas que el Ritual escribe).
 PermissionsCheck = Callable[[], "WriteAccessReport"]
+
+#: Sensor de visibilidad de mods inyectable (U-01): closure sobre
+#: VfsVisibilityChecker (¿el modlist del perfil se ve donde el tool lee?).
+VisibilityCheck = Callable[[], "VisibilityScan"]
 
 
 class PreflightStatus(StrEnum):
@@ -152,6 +157,11 @@ class PreflightService:
             que devuelve el :class:`WriteAccessReport` (closure sobre
             ``WritePermissionsChecker.check``). Corre en un thread (escribe un
             probe temporal en disco).
+        visibility_check: Sensor de visibilidad de mods (U-01): callable que
+            devuelve el :class:`VisibilityScan` (closure sobre
+            ``VfsVisibilityChecker.check``). Corre en un thread (lstat por
+            plugin). Es el único sensor que detecta el run standalone contra el
+            juego base — ver ``validators/vfs_visibility``.
     """
 
     def __init__(
@@ -164,6 +174,7 @@ class PreflightService:
         limits_check: LimitsCheck | None = None,
         overwrite_check: OverwriteCheck | None = None,
         permissions_check: PermissionsCheck | None = None,
+        visibility_check: VisibilityCheck | None = None,
         omit_unconfigured: bool = False,
     ) -> None:
         self._vfs_checker = vfs_checker
@@ -171,6 +182,7 @@ class PreflightService:
         self._limits_check = limits_check
         self._overwrite_check = overwrite_check
         self._permissions_check = permissions_check
+        self._visibility_check = visibility_check
         # T-16c·1: cuando está activo, un sensor no cableado NO emite su checkpoint
         # "no configurado". Un ritual que solo usa un subconjunto (xEdit: vfs +
         # permisos) muestra un semáforo limpio, sin el ruido de sensores ajenos.
@@ -260,6 +272,13 @@ class PreflightService:
         if self._keep(self._permissions_check is not None):
             checks.append(self._permissions_checkpoint(permissions))
 
+        visibility: VisibilityScan | None = None
+        if self._visibility_check is not None:
+            # Un lstat por plugin habilitado: fuera del event loop.
+            visibility = await asyncio.to_thread(self._visibility_check)
+        if self._keep(self._visibility_check is not None):
+            checks.append(self._visibility_checkpoint(visibility))
+
         composition = self._composition_check(vfs_issues, loot_version)
         if composition is not None:
             checks.append(composition)
@@ -337,6 +356,21 @@ class PreflightService:
         from sky_claw.local.validators.overwrite_health import overwrite_preflight_check
 
         return overwrite_preflight_check(scan)
+
+    @staticmethod
+    def _visibility_checkpoint(scan: VisibilityScan | None) -> PreflightCheck:
+        if scan is None:
+            # No mentir: "el modlist se ve" implica que se midió; acá no hubo sensor.
+            return PreflightCheck(
+                name="vfs_visibility",
+                status=PreflightStatus.GREEN,
+                summary="Sensor de visibilidad de mods no configurado.",
+            )
+        # Import a nivel función: mismo ciclo que los demás checkpoints
+        # (vfs_visibility importa PreflightCheck de este módulo).
+        from sky_claw.local.validators.vfs_visibility import visibility_preflight_check
+
+        return visibility_preflight_check(scan)
 
     @staticmethod
     def _permissions_checkpoint(report: WriteAccessReport | None) -> PreflightCheck:

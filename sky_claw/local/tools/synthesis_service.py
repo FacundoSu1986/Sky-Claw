@@ -229,15 +229,23 @@ class SynthesisPipelineService:
 
         # Imports perezosos (anti-ciclo: validators.preflight llega a tools._process).
         from sky_claw.local.validators.preflight import PreflightService
-        from sky_claw.local.validators.preflight_sensors import build_overwrite_sensor, build_vfs_sensor
+        from sky_claw.local.validators.preflight_sensors import (
+            build_mo2_profile_sources_resolver,
+            build_overwrite_sensor,
+            build_vfs_sensor,
+            build_vfs_visibility_sensor,
+        )
         from sky_claw.local.validators.write_permissions import WritePermissionsChecker
 
         # vfs sobre rutas CRUDAS (las resueltas ya siguieron los symlinks) —
         # builder compartido (T-16d): coacciona no-Path y guarda "al menos una raíz".
+        # scan_mods_dir: la raíz MO2 de acá ya está VALIDADA (el guard de arriba
+        # exige que get_mo2_path() sea un Path), así que enumerar mods/ es seguro
+        # — el False hardcodeado dejaba ciego el scan de symlinks (U-01).
         vfs_checker = build_vfs_sensor(
             raw_game=self._path_resolver.get_skyrim_path_raw(),
             raw_mo2=self._path_resolver.get_mo2_path_raw(),
-            scan_mods_dir=False,
+            scan_mods_dir=True,
         )
 
         # Output real donde Synthesis escribe (el override del sandbox manda; si no,
@@ -255,12 +263,22 @@ class SynthesisPipelineService:
         overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
         masters_check, limits_check = self._build_modlist_checks(game, mo2)
 
+        # U-01: Synthesis procesa TODO el modlist; sin la USVFS heredada el patch
+        # saldría del juego base. Mismo perfil que alimenta masters/límites.
+        visibility_check = build_vfs_visibility_sensor(
+            game=game,
+            sources_resolver=build_mo2_profile_sources_resolver(
+                game=game, mo2=mo2, profile=self._path_resolver.get_active_profile()
+            ),
+        )
+
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
             permissions_check=_permissions,
             overwrite_check=overwrite_check,
             masters_check=masters_check,
             limits_check=limits_check,
+            visibility_check=visibility_check,
             omit_unconfigured=True,
         )
         return self._preflight

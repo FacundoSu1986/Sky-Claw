@@ -186,14 +186,18 @@ class DynDOLODPipelineService:
             build_modlist_sensors,
             build_overwrite_sensor,
             build_vfs_sensor,
+            build_vfs_visibility_sensor,
         )
         from sky_claw.local.validators.write_permissions import WritePermissionsChecker
 
         # vfs sobre rutas CRUDAS (las resueltas ya siguieron los symlinks).
+        # scan_mods_dir: la raíz MO2 de acá ya está VALIDADA (el guard de arriba
+        # exige que get_mo2_path() sea un Path), así que enumerar mods/ es seguro
+        # — el False hardcodeado dejaba ciego el scan de symlinks (U-01).
         vfs_checker = build_vfs_sensor(
             raw_game=self._path_resolver.get_skyrim_path_raw(),
             raw_mo2=self._path_resolver.get_mo2_path_raw(),
-            scan_mods_dir=False,
+            scan_mods_dir=True,
         )
 
         # Permisos: los targets se recalculan POR CORRIDA dentro del closure
@@ -209,12 +213,17 @@ class DynDOLODPipelineService:
         )
         masters_check, limits_check = build_modlist_sensors(resolver) if resolver is not None else (None, None)
 
+        # U-01: DynDOLOD lee TODO el load order; si la USVFS no se heredó,
+        # generaría LODs del juego base durante 30+ min y reportaría éxito.
+        visibility_check = build_vfs_visibility_sensor(game=game, sources_resolver=resolver)
+
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
             permissions_check=_permissions,
             overwrite_check=overwrite_check,
             masters_check=masters_check,
             limits_check=limits_check,
+            visibility_check=visibility_check,
             omit_unconfigured=True,
         )
         return self._preflight
