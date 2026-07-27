@@ -56,7 +56,7 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   para no dejar rituales atrás; parchear un solo sensor deja los otros 4 en falso-verde.
   (2) Reconciliar el modelo de salida (`overwrite` vs `Data`/`mods`) en
   `_find_*_output`/`_permission_targets`. (3) Documentar la invariante de deployment.
-  > **Estado (#PENDIENTE_PR_U01): CERRADO PARCIALMENTE — la ENTRADA, no la salida.**
+  > **Estado (#381): CERRADO PARCIALMENTE — la ENTRADA, no la salida.**
   > **Corrección al fix (1), verificada contra el código:** `scan_mods_dir=True` **no
   > alcanzaba**. `VfsHealthChecker` (`vfs_health.py`) solo detecta symlinks/junctions; ese
   > flag únicamente extiende la detección a `mods/*` y nunca comprueba visibilidad. Tampoco

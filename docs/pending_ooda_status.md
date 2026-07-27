@@ -827,7 +827,7 @@ Se enlaza acá para que este inventario canónico siga siendo el punto único de
 triage (regla de `AGENTS.md`) — los ítems U-01…U-12 se triagean desde ese
 documento y se marcan cerrados acá a medida que se implementen:
 
-- **Alto:** **U-01 cerrado PARCIALMENTE** (#PENDIENTE_PR_U01 — sensor de
+- **Alto:** **U-01 cerrado PARCIALMENTE** (#381 — sensor de
   visibilidad de mods: el preflight ya detecta el run standalone contra el juego
   base; la reconciliación del modelo de SALIDA sigue abierta, ver addendum
   abajo), **U-02 cerrado** (#360 — ver addendum abajo), **U-03 cerrado**
@@ -869,7 +869,7 @@ otro sensor lo cubría: `MissingMastersChecker` busca a través de TODOS los
 `plugin_dirs` (`Data` + `mods/*` + `overwrite`), así que encuentra el plugin
 dentro de `mods/SomeMod/` y lo reporta presente — el punto ciego exacto.
 
-**Cerrado en #PENDIENTE_PR_U01:**
+**Cerrado en #381:**
 
 1. **Sensor nuevo** `validators/vfs_visibility.py`: compara los plugins que el
    perfil MO2 habilita contra lo que existe en el `Data` que el tool va a leer.
