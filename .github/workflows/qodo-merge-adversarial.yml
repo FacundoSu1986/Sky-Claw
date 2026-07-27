@@ -6,6 +6,11 @@ on:
   issue_comment:
     types: [created, edited]
 
+# Control de concurrencia: cancela revisiones en curso obsoletas si entra un nuevo commit o comando en el mismo PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   issues: write
   pull-requests: write
@@ -15,7 +20,10 @@ permissions:
 jobs:
   pr_agent_job:
     runs-on: ubuntu-latest
-    if: ${{ github.event.sender.type != 'Bot' }}
+    # 1. Evitar loops de bots
+    # 2. En comentarios, ejecuta SOLO si el texto empieza con un comando '/' (ej. /review, /describe, /ask) para ahorrar cuota
+    if: ${{ github.event.sender.type != 'Bot' && (github.event_name != 'issue_comment' || startsWith(github.event.comment.body, '/')) }}
+    timeout-minutes: 15
     steps:
       - name: Ejecutar Qodo Merge (PR-Agent) con Google Gemini
         uses: Codium-ai/pr-agent@main
