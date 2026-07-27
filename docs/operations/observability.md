@@ -9,15 +9,14 @@
 > `sky_claw/app/core/tracing.py` y
 > `sky_claw/app/db/journal.py`.
 >
-> **Última verificación:** 2026-07-26 sobre
-> `codex/crash-logging-async-safe` `74bdb8f`.
+> **Última verificación:** 2026-07-27 sobre `origin/main` `085918f`.
 
 ## Señales
 
 | Señal | Fuente | Uso |
 |---|---|---|
 | Log principal | `~/.sky_claw/logs/sky_claw.log` | Startup, modos, errores y tools |
-| Crashes | `~/.sky_claw/logs/crash.log` | Todos los eventos `ERROR+` |
+| Crashes | `~/.sky_claw/logs/crash.log` | Eventos `ERROR+` del proceso principal |
 | Watcher | `~/.sky_claw/logs/watcher.log` | Actividad del watcher |
 | Seguridad watcher | `~/.sky_claw/logs/watcher_security.log` | Eventos de seguridad |
 | Workers VFS | `~/.sky_claw/logs/workers/vfs-worker-<job_id>.log` | Evidencia por job |
@@ -38,10 +37,19 @@ evidencia `ERROR/CRITICAL` más antigua. No existe fallback síncrono desde asyn
 Cualquier health-check o recuperación futura debe mantener el I/O bloqueante
 fuera del event loop.
 
+El proceso `vfs_worker` **no** escribe en `crash.log`: cada job es un proceso
+aparte y su evidencia vive en `workers/vfs-worker-<job_id>.log`. El fallo del
+worker sí llega al `crash.log` del padre (evento `worker_exit` del broker y el
+`ERROR` del servicio que lo lanzó); lo que solo existe en el log por job es el
+traceback interno del worker.
+
 En Windows, un `WinError 32/5` durante el renombrado de rotación aplaza el
 rollover sin descartar el evento: el listener sigue escribiendo en el archivo
-base y vuelve a intentar más tarde. En GUI sin consola, `stdout` y `stderr`
-usan adaptadores `TextIOBase` del mismo pipeline.
+base y vuelve a intentar más tarde. Un `OSError` de escritura (por ejemplo
+`ENOSPC`) difiere el sink un segundo y cuenta lo perdido en `suppressed_records`;
+una excepción que no sea de I/O —un `%` mal armado en el call site— descarta solo
+ese record, sin cegar el sink. En GUI sin consola, `stdout` y `stderr` usan
+adaptadores `TextIOBase` del mismo pipeline.
 
 Los fallos non-zero de herramientas conservan hasta 64 KiB de `stderr`. Cuando
 se supera el límite, el registro incluye tail, tamaño original, SHA-256 y la

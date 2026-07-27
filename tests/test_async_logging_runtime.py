@@ -509,6 +509,111 @@ def test_flush_logging_confirma_salida_de_consola_antes_de_continuar(
     assert "respuesta ordenada" in stream.getvalue()
 
 
+def test_error_de_formateo_no_ciega_el_sink_de_archivo(tmp_path) -> None:
+    """Un record malformado solo se pierde a sí mismo, no al siguiente.
+
+    ``prepare()`` ya no formatea en el productor, así que el ``TypeError`` de
+    interpolación explota en el listener y la stdlib lo deriva a ``handleError``
+    (``BaseRotatingHandler.emit`` captura ``Exception``, y ``shouldRollover``
+    formatea porque ``maxBytes > 0``). La ventana de reintento existe para un
+    disco caído: armarla ante un bug de formateo ciega el sink un segundo entero.
+    """
+    setup_logging(log_dir=tmp_path, process_role="test", console_stream=None)
+
+    logging.getLogger("test.runtime").error("%s %s", "un-solo-argumento")
+    logging.getLogger("test.runtime").error("registro sano tras el malformado")
+
+    assert shutdown_logging() is True
+
+    principal = (tmp_path / "sky_claw.log").read_text(encoding="utf-8")
+    crash = (tmp_path / "crash.log").read_text(encoding="utf-8")
+    assert "registro sano tras el malformado" in principal
+    assert "registro sano tras el malformado" in crash
+
+
+def test_oserror_de_escritura_ciega_el_sink_y_contabiliza_lo_suprimido(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """El disco caído sí arma la ventana, y lo suprimido deja de ser invisible."""
+    runtime = setup_logging(
+        log_dir=tmp_path,
+        process_role="test",
+        console_stream=None,
+    )
+    sink = next(
+        handler
+        for handler in runtime.handlers
+        if isinstance(handler, FailSafeRotatingFileHandler) and handler.baseFilename.endswith("sky_claw.log")
+    )
+    # El record de inicialización ya se escribió: cerrar deja ``stream=None`` de
+    # forma determinista, así el próximo emit vuelve a pasar por ``_open``.
+    assert flush_logging(timeout_s=1.0) is True
+    sink.close()
+
+    def _fail_open():
+        raise OSError(errno.ENOSPC, "disco lleno")
+
+    monkeypatch.setattr(sink, "_open", _fail_open)
+
+    logging.getLogger("test.runtime").error("primer intento con disco lleno")
+    logging.getLogger("test.runtime").error("segundo intento dentro de la ventana")
+    assert flush_logging(timeout_s=1.0) is True
+
+    snapshot = runtime.health_snapshot()
+    assert snapshot.file_errors == 1
+    assert snapshot.suppressed_records >= 1
+    assert snapshot.degraded is True
+
+    assert shutdown_logging() is True
+
+
+def test_worker_vfs_no_resuelve_el_chat_id_de_telegram(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Resolver el chat id construye ``Config()`` y lee el keyring.
+
+    El worker es un subproceso efímero por job que nunca habla con Telegram:
+    pagar ocho lecturas del Credential Manager por cada job —y hacer transitar
+    los secretos por su memoria— no compra ninguna redacción.
+    """
+    resoluciones: list[str] = []
+
+    def _espia() -> str:
+        resoluciones.append("resuelto")
+        return ""
+
+    monkeypatch.setattr("sky_claw.logging_config._resolve_telegram_chat_id", _espia)
+    setup_logging(
+        log_dir=tmp_path,
+        log_file="vfs-worker-job-1.log",
+        process_role="vfs_worker",
+        console_stream=None,
+    )
+
+    assert resoluciones == []
+    assert shutdown_logging() is True
+
+
+def test_proceso_principal_si_resuelve_el_chat_id_de_telegram(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Hermano del test anterior: el recorte no puede tragarse al proceso que sí redacta."""
+    resoluciones: list[str] = []
+
+    def _espia() -> str:
+        resoluciones.append("resuelto")
+        return ""
+
+    monkeypatch.setattr("sky_claw.logging_config._resolve_telegram_chat_id", _espia)
+    setup_logging(log_dir=tmp_path, process_role="app", console_stream=None)
+
+    assert resoluciones == ["resuelto"]
+    assert shutdown_logging() is True
+
+
 def test_guardar_config_actualiza_chat_id_redactado_sin_reiniciar(
     tmp_path,
 ) -> None:

@@ -348,6 +348,12 @@ _runtime: LoggingRuntime | None = None
 _runtime_lock = threading.Lock()
 _telegram_chat_id_for_redaction = ""
 
+#: Roles cuyo proceso nunca habla con Telegram. Resolver el chat id ahí implica
+#: construir ``Config()`` —ocho lecturas del Credential Manager— en cada proceso
+#: lanzado, y hacer transitar todos los secretos por su memoria, sin comprar
+#: ninguna redacción a cambio. El worker VFS se lanza una vez por job.
+_ROLES_SIN_REDACCION_TELEGRAM = frozenset({"vfs_worker"})
+
 
 def default_log_dir() -> pathlib.Path:
     """Directorio persistente y estable para todos los modos de ejecución."""
@@ -478,7 +484,8 @@ def setup_logging(
         queue_handler = NonBlockingQueueHandler(records, health)
         queue_handler.addFilter(CorrelationFilter())
         queue_handler.addFilter(RuntimeContextFilter(process_role))
-        update_logging_redaction_context(telegram_chat_id=_resolve_telegram_chat_id())
+        if process_role not in _ROLES_SIN_REDACCION_TELEGRAM:
+            update_logging_redaction_context(telegram_chat_id=_resolve_telegram_chat_id())
         queue_handler.addFilter(SecurityRedactionFilter(chat_id_provider=_current_telegram_chat_id))
 
         handlers: list[logging.Handler] = []

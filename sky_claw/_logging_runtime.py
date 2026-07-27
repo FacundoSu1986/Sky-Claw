@@ -11,6 +11,7 @@ import io
 import logging
 import logging.handlers
 import queue
+import sys
 import threading
 import time
 from collections import deque
@@ -24,6 +25,7 @@ class LoggingHealthSnapshot:
 
     degraded: bool
     dropped_records: int
+    suppressed_records: int
     emergency_records: int
     file_errors: int
     listener_alive: bool
@@ -36,6 +38,7 @@ class LoggingHealth:
         self._lock = threading.Lock()
         self._degraded = False
         self._dropped_records = 0
+        self._suppressed_records = 0
         self._file_errors = 0
         self._emergency: deque[logging.LogRecord] = deque(maxlen=emergency_capacity)
 
@@ -54,6 +57,16 @@ class LoggingHealth:
         with self._lock:
             self._emergency.appendleft(record)
 
+    def record_suppressed(self) -> None:
+        """Cuenta un record que el sink descartó por estar en ventana de reintento.
+
+        Sin esto la degradación es medible solo en su causa (``file_errors``) y
+        no en su costo: cuántos eventos se perdieron mientras el sink esperaba.
+        """
+        with self._lock:
+            self._degraded = True
+            self._suppressed_records += 1
+
     def record_file_error(self) -> None:
         with self._lock:
             self._degraded = True
@@ -68,6 +81,7 @@ class LoggingHealth:
             return LoggingHealthSnapshot(
                 degraded=self._degraded,
                 dropped_records=self._dropped_records,
+                suppressed_records=self._suppressed_records,
                 emergency_records=len(self._emergency),
                 file_errors=self._file_errors,
                 listener_alive=listener_alive,
@@ -146,6 +160,7 @@ class FailSafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
 
     def emit(self, record: logging.LogRecord) -> None:
         if time.monotonic() < self._write_retry_at:
+            self._health.record_suppressed()
             return
         super().emit(record)
 
@@ -160,8 +175,22 @@ class FailSafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
             self._health.record_file_error()
 
     def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
+        """Degrada sin propagar, pero solo el disco justifica diferir la escritura.
+
+        La stdlib deriva acá **cualquier** excepción de ``emit``, no solo las de
+        I/O: ``shouldRollover`` formatea el record (``maxBytes > 0``), así que un
+        ``%`` mal armado llega hasta este punto. Como ``prepare()`` ya no formatea
+        en el productor, ese ``TypeError`` explota recién en el listener.
+
+        La ventana de reintento supone un sink caído (disco lleno, archivo tomado
+        por el antivirus) y por eso ciega el handler durante ``_RETRY_SECONDS``.
+        Ante un bug de formateo el sink está sano: cegarlo solo pierde los records
+        sanos del segundo siguiente —incluido ``crash.log``—. Espeja el criterio
+        que ``doRollover`` ya aplica con su ``except OSError``.
+        """
         del record
-        self._write_retry_at = time.monotonic() + self._RETRY_SECONDS
+        if isinstance(sys.exc_info()[1], OSError):
+            self._write_retry_at = time.monotonic() + self._RETRY_SECONDS
         self._health.record_file_error()
 
 
