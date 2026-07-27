@@ -269,16 +269,22 @@ class LootSortingService:
         # con broker LOOT corre DENTRO de la USVFS (`BrokeredLootRunner`), donde
         # ve los mods virtualizados que ese Data no tiene. Medirlo ahí daría un
         # ROJO falso que bloquea un sort correcto — exactamente el falso positivo
-        # que este sensor existe para evitar (review CodeRabbit #381). El modo de
-        # lanzamiento es una PRECONDICIÓN del sensor, no un detalle del caller:
-        # sin él, la medición no significa nada. Con `None` el checkpoint sale
-        # "no configurado" — honesto: no se midió (lección #250).
+        # que este sensor existe para evitar. El modo de lanzamiento es una
+        # PRECONDICIÓN del sensor, no un detalle del caller: sin él, la medición
+        # no significa nada. Con `None` el checkpoint sale "no configurado" —
+        # honesto: no se midió (lección #250).
+        #
+        # "vfs_broker configurado" no prueba "USVFS en uso" (review CodeRabbit,
+        # posterior a 134d9e0): un `loot_runner` inyectado sin `for_profile` hace
+        # que `_ensure_loot_runner` devuelva ESE runner y jamás toque el broker.
+        # `_routes_through_physical_data` espeja esa misma decisión para que el
+        # gate no pueda desincronizarse de lo que el sort va a ejecutar de verdad.
         visibility_check = (
             build_vfs_visibility_sensor(
                 game=self._path_resolver.get_skyrim_path() if self._path_resolver is not None else None,
                 sources_resolver=sources_resolver,
             )
-            if self._vfs_broker is None
+            if self._routes_through_physical_data()
             else None
         )
 
@@ -388,6 +394,24 @@ class LootSortingService:
 
         self._load_order_resolver = LoadOrderFileResolver(mo2_root=mo2_root, profile=profile)
         return self._load_order_resolver
+
+    def _routes_through_physical_data(self) -> bool:
+        """¿El runner que ``_ensure_loot_runner`` va a devolver lee el ``Data``
+        físico, en vez de correr bajo la USVFS del broker?
+
+        Espeja el mismo árbol de decisión de ``_ensure_loot_runner`` sin
+        construir el runner real (esto se evalúa en el preflight, antes de
+        que exista un job): un ``loot_runner`` inyectado SIN ``for_profile``
+        gana siempre, ignorando ``_vfs_broker`` por completo — solo
+        ``BrokeredLootRunner``/``VfsRequiredLootRunner`` implementan esa
+        fábrica, así que su presencia es lo único que certifica que el
+        runner es VFS-aware. Sin runner inyectado, decide el broker.
+        """
+        if self._loot_runner is not None:
+            declared_factory = getattr(type(self._loot_runner), "for_profile", None)
+            for_profile = getattr(self._loot_runner, "for_profile", None)
+            return not callable(declared_factory) or not callable(for_profile)
+        return self._vfs_broker is None
 
     def _ensure_loot_runner(self, profile: str = "Default") -> LootRunnerProtocol:
         """Lazily build the LOOTRunner, resolving the LOOT exe + game path on first use.

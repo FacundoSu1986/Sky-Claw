@@ -196,10 +196,18 @@ async def test_el_modlist_visible_no_bloquea(servicio: str, tmp_path: pathlib.Pa
 
 
 async def test_loot_con_broker_vfs_no_aplica_el_gate(tmp_path: pathlib.Path) -> None:
-    """Con broker, LOOT corre DENTRO de la USVFS vía ``BrokeredLootRunner`` y sí
-    ve los mods virtualizados. Medir el ``Data`` físico ahí daría un ROJO falso
-    que bloquea un sort correcto — el falso positivo que este sensor existe
-    para evitar. El modo de lanzamiento es precondición del sensor."""
+    """Con broker y SIN loot_runner inyectado, LOOT corre DENTRO de la USVFS vía
+    ``BrokeredLootRunner`` (``_ensure_loot_runner`` construye ese runner porque
+    no hay nada inyectado que lo bypasee) y sí ve los mods virtualizados. Medir
+    el ``Data`` físico ahí daría un ROJO falso que bloquea un sort correcto —
+    el falso positivo que este sensor existe para evitar. El modo de
+    lanzamiento es precondición del sensor.
+
+    Deliberadamente SIN ``loot_runner=`` (a diferencia de las demás pruebas de
+    este archivo): inyectarlo junto al broker es el escenario del test
+    hermano de abajo, donde el runner inyectado gana y el gate debe seguir
+    activo — mezclar ambos acá haría que este test no probara lo que dice
+    probar (review CodeRabbit, posterior a 134d9e0)."""
     from sky_claw.local.mo2.load_order import LoadOrderPaths
     from sky_claw.local.tools.loot_service import LootSortingService
 
@@ -212,7 +220,6 @@ async def test_loot_con_broker_vfs_no_aplica_el_gate(tmp_path: pathlib.Path) -> 
         lock_manager=MagicMock(),
         snapshot_manager=MagicMock(),
         path_resolver=_resolver(skyrim=skyrim, mo2=mo2),
-        loot_runner=MagicMock(),
         load_order_resolver=load_order,
         vfs_broker=MagicMock(),  # ← corre dentro de la USVFS
     )
@@ -224,6 +231,46 @@ async def test_loot_con_broker_vfs_no_aplica_el_gate(tmp_path: pathlib.Path) -> 
     # No se midió: el checkpoint debe DECIRLO, no fingir un verde verificado.
     assert "no configurado" in visibilidad.summary.lower()
     assert reporte.blocks_mutations is False
+
+
+async def test_loot_runner_inyectado_bypasea_el_broker_y_mantiene_el_gate(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Hermano del test anterior: ``vfs_broker`` configurado NO prueba que LOOT
+    vaya a correr bajo USVFS. ``_ensure_loot_runner`` mira primero
+    ``self._loot_runner`` y, si no declara ``for_profile`` (solo
+    ``BrokeredLootRunner``/``VfsRequiredLootRunner`` lo hacen), devuelve ESE
+    runner tal cual — el broker nunca se toca. Con el ternario viejo
+    (``visibility_check`` apagado solo por ``vfs_broker is not None``), este
+    caso quedaba con el sensor apagado mientras el sort real seguía leyendo el
+    ``Data`` físico: el falso verde de U-01, reabierto por un runner inyectado
+    en vez de por la ausencia de broker."""
+    from sky_claw.local.mo2.load_order import LoadOrderPaths
+    from sky_claw.local.tools.loot_service import LootSortingService
+
+    skyrim, mo2 = _instancia(tmp_path)  # Data pelado: el escenario que daría rojo
+    load_order = MagicMock()
+    load_order.resolve.return_value = LoadOrderPaths(
+        files=(mo2 / "profiles" / "Default" / "plugins.txt",), sources=("mo2_profile",)
+    )
+    loot_runner = MagicMock()  # sin for_profile: bypasea al broker en _ensure_loot_runner
+    svc = LootSortingService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=_resolver(skyrim=skyrim, mo2=mo2),
+        loot_runner=loot_runner,
+        load_order_resolver=load_order,
+        vfs_broker=MagicMock(),
+    )
+
+    # Confirma la premisa: el broker configurado no se usa, gana el inyectado.
+    assert svc._ensure_loot_runner("Default") is loot_runner
+
+    reporte = await svc._ensure_preflight().run()
+
+    visibilidad = next(c for c in reporte.checks if c.name == "vfs_visibility")
+    assert visibilidad.status is PreflightStatus.RED
+    assert reporte.blocks_mutations is True
 
 
 async def test_loot_sin_broker_sigue_aplicando_el_gate(tmp_path: pathlib.Path) -> None:
