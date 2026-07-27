@@ -223,6 +223,17 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   éxito-parcial** (o metadata `teardown_incomplete=True` en la TX committeada) que refleje
   "producto OK, cleanup pendiente".
   > **Recalibración:** ZAI ALTO → **Medio / design-call**. El fix de una línea de ZAI estaba roto.
+  > **Estado (#376): CERRADO.** La design-call se resolvió **sin tocar el schema**: como
+  > `transactions` solo admite `pending`/`committed`/`rolled_back`, el estado mixto se
+  > expresa con la TX **commiteada** (el cache existe y se preserva) más una **operación
+  > FALLIDA registrada dentro de ella**, marcada con `TEARDOWN_INCOMPLETE_KIND` y con los
+  > paths que quedaron sin borrar. Ese par es exactamente "producto OK, cleanup pendiente".
+  > El marcador y su predicado (`is_teardown_incomplete`) van en
+  > `app/db/journal_contracts.py`, el módulo que ya centralizaba el contrato LOOT↔grass para
+  > que escritor y lector no se desincronicen con strings sueltos. El journalizado es
+  > best-effort (espejo de `_journal_close`): perder la anotación no tumba un run exitoso.
+  > `exito` y el dict de retorno quedaron intactos — el bug estaba en el journal, no en el
+  > contrato del servicio.
 
 ### U-10 — BodySlide/Wrye Bash: TimeoutError se traga como struct, sin excepción dedicada · `[Z]` · Timeouts
 

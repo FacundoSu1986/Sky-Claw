@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from sky_claw.app.db.journal import OperationStatus, TransactionStatus
+from sky_claw.app.db.journal_contracts import is_teardown_incomplete
 from sky_claw.app.db.locks import LockAcquisitionError
 from sky_claw.local.mo2.grass_profile import GrassProfileError
 from sky_claw.local.tools.grass_cache_runner import GrassCacheRunResult
@@ -588,6 +589,82 @@ async def test_generate_sin_fallos_de_teardown_no_agrega_la_clave(tmp_path: path
     assert "teardown_failures" not in resultado
 
 
+# =============================================================================
+# U-09 — el journal debe reflejar "producto OK, cleanup pendiente"
+# =============================================================================
+
+
+def _entradas_de_teardown(journal: AsyncMock) -> list[dict[str, Any]]:
+    """Llamadas a ``begin_operation`` que marcan un teardown incompleto (U-09)."""
+    return [
+        llamada.kwargs
+        for llamada in journal.begin_operation.await_args_list
+        if is_teardown_incomplete(llamada.kwargs.get("metadata"))
+    ]
+
+
+async def test_teardown_fallido_commitea_pero_deja_constancia_en_el_journal(tmp_path: pathlib.Path) -> None:
+    """U-09: el cache SÍ se generó, así que la TX se commitea — pero el journal
+    tiene que registrar que el cleanup quedó a medias.
+
+    Antes, ``teardown_failures`` solo viajaba en el dict de retorno y la TX se
+    commiteaba como éxito limpio: el audit trail afirmaba que el FS quedó
+    consistente cuando el clon/mod seguían en disco. NO se puede marcar la TX
+    ROLLED_BACK (mentiría en la otra dirección: el producto existe y se preserva),
+    así que el estado mixto se expresa como una operación FALLIDA dentro de la TX
+    committeada.
+    """
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal)
+    trabado = tmp_path / "mo2" / "profiles" / "SkyClaw-GrassCache"
+    colab["profile_manager"].teardown.return_value = [trabado]
+
+    resultado = await service.generate(_PAYLOAD)
+
+    # El producto está: ni el resultado ni la TX se degradan.
+    assert resultado["success"] is True, resultado["message"]
+    journal.commit_transaction.assert_awaited_once_with(77)
+    journal.mark_transaction_rolled_back.assert_not_awaited()
+
+    # ...pero queda constancia del cleanup pendiente, en la MISMA TX.
+    entradas = _entradas_de_teardown(journal)
+    assert len(entradas) == 1, "falta la entrada de teardown incompleto en el journal"
+    assert entradas[0]["transaction_id"] == 77
+    assert entradas[0]["metadata"]["paths"] == [str(trabado)]
+    journal.fail_operation.assert_awaited_once()
+
+
+async def test_teardown_limpio_no_ensucia_el_journal(tmp_path: pathlib.Path) -> None:
+    """Sin fallos de teardown no se registra ninguna entrada del marcador U-09."""
+    journal = _journal_con_loot_completado()
+    service, _ = _servicio(tmp_path, journal=journal)
+
+    await service.generate(_PAYLOAD)
+
+    assert _entradas_de_teardown(journal) == []
+    journal.commit_transaction.assert_awaited_once_with(77)
+
+
+async def test_journalizar_el_teardown_incompleto_es_best_effort(tmp_path: pathlib.Path) -> None:
+    """El journal NUNCA enmascara el resultado del ritual (espejo de ``_journal_close``).
+
+    Si registrar la constancia falla, el cache generado sigue siendo un éxito y la
+    TX se commitea igual: perder la anotación es peor que perder el run, pero
+    romper el run por no poder anotar sería peor todavía.
+    """
+    journal = _journal_con_loot_completado()
+    journal.begin_operation.side_effect = OSError("journal caído")
+    service, colab = _servicio(tmp_path, journal=journal)
+    trabado = tmp_path / "mo2" / "profiles" / "SkyClaw-GrassCache"
+    colab["profile_manager"].teardown.return_value = [trabado]
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is True, resultado["message"]
+    assert resultado["teardown_failures"] == [str(trabado)]
+    journal.commit_transaction.assert_awaited_once_with(77)
+
+
 def test_contrato_flight_report_lectura_escritura() -> None:
     """§2.2: el helper de lectura (is_flight_report_committed) concuerda con lo
     que escribe el modelo FlightReport de LOOT — mismo kind y transaction_status."""
@@ -604,6 +681,20 @@ def test_contrato_flight_report_lectura_escritura() -> None:
     # Un ActionManifest (sin kind=flight_report) tampoco alcanza.
     assert is_flight_report_committed({"ritual_id": "loot-sort-1", "transaction_status": "committed"}) is False
     assert is_flight_report_committed(None) is False
+
+
+def test_contrato_teardown_incompleto_lectura_escritura() -> None:
+    """U-09: el marcador del teardown incompleto vive en el mismo módulo de
+    contratos que el del FlightReport, por el mismo motivo — que el lado que
+    escribe y el que lee no se desincronicen con strings sueltos."""
+    from sky_claw.app.db.journal_contracts import TEARDOWN_INCOMPLETE_KIND
+
+    assert is_teardown_incomplete({"kind": TEARDOWN_INCOMPLETE_KIND, "paths": ["/x/clon"]}) is True
+    # Otro kind (p. ej. el FlightReport de LOOT en la misma TX) no lo confunde.
+    assert is_teardown_incomplete({"kind": "flight_report", "transaction_status": "committed"}) is False
+    assert is_teardown_incomplete({}) is False
+    assert is_teardown_incomplete(None) is False
+    assert is_teardown_incomplete("no-es-un-mapping") is False
 
 
 async def test_generate_resuelve_deps_por_provider_lazy(tmp_path: pathlib.Path) -> None:
