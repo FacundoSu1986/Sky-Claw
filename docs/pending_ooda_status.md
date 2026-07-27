@@ -1036,3 +1036,98 @@ estaba en el journal.
 *Detalle de implementación verificado:* `fail_operation` **no persiste** el
 `metadata` que recibe (solo lo usa como condición y escribe `$.error`), así que la
 metadata estructurada va en `begin_operation`.
+
+## Addendum (2026-07-27) — auditoría del pipeline de crash logging (#372): residuos y falsos positivos
+
+Auditoría post-merge del PR #372 (`800afd6`, crash logging async-safe) con una
+pasada adversarial de refutación encima. **Verificado contra `origin/main`
+`67857c4`**; `_logging_runtime.py` y `logging_config.py` no cambiaron desde
+`c98409d`, así que todo lo de abajo sigue vigente.
+
+De siete sospechas iniciales, **tres quedaron refutadas con evidencia** y una
+bajó de crítica a baja. Lo único que resultó ser un defecto real se cerró en
+**#383**: `handleError` armaba la ventana de reintento del sink ante *cualquier*
+excepción, así que un `%` mal armado en un call site cegaba `crash.log` durante
+un segundo entero y descartaba los records sanos de esa ventana sin contarlos.
+
+**Esta nota existe por dos razones**, y la segunda importa tanto como la primera:
+dejar registrados los residuos reales que NO se arreglaron, y **blindar los
+falsos positivos** para que la próxima auditoría no gaste esfuerzo —o peor, un
+PR— "arreglando" cosas que ya se demostraron sanas.
+
+### Residuos reales, deliberadamente no cerrados
+
+Ninguno tiene víctima hoy; se registran para que la decisión sea explícita y no
+se re-derive desde cero.
+
+1. **Wedge de `shutdown` con el sentinel ya entregado.** En
+   `_logging_runtime.py:261`, si `enqueue_sentinel()` tiene éxito y
+   `thread.join(timeout=remaining)` expira por milisegundos, se devuelve `False`
+   y `LoggingRuntime.shutdown` **re-agrega** `queue_handler` al root
+   (`:331`) — pero el listener ya consumió el sentinel y murió. Desde ahí hay
+   productor sin consumidor. **Matiz que acota el riesgo:** sin records nuevos
+   entre medio la segunda llamada converge a `True` (el sentinel ejecuta
+   `task_done()` y `unfinished_tasks` vuelve a 0); el wedge permanente exige
+   ≥1 record posterior. **Impacto nulo hoy** porque los dos callers de
+   producción (`__main__.py`, `vfs_worker.py`) mueren inmediatamente después.
+   Se activaría en cuanto exista un caller de vida larga — p. ej. si alguien
+   cablea `shutdown_logging` en la cadena `on_shutdown` de NiceGUI. Fix si llega
+   ese día: no re-agregar el handler cuando `thread.is_alive()` sea `False`.
+
+2. **`health_snapshot()` no tiene consumidor en producción.** Grep confirma cero
+   callers fuera de `tests/`: `degraded`, `dropped_records`, `suppressed_records`
+   y `file_errors` no se loguean al cerrar, no salen como gauge Prometheus (el
+   registry existe en `app/core/metrics.py`) y no se muestran en la GUI. **No es
+   descuido:** el spec de diseño del propio PR lo declara fuera de alcance
+   ("Tampoco se implementarán en este cambio métricas nuevas ni un supervisor
+   del listener"). Es deuda declarada. El caso realmente ciego es el exe
+   *windowed*, donde no hay console handler y el archivo que falla es la única
+   salida. Ojo con el matiz: la clase `LoggingHealth` **no** es código muerto
+   —`record_drop`/`pop_emergency`/`restore_emergency` son producción-crítica—;
+   lo que no tiene consumidor es el accessor de lectura.
+
+3. **`logs/workers/` no tiene purga.** Un archivo por job VFS, para siempre. Cada
+   archivo está acotado por rotación (10 MB × 5), así que lo que crece sin cota
+   es el *conteo*, no el tamaño; y los jobs VFS son solo `health` y `loot_sort`.
+   Higiene pendiente, no fallo operativo.
+
+4. **El fragmento sin `\n` de `LoggerStream` se pierde al apagar.** Nadie llama
+   `flush()` (`_logging_runtime.py:357`) sobre los adaptadores instalados antes
+   de `shutdown_logging`, y después el root queda solo con `NullHandler`. Pérdida
+   cosmética de una línea parcial. Follow-up barato si molesta: flushear los
+   `LoggerStream` instalados en el `finally` de `__main__.main`.
+
+5. **Retención de objetos vía `args`/`extra`.** `prepare()` limpia `exc_info`,
+   pero `_redact_value` devuelve **por referencia** todo lo que no sea
+   `str`/`Mapping`/`tuple`/`list`/`set` (`logging_config.py:187`), así que un
+   `logger.error("fallo: %s", exc)` —patrón usado en decenas de call sites ERROR—
+   deja la excepción con su `__traceback__` viva en la cola (8192 slots) y en el
+   deque de emergencia (256). Acotado y transitorio (el deque se drena en cada
+   `enqueue`), y la cola viva retiene el mismo grafo con 32× más capacidad: si
+   algún día se quiere acotar de verdad, el target es `_QUEUE_CAPACITY`, no el
+   deque.
+
+### Falsos positivos — NO volver a reportarlos ni "arreglarlos"
+
+Cada uno se refutó con evidencia citada o medición; el detalle vive en el PR #383.
+
+| Sospecha | Por qué se cae |
+|---|---|
+| `encode`+`sha256` del stderr bloquean el event loop | Medido: 64 MiB → 30,7 ms; harían falta ~200 MiB para 100 ms. El mismo `await` ya paga `decode` + `_ANSI_ESCAPE.sub` + `splitlines` pre-existentes (`splitlines` de 9,2 MiB = 10,7 ms > sha256 3,6 ms). #372 **redujo** el CPU del loop ahí: antes el stderr sin cota viajaba como `%s` y el filtro de redacción le aplicaba ~15 `re.sub` completos en el productor. |
+| `stderr_sha256` no es comparable con el artefacto crudo | No existe tal artefacto: nada persiste los bytes crudos de stderr. El contrato del test ancla es explícitamente hash del **texto decodificado**. |
+| `LoggerStream` crece sin cota con salida `\r` | `flush()` vacía el buffer entero sin mirar separadores, y `StreamHandler.emit` flushea por registro. Además `ui.run(reload=False)` descarta el único `write` sin newline de uvicorn. |
+| `fileno()` roto es una regresión accidental | Es contrato explícito y **testeado** (`tests/test_pyinstaller.py`), con cero consumidores de `fileno`/`.buffer` en el repo y en las deps del bundle. |
+| Colisión de `job_id` al sanitizar el nombre del log del worker | `job_id` es siempre `uuid4` (`vfs_contracts.py`) ⇒ el `re.sub` de sanitización es un no-op. |
+| Los fallos del worker VFS no llegan al `crash.log` del padre | Sí llegan: `_failure()` → `LOOTResult.errors` → `loot_service` loguea ERROR con `exc_info`. Solo el traceback **interno** del worker queda exclusivamente en su log por job. |
+| El bucle de truncado de `subprocess_error_extra` es O(n²) | Cota demostrada: **máximo 2 iteraciones** (exceso = 2k con k ≤ 3 bytes de continuación huérfanos tras el corte). |
+| Lost-wakeup / deadlock en `stop_with_timeout` | `handle()` corre **fuera** del mutex de la `Queue` (`QueueListener._monitor` llama `task_done()` después), y `queue.mutex` es siempre el lock más interno. El stall del productor es O(1), no `timeout_s`. |
+| Corrupción de `config.toml` por workers concurrentes | Triple bloqueo: `_instance_lock` en `submit`, lock de archivo `O_EXCL` por instancia, y única instanciación productiva del broker = one-shot `--mode vfs-health`. |
+
+### Límite conocido de esta auditoría
+
+Cubre **las hipótesis que se formularon**, no el espacio completo. El barrido
+"¿qué defecto no anticipé?" —cuatro lentes independientes (bloqueo de loop,
+deadlock de apagado, memoria/correctitud de records, Windows/UTF-8/ENOSPC/
+multiproceso)— **nunca llegó a ejecutarse**: murió dos veces por límite de
+cuota de agentes. Queda pendiente y es el complemento honesto de esta nota;
+la ausencia de hallazgos nuevos acá **no** es evidencia de que no los haya.
