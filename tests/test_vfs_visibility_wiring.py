@@ -273,6 +273,86 @@ async def test_loot_runner_inyectado_bypasea_el_broker_y_mantiene_el_gate(
     assert reporte.blocks_mutations is True
 
 
+class _RunnerPorPerfil:
+    """Stub de un runner VFS-aware (``BrokeredLootRunner``/``VfsRequiredLootRunner``).
+
+    Lo que los distingue de un runner corriente es el factory ``for_profile``
+    declarado **en la clase** — por eso acá es un método real y no un
+    ``MagicMock``, que fabricaría el atributo sin declararlo en el tipo.
+
+    ``for_profile`` devuelve una instancia **distinta**, igual que el
+    ``BrokeredLootRunner`` real (crea un runner ligado a ese perfil). Es lo que
+    hace observable si el servicio realmente usó la fábrica: con un stub que
+    devolviera ``self``, "se fabricó por perfil" y "se devolvió el inyectado tal
+    cual" serían indistinguibles y la aserción pasaría por ambas ramas sin
+    probar nada (review CodeRabbit #385).
+    """
+
+    def __init__(self) -> None:
+        self.perfiles_pedidos: list[str] = []
+        self.hijos: dict[str, _RunnerPorPerfil] = {}
+
+    def for_profile(self, profile: str) -> _RunnerPorPerfil:
+        self.perfiles_pedidos.append(profile)
+        hijo = _RunnerPorPerfil()
+        self.hijos[profile] = hijo
+        return hijo
+
+    async def sort(self, *, update_masterlist: bool = False) -> Any:
+        raise AssertionError("el preflight no debe ejecutar el sort")
+
+
+async def test_runner_inyectado_por_perfil_no_aplica_el_gate(tmp_path: pathlib.Path) -> None:
+    """El CUARTO cuadrante de ``_routes_through_physical_data``: un runner
+    inyectado que **sí** declara ``for_profile`` es VFS-aware, así que
+    ``_ensure_loot_runner`` lo re-instancia por perfil y el sort corre DENTRO de
+    la USVFS — el gate no debe aplicar, igual que sin runner inyectado.
+
+    Sin este test la tabla de verdad queda con un hueco: una simplificación a
+    ``self._loot_runner is not None or self._vfs_broker is None`` pasaría los
+    otros tres casos y solo rompería éste, encendiendo el gate bajo un
+    ``BrokeredLootRunner`` inyectado → ROJO falso que bloquea un sort correcto.
+    """
+    from sky_claw.local.mo2.load_order import LoadOrderPaths
+    from sky_claw.local.tools.loot_service import LootSortingService
+
+    skyrim, mo2 = _instancia(tmp_path)  # Data pelado: el escenario que daría rojo
+    load_order = MagicMock()
+    load_order.resolve.return_value = LoadOrderPaths(
+        files=(mo2 / "profiles" / "Default" / "plugins.txt",), sources=("mo2_profile",)
+    )
+    runner = _RunnerPorPerfil()
+    svc = LootSortingService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=_resolver(skyrim=skyrim, mo2=mo2),
+        loot_runner=runner,
+        load_order_resolver=load_order,
+        vfs_broker=MagicMock(),
+    )
+
+    # Confirma la premisa: al declarar for_profile en la CLASE, el servicio usa
+    # la fábrica y devuelve el runner LIGADO AL PERFIL — no el inyectado tal
+    # cual, que es lo que hace el test hermano de arriba con un runner sin
+    # for_profile. Se comprueba por identidad del hijo y por la llamada
+    # registrada, sin volver a invocar la fábrica en la aserción (hacerlo la
+    # volvería trivialmente cierta).
+    elegido = svc._ensure_loot_runner("Default")
+    assert runner.perfiles_pedidos == ["Default"]
+    assert elegido is runner.hijos["Default"]
+    assert elegido is not runner
+    # Y se cachea por perfil: la segunda llamada no vuelve a fabricar.
+    assert svc._ensure_loot_runner("Default") is elegido
+    assert runner.perfiles_pedidos == ["Default"]
+
+    reporte = await svc._ensure_preflight().run()
+
+    visibilidad = next(c for c in reporte.checks if c.name == "vfs_visibility")
+    assert visibilidad.status is PreflightStatus.GREEN
+    assert "no configurado" in visibilidad.summary.lower()
+    assert reporte.blocks_mutations is False
+
+
 async def test_loot_sin_broker_sigue_aplicando_el_gate(tmp_path: pathlib.Path) -> None:
     """Contracara del anterior: el fix del broker no debe apagar el gate en el
     camino standalone, que es justo el que U-01 protege."""
