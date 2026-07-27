@@ -255,44 +255,133 @@ async def test_un_dispatch_concurrente_no_hereda_el_cliente() -> None:
     assert ajeno == [None], "una task concurrente heredó la pestaña del Ritual"
 
 
-async def test_el_finally_limpia_la_pendiente_de_este_mismo_dispatch() -> None:
-    """Al terminar el dispatch no puede quedar un modal stale — si es el propio."""
-    store = ReactiveStore()
+# ---------------------------------------------------------------------------
+# Ancla de familia: TODO lanzador que parkea una aprobación
+# ---------------------------------------------------------------------------
+#
+# P1-7 reincidió porque el fix original cubrió run_ritual y dejó intacto a su
+# hermano run_ritual_install — 90 líneas más abajo en el MISMO archivo, con la
+# misma estructura (single-flight, try/except/finally, misma clave del store).
+# Lo atajó un bot revisor, no la suite. Y la primera reparación fue otro caso
+# escrito a mano, que no habría atajado a un tercer lanzador.
+#
+# Estos tests convierten «acordate de mirar al hermano» en un fallo de CI:
+# la familia se detecta por introspección y se congela contra una lista
+# literal, y cada miembro necesita su receta de invocación. Un lanzador nuevo
+# rompe el ancla hasta que se lo agrega — y agregarlo lo mete automáticamente
+# en los tests de comportamiento de abajo, que es lo que realmente obliga.
+#
+# Mismo instrumento que ya usa tests/test_ritual_dispatch.py con
+# `assert RITUAL_TOOL_MAP == {...}`: enumeración literal, no muestra a mano.
 
+#: Recibir ``tab_id`` ES la firma de un lanzador: significa que su dispatch
+#: puede terminar parkeando una aprobación con dueño en el store compartido.
+LANZADORES_QUE_PARKEAN_APROBACION = frozenset({"run_ritual", "run_ritual_install"})
+
+
+def _lanzadores_detectados() -> frozenset[str]:
+    """Corrutinas públicas de ``ritual_runner`` que reciben un ``tab_id``."""
+    import inspect
+
+    from sky_claw.app.gui.controllers import ritual_runner
+
+    return frozenset(
+        nombre
+        for nombre, fn in inspect.getmembers(ritual_runner, inspect.iscoroutinefunction)
+        if not nombre.startswith("_") and "tab_id" in inspect.signature(fn).parameters
+    )
+
+
+async def _invocar_run_ritual(store: ReactiveStore, tab_id: str | None, espia: Any) -> None:
     class _Supervisor:
         async def dispatch_tool(self, _name: str, _args: dict) -> dict:
-            store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-A", HITL_OWNER_TAB: "tab-A"})
+            espia()  # acá corre el gate HITL, inline en esta misma task
             return {"success": True}
 
-    await run_ritual("loot", supervisor=_Supervisor(), store=store, tab_id="tab-A")
-
-    assert not store.get(STORE_KEY_PENDING_HITL), "quedó un modal colgado tras terminar el Ritual"
+    await run_ritual("loot", supervisor=_Supervisor(), store=store, tab_id=tab_id)
 
 
-async def test_el_finally_no_desaloja_una_pendiente_ajena() -> None:
-    """Una aprobación de OTRO origen no puede desaparecer al terminar este Ritual.
+async def _invocar_run_ritual_install(store: ReactiveStore, tab_id: str | None, espia: Any) -> None:
+    from sky_claw.app.gui.controllers.ritual_runner import run_ritual_install
 
-    ``STORE_KEY_RITUAL_IN_FLIGHT`` solo serializa entre Rituales/instalaciones;
-    no bloquea un ``tool_execution`` concurrente disparado por el agente LLM o
-    Telegram, que comparte la misma clave global del store. Si el `finally` de
-    tab-A limpia a ciegas, esa otra aprobación —que nadie respondió todavía—
-    desaparece de la vista sin que nadie pudiera contestarla, hasta su propio
-    timeout fail-closed.
+    class _Installer:
+        async def ensure_loot(self, _install_dir: Any, _session: Any) -> dict:
+            espia()
+            return {"success": True}
+
+    class _Ctx:
+        tools_installer = _Installer()
+        install_dir = None
+        session = None
+
+    await run_ritual_install("loot", app_context=_Ctx(), store=store, tab_id=tab_id)
+
+
+#: Cómo llevar a cada lanzador hasta su punto de aprobación HITL.
+RECETAS_DE_INVOCACION = {
+    "run_ritual": _invocar_run_ritual,
+    "run_ritual_install": _invocar_run_ritual_install,
+}
+
+
+def test_la_familia_de_lanzadores_esta_congelada() -> None:
+    """Un lanzador nuevo no puede entrar sin pasar por estos tests.
+
+    Si este test rompe, agregaste (o renombraste) una corrutina que recibe
+    ``tab_id``. No lo "arregles" tocando la constante y listo: agregale su
+    receta en ``RECETAS_DE_INVOCACION``, y los tests parametrizados de abajo
+    van a exigirle el mismo trato que a sus hermanos.
+    """
+    assert _lanzadores_detectados() == LANZADORES_QUE_PARKEAN_APROBACION, (
+        "cambió la familia de lanzadores que parkean aprobaciones HITL: "
+        "cada miembro necesita marcar su dueño y no desalojar aprobaciones ajenas"
+    )
+
+
+def test_cada_lanzador_tiene_receta_de_invocacion() -> None:
+    """Sin receta, un lanzador quedaría fuera de los tests parametrizados."""
+    assert set(RECETAS_DE_INVOCACION) == set(LANZADORES_QUE_PARKEAN_APROBACION)
+
+
+@pytest.mark.parametrize("nombre", sorted(LANZADORES_QUE_PARKEAN_APROBACION))
+async def test_todo_lanzador_marca_su_dueno(nombre: str) -> None:
+    """El defecto original: la aprobación quedaba sin dueño y la accionaba cualquiera."""
+    store = ReactiveStore()
+    visto: list[str | None] = []
+
+    await RECETAS_DE_INVOCACION[nombre](store, "tab-A", lambda: visto.append(ritual_tab_id()))
+
+    assert visto == ["tab-A"], f"{nombre} no armó el dueño: su aprobación queda accionable desde cualquier pestaña"
+
+
+@pytest.mark.parametrize("nombre", sorted(LANZADORES_QUE_PARKEAN_APROBACION))
+async def test_ningun_lanzador_desaloja_una_aprobacion_ajena(nombre: str) -> None:
+    """El `finally` no puede borrar lo que no es suyo.
+
+    ``STORE_KEY_RITUAL_IN_FLIGHT`` solo serializa lanzadores entre sí; no bloquea
+    un ``tool_execution`` concurrente del agente LLM o Telegram, que parkea bajo
+    la misma clave global. Limpiar a ciegas dejaba esa aprobación —que nadie
+    respondió— invisible hasta su propio timeout fail-closed.
     """
     store = ReactiveStore()
+    ajena = {"request_id": "req-ajena", HITL_OWNER_TAB: "tab-B"}
 
-    class _Supervisor:
-        async def dispatch_tool(self, _name: str, _args: dict) -> dict:
-            # Simula al agente concurrente parkeando SU pendiente mientras el
-            # Ritual de tab-A sigue en vuelo.
-            store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-ajena", HITL_OWNER_TAB: "tab-B"})
-            return {"success": True}
+    await RECETAS_DE_INVOCACION[nombre](store, "tab-A", lambda: store.set(STORE_KEY_PENDING_HITL, dict(ajena)))
 
-    await run_ritual("loot", supervisor=_Supervisor(), store=store, tab_id="tab-A")
-
-    assert store.get(STORE_KEY_PENDING_HITL) == {"request_id": "req-ajena", HITL_OWNER_TAB: "tab-B"}, (
-        "el finally de un Ritual desalojó una aprobación ajena que nadie respondió"
+    assert store.get(STORE_KEY_PENDING_HITL) == ajena, (
+        f"el finally de {nombre} desalojó una aprobación ajena que nadie respondió"
     )
+
+
+@pytest.mark.parametrize("nombre", sorted(LANZADORES_QUE_PARKEAN_APROBACION))
+async def test_todo_lanzador_limpia_su_propia_aprobacion(nombre: str) -> None:
+    """El camino inverso: la propia sí se limpia, para no dejar un modal stale."""
+    store = ReactiveStore()
+    propia = {"request_id": "req-A", HITL_OWNER_TAB: "tab-A"}
+
+    await RECETAS_DE_INVOCACION[nombre](store, "tab-A", lambda: store.set(STORE_KEY_PENDING_HITL, dict(propia)))
+
+    assert not store.get(STORE_KEY_PENDING_HITL), f"{nombre} dejó su propio modal colgado al terminar"
 
 
 # ---------------------------------------------------------------------------
@@ -384,24 +473,21 @@ def test_clear_owned_borra_solo_si_el_dueno_coincide() -> None:
     assert not store.get(STORE_KEY_PENDING_HITL), "clear_owned_hitl no borró la pendiente de su propio dueño"
 
 
-async def test_el_ritual_de_instalacion_tambien_marca_su_dueno() -> None:
-    """El botón "Instalar" despacha un HITL ``download`` y también debe scoparse.
+async def test_el_ritual_de_instalacion_falla_sin_perder_la_limpieza() -> None:
+    """Camino de excepción del installer: el `finally` corre igual.
 
-    Es egress de red y por eso NUNCA se auto-aprueba: es de las aprobaciones más
-    sensibles que hay. Sin armar el ContextVar en este camino, la solicitud
-    quedaba sin dueño y era accionable desde cualquier pestaña — el mismo
-    defecto P1-7, entrando por la puerta de instalación.
+    Complementa a los parametrizados de la familia, que solo ejercitan el camino
+    feliz. Acá el installer explota y la aprobación propia tiene que limpiarse
+    igual, o queda un modal colgado tras un fallo de descarga.
     """
     from sky_claw.app.gui.controllers.ritual_runner import run_ritual_install
 
     store = ReactiveStore()
-    visto: list[str | None] = []
 
     class _Installer:
         async def ensure_loot(self, _install_dir: Any, _session: Any) -> object:
-            # Acá corre el gate HITL del installer, inline en esta misma task.
-            visto.append(ritual_tab_id())
-            raise RuntimeError("corta acá: solo interesa el contexto")
+            store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-A", HITL_OWNER_TAB: "tab-A"})
+            raise RuntimeError("se cayó la descarga")
 
     class _Ctx:
         tools_installer = _Installer()
@@ -410,34 +496,5 @@ async def test_el_ritual_de_instalacion_tambien_marca_su_dueno() -> None:
 
     await run_ritual_install("loot", app_context=_Ctx(), store=store, tab_id="tab-A")
 
-    assert visto == ["tab-A"], (
-        "el Ritual de instalación no armó el dueño: la aprobación de descarga queda accionable desde cualquier pestaña"
-    )
-
-
-async def test_el_finally_de_la_instalacion_no_desaloja_una_pendiente_ajena() -> None:
-    """El mismo cuidado del ``finally`` de ``run_ritual`` aplica a la instalación.
-
-    ``run_ritual`` y ``run_ritual_install`` comparten ``STORE_KEY_RITUAL_IN_FLIGHT``
-    entre sí, pero ninguno de los dos bloquea un ``tool_execution`` concurrente
-    del agente/Telegram, que parkea bajo la misma clave global.
-    """
-    from sky_claw.app.gui.controllers.ritual_runner import run_ritual_install
-
-    store = ReactiveStore()
-
-    class _Installer:
-        async def ensure_loot(self, _install_dir: Any, _session: Any) -> object:
-            store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-ajena", HITL_OWNER_TAB: "tab-B"})
-            return {"success": True}
-
-    class _Ctx:
-        tools_installer = _Installer()
-        install_dir = None
-        session = None
-
-    await run_ritual_install("loot", app_context=_Ctx(), store=store, tab_id="tab-A")
-
-    assert store.get(STORE_KEY_PENDING_HITL) == {"request_id": "req-ajena", HITL_OWNER_TAB: "tab-B"}, (
-        "el finally de la instalación desalojó una aprobación ajena que nadie respondió"
-    )
+    assert not store.get(STORE_KEY_PENDING_HITL), "un fallo de instalación dejó el modal colgado"
+    assert ritual_tab_id() is None, "el ContextVar quedó armado tras un fallo de instalación"
