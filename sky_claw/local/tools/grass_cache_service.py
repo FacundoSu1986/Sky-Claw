@@ -561,19 +561,27 @@ class GrassCacheService:
             )
 
     async def _journalizar_teardown_incompleto(self, journal_tx: int | None, fallos: list[str]) -> None:
-        """Deja constancia de "producto OK, cleanup pendiente" en la TX (U-09).
+        """Registra en el journal que el teardown dejó residuos en disco (U-09).
 
-        El ritual puede terminar con el cache bien generado (y preservado en
-        ``overwrite/Grass``) pero con el clon de perfil o el mod de config sin
-        borrar. Antes eso solo viajaba en el dict de retorno: el journal
-        commiteaba un éxito limpio y el audit trail afirmaba que el FS había
-        quedado consistente.
+        El caso que motivó el ítem es el ritual que termina con el cache bien
+        generado (y preservado en ``overwrite/Grass``) pero con el clon de perfil
+        o el mod de config sin borrar: eso solo viajaba en el dict de retorno, así
+        que el journal commiteaba un éxito limpio y el audit trail afirmaba que el
+        FS había quedado consistente.
 
         Degradar la TX a ``ROLLED_BACK`` NO es la respuesta — mentiría sobre un
         cache que sí existe y contradiría el ``success=True`` del resultado. Como
-        ``transactions`` solo admite ``pending``/``committed``/``rolled_back``, el
+        ``transactions`` solo admite ``pending``/``committed``/``rolled_back``, ese
         estado mixto se expresa con una operación **fallida dentro de la TX
         commiteada**, marcada con :data:`TEARDOWN_INCOMPLETE_KIND`.
+
+        **Se registra sea cual sea el desenlace del ritual, no solo en éxito.** El
+        marcador afirma "estos paths quedaron sin limpiar", no "el producto está
+        OK": los residuos son igual de reales cuando el run falló, y ahí el dato
+        es aún más útil para el operador. Condicionarlo a ``exito`` reabriría la
+        divergencia que este ítem cierra, porque ``result["teardown_failures"]``
+        tampoco se condiciona: el journal quedaría afirmando menos que el dict de
+        retorno sobre el mismo run.
 
         Best-effort, igual que :meth:`_journal_close`: el journal nunca enmascara
         el resultado del ritual. La metadata estructurada va en
