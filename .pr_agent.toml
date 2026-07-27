@@ -6,8 +6,8 @@ fallback_models = ["gemini/gemini-3.6-flash", "gemini/gemini-3.5-flash-lite"]
 propagate_tool_errors = true
 # Temperatura baja (0.1) para máxima analítica forense y supresión drástica de alucinaciones
 temperature = 0.1
-# Resiliencia operativa frente a rate limits
-retry_on_rate_limit = true
+# Resiliencia operativa frente a rate limits (clave oficial en PR-Agent)
+ratelimit_retries = 5
 verbosity_level = 2
 
 [pr_reviewer]
@@ -24,17 +24,8 @@ persistent_comment = true
 num_code_suggestions = 0
 inline_code_comments = true
 
-# Límites duros de resiliencia para evitar desbordamiento de contexto y cuota en PRs masivos
-max_findings = 5
-max_files_reviewed = 50
-max_lines_per_file = 2000
-
-# Archivos a EXCLUIR del análisis adversarial para no quemar tokens en ruido o autogenerados
-exclude_file_patterns = [
-    "*.lock", "package-lock.json", "yarn.lock", "*.min.js", "*.map",
-    "dist/**", "build/**", ".git/**", "node_modules/**", "__pycache__/**",
-    "*.pyc", ".venv/**", "venv/**"
-]
+# Límite duro de hallazgos para enfocar la revisión en los defectos más graves (clave oficial en PR-Agent)
+num_max_findings = 5
 
 extra_instructions = """
 ACTÚA COMO UN REVISOR ADVERSARIAL SENIOR Y ETHICAL HACKER (NIVEL COPILOT REVIEWER).
