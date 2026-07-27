@@ -503,8 +503,20 @@ class DynDOLODPipelineService:
                 )
 
                 # Validar salida de DynDOLOD si fue exitoso
-                if result.success and result.dyndolod_result and result.dyndolod_result.output_path:
-                    is_valid = await runner.validate_dyndolod_output(result.dyndolod_result.output_path)
+                if result.success and result.dyndolod_result:
+                    output_path = result.dyndolod_result.output_path
+                    if output_path is None:
+                        # U-06: ``_find_dyndolod_output`` devuelve None cuando no
+                        # encuentra el output en ninguna ubicación candidata. Este
+                        # guard estaba encadenado al ``if``, así que un exit 0 sin
+                        # path SALTEABA la validación y commiteaba el journal como
+                        # éxito: falso verde por exit-code sobre un estado donde no
+                        # se sabe si DynDOLOD escribió algo.
+                        msg = "DynDOLOD no dejó un directorio de salida localizable"
+                        logger.error(msg)
+                        raise DynDOLODExecutionError(msg)
+
+                    is_valid = await runner.validate_dyndolod_output(output_path)
                     if not is_valid:
                         msg = "DynDOLOD output validation failed"
                         logger.error(msg)

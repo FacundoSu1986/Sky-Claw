@@ -121,8 +121,14 @@ def _make_success_result(
     run_texgen: bool = True,
     texgen_mod: pathlib.Path | None = None,
     dyndolod_mod: pathlib.Path | None = None,
+    dyndolod_output: pathlib.Path | None = pathlib.Path("/tmp/DynDOLOD_Output"),
 ) -> DynDOLODPipelineResult:
-    """Helper to build a successful DynDOLODPipelineResult."""
+    """Helper to build a successful DynDOLODPipelineResult.
+
+    ``dyndolod_output`` permite el caso U-06 de ``_find_dyndolod_output`` que no
+    ubicó la salida (``None``); su default conserva el comportamiento previo.
+    ``ToolExecutionResult`` es frozen, así que hay que fijarlo al construir.
+    """
     texgen_result = (
         ToolExecutionResult(
             success=True,
@@ -143,7 +149,7 @@ def _make_success_result(
         return_code=0,
         stdout="OK",
         stderr="",
-        output_path=pathlib.Path("/tmp/DynDOLOD_Output"),
+        output_path=dyndolod_output,
         duration_seconds=30.0,
     )
 
@@ -462,6 +468,42 @@ async def test_validation_failure_triggers_rollback(
     assert result["success"] is False
     assert result["rolled_back"] is True
     mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+
+
+@pytest.mark.asyncio
+async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """U-06: exit 0 pero SIN directorio de salida localizable no es éxito.
+
+    ``_find_dyndolod_output`` devuelve ``None`` cuando no encuentra el output en
+    ninguna de sus ubicaciones candidatas (solo loguea un warning). El guard de
+    validación estaba encadenado a ``and result.dyndolod_result.output_path``, así
+    que con ``None`` la validación se SALTEABA entera y el ritual commiteaba el
+    journal reportando éxito — falso verde por exit-code (U-06) sobre un estado
+    donde no se sabe si DynDOLOD escribió algo.
+    """
+    mock_runner = AsyncMock(spec=DynDOLODRunner)
+    mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result(dyndolod_output=None))
+    mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
+
+    mock_config = MagicMock()
+    mock_config.mo2_mods_path = tmp_path / "mods"
+    (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
+    mock_runner._config = mock_config
+
+    service._runner = mock_runner
+
+    result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
+
+    assert result["success"] is False
+    assert result["rolled_back"] is True
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    # Sin path no hay nada que validar: el fallo es anterior a la validación.
+    mock_runner.validate_dyndolod_output.assert_not_awaited()
 
 
 # =============================================================================
@@ -1157,3 +1199,60 @@ async def test_dyndolod_informe_falla_no_rompe_run(
     assert result["success"] is True  # el informe roto no tumba el run
     manifest = await _manifiesto_ultima_tx(real_journal)
     assert manifest.tool == "DynDOLOD"
+
+
+# =============================================================================
+# U-06 — validate_dyndolod_output sobre el runner REAL (no mockeado)
+#
+# Todos los tests de servicio de arriba mockean ``validate_dyndolod_output``, así
+# que su cuerpo real nunca se ejercía. Estos lo cubren directamente.
+# =============================================================================
+
+
+def _runner_para_validacion() -> DynDOLODRunner:
+    """Runner con config falsa: ``validate_dyndolod_output`` solo mira el path."""
+    return DynDOLODRunner(MagicMock())
+
+
+@pytest.mark.asyncio
+async def test_validate_output_falla_si_falta_dyndolod_esp(tmp_path: pathlib.Path) -> None:
+    """U-06: un ``.esp`` cualquiera NO alcanza — hay que exigir ``DynDOLOD.esp``.
+
+    El docstring de la función ya prometía "Contiene DynDOLOD.esp", pero su
+    ausencia solo logueaba un warning y seguía hasta ``return True``: un run que
+    dejó ESPs sueltos (o el output de otra tool) se validaba como bueno y el
+    pipeline construía encima de LODs inexistentes.
+    """
+    output = tmp_path / "DynDOLOD_Output"
+    output.mkdir()
+    (output / "Otro.esp").touch()  # hay un .esp, pero NO es el que importa
+
+    assert await _runner_para_validacion().validate_dyndolod_output(output) is False
+
+
+@pytest.mark.asyncio
+async def test_validate_output_acepta_salida_con_dyndolod_esp(tmp_path: pathlib.Path) -> None:
+    """Contracara del anterior: con ``DynDOLOD.esp`` presente sí valida (no se
+    endureció de más)."""
+    output = tmp_path / "DynDOLOD_Output"
+    output.mkdir()
+    (output / "DynDOLOD.esp").touch()
+
+    assert await _runner_para_validacion().validate_dyndolod_output(output) is True
+
+
+@pytest.mark.asyncio
+async def test_validate_output_rechaza_dir_inexistente_o_vacio(tmp_path: pathlib.Path) -> None:
+    """Guardas previas intactas tras el endurecimiento (regresión)."""
+    runner = _runner_para_validacion()
+
+    assert await runner.validate_dyndolod_output(tmp_path / "no_existe") is False
+
+    vacio = tmp_path / "vacio"
+    vacio.mkdir()
+    assert await runner.validate_dyndolod_output(vacio) is False
+
+    sin_esp = tmp_path / "sin_esp"
+    sin_esp.mkdir()
+    (sin_esp / "textura.dds").touch()
+    assert await runner.validate_dyndolod_output(sin_esp) is False

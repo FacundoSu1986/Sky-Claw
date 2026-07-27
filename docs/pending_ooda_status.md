@@ -832,7 +832,8 @@ documento y se marcan cerrados acá a medida que se implementen:
   (#356 — `PrecacheGrass.txt` huérfano se barre en el arranque), U-04 (Wrye
   Bash/Pandora sin rollback de salida, abierto), **U-05 cerrado** (#354 — VRAMr
   usa `kill_and_reap`/tree-kill en vez de `proc.kill()` pelado en timeout).
-- **Medio:** U-06 (falso verde por exit-code, abierto), **U-07 cerrado** (#355
+- **Medio:** **U-06 cerrado PARCIALMENTE** (#374 — solo DynDOLOD; Wrye Bash y
+  BodySlide siguen abiertos, ver addendum abajo), **U-07 cerrado** (#355
   — Job Object kill-on-close en DynDOLOD, base de U-02), U-08 (sin
   reconciliación de arranque / clon parcial, abierto), U-09 (journal de grass
   commitea éxito pese a fallo de teardown, abierto), **U-10 cerrado** (#357 —
@@ -862,3 +863,46 @@ cubiertos aparte por U-07 (no pasa por `run_capture`: tiene su propio spawn
 con drain de pipes). El juego (`vfs.launch_game`, vía `ModOrganizer.exe`) y
 el crash-loop de grass quedan **fuera** de este cierre — lanzamiento vía GUI
 de MO2, con su propio ciclo de vida; follow-up si se decide extender ahí.
+
+### Addendum (U-06) — cierre PARCIAL: solo DynDOLOD (no declarar U-06 "cerrado")
+
+U-06 lista cuatro sitios de falso verde por exit-code, pero **no son homogéneos**:
+verificar el artefacto exige saber DÓNDE cae, y eso depende del modelo VFS que
+U-01 todavía no resuelve. Solo DynDOLOD está libre de ese bloqueo, porque
+`_find_dyndolod_output()` (`dyndolod_runner.py`) **busca en disco** entre tres
+ubicaciones candidatas en vez de asumir una ruta.
+
+**Cerrado en #374 — dos falsos verdes, ambos anclados:**
+
+1. **`output_path is None` salteaba la validación entera** (hallazgo NUEVO, que la
+   auditoría original no registró). El guard de `dyndolod_service` estaba
+   encadenado — `if result.success and result.dyndolod_result and
+   result.dyndolod_result.output_path:` — así que cuando `_find_dyndolod_output`
+   no ubicaba la salida y devolvía `None` (solo logueaba un warning), la
+   validación **no corría**, el journal se commiteaba y el ritual reportaba
+   éxito. Es el caso más grave: exit 0 sin evidencia de que DynDOLOD escribiera
+   nada. Ahora eleva `DynDOLODExecutionError` **dentro** del `tx_stack`, así que
+   el move-aside de `DirectoryRollback` revierte (patrón de F1/#312).
+2. **`validate_dyndolod_output` no exigía `DynDOLOD.esp`.** Su docstring ya
+   prometía "Contiene DynDOLOD.esp", pero la ausencia solo logueaba un warning y
+   caía igual en `return True`: bastaba cualquier `.esp` suelto. Ahora devuelve
+   `False`.
+
+Los tests de servicio existentes mockean `validate_dyndolod_output` en sus 6 call
+sites, así que su cuerpo real **nunca se ejercía**; #374 agrega la primera
+cobertura directa del runner (incluidas las guardas previas como regresión).
+
+**Sigue ABIERTO de U-06, con motivo verificado:**
+
+- **Wrye Bash y BodySlide — bloqueados por U-01**, igual que U-04. Wrye Bash no
+  declara ruta de salida en su comando (`[bash, -b, "Bashed Patch, 0.esp"]` con
+  `cwd=game_path`) y BodySlide usa `-o meshes` **relativo**, resuelto contra ese
+  mismo `cwd`. Con MO2 en USVFS la salida se redirige a `overwrite`, así que un
+  post-check de artefacto marcaría **fallo un run correcto** — un falso negativo
+  es peor que el falso verde que intenta cerrar. Requieren U-01 primero.
+- **xEdit QuickAutoClean — aplazado por un trade-off distinto, no por U-01.** El
+  criterio de mtime que sugiere la auditoría daría falso negativo cuando el
+  plugin ya estaba limpio: xEdit sale 0 sin reescribirlo. Necesita una condición
+  más matizada (p. ej. existencia del plugin como condición dura y el mtime solo
+  informativo) y tocar tests que hoy afirman `success=True` sin crear el plugin
+  en disco. Follow-up en su propio PR.
