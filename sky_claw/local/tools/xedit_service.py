@@ -614,10 +614,20 @@ class XEditPipelineService:
 
         # Rutas CRUDAS para el sensor de symlinks (las resueltas ya los siguieron) —
         # builder compartido (T-16d): coacciona no-Path y guarda "al menos una raíz".
+        # scan_mods_dir solo con MO2 VALIDADA: enumerar mods/ sobre una raíz sin
+        # contraparte validada listaría directorios arbitrarios (review Codex
+        # #240). Acá el guard de arriba solo exige ``game``, así que se deriva.
+        #
+        # U-01: xEdit NO lleva el sensor de visibilidad de mods a propósito. Este
+        # preflight gatea solo ``quick_auto_clean``, que limpia los DLC oficiales
+        # del ``Data`` del juego — presentes con o sin VFS —, así que un ROJO por
+        # modlist invisible bloquearía una limpieza que funciona perfecto en
+        # standalone. Ver ``tests/test_vfs_visibility_wiring`` (la exclusión está
+        # enumerada ahí, no librada a la memoria de quien lea esto).
         vfs_checker = build_vfs_sensor(
             raw_game=self._path_resolver.get_skyrim_path_raw(),
             raw_mo2=self._path_resolver.get_mo2_path_raw(),
-            scan_mods_dir=False,
+            scan_mods_dir=self._path_resolver.get_mo2_path() is not None,
         )
 
         data_dir = game / "Data"

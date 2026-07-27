@@ -56,6 +56,23 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   para no dejar rituales atrás; parchear un solo sensor deja los otros 4 en falso-verde.
   (2) Reconciliar el modelo de salida (`overwrite` vs `Data`/`mods`) en
   `_find_*_output`/`_permission_targets`. (3) Documentar la invariante de deployment.
+  > **Estado (#PENDIENTE_PR_U01): CERRADO PARCIALMENTE — la ENTRADA, no la salida.**
+  > **Corrección al fix (1), verificada contra el código:** `scan_mods_dir=True` **no
+  > alcanzaba**. `VfsHealthChecker` (`vfs_health.py`) solo detecta symlinks/junctions; ese
+  > flag únicamente extiende la detección a `mods/*` y nunca comprueba visibilidad. Tampoco
+  > lo cubría `MissingMastersChecker`, que busca a través de TODOS los `plugin_dirs`
+  > (`Data` + `mods/*` + `overwrite`) y por eso encuentra el plugin dentro de `mods/` y lo
+  > da por presente — el punto ciego exacto. Hizo falta un **sensor nuevo**
+  > (`validators/vfs_visibility.py`): compara los plugins habilitados del perfil contra el
+  > `Data` que el tool va a leer, y corta en ROJO solo ante el caso inequívoco (N
+  > habilitados, CERO visibles) para no frenar materializaciones parciales. El `cc*` de
+  > Creation Club se excluye del universo medido junto con los masters base (vive en `Data`
+  > con o sin VFS: contarlo haría que el sensor mintiera verde). Cableado en los 5
+  > servicios de la familia + `scan_mods_dir` derivado; `xedit_service` excluido con motivo
+  > (su preflight gatea solo QuickAutoClean sobre DLC oficiales de `Data`). La enumeración
+  > de la familia vive en `tests/test_vfs_visibility_wiring.py` y falla ante un servicio
+  > nuevo sin clasificar. **Los puntos (2) y (3) siguen abiertos** — y (2) es lo que U-04 y
+  > las mitades abiertas de U-06 esperan.
 
 ### U-02 — Sin Job Object en Windows: la muerte dura de Python orfana todo el árbol externo · `[A+Z]` · Subprocesos/Zombies
 

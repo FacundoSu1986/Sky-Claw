@@ -827,8 +827,10 @@ Se enlaza acá para que este inventario canónico siga siendo el punto único de
 triage (regla de `AGENTS.md`) — los ítems U-01…U-12 se triagean desde ese
 documento y se marcan cerrados acá a medida que se implementen:
 
-- **Alto:** U-01 (precondición VFS/USVFS no enforced → falso-verde standalone,
-  abierto), **U-02 cerrado** (#360 — ver addendum abajo), **U-03 cerrado**
+- **Alto:** **U-01 cerrado PARCIALMENTE** (#PENDIENTE_PR_U01 — sensor de
+  visibilidad de mods: el preflight ya detecta el run standalone contra el juego
+  base; la reconciliación del modelo de SALIDA sigue abierta, ver addendum
+  abajo), **U-02 cerrado** (#360 — ver addendum abajo), **U-03 cerrado**
   (#356 — `PrecacheGrass.txt` huérfano se barre en el arranque), U-04 (Wrye
   Bash/Pandora sin rollback de salida, abierto), **U-05 cerrado** (#354 — VRAMr
   usa `kill_and_reap`/tree-kill en vez de `proc.kill()` pelado en timeout).
@@ -849,6 +851,52 @@ no actualizaron este addendum en su propio PR, violando la regla explícita de
 `AGENTS.md` ("actualizar `docs/pending_ooda_status.md` en el mismo PR"). Puesto
 al día acá retroactivamente junto con el cierre de U-02, verificado contra
 `git log --oneline origin/main` (no contra los títulos de PR únicamente).
+
+### Addendum (U-01) — cierre PARCIAL: el preflight deja de mentir verde en standalone
+
+U-01 arranca de una invariante de deployment confirmada por el mantenedor:
+Sky-Claw corre **standalone**, no lanzado desde MO2. Los tools se spawnean
+directo (solo el juego pasa por el proxy `ModOrganizer.exe`, `mo2/vfs.py`), así
+que **ninguno hereda la USVFS**. Con un MO2 en USVFS estándar los tools leen el
+`Data` del juego base y todo el pipeline reporta verde sobre un árbol sin mods.
+
+**El fix que proponía la auditoría no cerraba el ítem — hallazgo de esta
+implementación.** El texto pedía "reforzar `build_vfs_sensor` con
+`scan_mods_dir=True`". Verificado contra `vfs_health.py`: `VfsHealthChecker`
+**solo detecta symlinks/junctions**; `scan_mods_dir` únicamente extiende esa
+detección a `mods/*` y **nunca comprueba que los mods estén visibles**. Ningún
+otro sensor lo cubría: `MissingMastersChecker` busca a través de TODOS los
+`plugin_dirs` (`Data` + `mods/*` + `overwrite`), así que encuentra el plugin
+dentro de `mods/SomeMod/` y lo reporta presente — el punto ciego exacto.
+
+**Cerrado en #PENDIENTE_PR_U01:**
+
+1. **Sensor nuevo** `validators/vfs_visibility.py`: compara los plugins que el
+   perfil MO2 habilita contra lo que existe en el `Data` que el tool va a leer.
+   ROJO solo ante el caso **inequívoco** (N plugins de mod habilitados, CERO
+   visibles); una materialización parcial pasa en verde a propósito — un falso
+   negativo acotado es preferible a frenar un setup que funciona. El contenido
+   de Creation Club (`cc*`) se excluye del universo medido junto con los masters
+   base: vive en `Data` con o sin VFS, y contarlo haría que el sensor mintiera
+   verde justo en el escenario que ataca.
+2. **`scan_mods_dir` derivado** en vez de hardcodeado a `False` en los 5
+   servicios que lo fijaban — el flag existe por seguridad (no enumerar una raíz
+   sin contraparte validada, review #240), no para apagar el scan cuando la raíz
+   SÍ está validada. Se replica el patrón de `loot_service`.
+
+**Ancla de la clase, no del caso:** `tests/test_vfs_visibility_wiring.py`
+**enumera** la familia de servicios con preflight y falla si aparece uno nuevo
+sin clasificar — en vez de tests escritos a mano que callan sobre el hermano que
+falta (defecto #1 del repo). `xedit_service` queda **excluido con motivo
+registrado ahí**: su preflight gatea solo `quick_auto_clean`, que limpia los DLC
+oficiales presentes en `Data` con o sin VFS, así que un rojo por visibilidad
+sería un falso positivo.
+
+**Sigue ABIERTO — la parte (2) del fix original:** reconciliar el modelo de
+SALIDA (`overwrite` vs `Data`/`mods`) en `_find_*_output`/`_permission_targets`.
+Esta PR cierra la ENTRADA (qué ve el tool); la salida (dónde caen los
+artefactos) es lo que **U-04 y las dos mitades abiertas de U-06 realmente
+esperan**, y sigue sin resolverse.
 
 ### Addendum (U-02) — Job Object kill-on-close centralizado en `run_capture`
 

@@ -207,6 +207,7 @@ class LootSortingService:
             build_modlist_sensors,
             build_overwrite_sensor,
             build_vfs_sensor,
+            build_vfs_visibility_sensor,
         )
 
         raw_game: pathlib.Path | None = None
@@ -260,6 +261,14 @@ class LootSortingService:
         # order resueltos, no rutas de otros rituales (review Codex #256).
         permissions_check = self._build_permissions_check()
 
+        # U-01: ¿el modlist del perfil se ve en el Data que LOOT va a leer? Sin
+        # este sensor, un run standalone (sin heredar la USVFS de MO2) ordena el
+        # juego base y reporta verde. Reusa el resolver de fuentes ya armado.
+        visibility_check = build_vfs_visibility_sensor(
+            game=self._path_resolver.get_skyrim_path() if self._path_resolver is not None else None,
+            sources_resolver=sources_resolver,
+        )
+
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
             loot_exe=loot_exe,
@@ -267,6 +276,7 @@ class LootSortingService:
             limits_check=limits_check,
             overwrite_check=overwrite_check,
             permissions_check=permissions_check,
+            visibility_check=visibility_check,
         )
         return self._preflight
 

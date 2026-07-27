@@ -166,11 +166,20 @@ class PandoraPipelineService:
 
         # Imports perezosos (anti-ciclo: validators.preflight llega a tools._process).
         from sky_claw.local.validators.preflight import PreflightService
-        from sky_claw.local.validators.preflight_sensors import build_overwrite_sensor, build_vfs_sensor
+        from sky_claw.local.validators.preflight_sensors import (
+            build_mo2_profile_sources_resolver,
+            build_overwrite_sensor,
+            build_vfs_sensor,
+            build_vfs_visibility_sensor,
+        )
         from sky_claw.local.validators.write_permissions import WritePermissionsChecker
 
         # vfs sobre rutas CRUDAS (las resueltas ya siguieron los symlinks).
-        vfs_checker = build_vfs_sensor(raw_game=raw_game, raw_mo2=raw_mo2, scan_mods_dir=False)
+        # scan_mods_dir solo con MO2 VALIDADA (``mo2`` sale de get_mo2_path()):
+        # enumerar mods/ sobre una raíz sin contraparte validada listaría
+        # directorios arbitrarios (review Codex #240). Antes iba fijo en False,
+        # lo que dejaba el scan ciego incluso con una instancia legítima (U-01).
+        vfs_checker = build_vfs_sensor(raw_game=raw_game, raw_mo2=raw_mo2, scan_mods_dir=mo2 is not None)
 
         # Permisos: targets recalculados POR CORRIDA dentro del closure (freshness).
         def _permissions() -> Any:
@@ -180,10 +189,25 @@ class PandoraPipelineService:
         # sensor sin fuente — review #314 F3).
         overwrite_check = build_overwrite_sensor(mo2 / "overwrite") if mo2 is not None else None
 
+        # U-01: Pandora procesa mods de ANIMACIÓN, no plugins — pero el modlist
+        # habilitado sirve igual de PRUEBA de que la virtualización llega: si
+        # ningún plugin del perfil se ve en Data, tampoco se ven los mods de
+        # animación, y Pandora regeneraría behavior graphs del juego base.
+        # Requiere game + MO2 (sin perfil resoluble el builder devuelve None).
+        visibility_check = build_vfs_visibility_sensor(
+            game=game,
+            sources_resolver=(
+                build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile=self._path_resolver.get_active_profile())
+                if game is not None and mo2 is not None and self._path_resolver is not None
+                else None
+            ),
+        )
+
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
             permissions_check=_permissions,
             overwrite_check=overwrite_check,
+            visibility_check=visibility_check,
             omit_unconfigured=True,
         )
         return self._preflight
