@@ -25,35 +25,39 @@ concurrency:
 
 # Y-7: statuses:write no lo usa /review, /describe ni /ask — pr-agent solo
 # publica como GitHub Check si publish_as_check_run=true, que no está seteado.
+# Permisos otorgados por job (mínimo privilegio), no a nivel workflow.
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
 
 jobs:
   auto-review:
     name: "Auto-revisión en PR interno"
+    # El gate de bots se movió por completo a .pr_agent.toml (github.ignore_bot_pr):
+    # filtrar acá con sender.type != 'Bot' bloqueaba el evento antes de que PR-Agent
+    # pudiera aplicar esa política, dejando ignore_bot_pr=false sin efecto para
+    # PRs de Dependabot/Renovate — justo la superficie de supply-chain que se
+    # buscaba habilitar.
     if: >-
       github.event_name == 'pull_request' &&
-      github.event.sender.type != 'Bot' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.state == 'open' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      pull-requests: write
     steps:
       # Y-2: los pasos de checkout de configuración se eliminaron. Verificado
       # contra GithubProvider.get_repo_settings() de pr-agent: .pr_agent.toml se
-      # lee por la API de GitHub (desde PR_AGENT_CONFIG_BRANCH o la default
-      # branch), nunca desde el workspace del runner — el checkout no protegía
-      # nada, solo simulaba hacerlo. La rama de confianza se fija de forma
-      # explícita vía env var en el paso de ejecución, más abajo.
+      # lee por la API de GitHub, nunca desde el workspace del runner — el
+      # checkout no protegía nada, solo simulaba hacerlo. Sin CONFIG_BRANCH
+      # seteada, get_repo_settings() ya lee de la default branch por su cuenta
+      # (no hace falta fijarla explícitamente: sería el mismo valor).
       - name: "Ejecutar Qodo Merge / PR-Agent"
         uses: Codium-ai/pr-agent@570f67ed5fc8db5be74c18df070bc20079b64b0d # v0.41.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PR_AGENT_CONFIG_BRANCH: ${{ github.event.repository.default_branch }}
 
   comment-command:
     name: "Comando seguro en comentario"
@@ -67,6 +71,9 @@ jobs:
        github.event.comment.author_association == 'COLLABORATOR')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      pull-requests: read
+      issues: write
     steps:
       - name: "Validar comando permitido"
         id: gate
@@ -148,12 +155,10 @@ jobs:
       # Y-2: mismo motivo que en auto-review — pr-agent lee .pr_agent.toml por
       # la API de GitHub, no del workspace. El checkout de "rama base" que
       # existía acá (incluyendo el paso "gh pr view --json baseRefName") no
-      # aportaba la protección que su comentario describía; se reemplaza por
-      # la misma env var explícita.
+      # aportaba la protección que su comentario describía; se eliminó.
       - name: "Ejecutar Qodo Merge / PR-Agent"
         if: steps.gate.outputs.run == 'true'
         uses: Codium-ai/pr-agent@570f67ed5fc8db5be74c18df070bc20079b64b0d # v0.41.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PR_AGENT_CONFIG_BRANCH: ${{ github.event.repository.default_branch }}

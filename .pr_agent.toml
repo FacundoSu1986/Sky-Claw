@@ -22,7 +22,6 @@ repo_context_files = ["AGENTS.md", ".github/coding_conventions.md"]
 
 # Claves opcionales verificadas en uso intensivo
 temperature = 0.1
-ratelimit_retries = 5
 
 # F-5: verbosidad 2 vuelca el prompt completo (incluida la sección anti-leak)
 # al log de Actions. propagate_tool_errors ya da traza suficiente en error real.
@@ -39,6 +38,10 @@ publish_output_progress = false
 # transitivos apareciendo solos en main: son justo esos PRs. Sin esto, la
 # superficie de supply-chain queda sin revisar aunque el YAML permita el evento.
 ignore_bot_pr = false
+# Corrección sobre push anterior: esta clave se lee desde [github], no desde
+# [config] — ahí no tiene efecto. Quedó mal ubicada en el fix previo (se quitó
+# el duplicado de [pr_reviewer] pero nunca se movió a destino).
+ratelimit_retries = 5
 
 [github_action_config]
 # Revisión y descripción automática al abrir/sincronizar PR
