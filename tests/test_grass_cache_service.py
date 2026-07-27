@@ -671,9 +671,70 @@ async def test_teardown_incompleto_se_registra_aunque_el_ritual_falle(tmp_path: 
     # ...pero los residuos en disco quedan registrados igual, en la misma TX.
     entradas = _entradas_de_teardown(journal)
     assert len(entradas) == 1
+    assert entradas[0]["transaction_id"] == 77, "el residuo debe colgar de la TX del ritual"
     assert entradas[0]["metadata"]["paths"] == [str(trabado)]
+    # La operación queda FALLIDA (no pendiente): es lo que la vuelve legible como
+    # "cleanup que no se completó" y no como un paso más del ritual.
+    journal.fail_operation.assert_awaited_once_with(5, error=str(trabado))
     # Y el journal no dice menos que el dict de retorno.
     assert resultado["teardown_failures"] == [str(trabado)]
+
+
+async def test_teardown_incompleto_sobrevive_al_rollback_en_el_journal_real(tmp_path: pathlib.Path) -> None:
+    """U-09 (review Qodo #377): la constancia PERSISTE en la DB real tras revertir la TX.
+
+    La objeción fue de "falsa confianza por mock": que en producción
+    ``mark_transaction_rolled_back`` descartaría físicamente las filas insertadas
+    bajo esa transacción, dejando al operador sin rastro. **No es así**, y este
+    test lo prueba contra SQLite en vez de argumentarlo: las "transacciones" del
+    journal son un concepto de DOMINIO (una fila en ``transactions`` con columna
+    ``status``), no transacciones de la base — ``mark_transaction_rolled_back``
+    hace ``UPDATE ... SET status='rolled_back'`` + ``commit()``, y no existe
+    ningún ``db.rollback()`` en ``journal.py``. Cada ``begin_operation`` commitea
+    su propio ``INSERT``.
+
+    El propio diseño depende de esto: el guard Stage 5→8 lee operaciones de LOOT
+    de TXs ya cerradas, y no funcionaría si el cierre las borrara.
+    """
+    from sky_claw.app.db.journal import OperationJournal, OperationType
+
+    journal = OperationJournal(tmp_path / "grass_journal.db")
+    await journal.open()
+    try:
+        # Sembrar el Stage 5 (LOOT) que el guard exige, con FlightReport commiteado.
+        loot_tx = await journal.begin_transaction("LOOT sort", agent_id=GrassCacheService.LOOT_AGENT_ID)
+        loot_op = await journal.begin_operation(
+            agent_id=GrassCacheService.LOOT_AGENT_ID,
+            operation_type=OperationType.FILE_MODIFY,
+            target_path="plugins.txt",
+            transaction_id=loot_tx,
+            metadata={"kind": "flight_report", "transaction_status": TransactionStatus.COMMITTED.value},
+        )
+        await journal.complete_operation(loot_op)
+        await journal.commit_transaction(loot_tx)
+
+        service, colab = _servicio(tmp_path, journal=journal)
+        colab["profile_manager"].build_config_mod.side_effect = GrassProfileError("el clon ya existe")
+        trabado = tmp_path / "mo2" / "profiles" / "SkyClaw-GrassCache"
+        colab["profile_manager"].teardown.return_value = [trabado]
+
+        resultado = await service.generate(_PAYLOAD)
+        assert resultado["success"] is False
+
+        # La TX del ritual quedó revertida. Se busca por descripción y no por
+        # "la más reciente": la TX sembrada de LOOT comparte el mismo segundo
+        # (``datetime('now')``) y el desempate no sería determinista.
+        transacciones = await journal.list_recent_transactions(limit=10)
+        (ritual,) = [tx for tx in transacciones if "Grass precache" in tx.description]
+        assert ritual.status == TransactionStatus.ROLLED_BACK
+        # ...y aun así la constancia del residuo SIGUE consultable en la DB.
+        operaciones = await journal.get_operations_by_transaction(ritual.transaction_id)
+        residuos = [op for op in operaciones if is_teardown_incomplete(op.metadata)]
+        assert len(residuos) == 1, "el rollback de la TX no debe borrar la constancia del residuo"
+        assert residuos[0].metadata["paths"] == [str(trabado)]
+        assert residuos[0].status == OperationStatus.FAILED
+    finally:
+        await journal.close()
 
 
 async def test_journalizar_el_teardown_incompleto_es_best_effort(tmp_path: pathlib.Path) -> None:
