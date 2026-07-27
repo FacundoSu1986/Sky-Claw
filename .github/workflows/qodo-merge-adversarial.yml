@@ -3,8 +3,16 @@ name: "Qodo Merge (PR-Agent) - Revisor Adversarial Interactivo"
 on:
   pull_request:
     types: [opened, reopened, synchronize]
+    # Ahorro de costos: no activar la VM automática en cambios puros de documentación o imágenes
+    paths-ignore:
+      - '**.md'
+      - '**.txt'
+      - 'docs/**'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.svg'
   issue_comment:
-    types: [created, edited]
+    types: [created] # Evita relanzar al editar comentarios antiguos
 
 # Control de concurrencia: cancela revisiones en curso obsoletas si entra un nuevo commit o comando en el mismo PR
 concurrency:
@@ -21,10 +29,23 @@ jobs:
   pr_agent_job:
     runs-on: ubuntu-latest
     # 1. Evitar loops de bots
-    # 2. En comentarios, ejecuta SOLO si el texto empieza con un comando '/' (ej. /review, /describe, /ask) para ahorrar cuota
-    if: ${{ github.event.sender.type != 'Bot' && (github.event_name != 'issue_comment' || startsWith(github.event.comment.body, '/')) }}
+    # 2. En PRs automáticos: no correr en forks externos para no exponer secretos ni permitir inyecciones
+    # 3. En comentarios: ejecuta SOLO si empieza con '/' Y el autor es miembro/colaborador confiable del repo
+    if: >-
+      github.event.sender.type != 'Bot' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event_name != 'issue_comment' || (startsWith(github.event.comment.body, '/') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR')))
     timeout-minutes: 15
     steps:
+      # Seguridad SRE: leemos la configuración (.pr_agent.toml) desde la rama base o default branch,
+      # impidiendo que un PR malicioso intente autoliberarse alterando las reglas adversariales en su diff.
+      - name: Checkout de configuración confiable (rama base / default)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Ejecutar Qodo Merge (PR-Agent) con Google Gemini
         uses: Codium-ai/pr-agent@main
         env:
