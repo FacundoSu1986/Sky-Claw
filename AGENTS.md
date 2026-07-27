@@ -27,14 +27,66 @@ Los `AGENTS.md` de subárbol son punteros de alcance y no reemplazan esta guía.
   (`asyncio_mode=auto`: los tests `async def` no necesitan decorador.)
 - Lint/format/types — el gate "Lint" de CI exige **ambos** comandos de ruff:
   `ruff check sky_claw/ tests/` **y** `ruff format --check sky_claw/ tests/`.
-  `mypy sky_claw/` es **bloqueante en CI** (no es informativo).
-- Una rama + un PR por cambio; no commitear directo a `main`.
+  `mypy sky_claw/` corre bloqueante **pero no cubre todo**: `pyproject.toml`
+  tiene `ignore_errors = true` para ~30 módulos, incluidos `sky_claw.app.gui.*`,
+  `sky_claw.app.web.*` y `sky_claw.local.tools.*`. Lo mismo `BLE001` de ruff,
+  exento en todo `sky_claw/app/**`. Antes de confiar en que un gate te cubre,
+  verificá que tu archivo no esté en la lista de exentos — si lo está, ese
+  código sale a producción sin type-check.
+- Una rama + un PR por cambio; no commitear directo a `main`. El revisor
+  automático (`qodo-merge-adversarial.yml`) corre **solo** en `pull_request`:
+  un push directo saltea el único control que empíricamente ataja defectos acá.
 - **Al cerrar una tarea del backlog** (`TECHNICAL_REVIEW_TASKS.md`, T-XX):
   actualizar `docs/pending_ooda_status.md` en el mismo PR (o dejar constancia
   explícita si el cierre es parcial/cubre solo un runner). El título del PR
-  declarando "cerrado" **no alcanza** — verificar el árbol completo de
-  callers, no un archivo puntual (lección de #290: T-26/T-27/T-28 quedaron
-  "cerrados" en el historial cuando el backend solo cubría LOOT).
+  declarando "cerrado" **no alcanza**.
+
+## La regla que más se viola: arreglar un hermano y no al otro
+
+Es **la** clase de defecto dominante del repo: 13 de 21 follow-ups auditados son
+un fix que aterrizó en un camino y dejó intacto a su gemelo. No es descuido de
+gente distraída — pasa leyendo este archivo, y el que lo ataja es siempre un bot.
+
+Aplica **a todo cambio**, no solo al cierre de una T-XX.
+
+Las dos formas concretas que toma acá:
+
+1. **Dos superficies, un recurso.** La misma operación mutante se alcanza desde
+   la GUI (`SupervisorAgent` → `tool_dispatcher`) *y* desde el agente LLM
+   (`AsyncToolRegistry` → `LLMRouter` → Telegram / `/api/chat`). 9 de los 13
+   episodios son exactamente esto: lock, journal, preflight o sandbox cableados
+   en un path y ausentes en el otro (#166→#167, #171→#172, #213→#215→#217,
+   #243→#247).
+2. **Hermano en el mismo archivo.** #373: `run_ritual` recibió el scoping del
+   dueño de la aprobación HITL y `run_ritual_install` —90 líneas más abajo,
+   misma estructura, y la aprobación *más* sensible porque es egress de red—
+   quedó sin él.
+
+**Enunciala como propiedad del mecanismo, no como recordatorio de proceso.** Es
+la diferencia medible entre los episodios que fallaron y los que salieron bien de
+entrada: *"el lock cross-process solo protege si TODOS los mutadores participan"*
+(#316, #324) cubrió ambos paths sin que lo pidiera un revisor. *"verificar el
+árbol de callers"* no.
+
+**Y anclala con un test que enumere, no que muestree.** Un caso escrito a mano
+para el hermano que te faltó no ataja al tercero. El repo ya tiene el
+instrumento y funciona:
+
+- `tests/test_ritual_dispatch.py` → `assert RITUAL_TOOL_MAP == {...}` (igualdad
+  literal del dict: agregar un ritual sin cablearlo rompe el test).
+- `tests/test_hitl_client_scoping.py` → la familia de lanzadores se detecta por
+  introspección y se congela; un lanzador nuevo rompe el ancla hasta que se le
+  escribe su receta, y la receta lo mete en los tests de comportamiento.
+
+Escribir el racional de por qué excluís una rama **no cuenta como verificarla**:
+en #318 y #373 el autor enumeró, escribió el párrafo justificando el recorte, y
+el revisor lo revirtió igual.
+
+> Contexto de por qué esta sección existe y es tan explícita: ~94% de los ítems
+> normativos de este corpus no tienen gate que los haga fallar. Las reglas que el
+> repo sí cumple (ruff, mypy, contrato `success`/`message`) comparten que nombran
+> un comando o rompen un test. Si agregás una regla acá, traé con qué se verifica
+> — o va a envejecer como las demás.
 
 ## Mapa del repo
 
