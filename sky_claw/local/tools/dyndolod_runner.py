@@ -1014,13 +1014,20 @@ class DynDOLODRunner:
                 logger.warning("No se encontró archivo ESP en: %s", output_path)
                 return False
 
-            # Verificar que al menos DynDOLOD.esp existe
+            # U-06: exigir DynDOLOD.esp, no cualquier .esp. Antes esto solo
+            # logueaba un warning y caía igual en ``return True``, así que un run
+            # que dejó ESPs sueltos (o el output de otra tool) se validaba como
+            # bueno y los stages siguientes construían sobre LODs inexistentes.
+            # ``is_file()`` y no ``exists()``: un DIRECTORIO llamado DynDOLOD.esp
+            # pasaría el chequeo de existencia y se empaquetaría sin el plugin.
             dyndolod_esp = output_path / "DynDOLOD.esp"
-            if not dyndolod_esp.exists():
-                logger.warning(
-                    "DynDOLOD.esp no encontrado, encontrado: %s",
+            if not dyndolod_esp.is_file():
+                logger.error(
+                    "DynDOLOD.esp no encontrado en %s; encontrados: %s",
+                    output_path,
                     [e.name for e in esp_files],
                 )
+                return False
 
             logger.info(
                 "DynDOLOD output validado: %s (%d items)",

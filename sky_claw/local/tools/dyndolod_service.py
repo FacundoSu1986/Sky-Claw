@@ -503,8 +503,31 @@ class DynDOLODPipelineService:
                 )
 
                 # Validar salida de DynDOLOD si fue exitoso
-                if result.success and result.dyndolod_result and result.dyndolod_result.output_path:
-                    is_valid = await runner.validate_dyndolod_output(result.dyndolod_result.output_path)
+                if result.success:
+                    if result.dyndolod_result is None:
+                        # U-06 (review Qodo): la otra mitad del guard encadenado. Hoy
+                        # ``run_full_pipeline`` computa ``success`` exigiendo
+                        # ``dyndolod_result is not None``, así que este estado NO es
+                        # alcanzable — pero el tipo lo permite y el criterio del repo
+                        # (U-11) es no reportar éxito sobre un estado indeterminado
+                        # solo porque "no debería pasar".
+                        msg = "DynDOLOD reportó éxito sin resultado de ejecución"
+                        logger.error(msg)
+                        raise DynDOLODExecutionError(msg)
+
+                    output_path = result.dyndolod_result.output_path
+                    if output_path is None:
+                        # U-06: ``_find_dyndolod_output`` devuelve None cuando no
+                        # encuentra el output en ninguna ubicación candidata. Este
+                        # guard estaba encadenado al ``if``, así que un exit 0 sin
+                        # path SALTEABA la validación y commiteaba el journal como
+                        # éxito: falso verde por exit-code sobre un estado donde no
+                        # se sabe si DynDOLOD escribió algo.
+                        msg = "DynDOLOD no dejó un directorio de salida localizable"
+                        logger.error(msg)
+                        raise DynDOLODExecutionError(msg)
+
+                    is_valid = await runner.validate_dyndolod_output(output_path)
                     if not is_valid:
                         msg = "DynDOLOD output validation failed"
                         logger.error(msg)

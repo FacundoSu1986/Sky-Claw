@@ -145,6 +145,28 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   Es el smoke pendiente de QuickAutoClean ya documentado en `AGENTS.md`.
 - **Fix:** post-check de artefacto por runner (existe + mtime avanzó + no vacío; DynDOLOD
   exige `DynDOLOD.esp`). Cierra también el smoke de "Limpiar Archivos".
+  > **Hallazgo adicional en DynDOLOD, no registrado en el draft original (#375):** además
+  > del `.esp`, el guard de validación de `dyndolod_service.py` estaba **encadenado** a
+  > `and result.dyndolod_result.output_path`. `_find_dyndolod_output()` devuelve `None`
+  > cuando no ubica la salida en ninguna de sus tres candidatas (solo loguea warning), así
+  > que con `None` la validación **se salteaba entera**, el journal se commiteaba y el
+  > ritual reportaba éxito — falso verde más grave que el del `.esp`, sin ningún test que
+  > lo cubriera.
+  > **Estado (#375): CERRADO SOLO PARA DYNDOLOD.** Los otros tres sitios NO se tocaron, y
+  > no por omisión:
+  > - **Wrye Bash y BodySlide quedan bloqueados por U-01**, igual que U-04. Ninguno de los
+  >   dos declara una ruta de salida verificable: Wrye Bash corre `[bash, -b, "Bashed
+  >   Patch, 0.esp"]` con `cwd=game_path` (sin path de salida en el comando) y BodySlide usa
+  >   `-o meshes` **relativo**, resuelto contra ese mismo `cwd`. Con MO2 en USVFS la salida
+  >   se redirige a `overwrite`, así que el post-check marcaría **fallo un run correcto**.
+  >   Un falso negativo acá es peor que el falso verde que se quiere cerrar.
+  > - **QuickAutoClean se aplaza por un motivo distinto (no U-01):** el criterio de "mtime
+  >   avanzó" que propone este ítem da **falso negativo** cuando el plugin ya estaba limpio
+  >   — xEdit sale 0 sin reescribirlo. Necesita una condición más matizada (existencia del
+  >   plugin como condición dura, mtime solo informativo) y actualizar tests que hoy
+  >   afirman `success=True` sin crear el plugin en disco.
+  > DynDOLOD sí era ejecutable ya porque `_find_dyndolod_output()` **busca en disco**, no
+  > asume la ruta — por eso no hereda el bloqueo de U-01.
 
 ### U-07 — DynDOLOD: en salida NORMAL con un nieto (TexGen) vivo, el nieto queda huérfano · `[A]` · Subprocesos/Zombies
 
