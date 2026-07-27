@@ -1,63 +1,121 @@
-name: "Qodo Merge (PR-Agent) - Revisor Adversarial Interactivo"
+name: "Qodo Merge - Revisor Adversarial Interactivo"
 
 on:
   pull_request:
     types: [opened, reopened, synchronize]
-    # Ahorro de costos: no activar la VM automática en cambios puros de documentación o imágenes
     paths-ignore:
-      - '**.md'
-      - '**.txt'
-      - 'docs/**'
-      - '**/*.png'
-      - '**/*.jpg'
-      - '**/*.svg'
+      - "**/*.md"
+      - "**/*.txt"
+      - "docs/**"
+      - "**/*.png"
+      - "**/*.jpg"
+      - "**/*.svg"
   issue_comment:
-    types: [created] # Evita relanzar al editar comentarios antiguos
+    types: [created]
 
-# Control de concurrencia: cancela revisiones en curso obsoletas si entra un nuevo commit o comando en el mismo PR
+# Cancela revisiones obsoletas si entra un nuevo commit o comando en el mismo PR.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
-  issues: write
-  pull-requests: write
   contents: read
+  pull-requests: write
+  issues: write
   statuses: write
 
 jobs:
-  pr_agent_job:
-    runs-on: ubuntu-latest
-    # 1. Evitar loops de bots
-    # 2. En PRs automáticos: no correr en forks externos para no exponer secretos ni permitir inyecciones
-    # 3. En comentarios: ejecuta SOLO en PRs (no Issues), si empieza con '/' Y el autor es miembro/colaborador confiable del repo
+  auto-review:
+    name: "Auto-revisión en PR interno"
     if: >-
+      github.event_name == 'pull_request' &&
       github.event.sender.type != 'Bot' &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
-      (github.event_name != 'issue_comment' || (github.event.issue.pull_request != null && startsWith(github.event.comment.body, '/') && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR')))
+      github.event.pull_request.state == 'open' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      # Seguridad SRE: resolvemos el branch base del PR cuando se ejecuta desde un comentario (issue_comment)
-      - name: Resolver rama base del PR en evento issue_comment
-        id: pr_base
-        if: github.event_name == 'issue_comment'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BASE_REF=$(gh pr view ${{ github.event.issue.number }} --repo ${{ github.repository }} --json baseRefName --jq '.baseRefName')
-          echo "sha=$BASE_REF" >> "$GITHUB_OUTPUT"
-
-      # Seguridad SRE: leemos la configuración (.pr_agent.toml) desde la rama base o default branch,
-      # impidiendo que un PR malicioso intente autoliberarse alterando las reglas adversariales en su diff.
-      - name: Checkout de configuración confiable (rama base / default)
-        uses: actions/checkout@v4
+      # Lee configuración desde la base del PR, no desde el head.
+      - name: "Checkout de configuración confiable (base del PR)"
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.pull_request.base.sha || steps.pr_base.outputs.sha || github.event.repository.default_branch }}
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Ejecutar Qodo Merge (PR-Agent) con Google Gemini
-        uses: Codium-ai/pr-agent@main
+      - name: "Ejecutar Qodo Merge / PR-Agent"
+        uses: Codium-ai/pr-agent@570f67ed5fc8db5be74c18df070bc20079b64b0d # v0.41.0
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+  comment-command:
+    name: "Comando seguro en comentario"
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      github.event.issue.state == 'open' &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: "Validar comando permitido"
+        id: gate
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Tomar primera línea y normalizar CR.
+          first_line="${COMMENT_BODY%%$'\n'*}"
+          first_line="${first_line%$'\r'}"
+
+          # Quitar espacios iniciales.
+          first_line="${first_line#"${first_line%%[![:space:]]*}"}"
+
+          # Comandos permitidos: /review, /ask, /describe
+          if [[ "$first_line" =~ ^/(review|ask|describe)([[:space:]].*)?$ ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "Resolver rama base del PR"
+        if: steps.gate.outputs.run == 'true'
+        id: pr_base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_REF="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json baseRefName --jq '.baseRefName')"
+
+          if [[ -z "$BASE_REF" ]]; then
+            echo "No se pudo resolver la rama base del PR" >&2
+            exit 1
+          fi
+
+          echo "ref=$BASE_REF" >> "$GITHUB_OUTPUT"
+
+      # Lee configuración desde la rama base, impidiendo que el PR modifique
+      # las reglas del revisor en su propio diff.
+      - name: "Checkout de configuración confiable (rama base)"
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ steps.pr_base.outputs.ref || github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: "Ejecutar Qodo Merge / PR-Agent"
+        if: steps.gate.outputs.run == 'true'
+        uses: Codium-ai/pr-agent@570f67ed5fc8db5be74c18df070bc20079b64b0d # v0.41.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
