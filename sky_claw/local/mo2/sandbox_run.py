@@ -82,7 +82,20 @@ async def run_ritual_in_sandbox(
         Lo que lance el ritual (el clon se descarta antes de propagar) o el
         propio sandbox (``ProfileNotFoundError``, ``SandboxSymlinkError``…).
     """
-    clone = await sandbox.clone()
+    # U-08: clone() corre _materialize vía asyncio.to_thread (profile_sandbox.py)
+    # — cancelar la corrutina que lo espera no interrumpe ese hilo. Sin shield,
+    # el hilo seguía escribiendo el clon en background sin que nadie lo limpie
+    # (el `try` de acá abajo, que sí maneja CancelledError, nunca se alcanza a
+    # tiempo). Se espera el desenlace REAL antes de decidir qué limpiar — mismo
+    # patrón F2 que SandboxPromotionFlow._promote usa para promote().
+    clone_task = asyncio.ensure_future(sandbox.clone())
+    try:
+        clone = await asyncio.shield(clone_task)
+    except asyncio.CancelledError:
+        cleanup = asyncio.ensure_future(_finalizar_clone_cancelado(sandbox, clone_task))
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(cleanup)
+        raise
     try:
         result = await ritual(clone)
         # El diff va dentro del mismo cleanup: si lanza (p. ej.
@@ -113,3 +126,21 @@ async def run_ritual_in_sandbox(
         clone.root,
     )
     return SandboxedRunResult(clone=clone, diff=diff, result=result)
+
+
+async def _finalizar_clone_cancelado(sandbox: ProfileSandbox, clone_task: asyncio.Task[SandboxClone]) -> None:
+    """Observa el desenlace real de un ``clone()`` cancelado y descarta si materializó.
+
+    Espeja ``SandboxPromotionFlow._finalizar_promote_cancelado`` (F2): el hilo
+    de ``_materialize`` sigue escribiendo tras la cancelación de la corrutina
+    que lo esperaba, así que hay que esperar su desenlace REAL (shieldeado)
+    antes de tocar el disco. Si terminó en excepción, ``_materialize`` ya se
+    autolimpió (o nunca llegó a crear nada) — nada que hacer acá. Si terminó
+    con éxito, el clon quedó materializado pero nadie lo pidió: se descarta.
+    """
+    try:
+        clone = await asyncio.shield(clone_task)
+    except (asyncio.CancelledError, Exception):
+        return
+    with contextlib.suppress(Exception):
+        await sandbox.discard(clone)

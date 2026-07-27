@@ -150,6 +150,86 @@ class TestRunRitualInSandbox:
         sandbox_root = tmp_path / "sandbox"
         assert not sandbox_root.exists() or list(sandbox_root.iterdir()) == []
 
+    class _SandboxCloneLento:
+        """Sandbox fake: ``clone()`` bloqueante y observable, resto delega al real.
+
+        ``clone_iniciado``/``liberar_clone`` simulan la ventana en la que el
+        "hilo" de ``_materialize`` (``asyncio.to_thread``) sigue vivo tras la
+        cancelación del caller — mismo rol que ``_SandboxPromoteLento`` en
+        ``test_sandbox_promotion.py`` cumple para ``promote()``.
+        """
+
+        def __init__(self, real: ProfileSandbox, lanzar: Exception | None = None) -> None:
+            self._real = real
+            self._lanzar = lanzar
+            self.descartes = 0
+            self.clone_iniciado = asyncio.Event()
+            self.liberar_clone = asyncio.Event()
+
+        async def clone(self) -> SandboxClone:
+            self.clone_iniciado.set()
+            await self.liberar_clone.wait()
+            if self._lanzar is not None:
+                raise self._lanzar
+            return await self._real.clone()
+
+        async def diff(self, clone: SandboxClone) -> Any:
+            return await self._real.diff(clone)
+
+        async def discard(self, clone: SandboxClone) -> None:
+            self.descartes += 1
+            await self._real.discard(clone)
+
+    async def _correr_y_cancelar_en_clone(self, sandbox: TestRunRitualInSandbox._SandboxCloneLento) -> asyncio.Task:
+        """Lanza el ritual, espera a que ``clone()`` arranque y cancela la task."""
+
+        async def ritual(clone: SandboxClone) -> dict[str, Any]:
+            return {"success": True, "message": ""}
+
+        task = asyncio.ensure_future(run_ritual_in_sandbox(sandbox=sandbox, ritual=ritual))  # type: ignore[arg-type]
+        await asyncio.wait_for(sandbox.clone_iniciado.wait(), timeout=2.0)
+        task.cancel()
+        return task
+
+    async def test_cancelacion_durante_clone_espera_el_desenlace_y_descarta(self, tmp_path: pathlib.Path) -> None:
+        """U-08: ``clone()`` corre ``_materialize`` vía ``asyncio.to_thread`` —
+        cancelar la corrutina que lo espera no interrumpe el hilo. El clon
+        materializado en background tras la cancelación no debe quedar
+        huérfano: se observa el desenlace real y recién ahí se descarta."""
+        sandbox = self._SandboxCloneLento(_sandbox(tmp_path))
+        task = await self._correr_y_cancelar_en_clone(sandbox)
+
+        # Darle varios ciclos al loop SIN liberar el clone(): la cancelación
+        # debe esperar el desenlace real, no cortar en seco.
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert sandbox.descartes == 0
+        assert not task.done()
+
+        sandbox.liberar_clone.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert sandbox.descartes == 1
+        sandbox_root = tmp_path / "sandbox"
+        assert not sandbox_root.exists() or list(sandbox_root.iterdir()) == []
+
+    async def test_cancelacion_durante_clone_que_termina_en_error_no_rompe(self, tmp_path: pathlib.Path) -> None:
+        """Si el ``clone()`` cancelado termina en excepción (self-cleaning de
+        ``_materialize``, o un fallo previo como ``ProfileNotFoundError``), la
+        limpieza del cleanup no debe enmascarar la cancelación ni intentar
+        descartar un clon que nunca llegó a materializarse."""
+        sandbox = self._SandboxCloneLento(_sandbox(tmp_path), lanzar=OSError("disco lleno"))
+        task = await self._correr_y_cancelar_en_clone(sandbox)
+
+        sandbox.liberar_clone.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert sandbox.descartes == 0  # nunca hubo un clon vivo que descartar
+        sandbox_root = tmp_path / "sandbox"
+        assert not sandbox_root.exists() or list(sandbox_root.iterdir()) == []
+
     @_symlink_guard
     async def test_diff_que_lanza_descarta_el_clon_y_propaga(self, tmp_path: pathlib.Path) -> None:
         """review Codex #258 (P2): si el ritual deja un artefacto inseguro y el

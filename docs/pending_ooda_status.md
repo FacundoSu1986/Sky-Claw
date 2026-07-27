@@ -834,8 +834,10 @@ documento y se marcan cerrados acá a medida que se implementen:
   usa `kill_and_reap`/tree-kill en vez de `proc.kill()` pelado en timeout).
 - **Medio:** **U-06 cerrado PARCIALMENTE** (#375 — solo DynDOLOD; Wrye Bash y
   BodySlide siguen abiertos, ver addendum abajo), **U-07 cerrado** (#355
-  — Job Object kill-on-close en DynDOLOD, base de U-02), U-08 (sin
-  reconciliación de arranque / clon parcial, abierto), **U-09 cerrado** (#376 —
+  — Job Object kill-on-close en DynDOLOD, base de U-02), **U-08 cerrado
+  PARCIALMENTE** (#PENDIENTE_PR_U08 — `clone()`/`_materialize` autolimpian el
+  parcial ante fallo sync y cancelación; el reconciliador de arranque sigue
+  abierto, ver addendum abajo), **U-09 cerrado** (#376 —
   ver addendum abajo), **U-10 cerrado** (#357 —
   `*TimeoutError` dedicadas en Wrye Bash/BodySlide/Pandora).
 - **Bajo:** **U-11 cerrado** (#359 — `run_capture` ya no enmascara
@@ -906,6 +908,49 @@ cobertura directa del runner (incluidas las guardas previas como regresión).
   más matizada (p. ej. existencia del plugin como condición dura y el mtime solo
   informativo) y tocar tests que hoy afirman `success=True` sin crear el plugin
   en disco. Follow-up en su propio PR.
+
+### Addendum (U-08) — cierre PARCIAL: `clone()` self-cleaning, reconciliador de arranque queda abierto
+
+U-08 lista dos mecanismos con la misma raíz (una cancelación/muerte durante
+`clone()`/`_materialize` deja un clon parcial en `.skyclaw_sandbox/`): (1)
+que `_materialize` no se autolimpie, y (2) la falta de un reconciliador de
+arranque que barra lo que (1) no puede prevenir en origen.
+
+**Cerrado en #PENDIENTE_PR_U08 — mitad (1), las dos causas verificadas del clon parcial:**
+
+1. **`ProfileSandbox._materialize` (`profile_sandbox.py`) no tenía
+   try/except.** Un `OSError` a mitad de cualquiera de los 4 `copytree`
+   (disco lleno, permiso denegado) dejaba el directorio con lo ya copiado
+   huérfano para siempre — sin dueño ni referencia. Cero tests cubrían este
+   camino. Ahora el cuerpo corre envuelto en `try/except BaseException:
+   _rmtree_force(clone.root); raise`.
+2. **`run_ritual_in_sandbox` (`sandbox_run.py`) hacía `clone = await
+   sandbox.clone()` fuera del `try` que maneja `CancelledError`.** `clone()`
+   corre `_materialize` vía `asyncio.to_thread`; cancelar la corrutina que lo
+   espera **no interrumpe el hilo** — mismo mecanismo que F2 (auditoría
+   2026-07-18), ya resuelto para `promote()` en
+   `sky_claw/app/orchestrator/sandbox_promotion.py` (shield + observar
+   desenlace real antes de limpiar). Se aplicó el mismo patrón: `clone()` se
+   agenda como task, se espera shieldeada, y ante cancelación se observa su
+   desenlace real (también shieldeado) en `_finalizar_clone_cancelado` antes
+   de decidir si hay que descartar un clon que sí llegó a materializarse.
+
+Ambos anclados con tests que fallan en rojo contra la base (monkeypatch de
+`shutil.copytree` para el primero; gate de `asyncio.Event` simulando la
+ventana en la que el hilo de `_materialize` sigue vivo tras la cancelación,
+para el segundo — mismo patrón que `TestCancelacionDurantePromote` en
+`test_sandbox_promotion.py`).
+
+**Sigue ABIERTO — el reconciliador de arranque (mitad 2), y por qué no es un
+bloqueo técnico como U-01.** Barrer `*.rollback-*`/`.skyclaw_sandbox/*` que
+sobrevivieron a una muerte DURA del proceso (no a una cancelación cooperativa,
+que la mitad 1 ya cubre) necesita un hook de arranque. El único wiring
+existente de ese tipo (`reconcile_orphan_precache_flag`, U-03) se llama desde
+`app_context.py` — archivo que la coordinación vigente con el otro agente
+(trabajando lifecycle/GUI/shutdown, P0-1..P0-3/P1-1/P1-4/P1-7/watchdog) deja
+fuera de mi alcance. No es un diseño pendiente: es evitar la clase de colisión
+que el protocolo de coordinación existe para prevenir. Follow-up cuando se
+coordine el wiring.
 
 ### Addendum (U-09) — el estado de éxito-parcial del ritual de grass
 

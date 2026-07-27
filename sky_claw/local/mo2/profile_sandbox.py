@@ -297,23 +297,38 @@ class ProfileSandbox:
     # ------------------------------------------------------------------
 
     def _materialize(self, clone: SandboxClone) -> None:
-        """Copia byte-fiel de ambas áreas + baseline (``copy2`` preserva bytes y mtime)."""
+        """Copia byte-fiel de ambas áreas + baseline (``copy2`` preserva bytes y mtime).
+
+        U-08: self-cleaning ante un fallo SÍNCRONO de este hilo (disco lleno,
+        permiso denegado a mitad de un ``copytree``) — sin esto, el directorio
+        con lo ya copiado quedaba huérfano en el sandbox_root para siempre, sin
+        dueño ni referencia. **No cubre cancelación:** este método corre vía
+        ``asyncio.to_thread`` (ver ``clone()``); cancelar la corrutina que lo
+        espera no interrumpe el hilo, así que ese ``except`` nunca se dispara
+        en ese caso. Ese camino lo cubre ``run_ritual_in_sandbox``
+        (``sandbox_run.py``), que shieldea la task y observa su desenlace real
+        antes de limpiar — mismo patrón que F2 para ``promote()``.
+        """
         # Fail-closed ANTES de copiar: copytree seguiría un symlink del árbol
         # real y materializaría contenido de fuera del sandbox.
         self._reject_symlinks(clone.profile_source)
         self._reject_symlinks(clone.overwrite_source)
         clone.root.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(clone.profile_source, clone.profile_copy, copy_function=shutil.copy2)
-        if clone.overwrite_source.is_dir():
-            shutil.copytree(clone.overwrite_source, clone.overwrite_copy, copy_function=shutil.copy2)
-        else:
-            # Sin overwrite real todavía: el clon arranca con el área vacía y
-            # todo lo que el ritual escriba ahí saldrá como "added" en el diff.
-            clone.overwrite_copy.mkdir(parents=True)
-        # El baseline se copia DESDE las copias recién hechas para garantizar
-        # identidad bit a bit en t0 (diff y drift se miden contra esta foto).
-        shutil.copytree(clone.profile_copy, clone.profile_baseline, copy_function=shutil.copy2)
-        shutil.copytree(clone.overwrite_copy, clone.overwrite_baseline, copy_function=shutil.copy2)
+        try:
+            shutil.copytree(clone.profile_source, clone.profile_copy, copy_function=shutil.copy2)
+            if clone.overwrite_source.is_dir():
+                shutil.copytree(clone.overwrite_source, clone.overwrite_copy, copy_function=shutil.copy2)
+            else:
+                # Sin overwrite real todavía: el clon arranca con el área vacía y
+                # todo lo que el ritual escriba ahí saldrá como "added" en el diff.
+                clone.overwrite_copy.mkdir(parents=True)
+            # El baseline se copia DESDE las copias recién hechas para garantizar
+            # identidad bit a bit en t0 (diff y drift se miden contra esta foto).
+            shutil.copytree(clone.profile_copy, clone.profile_baseline, copy_function=shutil.copy2)
+            shutil.copytree(clone.overwrite_copy, clone.overwrite_baseline, copy_function=shutil.copy2)
+        except BaseException:
+            _rmtree_force(clone.root)
+            raise
 
     @classmethod
     def _tree_changes(cls, area: Area, old: pathlib.Path, new: pathlib.Path) -> tuple[FileChange, ...]:
