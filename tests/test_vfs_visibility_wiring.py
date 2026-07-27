@@ -273,6 +273,62 @@ async def test_loot_runner_inyectado_bypasea_el_broker_y_mantiene_el_gate(
     assert reporte.blocks_mutations is True
 
 
+class _RunnerPorPerfil:
+    """Stub de un runner VFS-aware (``BrokeredLootRunner``/``VfsRequiredLootRunner``).
+
+    Lo que los distingue de un runner corriente es el factory ``for_profile``
+    declarado **en la clase** — por eso acá es un método real y no un
+    ``MagicMock``, que fabricaría el atributo sin declararlo en el tipo.
+    """
+
+    def for_profile(self, profile: str) -> _RunnerPorPerfil:
+        return self
+
+    async def sort(self, *, update_masterlist: bool = False) -> Any:
+        raise AssertionError("el preflight no debe ejecutar el sort")
+
+
+async def test_runner_inyectado_por_perfil_no_aplica_el_gate(tmp_path: pathlib.Path) -> None:
+    """El CUARTO cuadrante de ``_routes_through_physical_data``: un runner
+    inyectado que **sí** declara ``for_profile`` es VFS-aware, así que
+    ``_ensure_loot_runner`` lo re-instancia por perfil y el sort corre DENTRO de
+    la USVFS — el gate no debe aplicar, igual que sin runner inyectado.
+
+    Sin este test la tabla de verdad queda con un hueco: una simplificación a
+    ``self._loot_runner is not None or self._vfs_broker is None`` pasaría los
+    otros tres casos y solo rompería éste, encendiendo el gate bajo un
+    ``BrokeredLootRunner`` inyectado → ROJO falso que bloquea un sort correcto.
+    """
+    from sky_claw.local.mo2.load_order import LoadOrderPaths
+    from sky_claw.local.tools.loot_service import LootSortingService
+
+    skyrim, mo2 = _instancia(tmp_path)  # Data pelado: el escenario que daría rojo
+    load_order = MagicMock()
+    load_order.resolve.return_value = LoadOrderPaths(
+        files=(mo2 / "profiles" / "Default" / "plugins.txt",), sources=("mo2_profile",)
+    )
+    runner = _RunnerPorPerfil()
+    svc = LootSortingService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=_resolver(skyrim=skyrim, mo2=mo2),
+        loot_runner=runner,
+        load_order_resolver=load_order,
+        vfs_broker=MagicMock(),
+    )
+
+    # Confirma la premisa: al declarar for_profile, se re-instancia por perfil
+    # (no se devuelve tal cual como el runner standalone del test hermano).
+    assert svc._ensure_loot_runner("Default") is runner.for_profile("Default")
+
+    reporte = await svc._ensure_preflight().run()
+
+    visibilidad = next(c for c in reporte.checks if c.name == "vfs_visibility")
+    assert visibilidad.status is PreflightStatus.GREEN
+    assert "no configurado" in visibilidad.summary.lower()
+    assert reporte.blocks_mutations is False
+
+
 async def test_loot_sin_broker_sigue_aplicando_el_gate(tmp_path: pathlib.Path) -> None:
     """Contracara del anterior: el fix del broker no debe apagar el gate en el
     camino standalone, que es justo el que U-01 protege."""

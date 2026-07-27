@@ -78,6 +78,31 @@ _DEFAULT_LOOT_TIMEOUT_SECONDS = 120
 _LOAD_ORDER_FILE_PRIORITY = ("loadorder.txt", "plugins.txt")
 
 
+def _is_per_profile_runner(runner: object) -> bool:
+    """True si *runner* declara el factory ``for_profile`` (runner VFS-aware).
+
+    Solo ``BrokeredLootRunner``/``VfsRequiredLootRunner`` lo implementan, así que
+    su presencia es lo único que certifica que el sort va a correr DENTRO de la
+    USVFS. Se exige el factory también en la CLASE: ``MagicMock`` fabrica
+    atributos arbitrarios, y mirar solo la instancia confundiría un mock (o un
+    runner legacy) con esta extensión.
+
+    **Fuente única de esa detección.** La consultan los dos lugares que tienen
+    que coincidir:
+
+    * :meth:`LootSortingService._ensure_loot_runner` — qué runner construir.
+    * :meth:`LootSortingService._routes_through_physical_data` — si el gate de
+      visibilidad (U-01) aplica.
+
+    Si divergieran, el preflight opinaría sobre un modo de lanzamiento distinto
+    del que realmente va a correr: o un ROJO falso que bloquea un sort correcto
+    bajo USVFS, o el falso verde de U-01 reabierto en standalone. Tenerlo una
+    sola vez es lo que hace imposible ese desfasaje (clase de defecto #1 del
+    repo — ver ``AGENTS.md``).
+    """
+    return callable(getattr(type(runner), "for_profile", None)) and callable(getattr(runner, "for_profile", None))
+
+
 def _primary_load_order_file(paths: list[pathlib.Path]) -> pathlib.Path | None:
     """Elige el archivo de load order que mejor refleja el orden de plugins.
 
@@ -408,9 +433,7 @@ class LootSortingService:
         runner es VFS-aware. Sin runner inyectado, decide el broker.
         """
         if self._loot_runner is not None:
-            declared_factory = getattr(type(self._loot_runner), "for_profile", None)
-            for_profile = getattr(self._loot_runner, "for_profile", None)
-            return not callable(declared_factory) or not callable(for_profile)
+            return not _is_per_profile_runner(self._loot_runner)
         return self._vfs_broker is None
 
     def _ensure_loot_runner(self, profile: str = "Default") -> LootRunnerProtocol:
@@ -422,15 +445,15 @@ class LootSortingService:
         ``loot.exe`` is on the cwd/PATH.
         """
         if self._loot_runner is not None:
-            # MagicMock fabrica atributos arbitrarios: detectar el factory en
-            # la clase evita confundir un mock/runner legacy con esta extension.
-            declared_factory = getattr(type(self._loot_runner), "for_profile", None)
-            for_profile = getattr(self._loot_runner, "for_profile", None)
-            if not callable(declared_factory) or not callable(for_profile):
+            # La detección vive en _is_per_profile_runner (fuente única): este
+            # predicado y el de _routes_through_physical_data TIENEN que decidir
+            # lo mismo, o el gate de visibilidad opinaría sobre otro modo de
+            # lanzamiento que el real.
+            if not _is_per_profile_runner(self._loot_runner):
                 return self._loot_runner
             cached = self._brokered_runners.get(profile)
             if cached is None:
-                cached = for_profile(profile)
+                cached = self._loot_runner.for_profile(profile)  # type: ignore[attr-defined]
                 self._brokered_runners[profile] = cached
             return cached
 
