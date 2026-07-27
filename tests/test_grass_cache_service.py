@@ -645,6 +645,37 @@ async def test_teardown_limpio_no_ensucia_el_journal(tmp_path: pathlib.Path) -> 
     journal.commit_transaction.assert_awaited_once_with(77)
 
 
+async def test_teardown_incompleto_se_registra_aunque_el_ritual_falle(tmp_path: pathlib.Path) -> None:
+    """U-09 (review Qodo): la constancia NO se condiciona a que el run haya salido bien.
+
+    Se sugirió registrarla solo cuando ``exito`` es True, con el argumento de que
+    en una TX revertida el marcador sería semánticamente inexacto. El marcador
+    afirma "estos paths quedaron sin limpiar", no "el producto está OK": los
+    residuos son igual de reales cuando el run falló, y ahí el dato le sirve MÁS
+    al operador. Además ``result["teardown_failures"]`` tampoco se condiciona a
+    ``exito`` (comportamiento previo a este PR), así que suprimir el journalizado
+    dejaría al journal afirmando menos que el dict de retorno sobre el mismo run
+    — exactamente la divergencia que U-09 viene a cerrar.
+    """
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal)
+    colab["profile_manager"].build_config_mod.side_effect = GrassProfileError("el clon ya existe")
+    trabado = tmp_path / "mo2" / "profiles" / "SkyClaw-GrassCache"
+    colab["profile_manager"].teardown.return_value = [trabado]
+
+    resultado = await service.generate(_PAYLOAD)
+
+    # El ritual fracasó y la TX se revierte...
+    assert resultado["success"] is False
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    # ...pero los residuos en disco quedan registrados igual, en la misma TX.
+    entradas = _entradas_de_teardown(journal)
+    assert len(entradas) == 1
+    assert entradas[0]["metadata"]["paths"] == [str(trabado)]
+    # Y el journal no dice menos que el dict de retorno.
+    assert resultado["teardown_failures"] == [str(trabado)]
+
+
 async def test_journalizar_el_teardown_incompleto_es_best_effort(tmp_path: pathlib.Path) -> None:
     """El journal NUNCA enmascara el resultado del ritual (espejo de ``_journal_close``).
 
