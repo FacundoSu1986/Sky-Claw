@@ -279,10 +279,24 @@ class _RunnerPorPerfil:
     Lo que los distingue de un runner corriente es el factory ``for_profile``
     declarado **en la clase** — por eso acá es un método real y no un
     ``MagicMock``, que fabricaría el atributo sin declararlo en el tipo.
+
+    ``for_profile`` devuelve una instancia **distinta**, igual que el
+    ``BrokeredLootRunner`` real (crea un runner ligado a ese perfil). Es lo que
+    hace observable si el servicio realmente usó la fábrica: con un stub que
+    devolviera ``self``, "se fabricó por perfil" y "se devolvió el inyectado tal
+    cual" serían indistinguibles y la aserción pasaría por ambas ramas sin
+    probar nada (review CodeRabbit #385).
     """
 
+    def __init__(self) -> None:
+        self.perfiles_pedidos: list[str] = []
+        self.hijos: dict[str, _RunnerPorPerfil] = {}
+
     def for_profile(self, profile: str) -> _RunnerPorPerfil:
-        return self
+        self.perfiles_pedidos.append(profile)
+        hijo = _RunnerPorPerfil()
+        self.hijos[profile] = hijo
+        return hijo
 
     async def sort(self, *, update_masterlist: bool = False) -> Any:
         raise AssertionError("el preflight no debe ejecutar el sort")
@@ -317,9 +331,19 @@ async def test_runner_inyectado_por_perfil_no_aplica_el_gate(tmp_path: pathlib.P
         vfs_broker=MagicMock(),
     )
 
-    # Confirma la premisa: al declarar for_profile, se re-instancia por perfil
-    # (no se devuelve tal cual como el runner standalone del test hermano).
-    assert svc._ensure_loot_runner("Default") is runner.for_profile("Default")
+    # Confirma la premisa: al declarar for_profile en la CLASE, el servicio usa
+    # la fábrica y devuelve el runner LIGADO AL PERFIL — no el inyectado tal
+    # cual, que es lo que hace el test hermano de arriba con un runner sin
+    # for_profile. Se comprueba por identidad del hijo y por la llamada
+    # registrada, sin volver a invocar la fábrica en la aserción (hacerlo la
+    # volvería trivialmente cierta).
+    elegido = svc._ensure_loot_runner("Default")
+    assert runner.perfiles_pedidos == ["Default"]
+    assert elegido is runner.hijos["Default"]
+    assert elegido is not runner
+    # Y se cachea por perfil: la segunda llamada no vuelve a fabricar.
+    assert svc._ensure_loot_runner("Default") is elegido
+    assert runner.perfiles_pedidos == ["Default"]
 
     reporte = await svc._ensure_preflight().run()
 
