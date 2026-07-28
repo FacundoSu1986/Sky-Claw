@@ -509,13 +509,18 @@ def setup_logging(
             # rastro legible. getattr en vez de isinstance(io.TextIOWrapper):
             # streams inyectados en tests (io.StringIO) no tienen reconfigure()
             # y no deben romper. callable() confirma que el método existe, pero
-            # no que acepte errors= — un stream de terceros con otra firma
-            # levantaría TypeError y abortaría setup_logging() entero por un
-            # detalle de la consola, justo lo que este bloque existe para evitar.
+            # no qué incompatibilidad conocida puede exponer. Esas variantes
+            # son best-effort; un fallo ajeno se registra y se propaga para no
+            # declarar sano un sink de consola potencialmente roto.
             reconfigure = getattr(stream, "reconfigure", None)
             if callable(reconfigure):
-                with contextlib.suppress(TypeError, ValueError, OSError):
+                try:
                     reconfigure(errors="backslashreplace")
+                except (TypeError, ValueError, OSError, AttributeError, RuntimeError):
+                    pass
+                except Exception:
+                    logger.exception("Fallo inesperado al reconfigurar el stream de consola")
+                    raise
             console_handler = logging.StreamHandler(stream)
             console_handler.setFormatter(
                 logging.Formatter("%(asctime)s [%(levelname)s] [%(correlation_id)s] %(name)s: %(message)s")
