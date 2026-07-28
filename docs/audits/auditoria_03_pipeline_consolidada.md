@@ -190,7 +190,7 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > comentarios que justificaban `target_files=[]`/`snapshots=[]` con la premisa falsa
   > (`wrye_bash_service` ×2, `system_tools.run_bodyslide_batch`) ya dicen que el pendiente
   > es de alcance, no de imposibilidad.
-  > **Estado (#393): CERRADO SOLO PARA WRYE BASH.** `wrye_bash_service.py` implementa el
+  > **Estado (#397): CERRADO SOLO PARA WRYE BASH.** `wrye_bash_service.py` implementa el
   > remedio exacto que este ítem describía: el lock externo (`Bashed Patch, 0.esp`) pasa a
   > llevar `target_files=self._rollback_target_files(runner)` (ruta resuelta desde
   > `runner.config.game_path`, misma fuente que ya usaba el manifiesto — no una tercera vía
@@ -211,12 +211,51 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > disco. Es la MISMA limitación que ya tiene `synthesis_service.py`
   > (`target_esp.exists()` gatea su propio snapshot) — no algo que U-04 introduce ni deba
   > resolver distinto. Ancla explícita: `test_fallo_sin_patch_previo_no_crashea`.
-  > **Pandora queda deliberadamente fuera de este PR.** Su salida es un árbol de
-  > directorios (behavior graphs), no un archivo único: el mecanismo correcto es
-  > `DirectoryRollback` (move-aside), no `target_files` de `SnapshotTransactionLock` —son
-  > dos primitivas de rollback distintas sobre la parte más riesgosa del backlog (mutar
-  > datos del usuario), y mezclarlas en un mismo PR duplica la superficie de review de
-  > exactamente lo que hay que revisar con más cuidado. Sigue abierto, PR propio.
+  > **Pandora quedó deliberadamente fuera de ese PR** y se cerró en el siguiente (abajo):
+  > su salida es un árbol de directorios (behavior graphs), no un archivo único, así que el
+  > mecanismo correcto es `DirectoryRollback` (move-aside) y no `target_files` de
+  > `SnapshotTransactionLock` — son dos primitivas distintas sobre la parte más riesgosa del
+  > backlog (mutar datos del usuario), y mezclarlas en un mismo PR duplicaba la superficie
+  > de review de exactamente lo que hay que revisar con más cuidado.
+  > **Estado (Pandora): CERRADO PARA EL MODO `Pandora_Output`; el modo `Data` queda
+  > abierto y acotado.** Cierra la mitad que el PR de Wrye Bash dejó abierta a
+  > propósito. La causa raíz es la misma —los dos mecanismos de rollback restauran sólo en
+  > la rama de excepción, y un `PandoraResult(success=False)` sale limpio del `async
+  > with`—, así que el puente es el mismo: `_RunFallidoError` DENTRO del context. Lo que
+  > cambia es la primitiva, y es el motivo por el que fueron dos PRs: la salida de Pandora
+  > es un **árbol** de behavior graphs, no un archivo, así que va `DirectoryRollback`
+  > (move-aside O(1)) y no `target_files` del `SnapshotTransactionLock`. Ambos modos de
+  > fallo cubiertos: exit non-zero (el `raise` nuevo) y timeout (`PandoraTimeoutError`, que
+  > ya elevaba desde U-10 — el move-aside lo restaura sin código dedicado).
+  > **La restricción de seguridad, que el ítem no anticipaba.** `DirectoryRollback`
+  > **renombra el directorio entero**, así que sólo es correcto sobre uno que la
+  > herramienta regenera por completo. De las candidatas de `pandora_output_candidates`,
+  > eso deja fuera al `Data` del juego (tiene todo el setup de mods del usuario, del que
+  > Pandora escribe una fracción) y al dir del exe (tiene el ejecutable que está por
+  > correr): revertirlos sería un remedio peor que la enfermedad. `pandora_rollback_dirs`
+  > devuelve el subconjunto **estricto** que sí se puede —los `Pandora_Output`— y el test
+  > lo afirma contra `pandora_output_candidates`, no contra una lista escrita a mano, para
+  > que agregar una raíz de salida obligue a decidir si es revertible.
+  > **Y una raíz de salida que faltaba:** `game/Pandora_Output`. `PandoraRunner.run_pandora`
+  > pasa `cwd=str(self.config.game_path)` explícito, así que una herramienta que crea su
+  > dir de salida relativo al cwd aterriza ahí — el mismo hecho verificado en el spawn que
+  > hizo entrar el `cwd` en `dyndolod_staging_roots` (review CodeRabbit #388). Sin esa raíz
+  > el rollback habría protegido un lugar donde Pandora quizá no escribió.
+  > **Ventaja sobre el hermano de Wrye Bash:** el move-aside no tiene la limitación del
+  > primer run. Sin salida previa, "volver al estado anterior" es borrar el parcial, y eso
+  > no necesita backup — `test_primer_run_fallido_borra_el_parcial` lo fija.
+  > **Lo que NO cubre, dicho sin eufemismo (review Codex #399).** `pandora_output_candidates`
+  > enumera `game/Data` como destino posible: cuando la versión instalada de Pandora escribe
+  > los `.hkx` directo ahí, un run fallido los deja en disco. Ese modo **no** queda cubierto.
+  > No es un recorte por comodidad ni algo que se pueda cerrar con el mismo mecanismo: el
+  > move-aside sobre `Data` es inadmisible (arrastraría todo el setup de mods), y el remedio
+  > que el review propone —"rollback de grano fino sobre los subárboles propios de Pandora"—
+  > exige **enumerar qué subárboles de `Data` son de Pandora**, dato que el repo hoy no
+  > tiene en ninguna parte. Inventar esa lista sería peor que la limitación: un rollback que
+  > cree cubrir y borre archivos de otros mods. Queda como follow-up con prerequisito
+  > explícito (obtener el manifiesto de salida real de Pandora, p. ej. de su propio log) y
+  > anclado en `test_el_rollback_no_toca_el_data_del_juego_ni_el_dir_del_exe`, que fija el
+  > límite en vez de dejarlo implícito.
 
 ### U-05 — VRAMr: timeout orfana nietos (usa `proc.kill()` pelado, no el tree-kill) · `[Z]` · Subprocesos/Zombies
 
