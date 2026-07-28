@@ -868,15 +868,25 @@ async def test_snapshot_lock_heartbeat_keeps_lease_alive(
     renew_real = lock_manager.renew_lock
 
     async def _contar_renovaciones(*args: object, **kwargs: object) -> bool:
+        """Cuenta SOLO las renovaciones exitosas (review CodeRabbit #392).
+
+        ``renew_lock`` devuelve ``False`` cuando el lease se perdió, y
+        ``_heartbeat_loop`` recién marca ``_lease_lost`` **después** de que este
+        wrapper retorna (``locks.py``, rama ``if not renewed``). Contar un
+        ``False`` liberaría la espera en esa ventana, con ``ctx.lease_lost``
+        todavía en ``False``: el test seguiría con el lease ya perdido.
+        """
         nonlocal renovaciones
         resultado = await renew_real(*args, **kwargs)  # type: ignore[arg-type]
-        renovaciones += 1
-        if renovaciones >= _HB_RENOVACIONES:
-            renovado.set()
+        if resultado:
+            renovaciones += 1
+            if renovaciones >= _HB_RENOVACIONES:
+                renovado.set()
         return resultado
 
     monkeypatch.setattr(lock_manager, "renew_lock", _contar_renovaciones)
 
+    inicio = time.monotonic()
     async with SnapshotTransactionLock(
         lock_manager=lock_manager,
         snapshot_manager=snapshot_manager,
@@ -888,6 +898,21 @@ async def test_snapshot_lock_heartbeat_keeps_lease_alive(
             await asyncio.wait_for(renovado.wait(), timeout=_HB_TTL * 10)
         except TimeoutError:  # pragma: no cover - solo si el heartbeat se rompe
             pytest.fail(f"el heartbeat no renovó: {renovaciones} de {_HB_RENOVACIONES} renovaciones")
+
+        # El conteo de renovaciones sincroniza, pero NO prueba por sí solo que la
+        # corrida haya durado más que el TTL (review Codex #392): si la cadencia
+        # del heartbeat regresara —el intervalo tiene piso en 0.05s—, las 4
+        # renovaciones podrían completarse ANTES del TTL, y entonces al intruso
+        # lo rechazaría el lease original sin renovar, no el heartbeat. El test
+        # pasaría sin ejercer su propia premisa. Se verifica la duración aparte.
+        #
+        # Es una cota INFERIOR, así que un event loop starved solo la hace más
+        # cierta: no reintroduce la fragilidad que este cambio vino a sacar.
+        transcurrido = time.monotonic() - inicio
+        assert transcurrido >= _HB_TTL, (
+            f"la corrida duró {transcurrido:.3f}s, menos que el TTL ({_HB_TTL}s): "
+            "el lease original todavía era válido, así que el intruso no prueba nada"
+        )
 
         assert ctx.lease_lost is False
         with pytest.raises(LockAcquisitionError):
