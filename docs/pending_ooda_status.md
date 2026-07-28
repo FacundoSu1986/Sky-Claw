@@ -852,10 +852,12 @@ Se enlaza acá para que este inventario canónico siga siendo el punto único de
 triage (regla de `AGENTS.md`) — los ítems U-01…U-12 se triagean desde ese
 documento y se marcan cerrados acá a medida que se implementen:
 
-- **Alto:** **U-01 cerrado PARCIALMENTE** (#381 — sensor de
-  visibilidad de mods: el preflight ya detecta el run standalone contra el juego
-  base; la reconciliación del modelo de SALIDA sigue abierta, ver addendum
-  abajo), **U-02 cerrado** (#360 — ver addendum abajo), **U-03 cerrado**
+- **Alto:** **U-01 cerrado** (#381 el punto 1 — sensor de visibilidad de mods:
+  el preflight detecta el run standalone contra el juego base; #388 el punto 2 —
+  modelo de SALIDA reconciliado en `output_targets`; 2026-07-28 el punto 3 —
+  la invariante documentada para operadores en
+  [`operations/deployment_standalone_usvfs.md`](operations/deployment_standalone_usvfs.md)),
+  **U-02 cerrado** (#360 — ver addendum abajo), **U-03 cerrado**
   (#356 — `PrecacheGrass.txt` huérfano se barre en el arranque), U-04 (Wrye
   Bash/Pandora sin rollback de salida, abierto), **U-05 cerrado** (#354 — VRAMr
   usa `kill_and_reap`/tree-kill en vez de `proc.kill()` pelado en timeout).
@@ -1379,8 +1381,10 @@ resuelve rutas relativas y busca su INI, así que no se hizo de arrastre.
 
 ### Qué queda abierto
 
-- **U-01 punto (3)**: documentar la invariante de deployment en `docs/` (el módulo ya
-  la enuncia; falta la versión para operadores).
+- **U-01 punto (3)**: **cerrado el 2026-07-28** —
+  [`docs/operations/deployment_standalone_usvfs.md`](operations/deployment_standalone_usvfs.md),
+  enlazada desde el portal y desde el índice de operaciones. Con esto U-01 queda
+  cerrado en sus tres puntos.
 - **U-04**: desbloqueado y **no implementado**. Sus dos prerequisitos están cerrados —
   el path ya no es ambiguo, y **U-10 también estaba cerrado** (`WryeBashTimeoutError` /
   `BodySlideTimeoutError` ya se elevan, así que la excepción propaga por el context

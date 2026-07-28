@@ -1,0 +1,155 @@
+# Sky-Claw corre standalone y no hereda la USVFS de MO2
+
+> **Audiencia:** operadores que instalan y corren Sky-Claw contra una instancia
+> de Mod Organizer 2.
+>
+> **Estado:** Implementado. La invariante es de deployment: describe cómo se
+> lanza Sky-Claw hoy, no una configuración a elegir.
+>
+> **Fuentes canónicas:** `sky_claw/local/tools/output_targets.py`,
+> `sky_claw/local/tools/_process.py`, `sky_claw/local/mo2/vfs.py`,
+> `sky_claw/local/mo2/brokered_loot.py`,
+> `sky_claw/local/validators/vfs_visibility.py`.
+>
+> **Última verificación:** 2026-07-28 sobre `origin/main` `9e5232c`.
+
+## La invariante, en una frase
+
+Sky-Claw **no se lanza desde Mod Organizer 2**. Corre como su propio proceso, y
+las herramientas del pipeline (LOOT, xEdit, Wrye Bash, Pandora, BodySlide,
+Synthesis, DynDOLOD/TexGen) las spawnea **directo**. Por lo tanto **ninguna
+hereda la USVFS de MO2**: leen y escriben en el filesystem **físico**, no en el
+árbol virtual que ves en la interfaz de MO2.
+
+El mecanismo es visible en el código, no una convención: los runners lanzan sus
+subprocesos con `asyncio.create_subprocess_exec` a través de
+`sky_claw/local/tools/_process.py`. El único proceso que Sky-Claw sí lanza a
+través del proxy `ModOrganizer.exe` es **el juego** (`sky_claw/local/mo2/vfs.py`).
+
+## Por qué te importa: el modo de falla silencioso
+
+La USVFS de MO2 es un árbol virtual. Existe **solo dentro de los procesos que
+MO2 lanza**. Un proceso externo que abra `<juego>/Data` ve el `Data` real del
+disco.
+
+Si tu instancia de MO2 está en USVFS estándar (el default) y el árbol de mods
+**no está materializado a disco**, entonces:
+
+- los tools leen el `Data` del juego base, **sin un solo mod**;
+- LOOT ordena una lista casi vacía, Wrye Bash arma un Bashed Patch sin
+  contenido, DynDOLOD genera LODs del juego base;
+- **cada paso termina con éxito.** No hay error: las herramientas hicieron bien
+  su trabajo sobre el árbol que les tocó ver.
+
+Es una falla silenciosa: el pipeline reporta verde de punta a punta y el
+resultado no sirve.
+
+## Qué hace Sky-Claw para detectarlo
+
+Antes de cada ritual mutante, el preflight corre un **sensor de visibilidad de
+mods** (`sky_claw/local/validators/vfs_visibility.py`). Compara los plugins que
+el perfil activa contra los que son visibles en el `Data` que el tool va a leer.
+
+El criterio es **deliberadamente conservador**: corta en ROJO solo ante el caso
+inequívoco — el perfil activa N plugins de mods y **ninguno** es visible. Eso
+distingue "la USVFS no se heredó" de una materialización parcial (algunos mods
+desplegados y otros no), que pasa en verde a propósito: frenar un setup que hoy
+funciona sería peor que dejar pasar un caso ambiguo.
+
+**Consecuencia operativa:** un preflight en verde te dice que *algo* del perfil
+es visible, **no** que todo lo esté. Con una materialización parcial, el sensor
+no te va a avisar.
+
+## Qué tenés que hacer
+
+**Materializá a disco el árbol de mods del perfil activo**, en el `Data` del
+juego, antes de correr rituales. Cómo hacerlo depende de tu instalación de MO2 y
+queda fuera de esta página: lo que Sky-Claw necesita es el resultado — que los
+plugins y assets del perfil estén **físicamente** bajo el `Data` que las
+herramientas van a abrir.
+
+Lanzar Sky-Claw *desde* MO2 para heredar la USVFS **no es un modo soportado**.
+
+### Cómo verificarlo vos mismo
+
+Abrí `<juego>/Data` con el explorador de archivos, fuera de MO2, y buscá un
+plugin que sepas que viene de un mod (no de un DLC oficial). Si no está, tus
+herramientas tampoco lo van a ver.
+
+Los `.esm` base y los archivos `cc*` de Creation Club **no sirven como prueba**:
+viven en `Data` con o sin VFS.
+
+## Dónde escribe cada herramienta
+
+Corolario de la misma invariante: hay exactamente **dos** formas de que la salida
+de una herramienta llegue al `overwrite` de MO2.
+
+- **(a) Redirección USVFS** — el tool escribe en `Data/x` y la VFS lo desvía a
+  `overwrite/x`. **Exige heredar la VFS**, así que para Sky-Claw es
+  **inalcanzable**.
+- **(b) Ruta explícita** — al tool se le pasa la ruta de salida en su línea de
+  comandos y escribe ahí **físicamente**. Funciona standalone y es perfectamente
+  válido.
+
+De ahí la regla: **el `overwrite` solo se alcanza por (b), nunca por (a)**. Quien
+no lleva su ruta de salida en el comando escribe relativo a su directorio de
+trabajo.
+
+| Herramienta | Dónde aterriza su salida |
+|---|---|
+| **Wrye Bash** | `<juego>/Data/Bashed Patch, 0.esp` — sin ruta en el comando, `cwd` = juego |
+| **Pandora** | `<juego>/Data`, el directorio del ejecutable, o `<dir del exe>/Pandora_Output`. Cuál de los tres depende de la versión/config de Pandora |
+| **BodySlide** | `<juego>/<output_path>` — el `-o` es **relativo** al `cwd`, que es el juego |
+| **Synthesis** | Ruta explícita (caso (b)): el `overwrite` de MO2 si existe, si no `<mo2>/mods/Synthesis Output` |
+| **DynDOLOD / TexGen** | Staging crudo (`DynDOLOD_Output` / `TexGen_Output`) bajo la raíz MO2, el directorio del exe o el directorio de trabajo del proceso; los mods empaquetados van a `<mo2>/mods/` |
+| **LOOT** | No produce artefacto nuevo: reordena el `plugins.txt` / `loadorder.txt` del perfil |
+| **xEdit (QuickAutoClean)** | Reescribe el plugin **in-place**, sobre su propia ruta de entrada |
+
+Para Pandora y BodySlide, que el destino sea una lista o un parámetro es
+**ambigüedad de la herramienta** (versión, configuración), no del modo de
+lanzamiento.
+
+La fuente única de estas rutas es `sky_claw/local/tools/output_targets.py`; esta
+tabla es su versión legible, no una segunda definición.
+
+### Consecuencia: qué se puede revertir y qué no
+
+El destino de salida define qué se puede deshacer cuando un ritual falla:
+
+- **DynDOLOD / TexGen** — el destino es un directorio propio, y se protege con un
+  move-aside que se restaura ante fallo.
+- **Wrye Bash** — el destino es **un archivo** con nombre canónico, así que se
+  puede snapshotear antes de correr y restaurar si el run falla.
+  *Estado: implementado en el PR #395; hasta que ese PR esté mergeado, tratá a
+  Wrye Bash como el caso de abajo.*
+- **Pandora y BodySlide** — escriben en **directorios compartidos** (el `Data` del
+  juego, el directorio del ejecutable). **No hay rollback automático:** un fallo a
+  mitad de camino deja la salida parcial en disco. Es una limitación conocida y
+  declarada, no un descuido — revertir automáticamente un directorio compartido
+  sería más destructivo que el fallo que intenta reparar. Ante un run fallido de
+  Pandora o BodySlide, asumí que el árbol quedó modificado.
+
+Si el proceso muere de forma dura (corte de luz, cierre forzado) durante un
+ritual, mirá [Recuperación](recovery.md). *Estado: la reconciliación automática
+de los backups que quedan a mitad de camino llega en el PR #396; hasta
+entonces, el residuo queda en disco para revisión manual.*
+
+## La única excepción: el broker VFS
+
+Sky-Claw tiene **un** camino que sí corre bajo la USVFS: el broker
+(`sky_claw/local/mo2/brokered_loot.py`), que despacha trabajos a un worker
+lanzado dentro del entorno de MO2.
+
+Su cobertura productiva es acotada y conviene no sobreestimarla: el worker acepta
+exactamente **dos tipos de trabajo**, `health` (atestación) y `loot_sort`
+(`sky_claw/local/mo2/vfs_worker.py`). Todo lo demás del pipeline corre standalone,
+con las implicancias de arriba.
+
+## Ver también
+
+- [Recuperación](recovery.md) — qué hacer ante un startup parcial, una
+  cancelación o un ritual fallido.
+- [MO2/USVFS y subprocesos](../architecture/mo2_vfs_subprocesses.md) — la vista
+  de arquitectura del mismo mecanismo.
+- [Pipeline de Skyrim](../pipeline/skyrim_sop.md) — el orden de stages y las
+  reglas por herramienta.
