@@ -9,19 +9,20 @@ distribuido compartido, mientras el guard M-04 (compartido, expuesto también po
 ``validate_plugin_limit``) se **inyecta** desde el supervisor en vez de vivir acá.
 
 Espeja a :class:`~sky_claw.local.tools.pandora_service.PandoraPipelineService`:
-construcción perezosa del runner desde el ``PathResolutionService`` y **snapshot
-diferido** (``target_files=[]``). **El motivo del diferimiento NO es que el destino
-sea ambiguo** (U-01 parte 2 desmontó esa premisa: ``bash.py`` corre con
-``cwd=game_path``, sin ruta de salida en el comando y sin heredar la USVFS, así que
-``Bashed Patch, 0.esp`` cae en el ``Data`` **físico** del juego — ver
-``output_targets.bashed_patch_target``); lo que falta es el remedio de **U-04**. La
-protección que aplica hoy es la
-*serialización*: un lock **anidado** (``Bashed Patch, 0.esp`` externo + ``load-order``
-interno, mismo patrón que ``grass_cache_service``) que serializa Wrye Bash tanto contra
-otra corrida propia como contra un sort de LOOT — el Bashed Patch se arma del orden
-activo que LOOT reescribe. El preflight brutal (PR B) corre PRIMERO y la caja negra de
-vuelo (ActionManifest fail-closed + FlightReport best-effort, T-26/T-28, "PR C") se
-emite con ``journal`` opcional, espejando ``loot_service``. Con ambos, Wrye Bash queda
+construcción perezosa del runner desde el ``PathResolutionService``. A diferencia de
+Pandora, el destino del Bashed Patch **no es ambiguo** (U-01 parte 2 desmontó esa
+premisa: ``bash.py`` corre con ``cwd=game_path``, sin ruta de salida en el comando y
+sin heredar la USVFS, así que cae en el ``Data`` **físico** del juego — ver
+``output_targets.bashed_patch_target``), así que el lock **externo** lleva
+``target_files`` con esa ruta resuelta (U-04): un fallo real (exit non-zero o
+timeout) restaura el patch previo, no solo serializa la corrida. Un lock **anidado**
+(``Bashed Patch, 0.esp`` externo + ``load-order`` interno, mismo patrón que
+``grass_cache_service``) serializa Wrye Bash tanto contra otra corrida propia como
+contra un sort de LOOT — el Bashed Patch se arma del orden activo que LOOT
+reescribe; el interno queda con snapshot diferido porque Wrye Bash solo LEE ese
+recurso. El preflight brutal (PR B) corre PRIMERO y la caja negra de vuelo
+(ActionManifest fail-closed + FlightReport best-effort, T-26/T-28, "PR C") se emite
+con ``journal`` opcional, espejando ``loot_service``. Con todo esto, Wrye Bash queda
 al día con la disciplina de sus hermanos rituales (6/6 en preflight y caja negra).
 """
 
@@ -45,6 +46,7 @@ from sky_claw.local.tools.wrye_bash_runner import (
     BASHED_PATCH_NAME,
     WryeBashConfig,
     WryeBashExecutionError,
+    WryeBashResult,
     WryeBashRunner,
 )
 
@@ -68,6 +70,27 @@ class _ActionManifestError(Exception):
     del lock (antes de mutar) para que Wrye Bash NO proceda sin manifiesto — la
     caja negra no es opcional cuando el journal está cableado (espejo de
     ``loot_service``/``pandora_service._ActionManifestError``)."""
+
+
+class _RunFallidoError(Exception):
+    """Interno (U-04): un ``WryeBashResult`` con ``success=False`` se convierte en
+    excepción DENTRO del lock para disparar el rollback real de la salida.
+
+    ``SnapshotTransactionLock.__aexit__`` solo restaura en la rama de EXCEPCIÓN
+    (``should_rollback = force_rollback or (exc_type is not None and ...)``); un
+    exit non-zero que sale "limpio" del context manager no dispara nada aunque
+    ``target_files`` esté poblado. Mismo patrón ya probado en
+    ``synthesis_service`` (``if not result.success: raise ...`` dentro del lock).
+
+    Carga el ``WryeBashResult`` completo para que el ``except`` arme el MISMO
+    dict de salida que el camino no-excepcional (return_code/stdout/stderr/
+    duration_seconds) — el contrato de la tool no cambia, solo se le agrega el
+    rollback real que le faltaba.
+    """
+
+    def __init__(self, result: WryeBashResult) -> None:
+        self.result = result
+        super().__init__(result.stderr or result.stdout or f"exit code {result.return_code}")
 
 
 def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
@@ -212,6 +235,41 @@ class WryeBashPipelineService:
         game = self._path_resolver.get_skyrim_path() if self._path_resolver is not None else None
         return bashed_patch_target(game if isinstance(game, pathlib.Path) else None)
 
+    def _destino_desde_runner(self, runner: WryeBashRunner) -> pathlib.Path | None:
+        """Ruta del Bashed Patch derivada del ``config`` del runner, o ``None``.
+
+        **Fuente única de esa derivación** (review CodeRabbit #397). La consultan
+        los dos lugares que TIENEN que describir el mismo artefacto:
+        ``_rollback_target_files`` (qué se snapshotea para restaurar) y
+        ``_bashed_patch_target`` (qué se registra en el manifiesto). Solo difieren
+        en el fallback cuando no resuelve, así que la derivación en sí vive acá:
+        si divergieran, el rollback restauraría un archivo distinto del que la
+        caja negra dice haber tocado.
+
+        Se toma del ``config`` del runner y NO del resolver porque el agent tool
+        construye el servicio con runner inyectado y sin resolver.
+        """
+        game_path = getattr(runner.config, "game_path", None)
+        return bashed_patch_target(game_path if isinstance(game_path, pathlib.Path) else None)
+
+    def _rollback_target_files(self, runner: WryeBashRunner) -> list[pathlib.Path]:
+        """``target_files`` del lock EXTERNO — el snapshot/restore real de U-04.
+
+        Deriva de ``_destino_desde_runner``, la misma fuente que alimenta al
+        manifiesto, y se calcula justo antes de entrar al lock (con el runner ya
+        construido), así que el snapshot y la caja negra describen SIEMPRE el
+        mismo artefacto.
+
+        ``SnapshotTransactionLock`` solo toma snapshot de rutas que YA EXISTEN
+        (``__aenter__``, ``file_path.exists()``): con la lista vacía —primer run,
+        sin Bashed Patch previo— no hay nada que restaurar y un parcial fallido
+        puede quedar en disco. Es la misma limitación aceptada de
+        ``synthesis_service`` (``target_esp.exists()`` gatea el snapshot), no un
+        caso que U-04 deba resolver de otro modo.
+        """
+        destino = self._destino_desde_runner(runner)
+        return [destino] if destino is not None else []
+
     def ensure_runner(self) -> WryeBashRunner:
         """Asegura el ``WryeBashRunner`` (construcción perezosa desde el resolver).
 
@@ -261,31 +319,28 @@ class WryeBashPipelineService:
     def _bashed_patch_target(self, runner: WryeBashRunner) -> str:
         """Ruta del Bashed Patch para el ``files_touched`` del manifiesto.
 
-        Delega en ``output_targets.bashed_patch_target`` — la misma fuente que usa
-        ``_permission_targets``, para que el manifiesto y el sondeo de permisos no
-        puedan opinar sobre destinos distintos. Se toma del ``config`` del runner
-        (no del resolver) porque el agent tool construye el servicio con runner y
-        sin resolver. Si el game path no es resoluble, cae al nombre canónico: el
-        manifiesto igual registra QUÉ artefacto se tocó, aunque no la ruta absoluta.
+        Deriva de ``_destino_desde_runner`` — la misma fuente que alimenta el
+        ``target_files`` del rollback, para que la caja negra y el snapshot no
+        puedan opinar sobre destinos distintos. Si el game path no es resoluble,
+        cae al nombre canónico: el manifiesto igual registra QUÉ artefacto se
+        tocó, aunque no la ruta absoluta (el rollback, en cambio, se queda sin
+        target: no se puede snapshotear una ruta que no se resolvió).
         """
-        game_path = getattr(runner.config, "game_path", None)
-        destino = bashed_patch_target(game_path if isinstance(game_path, pathlib.Path) else None)
+        destino = self._destino_desde_runner(runner)
         return str(destino) if destino is not None else BASHED_PATCH_NAME
 
     async def _emit_action_manifest(self, target_file: str) -> int:
         """Construye y persiste el ActionManifest ANTES de mutar (T-26).
 
         Se llama DENTRO del lock, antes de ``generate_bashed_patch()``. Devuelve el id
-        de la transacción del journal para commit/rollback posterior. Snapshot diferido
-        (``target_files=[]`` en el lock) → ``snapshots=[]``, y el manifiesto registra
-        el artefacto tocado para auditoría, sin plan de restore.
+        de la transacción del journal para commit/rollback posterior.
 
-        **El motivo del diferimiento ya no es "el destino es dependiente del
-        entorno"** — esa premisa era falsa y U-01 parte 2 la desmontó: la salida cae
-        en el ``Data`` del juego, ruta única que ``_bashed_patch_target`` computa
-        acá mismo. Lo que falta es el remedio de **U-04**: pasar esa ruta como
-        ``target_files`` y forzar el rollback ante un resultado fallido. Queda
-        pendiente por alcance, no por imposibilidad de resolver el path.
+        El manifiesto siempre lleva ``snapshots=[]`` — es un concepto DISTINTO del
+        ``target_files`` de ``SnapshotTransactionLock`` (execute_pipeline): el
+        manifiesto solo registra QUÉ artefacto se tocó, para auditoría; el rollback
+        REAL de U-04 (restaurar el patch previo ante un fallo) lo hace el lock
+        externo, ya con ``target_files`` poblado desde la misma ruta que
+        ``_bashed_patch_target`` computa acá mismo.
 
         Raises:
             _ActionManifestError: Si begin_transaction/persist falla — Wrye Bash no
@@ -339,6 +394,52 @@ class WryeBashPipelineService:
             )
         except Exception:  # noqa: BLE001 — boundary best-effort del journal
             logger.error("Fallo al persistir el informe de vuelo de la TX %d", journal_tx_id, exc_info=True)
+
+    async def _cerrar_tx_tras_rollback(
+        self,
+        journal_tx_id: int | None,
+        lock: SnapshotTransactionLock | None,
+    ) -> str:
+        """Cierra la TX del journal SOLO si el rollback fue honesto (review Codex #397).
+
+        ``rollback_completed`` es ``False`` por DOS causas distintas —no había
+        snapshot que restaurar, o el restore **falló**— y en la rama de excepción
+        un restore fallido solo se loguea (``locks.py``: *"el caller NO puede
+        asumir que hubo rollback"*). Marcar la TX ``rolled_back`` en el segundo
+        caso afirmaría una recuperación que no ocurrió y **escondería de la
+        recuperación manual** un Bashed Patch corrupto que sigue en disco.
+
+        Criterio (el mismo de ``synthesis_service``, que ya lo resolvía así):
+        se cierra la TX si el rollback restauró TODO, o si no había nada que
+        restaurar; si había snapshot y el restore falló, la TX queda **PENDING**
+        a propósito y se loguea CRITICAL.
+
+        Fuente única para los CINCO handlers de ``execute_pipeline`` que cierran
+        la TX. Antes de U-04 ``target_files=[]`` hacía que nunca hubiera
+        snapshots, así que marcarla incondicionalmente era inofensivo en todos;
+        poblar ``target_files`` los expuso a la vez. Centralizarlo es lo que
+        impide que uno se corrija y los otros cuatro queden atrás.
+
+        Returns:
+            Descripción del desenlace, para el log del caller.
+        """
+        habia_snapshot = bool(lock is not None and lock.snapshots)
+        restaurado = bool(lock is not None and lock.rollback_completed)
+
+        if restaurado:
+            await self._mark_journal_rolled_back(journal_tx_id)
+            return "completado"
+        if not habia_snapshot:
+            await self._mark_journal_rolled_back(journal_tx_id)
+            return "sin snapshot previo que restaurar"
+
+        logger.critical(
+            "Rollback del Bashed Patch INCOMPLETO (TX %s): el parcial sigue en disco y la "
+            "transacción queda PENDING para recuperación manual. Archivos no restaurados: %s",
+            journal_tx_id,
+            (lock.rollback_failures if lock is not None else []) or "desconocidos",
+        )
+        return "FALLIDO — el parcial sigue en disco"
 
     async def _mark_journal_rolled_back(self, journal_tx_id: int | None) -> None:
         """Marca la TX del journal como rolled-back (best-effort).
@@ -433,14 +534,16 @@ class WryeBashPipelineService:
         #    "Bashed Patch después de LOOT" (review Codex #315; mismo patrón que grass).
         # Orden de adquisición FIJO (bashed-patch → load-order), consistente con grass
         # (grass-cache → load-order): nadie toma load-order primero, así que no hay
-        # deadlock. Snapshot diferido en ambos: sobre el load order porque Wrye Bash
-        # solo LEE (LOOT es quien lo snapshotea al mutarlo), y sobre el patch porque
-        # el remedio de U-04 todavía no está — NO porque el destino sea ambiguo (es el
-        # Data del juego; ver _bashed_patch_target y tools.output_targets).
+        # deadlock. Snapshot diferido en el INTERNO: Wrye Bash solo LEE el load order
+        # (LOOT es quien lo snapshotea al mutarlo). El EXTERNO SÍ lleva target_files
+        # (U-04): el destino ya no es ambiguo (es el Data del juego; ver
+        # _bashed_patch_target y tools.output_targets), así que un fallo real
+        # restaura el patch previo en vez de solo serializar la corrida.
         journal_tx_id: int | None = None
         # Una vez commiteada la TX, ninguna ruta posterior debe re-marcarla rolled-back
         # (una cancelación post-commit corrompería el audit trail — review Codex #249/#318).
         journal_committed = False
+        bashed_patch_lock: SnapshotTransactionLock | None = None
         try:
             async with (
                 SnapshotTransactionLock(
@@ -448,9 +551,9 @@ class WryeBashPipelineService:
                     snapshot_manager=self._snapshot_manager,
                     resource_id=self.RESOURCE_ID,
                     agent_id=self.AGENT_ID,
-                    target_files=[],  # snapshot diferido — ver docstring del módulo
+                    target_files=self._rollback_target_files(runner),
                     metadata={"source": "wrye_bash_bashed_patch", "profile": profile},
-                ),
+                ) as bashed_patch_lock,
                 SnapshotTransactionLock(
                     lock_manager=self._lock_manager,
                     snapshot_manager=self._snapshot_manager,
@@ -466,23 +569,26 @@ class WryeBashPipelineService:
                 if self._journal is not None:
                     journal_tx_id = await self._emit_action_manifest(self._bashed_patch_target(runner))
                 result = await runner.generate_bashed_patch()
-            # Locks liberados. Cerrar la caja negra según el resultado real del run.
+                if not result.success:
+                    # U-04: convertir el fallo en excepción DENTRO del lock — es la
+                    # única rama que dispara el rollback real de _RunFallidoError.
+                    # El except dedicado (abajo) reemplaza el post-procesamiento de
+                    # abajo para este caso (marca rolled-back, arma el mismo dict).
+                    raise _RunFallidoError(result)
+            # Locks liberados. Llegar acá implica éxito (el fallo ya se manejó arriba
+            # elevando _RunFallidoError): commitear y cerrar la caja negra.
             if journal_tx_id is not None and self._journal is not None:
-                if result.success:
-                    try:
-                        await self._journal.commit_transaction(journal_tx_id)
-                        journal_committed = True
-                    except Exception:  # noqa: BLE001 — boundary best-effort del journal
-                        logger.error(
-                            "Fallo al commitear la TX del journal %d tras el Bashed Patch exitoso",
-                            journal_tx_id,
-                            exc_info=True,
-                        )
-                    # T-28: cerrar la caja negra con el informe post-vuelo (best-effort).
-                    await self._emit_flight_report(journal_tx_id)
-                else:
-                    # Run non-zero: no commitear, marcar rolled-back (no dejar PENDING).
-                    await self._mark_journal_rolled_back(journal_tx_id)
+                try:
+                    await self._journal.commit_transaction(journal_tx_id)
+                    journal_committed = True
+                except Exception:  # noqa: BLE001 — boundary best-effort del journal
+                    logger.error(
+                        "Fallo al commitear la TX del journal %d tras el Bashed Patch exitoso",
+                        journal_tx_id,
+                        exc_info=True,
+                    )
+                # T-28: cerrar la caja negra con el informe post-vuelo (best-effort).
+                await self._emit_flight_report(journal_tx_id)
         except LockAcquisitionError as exc:
             # Contención en __aenter__, antes del manifiesto: journal_tx_id sigue None.
             logger.warning("Lock contention (bashed-patch/load-order): %s", exc)
@@ -497,6 +603,29 @@ class WryeBashPipelineService:
                 {"success": False, "reason": "ActionManifestFailed", "error": detail, "message": detail},
                 preflight_report,
             )
+        except _RunFallidoError as exc:
+            # U-04: __aexit__ de ambos locks ya corrió — el EXTERNO restauró el
+            # Bashed Patch previo si target_files tenía algo que snapshotear.
+            result = exc.result
+            desenlace = await self._cerrar_tx_tras_rollback(journal_tx_id, bashed_patch_lock)
+            logger.error(
+                "[FASE-6] Wrye Bash retornó código %d; rollback de salida %s. stderr: %s",
+                result.return_code,
+                desenlace,
+                result.stderr[:500],
+            )
+            message = result.stderr or result.stdout or ""
+            return _attach_preflight(
+                {
+                    "success": False,
+                    "message": message,
+                    "return_code": result.return_code,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "duration_seconds": result.duration_seconds,
+                },
+                preflight_report,
+            )
         except LockError as exc:
             # __aexit__ del lock puede lanzar LockLeaseLostError (renovación fallida /
             # lease expirado durante una corrida larga) u otros errores de la capa de
@@ -504,29 +633,34 @@ class WryeBashPipelineService:
             # el middleware que envuelve errores), así que sin este catch la excepción
             # burbujea como crash de dispatch. La pérdida de lease invalida la
             # exclusividad → reportar éxito mentiría: devolvemos success=False honesto.
-            # Si no se commiteó, cerrar la TX del journal (no dejar PENDING).
+            # Si no se commiteó, cerrar la TX — pero SOLO si el rollback fue honesto
+            # (ver _cerrar_tx_tras_rollback). Ojo: en pérdida de lease el rollback se
+            # SALTEA a propósito (otro agente pudo mutar), así que con snapshot
+            # presente la TX queda PENDING, que es lo correcto: la mutación sigue.
             if not journal_committed:
-                await self._mark_journal_rolled_back(journal_tx_id)
+                await self._cerrar_tx_tras_rollback(journal_tx_id, bashed_patch_lock)
             logger.error("[FASE-6] Error de la capa de lock durante Wrye Bash: %s", exc)
             detail = f"Lock error durante la generación del Bashed Patch: {exc}"
             return _attach_preflight({"success": False, "error": detail, "message": detail}, preflight_report)
         except WryeBashExecutionError as exc:
-            await self._mark_journal_rolled_back(journal_tx_id)
-            logger.error("[FASE-6] WryeBashExecutionError: %s", exc)
+            # Incluye WryeBashTimeoutError (U-10): con target_files poblado, el
+            # __aexit__ del lock externo ya intentó restaurar el patch previo.
+            desenlace = await self._cerrar_tx_tras_rollback(journal_tx_id, bashed_patch_lock)
+            logger.error("[FASE-6] WryeBashExecutionError: %s; rollback de salida %s", exc, desenlace)
             return _attach_preflight({"success": False, "error": str(exc), "message": str(exc)}, preflight_report)
         except asyncio.CancelledError:
             # Cancelación (shutdown/timeout del task): cerrar la TX del journal para no
             # dejarla PENDING (salvo que ya se commiteara, #249) y re-lanzar (review
             # Codex #318). Los __aexit__ de los locks ya liberaron.
             if not journal_committed:
-                await self._mark_journal_rolled_back(journal_tx_id)
+                await self._cerrar_tx_tras_rollback(journal_tx_id, bashed_patch_lock)
             raise
         except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
             # Red de seguridad final para cualquier error inesperado en la salida del
-            # lock/journal (no Lock* ni WryeBashExecutionError): no dejar la TX PENDING
-            # ni romper el contrato "siempre devolver dict".
+            # lock/journal (no Lock* ni WryeBashExecutionError): cerrar la TX solo si
+            # el rollback fue honesto, sin romper el contrato "siempre devolver dict".
             if not journal_committed:
-                await self._mark_journal_rolled_back(journal_tx_id)
+                await self._cerrar_tx_tras_rollback(journal_tx_id, bashed_patch_lock)
             logger.error("[FASE-6] Error inesperado durante Wrye Bash: %s", exc, exc_info=True)
             return _attach_preflight({"success": False, "error": str(exc), "message": str(exc)}, preflight_report)
 

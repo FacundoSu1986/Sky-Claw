@@ -153,6 +153,13 @@ async def test_handler_lease_perdida_devuelve_json_de_error(
     runner = _runner()
 
     class _LeaseLostLock:
+        # Espeja la superficie que el servicio consulta tras salir del context
+        # (``_cerrar_tx_tras_rollback``, U-04). ``snapshots=[]`` modela "no había
+        # patch previo que snapshotear" → la TX se cierra como siempre.
+        snapshots: list[object] = []
+        rollback_completed: bool = False
+        rollback_failures: list[str] = []
+
         def __init__(self, **kwargs: object) -> None:
             pass
 

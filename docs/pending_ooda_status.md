@@ -326,10 +326,13 @@ dominio, follow-up separado.
 árbol: *"Currently 1,684 mypy errors across ~30 modules"* (comentario
 desactualizado en número exacto, pero la exención sigue activa). Se migra de
 a un módulo por PR; sin fecha límite. **Avance 2026-07-21:** `local/fomod/*`
-migrado a `strict = true` (ver addendum del 2026-07-21). Candidato trivial
-para el próximo commit: `local/loot/*` ya pasa `strict` sin cambios de código
-(probado — 0 errores), solo falta moverlo de la lista `ignore_errors` a la
-`strict = true`.
+migrado a `strict = true` (ver addendum del 2026-07-21). **Avance 2026-07-28:**
+`local/loot/*` migrado también (ver addendum del 2026-07-28) — 0 errores, sin
+cambios de código. Quedan en `ignore_errors` los bloques grandes:
+`sky_claw.app.*` (gui/comms/agent/modes/orchestrator/scraper/web/db/security/core),
+`local.tools.*`, `local.xedit.*`, `local.mo2.*`, `local.validators.*`,
+`sky_claw.local.auto_detect`, `sky_claw.local.local_config`,
+`local.discovery.*`, `app_context`, `config` y `tools_installer`.
 
 ### 2.2 T-10/T-11 — BLE001 (except genérico) sin activar en la mayoría del árbol
 
@@ -808,14 +811,36 @@ Gates verdes: `mypy sky_claw/` (240 archivos, 0 issues), `ruff check` +
 comportamiento — anclado por los 51 tests de `fomod` existentes, que siguen
 verdes.
 
-**Próximo candidato (trivial):** `local/loot/*` ya pasa `strict` con 0 errores
-(probado con el mismo probe); su migración es solo mover la entrada en
-`pyproject.toml`, sin tocar código.
+**Candidato cerrado:** `local/loot/*` — **cerrado el 2026-07-28**,
+ver el addendum de esa fecha.
 
 **Nota de alcance:** la exención `BLE001` de `local/fomod/**`
 (`pyproject.toml`, per-file-ignores) es de T-10/T-11, un frente distinto de
 T-12 — no se toca acá (un cambio, un PR). `fomod/parser.py` conserva su
 `except Exception` de boundary de parsing.
+
+## Addendum (2026-07-28) — T-12: `local/loot/*` migrado a mypy strict
+
+Cierra el candidato que dejó abierto el addendum del 2026-07-21.
+`sky_claw.local.loot.*` sale de la lista `ignore_errors = true` y entra a
+`strict = true`. **0 errores expuestos**: los 4 módulos (`cli.py`,
+`masterlist.py`, `parser.py`, `version.py`, 589 líneas) ya estaban totalmente
+anotados, así que la migración no toca una sola línea de código productivo.
+
+**Por qué el cambio muerde de verdad** (una config que no falla es peor que
+ninguna): se verificó rojo→verde con un probe temporal. Una función sin anotar
+agregada a `loot/version.py` es **invisible** con el `pyproject.toml` de
+`main` (`Success: no issues found in 256 source files`) y con el cambio la
+caza `error: Function is missing a type annotation [no-untyped-def]`, un check
+que solo existe bajo `strict`. El probe se revirtió; no queda en el árbol.
+
+Detalle de implementación: la entrada se **mueve**, no se duplica. Dejarla en
+ambas listas apoyaría el resultado en el orden de resolución de secciones
+per-module de mypy para dos patrones de igual especificidad, que no está
+garantizado — el mismo motivo por el que `local/fomod/*` se movió en #348.
+
+Gates verdes: `mypy sky_claw/` (256 archivos, 0 issues), `ruff check` +
+`ruff format --check`, suite completa con **exit code 0**.
 
 ## Addendum — Auditoría 03 (Pipeline): backlog consolidado U-01…U-12
 
@@ -1364,6 +1389,107 @@ resuelve rutas relativas y busca su INI, así que no se hizo de arrastre.
 - **U-06** (Wrye Bash / BodySlide): desbloqueado y no implementado. El falso negativo
   que motivaba el diferimiento exigía una redirección USVFS que no puede ocurrir.
   QuickAutoClean sigue aplazado por su motivo propio (mtime), ajeno a U-01.
+
+---
+
+## Addendum (2026-07-28) — U-04 cerrado para Wrye Bash: rollback real de salida (#397)
+
+U-04 pasa de "desbloqueado" a **cerrado solo para Wrye Bash**. Pandora queda abierto
+deliberadamente (ver más abajo).
+
+### El diseño: puentear el fallo a excepción, no un mecanismo nuevo
+
+Verificado contra el código antes de escribir una línea: los dos mecanismos de
+rollback del repo (`SnapshotTransactionLock`, `DirectoryRollback`) **solo restauran
+en la rama de excepción** — `SnapshotTransactionLock.__aexit__` calcula
+`should_rollback = force_rollback or (exc_type is not None and ...)`, y
+`force_rollback` solo se fija en el constructor, no hay API para pedirlo desde el
+cuerpo. Un `WryeBashResult(success=False)` que sale del `async with` sin excepción
+—que es lo que pasaba hasta hoy— sale "limpio": ningún rollback dispara aunque
+`target_files` esté poblado.
+
+El remedio no inventa un mecanismo nuevo: replica el patrón que `synthesis_service.py`
+ya prueba en producción —`if not result.success: raise ...` dentro del lock—. Se
+agregó una excepción interna `_RunFallidoError` que carga el `WryeBashResult`
+completo, así el `except` dedicado arma el MISMO dict de salida que el camino
+no-excepcional (return_code/stdout/stderr/duration_seconds): el contrato de la tool
+no cambia, solo se le agrega el rollback que le faltaba.
+
+`target_files` del lock externo pasa a resolver la ruta real
+(`runner.config.game_path` vía `output_targets.bashed_patch_target` — la MISMA fuente
+que ya usaba el manifiesto, no una tercera vía que pudiera divergir de las otras dos:
+el patrón "hermanos" de este repo, aplicado un nivel más abajo).
+
+### Cubre los dos modos de fallo sin código separado
+
+- **Exit non-zero**: el `raise _RunFallidoError(result)` nuevo.
+- **Timeout**: `WryeBashTimeoutError` ya elevaba desde U-10 (cerrado antes, verificado
+  en #388). Con `target_files` ahora poblado, el `except WryeBashExecutionError`
+  **preexistente** empieza a disparar rollback solo — cero líneas nuevas para ese
+  camino. Es la prueba de que U-10 era realmente el prerequisito que declaraba ser.
+
+Verificado con archivos reales en disco (no mocks): un Bashed Patch previo con
+contenido conocido se restaura byte a byte tras un fallo simulado, en ambos modos
+(`test_fallo_non_zero_restaura_el_bashed_patch_previo`,
+`test_timeout_tambien_restaura_el_bashed_patch_previo`).
+
+### Limitación aceptada, anclada para que nadie la lea como bug
+
+En el **primer run** (sin Bashed Patch previo), `SnapshotTransactionLock` no toma
+snapshot de un archivo que no existe (`__aenter__` chequea `file_path.exists()`), así
+que un parcial fallido puede quedar en disco. Es la MISMA limitación que ya tiene
+`synthesis_service.py` (`target_esp.exists()` gatea su propio snapshot) — no algo que
+este cambio introduce ni que corresponda resolver distinto acá. Ancla explícita:
+`test_fallo_sin_patch_previo_no_crashea`.
+
+### Hallazgo de review (Codex #397): el journal mentía cuando el restore fallaba
+
+La primera pasada marcaba la TX del journal como `rolled_back` **incondicionalmente**
+en el handler nuevo. Codex vio el problema y verificarlo contra `locks.py` le dio la
+razón:
+
+```python
+# locks.py:639-641
+return self.rollback_attempted and bool(self.snapshots) and not self.rollback_failures
+```
+
+`rollback_completed=False` tiene **dos causas distintas** —no había snapshot, o el
+restore **falló**— y en la rama de excepción un restore fallido **solo se loguea**
+(el propio módulo lo advierte: *"el caller NO puede asumir que hubo rollback"*).
+Marcarla `rolled_back` en el segundo caso afirma una recuperación que no ocurrió y
+**esconde de la recuperación manual** un Bashed Patch corrupto que sigue en disco.
+
+Lo agravante: **`synthesis_service.py` ya lo resolvía bien** (`if rolled_back or not
+target_files: mark... else: logger.critical(...pendiente para recuperación manual)`),
+y esta implementación decía estar replicando su patrón. Se replicó el `raise` pero no
+la lógica de journal honesto — el defecto #1 del repo cometido dentro del cambio que
+decía evitarlo.
+
+**Y el alcance era mayor que el handler señalado.** Antes de U-04, `target_files=[]`
+hacía que nunca hubiera snapshots, así que marcar `rolled_back` incondicionalmente era
+inofensivo en los **cinco** handlers de `execute_pipeline` que cierran la TX. Poblar
+`target_files` los expuso a todos a la vez, no solo al nuevo. Por eso el criterio vive
+ahora en un helper único (`_cerrar_tx_tras_rollback`) que consumen los cinco: si se
+hubiera arreglado solo el handler que Codex marcó, los otros cuatro quedaban atrás.
+
+Ancla: `test_rollback_fallido_deja_la_tx_pendiente` (parchea `restore_snapshot` para
+que falle con `OSError`, verifica que el patch queda corrupto Y que la TX **no** se
+cierra). Verificado en rojo revirtiendo el fix.
+
+*Efecto lateral:* el helper expuso tres dobles de `SnapshotTransactionLock` en la suite
+que no implementaban la superficie que el servicio consulta. Se completaron los tres
+(`test_wrye_bash_service.py` ×2, `test_wrye_bash_lock.py`) en vez de hacer el helper
+tolerante con `getattr` — un doble incompleto es un bug del doble, y el acceso directo
+es la convención que ya usa `synthesis_service`.
+
+### Por qué Pandora queda afuera, con nombre
+
+La salida de Pandora es un **árbol de directorios** (behavior graphs), no un archivo
+único: el mecanismo correcto ahí es `DirectoryRollback` (move-aside de todo el
+directorio), no `target_files` de `SnapshotTransactionLock` — son dos primitivas de
+rollback distintas. Mezclarlas en un mismo PR sobre la parte más riesgosa del
+backlog (mutar datos reales del usuario) duplica la superficie de review de
+exactamente lo que más cuidado necesita. Pandora sigue abierto, con su propio PR.
 
 ---
 
