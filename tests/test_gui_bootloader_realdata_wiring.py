@@ -91,26 +91,31 @@ async def test_environment_scan_swallows_errors() -> None:
     assert store.get(STORE_KEY_ENV) is None
 
 
-async def test_environment_scan_cancelado_no_retiene_el_proceso() -> None:
+def test_environment_scan_cancelado_no_retiene_el_proceso() -> None:
     """Cancelar el scan no espera al probe bloqueado, que corre en un hilo daemon."""
-    loop = asyncio.get_running_loop()
-    iniciado = asyncio.Event()
+    iniciado = threading.Event()
     liberar = threading.Event()
+    completado = threading.Event()
     hilos: list[threading.Thread] = []
+    errores: list[BaseException] = []
 
-    class ScannerBloqueado:
-        async def scan(self):
-            hilos.append(threading.current_thread())
-            loop.call_soon_threadsafe(iniciado.set)
-            liberar.wait()
+    async def ejercer_cancelacion() -> None:
+        loop = asyncio.get_running_loop()
+        inicio_async = asyncio.Event()
 
-    class Store:
-        def set(self, _key, _value):
-            raise AssertionError("el scan bloqueado no debe publicar")
+        class ScannerBloqueado:
+            async def scan(self):
+                hilos.append(threading.current_thread())
+                iniciado.set()
+                loop.call_soon_threadsafe(inicio_async.set)
+                liberar.wait()
 
-    task = asyncio.create_task(_run_environment_scan(ScannerBloqueado(), Store()))
-    try:
-        await iniciado.wait()
+        class Store:
+            def set(self, _key, _value):
+                raise AssertionError("el scan bloqueado no debe publicar")
+
+        task = asyncio.create_task(_run_environment_scan(ScannerBloqueado(), Store()))
+        await inicio_async.wait()
         task.cancel()
 
         with pytest.raises(asyncio.CancelledError):
@@ -119,11 +124,33 @@ async def test_environment_scan_cancelado_no_retiene_el_proceso() -> None:
         assert len(hilos) == 1
         assert hilos[0].is_alive(), "el probe debe seguir bloqueado al cancelarse la task"
         assert hilos[0].daemon is True
+
+    def ejecutar_loop() -> None:
+        try:
+            asyncio.run(ejercer_cancelacion())
+        except BaseException as exc:  # noqa: BLE001 - se repropaga en el hilo de pytest
+            errores.append(exc)
+        finally:
+            completado.set()
+
+    hilo_loop = threading.Thread(target=ejecutar_loop, name="test-environment-scan", daemon=True)
+    hilo_loop.start()
+    try:
+        # El watchdog vive en el hilo de pytest, no en el loop que la regresión
+        # podría bloquear. La importación de este módulo ya ocurrió durante la
+        # colección, por lo que este límite solo cubre la ejecución bajo prueba.
+        assert iniciado.wait(timeout=2.0), "el scan no inició dentro del watchdog"
+        assert completado.wait(timeout=2.0), "el loop quedó bloqueado durante la cancelación"
     finally:
         liberar.set()
-        if hilos:
-            hilos[0].join(timeout=2.0)
+        hilo_loop.join(timeout=2.0)
+        for hilo in hilos:
+            hilo.join(timeout=2.0)
 
+    assert not hilo_loop.is_alive(), "el loop de prueba no terminó tras liberar el probe"
+    if errores:
+        raise errores[0]
+    assert hilos, "el scanner no registró su worker"
     assert not hilos[0].is_alive(), "el worker debe terminar al liberar el probe"
 
 
