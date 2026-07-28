@@ -109,7 +109,18 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > eliminación de las carreras TOCTOU del filesystem), pero al cwd del proceso Python: la
   > rama sigue siendo verdadera. Follow-up abierto: apuntarlo a un staging **dedicado**;
   > eso sí la volvería falsa, y es cambio de semántica del lanzamiento.
-  > **Queda abierto solo el punto (3)** (documentar la invariante de deployment en `docs/`).
+  > **Estado (2026-07-28): CERRADO el punto (3) — y con él, U-01 completo.** La invariante
+  > vive ahora en prosa para operadores en
+  > [`docs/operations/deployment_standalone_usvfs.md`](../operations/deployment_standalone_usvfs.md),
+  > enlazada desde el portal (`docs/README.md`) y desde el índice de operaciones para que no
+  > quede huérfana. Cubre lo que el operador necesita **decidir**, no solo lo que el código
+  > hace: el modo de falla silencioso (pipeline verde de punta a punta sobre el `Data` base),
+  > que un preflight verde afirma *"algo es visible"* y **no** *"todo está materializado"*
+  > (el sensor corta solo en el caso inequívoco), cómo verificarlo a mano —y por qué los
+  > `.esm` base y los `cc*` de Creation Club no sirven como prueba—, la tabla de destinos de
+  > salida por herramienta, la consecuencia sobre qué se puede revertir y qué no, y el
+  > alcance real del broker (dos tipos de job: `health` y `loot_sort`). Sigue siendo la
+  > versión legible de `local/tools/output_targets.py`, no una segunda definición.
 
 ### U-02 — Sin Job Object en Windows: la muerte dura de Python orfana todo el árbol externo · `[A+Z]` · Subprocesos/Zombies
 

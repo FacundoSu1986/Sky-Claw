@@ -18,6 +18,7 @@
 ## Operar y recuperar
 
 - [Runbook de deployment](../DEPLOYMENT.md)
+- [Standalone y USVFS](operations/deployment_standalone_usvfs.md)
 - [Operaciones](operations/README.md)
 - [Política de seguridad](../SECURITY.md)
 - [Validación en rig real](operations/real_rig_validation.md)
