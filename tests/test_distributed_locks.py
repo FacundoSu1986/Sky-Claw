@@ -825,29 +825,76 @@ async def test_renew_lock_swallows_unexpected_sqlite_error(
 # =============================================================================
 
 
+#: TTL del test de heartbeat. El margen que separa a este test de un falso rojo es
+#: "cuánto puede quedar starved el event loop entre la última renovación y la
+#: aserción", y ese margen ES el TTL. Con 0.4s bastaba un stall de 400ms de un
+#: runner cargado para que el lease expirara solo y el test reportara un bug que
+#: no existe (pasó en CI el 2026-07-28: mismo commit, verde en 3 de 4 jobs).
+_HB_TTL = 1.0
+
+#: Renovaciones a observar antes de afirmar. El heartbeat renueva cada
+#: ``TTL/renew_divisor`` (divisor 3.0 por defecto), así que 4 renovaciones ≈
+#: 1.33x TTL: la corrida sigue durando MÁS que el TTL, que es lo que el test
+#: existe para probar.
+_HB_RENOVACIONES = 4
+
+
 @pytest.mark.asyncio
 async def test_snapshot_lock_heartbeat_keeps_lease_alive(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Una operación más larga que el TTL no pierde el lease: el heartbeat renueva.
 
-    Sin heartbeat, dormir 2.5x TTL dentro del contexto dejaría el lease expirado
-    y un segundo agente podría adquirir el mismo recurso (dos escritores).
+    Sin heartbeat, permanecer más que el TTL dentro del contexto dejaría el lease
+    expirado y un segundo agente podría adquirir el mismo recurso (dos escritores).
+
+    **La espera la gobierna un evento observado, no el reloj.** La versión previa
+    dormía un plazo fijo y afirmaba en un instante arbitrario del ciclo de
+    renovación: si el loop quedaba starved más que el TTL entre la última
+    renovación y el ``acquire`` del intruso, el lease expiraba por su cuenta y el
+    test fallaba con ``DID NOT RAISE`` sin que hubiera defecto alguno. Acá se
+    espera a que el heartbeat renueve ``_HB_RENOVACIONES`` veces **de verdad** y
+    recién entonces se afirma, así que el margen disponible es el TTL completo y
+    empieza a contar recién en la renovación observada.
+
+    El contador además fortalece el test: si el heartbeat nunca corre, esto falla
+    en el ``wait_for`` con "el heartbeat no renovó", en vez de manifestarse
+    indirectamente como un intruso que logra entrar.
     """
+    renovado = asyncio.Event()
+    renovaciones = 0
+    renew_real = lock_manager.renew_lock
+
+    async def _contar_renovaciones(*args: object, **kwargs: object) -> bool:
+        nonlocal renovaciones
+        resultado = await renew_real(*args, **kwargs)  # type: ignore[arg-type]
+        renovaciones += 1
+        if renovaciones >= _HB_RENOVACIONES:
+            renovado.set()
+        return resultado
+
+    monkeypatch.setattr(lock_manager, "renew_lock", _contar_renovaciones)
+
     async with SnapshotTransactionLock(
         lock_manager=lock_manager,
         snapshot_manager=snapshot_manager,
         resource_id="res-hb",
         agent_id="holder",
-        ttl=0.4,
-    ):
-        await asyncio.sleep(1.0)  # 2.5x TTL — el heartbeat debe haber renovado
+        ttl=_HB_TTL,
+    ) as ctx:
+        try:
+            await asyncio.wait_for(renovado.wait(), timeout=_HB_TTL * 10)
+        except TimeoutError:  # pragma: no cover - solo si el heartbeat se rompe
+            pytest.fail(f"el heartbeat no renovó: {renovaciones} de {_HB_RENOVACIONES} renovaciones")
+
+        assert ctx.lease_lost is False
         with pytest.raises(LockAcquisitionError):
-            await lock_manager.acquire_lock("res-hb", "intruder", ttl=0.4)
+            await lock_manager.acquire_lock("res-hb", "intruder", ttl=_HB_TTL)
 
     # Tras la salida limpia el lock se libera y otro agente puede adquirirlo.
-    info = await lock_manager.acquire_lock("res-hb", "intruder", ttl=0.4)
+    info = await lock_manager.acquire_lock("res-hb", "intruder", ttl=_HB_TTL)
     assert info.agent_id == "intruder"
 
 
