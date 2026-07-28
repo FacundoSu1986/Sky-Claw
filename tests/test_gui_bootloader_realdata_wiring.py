@@ -10,9 +10,8 @@ the event/scanner so no live daemon or disk scan is required.
 
 from __future__ import annotations
 
-import subprocess
-import sys
-import textwrap
+import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -92,52 +91,40 @@ async def test_environment_scan_swallows_errors() -> None:
     assert store.get(STORE_KEY_ENV) is None
 
 
-def test_environment_scan_cancelado_no_retiene_el_proceso() -> None:
-    """Cancelar un probe bloqueado no debe impedir que termine el intérprete."""
-    script = textwrap.dedent(
-        """
-        import asyncio
-        import threading
+async def test_environment_scan_cancelado_no_retiene_el_proceso() -> None:
+    """Cancelar el scan no espera al probe bloqueado, que corre en un hilo daemon."""
+    loop = asyncio.get_running_loop()
+    iniciado = asyncio.Event()
+    liberar = threading.Event()
+    hilos: list[threading.Thread] = []
 
-        from sky_claw.app.gui._bootloader import _run_environment_scan
+    class ScannerBloqueado:
+        async def scan(self):
+            hilos.append(threading.current_thread())
+            loop.call_soon_threadsafe(iniciado.set)
+            liberar.wait()
 
+    class Store:
+        def set(self, _key, _value):
+            raise AssertionError("el scan bloqueado no debe publicar")
 
-        class ScannerBloqueado:
-            async def scan(self):
-                threading.Event().wait()
-
-
-        class Store:
-            def set(self, _key, _value):
-                raise AssertionError("el scan bloqueado no debe publicar")
-
-
-        async def main():
-            task = asyncio.create_task(_run_environment_scan(ScannerBloqueado(), Store()))
-            await asyncio.sleep(0.1)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-
-        asyncio.run(main())
-        """
-    )
-
+    task = asyncio.create_task(_run_environment_scan(ScannerBloqueado(), Store()))
     try:
-        resultado = subprocess.run(
-            [sys.executable, "-c", script],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except subprocess.TimeoutExpired:
-        pytest.fail("el worker del scan retuvo el intérprete después de cancelar la task")
+        await iniciado.wait()
+        task.cancel()
 
-    assert resultado.returncode == 0, resultado.stderr
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert len(hilos) == 1
+        assert hilos[0].is_alive(), "el probe debe seguir bloqueado al cancelarse la task"
+        assert hilos[0].daemon is True
+    finally:
+        liberar.set()
+        if hilos:
+            hilos[0].join(timeout=2.0)
+
+    assert not hilos[0].is_alive(), "el worker debe terminar al liberar el probe"
 
 
 def test_hydrate_tool_env_from_snapshot_seeds_resolver_env(monkeypatch) -> None:
