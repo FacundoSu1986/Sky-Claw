@@ -23,8 +23,10 @@ import pytest
 
 from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.local.tools.rollback_reconciler import (
-    FAMILIAS_DE_BACKUP,
+    PRODUCTORES_CABLEADOS,
     VENTANA_DE_GRACIA_SEGUNDOS,
+    ProductorDeMoveAside,
+    construir_productores_de_move_aside,
     reconcile_orphan_rollback_backups,
 )
 
@@ -46,12 +48,15 @@ PRODUCTORES_DEL_NOMBRE: dict[str, str] = {
     "sky_claw/local/mo2/profile_sandbox.py": "clon-sandbox",
 }
 
-#: Módulos que **usan** ``DirectoryRollback`` sobre un directorio propio. Se
-#: enumeran aparte porque el riesgo que traen no es un nombre nuevo sino una
-#: **raíz** nueva: un servicio que mueva aparte un dir fuera de ``<mo2>/mods``
-#: dejaría residuo donde el reconciliador no mira. Un usuario nuevo rompe acá y
-#: obliga a confirmar que su raíz está cubierta por ``mods_root``.
-USUARIOS_DEL_MOVE_ASIDE: frozenset[str] = frozenset({"sky_claw/local/tools/dyndolod_service.py"})
+#: Módulos que **usan** ``DirectoryRollback`` sobre un directorio propio, y el
+#: productor con el que el reconciliador los barre. Se enumeran aparte porque el
+#: riesgo que traen no es un nombre nuevo sino una **raíz** nueva: un servicio que
+#: mueva aparte un dir bajo otra raíz —o serializado por otro lock— deja residuo
+#: donde el reconciliador no mira. Un usuario nuevo rompe el ancla hasta que se le
+#: declare su ``ProductorDeMoveAside``.
+USUARIOS_DEL_MOVE_ASIDE: dict[str, str] = {
+    "sky_claw/local/tools/dyndolod_service.py": "dyndolod",
+}
 
 #: Excluido con motivo: consume el prefijo, no lo produce (es este reconciliador).
 _CONSUMIDOR = "sky_claw/local/tools/rollback_reconciler.py"
@@ -69,19 +74,18 @@ def test_todo_productor_de_backups_tiene_su_familia_reconciliada() -> None:
     """Guard de completitud: un productor nuevo de ``rollback-*`` obliga a decidir
     cómo se reconcilia su residuo, en vez de dejarlo leakear en silencio."""
     assert _modulos_con_el_nombre("rollback-") - {_CONSUMIDOR} == set(PRODUCTORES_DEL_NOMBRE)
-    assert set(PRODUCTORES_DEL_NOMBRE.values()) == set(FAMILIAS_DE_BACKUP)
 
 
-def test_todo_usuario_del_move_aside_deja_su_residuo_bajo_una_raiz_barrida() -> None:
-    """El reconciliador barre ``<mo2>/mods``, que hoy alcanza porque el único
-    usuario de ``DirectoryRollback`` mueve aparte los mods de salida de
-    DynDOLOD/TexGen. Un usuario nuevo rompe acá: si su directorio vive en otra
-    raíz, el residuo queda fuera del barrido y hay que ampliarlo."""
+def test_todo_usuario_del_move_aside_tiene_su_productor_declarado() -> None:
+    """Cada usuario de ``DirectoryRollback`` deja residuo bajo SUS raíces y bajo SU
+    lock. Un usuario nuevo rompe acá hasta que alguien decida ambas cosas — que es
+    la pregunta que importa, no el nombre del archivo."""
     usuarios = _modulos_con_el_nombre("DirectoryRollback(") - {
         "sky_claw/local/tools/_dir_rollback.py",  # define la clase
     }
 
-    assert usuarios == USUARIOS_DEL_MOVE_ASIDE
+    assert usuarios == set(USUARIOS_DEL_MOVE_ASIDE)
+    assert set(USUARIOS_DEL_MOVE_ASIDE.values()) <= set(PRODUCTORES_CABLEADOS)
 
 
 #: Reconciliadores de arranque que DEBEN estar invocados en ``app_context``. Un
@@ -142,6 +146,11 @@ def sandbox(tmp_path: pathlib.Path) -> pathlib.Path:
     return raiz
 
 
+def _dyndolod(mods: pathlib.Path) -> ProductorDeMoveAside:
+    """Productor de DynDOLOD: mueve aparte sus mods de salida bajo ``<mo2>/mods``."""
+    return ProductorDeMoveAside(nombre="dyndolod", lock_resource_id="dyndolod-pipeline", raices=(mods,))
+
+
 def _backup_move_aside(mods: pathlib.Path, nombre: str, *, contenido: str) -> pathlib.Path:
     """Backup tal cual lo deja ``DirectoryRollback.__aenter__`` (rename O(1))."""
     backup = mods / f"{nombre}.rollback-1753700000000000000"
@@ -178,7 +187,9 @@ async def test_restaura_el_backup_cuando_el_target_no_existe(
     backup = _backup_move_aside(mods, "DynDOLOD Output", contenido="LODs previos")
     destino = mods / "DynDOLOD Output"
 
-    resultado = await reconcile_orphan_rollback_backups(mods_root=mods, sandbox_root=sandbox, lock_manager=lock_manager)
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_dyndolod(mods)], sandbox_root=sandbox, lock_manager=lock_manager
+    )
 
     assert destino.is_dir()
     assert (destino / "DynDOLOD.esp").read_text(encoding="utf-8") == "LODs previos"
@@ -200,12 +211,104 @@ async def test_preserva_el_backup_cuando_el_target_ya_existe(
     destino.mkdir()
     (destino / "DynDOLOD.esp").write_text("LODs nuevos, quizas parciales", encoding="utf-8")
 
-    resultado = await reconcile_orphan_rollback_backups(mods_root=mods, sandbox_root=sandbox, lock_manager=lock_manager)
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_dyndolod(mods)], sandbox_root=sandbox, lock_manager=lock_manager
+    )
 
     assert backup.exists(), "el backup previo no debe borrarse: es la única copia del output anterior"
     assert (destino / "DynDOLOD.esp").read_text(encoding="utf-8") == "LODs nuevos, quizas parciales"
     assert resultado.preservados == (backup,)
     assert resultado.restaurados == ()
+
+
+async def test_barre_un_productor_cuya_salida_no_cuelga_de_mods(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+    sandbox: pathlib.Path,
+) -> None:
+    """El residuo NO siempre vive bajo ``<mo2>/mods``.
+
+    DynDOLOD mueve aparte sus mods de salida, que sí cuelgan de ahí. Pandora
+    mueve aparte sus ``Pandora_Output``, que cuelgan del juego y del dir de su
+    ejecutable (``output_targets.pandora_rollback_dirs``). Un reconciliador con
+    una sola raíz cableada es **ciego** al segundo: el backup queda huérfano
+    para siempre y los behavior graphs previos no vuelven — el modo de falla
+    exacto que U-08 mitad 2 existe para cubrir.
+    """
+    game = tmp_path / "game"
+    game.mkdir()
+    backup = game / "Pandora_Output.rollback-1753700000000000000"
+    backup.mkdir()
+    (backup / "behaviors.hkx").write_text("behavior graphs previos", encoding="utf-8")
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[ProductorDeMoveAside(nombre="pandora", lock_resource_id="behavior-graphs", raices=(game,))],
+        sandbox_root=sandbox,
+        lock_manager=lock_manager,
+    )
+
+    destino = game / "Pandora_Output"
+    assert destino.is_dir()
+    assert (destino / "behaviors.hkx").read_text(encoding="utf-8") == "behavior graphs previos"
+    assert resultado.restaurados == (destino,)
+
+
+async def test_cada_productor_se_guarda_con_su_propio_lock(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+    mods: pathlib.Path,
+    sandbox: pathlib.Path,
+) -> None:
+    """El guard es por productor, no global.
+
+    Un ritual de Pandora en curso (lock ``behavior-graphs``) no debe frenar el
+    barrido del residuo de DynDOLOD, ni al revés — y sobre todo: el residuo de
+    Pandora NO puede barrerse mirando el lock de DynDOLOD, que es lo que haría
+    un guard único. Cada familia se reconcilia bajo el lock del ritual que la
+    produce, igual que ``reconcile_orphan_precache_flag``.
+    """
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "Pandora_Output.rollback-1753700000000000000").mkdir()
+    _backup_move_aside(mods, "DynDOLOD Output", contenido="LODs previos")
+    await lock_manager.acquire_lock("behavior-graphs", "otra-instancia", ttl=60.0)
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[
+            ProductorDeMoveAside(nombre="dyndolod", lock_resource_id="dyndolod-pipeline", raices=(mods,)),
+            ProductorDeMoveAside(nombre="pandora", lock_resource_id="behavior-graphs", raices=(game,)),
+        ],
+        sandbox_root=sandbox,
+        lock_manager=lock_manager,
+    )
+
+    # Pandora en curso: su backup queda intacto.
+    assert (game / "Pandora_Output.rollback-1753700000000000000").exists()
+    assert not (game / "Pandora_Output").exists()
+    assert "pandora" in resultado.omitidos_por_lock
+    # DynDOLOD no está corriendo: el suyo SÍ se restaura.
+    assert (mods / "DynDOLOD Output" / "DynDOLOD.esp").read_text(encoding="utf-8") == "LODs previos"
+    assert "dyndolod" not in resultado.omitidos_por_lock
+
+
+def test_el_constructor_resuelve_las_raices_reales_de_cada_productor(tmp_path: pathlib.Path) -> None:
+    """El cableado de producción sale de acá, no de una lista escrita a mano en
+    ``app_context``: los nombres que devuelve deben ser los que el ancla declara
+    como cableados, y las raíces las que el servicio realmente usa."""
+    mo2 = tmp_path / "mo2"
+
+    productores = construir_productores_de_move_aside(mo2_root=mo2)
+
+    assert {p.nombre for p in productores} <= PRODUCTORES_CABLEADOS
+    dyndolod = next(p for p in productores if p.nombre == "dyndolod")
+    # dyndolod_service mueve aparte `mods_path / runner.DYNDOLLOD_MOD_NAME`.
+    assert dyndolod.raices == (mo2 / "mods",)
+    assert dyndolod.lock_resource_id == "dyndolod-pipeline"
+
+
+def test_el_constructor_sin_mo2_no_inventa_rutas() -> None:
+    """Sin MO2 resoluble no se barre nada, en vez de sondear una ruta inventada."""
+    assert construir_productores_de_move_aside(mo2_root=None) == []
 
 
 async def test_no_toca_nada_si_el_ritual_de_dyndolod_esta_en_curso(
@@ -219,11 +322,13 @@ async def test_no_toca_nada_si_el_ritual_de_dyndolod_esta_en_curso(
     backup = _backup_move_aside(mods, "DynDOLOD Output", contenido="LODs previos")
     await lock_manager.acquire_lock("dyndolod-pipeline", "otra-instancia", ttl=60.0)
 
-    resultado = await reconcile_orphan_rollback_backups(mods_root=mods, sandbox_root=sandbox, lock_manager=lock_manager)
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_dyndolod(mods)], sandbox_root=sandbox, lock_manager=lock_manager
+    )
 
     assert backup.exists()
     assert not (mods / "DynDOLOD Output").exists()
-    assert "move-aside" in resultado.omitidos_por_lock
+    assert "dyndolod" in resultado.omitidos_por_lock
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +349,9 @@ async def test_preserva_el_clon_cuyo_promote_quedo_a_mitad(
     clon = _clon_sandbox(sandbox, con_backup_de_promote=True)
     _envejecer(clon)
 
-    resultado = await reconcile_orphan_rollback_backups(mods_root=mods, sandbox_root=sandbox, lock_manager=lock_manager)
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_dyndolod(mods)], sandbox_root=sandbox, lock_manager=lock_manager
+    )
 
     assert clon.exists()
     assert (clon / "rollback-deadbeef" / "plugins.txt").exists()
@@ -263,7 +370,9 @@ async def test_descarta_el_clon_huerfano_sin_promote_pendiente(
     clon = _clon_sandbox(sandbox, con_backup_de_promote=False)
     _envejecer(clon)
 
-    resultado = await reconcile_orphan_rollback_backups(mods_root=mods, sandbox_root=sandbox, lock_manager=lock_manager)
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_dyndolod(mods)], sandbox_root=sandbox, lock_manager=lock_manager
+    )
 
     assert not clon.exists()
     assert resultado.descartados == (clon,)
@@ -279,7 +388,9 @@ async def test_respeta_la_ventana_de_gracia_de_la_aprobacion_hitl(
     liberó). Un clon recién creado por otra instancia no es huérfano."""
     clon = _clon_sandbox(sandbox, con_backup_de_promote=False)  # mtime = ahora
 
-    resultado = await reconcile_orphan_rollback_backups(mods_root=mods, sandbox_root=sandbox, lock_manager=lock_manager)
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_dyndolod(mods)], sandbox_root=sandbox, lock_manager=lock_manager
+    )
 
     assert clon.exists()
     assert resultado.descartados == ()
@@ -298,7 +409,9 @@ async def test_ignora_lo_que_no_parece_un_clon(
     (ajeno / "leeme.txt").write_text("no borrar", encoding="utf-8")
     _envejecer(ajeno)
 
-    resultado = await reconcile_orphan_rollback_backups(mods_root=mods, sandbox_root=sandbox, lock_manager=lock_manager)
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_dyndolod(mods)], sandbox_root=sandbox, lock_manager=lock_manager
+    )
 
     assert (ajeno / "leeme.txt").exists()
     assert resultado.descartados == ()
@@ -320,8 +433,12 @@ async def test_es_idempotente(
     _backup_move_aside(mods, "DynDOLOD Output", contenido="LODs previos")
     _envejecer(_clon_sandbox(sandbox, con_backup_de_promote=False))
 
-    primera = await reconcile_orphan_rollback_backups(mods_root=mods, sandbox_root=sandbox, lock_manager=lock_manager)
-    segunda = await reconcile_orphan_rollback_backups(mods_root=mods, sandbox_root=sandbox, lock_manager=lock_manager)
+    primera = await reconcile_orphan_rollback_backups(
+        productores=[_dyndolod(mods)], sandbox_root=sandbox, lock_manager=lock_manager
+    )
+    segunda = await reconcile_orphan_rollback_backups(
+        productores=[_dyndolod(mods)], sandbox_root=sandbox, lock_manager=lock_manager
+    )
 
     assert primera.restaurados and primera.descartados
     assert segunda.restaurados == ()
@@ -334,7 +451,7 @@ async def test_sin_raices_configuradas_no_explota(
 ) -> None:
     """En una instalación sin MO2 resoluble el hook debe ser un no-op silencioso,
     no un error que tiña el arranque."""
-    resultado = await reconcile_orphan_rollback_backups(mods_root=None, sandbox_root=None, lock_manager=lock_manager)
+    resultado = await reconcile_orphan_rollback_backups(productores=[], sandbox_root=None, lock_manager=lock_manager)
 
     assert resultado.restaurados == ()
     assert resultado.descartados == ()

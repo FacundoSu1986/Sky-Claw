@@ -33,6 +33,7 @@ ritual que produce el residuo, y si otra instancia lo tiene, no se toca nada.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import pathlib
 import re
@@ -44,7 +45,7 @@ from typing import TYPE_CHECKING
 from sky_claw.app.db.locks import LockAcquisitionError
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
 
     from sky_claw.app.db.locks import DistributedLockManager
 
@@ -78,17 +79,40 @@ _NOMBRE_DE_CLON = re.compile(r"^.+-[0-9a-f]{12}$")
 #: corrección, y el costo de equivocarse es re-correr el ritual.
 VENTANA_DE_GRACIA_SEGUNDOS: float = 24 * 60 * 60
 
-#: Familia de backup → lock del ritual que la produce. Enumerar acá es lo que
-#: convierte "agregué un productor de backups" en un cambio visible:
-#: ``tests/test_rollback_reconciler.py`` exige que todo módulo que escriba un
-#: ``rollback-*`` caiga en una de estas familias.
-FAMILIAS_DE_BACKUP: dict[str, str] = {
-    # DirectoryRollback (`<dir>.rollback-<nonce>`), usado hoy solo por dyndolod_service.
-    "move-aside": "dyndolod-pipeline",
-    # ProfileSandbox: clones bajo `.skyclaw_sandbox/`. El único ritual que corre
-    # sandboxeado hoy es Synthesis ("corre SIEMPRE en sandbox", tool_dispatcher).
-    "clon-sandbox": "Synthesis.esp",
-}
+#: Lock del ritual que produce clones bajo ``.skyclaw_sandbox/``. El único que
+#: corre sandboxeado hoy es Synthesis ("corre SIEMPRE en sandbox", tool_dispatcher).
+LOCK_DEL_SANDBOX = "Synthesis.esp"
+
+#: Nombres de productor que el cableado de producción construye
+#: (:func:`construir_productores_de_move_aside`). El ancla de
+#: ``tests/test_rollback_reconciler.py`` exige que todo módulo que use
+#: ``DirectoryRollback`` esté mapeado a uno de estos.
+PRODUCTORES_CABLEADOS: frozenset[str] = frozenset({"dyndolod"})
+
+
+@dataclass(frozen=True, slots=True)
+class ProductorDeMoveAside:
+    """Un ritual que deja residuo ``<dir>.rollback-<nonce>``, con dónde y bajo qué lock.
+
+    **Por qué los tres datos viajan juntos.** La primera versión de este módulo
+    asumía que había *una* familia move-aside: una raíz (``<mo2>/mods``) y un lock
+    (``dyndolod-pipeline``). Las dos suposiciones son propiedades de DynDOLOD, no
+    del mecanismo — Pandora mueve aparte sus ``Pandora_Output``, que cuelgan del
+    juego y del dir de su ejecutable, y se serializa con ``behavior-graphs``.
+    Barrer su residuo mirando el lock de DynDOLOD sería peor que no barrerlo:
+    restauraría un backup mientras el ritual que lo creó sigue corriendo.
+
+    Enunciado como propiedad del mecanismo: *cada residuo se reconcilia bajo el
+    lock del ritual que lo produjo, y solo bajo las raíces donde ese ritual
+    escribe.* Un productor nuevo declara ambas cosas o no se barre.
+    """
+
+    #: Identificador corto, para logs y para el reporte de omitidos.
+    nombre: str
+    #: Lock del ritual: mientras esté vivo, su residuo es legítimo y no se toca.
+    lock_resource_id: str
+    #: Directorios PADRE donde buscar los ``<dir>.rollback-<nonce>``.
+    raices: tuple[pathlib.Path, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +149,7 @@ class _Acumulador:
 
 async def reconcile_orphan_rollback_backups(
     *,
-    mods_root: pathlib.Path | None,
+    productores: Sequence[ProductorDeMoveAside],
     sandbox_root: pathlib.Path | None,
     lock_manager: DistributedLockManager,
 ) -> ReconcileOutcome:
@@ -137,8 +161,10 @@ async def reconcile_orphan_rollback_backups(
     un efecto colateral: el operador debe seguir viendo que hay algo pendiente.
 
     Args:
-        mods_root: ``<mo2>/mods``, donde viven los move-aside de DynDOLOD/TexGen.
-            ``None`` si MO2 no resuelve (no-op silencioso).
+        productores: Rituales que dejan residuo move-aside, cada uno con sus
+            raíces y su lock (ver :class:`ProductorDeMoveAside`). Lista vacía →
+            no se barre ninguno. Construir con
+            :func:`construir_productores_de_move_aside`.
         sandbox_root: ``<mo2>/.skyclaw_sandbox``. ``None`` → no-op.
         lock_manager: El MISMO que serializa los rituales, para que el guard de
             concurrencia mire los locks reales y no una copia.
@@ -147,48 +173,82 @@ async def reconcile_orphan_rollback_backups(
         El :class:`ReconcileOutcome` con lo que se hizo y lo que se dejó.
     """
     acc = _Acumulador()
-    if mods_root is not None:
-        await _reconciliar_familia(
-            familia="move-aside",
+    for productor in productores:
+        await _bajo_el_lock_del_ritual(
+            nombre=productor.nombre,
+            resource_id=productor.lock_resource_id,
             lock_manager=lock_manager,
             acc=acc,
-            accion=lambda: _reconciliar_move_aside(mods_root, acc),
+            accion=functools.partial(_reconciliar_move_aside, productor.raices, acc),
         )
     if sandbox_root is not None:
-        await _reconciliar_familia(
-            familia="clon-sandbox",
+        await _bajo_el_lock_del_ritual(
+            nombre="clon-sandbox",
+            resource_id=LOCK_DEL_SANDBOX,
             lock_manager=lock_manager,
             acc=acc,
-            accion=lambda: _reconciliar_clones_sandbox(sandbox_root, acc),
+            accion=functools.partial(_reconciliar_clones_sandbox, sandbox_root, acc),
         )
     return acc.cerrar()
 
 
-async def _reconciliar_familia(
+def construir_productores_de_move_aside(
     *,
-    familia: str,
+    mo2_root: pathlib.Path | None,
+) -> list[ProductorDeMoveAside]:
+    """Los productores reales, con sus raíces resueltas — fuente única del cableado.
+
+    Vive acá y no en ``app_context`` para que el conjunto de rituales barridos sea
+    testeable sin levantar la app, y para que agregar uno sea un cambio en un solo
+    lugar. ``PRODUCTORES_CABLEADOS`` enumera los nombres que esta función puede
+    devolver; el ancla exige que todo usuario de ``DirectoryRollback`` mapee a uno.
+
+    Un productor cuyas raíces no resuelven se omite —no se inventa una ruta— y el
+    resto barre igual.
+    """
+    productores: list[ProductorDeMoveAside] = []
+    if mo2_root is not None:
+        # DynDOLOD/TexGen mueven aparte sus mods de salida empaquetados, que por
+        # construcción cuelgan de `<mo2>/mods` (`dyndolod_service`: `mods_path /
+        # runner.DYNDOLLOD_MOD_NAME`).
+        productores.append(
+            ProductorDeMoveAside(
+                nombre="dyndolod",
+                lock_resource_id="dyndolod-pipeline",
+                raices=(mo2_root / "mods",),
+            )
+        )
+    return productores
+
+
+async def _bajo_el_lock_del_ritual(
+    *,
+    nombre: str,
+    resource_id: str,
     lock_manager: DistributedLockManager,
     acc: _Acumulador,
     accion: Callable[[], Awaitable[None]],
 ) -> None:
-    """Corre ``accion`` bajo el lock del ritual que produce esa familia.
+    """Corre ``accion`` bajo el lock del ritual que produce ese residuo.
 
     Guard idéntico al de ``reconcile_orphan_precache_flag`` (U-03), y por el mismo
     motivo: sin adquirir el lock hay un TOCTOU real — entre "no veo el lock" y el
     ``rename``/``rmtree``, otra instancia puede arrancar el ritual y crear el
     backup que este proceso destruiría. El ``get_lock_info`` previo es solo un
     fast-path para no pagar el backoff de ``acquire_lock`` cuando ya hay dueño.
-    """
-    resource_id = FAMILIAS_DE_BACKUP[familia]
 
+    Es **por productor**, no global: un ritual de Pandora en curso no debe frenar
+    el barrido del residuo de DynDOLOD, y —sobre todo— el residuo de Pandora no
+    puede barrerse mirando el lock de DynDOLOD.
+    """
     info = await lock_manager.get_lock_info(resource_id)
     if info is not None and not info.is_expired:
         logger.info(
             "Reconciliación de '%s' salteada: el lock '%s' sigue vivo (ritual en curso).",
-            familia,
+            nombre,
             resource_id,
         )
-        acc.omitidos.append(familia)
+        acc.omitidos.append(nombre)
         return
 
     try:
@@ -196,10 +256,10 @@ async def _reconciliar_familia(
     except LockAcquisitionError:
         logger.info(
             "Reconciliación de '%s' salteada: no se pudo adquirir '%s' (ritual activo).",
-            familia,
+            nombre,
             resource_id,
         )
-        acc.omitidos.append(familia)
+        acc.omitidos.append(nombre)
         return
 
     try:
@@ -208,7 +268,7 @@ async def _reconciliar_familia(
         await lock_manager.release_lock(resource_id, _RECONCILE_AGENT_ID)
 
 
-async def _reconciliar_move_aside(mods_root: pathlib.Path, acc: _Acumulador) -> None:
+async def _reconciliar_move_aside(raices: Sequence[pathlib.Path], acc: _Acumulador) -> None:
     """Familia ``<dir>.rollback-<nonce>``: el marcador durable es el target.
 
     - **Target ausente** → el run murió entre el move-aside y la regeneración; el
@@ -221,7 +281,7 @@ async def _reconciliar_move_aside(mods_root: pathlib.Path, acc: _Acumulador) -> 
       borrar el backup tira la generación anterior, pisar el target tira la nueva.
       Se preservan ambos y se avisa.
     """
-    for backup in await asyncio.to_thread(_listar_backups_move_aside, mods_root):
+    for backup in await asyncio.to_thread(_listar_backups_move_aside, raices):
         destino = backup.with_name(_SUFIJO_MOVE_ASIDE.sub("", backup.name))
         if await asyncio.to_thread(destino.exists):
             logger.warning(
@@ -247,10 +307,23 @@ async def _reconciliar_move_aside(mods_root: pathlib.Path, acc: _Acumulador) -> 
         acc.restaurados.append(destino)
 
 
-def _listar_backups_move_aside(mods_root: pathlib.Path) -> list[pathlib.Path]:
-    if not mods_root.is_dir():
-        return []
-    return sorted(hijo for hijo in mods_root.iterdir() if hijo.is_dir() and _SUFIJO_MOVE_ASIDE.search(hijo.name))
+def _listar_backups_move_aside(raices: Sequence[pathlib.Path]) -> list[pathlib.Path]:
+    """Backups bajo cualquiera de las raíces del productor, sin repetir.
+
+    Se deduplica porque dos raíces pueden coincidir en una instalación real (p. ej.
+    Pandora instalado dentro del directorio del juego), y restaurar dos veces el
+    mismo backup haría que el segundo intento fallara con el target ya presente.
+    """
+    vistos: set[pathlib.Path] = set()
+    backups: list[pathlib.Path] = []
+    for raiz in raices:
+        if not raiz.is_dir():
+            continue
+        for hijo in sorted(raiz.iterdir()):
+            if hijo.is_dir() and _SUFIJO_MOVE_ASIDE.search(hijo.name) and hijo not in vistos:
+                vistos.add(hijo)
+                backups.append(hijo)
+    return backups
 
 
 async def _reconciliar_clones_sandbox(sandbox_root: pathlib.Path, acc: _Acumulador) -> None:

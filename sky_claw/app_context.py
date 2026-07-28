@@ -1023,12 +1023,16 @@ class AppContext:
             # Best-effort: NO debe abortar el arranque.
             try:
                 from sky_claw.local.tools.rollback_reconciler import (
+                    construir_productores_de_move_aside,
                     reconcile_orphan_rollback_backups,
                 )
 
                 await self._await_startup(
                     reconcile_orphan_rollback_backups(
-                        mods_root=mo2_root / "mods",
+                        # Las raíces y el lock de CADA ritual salen del constructor, no
+                        # de acá: barrer el residuo de un ritual mirando el lock de otro
+                        # restauraría un backup con la corrida todavía en vuelo.
+                        productores=construir_productores_de_move_aside(mo2_root=mo2_root),
                         sandbox_root=mo2_root / ".skyclaw_sandbox",
                         lock_manager=lock_manager,
                     )
