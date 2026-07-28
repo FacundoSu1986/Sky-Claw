@@ -151,10 +151,14 @@ def dyndolod_staging_roots(
     conjunto de raíces distinto del que mira la búsqueda de salida, el preflight
     opina sobre un lugar donde el tool no escribe.
 
-    *Follow-up conocido (review CodeRabbit #388):* fijar un ``cwd`` explícito al
-    subproceso volvería falsa la rama del cwd y permitiría sacarla. Es un cambio
-    de semántica del lanzamiento (afecta cómo DynDOLOD resuelve rutas relativas y
-    encuentra su INI), así que no se hace de arrastre.
+    *Estado (review CodeRabbit #388):* el runner ya **fija** el ``cwd`` en vez de
+    dejarlo heredar implícitamente — lo captura una vez por corrida y pasa el
+    mismo valor al subproceso y a esta búsqueda, así que un ``chdir`` a mitad de
+    run no puede separarlos. Pero lo fija **al cwd del proceso Python**, o sea que
+    la rama de arriba sigue siendo verdadera: el staging todavía puede aterrizar
+    ahí. Lo que la volvería falsa es apuntar el subproceso a un directorio de
+    staging dedicado; eso cambia cómo DynDOLOD resuelve rutas relativas y
+    encuentra su INI, así que no se hace de arrastre.
     """
     roots: list[pathlib.Path] = []
     if mo2 is not None:

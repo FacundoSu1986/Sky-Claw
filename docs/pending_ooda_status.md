@@ -1341,9 +1341,16 @@ búsqueda de salida salen del mismo resolver, así que sacarlo de un solo lado r
 de una exclusión no es verificarla. El primer intento repitió, dentro del PR que denuncia
 esa clase de defecto, exactamente esa clase de defecto.
 
-**Follow-up abierto:** fijar un `cwd` explícito al subproceso volvería falsa la rama del
-cwd y permitiría sacarla del resolver. Cambia dónde DynDOLOD resuelve rutas relativas y
-busca su INI, así que no se hizo de arrastre.
+**Cerrado a medias, y con precisión:** el runner ya **fija** el `cwd` en vez de dejarlo
+heredar implícitamente — lo captura una vez por corrida y pasa el mismo valor al
+subproceso y a la búsqueda de staging, así que un `chdir` a mitad de run no puede
+separarlos. Pero lo fija **al cwd del proceso Python**, con lo cual la rama del cwd sigue
+siendo verdadera: el staging todavía puede aterrizar ahí y el resolver debe seguir
+sondeándola.
+
+**Follow-up abierto:** apuntar el subproceso a un directorio de staging **dedicado**. Eso
+sí volvería falsa la rama y permitiría sacarla del resolver, pero cambia dónde DynDOLOD
+resuelve rutas relativas y busca su INI, así que no se hizo de arrastre.
 
 ### Qué queda abierto
 

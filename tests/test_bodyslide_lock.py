@@ -102,7 +102,6 @@ async def test_fails_closed_without_lock() -> None:
     runner.run_batch.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_fails_closed_when_one_protection_manager_is_missing(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
 ) -> None:
