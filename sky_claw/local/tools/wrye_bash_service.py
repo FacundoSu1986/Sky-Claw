@@ -32,6 +32,7 @@ import asyncio
 import logging
 import pathlib
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from sky_claw.app.db.locks import (
@@ -51,9 +52,11 @@ from sky_claw.local.tools.wrye_bash_runner import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sky_claw.app.core.path_resolver import PathResolutionService
     from sky_claw.app.db.journal import OperationJournal
-    from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+    from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
 
 logger = logging.getLogger(__name__)
@@ -63,6 +66,23 @@ logger = logging.getLogger(__name__)
 #: Wrye Bash. Además se anida el lock ``load-order`` (ver ``execute_pipeline``) porque
 #: el Bashed Patch se arma del orden activo que LOOT reescribe.
 BASHED_PATCH_RESOURCE_ID = "Bashed Patch, 0.esp"
+
+
+@dataclass(frozen=True, slots=True)
+class _DesenlaceDelRollback:
+    """Qué pasó con el rollback de salida, para el log **y** para el resultado.
+
+    El resumen es para el operador; ``revertido`` es el dato que el agente LLM
+    necesita para decidir. Van juntos porque son la misma respuesta: separarlos
+    invitaría a que el log diga una cosa y el dict del tool otra.
+    """
+
+    #: ``True`` solo si el Bashed Patch previo volvió de verdad. ``False`` tanto si
+    #: el restore falló como si no había snapshot que restaurar — en ambos casos el
+    #: parcial sigue en disco, que es lo único que le cambia la acción al operador.
+    revertido: bool
+    #: Descripción para el log.
+    resumen: str
 
 
 class _ActionManifestError(Exception):
@@ -329,23 +349,28 @@ class WryeBashPipelineService:
         destino = self._destino_desde_runner(runner)
         return str(destino) if destino is not None else BASHED_PATCH_NAME
 
-    async def _emit_action_manifest(self, target_file: str) -> int:
+    async def _emit_action_manifest(self, target_file: str, snapshots: Sequence[SnapshotInfo]) -> int:
         """Construye y persiste el ActionManifest ANTES de mutar (T-26).
 
-        Se llama DENTRO del lock, antes de ``generate_bashed_patch()``. Devuelve el id
-        de la transacción del journal para commit/rollback posterior.
+                Se llama DENTRO del lock, antes de ``generate_bashed_patch()``. Devuelve el id
+                de la transacción del journal para commit/rollback posterior.
 
-        El manifiesto siempre lleva ``snapshots=[]`` — es un concepto DISTINTO del
-        ``target_files`` de ``SnapshotTransactionLock`` (execute_pipeline): el
-        manifiesto solo registra QUÉ artefacto se tocó, para auditoría; el rollback
-        REAL de U-04 (restaurar el patch previo ante un fallo) lo hace el lock
-        externo, ya con ``target_files`` poblado desde la misma ruta que
-        ``_bashed_patch_target`` computa acá mismo.
+        El ``snapshots`` que recibe es el del lock externo, y **no es decorativo**:
+                ``build_action_manifest`` traduce cada ``SnapshotInfo`` a un ``RollbackStep``
+                del plan de rollback (qué snapshot restaura qué archivo). Mientras
+                ``target_files`` estaba vacío pasar ``[]`` era honesto —no había plan—, pero
+                desde U-04 el lock SÍ captura el Bashed Patch previo: seguir pasando ``[]``
+                haría que la caja negra declarara "sin plan de restore" sobre un ritual que
+                sí lo tiene, que es justo lo que la caja negra existe para no hacer.
 
-        Raises:
-            _ActionManifestError: Si begin_transaction/persist falla — Wrye Bash no
-                debe proceder sin la caja negra emitida. La TX recién abierta se marca
-                rolled-back para no dejarla PENDING (espejo de loot_service).
+                Llega por parámetro (y no se lee del lock acá adentro) porque el plan debe
+                reflejar lo que el lock **efectivamente capturó**: en el primer rebuild no
+                hay archivo previo, no hay snapshot, y el manifiesto tiene que decir eso.
+
+                Raises:
+                    _ActionManifestError: Si begin_transaction/persist falla — Wrye Bash no
+                        debe proceder sin la caja negra emitida. La TX recién abierta se marca
+                        rolled-back para no dejarla PENDING (espejo de loot_service).
         """
         from sky_claw.app.orchestrator.preview.action_manifest import build_action_manifest
 
@@ -361,7 +386,7 @@ class WryeBashPipelineService:
                 tool="Wrye Bash",
                 tool_version=None,  # Wrye Bash no expone versión hoy (follow-up menor).
                 target_files=[target_file],
-                snapshots=[],  # snapshot diferido — plan de rollback vacío por diseño.
+                snapshots=snapshots,  # U-04: plan de restore real (vacío solo si no había patch previo).
                 summary="Generar el Bashed Patch con Wrye Bash.",
             )
             await self._journal.persist_action_manifest(
@@ -399,7 +424,7 @@ class WryeBashPipelineService:
         self,
         journal_tx_id: int | None,
         lock: SnapshotTransactionLock | None,
-    ) -> str:
+    ) -> _DesenlaceDelRollback:
         """Cierra la TX del journal SOLO si el rollback fue honesto (review Codex #397).
 
         ``rollback_completed`` es ``False`` por DOS causas distintas —no había
@@ -428,10 +453,13 @@ class WryeBashPipelineService:
 
         if restaurado:
             await self._mark_journal_rolled_back(journal_tx_id)
-            return "completado"
+            return _DesenlaceDelRollback(revertido=True, resumen="completado")
         if not habia_snapshot:
             await self._mark_journal_rolled_back(journal_tx_id)
-            return "sin snapshot previo que restaurar"
+            # No hubo qué restaurar (primer rebuild): el parcial, si lo hay, sigue en
+            # disco. NO es un rollback — decir lo contrario al caller sería la falsa
+            # sensación que U-04 vino a eliminar.
+            return _DesenlaceDelRollback(revertido=False, resumen="sin snapshot previo que restaurar")
 
         logger.critical(
             "Rollback del Bashed Patch INCOMPLETO (TX %s): el parcial sigue en disco y la "
@@ -439,7 +467,7 @@ class WryeBashPipelineService:
             journal_tx_id,
             (lock.rollback_failures if lock is not None else []) or "desconocidos",
         )
-        return "FALLIDO — el parcial sigue en disco"
+        return _DesenlaceDelRollback(revertido=False, resumen="FALLIDO — el parcial sigue en disco")
 
     async def _mark_journal_rolled_back(self, journal_tx_id: int | None) -> None:
         """Marca la TX del journal como rolled-back (best-effort).
@@ -567,7 +595,10 @@ class WryeBashPipelineService:
                 # está cableado y la emisión falla, Wrye Bash NO corre (fail-closed:
                 # se lanza dentro del lock, nada mutó). El path sin journal la salta.
                 if self._journal is not None:
-                    journal_tx_id = await self._emit_action_manifest(self._bashed_patch_target(runner))
+                    journal_tx_id = await self._emit_action_manifest(
+                        self._bashed_patch_target(runner),
+                        bashed_patch_lock.snapshots,
+                    )
                 result = await runner.generate_bashed_patch()
                 if not result.success:
                     # U-04: convertir el fallo en excepción DENTRO del lock — es la
@@ -611,7 +642,7 @@ class WryeBashPipelineService:
             logger.error(
                 "[FASE-6] Wrye Bash retornó código %d; rollback de salida %s. stderr: %s",
                 result.return_code,
-                desenlace,
+                desenlace.resumen,
                 result.stderr[:500],
             )
             message = result.stderr or result.stdout or ""
@@ -623,6 +654,10 @@ class WryeBashPipelineService:
                     "stdout": result.stdout,
                     "stderr": result.stderr,
                     "duration_seconds": result.duration_seconds,
+                    # U-04: un fallo revertido y uno que dejó un Bashed Patch parcial
+                    # piden acciones DISTINTAS del operador, y el log no viaja al
+                    # agente LLM. Sin este campo, los dos se ven igual desde la tool.
+                    "rolled_back": desenlace.revertido,
                 },
                 preflight_report,
             )
@@ -646,8 +681,16 @@ class WryeBashPipelineService:
             # Incluye WryeBashTimeoutError (U-10): con target_files poblado, el
             # __aexit__ del lock externo ya intentó restaurar el patch previo.
             desenlace = await self._cerrar_tx_tras_rollback(journal_tx_id, bashed_patch_lock)
-            logger.error("[FASE-6] WryeBashExecutionError: %s; rollback de salida %s", exc, desenlace)
-            return _attach_preflight({"success": False, "error": str(exc), "message": str(exc)}, preflight_report)
+            logger.error("[FASE-6] WryeBashExecutionError: %s; rollback de salida %s", exc, desenlace.resumen)
+            return _attach_preflight(
+                {
+                    "success": False,
+                    "error": str(exc),
+                    "message": str(exc),
+                    "rolled_back": desenlace.revertido,
+                },
+                preflight_report,
+            )
         except asyncio.CancelledError:
             # Cancelación (shutdown/timeout del task): cerrar la TX del journal para no
             # dejarla PENDING (salvo que ya se commiteara, #249) y re-lanzar (review

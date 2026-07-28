@@ -891,6 +891,57 @@ async def test_timeout_tambien_restaura_el_bashed_patch_previo(
 
 
 @pytest.mark.asyncio
+async def test_rolled_back_distingue_el_revertido_del_que_dejo_basura(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """``rolled_back`` es el dato que el log NO le puede dar al agente LLM.
+
+    El servicio loguea el desenlace en prosa, pero el log no viaja en el dict de la
+    tool: sin este campo, un fallo que restauró el patch previo y uno que dejó un
+    parcial en disco se ven **idénticos** desde el agente, y piden acciones
+    distintas del operador. Se afirman los DOS desenlaces sobre el mismo mecanismo.
+    """
+    # (a) Con patch previo → el rollback restaura y rolled_back es True.
+    game_con = tmp_path / "con_previo"
+    config_con = _config_con_bashed_patch(game_con, contenido="contenido bueno")
+    patch_con = game_con / "Data" / "Bashed Patch, 0.esp"
+
+    async def _falla_con_previo() -> WryeBashResult:
+        patch_con.write_text("parcial", encoding="utf-8")
+        return WryeBashResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=0.1)
+
+    revertido = await _make_service(
+        lock_manager, snapshot_manager, _runner_con_config_real(config_con, side_effect=_falla_con_previo)
+    ).execute_pipeline(profile="Default")
+
+    assert revertido["success"] is False
+    assert revertido["rolled_back"] is True
+    assert patch_con.read_text(encoding="utf-8") == "contenido bueno"
+
+    # (b) Primer rebuild (sin patch previo) → no hubo qué restaurar. El parcial
+    # QUEDA en disco, así que declarar rolled_back sería la falsa sensación de
+    # rollback que U-04 vino a eliminar.
+    game_sin = tmp_path / "sin_previo"
+    (game_sin / "Data").mkdir(parents=True)
+    config_sin = WryeBashConfig(
+        wrye_bash_path=game_sin / "Mopy" / "bash.py", game_path=game_sin, mo2_path=game_sin / "mo2"
+    )
+    patch_sin = game_sin / "Data" / "Bashed Patch, 0.esp"
+
+    async def _falla_sin_previo() -> WryeBashResult:
+        patch_sin.write_text("parcial sin previo", encoding="utf-8")
+        return WryeBashResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=0.1)
+
+    sin_revertir = await _make_service(
+        lock_manager, snapshot_manager, _runner_con_config_real(config_sin, side_effect=_falla_sin_previo)
+    ).execute_pipeline(profile="Default")
+
+    assert sin_revertir["success"] is False
+    assert sin_revertir["rolled_back"] is False
+    assert patch_sin.exists()  # el parcial sigue ahí, y el campo lo dice
+
+
+@pytest.mark.asyncio
 async def test_fallo_sin_patch_previo_no_crashea(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:

@@ -1696,3 +1696,39 @@ con prerequisito explícito: obtener el manifiesto de salida real de Pandora (su
 log lo reporta) antes de intentar el remedio.
 
 Con eso, U-04 queda cerrado para Wrye Bash y para el modo `Pandora_Output`.
+
+### Addendum (2026-07-28) — el ancla de familia de U-04, y dos hermanos que faltaban
+
+Los dos PRs de U-04 (#397 Wrye Bash, #399 Pandora) cerraron sus casos con anclas
+propias. Faltaba el ancla de la **clase**: `tests/test_rollback_salida.py` enumera
+**todo módulo del paquete** que construya un `SnapshotTransactionLock` y exige que
+cada uno declare su mecanismo de rollback —`snapshot`, `directorio`, `no-muta` o
+`pendiente`— con el motivo **escrito** para los dos últimos. Un mutador nuevo rompe
+el guard de completitud hasta que alguien lo clasifique.
+
+El alcance del barrido es la parte que importa: acotarlo a `local/tools/*_service.py`
+—el reflejo natural— **no ve** a `run_bodyslide_batch`, que toma el lock desde
+`app/agent/tools/system_tools.py`. Un ancla de familia que muestrea el directorio
+equivocado reproduce el defecto que existe para atajar. Con el barrido correcto,
+**BodySlide queda como el único pendiente de U-04**, y el ancla lo fija: su destino
+es `game_path/<output_path>` con el `output_path` elegido por el LLM, así que el
+move-aside que resolvió Pandora no aplica (allá el destino es una constante del
+código; acá es un parámetro del modelo).
+
+Un tercer test evita que la clasificación sea prosa: quien figura como `directorio`
+tiene que construir un `DirectoryRollback` de verdad, y quien lo construye tiene que
+estar clasificado así.
+
+**Dos hermanos que #397 no cubrió**, cerrados acá:
+
+1. **`rolled_back` en el resultado**, propagado al path del agente LLM
+   (`system_tools.py`). El servicio ya distinguía el fallo revertido del que dejó
+   basura, pero solo en el **log** — y el log no viaja en el dict de la tool, así que
+   desde el agente los dos se veían idénticos pese a pedir acciones distintas del
+   operador. `_cerrar_tx_tras_rollback` devuelve ahora `_DesenlaceDelRollback`
+   (booleano + resumen) para que el log y el dict no puedan divergir.
+2. **`snapshots` reales en el `ActionManifest`.** `build_action_manifest` traduce cada
+   `SnapshotInfo` a un `RollbackStep`: es literalmente el plan de rollback. Mientras
+   `target_files` estaba vacío, pasar `[]` era honesto; desde U-04 el lock SÍ captura
+   el patch previo, y seguir pasando `[]` hacía que la caja negra declarara "sin plan
+   de restore" sobre un ritual que sí lo tiene.

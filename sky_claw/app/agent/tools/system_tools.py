@@ -444,6 +444,10 @@ async def generate_bashed_patch(
             "stdout": sanitize_for_prompt(str(res.get("stdout", ""))) if res.get("stdout") else "",
             "stderr": sanitize_for_prompt(str(res.get("stderr", ""))) if res.get("stderr") else "",
             "duration_seconds": res.get("duration_seconds", 0.0),
+            # U-04: el hermano LLM del log del servicio. Un fallo revertido y uno que
+            # dejó un Bashed Patch parcial piden acciones DISTINTAS del operador, y el
+            # log no viaja al agente: sin este campo los dos se ven igual desde acá.
+            "rolled_back": res.get("rolled_back", False),
         }
         if not out["success"] and res.get("message"):
             out["error"] = res["message"]
