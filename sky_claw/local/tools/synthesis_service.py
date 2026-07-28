@@ -40,6 +40,7 @@ from sky_claw.app.db.locks import (
     LockAcquisitionError,
     SnapshotTransactionLock,
 )
+from sky_claw.local.tools.output_targets import synthesis_output_target
 from sky_claw.local.tools.patcher_pipeline import PatcherPipeline
 from sky_claw.local.tools.synthesis_runner import (
     SynthesisConfig,
@@ -156,11 +157,11 @@ class SynthesisPipelineService:
             raise SynthesisExecutionError(f"Synthesis executable not found: {synthesis_exe}")
 
         # T-27b: el override (sandbox) manda; sin él, el destino de siempre.
-        output_path = self._output_path
-        if output_path is None:
-            output_path = mo2_path / "overwrite"
-            if not output_path.exists():
-                output_path = mo2_path / "mods" / "Synthesis Output"
+        # Fuente única compartida con _ensure_preflight (U-01 parte 2): estaban
+        # copiados con un comentario "mismo cálculo que…", y el preflight sondeando
+        # un destino distinto del que el runner escribe es un falso verde silencioso.
+        output_path = synthesis_output_target(mo2=mo2_path, override=self._output_path)
+        assert output_path is not None  # mo2_path ya validado arriba
 
         config = SynthesisConfig(
             game_path=game_path,
@@ -248,13 +249,10 @@ class SynthesisPipelineService:
             scan_mods_dir=True,
         )
 
-        # Output real donde Synthesis escribe (el override del sandbox manda; si no,
-        # overwrite / "Synthesis Output" — mismo cálculo que _ensure_synthesis_runner).
-        output_dir = self._output_path
-        if output_dir is None:
-            output_dir = mo2 / "overwrite"
-            if not output_dir.exists():
-                output_dir = mo2 / "mods" / "Synthesis Output"
+        # Output real donde Synthesis escribe — MISMO resolver que
+        # _ensure_synthesis_runner, no una copia del cálculo (U-01 parte 2).
+        output_dir = synthesis_output_target(mo2=mo2, override=self._output_path)
+        assert output_dir is not None  # mo2 ya validado por el guard de arriba
 
         def _permissions():
             # Re-probe por llamada (freshness): un cambio de permisos entre corridas se ve.

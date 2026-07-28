@@ -1,15 +1,21 @@
 """PandoraPipelineService — generación de animaciones (behavior graphs) bajo lock.
 
-Follow-up A de la Fase 2. Pandora regenera los grafos de comportamiento del juego
-(salida en el overwrite/MO2), estado serializable que el resto de los runners mutantes
-(LOOT/xEdit/DynDOLOD) ya protegen con :class:`SnapshotTransactionLock`. Este servicio
-expone la corrida real bajo el mismo lock distribuido.
+Follow-up A de la Fase 2. Pandora regenera los grafos de comportamiento del juego,
+estado serializable que el resto de los runners mutantes (LOOT/xEdit/DynDOLOD) ya
+protegen con :class:`SnapshotTransactionLock`. Este servicio expone la corrida real
+bajo el mismo lock distribuido.
 
 Espeja deliberadamente a :class:`~sky_claw.local.tools.loot_service.LootSortingService`:
 construcción perezosa del runner desde el ``PathResolutionService`` y **snapshot
-diferido** (``target_files=[]``) porque el archivo concreto que reescribe Pandora es
-dependiente del entorno (subproceso con ``cwd``) y no es resoluble con certeza hoy. La
-protección que aplica con certeza ahora es la *serialización*.
+diferido** (``target_files=[]``), así que la protección que aplica hoy es la
+*serialización*.
+
+**El destino de la salida NO es "dependiente del entorno"** (U-01 parte 2): Pandora
+se spawnea directo con ``cwd=game_path``, nunca hereda la USVFS de MO2 y por lo tanto
+escribe **físicamente** en una de las candidatas de
+``output_targets.pandora_output_candidates`` — el ``overwrite`` de MO2 no es
+alcanzable. Que queden varias candidatas es ambigüedad del tool (versión/config), no
+del modo de lanzamiento. Snapshotearlas es alcance de **U-04**.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from sky_claw.app.db.locks import (
     LockAcquisitionError,
     SnapshotTransactionLock,
 )
+from sky_claw.local.tools.output_targets import pandora_output_candidates
 from sky_claw.local.tools.pandora_runner import (
     PandoraConfig,
     PandoraExecutionError,
@@ -40,9 +47,6 @@ logger = logging.getLogger(__name__)
 
 #: Lock resource id compartido para la regeneración de behavior graphs de Pandora.
 BEHAVIOR_GRAPHS_RESOURCE_ID = "behavior-graphs"
-
-#: Nombre del dir de salida de Pandora en setups standalone (junto al exe).
-_PANDORA_OUTPUT_DIR = "Pandora_Output"
 
 
 class _ActionManifestError(Exception):
@@ -144,12 +148,13 @@ class PandoraPipelineService:
         """Construye perezosamente el preflight de Pandora (T-16c·4, STAGE 4).
 
         Pandora regenera los behavior graphs (animaciones/IA). Sensores relevantes:
-        **permisos de escritura** sobre los dirs candidatos de salida (el destino
-        exacto es dependiente del entorno — VFS de MO2 vs standalone — así que se
-        sondean todos los resolubles), **symlinks/junctions** en las rutas crudas,
-        y **overwrite sucio** (Pandora lee/escribe el overwrite; uno sucio hace el
-        diff inatribuible). NO cablea masters/límites: Pandora procesa mods de
-        ANIMACIÓN (estilo FNIS/Nemesis), no el load order de plugins.
+        **permisos de escritura** sobre los dirs candidatos de salida FÍSICOS (ver
+        ``_permission_targets``; cuál de ellos elige depende de la versión de
+        Pandora, no del modo de lanzamiento), **symlinks/junctions** en las rutas
+        crudas, y **overwrite sucio** (un overwrite sucio hace el diff
+        inatribuible aunque Pandora no escriba ahí). NO cablea masters/límites:
+        Pandora procesa mods de ANIMACIÓN (estilo FNIS/Nemesis), no el load order
+        de plugins.
 
         Se construye con lo que HAYA (review #314): basta game **o** exe **o** MO2
         resoluble (desde el resolver o el config del runner). El overwrite solo se
@@ -215,25 +220,21 @@ class PandoraPipelineService:
     def _permission_targets(self) -> list[pathlib.Path]:
         """Rutas candidatas donde Pandora escribe los behavior graphs (review-hardened).
 
-        El destino exacto es dependiente del entorno (lanzado vía el VFS de MO2 →
-        el ``overwrite``; standalone → ``Data`` o un ``Pandora_Output`` junto al
-        exe), así que se sondean todos los candidatos resolubles: el ``Data`` del
-        juego, el ``overwrite`` de MO2, el dir del exe **y el ``Pandora_Output``
-        concreto** (un output hijo read-only con el padre escribible pasaría
-        inadvertido — review #314 F2). El ``WritePermissionsChecker`` se salta los
-        inexistentes; se resuelve por corrida (freshness).
+        Delega en ``output_targets.pandora_output_candidates``: el ``Data`` del
+        juego, el dir del exe **y el ``Pandora_Output`` concreto** (un output hijo
+        read-only con el padre escribible pasaría inadvertido — review #314 F2).
+
+        **Ya no se sondea el ``overwrite`` de MO2** (U-01 parte 2): llegar ahí
+        exigiría la redirección USVFS, y Pandora se spawnea directo con
+        ``cwd=game_path`` y sin ruta de salida en el comando, así que no hereda la
+        VFS. Siguen siendo varias candidatas porque cuál elige depende de la
+        versión de Pandora, no del modo de lanzamiento.
+
+        El ``WritePermissionsChecker`` se salta los inexistentes; se resuelve por
+        corrida (freshness).
         """
-        game, mo2, exe, _, _ = self._resolve_pandora_paths()
-        candidates: list[pathlib.Path] = []
-        if game is not None:
-            candidates.append(game / "Data")
-        if mo2 is not None:
-            candidates.append(mo2 / "overwrite")
-        if exe is not None:
-            candidates.append(exe.parent)
-            candidates.append(exe.parent / _PANDORA_OUTPUT_DIR)
-        seen: set[pathlib.Path] = set()
-        return [p for p in candidates if not (p in seen or seen.add(p))]
+        game, _, exe, _, _ = self._resolve_pandora_paths()
+        return pandora_output_candidates(game=game, exe=exe)
 
     def _ensure_runner(self) -> PandoraRunner:
         """Construye el :class:`PandoraRunner` resolviendo el exe + game path.

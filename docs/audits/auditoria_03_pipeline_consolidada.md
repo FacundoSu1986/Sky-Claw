@@ -73,6 +73,29 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > de la familia vive en `tests/test_vfs_visibility_wiring.py` y falla ante un servicio
   > nuevo sin clasificar. **Los puntos (2) y (3) siguen abiertos** — y (2) es lo que U-04 y
   > las mitades abiertas de U-06 esperan.
+  > **Estado (#388): CERRADO el punto (2) — la SALIDA.** La incoherencia era mayor que la
+  > registrada arriba: la premisa *"el destino de salida es dependiente del entorno"*
+  > estaba escrita en **nueve** lugares del árbol y es **falsa en todos**, y en tres era el
+  > motivo declarado de que NO hubiera rollback (`target_files=[]`/`snapshots=[]`). Hay
+  > exactamente dos formas de llegar al `overwrite`: **(a)** redirección USVFS, que exige
+  > heredar la VFS y ningún runner spawneado por `run_capture` la hereda (el único camino
+  > bajo USVFS es el broker de `mo2/brokered_loot.py`, cuya cobertura productiva son
+  > `health` + dos entry points de LOOT); y **(b)** ruta explícita en el comando, que
+  > escribe **físicamente** y funciona standalone (lo que hace Synthesis). Regla resultante:
+  > **el `overwrite` solo se alcanza por (b), nunca por (a)**. Quien no lleva la ruta en el
+  > comando —Wrye Bash, Pandora, BodySlide— escribe físicamente relativo a su `cwd`, y su
+  > destino **es resoluble hoy**. El invariante vive una sola vez en
+  > `local/tools/output_targets.py`; los consumidores (`wrye_bash_service`,
+  > `pandora_service`, `synthesis_service` ×2, `dyndolod_runner`, `dyndolod_service`) lo
+  > usan en vez de reescribirlo. `tests/test_output_targets.py` enumera la familia (por uso
+  > de `WritePermissionsChecker`) y falla ante un servicio nuevo sin clasificar.
+  > **Defecto latente descubierto al reconciliar:** `_find_texgen_output`/
+  > `_find_dyndolod_output` sondeaban `pathlib.Path.cwd()` mientras su hermano
+  > `dyndolod_service._permission_targets` documentaba lo contrario. Un `DynDOLOD_Output/`
+  > viejo en el cwd del agente se devolvía como salida propia, el guard de #375 lo validaba
+  > y el ritual reportaba verde sobre un árbol ajeno. Candidata eliminada, con test que la
+  > reproduce en rojo. **Queda abierto solo el punto (3)** (documentar la invariante de
+  > deployment en `docs/`).
 
 ### U-02 — Sin Job Object en Windows: la muerte dura de Python orfana todo el árbol externo · `[A+Z]` · Subprocesos/Zombies
 
@@ -132,6 +155,16 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > Por eso **U-10 (elevar `WryeBashTimeoutError`/`BodySlideTimeoutError`) es prerequisito** de
   > este remedio: sin la excepción dedicada, agregar `target_files` da una falsa sensación de
   > rollback.
+  > **Estado (#388): DESBLOQUEADO, no implementado.** Los dos prerequisitos están cerrados:
+  > (1) el path de salida ya no es ambiguo — `output_targets.bashed_patch_target` devuelve
+  > el `Data` físico del juego y `pandora_output_candidates` las candidatas físicas de
+  > Pandora; y (2) **U-10 ya está cerrado**: `wrye_bash_runner.py` eleva
+  > `WryeBashTimeoutError` y `bodyslide_runner.py` eleva `BodySlideTimeoutError`, así que la
+  > excepción SÍ propaga por el context manager. Lo que falta es solo el remedio: pasar la
+  > ruta como `target_files` y forzar el rollback ante `result.success is False`. Los tres
+  > comentarios que justificaban `target_files=[]`/`snapshots=[]` con la premisa falsa
+  > (`wrye_bash_service` ×2, `system_tools.run_bodyslide_batch`) ya dicen que el pendiente
+  > es de alcance, no de imposibilidad.
 
 ### U-05 — VRAMr: timeout orfana nietos (usa `proc.kill()` pelado, no el tree-kill) · `[Z]` · Subprocesos/Zombies
 
@@ -184,6 +217,15 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   >   afirman `success=True` sin crear el plugin en disco.
   > DynDOLOD sí era ejecutable ya porque `_find_dyndolod_output()` **busca en disco**, no
   > asume la ruta — por eso no hereda el bloqueo de U-01.
+  > **Estado (#388): Wrye Bash y BodySlide DESBLOQUEADOS, no implementados.** El motivo del
+  > diferimiento —*"con MO2 en USVFS la salida se redirige a `overwrite`, así que el
+  > post-check marcaría fallo un run correcto"*— **no puede ocurrir**: ninguno de los dos
+  > se lanza a través de `ModOrganizer.exe`, así que no heredan la USVFS y la redirección
+  > que produciría ese falso negativo no existe. El post-check de Wrye Bash puede afirmarse
+  > sobre `output_targets.bashed_patch_target(game)` —ruta única— y el de BodySlide sobre
+  > su `-o <output_path>` resuelto físicamente contra `cwd=game_path`. QuickAutoClean sigue
+  > aplazado por su motivo propio (el falso negativo del criterio "mtime avanzó" cuando el
+  > plugin ya estaba limpio), que #388 no toca.
 
 ### U-07 — DynDOLOD: en salida NORMAL con un nieto (TexGen) vivo, el nieto queda huérfano · `[A]` · Subprocesos/Zombies
 

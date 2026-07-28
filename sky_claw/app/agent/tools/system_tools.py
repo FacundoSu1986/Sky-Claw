@@ -555,12 +555,17 @@ async def run_bodyslide_batch(
     that hardcoded the "CBBE Body Physics" preset; ``group`` is configurable.
 
     Codex #213 (same P1 vector as ``run_loot_sort``/``run_pandora``): BodySlide
-    batch-builds meshes into the overwrite/output, so when the distributed lock is
-    wired (production via ``app_context``) this agent path runs under the shared
-    ``bodyslide-meshes`` lock — the cross-process lock only protects if every mutator
-    participates. ``target_files=[]`` (serialize only): the output path is
-    environment-dependent, so a blind snapshot would be a false safety net. Without a
-    lock manager (legacy callers / tests) BodySlide runs directly, preserving prior behavior.
+    batch-builds meshes, so when the distributed lock is wired (production via
+    ``app_context``) this agent path runs under the shared ``bodyslide-meshes``
+    lock — the cross-process lock only protects if every mutator participates.
+
+    ``target_files=[]`` (serialize only). U-01 parte 2 retired the reason this
+    used to give ("the output path is environment-dependent"): BodySlide is
+    spawned directly, never inherits MO2's USVFS, and writes ``-o <output_path>``
+    resolved physically against ``cwd=game_path``. The destination IS knowable;
+    snapshotting it is U-04's scope, not a blocked problem. See
+    ``sky_claw/local/tools/output_targets.py`` for the invariant. Without a lock
+    manager (legacy callers / tests) BodySlide runs directly, preserving prior behavior.
     """
     if bodyslide_runner is None:
         return json.dumps(

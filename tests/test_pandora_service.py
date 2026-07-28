@@ -3,9 +3,11 @@
 Ancla el contrato de que la generación de animaciones de Pandora corre bajo el lock
 distribuido compartido (``SnapshotTransactionLock``), serializándola contra otras
 corridas concurrentes. Espeja el estilo de fixtures de ``test_loot_service.py``.
-Como la salida de Pandora es dependiente del entorno (subproceso con ``cwd``), el
-snapshot se difiere (``target_files=[]``) — la protección que aplica con certeza es la
-serialización, igual que en ``LootSortingService``.
+El snapshot se difiere (``target_files=[]``) y la protección que aplica hoy es la
+serialización, igual que en ``LootSortingService``. **El motivo ya no es que la
+salida sea "dependiente del entorno"** — U-01 parte 2 desmontó esa premisa: Pandora
+se spawnea directo, no hereda la USVFS y escribe físicamente en las candidatas de
+``output_targets.pandora_output_candidates``. Snapshotearlas es alcance de U-04.
 """
 
 from __future__ import annotations
@@ -319,7 +321,13 @@ async def test_ensure_preflight_construye_sensores_con_paths_resolubles(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
     """Con game/MO2/exe resolubles, ``_ensure_preflight`` arma un PreflightService
-    real (no None) y sondea los dirs candidatos de salida (Data/overwrite/exe)."""
+    real (no None) y sondea los dirs candidatos de salida FÍSICOS (Data/exe).
+
+    El ``overwrite`` de MO2 salió del sondeo en U-01 parte 2: llegar ahí exige la
+    redirección USVFS y Pandora se spawnea directo, así que sondearlo modelaba un
+    modo de lanzamiento que no existe. Se afirma su AUSENCIA para que reponerlo
+    tenga que pasar por este test.
+    """
     game = tmp_path / "Skyrim"
     (game / "Data").mkdir(parents=True)
     mo2 = tmp_path / "MO2"
@@ -339,7 +347,7 @@ async def test_ensure_preflight_construye_sensores_con_paths_resolubles(
     assert svc._ensure_preflight() is not None
     targets = svc._permission_targets()
     assert game / "Data" in targets
-    assert mo2 / "overwrite" in targets
+    assert mo2 / "overwrite" not in targets
     assert exe.parent in targets
 
 

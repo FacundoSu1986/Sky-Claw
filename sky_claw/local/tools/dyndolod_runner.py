@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
+from sky_claw.local.tools.output_targets import dyndolod_staging_roots
 
 logger = logging.getLogger(__name__)
 
@@ -935,6 +936,18 @@ class DynDOLODRunner:
             logger.error("Error generando meta.ini: %s", e)
             raise
 
+    def _staging_search_paths(self, staging_name: str) -> list[pathlib.Path]:
+        """Rutas donde puede vivir el staging crudo *staging_name*, en orden.
+
+        Las raíces salen de ``output_targets.dyndolod_staging_roots`` — la misma
+        fuente que usa ``dyndolod_service._permission_targets``, que ya documentaba
+        que el ``cwd`` del proceso Python **no** es el del subproceso de DynDOLOD.
+        Este runner lo sondeaba igual, y un staging viejo ahí se devolvía como
+        salida propia (U-01 parte 2).
+        """
+        roots = dyndolod_staging_roots(mo2=self._config.mo2_path, exe=self._config.dyndolod_exe)
+        return [root / staging_name for root in roots]
+
     def _find_texgen_output(self) -> pathlib.Path | None:
         """
         Busca el directorio de salida de TexGen.
@@ -942,12 +955,7 @@ class DynDOLODRunner:
         Returns:
             Path al directorio de salida o None si no se encuentra.
         """
-        # Ubicaciones comunes de TexGen_Output
-        search_paths = [
-            self._config.mo2_path / self.TEXGEN_OUTPUT_NAME,
-            self._config.dyndolod_exe.parent / self.TEXGEN_OUTPUT_NAME,
-            pathlib.Path.cwd() / self.TEXGEN_OUTPUT_NAME,
-        ]
+        search_paths = self._staging_search_paths(self.TEXGEN_OUTPUT_NAME)
 
         for path in search_paths:
             if path.exists() and any(path.iterdir()):
@@ -964,12 +972,7 @@ class DynDOLODRunner:
         Returns:
             Path al directorio de salida o None si no se encuentra.
         """
-        # Ubicaciones comunes de DynDOLOD_Output
-        search_paths = [
-            self._config.mo2_path / self.DYNDOLLOD_OUTPUT_NAME,
-            self._config.dyndolod_exe.parent / self.DYNDOLLOD_OUTPUT_NAME,
-            pathlib.Path.cwd() / self.DYNDOLLOD_OUTPUT_NAME,
-        ]
+        search_paths = self._staging_search_paths(self.DYNDOLLOD_OUTPUT_NAME)
 
         for path in search_paths:
             if path.exists() and any(path.iterdir()):

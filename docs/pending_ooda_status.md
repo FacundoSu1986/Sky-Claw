@@ -1252,3 +1252,80 @@ Sigue cubriendo **las hipótesis que se formularon y las que el barrido
 adversarial encontró en su primera pasada completa**, no necesariamente el
 espacio completo: no se relanzó una segunda ronda de barrido tras aplicar los
 2 fixes de arriba para buscar hallazgos de tercer orden.
+
+## Addendum (2026-07-28) — U-01 parte (2): el modelo de SALIDA reconciliado (#388)
+
+U-01 se había cerrado a medias en #381: la **ENTRADA** (el sensor
+`vfs_visibility.py` que detecta el modlist invisible en standalone). Este PR cierra
+la **SALIDA**, el punto (2) del fix original, que era el desbloqueante declarado de
+**U-04** y de las dos mitades abiertas de **U-06**.
+
+### La premisa falsa, y por qué no era prosa muerta
+
+*"El destino de salida es dependiente del entorno"* estaba escrita en **nueve**
+lugares del árbol —seis en producción, tres en docstrings de tests— y es **falsa en
+todos**. En tres de los seis productivos era el **motivo declarado** de que no
+hubiera rollback:
+
+| Sitio | Consecuencia que sostenía |
+|---|---|
+| `wrye_bash_service._emit_action_manifest` | `snapshots=[]` |
+| `wrye_bash_service`, comentario del doble lock | `target_files=[]` |
+| `system_tools.run_bodyslide_batch` | `target_files=[]` |
+| `wrye_bash_service._permission_targets` | sondeaba el `overwrite` |
+| `pandora_service._permission_targets` | sondeaba el `overwrite` |
+| `synthesis_service` ×2 | cálculo duplicado ("mismo cálculo que…") |
+
+Y el mismo `wrye_bash_service` ya tenía escrita la respuesta correcta ~20 líneas más
+arriba: `_bashed_patch_target` computaba `game/"Data"/BASHED_PATCH_NAME` justificando
+que *"``bash.py`` corre con ``cwd=game_path``"*. Hermanos en el mismo archivo
+contradiciéndose — la forma exacta del episodio #373, y esta vez el hermano
+equivocado era el que sostenía la ausencia de rollback.
+
+### El invariante, enunciado como propiedad del mecanismo
+
+Hay exactamente **dos** formas de que la salida termine en el `overwrite`:
+
+- **(a) Redirección USVFS** — el tool escribe en `Data/x` y la VFS lo desvía. Exige
+  heredar la VFS, cosa que solo hace un proceso lanzado vía `ModOrganizer.exe`. Todos
+  los runners de `local/tools/` se spawnean directo con `run_capture`: **para ellos (a)
+  es inalcanzable**. El único camino del repo bajo USVFS es el broker
+  (`mo2/brokered_loot.py`), cuya cobertura productiva son `health` + dos entry points
+  de LOOT (ver el addendum F8 más arriba, que lista a Wrye Bash / Synthesis / DynDOLOD
+  / xEdit como **pendientes de migrar**).
+- **(b) Ruta explícita** — se le pasa la ruta en el comando y escribe **físicamente**.
+  Funciona standalone; es lo que hace Synthesis apuntando al `overwrite`.
+
+⇒ **El `overwrite` solo se alcanza por (b), nunca por (a).** Quien no lleva la ruta en
+su línea de comandos —Wrye Bash (`[bash, -b, "Bashed Patch, 0.esp"]` con
+`cwd=game_path`), Pandora (`--auto`), BodySlide (`-o` relativo al `cwd`)— escribe
+físicamente y su destino **es resoluble hoy**.
+
+Vive una sola vez en `sky_claw/local/tools/output_targets.py`. Ancla:
+`tests/test_output_targets.py` enumera la familia por uso de `WritePermissionsChecker`
+y falla ante un servicio nuevo sin clasificar (`loot_service` y `xedit_service` quedan
+excluidos **con motivo escrito**, no de memoria).
+
+### Defecto latente que apareció al reconciliar
+
+`dyndolod_runner._find_texgen_output`/`_find_dyndolod_output` sondeaban
+`pathlib.Path.cwd()` como tercera candidata, mientras su hermano
+`dyndolod_service._permission_targets` documentaba lo contrario (*"no es el cwd del
+subproceso de DynDOLOD"*). Un `DynDOLOD_Output/` viejo en el directorio de trabajo del
+agente se devolvía como salida propia; con el guard de #375,
+`validate_dyndolod_output` lo aceptaba, el journal commiteaba y el ritual reportaba
+**verde sobre un árbol ajeno**. Candidata eliminada; el test la reproduce en rojo
+contra el código previo.
+
+### Qué queda abierto
+
+- **U-01 punto (3)**: documentar la invariante de deployment en `docs/` (el módulo ya
+  la enuncia; falta la versión para operadores).
+- **U-04**: desbloqueado y **no implementado**. Sus dos prerequisitos están cerrados —
+  el path ya no es ambiguo, y **U-10 también estaba cerrado** (`WryeBashTimeoutError` /
+  `BodySlideTimeoutError` ya se elevan, así que la excepción propaga por el context
+  manager). Falta solo pasar la ruta como `target_files` y forzar el rollback ante
+  `result.success is False`.
+- **U-06** (Wrye Bash / BodySlide): desbloqueado y no implementado. El falso negativo
+  que motivaba el diferimiento exigía una redirección USVFS que no puede ocurrir.
+  QuickAutoClean sigue aplazado por su motivo propio (mtime), ajeno a U-01.
