@@ -571,6 +571,32 @@ def test_stream_con_reconfigure_incompatible_no_rompe_setup_logging(tmp_path, ex
     assert "sigue funcionando pese al reconfigure roto" in consola.getvalue()
 
 
+def test_stream_con_reconfigure_desconocido_loggea_y_propaga(tmp_path, caplog: pytest.LogCaptureFixture) -> None:
+    """Un fallo ajeno a las incompatibilidades conocidas no puede ocultarse."""
+
+    class _FalloDeAplicacionError(Exception):
+        pass
+
+    class _StreamConFalloInesperado(io.StringIO):
+        def reconfigure(self, **_kwargs: object) -> None:
+            raise _FalloDeAplicacionError("estado interno corrupto")
+
+    with (
+        caplog.at_level(logging.ERROR, logger="sky_claw"),
+        pytest.raises(
+            _FalloDeAplicacionError,
+            match="estado interno corrupto",
+        ),
+    ):
+        setup_logging(
+            log_dir=tmp_path,
+            process_role="test",
+            console_stream=_StreamConFalloInesperado(),
+        )
+
+    assert "reconfigure" in caplog.text
+
+
 def test_error_de_formateo_no_ciega_el_sink_de_archivo(tmp_path) -> None:
     """Un record malformado solo se pierde a sí mismo, no al siguiente.
 

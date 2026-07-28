@@ -509,17 +509,18 @@ def setup_logging(
             # rastro legible. getattr en vez de isinstance(io.TextIOWrapper):
             # streams inyectados en tests (io.StringIO) no tienen reconfigure()
             # y no deben romper. callable() confirma que el método existe, pero
-            # no QUÉ excepción puede levantar: un stream de terceros con otra
-            # firma o un estado interno roto puede lanzar cualquier cosa
-            # (TypeError, AttributeError, RuntimeError...). Enumerar tipos uno
-            # por uno nunca termina de cerrarse — se suprime Exception entero,
-            # como el resto de los boundaries fail-safe de este módulo (BLE001
-            # exento acá, pyproject.toml): este reconfigure es un best-effort
-            # que jamás debe abortar setup_logging() por un detalle de consola.
+            # no qué incompatibilidad conocida puede exponer. Esas variantes
+            # son best-effort; un fallo ajeno se registra y se propaga para no
+            # declarar sano un sink de consola potencialmente roto.
             reconfigure = getattr(stream, "reconfigure", None)
             if callable(reconfigure):
-                with contextlib.suppress(Exception):
+                try:
                     reconfigure(errors="backslashreplace")
+                except (TypeError, ValueError, OSError, AttributeError, RuntimeError):
+                    pass
+                except Exception:
+                    logger.exception("Fallo inesperado al reconfigurar el stream de consola")
+                    raise
             console_handler = logging.StreamHandler(stream)
             console_handler.setFormatter(
                 logging.Formatter("%(asctime)s [%(levelname)s] [%(correlation_id)s] %(name)s: %(message)s")
