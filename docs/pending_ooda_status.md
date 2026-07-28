@@ -1144,11 +1144,111 @@ Cada uno se refutó con evidencia citada o medición; el detalle vive en el PR #
 | Lost-wakeup / deadlock en `stop_with_timeout` | `handle()` corre **fuera** del mutex de la `Queue` (`QueueListener._monitor` llama `task_done()` después), y `queue.mutex` es siempre el lock más interno. El stall del productor es O(1), no `timeout_s`. |
 | Corrupción de `config.toml` por workers concurrentes | Triple bloqueo: `_instance_lock` en `submit`, lock de archivo `O_EXCL` por instancia, y única instanciación productiva del broker = one-shot `--mode vfs-health`. |
 
+### Addendum (2026-07-27, noche) — el barrido pendiente corrió: 7 hallazgos nuevos (6 + 1), 2 cerrados
+
+El barrido "¿qué defecto no anticipé?" que la nota de arriba dejaba pendiente
+**corrió** (dos intentos previos murieron por cuota de agentes; el tercero
+completó: 10 agentes, 0 refutados). Encontró **6 hallazgos** reales que
+ninguna de las dos rondas anteriores había tocado — ninguno coincide con los
+refutados ni con los residuos R1-R5 ya catalogados arriba.
+
+Además, probar el pipeline con una corrida real (no mockeada) de
+`python -m sky_claw --mode cli`/`oneshot` — arranque completo, redacción en
+producción (`Auth token [REDACTED]`), `crash.log` comportándose como se
+espera — encontró **1 hallazgo más** por su cuenta, fuera del barrido: la
+consola no soporta el rango Unicode que el repo usa en español.
+
+**Total: 7 hallazgos nuevos** (6 del barrido + 1 de la corrida real). De esos
+7, se cierran 2 en este commit; los otros 5 quedan documentados como residuos
+más abajo.
+
+**Cerrados en este mismo commit:**
+
+1. **`SecurityRedactionFilter` nunca redactaba `record.stack_info`.**
+   `stack_info` (`logger.warning(..., stack_info=True)`) llega ya renderizado
+   como texto por la stdlib, a diferencia de `exc_info` (una tupla que el
+   propio filtro renderiza) — sin una rama explícita, viaja sin redactar hasta
+   `crash.log`/`sky_claw.log`. **No era hipotético**: NiceGUI (la GUI real de
+   Sky-Claw) llama `logging.getLogger("nicegui").warning(..., stack_info=True)`
+   en `Client.check_existence()` (bug conocido de NiceGUI, dispara con timers/
+   tareas en background que referencian un cliente tras su desconexión), y ese
+   logger propaga al root sin `propagate=False`. Cualquier ruta de archivo con
+   `Users\<usuario>` en ese stack trace se guardaba sin el masking de username
+   que protege a cualquier otro campo del record. Fix: `record.stack_info =
+   self._redact(record.stack_info)` junto al bloque de `exc_text`.
+   Test ancla: `tests/test_log_redaction_traceback.py`.
+
+2. **La consola pierde el registro completo ante un carácter no codificable
+   en su codepage.** `TextIOWrapper.write()` codifica la línea entera antes de
+   escribir cualquier byte — si falla (p. ej. `→` en una consola cp1252, común
+   en Windows sin `chcp 65001`), no se escribe NADA de esa línea, y la stdlib
+   imprime `--- Logging error ---` + traceback en su lugar. Con mensajes en
+   español por todo el repo (tildes, `ñ`, flechas), esto puede disparar en
+   cualquier consola Windows sin UTF-8. Fix: `stream.reconfigure(errors=
+   "backslashreplace")` sobre el stream de consola en `setup_logging` (con
+   guarda `getattr`/`callable` para no romper streams de test sin
+   `reconfigure`, como `io.StringIO`). Test ancla:
+   `test_consola_con_encoding_limitado_no_pierde_el_registro`.
+
+**Documentados como residuos, sin cerrar** (ninguno tiene víctima activa hoy;
+razones de alcance, no de urgencia):
+
+3. **`SecurityRedactionFilter.filter()` hace I/O de disco síncrono en el hilo
+   productor al renderizar un traceback.** Si `record.exc_info` está seteado y
+   `record.exc_text` aún no, el filtro llama `formatException()`, que internamente
+   usa `linecache` — y `linecache.checkcache()` hace `os.stat()` real por cada
+   nombre de archivo único en el traceback, en **cada** llamada (no solo la
+   primera vez), con lectura completa del archivo (`tokenize.open()+readlines()`)
+   si aún no está en caché. Contradice literalmente el docstring del propio
+   módulo ("los productores solo encolan... el listener concentra I/O fuera del
+   event loop"). Medido: ~1-1.3 ms en frío para un traceback de 3 archivos —
+   real pero modesto; se agrava con AV activo o discos de red (fricción ya
+   documentada en este repo para `FailSafeRotatingFileHandler`).
+4. **Ese mismo filtro no tiene límite de tamaño al redactar `extra`/`args`.**
+   A diferencia de `subprocess_error_extra` (acotado a 64 KiB explícitamente),
+   `_redact_value`/`_redact_container` solo cotan profundidad (`_MAX_DEPTH=64`),
+   nunca ancho/tamaño de colección. Medido: una lista de 20.000 strings cortos
+   como `extra` tarda ~0,3s sincrónico en el hilo productor. Latente hoy —
+   ningún caller del repo pasa una colección grande como `extra` — pero sin
+   ningún guard que lo impida si el pipeline crece hacia reportes batch.
+5. **`shutdown_logging()` no está protegido contra una segunda
+   `KeyboardInterrupt`/SIGTERM durante el apagado.** Solo atrapa
+   `except Exception`, y `KeyboardInterrupt` hereda de `BaseException`. Un
+   doble Ctrl+C (o un supervisor reenviando SIGTERM) mientras
+   `_runtime.shutdown()` está bloqueado en una de sus esperas troceadas deja el
+   `queue_handler` desenganchado del root pero `_closed=False`/`_runtime` global
+   sin resetear, y el `atexit` de la stdlib `logging` termina cerrando streams
+   mientras el hilo listener puede seguir vivo — el escritor pierde en silencio
+   justo los records que explicarían por qué el apagado se colgó. El mismo
+   patrón está sin protección adicional en `vfs_worker.worker_main`. Ventana de
+   exposición: requiere una segunda interrupción durante un apagado ya lento.
+6. **La rotación de `sky_claw.log`/`crash.log` no progresa —y el archivo crece
+   sin límite— mientras coexistan 2+ procesos** con el mismo `log_dir` (doble
+   lanzamiento del `.exe`, o GUI+CLI/Telegram en paralelo). No hay ningún
+   instance-lock a nivel de proceso completo (el único `instance_lock` real es
+   el de `vfs_broker.py`, scoped a un `mo2_root`, no al proceso). El
+   `os.rename()` del rollover falla con `WinError 32` (archivo abierto por el
+   otro proceso), `doRollover()` lo atrapa y sigue escribiendo sin rotar —
+   indefinidamente, mientras ambas instancias sigan vivas. No hay corrupción ni
+   pérdida de logs activos, pero el disco crece sin control y nadie se entera
+   (el `file_errors` que lo contaría es el residuo #2 de arriba, sin
+   consumidor).
+7. **El worker VFS pierde TODO su logging —ni archivo ni consola— si falla el
+   `mkdir` de su subdirectorio `workers/`.** A diferencia del rol `app` (que
+   siempre conserva `stdout` como fallback), `worker_main` pasa
+   `console_stream=None` explícito, así que si el `mkdir` falla (ACL, ENOSPC)
+   no hay ningún sink: ni archivo ni consola. Agravante confirmado: en el
+   binario congelado de producción (la única ruta de lanzamiento permitida
+   para el worker), `sys.stderr` ya es `None` sin parchear para esa rama —así
+   que no es "quizás MO2 no capture el stderr", es que no hay ningún stderr
+   real que capturar. El resultado del job (éxito/fallo) sigue llegando al
+   padre vía `VfsJobResult` de todos modos (residuo ya conocido); lo que se
+   pierde es solo el traceback interno de diagnóstico, en un caso de borde
+   poco frecuente.
+
 ### Límite conocido de esta auditoría
 
-Cubre **las hipótesis que se formularon**, no el espacio completo. El barrido
-"¿qué defecto no anticipé?" —cuatro lentes independientes (bloqueo de loop,
-deadlock de apagado, memoria/correctitud de records, Windows/UTF-8/ENOSPC/
-multiproceso)— **nunca llegó a ejecutarse**: murió dos veces por límite de
-cuota de agentes. Queda pendiente y es el complemento honesto de esta nota;
-la ausencia de hallazgos nuevos acá **no** es evidencia de que no los haya.
+Sigue cubriendo **las hipótesis que se formularon y las que el barrido
+adversarial encontró en su primera pasada completa**, no necesariamente el
+espacio completo: no se relanzó una segunda ronda de barrido tras aplicar los
+2 fixes de arriba para buscar hallazgos de tercer orden.
