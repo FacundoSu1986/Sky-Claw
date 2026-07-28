@@ -326,10 +326,13 @@ dominio, follow-up separado.
 árbol: *"Currently 1,684 mypy errors across ~30 modules"* (comentario
 desactualizado en número exacto, pero la exención sigue activa). Se migra de
 a un módulo por PR; sin fecha límite. **Avance 2026-07-21:** `local/fomod/*`
-migrado a `strict = true` (ver addendum del 2026-07-21). Candidato trivial
-para el próximo commit: `local/loot/*` ya pasa `strict` sin cambios de código
-(probado — 0 errores), solo falta moverlo de la lista `ignore_errors` a la
-`strict = true`.
+migrado a `strict = true` (ver addendum del 2026-07-21). **Avance 2026-07-28:**
+`local/loot/*` migrado también (ver addendum del 2026-07-28) — 0 errores, sin
+cambios de código. Quedan en `ignore_errors` los bloques grandes:
+`sky_claw.app.*` (gui/comms/agent/modes/orchestrator/scraper/web/db/security/core),
+`local.tools.*`, `local.xedit.*`, `local.mo2.*`, `local.validators.*`,
+`sky_claw.local.auto_detect`, `sky_claw.local.local_config`,
+`local.discovery.*`, `app_context`, `config` y `tools_installer`.
 
 ### 2.2 T-10/T-11 — BLE001 (except genérico) sin activar en la mayoría del árbol
 
@@ -808,14 +811,36 @@ Gates verdes: `mypy sky_claw/` (240 archivos, 0 issues), `ruff check` +
 comportamiento — anclado por los 51 tests de `fomod` existentes, que siguen
 verdes.
 
-**Próximo candidato (trivial):** `local/loot/*` ya pasa `strict` con 0 errores
-(probado con el mismo probe); su migración es solo mover la entrada en
-`pyproject.toml`, sin tocar código.
+**Candidato cerrado:** `local/loot/*` — **cerrado el 2026-07-28**,
+ver el addendum de esa fecha.
 
 **Nota de alcance:** la exención `BLE001` de `local/fomod/**`
 (`pyproject.toml`, per-file-ignores) es de T-10/T-11, un frente distinto de
 T-12 — no se toca acá (un cambio, un PR). `fomod/parser.py` conserva su
 `except Exception` de boundary de parsing.
+
+## Addendum (2026-07-28) — T-12: `local/loot/*` migrado a mypy strict
+
+Cierra el candidato que dejó abierto el addendum del 2026-07-21.
+`sky_claw.local.loot.*` sale de la lista `ignore_errors = true` y entra a
+`strict = true`. **0 errores expuestos**: los 4 módulos (`cli.py`,
+`masterlist.py`, `parser.py`, `version.py`, 589 líneas) ya estaban totalmente
+anotados, así que la migración no toca una sola línea de código productivo.
+
+**Por qué el cambio muerde de verdad** (una config que no falla es peor que
+ninguna): se verificó rojo→verde con un probe temporal. Una función sin anotar
+agregada a `loot/version.py` es **invisible** con el `pyproject.toml` de
+`main` (`Success: no issues found in 256 source files`) y con el cambio la
+caza `error: Function is missing a type annotation [no-untyped-def]`, un check
+que solo existe bajo `strict`. El probe se revirtió; no queda en el árbol.
+
+Detalle de implementación: la entrada se **mueve**, no se duplica. Dejarla en
+ambas listas apoyaría el resultado en el orden de resolución de secciones
+per-module de mypy para dos patrones de igual especificidad, que no está
+garantizado — el mismo motivo por el que `local/fomod/*` se movió en #348.
+
+Gates verdes: `mypy sky_claw/` (256 archivos, 0 issues), `ruff check` +
+`ruff format --check`, suite completa con **exit code 0**.
 
 ## Addendum — Auditoría 03 (Pipeline): backlog consolidado U-01…U-12
 
