@@ -852,10 +852,12 @@ Se enlaza acá para que este inventario canónico siga siendo el punto único de
 triage (regla de `AGENTS.md`) — los ítems U-01…U-12 se triagean desde ese
 documento y se marcan cerrados acá a medida que se implementen:
 
-- **Alto:** **U-01 cerrado PARCIALMENTE** (#381 — sensor de
-  visibilidad de mods: el preflight ya detecta el run standalone contra el juego
-  base; la reconciliación del modelo de SALIDA sigue abierta, ver addendum
-  abajo), **U-02 cerrado** (#360 — ver addendum abajo), **U-03 cerrado**
+- **Alto:** **U-01 cerrado** (#381 el punto 1 — sensor de visibilidad de mods:
+  el preflight detecta el run standalone contra el juego base; #388 el punto 2 —
+  modelo de SALIDA reconciliado en `output_targets`; 2026-07-28 el punto 3 —
+  la invariante documentada para operadores en
+  [`operations/deployment_standalone_usvfs.md`](operations/deployment_standalone_usvfs.md)),
+  **U-02 cerrado** (#360 — ver addendum abajo), **U-03 cerrado**
   (#356 — `PrecacheGrass.txt` huérfano se barre en el arranque), U-04 (Wrye
   Bash/Pandora sin rollback de salida, abierto), **U-05 cerrado** (#354 — VRAMr
   usa `kill_and_reap`/tree-kill en vez de `proc.kill()` pelado en timeout).
@@ -1379,11 +1381,19 @@ resuelve rutas relativas y busca su INI, así que no se hizo de arrastre.
 
 ### Qué queda abierto
 
-- **U-01 punto (3)**: documentar la invariante de deployment en `docs/` (el módulo ya
-  la enuncia; falta la versión para operadores).
-- **U-04**: **cerrado para Pandora** (ver el addendum al final de este documento); la
-  mitad de Wrye Bash va en su propio PR. Sus dos prerequisitos ya estaban cerrados —
-  el path ya no es ambiguo, y **U-10 también** (`WryeBashTimeoutError` /
+- **U-01 punto (3)**: **cerrado el 2026-07-28** —
+  [`docs/operations/deployment_standalone_usvfs.md`](operations/deployment_standalone_usvfs.md),
+  enlazada desde el portal y desde el índice de operaciones. Con esto U-01 queda
+  cerrado en sus tres puntos.
+- **U-04**: **cerrado para Wrye Bash** (#397) y **para Pandora en su modo
+  `Pandora_Output`** (#399, ver los addenda al final). **Sigue ABIERTO** en dos frentes
+  nombrados, ninguno por falta de alcance: (a) **BodySlide**
+  (`system_tools.run_bodyslide_batch`), cuyo destino es `game_path/<output_path>` con el
+  `output_path` elegido por el LLM, así que un move-aside apuntaría a un directorio que
+  no es constante del código; y (b) **el modo `Data` de Pandora**, donde revertir exigiría
+  enumerar qué subárboles del `Data` son suyos — dato que el repo no tiene. Sus dos
+  prerequisitos sí están cerrados: el path ya no es ambiguo, y **U-10 también**
+  (`WryeBashTimeoutError` /
   `BodySlideTimeoutError` ya se elevan, así que la excepción propaga por el context
   manager).
 - **U-06** (Wrye Bash / BodySlide): desbloqueado y no implementado. El falso negativo
