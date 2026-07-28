@@ -236,9 +236,10 @@ def test_dyndolod_incluye_el_cwd_y_los_dos_hermanos_coinciden(tmp_path: pathlib.
             event_bus=MagicMock(),
         )
         targets = svc._permission_targets()
-        buscadas = runner._staging_search_paths(DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME)
+        buscadas = set(runner._staging_search_paths(DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME))
+        buscadas.update(runner._staging_search_paths(DynDOLODRunner.TEXGEN_OUTPUT_NAME))
 
-    assert set(buscadas) <= set(targets), "el preflight no sondea donde el runner busca la salida"
+    assert buscadas <= set(targets), "el preflight no sondea donde el runner busca la salida"
 
 
 # ---------------------------------------------------------------------------

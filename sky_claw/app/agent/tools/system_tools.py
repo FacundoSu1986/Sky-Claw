@@ -560,40 +560,45 @@ async def run_bodyslide_batch(
     lock — the cross-process lock only protects if every mutator participates.
 
     ``target_files=[]`` (solo serializa). U-01 parte 2 retiró el motivo que este
-    bloque daba antes ("the output path is environment-dependent"): BodySlide se
-    spawnea directo, nunca hereda la USVFS de MO2 y escribe ``-o <output_path>``
+    bloque daba antes ("el destino de salida depende del entorno"): BodySlide se
+    lanza directamente, nunca hereda la USVFS de MO2 y escribe ``-o <output_path>``
     resuelto FÍSICAMENTE contra ``cwd=game_path``. El destino SÍ es conocible;
     snapshotearlo es alcance de U-04, no un problema bloqueado. El invariante vive
-    en ``sky_claw/local/tools/output_targets.py``. Sin lock manager (callers
-    legacy / tests) BodySlide corre directo, preservando el comportamiento previo.
+    en ``sky_claw/local/tools/output_targets.py``. Sin lock manager o snapshot
+    manager, la ejecución falla cerrada para no permitir una mutación sin protección.
     """
     if bodyslide_runner is None:
         return json.dumps(
             {"error": ("BodySlideRunner is not configured. Set bodyslide_exe in config or install it via setup_tools.")}
         )
 
-    if lock_manager is not None and snapshot_manager is not None:
-        from sky_claw.app.db.locks import LockAcquisitionError, SnapshotTransactionLock
+    missing_managers = [
+        name
+        for name, manager in (
+            ("lock_manager", lock_manager),
+            ("snapshot_manager", snapshot_manager),
+        )
+        if manager is None
+    ]
+    if missing_managers:
+        return json.dumps({"error": f"BodySlide requiere protección; faltan: {', '.join(missing_managers)}"})
 
-        try:
-            async with SnapshotTransactionLock(
-                lock_manager=lock_manager,
-                snapshot_manager=snapshot_manager,
-                resource_id=BODYSLIDE_MESHES_RESOURCE_ID,
-                agent_id="bodyslide-tool",
-                target_files=[],
-                metadata={"source": "bodyslide_batch", "group": group},
-            ):
-                result = await bodyslide_runner.run_batch(group, output_path)
-        except LockAcquisitionError as exc:
-            return json.dumps({"error": f"Could not acquire '{BODYSLIDE_MESHES_RESOURCE_ID}' lock: {exc}"})
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
-    else:
-        try:
+    from sky_claw.app.db.locks import LockAcquisitionError, SnapshotTransactionLock
+
+    try:
+        async with SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id=BODYSLIDE_MESHES_RESOURCE_ID,
+            agent_id="bodyslide-tool",
+            target_files=[],
+            metadata={"source": "bodyslide_batch", "group": group},
+        ):
             result = await bodyslide_runner.run_batch(group, output_path)
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
+    except LockAcquisitionError as exc:
+        return json.dumps({"error": f"Could not acquire '{BODYSLIDE_MESHES_RESOURCE_ID}' lock: {exc}"})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
 
     return json.dumps(
         {
