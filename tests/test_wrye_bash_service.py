@@ -343,6 +343,12 @@ async def test_lease_perdido_al_cerrar_devuelve_error(
     from sky_claw.app.db.locks import LockLeaseLostError
 
     class _LeaseLostLock:
+        # Espeja la superficie que el servicio consulta de SnapshotTransactionLock
+        # tras salir del context (ver _cerrar_tx_tras_rollback).
+        snapshots: list[object] = []
+        rollback_completed: bool = False
+        rollback_failures: list[str] = []
+
         def __init__(self, **kwargs: object) -> None:
             pass
 
@@ -707,9 +713,13 @@ async def test_cn_lock_contention_no_abre_transaccion(
 
 class _LockLeaseLostFake:
     """Lock de frontera: en un clean-exit ``__aexit__`` se comporta como lease perdida
-    (review Codex #318). ``snapshots=[]`` porque Wrye Bash corre con snapshot diferido."""
+    (review Codex #318). ``snapshots=[]`` modela el caso "no había patch previo que
+    snapshotear": con snapshot presente y rollback no completado, la TX quedaría
+    PENDING a propósito (ver ``_cerrar_tx_tras_rollback``)."""
 
     snapshots: list[object] = []
+    rollback_completed: bool = False
+    rollback_failures: list[str] = []
 
     def __init__(self, **_kwargs: object) -> None:
         pass
@@ -904,6 +914,45 @@ async def test_fallo_sin_patch_previo_no_crashea(
 
     assert result["success"] is False
     assert result["message"] == "boom"  # no crashea; contrato dict serializable intacto
+
+
+@pytest.mark.asyncio
+async def test_rollback_fallido_deja_la_tx_pendiente(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si el restore FALLA (disco lleno, destino no escribible), la TX queda
+    PENDING — no ``rolled_back`` (review Codex #397).
+
+    ``rollback_completed`` es False por dos causas distintas: no había snapshot, o
+    el restore falló. En la rama de excepción un restore fallido SOLO se loguea
+    (``locks.py``), así que marcar la TX ``rolled_back`` afirmaría una recuperación
+    que no ocurrió y escondería de la recuperación manual un patch corrupto que
+    sigue en disco. Mismo criterio que ``synthesis_service``.
+    """
+    game_path = tmp_path / "Skyrim"
+    config = _config_con_bashed_patch(game_path, contenido="bueno")
+    patch_path = game_path / "Data" / "Bashed Patch, 0.esp"
+
+    async def _corrida_fallida() -> WryeBashResult:
+        patch_path.write_text("corrupto", encoding="utf-8")
+        return WryeBashResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=0.1)
+
+    runner = _runner_con_config_real(config, side_effect=_corrida_fallida)
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    # El restore falla: restore_snapshot lanza (p. ej. disco lleno). __aexit__ lo
+    # traga y lo expone vía rollback_failures / rollback_completed=False.
+    with patch.object(snapshot_manager, "restore_snapshot", AsyncMock(side_effect=OSError("No space left on device"))):
+        result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    assert patch_path.read_text(encoding="utf-8") == "corrupto"  # el restore falló de verdad
+    # La TX NO se cierra: queda PENDING para recuperación manual.
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+    mock_journal.commit_transaction.assert_not_called()
 
 
 @pytest.mark.asyncio

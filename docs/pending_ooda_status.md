@@ -1415,6 +1415,46 @@ que un parcial fallido puede quedar en disco. Es la MISMA limitación que ya tie
 este cambio introduce ni que corresponda resolver distinto acá. Ancla explícita:
 `test_fallo_sin_patch_previo_no_crashea`.
 
+### Hallazgo de review (Codex #397): el journal mentía cuando el restore fallaba
+
+La primera pasada marcaba la TX del journal como `rolled_back` **incondicionalmente**
+en el handler nuevo. Codex vio el problema y verificarlo contra `locks.py` le dio la
+razón:
+
+```python
+# locks.py:639-641
+return self.rollback_attempted and bool(self.snapshots) and not self.rollback_failures
+```
+
+`rollback_completed=False` tiene **dos causas distintas** —no había snapshot, o el
+restore **falló**— y en la rama de excepción un restore fallido **solo se loguea**
+(el propio módulo lo advierte: *"el caller NO puede asumir que hubo rollback"*).
+Marcarla `rolled_back` en el segundo caso afirma una recuperación que no ocurrió y
+**esconde de la recuperación manual** un Bashed Patch corrupto que sigue en disco.
+
+Lo agravante: **`synthesis_service.py` ya lo resolvía bien** (`if rolled_back or not
+target_files: mark... else: logger.critical(...pendiente para recuperación manual)`),
+y esta implementación decía estar replicando su patrón. Se replicó el `raise` pero no
+la lógica de journal honesto — el defecto #1 del repo cometido dentro del cambio que
+decía evitarlo.
+
+**Y el alcance era mayor que el handler señalado.** Antes de U-04, `target_files=[]`
+hacía que nunca hubiera snapshots, así que marcar `rolled_back` incondicionalmente era
+inofensivo en los **cinco** handlers de `execute_pipeline` que cierran la TX. Poblar
+`target_files` los expuso a todos a la vez, no solo al nuevo. Por eso el criterio vive
+ahora en un helper único (`_cerrar_tx_tras_rollback`) que consumen los cinco: si se
+hubiera arreglado solo el handler que Codex marcó, los otros cuatro quedaban atrás.
+
+Ancla: `test_rollback_fallido_deja_la_tx_pendiente` (parchea `restore_snapshot` para
+que falle con `OSError`, verifica que el patch queda corrupto Y que la TX **no** se
+cierra). Verificado en rojo revirtiendo el fix.
+
+*Efecto lateral:* el helper expuso tres dobles de `SnapshotTransactionLock` en la suite
+que no implementaban la superficie que el servicio consulta. Se completaron los tres
+(`test_wrye_bash_service.py` ×2, `test_wrye_bash_lock.py`) en vez de hacer el helper
+tolerante con `getattr` — un doble incompleto es un bug del doble, y el acceso directo
+es la convención que ya usa `synthesis_service`.
+
 ### Por qué Pandora queda afuera, con nombre
 
 La salida de Pandora es un **árbol de directorios** (behavior graphs), no un archivo

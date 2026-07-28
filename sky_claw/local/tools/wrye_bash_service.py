@@ -381,6 +381,52 @@ class WryeBashPipelineService:
         except Exception:  # noqa: BLE001 — boundary best-effort del journal
             logger.error("Fallo al persistir el informe de vuelo de la TX %d", journal_tx_id, exc_info=True)
 
+    async def _cerrar_tx_tras_rollback(
+        self,
+        journal_tx_id: int | None,
+        lock: SnapshotTransactionLock | None,
+    ) -> str:
+        """Cierra la TX del journal SOLO si el rollback fue honesto (review Codex #397).
+
+        ``rollback_completed`` es ``False`` por DOS causas distintas —no había
+        snapshot que restaurar, o el restore **falló**— y en la rama de excepción
+        un restore fallido solo se loguea (``locks.py``: *"el caller NO puede
+        asumir que hubo rollback"*). Marcar la TX ``rolled_back`` en el segundo
+        caso afirmaría una recuperación que no ocurrió y **escondería de la
+        recuperación manual** un Bashed Patch corrupto que sigue en disco.
+
+        Criterio (el mismo de ``synthesis_service``, que ya lo resolvía así):
+        se cierra la TX si el rollback restauró TODO, o si no había nada que
+        restaurar; si había snapshot y el restore falló, la TX queda **PENDING**
+        a propósito y se loguea CRITICAL.
+
+        Fuente única para los CINCO handlers de ``execute_pipeline`` que cierran
+        la TX. Antes de U-04 ``target_files=[]`` hacía que nunca hubiera
+        snapshots, así que marcarla incondicionalmente era inofensivo en todos;
+        poblar ``target_files`` los expuso a la vez. Centralizarlo es lo que
+        impide que uno se corrija y los otros cuatro queden atrás.
+
+        Returns:
+            Descripción del desenlace, para el log del caller.
+        """
+        habia_snapshot = bool(lock is not None and lock.snapshots)
+        restaurado = bool(lock is not None and lock.rollback_completed)
+
+        if restaurado:
+            await self._mark_journal_rolled_back(journal_tx_id)
+            return "completado"
+        if not habia_snapshot:
+            await self._mark_journal_rolled_back(journal_tx_id)
+            return "sin snapshot previo que restaurar"
+
+        logger.critical(
+            "Rollback del Bashed Patch INCOMPLETO (TX %s): el parcial sigue en disco y la "
+            "transacción queda PENDING para recuperación manual. Archivos no restaurados: %s",
+            journal_tx_id,
+            (lock.rollback_failures if lock is not None else []) or "desconocidos",
+        )
+        return "FALLIDO — el parcial sigue en disco"
+
     async def _mark_journal_rolled_back(self, journal_tx_id: int | None) -> None:
         """Marca la TX del journal como rolled-back (best-effort).
 
@@ -547,13 +593,11 @@ class WryeBashPipelineService:
             # U-04: __aexit__ de ambos locks ya corrió — el EXTERNO restauró el
             # Bashed Patch previo si target_files tenía algo que snapshotear.
             result = exc.result
-            if journal_tx_id is not None:
-                await self._mark_journal_rolled_back(journal_tx_id)
-            restaurado = bool(bashed_patch_lock and bashed_patch_lock.rollback_completed)
+            desenlace = await self._cerrar_tx_tras_rollback(journal_tx_id, bashed_patch_lock)
             logger.error(
                 "[FASE-6] Wrye Bash retornó código %d; rollback de salida %s. stderr: %s",
                 result.return_code,
-                "completado" if restaurado else "sin snapshot previo que restaurar",
+                desenlace,
                 result.stderr[:500],
             )
             message = result.stderr or result.stdout or ""
@@ -575,29 +619,34 @@ class WryeBashPipelineService:
             # el middleware que envuelve errores), así que sin este catch la excepción
             # burbujea como crash de dispatch. La pérdida de lease invalida la
             # exclusividad → reportar éxito mentiría: devolvemos success=False honesto.
-            # Si no se commiteó, cerrar la TX del journal (no dejar PENDING).
+            # Si no se commiteó, cerrar la TX — pero SOLO si el rollback fue honesto
+            # (ver _cerrar_tx_tras_rollback). Ojo: en pérdida de lease el rollback se
+            # SALTEA a propósito (otro agente pudo mutar), así que con snapshot
+            # presente la TX queda PENDING, que es lo correcto: la mutación sigue.
             if not journal_committed:
-                await self._mark_journal_rolled_back(journal_tx_id)
+                await self._cerrar_tx_tras_rollback(journal_tx_id, bashed_patch_lock)
             logger.error("[FASE-6] Error de la capa de lock durante Wrye Bash: %s", exc)
             detail = f"Lock error durante la generación del Bashed Patch: {exc}"
             return _attach_preflight({"success": False, "error": detail, "message": detail}, preflight_report)
         except WryeBashExecutionError as exc:
-            await self._mark_journal_rolled_back(journal_tx_id)
-            logger.error("[FASE-6] WryeBashExecutionError: %s", exc)
+            # Incluye WryeBashTimeoutError (U-10): con target_files poblado, el
+            # __aexit__ del lock externo ya intentó restaurar el patch previo.
+            desenlace = await self._cerrar_tx_tras_rollback(journal_tx_id, bashed_patch_lock)
+            logger.error("[FASE-6] WryeBashExecutionError: %s; rollback de salida %s", exc, desenlace)
             return _attach_preflight({"success": False, "error": str(exc), "message": str(exc)}, preflight_report)
         except asyncio.CancelledError:
             # Cancelación (shutdown/timeout del task): cerrar la TX del journal para no
             # dejarla PENDING (salvo que ya se commiteara, #249) y re-lanzar (review
             # Codex #318). Los __aexit__ de los locks ya liberaron.
             if not journal_committed:
-                await self._mark_journal_rolled_back(journal_tx_id)
+                await self._cerrar_tx_tras_rollback(journal_tx_id, bashed_patch_lock)
             raise
         except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
             # Red de seguridad final para cualquier error inesperado en la salida del
-            # lock/journal (no Lock* ni WryeBashExecutionError): no dejar la TX PENDING
-            # ni romper el contrato "siempre devolver dict".
+            # lock/journal (no Lock* ni WryeBashExecutionError): cerrar la TX solo si
+            # el rollback fue honesto, sin romper el contrato "siempre devolver dict".
             if not journal_committed:
-                await self._mark_journal_rolled_back(journal_tx_id)
+                await self._cerrar_tx_tras_rollback(journal_tx_id, bashed_patch_lock)
             logger.error("[FASE-6] Error inesperado durante Wrye Bash: %s", exc, exc_info=True)
             return _attach_preflight({"success": False, "error": str(exc), "message": str(exc)}, preflight_report)
 
