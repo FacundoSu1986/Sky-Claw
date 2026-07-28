@@ -1364,3 +1364,62 @@ resuelve rutas relativas y busca su INI, así que no se hizo de arrastre.
 - **U-06** (Wrye Bash / BodySlide): desbloqueado y no implementado. El falso negativo
   que motivaba el diferimiento exigía una redirección USVFS que no puede ocurrir.
   QuickAutoClean sigue aplazado por su motivo propio (mtime), ajeno a U-01.
+
+## Addendum (2026-07-28) — U-04 cerrado para Wrye Bash: rollback real de salida (#393)
+
+U-04 pasa de "desbloqueado" a **cerrado solo para Wrye Bash**. Pandora queda abierto
+deliberadamente (ver más abajo).
+
+### El diseño: puentear el fallo a excepción, no un mecanismo nuevo
+
+Verificado contra el código antes de escribir una línea: los dos mecanismos de
+rollback del repo (`SnapshotTransactionLock`, `DirectoryRollback`) **solo restauran
+en la rama de excepción** — `SnapshotTransactionLock.__aexit__` calcula
+`should_rollback = force_rollback or (exc_type is not None and ...)`, y
+`force_rollback` solo se fija en el constructor, no hay API para pedirlo desde el
+cuerpo. Un `WryeBashResult(success=False)` que sale del `async with` sin excepción
+—que es lo que pasaba hasta hoy— sale "limpio": ningún rollback dispara aunque
+`target_files` esté poblado.
+
+El remedio no inventa un mecanismo nuevo: replica el patrón que `synthesis_service.py`
+ya prueba en producción —`if not result.success: raise ...` dentro del lock—. Se
+agregó una excepción interna `_RunFallidoError` que carga el `WryeBashResult`
+completo, así el `except` dedicado arma el MISMO dict de salida que el camino
+no-excepcional (return_code/stdout/stderr/duration_seconds): el contrato de la tool
+no cambia, solo se le agrega el rollback que le faltaba.
+
+`target_files` del lock externo pasa a resolver la ruta real
+(`runner.config.game_path` vía `output_targets.bashed_patch_target` — la MISMA fuente
+que ya usaba el manifiesto, no una tercera vía que pudiera divergir de las otras dos:
+el patrón "hermanos" de este repo, aplicado un nivel más abajo).
+
+### Cubre los dos modos de fallo sin código separado
+
+- **Exit non-zero**: el `raise _RunFallidoError(result)` nuevo.
+- **Timeout**: `WryeBashTimeoutError` ya elevaba desde U-10 (cerrado antes, verificado
+  en #388). Con `target_files` ahora poblado, el `except WryeBashExecutionError`
+  **preexistente** empieza a disparar rollback solo — cero líneas nuevas para ese
+  camino. Es la prueba de que U-10 era realmente el prerequisito que declaraba ser.
+
+Verificado con archivos reales en disco (no mocks): un Bashed Patch previo con
+contenido conocido se restaura byte a byte tras un fallo simulado, en ambos modos
+(`test_fallo_non_zero_restaura_el_bashed_patch_previo`,
+`test_timeout_tambien_restaura_el_bashed_patch_previo`).
+
+### Limitación aceptada, anclada para que nadie la lea como bug
+
+En el **primer run** (sin Bashed Patch previo), `SnapshotTransactionLock` no toma
+snapshot de un archivo que no existe (`__aenter__` chequea `file_path.exists()`), así
+que un parcial fallido puede quedar en disco. Es la MISMA limitación que ya tiene
+`synthesis_service.py` (`target_esp.exists()` gatea su propio snapshot) — no algo que
+este cambio introduce ni que corresponda resolver distinto acá. Ancla explícita:
+`test_fallo_sin_patch_previo_no_crashea`.
+
+### Por qué Pandora queda afuera, con nombre
+
+La salida de Pandora es un **árbol de directorios** (behavior graphs), no un archivo
+único: el mecanismo correcto ahí es `DirectoryRollback` (move-aside de todo el
+directorio), no `target_files` de `SnapshotTransactionLock` — son dos primitivas de
+rollback distintas. Mezclarlas en un mismo PR sobre la parte más riesgosa del
+backlog (mutar datos reales del usuario) duplica la superficie de review de
+exactamente lo que más cuidado necesita. Pandora sigue abierto, con su propio PR.
