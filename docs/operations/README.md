@@ -12,6 +12,9 @@
 
 ## Runbooks
 
+- [Standalone y USVFS](deployment_standalone_usvfs.md) — **leer antes del primer
+  ritual**: Sky-Claw no hereda la VFS de MO2, y esa invariante decide qué ven y
+  dónde escriben las herramientas.
 - [Observabilidad](observability.md)
 - [Recuperación](recovery.md)
 - [Release](release.md)
