@@ -505,6 +505,22 @@ def test_clear_owned_borra_solo_si_el_dueno_coincide() -> None:
     assert not store.get(STORE_KEY_PENDING_HITL), "clear_owned_hitl no borró la pendiente de su propio dueño"
 
 
+async def test_el_ritual_falla_sin_perder_la_limpieza() -> None:
+    """El hermano ``run_ritual`` tambien libera el estado ante una excepcion."""
+    store = ReactiveStore()
+
+    class _Supervisor:
+        async def dispatch_tool(self, _name: str, _args: dict) -> dict:
+            store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-A", HITL_OWNER_TAB: "tab-A"})
+            raise RuntimeError("dispatch failed")
+
+    await run_ritual("loot", supervisor=_Supervisor(), store=store, tab_id="tab-A")
+
+    assert not store.get(STORE_KEY_PENDING_HITL), "un fallo de Ritual dejo el modal colgado"
+    assert ritual_tab_id() is None, "el ContextVar quedo armado tras un fallo de Ritual"
+    assert not store.get(STORE_KEY_RITUAL_IN_FLIGHT), "un fallo de Ritual dejo el single-flight trabado"
+
+
 async def test_el_ritual_de_instalacion_falla_sin_perder_la_limpieza() -> None:
     """Camino de excepción del installer: el `finally` corre igual.
 
