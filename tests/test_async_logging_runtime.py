@@ -530,6 +530,27 @@ def test_consola_con_encoding_limitado_no_pierde_el_registro(tmp_path) -> None:
     assert "paso-B" in salida
 
 
+def test_stream_con_reconfigure_incompatible_no_rompe_setup_logging(tmp_path) -> None:
+    """``callable(reconfigure)`` no garantiza que el método acepte ``errors=``:
+    un stream inyectado por un caller de terceros puede tener un ``reconfigure``
+    con otra firma y levantar ``TypeError`` en vez de aceptar el kwarg. Sin
+    tolerar ese caso puntual, ``setup_logging()`` entero abortaría por un
+    detalle de la consola — justo lo que este bloque existe para evitar."""
+
+    class _StreamConReconfigureIncompatible(io.StringIO):
+        def reconfigure(self, **_kwargs: object) -> None:
+            raise TypeError("reconfigure() got an unexpected keyword argument 'errors'")
+
+    consola = _StreamConReconfigureIncompatible()
+
+    runtime = setup_logging(log_dir=tmp_path, process_role="test", console_stream=consola)
+
+    logging.getLogger("test.runtime").info("sigue funcionando pese al reconfigure roto")
+    assert shutdown_logging() is True
+    assert runtime.health_snapshot().degraded is False
+    assert "sigue funcionando pese al reconfigure roto" in consola.getvalue()
+
+
 def test_error_de_formateo_no_ciega_el_sink_de_archivo(tmp_path) -> None:
     """Un record malformado solo se pierde a sí mismo, no al siguiente.
 

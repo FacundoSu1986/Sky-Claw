@@ -1144,19 +1144,23 @@ Cada uno se refutó con evidencia citada o medición; el detalle vive en el PR #
 | Lost-wakeup / deadlock en `stop_with_timeout` | `handle()` corre **fuera** del mutex de la `Queue` (`QueueListener._monitor` llama `task_done()` después), y `queue.mutex` es siempre el lock más interno. El stall del productor es O(1), no `timeout_s`. |
 | Corrupción de `config.toml` por workers concurrentes | Triple bloqueo: `_instance_lock` en `submit`, lock de archivo `O_EXCL` por instancia, y única instanciación productiva del broker = one-shot `--mode vfs-health`. |
 
-### Addendum (2026-07-27, noche) — el barrido pendiente corrió: 6 hallazgos nuevos, 2 cerrados
+### Addendum (2026-07-27, noche) — el barrido pendiente corrió: 7 hallazgos nuevos (6 + 1), 2 cerrados
 
 El barrido "¿qué defecto no anticipé?" que la nota de arriba dejaba pendiente
 **corrió** (dos intentos previos murieron por cuota de agentes; el tercero
-completó: 10 agentes, 0 refutados). Encontró 6 hallazgos reales que ninguna de
-las dos rondas anteriores había tocado — ninguno coincide con los refutados ni
-con los residuos R1-R5 ya catalogados arriba.
+completó: 10 agentes, 0 refutados). Encontró **6 hallazgos** reales que
+ninguna de las dos rondas anteriores había tocado — ninguno coincide con los
+refutados ni con los residuos R1-R5 ya catalogados arriba.
 
 Además, probar el pipeline con una corrida real (no mockeada) de
 `python -m sky_claw --mode cli`/`oneshot` — arranque completo, redacción en
 producción (`Auth token [REDACTED]`), `crash.log` comportándose como se
-espera — encontró un séptimo hallazgo por su cuenta: la consola no soporta el
-rango Unicode que el repo usa en español.
+espera — encontró **1 hallazgo más** por su cuenta, fuera del barrido: la
+consola no soporta el rango Unicode que el repo usa en español.
+
+**Total: 7 hallazgos nuevos** (6 del barrido + 1 de la corrida real). De esos
+7, se cierran 2 en este commit; los otros 5 quedan documentados como residuos
+más abajo.
 
 **Cerrados en este mismo commit:**
 
