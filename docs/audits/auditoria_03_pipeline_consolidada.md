@@ -181,7 +181,7 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > es de alcance, no de imposibilidad.
   > **Estado (#393): CERRADO SOLO PARA WRYE BASH.** `wrye_bash_service.py` implementa el
   > remedio exacto que este ítem describía: el lock externo (`Bashed Patch, 0.esp`) pasa a
-  > llevar `target_files=[self._rollback_target_files(runner)]` (ruta resuelta desde
+  > llevar `target_files=self._rollback_target_files(runner)` (ruta resuelta desde
   > `runner.config.game_path`, misma fuente que ya usaba el manifiesto — no una tercera vía
   > que pudiera divergir), y `execute_pipeline` eleva una excepción interna
   > `_RunFallidoError` DENTRO del `async with` cuando `not result.success` — el puente que

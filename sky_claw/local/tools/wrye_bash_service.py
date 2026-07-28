@@ -235,14 +235,30 @@ class WryeBashPipelineService:
         game = self._path_resolver.get_skyrim_path() if self._path_resolver is not None else None
         return bashed_patch_target(game if isinstance(game, pathlib.Path) else None)
 
+    def _destino_desde_runner(self, runner: WryeBashRunner) -> pathlib.Path | None:
+        """Ruta del Bashed Patch derivada del ``config`` del runner, o ``None``.
+
+        **Fuente única de esa derivación** (review CodeRabbit #397). La consultan
+        los dos lugares que TIENEN que describir el mismo artefacto:
+        ``_rollback_target_files`` (qué se snapshotea para restaurar) y
+        ``_bashed_patch_target`` (qué se registra en el manifiesto). Solo difieren
+        en el fallback cuando no resuelve, así que la derivación en sí vive acá:
+        si divergieran, el rollback restauraría un archivo distinto del que la
+        caja negra dice haber tocado.
+
+        Se toma del ``config`` del runner y NO del resolver porque el agent tool
+        construye el servicio con runner inyectado y sin resolver.
+        """
+        game_path = getattr(runner.config, "game_path", None)
+        return bashed_patch_target(game_path if isinstance(game_path, pathlib.Path) else None)
+
     def _rollback_target_files(self, runner: WryeBashRunner) -> list[pathlib.Path]:
         """``target_files`` del lock EXTERNO — el snapshot/restore real de U-04.
 
-        Misma fuente que ``_bashed_patch_target`` (``runner.config.game_path``, NO
-        el resolver): se calcula en el mismo punto —justo antes de entrar al
-        lock, con el runner ya construido— así que el manifiesto y el snapshot
-        describen SIEMPRE el mismo artefacto, incluso en el path del agente (que
-        construye el servicio con runner inyectado y sin resolver).
+        Deriva de ``_destino_desde_runner``, la misma fuente que alimenta al
+        manifiesto, y se calcula justo antes de entrar al lock (con el runner ya
+        construido), así que el snapshot y la caja negra describen SIEMPRE el
+        mismo artefacto.
 
         ``SnapshotTransactionLock`` solo toma snapshot de rutas que YA EXISTEN
         (``__aenter__``, ``file_path.exists()``): con la lista vacía —primer run,
@@ -251,8 +267,7 @@ class WryeBashPipelineService:
         ``synthesis_service`` (``target_esp.exists()`` gatea el snapshot), no un
         caso que U-04 deba resolver de otro modo.
         """
-        game_path = getattr(runner.config, "game_path", None)
-        destino = bashed_patch_target(game_path if isinstance(game_path, pathlib.Path) else None)
+        destino = self._destino_desde_runner(runner)
         return [destino] if destino is not None else []
 
     def ensure_runner(self) -> WryeBashRunner:
@@ -304,15 +319,14 @@ class WryeBashPipelineService:
     def _bashed_patch_target(self, runner: WryeBashRunner) -> str:
         """Ruta del Bashed Patch para el ``files_touched`` del manifiesto.
 
-        Delega en ``output_targets.bashed_patch_target`` — la misma fuente que usa
-        ``_permission_targets``, para que el manifiesto y el sondeo de permisos no
-        puedan opinar sobre destinos distintos. Se toma del ``config`` del runner
-        (no del resolver) porque el agent tool construye el servicio con runner y
-        sin resolver. Si el game path no es resoluble, cae al nombre canónico: el
-        manifiesto igual registra QUÉ artefacto se tocó, aunque no la ruta absoluta.
+        Deriva de ``_destino_desde_runner`` — la misma fuente que alimenta el
+        ``target_files`` del rollback, para que la caja negra y el snapshot no
+        puedan opinar sobre destinos distintos. Si el game path no es resoluble,
+        cae al nombre canónico: el manifiesto igual registra QUÉ artefacto se
+        tocó, aunque no la ruta absoluta (el rollback, en cambio, se queda sin
+        target: no se puede snapshotear una ruta que no se resolvió).
         """
-        game_path = getattr(runner.config, "game_path", None)
-        destino = bashed_patch_target(game_path if isinstance(game_path, pathlib.Path) else None)
+        destino = self._destino_desde_runner(runner)
         return str(destino) if destino is not None else BASHED_PATCH_NAME
 
     async def _emit_action_manifest(self, target_file: str) -> int:
