@@ -368,6 +368,39 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > (`app_context.py`, patrón `reconcile_orphan_precache_flag` de U-03) es dominio del otro
   > agente en la coordinación de lifecycle/GUI vigente, no un bloqueo técnico — follow-up
   > cuando se coordine. `_promote_sync`/backups de DynDOLOD/TexGen quedan fuera de este cierre.
+  > **Estado (2026-07-28): CERRADO — la mitad (2).** `local/tools/rollback_reconciler.py`
+  > (módulo nuevo, nace estricto en mypy) cableado en `app_context.py` junto al hook de U-03,
+  > con su mismo guard de concurrencia: se adquiere el lock del ritual que produce el residuo
+  > y, si otra instancia lo tiene, no se toca nada.
+  >
+  > **Corrección al fix propuesto — "barra … como piso, GC de backups huérfanos" no se
+  > implementó como GC ciego, y es a propósito.** Un `<dir>.rollback-<nonce>` de DynDOLOD es
+  > la **única copia** de la generación de LODs anterior (varios GB, horas de cómputo), y un
+  > `rollback-*` dentro de un clon de sandbox es la **única ruta de recuperación manual** de
+  > un promote a medio aplicar — el propio mensaje de `SandboxRollbackError` apunta ahí.
+  > Borrarlos "por huérfanos" sería un destructor de datos con nombre amable. Se tomó la
+  > primera opción del remedio (*revertir según marcador durable*), leyendo el marcador que
+  > ya está en disco:
+  >
+  > | Familia | Marcador durable | Acción |
+  > |---|---|---|
+  > | `<dir>.rollback-<nonce>` | el target **no** existe | **restaurar** (lo que el `__aexit__` interrumpido habría hecho) |
+  > | `<dir>.rollback-<nonce>` | el target **sí** existe | **preservar + WARNING**: hay dos estados y el FS no dice cuál vale |
+  > | `.skyclaw_sandbox/<clon>` | contiene un `rollback-*` | **preservar + WARNING** (promote a medio aplicar) |
+  > | `.skyclaw_sandbox/<clon>` | sin `rollback-*`, sin actividad > 24 h | **descartar** (el GC de disco que pide U-08) |
+  >
+  > La ventana de gracia de 24 h cubre el hueco que ningún lock tapa: un clon **sobrevive al
+  > ritual a propósito** esperando la aprobación HITL, y en esa ventana el lock del ritual ya
+  > se liberó. Sin la gracia, arrancar una segunda instancia le borraba el clon a la primera.
+  > El GC además solo toca dirs con la forma que produce `clone()` (`<perfil>-<12 hex>`).
+  >
+  > Anclado en `tests/test_rollback_reconciler.py`, que enumera los productores de residuo,
+  > los usuarios de `DirectoryRollback` (uno nuevo rompe el test hasta que declare su lock
+  > y sus raíces, que es la pregunta que importa) y
+  > —sobre el AST, no por grep— que ambos reconciliadores de arranque estén **invocados** en
+  > `app_context`. **Fuera de alcance, declarado:** `_promote_sync` sigue corriendo entero en
+  > un `to_thread`; el reconciliador es la red que atrapa su residuo, no un cambio a su
+  > atomicidad.
 
 ### U-09 — Journal de grass se commitea como éxito pese a fallos de teardown · `[Z]` · Teardown/Rollback
 
