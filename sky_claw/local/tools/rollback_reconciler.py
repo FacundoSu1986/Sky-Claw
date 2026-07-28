@@ -61,8 +61,16 @@ _RECONCILE_AGENT_ID = "rollback-backup-reconciler"
 #: él tomado, expira solo y no wedgea el próximo ritual.
 _RECONCILE_TTL_SECONDS = 60.0
 
-#: Sufijo que ``DirectoryRollback.__aenter__`` le pone al directorio movido aparte.
-_SUFIJO_MOVE_ASIDE = re.compile(r"\.rollback-\d+$")
+#: Sufijo que ``DirectoryRollback.__aenter__`` le pone al directorio movido aparte:
+#: ``.rollback-<time.time_ns()>``.
+#:
+#: Se exigen **≥12 dígitos** a propósito. Con una sola raíz bajo `<mo2>/mods` el
+#: patrón laxo (``\d+``) era inofensivo, pero desde que se barre también la raíz del
+#: juego y el dir del ejecutable de Pandora —directorios del usuario, no nuestros—
+#: un ``Algo.rollback-1`` ajeno entraría al barrido y podría terminar renombrado.
+#: ``time_ns()`` devuelve 19 dígitos (y ≥16 desde 1970), así que el piso no deja
+#: afuera ningún backup real y vuelve el falso positivo prácticamente imposible.
+_SUFIJO_MOVE_ASIDE = re.compile(r"\.rollback-\d{12,}$")
 
 #: Nombre del backup que ``ProfileSandbox._apply_changes`` crea dentro del clon
 #: antes de tocar el árbol real (fase 0).

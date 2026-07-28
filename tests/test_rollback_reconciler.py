@@ -446,6 +446,32 @@ async def test_ignora_lo_que_no_parece_un_clon(
 # ---------------------------------------------------------------------------
 
 
+async def test_no_toca_un_directorio_ajeno_que_se_parece_a_un_backup(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+    sandbox: pathlib.Path,
+) -> None:
+    """Desde que se barre la raíz del JUEGO —un directorio del usuario, no nuestro—
+    el patrón tiene que ser específico. ``DirectoryRollback`` usa
+    ``time.time_ns()`` (19 dígitos); cualquier cosa con un sufijo corto es del
+    operador y no se toca."""
+    game = tmp_path / "game"
+    game.mkdir()
+    ajeno = game / "MisCosas.rollback-1"
+    ajeno.mkdir()
+    (ajeno / "nota.txt").write_text("no borrar", encoding="utf-8")
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[ProductorDeMoveAside(nombre="pandora", lock_resource_id="behavior-graphs", raices=(game,))],
+        sandbox_root=sandbox,
+        lock_manager=lock_manager,
+    )
+
+    assert (ajeno / "nota.txt").exists()
+    assert not (game / "MisCosas").exists()
+    assert resultado.restaurados == ()
+
+
 async def test_es_idempotente(
     lock_manager: DistributedLockManager,
     mods: pathlib.Path,
