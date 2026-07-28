@@ -535,18 +535,33 @@ def test_consola_con_encoding_limitado_no_pierde_el_registro(tmp_path) -> None:
     assert "\\u2192" in salida
 
 
-def test_stream_con_reconfigure_incompatible_no_rompe_setup_logging(tmp_path) -> None:
-    """``callable(reconfigure)`` no garantiza que el método acepte ``errors=``:
-    un stream inyectado por un caller de terceros puede tener un ``reconfigure``
-    con otra firma y levantar ``TypeError`` en vez de aceptar el kwarg. Sin
-    tolerar ese caso puntual, ``setup_logging()`` entero abortaría por un
-    detalle de la consola — justo lo que este bloque existe para evitar."""
+@pytest.mark.parametrize(
+    "excepcion",
+    [
+        TypeError("reconfigure() got an unexpected keyword argument 'errors'"),
+        ValueError("boom"),
+        OSError("boom"),
+        AttributeError("stream no completamente inicializado"),
+        RuntimeError("reconfigure sobre un stream activo"),
+    ],
+)
+def test_stream_con_reconfigure_incompatible_no_rompe_setup_logging(tmp_path, excepcion) -> None:
+    """``callable(reconfigure)`` confirma que el método existe, pero no qué
+    excepción puede levantar: un stream inyectado por un caller de terceros
+    (tests, wrappers de GUI, mocks) puede tener un ``reconfigure`` con otra
+    firma o un estado interno roto. Enumerar tipos uno por uno (``ValueError``/
+    ``OSError`` primero, luego ``TypeError``, luego ``AttributeError``/
+    ``RuntimeError``...) es una lista que nunca termina de cerrarse; el punto
+    real es que NINGUNA excepción de este ``reconfigure()`` best-effort debe
+    abortar ``setup_logging()`` entero — justo lo que este bloque existe para
+    evitar. Parametrizado para que agregar un tipo nuevo no requiera un test
+    nuevo."""
 
-    class _StreamConReconfigureIncompatible(io.StringIO):
+    class _StreamConReconfigureRoto(io.StringIO):
         def reconfigure(self, **_kwargs: object) -> None:
-            raise TypeError("reconfigure() got an unexpected keyword argument 'errors'")
+            raise excepcion
 
-    consola = _StreamConReconfigureIncompatible()
+    consola = _StreamConReconfigureRoto()
 
     runtime = setup_logging(log_dir=tmp_path, process_role="test", console_stream=consola)
 
@@ -554,6 +569,32 @@ def test_stream_con_reconfigure_incompatible_no_rompe_setup_logging(tmp_path) ->
     assert shutdown_logging() is True
     assert runtime.health_snapshot().degraded is False
     assert "sigue funcionando pese al reconfigure roto" in consola.getvalue()
+
+
+def test_stream_con_reconfigure_desconocido_loggea_y_propaga(tmp_path, caplog: pytest.LogCaptureFixture) -> None:
+    """Un fallo ajeno a las incompatibilidades conocidas no puede ocultarse."""
+
+    class _FalloDeAplicacionError(Exception):
+        pass
+
+    class _StreamConFalloInesperado(io.StringIO):
+        def reconfigure(self, **_kwargs: object) -> None:
+            raise _FalloDeAplicacionError("estado interno corrupto")
+
+    with (
+        caplog.at_level(logging.ERROR, logger="sky_claw"),
+        pytest.raises(
+            _FalloDeAplicacionError,
+            match="estado interno corrupto",
+        ),
+    ):
+        setup_logging(
+            log_dir=tmp_path,
+            process_role="test",
+            console_stream=_StreamConFalloInesperado(),
+        )
+
+    assert "reconfigure" in caplog.text
 
 
 def test_error_de_formateo_no_ciega_el_sink_de_archivo(tmp_path) -> None:
