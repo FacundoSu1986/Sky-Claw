@@ -78,9 +78,9 @@ Python lo resuelve como namespace package y `tests/test_namespace_migration.py`
 falla localmente aunque el árbol esté correcto. Borrar el directorio; no es un
 defecto del código.
 
-**Pendiente:** el smoke real del `.exe` de este fix (cierre, 8765 libre, ausencia
-del warning de WAL/SHM y reapertura sin WinError 10048) — ningún test lo cubre
-porque `run.tear_down()` hace `if helpers.is_pytest(): return`.
+**Cerrado:** el smoke real del `.exe` de este fix (cierre, 8765 libre, ausencia
+del warning de WAL/SHM y reapertura sin WinError 10048) fue verificado contra el log real.
+Nota de cierre: validado con `SKY_CLAW_GUI_EXIT_GRACE_SECONDS=5` (default de producción: 15s).
 
 ## Addendum (2026-07-21) - F8 USVFS de la auditoria externa
 
