@@ -1014,6 +1014,31 @@ class AppContext:
                         exc_info=True,
                     )
 
+            # U-08 (mitad 2): reconciliar el residuo de rollback que sobrevive a una
+            # muerte dura. La mitad 1 (#378) cubrió la cancelación cooperativa en
+            # clone(); un SIGKILL/OOM/corte de luz evade TODO finally e __aexit__, así
+            # que la única red posible es al arrancar. Comparte hook y lock_manager con
+            # la reconciliación de U-03 de arriba — mismo guard: si el ritual que
+            # produce el residuo está en curso (aun en otra instancia), no se toca.
+            # Best-effort: NO debe abortar el arranque.
+            try:
+                from sky_claw.local.tools.rollback_reconciler import (
+                    reconcile_orphan_rollback_backups,
+                )
+
+                await self._await_startup(
+                    reconcile_orphan_rollback_backups(
+                        mods_root=mo2_root / "mods",
+                        sandbox_root=mo2_root / ".skyclaw_sandbox",
+                        lock_manager=lock_manager,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Reconciliación de backups de rollback huérfanos falló (no bloquea el arranque)",
+                    exc_info=True,
+                )
+
             # T-26 (ADR 0002, follow-up de #243): journal para que run_loot_sort
             # de este path del agente también emita+persista el ActionManifest
             # ("caja negra de vuelo") antes de mutar — cerrando el hueco donde la
