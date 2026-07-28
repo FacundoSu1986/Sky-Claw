@@ -104,9 +104,11 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > afirma que ambos hermanos derivan del mismo resolver. *Lección, que es la misma que
   > motiva este ítem: escribir el racional de una exclusión no es verificarla — hay que ir
   > al mecanismo.* El runner además pasó a **fijar** el `cwd` (capturado una vez y
-  > compartido entre el subproceso y la búsqueda, sin TOCTOU), pero al cwd del proceso
-  > Python: la rama sigue siendo verdadera. Follow-up abierto: apuntarlo a un staging
-  > **dedicado**; eso sí la volvería falsa, y es cambio de semántica del lanzamiento.
+  > compartido entre el spawn, el sondeo de permisos y la búsqueda de salida, de modo que
+  > un `chdir` a mitad de run no puede hacerlos divergir — es esa garantía puntual, no la
+  > eliminación de las carreras TOCTOU del filesystem), pero al cwd del proceso Python: la
+  > rama sigue siendo verdadera. Follow-up abierto: apuntarlo a un staging **dedicado**;
+  > eso sí la volvería falsa, y es cambio de semántica del lanzamiento.
   > **Queda abierto solo el punto (3)** (documentar la invariante de deployment en `docs/`).
 
 ### U-02 — Sin Job Object en Windows: la muerte dura de Python orfana todo el árbol externo · `[A+Z]` · Subprocesos/Zombies
