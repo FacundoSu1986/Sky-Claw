@@ -827,8 +827,10 @@ Se enlaza acá para que este inventario canónico siga siendo el punto único de
 triage (regla de `AGENTS.md`) — los ítems U-01…U-12 se triagean desde ese
 documento y se marcan cerrados acá a medida que se implementen:
 
-- **Alto:** U-01 (precondición VFS/USVFS no enforced → falso-verde standalone,
-  abierto), **U-02 cerrado** (#360 — ver addendum abajo), **U-03 cerrado**
+- **Alto:** **U-01 cerrado PARCIALMENTE** (#381 — sensor de
+  visibilidad de mods: el preflight ya detecta el run standalone contra el juego
+  base; la reconciliación del modelo de SALIDA sigue abierta, ver addendum
+  abajo), **U-02 cerrado** (#360 — ver addendum abajo), **U-03 cerrado**
   (#356 — `PrecacheGrass.txt` huérfano se barre en el arranque), U-04 (Wrye
   Bash/Pandora sin rollback de salida, abierto), **U-05 cerrado** (#354 — VRAMr
   usa `kill_and_reap`/tree-kill en vez de `proc.kill()` pelado en timeout).
@@ -849,6 +851,52 @@ no actualizaron este addendum en su propio PR, violando la regla explícita de
 `AGENTS.md` ("actualizar `docs/pending_ooda_status.md` en el mismo PR"). Puesto
 al día acá retroactivamente junto con el cierre de U-02, verificado contra
 `git log --oneline origin/main` (no contra los títulos de PR únicamente).
+
+### Addendum (U-01) — cierre PARCIAL: el preflight deja de mentir verde en standalone
+
+U-01 arranca de una invariante de deployment confirmada por el mantenedor:
+Sky-Claw corre **standalone**, no lanzado desde MO2. Los tools se spawnean
+directo (solo el juego pasa por el proxy `ModOrganizer.exe`, `mo2/vfs.py`), así
+que **ninguno hereda la USVFS**. Con un MO2 en USVFS estándar los tools leen el
+`Data` del juego base y todo el pipeline reporta verde sobre un árbol sin mods.
+
+**El fix que proponía la auditoría no cerraba el ítem — hallazgo de esta
+implementación.** El texto pedía "reforzar `build_vfs_sensor` con
+`scan_mods_dir=True`". Verificado contra `vfs_health.py`: `VfsHealthChecker`
+**solo detecta symlinks/junctions**; `scan_mods_dir` únicamente extiende esa
+detección a `mods/*` y **nunca comprueba que los mods estén visibles**. Ningún
+otro sensor lo cubría: `MissingMastersChecker` busca a través de TODOS los
+`plugin_dirs` (`Data` + `mods/*` + `overwrite`), así que encuentra el plugin
+dentro de `mods/SomeMod/` y lo reporta presente — el punto ciego exacto.
+
+**Cerrado en #381:**
+
+1. **Sensor nuevo** `validators/vfs_visibility.py`: compara los plugins que el
+   perfil MO2 habilita contra lo que existe en el `Data` que el tool va a leer.
+   ROJO solo ante el caso **inequívoco** (N plugins de mod habilitados, CERO
+   visibles); una materialización parcial pasa en verde a propósito — un falso
+   negativo acotado es preferible a frenar un setup que funciona. El contenido
+   de Creation Club (`cc*`) se excluye del universo medido junto con los masters
+   base: vive en `Data` con o sin VFS, y contarlo haría que el sensor mintiera
+   verde justo en el escenario que ataca.
+2. **`scan_mods_dir` derivado** en vez de hardcodeado a `False` en los 5
+   servicios que lo fijaban — el flag existe por seguridad (no enumerar una raíz
+   sin contraparte validada, review #240), no para apagar el scan cuando la raíz
+   SÍ está validada. Se replica el patrón de `loot_service`.
+
+**Ancla de la clase, no del caso:** `tests/test_vfs_visibility_wiring.py`
+**enumera** la familia de servicios con preflight y falla si aparece uno nuevo
+sin clasificar — en vez de tests escritos a mano que callan sobre el hermano que
+falta (defecto #1 del repo). `xedit_service` queda **excluido con motivo
+registrado ahí**: su preflight gatea solo `quick_auto_clean`, que limpia los DLC
+oficiales presentes en `Data` con o sin VFS, así que un rojo por visibilidad
+sería un falso positivo.
+
+**Sigue ABIERTO — la parte (2) del fix original:** reconciliar el modelo de
+SALIDA (`overwrite` vs `Data`/`mods`) en `_find_*_output`/`_permission_targets`.
+Esta PR cierra la ENTRADA (qué ve el tool); la salida (dónde caen los
+artefactos) es lo que **U-04 y las dos mitades abiertas de U-06 realmente
+esperan**, y sigue sin resolverse.
 
 ### Addendum (U-02) — Job Object kill-on-close centralizado en `run_capture`
 
@@ -988,3 +1036,219 @@ estaba en el journal.
 *Detalle de implementación verificado:* `fail_operation` **no persiste** el
 `metadata` que recibe (solo lo usa como condición y escribe `$.error`), así que la
 metadata estructurada va en `begin_operation`.
+
+## Addendum (2026-07-27) — auditoría del pipeline de crash logging (#372): residuos y falsos positivos
+
+Auditoría post-merge del PR #372 (`800afd6`, crash logging async-safe) con una
+pasada adversarial de refutación encima. **Verificado contra `origin/main`
+`67857c4`**; `_logging_runtime.py` y `logging_config.py` no cambiaron desde
+`c98409d`, así que todo lo de abajo sigue vigente.
+
+Esta auditoría partió de **7 hallazgos numerados** (F1–F7) y sumó **3
+verificaciones adicionales** sobre detalles de implementación puntuales que se
+sospechaban falsos (R1–R3) — **10 ítems en total**, todos pasados por una ronda
+adversarial de refutación. De esos 10:
+
+- **2 resultaron ser defectos reales**, ambos cerrados en **#383**:
+  `handleError` armaba la ventana de reintento del sink ante *cualquier*
+  excepción, así que un `%` mal armado en un call site cegaba `crash.log`
+  durante un segundo entero y descartaba los records sanos de esa ventana sin
+  contarlos (F2); y `setup_logging` resolvía el chat id de Telegram —ocho
+  lecturas de keyring— en cada proceso worker VFS, sin necesitarlo (F1, cuya
+  severidad bajó de crítica a baja una vez refutada la sospecha de corrupción
+  de `config.toml`).
+- **2 sobrevivieron en forma reducida** —severidad bajada o reclasificados
+  como deuda declarada— y son los residuos #1 y #2 de abajo (F4, F7).
+- **6 quedaron refutados** tal como se habían planteado originalmente (F3, F5,
+  F6, R1, R2, R3). Refutar tres de esos seis —F5, F6 y R3— sacó a la luz, como
+  subproducto, los residuos #3, #4 y #5.
+
+La tabla de "falsos positivos" de abajo lista **9 filas**, no 6, porque F3, F5
+y F6 traían dos reclamos distintos cada uno —costo de CPU y comparabilidad del
+hash en F3; crecimiento sin cota y `fileno()` en F5; colisión de `job_id` y
+llegada a `crash.log` en F6— y cada reclamo se verificó y se refutó por
+separado. La novena fila es la parte de F1 que sí se refutó (la corrupción de
+`config.toml`), aunque F1 en su conjunto sobrevivió como el defecto de keyring
+recién descripto.
+
+**Esta nota existe por dos razones**, y la segunda importa tanto como la primera:
+dejar registrados los residuos reales que NO se arreglaron, y **blindar los
+falsos positivos** para que la próxima auditoría no gaste esfuerzo —o peor, un
+PR— "arreglando" cosas que ya se demostraron sanas.
+
+### Residuos reales, deliberadamente no cerrados
+
+Ninguno tiene víctima hoy; se registran para que la decisión sea explícita y no
+se re-derive desde cero.
+
+1. **Wedge de `shutdown` con el sentinel ya entregado.** En
+   `_logging_runtime.py:261`, si `enqueue_sentinel()` tiene éxito y
+   `thread.join(timeout=remaining)` expira por milisegundos, se devuelve `False`
+   y `LoggingRuntime.shutdown` **re-agrega** `queue_handler` al root
+   (`:331`) — pero el listener ya consumió el sentinel y murió. Desde ahí hay
+   productor sin consumidor. **Matiz que acota el riesgo:** sin records nuevos
+   entre medio la segunda llamada converge a `True` (el sentinel ejecuta
+   `task_done()` y `unfinished_tasks` vuelve a 0); el wedge permanente exige
+   ≥1 record posterior. **Impacto nulo hoy** porque los dos callers de
+   producción (`__main__.py`, `vfs_worker.py`) mueren inmediatamente después.
+   Se activaría en cuanto exista un caller de vida larga — p. ej. si alguien
+   cablea `shutdown_logging` en la cadena `on_shutdown` de NiceGUI. Fix si llega
+   ese día: no re-agregar el handler cuando `thread.is_alive()` sea `False`.
+
+2. **`health_snapshot()` no tiene consumidor en producción.** Grep confirma cero
+   callers fuera de `tests/`: `degraded`, `dropped_records`, `suppressed_records`
+   y `file_errors` no se loguean al cerrar, no salen como gauge Prometheus (el
+   registry existe en `app/core/metrics.py`) y no se muestran en la GUI. **No es
+   descuido:** el spec de diseño del propio PR lo declara fuera de alcance
+   ("Tampoco se implementarán en este cambio métricas nuevas ni un supervisor
+   del listener"). Es deuda declarada. El caso realmente ciego es el exe
+   *windowed*, donde no hay console handler y el archivo que falla es la única
+   salida. Ojo con el matiz: la clase `LoggingHealth` **no** es código muerto
+   —`record_drop`/`pop_emergency`/`restore_emergency` son producción-crítica—;
+   lo que no tiene consumidor es el accessor de lectura.
+
+3. **`logs/workers/` no tiene purga.** Un archivo por job VFS, para siempre. Cada
+   archivo está acotado por rotación (10 MB × 5), así que lo que crece sin cota
+   es el *conteo*, no el tamaño; y los jobs VFS son solo `health` y `loot_sort`.
+   Higiene pendiente, no fallo operativo.
+
+4. **El fragmento sin `\n` de `LoggerStream` se pierde al apagar.** Nadie llama
+   `flush()` (`_logging_runtime.py:357`) sobre los adaptadores instalados antes
+   de `shutdown_logging`, y después el root queda solo con `NullHandler`. Pérdida
+   cosmética de una línea parcial. Follow-up barato si molesta: flushear los
+   `LoggerStream` instalados en el `finally` de `__main__.main`.
+
+5. **Retención de objetos vía `args`/`extra`.** `prepare()` limpia `exc_info`,
+   pero `_redact_value` devuelve **por referencia** todo lo que no sea
+   `str`/`Mapping`/`tuple`/`list`/`set` (`logging_config.py:187`), así que un
+   `logger.error("fallo: %s", exc)` —patrón usado en decenas de call sites ERROR—
+   deja la excepción con su `__traceback__` viva en la cola (8192 slots) y en el
+   deque de emergencia (256). Acotado y transitorio (el deque se drena en cada
+   `enqueue`), y la cola viva retiene el mismo grafo con 32× más capacidad: si
+   algún día se quiere acotar de verdad, el target es `_QUEUE_CAPACITY`, no el
+   deque.
+
+### Falsos positivos — NO volver a reportarlos ni "arreglarlos"
+
+Cada uno se refutó con evidencia citada o medición; el detalle vive en el PR #383.
+
+| Sospecha | Por qué se cae |
+|---|---|
+| `encode`+`sha256` del stderr bloquean el event loop | Medido: 64 MiB → 30,7 ms; harían falta ~200 MiB para 100 ms. El mismo `await` ya paga `decode` + `_ANSI_ESCAPE.sub` + `splitlines` pre-existentes (`splitlines` de 9,2 MiB = 10,7 ms > sha256 3,6 ms). #372 **redujo** el CPU del loop ahí: antes el stderr sin cota viajaba como `%s` y el filtro de redacción le aplicaba ~15 `re.sub` completos en el productor. |
+| `stderr_sha256` no es comparable con el artefacto crudo | No existe tal artefacto: nada persiste los bytes crudos de stderr. El contrato del test ancla es explícitamente hash del **texto decodificado**. |
+| `LoggerStream` crece sin cota con salida `\r` | `flush()` vacía el buffer entero sin mirar separadores, y `StreamHandler.emit` flushea por registro. Además `ui.run(reload=False)` descarta el único `write` sin newline de uvicorn. |
+| `fileno()` roto es una regresión accidental | Es contrato explícito y **testeado** (`tests/test_pyinstaller.py`), con cero consumidores de `fileno`/`.buffer` en el repo y en las deps del bundle. |
+| Colisión de `job_id` al sanitizar el nombre del log del worker | `job_id` es siempre `uuid4` (`vfs_contracts.py`) ⇒ el `re.sub` de sanitización es un no-op. |
+| Los fallos del worker VFS no llegan al `crash.log` del padre | Sí llegan: `_failure()` → `LOOTResult.errors` → `loot_service` loguea ERROR con `exc_info`. Solo el traceback **interno** del worker queda exclusivamente en su log por job. |
+| El bucle de truncado de `subprocess_error_extra` es O(n²) | Cota demostrada: **máximo 2 iteraciones** (exceso = 2k con k ≤ 3 bytes de continuación huérfanos tras el corte). |
+| Lost-wakeup / deadlock en `stop_with_timeout` | `handle()` corre **fuera** del mutex de la `Queue` (`QueueListener._monitor` llama `task_done()` después), y `queue.mutex` es siempre el lock más interno. El stall del productor es O(1), no `timeout_s`. |
+| Corrupción de `config.toml` por workers concurrentes | Triple bloqueo: `_instance_lock` en `submit`, lock de archivo `O_EXCL` por instancia, y única instanciación productiva del broker = one-shot `--mode vfs-health`. |
+
+### Addendum (2026-07-27, noche) — el barrido pendiente corrió: 7 hallazgos nuevos (6 + 1), 2 cerrados
+
+El barrido "¿qué defecto no anticipé?" que la nota de arriba dejaba pendiente
+**corrió** (dos intentos previos murieron por cuota de agentes; el tercero
+completó: 10 agentes, 0 refutados). Encontró **6 hallazgos** reales que
+ninguna de las dos rondas anteriores había tocado — ninguno coincide con los
+refutados ni con los residuos R1-R5 ya catalogados arriba.
+
+Además, probar el pipeline con una corrida real (no mockeada) de
+`python -m sky_claw --mode cli`/`oneshot` — arranque completo, redacción en
+producción (`Auth token [REDACTED]`), `crash.log` comportándose como se
+espera — encontró **1 hallazgo más** por su cuenta, fuera del barrido: la
+consola no soporta el rango Unicode que el repo usa en español.
+
+**Total: 7 hallazgos nuevos** (6 del barrido + 1 de la corrida real). De esos
+7, se cierran 2 en este commit; los otros 5 quedan documentados como residuos
+más abajo.
+
+**Cerrados en este mismo commit:**
+
+1. **`SecurityRedactionFilter` nunca redactaba `record.stack_info`.**
+   `stack_info` (`logger.warning(..., stack_info=True)`) llega ya renderizado
+   como texto por la stdlib, a diferencia de `exc_info` (una tupla que el
+   propio filtro renderiza) — sin una rama explícita, viaja sin redactar hasta
+   `crash.log`/`sky_claw.log`. **No era hipotético**: NiceGUI (la GUI real de
+   Sky-Claw) llama `logging.getLogger("nicegui").warning(..., stack_info=True)`
+   en `Client.check_existence()` (bug conocido de NiceGUI, dispara con timers/
+   tareas en background que referencian un cliente tras su desconexión), y ese
+   logger propaga al root sin `propagate=False`. Cualquier ruta de archivo con
+   `Users\<usuario>` en ese stack trace se guardaba sin el masking de username
+   que protege a cualquier otro campo del record. Fix: `record.stack_info =
+   self._redact(record.stack_info)` junto al bloque de `exc_text`.
+   Test ancla: `tests/test_log_redaction_traceback.py`.
+
+2. **La consola pierde el registro completo ante un carácter no codificable
+   en su codepage.** `TextIOWrapper.write()` codifica la línea entera antes de
+   escribir cualquier byte — si falla (p. ej. `→` en una consola cp1252, común
+   en Windows sin `chcp 65001`), no se escribe NADA de esa línea, y la stdlib
+   imprime `--- Logging error ---` + traceback en su lugar. Con mensajes en
+   español por todo el repo (tildes, `ñ`, flechas), esto puede disparar en
+   cualquier consola Windows sin UTF-8. Fix: `stream.reconfigure(errors=
+   "backslashreplace")` sobre el stream de consola en `setup_logging` (con
+   guarda `getattr`/`callable` para no romper streams de test sin
+   `reconfigure`, como `io.StringIO`). Test ancla:
+   `test_consola_con_encoding_limitado_no_pierde_el_registro`.
+
+**Documentados como residuos, sin cerrar** (ninguno tiene víctima activa hoy;
+razones de alcance, no de urgencia):
+
+3. **`SecurityRedactionFilter.filter()` hace I/O de disco síncrono en el hilo
+   productor al renderizar un traceback.** Si `record.exc_info` está seteado y
+   `record.exc_text` aún no, el filtro llama `formatException()`, que internamente
+   usa `linecache` — y `linecache.checkcache()` hace `os.stat()` real por cada
+   nombre de archivo único en el traceback, en **cada** llamada (no solo la
+   primera vez), con lectura completa del archivo (`tokenize.open()+readlines()`)
+   si aún no está en caché. Contradice literalmente el docstring del propio
+   módulo ("los productores solo encolan... el listener concentra I/O fuera del
+   event loop"). Medido: ~1-1.3 ms en frío para un traceback de 3 archivos —
+   real pero modesto; se agrava con AV activo o discos de red (fricción ya
+   documentada en este repo para `FailSafeRotatingFileHandler`).
+4. **Ese mismo filtro no tiene límite de tamaño al redactar `extra`/`args`.**
+   A diferencia de `subprocess_error_extra` (acotado a 64 KiB explícitamente),
+   `_redact_value`/`_redact_container` solo cotan profundidad (`_MAX_DEPTH=64`),
+   nunca ancho/tamaño de colección. Medido: una lista de 20.000 strings cortos
+   como `extra` tarda ~0,3s sincrónico en el hilo productor. Latente hoy —
+   ningún caller del repo pasa una colección grande como `extra` — pero sin
+   ningún guard que lo impida si el pipeline crece hacia reportes batch.
+5. **`shutdown_logging()` no está protegido contra una segunda
+   `KeyboardInterrupt`/SIGTERM durante el apagado.** Solo atrapa
+   `except Exception`, y `KeyboardInterrupt` hereda de `BaseException`. Un
+   doble Ctrl+C (o un supervisor reenviando SIGTERM) mientras
+   `_runtime.shutdown()` está bloqueado en una de sus esperas troceadas deja el
+   `queue_handler` desenganchado del root pero `_closed=False`/`_runtime` global
+   sin resetear, y el `atexit` de la stdlib `logging` termina cerrando streams
+   mientras el hilo listener puede seguir vivo — el escritor pierde en silencio
+   justo los records que explicarían por qué el apagado se colgó. El mismo
+   patrón está sin protección adicional en `vfs_worker.worker_main`. Ventana de
+   exposición: requiere una segunda interrupción durante un apagado ya lento.
+6. **La rotación de `sky_claw.log`/`crash.log` no progresa —y el archivo crece
+   sin límite— mientras coexistan 2+ procesos** con el mismo `log_dir` (doble
+   lanzamiento del `.exe`, o GUI+CLI/Telegram en paralelo). No hay ningún
+   instance-lock a nivel de proceso completo (el único `instance_lock` real es
+   el de `vfs_broker.py`, scoped a un `mo2_root`, no al proceso). El
+   `os.rename()` del rollover falla con `WinError 32` (archivo abierto por el
+   otro proceso), `doRollover()` lo atrapa y sigue escribiendo sin rotar —
+   indefinidamente, mientras ambas instancias sigan vivas. No hay corrupción ni
+   pérdida de logs activos, pero el disco crece sin control y nadie se entera
+   (el `file_errors` que lo contaría es el residuo #2 de arriba, sin
+   consumidor).
+7. **El worker VFS pierde TODO su logging —ni archivo ni consola— si falla el
+   `mkdir` de su subdirectorio `workers/`.** A diferencia del rol `app` (que
+   siempre conserva `stdout` como fallback), `worker_main` pasa
+   `console_stream=None` explícito, así que si el `mkdir` falla (ACL, ENOSPC)
+   no hay ningún sink: ni archivo ni consola. Agravante confirmado: en el
+   binario congelado de producción (la única ruta de lanzamiento permitida
+   para el worker), `sys.stderr` ya es `None` sin parchear para esa rama —así
+   que no es "quizás MO2 no capture el stderr", es que no hay ningún stderr
+   real que capturar. El resultado del job (éxito/fallo) sigue llegando al
+   padre vía `VfsJobResult` de todos modos (residuo ya conocido); lo que se
+   pierde es solo el traceback interno de diagnóstico, en un caso de borde
+   poco frecuente.
+
+### Límite conocido de esta auditoría
+
+Sigue cubriendo **las hipótesis que se formularon y las que el barrido
+adversarial encontró en su primera pasada completa**, no necesariamente el
+espacio completo: no se relanzó una segunda ronda de barrido tras aplicar los
+2 fixes de arriba para buscar hallazgos de tercer orden.

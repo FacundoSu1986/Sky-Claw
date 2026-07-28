@@ -248,6 +248,15 @@ class SecurityRedactionFilter(logging.Filter):
                 record.exc_text = logging.Formatter().formatException(record.exc_info)
             record.exc_text = self._redact(record.exc_text)
 
+        # A diferencia de exc_info, stack_info (logger.warning(..., stack_info=True))
+        # ya llega renderizado como texto por la stdlib: no hay paso de formateo
+        # que interceptar, así que sin esta rama viaja sin redactar. Vector real:
+        # NiceGUI llama logging.getLogger("nicegui").warning(..., stack_info=True)
+        # en Client.check_existence(), y ese logger propaga al root sin
+        # propagate=False.
+        if record.stack_info:
+            record.stack_info = self._redact(record.stack_info)
+
         return True
 
 
@@ -347,6 +356,12 @@ _MAX_STDERR_BYTES = 64 * 1024
 _runtime: LoggingRuntime | None = None
 _runtime_lock = threading.Lock()
 _telegram_chat_id_for_redaction = ""
+
+#: Roles cuyo proceso nunca habla con Telegram. Resolver el chat id ahí implica
+#: construir ``Config()`` —ocho lecturas del Credential Manager— en cada proceso
+#: lanzado, y hacer transitar todos los secretos por su memoria, sin comprar
+#: ninguna redacción a cambio. El worker VFS se lanza una vez por job.
+_ROLES_SIN_REDACCION_TELEGRAM = frozenset({"vfs_worker"})
 
 
 def default_log_dir() -> pathlib.Path:
@@ -478,12 +493,34 @@ def setup_logging(
         queue_handler = NonBlockingQueueHandler(records, health)
         queue_handler.addFilter(CorrelationFilter())
         queue_handler.addFilter(RuntimeContextFilter(process_role))
-        update_logging_redaction_context(telegram_chat_id=_resolve_telegram_chat_id())
+        if process_role not in _ROLES_SIN_REDACCION_TELEGRAM:
+            update_logging_redaction_context(telegram_chat_id=_resolve_telegram_chat_id())
         queue_handler.addFilter(SecurityRedactionFilter(chat_id_provider=_current_telegram_chat_id))
 
         handlers: list[logging.Handler] = []
         stream = sys.stdout if console_stream is _CONSOLE_DEFAULT else cast(TextIO | None, console_stream)
         if stream is not None and not isinstance(stream, LoggerStream):
+            # Una consola Windows con codepage limitado (cp1252, no UTF-8) no
+            # puede codificar buena parte de los mensajes en español del repo
+            # (tildes, flechas, emojis). Sin esto, TextIOWrapper.write falla
+            # completo (no parcial) con UnicodeEncodeError, StreamHandler.emit
+            # lo deriva a handleError, y la stdlib imprime "--- Logging error
+            # ---" en vez del mensaje real: se pierde de la consola sin dejar
+            # rastro legible. getattr en vez de isinstance(io.TextIOWrapper):
+            # streams inyectados en tests (io.StringIO) no tienen reconfigure()
+            # y no deben romper. callable() confirma que el método existe, pero
+            # no qué incompatibilidad conocida puede exponer. Esas variantes
+            # son best-effort; un fallo ajeno se registra y se propaga para no
+            # declarar sano un sink de consola potencialmente roto.
+            reconfigure = getattr(stream, "reconfigure", None)
+            if callable(reconfigure):
+                try:
+                    reconfigure(errors="backslashreplace")
+                except (TypeError, ValueError, OSError, AttributeError, RuntimeError):
+                    pass
+                except Exception:
+                    logger.exception("Fallo inesperado al reconfigurar el stream de consola")
+                    raise
             console_handler = logging.StreamHandler(stream)
             console_handler.setFormatter(
                 logging.Formatter("%(asctime)s [%(levelname)s] [%(correlation_id)s] %(name)s: %(message)s")

@@ -78,6 +78,31 @@ _DEFAULT_LOOT_TIMEOUT_SECONDS = 120
 _LOAD_ORDER_FILE_PRIORITY = ("loadorder.txt", "plugins.txt")
 
 
+def _is_per_profile_runner(runner: object) -> bool:
+    """True si *runner* declara el factory ``for_profile`` (runner VFS-aware).
+
+    Solo ``BrokeredLootRunner``/``VfsRequiredLootRunner`` lo implementan, así que
+    su presencia es lo único que certifica que el sort va a correr DENTRO de la
+    USVFS. Se exige el factory también en la CLASE: ``MagicMock`` fabrica
+    atributos arbitrarios, y mirar solo la instancia confundiría un mock (o un
+    runner legacy) con esta extensión.
+
+    **Fuente única de esa detección.** La consultan los dos lugares que tienen
+    que coincidir:
+
+    * :meth:`LootSortingService._ensure_loot_runner` — qué runner construir.
+    * :meth:`LootSortingService._routes_through_physical_data` — si el gate de
+      visibilidad (U-01) aplica.
+
+    Si divergieran, el preflight opinaría sobre un modo de lanzamiento distinto
+    del que realmente va a correr: o un ROJO falso que bloquea un sort correcto
+    bajo USVFS, o el falso verde de U-01 reabierto en standalone. Tenerlo una
+    sola vez es lo que hace imposible ese desfasaje (clase de defecto #1 del
+    repo — ver ``AGENTS.md``).
+    """
+    return callable(getattr(type(runner), "for_profile", None)) and callable(getattr(runner, "for_profile", None))
+
+
 def _primary_load_order_file(paths: list[pathlib.Path]) -> pathlib.Path | None:
     """Elige el archivo de load order que mejor refleja el orden de plugins.
 
@@ -207,6 +232,7 @@ class LootSortingService:
             build_modlist_sensors,
             build_overwrite_sensor,
             build_vfs_sensor,
+            build_vfs_visibility_sensor,
         )
 
         raw_game: pathlib.Path | None = None
@@ -260,6 +286,33 @@ class LootSortingService:
         # order resueltos, no rutas de otros rituales (review Codex #256).
         permissions_check = self._build_permissions_check()
 
+        # U-01: ¿el modlist del perfil se ve en el Data que LOOT va a leer? Sin
+        # este sensor, un run standalone (sin heredar la USVFS de MO2) ordena el
+        # juego base y reporta verde. Reusa el resolver de fuentes ya armado.
+        #
+        # SOLO aplica al lanzamiento STANDALONE: el sensor mide el Data FÍSICO, y
+        # con broker LOOT corre DENTRO de la USVFS (`BrokeredLootRunner`), donde
+        # ve los mods virtualizados que ese Data no tiene. Medirlo ahí daría un
+        # ROJO falso que bloquea un sort correcto — exactamente el falso positivo
+        # que este sensor existe para evitar. El modo de lanzamiento es una
+        # PRECONDICIÓN del sensor, no un detalle del caller: sin él, la medición
+        # no significa nada. Con `None` el checkpoint sale "no configurado" —
+        # honesto: no se midió (lección #250).
+        #
+        # "vfs_broker configurado" no prueba "USVFS en uso" (review CodeRabbit,
+        # posterior a 134d9e0): un `loot_runner` inyectado sin `for_profile` hace
+        # que `_ensure_loot_runner` devuelva ESE runner y jamás toque el broker.
+        # `_routes_through_physical_data` espeja esa misma decisión para que el
+        # gate no pueda desincronizarse de lo que el sort va a ejecutar de verdad.
+        visibility_check = (
+            build_vfs_visibility_sensor(
+                game=self._path_resolver.get_skyrim_path() if self._path_resolver is not None else None,
+                sources_resolver=sources_resolver,
+            )
+            if self._routes_through_physical_data()
+            else None
+        )
+
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
             loot_exe=loot_exe,
@@ -267,6 +320,7 @@ class LootSortingService:
             limits_check=limits_check,
             overwrite_check=overwrite_check,
             permissions_check=permissions_check,
+            visibility_check=visibility_check,
         )
         return self._preflight
 
@@ -366,6 +420,22 @@ class LootSortingService:
         self._load_order_resolver = LoadOrderFileResolver(mo2_root=mo2_root, profile=profile)
         return self._load_order_resolver
 
+    def _routes_through_physical_data(self) -> bool:
+        """¿El runner que ``_ensure_loot_runner`` va a devolver lee el ``Data``
+        físico, en vez de correr bajo la USVFS del broker?
+
+        Espeja el mismo árbol de decisión de ``_ensure_loot_runner`` sin
+        construir el runner real (esto se evalúa en el preflight, antes de
+        que exista un job): un ``loot_runner`` inyectado SIN ``for_profile``
+        gana siempre, ignorando ``_vfs_broker`` por completo — solo
+        ``BrokeredLootRunner``/``VfsRequiredLootRunner`` implementan esa
+        fábrica, así que su presencia es lo único que certifica que el
+        runner es VFS-aware. Sin runner inyectado, decide el broker.
+        """
+        if self._loot_runner is not None:
+            return not _is_per_profile_runner(self._loot_runner)
+        return self._vfs_broker is None
+
     def _ensure_loot_runner(self, profile: str = "Default") -> LootRunnerProtocol:
         """Lazily build the LOOTRunner, resolving the LOOT exe + game path on first use.
 
@@ -375,15 +445,15 @@ class LootSortingService:
         ``loot.exe`` is on the cwd/PATH.
         """
         if self._loot_runner is not None:
-            # MagicMock fabrica atributos arbitrarios: detectar el factory en
-            # la clase evita confundir un mock/runner legacy con esta extension.
-            declared_factory = getattr(type(self._loot_runner), "for_profile", None)
-            for_profile = getattr(self._loot_runner, "for_profile", None)
-            if not callable(declared_factory) or not callable(for_profile):
+            # La detección vive en _is_per_profile_runner (fuente única): este
+            # predicado y el de _routes_through_physical_data TIENEN que decidir
+            # lo mismo, o el gate de visibilidad opinaría sobre otro modo de
+            # lanzamiento que el real.
+            if not _is_per_profile_runner(self._loot_runner):
                 return self._loot_runner
             cached = self._brokered_runners.get(profile)
             if cached is None:
-                cached = for_profile(profile)
+                cached = self._loot_runner.for_profile(profile)  # type: ignore[attr-defined]
                 self._brokered_runners[profile] = cached
             return cached
 

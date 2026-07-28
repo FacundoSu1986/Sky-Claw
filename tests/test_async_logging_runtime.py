@@ -509,6 +509,207 @@ def test_flush_logging_confirma_salida_de_consola_antes_de_continuar(
     assert "respuesta ordenada" in stream.getvalue()
 
 
+def test_consola_con_encoding_limitado_no_pierde_el_registro(tmp_path) -> None:
+    """Una consola Windows con codepage limitado (cp1252, no UTF-8) no puede
+    codificar buena parte de los mensajes en español del repo (tildes, `→`,
+    emojis). Sin reconfigurar el stream, ``TextIOWrapper.write`` levanta
+    ``UnicodeEncodeError`` ANTES de escribir nada (el encode falla completo,
+    no parcial), `StreamHandler.emit` lo deriva a `handleError`, y la stdlib
+    imprime "--- Logging error ---" en vez del mensaje real: el registro se
+    pierde de la consola sin dejar rastro legible (reproducido en un run real
+    de `python -m sky_claw` bajo una terminal cp1252)."""
+    crudo = io.BytesIO()
+    consola = io.TextIOWrapper(crudo, encoding="cp1252", write_through=True)
+    setup_logging(log_dir=tmp_path, process_role="test", console_stream=consola)
+
+    logging.getLogger("test.runtime").info("paso-A %s paso-B", "→")
+
+    assert shutdown_logging() is True
+    salida = crudo.getvalue().decode("cp1252", errors="replace")
+    assert "paso-A" in salida
+    assert "paso-B" in salida
+    # Ancla el contrato exacto (backslashreplace conserva el código del
+    # carácter escapado, p. ej. "→"), no solo "algo sobrevivió":
+    # errors="replace" (que lo pierde, mostrando "?") pasaría las dos
+    # aserciones de arriba igual.
+    assert "\\u2192" in salida
+
+
+@pytest.mark.parametrize(
+    "excepcion",
+    [
+        TypeError("reconfigure() got an unexpected keyword argument 'errors'"),
+        ValueError("boom"),
+        OSError("boom"),
+        AttributeError("stream no completamente inicializado"),
+        RuntimeError("reconfigure sobre un stream activo"),
+    ],
+)
+def test_stream_con_reconfigure_incompatible_no_rompe_setup_logging(tmp_path, excepcion) -> None:
+    """``callable(reconfigure)`` confirma que el método existe, pero no qué
+    excepción puede levantar: un stream inyectado por un caller de terceros
+    (tests, wrappers de GUI, mocks) puede tener un ``reconfigure`` con otra
+    firma o un estado interno roto. Enumerar tipos uno por uno (``ValueError``/
+    ``OSError`` primero, luego ``TypeError``, luego ``AttributeError``/
+    ``RuntimeError``...) es una lista que nunca termina de cerrarse; el punto
+    real es que NINGUNA excepción de este ``reconfigure()`` best-effort debe
+    abortar ``setup_logging()`` entero — justo lo que este bloque existe para
+    evitar. Parametrizado para que agregar un tipo nuevo no requiera un test
+    nuevo."""
+
+    class _StreamConReconfigureRoto(io.StringIO):
+        def reconfigure(self, **_kwargs: object) -> None:
+            raise excepcion
+
+    consola = _StreamConReconfigureRoto()
+
+    runtime = setup_logging(log_dir=tmp_path, process_role="test", console_stream=consola)
+
+    logging.getLogger("test.runtime").info("sigue funcionando pese al reconfigure roto")
+    assert shutdown_logging() is True
+    assert runtime.health_snapshot().degraded is False
+    assert "sigue funcionando pese al reconfigure roto" in consola.getvalue()
+
+
+def test_stream_con_reconfigure_desconocido_loggea_y_propaga(tmp_path, caplog: pytest.LogCaptureFixture) -> None:
+    """Un fallo ajeno a las incompatibilidades conocidas no puede ocultarse."""
+
+    class _FalloDeAplicacionError(Exception):
+        pass
+
+    class _StreamConFalloInesperado(io.StringIO):
+        def reconfigure(self, **_kwargs: object) -> None:
+            raise _FalloDeAplicacionError("estado interno corrupto")
+
+    with (
+        caplog.at_level(logging.ERROR, logger="sky_claw"),
+        pytest.raises(
+            _FalloDeAplicacionError,
+            match="estado interno corrupto",
+        ),
+    ):
+        setup_logging(
+            log_dir=tmp_path,
+            process_role="test",
+            console_stream=_StreamConFalloInesperado(),
+        )
+
+    assert "reconfigure" in caplog.text
+
+
+def test_error_de_formateo_no_ciega_el_sink_de_archivo(tmp_path) -> None:
+    """Un record malformado solo se pierde a sí mismo, no al siguiente.
+
+    ``prepare()`` ya no formatea en el productor, así que el ``TypeError`` de
+    interpolación explota en el listener y la stdlib lo deriva a ``handleError``
+    (``BaseRotatingHandler.emit`` captura ``Exception``, y ``shouldRollover``
+    formatea porque ``maxBytes > 0``). La ventana de reintento existe para un
+    disco caído: armarla ante un bug de formateo ciega el sink un segundo entero.
+    """
+    runtime = setup_logging(log_dir=tmp_path, process_role="test", console_stream=None)
+
+    logging.getLogger("test.runtime").error("%s %s", "un-solo-argumento")
+    logging.getLogger("test.runtime").error("registro sano tras el malformado")
+
+    assert shutdown_logging() is True
+
+    principal = (tmp_path / "sky_claw.log").read_text(encoding="utf-8")
+    crash = (tmp_path / "crash.log").read_text(encoding="utf-8")
+    assert "registro sano tras el malformado" in principal
+    assert "registro sano tras el malformado" in crash
+
+    # Un bug de formateo no es un problema de disco: no debe contarse como
+    # file_error (mentiría sobre la causa) — pero el record SÍ se perdió, así
+    # que debe seguir siendo visible como supresión, no desaparecer sin rastro.
+    snapshot = runtime.health_snapshot()
+    assert snapshot.file_errors == 0
+    assert snapshot.suppressed_records >= 1
+    assert snapshot.degraded is True
+
+
+def test_oserror_de_escritura_ciega_el_sink_y_contabiliza_lo_suprimido(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """El disco caído sí arma la ventana, y lo suprimido deja de ser invisible."""
+    runtime = setup_logging(
+        log_dir=tmp_path,
+        process_role="test",
+        console_stream=None,
+    )
+    sink = next(
+        handler
+        for handler in runtime.handlers
+        if isinstance(handler, FailSafeRotatingFileHandler) and handler.baseFilename.endswith("sky_claw.log")
+    )
+    # El record de inicialización ya se escribió: cerrar deja ``stream=None`` de
+    # forma determinista, así el próximo emit vuelve a pasar por ``_open``.
+    assert flush_logging(timeout_s=1.0) is True
+    sink.close()
+
+    def _fail_open():
+        raise OSError(errno.ENOSPC, "disco lleno")
+
+    monkeypatch.setattr(sink, "_open", _fail_open)
+
+    logging.getLogger("test.runtime").error("primer intento con disco lleno")
+    logging.getLogger("test.runtime").error("segundo intento dentro de la ventana")
+    assert flush_logging(timeout_s=1.0) is True
+
+    snapshot = runtime.health_snapshot()
+    assert snapshot.file_errors == 1
+    assert snapshot.suppressed_records >= 1
+    assert snapshot.degraded is True
+
+    assert shutdown_logging() is True
+
+
+def test_worker_vfs_no_resuelve_el_chat_id_de_telegram(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Resolver el chat id construye ``Config()`` y lee el keyring.
+
+    El worker es un subproceso efímero por job que nunca habla con Telegram:
+    pagar ocho lecturas del Credential Manager por cada job —y hacer transitar
+    los secretos por su memoria— no compra ninguna redacción.
+    """
+    resoluciones: list[str] = []
+
+    def _espia() -> str:
+        resoluciones.append("resuelto")
+        return ""
+
+    monkeypatch.setattr("sky_claw.logging_config._resolve_telegram_chat_id", _espia)
+    setup_logging(
+        log_dir=tmp_path,
+        log_file="vfs-worker-job-1.log",
+        process_role="vfs_worker",
+        console_stream=None,
+    )
+
+    assert resoluciones == []
+    assert shutdown_logging() is True
+
+
+def test_proceso_principal_si_resuelve_el_chat_id_de_telegram(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Hermano del test anterior: el recorte no puede tragarse al proceso que sí redacta."""
+    resoluciones: list[str] = []
+
+    def _espia() -> str:
+        resoluciones.append("resuelto")
+        return ""
+
+    monkeypatch.setattr("sky_claw.logging_config._resolve_telegram_chat_id", _espia)
+    setup_logging(log_dir=tmp_path, process_role="app", console_stream=None)
+
+    assert resoluciones == ["resuelto"]
+    assert shutdown_logging() is True
+
+
 def test_guardar_config_actualiza_chat_id_redactado_sin_reiniciar(
     tmp_path,
 ) -> None:

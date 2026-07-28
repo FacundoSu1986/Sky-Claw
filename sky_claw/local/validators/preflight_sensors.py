@@ -8,6 +8,8 @@ Extrae la costura de sensores que ``loot_service``, ``xedit_service`` y
 * ``build_modlist_sensors`` — arma los closures de masters/límites con gate de
   honestidad y re-resolución por llamada (freshness, review Codex #252).
 * ``build_overwrite_sensor`` — arma el closure del sensor de overwrite sucio.
+* ``build_vfs_visibility_sensor`` — arma el closure del sensor de visibilidad de
+  mods (U-01): ¿el modlist del perfil se ve donde el tool lee?
 
 Los sensores que difieren por ritual NO se extraen: los **permisos de
 escritura** se prueban sobre rutas distintas según lo que cada Ritual reescribe
@@ -37,8 +39,10 @@ if TYPE_CHECKING:
         LimitsCheck,
         MastersCheck,
         OverwriteCheck,
+        VisibilityCheck,
     )
     from sky_claw.local.validators.vfs_health import VfsHealthChecker
+    from sky_claw.local.validators.vfs_visibility import VisibilityScan
 
 
 def build_vfs_sensor(
@@ -159,3 +163,40 @@ def build_overwrite_sensor(overwrite_dir: pathlib.Path | None) -> OverwriteCheck
         return OverwriteHealthChecker(overwrite_dir=resolved).check()
 
     return _overwrite
+
+
+def build_vfs_visibility_sensor(
+    *,
+    game: pathlib.Path | None,
+    sources_resolver: Callable[[], PluginSources] | None,
+) -> VisibilityCheck | None:
+    """Closure del sensor de visibilidad de mods (U-01).
+
+    Responde la pregunta que ningún sensor previo hacía: ¿los plugins que el
+    perfil MO2 habilita son visibles en el ``Data`` que el tool va a leer? Sin
+    ella, un run standalone (sin heredar la USVFS de MO2) procesa el juego base
+    y reporta verde — el falso verde de U-01.
+
+    ``sources_resolver`` es el mismo closure que alimenta a
+    ``build_modlist_sensors``: se reusa para no volver a parsear el load order
+    del perfil. Sin ``game`` o sin resolver → ``None`` → "no configurado", nunca
+    un verde inventado (lección #250).
+
+    Re-resuelve en cada run (freshness, patrón #252): el ``PreflightService`` se
+    cachea, pero el perfil activo y el contenido de ``Data`` pueden cambiar
+    entre Rituales.
+    """
+    if not isinstance(game, pathlib.Path) or sources_resolver is None:
+        return None
+    from sky_claw.local.validators.vfs_visibility import VfsVisibilityChecker
+
+    data_dir = game / "Data"
+    resolver = sources_resolver
+
+    def _visibility() -> VisibilityScan:
+        return VfsVisibilityChecker(
+            game_data_dir=data_dir,
+            enabled_plugins=resolver().enabled_plugins,
+        ).check()
+
+    return _visibility

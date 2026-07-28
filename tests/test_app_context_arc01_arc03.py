@@ -874,7 +874,7 @@ class TestAppContextPartialFullAcquisition:
             scan_calls += 1
             if scan_calls == 1:
                 loop.call_soon_threadsafe(heartbeat.set)
-                release_scan.wait(timeout=0.2)
+                release_scan.wait(timeout=2.0)
             return None
 
         def fallar_despues_del_scan(**_kwargs: object) -> None:
@@ -910,8 +910,16 @@ class TestAppContextPartialFullAcquisition:
             startup = asyncio.create_task(ctx.start_full())
             started_at = loop.time()
             try:
-                await asyncio.wait_for(heartbeat.wait(), timeout=1.0)
-                assert loop.time() - started_at < 0.1
+                # Margen amplio a propósito (release_scan bloquea el hilo del
+                # scan 2.0s): si `scan_common_paths` estuviera corriendo sobre
+                # el loop en vez de offloadeado a un hilo (`run_off_loop`),
+                # `heartbeat.set()` no se procesaría hasta que ese bloqueo
+                # completo termine, ~2.0s después. 1.0s deja 2x de margen frente
+                # a esa señal real y absorbe la varianza de scheduling de un
+                # runner de CI compartido — la versión anterior (0.1s) flaqueaba
+                # en windows-py3.12 por jitter, no por una regresión real.
+                await asyncio.wait_for(heartbeat.wait(), timeout=5.0)
+                assert loop.time() - started_at < 1.0
             finally:
                 release_scan.set()
                 result = await asyncio.gather(startup, return_exceptions=True)
