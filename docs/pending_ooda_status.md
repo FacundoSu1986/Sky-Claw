@@ -1306,16 +1306,44 @@ Vive una sola vez en `sky_claw/local/tools/output_targets.py`. Ancla:
 y falla ante un servicio nuevo sin clasificar (`loot_service` y `xedit_service` quedan
 excluidos **con motivo escrito**, no de memoria).
 
-### Defecto latente que apareció al reconciliar
+### La divergencia del `cwd` de DynDOLOD — y el error de la primera pasada
 
 `dyndolod_runner._find_texgen_output`/`_find_dyndolod_output` sondeaban
 `pathlib.Path.cwd()` como tercera candidata, mientras su hermano
-`dyndolod_service._permission_targets` documentaba lo contrario (*"no es el cwd del
-subproceso de DynDOLOD"*). Un `DynDOLOD_Output/` viejo en el directorio de trabajo del
-agente se devolvía como salida propia; con el guard de #375,
-`validate_dyndolod_output` lo aceptaba, el journal commiteaba y el ritual reportaba
-**verde sobre un árbol ajeno**. Candidata eliminada; el test la reproduce en rojo
-contra el código previo.
+`dyndolod_service._permission_targets` la excluía afirmando *"no es el cwd del
+subproceso de DynDOLOD"*. **La divergencia era real. La primera pasada de este PR la
+resolvió para el lado equivocado**: sacó el cwd de la búsqueda, creyéndole al
+comentario en vez de mirar el spawn.
+
+Lo atajó el review de CodeRabbit, y la verificación le dio la razón —
+`_execute_process` (`dyndolod_runner.py:458-463`):
+
+```python
+proc = await asyncio.create_subprocess_exec(
+    str(executable), *args,
+    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    **kwargs,          # solo creationflags en Windows: NO hay cwd=
+)
+```
+
+Sin `cwd=`, el hijo **hereda** el del proceso Python. Excluirlo habría hecho que un run
+exitoso devolviera `output_path=None` y el servicio abortara por salida no localizable —
+un falso negativo peor que el falso positivo que se quería evitar.
+
+**Resolución final:** el `cwd` es raíz legítima y viaja como **parámetro explícito** de
+`dyndolod_staging_roots` (visible en los dos llamadores, testeable sin parchear
+globals). `_permission_targets` **lo gana**, cerrando un hueco real: antes sondeaba de
+menos, y un staging read-only en el cwd mataba el run después de generar sin que el
+preflight lo viera. El ancla afirma que las raíces del sondeo de permisos y las de la
+búsqueda de salida salen del mismo resolver, así que sacarlo de un solo lado rompe.
+
+**La lección es la del propio ítem, aplicada a quien lo escribió:** escribir el racional
+de una exclusión no es verificarla. El primer intento repitió, dentro del PR que denuncia
+esa clase de defecto, exactamente esa clase de defecto.
+
+**Follow-up abierto:** fijar un `cwd` explícito al subproceso volvería falsa la rama del
+cwd y permitiría sacarla del resolver. Cambia dónde DynDOLOD resuelve rutas relativas y
+busca su INI, así que no se hizo de arrastre.
 
 ### Qué queda abierto
 

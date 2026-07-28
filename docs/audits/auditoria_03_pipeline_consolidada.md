@@ -89,13 +89,23 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > `pandora_service`, `synthesis_service` ×2, `dyndolod_runner`, `dyndolod_service`) lo
   > usan en vez de reescribirlo. `tests/test_output_targets.py` enumera la familia (por uso
   > de `WritePermissionsChecker`) y falla ante un servicio nuevo sin clasificar.
-  > **Defecto latente descubierto al reconciliar:** `_find_texgen_output`/
-  > `_find_dyndolod_output` sondeaban `pathlib.Path.cwd()` mientras su hermano
-  > `dyndolod_service._permission_targets` documentaba lo contrario. Un `DynDOLOD_Output/`
-  > viejo en el cwd del agente se devolvía como salida propia, el guard de #375 lo validaba
-  > y el ritual reportaba verde sobre un árbol ajeno. Candidata eliminada, con test que la
-  > reproduce en rojo. **Queda abierto solo el punto (3)** (documentar la invariante de
-  > deployment en `docs/`).
+  > **Divergencia encontrada al reconciliar, y el error de la primera pasada:**
+  > `_find_texgen_output`/`_find_dyndolod_output` sondeaban `pathlib.Path.cwd()` mientras
+  > `dyndolod_service._permission_targets` lo excluía afirmando que *"no es el cwd del
+  > subproceso de DynDOLOD"*. La divergencia era real; el primer intento la resolvió **para
+  > el lado equivocado**, sacando el cwd de la búsqueda por creerle a ese comentario. El
+  > review de CodeRabbit lo atajó y la verificación en el spawn le dio la razón:
+  > `_execute_process` llama a `create_subprocess_exec` **sin** `cwd=` (solo pasa
+  > `creationflags` en Windows), así que el subproceso **hereda** el del proceso Python.
+  > Excluirlo habría hecho que un run exitoso reportara salida no localizable. Resolución
+  > final: el `cwd` es raíz legítima, pasa como **parámetro explícito** a
+  > `dyndolod_staging_roots`, y `_permission_targets` **lo gana** (antes sondeaba de menos:
+  > un staging read-only ahí mata el run tras generar y el preflight no lo veía). El ancla
+  > afirma que ambos hermanos derivan del mismo resolver. *Lección, que es la misma que
+  > motiva este ítem: escribir el racional de una exclusión no es verificarla — hay que ir
+  > al mecanismo.* Follow-up abierto: fijar un `cwd` explícito al subproceso volvería falsa
+  > esa rama; es cambio de semántica del lanzamiento y no se hizo de arrastre.
+  > **Queda abierto solo el punto (3)** (documentar la invariante de deployment en `docs/`).
 
 ### U-02 — Sin Job Object en Windows: la muerte dura de Python orfana todo el árbol externo · `[A+Z]` · Subprocesos/Zombies
 

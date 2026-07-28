@@ -236,12 +236,18 @@ class DynDOLODPipelineService:
           (``DynDOLOD Output``/``TexGen Output``).
         - El **staging crudo** (``DynDOLOD_Output``/``TexGen_Output``) que la
           herramienta crea/reusa bajo las raíces de
-          ``output_targets.dyndolod_staging_roots`` (raíz MO2 y dir del exe): su
-          padre debe ser escribible para crearlo, y un staging existente
-          read-only mata el run tras la generación. El ``cwd`` del agente **no**
-          es el cwd del subproceso de DynDOLOD, así que queda fuera — el resolver
-          compartido garantiza que ``_find_texgen_output``/``_find_dyndolod_output``
-          busquen exactamente donde este método sondea permisos.
+          ``output_targets.dyndolod_staging_roots`` (raíz MO2, dir del exe y
+          ``cwd``): su padre debe ser escribible para crearlo, y un staging
+          existente read-only mata el run tras la generación.
+
+        El ``cwd`` **entró** en U-01 parte 2 (review CodeRabbit #388): este método
+        lo excluía afirmando que no era el cwd del subproceso, y eso es falso —
+        ``DynDOLODRunner._execute_process`` no le pasa ``cwd=`` al
+        ``create_subprocess_exec``, así que el hijo hereda el de este proceso. Se
+        sondeaba de menos: un staging read-only ahí mataba el run sin que el
+        preflight lo viera. Compartir el resolver con
+        ``_find_texgen_output``/``_find_dyndolod_output`` es lo que garantiza que
+        ambos miren el mismo conjunto de raíces.
 
         ``WritePermissionsChecker`` sondea solo los dirs existentes, así que
         incluir rutas aún inexistentes es seguro (se saltan) y las que aparezcan
@@ -257,6 +263,7 @@ class DynDOLODPipelineService:
         roots = dyndolod_staging_roots(
             mo2=mo2 if isinstance(mo2, pathlib.Path) else None,
             exe=exe if isinstance(exe, pathlib.Path) else None,
+            cwd=pathlib.Path.cwd(),
         )
         for root in roots:
             candidates += [root, root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME, root / DynDOLODRunner.TEXGEN_OUTPUT_NAME]

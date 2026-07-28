@@ -559,13 +559,13 @@ async def run_bodyslide_batch(
     ``app_context``) this agent path runs under the shared ``bodyslide-meshes``
     lock — the cross-process lock only protects if every mutator participates.
 
-    ``target_files=[]`` (serialize only). U-01 parte 2 retired the reason this
-    used to give ("the output path is environment-dependent"): BodySlide is
-    spawned directly, never inherits MO2's USVFS, and writes ``-o <output_path>``
-    resolved physically against ``cwd=game_path``. The destination IS knowable;
-    snapshotting it is U-04's scope, not a blocked problem. See
-    ``sky_claw/local/tools/output_targets.py`` for the invariant. Without a lock
-    manager (legacy callers / tests) BodySlide runs directly, preserving prior behavior.
+    ``target_files=[]`` (solo serializa). U-01 parte 2 retiró el motivo que este
+    bloque daba antes ("the output path is environment-dependent"): BodySlide se
+    spawnea directo, nunca hereda la USVFS de MO2 y escribe ``-o <output_path>``
+    resuelto FÍSICAMENTE contra ``cwd=game_path``. El destino SÍ es conocible;
+    snapshotearlo es alcance de U-04, no un problema bloqueado. El invariante vive
+    en ``sky_claw/local/tools/output_targets.py``. Sin lock manager (callers
+    legacy / tests) BodySlide corre directo, preservando el comportamiento previo.
     """
     if bodyslide_runner is None:
         return json.dumps(

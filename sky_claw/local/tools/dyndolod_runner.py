@@ -940,12 +940,17 @@ class DynDOLODRunner:
         """Rutas donde puede vivir el staging crudo *staging_name*, en orden.
 
         Las raíces salen de ``output_targets.dyndolod_staging_roots`` — la misma
-        fuente que usa ``dyndolod_service._permission_targets``, que ya documentaba
-        que el ``cwd`` del proceso Python **no** es el del subproceso de DynDOLOD.
-        Este runner lo sondeaba igual, y un staging viejo ahí se devolvía como
-        salida propia (U-01 parte 2).
+        fuente que usa ``dyndolod_service._permission_targets``, que antes excluía
+        el ``cwd`` con un motivo que resultó falso: ``_execute_process`` no le fija
+        ``cwd`` al subproceso, así que lo hereda de este proceso (U-01 parte 2,
+        review CodeRabbit #388). Compartir la fuente es lo que impide que el
+        sondeo de permisos y la búsqueda de salida miren lugares distintos.
         """
-        roots = dyndolod_staging_roots(mo2=self._config.mo2_path, exe=self._config.dyndolod_exe)
+        roots = dyndolod_staging_roots(
+            mo2=self._config.mo2_path,
+            exe=self._config.dyndolod_exe,
+            cwd=pathlib.Path.cwd(),
+        )
         return [root / staging_name for root in roots]
 
     def _find_texgen_output(self) -> pathlib.Path | None:

@@ -22,12 +22,18 @@ alcanza por (b), nunca por (a)**. Quien no lleva la ruta en su línea de comando
 relativo a su ``cwd``, y su destino es resoluble sin adivinar.
 
 **Por qué es un módulo y no un comentario.** La premisa contraria ("el destino es
-dependiente del entorno") estaba escrita en seis lugares, y en tres de ellos era
-el motivo declarado de que NO hubiera rollback (``target_files=[]`` /
-``snapshots=[]``, U-04). Mientras cada servicio la reescribiera por su cuenta,
-corregir uno dejaba a los otros cinco — el defecto #1 del repo. Acá se enuncia
-una vez; ``tests/test_output_targets.py`` enumera la familia y falla ante un
-servicio nuevo sin clasificar.
+dependiente del entorno") estaba reescrita a mano en nueve lugares del árbol, y
+en tres de ellos era el motivo declarado de que NO hubiera rollback
+(``target_files=[]`` / ``snapshots=[]``, U-04). Mientras cada servicio la
+reescribiera por su cuenta, corregir uno dejaba a los otros ocho — el defecto #1
+del repo. Acá se enuncia una vez; ``tests/test_output_targets.py`` enumera la
+familia y falla ante un servicio nuevo sin clasificar.
+
+**Y las afirmaciones de este módulo se verifican contra el spawn, no contra otro
+comentario.** El primer intento de U-01 parte 2 excluyó el ``cwd`` de las raíces
+de DynDOLOD porque un comentario vecino decía que no era el del subproceso; el
+``create_subprocess_exec`` decía lo contrario (review CodeRabbit #388). Cada
+rama de acá cita el mecanismo concreto que la sostiene.
 
 Hermano del lado de la ENTRADA:
 ``LootSortingService._routes_through_physical_data`` (``loot_service.py``)
@@ -123,6 +129,7 @@ def dyndolod_staging_roots(
     *,
     mo2: pathlib.Path | None,
     exe: pathlib.Path | None,
+    cwd: pathlib.Path | None,
 ) -> list[pathlib.Path]:
     """Raíces bajo las que DynDOLOD/TexGen crean su staging crudo, sin duplicados.
 
@@ -130,17 +137,32 @@ def dyndolod_staging_roots(
     stagings —``DynDOLOD_Output`` y ``TexGen_Output``— son constantes de clase del
     runner; que las una el llamador evita un ciclo de imports.
 
-    **El ``cwd`` del proceso Python no está**, y esa es la corrección: no es el
-    ``cwd`` del subproceso de DynDOLOD (se le fija otro), así que un staging viejo
-    en el directorio de trabajo del agente no es salida de este run. Sondearlo
-    hacía que la búsqueda devolviera una ruta ajena y poblada, que el guard de
-    validación aceptaba como propia.
+    **El ``cwd`` es un parámetro explícito, y es una raíz legítima**, por un hecho
+    verificado en el spawn: ``DynDOLODRunner._execute_process`` llama a
+    ``asyncio.create_subprocess_exec`` **sin** ``cwd=`` (solo pasa
+    ``creationflags`` en Windows), así que el subproceso **hereda el cwd del
+    proceso Python**. Mientras eso siga así, un staging en el directorio de
+    trabajo del agente SÍ puede ser salida de este run, y excluirlo haría que un
+    run exitoso se reporte como salida no localizable.
+
+    Se pide explícito —en vez de llamar a ``pathlib.Path.cwd()`` acá adentro— para
+    que la dependencia sea visible en los dos llamadores y testeable sin parchear
+    globals. Los dos DEBEN pasar el mismo valor: si el sondeo de permisos mira un
+    conjunto de raíces distinto del que mira la búsqueda de salida, el preflight
+    opina sobre un lugar donde el tool no escribe.
+
+    *Follow-up conocido (review CodeRabbit #388):* fijar un ``cwd`` explícito al
+    subproceso volvería falsa la rama del cwd y permitiría sacarla. Es un cambio
+    de semántica del lanzamiento (afecta cómo DynDOLOD resuelve rutas relativas y
+    encuentra su INI), así que no se hace de arrastre.
     """
     roots: list[pathlib.Path] = []
     if mo2 is not None:
         roots.append(mo2)
     if exe is not None:
         roots.append(exe.parent)
+    if cwd is not None:
+        roots.append(cwd)
     return _sin_duplicados(roots)
 
 

@@ -25,6 +25,7 @@ import pathlib
 from unittest.mock import MagicMock, patch
 
 from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
+from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.output_targets import (
     bashed_patch_target,
     dyndolod_staging_roots,
@@ -90,6 +91,15 @@ def test_la_enumeracion_cubre_toda_la_familia() -> None:
 # ---------------------------------------------------------------------------
 # Wrye Bash — el destino es el Data del juego, no el overwrite
 # ---------------------------------------------------------------------------
+
+
+def _resolver_dyndolod(*, mo2: pathlib.Path, exe: pathlib.Path) -> MagicMock:
+    """Resolver mínimo para ``DynDOLODPipelineService._permission_targets``."""
+    resolver = MagicMock()
+    resolver.get_mo2_mods_path.return_value = mo2 / "mods"
+    resolver.get_mo2_path.return_value = mo2
+    resolver.get_dyndolod_exe.return_value = exe
+    return resolver
 
 
 def _resolver(*, game: pathlib.Path | None = None, mo2: pathlib.Path | None = None) -> MagicMock:
@@ -170,21 +180,30 @@ def test_pandora_service_no_sondea_el_overwrite(tmp_path: pathlib.Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DynDOLOD — el cwd del agente NO es el cwd del subproceso
+# DynDOLOD — el subproceso HEREDA el cwd, y los dos hermanos deben coincidir
 # ---------------------------------------------------------------------------
 
 
-def test_dyndolod_no_busca_la_salida_en_el_cwd_del_agente(tmp_path: pathlib.Path) -> None:
-    """``dyndolod_service._permission_targets`` ya documenta que el ``cwd`` del
-    agente no es el del subproceso; el runner lo sondeaba igual. Un
-    ``DynDOLOD_Output/`` viejo ahí hacía que ``_find_dyndolod_output`` devolviera
-    una ruta AJENA y poblada: el guard de #375 la valida, el journal commitea y
-    el ritual reporta verde sobre un árbol que no es el suyo."""
+def test_dyndolod_incluye_el_cwd_y_los_dos_hermanos_coinciden(tmp_path: pathlib.Path) -> None:
+    """El ``cwd`` es raíz legítima de staging, y AMBOS hermanos la miran.
+
+    ``DynDOLODRunner._execute_process`` llama a ``create_subprocess_exec`` **sin**
+    ``cwd=``, así que el subproceso hereda el de este proceso: un staging ahí SÍ
+    puede ser salida del run. ``dyndolod_service._permission_targets`` afirmaba lo
+    contrario y por eso sondeaba de menos (un staging read-only ahí mata el run
+    tras la generación, sin que el preflight lo vea).
+
+    La parte que ancla la CLASE de defecto es la tercera aserción: las raíces que
+    usa el sondeo de permisos y las que usa la búsqueda de salida salen del mismo
+    resolver. Sacar el ``cwd`` de un solo lado —o agregarle una raíz nueva a uno
+    solo— rompe acá antes de llegar a producción.
+    """
     mo2 = tmp_path / "mo2"
     exe_dir = tmp_path / "dyndolod"
     cwd = tmp_path / "cwd"
-    (cwd / "DynDOLOD_Output").mkdir(parents=True)
-    (cwd / "DynDOLOD_Output" / "DynDOLOD.esp").write_text("ajeno", encoding="utf-8")
+    staging = cwd / "DynDOLOD_Output"
+    staging.mkdir(parents=True)
+    (staging / "DynDOLOD.esp").write_text("salida real del run", encoding="utf-8")
     mo2.mkdir()
     exe_dir.mkdir()
     game = tmp_path / "game"
@@ -192,9 +211,8 @@ def test_dyndolod_no_busca_la_salida_en_el_cwd_del_agente(tmp_path: pathlib.Path
     exe = exe_dir / "DynDOLODx64.exe"
     exe.write_text("", encoding="utf-8")
 
-    raices = dyndolod_staging_roots(mo2=mo2, exe=exe)
-    assert cwd not in raices
-    assert raices == [mo2, exe_dir]
+    raices = dyndolod_staging_roots(mo2=mo2, exe=exe, cwd=cwd)
+    assert raices == [mo2, exe_dir, cwd]
 
     runner = DynDOLODRunner(
         DynDOLODConfig(
@@ -205,8 +223,22 @@ def test_dyndolod_no_busca_la_salida_en_el_cwd_del_agente(tmp_path: pathlib.Path
         )
     )
     with patch("pathlib.Path.cwd", return_value=cwd):
-        assert runner._find_dyndolod_output() is None
-        assert runner._find_texgen_output() is None
+        assert runner._find_dyndolod_output() == staging
+        assert runner._find_texgen_output() is None  # TexGen_Output no existe
+
+        # Los dos hermanos, sobre el mismo entorno: las raíces del sondeo de
+        # permisos contienen exactamente las de la búsqueda de salida.
+        svc = DynDOLODPipelineService(
+            lock_manager=MagicMock(),
+            snapshot_manager=MagicMock(),
+            journal=MagicMock(),
+            path_resolver=_resolver_dyndolod(mo2=mo2, exe=exe),
+            event_bus=MagicMock(),
+        )
+        targets = svc._permission_targets()
+        buscadas = runner._staging_search_paths(DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME)
+
+    assert set(buscadas) <= set(targets), "el preflight no sondea donde el runner busca la salida"
 
 
 # ---------------------------------------------------------------------------
