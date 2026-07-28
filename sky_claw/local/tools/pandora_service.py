@@ -5,22 +5,31 @@ estado serializable que el resto de los runners mutantes (LOOT/xEdit/DynDOLOD) y
 protegen con :class:`SnapshotTransactionLock`. Este servicio expone la corrida real
 bajo el mismo lock distribuido.
 
-Espeja deliberadamente a :class:`~sky_claw.local.tools.loot_service.LootSortingService`:
-construcción perezosa del runner desde el ``PathResolutionService`` y **snapshot
-diferido** (``target_files=[]``), así que la protección que aplica hoy es la
-*serialización*.
+Espeja deliberadamente a :class:`~sky_claw.local.tools.loot_service.LootSortingService`
+en la construcción perezosa del runner desde el ``PathResolutionService``. El lock
+sigue con **snapshot diferido** (``target_files=[]``), pero eso ya no significa "sin
+rollback": el rollback de la salida lo hace el **move-aside** de
+:class:`~sky_claw.local.tools._dir_rollback.DirectoryRollback` (U-04), igual que en
+``dyndolod_service``. La salida de Pandora es un ÁRBOL de behavior graphs, no un
+archivo único, así que el snapshot copy-based del lock es la primitiva equivocada.
 
 **El destino de la salida NO es "dependiente del entorno"** (U-01 parte 2): Pandora
 se spawnea directo con ``cwd=game_path``, nunca hereda la USVFS de MO2 y por lo tanto
 escribe **físicamente** en una de las candidatas de
 ``output_targets.pandora_output_candidates`` — el ``overwrite`` de MO2 no es
 alcanzable. Que queden varias candidatas es ambigüedad del tool (versión/config), no
-del modo de lanzamiento. Snapshotearlas es alcance de **U-04**.
+del modo de lanzamiento.
+
+**Lo que se revierte es un subconjunto estricto de lo que se sondea**
+(``output_targets.pandora_rollback_dirs``): sólo los ``Pandora_Output``, que Pandora
+regenera enteros. El ``Data`` del juego y el dir del exe se sondean por permisos pero
+NO se revierten — un move-aside ahí arrastraría estado que Pandora no produjo.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import pathlib
 from typing import TYPE_CHECKING, Any
@@ -30,10 +39,15 @@ from sky_claw.app.db.locks import (
     LockAcquisitionError,
     SnapshotTransactionLock,
 )
-from sky_claw.local.tools.output_targets import pandora_output_candidates
+from sky_claw.local.tools._dir_rollback import DirectoryRollback
+from sky_claw.local.tools.output_targets import (
+    pandora_output_candidates,
+    pandora_rollback_dirs,
+)
 from sky_claw.local.tools.pandora_runner import (
     PandoraConfig,
     PandoraExecutionError,
+    PandoraResult,
     PandoraRunner,
 )
 
@@ -54,6 +68,32 @@ class _ActionManifestError(Exception):
     del lock (antes de mutar) para que Pandora NO proceda sin manifiesto — la
     caja negra no es opcional cuando el journal está cableado (espejo de
     ``loot_service``/``dyndolod_service._ActionManifestError``)."""
+
+
+class _RunFallidoError(Exception):
+    """Interno (U-04): convierte un ``PandoraResult`` fallido en excepción DENTRO
+    del ``AsyncExitStack`` para disparar el rollback real de la salida.
+
+    Existe por una propiedad del mecanismo, no por gusto: ``DirectoryRollback``
+    restaura **sólo en la rama de excepción** (``if exc_type is not None`` en su
+    ``__aexit__``), igual que ``SnapshotTransactionLock``. Un
+    ``PandoraResult(success=False)`` —el modo de fallo por exit non-zero— sale
+    *limpio* del ``async with``, así que el backup se descartaría y el árbol
+    parcial quedaría en disco. Puentear el fallo a excepción es lo que la
+    auditoría pedía con *"forzar el rollback cuando ``result.success is False``"*;
+    la forma literal no es implementable porque no hay API para pedir el rollback
+    desde el cuerpo del context manager.
+
+    Lleva el ``PandoraResult`` completo para que el ``except`` arme el **mismo**
+    dict de salida que el camino no-excepcional: el contrato de la tool no cambia,
+    sólo gana el rollback que le faltaba. Mismo patrón que
+    ``wrye_bash_service._RunFallidoError`` (#397) y que el ``raise`` que
+    ``synthesis_service`` ya usaba en producción.
+    """
+
+    def __init__(self, result: PandoraResult) -> None:
+        self.result = result
+        super().__init__(result.stderr or result.stdout or f"exit code {result.return_code}")
 
 
 def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
@@ -236,6 +276,88 @@ class PandoraPipelineService:
         game, _, exe, _, _ = self._resolve_pandora_paths()
         return pandora_output_candidates(game=game, exe=exe)
 
+    def _rollback_output_dirs(self) -> list[pathlib.Path]:
+        """Dirs de salida a proteger con move-aside (U-04).
+
+        Sale de la **misma resolución de rutas** que ``_permission_targets`` — no
+        de una segunda derivación que pudiera divergir del lugar que el preflight
+        sondea. ``pandora_rollback_dirs`` se queda con el subconjunto que Pandora
+        regenera entero (los ``Pandora_Output``) y descarta el ``Data`` del juego y
+        el dir del exe, donde un rename del árbol completo arrastraría estado
+        ajeno al run. Vacío si no hay rutas resolubles: sin destino conocido no se
+        inventa uno.
+        """
+        game, _, exe, _, _ = self._resolve_pandora_paths()
+        return pandora_rollback_dirs(game=game, exe=exe)
+
+    async def _cerrar_tx_tras_rollback(
+        self,
+        journal_tx_id: int | None,
+        dir_rollbacks: list[DirectoryRollback],
+        *,
+        hubo_restore: bool,
+    ) -> str:
+        """Cierra la TX del journal SÓLO si el rollback fue honesto (P1 de #397).
+
+        ``DirectoryRollback`` se traga el ``OSError`` del restore para no enmascarar
+        la excepción del body y lo expone vía ``rollback_completed=False``. Marcar
+        la TX ``rolled_back`` de todos modos escondería del recovery manual una
+        salida parcial que sigue en disco, mientras el audit trail afirma que se
+        recuperó — exactamente el defecto que Codex encontró en el hermano de este
+        cambio.
+
+        ``hubo_restore`` distingue las **dos** causas de ``rollback_completed ==
+        False``, que es la corrección del review CodeRabbit #399 (una versión
+        previa de esta docstring afirmaba que acá había una sola, y era falso —
+        el mismo error de razonamiento que el P1 de #397, cometido en el texto que
+        decía que no podía pasar):
+
+        - **el cuerpo falló y el restore se intentó** → False significa que el
+          restore reventó. La TX queda PENDING a propósito.
+        - **el cuerpo terminó bien y la excepción vino del teardown** (p. ej.
+          ``LockLeaseLostError`` desde el ``__aexit__`` del lock, con los backups
+          ya descartados) → False sólo significa "nunca hubo restore que hacer".
+          Dejar la TX PENDING ahí sería un falso positivo; se cierra como
+          revertida, porque la exclusividad no estuvo garantizada y reportar éxito
+          mentiría igual.
+
+        Devuelve una descripción del desenlace para el log del caller.
+        """
+        if not hubo_restore:
+            await self._mark_journal_rolled_back(journal_tx_id)
+            return "sin restore que hacer (el run terminó; falló el teardown)"
+        fallidos = [dr for dr in dir_rollbacks if not dr.rollback_completed]
+        if not fallidos:
+            await self._mark_journal_rolled_back(journal_tx_id)
+            return "completado" if dir_rollbacks else "sin salida protegida que revertir"
+        logger.critical(
+            "Rollback de la salida de Pandora INCOMPLETO (TX %s): %s quedaron sin restaurar. "
+            "La TX queda PENDIENTE a propósito, para que el recovery manual la vea.",
+            journal_tx_id,
+            [str(dr.target) for dr in fallidos],
+        )
+        return "FALLIDO — la salida parcial sigue en disco"
+
+    @staticmethod
+    def _dict_de_resultado(result: PandoraResult) -> dict[str, Any]:
+        """Dict de salida del run, compartido por el camino limpio y el de fallo.
+
+        Fuente única para que el ``except _RunFallidoError`` no arme una segunda
+        forma del contrato que pudiera divergir de la del retorno normal.
+
+        Contrato compartido (deuda #5): ``message`` canónico junto a los campos
+        estructurados; en éxito queda vacío (el consumidor arma su copy).
+        """
+        return {
+            "status": "success" if result.success else "error",
+            "success": result.success,
+            "message": "" if result.success else (result.stderr or result.stdout or ""),
+            "return_code": result.return_code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "duration_seconds": result.duration_seconds,
+        }
+
     def _ensure_runner(self) -> PandoraRunner:
         """Construye el :class:`PandoraRunner` resolviendo el exe + game path.
 
@@ -280,11 +402,19 @@ class PandoraPipelineService:
         Se llama ANTES de ``runner.run_pandora()`` con el journal ya cableado.
         Devuelve el id de la transacción del journal para commit/rollback posterior.
 
-        NOTA: Pandora corre con snapshot diferido (``target_files=[]`` en el lock),
-        así que ``tx.snapshots`` — y por ende el plan de rollback del manifiesto —
-        queda vacío por diseño: la salida de behavior graphs es dependiente del
-        entorno (VFS de MO2 con ``cwd``) y no se snapshotea. El manifiesto registra
-        los dirs candidatos que Pandora toca para auditoría (files_touched).
+        NOTA: ``tx.snapshots`` queda vacío por diseño (``target_files=[]`` en el
+        lock) y eso **no** significa "sin rollback" — el motivo ya no es la premisa
+        falsa de U-01 (*"la salida es dependiente del entorno"*), que Pandora
+        desmiente escribiendo físicamente. El rollback real de la salida lo hace el
+        move-aside de ``DirectoryRollback`` (U-04), que no pasa por el snapshot
+        store porque un árbol de behavior graphs no es un archivo. Los dos
+        conceptos se separan igual que en ``dyndolod_service``: el manifiesto
+        registra QUÉ se tocó (``files_touched``, para auditoría); revertirlo es
+        trabajo del move-aside.
+
+        Se emite ANTES del move-aside (primera mutación de FS): si el proceso muere
+        en el gap, el journal ya tiene el manifiesto de la mutación (review Codex
+        #312 sobre el hermano DynDOLOD).
 
         Raises:
             _ActionManifestError: Si begin_transaction/persist falla — Pandora no
@@ -405,36 +535,67 @@ class PandoraPipelineService:
         # una cancelación mientras se compone/persiste el informe (post-commit)
         # corrompería el audit trail de una TX ya exitosa (review Codex #249/#318).
         journal_committed = False
+        # U-04: se rastrean para leer el resultado REAL del rollback
+        # (dr.rollback_completed) en vez de asumir que hubo excepción ⇒ se revirtió.
+        # El AsyncExitStack corre los __aexit__ (restore) ANTES que los except
+        # handlers, así que los flags ya están seteados cuando se leen.
+        dir_rollbacks: list[DirectoryRollback] = []
+        # Distingue "el cuerpo falló y el restore se intentó" de "el cuerpo terminó
+        # y reventó el teardown" — sin esto, un LockLeaseLostError tras un run
+        # exitoso dejaba la TX PENDING como si el rollback hubiera fallado, cuando
+        # nunca hubo restore que hacer (review CodeRabbit #399).
+        run_exitoso = False
         try:
-            async with tx:
+            # AsyncExitStack: el lock se adquiere primero y se libera último, así los
+            # move-aside se restauran DENTRO del lock (espejo de dyndolod_service).
+            async with contextlib.AsyncExitStack() as tx_stack:
+                await tx_stack.enter_async_context(tx)
                 # T-26 (ADR 0002): emitir la caja negra ANTES de mutar. Si el journal
                 # está cableado y la emisión falla, Pandora NO corre (se lanza dentro
                 # del lock → __aexit__ libera; nada mutó todavía). El path del agente
                 # (sin journal) salta esto — no hay caja negra que emitir.
                 if self._journal is not None:
                     journal_tx_id = await self._emit_action_manifest(tx, self._permission_targets())
+
+                # U-04: move-aside de los árboles de salida (primera mutación de FS,
+                # después del manifiesto a propósito). Fail-closed: si el rename no
+                # se puede hacer, DirectoryRollback lanza OSError y Pandora no corre
+                # — mejor no correr que correr sin el rollback que se prometió.
+                for output_dir in self._rollback_output_dirs():
+                    # El veto de lease hace que el move-aside y el lock que lo
+                    # envuelve apliquen el MISMO criterio: el lock saltea su
+                    # rollback tras perder la lease para no pisar a un dueño
+                    # concurrente, pero este context sale ANTES que él y sin el
+                    # veto restauraría igual (review Codex #399).
+                    dr = DirectoryRollback(output_dir, should_rollback=lambda: not tx.lease_lost)
+                    await tx_stack.enter_async_context(dr)
+                    dir_rollbacks.append(dr)
+
                 result = await runner.run_pandora()
-            # Lock liberado. Cerrar la caja negra según el resultado real del run.
+
+                # U-04: el puente fallo→excepción. Sin esto, un exit non-zero sale
+                # limpio del stack, los DirectoryRollback DESCARTAN el backup y el
+                # árbol parcial queda en disco. Ver _RunFallidoError.
+                if not result.success:
+                    raise _RunFallidoError(result)
+                run_exitoso = True
+            # Lock liberado y salida confirmada: el run fue exitoso (un fallo habría
+            # salido por _RunFallidoError / PandoraExecutionError).
             if journal_tx_id is not None and self._journal is not None:
-                if result.success:
-                    # El run ya terminó y el lock se liberó; un fallo de commit es de
-                    # estado (el manifiesto ya quedó persistido), best-effort (no rompe
-                    # el contrato "siempre devolver dict"). Espejo de loot_service.
-                    try:
-                        await self._journal.commit_transaction(journal_tx_id)
-                        journal_committed = True
-                    except Exception:  # noqa: BLE001 — boundary best-effort del journal
-                        logger.error(
-                            "Fallo al commitear la TX del journal %d tras Pandora exitoso",
-                            journal_tx_id,
-                            exc_info=True,
-                        )
-                    # T-28: cerrar la caja negra con el informe post-vuelo (best-effort).
-                    await self._emit_flight_report(journal_tx_id)
-                else:
-                    # Run non-zero (timeout/exit): no commitear, marcar rolled-back para
-                    # no dejar la TX PENDING (la caja negra registra un run fallido).
-                    await self._mark_journal_rolled_back(journal_tx_id)
+                # El run ya terminó y el lock se liberó; un fallo de commit es de
+                # estado (el manifiesto ya quedó persistido), best-effort (no rompe
+                # el contrato "siempre devolver dict"). Espejo de loot_service.
+                try:
+                    await self._journal.commit_transaction(journal_tx_id)
+                    journal_committed = True
+                except Exception:  # noqa: BLE001 — boundary best-effort del journal
+                    logger.error(
+                        "Fallo al commitear la TX del journal %d tras Pandora exitoso",
+                        journal_tx_id,
+                        exc_info=True,
+                    )
+                # T-28: cerrar la caja negra con el informe post-vuelo (best-effort).
+                await self._emit_flight_report(journal_tx_id)
         except LockAcquisitionError as exc:
             # La contención ocurre en __aenter__, antes de emitir el manifiesto:
             # journal_tx_id sigue None, no hay TX que revertir.
@@ -458,10 +619,18 @@ class PandoraPipelineService:
                 },
                 preflight_report,
             )
+        except _RunFallidoError as exc:
+            # U-04: exit non-zero. El move-aside ya restauró (o no, y el cierre de la
+            # TX lo refleja). Se devuelve el MISMO dict que el camino limpio.
+            desenlace = await self._cerrar_tx_tras_rollback(journal_tx_id, dir_rollbacks, hubo_restore=True)
+            logger.error("Pandora falló (rc=%s); rollback de la salida: %s", exc.result.return_code, desenlace)
+            return _attach_preflight(self._dict_de_resultado(exc.result), preflight_report)
         except PandoraExecutionError as exc:
-            # El runner lanzó DENTRO del lock: marcar la TX rolled-back (no PENDING).
-            await self._mark_journal_rolled_back(journal_tx_id)
-            logger.error("Pandora execution failed: %s", exc)
+            # El runner lanzó DENTRO del stack (incluye PandoraTimeoutError, U-10): la
+            # excepción ya propagó por los DirectoryRollback y restauraron. Cerrar la
+            # TX según ese resultado real, no asumiendo que se revirtió.
+            desenlace = await self._cerrar_tx_tras_rollback(journal_tx_id, dir_rollbacks, hubo_restore=True)
+            logger.error("Pandora execution failed: %s; rollback de la salida: %s", exc, desenlace)
             return _attach_preflight(
                 {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}, preflight_report
             )
@@ -472,7 +641,7 @@ class PandoraPipelineService:
             # post-vuelo) NO se revierte — la TX fue exitosa y el audit trail no debe
             # mentir (#249). El __aexit__ del lock ya liberó; se re-lanza la cancelación.
             if not journal_committed:
-                await self._mark_journal_rolled_back(journal_tx_id)
+                await self._cerrar_tx_tras_rollback(journal_tx_id, dir_rollbacks, hubo_restore=not run_exitoso)
             raise
         except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
             # Red de seguridad final: incluye LockLeaseLostError que __aexit__ del lock
@@ -480,27 +649,13 @@ class PandoraPipelineService:
             # el run (renovación fallida / otro agente reclamó el lock). No es
             # LockAcquisitionError ni PandoraExecutionError, así que sin este catch
             # burbujearía rompiendo el contrato y dejaría la TX PENDING (review Codex
-            # #318). Si no se commiteó, marcar rolled-back (la exclusividad no estuvo
-            # garantizada — reportar éxito mentiría).
+            # #318). Si no se commiteó, cerrar la TX según el rollback real (la
+            # exclusividad no estuvo garantizada — reportar éxito mentiría).
             if not journal_committed:
-                await self._mark_journal_rolled_back(journal_tx_id)
+                await self._cerrar_tx_tras_rollback(journal_tx_id, dir_rollbacks, hubo_restore=not run_exitoso)
             logger.error("Error inesperado en Pandora: %s", exc, exc_info=True)
             return _attach_preflight(
                 {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}, preflight_report
             )
 
-        # Contrato compartido (deuda #5): ``message`` canónico junto a los campos
-        # estructurados; en éxito queda vacío (el consumidor arma su copy).
-        message = "" if result.success else (result.stderr or result.stdout or "")
-        return _attach_preflight(
-            {
-                "status": "success" if result.success else "error",
-                "success": result.success,
-                "message": message,
-                "return_code": result.return_code,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "duration_seconds": result.duration_seconds,
-            },
-            preflight_report,
-        )
+        return _attach_preflight(self._dict_de_resultado(result), preflight_report)

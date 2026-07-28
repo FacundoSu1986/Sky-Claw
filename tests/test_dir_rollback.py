@@ -187,3 +187,156 @@ async def test_commit_es_idempotente(tmp_path: pathlib.Path) -> None:
         target.mkdir()
         await rb.commit()
         await rb.commit()  # segunda vez: no-op
+
+
+async def test_exito_sin_regeneracion_conserva_el_contenido_previo(tmp_path: pathlib.Path) -> None:
+    """Descartar el backup sólo es seguro si la herramienta regeneró el dir.
+
+    La propiedad se ancla acá —y no sólo en el caller que la destapó (Pandora, con
+    sus dos ``Pandora_Output`` candidatos)— porque no es de Pandora: cualquiera que
+    proteja varios destinos candidatos, o cuya herramienta pueda no producir
+    salida, tiene el mismo agujero. Y es el peor tipo de agujero: ocurre en el
+    camino de ÉXITO, así que no hay excepción que lo delate (review Codex #399).
+    """
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("irremplazable", encoding="utf-8")
+
+    async with DirectoryRollback(target):
+        pass  # la herramienta "corre" bien pero no escribe nada acá
+
+    assert target.exists(), "se borró un dir que la herramienta no regeneró"
+    assert (target / "previo.txt").read_text(encoding="utf-8") == "irremplazable"
+    assert not list(tmp_path.glob("Output.rollback-*"))  # sin backup huérfano
+
+
+async def test_exito_con_regeneracion_sigue_descartando_el_backup(tmp_path: pathlib.Path) -> None:
+    """El hermano: cuando la herramienta SÍ regenera, el backup se descarta como
+    siempre — el fix de arriba no puede convertirse en una fuga de disco (los
+    ``Output/`` de DynDOLOD pesan GBs, que es el motivo de existir del move-aside)."""
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("viejo", encoding="utf-8")
+
+    async with DirectoryRollback(target):
+        target.mkdir()
+        (target / "nuevo.txt").write_text("nuevo", encoding="utf-8")
+
+    assert (target / "nuevo.txt").read_text(encoding="utf-8") == "nuevo"
+    assert not (target / "previo.txt").exists()
+    assert not list(tmp_path.glob("Output.rollback-*"))
+
+
+async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathlib.Path) -> None:
+    """Una cancelación mientras corre el rename no puede dejar el dir varado.
+
+    El rename va por ``asyncio.to_thread``: cancelar la corrutina que lo espera NO
+    interrumpe el hilo. Sin shield, el rename terminaba en background mientras el
+    caller nunca llegaba a registrar el context en su ``AsyncExitStack`` — el dir
+    previo quedaba bajo un nombre ``.rollback-*`` y ningún ``__aexit__`` podía
+    devolverlo, pese a que la herramienta nunca llegó a correr (review Codex #399).
+
+    Mismo patrón F2 que ``sandbox_run.run_ritual_in_sandbox`` ya usa para
+    ``clone()``: esperar el desenlace REAL antes de decidir qué limpiar.
+    """
+    import asyncio
+    import threading
+    import time
+    from unittest.mock import patch
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("irremplazable", encoding="utf-8")
+
+    rename_real = pathlib.Path.rename
+    # Sincroniza con el HILO, no con el reloj: sin esto el test afirmaba antes de
+    # que el rename ocurriera y pasaba igual sin el shield — o sea, no probaba nada.
+    primer_rename = threading.Event()
+
+    def _rename_lento(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
+        if primer_rename.is_set():
+            return rename_real(self, dst)  # el deshacer no se demora
+        time.sleep(0.3)  # el hilo sigue pese a la cancelación de quien lo espera
+        try:
+            return rename_real(self, dst)
+        finally:
+            primer_rename.set()
+
+    async def _entrar() -> None:
+        async with DirectoryRollback(target):
+            pass
+
+    with patch.object(pathlib.Path, "rename", _rename_lento):
+        task = asyncio.ensure_future(_entrar())
+        await asyncio.sleep(0.05)  # dejar que entre al rename
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # El move-aside corre en un hilo que la cancelación no interrumpe: hay que
+        # esperar su desenlace REAL antes de mirar el disco.
+        assert await asyncio.to_thread(primer_rename.wait, 5.0)
+
+    assert target.exists(), "el dir previo quedó varado bajo el nombre de backup"
+    assert (target / "previo.txt").read_text(encoding="utf-8") == "irremplazable"
+    assert not list(tmp_path.glob("Output.rollback-*"))
+
+
+async def test_veto_de_lease_omite_el_restore_y_conserva_el_backup(tmp_path: pathlib.Path) -> None:
+    """Perdida la exclusividad, NO se restaura — pero el backup se conserva.
+
+    El move-aside vive anidado dentro de un ``SnapshotTransactionLock`` y sale
+    ANTES que él. El lock saltea deliberadamente su rollback tras perder la lease
+    (*"never clobber a concurrent owner's mutations"*, ``locks.py``), así que sin
+    este veto el context de abajo restauraba igual: borraba la salida del nuevo
+    dueño y devolvía un backup viejo (review Codex #399).
+
+    El backup NO se descarta: es el único ejemplar del estado previo y el recovery
+    manual lo necesita. Y ``rollback_completed`` queda False, para que el caller
+    deje la TX PENDIENTE en vez de afirmar que revirtió.
+    """
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("mio", encoding="utf-8")
+
+    rb = DirectoryRollback(target, should_rollback=lambda: False)
+    with pytest.raises(RuntimeError):
+        async with rb:
+            target.mkdir()
+            (target / "del_otro.txt").write_text("del nuevo dueño", encoding="utf-8")
+            raise RuntimeError("boom")
+
+    assert (target / "del_otro.txt").exists(), "se pisó la salida del dueño concurrente"
+    assert not (target / "previo.txt").exists()
+    assert rb.rollback_completed is False
+    backups = list(tmp_path.glob("Output.rollback-*"))
+    assert len(backups) == 1, "el backup debe quedar en disco para recuperación manual"
+    assert (backups[0] / "previo.txt").read_text(encoding="utf-8") == "mio"
+
+
+def test_todos_los_callers_de_move_aside_cablean_el_veto_de_lease() -> None:
+    """Ancla que ENUMERA: un caller nuevo de ``DirectoryRollback`` no puede nacer
+    sin el veto.
+
+    El agujero del lease no era de Pandora sino del patrón —``DirectoryRollback``
+    anidado dentro de un ``SnapshotTransactionLock``—, así que arreglarlo sólo
+    donde lo reportó el review habría dejado a DynDOLOD intacto: el defecto #1 del
+    repo. En vez de listar a mano los servicios que ya conozco, se detectan los que
+    construyen un ``DirectoryRollback`` y se exige que cada uno pase
+    ``should_rollback``.
+    """
+    import re
+
+    tools = pathlib.Path(__file__).resolve().parent.parent / "sky_claw" / "local" / "tools"
+    constructores = re.compile(r"DirectoryRollback\((?!\s*\))[^)]*\)", re.DOTALL)
+
+    sin_veto: list[str] = []
+    for modulo in sorted(tools.glob("*.py")):
+        if modulo.name == "_dir_rollback.py":  # la definición, no un caller
+            continue
+        for uso in constructores.findall(modulo.read_text(encoding="utf-8")):
+            if "should_rollback" not in uso:
+                sin_veto.append(f"{modulo.name}: {' '.join(uso.split())}")
+
+    assert not sin_veto, (
+        f"estos move-aside restaurarían aunque se hubiera perdido la lease, pisando a un dueño concurrente: {sin_veto}"
+    )

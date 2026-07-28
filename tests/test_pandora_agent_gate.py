@@ -158,3 +158,44 @@ def test_generate_animations_validate_rejects_unexpected_keys() -> None:
 def test_generate_animations_describe_mentions_no_params() -> None:
     desc = GenerateAnimationsStrategy(service=MagicMock()).describe_for_approval({})
     assert isinstance(desc, str) and desc
+
+
+@pytest.mark.asyncio
+async def test_run_pandora_agent_path_tambien_revierte_la_salida(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """U-04 llega también por la capa LLM, no sólo por el Ritual de la GUI.
+
+    Es el defecto #1 del repo aplicado a este cambio: la misma operación mutante se
+    alcanza desde dos superficies, y un rollback cableado en una sola deja la otra
+    escribiendo behavior graphs parciales sin red. Acá se cumple **por construcción**
+    —ambas delegan en ``PandoraPipelineService.generate_animations``— pero el path
+    del agente construye el servicio SIN ``path_resolver``, así que las dirs a
+    revertir tienen que derivarse del ``config`` del runner. Ese es el detalle que
+    podría romperse en silencio, y por eso se afirma en vez de razonarse.
+    """
+    from sky_claw.local.tools.output_targets import PANDORA_OUTPUT_DIR
+    from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraResult
+
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    exe = tmp_path / "Pandora" / "Pandora.exe"
+    exe.parent.mkdir(parents=True)
+    salida = exe.parent / PANDORA_OUTPUT_DIR
+    salida.mkdir()
+    (salida / "defaultmale.hkx").write_text("bueno", encoding="utf-8")
+
+    async def _corre_y_falla() -> PandoraResult:
+        (salida / "defaultmale.hkx").write_text("corrupto", encoding="utf-8")
+        return PandoraResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=1.0)
+
+    runner = MagicMock()
+    runner.config = PandoraConfig(pandora_exe=exe, game_path=game)
+    runner.run_pandora = AsyncMock(side_effect=_corre_y_falla)
+
+    out = json.loads(await run_pandora(runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager))
+
+    assert out["success"] is False
+    assert (salida / "defaultmale.hkx").read_text(encoding="utf-8") == "bueno"
