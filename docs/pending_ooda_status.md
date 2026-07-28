@@ -331,6 +331,7 @@ migrado a `strict = true` (ver addendum del 2026-07-21). **Avance 2026-07-28:**
 cambios de código. Quedan en `ignore_errors` los bloques grandes:
 `sky_claw.app.*` (gui/comms/agent/modes/orchestrator/scraper/web/db/security/core),
 `local.tools.*`, `local.xedit.*`, `local.mo2.*`, `local.validators.*`,
+`sky_claw.local.auto_detect`, `sky_claw.local.local_config`,
 `local.discovery.*`, `app_context`, `config` y `tools_installer`.
 
 ### 2.2 T-10/T-11 — BLE001 (except genérico) sin activar en la mayoría del árbol
@@ -810,7 +811,7 @@ Gates verdes: `mypy sky_claw/` (240 archivos, 0 issues), `ruff check` +
 comportamiento — anclado por los 51 tests de `fomod` existentes, que siguen
 verdes.
 
-**Próximo candidato (trivial):** `local/loot/*` — **cerrado el 2026-07-28**,
+**Candidato cerrado:** `local/loot/*` — **cerrado el 2026-07-28**,
 ver el addendum de esa fecha.
 
 **Nota de alcance:** la exención `BLE001` de `local/fomod/**`
