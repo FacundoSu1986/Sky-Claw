@@ -40,6 +40,7 @@ import pytest
 from sky_claw.app.gui.controllers.ritual_runner import (
     HITL_OWNER_TAB,
     STORE_KEY_PENDING_HITL,
+    STORE_KEY_RITUAL_IN_FLIGHT,
     clear_answered_hitl,
     clear_owned_hitl,
     make_gui_hitl_notify,
@@ -281,11 +282,11 @@ LANZADORES_QUE_PARKEAN_APROBACION = frozenset({"run_ritual", "run_ritual_install
 
 
 def _lanzadores_detectados() -> frozenset[str]:
-    """Corrutinas públicas DEFINIDAS en ``ritual_runner`` que reciben un ``tab_id``.
+    """Corrutinas públicas DEFINIDAS en ``ritual_runner`` que reciben un ``store``.
 
     El filtro por ``__module__`` no es cosmético: ``getmembers`` también devuelve
     lo que el módulo *importa*, así que una corrutina ajena con un parámetro
-    ``tab_id`` rompería el ancla sin que exista un lanzador nuevo. Un ancla que
+    ``store`` rompería el ancla sin que exista un lanzador nuevo. Un ancla que
     grita en falso termina desactivada, y ahí deja de proteger.
     """
     import inspect
@@ -297,7 +298,7 @@ def _lanzadores_detectados() -> frozenset[str]:
         for nombre, fn in inspect.getmembers(ritual_runner, inspect.iscoroutinefunction)
         if not nombre.startswith("_")
         and fn.__module__ == ritual_runner.__name__
-        and "tab_id" in inspect.signature(fn).parameters
+        and "store" in inspect.signature(fn).parameters
     )
 
 
@@ -337,14 +338,22 @@ def test_la_familia_de_lanzadores_esta_congelada() -> None:
     """Un lanzador nuevo no puede entrar sin pasar por estos tests.
 
     Si este test rompe, agregaste (o renombraste) una corrutina que recibe
-    ``tab_id``. No lo "arregles" tocando la constante y listo: agregale su
+    ``store``. No lo "arregles" tocando la constante y listo: agregale su
     receta en ``RECETAS_DE_INVOCACION``, y los tests parametrizados de abajo
     van a exigirle el mismo trato que a sus hermanos.
     """
-    assert _lanzadores_detectados() == LANZADORES_QUE_PARKEAN_APROBACION, (
+    import inspect
+
+    from sky_claw.app.gui.controllers import ritual_runner
+
+    detectados = _lanzadores_detectados()
+    assert detectados == LANZADORES_QUE_PARKEAN_APROBACION, (
         "cambió la familia de lanzadores que parkean aprobaciones HITL: "
         "cada miembro necesita marcar su dueño y no desalojar aprobaciones ajenas"
     )
+    for nombre in detectados:
+        fn = getattr(ritual_runner, nombre)
+        assert "tab_id" in inspect.signature(fn).parameters, f"{nombre} no acepta tab_id"
 
 
 def test_cada_lanzador_tiene_receta_de_invocacion() -> None:
@@ -496,6 +505,22 @@ def test_clear_owned_borra_solo_si_el_dueno_coincide() -> None:
     assert not store.get(STORE_KEY_PENDING_HITL), "clear_owned_hitl no borró la pendiente de su propio dueño"
 
 
+async def test_el_ritual_falla_sin_perder_la_limpieza() -> None:
+    """El hermano ``run_ritual`` tambien libera el estado ante una excepcion."""
+    store = ReactiveStore()
+
+    class _Supervisor:
+        async def dispatch_tool(self, _name: str, _args: dict) -> dict:
+            store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-A", HITL_OWNER_TAB: "tab-A"})
+            raise RuntimeError("dispatch failed")
+
+    await run_ritual("loot", supervisor=_Supervisor(), store=store, tab_id="tab-A")
+
+    assert not store.get(STORE_KEY_PENDING_HITL), "un fallo de Ritual dejo el modal colgado"
+    assert ritual_tab_id() is None, "el ContextVar quedo armado tras un fallo de Ritual"
+    assert not store.get(STORE_KEY_RITUAL_IN_FLIGHT), "un fallo de Ritual dejo el single-flight trabado"
+
+
 async def test_el_ritual_de_instalacion_falla_sin_perder_la_limpieza() -> None:
     """Camino de excepción del installer: el `finally` corre igual.
 
@@ -521,3 +546,4 @@ async def test_el_ritual_de_instalacion_falla_sin_perder_la_limpieza() -> None:
 
     assert not store.get(STORE_KEY_PENDING_HITL), "un fallo de instalación dejó el modal colgado"
     assert ritual_tab_id() is None, "el ContextVar quedó armado tras un fallo de instalación"
+    assert not store.get(STORE_KEY_RITUAL_IN_FLIGHT), "un fallo de instalación dejó el single-flight trabado"
