@@ -666,3 +666,287 @@ async def test_cancelacion_marca_rolled_back_y_propaga(
     mock_journal.commit_transaction.assert_not_called()
     # El lock se liberó pese a la cancelación.
     assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None
+
+
+# =============================================================================
+# U-04 — rollback REAL de la salida de Pandora (move-aside de ``Pandora_Output``).
+#
+# Cierra la mitad que #397 dejó abierta a propósito. La causa raíz es la MISMA que
+# en Wrye Bash —los dos mecanismos de rollback del repo restauran sólo en la rama
+# de excepción, y un ``PandoraResult(success=False)`` sale limpio del ``async
+# with``—, pero la primitiva es distinta: Wrye Bash produce un archivo único
+# (``target_files`` del lock) y Pandora un ÁRBOL de behavior graphs, así que acá va
+# ``DirectoryRollback`` (move-aside O(1)), igual que DynDOLOD.
+#
+# Los tests usan archivos REALES en disco: contar llamadas a un mock probaría que
+# se invocó el rollback, no que la salida volvió.
+# =============================================================================
+
+
+def _escribir_output(destino: pathlib.Path, contenido: str) -> None:
+    """Materializa un árbol de salida de Pandora con contenido reconocible."""
+    (destino / "meshes" / "actors").mkdir(parents=True, exist_ok=True)
+    (destino / "meshes" / "actors" / "defaultmale.hkx").write_text(contenido, encoding="utf-8")
+
+
+def _leer_output(destino: pathlib.Path) -> str:
+    return (destino / "meshes" / "actors" / "defaultmale.hkx").read_text(encoding="utf-8")
+
+
+def _svc_con_salida_real(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    *,
+    game: pathlib.Path,
+    exe: pathlib.Path,
+    corrida: object,
+    journal: AsyncMock | None = None,
+) -> PandoraPipelineService:
+    """Servicio con rutas REALES en disco y preflight verde inyectado.
+
+    El runner es un mock cuyo ``run_pandora`` **escribe de verdad** en el árbol de
+    salida antes de devolver/lanzar: es la única forma de afirmar que el rollback
+    restauró byte a byte en vez de que simplemente se llamó.
+    """
+    from sky_claw.local.tools.pandora_runner import PandoraConfig
+
+    runner = MagicMock()
+    runner.config = PandoraConfig(pandora_exe=exe, game_path=game)
+    runner.run_pandora = AsyncMock(side_effect=corrida)
+    return PandoraPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        pandora_runner=runner,
+        preflight=_FakePreflight(_perm_report(PreflightStatus.GREEN, "Escritura verificada.")),  # type: ignore[arg-type]
+        journal=journal,
+    )
+
+
+def _rutas_de_salida(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, list[pathlib.Path]]:
+    """``(game, exe, [las dos raíces de Pandora_Output])``, ya creadas en disco."""
+    from sky_claw.local.tools.output_targets import PANDORA_OUTPUT_DIR
+
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    exe = tmp_path / "Pandora" / "Pandora Behaviour Engine+.exe"
+    exe.parent.mkdir(parents=True)
+    return game, exe, [game / PANDORA_OUTPUT_DIR, exe.parent / PANDORA_OUTPUT_DIR]
+
+
+@pytest.mark.asyncio
+async def test_fallo_non_zero_restaura_las_dos_raices_de_salida(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """Un exit non-zero revierte el árbol de salida en AMBAS raíces.
+
+    Se afirman las dos —la del ``cwd`` (``game_path``) y la del exe— en el mismo
+    test a propósito: son hermanas exactas y cubrir sólo una es el defecto #1 del
+    repo. Cuál de las dos usa Pandora depende de su versión, no del entorno.
+    """
+    game, exe, salidas = _rutas_de_salida(tmp_path)
+    for salida in salidas:
+        _escribir_output(salida, "bueno")
+
+    async def _corre_y_falla() -> PandoraResult:
+        for salida in salidas:
+            _escribir_output(salida, "corrupto")  # parcial a medio escribir
+        return PandoraResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_y_falla)
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert result["return_code"] == 1  # el contrato del dict no cambia
+    assert result["stderr"] == "boom"
+    for salida in salidas:
+        assert _leer_output(salida) == "bueno", f"la salida de {salida} no se restauró"
+
+
+@pytest.mark.asyncio
+async def test_timeout_restaura_la_salida_previa(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """El otro modo de fallo del ítem: ``PandoraTimeoutError`` (U-10) ya elevaba,
+    así que con el move-aside cableado restaura sin código dedicado."""
+    from sky_claw.local.tools.pandora_runner import PandoraTimeoutError
+
+    game, exe, salidas = _rutas_de_salida(tmp_path)
+    for salida in salidas:
+        _escribir_output(salida, "bueno")
+
+    async def _corre_y_cuelga() -> PandoraResult:
+        for salida in salidas:
+            _escribir_output(salida, "corrupto")
+        raise PandoraTimeoutError(300.0)
+
+    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_y_cuelga)
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    for salida in salidas:
+        assert _leer_output(salida) == "bueno", f"la salida de {salida} no se restauró tras el timeout"
+
+
+@pytest.mark.asyncio
+async def test_exito_conserva_la_salida_nueva_y_descarta_el_backup(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """El camino feliz no debe revertir nada ni dejar backups huérfanos ocupando
+    disco (los behavior graphs pesan)."""
+    game, exe, salidas = _rutas_de_salida(tmp_path)
+    for salida in salidas:
+        _escribir_output(salida, "viejo")
+
+    async def _corre_ok() -> PandoraResult:
+        for salida in salidas:
+            _escribir_output(salida, "nuevo")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok)
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is True
+    for salida in salidas:
+        assert _leer_output(salida) == "nuevo"
+        assert not list(salida.parent.glob(f"{salida.name}.rollback-*")), "quedó un backup huérfano"
+
+
+@pytest.mark.asyncio
+async def test_primer_run_fallido_borra_el_parcial(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """Sin salida previa, el move-aside igual revierte: borra el parcial.
+
+    Es donde ``DirectoryRollback`` es ESTRICTAMENTE mejor que el snapshot del lock
+    —la limitación aceptada de Wrye Bash en #397 (``file_path.exists()`` gatea el
+    snapshot, así que un primer run fallido deja el parcial)— porque "volver al
+    estado previo" cuando el estado previo era "no existía" es borrarlo, y eso no
+    necesita backup.
+    """
+    game, exe, salidas = _rutas_de_salida(tmp_path)  # sin Pandora_Output previo
+
+    async def _corre_y_falla() -> PandoraResult:
+        for salida in salidas:
+            _escribir_output(salida, "parcial")
+        return PandoraResult(success=False, return_code=2, stdout="", stderr="crash", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_y_falla)
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    for salida in salidas:
+        assert not salida.exists(), f"el parcial de {salida} quedó en disco"
+
+
+@pytest.mark.asyncio
+async def test_el_rollback_no_toca_el_data_del_juego_ni_el_dir_del_exe(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """La restricción de seguridad del mecanismo, afirmada end-to-end.
+
+    ``DirectoryRollback`` RENOMBRA el directorio entero aparte. Eso sólo es correcto
+    sobre un dir que la herramienta regenera por completo. El ``Data`` del juego
+    contiene TODO el setup de mods del usuario y ``exe.parent`` contiene el
+    ejecutable que está por correr: un move-aside ahí destruiría estado que Pandora
+    no produjo, y sería un remedio peor que la enfermedad que U-04 describe.
+
+    **Se observa DURANTE el run, no después.** Un move-aside indebido va y vuelve
+    —renombra al entrar, restaura al fallar—, así que mirar el disco al final lo
+    taparía por completo: verificado simulando la regresión (devolver todas las
+    candidatas como revertibles) contra la versión que sólo miraba el estado final,
+    y pasaba igual. El único instante en que el daño es visible es mientras Pandora
+    corre, que además es exactamente cuando importa: si el ``Data`` está renombrado
+    ahí, la herramienta lee un juego sin mods.
+    """
+    game, exe, salidas = _rutas_de_salida(tmp_path)
+    (game / "Data" / "Skyrim.esm").write_text("master intocable", encoding="utf-8")
+    exe.write_text("exe intocable", encoding="utf-8")
+    durante: dict[str, bool] = {}
+
+    async def _corre_y_falla() -> PandoraResult:
+        durante["data_en_su_lugar"] = (game / "Data" / "Skyrim.esm").exists()
+        durante["exe_en_su_lugar"] = exe.exists()
+        for salida in salidas:
+            _escribir_output(salida, "corrupto")
+        return PandoraResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_y_falla)
+
+    await svc.generate_animations()
+
+    assert durante["data_en_su_lugar"], "el Data del juego fue movido aparte mientras Pandora corría"
+    assert durante["exe_en_su_lugar"], "el dir del exe fue movido aparte mientras Pandora corría"
+    assert (game / "Data" / "Skyrim.esm").read_text(encoding="utf-8") == "master intocable"
+    assert exe.read_text(encoding="utf-8") == "exe intocable"
+    # Secundario: un restore fallido dejaría el backup huérfano a la vista.
+    assert not list(tmp_path.rglob("Data.rollback-*"))
+    assert not list(tmp_path.rglob("Pandora.rollback-*"))
+
+
+@pytest.mark.asyncio
+async def test_restore_fallido_deja_la_tx_pendiente(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """Si el restore falla (disco lleno), la TX NO puede cerrarse como revertida.
+
+    ``DirectoryRollback`` se traga el ``OSError`` del restore para no enmascarar la
+    excepción del body y lo expone vía ``rollback_completed=False``. Marcar la TX
+    ``rolled_back`` igual escondería del recovery manual una salida parcial que
+    sigue en disco — el mismo P1 que Codex encontró en #397.
+    """
+    from sky_claw.local.tools._dir_rollback import DirectoryRollback
+
+    game, exe, salidas = _rutas_de_salida(tmp_path)
+    for salida in salidas:
+        _escribir_output(salida, "bueno")
+
+    async def _corre_y_falla() -> PandoraResult:
+        return PandoraResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_y_falla, journal=mock_journal
+    )
+
+    with patch.object(DirectoryRollback, "_restore_backup", AsyncMock(side_effect=OSError("No space left on device"))):
+        result = await svc.generate_animations()
+
+    assert result["success"] is False
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_not_called()  # queda PENDING, a la vista
+
+
+@pytest.mark.asyncio
+async def test_fallo_con_journal_cierra_la_tx_tras_un_rollback_honesto(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """El hermano del test anterior: con el rollback COMPLETADO, la TX sí se cierra."""
+    game, exe, salidas = _rutas_de_salida(tmp_path)
+    for salida in salidas:
+        _escribir_output(salida, "bueno")
+
+    async def _corre_y_falla() -> PandoraResult:
+        for salida in salidas:
+            _escribir_output(salida, "corrupto")
+        return PandoraResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_y_falla, journal=mock_journal
+    )
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.commit_transaction.assert_not_called()
+    for salida in salidas:
+        assert _leer_output(salida) == "bueno"

@@ -1356,11 +1356,116 @@ resuelve rutas relativas y busca su INI, así que no se hizo de arrastre.
 
 - **U-01 punto (3)**: documentar la invariante de deployment en `docs/` (el módulo ya
   la enuncia; falta la versión para operadores).
-- **U-04**: desbloqueado y **no implementado**. Sus dos prerequisitos están cerrados —
-  el path ya no es ambiguo, y **U-10 también estaba cerrado** (`WryeBashTimeoutError` /
+- **U-04**: **cerrado para Pandora** (ver el addendum al final de este documento); la
+  mitad de Wrye Bash va en su propio PR. Sus dos prerequisitos ya estaban cerrados —
+  el path ya no es ambiguo, y **U-10 también** (`WryeBashTimeoutError` /
   `BodySlideTimeoutError` ya se elevan, así que la excepción propaga por el context
-  manager). Falta solo pasar la ruta como `target_files` y forzar el rollback ante
-  `result.success is False`.
+  manager).
 - **U-06** (Wrye Bash / BodySlide): desbloqueado y no implementado. El falso negativo
   que motivaba el diferimiento exigía una redirección USVFS que no puede ocurrir.
   QuickAutoClean sigue aplazado por su motivo propio (mtime), ajeno a U-01.
+
+---
+
+## Addendum — U-04 cerrado para Pandora (rollback move-aside de la salida)
+
+Cierra la segunda mitad de U-04. La primera (Wrye Bash) va en su propio PR; se
+separaron porque **la causa raíz es común pero la primitiva de rollback no**, y
+mezclar dos mecanismos distintos sobre la parte más riesgosa del backlog —revertir
+datos reales del usuario— duplica la superficie de review de justo lo que hay que
+revisar con más cuidado.
+
+### La parte compartida: el puente fallo→excepción
+
+Los dos mecanismos de rollback del repo restauran **sólo en la rama de excepción**:
+
+```python
+# _dir_rollback.py — DirectoryRollback.__aexit__
+if exc_type is not None:
+    await self._restore_backup()
+    self.rollback_completed = True
+else:
+    await self._discard_backup()
+```
+
+Un `PandoraResult(success=False)` —el modo de fallo por exit non-zero— sale *limpio*
+del `async with`, así que el backup se descarta y el árbol parcial queda en disco.
+Por eso el remedio literal del ítem ("forzar el rollback cuando `result.success is
+False`") no es implementable: no hay API para pedirlo desde el cuerpo. Se puentea con
+`_RunFallidoError`, que lleva el `PandoraResult` completo para que el `except` arme el
+**mismo** dict de salida del camino limpio (`_dict_de_resultado`, fuente única) — el
+contrato de la tool no cambia.
+
+El otro modo de fallo, el timeout, sale **gratis**: `PandoraTimeoutError` ya elevaba
+desde U-10, así que con el move-aside cableado el `except PandoraExecutionError`
+preexistente empieza a restaurar sin líneas nuevas.
+
+### La parte propia: qué es seguro revertir
+
+`DirectoryRollback` **renombra el directorio entero** a un sibling. Enunciado como
+propiedad del mecanismo: *eso sólo es correcto sobre un directorio que la herramienta
+regenera por completo*. De ahí sale, sin criterio caso por caso, el recorte de las
+candidatas:
+
+| Candidata | ¿Revertible? | Por qué |
+|---|---|---|
+| `Pandora_Output` (cwd y dir del exe) | **sí** | Pandora lo crea y lo regenera entero |
+| `game/Data` | **no** | Todo el setup de mods del usuario; Pandora escribe una fracción |
+| `exe.parent` | **no** | Contiene el ejecutable que está por correr |
+
+`pandora_rollback_dirs` devuelve el subconjunto **estricto**, y el test lo afirma
+contra `pandora_output_candidates` en vez de contra una lista escrita a mano: agregar
+una raíz de salida rompe el ancla hasta que se decida si es revertible.
+
+**El guard end-to-end observa DURANTE el run, no después.** Un move-aside indebido va
+y vuelve, así que mirar el disco al final lo tapa por completo — verificado simulando
+la regresión contra la primera versión del test, que pasaba igual. El único instante
+en que el daño es visible es mientras Pandora corre, que además es cuando importa: con
+el `Data` renombrado, la herramienta leería un juego sin mods.
+
+### Una raíz de salida que faltaba
+
+`game/Pandora_Output` se suma a las candidatas. `PandoraRunner.run_pandora` pasa
+`cwd=str(self.config.game_path)` explícito a `run_capture`, así que una herramienta
+que crea su dir de salida relativo al directorio de trabajo aterriza ahí. Es el mismo
+hecho verificado **en el spawn** que hizo entrar el `cwd` en `dyndolod_staging_roots`
+tras la review de #388; el test lo ancla con `inspect.getsource`, para que sacar ese
+`cwd=` del runner rompa el ancla en vez de degradar el rollback en silencio.
+
+Beneficio colateral: el sondeo de permisos del preflight y el rollback salen de la
+**misma** resolución de rutas, así que no pueden divergir.
+
+### Ventaja sobre el hermano de Wrye Bash
+
+El move-aside **no** tiene la limitación del primer run que se aceptó allá
+(`SnapshotTransactionLock` no snapshotea un archivo inexistente, así que un primer run
+fallido deja el parcial). Sin salida previa, "volver al estado anterior" es borrar el
+parcial, y eso no necesita backup. `test_primer_run_fallido_borra_el_parcial` lo fija.
+
+### Journal honesto en los cinco caminos
+
+`_cerrar_tx_tras_rollback` cierra la TX **sólo si el rollback se completó de verdad**
+(`dr.rollback_completed`); si el restore falló —disco lleno, dir no escribible— la TX
+queda PENDING a propósito y se loguea `critical`, porque marcarla `rolled_back`
+escondería del recovery manual una salida parcial que sigue en disco. Es el P1 que
+Codex encontró en el hermano de Wrye Bash, aplicado acá de entrada y a **todos** los
+handlers (`_RunFallidoError`, `PandoraExecutionError`, `CancelledError`, el
+`except Exception` final), no sólo al nuevo.
+
+Detalle a favor del move-aside: acá `rollback_completed=False` tiene **una sola** causa
+(el restore falló). En `SnapshotTransactionLock` el flag también es False cuando no
+había snapshot previo, y hay que desambiguar.
+
+### Las dos superficies
+
+GUI (`SupervisorAgent` → `tool_dispatcher` → `GenerateAnimationsStrategy`) y agente LLM
+(`system_tools.run_pandora`) delegan ambas en
+`PandoraPipelineService.generate_animations`, así que el rollback llega a las dos por
+construcción. El detalle que **sí** podía romperse en silencio es que el path del
+agente construye el servicio SIN `path_resolver`: las dirs a revertir se derivan del
+`config` del runner. Anclado en
+`test_run_pandora_agent_path_tambien_revierte_la_salida` en vez de razonado.
+
+### Qué sigue abierto de U-04
+
+Nada: con Wrye Bash y Pandora cerrados, el ítem queda completo.
