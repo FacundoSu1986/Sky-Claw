@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import pathlib
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -29,6 +29,8 @@ def _make_registry(
     pandora_runner: object | None = None,
     bodyslide_runner: object | None = None,
     path_validator: object | None = None,
+    lock_manager: object | None = None,
+    snapshot_manager: object | None = None,
 ) -> AsyncToolRegistry:
     mo2 = MagicMock()
     mo2.root = tmp_path
@@ -41,6 +43,8 @@ def _make_registry(
         pandora_runner=pandora_runner,
         bodyslide_runner=bodyslide_runner,
         path_validator=path_validator,
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
     )
 
 
@@ -241,9 +245,21 @@ async def test_run_pandora_tool_uses_injected_runner(tmp_path: pathlib.Path) -> 
 async def test_run_bodyslide_tool_forwards_group_and_output(tmp_path: pathlib.Path) -> None:
     injected = MagicMock(spec=BodySlideRunner)
     injected.run_batch = AsyncMock(return_value=_runner_result())
-    reg = _make_registry(tmp_path=tmp_path, bodyslide_runner=injected)
+    reg = _make_registry(
+        tmp_path=tmp_path,
+        bodyslide_runner=injected,
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+    )
 
-    result = json.loads(await reg.tools["run_bodyslide"].fn(group="3BA", output_path="out"))
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=None)
+    with patch(
+        "sky_claw.app.db.locks.SnapshotTransactionLock",
+        return_value=transaction,
+    ):
+        result = json.loads(await reg.tools["run_bodyslide"].fn(group="3BA", output_path="out"))
 
     assert result["success"] is True
     injected.run_batch.assert_awaited_once_with("3BA", "out")

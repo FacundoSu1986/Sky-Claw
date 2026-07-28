@@ -4,7 +4,8 @@ Codex (#213) nombró el "mismo vector P1 de pandora/bodyslide": el tool del agen
 corría el runner directo, sin el lock que serializa contra otros mutadores. Pandora
 ya se cerró (#215); esto cierra BodySlide: ``run_bodyslide_batch`` serializa en el lock
 ``bodyslide-meshes`` cuando el lock está cableado, espejando ``run_loot_sort`` /
-``run_pandora``. Sin lock manager (callers legacy / tests) se preserva la corrida directa.
+``run_pandora``. Si falta cualquiera de los gestores, la ejecución falla cerrada
+y el runner no se invoca.
 
 Nota: hoy no hay Ritual de GUI que compita con BodySlide, así que la carrera es teórica;
 esto cierra el patrón abierto de forma consistente.
@@ -89,14 +90,32 @@ async def test_blocked_when_lock_already_held(
 
 
 @pytest.mark.asyncio
-async def test_direct_path_preserved_without_lock() -> None:
+async def test_fails_closed_without_lock() -> None:
     runner = MagicMock()
     runner.run_batch = AsyncMock(return_value=_runner_result())
 
     out = json.loads(await run_bodyslide_batch(runner, group="3BA", output_path="meshes"))
 
-    assert out["success"] is True
-    runner.run_batch.assert_awaited_once_with("3BA", "meshes")
+    assert "error" in out
+    assert "lock_manager" in out["error"]
+    assert "snapshot_manager" in out["error"]
+    runner.run_batch.assert_not_awaited()
+
+
+async def test_fails_closed_when_one_protection_manager_is_missing(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+) -> None:
+    runner = MagicMock()
+    runner.run_batch = AsyncMock(return_value=_runner_result())
+
+    for managers in (
+        {"lock_manager": None, "snapshot_manager": snapshot_manager},
+        {"lock_manager": lock_manager, "snapshot_manager": None},
+    ):
+        out = json.loads(await run_bodyslide_batch(runner, **managers))
+
+        assert "error" in out
+        runner.run_batch.assert_not_awaited()
 
 
 @pytest.mark.asyncio

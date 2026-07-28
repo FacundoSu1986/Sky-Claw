@@ -714,6 +714,24 @@ class TestExecuteProcessDrainGrace:
     path de éxito colgaría `_execute_process` pasado incluso el timeout global.
     """
 
+    async def test_fija_cwd_explicito_para_el_subproceso(self) -> None:
+        from sky_claw.local.tools import dyndolod_runner as ddl
+
+        proc = MagicMock()
+        proc.stdout = _EOFStream()
+        proc.stderr = _EOFStream()
+        proc.returncode = 0
+        proc.wait = AsyncMock(return_value=0)
+
+        config = MagicMock(timeout_seconds=3600, heartbeat_interval=60)
+        runner = ddl.DynDOLODRunner(config)
+        cwd = pathlib.Path.cwd()
+
+        with patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)) as create_process:
+            await runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "DynDOLOD")
+
+        assert create_process.call_args.kwargs["cwd"] == cwd
+
     async def test_drain_colgado_en_exito_retorna_dentro_del_grace(self) -> None:
         from sky_claw.local.tools import dyndolod_runner as ddl
 

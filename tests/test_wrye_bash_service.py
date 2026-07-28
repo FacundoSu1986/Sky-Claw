@@ -6,11 +6,12 @@ otras corridas concurrentes. Wrye Bash era el único ritual mutante que NO estab
 serializado (su lógica vivía en ``SupervisorAgent.execute_wrye_bash_pipeline`` sin
 lock); este servicio cierra ese hueco.
 
-Espeja el estilo de fixtures de ``test_pandora_service.py``. Como la salida de Wrye
-Bash es dependiente del entorno (subproceso con ``cwd`` que escribe vía la VFS de
-MO2), el snapshot se difiere (``target_files=[]``) — la protección que aplica con
-certeza es la serialización. El guard M-04 (compartido) se INYECTA desde el
-supervisor, no lo posee este servicio.
+Espeja el estilo de fixtures de ``test_pandora_service.py``. El snapshot se difiere
+(``target_files=[]``) y la protección que aplica hoy es la serialización — pero **no
+porque la salida sea "dependiente del entorno"**: U-01 parte 2 desmontó esa premisa
+(``bash.py`` corre con ``cwd=game_path``, sin heredar la USVFS, y el patch cae en el
+``Data`` físico). Snapshotearlo es alcance de U-04. El guard M-04 (compartido) se
+INYECTA desde el supervisor, no lo posee este servicio.
 """
 
 from __future__ import annotations

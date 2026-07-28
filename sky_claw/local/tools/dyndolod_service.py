@@ -38,6 +38,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODRunner,
     DynDOLODTimeoutError,
 )
+from sky_claw.local.tools.output_targets import dyndolod_staging_roots
 
 if TYPE_CHECKING:
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
@@ -234,11 +235,19 @@ class DynDOLODPipelineService:
         - ``mods/`` (padre donde crea los mods) + los mod dirs empaquetados
           (``DynDOLOD Output``/``TexGen Output``).
         - El **staging crudo** (``DynDOLOD_Output``/``TexGen_Output``) que la
-          herramienta crea/reusa bajo la raíz MO2 y el dir del exe
-          (``dyndolod_runner._find_texgen_output``/``_find_dyndolod_output``): su
-          padre debe ser escribible para crearlo, y un staging existente
-          read-only mata el run tras la generación. No se sondea el ``cwd`` del
-          agente: no es el cwd del subproceso de DynDOLOD.
+          herramienta crea/reusa bajo las raíces de
+          ``output_targets.dyndolod_staging_roots`` (raíz MO2, dir del exe y
+          ``cwd``): su padre debe ser escribible para crearlo, y un staging
+          existente read-only mata el run tras la generación.
+
+        El ``cwd`` **entró** en U-01 parte 2 (review CodeRabbit #388): este método
+        lo excluía afirmando que no era el cwd del subproceso, y eso es falso —
+        ``DynDOLODRunner._execute_process`` no le pasa ``cwd=`` al
+        ``create_subprocess_exec``, así que el hijo hereda el de este proceso. Se
+        sondeaba de menos: un staging read-only ahí mataba el run sin que el
+        preflight lo viera. Compartir el resolver con
+        ``_find_texgen_output``/``_find_dyndolod_output`` es lo que garantiza que
+        ambos miren el mismo conjunto de raíces.
 
         ``WritePermissionsChecker`` sondea solo los dirs existentes, así que
         incluir rutas aún inexistentes es seguro (se saltan) y las que aparezcan
@@ -249,13 +258,13 @@ class DynDOLODPipelineService:
         if isinstance(mods, pathlib.Path):
             candidates += [mods, mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME, mods / DynDOLODRunner.TEXGEN_MOD_NAME]
 
-        roots: list[pathlib.Path] = []
         mo2 = self._path_resolver.get_mo2_path()
-        if isinstance(mo2, pathlib.Path):
-            roots.append(mo2)
         exe = self._path_resolver.get_dyndolod_exe()
-        if isinstance(exe, pathlib.Path):
-            roots.append(exe.parent)
+        roots = dyndolod_staging_roots(
+            mo2=mo2 if isinstance(mo2, pathlib.Path) else None,
+            exe=exe if isinstance(exe, pathlib.Path) else None,
+            cwd=pathlib.Path.cwd(),
+        )
         for root in roots:
             candidates += [root, root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME, root / DynDOLODRunner.TEXGEN_OUTPUT_NAME]
 

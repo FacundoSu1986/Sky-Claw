@@ -10,9 +10,12 @@ distribuido compartido, mientras el guard M-04 (compartido, expuesto también po
 
 Espeja a :class:`~sky_claw.local.tools.pandora_service.PandoraPipelineService`:
 construcción perezosa del runner desde el ``PathResolutionService`` y **snapshot
-diferido** (``target_files=[]``) porque el archivo concreto que escribe Wrye Bash
-(``Bashed Patch, 0.esp``) sale vía la VFS de MO2 (subproceso con ``cwd``) y su ubicación
-real es dependiente del entorno. La protección que aplica con certeza ahora es la
+diferido** (``target_files=[]``). **El motivo del diferimiento NO es que el destino
+sea ambiguo** (U-01 parte 2 desmontó esa premisa: ``bash.py`` corre con
+``cwd=game_path``, sin ruta de salida en el comando y sin heredar la USVFS, así que
+``Bashed Patch, 0.esp`` cae en el ``Data`` **físico** del juego — ver
+``output_targets.bashed_patch_target``); lo que falta es el remedio de **U-04**. La
+protección que aplica hoy es la
 *serialización*: un lock **anidado** (``Bashed Patch, 0.esp`` externo + ``load-order``
 interno, mismo patrón que ``grass_cache_service``) que serializa Wrye Bash tanto contra
 otra corrida propia como contra un sort de LOOT — el Bashed Patch se arma del orden
@@ -37,6 +40,7 @@ from sky_claw.app.db.locks import (
     SnapshotTransactionLock,
 )
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
+from sky_claw.local.tools.output_targets import bashed_patch_target
 from sky_claw.local.tools.wrye_bash_runner import (
     BASHED_PATCH_NAME,
     WryeBashConfig,
@@ -119,13 +123,13 @@ class WryeBashPipelineService:
         """Construye perezosamente el preflight de Wrye Bash (T-16c, PR B, FASE 6).
 
         Wrye Bash arma el Bashed Patch leyendo TODO el load order activo y escribe
-        ``Bashed Patch, 0.esp`` (vía la VFS de MO2). Sensores relevantes — el mismo
-        set que DynDOLOD/Synthesis, porque es un ritual plugin-based: **permisos de
-        escritura** sobre el destino del Bashed Patch (``Data`` del juego y el
-        ``overwrite`` de MO2 — el destino real es dependiente del entorno, así que se
-        sondean ambos), **símbolos/junctions** en las rutas crudas, **masters
-        faltantes** y **límites full/light** del perfil MO2 activo, y **overwrite
-        sucio** (el Bashed Patch aterriza ahí; uno sucio hace el diff inatribuible).
+        ``Bashed Patch, 0.esp`` en el ``Data`` físico del juego. Sensores relevantes
+        — el mismo set que DynDOLOD/Synthesis, porque es un ritual plugin-based:
+        **permisos de escritura** sobre el destino del Bashed Patch (solo el ``Data``
+        del juego: ver ``_permission_targets`` y ``tools.output_targets``),
+        **símbolos/junctions** en las rutas crudas, **masters faltantes** y
+        **límites full/light** del perfil MO2 activo, y **overwrite sucio** (uno
+        sucio hace el diff inatribuible aunque el patch no aterrice ahí).
         NO cablea la versión de LOOT (irrelevante). Reusa las primitivas compartidas
         (T-16d). Sensores no resolubles → ``None`` (omitidos con ``omit_unconfigured``).
         Sin game/MO2 resoluble → ``None`` (sin gate, mismo criterio que sus hermanos).
@@ -189,25 +193,24 @@ class WryeBashPipelineService:
         return self._preflight
 
     def _permission_targets(self) -> list[pathlib.Path]:
-        """Rutas candidatas donde aterriza ``Bashed Patch, 0.esp``, por corrida.
+        """Directorio donde aterriza ``Bashed Patch, 0.esp``, resuelto por corrida.
 
-        El destino real es dependiente del entorno: lanzado vía la VFS de MO2 (con
-        ``cwd`` en el juego) el plugin se redirige al ``overwrite`` de MO2; en un
-        setup sin VFS iría al ``Data`` del juego. Se sondean ambos; el
-        ``WritePermissionsChecker`` se salta los inexistentes y se resuelve por
-        corrida (freshness), así que incluir rutas aún ausentes es seguro.
+        Es el ``Data`` del juego y solo el ``Data``: ``bash.py`` corre con
+        ``cwd=game_path`` y sin ruta de salida en el comando, y el subproceso se
+        spawnea directo (no hereda la USVFS), así que la redirección al
+        ``overwrite`` de MO2 —que este método sondeaba— **no puede ocurrir**. El
+        invariante y su porqué viven en ``tools.output_targets`` (U-01 parte 2).
+
+        El ``WritePermissionsChecker`` se salta los inexistentes y se resuelve por
+        corrida (freshness), así que devolver una ruta aún ausente es seguro.
         """
-        import pathlib
+        destino = self._bashed_patch_path()
+        return [destino.parent] if destino is not None else []
 
-        candidates: list[pathlib.Path] = []
+    def _bashed_patch_path(self) -> pathlib.Path | None:
+        """Ruta del Bashed Patch desde el resolver, o ``None`` si no resuelve."""
         game = self._path_resolver.get_skyrim_path() if self._path_resolver is not None else None
-        if isinstance(game, pathlib.Path):
-            candidates.append(game / "Data")
-        mo2 = self._path_resolver.get_mo2_path() if self._path_resolver is not None else None
-        if isinstance(mo2, pathlib.Path):
-            candidates.append(mo2 / "overwrite")
-        seen: set[pathlib.Path] = set()
-        return [p for p in candidates if not (p in seen or seen.add(p))]
+        return bashed_patch_target(game if isinstance(game, pathlib.Path) else None)
 
     def ensure_runner(self) -> WryeBashRunner:
         """Asegura el ``WryeBashRunner`` (construcción perezosa desde el resolver).
@@ -258,23 +261,31 @@ class WryeBashPipelineService:
     def _bashed_patch_target(self, runner: WryeBashRunner) -> str:
         """Ruta del Bashed Patch para el ``files_touched`` del manifiesto.
 
-        Vive en el ``Data`` del juego (``bash.py`` corre con ``cwd=game_path``). Si
-        el game path no es resoluble, cae al nombre canónico — el manifiesto igual
-        registra QUÉ artefacto se tocó, aunque no la ruta absoluta.
+        Delega en ``output_targets.bashed_patch_target`` — la misma fuente que usa
+        ``_permission_targets``, para que el manifiesto y el sondeo de permisos no
+        puedan opinar sobre destinos distintos. Se toma del ``config`` del runner
+        (no del resolver) porque el agent tool construye el servicio con runner y
+        sin resolver. Si el game path no es resoluble, cae al nombre canónico: el
+        manifiesto igual registra QUÉ artefacto se tocó, aunque no la ruta absoluta.
         """
         game_path = getattr(runner.config, "game_path", None)
-        if isinstance(game_path, pathlib.Path):
-            return str(game_path / "Data" / BASHED_PATCH_NAME)
-        return BASHED_PATCH_NAME
+        destino = bashed_patch_target(game_path if isinstance(game_path, pathlib.Path) else None)
+        return str(destino) if destino is not None else BASHED_PATCH_NAME
 
     async def _emit_action_manifest(self, target_file: str) -> int:
         """Construye y persiste el ActionManifest ANTES de mutar (T-26).
 
         Se llama DENTRO del lock, antes de ``generate_bashed_patch()``. Devuelve el id
         de la transacción del journal para commit/rollback posterior. Snapshot diferido
-        (``target_files=[]`` en el lock) → ``snapshots=[]``: el rollback de Wrye Bash no
-        es copy-based (la salida sale vía la VFS de MO2 con ``cwd``); el manifiesto
-        registra el artefacto tocado para auditoría, sin plan de restore.
+        (``target_files=[]`` en el lock) → ``snapshots=[]``, y el manifiesto registra
+        el artefacto tocado para auditoría, sin plan de restore.
+
+        **El motivo del diferimiento ya no es "el destino es dependiente del
+        entorno"** — esa premisa era falsa y U-01 parte 2 la desmontó: la salida cae
+        en el ``Data`` del juego, ruta única que ``_bashed_patch_target`` computa
+        acá mismo. Lo que falta es el remedio de **U-04**: pasar esa ruta como
+        ``target_files`` y forzar el rollback ante un resultado fallido. Queda
+        pendiente por alcance, no por imposibilidad de resolver el path.
 
         Raises:
             _ActionManifestError: Si begin_transaction/persist falla — Wrye Bash no
@@ -422,8 +433,10 @@ class WryeBashPipelineService:
         #    "Bashed Patch después de LOOT" (review Codex #315; mismo patrón que grass).
         # Orden de adquisición FIJO (bashed-patch → load-order), consistente con grass
         # (grass-cache → load-order): nadie toma load-order primero, así que no hay
-        # deadlock. Snapshot diferido en ambos: la salida sale vía la VFS de MO2 con cwd
-        # y Wrye Bash solo LEE el load order (LOOT es quien lo snapshotea al mutarlo).
+        # deadlock. Snapshot diferido en ambos: sobre el load order porque Wrye Bash
+        # solo LEE (LOOT es quien lo snapshotea al mutarlo), y sobre el patch porque
+        # el remedio de U-04 todavía no está — NO porque el destino sea ambiguo (es el
+        # Data del juego; ver _bashed_patch_target y tools.output_targets).
         journal_tx_id: int | None = None
         # Una vez commiteada la TX, ninguna ruta posterior debe re-marcarla rolled-back
         # (una cancelación post-commit corrompería el audit trail — review Codex #249/#318).

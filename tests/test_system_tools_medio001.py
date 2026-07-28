@@ -7,7 +7,7 @@ direct runner handlers is sanitized via sanitize_for_prompt().
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -76,7 +76,20 @@ class TestSystemToolsSanitization:
                 duration_seconds=0.5,
             )
         )
-        result = json.loads(await run_bodyslide_batch(runner))
+        transaction = MagicMock()
+        transaction.__aenter__ = AsyncMock(return_value=None)
+        transaction.__aexit__ = AsyncMock(return_value=None)
+        with patch(
+            "sky_claw.app.db.locks.SnapshotTransactionLock",
+            return_value=transaction,
+        ):
+            result = json.loads(
+                await run_bodyslide_batch(
+                    runner,
+                    lock_manager=MagicMock(),
+                    snapshot_manager=MagicMock(),
+                )
+            )
         assert result["stdout"] == sanitize_for_prompt(bad_out)
         assert "<tool_call>" not in result["stdout"]
 

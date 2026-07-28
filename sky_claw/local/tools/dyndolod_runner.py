@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
+from sky_claw.local.tools.output_targets import dyndolod_staging_roots
 
 logger = logging.getLogger(__name__)
 
@@ -274,10 +275,12 @@ class DynDOLODRunner:
         args = self._build_texgen_args(extra_args)
 
         try:
+            execution_cwd = pathlib.Path.cwd()
             stdout, stderr, return_code, duration = await self._execute_process(
                 executable=self._config.texgen_exe,
                 args=args,
                 tool_name="TexGen",
+                cwd=execution_cwd,
             )
         except DynDOLODExecutionError:
             raise
@@ -297,7 +300,7 @@ class DynDOLODRunner:
         success = return_code == 0 and not errors
 
         # Determinar path de salida
-        output_path = self._find_texgen_output()
+        output_path = self._find_texgen_output(cwd=execution_cwd)
 
         result = ToolExecutionResult(
             success=success,
@@ -352,10 +355,12 @@ class DynDOLODRunner:
         args = self._build_dyndolod_args(preset, extra_args)
 
         try:
+            execution_cwd = pathlib.Path.cwd()
             stdout, stderr, return_code, duration = await self._execute_process(
                 executable=self._config.dyndolod_exe,
                 args=args,
                 tool_name="DynDOLOD",
+                cwd=execution_cwd,
             )
         except DynDOLODExecutionError:
             raise
@@ -375,7 +380,7 @@ class DynDOLODRunner:
         success = return_code == 0 and not errors
 
         # Determinar path de salida
-        output_path = self._find_dyndolod_output()
+        output_path = self._find_dyndolod_output(cwd=execution_cwd)
 
         result = ToolExecutionResult(
             success=success,
@@ -410,6 +415,7 @@ class DynDOLODRunner:
         args: list[str],
         tool_name: str,
         timeout: int | None = None,
+        cwd: pathlib.Path | None = None,
     ) -> tuple[str, str, int, float]:
         """
         Ejecuta un proceso con manejo de heartbeat para procesos largos.
@@ -426,6 +432,7 @@ class DynDOLODRunner:
             args: Argumentos del comando.
             tool_name: Nombre de la herramienta para logs.
             timeout: Timeout en segundos (usa config default si es None).
+            cwd: Directorio de trabajo explícito del subproceso y raíz del staging.
 
         Returns:
             tuple[str, str, int, float]: (stdout, stderr, return_code, duration_seconds)
@@ -439,7 +446,8 @@ class DynDOLODRunner:
         heartbeat_interval = self._config.heartbeat_interval
 
         # Windows: CREATE_NO_WINDOW to avoid console popups.
-        kwargs: dict[str, Any] = {}
+        process_cwd = cwd if cwd is not None else pathlib.Path.cwd()
+        kwargs: dict[str, Any] = {"cwd": process_cwd}
         if sys.platform == "win32":
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
 
@@ -935,19 +943,36 @@ class DynDOLODRunner:
             logger.error("Error generando meta.ini: %s", e)
             raise
 
-    def _find_texgen_output(self) -> pathlib.Path | None:
+    def _staging_search_paths(
+        self,
+        staging_name: str,
+        *,
+        cwd: pathlib.Path | None = None,
+    ) -> list[pathlib.Path]:
+        """Rutas donde puede vivir el staging crudo *staging_name*, en orden.
+
+        Las raíces salen de ``output_targets.dyndolod_staging_roots`` — la misma
+        fuente que usa ``dyndolod_service._permission_targets``. El ``cwd`` se
+        fija explícitamente al subproceso y se pasa también a esta búsqueda (U-01
+        parte 2, review CodeRabbit #388). Compartir la fuente y el valor concreto
+        impide que el sondeo de permisos y la búsqueda de salida miren lugares
+        distintos.
+        """
+        roots = dyndolod_staging_roots(
+            mo2=self._config.mo2_path,
+            exe=self._config.dyndolod_exe,
+            cwd=cwd if cwd is not None else pathlib.Path.cwd(),
+        )
+        return [root / staging_name for root in roots]
+
+    def _find_texgen_output(self, *, cwd: pathlib.Path | None = None) -> pathlib.Path | None:
         """
         Busca el directorio de salida de TexGen.
 
         Returns:
             Path al directorio de salida o None si no se encuentra.
         """
-        # Ubicaciones comunes de TexGen_Output
-        search_paths = [
-            self._config.mo2_path / self.TEXGEN_OUTPUT_NAME,
-            self._config.dyndolod_exe.parent / self.TEXGEN_OUTPUT_NAME,
-            pathlib.Path.cwd() / self.TEXGEN_OUTPUT_NAME,
-        ]
+        search_paths = self._staging_search_paths(self.TEXGEN_OUTPUT_NAME, cwd=cwd)
 
         for path in search_paths:
             if path.exists() and any(path.iterdir()):
@@ -957,19 +982,14 @@ class DynDOLODRunner:
         logger.warning("No se encontró directorio de salida de TexGen")
         return None
 
-    def _find_dyndolod_output(self) -> pathlib.Path | None:
+    def _find_dyndolod_output(self, *, cwd: pathlib.Path | None = None) -> pathlib.Path | None:
         """
         Busca el directorio de salida de DynDOLOD.
 
         Returns:
             Path al directorio de salida o None si no se encuentra.
         """
-        # Ubicaciones comunes de DynDOLOD_Output
-        search_paths = [
-            self._config.mo2_path / self.DYNDOLLOD_OUTPUT_NAME,
-            self._config.dyndolod_exe.parent / self.DYNDOLLOD_OUTPUT_NAME,
-            pathlib.Path.cwd() / self.DYNDOLLOD_OUTPUT_NAME,
-        ]
+        search_paths = self._staging_search_paths(self.DYNDOLLOD_OUTPUT_NAME, cwd=cwd)
 
         for path in search_paths:
             if path.exists() and any(path.iterdir()):
