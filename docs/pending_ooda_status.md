@@ -863,10 +863,10 @@ documento y se marcan cerrados acá a medida que se implementen:
   usa `kill_and_reap`/tree-kill en vez de `proc.kill()` pelado en timeout).
 - **Medio:** **U-06 cerrado PARCIALMENTE** (#375 — solo DynDOLOD; Wrye Bash y
   BodySlide siguen abiertos, ver addendum abajo), **U-07 cerrado** (#355
-  — Job Object kill-on-close en DynDOLOD, base de U-02), **U-08 cerrado
-  PARCIALMENTE** (#378 — `clone()`/`_materialize` autolimpian el
-  parcial ante fallo sync y cancelación; el reconciliador de arranque sigue
-  abierto, ver addendum abajo), **U-09 cerrado** (#376 —
+  — Job Object kill-on-close en DynDOLOD, base de U-02), **U-08 cerrado**
+  (#378 la mitad 1 — `clone()`/`_materialize` autolimpian el parcial ante fallo
+  sync y cancelación; 2026-07-28 la mitad 2 — reconciliador de arranque de
+  backups huérfanos, ver addendum abajo), **U-09 cerrado** (#376 —
   ver addendum abajo), **U-10 cerrado** (#357 —
   `*TimeoutError` dedicadas en Wrye Bash/BodySlide/Pandora).
 - **Bajo:** **U-11 cerrado** (#359 — `run_capture` ya no enmascara
@@ -984,7 +984,7 @@ cobertura directa del runner (incluidas las guardas previas como regresión).
   informativo) y tocar tests que hoy afirman `success=True` sin crear el plugin
   en disco. Follow-up en su propio PR.
 
-### Addendum (U-08) — cierre PARCIAL: `clone()` self-cleaning, reconciliador de arranque queda abierto
+### Addendum (U-08) — CERRADO: `clone()` self-cleaning (#378) + reconciliador de arranque (2026-07-28)
 
 U-08 lista dos mecanismos con la misma raíz (una cancelación/muerte durante
 `clone()`/`_materialize` deja un clon parcial en `.skyclaw_sandbox/`): (1)
@@ -1016,16 +1016,57 @@ ventana en la que el hilo de `_materialize` sigue vivo tras la cancelación,
 para el segundo — mismo patrón que `TestCancelacionDurantePromote` en
 `test_sandbox_promotion.py`).
 
-**Sigue ABIERTO — el reconciliador de arranque (mitad 2), y por qué no es un
-bloqueo técnico como U-01.** Barrer `*.rollback-*`/`.skyclaw_sandbox/*` que
-sobrevivieron a una muerte DURA del proceso (no a una cancelación cooperativa,
-que la mitad 1 ya cubre) necesita un hook de arranque. El único wiring
-existente de ese tipo (`reconcile_orphan_precache_flag`, U-03) se llama desde
-`app_context.py` — archivo que la coordinación vigente con el otro agente
-(trabajando lifecycle/GUI/shutdown, P0-1..P0-3/P1-1/P1-4/P1-7/watchdog) deja
-fuera de mi alcance. No es un diseño pendiente: es evitar la clase de colisión
-que el protocolo de coordinación existe para prevenir. Follow-up cuando se
-coordine el wiring.
+**Cerrado el 2026-07-28 — mitad (2), el reconciliador de arranque.** El wiring
+que este addendum dejaba pendiente por coordinación ya está hecho:
+`local/tools/rollback_reconciler.py` (módulo nuevo, nace estricto en mypy) se
+llama desde `app_context.py` junto al hook de U-03 y con su mismo guard — se
+adquiere el lock del ritual que produce el residuo, y si otra instancia lo tiene,
+no se toca nada.
+
+**Barrer no es borrar, y esa es la parte de diseño.** U-08 pedía *"complete/revierta
+según marcador durable; como piso, GC de backups huérfanos"*. El piso de GC ciego
+**no se implementó, a propósito**: un `<dir>.rollback-<nonce>` de DynDOLOD es la
+única copia de la generación de LODs anterior (varios GB, horas de cómputo), y un
+`rollback-*` dentro de un clon es la única ruta de recuperación manual de un
+promote a medio aplicar — el mensaje de `SandboxRollbackError` apunta ahí. Se tomó
+la primera opción, leyendo el marcador durable que ya está en disco:
+
+| Familia | Marcador durable | Acción |
+|---|---|---|
+| `<dir>.rollback-<nonce>` | el target **no** existe | **restaurar** (lo que el `__aexit__` interrumpido habría hecho) |
+| `<dir>.rollback-<nonce>` | el target **sí** existe | **preservar + WARNING** (hay dos estados y el FS no dice cuál vale) |
+| `.skyclaw_sandbox/<clon>` | contiene un `rollback-*` | **preservar + WARNING** (promote a medio aplicar) |
+| `.skyclaw_sandbox/<clon>` | sin `rollback-*`, sin actividad > 24 h | **descartar** (el GC de disco de U-08) |
+
+**Se barre por PRODUCTOR, no por familia única.** La primera versión asumía que el
+move-aside tenía *una* raíz (`<mo2>/mods`) y *un* lock (`dyndolod-pipeline`); las dos
+son propiedades de DynDOLOD, no del mecanismo. Pandora (U-04, #399) mueve aparte sus
+`Pandora_Output`, que cuelgan del juego y del dir de su ejecutable y se serializan con
+`behavior-graphs`. Con el modelo viejo eso daba **dos** defectos: ceguera (ninguna de
+esas raíces cuelga de `mods/`, así que el backup quedaba huérfano para siempre) y algo
+peor que no barrer (mirar el lock de DynDOLOD para decidir si el residuo de Pandora es
+huérfano restauraría un backup con la corrida de Pandora todavía en vuelo). Cada
+`ProductorDeMoveAside` lleva nombre, lock y raíces juntos, y el guard es por productor.
+Sus raíces salen de `output_targets.pandora_rollback_dirs` —la MISMA función que usa el
+rollback—, no de una lista escrita en el reconciliador: es el hermano de #388, donde el
+sondeo de permisos y la búsqueda de salida divergieron por tener dos fuentes.
+
+La ventana de gracia cubre el hueco que ningún lock tapa: el clon **sobrevive al
+ritual a propósito**, esperando la aprobación HITL, y ahí el lock del ritual ya se
+liberó. Sin la gracia, arrancar una segunda instancia le borraba el clon a la
+primera. El GC además solo toca dirs con la forma que produce `clone()`
+(`<perfil>-<12 hex>`): el `.skyclaw_sandbox` puede tener cosas del operador.
+
+**Ancla:** `tests/test_rollback_reconciler.py` enumera los productores de residuo,
+los usuarios de `DirectoryRollback` (uno nuevo rompe el test hasta que declare su
+lock y sus raíces, que es la pregunta que importa) y
+—sobre el **AST**, no por grep— que ambos reconciliadores de arranque estén
+*invocados* en `app_context`, que es el modo de falla de #240/#252/#362: verde en
+la suite, no-op en producción.
+
+**Fuera de alcance, declarado:** `_promote_sync` sigue corriendo entero en un
+`to_thread`; el reconciliador es la red que atrapa su residuo, no un cambio a su
+atomicidad.
 
 ### Addendum (U-09) — el estado de éxito-parcial del ritual de grass
 
