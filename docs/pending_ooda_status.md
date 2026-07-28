@@ -1038,6 +1038,19 @@ la primera opción, leyendo el marcador durable que ya está en disco:
 | `.skyclaw_sandbox/<clon>` | contiene un `rollback-*` | **preservar + WARNING** (promote a medio aplicar) |
 | `.skyclaw_sandbox/<clon>` | sin `rollback-*`, sin actividad > 24 h | **descartar** (el GC de disco de U-08) |
 
+**Se barre por PRODUCTOR, no por familia única.** La primera versión asumía que el
+move-aside tenía *una* raíz (`<mo2>/mods`) y *un* lock (`dyndolod-pipeline`); las dos
+son propiedades de DynDOLOD, no del mecanismo. Pandora (U-04, #399) mueve aparte sus
+`Pandora_Output`, que cuelgan del juego y del dir de su ejecutable y se serializan con
+`behavior-graphs`. Con el modelo viejo eso daba **dos** defectos: ceguera (ninguna de
+esas raíces cuelga de `mods/`, así que el backup quedaba huérfano para siempre) y algo
+peor que no barrer (mirar el lock de DynDOLOD para decidir si el residuo de Pandora es
+huérfano restauraría un backup con la corrida de Pandora todavía en vuelo). Cada
+`ProductorDeMoveAside` lleva nombre, lock y raíces juntos, y el guard es por productor.
+Sus raíces salen de `output_targets.pandora_rollback_dirs` —la MISMA función que usa el
+rollback—, no de una lista escrita en el reconciliador: es el hermano de #388, donde el
+sondeo de permisos y la búsqueda de salida divergieron por tener dos fuentes.
+
 La ventana de gracia cubre el hueco que ningún lock tapa: el clon **sobrevive al
 ritual a propósito**, esperando la aprobación HITL, y ahí el lock del ritual ya se
 liberó. Sin la gracia, arrancar una segunda instancia le borraba el clon a la
@@ -1045,7 +1058,8 @@ primera. El GC además solo toca dirs con la forma que produce `clone()`
 (`<perfil>-<12 hex>`): el `.skyclaw_sandbox` puede tener cosas del operador.
 
 **Ancla:** `tests/test_rollback_reconciler.py` enumera los productores de residuo,
-los usuarios de `DirectoryRollback` (uno nuevo con otra **raíz** rompe el test) y
+los usuarios de `DirectoryRollback` (uno nuevo rompe el test hasta que declare su
+lock y sus raíces, que es la pregunta que importa) y
 —sobre el **AST**, no por grep— que ambos reconciliadores de arranque estén
 *invocados* en `app_context`, que es el modo de falla de #240/#252/#362: verde en
 la suite, no-op en producción.

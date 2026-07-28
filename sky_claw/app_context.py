@@ -1031,8 +1031,15 @@ class AppContext:
                     reconcile_orphan_rollback_backups(
                         # Las raíces y el lock de CADA ritual salen del constructor, no
                         # de acá: barrer el residuo de un ritual mirando el lock de otro
-                        # restauraría un backup con la corrida todavía en vuelo.
-                        productores=construir_productores_de_move_aside(mo2_root=mo2_root),
+                        # restauraría un backup con la corrida todavía en vuelo. Pandora
+                        # además NO deja su residuo bajo `<mo2>/mods` sino junto al juego
+                        # y a su ejecutable, así que sin estas dos rutas su backup queda
+                        # huérfano para siempre.
+                        productores=construir_productores_de_move_aside(
+                            mo2_root=mo2_root,
+                            game=configured_game,
+                            pandora_exe=(pathlib.Path(local_cfg.pandora_exe) if local_cfg.pandora_exe else None),
+                        ),
                         sandbox_root=mo2_root / ".skyclaw_sandbox",
                         lock_manager=lock_manager,
                     )

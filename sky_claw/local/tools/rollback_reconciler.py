@@ -43,6 +43,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sky_claw.app.db.locks import LockAcquisitionError
+from sky_claw.local.tools.output_targets import pandora_rollback_dirs
+from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -87,7 +89,7 @@ LOCK_DEL_SANDBOX = "Synthesis.esp"
 #: (:func:`construir_productores_de_move_aside`). El ancla de
 #: ``tests/test_rollback_reconciler.py`` exige que todo módulo que use
 #: ``DirectoryRollback`` esté mapeado a uno de estos.
-PRODUCTORES_CABLEADOS: frozenset[str] = frozenset({"dyndolod"})
+PRODUCTORES_CABLEADOS: frozenset[str] = frozenset({"dyndolod", "pandora"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +197,8 @@ async def reconcile_orphan_rollback_backups(
 def construir_productores_de_move_aside(
     *,
     mo2_root: pathlib.Path | None,
+    game: pathlib.Path | None = None,
+    pandora_exe: pathlib.Path | None = None,
 ) -> list[ProductorDeMoveAside]:
     """Los productores reales, con sus raíces resueltas — fuente única del cableado.
 
@@ -216,6 +220,22 @@ def construir_productores_de_move_aside(
                 nombre="dyndolod",
                 lock_resource_id="dyndolod-pipeline",
                 raices=(mo2_root / "mods",),
+            )
+        )
+
+    # Pandora mueve aparte sus `Pandora_Output`, que NO cuelgan de `<mo2>/mods`: el
+    # `pandora_service` los toma de `output_targets.pandora_rollback_dirs`, o sea el
+    # juego (su `cwd`) y el dir de su ejecutable. Se derivan de esa MISMA función y
+    # no de una lista escrita acá: si el rollback gana o pierde una raíz, el barrido
+    # la sigue sin que nadie tenga que acordarse — es el hermano de #388, donde el
+    # sondeo de permisos y la búsqueda de salida divergieron por tener dos fuentes.
+    raices_pandora = tuple(dict.fromkeys(d.parent for d in pandora_rollback_dirs(game=game, exe=pandora_exe)))
+    if raices_pandora:
+        productores.append(
+            ProductorDeMoveAside(
+                nombre="pandora",
+                lock_resource_id=BEHAVIOR_GRAPHS_RESOURCE_ID,
+                raices=raices_pandora,
             )
         )
     return productores

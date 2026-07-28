@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.local.tools.output_targets import pandora_rollback_dirs
+from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
 from sky_claw.local.tools.rollback_reconciler import (
     PRODUCTORES_CABLEADOS,
     VENTANA_DE_GRACIA_SEGUNDOS,
@@ -56,6 +58,7 @@ PRODUCTORES_DEL_NOMBRE: dict[str, str] = {
 #: declare su ``ProductorDeMoveAside``.
 USUARIOS_DEL_MOVE_ASIDE: dict[str, str] = {
     "sky_claw/local/tools/dyndolod_service.py": "dyndolod",
+    "sky_claw/local/tools/pandora_service.py": "pandora",
 }
 
 #: Excluido con motivo: consume el prefijo, no lo produce (es este reconciliador).
@@ -306,9 +309,30 @@ def test_el_constructor_resuelve_las_raices_reales_de_cada_productor(tmp_path: p
     assert dyndolod.lock_resource_id == "dyndolod-pipeline"
 
 
-def test_el_constructor_sin_mo2_no_inventa_rutas() -> None:
-    """Sin MO2 resoluble no se barre nada, en vez de sondear una ruta inventada."""
-    assert construir_productores_de_move_aside(mo2_root=None) == []
+def test_el_constructor_barre_donde_pandora_realmente_mueve_aparte(tmp_path: pathlib.Path) -> None:
+    """Las raíces de Pandora salen de ``pandora_rollback_dirs`` —la MISMA función que
+    usa el rollback— y no de una lista escrita en el reconciliador.
+
+    Es el hermano de #388: allá el sondeo de permisos y la búsqueda de salida
+    divergieron por tener dos fuentes. Acá, si el rollback gana o pierde una raíz,
+    el barrido la sigue sin que nadie tenga que acordarse.
+    """
+    game = tmp_path / "game"
+    exe = tmp_path / "pandora" / "Pandora Behaviour Engine+.exe"
+
+    productores = construir_productores_de_move_aside(mo2_root=None, game=game, pandora_exe=exe)
+
+    pandora = next(p for p in productores if p.nombre == "pandora")
+    assert pandora.lock_resource_id == BEHAVIOR_GRAPHS_RESOURCE_ID
+    # Los PADRES de los dirs que el rollback mueve aparte: ahí aterriza el residuo.
+    assert set(pandora.raices) == {d.parent for d in pandora_rollback_dirs(game=game, exe=exe)}
+    assert set(pandora.raices) == {game, exe.parent}
+
+
+def test_el_constructor_sin_rutas_resolubles_no_inventa_nada() -> None:
+    """Sin MO2 ni juego ni exe resolubles no se barre nada, en vez de sondear una
+    ruta inventada."""
+    assert construir_productores_de_move_aside(mo2_root=None, game=None, pandora_exe=None) == []
 
 
 async def test_no_toca_nada_si_el_ritual_de_dyndolod_esta_en_curso(

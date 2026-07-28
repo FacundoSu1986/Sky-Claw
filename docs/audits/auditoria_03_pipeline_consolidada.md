@@ -395,7 +395,8 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > El GC además solo toca dirs con la forma que produce `clone()` (`<perfil>-<12 hex>`).
   >
   > Anclado en `tests/test_rollback_reconciler.py`, que enumera los productores de residuo,
-  > los usuarios de `DirectoryRollback` (un usuario nuevo con otra **raíz** rompe el test) y
+  > los usuarios de `DirectoryRollback` (uno nuevo rompe el test hasta que declare su lock
+  > y sus raíces, que es la pregunta que importa) y
   > —sobre el AST, no por grep— que ambos reconciliadores de arranque estén **invocados** en
   > `app_context`. **Fuera de alcance, declarado:** `_promote_sync` sigue corriendo entero en
   > un `to_thread`; el reconciliador es la red que atrapa su residuo, no un cambio a su
