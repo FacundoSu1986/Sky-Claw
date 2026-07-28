@@ -528,6 +528,11 @@ def test_consola_con_encoding_limitado_no_pierde_el_registro(tmp_path) -> None:
     salida = crudo.getvalue().decode("cp1252", errors="replace")
     assert "paso-A" in salida
     assert "paso-B" in salida
+    # Ancla el contrato exacto (backslashreplace conserva el código del
+    # carácter escapado, p. ej. "→"), no solo "algo sobrevivió":
+    # errors="replace" (que lo pierde, mostrando "?") pasaría las dos
+    # aserciones de arriba igual.
+    assert "\\u2192" in salida
 
 
 def test_stream_con_reconfigure_incompatible_no_rompe_setup_logging(tmp_path) -> None:
