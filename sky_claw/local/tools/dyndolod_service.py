@@ -478,16 +478,17 @@ class DynDOLODPipelineService:
         # DirectoryRollback se restauran ANTES de soltar el lock.
         try:
             async with contextlib.AsyncExitStack() as tx_stack:
-                await tx_stack.enter_async_context(
-                    SnapshotTransactionLock(
-                        lock_manager=self._lock_manager,
-                        snapshot_manager=self._snapshot_manager,
-                        resource_id="dyndolod-pipeline",
-                        agent_id="dyndolod-pipeline-service",
-                        target_files=[],
-                        metadata={"preset": preset, "run_texgen": run_texgen},
-                    )
+                # Ligado a variable para consultar su ``lease_lost`` desde el veto de
+                # los DirectoryRollback de más abajo (review Codex #399).
+                tx_lock = SnapshotTransactionLock(
+                    lock_manager=self._lock_manager,
+                    snapshot_manager=self._snapshot_manager,
+                    resource_id="dyndolod-pipeline",
+                    agent_id="dyndolod-pipeline-service",
+                    target_files=[],
+                    metadata={"preset": preset, "run_texgen": run_texgen},
                 )
+                await tx_stack.enter_async_context(tx_lock)
                 # Comenzar transacción en journal DENTRO del lock.
                 tx_id = await self._journal.begin_transaction(
                     description=f"DynDOLOD pipeline (preset={preset}, texgen={run_texgen})",
@@ -507,8 +508,13 @@ class DynDOLODPipelineService:
                 )
 
                 # Move-aside de los outputs regenerados (primera mutación de FS).
+                # El veto de lease alinea este context con el lock que lo envuelve:
+                # el lock saltea su rollback tras perder la lease para no pisar a un
+                # dueño concurrente, pero los DirectoryRollback salen ANTES que él y
+                # sin el veto restaurarían igual, borrando la salida del nuevo dueño
+                # (review Codex #399 sobre el hermano Pandora — mismo agujero acá).
                 for output_dir in rollback_dirs:
-                    dr = DirectoryRollback(output_dir)
+                    dr = DirectoryRollback(output_dir, should_rollback=lambda: not tx_lock.lease_lost)
                     await tx_stack.enter_async_context(dr)
                     dir_rollbacks.append(dr)
 

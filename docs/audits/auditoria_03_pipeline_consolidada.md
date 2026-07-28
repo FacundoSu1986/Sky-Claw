@@ -179,7 +179,8 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > comentarios que justificaban `target_files=[]`/`snapshots=[]` con la premisa falsa
   > (`wrye_bash_service` ×2, `system_tools.run_bodyslide_batch`) ya dicen que el pendiente
   > es de alcance, no de imposibilidad.
-  > **Estado (Pandora): CERRADO.** Cierra la mitad que el PR de Wrye Bash dejó abierta a
+  > **Estado (Pandora): CERRADO PARA EL MODO `Pandora_Output`; el modo `Data` queda
+  > abierto y acotado.** Cierra la mitad que el PR de Wrye Bash dejó abierta a
   > propósito. La causa raíz es la misma —los dos mecanismos de rollback restauran sólo en
   > la rama de excepción, y un `PandoraResult(success=False)` sale limpio del `async
   > with`—, así que el puente es el mismo: `_RunFallidoError` DENTRO del context. Lo que
@@ -205,6 +206,18 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > **Ventaja sobre el hermano de Wrye Bash:** el move-aside no tiene la limitación del
   > primer run. Sin salida previa, "volver al estado anterior" es borrar el parcial, y eso
   > no necesita backup — `test_primer_run_fallido_borra_el_parcial` lo fija.
+  > **Lo que NO cubre, dicho sin eufemismo (review Codex #399).** `pandora_output_candidates`
+  > enumera `game/Data` como destino posible: cuando la versión instalada de Pandora escribe
+  > los `.hkx` directo ahí, un run fallido los deja en disco. Ese modo **no** queda cubierto.
+  > No es un recorte por comodidad ni algo que se pueda cerrar con el mismo mecanismo: el
+  > move-aside sobre `Data` es inadmisible (arrastraría todo el setup de mods), y el remedio
+  > que el review propone —"rollback de grano fino sobre los subárboles propios de Pandora"—
+  > exige **enumerar qué subárboles de `Data` son de Pandora**, dato que el repo hoy no
+  > tiene en ninguna parte. Inventar esa lista sería peor que la limitación: un rollback que
+  > cree cubrir y borre archivos de otros mods. Queda como follow-up con prerequisito
+  > explícito (obtener el manifiesto de salida real de Pandora, p. ej. de su propio log) y
+  > anclado en `test_el_rollback_no_toca_el_data_del_juego_ni_el_dir_del_exe`, que fija el
+  > límite en vez de dejarlo implícito.
 
 ### U-05 — VRAMr: timeout orfana nietos (usa `proc.kill()` pelado, no el tree-kill) · `[Z]` · Subprocesos/Zombies
 

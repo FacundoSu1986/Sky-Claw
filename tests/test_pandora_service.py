@@ -950,3 +950,76 @@ async def test_fallo_con_journal_cierra_la_tx_tras_un_rollback_honesto(
     mock_journal.commit_transaction.assert_not_called()
     for salida in salidas:
         assert _leer_output(salida) == "bueno"
+
+
+@pytest.mark.asyncio
+async def test_exito_no_borra_el_candidato_que_pandora_no_regenero(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """El candidato INACTIVO no puede desaparecer tras un run exitoso (review Codex #399).
+
+    Las dos raíces de ``Pandora_Output`` son candidatas porque cuál usa Pandora
+    depende de su versión: en una instalación real se escribe **una sola**. El
+    move-aside entra en las dos, así que si el descarte del backup no mira si la
+    herramienta regeneró el dir, el candidato que Pandora no tocó pierde su único
+    ejemplar — borrado permanente, en el camino FELIZ, y sin excepción que lo
+    delate.
+
+    El test anterior (``test_exito_conserva_la_salida_nueva``) escribía en ambos y
+    tapaba exactamente esto.
+    """
+    game, exe, salidas = _rutas_de_salida(tmp_path)
+    for salida in salidas:
+        _escribir_output(salida, "viejo")
+    activa, inactiva = exe.parent / "Pandora_Output", game / "Pandora_Output"
+
+    async def _corre_ok() -> PandoraResult:
+        _escribir_output(activa, "nuevo")  # esta versión de Pandora usa UNA sola
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok)
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is True
+    assert _leer_output(activa) == "nuevo"
+    assert _leer_output(inactiva) == "viejo", "se borró el candidato que Pandora no regeneró"
+
+
+@pytest.mark.asyncio
+async def test_lease_perdida_tras_run_exitoso_cierra_la_tx_sin_falso_positivo(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """Un teardown fallido tras un run exitoso NO es un rollback fallido.
+
+    ``rollback_completed`` también es False en la salida limpia —nunca hubo restore
+    que hacer—, así que un ``LockLeaseLostError`` desde el ``__aexit__`` del lock
+    dejaba la TX PENDING como si el restore hubiera reventado (review CodeRabbit
+    #399). Es el mismo error de razonamiento del P1 de #397, cometido esta vez en
+    el párrafo que explicaba por qué no podía pasar.
+    """
+    game, exe, salidas = _rutas_de_salida(tmp_path)
+    for salida in salidas:
+        _escribir_output(salida, "viejo")
+
+    async def _corre_ok() -> PandoraResult:
+        for salida in salidas:
+            _escribir_output(salida, "nuevo")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok, journal=mock_journal
+    )
+
+    with patch("sky_claw.local.tools.pandora_service.SnapshotTransactionLock", _LeaseLostLock):
+        result = await svc.generate_animations()
+
+    assert result["success"] is False  # la exclusividad no estuvo garantizada
+    # La TX se cierra: no hay salida parcial escondida que el recovery deba ver.
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.commit_transaction.assert_not_called()
+    for salida in salidas:
+        assert _leer_output(salida) == "nuevo", "no había restore que hacer; nada debió revertirse"

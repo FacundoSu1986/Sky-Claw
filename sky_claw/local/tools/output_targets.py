@@ -134,8 +134,23 @@ def pandora_rollback_dirs(
     vez de contra una lista escrita a mano: agregar una raíz de salida obliga a
     decidir si es revertible. Sondear dónde *podría* escribir una herramienta es
     barato y seguro; revertir ahí, no.
+
+    **Se selecciona por identidad, no por nombre** (review CodeRabbit #399): un
+    filtro ``c.name == PANDORA_OUTPUT_DIR`` sobre las candidatas parece
+    equivalente y no lo es — si el usuario instala Pandora en una carpeta llamada
+    literalmente ``Pandora_Output``, ``exe.parent`` satisface el nombre y entra
+    como revertible, o sea justo el caso que el párrafo de arriba declara
+    inseguro. Construir las rutas seguras y quedarse con las que la función de
+    candidatas efectivamente emite mantiene las dos propiedades —subconjunto y
+    exclusión— sin depender de que ningún directorio del usuario se llame igual.
     """
-    return [c for c in pandora_output_candidates(game=game, exe=exe) if c.name == PANDORA_OUTPUT_DIR]
+    seguras: list[pathlib.Path] = []
+    if game is not None:
+        seguras.append(game / PANDORA_OUTPUT_DIR)
+    if exe is not None:
+        seguras.append(exe.parent / PANDORA_OUTPUT_DIR)
+    candidatas = set(pandora_output_candidates(game=game, exe=exe))
+    return [ruta for ruta in _sin_duplicados(seguras) if ruta in candidatas]
 
 
 def synthesis_output_target(

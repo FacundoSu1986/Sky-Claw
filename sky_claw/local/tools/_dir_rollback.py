@@ -11,6 +11,7 @@ copiar datos.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import pathlib
 import shutil
@@ -47,6 +48,47 @@ async def _fs_op_with_retry(op: Callable[..., Any], *args: Any) -> Any:
     raise last_exc
 
 
+#: Referencias fuertes a las tasks en vuelo tras una cancelación: el loop solo
+#: guarda referencias DÉBILES, así que sin esto el GC podría recolectar la task
+#: del rename —o la de su deshacer— antes de que termine (mismo motivo que
+#: ``sandbox_run._background_tasks``).
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _track(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+    """Ancla ``task`` contra GC hasta que termine (ver ``_background_tasks``)."""
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+async def _deshacer_rename_cancelado(
+    rename_task: asyncio.Task[Any],
+    backup: pathlib.Path,
+    target: pathlib.Path,
+) -> None:
+    """Observa el desenlace REAL de un move-aside cancelado y lo revierte.
+
+    Si el rename terminó en excepción no movió nada. Si terminó bien, el dir
+    previo quedó bajo el nombre de backup **sin dueño**: el context nunca se
+    registró en el ``AsyncExitStack`` del caller, así que no habrá ``__aexit__``
+    que lo restaure. Devolverlo a su lugar acá es lo único que evita que una
+    cancelación bien temporizada haga desaparecer la salida previa sin que
+    ninguna herramienta llegara a correr.
+    """
+    try:
+        await asyncio.shield(rename_task)
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001 — sólo interesa SI movió, no por qué falló
+        # Cualquier desenlace que no sea "terminó bien" significa que el rename no
+        # dejó el dir bajo el nombre de backup: no hay nada que deshacer. Se listan
+        # las dos porque CancelledError deriva de BaseException, no de Exception.
+        return
+    with contextlib.suppress(OSError):
+        if await asyncio.to_thread(backup.exists) and not await asyncio.to_thread(target.exists):
+            await _fs_op_with_retry(backup.rename, target)
+            logger.warning("Move-aside cancelado: '%s' devuelto a su lugar desde '%s'", target, backup)
+
+
 class DirectoryRollback:
     """Move-aside rollback para un directorio regenerado por completo.
 
@@ -63,9 +105,24 @@ class DirectoryRollback:
     no enmascara la excepción original del body.
     """
 
-    def __init__(self, target_dir: pathlib.Path, *, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        target_dir: pathlib.Path,
+        *,
+        enabled: bool = True,
+        should_rollback: Callable[[], bool] | None = None,
+    ) -> None:
         self._target = target_dir
         self._enabled = enabled
+        #: Veto consultado JUSTO ANTES de restaurar (review Codex #399). Existe
+        #: porque el move-aside vive anidado DENTRO de un
+        #: ``SnapshotTransactionLock`` y sale ANTES que él: si el heartbeat perdió
+        #: el lease durante el run, el lock saltea su propio rollback —"never
+        #: clobber a concurrent owner's mutations", ``locks.py``— pero este context
+        #: ya restauró, borrando la salida del nuevo dueño y devolviendo un backup
+        #: viejo. El caller cablea ``lambda: not lock.lease_lost`` para que las dos
+        #: capas apliquen el MISMO criterio.
+        self._should_rollback = should_rollback
         self._backup: pathlib.Path | None = None
         #: M-7: refleja si el rollback en el path de excepción se COMPLETÓ. El
         #: restore es best-effort (traga OSError sin re-raise), así que el caller no
@@ -74,6 +131,12 @@ class DirectoryRollback:
         #: output parcial en disco. Espeja SnapshotTransactionLock.rollback_completed.
         self.rollback_completed: bool = False
 
+    @property
+    def target(self) -> pathlib.Path:
+        """Directorio protegido — para que el caller lo nombre en sus logs sin
+        tener que alcanzar el atributo privado."""
+        return self._target
+
     async def __aenter__(self) -> DirectoryRollback:
         if not self._enabled:
             return self
@@ -81,8 +144,21 @@ class DirectoryRollback:
             # Primer run: no hay estado previo que preservar.
             return self
         backup = self._target.with_name(f"{self._target.name}.rollback-{time.time_ns()}")
+        # El rename corre en un hilo (``asyncio.to_thread``): cancelar la corrutina
+        # que lo espera NO lo interrumpe. Sin shield, una cancelación acá dejaba el
+        # rename completándose en background mientras el caller nunca llegaba a
+        # registrar este context — el dir previo quedaba varado bajo un nombre
+        # ``.rollback-*`` y ningún ``__aexit__`` podía restaurarlo (review Codex
+        # #399). Se espera el desenlace REAL antes de decidir, mismo patrón F2 que
+        # ``sandbox_run.run_ritual_in_sandbox`` usa para ``clone()``.
+        rename_task = _track(asyncio.ensure_future(_fs_op_with_retry(self._target.rename, backup)))
         try:
-            await _fs_op_with_retry(self._target.rename, backup)
+            await asyncio.shield(rename_task)
+        except asyncio.CancelledError:
+            deshacer = _track(asyncio.ensure_future(_deshacer_rename_cancelado(rename_task, backup, self._target)))
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(deshacer)
+            raise
         except OSError as exc:
             # Fail-closed: sin move-aside no podemos garantizar el rollback que el
             # caller pidió; abortar antes de correr la operación destructiva.
@@ -101,6 +177,20 @@ class DirectoryRollback:
             return
         try:
             if exc_type is not None:
+                if self._should_rollback is not None and not self._should_rollback():
+                    # Perdimos la exclusividad: otro dueño pudo haber mutado ya, así
+                    # que restaurar pisaría SU salida con nuestro backup viejo. El
+                    # backup NO se descarta —queda en disco bajo su nombre
+                    # ``.rollback-*``— porque es el único ejemplar del estado previo
+                    # y el recovery manual lo necesita. ``rollback_completed`` queda
+                    # False a propósito: el caller debe dejar la TX PENDIENTE.
+                    logger.critical(
+                        "Rollback de '%s' OMITIDO: se perdió la exclusividad del recurso. "
+                        "El backup queda en '%s' para recuperación manual.",
+                        self._target,
+                        self._backup,
+                    )
+                    return
                 await self._restore_backup()
                 # M-7: sólo aquí el rollback se considera COMPLETADO. Si
                 # _restore_backup lanza, no se llega a esta línea y el flag queda
@@ -147,6 +237,29 @@ class DirectoryRollback:
             logger.warning("Rollback: '%s' restaurado desde backup tras fallo del pipeline", self._target)
 
     async def _discard_backup(self) -> None:
-        """Descarta el backup tras un run exitoso."""
-        if self._backup is not None and await asyncio.to_thread(self._backup.exists):
-            await _fs_op_with_retry(shutil.rmtree, self._backup)
+        """Descarta el backup tras un run exitoso — **salvo que nada lo haya reemplazado**.
+
+        Enunciado como propiedad del mecanismo (review Codex #399): descartar el
+        backup sólo es seguro si la herramienta **efectivamente regeneró** el
+        directorio. Si el target no existe al salir, la herramienta no escribió
+        ahí, y el backup es el ÚNICO ejemplar del estado previo: borrarlo sería
+        pérdida de datos disfrazada de limpieza — silenciosa, porque ocurre en el
+        camino de ÉXITO, sin excepción que la delate.
+
+        El caso que lo destapó: Pandora tiene dos ``Pandora_Output`` candidatos
+        —cuál usa depende de su versión— y el servicio mueve aparte los dos. En una
+        instalación real se escribe uno solo, así que el otro se perdía entero tras
+        un run exitoso. Vive acá y no en ``pandora_service`` porque la propiedad no
+        es de Pandora: cualquier caller que proteja más de un destino candidato
+        —o cuya herramienta pueda no producir salida— tiene el mismo agujero.
+        """
+        if self._backup is None or not await asyncio.to_thread(self._backup.exists):
+            return
+        if not await asyncio.to_thread(self._target.exists):
+            await _fs_op_with_retry(self._backup.rename, self._target)
+            logger.info(
+                "'%s' no fue regenerado por la herramienta; se conserva el contenido previo.",
+                self._target,
+            )
+            return
+        await _fs_op_with_retry(shutil.rmtree, self._backup)

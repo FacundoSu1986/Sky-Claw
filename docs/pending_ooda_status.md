@@ -1466,6 +1466,56 @@ agente construye el servicio SIN `path_resolver`: las dirs a revertir se derivan
 `config` del runner. Anclado en
 `test_run_pandora_agent_path_tambien_revierte_la_salida` en vez de razonado.
 
+### Cuatro hallazgos del review, y por qué tres cambiaron el mecanismo
+
+Codex y CodeRabbit encontraron cuatro cosas sobre el primer commit. Tres eran
+defectos reales y el fix de todas terminó **en `DirectoryRollback`**, no en Pandora
+— señal de que el agujero era del patrón, no del caller:
+
+1. **El candidato inactivo se borraba en el camino FELIZ.** Con dos `Pandora_Output`
+   candidatos, el move-aside entra en los dos; una instalación real escribe uno solo,
+   y `_discard_backup` borraba el backup del otro sin mirar si algo lo había
+   reemplazado. Pérdida de datos silenciosa, sin excepción que la delatara. Estaba
+   clasificado P2 y es P1. **Mis tests lo tapaban** porque escribían en ambos
+   candidatos. Fix: descartar sólo si la herramienta regeneró el dir.
+2. **Rollback tras perder la lease.** El move-aside vive anidado dentro del
+   `SnapshotTransactionLock` y sale ANTES que él. El lock saltea deliberadamente su
+   rollback tras perder la lease (*"never clobber a concurrent owner's mutations"*,
+   `locks.py:795-798`), pero el context de abajo restauraba igual: borraba la salida
+   del nuevo dueño y devolvía un backup viejo. Fix: veto `should_rollback` que las
+   dos capas comparten. **DynDOLOD tenía el agujero idéntico** y se cableó también —
+   arreglarlo sólo donde lo reportó el review habría sido el defecto #1 en directo.
+   Anclado con un test que **enumera** los callers de `DirectoryRollback` por
+   inspección del árbol, no con una lista escrita a mano.
+3. **Cancelación durante el move-aside.** El rename corre en `asyncio.to_thread`:
+   cancelar la corrutina no interrumpe el hilo, así que el rename terminaba mientras
+   el caller nunca registraba el context — dir previo varado bajo `.rollback-*`, sin
+   `__aexit__` que lo devolviera, y la herramienta ni siquiera había corrido. Fix:
+   shield + observar el desenlace real, el patrón F2 que `sandbox_run` ya usaba.
+   **El primer test que escribí para esto pasaba también sin el fix**: afirmaba antes
+   de que el hilo completara. Se sincronizó con un `threading.Event`.
+4. **`rollback_completed=False` no tenía una sola causa** — y mi propia docstring
+   afirmaba que sí, en el párrafo que explicaba por qué el move-aside era superior al
+   lock en ese punto. También es False en la salida limpia, así que un run exitoso
+   cuyo lock lanzara `LockLeaseLostError` en el teardown quedaba marcado como
+   "rollback fallido" y la TX PENDING. Es el mismo error de razonamiento del P1 de
+   #397, cometido en el texto que decía que no podía pasar. Fix: `hubo_restore`
+   explícito, derivado de si el cuerpo llegó a terminar.
+
+CodeRabbit sumó un quinto, menor pero válido: `pandora_rollback_dirs` clasificaba por
+**nombre** (`c.name == "Pandora_Output"`), así que un Pandora instalado en una carpeta
+llamada así habría hecho revertible el dir del ejecutable. Ahora selecciona por
+identidad de la ruta construida.
+
 ### Qué sigue abierto de U-04
 
-Nada: con Wrye Bash y Pandora cerrados, el ítem queda completo.
+El **modo `Data`** de Pandora. `pandora_output_candidates` lo enumera como destino
+posible; cuando la versión instalada escribe los `.hkx` directo ahí, un run fallido los
+deja en disco. El move-aside es inadmisible sobre `Data` (arrastraría todo el setup de
+mods), y el rollback de grano fino que haría falta exige **enumerar qué subárboles de
+`Data` son de Pandora** — dato que el repo no tiene hoy. Inventar esa lista sería peor
+que la limitación: un rollback que cree cubrir y borre archivos de otros mods. Follow-up
+con prerequisito explícito: obtener el manifiesto de salida real de Pandora (su propio
+log lo reporta) antes de intentar el remedio.
+
+Con eso, U-04 queda cerrado para Wrye Bash y para el modo `Pandora_Output`.

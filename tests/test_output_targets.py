@@ -218,6 +218,24 @@ def test_pandora_rollback_dirs_es_subconjunto_estricto_de_las_candidatas(tmp_pat
     assert revertibles == [game / "Pandora_Output", exe.parent / "Pandora_Output"]
 
 
+def test_pandora_rollback_dirs_no_clasifica_por_nombre(tmp_path: pathlib.Path) -> None:
+    """El dir del exe NO es revertible aunque se llame ``Pandora_Output``.
+
+    Un filtro por nombre sobre las candidatas parece equivalente y no lo es
+    (review CodeRabbit #399): si el usuario instala Pandora en una carpeta
+    llamada así, ``exe.parent`` satisface el nombre y entraría como revertible —
+    el move-aside renombraría el directorio del ejecutable justo antes de
+    spawnearlo. La selección es por identidad de la ruta construida.
+    """
+    exe = tmp_path / "tools" / "Pandora_Output" / "Pandora Behaviour Engine+.exe"
+    game = tmp_path / "game"
+
+    revertibles = pandora_rollback_dirs(game=game, exe=exe)
+
+    assert exe.parent not in revertibles
+    assert revertibles == [game / "Pandora_Output", exe.parent / "Pandora_Output"]
+
+
 def test_pandora_rollback_dirs_sin_rutas_no_inventa_nada(tmp_path: pathlib.Path) -> None:
     """Sin game ni exe resolubles no hay nada que revertir — lista vacía, no un
     path relativo que un move-aside podría aplicar sobre el cwd del agente."""
