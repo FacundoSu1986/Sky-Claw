@@ -6,12 +6,13 @@ otras corridas concurrentes. Wrye Bash era el único ritual mutante que NO estab
 serializado (su lógica vivía en ``SupervisorAgent.execute_wrye_bash_pipeline`` sin
 lock); este servicio cierra ese hueco.
 
-Espeja el estilo de fixtures de ``test_pandora_service.py``. El snapshot se difiere
-(``target_files=[]``) y la protección que aplica hoy es la serialización — pero **no
-porque la salida sea "dependiente del entorno"**: U-01 parte 2 desmontó esa premisa
-(``bash.py`` corre con ``cwd=game_path``, sin heredar la USVFS, y el patch cae en el
-``Data`` físico). Snapshotearlo es alcance de U-04. El guard M-04 (compartido) se
-INYECTA desde el supervisor, no lo posee este servicio.
+Espeja el estilo de fixtures de ``test_pandora_service.py``. La protección de base es
+la serialización (lock anidado bashed-patch → load-order), y desde U-04 el lock
+externo lleva ``target_files`` con la ruta real del Bashed Patch —resoluble desde
+U-01 parte 2, que desmontó la premisa de que la salida era "dependiente del
+entorno"—, así que un fallo real restaura el patch previo, no solo serializa (ver la
+sección U-04 más abajo). El guard M-04 (compartido) se INYECTA desde el supervisor,
+no lo posee este servicio.
 """
 
 from __future__ import annotations
@@ -24,7 +25,12 @@ import pytest
 
 from sky_claw.app.db.locks import DistributedLockManager, LockLeaseLostError
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
-from sky_claw.local.tools.wrye_bash_runner import WryeBashExecutionError, WryeBashResult
+from sky_claw.local.tools.wrye_bash_runner import (
+    WryeBashConfig,
+    WryeBashExecutionError,
+    WryeBashResult,
+    WryeBashTimeoutError,
+)
 from sky_claw.local.tools.wrye_bash_service import (
     BASHED_PATCH_RESOURCE_ID,
     WryeBashPipelineService,
@@ -337,6 +343,12 @@ async def test_lease_perdido_al_cerrar_devuelve_error(
     from sky_claw.app.db.locks import LockLeaseLostError
 
     class _LeaseLostLock:
+        # Espeja la superficie que el servicio consulta de SnapshotTransactionLock
+        # tras salir del context (ver _cerrar_tx_tras_rollback).
+        snapshots: list[object] = []
+        rollback_completed: bool = False
+        rollback_failures: list[str] = []
+
         def __init__(self, **kwargs: object) -> None:
             pass
 
@@ -701,9 +713,13 @@ async def test_cn_lock_contention_no_abre_transaccion(
 
 class _LockLeaseLostFake:
     """Lock de frontera: en un clean-exit ``__aexit__`` se comporta como lease perdida
-    (review Codex #318). ``snapshots=[]`` porque Wrye Bash corre con snapshot diferido."""
+    (review Codex #318). ``snapshots=[]`` modela el caso "no había patch previo que
+    snapshotear": con snapshot presente y rollback no completado, la TX quedaría
+    PENDING a propósito (ver ``_cerrar_tx_tras_rollback``)."""
 
     snapshots: list[object] = []
+    rollback_completed: bool = False
+    rollback_failures: list[str] = []
 
     def __init__(self, **_kwargs: object) -> None:
         pass
@@ -750,3 +766,218 @@ async def test_cn_cancelacion_marca_rolled_back_y_propaga(
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(88)
     mock_journal.commit_transaction.assert_not_called()
     assert await lock_manager.get_lock_info(BASHED_PATCH_RESOURCE_ID) is None
+
+
+# =============================================================================
+# U-04 — rollback REAL de la salida: un exit non-zero (o timeout) restaura el
+# Bashed Patch previo en disco, no solo serializa la corrida.
+#
+# Antes de esto, ``target_files=[]`` significaba que SnapshotTransactionLock
+# nunca tomaba una copia del patch previo, y un WryeBashResult(success=False)
+# salía "limpio" del context manager (sin excepción) — el mecanismo de rollback
+# de la librería SOLO dispara en la rama de excepción. Cierra U-04 replicando
+# el patrón ya probado en Synthesis: "if not result.success: raise dentro del
+# lock", con una excepción interna dedicada que carga el WryeBashResult para
+# que el except arme el MISMO dict de salida que el camino no-excepcional.
+# =============================================================================
+
+
+def _config_con_bashed_patch(game_path: pathlib.Path, *, contenido: str | None) -> WryeBashConfig:
+    """Config real con ``game_path`` apuntando a un tmp dir; opcionalmente
+    materializa un Bashed Patch previo en ``Data/`` con *contenido*."""
+    data = game_path / "Data"
+    data.mkdir(parents=True, exist_ok=True)
+    if contenido is not None:
+        (data / "Bashed Patch, 0.esp").write_text(contenido, encoding="utf-8")
+    wrye_bash_exe = game_path.parent / "bash.exe"
+    wrye_bash_exe.touch()
+    mo2_path = game_path.parent / "MO2"
+    mo2_path.mkdir(exist_ok=True)
+    return WryeBashConfig(wrye_bash_path=wrye_bash_exe, game_path=game_path, mo2_path=mo2_path)
+
+
+def _runner_con_config_real(config: WryeBashConfig, *, side_effect: Any) -> MagicMock:
+    """Runner con ``.config.game_path`` REAL (no un Mock auto-generado) para que
+    ``_rollback_target_files`` resuelva un ``pathlib.Path`` de verdad."""
+    runner = MagicMock()
+    runner.config = config
+    runner.generate_bashed_patch = AsyncMock(side_effect=side_effect)
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_target_files_incluye_la_ruta_resuelta_del_bashed_patch(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """El lock EXTERNO (bashed-patch) recibe ``target_files`` con la ruta real —
+    ya no ``[]``. El INTERNO (load-order) se mantiene vacío: Wrye Bash solo LEE
+    el orden, LOOT es quien lo snapshotea al mutarlo."""
+    game_path = tmp_path / "Skyrim"
+    config = _config_con_bashed_patch(game_path, contenido="bueno")
+    runner = _runner_con_config_real(
+        config,
+        side_effect=lambda: WryeBashResult(success=True, return_code=0, stdout="", stderr="", duration_seconds=0.1),
+    )
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    llamadas: list[dict[str, Any]] = []
+
+    from sky_claw.app.db import locks as locks_module
+
+    original_init = locks_module.SnapshotTransactionLock.__init__
+
+    def _capturar_init(self: Any, **kwargs: Any) -> None:
+        llamadas.append(kwargs)
+        original_init(self, **kwargs)
+
+    with patch.object(locks_module.SnapshotTransactionLock, "__init__", _capturar_init):
+        result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is True
+    assert len(llamadas) == 2
+    bashed_call, load_order_call = llamadas
+    assert bashed_call["resource_id"] == BASHED_PATCH_RESOURCE_ID
+    assert bashed_call["target_files"] == [game_path / "Data" / "Bashed Patch, 0.esp"]
+    assert load_order_call["target_files"] == []
+
+
+@pytest.mark.asyncio
+async def test_fallo_non_zero_restaura_el_bashed_patch_previo(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """U-04: un exit non-zero que dejó el patch a medio escribir se REVIERTE al
+    contenido previo — no solo se serializa, se restaura de verdad en disco."""
+    game_path = tmp_path / "Skyrim"
+    config = _config_con_bashed_patch(game_path, contenido="contenido bueno")
+    patch_path = game_path / "Data" / "Bashed Patch, 0.esp"
+
+    async def _corrida_fallida() -> WryeBashResult:
+        # Simula el subproceso escribiendo un archivo a medio terminar antes de
+        # salir con código de error — el escenario que la auditoría describe.
+        patch_path.write_text("contenido corrupto a medio escribir", encoding="utf-8")
+        return WryeBashResult(success=False, return_code=1, stdout="", stderr="master missing", duration_seconds=0.5)
+
+    runner = _runner_con_config_real(config, side_effect=_corrida_fallida)
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    assert result["message"] == "master missing"
+    assert patch_path.read_text(encoding="utf-8") == "contenido bueno"  # restaurado, no el parcial
+
+
+@pytest.mark.asyncio
+async def test_timeout_tambien_restaura_el_bashed_patch_previo(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """WryeBashTimeoutError (U-10, ya elevaba) se beneficia del MISMO mecanismo sin
+    código dedicado: con target_files poblado, la excepción que ya existía alcanza."""
+    game_path = tmp_path / "Skyrim"
+    config = _config_con_bashed_patch(game_path, contenido="contenido bueno")
+    patch_path = game_path / "Data" / "Bashed Patch, 0.esp"
+
+    async def _corrida_con_timeout() -> WryeBashResult:
+        patch_path.write_text("a medio escribir cuando venció el timeout", encoding="utf-8")
+        raise WryeBashTimeoutError(600.0)
+
+    runner = _runner_con_config_real(config, side_effect=_corrida_con_timeout)
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    assert patch_path.read_text(encoding="utf-8") == "contenido bueno"
+
+
+@pytest.mark.asyncio
+async def test_fallo_sin_patch_previo_no_crashea(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """Primer run (sin Bashed Patch previo): ``SnapshotTransactionLock`` no toma
+    snapshot de un archivo inexistente, así que no hay nada que restaurar — el
+    parcial puede quedar en disco. Es la MISMA limitación aceptada de Synthesis
+    (``target_esp.exists()`` gatea el snapshot); no es un bug de U-04, así que
+    este test ancla el comportamiento para que nadie lo lea como una regresión."""
+    game_path = tmp_path / "Skyrim"
+    config = _config_con_bashed_patch(game_path, contenido=None)  # sin patch previo
+    patch_path = game_path / "Data" / "Bashed Patch, 0.esp"
+
+    async def _corrida_fallida() -> WryeBashResult:
+        patch_path.write_text("parcial", encoding="utf-8")
+        return WryeBashResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=0.1)
+
+    runner = _runner_con_config_real(config, side_effect=_corrida_fallida)
+    svc = _make_service(lock_manager, snapshot_manager, runner)
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    assert result["message"] == "boom"  # no crashea; contrato dict serializable intacto
+
+
+@pytest.mark.asyncio
+async def test_rollback_fallido_deja_la_tx_pendiente(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si el restore FALLA (disco lleno, destino no escribible), la TX queda
+    PENDING — no ``rolled_back`` (review Codex #397).
+
+    ``rollback_completed`` es False por dos causas distintas: no había snapshot, o
+    el restore falló. En la rama de excepción un restore fallido SOLO se loguea
+    (``locks.py``), así que marcar la TX ``rolled_back`` afirmaría una recuperación
+    que no ocurrió y escondería de la recuperación manual un patch corrupto que
+    sigue en disco. Mismo criterio que ``synthesis_service``.
+    """
+    game_path = tmp_path / "Skyrim"
+    config = _config_con_bashed_patch(game_path, contenido="bueno")
+    patch_path = game_path / "Data" / "Bashed Patch, 0.esp"
+
+    async def _corrida_fallida() -> WryeBashResult:
+        patch_path.write_text("corrupto", encoding="utf-8")
+        return WryeBashResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=0.1)
+
+    runner = _runner_con_config_real(config, side_effect=_corrida_fallida)
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    # El restore falla: restore_snapshot lanza (p. ej. disco lleno). __aexit__ lo
+    # traga y lo expone vía rollback_failures / rollback_completed=False.
+    with patch.object(snapshot_manager, "restore_snapshot", AsyncMock(side_effect=OSError("No space left on device"))):
+        result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    assert patch_path.read_text(encoding="utf-8") == "corrupto"  # el restore falló de verdad
+    # La TX NO se cierra: queda PENDING para recuperación manual.
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+    mock_journal.commit_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cn_fallo_non_zero_con_rollback_marca_rolled_back(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Con journal cableado, el rollback real de U-04 sigue cerrando la TX como
+    rolled-back (no PENDING) — la caja negra y el rollback de datos no divergen."""
+    game_path = tmp_path / "Skyrim"
+    config = _config_con_bashed_patch(game_path, contenido="bueno")
+    patch_path = game_path / "Data" / "Bashed Patch, 0.esp"
+
+    async def _corrida_fallida() -> WryeBashResult:
+        patch_path.write_text("corrupto", encoding="utf-8")
+        return WryeBashResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=0.1)
+
+    runner = _runner_con_config_real(config, side_effect=_corrida_fallida)
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+
+    result = await svc.execute_pipeline(profile="Default")
+
+    assert result["success"] is False
+    assert patch_path.read_text(encoding="utf-8") == "bueno"
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(88)
+    mock_journal.commit_transaction.assert_not_called()

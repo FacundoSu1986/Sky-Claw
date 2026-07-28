@@ -179,6 +179,33 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > comentarios que justificaban `target_files=[]`/`snapshots=[]` con la premisa falsa
   > (`wrye_bash_service` ×2, `system_tools.run_bodyslide_batch`) ya dicen que el pendiente
   > es de alcance, no de imposibilidad.
+  > **Estado (#393): CERRADO SOLO PARA WRYE BASH.** `wrye_bash_service.py` implementa el
+  > remedio exacto que este ítem describía: el lock externo (`Bashed Patch, 0.esp`) pasa a
+  > llevar `target_files=self._rollback_target_files(runner)` (ruta resuelta desde
+  > `runner.config.game_path`, misma fuente que ya usaba el manifiesto — no una tercera vía
+  > que pudiera divergir), y `execute_pipeline` eleva una excepción interna
+  > `_RunFallidoError` DENTRO del `async with` cuando `not result.success` — el puente que
+  > el fix de Codex pedía, replicando el patrón `if not result.success: raise ...` que ya
+  > usaba `synthesis_service.py`. El except dedicado recupera el `WryeBashResult` y arma el
+  > MISMO dict de salida del camino no-excepcional (return_code/stdout/stderr/
+  > duration_seconds), así que el contrato de la tool no cambia. Cubre **los dos** modos de
+  > fallo que el ítem nombra sin código separado: el exit non-zero (nuevo `raise`) y el
+  > timeout (`WryeBashTimeoutError`, ya elevaba desde U-10 — con `target_files` poblado, el
+  > `except WryeBashExecutionError` existente empieza a disparar rollback solo). Verificado
+  > con archivos reales en disco (no mocks): un Bashed Patch previo se restaura byte a byte
+  > tras un fallo simulado, en ambos modos.
+  > **Limitación aceptada, no un bug:** en el PRIMER run (sin Bashed Patch previo),
+  > `SnapshotTransactionLock` no toma snapshot de un archivo inexistente
+  > (`file_path.exists()` en `__aenter__`), así que un parcial fallido puede quedar en
+  > disco. Es la MISMA limitación que ya tiene `synthesis_service.py`
+  > (`target_esp.exists()` gatea su propio snapshot) — no algo que U-04 introduce ni deba
+  > resolver distinto. Ancla explícita: `test_fallo_sin_patch_previo_no_crashea`.
+  > **Pandora queda deliberadamente fuera de este PR.** Su salida es un árbol de
+  > directorios (behavior graphs), no un archivo único: el mecanismo correcto es
+  > `DirectoryRollback` (move-aside), no `target_files` de `SnapshotTransactionLock` —son
+  > dos primitivas de rollback distintas sobre la parte más riesgosa del backlog (mutar
+  > datos del usuario), y mezclarlas en un mismo PR duplica la superficie de review de
+  > exactamente lo que hay que revisar con más cuidado. Sigue abierto, PR propio.
 
 ### U-05 — VRAMr: timeout orfana nietos (usa `proc.kill()` pelado, no el tree-kill) · `[Z]` · Subprocesos/Zombies
 
