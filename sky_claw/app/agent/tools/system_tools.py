@@ -414,9 +414,12 @@ async def generate_bashed_patch(
     sort de LOOT concurrente — el lock cross-process solo protege si TODOS los
     mutadores participan. Este path del agente delega al mismo servicio en vez
     de mantener una segunda implementación del lock (§2.1 auditoría original:
-    mismo vector P1 que ``run_loot_sort``/``run_pandora``). Sin lock manager
-    (callers legacy / tests) corre directo, preservando el comportamiento
-    anterior.
+    mismo vector P1 que ``run_loot_sort``/``run_pandora``). Que el rollback de
+    salida de U-04 viva en ese servicio —y no acá— es lo que hace que cubra a los
+    dos hermanos sin cablearlo dos veces. Sin lock manager (callers legacy /
+    tests) corre directo, preservando el comportamiento anterior: ese camino no
+    tiene lock NI rollback, y en producción no se usa (``app_context`` siempre
+    cablea ambos managers).
 
     T-26/T-28 (ADR 0002, "PR C" del #315): cuando ``journal`` está cableado (via
     ``app_context``) este path del agente TAMBIÉN emite la caja negra de vuelo —
@@ -444,6 +447,10 @@ async def generate_bashed_patch(
             "stdout": sanitize_for_prompt(str(res.get("stdout", ""))) if res.get("stdout") else "",
             "stderr": sanitize_for_prompt(str(res.get("stderr", ""))) if res.get("stderr") else "",
             "duration_seconds": res.get("duration_seconds", 0.0),
+            # U-04: el agente necesita saber si el Bashed Patch previo volvió o si
+            # quedó un artefacto parcial en disco — un fallo "revertido" y uno que
+            # dejó basura piden acciones distintas del operador.
+            "rolled_back": res.get("rolled_back", False),
         }
         if not out["success"] and res.get("message"):
             out["error"] = res["message"]

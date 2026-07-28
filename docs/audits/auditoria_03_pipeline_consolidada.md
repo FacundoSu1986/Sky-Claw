@@ -179,6 +179,30 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > comentarios que justificaban `target_files=[]`/`snapshots=[]` con la premisa falsa
   > (`wrye_bash_service` ×2, `system_tools.run_bodyslide_batch`) ya dicen que el pendiente
   > es de alcance, no de imposibilidad.
+  >
+  > **Estado (2026-07-28): CERRADO para Wrye Bash; Pandora y BodySlide siguen ABIERTOS.**
+  > Wrye Bash implementa las dos mitades: el lock externo recibe
+  > `_snapshot_targets()` (el `Data` físico, misma fuente que el manifiesto y el
+  > sondeo de permisos) y un `result.success is False` eleva `_BashedPatchRunError`
+  > **dentro** del lock, así que `__aexit__` restaura en vez de descartar el
+  > snapshot. Cubre las dos superficies por construcción: GUI y agente LLM entran
+  > los dos por `WryeBashPipelineService.execute_pipeline`, que es el único método
+  > que corre `generate_bashed_patch()`. El resultado expone `rolled_back` para
+  > distinguir un fallo revertido de uno que dejó un artefacto parcial.
+  >
+  > **Por qué los otros dos NO se cerraron de arrastre** (y no es alcance, es un
+  > bloqueo real): sus destinos son **directorios**, no archivos.
+  > `SnapshotTransactionLock.__aenter__` solo snapshotea `is_file()`, así que
+  > pasarle esas rutas snapshotearía **nada en silencio** — la falsa sensación de
+  > rollback contra la que advierte el párrafo de arriba, en su forma más pura. Y el
+  > único mecanismo de directorios del repo (`DirectoryRollback`) es un move-aside:
+  > aplicarlo a `game/Data` (candidata de Pandora) renombraría el `Data` del juego
+  > entero. En BodySlide es peor, porque el destino
+  > (`game_path/<output_path>`) lo elige el LLM vía `BodySlideBatchParams`. Cerrarlos
+  > pide un mecanismo de rollback selectivo por archivos escritos, que es un diseño
+  > nuevo — no un cableado. Anclado en `tests/test_rollback_salida.py`, que enumera
+  > **todo** módulo que construye el lock (no solo los `*_service.py`, que era lo que
+  > dejaba a BodySlide fuera) y exige un motivo escrito para cada pendiente.
 
 ### U-05 — VRAMr: timeout orfana nietos (usa `proc.kill()` pelado, no el tree-kill) · `[Z]` · Subprocesos/Zombies
 

@@ -817,6 +817,55 @@ verdes.
 T-12 — no se toca acá (un cambio, un PR). `fomod/parser.py` conserva su
 `except Exception` de boundary de parsing.
 
+## Addendum (2026-07-28) — U-04: rollback de salida en Wrye Bash (PARCIAL)
+
+**Cerrado para Wrye Bash. Pandora y BodySlide siguen ABIERTOS** — el título del PR
+no los cubre y este documento tampoco los declara cerrados.
+
+**Las dos mitades, porque ninguna alcanza sola.** `SnapshotTransactionLock` restaura
+solo ante excepción o `force_rollback`. Un `bash.py` que sale non-zero se traduce a
+`result.success=False` **sin elevar nada**, así que el `async with` salía limpio, el
+snapshot se descartaba y el patch a medio escribir quedaba en disco. Implementar solo
+(a) —pasar `target_files`— habría producido una falsa sensación de rollback. Van las
+dos: el lock externo recibe `_snapshot_targets()` y un resultado fallido eleva
+`_BashedPatchRunError` **dentro** del lock (mismo mecanismo que `synthesis_service` con
+`SynthesisExecutionError` y `dyndolod_service` con `DynDOLODExecutionError`).
+
+**Hermanos, por construcción y no por revisión.** La GUI
+(`SupervisorAgent.execute_wrye_bash_pipeline` → `tool_dispatcher`) y el agente LLM
+(`AsyncToolRegistry` → `generate_bashed_patch`) entran los dos por
+`WryeBashPipelineService.execute_pipeline`, el único método que corre
+`generate_bashed_patch()` — es la razón por la que #315 extrajo el servicio. También se
+unificó la resolución del destino: `_bashed_patch_target` (manifiesto) y
+`_permission_targets` (preflight) derivan de `_snapshot_targets`, así que no quedan dos
+cálculos hermanos de "dónde escribe Wrye Bash" que haya que acordarse de cambiar juntos
+(#373). El resultado expone `rolled_back`, propagado también al path del agente.
+
+**Por qué Pandora y BodySlide NO se cerraron de arrastre** — es un bloqueo real, no
+alcance recortado:
+
+- Sus destinos son **directorios**, no archivos. `SnapshotTransactionLock.__aenter__`
+  solo snapshotea `is_file()`, así que pasarle esas rutas snapshotearía **nada, en
+  silencio**.
+- El único mecanismo de directorios del repo (`DirectoryRollback`) es un move-aside.
+  Aplicarlo a `game/Data` —candidata de `pandora_output_candidates`— renombraría el
+  `Data` del juego entero.
+- En BodySlide es peor: el destino es `game_path/<output_path>` y `output_path` lo
+  **elige el LLM** (`BodySlideBatchParams`, default `"meshes"`, validado solo como
+  relativo sin `..`). El destino del move-aside no sería una constante del código.
+
+Cerrarlos pide un rollback selectivo por archivos escritos: diseño nuevo, PR propio.
+
+**Ancla:** `tests/test_rollback_salida.py`. Enumera **todo módulo del paquete** que
+construya un `SnapshotTransactionLock` —no solo `local/tools/*_service.py`, que era lo
+que dejaba a `run_bodyslide_batch` fuera de la primera versión del propio ancla— y exige
+que cada pendiente tenga su motivo escrito. Los tests de comportamiento afirman sobre el
+**contenido del archivo tras el run fallido**, no sobre que el lock recibiera una lista
+no vacía.
+
+Gates verdes: `ruff check` + `ruff format --check`, `mypy sky_claw/`, suite completa con
+**exit code 0**.
+
 ## Addendum — Auditoría 03 (Pipeline): backlog consolidado U-01…U-12
 
 Backlog de la auditoría del dominio de orquestación + herramientas externas
@@ -1356,11 +1405,10 @@ resuelve rutas relativas y busca su INI, así que no se hizo de arrastre.
 
 - **U-01 punto (3)**: documentar la invariante de deployment en `docs/` (el módulo ya
   la enuncia; falta la versión para operadores).
-- **U-04**: desbloqueado y **no implementado**. Sus dos prerequisitos están cerrados —
-  el path ya no es ambiguo, y **U-10 también estaba cerrado** (`WryeBashTimeoutError` /
-  `BodySlideTimeoutError` ya se elevan, así que la excepción propaga por el context
-  manager). Falta solo pasar la ruta como `target_files` y forzar el rollback ante
-  `result.success is False`.
+- **U-04**: **cerrado para Wrye Bash** (2026-07-28, ver el addendum de esa fecha);
+  **Pandora y BodySlide siguen abiertos**, y no por alcance: sus destinos son
+  directorios compartidos y ningún mecanismo vigente los revierte sin ser
+  destructivo. Detalle y evidencia en el addendum.
 - **U-06** (Wrye Bash / BodySlide): desbloqueado y no implementado. El falso negativo
   que motivaba el diferimiento exigía una redirección USVFS que no puede ocurrir.
   QuickAutoClean sigue aplazado por su motivo propio (mtime), ajeno a U-01.
