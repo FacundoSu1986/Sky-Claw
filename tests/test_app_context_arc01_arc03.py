@@ -437,12 +437,12 @@ class TestAppContextLifecycleCoordinator:
             await liberar.wait()
 
         ctx._push_startup_cleanup(cleanup_obstinado)
-        loop = asyncio.get_running_loop()
-        liberacion_de_emergencia = loop.call_later(0.1, liberar.set)
 
+        # Sin red de emergencia por reloj: lo único que tiene que vencer es el
+        # presupuesto (0.01 s), y `liberar` sigue sin setearse, así que el timeout
+        # es determinístico. Un cuelgue real lo ataja `--timeout=120` (pyproject).
         with pytest.raises(TimeoutError):
             await ctx.stop()
-        liberacion_de_emergencia.cancel()
         assert ejecuciones == 1
 
         segundo_stop = asyncio.create_task(ctx.stop())
@@ -507,12 +507,13 @@ class TestAppContextLifecycleCoordinator:
                 raise error
 
         ctx._push_startup_cleanup(cleanup_tardio)
-        loop = asyncio.get_running_loop()
-        liberacion_de_emergencia = loop.call_later(0.1, liberar.set)
 
+        # Sin red de emergencia por reloj. Es el caso que mordió en CI: cuando la
+        # red ganaba la carrera, `cleanup_tardio` reanudaba y lanzaba su
+        # RuntimeError, así que `stop()` levantaba ESE error en vez del TimeoutError
+        # y el fallo se veía como un defecto de producción que no existía.
         with pytest.raises(TimeoutError):
             await ctx.stop()
-        liberacion_de_emergencia.cancel()
         assert ejecuciones == 1
 
         liberar.set()
@@ -550,18 +551,17 @@ class TestAppContextLifecycleCoordinator:
             raise error_primario
 
         ctx._start_full_inner = full_fallido
-        loop = asyncio.get_running_loop()
-        liberacion_de_emergencia = loop.call_later(0.5, liberar.set)
-        startup = asyncio.create_task(ctx.start_full())
-        done, _ = await asyncio.wait({startup}, timeout=0.2)
-        if startup not in done:
-            liberar.set()
-            await asyncio.gather(startup, return_exceptions=True)
-        assert startup in done
+
+        # Se espera el DESENLACE de start_full(), no una ventana de reloj. El
+        # `asyncio.wait(timeout=0.2)` previo tenía dos problemas encadenados: bajo
+        # carga el rollback tarda más que la ventana, y su rama de rescate
+        # (`if startup not in done`) no podía rescatar nada — el `assert startup in
+        # done` de la línea siguiente miraba el `done` ya calculado, así que entrar
+        # ahí era fallar igual. El presupuesto (0.01 s) es lo único que tiene que
+        # vencer para que el cleanup se abandone y el error primario propague.
         with pytest.raises(RuntimeError) as raised:
-            startup.result()
+            await ctx.start_full()
         assert raised.value is error_primario
-        liberacion_de_emergencia.cancel()
         assert ejecuciones == 1
         assert ctx.router is None
         assert ctx.hitl is None
