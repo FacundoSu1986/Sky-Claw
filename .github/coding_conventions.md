@@ -33,18 +33,25 @@ Si dos reglas colisionan, obedecé este orden:
 
 ### 2.2 Base de datos (SQLite)
 
-- La conexión es **`aiosqlite` y singleton por path resuelto**, la entrega
-  `DatabaseLifecycleManager.get_connection()` (`core/db_lifecycle.py`). Dos
-  `DatabaseAgent` con el mismo path comparten la misma conexión, a propósito.
-  Código nuevo no llama `aiosqlite.connect()` / `sqlite3.connect()`: quedan
-  fallbacks pre-M-01 que sí lo hacen, congelados por
-  `tests/test_db_connection_invariant.py` — sumar uno rompe el test.
-- Como la conexión es compartida, **toda escritura pasa por
-  `_write_transaction()`** (que delega en `lifecycle.transaction()` y toma el
-  write lock por path). Escribir sobre la conexión de `_get_conn()` compila,
-  pasa los tests y se saltea el lock — es el modo de falla de esta sección.
-  `transaction()` ya hace commit y rollback; `BEGIN IMMEDIATE` explícito solo
-  para batches largos (ver `init_db`).
+- La conexión es **`aiosqlite`**, la entrega
+  `DatabaseLifecycleManager.get_connection()` (`core/db_lifecycle.py`). Código
+  nuevo no llama `aiosqlite.connect()` / `sqlite3.connect()`: el conjunto de
+  módulos que sí lo hacen (fallbacks pre-M-01 más tres exenciones deliberadas)
+  está congelado en `tests/test_db_connection_invariant.py` — sumar uno rompe
+  el test.
+- **El singleton es por path resuelto _dentro de un manager_, no global.**
+  `_connections` y `_write_locks` son campos de instancia, y `init_db()`
+  construye un `DatabaseLifecycleManager` propio por cada `DatabaseAgent`: dos
+  agentes sobre el mismo archivo hoy usan conexiones y locks **distintos**.
+  Compartir serialización exige inyectar el *mismo* manager (la DI `lifecycle=`
+  de M-01.1). No asumas exclusión mutua entre dos wrappers sin verificar que
+  comparten manager.
+- Dentro de un manager la conexión sí es compartida, así que **toda escritura
+  pasa por `_write_transaction()`** (que delega en `lifecycle.transaction()` y
+  toma el write lock por path). Escribir sobre la conexión de `_get_conn()`
+  compila, pasa los tests y se saltea el lock — es el modo de falla de esta
+  sección. `transaction()` ya hace commit y rollback; `BEGIN IMMEDIATE`
+  explícito solo para batches largos (ver `init_db`).
 - Por la misma razón, `last_insert_rowid()` no es confiable: releé el id por
   clave única (`SELECT id ... WHERE name = ?`), como hace `add_mod` (#220).
 - `INSERT ... ON CONFLICT DO UPDATE`, nunca `INSERT OR REPLACE`: REPLACE
