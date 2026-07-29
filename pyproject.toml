@@ -265,6 +265,11 @@ module = [
     "sky_claw.local.tools.rollback_reconciler",  # U-08: reconciliador de arranque, nace estricto
     "sky_claw.local.fomod.*",  # T-12: instalador FOMOD anotado a strict (parser/resolver/models/installer)
     "sky_claw.local.loot.*",  # T-12: cliente LOOT a strict (cli/masterlist/parser/version)
+    # Primitiva de detección de enlaces: módulo nuevo, nace estricto. El opt-in es
+    # OBLIGATORIO y no cosmético — `sky_claw.app.security.*` está en la lista
+    # `ignore_errors` de arriba y `sky_claw/app/**` tiene BLE001 exento, así que sin
+    # esta línea el módulo saldría a producción sin type-check NI guard de except.
+    "sky_claw.app.security.links",
 ]
 strict = true
 ignore_errors = false

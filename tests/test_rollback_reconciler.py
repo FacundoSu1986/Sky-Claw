@@ -28,9 +28,11 @@ from sky_claw.local.tools.rollback_reconciler import (
     PRODUCTORES_CABLEADOS,
     VENTANA_DE_GRACIA_SEGUNDOS,
     ProductorDeMoveAside,
+    _listar_backups_move_aside,
     construir_productores_de_move_aside,
     reconcile_orphan_rollback_backups,
 )
+from tests._symlink_guard import symlink_guard
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -514,3 +516,50 @@ def _envejecer(directorio: pathlib.Path) -> None:
 
     viejo = directorio.stat().st_mtime - VENTANA_DE_GRACIA_SEGUNDOS - 60
     os.utime(directorio, (viejo, viejo))
+
+
+# ---------------------------------------------------------------------------
+# Enlaces: un enlace con nombre de backup no es un backup
+# ---------------------------------------------------------------------------
+
+
+@symlink_guard
+def test_un_enlace_con_nombre_de_backup_no_se_toma_como_backup(tmp_path: pathlib.Path) -> None:
+    """El hermano de ``DirectoryRollback``: acá tampoco "existe" es "es un backup".
+
+    ``_listar_backups_move_aside`` filtraba con ``is_dir()``, que **sigue** el
+    enlace: un symlink (o junction) a directorio llamado ``X.rollback-<nonce>``
+    entraba como backup legítimo y después ``backup.rename(destino)`` lo movía
+    encima del target real. El resultado es doblemente malo — el target queda
+    siendo un enlace a un árbol ajeno, y el reconciliador lo reporta como
+    "restaurado desde el último estado bueno".
+
+    Este módulo es el que **no tiene** el fail-closed de ``__aenter__``: opera
+    sobre lo que encuentra en disco al arrancar, así que es el único camino por el
+    que un artefacto enlazado llega a una operación destructiva. Dejarlo afuera del
+    fix de ``_dir_rollback`` habría sido arreglar un hermano y no al otro.
+    """
+    raiz = tmp_path / "juego"
+    raiz.mkdir()
+    ajeno = tmp_path / "arbol_ajeno"
+    ajeno.mkdir()
+    (ajeno / "importante.txt").write_text("no soy un backup", encoding="utf-8")
+
+    impostor = raiz / "Pandora_Output.rollback-1782000000000000000"
+    impostor.symlink_to(ajeno, target_is_directory=True)
+
+    assert impostor.is_dir(), "is_dir() sigue el enlace — el motivo del bug"
+    assert _listar_backups_move_aside([raiz]) == []
+
+
+@symlink_guard
+def test_un_backup_real_si_se_lista(tmp_path: pathlib.Path) -> None:
+    """Hermano del anterior: el filtro nuevo no puede volverse ciego a los backups
+    de verdad. Sin este par, "no listar nada nunca" pasaría el test de arriba."""
+    raiz = tmp_path / "juego"
+    raiz.mkdir()
+    real = raiz / "Pandora_Output.rollback-1782000000000000000"
+    real.mkdir()
+    (real / "previo.hkx").write_text("estado previo", encoding="utf-8")
+
+    assert _listar_backups_move_aside([raiz]) == [real]

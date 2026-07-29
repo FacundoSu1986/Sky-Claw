@@ -19,6 +19,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from sky_claw.app.security.links import is_link, link_kind, path_present
+
 logger = logging.getLogger("SkyClaw.DirectoryRollback")
 
 #: Reintentos ante fallos transitorios de FS en Windows (WinError 5/32): renombrar
@@ -26,6 +28,31 @@ logger = logging.getLogger("SkyClaw.DirectoryRollback")
 #: se liberan en milisegundos. Se reintenta con backoff corto antes de rendirse.
 _FS_RETRIES = 5
 _FS_BACKOFF_SECONDS = 0.1
+
+
+async def _borrar_arbol_o_enlace(ruta: pathlib.Path) -> None:
+    """Descarta *ruta*, sea un árbol real o un enlace, sin tocar el destino ajeno.
+
+    ``shutil.rmtree`` no sirve solo para las dos: sobre un **symlink** lanza
+    ``OSError`` y sobre un **junction** de Windows lo atraviesa y borra el
+    contenido del destino, porque su guard interno es ``os.path.islink()`` y ese
+    devuelve False para un ``IO_REPARSE_TAG_MOUNT_POINT``. Para un enlace la
+    operación correcta es ``unlink``: lo que sobra es el enlace, y el árbol al que
+    apunta es de otro.
+
+    ``Path.unlink`` borra symlinks en las dos plataformas; en Windows un junction
+    a directorio necesita ``rmdir`` (quita el reparse point, no su contenido), así
+    que se prueba en ese orden.
+    """
+    if not is_link(ruta):
+        await _fs_op_with_retry(shutil.rmtree, ruta)
+        return
+    try:
+        await _fs_op_with_retry(ruta.unlink)
+    except OSError:
+        # Junction a directorio en Windows: unlink no aplica, rmdir quita el
+        # reparse point y deja intacto el árbol destino.
+        await _fs_op_with_retry(ruta.rmdir)
 
 
 async def _fs_op_with_retry(op: Callable[..., Any], *args: Any) -> Any:
@@ -140,7 +167,32 @@ class DirectoryRollback:
     async def __aenter__(self) -> DirectoryRollback:
         if not self._enabled:
             return self
-        if not await asyncio.to_thread(self._target.exists):
+        # Fail-closed ante un target ENLAZADO, antes de mover o borrar nada. El
+        # move-aside renombraría el enlace y no el árbol al que apunta, así que el
+        # backup quedaría siendo un enlace y las dos operaciones destructivas de
+        # ``__aexit__`` dejarían de significar lo que dicen: ``rmtree`` lanza sobre
+        # un symlink (y ``__aexit__`` traga ese OSError por diseño, dejando el
+        # backup huérfano y el run "exitoso") y ATRAVIESA un junction de Windows,
+        # borrando el contenido del destino — datos de otro, en el camino de éxito.
+        # El rollback prometido es inejecutable sobre un enlace, así que no se
+        # corre: mismo criterio que el rename fallido de más abajo y que
+        # ``grass_profile`` ante un mod que ya existe como symlink.
+        #
+        # Se pregunta por el enlace ANTES que por la existencia a propósito
+        # (``file_permissions.restrict_to_owner`` documenta el mismo orden): para un
+        # enlace ROTO ``exists()`` da False, así que el orden inverso tomaba el
+        # camino "primer run, nada que preservar" y la ruta seguía ocupada — el
+        # ``mkdir()`` posterior de la herramienta moría con un ``FileExistsError``
+        # que no menciona enlaces y manda a depurar el lugar equivocado.
+        tipo_de_enlace = await asyncio.to_thread(link_kind, self._target)
+        if tipo_de_enlace is not None:
+            raise OSError(
+                f"'{self._target}' es un enlace ({tipo_de_enlace}) y no un directorio real: "
+                "el rollback move-aside renombraría el enlace y no su contenido, así que "
+                "no puede garantizar la restauración prometida. Reemplazá el enlace por "
+                "una carpeta real para correr este ritual con rollback."
+            )
+        if not await asyncio.to_thread(path_present, self._target):
             # Primer run: no hay estado previo que preservar.
             return self
         backup = self._target.with_name(f"{self._target.name}.rollback-{time.time_ns()}")
@@ -258,9 +310,15 @@ class DirectoryRollback:
 
     async def _restore_backup(self) -> None:
         """Descarta el parcial nuevo y restaura el directorio original."""
-        if await asyncio.to_thread(self._target.exists):
-            await _fs_op_with_retry(shutil.rmtree, self._target)
-        if self._backup is not None and await asyncio.to_thread(self._backup.exists):
+        # ``path_present``/``_borrar_arbol_o_enlace`` en vez de ``exists``/``rmtree``:
+        # el fail-closed de ``__aenter__`` filtra el target enlazado en el caso
+        # normal, pero no cubre un enlace que aparezca DURANTE el run (la
+        # herramienta, u otro proceso, puede dejar uno donde había un directorio).
+        # Sobre un enlace, ``rmtree`` lanzaría —quedando el parcial en disco y el
+        # restore sin hacer— o atravesaría un junction borrando un árbol ajeno.
+        if await asyncio.to_thread(path_present, self._target):
+            await _borrar_arbol_o_enlace(self._target)
+        if self._backup is not None and await asyncio.to_thread(path_present, self._backup):
             await _fs_op_with_retry(self._backup.rename, self._target)
             logger.warning("Rollback: '%s' restaurado desde backup tras fallo del pipeline", self._target)
 
@@ -286,7 +344,12 @@ class DirectoryRollback:
         caller, no algo que revertir. Con la bandera en False esta función SÓLO
         descarta —nunca restaura— así que el commit nunca se deshace a sí mismo.
         """
-        if self._backup is None or not await asyncio.to_thread(self._backup.exists):
+        # ``path_present`` y no ``exists``: un backup que quedó siendo un enlace
+        # —de una versión anterior a este fail-closed, o encontrado en disco por el
+        # reconciliador de arranque— tiene que entrar acá para que lo descarte
+        # ``_borrar_arbol_o_enlace``. Con ``exists()`` un enlace ROTO se saltaba
+        # entero y quedaba huérfano para siempre.
+        if self._backup is None or not await asyncio.to_thread(path_present, self._backup):
             return
 
         def _sin_regenerar() -> bool:
@@ -327,7 +390,11 @@ class DirectoryRollback:
                 self._target,
             )
             return
-        await _fs_op_with_retry(shutil.rmtree, self._backup)
+        # El sitio que motivó todo: sobre un backup enlazado, ``rmtree`` lanza
+        # ``OSError`` (symlink) o borra el contenido del destino ajeno (junction de
+        # Windows), y esto corre en el camino de ÉXITO — donde ``__aexit__`` traga el
+        # OSError y nadie se entera.
+        await _borrar_arbol_o_enlace(self._backup)
 
     def _restaurar_target_vacio_sync(self) -> None:
         """rmdir del target vacío + rename del backup, como una sola unidad síncrona.

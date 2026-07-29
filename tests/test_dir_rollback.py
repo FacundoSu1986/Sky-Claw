@@ -8,6 +8,7 @@ import pathlib
 import pytest
 
 from sky_claw.local.tools._dir_rollback import DirectoryRollback
+from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
 
 def _llamadas_sin_veto(arbol: ast.Module) -> list[int]:
@@ -613,3 +614,137 @@ def test_meta_test_detecta_should_rollback_en_none(tmp_path: pathlib.Path) -> No
     arbol = ast.parse(fuente)
 
     assert _llamadas_sin_veto(arbol) == [4]
+
+
+# ---------------------------------------------------------------------------
+# Enlaces: el enlace no es su destino
+# ---------------------------------------------------------------------------
+
+
+@symlink_guard
+async def test_target_enlazado_es_fail_closed_y_no_deja_backup(tmp_path: pathlib.Path) -> None:
+    """Un target que es un enlace aborta el ritual ANTES de mutar nada.
+
+    El move-aside renombra **el enlace**, no el árbol al que apunta, así que el
+    backup queda siendo un enlace y las dos operaciones destructivas que vienen
+    después dejan de significar lo que dicen:
+
+    * ``shutil.rmtree`` sobre un symlink **lanza** ``OSError`` — que ``__aexit__``
+      traga por diseño para no enmascarar la excepción del body. Resultado: el
+      backup queda huérfano para siempre y el run se reporta exitoso.
+    * sobre un **junction** de Windows no lanza: ``os.path.islink()`` devuelve
+      False para un ``IO_REPARSE_TAG_MOUNT_POINT``, así que ``rmtree`` entra por
+      ``scandir`` y borra el contenido del DESTINO — datos que no son ni de la
+      herramienta ni del rollback, en el camino de éxito y sin excepción que lo
+      delate.
+
+    Se aborta en vez de "arreglar" cada operación porque el rollback prometido es
+    inejecutable: mismo criterio fail-closed que el rename fallido de más arriba y
+    que ``grass_profile.py`` ante un mod que ya existe como symlink.
+    """
+    real = tmp_path / "salida_real"
+    real.mkdir()
+    (real / "dato.txt").write_text("del usuario", encoding="utf-8")
+    target = tmp_path / "Output"
+    target.symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(OSError, match="enlace"):
+        async with DirectoryRollback(target):
+            pytest.fail("el body no debe correr: el rollback no se puede garantizar")
+
+    # Nada se movió ni se borró: el enlace sigue en su lugar y su destino intacto.
+    assert target.is_symlink()
+    assert (real / "dato.txt").read_text(encoding="utf-8") == "del usuario"
+    assert not list(tmp_path.glob("Output.rollback-*"))
+
+
+@symlink_guard
+async def test_target_con_enlace_roto_es_fail_closed_y_no_dice_primer_run(tmp_path: pathlib.Path) -> None:
+    """Un enlace ROTO no es "primer run, nada que preservar".
+
+    ``exists()`` sigue el enlace, así que para uno colgante devuelve False y el
+    camino de "primer run" se tomaba solo. Pero la ruta **está ocupada**: el
+    ``mkdir()`` que la herramienta hace después falla con ``FileExistsError``, un
+    error que no menciona enlaces y manda a depurar el lugar equivocado.
+
+    Mismo orden que ``file_permissions.restrict_to_owner``: preguntar por el
+    enlace ANTES que por la existencia, porque el orden inverso deja pasar los
+    colgantes en silencio.
+    """
+    target = tmp_path / "Output"
+    target.symlink_to(tmp_path / "jamas-existio", target_is_directory=True)
+    assert target.exists() is False  # el motivo por el que el bug existía
+
+    with pytest.raises(OSError, match="enlace"):
+        async with DirectoryRollback(target):
+            pytest.fail("el body no debe correr")
+
+    assert target.is_symlink(), "el enlace roto no debe tocarse"
+    assert not list(tmp_path.glob("Output.rollback-*"))
+
+
+@symlink_guard
+async def test_descartar_un_backup_enlazado_no_toca_el_destino(tmp_path: pathlib.Path) -> None:
+    """Defensa en profundidad: descartar un backup que ES un enlace lo desenlaza.
+
+    El fail-closed de ``__aenter__`` cubre el caso normal, pero **no todos**: el
+    reconciliador de arranque (``rollback_reconciler``) opera sobre backups que
+    encuentra en disco sin ningún ``__aenter__`` que los haya filtrado, y un
+    ``.rollback-*`` puede ser un enlace por haber quedado de una versión anterior.
+    Ahí la operación correcta es ``unlink`` del enlace, nunca ``rmtree`` de su
+    destino: el enlace es el artefacto, su destino es de otro.
+    """
+    ajeno = tmp_path / "arbol_ajeno"
+    ajeno.mkdir()
+    (ajeno / "importante.txt").write_text("no borrar", encoding="utf-8")
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "nuevo.txt").write_text("salida nueva", encoding="utf-8")
+
+    backup = tmp_path / "Output.rollback-123"
+    backup.symlink_to(ajeno, target_is_directory=True)
+
+    rollback = DirectoryRollback(target)
+    rollback._backup = backup
+
+    # permitir_restore=True es el camino del run limpio (el de commit() es el otro):
+    # el target FUE regenerado y no está vacío, así que se toma la rama de descarte,
+    # que es justo la que hacía rmtree sobre el enlace.
+    await rollback._discard_backup(permitir_restore=True)
+
+    assert not backup.exists() and not backup.is_symlink(), "el enlace debía desaparecer"
+    assert (ajeno / "importante.txt").read_text(encoding="utf-8") == "no borrar"
+    assert (target / "nuevo.txt").exists(), "la salida nueva no se toca"
+
+
+@junction_guard
+async def test_target_con_junction_es_fail_closed_y_no_borra_el_destino(tmp_path: pathlib.Path) -> None:
+    """El caso que SÍ pierde datos, y que sólo Windows puede ejercer.
+
+    Un junction no es un symlink para la stdlib: ``os.path.islink()`` devuelve False
+    para un ``IO_REPARSE_TAG_MOUNT_POINT``, y el guard interno de ``shutil.rmtree``
+    es exactamente ``os.path.islink()``. Así que donde un symlink hace **lanzar** a
+    ``rmtree``, un junction lo hace **atravesar**: ``scandir`` entra al destino,
+    borra su contenido y después ``rmdir`` quita el reparse point.
+
+    Eso ocurría en ``_discard_backup``, el camino de **ÉXITO**, cuyo ``OSError`` (si
+    lo hubiera) ``__aexit__`` traga por diseño. Sin este test el modo de falla más
+    grave del fix quedaría sin ejercer, porque en POSIX no existe.
+
+    Junctionear una carpeta de mods a otro disco es práctica común de MO2, así que
+    el escenario es el del usuario real, no uno sintético.
+    """
+    real = tmp_path / "salida_en_otro_disco"
+    real.mkdir()
+    (real / "dato.txt").write_text("del usuario", encoding="utf-8")
+    target = tmp_path / "Output"
+    if not crear_junction(target, real):
+        pytest.skip("no se pudo crear el junction (mklink no disponible)")
+
+    with pytest.raises(OSError, match="enlace"):
+        async with DirectoryRollback(target):
+            pytest.fail("el body no debe correr sobre un junction")
+
+    assert (real / "dato.txt").read_text(encoding="utf-8") == "del usuario"
+    assert not list(tmp_path.glob("Output.rollback-*"))

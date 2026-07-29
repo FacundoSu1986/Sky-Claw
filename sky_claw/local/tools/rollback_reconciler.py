@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sky_claw.app.db.locks import LockAcquisitionError
+from sky_claw.app.security.links import is_link, path_present
 from sky_claw.local.tools.output_targets import pandora_rollback_dirs
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
 
@@ -311,7 +312,12 @@ async def _reconciliar_move_aside(raices: Sequence[pathlib.Path], acc: _Acumulad
     """
     for backup in await asyncio.to_thread(_listar_backups_move_aside, raices):
         destino = backup.with_name(_SUFIJO_MOVE_ASIDE.sub("", backup.name))
-        if await asyncio.to_thread(destino.exists):
+        # ``path_present`` y no ``exists``: si el destino es un enlace ROTO,
+        # ``exists()`` da False y caeríamos al ``rename`` de abajo, que **reemplaza**
+        # el enlace en silencio — destruyendo algo del usuario que este
+        # reconciliador no tiene por qué tocar. "Hay algo acá" es la pregunta
+        # correcta, y la respuesta segura es preservar los dos y avisar.
+        if await asyncio.to_thread(path_present, destino):
             logger.warning(
                 "Backup de rollback huérfano en '%s' CON el destino '%s' ya presente: "
                 "no se toca ninguno (la salida nueva puede estar incompleta y el backup "
@@ -348,6 +354,27 @@ def _listar_backups_move_aside(raices: Sequence[pathlib.Path]) -> list[pathlib.P
         if not raiz.is_dir():
             continue
         for hijo in sorted(raiz.iterdir()):
+            # ``is_dir()`` **sigue** el enlace, así que un symlink/junction a
+            # directorio llamado ``X.rollback-<nonce>`` entraba como backup legítimo
+            # y el ``backup.rename(destino)`` de abajo lo movía encima del target
+            # real: el target quedaba siendo un enlace a un árbol ajeno, reportado
+            # como "restaurado desde el último estado bueno". Las raíces que se
+            # barren incluyen directorios del USUARIO (la del juego y la del exe de
+            # Pandora), no sólo las nuestras, así que el impostor no es hipotético.
+            #
+            # Este módulo es el que NO tiene el fail-closed de
+            # ``DirectoryRollback.__aenter__``: opera sobre lo que encuentra en disco
+            # al arrancar, así que es el único camino por el que un artefacto
+            # enlazado alcanza una operación destructiva.
+            if is_link(hijo):
+                logger.warning(
+                    "Se ignora '%s': tiene nombre de backup de rollback pero es un enlace, "
+                    "no un directorio real. Un backup legítimo lo produce un rename O(1) de "
+                    "%s, que nunca deja un enlace.",
+                    hijo,
+                    "DirectoryRollback",
+                )
+                continue
             if hijo.is_dir() and _SUFIJO_MOVE_ASIDE.search(hijo.name) and hijo not in vistos:
                 vistos.add(hijo)
                 backups.append(hijo)
@@ -411,9 +438,21 @@ def _mtime(ruta: pathlib.Path) -> float:
 
 
 def _listar_clones(sandbox_root: pathlib.Path) -> list[pathlib.Path]:
+    """Clones candidatos a descarte, **excluyendo enlaces**.
+
+    Un clon se descarta con ``shutil.rmtree(clon, True)`` —con
+    ``ignore_errors=True``, así que un fallo no se ve. Sobre un junction de Windows
+    ``rmtree`` no falla: lo atraviesa y borra el árbol destino, y el
+    ``ignore_errors`` garantiza que nadie se entere. Un enlace acá no puede ser un
+    clon legítimo: ``ProfileSandbox.clone()`` los crea copiando, nunca enlazando.
+    """
     if not sandbox_root.is_dir():
         return []
-    return sorted(hijo for hijo in sandbox_root.iterdir() if hijo.is_dir() and _NOMBRE_DE_CLON.match(hijo.name))
+    return sorted(
+        hijo
+        for hijo in sandbox_root.iterdir()
+        if not is_link(hijo) and hijo.is_dir() and _NOMBRE_DE_CLON.match(hijo.name)
+    )
 
 
 def _backup_de_promote(clon: pathlib.Path) -> pathlib.Path | None:
