@@ -177,7 +177,7 @@ class DirectoryRollback:
             return
         try:
             if exc_type is not None:
-                if self._should_rollback is not None and not self._should_rollback():
+                if not self._veto_permite_restaurar():
                     # Perdimos la exclusividad: otro dueño pudo haber mutado ya, así
                     # que restaurar pisaría SU salida con nuestro backup viejo. El
                     # backup NO se descarta —queda en disco bajo su nombre
@@ -228,6 +228,28 @@ class DirectoryRollback:
             )
         self._backup = None
 
+    def _veto_permite_restaurar(self) -> bool:
+        """Evalúa el veto de ``should_rollback`` **fail-closed** (review CodeRabbit #399).
+
+        El callback lo provee el caller y puede lanzar (p. ej. un ``AttributeError``
+        si el lock cambia de superficie). Dejarlo escapar rompería la garantía que
+        la docstring de la clase promete —*nunca lanza desde ``__aexit__``*— y
+        además enmascararía la excepción original del body. Si el veto no se puede
+        evaluar, se asume lo conservador: **no restaurar**, y el backup queda en
+        disco. Restaurar a ciegas es lo único irreversible de las dos opciones.
+        """
+        if self._should_rollback is None:
+            return True
+        try:
+            return bool(self._should_rollback())
+        except Exception:  # noqa: BLE001 — boundary: el callback es del caller
+            logger.critical(
+                "El veto de rollback de '%s' falló al evaluarse; se OMITE el restore (fail-closed).",
+                self._target,
+                exc_info=True,
+            )
+            return False
+
     async def _restore_backup(self) -> None:
         """Descarta el parcial nuevo y restaura el directorio original."""
         if await asyncio.to_thread(self._target.exists):
@@ -255,7 +277,18 @@ class DirectoryRollback:
         """
         if self._backup is None or not await asyncio.to_thread(self._backup.exists):
             return
-        if not await asyncio.to_thread(self._target.exists):
+
+        def _sin_regenerar() -> bool:
+            """ "Existe" no es "lo regeneró" (review CodeRabbit #399): una herramienta
+            que crea el directorio candidato y no escribe nada dentro dejaba pasar
+            el ``rmtree`` del backup — la misma pérdida silenciosa, un paso más
+            allá, y plausible justo en el escenario multi-candidato que motivó este
+            método."""
+            return not self._target.exists() or not any(self._target.iterdir())
+
+        if await asyncio.to_thread(_sin_regenerar):
+            if await asyncio.to_thread(self._target.exists):
+                await _fs_op_with_retry(self._target.rmdir)  # vacío: rmdir basta y es reversible
             await _fs_op_with_retry(self._backup.rename, self._target)
             logger.info(
                 "'%s' no fue regenerado por la herramienta; se conserva el contenido previo.",

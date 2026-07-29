@@ -252,10 +252,16 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
     # Sincroniza con el HILO, no con el reloj: sin esto el test afirmaba antes de
     # que el rename ocurriera y pasaba igual sin el shield — o sea, no probaba nada.
     primer_rename = threading.Event()
+    # Y el ARRANQUE también (review CodeRabbit #399): con un `sleep` de reloj, en
+    # CI cargada la task puede no haber llegado al rename cuando se la cancela, y
+    # entonces el verde no ejerce el shield — el mismo falso verde de nuevo, un
+    # paso antes.
+    rename_empezo = threading.Event()
 
     def _rename_lento(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
         if primer_rename.is_set():
             return rename_real(self, dst)  # el deshacer no se demora
+        rename_empezo.set()
         time.sleep(0.3)  # el hilo sigue pese a la cancelación de quien lo espera
         try:
             return rename_real(self, dst)
@@ -268,7 +274,7 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
 
     with patch.object(pathlib.Path, "rename", _rename_lento):
         task = asyncio.ensure_future(_entrar())
-        await asyncio.sleep(0.05)  # dejar que entre al rename
+        assert await asyncio.to_thread(rename_empezo.wait, 5.0), "el rename nunca arrancó"
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -324,19 +330,74 @@ def test_todos_los_callers_de_move_aside_cablean_el_veto_de_lease() -> None:
     construyen un ``DirectoryRollback`` y se exige que cada uno pase
     ``should_rollback``.
     """
-    import re
+    import ast
 
-    tools = pathlib.Path(__file__).resolve().parent.parent / "sky_claw" / "local" / "tools"
-    constructores = re.compile(r"DirectoryRollback\((?!\s*\))[^)]*\)", re.DOTALL)
+    # Por AST y recursivo sobre TODO ``sky_claw`` (review CodeRabbit #399). La
+    # primera versión usaba un regex y ``glob`` no recursivo sobre ``local/tools``:
+    # un caller en un subpaquete —o en la GUI, o en la capa del agente— nacía sin
+    # veto y el ancla no lo veía, y el patrón ``[^)]*`` no cruza paréntesis, así
+    # que una construcción anidada se cortaba en el primer ``)``. Un ancla que
+    # muestrea es justo lo que este test existe para no ser.
+    raiz = pathlib.Path(__file__).resolve().parent.parent / "sky_claw"
 
     sin_veto: list[str] = []
-    for modulo in sorted(tools.glob("*.py")):
+    for modulo in sorted(raiz.rglob("*.py")):
         if modulo.name == "_dir_rollback.py":  # la definición, no un caller
             continue
-        for uso in constructores.findall(modulo.read_text(encoding="utf-8")):
-            if "should_rollback" not in uso:
-                sin_veto.append(f"{modulo.name}: {' '.join(uso.split())}")
+        for nodo in ast.walk(ast.parse(modulo.read_text(encoding="utf-8"))):
+            if not isinstance(nodo, ast.Call):
+                continue
+            nombre = nodo.func.id if isinstance(nodo.func, ast.Name) else getattr(nodo.func, "attr", "")
+            if nombre == "DirectoryRollback" and not any(kw.arg == "should_rollback" for kw in nodo.keywords):
+                sin_veto.append(f"{modulo.relative_to(raiz)}:{nodo.lineno}")
 
     assert not sin_veto, (
         f"estos move-aside restaurarían aunque se hubiera perdido la lease, pisando a un dueño concurrente: {sin_veto}"
     )
+
+
+async def test_exito_con_target_vacio_conserva_el_contenido_previo(tmp_path: pathlib.Path) -> None:
+    """ "Existe" no es "lo regeneró" (review CodeRabbit #399).
+
+    Una herramienta que crea el directorio candidato y no escribe nada dentro
+    dejaba pasar el ``rmtree`` del backup: la misma pérdida silenciosa que el test
+    anterior ataja, un paso más allá — y plausible justo en el escenario
+    multi-candidato de Pandora que motivó todo esto.
+    """
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("irremplazable", encoding="utf-8")
+
+    async with DirectoryRollback(target):
+        target.mkdir()  # la tool crea el dir y no escribe nada
+
+    assert (target / "previo.txt").read_text(encoding="utf-8") == "irremplazable"
+    assert not list(tmp_path.glob("Output.rollback-*"))
+
+
+async def test_veto_que_lanza_no_escapa_de_aexit_y_es_fail_closed(tmp_path: pathlib.Path) -> None:
+    """Un ``should_rollback`` que lance no puede romper la garantía de ``__aexit__``.
+
+    La clase promete no lanzar nunca desde ``__aexit__`` para no enmascarar la
+    excepción del body. El veto lo provee el caller y puede reventar; ante eso se
+    asume lo conservador —no restaurar, conservar el backup—, porque restaurar a
+    ciegas es lo único irreversible de las dos opciones (review CodeRabbit #399).
+    """
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("mio", encoding="utf-8")
+
+    def _veto_roto() -> bool:
+        raise AttributeError("el lock cambió de superficie")
+
+    rb = DirectoryRollback(target, should_rollback=_veto_roto)
+    with pytest.raises(RuntimeError, match="boom"):  # la excepción ORIGINAL, no la del veto
+        async with rb:
+            target.mkdir()
+            (target / "parcial.txt").write_text("parcial", encoding="utf-8")
+            raise RuntimeError("boom")
+
+    assert rb.rollback_completed is False
+    backups = list(tmp_path.glob("Output.rollback-*"))
+    assert len(backups) == 1, "el backup debe conservarse cuando el veto no se pudo evaluar"
+    assert (backups[0] / "previo.txt").read_text(encoding="utf-8") == "mio"
