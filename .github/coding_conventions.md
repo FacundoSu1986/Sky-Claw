@@ -22,8 +22,10 @@ Si dos reglas colisionan, obedecé este orden:
 
 ### 2.1 Concurrencia y UI (NiceGUI / asyncio)
 
-- No bloquear el event loop: I/O pesada (subprocesos, disco, red, SQLite) vía
-  `asyncio.to_thread` o executors.
+- No bloquear el event loop: I/O bloqueante (subprocesos, disco, librerías de red
+  sincrónicas) vía `asyncio.to_thread` o executors. **SQLite no entra acá**: la DB
+  es `aiosqlite`, nativamente async — envolverla en `to_thread` mueve una corrutina
+  a otro hilo y rompe el loop que la conexión tiene asociada.
 - Prohibido `time.sleep()` en código async — usar `asyncio.sleep()`.
 - Los eventos hacia la UI se emiten desde el loop: el `EventBus` de la GUI debe arrancar
   con `app.on_startup(event_bus.start)` — si `_loop is None`, los eventos se descartan en
@@ -31,10 +33,25 @@ Si dos reglas colisionan, obedecé este orden:
 
 ### 2.2 Base de datos (SQLite)
 
-- Conexiones con `threading.local()`; nunca compartir instancias de `DatabaseAgent`.
-- Transacciones batch con `BEGIN IMMEDIATE`; rollback ante excepciones.
+- La conexión es **`aiosqlite` y singleton por path resuelto**, la entrega
+  `DatabaseLifecycleManager.get_connection()` (`core/db_lifecycle.py`). Dos
+  `DatabaseAgent` con el mismo path comparten la misma conexión, a propósito.
+  Código nuevo no llama `aiosqlite.connect()` / `sqlite3.connect()`: quedan
+  fallbacks pre-M-01 que sí lo hacen, congelados por
+  `tests/test_db_connection_invariant.py` — sumar uno rompe el test.
+- Como la conexión es compartida, **toda escritura pasa por
+  `_write_transaction()`** (que delega en `lifecycle.transaction()` y toma el
+  write lock por path). Escribir sobre la conexión de `_get_conn()` compila,
+  pasa los tests y se saltea el lock — es el modo de falla de esta sección.
+  `transaction()` ya hace commit y rollback; `BEGIN IMMEDIATE` explícito solo
+  para batches largos (ver `init_db`).
+- Por la misma razón, `last_insert_rowid()` no es confiable: releé el id por
+  clave única (`SELECT id ... WHERE name = ?`), como hace `add_mod` (#220).
+- `INSERT ... ON CONFLICT DO UPDATE`, nunca `INSERT OR REPLACE`: REPLACE
+  borra+reinserta con id nuevo y con `foreign_keys=ON` rompe las FKs de `conflicts`.
 - Solo consultas parametrizadas — **prohibido** f-strings o `.format()` en SQL.
-- Al inicio: `PRAGMA journal_mode=WAL;` y `PRAGMA foreign_keys=ON;`.
+- Pragmas al abrir (los pone el lifecycle): `journal_mode=WAL`, `foreign_keys=ON`,
+  `busy_timeout=5000`, `synchronous=NORMAL`.
 
 ### 2.3 Agentes LLM
 
@@ -74,7 +91,7 @@ Si dos reglas colisionan, obedecé este orden:
 - `except Exception` / `except BaseException` desnudo.
 - `print()` para output — usar `logging`.
 - f-strings o `.format()` en queries SQL — solo consultas parametrizadas.
-- Estado global para conexiones DB — usar `threading.local()`.
+- `sqlite3.connect()` o `aiosqlite.connect()` a mano — pedir la conexión al lifecycle.
 - Claves API, rutas o umbrales hardcodeados — usar `config.py`, keyring o variables de entorno.
 - Regex para parsear output de LLM — usar Pydantic.
 - Paths hardcodeados (`/tmp/...`, `C:/...`) — usar `SystemPaths` o `tempfile`.
@@ -98,6 +115,6 @@ Si dos reglas colisionan, obedecé este orden:
 |------|-------------|----------|
 | Lint | Ruff | `ruff check` **y** `ruff format --check` sin errores |
 | Type Check | Mypy | **Bloqueante** (`mypy sky_claw/`) |
-| Test | Pytest | `--cov-fail-under=60`; matrix Windows py3.11/3.12 |
+| Test | Pytest | `--cov-fail-under=60`; matrix Windows+Ubuntu × py3.11/3.12, pero Ubuntu corre con `continue-on-error` — **solo Windows bloquea** |
 | Security | Bandit + pip-audit + npm audit | SAST sin high/critical; `pip-audit --strict` sobre `requirements.lock` (hashes enforced); `npm audit` del gateway de Telegram |
 | Build | PyInstaller | `sky_claw.spec` (autoderiva el VERSIONINFO de la versión del paquete); depende de los gates anteriores |
