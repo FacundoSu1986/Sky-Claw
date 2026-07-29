@@ -65,8 +65,17 @@ def _nombres_conectores(arbol: ast.AST) -> tuple[set[str], set[str]]:
     """Resuelve los nombres con que este módulo puede llamar al conector.
 
     Devuelve `(alias_de_modulo, nombres_directos)`. Sin esto, `import aiosqlite
-    as db; db.connect(...)` y `from aiosqlite import connect; connect(...)`
-    esquivan el detector — y son las dos formas más comunes de escribirlo.
+    as db; db.connect(...)`, `from aiosqlite import connect; connect(...)` y
+    `conector = db.connect; conector(...)` esquivan el detector — y son las tres
+    formas naturales de escribirlo.
+
+    Los nombres por asignación se resuelven a punto fijo (`a = db.connect;
+    b = a`) y sin distinguir scope: la sobre-aproximación puede marcar un
+    homónimo en otra función, y eso está bien — un falso positivo acá solo obliga
+    a tomar una decisión explícita, mientras que un falso negativo deja pasar una
+    conexión sin lock. El ancla apunta a descuidos, no a un adversario: una
+    evasión deliberada (`getattr`, import dinámico) queda fuera del alcance de un
+    chequeo estático, y por eso el invariante también está escrito en §2.2.
     """
     alias_de_modulo: set[str] = set()
     nombres_directos: set[str] = set()
@@ -79,7 +88,38 @@ def _nombres_conectores(arbol: ast.AST) -> tuple[set[str], set[str]]:
             for alias in nodo.names:
                 if alias.name == FUNCION_CONECTORA:
                     nombres_directos.add(alias.asname or alias.name)
-    return alias_de_modulo, nombres_directos
+
+    # Punto fijo sobre las asignaciones que reexponen el conector con otro nombre.
+    while True:
+        nuevos = _nombres_por_asignacion(arbol, alias_de_modulo, nombres_directos)
+        if nuevos <= nombres_directos:
+            return alias_de_modulo, nombres_directos
+        nombres_directos |= nuevos
+
+
+def _nombres_por_asignacion(arbol: ast.AST, alias_de_modulo: set[str], nombres_directos: set[str]) -> set[str]:
+    """Nombres ligados a `<alias>.connect` o a otro nombre ya reconocido."""
+    encontrados: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Assign):
+            objetivos, valor = nodo.targets, nodo.value
+        elif isinstance(nodo, ast.AnnAssign) and nodo.value is not None:
+            objetivos, valor = [nodo.target], nodo.value
+        else:
+            continue
+        if not _es_referencia_al_conector(valor, alias_de_modulo, nombres_directos):
+            continue
+        encontrados.update(objetivo.id for objetivo in objetivos if isinstance(objetivo, ast.Name))
+    return encontrados
+
+
+def _es_referencia_al_conector(valor: ast.expr, alias_de_modulo: set[str], nombres_directos: set[str]) -> bool:
+    """`db.connect` / `connect` *sin llamar* — el valor que se está ligando."""
+    if isinstance(valor, ast.Attribute):
+        return (
+            isinstance(valor.value, ast.Name) and valor.value.id in alias_de_modulo and valor.attr == FUNCION_CONECTORA
+        )
+    return isinstance(valor, ast.Name) and valor.id in nombres_directos
 
 
 def _es_llamada_a_conector(func: ast.expr, alias_de_modulo: set[str], nombres_directos: set[str]) -> bool:
@@ -134,6 +174,22 @@ def test_detector_reconoce_las_formas_de_importar_el_conector() -> None:
     assert _contar("from sqlite3 import connect as abrir\nabrir('a.db')\n") == 1
     # Dentro de una corrutina, que es como aparece en el código real.
     assert _contar("import aiosqlite\nasync def f():\n    return await aiosqlite.connect('a.db')\n") == 1
+
+
+def test_detector_reconoce_aliases_creados_por_asignacion() -> None:
+    """Ligar el conector a otro nombre y llamarlo desde ahí también cuenta."""
+    asignado = (
+        "import aiosqlite as db\nasync def abrir():\n    conector = db.connect\n    return await conector('a.db')\n"
+    )
+    assert _contar(asignado) == 1
+    # Cadena de asignaciones: se resuelve a punto fijo.
+    encadenado = "import aiosqlite\nabrir = aiosqlite.connect\notro = abrir\notro('a.db')\n"
+    assert _contar(encadenado) == 1
+    # Asignación anotada.
+    anotado = "import sqlite3\nfrom typing import Any\nabrir: Any = sqlite3.connect\nabrir('a.db')\n"
+    assert _contar(anotado) == 1
+    # Ligar sin llamar sigue sin contar.
+    assert _contar("import aiosqlite\nconector = aiosqlite.connect\n") == 0
 
 
 def test_detector_ignora_menciones_que_no_son_llamadas() -> None:
