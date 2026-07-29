@@ -50,8 +50,18 @@ CONEXIONES_ESPERADAS = {
     "sky_claw/app/db/registry.py": 1,
 }
 
-MODULOS_CONECTORES = {"aiosqlite", "sqlite3"}
+# Se matchea por paquete raíz, no por nombre exacto: `sqlite3.dbapi2` expone el
+# mismo `connect` que `sqlite3` (de hecho es donde vive), y `aiosqlite.core` lo
+# mismo para aiosqlite. Enumerar submódulos uno por uno sería la lista que se
+# queda corta con el próximo; el paquete raíz los cubre a todos.
+PAQUETES_CONECTORES = {"aiosqlite", "sqlite3"}
 FUNCION_CONECTORA = "connect"
+
+
+def _es_modulo_conector(nombre: str | None) -> bool:
+    """True para `sqlite3`, `sqlite3.dbapi2`, `aiosqlite.core`… (None en imports relativos)."""
+    return nombre is not None and nombre.split(".")[0] in PAQUETES_CONECTORES
+
 
 # Allowlist, no blocklist: enumerar los directorios propios es lo único que no
 # depende de cómo cada quien llame a su venv. Una lista de exclusiones deja pasar
@@ -82,9 +92,16 @@ def _nombres_conectores(arbol: ast.AST) -> tuple[set[str], set[str]]:
     for nodo in ast.walk(arbol):
         if isinstance(nodo, ast.Import):
             for alias in nodo.names:
-                if alias.name in MODULOS_CONECTORES:
-                    alias_de_modulo.add(alias.asname or alias.name)
-        elif isinstance(nodo, ast.ImportFrom) and nodo.module in MODULOS_CONECTORES:
+                if not _es_modulo_conector(alias.name):
+                    continue
+                if alias.asname:
+                    alias_de_modulo.add(alias.asname)
+                else:
+                    # `import sqlite3.dbapi2` liga `sqlite3`, y deja alcanzable
+                    # tanto `sqlite3.connect` como `sqlite3.dbapi2.connect`.
+                    alias_de_modulo.add(alias.name.split(".")[0])
+                    alias_de_modulo.add(alias.name)
+        elif isinstance(nodo, ast.ImportFrom) and _es_modulo_conector(nodo.module):
             for alias in nodo.names:
                 if alias.name == FUNCION_CONECTORA:
                     nombres_directos.add(alias.asname or alias.name)
@@ -113,19 +130,27 @@ def _nombres_por_asignacion(arbol: ast.AST, alias_de_modulo: set[str], nombres_d
     return encontrados
 
 
+def _nombre_punteado(nodo: ast.expr) -> str | None:
+    """Reconstruye `sqlite3.dbapi2` de una cadena de atributos; None si no es una."""
+    if isinstance(nodo, ast.Name):
+        return nodo.id
+    if isinstance(nodo, ast.Attribute):
+        base = _nombre_punteado(nodo.value)
+        return f"{base}.{nodo.attr}" if base is not None else None
+    return None
+
+
 def _es_referencia_al_conector(valor: ast.expr, alias_de_modulo: set[str], nombres_directos: set[str]) -> bool:
     """`db.connect` / `connect` *sin llamar* — el valor que se está ligando."""
     if isinstance(valor, ast.Attribute):
-        return (
-            isinstance(valor.value, ast.Name) and valor.value.id in alias_de_modulo and valor.attr == FUNCION_CONECTORA
-        )
+        return valor.attr == FUNCION_CONECTORA and _nombre_punteado(valor.value) in alias_de_modulo
     return isinstance(valor, ast.Name) and valor.id in nombres_directos
 
 
 def _es_llamada_a_conector(func: ast.expr, alias_de_modulo: set[str], nombres_directos: set[str]) -> bool:
     """`db.connect(...)` con `db` alias del módulo, o `connect(...)` importado directo."""
     if isinstance(func, ast.Attribute):
-        return isinstance(func.value, ast.Name) and func.value.id in alias_de_modulo and func.attr == FUNCION_CONECTORA
+        return func.attr == FUNCION_CONECTORA and _nombre_punteado(func.value) in alias_de_modulo
     return isinstance(func, ast.Name) and func.id in nombres_directos
 
 
@@ -190,6 +215,18 @@ def test_detector_reconoce_aliases_creados_por_asignacion() -> None:
     assert _contar(anotado) == 1
     # Ligar sin llamar sigue sin contar.
     assert _contar("import aiosqlite\nconector = aiosqlite.connect\n") == 0
+
+
+def test_detector_reconoce_submodulos_del_paquete_conector() -> None:
+    """`sqlite3.dbapi2` es donde vive `connect`; `aiosqlite.core`, lo mismo."""
+    assert _contar("from sqlite3.dbapi2 import connect\nconnect('a.db')\n") == 1
+    assert _contar("from aiosqlite.core import connect\nconnect('a.db')\n") == 1
+    assert _contar("import sqlite3.dbapi2 as api\napi.connect('a.db')\n") == 1
+    # `import sqlite3.dbapi2` liga `sqlite3`: ambas rutas quedan alcanzables.
+    assert _contar("import sqlite3.dbapi2\nsqlite3.dbapi2.connect('a.db')\n") == 1
+    assert _contar("import sqlite3.dbapi2\nsqlite3.connect('a.db')\n") == 1
+    # Un paquete ajeno con submódulo homónimo no cuenta.
+    assert _contar("from otra.dbapi2 import connect\nconnect('a.db')\n") == 0
 
 
 def test_detector_ignora_menciones_que_no_son_llamadas() -> None:
