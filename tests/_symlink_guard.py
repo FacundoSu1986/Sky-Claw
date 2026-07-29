@@ -60,14 +60,22 @@ junction_guard = pytest.mark.skipif(
 )
 
 
-def crear_junction(enlace: pathlib.Path, destino: pathlib.Path) -> bool:
-    """Crea un junction ``enlace`` → ``destino`` con ``mklink /J``. True si pudo.
+def crear_junction(enlace: pathlib.Path, destino: pathlib.Path) -> str | None:
+    """Crea un junction ``enlace`` → ``destino``. ``None`` si pudo, o el motivo.
 
-    Se usa ``mklink`` y no ``os.symlink`` porque un junction es un reparse point
+    Se usa ``mklink /J`` y no ``os.symlink`` porque un junction es un reparse point
     de tipo ``IO_REPARSE_TAG_MOUNT_POINT``, que es justamente el que
     ``os.path.islink()`` NO reporta como enlace — el corazón del bug que estos
     tests cubren. Sin él, un test de "junction" estaría creando un symlink y
     ejercitando el camino equivocado.
+
+    **Devuelve el motivo en vez de un bool** a propósito: crear un junction en
+    Windows **no** requiere privilegios elevados, así que un fallo acá no es "el
+    entorno no soporta la feature" sino "el helper se rompió". Un ``skip``
+    silencioso en la única plataforma que puede ejercer el modo de falla más grave
+    hace que la ausencia de cobertura se vea exactamente igual que la cobertura
+    (fue lo que pasó en la primera corrida: la suite de Windows reportó el mismo
+    conteo que la de Linux). El caller convierte el motivo en un fallo con nombre.
     """
     import subprocess  # noqa: PLC0415 — sólo se necesita en Windows, no en el import del módulo
 
@@ -77,7 +85,29 @@ def crear_junction(enlace: pathlib.Path, destino: pathlib.Path) -> bool:
             capture_output=True,
             check=False,
             timeout=30,
+            text=True,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"no se pudo invocar mklink: {exc!r}"
+    if completed.returncode != 0:
+        return f"mklink /J salió con {completed.returncode}: stdout={completed.stdout!r} stderr={completed.stderr!r}"
+    if not is_junction_real(enlace):
+        return f"mklink /J dijo OK pero '{enlace}' no quedó como reparse point"
+    return None
+
+
+def is_junction_real(path: pathlib.Path) -> bool:
+    """Confirma que *path* es un junction, sin usar el código bajo test.
+
+    Se apoya en el ``st_reparse_tag`` del ``lstat`` (Windows) y verifica además
+    que ``os.path.islink`` diga **False** — que es la propiedad que hace peligroso
+    al junction y la que el test necesita tener garantizada para estar ejerciendo
+    el camino correcto.
+    """
+    import os  # noqa: PLC0415 — local, igual que subprocess
+
+    try:
+        tiene_reparse = bool(getattr(path.lstat(), "st_reparse_tag", 0))
+    except OSError:
         return False
-    return completed.returncode == 0
+    return tiene_reparse and not os.path.islink(path)

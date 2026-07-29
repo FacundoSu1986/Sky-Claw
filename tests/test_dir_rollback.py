@@ -8,7 +8,7 @@ import pathlib
 import pytest
 
 from sky_claw.local.tools._dir_rollback import DirectoryRollback
-from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
+from tests._symlink_guard import crear_junction, is_junction_real, junction_guard, symlink_guard
 
 
 def _llamadas_sin_veto(arbol: ast.Module) -> list[int]:
@@ -739,8 +739,19 @@ async def test_target_con_junction_es_fail_closed_y_no_borra_el_destino(tmp_path
     real.mkdir()
     (real / "dato.txt").write_text("del usuario", encoding="utf-8")
     target = tmp_path / "Output"
-    if not crear_junction(target, real):
-        pytest.skip("no se pudo crear el junction (mklink no disponible)")
+
+    # NO se hace skip si mklink falla: crear un junction en Windows no requiere
+    # privilegios, así que un fallo es el helper roto, no el entorno. Un skip acá
+    # dejaría la ausencia de cobertura idéntica a la cobertura — que es lo que pasó
+    # en la primera corrida de este PR, donde Windows reportó el mismo conteo que
+    # Linux y el caso más grave nunca se ejerció.
+    if (motivo := crear_junction(target, real)) is not None:
+        pytest.fail(f"no se pudo crear el junction que este test existe para ejercer: {motivo}")
+
+    # Se afirma la premisa antes que la conclusión: si esto no fuera un junction
+    # "invisible" para islink(), el test estaría pasando por el camino del symlink
+    # y no probaría nada de lo que dice probar.
+    assert is_junction_real(target), "el enlace creado no es un junction invisible a islink()"
 
     with pytest.raises(OSError, match="enlace"):
         async with DirectoryRollback(target):
