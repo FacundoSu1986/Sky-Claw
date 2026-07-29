@@ -2,11 +2,52 @@
 
 from __future__ import annotations
 
+import ast
 import pathlib
 
 import pytest
 
 from sky_claw.local.tools._dir_rollback import DirectoryRollback
+
+
+def _llamadas_sin_veto(arbol: ast.Module) -> list[int]:
+    """Líneas de llamadas a ``DirectoryRollback`` (o su alias local) sin
+    ``should_rollback``. Función pura, testeable contra un AST aislado.
+
+    **Resuelve el alias de import** (review Codex #401): matchear el nombre
+    literal ``"DirectoryRollback"`` deja pasar en silencio un caller que
+    importe con ``from ... import DirectoryRollback as Rollback`` — el nodo de
+    la llamada tiene ``func.id == "Rollback"``, y un ancla que se supone
+    congela TODOS los callers no puede depender de que nadie use ese alias.
+    """
+    nombres_validos = {"DirectoryRollback"}
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.ImportFrom):
+            for alias in nodo.names:
+                if alias.name == "DirectoryRollback":
+                    nombres_validos.add(alias.asname or alias.name)
+
+    lineas: list[int] = []
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        nombre = nodo.func.id if isinstance(nodo.func, ast.Name) else getattr(nodo.func, "attr", "")
+        if nombre not in nombres_validos:
+            continue
+        # Presente pero en None equivale a ausente (review CodeRabbit #401):
+        # ``_veto_permite_restaurar`` trata ``self._should_rollback is None`` como
+        # "siempre permitido" — el mismo estado sin protección que no pasar el
+        # kwarg. Un ``DirectoryRollback(x, should_rollback=None)`` pasaría el
+        # chequeo de sólo-presencia mientras deja el veto tan desactivado como si
+        # nunca se hubiera escrito: exactamente la clase de descuido que este
+        # ancla exhaustiva existe para atajar.
+        tiene_veto_real = any(
+            kw.arg == "should_rollback" and not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
+            for kw in nodo.keywords
+        )
+        if not tiene_veto_real:
+            lineas.append(nodo.lineno)
+    return lineas
 
 
 async def test_success_discards_backup(tmp_path: pathlib.Path) -> None:
@@ -252,10 +293,16 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
     # Sincroniza con el HILO, no con el reloj: sin esto el test afirmaba antes de
     # que el rename ocurriera y pasaba igual sin el shield — o sea, no probaba nada.
     primer_rename = threading.Event()
+    # Y el ARRANQUE también (review CodeRabbit #399): con un `sleep` de reloj, en
+    # CI cargada la task puede no haber llegado al rename cuando se la cancela, y
+    # entonces el verde no ejerce el shield — el mismo falso verde de nuevo, un
+    # paso antes.
+    rename_empezo = threading.Event()
 
     def _rename_lento(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
         if primer_rename.is_set():
             return rename_real(self, dst)  # el deshacer no se demora
+        rename_empezo.set()
         time.sleep(0.3)  # el hilo sigue pese a la cancelación de quien lo espera
         try:
             return rename_real(self, dst)
@@ -268,7 +315,7 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
 
     with patch.object(pathlib.Path, "rename", _rename_lento):
         task = asyncio.ensure_future(_entrar())
-        await asyncio.sleep(0.05)  # dejar que entre al rename
+        assert await asyncio.to_thread(rename_empezo.wait, 5.0), "el rename nunca arrancó"
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -324,19 +371,245 @@ def test_todos_los_callers_de_move_aside_cablean_el_veto_de_lease() -> None:
     construyen un ``DirectoryRollback`` y se exige que cada uno pase
     ``should_rollback``.
     """
-    import re
-
-    tools = pathlib.Path(__file__).resolve().parent.parent / "sky_claw" / "local" / "tools"
-    constructores = re.compile(r"DirectoryRollback\((?!\s*\))[^)]*\)", re.DOTALL)
+    # Por AST y recursivo sobre TODO ``sky_claw`` (review CodeRabbit #399), con
+    # resolución de alias de import (review Codex #401, ``_llamadas_sin_veto``).
+    # La primera versión usaba un regex y ``glob`` no recursivo sobre
+    # ``local/tools``: un caller en un subpaquete —o en la GUI, o en la capa del
+    # agente— nacía sin veto y el ancla no lo veía, y el patrón ``[^)]*`` no
+    # cruza paréntesis, así que una construcción anidada se cortaba en el primer
+    # ``)``. Un ancla que muestrea es justo lo que este test existe para no ser.
+    raiz = pathlib.Path(__file__).resolve().parent.parent / "sky_claw"
 
     sin_veto: list[str] = []
-    for modulo in sorted(tools.glob("*.py")):
+    for modulo in sorted(raiz.rglob("*.py")):
         if modulo.name == "_dir_rollback.py":  # la definición, no un caller
             continue
-        for uso in constructores.findall(modulo.read_text(encoding="utf-8")):
-            if "should_rollback" not in uso:
-                sin_veto.append(f"{modulo.name}: {' '.join(uso.split())}")
+        arbol = ast.parse(modulo.read_text(encoding="utf-8"))
+        sin_veto += [f"{modulo.relative_to(raiz)}:{linea}" for linea in _llamadas_sin_veto(arbol)]
 
     assert not sin_veto, (
         f"estos move-aside restaurarían aunque se hubiera perdido la lease, pisando a un dueño concurrente: {sin_veto}"
     )
+
+
+async def test_exito_con_target_vacio_conserva_el_contenido_previo(tmp_path: pathlib.Path) -> None:
+    """ "Existe" no es "lo regeneró" (review CodeRabbit #399).
+
+    Una herramienta que crea el directorio candidato y no escribe nada dentro
+    dejaba pasar el ``rmtree`` del backup: la misma pérdida silenciosa que el test
+    anterior ataja, un paso más allá — y plausible justo en el escenario
+    multi-candidato de Pandora que motivó todo esto.
+    """
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("irremplazable", encoding="utf-8")
+
+    async with DirectoryRollback(target):
+        target.mkdir()  # la tool crea el dir y no escribe nada
+
+    assert (target / "previo.txt").read_text(encoding="utf-8") == "irremplazable"
+    assert not list(tmp_path.glob("Output.rollback-*"))
+
+
+async def test_veto_que_lanza_no_escapa_de_aexit_y_es_fail_closed(tmp_path: pathlib.Path) -> None:
+    """Un ``should_rollback`` que lance no puede romper la garantía de ``__aexit__``.
+
+    La clase promete no lanzar nunca desde ``__aexit__`` para no enmascarar la
+    excepción del body. El veto lo provee el caller y puede reventar; ante eso se
+    asume lo conservador —no restaurar, conservar el backup—, porque restaurar a
+    ciegas es lo único irreversible de las dos opciones (review CodeRabbit #399).
+    """
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("mio", encoding="utf-8")
+
+    def _veto_roto() -> bool:
+        raise AttributeError("el lock cambió de superficie")
+
+    rb = DirectoryRollback(target, should_rollback=_veto_roto)
+    with pytest.raises(RuntimeError, match="boom"):  # la excepción ORIGINAL, no la del veto
+        async with rb:
+            target.mkdir()
+            (target / "parcial.txt").write_text("parcial", encoding="utf-8")
+            raise RuntimeError("boom")
+
+    assert rb.rollback_completed is False
+    backups = list(tmp_path.glob("Output.rollback-*"))
+    assert len(backups) == 1, "el backup debe conservarse cuando el veto no se pudo evaluar"
+    assert (backups[0] / "previo.txt").read_text(encoding="utf-8") == "mio"
+
+
+async def test_veto_de_lease_tambien_protege_el_restore_del_camino_limpio(tmp_path: pathlib.Path) -> None:
+    """El veto de lease debe cubrir la restauración del target vacío EN EL CAMINO
+    LIMPIO, no sólo en el de excepción (review Codex #401).
+
+    Es el mismo defecto #1 del repo cometido dentro de la propia clase: el veto se
+    cableó en la rama ``if exc_type is not None`` de ``__aexit__`` y se olvidó el
+    ``else`` — que es exactamente donde vive la restauración de target vacío que
+    este PR agregó. Si el heartbeat marcó la lease perdida DURANTE un run que
+    igual "termina bien" (sin excepción) y el target queda vacío, restaurar sin
+    consultar el veto pisaría lo que un dueño concurrente pudo haber empezado a
+    escribir ahí — el mismo daño que el veto ya evita en la rama de excepción.
+    """
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("del dueño viejo", encoding="utf-8")
+
+    rb = DirectoryRollback(target, should_rollback=lambda: False)
+    async with rb:
+        target.mkdir()  # el "dueño nuevo" recreó el dir, todavía sin contenido
+
+    # Sin excepción: el body terminó bien. Si el veto se ignora acá, el dir del
+    # dueño nuevo se borra y se restaura el backup del viejo encima.
+    assert target.exists()
+    assert not (target / "previo.txt").exists(), "se restauró el backup del dueño viejo sobre el del nuevo"
+    backups = list(tmp_path.glob("Output.rollback-*"))
+    assert len(backups) == 1, "el backup del dueño viejo debe conservarse, ni perderse ni restaurarse"
+    assert (backups[0] / "previo.txt").read_text(encoding="utf-8") == "del dueño viejo"
+
+
+async def test_commit_con_target_vacio_no_revierte_el_estado_comprometido(tmp_path: pathlib.Path) -> None:
+    """``commit()`` es un punto de no-retorno: un target vacío en ese instante es
+    el estado FINAL que el caller eligió, no algo que revertir (review Codex #401).
+
+    ``commit()`` delega en ``_discard_backup`` para soltar el backup — pero esa
+    función ganó, en este mismo PR, la lógica de "restaurar si está vacío". Sin
+    diferenciar el llamador, un commit sobre un output vacío quedaba revertido
+    por la propia limpieza que el commit dispara, violando el contrato que la
+    docstring de ``commit()`` promete textualmente.
+    """
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "viejo.txt").write_text("viejo", encoding="utf-8")
+
+    async with DirectoryRollback(target) as rb:
+        target.mkdir()  # el caller deja el target vacío A PROPÓSITO
+        await rb.commit()  # ya es final
+
+    assert target.exists()
+    assert not (target / "viejo.txt").exists(), "commit() revirtió un estado ya comprometido"
+    assert not list(tmp_path.glob("Output.rollback-*")), "no debe quedar backup huérfano tras commit"
+
+
+async def test_cancelacion_no_deja_rmdir_sin_su_rename(tmp_path: pathlib.Path) -> None:
+    """Entre el ``rmdir`` del target vacío y el ``rename`` del backup no puede
+    haber una cancelación que ejecute uno sin el otro (review Codex #401).
+
+    Eran dos ``await`` separados: una cancelación que llegara justo entre medio
+    dejaba el target BORRADO (rmdir ya corrió) y el backup varado bajo su nombre
+    ``.rollback-*`` (rename nunca llegó a correr) — el mismo agujero que el shield
+    de ``__aenter__`` ataja del otro lado del ciclo de vida. Se cierra fusionando
+    los dos pasos en una sola llamada de hilo: sin punto de `await` entre medio,
+    no hay ventana que una cancelación pueda aprovechar.
+    """
+    import asyncio
+    import threading
+    from unittest.mock import patch
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("irremplazable", encoding="utf-8")
+
+    rmdir_real = pathlib.Path.rmdir
+    rmdir_hecho = threading.Event()
+    # El hilo del rmdir se BLOQUEA tras terminar, hasta que el test ya haya
+    # llamado cancel(). Sin esto la reproducción es una carrera (verificado: sólo
+    # 3 de 5 corridas reproducían el agujero) — cancelar DESPUÉS de que el hilo
+    # ya haya devuelto el control no prueba nada, porque la corrutina puede haber
+    # alcanzado a arrancar el rename antes de que la cancelación se procese.
+    # Bloquear garantiza el orden: cancel() SIEMPRE ocurre antes de que la
+    # corrutina tenga chance de seguir.
+    continuar = threading.Event()
+
+    def _rmdir_bloqueante(self: pathlib.Path) -> None:
+        rmdir_real(self)
+        rmdir_hecho.set()
+        continuar.wait(5.0)
+
+    rename_real = pathlib.Path.rename
+    # Sólo el rename de RESTAURACIÓN (backup -> target) importa acá; el de
+    # move-aside de __aenter__ (target -> backup) usa el MISMO Path.rename
+    # parcheado y dispararía este evento antes de tiempo si no se discrimina
+    # por dirección.
+    rename_de_restauracion_corrio = threading.Event()
+
+    def _rename(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
+        try:
+            return rename_real(self, dst)
+        finally:
+            if dst == target:
+                rename_de_restauracion_corrio.set()
+
+    async def _entrar() -> None:
+        async with DirectoryRollback(target):
+            target.mkdir()  # target vacío al salir -> dispara el restore
+
+    with (
+        patch.object(pathlib.Path, "rmdir", _rmdir_bloqueante),
+        patch.object(pathlib.Path, "rename", _rename),
+    ):
+        task = asyncio.ensure_future(_entrar())
+        assert await asyncio.to_thread(rmdir_hecho.wait, 5.0), "rmdir nunca corrió"
+        task.cancel()
+        continuar.set()  # recién ahora el hilo del rmdir devuelve el control
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # Si el rename SÍ llegó a correr (con el fix, es lo esperado: la fusión
+        # corre en el mismo hilo pese a la cancelación), hay que esperar su
+        # desenlace real antes de mirar el disco.
+        await asyncio.to_thread(rename_de_restauracion_corrio.wait, 1.0)
+
+    if target.exists():
+        # Con el fix: rmdir+rename fusionados corrieron como una unidad pese a
+        # la cancelación (el hilo no se detiene, sólo el await se corta).
+        assert (target / "previo.txt").read_text(encoding="utf-8") == "irremplazable"
+        assert not list(tmp_path.glob("Output.rollback-*"))
+    else:
+        # Sin el fix: el rmdir corrió y el rename nunca llegó a arrancar — el
+        # target quedó BORRADO y el backup varado. Es el estado que este test
+        # existe para prohibir.
+        pytest.fail("el rmdir corrió sin su rename: target borrado, backup varado")
+
+
+def test_meta_test_resuelve_alias_de_import(tmp_path: pathlib.Path) -> None:
+    """El ancla de callers debe resolver ``import ... as`` (review Codex #401).
+
+    Matchear el nombre literal ``DirectoryRollback`` en el AST deja pasar un
+    caller que importe con alias (``from ... import DirectoryRollback as
+    Rollback``): el nodo de la llamada tiene ``func.id == "Rollback"``, así que
+    un chequeo por nombre fijo lo ignora en silencio y el ancla deja de cumplir
+    lo que promete —congelar TODOS los callers—. Se prueba contra una fuente
+    aislada (no un archivo real del árbol) para no ensuciar ``sky_claw/`` sólo
+    para este test.
+    """
+    fuente = (
+        "from sky_claw.local.tools._dir_rollback import DirectoryRollback as Rollback\n"
+        "\n"
+        "def f(target):\n"
+        "    return Rollback(target)\n"  # sin should_rollback — debe detectarse
+    )
+    arbol = ast.parse(fuente)
+
+    assert _llamadas_sin_veto(arbol) == [4]
+
+
+def test_meta_test_detecta_should_rollback_en_none(tmp_path: pathlib.Path) -> None:
+    """``should_rollback=None`` equivale a no pasarlo — el ancla debe verlo
+    igual (review CodeRabbit #401).
+
+    ``_veto_permite_restaurar`` trata ``self._should_rollback is None`` como
+    "siempre permitido restaurar": el mismo estado sin protección que omitir el
+    kwarg. Un chequeo que sólo mira si la keyword está PRESENTE (sin mirar su
+    valor) dejaría pasar ``DirectoryRollback(x, should_rollback=None)`` como si
+    tuviera veto — exactamente la clase de descuido que el ancla existe para
+    atajar, cometido dentro del propio ancla.
+    """
+    fuente = (
+        "from sky_claw.local.tools._dir_rollback import DirectoryRollback\n"
+        "\n"
+        "def f(target):\n"
+        "    return DirectoryRollback(target, should_rollback=None)\n"
+    )
+    arbol = ast.parse(fuente)
+
+    assert _llamadas_sin_veto(arbol) == [4]

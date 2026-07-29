@@ -177,7 +177,7 @@ class DirectoryRollback:
             return
         try:
             if exc_type is not None:
-                if self._should_rollback is not None and not self._should_rollback():
+                if not self._veto_permite_restaurar():
                     # Perdimos la exclusividad: otro dueño pudo haber mutado ya, así
                     # que restaurar pisaría SU salida con nuestro backup viejo. El
                     # backup NO se descarta —queda en disco bajo su nombre
@@ -197,7 +197,7 @@ class DirectoryRollback:
                 # False, señalando al caller un rollback fallido.
                 self.rollback_completed = True
             else:
-                await self._discard_backup()
+                await self._discard_backup(permitir_restore=True)
         except OSError:
             # Nunca enmascarar la excepción del body ni romper un cierre limpio.
             logger.critical(
@@ -221,12 +221,40 @@ class DirectoryRollback:
             return
         self._enabled = False
         try:
-            await self._discard_backup()
+            # permitir_restore=False (review Codex #401): commit() es un punto de
+            # no-retorno — un target vacío EN ESE INSTANTE es el estado final que
+            # el caller eligió, no algo que la propia limpieza deba revertir. La
+            # lógica de "restaurar si está vacío" que _discard_backup ganó en este
+            # mismo PR es correcta para el camino limpio SIN commit, pero viola el
+            # contrato de commit() si se aplica acá también.
+            await self._discard_backup(permitir_restore=False)
         except OSError:
             logger.warning(
                 "commit(): no se pudo descartar el backup de '%s' (queda huérfano)", self._target, exc_info=True
             )
         self._backup = None
+
+    def _veto_permite_restaurar(self) -> bool:
+        """Evalúa el veto de ``should_rollback`` **fail-closed** (review CodeRabbit #399).
+
+        El callback lo provee el caller y puede lanzar (p. ej. un ``AttributeError``
+        si el lock cambia de superficie). Dejarlo escapar rompería la garantía que
+        la docstring de la clase promete —*nunca lanza desde ``__aexit__``*— y
+        además enmascararía la excepción original del body. Si el veto no se puede
+        evaluar, se asume lo conservador: **no restaurar**, y el backup queda en
+        disco. Restaurar a ciegas es lo único irreversible de las dos opciones.
+        """
+        if self._should_rollback is None:
+            return True
+        try:
+            return bool(self._should_rollback())
+        except Exception:  # noqa: BLE001 — boundary: el callback es del caller
+            logger.critical(
+                "El veto de rollback de '%s' falló al evaluarse; se OMITE el restore (fail-closed).",
+                self._target,
+                exc_info=True,
+            )
+            return False
 
     async def _restore_backup(self) -> None:
         """Descarta el parcial nuevo y restaura el directorio original."""
@@ -236,7 +264,7 @@ class DirectoryRollback:
             await _fs_op_with_retry(self._backup.rename, self._target)
             logger.warning("Rollback: '%s' restaurado desde backup tras fallo del pipeline", self._target)
 
-    async def _discard_backup(self) -> None:
+    async def _discard_backup(self, *, permitir_restore: bool) -> None:
         """Descarta el backup tras un run exitoso — **salvo que nada lo haya reemplazado**.
 
         Enunciado como propiedad del mecanismo (review Codex #399): descartar el
@@ -252,14 +280,65 @@ class DirectoryRollback:
         un run exitoso. Vive acá y no en ``pandora_service`` porque la propiedad no
         es de Pandora: cualquier caller que proteja más de un destino candidato
         —o cuya herramienta pueda no producir salida— tiene el mismo agujero.
+
+        ``permitir_restore=False`` lo pide ``commit()`` (review Codex #401): un
+        target vacío en el instante del commit es el estado FINAL elegido por el
+        caller, no algo que revertir. Con la bandera en False esta función SÓLO
+        descarta —nunca restaura— así que el commit nunca se deshace a sí mismo.
         """
         if self._backup is None or not await asyncio.to_thread(self._backup.exists):
             return
-        if not await asyncio.to_thread(self._target.exists):
-            await _fs_op_with_retry(self._backup.rename, self._target)
+
+        def _sin_regenerar() -> bool:
+            """ "Existe" no es "lo regeneró" (review CodeRabbit #399): una herramienta
+            que crea el directorio candidato y no escribe nada dentro dejaba pasar
+            el ``rmtree`` del backup — la misma pérdida silenciosa, un paso más
+            allá, y plausible justo en el escenario multi-candidato que motivó este
+            método."""
+            return not self._target.exists() or not any(self._target.iterdir())
+
+        if permitir_restore and await asyncio.to_thread(_sin_regenerar):
+            # El veto de lease también cubre ESTE restore (review Codex #401): es
+            # el mismo defecto #1 del repo cometido dentro de la propia clase —
+            # se cableó en la rama de excepción de __aexit__ y se olvidó acá, que
+            # es justo donde vive la restauración de target vacío que este PR
+            # agregó. Si el heartbeat perdió la lease durante un run que igual
+            # "termina bien", restaurar sin consultar el veto pisaría lo que un
+            # dueño concurrente empezó a escribir en el target vacío.
+            if not self._veto_permite_restaurar():
+                logger.critical(
+                    "Restauración de target vacío en '%s' OMITIDA: se perdió la exclusividad del recurso. "
+                    "El backup queda en '%s' para recuperación manual.",
+                    self._target,
+                    self._backup,
+                )
+                return
+            # rmdir + rename FUSIONADOS en una sola llamada de hilo (review Codex
+            # #401): eran dos ``await`` separados, y una cancelación que llegara
+            # justo entre medio dejaba el rmdir hecho y el rename sin correr — el
+            # target BORRADO y el backup varado bajo su nombre ``.rollback-*``, sin
+            # que nadie lo restaure. Al no haber punto de ``await`` entre los dos
+            # pasos, no hay ventana que una cancelación pueda aprovechar: el hilo
+            # (que no se detiene por cancelar quien lo espera, mismo motivo que el
+            # shield de ``__aenter__``) siempre corre los dos juntos o ninguno.
+            await _fs_op_with_retry(self._restaurar_target_vacio_sync)
             logger.info(
                 "'%s' no fue regenerado por la herramienta; se conserva el contenido previo.",
                 self._target,
             )
             return
         await _fs_op_with_retry(shutil.rmtree, self._backup)
+
+    def _restaurar_target_vacio_sync(self) -> None:
+        """rmdir del target vacío + rename del backup, como una sola unidad síncrona.
+
+        Corre dentro de UN ``asyncio.to_thread`` (ver ``_discard_backup``): sin
+        punto de ``await`` entre las dos operaciones, una cancelación no puede
+        aterrizar entre medio. Idempotente ante reintentos de
+        ``_fs_op_with_retry``: si el rename falla tras un rmdir ya exitoso, el
+        segundo intento ve ``target`` inexistente y salta directo al rename.
+        """
+        if self._target.exists():
+            self._target.rmdir()
+        assert self._backup is not None  # invariante: el caller ya lo verificó
+        self._backup.rename(self._target)
