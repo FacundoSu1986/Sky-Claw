@@ -32,7 +32,20 @@ def _llamadas_sin_veto(arbol: ast.Module) -> list[int]:
         if not isinstance(nodo, ast.Call):
             continue
         nombre = nodo.func.id if isinstance(nodo.func, ast.Name) else getattr(nodo.func, "attr", "")
-        if nombre in nombres_validos and not any(kw.arg == "should_rollback" for kw in nodo.keywords):
+        if nombre not in nombres_validos:
+            continue
+        # Presente pero en None equivale a ausente (review CodeRabbit #401):
+        # ``_veto_permite_restaurar`` trata ``self._should_rollback is None`` como
+        # "siempre permitido" — el mismo estado sin protección que no pasar el
+        # kwarg. Un ``DirectoryRollback(x, should_rollback=None)`` pasaría el
+        # chequeo de sólo-presencia mientras deja el veto tan desactivado como si
+        # nunca se hubiera escrito: exactamente la clase de descuido que este
+        # ancla exhaustiva existe para atajar.
+        tiene_veto_real = any(
+            kw.arg == "should_rollback" and not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
+            for kw in nodo.keywords
+        )
+        if not tiene_veto_real:
             lineas.append(nodo.lineno)
     return lineas
 
@@ -574,6 +587,28 @@ def test_meta_test_resuelve_alias_de_import(tmp_path: pathlib.Path) -> None:
         "\n"
         "def f(target):\n"
         "    return Rollback(target)\n"  # sin should_rollback — debe detectarse
+    )
+    arbol = ast.parse(fuente)
+
+    assert _llamadas_sin_veto(arbol) == [4]
+
+
+def test_meta_test_detecta_should_rollback_en_none(tmp_path: pathlib.Path) -> None:
+    """``should_rollback=None`` equivale a no pasarlo — el ancla debe verlo
+    igual (review CodeRabbit #401).
+
+    ``_veto_permite_restaurar`` trata ``self._should_rollback is None`` como
+    "siempre permitido restaurar": el mismo estado sin protección que omitir el
+    kwarg. Un chequeo que sólo mira si la keyword está PRESENTE (sin mirar su
+    valor) dejaría pasar ``DirectoryRollback(x, should_rollback=None)`` como si
+    tuviera veto — exactamente la clase de descuido que el ancla existe para
+    atajar, cometido dentro del propio ancla.
+    """
+    fuente = (
+        "from sky_claw.local.tools._dir_rollback import DirectoryRollback\n"
+        "\n"
+        "def f(target):\n"
+        "    return DirectoryRollback(target, should_rollback=None)\n"
     )
     arbol = ast.parse(fuente)
 
