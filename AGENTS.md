@@ -77,6 +77,8 @@ instrumento y funciona:
 - `tests/test_hitl_client_scoping.py` → la familia de lanzadores se detecta por
   introspección y se congela; un lanzador nuevo rompe el ancla hasta que se le
   escribe su receta, y la receta lo mete en los tests de comportamiento.
+- `tests/test_db_connection_invariant.py` → el conjunto de módulos que abren
+  conexiones SQLite por su cuenta se detecta por AST y se congela.
 
 Escribir el racional de por qué excluís una rama **no cuenta como verificarla**:
 en #318 y #373 el autor enumeró, escribió el párrafo justificando el recorte, y

@@ -114,27 +114,16 @@ El CI ejecuta `bandit`, `pip-audit --strict` y `npm audit`. Evita introducir dep
 
 ## 4. Convenciones de Código
 
-Consulta [.github/coding_conventions.md](.github/coding_conventions.md) para el detalle completo. Aquí un resumen de las reglas innegociables (P0/P1):
+Las invariantes (concurrencia, DB, agentes LLM, errores y logging) viven en un
+solo lugar: **[.github/coding_conventions.md](.github/coding_conventions.md)**,
+con [AGENTS.md](AGENTS.md) como puerta de entrada para agentes.
 
-### 4.1 Concurrencia (NiceGUI / asyncio)
-- **Prohibido** `time.sleep()` en código async. Usa `asyncio.sleep()`.
-- No bloquear el event loop. I/O pesada debe correr en `asyncio.to_thread` o executors.
-- Los eventos hacia la UI deben emitirse desde el loop.
-
-### 4.2 Base de Datos (SQLite)
-- Conexiones con `threading.local()`; nunca compartir instancias de `DatabaseAgent`.
-- Solo consultas parametrizadas. **Prohibido** f-strings o `.format()` en SQL.
-- Transacciones batch con `BEGIN IMMEDIATE`.
-
-### 4.3 Agentes LLM y Contratos
-- Todo output de LLM se valida con Pydantic (`model_validate_json`). **Prohibido** regex para parsear responses.
-- Operaciones de archivo confinadas al sandbox: validar con `PathValidator.validate()`.
-- Los Tools nuevos emiten `success: bool` + `message: str` (ver contrato en `AGENTS.md`).
-
-### 4.4 Errores y Logging
-- Usa la jerarquía `AppNexusError` (`sky_claw/app/core/errors.py`).
-- **Prohibido** `except Exception` desnudo; re-lanzar excepciones desconocidas tras loggear.
-- Usa `logging.getLogger(__name__)`. **Prohibido** `print()`.
+Acá no hay resumen a propósito. Este archivo tuvo una copia de esas reglas y
+derivó: sostuvo durante meses que las conexiones SQLite eran por hilo
+(thread-local) cuando la DB es `aiosqlite` con conexión singleton por path.
+Es exactamente el caso que
+[docs/documentation/source_of_truth.md](docs/documentation/source_of_truth.md)
+prohíbe — corregí la fuente, no agregues una tercera versión.
 
 ---
 
@@ -149,11 +138,12 @@ Consulta [.github/coding_conventions.md](.github/coding_conventions.md) para el 
 ### 5.2 Creación del PR
 
 1.  Asegúrate de que todos los tests pasan localmente: `pytest`.
-2.  Ejecuta los linters: `ruff check .` y `mypy sky_claw/`.
+2.  Ejecuta los linters: `ruff check sky_claw/ tests/`, `ruff format --check sky_claw/ tests/` y `mypy sky_claw/` (los tres, como en CI — ver §3).
 3.  Pushea tu rama y abre un PR en GitHub.
 4.  El título del PR debe ser claro y conciso (ej. "feat: Añadir soporte para BodySlide Batch Build").
 5.  En la descripción del PR, vincula el issue o ticket correspondiente (ej. "Cierra #123").
-6.  **Tareas del Backlog:** Si tu PR cierra una tarea de `TECHNICAL_REVIEW_TASKS.md` (ej. T-XX), **debes** actualizar `docs/pending_ooda_status.md` en el mismo PR. El título declarando "cerrado" no es suficiente; verifica el árbol completo de callers.
+6.  **Tareas del Backlog:** Si tu PR cierra una tarea de `TECHNICAL_REVIEW_TASKS.md` (ej. T-XX), **debes** actualizar `docs/pending_ooda_status.md` en el mismo PR. El título declarando "cerrado" no es suficiente.
+7.  **Hermanos:** si tocás un camino mutante (GUI o agente LLM), leé ["La regla que más se viola"](AGENTS.md) en `AGENTS.md` antes de abrir el PR. Es la clase de defecto dominante del repo y el remedio es un test que enumere, no revisar callers a ojo.
 
 ### 5.3 Proceso de Revisión
 
