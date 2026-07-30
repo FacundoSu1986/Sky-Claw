@@ -59,27 +59,44 @@ def link_kind_or_raise(path: pathlib.Path) -> str | None:
     creyendo que era un directorio real (review qodo-merge #404). Reintentar
     ESTA función con la misma política de backoff que las mutaciones cierra la
     ventana sin inventar una segunda implementación de la detección.
+
+    ``FileNotFoundError`` es la ÚNICA excepción que NO propaga: "la ruta no
+    existe" no es ambiguo ni transitorio como un lock de AV/indexer —
+    reintentarlo no lo cambia, y es el caso NORMAL de un primer run (target
+    todavía no creado). Dejarlo escapar rompía exactamente eso: un
+    ``_fs_op_with_retry`` alrededor de esta función quemaba los 5 reintentos
+    con backoff y terminaba fallando ``__aenter__`` sobre la entrada más común
+    y correcta que hay.
     """
-    if path.is_symlink():
-        return SYMLINK
     # ``is_junction`` es de Python 3.12+; en 3.11 se cae al reparse tag.
     es_junction = getattr(path, "is_junction", None)
     if es_junction is not None and es_junction():
         return JUNCTION
-    # ``st_reparse_tag`` sólo existe en Windows. Se consulta sobre el lstat
-    # (que no sigue el enlace) y NO se guarda con ``exists()``: ese guard
-    # seguía el enlace para decidir si vale la pena mirarlo, así que un
-    # junction roto (destino borrado) quedaba invisible — el mismo modo de
-    # falla que este módulo existe para evitar, pero sin cubrir. La ruta
-    # ausente ya la cubre el ``except OSError`` del caller.
+    # UN solo ``lstat()`` (no sigue el enlace) para las dos preguntas que
+    # quedan, en vez de ``is_symlink()`` (que hace su propio lstat interno) más
+    # un ``path.lstat()`` explícito para el reparse tag — este módulo está en
+    # el camino recursivo de borrado (``_rmtree_link_aware_sync`` lo llama una
+    # vez por entrada del árbol), así que duplicar el syscall en el caso común
+    # (directorio real, ni symlink ni junction) se paga en cada archivo de un
+    # output de mods potencialmente enorme (review CodeRabbit #404).
     #
+    # NO se guarda con ``exists()``: ese guard seguía el enlace para decidir
+    # si vale la pena mirarlo, así que un junction roto (destino borrado)
+    # quedaba invisible — el mismo modo de falla que este módulo existe para
+    # evitar, pero sin cubrir.
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(st.st_mode):
+        return SYMLINK
     # Comparación EXACTA contra IO_REPARSE_TAG_MOUNT_POINT, no "no es cero"
     # (review qodo-merge): un reparse tag distinto de cero no es sólo un
     # junction — OneDrive Files On-Demand usa IO_REPARSE_TAG_CLOUD, y NTFS
     # tiene dedup/HSM con sus propios tags. Con el ``bool()`` original,
     # cualquiera de esos hacía que ``DirectoryRollback``/``ProfileSandbox``
     # abortaran con "es un junction" sobre una carpeta que no lo es.
-    if getattr(path.lstat(), "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT:
+    if getattr(st, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT:
         return JUNCTION
     return None
 

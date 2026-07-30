@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from sky_claw.app.security.links import JUNCTION, link_kind, link_kind_or_raise, path_present
+from sky_claw.app.security.links import JUNCTION, link_kind_or_raise, path_present
 
 logger = logging.getLogger("SkyClaw.DirectoryRollback")
 
@@ -228,7 +228,13 @@ class DirectoryRollback:
         # camino "primer run, nada que preservar" y la ruta seguía ocupada — el
         # ``mkdir()`` posterior de la herramienta moría con un ``FileExistsError``
         # que no menciona enlaces y manda a depurar el lugar equivocado.
-        tipo_de_enlace = await asyncio.to_thread(link_kind, self._target)
+        #
+        # ``link_kind_or_raise`` con retry, no ``link_kind`` pelado (review
+        # CodeRabbit #404): un bloqueo TRANSITORIO de AV/indexer acá se leía
+        # como "no es un enlace" y dejaba pasar el move-aside — el mismo modo
+        # de falla que ``_borrar_arbol_o_enlace`` ya cerró, sin cerrar en este
+        # preflight.
+        tipo_de_enlace = await _fs_op_with_retry(link_kind_or_raise, self._target)
         if tipo_de_enlace is not None:
             raise OSError(
                 f"'{self._target}' es un enlace ({tipo_de_enlace}) y no un directorio real: "
@@ -396,6 +402,17 @@ class DirectoryRollback:
         if self._backup is None or not await asyncio.to_thread(path_present, self._backup):
             return
 
+        # Inspección del target con retry, separada de ``_sin_regenerar`` (review
+        # CodeRabbit #404): ``link_kind`` pelado tragaba un bloqueo TRANSITORIO
+        # de AV/indexer y lo leía como "no es un enlace", dejando que un target
+        # enlazado con contenido AJENO se contara como "regenerado" — el mismo
+        # modo de falla que ``_borrar_arbol_o_enlace`` ya cerró. No hace falta
+        # que corra DENTRO de ``_sin_regenerar``: la decisión de ruteo acá no
+        # necesita estar fusionada con la mutación, porque
+        # ``_restaurar_target_vacio_sync`` vuelve a chequear el enlace, fusionado
+        # con SU mutación, justo antes de tocar algo.
+        tipo_de_enlace_target = await _fs_op_with_retry(link_kind_or_raise, self._target)
+
         def _sin_regenerar() -> bool:
             """ "Existe" no es "lo regeneró" (review CodeRabbit #399): una herramienta
             que crea el directorio candidato y no escribe nada dentro dejaba pasar
@@ -411,10 +428,10 @@ class DirectoryRollback:
             descartando la ÚNICA copia del estado previo mientras el enlace ajeno
             seguía ocupando ``self._target`` sin que nadie lo mirara. Empujar la
             decisión a la rama de ``_restaurar_target_vacio_sync`` es lo que la
-            deja pasar por SU chequeo de ``link_kind`` fail-closed, en vez de
+            deja pasar por SU chequeo de ``link_kind_or_raise`` fail-closed, en vez de
             saltearlo entero.
             """
-            return link_kind(self._target) is not None or not self._target.exists() or not any(self._target.iterdir())
+            return tipo_de_enlace_target is not None or not self._target.exists() or not any(self._target.iterdir())
 
         if permitir_restore and await asyncio.to_thread(_sin_regenerar):
             # El chequeo de enlace y el veto viven DENTRO de
@@ -453,8 +470,14 @@ class DirectoryRollback:
         Idempotente ante reintentos de ``_fs_op_with_retry``: si el rename falla
         tras un rmdir ya exitoso, el segundo intento ve ``target`` inexistente y
         salta directo al rename.
+
+        ``link_kind_or_raise`` y no ``link_kind`` (review CodeRabbit #404): esta
+        función entera corre dentro de UN ``_fs_op_with_retry`` en el caller, así
+        que un ``OSError`` de inspección transitorio se retryea ahí — con
+        ``link_kind`` (que traga el ``OSError``) ese retry nunca se activaba y el
+        bloqueo se leía como "no es un enlace".
         """
-        tipo_de_enlace = link_kind(self._target)
+        tipo_de_enlace = link_kind_or_raise(self._target)
         if tipo_de_enlace is not None:
             logger.critical(
                 "Restauración de target vacío en '%s' OMITIDA: el target es un enlace (%s), no un "

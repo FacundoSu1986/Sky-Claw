@@ -21,7 +21,7 @@ import pathlib
 
 import pytest
 
-from sky_claw.app.security.links import is_link, link_kind, path_present
+from sky_claw.app.security.links import is_link, link_kind, link_kind_or_raise, path_present
 from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
 
@@ -52,6 +52,18 @@ class TestLinkKind:
         """
         assert link_kind(tmp_path / "no-existe") is None
         assert is_link(tmp_path / "no-existe") is False
+
+    def test_link_kind_or_raise_no_lanza_por_ruta_inexistente(self, tmp_path: pathlib.Path) -> None:
+        """``FileNotFoundError`` es la ÚNICA excepción que ``link_kind_or_raise``
+        no propaga (review CodeRabbit #404, segunda vuelta).
+
+        "No existe" no es ambiguo como un lock transitorio de AV/indexer —
+        reintentarlo no lo cambia, y es el caso NORMAL de un primer run. Dejarlo
+        escapar hacía que envolver esta función en ``_fs_op_with_retry`` (como
+        hace ``_dir_rollback.__aenter__``) quemara los 5 reintentos con backoff
+        y fallara sobre la entrada más común y correcta que hay.
+        """
+        assert link_kind_or_raise(tmp_path / "no-existe") is None
 
     @symlink_guard
     def test_symlink_a_directorio(self, tmp_path: pathlib.Path) -> None:
