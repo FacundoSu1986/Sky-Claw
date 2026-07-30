@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sky_claw.app.db.journal import JournalSnapshotError
+from sky_claw.app.security.links import rmtree_link_aware
 
 logger = logging.getLogger(__name__)
 
@@ -396,7 +397,7 @@ class FileSnapshotManager:
                     dir_size, file_count = await asyncio.to_thread(_scan_dir_stats, date_dir)
 
                     if not dry_run:
-                        await asyncio.to_thread(shutil.rmtree, date_dir)
+                        await asyncio.to_thread(rmtree_link_aware, date_dir)
 
                     deleted_count += file_count
                     freed_bytes += dir_size
@@ -499,8 +500,12 @@ class FileSnapshotManager:
 
             # SSP-002: Delegar cálculo de tamaño y eliminación a thread pool
             def _calc_dir_size_and_remove(d: pathlib.Path) -> int:
+                # `rglob` sigue los enlaces al sumar tamaños, así que un junction
+                # dentro del store haría contar bytes ajenos y reportarlos como
+                # "liberados"; el borrado link-aware no los toca, así que la cuenta
+                # y el efecto real dejan de divergir.
                 sz = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
-                shutil.rmtree(d)
+                rmtree_link_aware(d)
                 return sz
 
             dir_size = await asyncio.to_thread(_calc_dir_size_and_remove, date_dir)

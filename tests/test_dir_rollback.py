@@ -7,7 +7,7 @@ import pathlib
 
 import pytest
 
-from sky_claw.local.tools import _dir_rollback
+from sky_claw.app.security import links
 from sky_claw.local.tools._dir_rollback import DirectoryRollback, _borrar_arbol_o_enlace
 from tests._symlink_guard import crear_junction, is_junction_real, junction_guard, symlink_guard
 
@@ -1051,7 +1051,7 @@ async def test_borrar_arbol_o_enlace_reintenta_la_inspeccion_ante_bloqueo_transi
     (real / "dato.txt").write_text("contenido", encoding="utf-8")
 
     llamadas = {"n": 0}
-    original = _dir_rollback.link_kind_or_raise
+    original = links.link_kind_or_raise
 
     def _con_un_bloqueo_transitorio(path: pathlib.Path) -> str | None:
         llamadas["n"] += 1
@@ -1059,7 +1059,10 @@ async def test_borrar_arbol_o_enlace_reintenta_la_inspeccion_ante_bloqueo_transi
             raise OSError("WinError 32: el proceso no tiene acceso al archivo")
         return original(path)
 
-    monkeypatch.setattr(_dir_rollback, "link_kind_or_raise", _con_un_bloqueo_transitorio)
+    # Se parchea en ``links`` y no en ``_dir_rollback``: el recorrido se promovió
+    # allá, así que resuelve el símbolo en SU módulo. Parchear el import local
+    # dejaría el test verde sin ejercer nada.
+    monkeypatch.setattr(links, "link_kind_or_raise", _con_un_bloqueo_transitorio)
 
     await _borrar_arbol_o_enlace(real)
 
@@ -1085,7 +1088,7 @@ async def test_borrar_arbol_o_enlace_falla_cerrado_si_la_inspeccion_no_se_recupe
     def _siempre_bloqueado(path: pathlib.Path) -> str | None:
         raise OSError("WinError 32: el proceso no tiene acceso al archivo")
 
-    monkeypatch.setattr(_dir_rollback, "link_kind_or_raise", _siempre_bloqueado)
+    monkeypatch.setattr(links, "link_kind_or_raise", _siempre_bloqueado)
 
     with pytest.raises(OSError):
         await _borrar_arbol_o_enlace(real)

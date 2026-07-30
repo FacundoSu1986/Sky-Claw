@@ -36,6 +36,7 @@ from typing import Literal
 
 from sky_claw.app.security.links import link_kind
 from sky_claw.app.security.path_validator import assert_safe_component
+from sky_claw.local.mo2.vfs import _rmtree_force
 
 logger = logging.getLogger(__name__)
 
@@ -552,25 +553,11 @@ def _make_writable(path: pathlib.Path) -> None:
         path.chmod(path.stat().st_mode | stat.S_IWRITE)
 
 
-def _rmtree_force(path: pathlib.Path) -> None:
-    """Borra ``path`` recursivo, limpiando read-only de Windows (mods suelen
-    traerlo). Mismo patrón que el helper de ``vfs.py`` (compatible con 3.11:
-    intentar → limpiar bits de escritura → reintentar); no-op si no existe.
-    """
-    if not path.exists():
-        return
-
-    def _clear_readonly() -> None:
-        for root, dirs, files in os.walk(path):
-            for name in (*dirs, *files):
-                p = os.path.join(root, name)
-                with contextlib.suppress(OSError):
-                    # Sumar el bit de escritura preservando el modo (clobberear
-                    # el modo de un dir rompe rmtree en POSIX).
-                    os.chmod(p, os.stat(p).st_mode | stat.S_IWRITE)
-
-    try:
-        shutil.rmtree(path)
-    except OSError:
-        _clear_readonly()
-        shutil.rmtree(path)
+# ``_rmtree_force`` vivía acá **copiado** del de ``vfs.py`` —su propio docstring
+# lo declaraba— y las dos copias compartían los mismos dos agujeros:
+# ``shutil.rmtree`` es ciego a los junctions de Windows en la raíz y en cualquier
+# nivel anidado, y la limpieza de read-only iba en un ``os.walk`` previo que
+# también desciende por junctions, así que chmodeaba el árbol ajeno antes de
+# borrarlo. Ahora hay una sola definición (``vfs``), que delega en
+# ``app.security.links.rmtree_link_aware``; se re-exporta acá porque
+# ``grass_profile`` la importa de este módulo.

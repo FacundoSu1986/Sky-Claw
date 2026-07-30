@@ -10,6 +10,7 @@ import pytest
 
 from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.mo2.vfs import MO2Controller
+from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
 
 class BomFixture(NamedTuple):
@@ -131,6 +132,64 @@ class TestDeleteModFiles:
     async def test_delete_nonexistent_dir(self, controller: MO2Controller) -> None:
         # Should not raise
         await controller.delete_mod_files("GhostMod")
+
+    @symlink_guard
+    @pytest.mark.asyncio
+    async def test_un_mod_enlazado_es_fail_closed_y_no_borra_el_destino(
+        self, controller: MO2Controller, mo2_root: pathlib.Path
+    ) -> None:
+        """Un mod que es un ENLACE no se borra: se destruiría el árbol destino.
+
+        Es el sitio de borrado más expuesto del paquete: el nombre del mod llega
+        como **parámetro de una tool del agente LLM**
+        (``system_tools.uninstall_mod`` → ``delete_mod_files``).
+
+        El guard va sobre la ruta CRUDA, antes de ``PathValidator.validate()``,
+        porque ``validate()`` hace ``target.resolve()`` incondicional: para un
+        enlace devuelve el DESTINO YA RESUELTO, así que el borrado ni siquiera
+        necesita atravesar un reparse point — recibe el árbol ajeno
+        directamente, como si fuera el mod.
+
+        **Por eso este caso NO es sólo-Windows y este test no es un ancla de
+        regresión, sino la prueba del fix.** Verificado quitando el guard: con un
+        symlink común en POSIX el contenido del mod ajeno **se borra**. El resto
+        de la familia (``rmtree`` atravesando junctions) sí necesita Windows;
+        éste no, porque el enlace lo resuelve el validador antes de llegar al
+        borrado.
+        """
+        ajeno = mo2_root / "mods" / "OtroModImportante"
+        ajeno.mkdir(parents=True)
+        (ajeno / "importante.esp").write_bytes(b"no-borrar")
+        (mo2_root / "mods" / "ModEnlazado").symlink_to(ajeno, target_is_directory=True)
+
+        with pytest.raises(PathViolationError, match="enlace"):
+            await controller.delete_mod_files("ModEnlazado")
+
+        assert (ajeno / "importante.esp").read_bytes() == b"no-borrar"
+        assert (mo2_root / "mods" / "ModEnlazado").is_symlink(), "el enlace tampoco se toca"
+
+    @junction_guard
+    @pytest.mark.asyncio
+    async def test_un_mod_con_junction_es_fail_closed_y_no_borra_el_destino(
+        self, controller: MO2Controller, mo2_root: pathlib.Path
+    ) -> None:
+        """El mismo caso con un junction — el que de verdad pierde datos.
+
+        Junctionear una carpeta de mods a otro disco es práctica corriente en
+        MO2, y ``is_symlink()`` (lo que usaba el guard de ``validate()``) es
+        ciego a ellos.
+        """
+        ajeno = mo2_root / "mods" / "OtroModImportante"
+        ajeno.mkdir(parents=True)
+        (ajeno / "importante.esp").write_bytes(b"no-borrar")
+        enlace = mo2_root / "mods" / "ModEnlazado"
+        if (motivo := crear_junction(enlace, ajeno)) is not None:
+            pytest.fail(f"no se pudo crear el junction que este test existe para ejercer: {motivo}")
+
+        with pytest.raises(PathViolationError, match="enlace"):
+            await controller.delete_mod_files("ModEnlazado")
+
+        assert (ajeno / "importante.esp").read_bytes() == b"no-borrar"
 
 
 class TestBomPreservation:

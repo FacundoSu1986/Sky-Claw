@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from sky_claw.app.security.links import link_kind, rmtree_link_aware
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 from sky_claw.local.tools.output_targets import dyndolod_staging_roots
 
@@ -651,10 +652,23 @@ class DynDOLODRunner:
                     output_path=output_path,
                 )
 
+            # Fail-closed si el destino es un enlace: `mod_path` cuelga de
+            # `mods/` del usuario, y el borrado de abajo destruiría el árbol al
+            # que apunta en vez del output previo de DynDOLOD. Mismo criterio y
+            # mismo orden que `grass_profile.build_config_mod` y
+            # `vfs.delete_mod_files`.
+            if (tipo_de_enlace := link_kind(mod_path)) is not None:
+                raise DynDOLODValidationError(
+                    f"El mod de salida '{mod_name}' es un enlace ({tipo_de_enlace}), no un "
+                    "directorio real: limpiarlo borraría el árbol al que apunta. Reemplazá "
+                    "el enlace por una carpeta real para empaquetar la salida.",
+                    output_path=mod_path,
+                )
+
             # Crear directorio del mod (o limpiar si existe)
             if mod_path.exists():
                 logger.debug("Limpiando directorio existente: %s", mod_path)
-                shutil.rmtree(mod_path)
+                rmtree_link_aware(mod_path)
 
             mod_path.mkdir(parents=True, exist_ok=True)
 

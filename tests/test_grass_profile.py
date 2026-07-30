@@ -317,6 +317,32 @@ async def test_teardown_es_idempotente(manager: GrassProfileManager) -> None:
     await manager.teardown()
 
 
+@_symlink_guard
+async def test_teardown_no_borra_un_objetivo_enlazado(mo2_root: pathlib.Path, manager: GrassProfileManager) -> None:
+    """El teardown hereda el fail-closed que ``build_config_mod`` ya tenía.
+
+    ``mods/<config_mod>`` es LITERALMENTE la misma ruta que
+    :meth:`create_config_mod` protege desde #404 con ``link_kind`` sobre la ruta
+    cruda. Tener el guard sólo en el camino de creación y no en el de borrado
+    era la asimetría entre hermanos **dentro de un mismo archivo** que este repo
+    nombra como su defecto dominante.
+
+    El objetivo enlazado se reporta como fallido —para que el operador lo vea—
+    en vez de borrarse o de tragarse en silencio.
+    """
+    ajeno = mo2_root / "mods" / "OtroModImportante"
+    ajeno.mkdir(parents=True)
+    (ajeno / "importante.esp").write_bytes(b"no-borrar")
+    enlazado = mo2_root / "mods" / "SkyClaw - Grass Precache Config"
+    enlazado.symlink_to(ajeno, target_is_directory=True)
+
+    fallidos = await manager.teardown()
+
+    assert enlazado in fallidos, "un objetivo enlazado debe reportarse, no borrarse"
+    assert (ajeno / "importante.esp").read_bytes() == b"no-borrar"
+    assert enlazado.is_symlink(), "el enlace tampoco se toca"
+
+
 async def test_teardown_reporta_fallos_e_intenta_ambos(
     mo2_root: pathlib.Path, manager: GrassProfileManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:

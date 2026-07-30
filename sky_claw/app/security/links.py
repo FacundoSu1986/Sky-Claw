@@ -23,13 +23,23 @@ enumera los módulos que la implementan y rompe ante una copia nueva.
 Sigue el criterio que ya usa :mod:`sky_claw.app.security.file_permissions`:
 preguntar por el enlace **antes** que por la existencia, porque el orden inverso
 deja pasar los enlaces rotos en silencio.
+
+Además de *detectar*, este módulo **borra**: :func:`rmtree_link_aware` es el
+único borrado recursivo del paquete que no atraviesa enlaces. Vive acá y no en
+el caller destructivo de turno porque la decisión que toma —"esto es un enlace,
+borro el enlace y no lo que apunta"— es exactamente la que implementan las
+funciones de arriba, y separarlas fue lo que dejó ``shutil.rmtree`` crudo en 9
+módulos. El ancla ``tests/test_borrado_recursivo.py`` enumera a todo el que
+borre árboles y exige que declare con qué mecanismo.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 import stat
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -134,3 +144,109 @@ def path_present(path: pathlib.Path) -> bool:
     Quien pregunta "¿está libre el camino?" necesita esta respuesta, no la otra.
     """
     return path.exists() or is_link(path)
+
+
+def borrar_enlace(ruta: pathlib.Path, tipo: str) -> None:
+    """Borra el ENLACE *ruta*, nunca el árbol al que ``tipo`` dice que apunta.
+
+    ``Path.unlink`` borra un symlink en POSIX, y en Windows un symlink de
+    ARCHIVO — pero un symlink de DIRECTORIO en Windows necesita ``rmdir`` igual
+    que un junction: ``DeleteFileW`` (lo que ``unlink`` invoca) rechaza
+    cualquier ruta con ``FILE_ATTRIBUTE_DIRECTORY``, que un symlink de
+    directorio SÍ tiene, y falla con ``PermissionError`` (review qodo-merge
+    #404). Por eso la rama no-junction prueba ``unlink`` primero (cubre POSIX
+    sin costo) y cae a ``rmdir`` si falla, en vez de asumir ``unlink``
+    incondicional.
+
+    Para el junction se va directo a ``rmdir``, sin probar ``unlink``: ahí
+    ``unlink`` falla SIEMPRE (no es transitorio), así que probarlo primero sólo
+    quema tiempo antes de caer igual a ``rmdir``.
+    """
+    if tipo == JUNCTION:
+        ruta.rmdir()
+        return
+    try:
+        ruta.unlink()
+    except OSError:
+        ruta.rmdir()
+
+
+def _sumar_bit_de_escritura(ruta: pathlib.Path) -> None:
+    """Agrega ``S_IWRITE`` preservando el resto del modo.
+
+    Clobberear el modo completo de un directorio rompe el borrado en POSIX (se
+    pierde el bit de ejecución y deja de poder recorrerse), así que se suma en
+    vez de asignar.
+    """
+    try:
+        os.chmod(ruta, ruta.stat().st_mode | stat.S_IWRITE)
+    except OSError as exc:  # noqa: BLE001 — best-effort: el borrado de abajo re-lanza si igual falla
+        logger.debug("No se pudo limpiar el read-only de %s: %s", ruta, exc)
+
+
+def _borrar_con_reintento_de_readonly(
+    operacion: Callable[[], None],
+    ruta: pathlib.Path,
+    *,
+    limpiar_readonly: bool,
+) -> None:
+    """Ejecuta *operacion*; si falla y se pidió, limpia el read-only y reintenta.
+
+    El read-only se limpia **por entrada y sólo ante el fallo**, no con un
+    ``os.walk`` previo sobre todo el árbol como hacían las dos copias de
+    ``_rmtree_force``: ese walk desciende por junctions (``followlinks=False``
+    decide con ``islink()``, ciego al reparse point) y terminaba **chmodeando el
+    árbol ajeno** antes de que ``rmtree`` lo borrara. Acá el chmod no puede
+    alcanzar nada que el recorrido no vaya a borrar.
+    """
+    try:
+        operacion()
+    except OSError:
+        if not limpiar_readonly:
+            raise
+        _sumar_bit_de_escritura(ruta)
+        operacion()
+
+
+def _borrar_recursivo(ruta: pathlib.Path, *, limpiar_readonly: bool) -> None:
+    """Recorrido interno de :func:`rmtree_link_aware`; asume que *ruta* existe."""
+    tipo = link_kind_or_raise(ruta)
+    if tipo is not None:
+        borrar_enlace(ruta, tipo)
+        return
+    if not ruta.is_dir():
+        _borrar_con_reintento_de_readonly(ruta.unlink, ruta, limpiar_readonly=limpiar_readonly)
+        return
+    with os.scandir(ruta) as entradas:
+        for entrada in entradas:
+            _borrar_recursivo(pathlib.Path(entrada.path), limpiar_readonly=limpiar_readonly)
+    _borrar_con_reintento_de_readonly(ruta.rmdir, ruta, limpiar_readonly=limpiar_readonly)
+
+
+def rmtree_link_aware(ruta: pathlib.Path, *, limpiar_readonly: bool = False) -> None:
+    """Borra *ruta* recursivamente SIN atravesar enlaces, ni siquiera anidados.
+
+    Reemplaza a ``shutil.rmtree`` en todo el paquete. ``rmtree`` sólo protege su
+    propia RAÍZ contra symlinks (ahí lanza ``OSError``) y es ciego a junctions
+    en la raíz **y en cualquier nivel más profundo**: su recorrido interno usa
+    ``os.path.islink()``/``DirEntry.is_dir()``, que no distinguen un
+    ``IO_REPARSE_TAG_MOUNT_POINT`` de un directorio real. Un árbol por lo demás
+    propio con un junction en un subdirectorio —una sola carpeta de mods llevada
+    a otro disco, práctica corriente en MO2— se atravesaba igual y borraba el
+    destino ajeno, sin excepción que lo delatara. Acá cada entrada se inspecciona
+    con :func:`link_kind_or_raise` ANTES de decidir si recursar o borrar sólo el
+    enlace.
+
+    *limpiar_readonly* activa el reintento tras sumar el bit de escritura, que
+    los mods extraídos y los ``.git`` necesitan en Windows. Va apagado por
+    defecto: es una mutación de permisos, y el caller que no la pidió merece ver
+    el ``OSError`` en vez de que se le toquen modos en silencio.
+
+    **No lanza si *ruta* no está.** Borrar lo que ya no existe cumplió el
+    objetivo, y la ausencia se mide con :func:`path_present` —no con
+    ``exists()``— para que un enlace ROTO cuente como presente y se borre el
+    enlace en vez de tomarse por "no hay nada acá".
+    """
+    if not path_present(ruta):
+        return
+    _borrar_recursivo(ruta, limpiar_readonly=limpiar_readonly)

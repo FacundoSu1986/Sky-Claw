@@ -21,8 +21,14 @@ import pathlib
 
 import pytest
 
-from sky_claw.app.security.links import is_link, link_kind, link_kind_or_raise, path_present
-from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
+from sky_claw.app.security.links import (
+    is_link,
+    link_kind,
+    link_kind_or_raise,
+    path_present,
+    rmtree_link_aware,
+)
+from tests._symlink_guard import crear_junction, is_junction_real, junction_guard, symlink_guard
 
 
 class TestLinkKind:
@@ -181,6 +187,182 @@ class TestPathPresent:
 
         assert enlace.exists() is False
         assert path_present(enlace) is True
+
+
+class TestRmtreeLinkAware:
+    """El borrado recursivo que no atraviesa enlaces — reemplazo de ``shutil.rmtree``.
+
+    El caso que motiva la primitiva no es el enlace en la RAÍZ (que ``rmtree`` al
+    menos rechaza cuando es un symlink) sino el **anidado**: su recorrido interno
+    usa ``DirEntry.is_dir()``, ciego al reparse point, así que un árbol por lo
+    demás propio con un junction adentro se atraviesa entero y borra el destino
+    ajeno sin lanzar nada.
+    """
+
+    def test_borra_un_arbol_real_completo(self, tmp_path: pathlib.Path) -> None:
+        raiz = tmp_path / "arbol"
+        (raiz / "sub" / "hondo").mkdir(parents=True)
+        (raiz / "suelto.txt").write_text("x", encoding="utf-8")
+        (raiz / "sub" / "hondo" / "dato.bin").write_bytes(b"y")
+
+        rmtree_link_aware(raiz)
+
+        assert not raiz.exists()
+
+    def test_es_no_op_si_la_ruta_no_existe(self, tmp_path: pathlib.Path) -> None:
+        """Borrar lo que ya no está cumplió el objetivo; no es un error.
+
+        Lo necesitan los callers que hoy hacen ``if x.exists(): _rmtree_force(x)``
+        y los que confían en el no-op interno que tenía una de las dos copias.
+        """
+        rmtree_link_aware(tmp_path / "jamas-existio")
+
+    @symlink_guard
+    def test_un_symlink_anidado_se_desenlaza_sin_tocar_el_destino(self, tmp_path: pathlib.Path) -> None:
+        """Ancla de regresión, **no** prueba del fix — verificado, no supuesto.
+
+        ``shutil.rmtree`` ya trata bien el symlink anidado: su recorrido usa
+        ``entry.is_dir(follow_symlinks=False)``, así que lo desenlaza en vez de
+        atravesarlo (comprobado ejecutándolo: raíz borrada, destino intacto).
+        Este test pasaría igual con el ``rmtree`` crudo. Existe para que el
+        reemplazo hecho a mano no regresione el caso que ya andaba, y para dar
+        cobertura real al recorrido nuevo en el runner de Linux. El caso que de
+        verdad pierde datos es el junction de abajo, y sólo Windows lo ejerce.
+        """
+        ajeno = tmp_path / "arbol_ajeno"
+        ajeno.mkdir()
+        (ajeno / "importante.txt").write_text("no borrar", encoding="utf-8")
+
+        raiz = tmp_path / "arbol"
+        (raiz / "propio").mkdir(parents=True)
+        (raiz / "propio" / "mio.txt").write_text("borrable", encoding="utf-8")
+        (raiz / "enlace").symlink_to(ajeno, target_is_directory=True)
+
+        rmtree_link_aware(raiz)
+
+        assert not raiz.exists()
+        assert (ajeno / "importante.txt").read_text(encoding="utf-8") == "no borrar"
+
+    @junction_guard
+    def test_un_junction_anidado_se_desenlaza_sin_tocar_el_destino(self, tmp_path: pathlib.Path) -> None:
+        """El que de verdad perdía datos, y sólo Windows puede ejercer.
+
+        ``shutil.rmtree`` acá no lanza: entra por ``scandir`` al destino, borra
+        su contenido y recién después quita el reparse point.
+        """
+        ajeno = tmp_path / "texturas_en_otro_disco"
+        ajeno.mkdir()
+        (ajeno / "importante.dds").write_bytes(b"no borrar")
+
+        raiz = tmp_path / "arbol"
+        (raiz / "propio").mkdir(parents=True)
+        if (motivo := crear_junction(raiz / "textures", ajeno)) is not None:
+            pytest.fail(f"no se pudo crear el junction que este test existe para ejercer: {motivo}")
+
+        rmtree_link_aware(raiz)
+
+        assert not raiz.exists()
+        assert (ajeno / "importante.dds").read_bytes() == b"no borrar"
+
+    @symlink_guard
+    def test_un_symlink_en_la_raiz_borra_solo_el_enlace(self, tmp_path: pathlib.Path) -> None:
+        ajeno = tmp_path / "arbol_ajeno"
+        ajeno.mkdir()
+        (ajeno / "importante.txt").write_text("no borrar", encoding="utf-8")
+        enlace = tmp_path / "enlace"
+        enlace.symlink_to(ajeno, target_is_directory=True)
+
+        rmtree_link_aware(enlace)
+
+        assert not enlace.is_symlink()
+        assert (ajeno / "importante.txt").read_text(encoding="utf-8") == "no borrar"
+
+    @junction_guard
+    def test_un_junction_en_la_raiz_borra_solo_el_reparse_point(self, tmp_path: pathlib.Path) -> None:
+        ajeno = tmp_path / "arbol_ajeno"
+        ajeno.mkdir()
+        (ajeno / "importante.dds").write_bytes(b"no borrar")
+        enlace = tmp_path / "enlace"
+        if (motivo := crear_junction(enlace, ajeno)) is not None:
+            pytest.fail(f"no se pudo crear el junction que este test existe para ejercer: {motivo}")
+        assert is_junction_real(enlace), "el enlace creado no es un junction invisible a islink()"
+
+        rmtree_link_aware(enlace)
+
+        assert not enlace.exists()
+        assert (ajeno / "importante.dds").read_bytes() == b"no borrar"
+
+    @symlink_guard
+    def test_un_enlace_roto_en_la_raiz_se_borra_igual(self, tmp_path: pathlib.Path) -> None:
+        """La ausencia se mide con ``path_present``, no con ``exists()``.
+
+        Con ``exists()`` un enlace colgante se tomaba por "no hay nada acá" y el
+        borrado era un no-op silencioso que dejaba la ruta ocupada.
+        """
+        roto = tmp_path / "roto"
+        roto.symlink_to(tmp_path / "jamas-existio", target_is_directory=True)
+        assert roto.exists() is False
+
+        rmtree_link_aware(roto)
+
+        assert not roto.is_symlink()
+
+    def test_sin_limpiar_readonly_el_error_se_propaga(self, tmp_path: pathlib.Path) -> None:
+        """El default no toca permisos: quien no lo pidió ve el ``OSError``.
+
+        Se simula el fallo en vez de depender de que el FS del runner respete el
+        bit de sólo-lectura (en POSIX con uid 0 no lo hace).
+        """
+        raiz = tmp_path / "arbol"
+        raiz.mkdir()
+        objetivo = raiz / "porfiado.txt"
+        objetivo.write_text("x", encoding="utf-8")
+
+        unlink_real = pathlib.Path.unlink
+        chmods: list[pathlib.Path] = []
+
+        def _unlink_que_falla(self: pathlib.Path, missing_ok: bool = False) -> None:
+            if self == objetivo:
+                raise PermissionError("WinError 5: acceso denegado")
+            unlink_real(self, missing_ok=missing_ok)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(pathlib.Path, "unlink", _unlink_que_falla)
+            mp.setattr("sky_claw.app.security.links._sumar_bit_de_escritura", chmods.append)
+            with pytest.raises(PermissionError):
+                rmtree_link_aware(raiz)
+
+        assert chmods == [], "no se pidió limpiar_readonly; no debía tocarse ningún permiso"
+
+    def test_con_limpiar_readonly_reintenta_tras_sumar_el_bit(self, tmp_path: pathlib.Path) -> None:
+        """El reintento es POR ENTRADA y sólo ante el fallo.
+
+        Las dos copias de ``_rmtree_force`` lo hacían con un ``os.walk`` previo
+        sobre todo el árbol — y ese walk desciende por junctions, así que
+        chmodeaba el árbol ajeno antes de borrarlo.
+        """
+        raiz = tmp_path / "arbol"
+        raiz.mkdir()
+        objetivo = raiz / "porfiado.txt"
+        objetivo.write_text("x", encoding="utf-8")
+
+        unlink_real = pathlib.Path.unlink
+        fallas = {"n": 0}
+        chmods: list[pathlib.Path] = []
+
+        def _unlink_que_falla_una_vez(self: pathlib.Path, missing_ok: bool = False) -> None:
+            if self == objetivo and fallas["n"] == 0:
+                fallas["n"] += 1
+                raise PermissionError("WinError 5: acceso denegado")
+            unlink_real(self, missing_ok=missing_ok)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(pathlib.Path, "unlink", _unlink_que_falla_una_vez)
+            mp.setattr("sky_claw.app.security.links._sumar_bit_de_escritura", chmods.append)
+            rmtree_link_aware(raiz, limpiar_readonly=True)
+
+        assert chmods == [objetivo], "el chmod debe alcanzar sólo a la entrada que falló"
+        assert not raiz.exists()
 
 
 def test_la_deteccion_de_junctions_vive_en_un_solo_modulo() -> None:

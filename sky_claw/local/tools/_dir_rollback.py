@@ -13,13 +13,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import pathlib
 import time
 from collections.abc import Callable
 from typing import Any
 
-from sky_claw.app.security.links import JUNCTION, link_kind_or_raise, path_present
+from sky_claw.app.security.links import link_kind_or_raise, path_present, rmtree_link_aware
 
 logger = logging.getLogger("SkyClaw.DirectoryRollback")
 
@@ -30,73 +29,26 @@ _FS_RETRIES = 5
 _FS_BACKOFF_SECONDS = 0.1
 
 
-def _borrar_enlace_sync(ruta: pathlib.Path, tipo: str) -> None:
-    """Borra el ENLACE *ruta* (no lo que ``tipo`` diga que apunta a otro lado).
-
-    ``Path.unlink`` borra un symlink en POSIX, y en Windows un symlink de
-    ARCHIVO — pero un symlink de DIRECTORIO en Windows (el único tipo que
-    ``_rmtree_link_aware_sync`` puede producir: este módulo sólo enlaza
-    directorios) necesita ``rmdir`` igual que un junction: ``DeleteFileW`` (lo
-    que ``unlink`` invoca) rechaza cualquier ruta con
-    ``FILE_ATTRIBUTE_DIRECTORY``, que un symlink de directorio SÍ tiene, y
-    falla con ``PermissionError`` (review qodo-merge #404). Por eso la rama
-    no-junction prueba ``unlink`` primero (cubre POSIX sin costo) y cae a
-    ``rmdir`` si falla, en vez de asumir ``unlink`` incondicional.
-
-    Para el junction se va directo a ``rmdir``, sin probar ``unlink``: ahí
-    ``unlink`` falla SIEMPRE (no es transitorio), así que probarlo primero sólo
-    quema tiempo antes de caer igual a ``rmdir``.
-    """
-    if tipo == JUNCTION:
-        ruta.rmdir()
-        return
-    try:
-        ruta.unlink()
-    except OSError:
-        ruta.rmdir()
-
-
-def _rmtree_link_aware_sync(ruta: pathlib.Path) -> None:
-    """Recorre y borra *ruta* SIN atravesar ningún enlace, ni siquiera anidado.
-
-    ``shutil.rmtree`` sólo protege su propia raíz contra symlinks (lanza
-    ``OSError``) y es ciego a junctions ahí Y en cualquier nivel más profundo:
-    su guard/recorrido interno usa ``os.path.islink()``/``DirEntry.is_dir()``,
-    que no distinguen un ``IO_REPARSE_TAG_MOUNT_POINT`` de un directorio real.
-    Un backup/target por lo demás real que tuviera un junction en un
-    subdirectorio —una sola carpeta de un output de DynDOLOD llevada a otro
-    disco, en vez del árbol entero— se atravesaba igual y borraba el destino
-    ajeno, sin excepción que lo delate (review qodo-merge #404). Cada entrada
-    se inspecciona con :func:`link_kind_or_raise` ANTES de decidir si recursar
-    o borrar el enlace, en vez de confiar en un chequeo que sólo mira la raíz.
-
-    Sin retry propio por entrada: corre entera dentro de UN
-    ``_fs_op_with_retry`` (ver el caller), así que un ``OSError`` transitorio
-    en cualquier punto reintenta el recorrido completo — idempotente, porque
-    lo ya borrado simplemente no vuelve a aparecer en el ``scandir``.
-    """
-    tipo = link_kind_or_raise(ruta)
-    if tipo is not None:
-        _borrar_enlace_sync(ruta, tipo)
-        return
-    if not ruta.is_dir():
-        ruta.unlink()
-        return
-    with os.scandir(ruta) as entradas:
-        for entrada in entradas:
-            _rmtree_link_aware_sync(pathlib.Path(entrada.path))
-    ruta.rmdir()
-
-
 async def _borrar_arbol_o_enlace(ruta: pathlib.Path) -> None:
     """Descarta *ruta*, sea un árbol real o un enlace, sin tocar ningún destino ajeno.
 
-    Delega en :func:`_rmtree_link_aware_sync`, que aplica la misma decisión
-    (enlace → borrar sólo el enlace; real → recursar) en la raíz Y en cada
-    nivel anidado — ver su docstring para el modo de falla que motivó no
-    conformarse con chequear sólo la raíz.
+    Delega en :func:`~sky_claw.app.security.links.rmtree_link_aware`, que aplica
+    la misma decisión (enlace → borrar sólo el enlace; real → recursar) en la
+    raíz Y en cada nivel anidado. El recorrido nació acá y se promovió a
+    ``app.security.links`` cuando el censo mostró que otros 8 módulos borraban
+    árboles con ``shutil.rmtree`` crudo: era la única copia correcta del paquete
+    y estaba privada dentro de un módulo privado.
+
+    Sin retry por entrada a propósito: el recorrido entero corre dentro de UN
+    ``_fs_op_with_retry``, así que un ``OSError`` transitorio reintenta todo —
+    idempotente, porque lo ya borrado no vuelve a aparecer en el ``scandir``.
+
+    ``limpiar_readonly`` queda apagado: los artefactos de rollback los produce
+    este módulo con un ``rename``, así que heredan los permisos del árbol que la
+    herramienta generó. Si alguno viniera de solo-lectura, el ``OSError`` tiene
+    que verse en vez de que se muten permisos en silencio.
     """
-    await _fs_op_with_retry(_rmtree_link_aware_sync, ruta)
+    await _fs_op_with_retry(rmtree_link_aware, ruta)
 
 
 async def _fs_op_with_retry(op: Callable[..., Any], *args: Any) -> Any:

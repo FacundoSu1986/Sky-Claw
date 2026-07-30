@@ -40,9 +40,8 @@ from sky_claw.local.mo2.ini_editor import IniEditor
 from sky_claw.local.mo2.profile_sandbox import (
     ProfileNotFoundError,
     SandboxSymlinkError,
-    _rmtree_force,
 )
-from sky_claw.local.mo2.vfs import MO2Controller
+from sky_claw.local.mo2.vfs import MO2Controller, _rmtree_force
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -312,6 +311,14 @@ class GrassProfileManager:
         (análisis hostil §1.6) — y se devuelven los paths que no se pudieron
         borrar para que el caller los exponga en vez de tragarlos.
 
+        **Fail-closed ante un objetivo enlazado**, igual que ``build_config_mod``
+        (:meth:`create_config_mod`): los dos objetivos cuelgan del árbol MO2 del
+        usuario, y ``mods/<config_mod>`` es LITERALMENTE la misma ruta que aquel
+        método ya protege. Tener el guard sólo en el camino de creación y no en
+        el de borrado era la asimetría entre hermanos dentro de un mismo archivo
+        que este repo nombra como su defecto #1. Un enlace se reporta como
+        fallido —no se toca— para que el operador decida.
+
         Returns:
             Lista de rutas que NO se pudieron eliminar (vacía en éxito total).
         """
@@ -321,6 +328,15 @@ class GrassProfileManager:
         ]
         fallidos: list[pathlib.Path] = []
         for objetivo in objetivos:
+            if (tipo_de_enlace := link_kind(objetivo)) is not None:
+                logger.warning(
+                    "Teardown del ritual grass: '%s' es un enlace (%s) y NO se borra — "
+                    "hacerlo destruiría el árbol al que apunta. Quitalo a mano si corresponde.",
+                    objetivo,
+                    tipo_de_enlace,
+                )
+                fallidos.append(objetivo)
+                continue
             try:
                 await asyncio.to_thread(_rmtree_force, objetivo)
             except Exception:  # noqa: BLE001 — un objetivo trabado no debe frenar al otro
