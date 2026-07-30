@@ -25,7 +25,7 @@ confirmarlo contra código y tests.
 | T-22 | Abierto | — | Transiciones y `prefers-reduced-motion` | humano |
 | T-23 | Abierto | — | Virtualizar listas grandes de mods | humano |
 | T-24 | Abierto | — | Labels y foco visible en formularios | humano |
-| T-25 | Bloqueado (rig humano) | — | Ejecutar la matriz E2E con Skyrim, MO2 y herramientas reales | humano |
+| T-25 | Parcial | — | Cerrar T-27 y después ejecutar la matriz E2E con Skyrim, MO2 y herramientas reales | `TECHNICAL_REVIEW_TASKS.md:247-249`; humano |
 | T-26 | Cerrado | #309, #318 y cierres posteriores | — | productores de `persist_action_manifest` |
 | T-27 | Parcial | ADR 0005 para Synthesis | Diseñar redirección de salida para Pandora, DynDOLOD y Wrye Bash | código y ADR 0005 |
 | T-28 | Cerrado | #309, #318 y cierres posteriores | — | productores de `persist_flight_report` |

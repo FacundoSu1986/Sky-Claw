@@ -154,7 +154,7 @@ fail-closed ANTES de mutar (si no se puede persistir, no se muta) y el
 `execute_patch` habría dejado `quick_auto_clean` como mutante sin caja negra,
 repitiendo la sobre-declaración que este doc advierte.
 
-```
+```console
 $ grep -rln "persist_action_manifest\|persist_flight_report" sky_claw/ | grep -v test
 sky_claw/app/db/journal.py       # la definición
 sky_claw/local/tools/loot_service.py     # productor (T-26/T-28 v1)
@@ -461,8 +461,8 @@ corrida real. Ítem ya conocido y documentado, sin cambio de estado.
 
 ## Addendum (2026-07-16) — verificación de auditoría externa (#305) + follow-ups
 
-Una auditoría externa (estilo "Copilot bot") reportó 5 hallazgos sobre los PRs
-#300–#304. Se **verificó cada uno contra el código** (no contra el texto de la
+Una auditoría externa (estilo "Copilot bot") reportó 5 hallazgos sobre los
+PRs #300–#304. Se **verificó cada uno contra el código** (no contra el texto de la
 auditoría) y se documentó el veredicto en
 `docs/audits/auditoria_prs_300-304_verificacion.md`: citas reales,
 pero 2 hallazgos con afirmaciones fabricadas, 1 redundante (pedía código que ya

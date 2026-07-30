@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import pathlib
 
+from sky_claw.local.tools.output_targets import (
+    pandora_output_candidates,
+    pandora_rollback_dirs,
+)
 from tests.test_borrado_recursivo import MECANISMO_DE_BORRADO
 from tests.test_rollback_reconciler import (
     PRODUCTORES_DEL_NOMBRE,
@@ -19,17 +23,48 @@ _RAIZ = pathlib.Path(__file__).resolve().parent.parent
 _INVENTARIO = _RAIZ / "docs" / "pending_ooda_status.md"
 _ESTADOS = {"Cerrado", "Parcial", "Abierto", "Bloqueado (rig humano)"}
 _COLUMNAS = ["Ítem", "Estado", "Cerrado en", "Qué falta", "Verificado por"]
+_ITEMS = frozenset(
+    {
+        "T-10",
+        "T-11",
+        "T-12",
+        "T-16c",
+        "T-22",
+        "T-23",
+        "T-24",
+        "T-25",
+        "T-26",
+        "T-27",
+        "T-28",
+        "T-29",
+        "T-30",
+        *(f"U-{numero:02d}" for numero in range(1, 13)),
+        *(f"F{numero}" for numero in range(1, 10)),
+        "F8 USVFS",
+        "Detección de enlaces",
+        "Borrado recursivo",
+        "Smoke real de QuickAutoClean",
+        "Smokes reales restantes",
+        "Residuos OODA de bajo valor",
+        "Residuos de crash logging",
+    }
+)
+
+
+def _celdas(linea: str) -> list[str]:
+    """Normaliza el espaciado exterior de una fila Markdown."""
+    return [celda.strip() for celda in linea.strip().strip("|").split("|")]
 
 
 def _tabla() -> dict[str, dict[str, str]]:
+    """Lee la tabla de estado sin acoplarla al espaciado Markdown."""
     lineas = _INVENTARIO.read_text(encoding="utf-8").splitlines()
-    cabecera = "| " + " | ".join(_COLUMNAS) + " |"
-    inicio = lineas.index(cabecera)
+    inicio = next(indice for indice, linea in enumerate(lineas) if _celdas(linea) == _COLUMNAS)
     filas: dict[str, dict[str, str]] = {}
     for linea in lineas[inicio + 2 :]:
-        if not linea.startswith("|"):
+        if not linea.strip().startswith("|"):
             break
-        valores = [celda.strip() for celda in linea.strip("|").split("|")]
+        valores = _celdas(linea)
         assert len(valores) == len(_COLUMNAS), linea
         fila = dict(zip(_COLUMNAS, valores, strict=True))
         assert fila["Ítem"] not in filas
@@ -45,8 +80,11 @@ def test_la_tabla_tiene_estados_cerrados_y_anclas_externas() -> None:
     assert "## 2.3 Zero-Trust" in texto
     assert "## Decide — recomendación de próximo frente" in texto
     assert "audits/2026-07_historial_ooda.md" in texto
-    assert {f"U-{numero:02d}" for numero in range(1, 13)} <= set(filas)
-    assert {f"F{numero}" for numero in range(1, 10)} <= set(filas)
+    assert set(filas) == _ITEMS
+
+
+def test_el_parser_tolera_espacios_exteriores_en_la_tabla() -> None:
+    assert _celdas("  | Ítem | Estado | Cerrado en | Qué falta | Verificado por |   ") == _COLUMNAS
 
 
 def test_u04_no_puede_figurar_cerrado_mientras_haya_un_mutador_pendiente() -> None:
@@ -56,7 +94,21 @@ def test_u04_no_puede_figurar_cerrado_mientras_haya_un_mutador_pendiente() -> No
     assert pendientes
     assert fila["Estado"] == "Parcial"
     assert "BodySlide" in fila["Qué falta"]
+    assert "`Data` de Pandora" in fila["Qué falta"]
     assert "test_rollback_salida.py" in fila["Verificado por"]
+
+    game = pathlib.Path("juego")
+    exe = pathlib.Path("tools") / "Pandora" / "Pandora.exe"
+    assert game / "Data" in pandora_output_candidates(game=game, exe=exe)
+    assert game / "Data" not in pandora_rollback_dirs(game=game, exe=exe)
+
+
+def test_t25_nombra_t27_antes_del_rig_humano() -> None:
+    fila = _tabla()["T-25"]
+
+    assert fila["Estado"] == "Parcial"
+    assert "T-27" in fila["Qué falta"]
+    assert "TECHNICAL_REVIEW_TASKS.md" in fila["Verificado por"]
 
 
 def test_u08_cerrado_se_apoya_en_el_reconciliador_enumerativo() -> None:
@@ -89,6 +141,6 @@ def test_borrado_recursivo_no_puede_cerrarse_con_modulos_pendientes() -> None:
 def test_los_smokes_sin_ancla_automatizable_declaran_verificacion_humana() -> None:
     filas = _tabla()
 
-    for item in ("T-25", "Smoke real de QuickAutoClean"):
+    for item in ("Smoke real de QuickAutoClean", "Smokes reales restantes"):
         assert filas[item]["Estado"] == "Bloqueado (rig humano)"
         assert filas[item]["Verificado por"] == "humano"
