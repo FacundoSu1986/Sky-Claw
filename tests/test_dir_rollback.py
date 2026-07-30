@@ -759,3 +759,90 @@ async def test_target_con_junction_es_fail_closed_y_no_borra_el_destino(tmp_path
 
     assert (real / "dato.txt").read_text(encoding="utf-8") == "del usuario"
     assert not list(tmp_path.glob("Output.rollback-*"))
+
+
+@junction_guard
+async def test_descartar_un_backup_con_junction_no_borra_el_destino(tmp_path: pathlib.Path) -> None:
+    """``_borrar_arbol_o_enlace`` sobre un backup-junction: mismo caso que el
+    symlink de arriba, ejerciendo la rama ``JUNCTION`` que ``rmtree`` atraviesa
+    y que ``unlink`` (a diferencia de un symlink) rechaza siempre — la rama que
+    ``link_kind`` decide de antemano en vez de descubrir vía retry fallido.
+    """
+    ajeno = tmp_path / "arbol_ajeno"
+    ajeno.mkdir()
+    (ajeno / "importante.txt").write_text("no borrar", encoding="utf-8")
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "nuevo.txt").write_text("salida nueva", encoding="utf-8")
+
+    backup = tmp_path / "Output.rollback-123"
+    if (motivo := crear_junction(backup, ajeno)) is not None:
+        pytest.fail(f"no se pudo crear el junction que este test existe para ejercer: {motivo}")
+
+    rollback = DirectoryRollback(target)
+    rollback._backup = backup
+
+    await rollback._discard_backup(permitir_restore=True)
+
+    assert not backup.exists(), "el junction debía desaparecer"
+    assert (ajeno / "importante.txt").read_text(encoding="utf-8") == "no borrar"
+    assert (target / "nuevo.txt").exists(), "la salida nueva no se toca"
+
+
+@symlink_guard
+async def test_restaurar_target_vacio_es_fail_closed_si_el_target_es_un_enlace(tmp_path: pathlib.Path) -> None:
+    """Un target que se volvió un enlace ROTO durante el run no dispara la
+    restauración ciega del backup vía el camino de "target vacío".
+
+    ``_sin_regenerar`` ve el target "vacío" a través de ``exists()``/``iterdir()``,
+    que siguen el enlace: para uno roto da directamente ``not exists()``. Sin el
+    fail-closed, ``_restaurar_target_vacio_sync`` saltearía el ``rmdir()`` (porque
+    ``exists()`` da False) y haría ``rename()`` del backup DIRECTO sobre la ruta
+    del enlace.
+    """
+    backup = tmp_path / "Output.rollback-123"
+    backup.mkdir()
+    (backup / "previo.txt").write_text("del backup", encoding="utf-8")
+
+    target = tmp_path / "Output"
+    target.symlink_to(tmp_path / "jamas-existio", target_is_directory=True)
+
+    rollback = DirectoryRollback(target)
+    rollback._backup = backup
+
+    await rollback._discard_backup(permitir_restore=True)
+
+    assert target.is_symlink(), "el enlace no debe tocarse"
+    assert backup.exists(), "el backup no debe restaurarse ciegamente sobre el enlace"
+
+
+@junction_guard
+async def test_restaurar_target_vacio_es_fail_closed_si_el_target_es_un_junction(tmp_path: pathlib.Path) -> None:
+    """El caso que de verdad pierde datos: un junction sobre un directorio VACÍO.
+
+    A diferencia del symlink (que en POSIX falla ``rmdir()`` con ``ENOTDIR`` por
+    casualidad), un junction de Windows apuntando a un directorio real y vacío
+    hace que ``_sin_regenerar`` vea "vacío" (``exists()``/``iterdir()`` siguen el
+    enlace) y que ``_restaurar_target_vacio_sync`` acepte el ``rmdir()`` sobre el
+    reparse point — sin el fail-closed, seguiría de largo pisando el path con el
+    backup sin que nadie evaluara si el target seguía siendo un directorio real.
+    """
+    externo = tmp_path / "carpeta_vacia_ajena"
+    externo.mkdir()
+
+    backup = tmp_path / "Output.rollback-123"
+    backup.mkdir()
+    (backup / "previo.txt").write_text("del backup", encoding="utf-8")
+
+    target = tmp_path / "Output"
+    if (motivo := crear_junction(target, externo)) is not None:
+        pytest.fail(f"no se pudo crear el junction que este test existe para ejercer: {motivo}")
+
+    rollback = DirectoryRollback(target)
+    rollback._backup = backup
+
+    await rollback._discard_backup(permitir_restore=True)
+
+    assert is_junction_real(target), "el junction no debe tocarse"
+    assert backup.exists(), "el backup no debe restaurarse ciegamente sobre el junction"

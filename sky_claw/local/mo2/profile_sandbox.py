@@ -515,6 +515,13 @@ class ProfileSandbox:
             SandboxSymlinkError: Si el árbol contiene symlinks (fail-closed:
                 diff/promote los leerían o escribirían a través de ellos).
         """
+        # ``link_kind(root)`` antes de ``is_dir()``: ``rglob`` nunca produce la
+        # propia raíz, así que un ``profile_source``/``overwrite_source`` que sea
+        # él mismo un enlace pasaba de largo — ``is_dir()`` lo sigue igual que
+        # ``rglob`` seguiría sus hijos — y diff/promote leían o escribían a través
+        # de un árbol fuera del sandbox sin que el fail-closed de abajo lo viera.
+        if (tipo := link_kind(root)) is not None:
+            raise SandboxSymlinkError(f"Enlace ({tipo}) detectado en el sandbox: {root}. No se sigue.")
         if not root.is_dir():
             return set()
         files: set[str] = set()

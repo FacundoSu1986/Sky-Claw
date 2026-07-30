@@ -58,9 +58,12 @@ def link_kind(path: pathlib.Path) -> str | None:
         if es_junction is not None and es_junction():
             return JUNCTION
         # ``st_reparse_tag`` sólo existe en Windows. Se consulta sobre el lstat
-        # (que no sigue el enlace) y se guarda con ``exists()`` para no pagar un
-        # FileNotFoundError en el camino más común: la ruta que simplemente no está.
-        if path.exists() and bool(getattr(path.lstat(), "st_reparse_tag", 0)):
+        # (que no sigue el enlace) y NO se guarda con ``exists()``: ese guard
+        # seguía el enlace para decidir si vale la pena mirarlo, así que un
+        # junction roto (destino borrado) quedaba invisible — el mismo modo de
+        # falla que este módulo existe para evitar, pero sin cubrir. La ruta
+        # ausente ya la cubre el ``except OSError`` de abajo.
+        if bool(getattr(path.lstat(), "st_reparse_tag", 0)):
             return JUNCTION
     except OSError as exc:
         logger.debug("No se pudo inspeccionar el enlace %s: %s", path, exc)
@@ -68,12 +71,12 @@ def link_kind(path: pathlib.Path) -> str | None:
 
 
 def is_link(path: pathlib.Path) -> bool:
-    """True si *path* es un symlink o un junction (ver :func:`link_kind`)."""
+    """Devuelve ``True`` si *path* es un symlink o un junction (ver :func:`link_kind`)."""
     return link_kind(path) is not None
 
 
 def path_present(path: pathlib.Path) -> bool:
-    """True si hay **algo** en *path*, incluido un enlace roto.
+    """Devuelve ``True`` si hay **algo** en *path*, incluido un enlace roto.
 
     ``Path.exists()`` no alcanza: para un symlink colgante devuelve ``False``
     mientras que ``mkdir()`` sobre esa misma ruta falla con ``FileExistsError``.

@@ -20,7 +20,7 @@ import ast
 import pathlib
 
 from sky_claw.app.security.links import is_link, link_kind, path_present
-from tests._symlink_guard import symlink_guard
+from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
 
 class TestLinkKind:
@@ -76,6 +76,27 @@ class TestLinkKind:
         assert link_kind(roto) == "symlink"
         assert is_link(roto) is True
 
+    @junction_guard
+    def test_junction_roto_sigue_siendo_un_enlace(self, tmp_path: pathlib.Path) -> None:
+        """El mismo caso que el symlink roto, pero para el reparse tag de 3.11.
+
+        El guard de ``st_reparse_tag`` estaba condicionado a ``path.exists()``,
+        que **sigue** el enlace: para un junction cuyo destino se borró, eso
+        cortocircuitaba antes de leer el ``lstat`` y ``link_kind`` devolvía
+        ``None``. Es el mismo modo de falla que el test de arriba cubre para
+        symlinks, sin cubrir para junctions — hasta este test.
+        """
+        destino = tmp_path / "destino"
+        destino.mkdir()
+        enlace = tmp_path / "enlace"
+        motivo = crear_junction(enlace, destino)
+        assert motivo is None, motivo
+        destino.rmdir()
+
+        assert enlace.exists() is False  # el motivo por el que hace falta esta primitiva
+        assert link_kind(enlace) == "junction"
+        assert is_link(enlace) is True
+
 
 class TestPathPresent:
     """``path_present`` = "hay algo acá", incluido un enlace roto."""
@@ -99,6 +120,25 @@ class TestPathPresent:
 
         assert roto.exists() is False
         assert path_present(roto) is True
+
+    @junction_guard
+    def test_junction_roto_esta_presente_aunque_exists_diga_que_no(self, tmp_path: pathlib.Path) -> None:
+        """El mismo caso que el symlink roto, sobre un junction sin destino.
+
+        Es el escenario que ``DirectoryRollback.__aenter__`` interpretaba como
+        "primer run, nada que preservar" en 3.11: ``path_present`` decía
+        ``False`` y el ``mkdir()`` posterior de la herramienta moría con un
+        ``FileExistsError`` que no menciona enlaces.
+        """
+        destino = tmp_path / "destino"
+        destino.mkdir()
+        enlace = tmp_path / "enlace"
+        motivo = crear_junction(enlace, destino)
+        assert motivo is None, motivo
+        destino.rmdir()
+
+        assert enlace.exists() is False
+        assert path_present(enlace) is True
 
 
 def test_la_deteccion_de_junctions_vive_en_un_solo_modulo() -> None:

@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from sky_claw.app.security.links import is_link, link_kind, path_present
+from sky_claw.app.security.links import JUNCTION, link_kind, path_present
 
 logger = logging.getLogger("SkyClaw.DirectoryRollback")
 
@@ -40,19 +40,21 @@ async def _borrar_arbol_o_enlace(ruta: pathlib.Path) -> None:
     operación correcta es ``unlink``: lo que sobra es el enlace, y el árbol al que
     apunta es de otro.
 
-    ``Path.unlink`` borra symlinks en las dos plataformas; en Windows un junction
-    a directorio necesita ``rmdir`` (quita el reparse point, no su contenido), así
-    que se prueba en ese orden.
+    ``Path.unlink`` borra symlinks en las dos plataformas; un junction de Windows
+    necesita ``rmdir`` (quita el reparse point, no su contenido). Se decide con
+    ``link_kind`` de antemano y no probando ``unlink`` primero: sobre un junction
+    ``unlink`` falla SIEMPRE (no es un fallo transitorio), así que reintentarlo
+    con el backoff de ``_fs_op_with_retry`` sólo quema tiempo antes de caer al
+    ``except`` — y ``link_kind`` corre off-loop, como toda operación de
+    filesystem en este módulo (ver el docstring de la clase).
     """
-    if not is_link(ruta):
+    tipo = await asyncio.to_thread(link_kind, ruta)
+    if tipo is None:
         await _fs_op_with_retry(shutil.rmtree, ruta)
-        return
-    try:
-        await _fs_op_with_retry(ruta.unlink)
-    except OSError:
-        # Junction a directorio en Windows: unlink no aplica, rmdir quita el
-        # reparse point y deja intacto el árbol destino.
+    elif tipo == JUNCTION:
         await _fs_op_with_retry(ruta.rmdir)
+    else:
+        await _fs_op_with_retry(ruta.unlink)
 
 
 async def _fs_op_with_retry(op: Callable[..., Any], *args: Any) -> Any:
@@ -361,6 +363,26 @@ class DirectoryRollback:
             return not self._target.exists() or not any(self._target.iterdir())
 
         if permitir_restore and await asyncio.to_thread(_sin_regenerar):
+            # Mismo fail-closed que ``__aenter__``, para el mismo hermano que
+            # ``_borrar_arbol_o_enlace`` ya cubre unas líneas más abajo: si el
+            # target se volvió un enlace DURANTE el run (``_sin_regenerar`` lo ve
+            # "vacío" vía ``exists()``/``iterdir()``, que siguen el enlace — un
+            # roto da directamente ``not exists()``), ``_restaurar_target_vacio_sync``
+            # haría ``rmdir()`` sobre el enlace y no sobre un directorio real:
+            # en POSIX un symlink falla ahí con ``ENOTDIR`` (fail-closed por
+            # casualidad), pero un junction de Windows SÍ lo acepta y sigue de
+            # largo pisando el path sin que nadie evaluara si eso era seguro.
+            tipo_de_enlace = await asyncio.to_thread(link_kind, self._target)
+            if tipo_de_enlace is not None:
+                logger.critical(
+                    "Restauración de target vacío en '%s' OMITIDA: el target es un enlace (%s), no un "
+                    "directorio real; rmdir/rename no pueden garantizar no tocar un árbol ajeno. "
+                    "El backup queda en '%s' para recuperación manual.",
+                    self._target,
+                    tipo_de_enlace,
+                    self._backup,
+                )
+                return
             # El veto de lease también cubre ESTE restore (review Codex #401): es
             # el mismo defecto #1 del repo cometido dentro de la propia clase —
             # se cableó en la rama de excepción de __aexit__ y se olvidó acá, que

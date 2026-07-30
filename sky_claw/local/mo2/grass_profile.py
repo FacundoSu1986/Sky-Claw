@@ -34,6 +34,7 @@ import pathlib
 import shutil
 from typing import TYPE_CHECKING
 
+from sky_claw.app.security.links import link_kind
 from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.local.mo2.ini_editor import IniEditor
 from sky_claw.local.mo2.profile_sandbox import (
@@ -217,14 +218,19 @@ class GrassProfileManager:
                 f"El perfil clon '{self._clone_profile}' no existe: llamá create_clone_profile() primero."
             )
         # Fail-closed si el destino ya existe como symlink/junction: validate()
-        # resuelve el symlink y _rmtree_force borraría su TARGET (otro mod o
+        # resuelve el enlace y _rmtree_force borraría su TARGET (otro mod o
         # perfil del árbol MO2), no el enlace. Se chequea el path CRUDO — el
-        # resuelto nunca reporta is_symlink (review Codex #284).
+        # resuelto nunca reporta is_symlink (review Codex #284). ``link_kind`` y
+        # no ``is_symlink()``: éste es ciego a los junctions de Windows
+        # (``os.path.islink()`` da False para un ``IO_REPARSE_TAG_MOUNT_POINT``),
+        # el mismo agujero que ``profile_sandbox`` y ``_dir_rollback`` tenían
+        # antes de consolidar en ``links.py`` — quedaba sin el fix acá.
         raw_mod_dir = self._root / "mods" / self._config_mod_name
-        if raw_mod_dir.is_symlink():
+        tipo_de_enlace = link_kind(raw_mod_dir)
+        if tipo_de_enlace is not None:
             raise GrassProfileError(
-                f"El mod de config '{self._config_mod_name}' ya existe como symlink ({raw_mod_dir}): "
-                "fail-closed para no borrar el árbol al que apunta."
+                f"El mod de config '{self._config_mod_name}' ya existe como enlace "
+                f"({tipo_de_enlace}, {raw_mod_dir}): fail-closed para no borrar el árbol al que apunta."
             )
         mod_dir = self._validator.validate(raw_mod_dir, strict_symlink=False)
 
