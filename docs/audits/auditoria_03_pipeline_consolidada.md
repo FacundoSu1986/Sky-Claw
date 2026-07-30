@@ -217,7 +217,7 @@ la propia aportó U-01, U-03, U-06, U-07, U-12.
   > `SnapshotTransactionLock` — son dos primitivas distintas sobre la parte más riesgosa del
   > backlog (mutar datos del usuario), y mezclarlas en un mismo PR duplicaba la superficie
   > de review de exactamente lo que hay que revisar con más cuidado.
-  > **Estado (Pandora): CERRADO PARA EL MODO `Pandora_Output`; el modo `Data` queda
+  > **Estado (#399): CERRADO PARA EL MODO `Pandora_Output`; el modo `Data` queda
   > abierto y acotado.** Cierra la mitad que el PR de Wrye Bash dejó abierta a
   > propósito. La causa raíz es la misma —los dos mecanismos de rollback restauran sólo en
   > la rama de excepción, y un `PandoraResult(success=False)` sale limpio del `async
