@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Callable, Sequence
 
 from sky_claw.app.security.file_permissions import restrict_to_owner
+from sky_claw.app.security.links import link_kind_or_raise_with_retry, rmtree_link_aware
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION
 
@@ -60,8 +61,17 @@ class MO2BridgeInstaller:
         plugins = root / "plugins"
         plugins.mkdir(parents=True, exist_ok=True)
         destination = plugins / "skyclaw_bridge"
-        if destination.is_symlink():
-            raise MO2BridgeInstallError("el destino skyclaw_bridge no puede ser un symlink")
+        # `link_kind` y no `is_symlink()`: éste es ciego a los junctions de
+        # Windows, y el guard tenía una cadena de falla concreta — un junction
+        # pasaba el chequeo, `os.replace` movía EL ENLACE a `backup`, y el
+        # borrado del backup lo atravesaba y destruía el árbol destino (que acá
+        # es la instalación previa del bridge del usuario).
+        try:
+            tipo_de_enlace = link_kind_or_raise_with_retry(destination)
+        except OSError as exc:
+            raise MO2BridgeInstallError(f"no se pudo inspeccionar el destino skyclaw_bridge: {exc}") from exc
+        if tipo_de_enlace is not None:
+            raise MO2BridgeInstallError(f"el destino skyclaw_bridge no puede ser un enlace ({tipo_de_enlace})")
         suffix = uuid.uuid4().hex
         staging = plugins / f".skyclaw_bridge.{suffix}.tmp"
         backup = plugins / f".skyclaw_bridge.{suffix}.backup"
@@ -95,11 +105,9 @@ class MO2BridgeInstaller:
         except Exception as exc:
             if moved_old and backup.exists() and not destination.exists():
                 os.replace(backup, destination)
-            if staging.exists():
-                shutil.rmtree(staging)
+            rmtree_link_aware(staging)
             raise MO2BridgeInstallError(f"no se pudo instalar el bridge: {exc}") from exc
-        if backup.exists():
-            shutil.rmtree(backup)
+        rmtree_link_aware(backup)
         return destination.resolve()
 
     def _harden_tree(self, root: pathlib.Path) -> None:

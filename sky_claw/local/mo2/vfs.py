@@ -18,8 +18,6 @@ import contextlib
 import logging
 import os
 import pathlib
-import shutil
-import stat
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -31,34 +29,31 @@ if TYPE_CHECKING:
 
     from sky_claw.app.security.path_validator import PathValidator
 
-from sky_claw.app.security.path_validator import assert_safe_component
+from sky_claw.app.security.links import link_kind_or_raise_with_retry, rmtree_link_aware
+from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 
 logger = logging.getLogger(__name__)
 
 
 def _rmtree_force(path: pathlib.Path) -> None:
-    """Recursively delete *path*, clearing Windows read-only attributes that make
-    ``shutil.rmtree`` fail (read-only files are common in extracted mods / ``.git``).
+    """Borra *path* recursivamente, limpiando el read-only de Windows.
 
-    Unlike ``rmtree(ignore_errors=True)`` this never leaves a partially-deleted
-    directory silently: it retries once after clearing read-only bits and lets a
-    still-failing delete raise.
+    Los mods extraídos y los ``.git`` traen archivos de sólo-lectura que hacen
+    fallar el borrado; ``limpiar_readonly=True`` suma el bit de escritura y
+    reintenta **por entrada**, sólo ante el fallo.
+
+    Delega en :func:`~sky_claw.app.security.links.rmtree_link_aware` en vez de
+    usar ``shutil.rmtree``: éste es ciego a los junctions de Windows en la raíz
+    y en cualquier nivel anidado, así que atravesaba el reparse point y borraba
+    el árbol destino. Este helper además estaba **duplicado** en
+    ``profile_sandbox.py`` (su propio docstring lo declaraba), y su limpieza de
+    read-only usaba un ``os.walk`` previo que desciende por junctions — llegaba
+    a chmodear el árbol ajeno antes de borrarlo.
+
+    A diferencia de ``rmtree(ignore_errors=True)``, nunca deja un directorio a
+    medio borrar en silencio: un fallo que persiste tras el reintento se propaga.
     """
-
-    def _clear_readonly() -> None:
-        for root, dirs, files in os.walk(path):
-            for name in (*dirs, *files):
-                p = os.path.join(root, name)
-                with contextlib.suppress(OSError):
-                    # Add the write bit, preserving existing mode (don't clobber
-                    # read/execute — clobbering a dir's mode breaks rmtree on POSIX).
-                    os.chmod(p, os.stat(p).st_mode | stat.S_IWRITE)
-
-    try:
-        shutil.rmtree(path)
-    except OSError:
-        _clear_readonly()
-        shutil.rmtree(path)
+    rmtree_link_aware(path, limpiar_readonly=True)
 
 
 # TASK-011: Default timeout for game-launch *spawn* verification (seconds).
@@ -313,6 +308,29 @@ class MO2Controller:
         """
         assert_safe_component(mod_name, field="mod_name")
         mod_dir = self._root / "mods" / mod_name
+
+        # Fail-closed sobre la ruta CRUDA, antes de validate(). No es redundante
+        # con el borrado link-aware de abajo: PathValidator.validate() gatea
+        # symlinks con is_symlink() —ciego a junctions— y después hace
+        # target.resolve() INCONDICIONAL, así que para un junction devuelve el
+        # DESTINO RESUELTO. El borrado ni siquiera necesitaría atravesar un
+        # reparse point: recibiría directamente el árbol ajeno como si fuera el
+        # mod. Mismo orden y mismo motivo que grass_profile.build_config_mod.
+        #
+        # Pesa que este camino arranca en una tool del agente LLM
+        # (system_tools.uninstall_mod → delete_mod_files) con el nombre del mod
+        # como parámetro del modelo.
+        try:
+            tipo_de_enlace = await asyncio.to_thread(link_kind_or_raise_with_retry, mod_dir)
+        except OSError as exc:
+            raise PathViolationError(f"No se pudo inspeccionar el mod '{mod_name}' antes de borrarlo: {exc}") from exc
+        if tipo_de_enlace is not None:
+            raise PathViolationError(
+                f"El mod '{mod_name}' es un enlace ({tipo_de_enlace}), no un directorio real: "
+                "borrarlo destruiría el árbol al que apunta. Quitá el enlace a mano si "
+                "realmente querés desinstalarlo."
+            )
+
         validated = self._validator.validate(mod_dir)
 
         if validated.exists() and validated.is_dir():

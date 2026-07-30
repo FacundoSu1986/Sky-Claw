@@ -1732,3 +1732,65 @@ estar clasificado así.
    `target_files` estaba vacío, pasar `[]` era honesto; desde U-04 el lock SÍ captura
    el patch previo, y seguir pasando `[]` hacía que la caja negra declarara "sin plan
    de restore" sobre un ritual que sí lo tiene.
+
+---
+
+## Addendum — el borrado recursivo link-aware es de todo el paquete, no de un archivo
+
+Cierra la generalización que #404 dejó abierta **y la deuda de proceso de ese mismo PR**:
+El PR `#404` no actualizó este documento, violando `AGENTS.md:39-42`. Queda asentado acá.
+
+**El disparador es empírico, no una intuición de diseño.** #404 necesitó seis rondas para
+seis defectos reales —uno con pérdida de datos del usuario— y **los seis los encontró un
+bot; ninguno, un gate**. El código pasó ruff, mypy, 3776 tests y CI en verde cinco veces
+seguidas con el borrado de datos ajenos adentro. Es la confirmación medida de lo que
+`AGENTS.md:87-91` ya estimaba: *"~94% de los ítems normativos de este corpus no tienen gate
+que los haga fallar"*.
+
+### El censo que #404 no hizo
+
+Arreglado un archivo (`_dir_rollback.py`), el barrido del árbol encontró **16 sitios de
+borrado recursivo en 10 módulos**, 8 apuntando a árboles del usuario y **ninguno protegido en
+niveles anidados**. Y `_rmtree_force` estaba **duplicado** (`vfs.py` / `profile_sandbox.py`,
+el segundo declarándolo en su propio docstring), con un agujero extra que ninguno de los dos
+veía: su limpieza de read-only usaba un `os.walk` previo que —igual que `rmtree`— desciende
+por junctions, así que **chmodeaba el árbol ajeno** antes de borrarlo.
+
+Dos hallazgos que corrigen afirmaciones previas, verificados ejecutando el código:
+
+1. **`rollback_reconciler.py:416` NO era el peor caso**, pese a que la descripción de #404
+   nombraba ese patrón como peligroso. Borra clones de sandbox propios y ya filtraba enlaces
+   en la raíz. Lo grave estaba en `vfs.delete_mod_files`, `dyndolod_runner._package_as_mod` y
+   `grass_profile.teardown`: árboles del usuario con **cero** defensa.
+2. **`vfs.delete_mod_files` no era un bug sólo-Windows.** `PathValidator.validate()` gatea
+   enlaces con `is_symlink()` —ciego a junctions— y después hace `target.resolve()`
+   **incondicional**, así que devuelve el DESTINO resuelto: el borrado recibe el árbol ajeno
+   directamente, sin necesidad de atravesar ningún reparse point. Comprobado quitando el
+   guard: **con un symlink común en POSIX el mod ajeno se borra**. El camino arranca en una
+   tool del agente LLM (`system_tools.uninstall_mod`), con el nombre del mod como parámetro
+   del modelo.
+
+### Lo que cierra
+
+`app/security/links.py` gana `rmtree_link_aware()` —el recorrido que nació privado dentro de
+`_dir_rollback`, promovido— y los 16 sitios delegan. `shutil.rmtree` **ya no se usa en ningún
+lugar del paquete**. Fail-closed nuevo en los tres sitios sin defensa, más `link_kind` en
+lugar de `is_symlink()` en `bridge_installer` y `vramr_service`, donde el guard existía con la
+API equivocada.
+
+### El gate, que es el punto
+
+`tests/test_borrado_recursivo.py` **enumera por AST** —no por grep: el docstring de `links.py`
+menciona `shutil.rmtree` para explicar por qué existe, y un barrido textual se marcaría en rojo
+por un comentario, el mismo bug que `test_links.py` ya tuvo— y exige que todo módulo que borre
+árboles declare su mecanismo, con motivo escrito para el que no delegue.
+
+Verificado en rojo reintroduciendo el `shutil.rmtree(clon, True)` de `rollback_reconciler`: el
+ancla lo atrapa. Es el defecto que sobrevivió a seis rondas de tres revisores automáticos.
+
+### Deuda declarada
+
+`_rmtree_force` sobrevive como wrapper de una línea (`vfs.py`) para la limpieza de read-only;
+`grass_profile` y `profile_sandbox` delegan a través de él y el ancla los clasifica
+`vía-wrapper`, no `link-aware`, para no afirmar más de lo que hay. El ancla dura
+(`shutil.rmtree` no existe) los cubre igual, en el módulo del wrapper.

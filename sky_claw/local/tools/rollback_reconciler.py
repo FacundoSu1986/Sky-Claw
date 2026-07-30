@@ -37,13 +37,12 @@ import functools
 import logging
 import pathlib
 import re
-import shutil
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sky_claw.app.db.locks import LockAcquisitionError
-from sky_claw.app.security.links import is_link, path_present
+from sky_claw.app.security.links import is_link, path_present, rmtree_link_aware
 from sky_claw.local.tools.output_targets import pandora_rollback_dirs
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
 
@@ -413,7 +412,7 @@ async def _reconciliar_clones_sandbox(sandbox_root: pathlib.Path, acc: _Acumulad
             logger.debug("Clon de sandbox '%s' dentro de la ventana de gracia (%.0fs); no se toca.", clon, edad)
             continue
         try:
-            await asyncio.to_thread(shutil.rmtree, clon, True)
+            await asyncio.to_thread(rmtree_link_aware, clon)
         except OSError:
             logger.warning("No se pudo descartar el clon de sandbox huérfano '%s'", clon, exc_info=True)
             continue
@@ -440,11 +439,15 @@ def _mtime(ruta: pathlib.Path) -> float:
 def _listar_clones(sandbox_root: pathlib.Path) -> list[pathlib.Path]:
     """Clones candidatos a descarte, **excluyendo enlaces**.
 
-    Un clon se descarta con ``shutil.rmtree(clon, True)`` —con
-    ``ignore_errors=True``, así que un fallo no se ve. Sobre un junction de Windows
-    ``rmtree`` no falla: lo atraviesa y borra el árbol destino, y el
-    ``ignore_errors`` garantiza que nadie se entere. Un enlace acá no puede ser un
-    clon legítimo: ``ProfileSandbox.clone()`` los crea copiando, nunca enlazando.
+    Un enlace acá no puede ser un clon legítimo: ``ProfileSandbox.clone()`` los
+    crea copiando, nunca enlazando.
+
+    Este filtro cubre la RAÍZ; el borrado usa ``rmtree_link_aware``, que cubre
+    además cualquier enlace **anidado**. Hasta que esa primitiva existió, el
+    descarte era ``shutil.rmtree(clon, True)``: sobre un junction ``rmtree`` no
+    falla —lo atraviesa y borra el árbol destino— y el ``ignore_errors``
+    garantizaba que nadie se enterara. Este módulo nació nombrando ese modo de
+    falla en su propio docstring y descartando con la llamada que lo tenía.
     """
     if not sandbox_root.is_dir():
         return []

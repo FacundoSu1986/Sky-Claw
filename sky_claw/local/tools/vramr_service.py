@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
-import shutil
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -41,6 +40,7 @@ from sky_claw.app.db.locks import (
     LockLeaseLostError,
     SnapshotTransactionLock,
 )
+from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.tools._process import kill_and_reap
 
@@ -406,10 +406,14 @@ class VRAMrPipelineService:
             if entry in existed_before:
                 continue
             try:
-                if entry.is_dir() and not entry.is_symlink():
-                    shutil.rmtree(entry, ignore_errors=True)
-                else:
-                    entry.unlink(missing_ok=True)
+                # `rmtree_link_aware` en vez de `is_symlink()` + `shutil.rmtree`:
+                # `is_symlink()` es ciego a los junctions de Windows, así que un
+                # junction entre las entradas nuevas caía en la rama del rmtree
+                # y se atravesaba, borrando el árbol destino — y con
+                # `ignore_errors=True` el daño era además invisible. La
+                # primitiva decide por entrada y borra el enlace, nunca su
+                # destino.
+                rmtree_link_aware(entry)
             except OSError as exc:
                 logger.warning("No pude limpiar %s: %s", entry, exc)
 

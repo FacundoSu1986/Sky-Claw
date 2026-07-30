@@ -10,6 +10,7 @@ Extraction formats: ``.zip``, ``.7z``, ``.rar``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import pathlib
 import shutil
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 import aiofiles
 import aiofiles.os
 
+from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.app.security.path_validator import PathValidator, PathViolationError, safe_join
 from sky_claw.local.fomod.parser import FomodParseError, parse_fomod
 from sky_claw.local.fomod.resolver import FomodResolver
@@ -258,7 +260,13 @@ class FomodInstaller:
                     mod_name,
                 )
         finally:
-            await asyncio.to_thread(shutil.rmtree, tmp_dir, ignore_errors=True)
+            # El dir es propio (`mkdtemp`) pero su CONTENIDO salió de extraer un
+            # archive no confiable, así que un enlace ahí adentro no es
+            # hipotético: `shutil.rmtree` lo habría atravesado, y con
+            # `ignore_errors=True` sin dejar rastro. La primitiva borra el
+            # enlace, nunca su destino.
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(rmtree_link_aware, tmp_dir)
 
     # ------------------------------------------------------------------
     # Internal helpers
