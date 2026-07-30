@@ -902,7 +902,7 @@ async def test_in_memory_heartbeat_manager_enumera_expiracion_y_ownership() -> N
     assert await manager.renew_lock("res-hb", "intruder", ttl=10.0) is False
     assert await manager.release_lock("res-hb", "intruder") is False
 
-    reloj[0] = 1_011.0
+    reloj[0] = holder.expires_at
     assert await manager.renew_lock("res-hb", "holder", ttl=10.0) is False
 
     intruder = await manager.acquire_lock("res-hb", "intruder", ttl=10.0)
