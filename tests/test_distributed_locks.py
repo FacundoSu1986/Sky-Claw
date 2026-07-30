@@ -839,11 +839,58 @@ _HB_TTL = 1.0
 _HB_RENOVACIONES = 4
 
 
+class _InMemoryHeartbeatLockManager:
+    """Manager determinista para probar el loop sin I/O de aiosqlite.
+
+    La exclusividad y el vencimiento siguen siendo reales para el escenario del
+    test; lo único que se elimina es la latencia variable del worker de SQLite.
+    ``DistributedLockManager`` conserva sus propios tests de integración para
+    ``acquire_lock`` y ``renew_lock``.
+    """
+
+    def __init__(self) -> None:
+        self._locks: dict[str, LockInfo] = {}
+
+    async def acquire_lock(self, resource_id: str, agent_id: str, ttl: float) -> LockInfo:
+        current = self._locks.get(resource_id)
+        if current is not None and not current.is_expired:
+            raise LockAcquisitionError(resource_id, agent_id, "lock is already held")
+
+        now = time.time()
+        info = LockInfo(
+            resource_id=resource_id,
+            agent_id=agent_id,
+            acquired_at=now,
+            expires_at=now + ttl,
+        )
+        self._locks[resource_id] = info
+        return info
+
+    async def renew_lock(self, resource_id: str, agent_id: str, ttl: float) -> bool:
+        current = self._locks.get(resource_id)
+        if current is None or current.agent_id != agent_id or current.is_expired:
+            return False
+
+        now = time.time()
+        self._locks[resource_id] = LockInfo(
+            resource_id=resource_id,
+            agent_id=agent_id,
+            acquired_at=current.acquired_at,
+            expires_at=now + ttl,
+        )
+        return True
+
+    async def release_lock(self, resource_id: str, agent_id: str) -> bool:
+        current = self._locks.get(resource_id)
+        if current is None or current.agent_id != agent_id:
+            return False
+        del self._locks[resource_id]
+        return True
+
+
 @pytest.mark.asyncio
 async def test_snapshot_lock_heartbeat_keeps_lease_alive(
-    lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Una operación más larga que el TTL no pierde el lease: el heartbeat renueva.
 
@@ -863,6 +910,7 @@ async def test_snapshot_lock_heartbeat_keeps_lease_alive(
     en el ``wait_for`` con "el heartbeat no renovó", en vez de manifestarse
     indirectamente como un intruso que logra entrar.
     """
+    lock_manager = _InMemoryHeartbeatLockManager()
     renovado = asyncio.Event()
     renovaciones = 0
     renew_real = lock_manager.renew_lock
@@ -884,7 +932,7 @@ async def test_snapshot_lock_heartbeat_keeps_lease_alive(
                 renovado.set()
         return resultado
 
-    monkeypatch.setattr(lock_manager, "renew_lock", _contar_renovaciones)
+    setattr(lock_manager, "renew_lock", _contar_renovaciones)
 
     inicio = time.monotonic()
     async with SnapshotTransactionLock(
