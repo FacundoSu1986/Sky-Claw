@@ -791,6 +791,75 @@ async def test_descartar_un_backup_con_junction_no_borra_el_destino(tmp_path: pa
     assert (target / "nuevo.txt").exists(), "la salida nueva no se toca"
 
 
+@junction_guard
+async def test_descartar_un_backup_con_junction_anidado_no_borra_el_destino(tmp_path: pathlib.Path) -> None:
+    """El junction puede estar DENTRO del backup, no sólo ser el backup entero.
+
+    ``shutil.rmtree`` sólo protege su propia raíz — su recorrido interno usa
+    ``DirEntry.is_dir()``, ciego a junctions igual que ``os.path.islink()`` — así
+    que un backup por lo demás real con UN junction en un subdirectorio (una
+    sola carpeta de un output llevada a otro disco, no el árbol entero) se
+    atravesaba igual, sin que el chequeo de la raíz lo viera (review
+    qodo-merge #404).
+    """
+    ajeno = tmp_path / "textures_en_otro_disco"
+    ajeno.mkdir()
+    (ajeno / "importante.dds").write_bytes(b"no borrar")
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "nuevo.txt").write_text("salida nueva", encoding="utf-8")
+
+    backup = tmp_path / "Output.rollback-123"
+    backup.mkdir()
+    (backup / "meshes").mkdir()
+    (backup / "meshes" / "propio.nif").write_bytes(b"del backup")
+    if (motivo := crear_junction(backup / "textures", ajeno)) is not None:
+        pytest.fail(f"no se pudo crear el junction que este test existe para ejercer: {motivo}")
+
+    rollback = DirectoryRollback(target)
+    rollback._backup = backup
+
+    await rollback._discard_backup(permitir_restore=True)
+
+    assert not backup.exists(), "el backup (real, con el junction adentro) debía desaparecer"
+    assert (ajeno / "importante.dds").read_bytes() == b"no borrar", "el destino del junction anidado no se toca"
+
+
+@symlink_guard
+async def test_descartar_un_backup_con_symlink_anidado_no_borra_el_destino(tmp_path: pathlib.Path) -> None:
+    """Mismo caso que el junction anidado, con un symlink — portable a POSIX.
+
+    Un symlink anidado ya lo cubría ``shutil.rmtree`` antes de este PR
+    (``is_symlink()`` lo ve en cualquier nivel, no sólo junctions); este test
+    ancla que ``_rmtree_link_aware_sync`` —el reemplazo hecho a mano para
+    generalizar la protección a junctions anidados— no regresionó el caso que
+    ya andaba, además de dejar cobertura real en el runner de Linux para el
+    recorrido recursivo nuevo.
+    """
+    ajeno = tmp_path / "arbol_ajeno"
+    ajeno.mkdir()
+    (ajeno / "importante.txt").write_text("no borrar", encoding="utf-8")
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "nuevo.txt").write_text("salida nueva", encoding="utf-8")
+
+    backup = tmp_path / "Output.rollback-123"
+    backup.mkdir()
+    (backup / "meshes").mkdir()
+    (backup / "meshes" / "propio.nif").write_bytes(b"del backup")
+    (backup / "textures").symlink_to(ajeno, target_is_directory=True)
+
+    rollback = DirectoryRollback(target)
+    rollback._backup = backup
+
+    await rollback._discard_backup(permitir_restore=True)
+
+    assert not backup.exists(), "el backup (real, con el symlink adentro) debía desaparecer"
+    assert (ajeno / "importante.txt").read_text(encoding="utf-8") == "no borrar"
+
+
 @symlink_guard
 async def test_borrar_arbol_o_enlace_cae_a_rmdir_si_unlink_falla_en_symlink_de_directorio(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
