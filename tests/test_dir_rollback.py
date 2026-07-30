@@ -7,7 +7,8 @@ import pathlib
 
 import pytest
 
-from sky_claw.local.tools._dir_rollback import DirectoryRollback
+from sky_claw.local.tools import _dir_rollback
+from sky_claw.local.tools._dir_rollback import DirectoryRollback, _borrar_arbol_o_enlace
 from tests._symlink_guard import crear_junction, is_junction_real, junction_guard, symlink_guard
 
 
@@ -846,3 +847,131 @@ async def test_restaurar_target_vacio_es_fail_closed_si_el_target_es_un_junction
 
     assert is_junction_real(target), "el junction no debe tocarse"
     assert backup.exists(), "el backup no debe restaurarse ciegamente sobre el junction"
+
+
+@symlink_guard
+async def test_sin_regenerar_no_deja_pasar_un_enlace_con_contenido_ajeno(tmp_path: pathlib.Path) -> None:
+    """Un target-enlace a un directorio AJENO NO VACÍO no debe descartar el backup.
+
+    ``_sin_regenerar`` sólo miraba ``exists()``/``iterdir()``: un symlink a un
+    directorio con contenido (no vacío) hacía que viera "hay contenido" y
+    devolviera ``False`` — el flujo se saltaba ENTERO el fail-closed de
+    ``_restaurar_target_vacio_sync`` y caía directo al
+    ``_borrar_arbol_o_enlace(self._backup)`` incondicional, descartando la
+    única copia del estado previo mientras el enlace ajeno seguía en
+    ``self._target`` sin que nadie lo mirara (review CodeRabbit #404).
+    """
+    ajeno = tmp_path / "arbol_ajeno_no_vacio"
+    ajeno.mkdir()
+    (ajeno / "no_es_nuestro.txt").write_text("de otro proceso", encoding="utf-8")
+
+    backup = tmp_path / "Output.rollback-123"
+    backup.mkdir()
+    (backup / "previo.txt").write_text("del backup", encoding="utf-8")
+
+    target = tmp_path / "Output"
+    target.symlink_to(ajeno, target_is_directory=True)
+
+    rollback = DirectoryRollback(target)
+    rollback._backup = backup
+
+    await rollback._discard_backup(permitir_restore=True)
+
+    assert target.is_symlink(), "el enlace no debe tocarse"
+    assert backup.exists(), "el backup no debe descartarse mientras un enlace ajeno ocupa el target"
+    assert (ajeno / "no_es_nuestro.txt").read_text(encoding="utf-8") == "de otro proceso"
+
+
+@junction_guard
+async def test_sin_regenerar_no_deja_pasar_un_junction_con_contenido_ajeno(tmp_path: pathlib.Path) -> None:
+    """Mismo caso que el symlink de arriba, con un junction de Windows.
+
+    El más grave de los dos: si esto NO estuviera cubierto, el camino de éxito
+    llegaría a ``_borrar_arbol_o_enlace(self._backup)`` — que sí es link-aware
+    y no tocaría el backup en sí, pero el punto es que el backup se DESCARTA
+    igual, perdiendo la única copia del estado previo sin haber restaurado
+    nada sobre el árbol ajeno que ocupa el target.
+    """
+    ajeno = tmp_path / "arbol_ajeno_no_vacio"
+    ajeno.mkdir()
+    (ajeno / "no_es_nuestro.txt").write_text("de otro proceso", encoding="utf-8")
+
+    backup = tmp_path / "Output.rollback-123"
+    backup.mkdir()
+    (backup / "previo.txt").write_text("del backup", encoding="utf-8")
+
+    target = tmp_path / "Output"
+    if (motivo := crear_junction(target, ajeno)) is not None:
+        pytest.fail(f"no se pudo crear el junction que este test existe para ejercer: {motivo}")
+
+    rollback = DirectoryRollback(target)
+    rollback._backup = backup
+
+    await rollback._discard_backup(permitir_restore=True)
+
+    assert is_junction_real(target), "el junction no debe tocarse"
+    assert backup.exists(), "el backup no debe descartarse mientras un junction ajeno ocupa el target"
+    assert (ajeno / "no_es_nuestro.txt").read_text(encoding="utf-8") == "de otro proceso"
+
+
+async def test_borrar_arbol_o_enlace_reintenta_la_inspeccion_ante_bloqueo_transitorio(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un ``OSError`` transitorio (AV/indexer) al inspeccionar no debe leerse
+    como "no es un enlace" (review qodo-merge #404).
+
+    ``link_kind`` traga el ``OSError`` por diseño y devuelve ``None`` — que
+    ``_borrar_arbol_o_enlace`` interpretaba como "es un directorio real" y
+    llamaba ``rmtree``. Si la ruta en verdad ERA un junction y el bloqueo se
+    liberaba durante el propio retry de ``rmtree``, éste atravesaba el
+    junction y borraba el destino. Acá se simula el bloqueo con
+    ``link_kind_or_raise`` (la variante que sí propaga) fallando una vez antes
+    de resolver — sin necesitar Windows real, porque lo que se prueba es la
+    política de reintento, no el reparse tag en sí.
+    """
+    real = tmp_path / "arbol_real"
+    real.mkdir()
+    (real / "dato.txt").write_text("contenido", encoding="utf-8")
+
+    llamadas = {"n": 0}
+    original = _dir_rollback.link_kind_or_raise
+
+    def _con_un_bloqueo_transitorio(path: pathlib.Path) -> str | None:
+        llamadas["n"] += 1
+        if llamadas["n"] == 1:
+            raise OSError("WinError 32: el proceso no tiene acceso al archivo")
+        return original(path)
+
+    monkeypatch.setattr(_dir_rollback, "link_kind_or_raise", _con_un_bloqueo_transitorio)
+
+    await _borrar_arbol_o_enlace(real)
+
+    assert llamadas["n"] >= 2, "debía reintentar la inspección tras el OSError transitorio"
+    assert not real.exists(), "tras resolver el bloqueo, la inspección debía ver un dir real y rmtree debía correr"
+
+
+async def test_borrar_arbol_o_enlace_falla_cerrado_si_la_inspeccion_no_se_recupera(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Si la inspección NUNCA se resuelve, no hay fallback silencioso a ``rmtree``.
+
+    Antes de este fix, cualquier ``OSError`` de inspección —transitorio o no—
+    se leía como "no es un enlace" y corría ``rmtree`` igual. Ahora, agotados
+    los reintentos, el ``OSError`` se propaga: el caller (``__aexit__``/
+    ``commit()``) ya lo atrapa y deja el backup huérfano en vez de arriesgar
+    borrar un destino ajeno a ciegas.
+    """
+    real = tmp_path / "arbol_real"
+    real.mkdir()
+    (real / "dato.txt").write_text("contenido", encoding="utf-8")
+
+    def _siempre_bloqueado(path: pathlib.Path) -> str | None:
+        raise OSError("WinError 32: el proceso no tiene acceso al archivo")
+
+    monkeypatch.setattr(_dir_rollback, "link_kind_or_raise", _siempre_bloqueado)
+
+    with pytest.raises(OSError):
+        await _borrar_arbol_o_enlace(real)
+
+    assert real.exists(), "sin poder inspeccionar, no debe arriesgarse un rmtree a ciegas"
+    assert (real / "dato.txt").read_text(encoding="utf-8") == "contenido"

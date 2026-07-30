@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from sky_claw.app.security.links import JUNCTION, link_kind, path_present
+from sky_claw.app.security.links import JUNCTION, link_kind, link_kind_or_raise, path_present
 
 logger = logging.getLogger("SkyClaw.DirectoryRollback")
 
@@ -42,13 +42,24 @@ async def _borrar_arbol_o_enlace(ruta: pathlib.Path) -> None:
 
     ``Path.unlink`` borra symlinks en las dos plataformas; un junction de Windows
     necesita ``rmdir`` (quita el reparse point, no su contenido). Se decide con
-    ``link_kind`` de antemano y no probando ``unlink`` primero: sobre un junction
-    ``unlink`` falla SIEMPRE (no es un fallo transitorio), así que reintentarlo
-    con el backoff de ``_fs_op_with_retry`` sólo quema tiempo antes de caer al
-    ``except`` — y ``link_kind`` corre off-loop, como toda operación de
-    filesystem en este módulo (ver el docstring de la clase).
+    ``link_kind_or_raise`` de antemano y no probando ``unlink`` primero: sobre un
+    junction ``unlink`` falla SIEMPRE (no es un fallo transitorio), así que
+    reintentarlo con el backoff de ``_fs_op_with_retry`` sólo quema tiempo antes
+    de caer al ``except``.
+
+    Se usa ``link_kind_or_raise`` (no ``link_kind``) a través de
+    ``_fs_op_with_retry``, y NO ``asyncio.to_thread`` pelado: un bloqueo
+    TRANSITORIO de AV/indexer en Windows (``WinError 5/32``, el mismo que
+    ``_fs_op_with_retry`` ya tolera en las mutaciones) durante la inspección
+    hacía que ``link_kind`` — que traga ``OSError`` por diseño — devolviera
+    ``None`` en plena inspección de un junction, y esta función tomaba la rama
+    de ``rmtree`` creyendo que era un directorio real; en cuanto el lock se
+    liberaba, atravesaba el junction y borraba el destino (review qodo-merge
+    #404). Reintentar la inspección con la misma política de backoff que las
+    mutaciones cierra la ventana; si el fallo NO es transitorio, se propaga
+    (fail-closed) en vez de asumir "no es un enlace".
     """
-    tipo = await asyncio.to_thread(link_kind, ruta)
+    tipo = await _fs_op_with_retry(link_kind_or_raise, ruta)
     if tipo is None:
         await _fs_op_with_retry(shutil.rmtree, ruta)
     elif tipo == JUNCTION:
@@ -359,8 +370,20 @@ class DirectoryRollback:
             que crea el directorio candidato y no escribe nada dentro dejaba pasar
             el ``rmtree`` del backup — la misma pérdida silenciosa, un paso más
             allá, y plausible justo en el escenario multi-candidato que motivó este
-            método."""
-            return not self._target.exists() or not any(self._target.iterdir())
+            método.
+
+            También cuenta como "no regenerado" un target que se volvió un enlace
+            (review CodeRabbit #404): un symlink/junction a un directorio AJENO
+            NO VACÍO hacía que ``exists()``/``iterdir()`` vieran "hay contenido" y
+            esta función devolviera ``False`` — control caía derecho al
+            ``_borrar_arbol_o_enlace(self._backup)`` incondicional de más abajo,
+            descartando la ÚNICA copia del estado previo mientras el enlace ajeno
+            seguía ocupando ``self._target`` sin que nadie lo mirara. Empujar la
+            decisión a la rama de ``_restaurar_target_vacio_sync`` es lo que la
+            deja pasar por SU chequeo de ``link_kind`` fail-closed, en vez de
+            saltearlo entero.
+            """
+            return link_kind(self._target) is not None or not self._target.exists() or not any(self._target.iterdir())
 
         if permitir_restore and await asyncio.to_thread(_sin_regenerar):
             # El chequeo de enlace y el veto viven DENTRO de
