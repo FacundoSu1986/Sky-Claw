@@ -792,6 +792,54 @@ async def test_descartar_un_backup_con_junction_no_borra_el_destino(tmp_path: pa
 
 
 @symlink_guard
+async def test_borrar_arbol_o_enlace_cae_a_rmdir_si_unlink_falla_en_symlink_de_directorio(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """En Windows, ``unlink()`` sobre un symlink de DIRECTORIO falla siempre
+    (review qodo-merge #404): ``DeleteFileW`` —lo que invoca ``unlink``—
+    rechaza cualquier ruta con ``FILE_ATTRIBUTE_DIRECTORY``, y un symlink de
+    directorio SÍ la tiene. ``RemoveDirectoryW`` (``rmdir()``) sí la acepta y
+    quita sólo el enlace.
+
+    Se simulan las dos llamadas (POSIX no puede reproducir la falla real de
+    ``unlink`` en un symlink, ni ``rmdir`` sobre un symlink real — ahí falla
+    con ``ENOTDIR`` por una razón DISTINTA): lo que se ejerce es la política de
+    fallback en `_borrar_arbol_o_enlace`, no el errno exacto de una plataforma
+    que este runner no tiene.
+    """
+    ajeno = tmp_path / "arbol_ajeno"
+    ajeno.mkdir()
+    (ajeno / "importante.txt").write_text("no borrar", encoding="utf-8")
+
+    enlace = tmp_path / "enlace"
+    enlace.symlink_to(ajeno, target_is_directory=True)
+
+    unlink_real = pathlib.Path.unlink
+
+    def _unlink_como_windows(self: pathlib.Path, missing_ok: bool = False) -> None:
+        if self == enlace:
+            raise PermissionError("WinError 5: Acceso denegado")
+        unlink_real(self, missing_ok=missing_ok)
+
+    def _rmdir_como_windows(self: pathlib.Path) -> None:
+        if self == enlace:
+            # RemoveDirectoryW sobre un symlink de directorio quita SÓLO el
+            # reparse point, sin tocar destino — en POSIX eso es un unlink real
+            # del enlace (bypasseando el mock de arriba a propósito).
+            unlink_real(self)
+        else:
+            pathlib.Path.rmdir(self)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _unlink_como_windows)
+    monkeypatch.setattr(pathlib.Path, "rmdir", _rmdir_como_windows)
+
+    await _borrar_arbol_o_enlace(enlace)
+
+    assert not enlace.exists() and not enlace.is_symlink(), "el enlace debía desaparecer vía el fallback a rmdir"
+    assert (ajeno / "importante.txt").read_text(encoding="utf-8") == "no borrar"
+
+
+@symlink_guard
 async def test_restaurar_target_vacio_es_fail_closed_si_el_target_es_un_enlace(tmp_path: pathlib.Path) -> None:
     """Un target que se volvió un enlace ROTO durante el run no dispara la
     restauración ciega del backup vía el camino de "target vacío".

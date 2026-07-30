@@ -40,12 +40,22 @@ async def _borrar_arbol_o_enlace(ruta: pathlib.Path) -> None:
     operación correcta es ``unlink``: lo que sobra es el enlace, y el árbol al que
     apunta es de otro.
 
-    ``Path.unlink`` borra symlinks en las dos plataformas; un junction de Windows
-    necesita ``rmdir`` (quita el reparse point, no su contenido). Se decide con
-    ``link_kind_or_raise`` de antemano y no probando ``unlink`` primero: sobre un
-    junction ``unlink`` falla SIEMPRE (no es un fallo transitorio), así que
-    reintentarlo con el backoff de ``_fs_op_with_retry`` sólo quema tiempo antes
-    de caer al ``except``.
+    ``Path.unlink`` borra un symlink en POSIX, y en Windows un symlink de
+    ARCHIVO — pero un symlink de DIRECTORIO en Windows (que es el único tipo que
+    puede aparecer acá: este módulo sólo enlaza directorios) necesita ``rmdir``
+    igual que un junction: ``DeleteFileW`` (lo que ``unlink`` invoca) rechaza
+    cualquier ruta con ``FILE_ATTRIBUTE_DIRECTORY``, que un symlink de
+    directorio SÍ tiene, y falla con ``PermissionError`` (review qodo-merge
+    #404). Por eso la rama no-junction prueba ``unlink`` primero (cubre POSIX,
+    la mayoría de los casos) y cae a ``rmdir`` si falla — en vez de asumir
+    ``unlink`` incondicional como si "symlink" implicara una sola operación
+    correcta en las dos plataformas.
+
+    Para el junction sí se decide con ``link_kind_or_raise`` de antemano, SIN
+    probar ``unlink``: ahí ``unlink`` falla SIEMPRE (no es un fallo transitorio,
+    ni el ``except`` de arriba lo cubre distinto), así que reintentarlo con el
+    backoff de ``_fs_op_with_retry`` sólo quema tiempo antes de caer al
+    ``rmdir``.
 
     Se usa ``link_kind_or_raise`` (no ``link_kind``) a través de
     ``_fs_op_with_retry``, y NO ``asyncio.to_thread`` pelado: un bloqueo
@@ -65,7 +75,16 @@ async def _borrar_arbol_o_enlace(ruta: pathlib.Path) -> None:
     elif tipo == JUNCTION:
         await _fs_op_with_retry(ruta.rmdir)
     else:
-        await _fs_op_with_retry(ruta.unlink)
+        try:
+            await _fs_op_with_retry(ruta.unlink)
+        except OSError:
+            # Symlink de DIRECTORIO en Windows: ``unlink`` (``DeleteFileW``)
+            # rechaza cualquier ruta con ``FILE_ATTRIBUTE_DIRECTORY``, y un
+            # symlink de directorio SÍ lo tiene — falla con ``PermissionError``
+            # tras agotar los reintentos. ``rmdir`` (``RemoveDirectoryW``) lo
+            # acepta y quita el enlace sin tocar el destino. En POSIX este
+            # ``except`` nunca se alcanza: ``unlink`` ya borró el symlink.
+            await _fs_op_with_retry(ruta.rmdir)
 
 
 async def _fs_op_with_retry(op: Callable[..., Any], *args: Any) -> Any:
