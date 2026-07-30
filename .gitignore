@@ -136,3 +136,10 @@ sky_claw/.llm-chat-history/
 
 # Reporte de auditoría — mantener fuera del repo
 AUDIT_PANEL_REPORT.md
+
+# Local test and skills output
+.junie/
+output_real.txt
+pytest_links.txt
+pytest_out.txt
+skills-lock.json
