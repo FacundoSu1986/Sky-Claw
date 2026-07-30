@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import stat
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,12 @@ logger = logging.getLogger(__name__)
 #: aparecer en Windows.
 SYMLINK = "symlink"
 JUNCTION = "junction"
+
+#: Valor de ``IO_REPARSE_TAG_MOUNT_POINT`` (constante pública de Windows, no de
+#: Python). ``stat`` recién lo expone desde 3.12 —lo mismo que ``isjunction``,
+#: que internamente compara CONTRA este valor exacto y no contra "no es cero"—
+#: así que en 3.11 hace falta el literal como fallback.
+_IO_REPARSE_TAG_MOUNT_POINT = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
 
 
 def link_kind(path: pathlib.Path) -> str | None:
@@ -63,7 +70,14 @@ def link_kind(path: pathlib.Path) -> str | None:
         # junction roto (destino borrado) quedaba invisible — el mismo modo de
         # falla que este módulo existe para evitar, pero sin cubrir. La ruta
         # ausente ya la cubre el ``except OSError`` de abajo.
-        if bool(getattr(path.lstat(), "st_reparse_tag", 0)):
+        #
+        # Comparación EXACTA contra IO_REPARSE_TAG_MOUNT_POINT, no "no es cero"
+        # (review qodo-merge): un reparse tag distinto de cero no es sólo un
+        # junction — OneDrive Files On-Demand usa IO_REPARSE_TAG_CLOUD, y NTFS
+        # tiene dedup/HSM con sus propios tags. Con el ``bool()`` original,
+        # cualquiera de esos hacía que ``DirectoryRollback``/``ProfileSandbox``
+        # abortaran con "es un junction" sobre una carpeta que no lo es.
+        if getattr(path.lstat(), "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT:
             return JUNCTION
     except OSError as exc:
         logger.debug("No se pudo inspeccionar el enlace %s: %s", path, exc)

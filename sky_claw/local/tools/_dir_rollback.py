@@ -363,54 +363,19 @@ class DirectoryRollback:
             return not self._target.exists() or not any(self._target.iterdir())
 
         if permitir_restore and await asyncio.to_thread(_sin_regenerar):
-            # Mismo fail-closed que ``__aenter__``, para el mismo hermano que
-            # ``_borrar_arbol_o_enlace`` ya cubre unas líneas más abajo: si el
-            # target se volvió un enlace DURANTE el run (``_sin_regenerar`` lo ve
-            # "vacío" vía ``exists()``/``iterdir()``, que siguen el enlace — un
-            # roto da directamente ``not exists()``), ``_restaurar_target_vacio_sync``
-            # haría ``rmdir()`` sobre el enlace y no sobre un directorio real:
-            # en POSIX un symlink falla ahí con ``ENOTDIR`` (fail-closed por
-            # casualidad), pero un junction de Windows SÍ lo acepta y sigue de
-            # largo pisando el path sin que nadie evaluara si eso era seguro.
-            tipo_de_enlace = await asyncio.to_thread(link_kind, self._target)
-            if tipo_de_enlace is not None:
-                logger.critical(
-                    "Restauración de target vacío en '%s' OMITIDA: el target es un enlace (%s), no un "
-                    "directorio real; rmdir/rename no pueden garantizar no tocar un árbol ajeno. "
-                    "El backup queda en '%s' para recuperación manual.",
+            # El chequeo de enlace y el veto viven DENTRO de
+            # ``_restaurar_target_vacio_sync``, en el mismo hilo que el
+            # rmdir/rename — no como ``await``s separados acá (review CodeRabbit
+            # #404): un ``asyncio.to_thread`` por chequeo devuelve el control al
+            # loop entre medio, así que el target podía volverse un enlace EN esa
+            # ventana y el fail-closed no lo vería — exactamente el escenario que
+            # existe para prevenir. Fusionarlo con la mutación es la misma razón
+            # por la que rmdir+rename ya iban juntos (ver el docstring del método).
+            if await _fs_op_with_retry(self._restaurar_target_vacio_sync):
+                logger.info(
+                    "'%s' no fue regenerado por la herramienta; se conserva el contenido previo.",
                     self._target,
-                    tipo_de_enlace,
-                    self._backup,
                 )
-                return
-            # El veto de lease también cubre ESTE restore (review Codex #401): es
-            # el mismo defecto #1 del repo cometido dentro de la propia clase —
-            # se cableó en la rama de excepción de __aexit__ y se olvidó acá, que
-            # es justo donde vive la restauración de target vacío que este PR
-            # agregó. Si el heartbeat perdió la lease durante un run que igual
-            # "termina bien", restaurar sin consultar el veto pisaría lo que un
-            # dueño concurrente empezó a escribir en el target vacío.
-            if not self._veto_permite_restaurar():
-                logger.critical(
-                    "Restauración de target vacío en '%s' OMITIDA: se perdió la exclusividad del recurso. "
-                    "El backup queda en '%s' para recuperación manual.",
-                    self._target,
-                    self._backup,
-                )
-                return
-            # rmdir + rename FUSIONADOS en una sola llamada de hilo (review Codex
-            # #401): eran dos ``await`` separados, y una cancelación que llegara
-            # justo entre medio dejaba el rmdir hecho y el rename sin correr — el
-            # target BORRADO y el backup varado bajo su nombre ``.rollback-*``, sin
-            # que nadie lo restaure. Al no haber punto de ``await`` entre los dos
-            # pasos, no hay ventana que una cancelación pueda aprovechar: el hilo
-            # (que no se detiene por cancelar quien lo espera, mismo motivo que el
-            # shield de ``__aenter__``) siempre corre los dos juntos o ninguno.
-            await _fs_op_with_retry(self._restaurar_target_vacio_sync)
-            logger.info(
-                "'%s' no fue regenerado por la herramienta; se conserva el contenido previo.",
-                self._target,
-            )
             return
         # El sitio que motivó todo: sobre un backup enlazado, ``rmtree`` lanza
         # ``OSError`` (symlink) o borra el contenido del destino ajeno (junction de
@@ -418,16 +383,51 @@ class DirectoryRollback:
         # OSError y nadie se entera.
         await _borrar_arbol_o_enlace(self._backup)
 
-    def _restaurar_target_vacio_sync(self) -> None:
-        """rmdir del target vacío + rename del backup, como una sola unidad síncrona.
+    def _restaurar_target_vacio_sync(self) -> bool:
+        """Chequeos fail-closed + rmdir del target vacío + rename del backup.
 
-        Corre dentro de UN ``asyncio.to_thread`` (ver ``_discard_backup``): sin
-        punto de ``await`` entre las dos operaciones, una cancelación no puede
-        aterrizar entre medio. Idempotente ante reintentos de
-        ``_fs_op_with_retry``: si el rename falla tras un rmdir ya exitoso, el
-        segundo intento ve ``target`` inexistente y salta directo al rename.
+        Todo en una sola unidad síncrona — no sólo el rmdir+rename. El chequeo de
+        enlace y el veto de lease corren ACÁ, no como ``await``s separados en el
+        caller (review CodeRabbit #404): un hop por ``asyncio.to_thread`` devuelve
+        el control al event loop, así que el target podía volverse un enlace en
+        esa ventana entre "lo chequeé" y "lo mutaría" — la misma clase de TOCTOU
+        que el rmdir+rename fusionado ya evita para la cancelación. Fusionar
+        TODO (chequeo + mutación) es la única forma de que "no hay ventana" sea
+        cierto también para el fail-closed.
+
+        Devuelve ``True`` si restauró, ``False`` si se omitió (enlace o veto).
+        Idempotente ante reintentos de ``_fs_op_with_retry``: si el rename falla
+        tras un rmdir ya exitoso, el segundo intento ve ``target`` inexistente y
+        salta directo al rename.
         """
+        tipo_de_enlace = link_kind(self._target)
+        if tipo_de_enlace is not None:
+            logger.critical(
+                "Restauración de target vacío en '%s' OMITIDA: el target es un enlace (%s), no un "
+                "directorio real; rmdir/rename no pueden garantizar no tocar un árbol ajeno. "
+                "El backup queda en '%s' para recuperación manual.",
+                self._target,
+                tipo_de_enlace,
+                self._backup,
+            )
+            return False
+        # El veto de lease también cubre ESTE restore (review Codex #401): es el
+        # mismo defecto #1 del repo cometido dentro de la propia clase — se
+        # cableó en la rama de excepción de __aexit__ y se olvidó acá, que es
+        # justo donde vive la restauración de target vacío que este PR agregó.
+        # Si el heartbeat perdió la lease durante un run que igual "termina
+        # bien", restaurar sin consultar el veto pisaría lo que un dueño
+        # concurrente empezó a escribir en el target vacío.
+        if not self._veto_permite_restaurar():
+            logger.critical(
+                "Restauración de target vacío en '%s' OMITIDA: se perdió la exclusividad del recurso. "
+                "El backup queda en '%s' para recuperación manual.",
+                self._target,
+                self._backup,
+            )
+            return False
         if self._target.exists():
             self._target.rmdir()
         assert self._backup is not None  # invariante: el caller ya lo verificó
         self._backup.rename(self._target)
+        return True

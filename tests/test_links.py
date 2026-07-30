@@ -19,6 +19,8 @@ from __future__ import annotations
 import ast
 import pathlib
 
+import pytest
+
 from sky_claw.app.security.links import is_link, link_kind, path_present
 from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
@@ -96,6 +98,34 @@ class TestLinkKind:
         assert enlace.exists() is False  # el motivo por el que hace falta esta primitiva
         assert link_kind(enlace) == "junction"
         assert is_link(enlace) is True
+
+    def test_reparse_tag_no_mount_point_no_es_un_junction(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un ``st_reparse_tag`` distinto de cero no es necesariamente un junction.
+
+        OneDrive Files On-Demand usa ``IO_REPARSE_TAG_CLOUD`` (``0x9000001A``);
+        NTFS con deduplicación/HSM tiene los suyos. El ``bool()`` original trataba
+        CUALQUIER tag no nulo como junction — bastaba tener el árbol sincronizado
+        con OneDrive para que ``DirectoryRollback``/``ProfileSandbox`` abortaran
+        con "es un enlace" sobre una carpeta real (review qodo-merge #404).
+
+        No depende de crear un reparse point real (no hay forma portable de
+        producir uno que no sea junction/symlink): se simula el ``lstat`` para
+        ejercer la rama de comparación sin acoplarse a una plataforma.
+        """
+        real = tmp_path / "real"
+        real.mkdir()
+        st_mode_real = real.lstat().st_mode  # antes de parchear: modo de directorio real
+
+        class _LstatConTagAjeno:
+            st_mode = st_mode_real  # para que is_symlink() (que también lee lstat) siga viendo un directorio
+            st_reparse_tag = 0x9000001A  # IO_REPARSE_TAG_CLOUD, no MOUNT_POINT
+
+        monkeypatch.setattr(pathlib.Path, "lstat", lambda self: _LstatConTagAjeno())
+
+        assert link_kind(real) is None
+        assert is_link(real) is False
 
 
 class TestPathPresent:
