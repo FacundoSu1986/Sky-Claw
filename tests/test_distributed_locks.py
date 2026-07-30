@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import sqlite3
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import pytest
@@ -848,15 +849,16 @@ class _InMemoryHeartbeatLockManager:
     ``acquire_lock`` y ``renew_lock``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
         self._locks: dict[str, LockInfo] = {}
+        self._clock = clock
 
     async def acquire_lock(self, resource_id: str, agent_id: str, ttl: float) -> LockInfo:
         current = self._locks.get(resource_id)
-        if current is not None and not current.is_expired:
+        if current is not None and self._clock() < current.expires_at:
             raise LockAcquisitionError(resource_id, agent_id, "lock is already held")
 
-        now = time.time()
+        now = self._clock()
         info = LockInfo(
             resource_id=resource_id,
             agent_id=agent_id,
@@ -868,10 +870,10 @@ class _InMemoryHeartbeatLockManager:
 
     async def renew_lock(self, resource_id: str, agent_id: str, ttl: float) -> bool:
         current = self._locks.get(resource_id)
-        if current is None or current.agent_id != agent_id or current.is_expired:
+        if current is None or current.agent_id != agent_id or self._clock() >= current.expires_at:
             return False
 
-        now = time.time()
+        now = self._clock()
         self._locks[resource_id] = LockInfo(
             resource_id=resource_id,
             agent_id=agent_id,
@@ -889,8 +891,29 @@ class _InMemoryHeartbeatLockManager:
 
 
 @pytest.mark.asyncio
+async def test_in_memory_heartbeat_manager_enumera_expiracion_y_ownership() -> None:
+    """El doble conserva todas las ramas de lease que usa el test del heartbeat."""
+    reloj = [1_000.0]
+    manager = _InMemoryHeartbeatLockManager(clock=lambda: reloj[0])
+
+    holder = await manager.acquire_lock("res-hb", "holder", ttl=10.0)
+    assert holder.agent_id == "holder"
+    assert await manager.renew_lock("res-hb", "holder", ttl=10.0) is True
+    assert await manager.renew_lock("res-hb", "intruder", ttl=10.0) is False
+    assert await manager.release_lock("res-hb", "intruder") is False
+
+    reloj[0] = 1_011.0
+    assert await manager.renew_lock("res-hb", "holder", ttl=10.0) is False
+
+    intruder = await manager.acquire_lock("res-hb", "intruder", ttl=10.0)
+    assert intruder.agent_id == "intruder"
+    assert await manager.release_lock("res-hb", "intruder") is True
+
+
+@pytest.mark.asyncio
 async def test_snapshot_lock_heartbeat_keeps_lease_alive(
     snapshot_manager: FileSnapshotManager,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Una operación más larga que el TTL no pierde el lease: el heartbeat renueva.
 
@@ -932,7 +955,7 @@ async def test_snapshot_lock_heartbeat_keeps_lease_alive(
                 renovado.set()
         return resultado
 
-    setattr(lock_manager, "renew_lock", _contar_renovaciones)
+    monkeypatch.setattr(lock_manager, "renew_lock", _contar_renovaciones)
 
     inicio = time.monotonic()
     async with SnapshotTransactionLock(
