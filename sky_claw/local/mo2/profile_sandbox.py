@@ -34,6 +34,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal
 
+from sky_claw.app.security.links import link_kind
 from sky_claw.app.security.path_validator import assert_safe_component
 
 logger = logging.getLogger(__name__)
@@ -514,13 +515,26 @@ class ProfileSandbox:
             SandboxSymlinkError: Si el árbol contiene symlinks (fail-closed:
                 diff/promote los leerían o escribirían a través de ellos).
         """
+        # ``link_kind(root)`` antes de ``is_dir()``: ``rglob`` nunca produce la
+        # propia raíz, así que un ``profile_source``/``overwrite_source`` que sea
+        # él mismo un enlace pasaba de largo — ``is_dir()`` lo sigue igual que
+        # ``rglob`` seguiría sus hijos — y diff/promote leían o escribían a través
+        # de un árbol fuera del sandbox sin que el fail-closed de abajo lo viera.
+        if (tipo := link_kind(root)) is not None:
+            raise SandboxSymlinkError(f"Enlace ({tipo}) detectado en el sandbox: {root}. No se sigue.")
         if not root.is_dir():
             return set()
         files: set[str] = set()
         for p in root.rglob("*"):
-            if p.is_symlink():
+            # ``is_link`` y no ``is_symlink()``: este fail-closed existe porque
+            # diff/promote leerían o escribirían A TRAVÉS del enlace, y un junction
+            # de Windows tiene exactamente ese problema — pero ``is_symlink()`` NO
+            # lo ve (``os.path.islink`` devuelve False para un
+            # ``IO_REPARSE_TAG_MOUNT_POINT``; por eso 3.12 agregó ``is_junction``).
+            # En un repo Windows-first el agujero era justo el caso más probable.
+            if (tipo := link_kind(p)) is not None:
                 raise SandboxSymlinkError(
-                    f"Symlink detectado en el sandbox: {p}. No se sigue (podría apuntar fuera del árbol)."
+                    f"Enlace ({tipo}) detectado en el sandbox: {p}. No se sigue (podría apuntar fuera del árbol)."
                 )
             if p.is_file():
                 files.add(p.relative_to(root).as_posix())

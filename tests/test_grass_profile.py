@@ -37,6 +37,7 @@ from sky_claw.local.mo2.profile_sandbox import (
     ProfileNotFoundError,
     SandboxSymlinkError,
 )
+from tests._symlink_guard import crear_junction, junction_guard
 
 
 def _puede_crear_symlinks() -> bool:
@@ -234,6 +235,31 @@ async def test_mod_de_config_symlink_no_borra_su_target(mo2_root: pathlib.Path, 
         await manager.build_config_mod(["Tamriel"])
 
     # El árbol al que apunta el symlink quedó intacto.
+    assert (otro / "importante.esp").read_bytes() == b"no-borrar"
+
+
+@junction_guard
+async def test_mod_de_config_junction_no_borra_su_target(mo2_root: pathlib.Path, manager: GrassProfileManager) -> None:
+    """Mismo caso que el symlink, con un junction de Windows.
+
+    ``raw_mod_dir.is_symlink()`` es **ciego** a los junctions (``os.path.islink()``
+    da False para un ``IO_REPARSE_TAG_MOUNT_POINT``) — el fail-closed anterior sólo
+    cubría symlinks y dejaba pasar exactamente el reparse point que
+    ``PathValidator.validate()`` resuelve y que ``_scaffold_mod_sync`` borraría con
+    ``_rmtree_force`` sobre el destino ajeno.
+    """
+    await manager.create_clone_profile()
+    otro = mo2_root / "mods" / "OtroModImportante"
+    otro.mkdir()
+    (otro / "importante.esp").write_bytes(b"no-borrar")
+    enlace = mo2_root / "mods" / "SkyClaw - Grass Precache Config"
+    motivo = crear_junction(enlace, otro)
+    assert motivo is None, motivo
+
+    with pytest.raises(GrassProfileError):
+        await manager.build_config_mod(["Tamriel"])
+
+    # El árbol al que apunta el junction quedó intacto.
     assert (otro / "importante.esp").read_bytes() == b"no-borrar"
 
 

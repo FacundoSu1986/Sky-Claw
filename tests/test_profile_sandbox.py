@@ -27,6 +27,7 @@ from sky_claw.local.mo2.profile_sandbox import (
     SandboxRollbackError,
     SandboxSymlinkError,
 )
+from tests._symlink_guard import crear_junction, junction_guard
 
 
 def _puede_crear_symlinks() -> bool:
@@ -348,6 +349,60 @@ async def test_symlink_plantado_en_el_clon_se_rechaza(mo2_root: pathlib.Path, tm
 
     with pytest.raises(SandboxSymlinkError):
         await sandbox.diff(clone)
+
+
+@_symlink_guard
+async def test_symlink_como_raiz_del_overwrite_se_rechaza(tmp_path: pathlib.Path) -> None:
+    """El propio ``overwrite/`` (la raíz escaneada) puede ser un enlace.
+
+    ``rglob("*")`` nunca produce la raíz que lo invoca, así que chequear sólo lo
+    que devuelve dejaba pasar un ``overwrite_source`` que fuera él mismo un
+    symlink: ``is_dir()`` lo sigue igual que ``rglob`` seguiría a sus hijos, y
+    clone/diff terminaban leyendo un árbol fuera del sandbox sin que el
+    fail-closed lo viera.
+    """
+    mo2_root = tmp_path / "mo2"
+    profile = mo2_root / "profiles" / "Default"
+    profile.mkdir(parents=True)
+    (profile / "plugins.txt").write_bytes(_PLUGINS)
+    (profile / "modlist.txt").write_bytes(_MODLIST)
+    (profile / "settings.ini").write_bytes(_SETTINGS)
+
+    fuera = tmp_path / "fuera"
+    fuera.mkdir()
+    (fuera / "secreto.txt").write_bytes(b"fuera del sandbox")
+    (mo2_root / "overwrite").symlink_to(fuera, target_is_directory=True)
+
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+
+    with pytest.raises(SandboxSymlinkError):
+        await sandbox.clone()
+
+
+@junction_guard
+async def test_junction_como_raiz_del_overwrite_se_rechaza(tmp_path: pathlib.Path) -> None:
+    """Mismo caso que el symlink de raíz, con un junction de Windows.
+
+    ``is_symlink()``/``os.path.islink()`` no ven un junction; es exactamente el
+    caso que motivó consolidar la detección en ``link_kind``.
+    """
+    mo2_root = tmp_path / "mo2"
+    profile = mo2_root / "profiles" / "Default"
+    profile.mkdir(parents=True)
+    (profile / "plugins.txt").write_bytes(_PLUGINS)
+    (profile / "modlist.txt").write_bytes(_MODLIST)
+    (profile / "settings.ini").write_bytes(_SETTINGS)
+
+    fuera = tmp_path / "fuera"
+    fuera.mkdir()
+    (fuera / "secreto.txt").write_bytes(b"fuera del sandbox")
+    motivo = crear_junction(mo2_root / "overwrite", fuera)
+    assert motivo is None, motivo
+
+    sandbox = ProfileSandbox(mo2_root=mo2_root)
+
+    with pytest.raises(SandboxSymlinkError):
+        await sandbox.clone()
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,14 @@ import logging
 import pathlib
 from dataclasses import dataclass
 
+# La detección de enlaces NO se reimplementa acá: estaba duplicada con
+# ``overwrite_health`` (cuyo helper declaraba en su docstring que "espejaba" a este)
+# y el rollback de directorios iba a ser la tercera copia. Conocer que ``islink()``
+# no ve los junctions y que ``is_junction`` recién existe en 3.12 es exactamente la
+# clase de detalle que no puede estar escrito en tres lados. Anclado en
+# ``tests/test_links.py::test_la_deteccion_de_junctions_vive_en_un_solo_modulo``.
+from sky_claw.app.security.links import link_kind
+
 logger = logging.getLogger(__name__)
 
 #: Subdirectorios de MO2 cuya virtualización importa a las herramientas.
@@ -51,27 +59,6 @@ class VfsIssue:
     kind: str
     severity: str
     remediation: str
-
-
-def _link_kind(path: pathlib.Path) -> str | None:
-    """Devuelve el tipo de enlace de *path*, o None si es una ruta real.
-
-    ``is_junction`` existe desde Python 3.12; en 3.11/Windows se detecta por
-    ``st_reparse_tag`` del lstat. En POSIX solo aplican los symlinks.
-    """
-    try:
-        if path.is_symlink():
-            return "symlink"
-        is_junction = getattr(path, "is_junction", None)
-        if is_junction is not None and is_junction():
-            return "junction"
-        if path.exists():
-            reparse_tag = getattr(path.lstat(), "st_reparse_tag", 0)
-            if reparse_tag:
-                return "junction"
-    except OSError as exc:
-        logger.debug("No se pudo inspeccionar %s: %s", path, exc)
-    return None
 
 
 class VfsHealthChecker:
@@ -114,7 +101,7 @@ class VfsHealthChecker:
         def add(path: pathlib.Path, severity: str, remediation: str) -> None:
             if path in seen:
                 return
-            kind = _link_kind(path)
+            kind = link_kind(path)
             if kind is None:
                 return
             seen.add(path)
