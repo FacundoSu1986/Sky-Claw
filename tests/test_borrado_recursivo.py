@@ -51,12 +51,30 @@ def _referencias(ruta: pathlib.Path, nombres: set[str]) -> bool:
     sin ``Call`` alrededor), que es como lo usan la mitad de los call sites.
     """
     arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+    aliases = {
+        alias.asname or alias.name
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.ImportFrom)
+        for alias in nodo.names
+        if alias.name in nombres
+    }
     for nodo in ast.walk(arbol):
         if isinstance(nodo, ast.Attribute) and nodo.attr in nombres:
             return True
-        if isinstance(nodo, ast.Name) and nodo.id in nombres:
+        if isinstance(nodo, ast.Name) and nodo.id in nombres | aliases:
             return True
     return False
+
+
+def test_el_censo_resuelve_aliases_de_importacion(tmp_path: pathlib.Path) -> None:
+    """Un alias de ``rmtree`` sigue siendo un borrador crudo y rompe el ancla."""
+    modulo = tmp_path / "borrador_alias.py"
+    modulo.write_text(
+        "from shutil import rmtree as remove_tree\n\ndef borrar(path):\n    remove_tree(path)\n",
+        encoding="utf-8",
+    )
+
+    assert _referencias(modulo, _BORRADORES_CRUDOS)
 
 
 def _modulos(nombres: set[str]) -> set[str]:

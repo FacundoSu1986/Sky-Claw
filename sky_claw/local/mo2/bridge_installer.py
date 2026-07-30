@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable, Sequence
 
 from sky_claw.app.security.file_permissions import restrict_to_owner
-from sky_claw.app.security.links import link_kind, rmtree_link_aware
+from sky_claw.app.security.links import link_kind_or_raise_with_retry, rmtree_link_aware
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION
 
@@ -66,7 +66,11 @@ class MO2BridgeInstaller:
         # pasaba el chequeo, `os.replace` movía EL ENLACE a `backup`, y el
         # borrado del backup lo atravesaba y destruía el árbol destino (que acá
         # es la instalación previa del bridge del usuario).
-        if (tipo_de_enlace := link_kind(destination)) is not None:
+        try:
+            tipo_de_enlace = link_kind_or_raise_with_retry(destination)
+        except OSError as exc:
+            raise MO2BridgeInstallError(f"no se pudo inspeccionar el destino skyclaw_bridge: {exc}") from exc
+        if tipo_de_enlace is not None:
             raise MO2BridgeInstallError(f"el destino skyclaw_bridge no puede ser un enlace ({tipo_de_enlace})")
         suffix = uuid.uuid4().hex
         staging = plugins / f".skyclaw_bridge.{suffix}.tmp"

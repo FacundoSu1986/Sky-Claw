@@ -34,7 +34,7 @@ import pathlib
 import shutil
 from typing import TYPE_CHECKING
 
-from sky_claw.app.security.links import link_kind
+from sky_claw.app.security.links import link_kind_or_raise_with_retry
 from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.local.mo2.ini_editor import IniEditor
 from sky_claw.local.mo2.profile_sandbox import (
@@ -225,7 +225,10 @@ class GrassProfileManager:
         # el mismo agujero que ``profile_sandbox`` y ``_dir_rollback`` tenían
         # antes de consolidar en ``links.py`` — quedaba sin el fix acá.
         raw_mod_dir = self._root / "mods" / self._config_mod_name
-        tipo_de_enlace = link_kind(raw_mod_dir)
+        try:
+            tipo_de_enlace = await asyncio.to_thread(link_kind_or_raise_with_retry, raw_mod_dir)
+        except OSError as exc:
+            raise GrassProfileError(f"No se pudo inspeccionar el mod de config '{raw_mod_dir}': {exc}") from exc
         if tipo_de_enlace is not None:
             raise GrassProfileError(
                 f"El mod de config '{self._config_mod_name}' ya existe como enlace "
@@ -328,7 +331,13 @@ class GrassProfileManager:
         ]
         fallidos: list[pathlib.Path] = []
         for objetivo in objetivos:
-            if (tipo_de_enlace := link_kind(objetivo)) is not None:
+            try:
+                tipo_de_enlace = await asyncio.to_thread(link_kind_or_raise_with_retry, objetivo)
+            except OSError as exc:
+                logger.warning("Teardown del ritual grass: no se pudo inspeccionar '%s': %s", objetivo, exc)
+                fallidos.append(objetivo)
+                continue
+            if tipo_de_enlace is not None:
                 logger.warning(
                     "Teardown del ritual grass: '%s' es un enlace (%s) y NO se borra — "
                     "hacerlo destruiría el árbol al que apunta. Quitalo a mano si corresponde.",

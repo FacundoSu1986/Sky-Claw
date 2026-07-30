@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from sky_claw.app.security.links import link_kind, rmtree_link_aware
+from sky_claw.app.security.links import link_kind_or_raise_with_retry, rmtree_link_aware
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 from sky_claw.local.tools.output_targets import dyndolod_staging_roots
 
@@ -657,7 +657,14 @@ class DynDOLODRunner:
             # que apunta en vez del output previo de DynDOLOD. Mismo criterio y
             # mismo orden que `grass_profile.build_config_mod` y
             # `vfs.delete_mod_files`.
-            if (tipo_de_enlace := link_kind(mod_path)) is not None:
+            try:
+                tipo_de_enlace = await asyncio.to_thread(link_kind_or_raise_with_retry, mod_path)
+            except OSError as exc:
+                raise DynDOLODValidationError(
+                    f"No se pudo inspeccionar el mod de salida '{mod_name}' antes de limpiarlo: {exc}",
+                    output_path=mod_path,
+                ) from exc
+            if tipo_de_enlace is not None:
                 raise DynDOLODValidationError(
                     f"El mod de salida '{mod_name}' es un enlace ({tipo_de_enlace}), no un "
                     "directorio real: limpiarlo borraría el árbol al que apunta. Reemplazá "

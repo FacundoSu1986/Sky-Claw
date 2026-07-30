@@ -17,10 +17,13 @@ versión/plataforma vive en un solo módulo a propósito.
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
+from types import SimpleNamespace
 
 import pytest
 
+import sky_claw.app.security.links as links
 from sky_claw.app.security.links import (
     is_link,
     link_kind,
@@ -47,6 +50,29 @@ class TestLinkKind:
 
         assert link_kind(archivo) is None
         assert is_link(archivo) is False
+
+    def test_detector_fail_closed_reintenta_un_error_transitorio(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un guard destructivo no confunde un fallo de inspección con "ruta real"."""
+        detector = links.link_kind_or_raise_with_retry
+        objetivo = tmp_path / "real"
+        objetivo.mkdir()
+        lstat_real = pathlib.Path.lstat
+        intentos = 0
+
+        def _lstat_transitorio(self: pathlib.Path) -> os.stat_result:
+            nonlocal intentos
+            if self == objetivo:
+                intentos += 1
+                if intentos < 3:
+                    raise PermissionError("WinError 5: bloqueo transitorio del indexer")
+            return lstat_real(self)
+
+        monkeypatch.setattr(pathlib.Path, "lstat", _lstat_transitorio)
+
+        assert detector(objetivo) is None
+        assert intentos == 3
 
     def test_ruta_inexistente_no_es_enlace_y_no_hace_ruido(self, tmp_path: pathlib.Path) -> None:
         """Una ruta que no existe no es un enlace, y preguntarlo no debe lanzar.
@@ -208,6 +234,91 @@ class TestRmtreeLinkAware:
         rmtree_link_aware(raiz)
 
         assert not raiz.exists()
+
+    def test_un_arbol_mas_profundo_que_el_limite_de_python_se_borra_en_postorden(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """El recorrido no depende de la pila de Python para cada directorio."""
+        profundidad = 1_200
+        eliminados: list[int] = []
+
+        class _StatDirectorio:
+            st_mode = 0o040755
+            st_dev = 1
+            st_reparse_tag = 0
+
+            def __init__(self, inode: int) -> None:
+                self.st_ino = inode
+
+        class _RutaVirtual:
+            def __init__(self, valor: str | int) -> None:
+                self.nivel = int(valor)
+
+            def lstat(self) -> _StatDirectorio:
+                return _StatDirectorio(self.nivel)
+
+            def rmdir(self) -> None:
+                eliminados.append(self.nivel)
+
+            def unlink(self) -> None:
+                raise AssertionError("el árbol virtual sólo contiene directorios")
+
+            def __str__(self) -> str:
+                return str(self.nivel)
+
+        class _ScandirVirtual:
+            def __init__(self, ruta: _RutaVirtual) -> None:
+                self._ruta = ruta
+
+            def __enter__(self):
+                if self._ruta.nivel == profundidad:
+                    return iter(())
+                return iter((SimpleNamespace(path=str(self._ruta.nivel + 1)),))
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+        monkeypatch.setattr(links, "pathlib", SimpleNamespace(Path=_RutaVirtual))
+        monkeypatch.setattr(links, "os", SimpleNamespace(scandir=_ScandirVirtual))
+
+        links._borrar_recursivo(_RutaVirtual(0), limpiar_readonly=False)
+
+        assert eliminados == list(range(profundidad, -1, -1))
+
+    @junction_guard
+    def test_revalida_la_identidad_antes_de_descender(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un swap entre inspección y ``scandir`` aborta sin tocar el destino."""
+        ajeno = tmp_path / "arbol_ajeno"
+        ajeno.mkdir()
+        importante = ajeno / "importante.txt"
+        importante.write_text("no borrar", encoding="utf-8")
+
+        raiz = tmp_path / "arbol"
+        victima = raiz / "victima"
+        victima.mkdir(parents=True)
+        (victima / "propio.txt").write_text("borrable", encoding="utf-8")
+        preservado = tmp_path / "victima_original"
+        scandir_real = os.scandir
+        intercambio_hecho = False
+
+        def _scandir_con_intercambio(path: os.PathLike[str] | str | int):
+            nonlocal intercambio_hecho
+            if pathlib.Path(path) == victima and not intercambio_hecho:
+                intercambio_hecho = True
+                victima.rename(preservado)
+                motivo = crear_junction(victima, ajeno)
+                assert motivo is None, motivo
+            return scandir_real(path)
+
+        monkeypatch.setattr(os, "scandir", _scandir_con_intercambio)
+
+        with pytest.raises(OSError, match="cambi"):
+            rmtree_link_aware(raiz)
+
+        assert intercambio_hecho
+        assert importante.read_text(encoding="utf-8") == "no borrar"
 
     def test_es_no_op_si_la_ruta_no_existe(self, tmp_path: pathlib.Path) -> None:
         """Borrar lo que ya no está cumplió el objetivo; no es un error.

@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from sky_claw.app.security.path_validator import PathValidator
 
-from sky_claw.app.security.links import link_kind, rmtree_link_aware
+from sky_claw.app.security.links import link_kind_or_raise_with_retry, rmtree_link_aware
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 
 logger = logging.getLogger(__name__)
@@ -320,7 +320,11 @@ class MO2Controller:
         # Pesa que este camino arranca en una tool del agente LLM
         # (system_tools.uninstall_mod → delete_mod_files) con el nombre del mod
         # como parámetro del modelo.
-        if (tipo_de_enlace := link_kind(mod_dir)) is not None:
+        try:
+            tipo_de_enlace = await asyncio.to_thread(link_kind_or_raise_with_retry, mod_dir)
+        except OSError as exc:
+            raise PathViolationError(f"No se pudo inspeccionar el mod '{mod_name}' antes de borrarlo: {exc}") from exc
+        if tipo_de_enlace is not None:
             raise PathViolationError(
                 f"El mod '{mod_name}' es un enlace ({tipo_de_enlace}), no un directorio real: "
                 "borrarlo destruiría el árbol al que apunta. Quitá el enlace a mano si "

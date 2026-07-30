@@ -1738,7 +1738,7 @@ estar clasificado así.
 ## Addendum — el borrado recursivo link-aware es de todo el paquete, no de un archivo
 
 Cierra la generalización que #404 dejó abierta **y la deuda de proceso de ese mismo PR**:
-#404 no actualizó este documento, violando `AGENTS.md:39-42`. Queda asentado acá.
+El PR `#404` no actualizó este documento, violando `AGENTS.md:39-42`. Queda asentado acá.
 
 **El disparador es empírico, no una intuición de diseño.** #404 necesitó seis rondas para
 seis defectos reales —uno con pérdida de datos del usuario— y **los seis los encontró un
@@ -1750,7 +1750,7 @@ que los haga fallar"*.
 ### El censo que #404 no hizo
 
 Arreglado un archivo (`_dir_rollback.py`), el barrido del árbol encontró **16 sitios de
-borrado recursivo en 9 módulos**, 8 apuntando a árboles del usuario y **ninguno protegido en
+borrado recursivo en 10 módulos**, 8 apuntando a árboles del usuario y **ninguno protegido en
 niveles anidados**. Y `_rmtree_force` estaba **duplicado** (`vfs.py` / `profile_sandbox.py`,
 el segundo declarándolo en su propio docstring), con un agujero extra que ninguno de los dos
 veía: su limpieza de read-only usaba un `os.walk` previo que —igual que `rmtree`— desciende

@@ -39,6 +39,7 @@ import logging
 import os
 import pathlib
 import stat
+import time
 from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,21 @@ JUNCTION = "junction"
 #: que internamente compara CONTRA este valor exacto y no contra "no es cero"—
 #: así que en 3.11 hace falta el literal como fallback.
 _IO_REPARSE_TAG_MOUNT_POINT = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+_LINK_INSPECTION_RETRIES = 5
+_LINK_INSPECTION_BACKOFF_SECONDS = 0.1
+
+
+def _inspeccionar_enlace(path: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
+    """Inspecciona *path* con un único ``lstat`` y devuelve también su identidad."""
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return None, None
+    if stat.S_ISLNK(st.st_mode):
+        return SYMLINK, st
+    if getattr(st, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT:
+        return JUNCTION, st
+    return None, st
 
 
 def link_kind_or_raise(path: pathlib.Path) -> str | None:
@@ -78,13 +94,9 @@ def link_kind_or_raise(path: pathlib.Path) -> str | None:
     con backoff y terminaba fallando ``__aenter__`` sobre la entrada más común
     y correcta que hay.
     """
-    # ``is_junction`` es de Python 3.12+; en 3.11 se cae al reparse tag.
-    es_junction = getattr(path, "is_junction", None)
-    if es_junction is not None and es_junction():
-        return JUNCTION
-    # UN solo ``lstat()`` (no sigue el enlace) para las dos preguntas que
-    # quedan, en vez de ``is_symlink()`` (que hace su propio lstat interno) más
-    # un ``path.lstat()`` explícito para el reparse tag — este módulo está en
+    # UN solo ``lstat()`` (no sigue el enlace) para las dos preguntas, en vez de
+    # ``is_symlink()``/``is_junction()`` (cada uno hace su propio lstat interno)
+    # más un ``path.lstat()`` explícito para el reparse tag — este módulo está en
     # el camino recursivo de borrado (``_rmtree_link_aware_sync`` lo llama una
     # vez por entrada del árbol), así que duplicar el syscall en el caso común
     # (directorio real, ni symlink ni junction) se paga en cada archivo de un
@@ -94,21 +106,29 @@ def link_kind_or_raise(path: pathlib.Path) -> str | None:
     # si vale la pena mirarlo, así que un junction roto (destino borrado)
     # quedaba invisible — el mismo modo de falla que este módulo existe para
     # evitar, pero sin cubrir.
-    try:
-        st = path.lstat()
-    except FileNotFoundError:
-        return None
-    if stat.S_ISLNK(st.st_mode):
-        return SYMLINK
-    # Comparación EXACTA contra IO_REPARSE_TAG_MOUNT_POINT, no "no es cero"
-    # (review qodo-merge): un reparse tag distinto de cero no es sólo un
-    # junction — OneDrive Files On-Demand usa IO_REPARSE_TAG_CLOUD, y NTFS
-    # tiene dedup/HSM con sus propios tags. Con el ``bool()`` original,
-    # cualquiera de esos hacía que ``DirectoryRollback``/``ProfileSandbox``
-    # abortaran con "es un junction" sobre una carpeta que no lo es.
-    if getattr(st, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT:
-        return JUNCTION
-    return None
+    tipo, _st = _inspeccionar_enlace(path)
+    return tipo
+
+
+def link_kind_or_raise_with_retry(path: pathlib.Path) -> str | None:
+    """Inspecciona fail-closed, reintentando bloqueos transitorios del filesystem.
+
+    Los guards destructivos no pueden usar :func:`link_kind`: allí ``None``
+    también significa "no pude inspeccionar". Esta variante conserva el
+    ``OSError`` y aplica el mismo presupuesto de cinco intentos con backoff
+    lineal que las mutaciones de ``DirectoryRollback``. Si el bloqueo persiste,
+    propaga el último error y el caller aborta sin borrar.
+    """
+    last_exc: OSError | None = None
+    for attempt in range(_LINK_INSPECTION_RETRIES):
+        try:
+            return link_kind_or_raise(path)
+        except OSError as exc:
+            last_exc = exc
+            if attempt < _LINK_INSPECTION_RETRIES - 1:
+                time.sleep(_LINK_INSPECTION_BACKOFF_SECONDS * (attempt + 1))
+    assert last_exc is not None
+    raise last_exc
 
 
 def link_kind(path: pathlib.Path) -> str | None:
@@ -208,19 +228,51 @@ def _borrar_con_reintento_de_readonly(
         operacion()
 
 
+def _misma_entrada(antes: os.stat_result, despues: os.stat_result | None) -> bool:
+    """True si dos ``lstat`` describen la misma entrada del directorio."""
+    return (
+        despues is not None
+        and antes.st_dev == despues.st_dev
+        and antes.st_ino == despues.st_ino
+        and stat.S_IFMT(antes.st_mode) == stat.S_IFMT(despues.st_mode)
+        and getattr(antes, "st_reparse_tag", 0) == getattr(despues, "st_reparse_tag", 0)
+    )
+
+
 def _borrar_recursivo(ruta: pathlib.Path, *, limpiar_readonly: bool) -> None:
-    """Recorrido interno de :func:`rmtree_link_aware`; asume que *ruta* existe."""
-    tipo = link_kind_or_raise(ruta)
-    if tipo is not None:
-        borrar_enlace(ruta, tipo)
-        return
-    if not ruta.is_dir():
-        _borrar_con_reintento_de_readonly(ruta.unlink, ruta, limpiar_readonly=limpiar_readonly)
-        return
-    with os.scandir(ruta) as entradas:
-        for entrada in entradas:
-            _borrar_recursivo(pathlib.Path(entrada.path), limpiar_readonly=limpiar_readonly)
-    _borrar_con_reintento_de_readonly(ruta.rmdir, ruta, limpiar_readonly=limpiar_readonly)
+    """Recorrido postorden iterativo de :func:`rmtree_link_aware`."""
+    pendientes: list[tuple[pathlib.Path, os.stat_result | None]] = [(ruta, None)]
+    while pendientes:
+        actual, identidad_para_rmdir = pendientes.pop()
+        if identidad_para_rmdir is not None:
+            tipo_final, identidad_final = _inspeccionar_enlace(actual)
+            if tipo_final is not None or not _misma_entrada(identidad_para_rmdir, identidad_final):
+                raise OSError(f"La entrada cambió antes de quitar el directorio: {actual}")
+            _borrar_con_reintento_de_readonly(actual.rmdir, actual, limpiar_readonly=limpiar_readonly)
+            continue
+
+        tipo = link_kind_or_raise(actual)
+        tipo_revalidado, identidad_antes = _inspeccionar_enlace(actual)
+        if identidad_antes is None:
+            continue
+        if tipo != tipo_revalidado:
+            raise OSError(f"La entrada cambió mientras se inspeccionaba para borrar: {actual}")
+        if tipo_revalidado is not None:
+            borrar_enlace(actual, tipo_revalidado)
+            continue
+        if not stat.S_ISDIR(identidad_antes.st_mode):
+            _borrar_con_reintento_de_readonly(actual.unlink, actual, limpiar_readonly=limpiar_readonly)
+            continue
+
+        with os.scandir(actual) as entradas:
+            tipo_despues, identidad_despues = _inspeccionar_enlace(actual)
+            if tipo_despues is not None or not _misma_entrada(identidad_antes, identidad_despues):
+                raise OSError(f"La entrada cambió mientras se abría para borrar: {actual}")
+            hijos = [pathlib.Path(entrada.path) for entrada in entradas]
+
+        assert identidad_despues is not None
+        pendientes.append((actual, identidad_despues))
+        pendientes.extend((hijo, None) for hijo in reversed(hijos))
 
 
 def rmtree_link_aware(ruta: pathlib.Path, *, limpiar_readonly: bool = False) -> None:
