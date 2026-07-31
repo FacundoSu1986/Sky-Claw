@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import pathlib
 
-from sky_claw.local.tools.output_targets import pandora_output_target
 from tests.test_borrado_recursivo import MECANISMO_DE_BORRADO
 from tests.test_rollback_reconciler import (
     PRODUCTORES_DEL_NOMBRE,
     RECONCILIADORES_DE_ARRANQUE,
 )
-from tests.test_rollback_salida import MECANISMO_DE_ROLLBACK
+from tests.test_rollback_salida import MECANISMO_DE_ROLLBACK, MOTIVO
 
 _RAIZ = pathlib.Path(__file__).resolve().parent.parent
 _INVENTARIO = _RAIZ / "docs" / "pending_ooda_status.md"
@@ -87,16 +86,27 @@ def test_el_parser_tolera_espacios_exteriores_en_la_tabla() -> None:
 def test_u04_sigue_parcial_hasta_bodyslide_y_el_smoke_real_de_pandora() -> None:
     fila = _tabla()["U-04"]
     pendientes = {modulo for modulo, mecanismo in MECANISMO_DE_ROLLBACK.items() if mecanismo == "pendiente"}
+    modulo_bodyslide = "sky_claw/app/agent/tools/system_tools.py"
 
-    assert pendientes
+    assert pendientes == {modulo_bodyslide}
+    assert "BodySlide" in MOTIVO[modulo_bodyslide]
     assert fila["Estado"] == "Parcial"
     assert "BodySlide" in fila["Qué falta"]
     assert "smoke real de rollback de Pandora" in fila["Qué falta"]
     assert "test_rollback_salida.py" in fila["Verificado por"]
     assert "test_pandora_service.py" in fila["Verificado por"]
 
-    game = pathlib.Path("juego")
-    assert pandora_output_target(game=game) == game.resolve() / "Pandora_Output"
+
+def test_pandora_documenta_la_salida_administrada_sin_cerrar_el_sandbox() -> None:
+    sandbox = (_RAIZ / "sky_claw" / "local" / "mo2" / "sandbox_run.py").read_text(encoding="utf-8")
+    adr = (_RAIZ / "docs" / "adr" / "0005-sandbox-promocion-sincrona-hitl.md").read_text(encoding="utf-8")
+
+    for texto in (sandbox, adr):
+        assert "--output" in texto
+        assert "Pandora_Output" in texto
+        assert "sandbox" in texto.lower()
+        assert "USVFS" in texto
+    assert "supersedida" in adr.lower()
 
 
 def test_t25_nombra_t27_antes_del_rig_humano() -> None:

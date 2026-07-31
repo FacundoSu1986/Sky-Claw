@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD013 -->
+
 # ADR 0005 — Promoción del sandbox: síncrona, bloqueando en HITL dentro del mismo dispatch
 
 **Fecha:** 2026-07-14
@@ -100,6 +102,13 @@ sin GUI que lo inspeccione. La excepción es `SandboxRollbackError` (arriba).
   tras una aprobación explícita sobre el diff. Pandora/DynDOLOD/Wrye Bash
   siguen fuera (sin palanca de redirección de output — follow-up documentado
   en `sandbox_run.py`); T-27 queda **parcialmente** cerrado, no cerrado.
+
+  > **Addendum 2026-07-31 — premisa supersedida:** Pandora incorporó soporte
+  > oficial para `--output` y Sky-Claw fija una salida administrada absoluta en
+  > `<game>/Pandora_Output`. La decisión restante es aceptar el override del
+  > clon y cablear Pandora al sandbox/perfil USVFS con diff/promoción. El
+  > comportamiento en un runtime real de Pandora/MO2 no está verificado.
+
 - Comportamiento nuevo visible: ejecutar Synthesis ahora pide una aprobación
   post-run (modal GUI / Telegram). Sin operador, el timeout de 300 s descarta
   — explícito en el result, nunca silencioso.
@@ -117,3 +126,5 @@ uso real de aprobación diferida (p. ej. pipeline nocturno desatendido donde el
 operador revisa a la mañana) **y** para entonces existe una respuesta al drift
 mejor que "reclonar y re-ejecutar" (p. ej. re-basar el diff). Mientras el
 drift-gate mande, la ventana corta es la correcta.
+
+<!-- markdownlint-enable MD013 -->
