@@ -134,7 +134,8 @@ async def test_run_pandora_falla_cerrado_sin_managers_de_proteccion(
         )
     )
 
-    assert out == {"error": f"Pandora requiere protección; faltan: {faltantes}"}
+    detail = f"Pandora requiere protección; faltan: {faltantes}"
+    assert out == {"success": False, "message": detail, "error": detail}
     runner.run_pandora.assert_not_awaited()
 
 

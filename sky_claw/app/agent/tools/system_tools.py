@@ -508,7 +508,8 @@ async def run_pandora(
         if manager is None
     ]
     if missing_managers:
-        return json.dumps({"error": f"Pandora requiere protección; faltan: {', '.join(missing_managers)}"})
+        detail = f"Pandora requiere protección; faltan: {', '.join(missing_managers)}"
+        return json.dumps({"success": False, "message": detail, "error": detail})
 
     from sky_claw.local.tools.pandora_service import PandoraPipelineService
 
