@@ -22,8 +22,8 @@ from sky_claw.app.gui.models.app_state import enrich_conflicts
 async def db(tmp_path: pathlib.Path) -> AsyncIterator[DatabaseAgent]:
     """Cierra la conexión real antes del teardown del event loop."""
     agent = DatabaseAgent(str(tmp_path / "state.db"))
-    await agent.init_db()
     try:
+        await agent.init_db()
         yield agent
     finally:
         await agent.close()
