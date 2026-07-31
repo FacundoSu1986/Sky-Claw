@@ -11,7 +11,6 @@ Tests cover:
 
 from __future__ import annotations
 
-import asyncio
 import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -90,9 +89,19 @@ class TestLOOTRunnerTimeout:
         mock_proc.kill = MagicMock()
         mock_proc.wait = AsyncMock()
 
+        call_count = 0
+
+        async def _wait_for_side_effect(coro, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                coro.close()
+                raise TimeoutError
+            return await coro
+
         with (
             patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sky_claw.local.loot.cli.asyncio.wait_for", side_effect=asyncio.TimeoutError),
+            patch("sky_claw.local.loot.cli.asyncio.wait_for", side_effect=_wait_for_side_effect),
             patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(config.game_path)),
             pytest.raises(LOOTTimeoutError, match="timed out"),
         ):
@@ -117,6 +126,7 @@ class TestLOOTRunnerTimeout:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
+                coro.close()
                 raise TimeoutError
             return await coro
 
@@ -229,6 +239,7 @@ class TestMO2LaunchGameSpawn:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
+                coro.close()
                 raise TimeoutError
             return await coro
 
@@ -263,10 +274,14 @@ class TestMO2LaunchGameSpawn:
         mock_proc.kill = MagicMock()
         mock_proc.wait = AsyncMock()
 
+        async def _capturar_timeout(coro, timeout=None):
+            coro.close()
+            return None
+
         with (
             patch("sky_claw.local.mo2.vfs.asyncio.create_subprocess_exec", return_value=mock_proc),
             patch("sky_claw.local.mo2.vfs.psutil.pid_exists", return_value=True),
-            patch("sky_claw.local.mo2.vfs.asyncio.wait_for", return_value=None) as mock_wf,
+            patch("sky_claw.local.mo2.vfs.asyncio.wait_for", side_effect=_capturar_timeout) as mock_wf,
         ):
             await controller.launch_game("Default")
 
@@ -425,14 +440,15 @@ class TestIsWSL2Detection:
             mock_sys.platform = "linux"
             assert is_wsl2() is False
 
-    def test_cached_flag_persists(self, *, _reset_wsl2_cache: None) -> None:
+    @pytest.mark.asyncio
+    async def test_cached_flag_persists(self, *, _reset_wsl2_cache: None) -> None:
         """is_wsl2_cached() returns the same value on repeated calls."""
         import sky_claw.app.core.windows_interop as _mod
 
         _mod._WSL2_ACTIVE = None
         with patch("sky_claw.app.core.windows_interop.is_wsl2", return_value=True):
-            result1 = asyncio.run(is_wsl2_cached())
-            result2 = asyncio.run(is_wsl2_cached())
+            result1 = await is_wsl2_cached()
+            result2 = await is_wsl2_cached()
 
         assert result1 is True
         assert result2 is True

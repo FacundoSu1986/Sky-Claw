@@ -716,20 +716,25 @@ async def test_close_con_job_activo_espera_terminacion_y_resuelve_submit(tmp_pat
     )
     await broker.start()
     reader, writer, secret = await _conectar_bridge(broker)
-    pending = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
-    await read_authenticated_message(reader, secret)
+    try:
+        pending = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+        await read_authenticated_message(reader, secret)
 
-    closing = asyncio.create_task(broker.close())
-    cancel = await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=1)
-    assert cancel["type"] == "cancel"
-    await asyncio.sleep(0.1)
-    assert not closing.done()
-    assert not pending.done()
+        closing = asyncio.create_task(broker.close())
+        cancel = await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=1)
+        assert cancel["type"] == "cancel"
+        await asyncio.sleep(0.1)
+        assert not closing.done()
+        assert not pending.done()
 
-    await _reportar_salida_bridge(writer, secret, job_id=job.job_id, exit_code=1)
-    await asyncio.wait_for(closing, timeout=1)
-    with pytest.raises(VfsBrokerError):
-        await asyncio.wait_for(pending, timeout=1)
+        await _reportar_salida_bridge(writer, secret, job_id=job.job_id, exit_code=1)
+        await asyncio.wait_for(closing, timeout=1)
+        with pytest.raises(VfsBrokerError):
+            await asyncio.wait_for(pending, timeout=1)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await broker.close()
 
 
 async def test_close_concurrente_es_idempotente(tmp_path: pathlib.Path) -> None:

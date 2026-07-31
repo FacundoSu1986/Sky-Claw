@@ -154,7 +154,7 @@ def _mock_gateway_github(installer: ToolsInstaller, zip_payload: bytes, asset_na
     """Encadena las dos respuestas del gateway: metadata del release y stream binario."""
     release_json = _ngio_release_json(asset_name=asset_name, size=len(zip_payload))
 
-    mock_api_resp = AsyncMock()
+    mock_api_resp = MagicMock()
     mock_api_resp.status = 200
     mock_api_resp.json = AsyncMock(return_value=release_json)
     mock_api_resp.release = MagicMock()
@@ -162,7 +162,7 @@ def _mock_gateway_github(installer: ToolsInstaller, zip_payload: bytes, asset_na
     async def _iter_chunks(size: int):
         yield zip_payload
 
-    mock_dl_resp = AsyncMock()
+    mock_dl_resp = MagicMock()
     mock_dl_resp.status = 200
     mock_dl_resp.raise_for_status = MagicMock()
     mock_dl_resp.release = MagicMock()
@@ -682,7 +682,7 @@ class TestListFiles:
         """list_files pega a files.json vía gateway.request (F5b) y devuelve la lista cruda."""
         from sky_claw.app.scraper.nexus_downloader import NexusDownloader
 
-        resp = AsyncMock()
+        resp = MagicMock()
         resp.status = 200
         resp.raise_for_status = MagicMock()
         resp.release = MagicMock()

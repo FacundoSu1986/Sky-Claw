@@ -15,6 +15,7 @@ type-discriminated outcomes (no overloaded ``None`` semantics):
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from unittest.mock import patch
 
 import aiosqlite
@@ -25,7 +26,7 @@ from sky_claw.app.security.credential_vault import CredentialVault
 
 
 @pytest.fixture
-def vault(tmp_path):
+async def vault(tmp_path) -> AsyncIterator[CredentialVault]:
     """Return an initialised CredentialVault backed by a tmp DB."""
     db_path = str(tmp_path / "vault_sec02.db")
     with patch("sky_claw.app.security.credential_vault.restrict_to_owner"):
@@ -34,7 +35,10 @@ def vault(tmp_path):
             master_key="test-master-key",
             salt_dir=tmp_path / "salt",
         )
-    return vault
+    try:
+        yield vault
+    finally:
+        await vault.close()
 
 
 class TestCredentialVaultGetSecret:

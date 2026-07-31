@@ -19,14 +19,11 @@ from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 
 
 @pytest.fixture
-def manager(tmp_path: pathlib.Path):
+async def manager(tmp_path: pathlib.Path) -> FileSnapshotManager:
     """Return an initialised FileSnapshotManager backed by a tmp directory."""
     snap_dir = tmp_path / "snapshots"
     mgr = FileSnapshotManager(snapshot_dir=snap_dir, max_size_mb=100)
-    # initialize() is sync-like (mkdir), call it directly
-    import asyncio
-
-    asyncio.run(mgr.initialize())
+    await mgr.initialize()
     return mgr
 
 

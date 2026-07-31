@@ -7,7 +7,6 @@ Verifies:
 
 from __future__ import annotations
 
-import asyncio
 import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -155,7 +154,10 @@ class TestDownloadModFreshUrl:
         hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)
         return hitl
 
-    def test_p0_2_captures_mod_ids_not_url(self, mock_registry, mock_mo2, mock_sync_engine, mock_downloader, mock_hitl):
+    @pytest.mark.asyncio
+    async def test_p0_2_captures_mod_ids_not_url(
+        self, mock_registry, mock_mo2, mock_sync_engine, mock_downloader, mock_hitl
+    ):
         """P0-2 FIX: Should capture nexus_id/file_id, not the URL itself.
 
         Previously, the download closure captured file_info.download_url directly,
@@ -180,7 +182,7 @@ class TestDownloadModFreshUrl:
 
         with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession", return_value=mock_session):
             # Call _download_mod
-            asyncio.run(registry._download_mod(nexus_id=1234, file_id=5678))
+            await registry._download_mod(nexus_id=1234, file_id=5678)
 
         # Verify enqueue was called with a coroutine
         mock_sync_engine.enqueue_download.assert_called_once()
@@ -190,7 +192,7 @@ class TestDownloadModFreshUrl:
 
         # Run the coroutine to verify it works (mock session for the closure's own session)
         with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession", return_value=mock_session):
-            asyncio.run(enqueued_coro)
+            await enqueued_coro
 
         # Verify fresh URL was fetched (get_file_info called twice: once for HITL, once in closure)
         assert mock_downloader.get_file_info.call_count >= 2

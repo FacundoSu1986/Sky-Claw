@@ -354,7 +354,17 @@ async def test_timeout_kills_process_and_cleans_up(
 
     # El primer wait_for (proc.wait) levanta TimeoutError. El segundo (kill-grace)
     # devuelve None limpiamente.
-    wait_for_mock = AsyncMock(side_effect=[TimeoutError(), None])
+    call_count = 0
+
+    async def _wait_for_timeout(coro, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            coro.close()
+            raise TimeoutError
+        return await coro
+
+    wait_for_mock = AsyncMock(side_effect=_wait_for_timeout)
 
     async def _fake_create(*a, **kw):
         (output_dir / "pending.dds").write_bytes(b"x")
@@ -405,9 +415,14 @@ async def test_timeout_mata_el_arbol_de_procesos_no_solo_el_hijo(
         return fake
 
     kill_and_reap_spy = AsyncMock()
+
+    async def _wait_for_timeout(coro, timeout=None):
+        coro.close()
+        raise TimeoutError
+
     with (
         patch.object(vramr_mod.asyncio, "create_subprocess_exec", AsyncMock(side_effect=_fake_create)),
-        patch.object(vramr_mod.asyncio, "wait_for", AsyncMock(side_effect=TimeoutError())),
+        patch.object(vramr_mod.asyncio, "wait_for", AsyncMock(side_effect=_wait_for_timeout)),
         patch.object(vramr_mod, "kill_and_reap", kill_and_reap_spy),
     ):
         result = await svc.execute_pipeline(
