@@ -733,7 +733,18 @@ class VfsExecutionBroker:
     async def close(self) -> None:
         """Termina jobs activos y luego cierra sesión, sockets y descriptor."""
         async with self._close_lock:
-            await self._close_unlocked()
+            cleanup = asyncio.ensure_future(self._close_unlocked())
+            cancelled = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    # El cierre es un fence: la cancelación se conserva, pero no
+                    # puede abandonar sockets, descriptor o lock de instancia.
+                    cancelled = True
+            cleanup.result()
+            if cancelled:
+                raise asyncio.CancelledError
 
     async def _close_unlocked(self) -> None:
         if self._server is None:
