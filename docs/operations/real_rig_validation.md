@@ -46,3 +46,9 @@ Cada runner prometido por una release necesita su propia matriz de aceptación.
 
 Registrar versión de MO2, USVFS, Skyrim, tool, perfil, SHA de Sky-Claw y
 resultado de cada escenario.
+
+## Evidencia fechada
+
+Los paquetes observados se indexan en
+[evidencia de validación](../validation/README.md). Un paquete bloqueado no
+sustituye una corrida verde.
