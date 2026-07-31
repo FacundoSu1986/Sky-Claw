@@ -247,7 +247,17 @@ class PandoraPipelineService:
         return self._preflight
 
     def _managed_output(self) -> pathlib.Path | None:
-        """Devuelve el único output que Pandora recibe por ``--output``."""
+        """Devuelve el output que el runner efectivo recibe por ``--output``.
+
+        Un runner inyectado construye el comando desde ``config.game_path``; esa
+        ruta es autoritativa aunque el resolver apunte a otra instalación.
+        """
+        runner = self._pandora_runner
+        if runner is not None:
+            config = getattr(runner, "config", None)
+            runner_game = getattr(config, "game_path", None)
+            if isinstance(runner_game, pathlib.Path):
+                return pandora_output_target(game=runner_game)
         game, _, _, _, _ = self._resolve_pandora_paths()
         return pandora_output_target(game=game)
 

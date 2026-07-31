@@ -508,6 +508,60 @@ async def test_emite_manifest_antes_de_correr_y_flight_report_tras_commit(
 
 
 @pytest.mark.asyncio
+async def test_runner_inyectado_define_output_aunque_el_resolver_apunte_a_otro_game(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El config del runner manda sobre un resolver divergente para todo safeguard."""
+    game_resolver = tmp_path / "SkyrimResolver"
+    game_runner = tmp_path / "SkyrimRunner"
+    (game_resolver / "Data").mkdir(parents=True)
+    (game_runner / "Data").mkdir(parents=True)
+    exe = tmp_path / "Pandora" / "Pandora.exe"
+    exe.parent.mkdir()
+    output_resolver = game_resolver.resolve() / "Pandora_Output"
+    output_runner = game_runner.resolve() / "Pandora_Output"
+    _escribir_output(output_resolver, "resolver-intacto")
+    _escribir_output(output_runner, "bueno")
+
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=game_resolver)
+    resolver.get_mo2_path = MagicMock(return_value=None)
+    resolver.get_pandora_exe = MagicMock(return_value=exe)
+    resolver.get_skyrim_path_raw = MagicMock(return_value=game_resolver)
+    resolver.get_mo2_path_raw = MagicMock(return_value=None)
+
+    async def _corre_y_falla() -> PandoraResult:
+        _escribir_output(output_runner, "corrupto")
+        return PandoraResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=1.0)
+
+    runner = MagicMock()
+    runner.config = PandoraConfig(pandora_exe=exe, game_path=game_runner)
+    runner.run_pandora = AsyncMock(side_effect=_corre_y_falla)
+    svc = PandoraPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=resolver,
+        pandora_runner=runner,
+        preflight=_FakePreflight(_perm_report(PreflightStatus.GREEN, "Escritura verificada.")),  # type: ignore[arg-type]
+        journal=mock_journal,
+    )
+
+    result = await svc.generate_animations()
+
+    manifest = mock_journal.persist_action_manifest.await_args.args[0]
+    assert svc._managed_output() == output_runner
+    assert svc._permission_targets() == [output_runner]
+    assert svc._rollback_output_dirs() == [output_runner]
+    assert manifest.files_touched == [str(output_runner)]
+    assert result["success"] is False
+    assert _leer_output(output_runner) == "bueno"
+    assert _leer_output(output_resolver) == "resolver-intacto"
+
+
+@pytest.mark.asyncio
 async def test_manifest_fail_closed_aborta_sin_correr_pandora(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
@@ -708,19 +762,64 @@ async def test_cancelacion_marca_rolled_back_y_propaga(
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Una cancelación (shutdown/timeout) mientras corre Pandora cierra la TX
-    rolled-back (no PENDING) y re-lanza la CancelledError (review Codex #318)."""
-    runner = MagicMock()
-    runner.run_pandora = AsyncMock(side_effect=asyncio.CancelledError())
-    game = _crear_game(tmp_path)
-    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal, game)
+    """La cancelación restaura bytes, cierra journal/lock y se propaga."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "bueno")
+    esperado = (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes()
+
+    async def _corre_y_se_cancela() -> PandoraResult:
+        _escribir_output(salida, "corrupto")
+        raise asyncio.CancelledError
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_y_se_cancela,
+        journal=mock_journal,
+    )
 
     with pytest.raises(asyncio.CancelledError):
         await svc.generate_animations()
 
+    assert (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes() == esperado
+    assert not list(salida.parent.glob(f"{salida.name}.rollback-*"))
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
     mock_journal.commit_transaction.assert_not_called()
-    # El lock se liberó pese a la cancelación.
+    assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_en_primer_run_elimina_parcial_y_libera_recursos(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Sin output previo, cancelar elimina el parcial y no deja backup residual."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+
+    async def _corre_y_se_cancela() -> PandoraResult:
+        _escribir_output(salida, "parcial")
+        raise asyncio.CancelledError
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_y_se_cancela,
+        journal=mock_journal,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await svc.generate_animations()
+
+    assert not salida.exists()
+    assert not list(salida.parent.glob(f"{salida.name}.rollback-*"))
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.commit_transaction.assert_not_called()
     assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None
 
 
