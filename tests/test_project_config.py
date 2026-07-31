@@ -39,6 +39,19 @@ def test_pytest_addopts_sets_basetemp() -> None:
     )
 
 
+def test_pytest_trata_warnings_de_lifecycle_como_errores() -> None:
+    """El gate debe fallar ante fugas async sin endurecer warnings ajenos."""
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+
+    filterwarnings: list[str] = pyproject["tool"]["pytest"]["ini_options"].get("filterwarnings", [])
+    assert set(filterwarnings) == {
+        "error::RuntimeWarning",
+        "error::ResourceWarning",
+        "error::pytest.PytestUnraisableExceptionWarning",
+    }
+
+
 def test_pytest_tmp_dir_is_gitignored() -> None:
     """.pytest-tmp/ must be listed in .gitignore to avoid committing temp artifacts.
 
