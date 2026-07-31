@@ -370,6 +370,60 @@ async def test_ensure_preflight_construye_sensores_con_paths_resolubles(
     assert mo2 / "overwrite" not in targets
 
 
+def test_preflight_real_usa_el_game_del_runner_inyectado(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """Los sensores reciben el game/cwd real del runner, no el resolver divergente."""
+    game_resolver = tmp_path / "SkyrimResolver"
+    game_runner = tmp_path / "SkyrimRunner"
+    (game_resolver / "Data").mkdir(parents=True)
+    (game_runner / "Data").mkdir(parents=True)
+    mo2 = tmp_path / "MO2"
+    (mo2 / "overwrite").mkdir(parents=True)
+    exe_resolver = tmp_path / "PandoraResolver" / "Pandora.exe"
+    exe_runner = tmp_path / "PandoraRunner" / "Pandora.exe"
+    exe_resolver.parent.mkdir()
+    exe_runner.parent.mkdir()
+
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=game_resolver)
+    resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_pandora_exe = MagicMock(return_value=exe_resolver)
+    resolver.get_skyrim_path_raw = MagicMock(return_value=game_resolver)
+    resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
+    resolver.get_active_profile = MagicMock(return_value="Default")
+
+    runner = _runner_returning(game_runner)
+    runner.config = PandoraConfig(pandora_exe=exe_runner, game_path=game_runner)
+    svc = PandoraPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=resolver,
+        pandora_runner=runner,
+    )
+
+    with (
+        patch(
+            "sky_claw.local.validators.preflight_sensors.build_vfs_sensor",
+            return_value=MagicMock(),
+        ) as build_vfs,
+        patch(
+            "sky_claw.local.validators.preflight_sensors.build_vfs_visibility_sensor",
+            return_value=MagicMock(),
+        ) as build_visibility,
+        patch(
+            "sky_claw.local.validators.preflight_sensors.build_mo2_profile_sources_resolver",
+            return_value=MagicMock(),
+        ),
+    ):
+        assert svc._ensure_preflight() is not None
+
+    build_vfs.assert_called_once_with(raw_game=game_runner, raw_mo2=mo2, scan_mods_dir=True)
+    assert build_visibility.call_args.kwargs["game"] == game_runner
+    assert svc._resolve_pandora_paths()[2] == exe_runner
+    assert svc._managed_output() == game_runner.resolve() / "Pandora_Output"
+
+
 def test_preflight_sondea_output_existente_o_su_padre(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:

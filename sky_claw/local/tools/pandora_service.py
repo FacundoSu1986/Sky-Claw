@@ -139,10 +139,10 @@ class PandoraPipelineService:
         """Reúne ``(game, mo2, exe, raw_game, raw_mo2)`` desde el ``path_resolver``
         **O** el config del runner inyectado (review Codex #314).
 
-        El agent tool (``system_tools.run_pandora``) construye el servicio con un
-        ``PandoraRunner`` pero SIN resolver — el gate no debe desactivarse por eso,
-        así que si falta el resolver se deriva ``game``/``exe`` del ``config`` del
-        runner. MO2 solo lo conoce el resolver (el config de Pandora no lo tiene).
+        El runner inyectado domina ``game``/``raw_game``/``exe`` cuando su config
+        contiene rutas: es quien construye los ``argv`` y ``cwd`` reales. El
+        resolver queda como fallback y sigue siendo la única fuente de
+        ``mo2``/``raw_mo2``, que el config de Pandora no conserva.
         """
         game = mo2 = exe = raw_game = raw_mo2 = None
         resolver = self._path_resolver
@@ -157,17 +157,18 @@ class PandoraPipelineService:
             raw_mo2 = rm if isinstance(rm, pathlib.Path) else None
             e = resolver.get_pandora_exe()
             exe = e if isinstance(e, pathlib.Path) else None
+        if self._pandora_exe is not None:
+            exe = self._pandora_exe
         runner = self._pandora_runner
         if runner is not None:
             cfg = getattr(runner, "config", None)
             cfg_game = getattr(cfg, "game_path", None)
             cfg_exe = getattr(cfg, "pandora_exe", None)
-            if game is None and isinstance(cfg_game, pathlib.Path):
+            if isinstance(cfg_game, pathlib.Path):
                 game = cfg_game
-            if exe is None and isinstance(cfg_exe, pathlib.Path):
+                raw_game = cfg_game
+            if isinstance(cfg_exe, pathlib.Path):
                 exe = cfg_exe
-        if self._pandora_exe is not None:
-            exe = self._pandora_exe
         # Fallback de raw: sin resolver (runner inyectado) no hay rutas crudas; usar
         # las resueltas es mejor que no cablear vfs (detecta symlinks en la ruta).
         raw_game = raw_game or game
@@ -247,17 +248,7 @@ class PandoraPipelineService:
         return self._preflight
 
     def _managed_output(self) -> pathlib.Path | None:
-        """Devuelve el output que el runner efectivo recibe por ``--output``.
-
-        Un runner inyectado construye el comando desde ``config.game_path``; esa
-        ruta es autoritativa aunque el resolver apunte a otra instalación.
-        """
-        runner = self._pandora_runner
-        if runner is not None:
-            config = getattr(runner, "config", None)
-            runner_game = getattr(config, "game_path", None)
-            if isinstance(runner_game, pathlib.Path):
-                return pandora_output_target(game=runner_game)
+        """Devuelve el único output resuelto que Pandora recibe por ``--output``."""
         game, _, _, _, _ = self._resolve_pandora_paths()
         return pandora_output_target(game=game)
 
