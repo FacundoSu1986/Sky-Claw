@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import pathlib
@@ -715,21 +716,82 @@ async def test_close_con_job_activo_espera_terminacion_y_resuelve_submit(tmp_pat
         descriptor_hardener=lambda _path: None,
     )
     await broker.start()
-    reader, writer, secret = await _conectar_bridge(broker)
-    pending = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
-    await read_authenticated_message(reader, secret)
+    writer: asyncio.StreamWriter | None = None
+    closing: asyncio.Task[None] | None = None
+    try:
+        reader, writer, secret = await _conectar_bridge(broker)
+        pending = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+        await read_authenticated_message(reader, secret)
 
-    closing = asyncio.create_task(broker.close())
-    cancel = await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=1)
-    assert cancel["type"] == "cancel"
-    await asyncio.sleep(0.1)
-    assert not closing.done()
-    assert not pending.done()
+        closing = asyncio.create_task(broker.close())
+        cancel = await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=1)
+        assert cancel["type"] == "cancel"
+        await asyncio.sleep(0.1)
+        assert not closing.done()
+        assert not pending.done()
 
-    await _reportar_salida_bridge(writer, secret, job_id=job.job_id, exit_code=1)
-    await asyncio.wait_for(closing, timeout=1)
-    with pytest.raises(VfsBrokerError):
-        await asyncio.wait_for(pending, timeout=1)
+        await _reportar_salida_bridge(writer, secret, job_id=job.job_id, exit_code=1)
+        await asyncio.wait_for(closing, timeout=1)
+        with pytest.raises(VfsBrokerError):
+            await asyncio.wait_for(pending, timeout=1)
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        if closing is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await closing
+        if broker._server is not None:
+            await broker.close()
+
+
+async def test_close_cancelado_durante_fence_limpia_antes_de_propagar(tmp_path: pathlib.Path) -> None:
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = VfsExecutionBroker(
+        instance_id="portable-main",
+        state_dir=tmp_path / "state",
+        secret=b"x" * 32,
+        descriptor_hardener=lambda _path: None,
+    )
+    await broker.start()
+    writer: asyncio.StreamWriter | None = None
+    pending: asyncio.Task[Any] | None = None
+    closing: asyncio.Task[None] | None = None
+    try:
+        reader, writer, secret = await _conectar_bridge(broker)
+        pending = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+        await read_authenticated_message(reader, secret)
+
+        closing = asyncio.create_task(broker.close())
+        cancel = await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=1)
+        assert cancel["type"] == "cancel"
+
+        closing.cancel()
+        await asyncio.sleep(0)
+        assert not closing.done()
+
+        await _reportar_salida_bridge(writer, secret, job_id=job.job_id, exit_code=1)
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+
+        assert broker._server is None
+        assert not broker.descriptor_path.exists()
+        with pytest.raises(VfsBrokerError):
+            await asyncio.wait_for(pending, timeout=1)
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        if closing is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await closing
+        if broker._server is not None:
+            await broker.close()
+        if pending is not None:
+            if not pending.done():
+                pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError, VfsBrokerError):
+                await pending
 
 
 async def test_close_concurrente_es_idempotente(tmp_path: pathlib.Path) -> None:

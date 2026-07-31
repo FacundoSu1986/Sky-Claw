@@ -10,9 +10,24 @@ Cubre:
 from __future__ import annotations
 
 import pathlib
+from collections.abc import AsyncIterator
+
+import pytest
 
 from sky_claw.app.core.database import DatabaseAgent
 from sky_claw.app.gui.models.app_state import enrich_conflicts
+
+
+@pytest.fixture
+async def db(tmp_path: pathlib.Path) -> AsyncIterator[DatabaseAgent]:
+    """Cierra la conexión real antes del teardown del event loop."""
+    agent = DatabaseAgent(str(tmp_path / "state.db"))
+    try:
+        await agent.init_db()
+        yield agent
+    finally:
+        await agent.close()
+
 
 # ── enrich_conflicts (seam puro) ────────────────────────────────────────────────
 _MODS = [
@@ -97,9 +112,7 @@ def test_resolved_row_html_escapa_contenido() -> None:
 
 
 # ── DatabaseAgent: alta y resolución de conflictos ──────────────────────────────
-async def test_add_and_get_conflict(tmp_path: pathlib.Path) -> None:
-    db = DatabaseAgent(str(tmp_path / "state.db"))
-    await db.init_db()
+async def test_add_and_get_conflict(db: DatabaseAgent) -> None:
     m1 = await db.add_mod("Immersive Armors")
     m2 = await db.add_mod("Ordinator")
 
@@ -113,9 +126,7 @@ async def test_add_and_get_conflict(tmp_path: pathlib.Path) -> None:
     assert pending[0]["conflict_type"] == "record"
 
 
-async def test_resolve_conflict_lo_saca_de_pendientes(tmp_path: pathlib.Path) -> None:
-    db = DatabaseAgent(str(tmp_path / "state.db"))
-    await db.init_db()
+async def test_resolve_conflict_lo_saca_de_pendientes(db: DatabaseAgent) -> None:
     m1 = await db.add_mod("Immersive Armors")
     m2 = await db.add_mod("Ordinator")
     cid = await db.add_conflict(m1, m2, "record")
@@ -128,15 +139,13 @@ async def test_resolve_conflict_lo_saca_de_pendientes(tmp_path: pathlib.Path) ->
     assert resolved[0]["resolution"] == "parcheado"
 
 
-async def test_add_mod_upsert_preserva_id_con_conflicto_registrado(tmp_path: pathlib.Path) -> None:
+async def test_add_mod_upsert_preserva_id_con_conflicto_registrado(db: DatabaseAgent) -> None:
     """Actualizar un mod con conflicto registrado no debe romper la FK.
 
     ``INSERT OR REPLACE`` borra+reinserta la fila (nuevo id) y, con
     ``foreign_keys=ON``, la fila de ``conflicts`` que apunta al id viejo
     bloquea la operación. El UPSERT debe preservar el id (review Codex #220).
     """
-    db = DatabaseAgent(str(tmp_path / "state.db"))
-    await db.init_db()
     m1 = await db.add_mod("Immersive Armors", "1.0")
     m2 = await db.add_mod("Ordinator")
     await db.add_conflict(m1, m2, "record")

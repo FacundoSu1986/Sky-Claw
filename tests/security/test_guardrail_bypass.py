@@ -301,14 +301,19 @@ class TestDownloadModZeroTrust:
             mock_cls.return_value.closed = False
             mock_cls.return_value.close = AsyncMock()
 
-            result = await download_mod(
-                downloader=mock_downloader,
-                hitl=mock_hitl,
-                sync_engine=mock_sync_engine,
-                nexus_id=12604,
-                gateway=gateway,
-                session=None,
-            )
+            try:
+                result = await download_mod(
+                    downloader=mock_downloader,
+                    hitl=mock_hitl,
+                    sync_engine=mock_sync_engine,
+                    nexus_id=12604,
+                    gateway=gateway,
+                    session=None,
+                )
+            finally:
+                # El mock no posee un worker que consuma la corrutina encolada.
+                if mock_sync_engine.enqueue_download.called:
+                    mock_sync_engine.enqueue_download.call_args.args[0].close()
 
         data = json.loads(result)
         # Should be "enqueued", not "error".

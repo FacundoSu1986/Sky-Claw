@@ -20,6 +20,7 @@ from sky_claw.app.scraper.nexus_downloader import FileInfo, NexusDownloader
 from sky_claw.app.security.hitl import Decision, HITLGuard
 from sky_claw.app.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.app.security.path_validator import PathValidator
+from sky_claw.config import Config
 from sky_claw.local.mo2.vfs import MO2Controller
 
 # ---------------------------------------------------------------------------
@@ -464,12 +465,12 @@ class TestAppContextWiring:
         keyring_store = {"nexus_api_key": "nexus-key"}
 
         with (
+            patch.object(Config, "DEFAULT_CONFIG_FILE", clean_config),
             patch("keyring.get_password", side_effect=lambda _svc, key: keyring_store.get(key)),
             patch("keyring.set_password"),
         ):
             ctx = AppContext(args)
             await ctx.start_minimal()
-            ctx.config_path = clean_config
             await ctx.start_full()
 
         try:
@@ -501,12 +502,12 @@ class TestAppContextWiring:
         clean_config.write_text("")
 
         with (
+            patch.object(Config, "DEFAULT_CONFIG_FILE", clean_config),
             patch("keyring.get_password", return_value=None),
             patch("keyring.set_password"),
         ):
             ctx = AppContext(args)
             await ctx.start_minimal()
-            ctx.config_path = clean_config
             await ctx.start_full()
 
         try:
@@ -539,13 +540,13 @@ class TestAppContextWiring:
         keyring_store = {"telegram_bot_token": "123:TOKEN"}
 
         with (
+            patch.object(Config, "DEFAULT_CONFIG_FILE", clean_config),
             patch("keyring.get_password", side_effect=lambda _svc, key: keyring_store.get(key)),
             patch("keyring.set_password"),
             patch("sky_claw.app.comms.telegram_polling.TelegramPolling.start", new=AsyncMock()),
         ):
             ctx = AppContext(args)
             await ctx.start_minimal()
-            ctx.config_path = clean_config
             await ctx.start_full()
 
         try:
@@ -574,12 +575,12 @@ class TestAppContextWiring:
         clean_config.write_text("")
 
         with (
+            patch.object(Config, "DEFAULT_CONFIG_FILE", clean_config),
             patch("keyring.get_password", return_value=None),
             patch("keyring.set_password"),
         ):
             ctx = AppContext(args)
             await ctx.start_minimal()
-            ctx.config_path = clean_config
             await ctx.start_full()
 
         try:
@@ -624,12 +625,12 @@ class TestHITLToolExecutionCategory:
         clean_config.write_text("")
 
         with (
+            patch.object(Config, "DEFAULT_CONFIG_FILE", clean_config),
             patch("keyring.get_password", return_value=None),
             patch("keyring.set_password"),
         ):
             ctx = AppContext(self._make_args(tmp_path))
             await ctx.start_minimal()
-            ctx.config_path = clean_config
             await ctx.start_full()
         return ctx
 

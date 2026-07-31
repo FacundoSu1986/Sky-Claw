@@ -9,6 +9,9 @@ de Conflictos (#220).
 from __future__ import annotations
 
 import pathlib
+from collections.abc import AsyncIterator
+
+import pytest
 
 from sky_claw.app.core.conflict_persistence import (
     pair_asset_conflicts,
@@ -16,6 +19,17 @@ from sky_claw.app.core.conflict_persistence import (
 )
 from sky_claw.app.core.database import DatabaseAgent
 from sky_claw.local.assets.asset_scanner import AssetConflictReport, AssetType
+
+
+@pytest.fixture
+async def db(tmp_path: pathlib.Path) -> AsyncIterator[DatabaseAgent]:
+    """Entrega una DB real y cierra su worker antes de cerrar el event loop."""
+    agent = DatabaseAgent(str(tmp_path / "state.db"))
+    try:
+        await agent.init_db()
+        yield agent
+    finally:
+        await agent.close()
 
 
 def _report(winner: str, losers: tuple[str, ...], path: str = "meshes/a.nif") -> AssetConflictReport:
@@ -49,10 +63,7 @@ def test_lista_vacia_devuelve_vacio() -> None:
 
 
 # ── persist_asset_conflicts (DB real en tmp) ────────────────────────────────────
-async def test_persiste_pares_y_enriquece_con_nombres(tmp_path: pathlib.Path) -> None:
-    db = DatabaseAgent(str(tmp_path / "state.db"))
-    await db.init_db()
-
+async def test_persiste_pares_y_enriquece_con_nombres(db: DatabaseAgent) -> None:
     nuevos = await persist_asset_conflicts([_report("SMIM", ("Skyrim 202X",))], db)
     assert nuevos == 1
 
@@ -68,10 +79,8 @@ async def test_persiste_pares_y_enriquece_con_nombres(tmp_path: pathlib.Path) ->
     assert {enriquecido["mod_a"], enriquecido["mod_b"]} == {"SMIM", "Skyrim 202X"}
 
 
-async def test_es_idempotente_sobre_pendientes(tmp_path: pathlib.Path) -> None:
+async def test_es_idempotente_sobre_pendientes(db: DatabaseAgent) -> None:
     # Correr la detección dos veces no debe duplicar disputas sin resolver.
-    db = DatabaseAgent(str(tmp_path / "state.db"))
-    await db.init_db()
     reports = [_report("SMIM", ("Skyrim 202X",))]
 
     assert await persist_asset_conflicts(reports, db) == 1
@@ -79,11 +88,9 @@ async def test_es_idempotente_sobre_pendientes(tmp_path: pathlib.Path) -> None:
     assert len(await db.get_conflicts(resolved=False)) == 1
 
 
-async def test_no_pisa_metadatos_de_mods_existentes(tmp_path: pathlib.Path) -> None:
+async def test_no_pisa_metadatos_de_mods_existentes(db: DatabaseAgent) -> None:
     """El scan no debe degradar version/size/source de mods ya registrados
     (add_mod con defaults haría UPSERT a NULL/0 — review Copilot #223)."""
-    db = DatabaseAgent(str(tmp_path / "state.db"))
-    await db.init_db()
     await db.add_mod("SMIM", "2.08", 1200, "Nexusmods")
 
     await persist_asset_conflicts([_report("SMIM", ("Skyrim 202X",))], db)
@@ -116,11 +123,9 @@ def test_claim_scan_slot_es_single_flight() -> None:
     assert claim_scan_slot(store) is True  # liberado: se puede volver a escanear
 
 
-async def test_conflicto_resuelto_puede_reaparecer(tmp_path: pathlib.Path) -> None:
+async def test_conflicto_resuelto_puede_reaparecer(db: DatabaseAgent) -> None:
     # Si el usuario resolvió la disputa pero la detección la vuelve a encontrar,
     # se registra de nuevo (el estado real manda sobre el historial).
-    db = DatabaseAgent(str(tmp_path / "state.db"))
-    await db.init_db()
     reports = [_report("SMIM", ("Skyrim 202X",))]
 
     await persist_asset_conflicts(reports, db)

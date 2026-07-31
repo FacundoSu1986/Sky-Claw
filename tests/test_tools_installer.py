@@ -198,7 +198,7 @@ class TestEnsureLoot:
         release_json = _github_release_json(size=len(zip_bytes))
 
         # Mock aiohttp responses.
-        mock_api_resp = AsyncMock()
+        mock_api_resp = MagicMock()
         mock_api_resp.status = 200
         mock_api_resp.json = AsyncMock(return_value=release_json)
         mock_api_resp.__aenter__ = AsyncMock(return_value=mock_api_resp)
@@ -208,7 +208,7 @@ class TestEnsureLoot:
         async def _iter_chunks(size: int) -> AsyncIterator[bytes]:
             yield zip_bytes
 
-        mock_dl_resp = AsyncMock()
+        mock_dl_resp = MagicMock()
         mock_dl_resp.status = 200
         mock_dl_resp.raise_for_status = MagicMock()
         mock_dl_resp.content = MagicMock()
@@ -249,7 +249,7 @@ class TestEnsureLoot:
         install_dir.mkdir()
 
         release_json = _github_release_json()
-        mock_api_resp = AsyncMock()
+        mock_api_resp = MagicMock()
         mock_api_resp.status = 200
         mock_api_resp.json = AsyncMock(return_value=release_json)
 
@@ -271,7 +271,7 @@ class TestEnsureLoot:
         install_dir = tmp_path / "install"
         install_dir.mkdir()
 
-        mock_resp = AsyncMock()
+        mock_resp = MagicMock()
         mock_resp.status = 403
 
         session = MagicMock(spec=aiohttp.ClientSession)
@@ -316,7 +316,7 @@ class TestEnsureXedit:
         # Use a .zip asset name to match.
         release_json = _xedit_release_json(asset_name="SSEEdit_4.1.5.zip", size=len(zip_bytes))
 
-        mock_api_resp = AsyncMock()
+        mock_api_resp = MagicMock()
         mock_api_resp.status = 200
         mock_api_resp.json = AsyncMock(return_value=release_json)
         mock_api_resp.__aenter__ = AsyncMock(return_value=mock_api_resp)
@@ -325,7 +325,7 @@ class TestEnsureXedit:
         async def _iter_chunks(size: int) -> AsyncIterator[bytes]:
             yield zip_bytes
 
-        mock_dl_resp = AsyncMock()
+        mock_dl_resp = MagicMock()
         mock_dl_resp.status = 200
         mock_dl_resp.raise_for_status = MagicMock()
         mock_dl_resp.content = MagicMock()
@@ -360,7 +360,7 @@ class TestEnsureXedit:
         install_dir.mkdir()
 
         release_json = _xedit_release_json(asset_name="SSEEdit_4.1.5.zip")
-        mock_api_resp = AsyncMock()
+        mock_api_resp = MagicMock()
         mock_api_resp.status = 200
         mock_api_resp.json = AsyncMock(return_value=release_json)
 
