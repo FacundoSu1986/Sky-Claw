@@ -25,8 +25,8 @@ from sky_claw.local.assets.asset_scanner import AssetConflictReport, AssetType
 async def db(tmp_path: pathlib.Path) -> AsyncIterator[DatabaseAgent]:
     """Entrega una DB real y cierra su worker antes de cerrar el event loop."""
     agent = DatabaseAgent(str(tmp_path / "state.db"))
-    await agent.init_db()
     try:
+        await agent.init_db()
         yield agent
     finally:
         await agent.close()

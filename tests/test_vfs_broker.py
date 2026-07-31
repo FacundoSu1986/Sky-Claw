@@ -715,8 +715,10 @@ async def test_close_con_job_activo_espera_terminacion_y_resuelve_submit(tmp_pat
         descriptor_hardener=lambda _path: None,
     )
     await broker.start()
-    reader, writer, secret = await _conectar_bridge(broker)
+    writer: asyncio.StreamWriter | None = None
+    closing: asyncio.Task[None] | None = None
     try:
+        reader, writer, secret = await _conectar_bridge(broker)
         pending = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
         await read_authenticated_message(reader, secret)
 
@@ -732,9 +734,13 @@ async def test_close_con_job_activo_espera_terminacion_y_resuelve_submit(tmp_pat
         with pytest.raises(VfsBrokerError):
             await asyncio.wait_for(pending, timeout=1)
     finally:
-        writer.close()
-        await writer.wait_closed()
-        await broker.close()
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        if closing is not None:
+            await closing
+        else:
+            await broker.close()
 
 
 async def test_close_concurrente_es_idempotente(tmp_path: pathlib.Path) -> None:

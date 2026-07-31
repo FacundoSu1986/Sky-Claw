@@ -29,8 +29,8 @@ from sky_claw.local.xedit.conflict_analyzer import (
 async def db(tmp_path: pathlib.Path) -> AsyncIterator[DatabaseAgent]:
     """Cierra la DB real antes de que pytest cierre el event loop."""
     agent = DatabaseAgent(str(tmp_path / "state.db"))
-    await agent.init_db()
     try:
+        await agent.init_db()
         yield agent
     finally:
         await agent.close()
