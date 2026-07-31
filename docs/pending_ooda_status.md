@@ -7,7 +7,9 @@
 > **Fuentes canónicas:** código y tests del árbol actual; ADRs aceptados para
 > decisiones; este documento únicamente consolida su estado.
 >
-> **Última verificación:** 2026-07-30 sobre `origin/main` `8d1050b`.
+> **Última verificación:** 2026-07-31 en la rama actual, basada en
+> `origin/main` `f986ffe`; los cambios posteriores de esta rama no se afirman
+> integrados en `origin/main`.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de
@@ -15,6 +17,8 @@ preservan en el [historial OODA de julio de
 confirmarlo contra código y tests.
 
 ## Estado consolidado
+
+<!-- markdownlint-disable MD013 -->
 
 | Ítem | Estado | Cerrado en | Qué falta | Verificado por |
 |---|---|---|---|---|
@@ -27,14 +31,14 @@ confirmarlo contra código y tests.
 | T-24 | Abierto | — | Labels y foco visible en formularios | humano |
 | T-25 | Parcial | — | Cerrar T-27 y después ejecutar la matriz E2E con Skyrim, MO2 y herramientas reales | `TECHNICAL_REVIEW_TASKS.md:247-249`; humano |
 | T-26 | Cerrado | #309, #318 y cierres posteriores | — | productores de `persist_action_manifest` |
-| T-27 | Parcial | ADR 0005 para Synthesis | Diseñar redirección de salida para Pandora, DynDOLOD y Wrye Bash | código y ADR 0005 |
+| T-27 | Parcial | ADR 0005 para Synthesis y salida administrada de Pandora | Migrar Pandora, DynDOLOD y Wrye Bash al flujo aislado USVFS con diff/promoción | código, ADR 0005 y `test_pandora_service.py` |
 | T-28 | Cerrado | #309, #318 y cierres posteriores | — | productores de `persist_flight_report` |
 | T-29 | Cerrado | Oleada 7 | — | historial Git y tests |
 | T-30 | Cerrado | Oleada 7 | — | historial Git y tests |
 | U-01 | Cerrado | #381, #388 y documentación operativa | — | `test_output_targets.py` |
 | U-02 | Cerrado | #360 | — | tests de Job Object |
 | U-03 | Cerrado | #356 | — | tests de reconciliación de precache |
-| U-04 | Parcial | #397 y #399 | BodySlide y el modo `Data` de Pandora | `test_rollback_salida.py` |
+| U-04 | Parcial | #397, #399 y salida administrada de Pandora | BodySlide y smoke real de rollback de Pandora | `test_rollback_salida.py`, `test_pandora_service.py` y humano |
 | U-05 | Cerrado | #354 | — | `test_vramr_service.py` |
 | U-06 | Parcial | #375 para DynDOLOD | Post-check de Wrye Bash y BodySlide; criterio seguro para QuickAutoClean | tests de cada runner |
 | U-07 | Cerrado | #355 | — | tests de Job Object de DynDOLOD |
@@ -60,6 +64,8 @@ confirmarlo contra código y tests.
 | Residuos OODA de bajo valor | Abierto | — | Solo retomar agrupados si cambia su relación esfuerzo/impacto | historial OODA §3 |
 | Residuos de crash logging | Abierto | #383 cerró F1/F2 reales | Cinco deudas sin víctima productiva actual | historial OODA, addendum #372 |
 
+<!-- markdownlint-enable MD013 -->
+
 ## 2.3 Zero-Trust — 2 ítems residuales
 
 Persisten dos trabajos no urgentes heredados del inventario Zero-Trust:
@@ -80,12 +86,14 @@ El frente de cierres mecánicos verificables íntegramente por un agente está
 agotado. Lo pendiente se divide en tres clases:
 
 1. **prueba humana en rig real:** T-25, QuickAutoClean y los demás smokes de
-   herramientas;
-2. **decisión de dominio antes de implementar:** rollback fino de Pandora
-   `Data`, salida parametrizada de BodySlide y redirección de T-27;
+   herramientas. Pandora ya no tiene modo `Data` implícito en el comando de
+   Sky-Claw; el rig debe demostrar que Pandora 4.3.1-beta respeta `--output` en
+   éxito, error, timeout y cancelación;
+2. **aislamiento pendiente:** T-27 sigue abierto hasta que Pandora, DynDOLOD y
+   Wrye Bash lean y ejecuten dentro del sandbox USVFS con diff/promoción;
 3. **deuda incremental no bloqueante:** T-10/T-11/T-12, F9 y los residuales de
    bajo valor.
 
-El próximo PR debería partir de evidencia nueva del rig o de una decisión de
-dominio explícita. No conviene abrir otra caza general de hallazgos sobre este
-snapshot.
+El próximo PR debería partir de evidencia nueva del rig o del aislamiento
+pendiente. Este inventario no declara GA. No conviene abrir otra caza general de
+hallazgos sobre este snapshot.
