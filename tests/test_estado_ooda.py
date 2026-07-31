@@ -101,9 +101,11 @@ def test_u04_sigue_parcial_hasta_bodyslide_y_el_smoke_real_de_pandora() -> None:
 
 def test_t25_nombra_t27_antes_del_rig_humano() -> None:
     fila = _tabla()["T-25"]
+    que_falta = fila["Qué falta"]
 
     assert fila["Estado"] == "Parcial"
-    assert "T-27" in fila["Qué falta"]
+    assert "T-27" in que_falta
+    assert que_falta.index("T-27") < que_falta.index("matriz E2E")
     assert "TECHNICAL_REVIEW_TASKS.md" in fila["Verificado por"]
 
 
