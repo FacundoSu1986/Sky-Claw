@@ -172,8 +172,10 @@ Antes de ejecutar:
 2. Instalar y configurar BodySlide dentro del rig o declarar su matriz
    explícitamente no aplicable para la release.
 3. Migrar Pandora y BodySlide al broker, con handler y targets declarados para
-   cada uno. BodySlide necesita además staging dedicado o debe fallar cerrado:
-   staging aísla la salida, pero no le aporta la vista USVFS de los mods.
+   cada uno. BodySlide debe ejecutarse en el worker USVFS o materializar todos
+   los mods requeridos en staging dedicado. Su canary debe verificar esa vista
+   de entrada y fallar cerrado si falta algún input; aislar solo la salida no
+   aporta la vista USVFS de los mods.
 4. Crear un perfil descartable. No vaciar ni mover el overwrite compartido:
    tomar su snapshot y probar que el runner escribe en
    `SandboxClone.overwrite_copy` o en otra salida aislada declarada.
