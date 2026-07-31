@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from sky_claw.app.db.locks import DistributedLockManager
-from sky_claw.local.tools.output_targets import pandora_rollback_dirs
+from sky_claw.local.tools.output_targets import pandora_output_target
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
 from sky_claw.local.tools.rollback_reconciler import (
     PRODUCTORES_CABLEADOS,
@@ -234,11 +234,10 @@ async def test_barre_un_productor_cuya_salida_no_cuelga_de_mods(
     """El residuo NO siempre vive bajo ``<mo2>/mods``.
 
     DynDOLOD mueve aparte sus mods de salida, que sí cuelgan de ahí. Pandora
-    mueve aparte sus ``Pandora_Output``, que cuelgan del juego y del dir de su
-    ejecutable (``output_targets.pandora_rollback_dirs``). Un reconciliador con
-    una sola raíz cableada es **ciego** al segundo: el backup queda huérfano
-    para siempre y los behavior graphs previos no vuelven — el modo de falla
-    exacto que U-08 mitad 2 existe para cubrir.
+    mueve aparte su único ``Pandora_Output`` administrado junto al juego. Un
+    reconciliador que solo barra ``<mo2>/mods`` es ciego a ese residuo: el backup
+    queda huérfano para siempre y los behavior graphs previos no vuelven — el
+    modo de falla exacto que U-08 mitad 2 existe para cubrir.
     """
     game = tmp_path / "game"
     game.mkdir()
@@ -311,30 +310,29 @@ def test_el_constructor_resuelve_las_raices_reales_de_cada_productor(tmp_path: p
     assert dyndolod.lock_resource_id == "dyndolod-pipeline"
 
 
-def test_el_constructor_barre_donde_pandora_realmente_mueve_aparte(tmp_path: pathlib.Path) -> None:
-    """Las raíces de Pandora salen de ``pandora_rollback_dirs`` —la MISMA función que
-    usa el rollback— y no de una lista escrita en el reconciliador.
+def test_el_constructor_barre_solo_la_raiz_administrada_de_pandora(tmp_path: pathlib.Path) -> None:
+    """La raíz de Pandora sale del único output que administra el servicio.
 
     Es el hermano de #388: allá el sondeo de permisos y la búsqueda de salida
-    divergieron por tener dos fuentes. Acá, si el rollback gana o pierde una raíz,
-    el barrido la sigue sin que nadie tenga que acordarse.
+    divergieron por tener dos fuentes. Acá el rollback y el barrido comparten
+    ``pandora_output_target``.
     """
-    game = tmp_path / "game"
-    exe = tmp_path / "pandora" / "Pandora Behaviour Engine+.exe"
+    game = tmp_path / "segmento" / ".." / "game"
 
-    productores = construir_productores_de_move_aside(mo2_root=None, game=game, pandora_exe=exe)
+    productores = construir_productores_de_move_aside(mo2_root=None, game=game)
 
     pandora = next(p for p in productores if p.nombre == "pandora")
     assert pandora.lock_resource_id == BEHAVIOR_GRAPHS_RESOURCE_ID
-    # Los PADRES de los dirs que el rollback mueve aparte: ahí aterriza el residuo.
-    assert set(pandora.raices) == {d.parent for d in pandora_rollback_dirs(game=game, exe=exe)}
-    assert set(pandora.raices) == {game, exe.parent}
+    output = pandora_output_target(game=game)
+    assert output is not None
+    # El PADRE del único dir que el rollback mueve aparte: ahí aterriza el residuo.
+    assert pandora.raices == (game.resolve(),)
+    assert pandora.raices == (output.parent,)
 
 
 def test_el_constructor_sin_rutas_resolubles_no_inventa_nada() -> None:
-    """Sin MO2 ni juego ni exe resolubles no se barre nada, en vez de sondear una
-    ruta inventada."""
-    assert construir_productores_de_move_aside(mo2_root=None, game=None, pandora_exe=None) == []
+    """Sin MO2 ni juego resolubles no se barre nada ni se inventa una ruta."""
+    assert construir_productores_de_move_aside(mo2_root=None, game=None) == []
 
 
 async def test_no_toca_nada_si_el_ritual_de_dyndolod_esta_en_curso(

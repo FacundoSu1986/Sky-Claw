@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING
 
 from sky_claw.app.db.locks import LockAcquisitionError
 from sky_claw.app.security.links import is_link, path_present, rmtree_link_aware
-from sky_claw.local.tools.output_targets import pandora_rollback_dirs
+from sky_claw.local.tools.output_targets import pandora_output_target
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
 
 if TYPE_CHECKING:
@@ -65,9 +65,9 @@ _RECONCILE_TTL_SECONDS = 60.0
 #: ``.rollback-<time.time_ns()>``.
 #:
 #: Se exigen **≥12 dígitos** a propósito. Con una sola raíz bajo `<mo2>/mods` el
-#: patrón laxo (``\d+``) era inofensivo, pero desde que se barre también la raíz del
-#: juego y el dir del ejecutable de Pandora —directorios del usuario, no nuestros—
-#: un ``Algo.rollback-1`` ajeno entraría al barrido y podría terminar renombrado.
+#: patrón laxo (``\d+``) era inofensivo, pero se barre también la raíz del juego
+#: para el único ``Pandora_Output`` administrado —un directorio del usuario— y un
+#: ``Algo.rollback-1`` ajeno podría entrar al barrido y terminar renombrado.
 #: ``time_ns()`` devuelve 19 dígitos (y ≥16 desde 1970), así que el piso no deja
 #: afuera ningún backup real y vuelve el falso positivo prácticamente imposible.
 _SUFIJO_MOVE_ASIDE = re.compile(r"\.rollback-\d{12,}$")
@@ -107,8 +107,8 @@ class ProductorDeMoveAside:
     **Por qué los tres datos viajan juntos.** La primera versión de este módulo
     asumía que había *una* familia move-aside: una raíz (``<mo2>/mods``) y un lock
     (``dyndolod-pipeline``). Las dos suposiciones son propiedades de DynDOLOD, no
-    del mecanismo — Pandora mueve aparte sus ``Pandora_Output``, que cuelgan del
-    juego y del dir de su ejecutable, y se serializa con ``behavior-graphs``.
+    del mecanismo — Pandora mueve aparte su único ``Pandora_Output`` administrado,
+    que cuelga del juego y se serializa con ``behavior-graphs``.
     Barrer su residuo mirando el lock de DynDOLOD sería peor que no barrerlo:
     restauraría un backup mientras el ritual que lo creó sigue corriendo.
 
@@ -206,7 +206,6 @@ def construir_productores_de_move_aside(
     *,
     mo2_root: pathlib.Path | None,
     game: pathlib.Path | None = None,
-    pandora_exe: pathlib.Path | None = None,
 ) -> list[ProductorDeMoveAside]:
     """Los productores reales, con sus raíces resueltas — fuente única del cableado.
 
@@ -231,19 +230,17 @@ def construir_productores_de_move_aside(
             )
         )
 
-    # Pandora mueve aparte sus `Pandora_Output`, que NO cuelgan de `<mo2>/mods`: el
-    # `pandora_service` los toma de `output_targets.pandora_rollback_dirs`, o sea el
-    # juego (su `cwd`) y el dir de su ejecutable. Se derivan de esa MISMA función y
-    # no de una lista escrita acá: si el rollback gana o pierde una raíz, el barrido
-    # la sigue sin que nadie tenga que acordarse — es el hermano de #388, donde el
-    # sondeo de permisos y la búsqueda de salida divergieron por tener dos fuentes.
-    raices_pandora = tuple(dict.fromkeys(d.parent for d in pandora_rollback_dirs(game=game, exe=pandora_exe)))
-    if raices_pandora:
+    # Pandora mueve aparte su único `Pandora_Output` administrado, que NO cuelga
+    # de `<mo2>/mods` sino del juego. El reconciliador deriva la raíz de la MISMA
+    # función que usa el servicio: si cambia el destino administrado, el barrido lo
+    # sigue sin duplicar el cálculo (hermano del defecto #388).
+    output_pandora = pandora_output_target(game=game)
+    if output_pandora is not None:
         productores.append(
             ProductorDeMoveAside(
                 nombre="pandora",
                 lock_resource_id=BEHAVIOR_GRAPHS_RESOURCE_ID,
-                raices=raices_pandora,
+                raices=(output_pandora.parent,),
             )
         )
     return productores
@@ -343,9 +340,9 @@ async def _reconciliar_move_aside(raices: Sequence[pathlib.Path], acc: _Acumulad
 def _listar_backups_move_aside(raices: Sequence[pathlib.Path]) -> list[pathlib.Path]:
     """Backups bajo cualquiera de las raíces del productor, sin repetir.
 
-    Se deduplica porque dos raíces pueden coincidir en una instalación real (p. ej.
-    Pandora instalado dentro del directorio del juego), y restaurar dos veces el
-    mismo backup haría que el segundo intento fallara con el target ya presente.
+    La deduplicación es una defensa del mecanismo para productores presentes o
+    futuros que declaren rutas equivalentes; restaurar dos veces el mismo backup
+    haría que el segundo intento fallara con el target ya presente.
     """
     vistos: set[pathlib.Path] = set()
     backups: list[pathlib.Path] = []
@@ -358,7 +355,7 @@ def _listar_backups_move_aside(raices: Sequence[pathlib.Path]) -> list[pathlib.P
             # y el ``backup.rename(destino)`` de abajo lo movía encima del target
             # real: el target quedaba siendo un enlace a un árbol ajeno, reportado
             # como "restaurado desde el último estado bueno". Las raíces que se
-            # barren incluyen directorios del USUARIO (la del juego y la del exe de
+            # barren incluyen un directorio del USUARIO (la raíz del juego para
             # Pandora), no sólo las nuestras, así que el impostor no es hipotético.
             #
             # Este módulo es el que NO tiene el fail-closed de
