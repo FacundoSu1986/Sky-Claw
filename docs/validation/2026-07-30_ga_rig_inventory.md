@@ -16,8 +16,12 @@ El rig contiene Skyrim, MO2, USVFS y Pandora, pero no satisface las
 precondiciones para una corrida atribuible y reversible:
 
 - BodySlide no está instalado en el juego ni en los mods de MO2 inspeccionados.
-- `pandora_exe`, `bodyslide_exe` y `skyrim_path` están vacíos en la
-  configuración canónica de Sky-Claw.
+- `pandora_exe`, `bodyslide_exe` y `skyrim_path` están vacíos en el TOML
+  inspeccionado. `SKYRIM_PATH`, `PANDORA_EXE`, `BODYSLIDE_EXE` y `MO2_PATH`
+  también estaban vacíos en los entornos de proceso, usuario y máquina.
+- No se inició `AppContext`: su autodetección puede resolver y persistir rutas.
+  Por eso este paquete describe el estado en reposo, no afirma que una ruta sea
+  imposible de resolver durante startup.
 - El bridge de MO2 referencia un ejecutable congelado de otro checkout. Ese
   binario existe, pero no demuestra correspondencia con el SHA inspeccionado.
 - El único perfil encontrado es `Default`; no es un perfil descartable.
@@ -32,7 +36,7 @@ estado real, pero no cierra U-04, T-27 ni T-25.
 
 ## Configuración sanitizada
 
-La configuración observada no contenía rutas operativas para los dos runners:
+El TOML observado no contenía rutas operativas para los dos runners:
 
 ```text
 mo2_root = C:/Modding/MO2
@@ -144,9 +148,13 @@ correspondiente.
 ### BodySlide
 
 No se demostró que `-o` admita una raíz de staging aislada ni que produzca un
-manifiesto completo. Por eso este inventario no habilita las dos primeras
-ramas. U-04 permanece abierto; cualquier cambio productivo de fail-closed
-requiere su propio PR y tests.
+manifiesto completo. Por eso este inventario no habilita:
+
+1. staging propiedad de Sky-Claw con promoción de archivos enumerados;
+2. snapshot y restore por archivo a partir de un manifiesto completo.
+
+Permanece la tercera rama del plan: fallar cerrado para destinos compartidos.
+U-04 sigue abierto; ese cambio productivo requiere su propio PR y tests.
 
 ### Pandora
 
@@ -163,12 +171,18 @@ Antes de ejecutar:
 1. Construir el SHA bajo prueba y reinstalar el bridge apuntando a ese artefacto.
 2. Instalar y configurar BodySlide dentro del rig o declarar su matriz
    explícitamente no aplicable para la release.
-3. Crear un perfil descartable y un overwrite vacío dedicados a validación.
-4. Ejecutar primero `vfs-health` y conservar la attestation del canary.
-5. Tomar un manifiesto completo de hashes de `Data`, perfil, overwrite y outputs.
-6. Recién entonces ejecutar éxito, error, timeout, cancelación y proceso cortado.
-7. Comparar hashes posteriores, verificar procesos huérfanos y registrar el
+3. Migrar Pandora y BodySlide al broker, con handler y targets declarados para
+   cada uno. BodySlide necesita además staging dedicado o debe fallar cerrado:
+   staging aísla la salida, pero no le aporta la vista USVFS de los mods.
+4. Crear un perfil descartable. No vaciar ni mover el overwrite compartido:
+   tomar su snapshot y probar que el runner escribe en
+   `SandboxClone.overwrite_copy` o en otra salida aislada declarada.
+5. Ejecutar `vfs-health` y conservar la attestation. Después ejecutar un canary
+   por runner: el handler health no demuestra la vista VFS de Pandora/BodySlide.
+6. Tomar un manifiesto completo de hashes de `Data`, perfil, overwrite y outputs.
+7. Recién entonces ejecutar éxito, error, timeout, cancelación y proceso cortado.
+8. Comparar hashes posteriores, verificar procesos huérfanos y registrar el
    resultado en un paquete fechado nuevo.
 
-Los pasos 1-5 y el cierre de T-27/U-04 son precondiciones para ejecutar la
-matriz. T-25 no puede cerrarse hasta completar y registrar los pasos 6-7.
+Los pasos 1-6 y el cierre de T-27/U-04 son precondiciones para ejecutar la
+matriz. T-25 no puede cerrarse hasta completar y registrar los pasos 7-8.
