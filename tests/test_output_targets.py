@@ -30,6 +30,7 @@ from sky_claw.local.tools.output_targets import (
     bashed_patch_target,
     dyndolod_staging_roots,
     pandora_output_candidates,
+    pandora_output_target,
     pandora_rollback_dirs,
     synthesis_output_target,
 )
@@ -148,6 +149,13 @@ def test_wrye_bash_no_sondea_el_overwrite(tmp_path: pathlib.Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_pandora_tiene_un_unico_destino_administrado(tmp_path: pathlib.Path) -> None:
+    game = tmp_path / "segmento" / ".." / "game"
+
+    assert pandora_output_target(game=game) == game.resolve() / "Pandora_Output"
+    assert pandora_output_target(game=None) is None
+
+
 def test_pandora_no_sondea_el_overwrite(tmp_path: pathlib.Path) -> None:
     """Pandora corre ``--auto`` con ``cwd=game_path``, sin ruta de salida en el
     comando: escribe físicamente. Las candidatas reales son el ``Data``, el dir
@@ -170,20 +178,18 @@ def test_pandora_no_sondea_el_overwrite(tmp_path: pathlib.Path) -> None:
 
 
 def test_pandora_incluye_el_output_bajo_el_cwd(tmp_path: pathlib.Path) -> None:
-    """El ``game_path`` es raíz de salida porque es el ``cwd`` REAL del subproceso.
+    """El ``game_path`` sigue siendo el ``cwd`` real del subproceso.
 
     Verificado contra el spawn, no contra un comentario vecino (la lección de
-    #388): ``PandoraRunner.run_pandora`` pasa ``cwd=str(self.config.game_path)`` a
-    ``run_capture`` de forma explícita. Una herramienta que crea su dir de salida
-    relativo al cwd aterriza ahí, así que omitirlo dejaría el sondeo de permisos
-    —y el rollback de U-04— opinando sobre un lugar donde Pandora no escribió.
+    #388): ``PandoraRunner.run_pandora`` resuelve el game path y lo pasa como
+    ``cwd`` explícito a ``run_capture``.
     """
     import inspect
 
     from sky_claw.local.tools.pandora_runner import PandoraRunner
 
     fuente = inspect.getsource(PandoraRunner.run_pandora)
-    assert "cwd=str(self.config.game_path)" in fuente, (
+    assert "cwd=str(game_path)" in fuente, (
         "PandoraRunner ya no fija cwd=game_path: revisar si game sigue siendo raíz de salida"
     )
 

@@ -60,6 +60,17 @@ PANDORA_OUTPUT_DIR = "Pandora_Output"
 SYNTHESIS_MOD_NAME = "Synthesis Output"
 
 
+def pandora_output_target(*, game: pathlib.Path | None) -> pathlib.Path | None:
+    """Salida física única administrada, pasada por ``--output``.
+
+    No admite override externo porque el mismo árbol se restaura
+    transaccionalmente.
+    """
+    if game is None:
+        return None
+    return game.resolve() / PANDORA_OUTPUT_DIR
+
+
 def bashed_patch_target(game: pathlib.Path | None) -> pathlib.Path | None:
     """Ruta física del ``Bashed Patch, 0.esp``, o ``None`` si el juego no resuelve.
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sky_claw.local.tools._process import run_capture
+from sky_claw.local.tools.output_targets import pandora_output_target
 
 if TYPE_CHECKING:
     import pathlib
@@ -59,25 +60,39 @@ class PandoraRunner:
     def __init__(self, config: PandoraConfig):
         self.config = config
 
+    @property
+    def output_path(self) -> pathlib.Path:
+        output_path = pandora_output_target(game=self.config.game_path)
+        assert output_path is not None
+        return output_path
+
     async def run_pandora(self) -> PandoraResult:
         """Execute Pandora in auto mode for Skyrim Special Edition."""
         logger.info("[M-02] Executing Pandora Behavior Engine...")
         start_time = time.monotonic()
+        game_path = self.config.game_path.resolve()
 
-        args = [str(self.config.pandora_exe), "--game", "Skyrim Special Edition", "--auto"]
+        args = [
+            str(self.config.pandora_exe),
+            "--game",
+            "Skyrim Special Edition",
+            "--auto",
+            "--output",
+            str(self.output_path),
+        ]
 
         try:
             stdout, stderr, return_code = await run_capture(
                 args,
                 timeout=self.config.timeout_seconds,
-                cwd=str(self.config.game_path),
+                cwd=str(game_path),
             )
         except TimeoutError as exc:
             logger.error("Pandora execution timed out.")
             raise PandoraTimeoutError(self.config.timeout_seconds) from exc
-        except Exception as e:
-            logger.error(f"Pandora execution failed: {e}")
-            raise PandoraExecutionError(f"Failed to execute Pandora: {e}") from e
+        except Exception as exc:
+            logger.error("Pandora execution failed: %s", exc)
+            raise PandoraExecutionError(f"Failed to execute Pandora: {exc}") from exc
 
         return PandoraResult(
             success=return_code == 0,
