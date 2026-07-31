@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sky_claw.__main__ import AppContext, _install_vfs_bridge, _main, _parse_args
+from sky_claw.config import Config
 
 # ------------------------------------------------------------------
 # Argument parsing
@@ -92,18 +93,20 @@ class TestAppContext:
         clean_config = tmp_path / "config.toml"
         clean_config.write_text("")
 
-        with patch.dict(
-            "os.environ",
-            {
-                "ANTHROPIC_API_KEY": "test-key",
-                "NEXUS_API_KEY": "",
-                "TELEGRAM_BOT_TOKEN": "",
-            },
-            clear=False,
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "ANTHROPIC_API_KEY": "test-key",
+                    "NEXUS_API_KEY": "",
+                    "TELEGRAM_BOT_TOKEN": "",
+                },
+                clear=False,
+            ),
+            patch.object(Config, "DEFAULT_CONFIG_FILE", clean_config),
         ):
             ctx = AppContext(args)
             await ctx.start_minimal()
-            ctx.config_path = clean_config
             await ctx.start_full()
 
         assert ctx.registry is not None

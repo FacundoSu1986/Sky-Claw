@@ -69,6 +69,11 @@ testpaths = ["tests"]
 # en 2 min en vez de consumir el timeout del job de CI (20 min). method=thread
 # es el único soportado en Windows y funciona con pytest-asyncio.
 addopts = "--basetemp=.pytest-tmp --timeout=120 --timeout-method=thread"
+filterwarnings = [
+    "error::RuntimeWarning",
+    "error::ResourceWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
 
 [tool.ruff]
 target-version = "py311"

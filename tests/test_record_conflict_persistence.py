@@ -9,6 +9,9 @@ la tabla ``conflicts`` de la DB GUI, con la severidad peor del par como tipo.
 from __future__ import annotations
 
 import pathlib
+from collections.abc import AsyncIterator
+
+import pytest
 
 from sky_claw.app.core.conflict_persistence import (
     pair_record_conflicts,
@@ -20,6 +23,17 @@ from sky_claw.local.xedit.conflict_analyzer import (
     PluginConflictPair,
     RecordConflict,
 )
+
+
+@pytest.fixture
+async def db(tmp_path: pathlib.Path) -> AsyncIterator[DatabaseAgent]:
+    """Cierra la DB real antes de que pytest cierre el event loop."""
+    agent = DatabaseAgent(str(tmp_path / "state.db"))
+    try:
+        await agent.init_db()
+        yield agent
+    finally:
+        await agent.close()
 
 
 def _rc(severity: str, form_id: str = "0x001") -> RecordConflict:
@@ -79,10 +93,7 @@ def test_reporte_vacio_devuelve_vacio() -> None:
 
 
 # ── persist_record_conflicts (DB real en tmp) ───────────────────────────────────
-async def test_persiste_pares_y_enriquece_con_nombres(tmp_path: pathlib.Path) -> None:
-    db = DatabaseAgent(str(tmp_path / "state.db"))
-    await db.init_db()
-
+async def test_persiste_pares_y_enriquece_con_nombres(db: DatabaseAgent) -> None:
     report = _report(PluginConflictPair("A.esp", "B.esp", conflicts=[_rc("critical")]))
     assert await persist_record_conflicts(report, db) == 1
 
@@ -97,9 +108,7 @@ async def test_persiste_pares_y_enriquece_con_nombres(tmp_path: pathlib.Path) ->
     assert {enriquecido["mod_a"], enriquecido["mod_b"]} == {"A.esp", "B.esp"}
 
 
-async def test_es_idempotente_sobre_pendientes(tmp_path: pathlib.Path) -> None:
-    db = DatabaseAgent(str(tmp_path / "state.db"))
-    await db.init_db()
+async def test_es_idempotente_sobre_pendientes(db: DatabaseAgent) -> None:
     report = _report(PluginConflictPair("A.esp", "B.esp", conflicts=[_rc("critical")]))
 
     assert await persist_record_conflicts(report, db) == 1
@@ -107,9 +116,7 @@ async def test_es_idempotente_sobre_pendientes(tmp_path: pathlib.Path) -> None:
     assert len(await db.get_conflicts(resolved=False)) == 1
 
 
-async def test_no_pisa_metadatos_de_mods_existentes(tmp_path: pathlib.Path) -> None:
-    db = DatabaseAgent(str(tmp_path / "state.db"))
-    await db.init_db()
+async def test_no_pisa_metadatos_de_mods_existentes(db: DatabaseAgent) -> None:
     await db.add_mod("A.esp", "3.1", 500, "Nexusmods")
 
     report = _report(PluginConflictPair("A.esp", "B.esp", conflicts=[_rc("warning")]))
@@ -121,8 +128,6 @@ async def test_no_pisa_metadatos_de_mods_existentes(tmp_path: pathlib.Path) -> N
     assert a["source"] == "Nexusmods"
 
 
-async def test_reporte_vacio_no_persiste_nada(tmp_path: pathlib.Path) -> None:
-    db = DatabaseAgent(str(tmp_path / "state.db"))
-    await db.init_db()
+async def test_reporte_vacio_no_persiste_nada(db: DatabaseAgent) -> None:
     assert await persist_record_conflicts(_report(), db) == 0
     assert await db.get_conflicts(resolved=False) == []
