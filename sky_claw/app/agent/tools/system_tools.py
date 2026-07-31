@@ -482,12 +482,10 @@ async def run_pandora(
     The runner uses the unified ``_process`` helpers (timeout + kill-tree).
 
     Codex #213 (same P1 vector as ``run_loot_sort``/Audit #190): Pandora rewrites
-    the shared behavior graphs, so when the distributed lock is wired (production
-    via ``app_context``) this live agent path delegates to
-    :class:`PandoraPipelineService` and serializes on the same ``behavior-graphs``
-    lock as the GUI Ritual — the cross-process lock only protects if every mutator
-    participates. Without a lock manager (legacy callers / tests) Pandora runs
-    directly, preserving prior behavior.
+    the shared behavior graphs, so every mutator delegates to
+    :class:`PandoraPipelineService` and participates in the same
+    ``behavior-graphs`` lock and rollback as the GUI Ritual. Callers without both
+    protection managers fail closed before the runner can mutate shared output.
 
     T-26/T-28 (ADR 0002, review Codex #318): cuando ``journal`` está cableado (via
     ``app_context``) este path del agente TAMBIÉN emite la caja negra de vuelo —
@@ -501,46 +499,42 @@ async def run_pandora(
             {"error": ("PandoraRunner is not configured. Set pandora_exe in config or install it via setup_tools.")}
         )
 
-    if lock_manager is not None and snapshot_manager is not None:
-        from sky_claw.local.tools.pandora_service import PandoraPipelineService
-
-        service = PandoraPipelineService(
-            lock_manager=lock_manager,
-            snapshot_manager=snapshot_manager,
-            pandora_runner=pandora_runner,
-            journal=journal,
+    missing_managers = [
+        name
+        for name, manager in (
+            ("lock_manager", lock_manager),
+            ("snapshot_manager", snapshot_manager),
         )
-        # The service serializes on the behavior-graphs lock and converts lock
-        # contention / execution failures to a dict; map it to the tool's JSON
-        # contract. A non-success carries the detail under ``logs``.
-        try:
-            res = await service.generate_animations()
-        except Exception as exc:
-            return json.dumps({"error": str(exc)})
-        out: dict[str, Any] = {
-            "success": res.get("success", False),
-            "return_code": res.get("return_code", -1),
-            "stdout": sanitize_for_prompt(str(res.get("stdout", ""))) if res.get("stdout") else "",
-            "stderr": sanitize_for_prompt(str(res.get("stderr", ""))) if res.get("stderr") else "",
-            "duration_seconds": res.get("duration_seconds", 0.0),
-        }
-        if not out["success"] and res.get("logs"):
-            out["error"] = res["logs"]
-        return json.dumps(out)
+        if manager is None
+    ]
+    if missing_managers:
+        return json.dumps({"error": f"Pandora requiere protección; faltan: {', '.join(missing_managers)}"})
 
+    from sky_claw.local.tools.pandora_service import PandoraPipelineService
+
+    service = PandoraPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        pandora_runner=pandora_runner,
+        journal=journal,
+    )
+    # The service serializes on the behavior-graphs lock and converts lock
+    # contention / execution failures to a dict; map it to the tool's JSON
+    # contract. A non-success carries the detail under ``logs``.
     try:
-        result = await pandora_runner.run_pandora()
+        res = await service.generate_animations()
     except Exception as exc:
         return json.dumps({"error": str(exc)})
-    return json.dumps(
-        {
-            "success": result.success,
-            "return_code": result.return_code,
-            "stdout": sanitize_for_prompt(result.stdout) if result.stdout else "",
-            "stderr": sanitize_for_prompt(result.stderr) if result.stderr else "",
-            "duration_seconds": result.duration_seconds,
-        }
-    )
+    out: dict[str, Any] = {
+        "success": res.get("success", False),
+        "return_code": res.get("return_code", -1),
+        "stdout": sanitize_for_prompt(str(res.get("stdout", ""))) if res.get("stdout") else "",
+        "stderr": sanitize_for_prompt(str(res.get("stderr", ""))) if res.get("stderr") else "",
+        "duration_seconds": res.get("duration_seconds", 0.0),
+    }
+    if not out["success"] and res.get("logs"):
+        out["error"] = res["logs"]
+    return json.dumps(out)
 
 
 async def run_bodyslide_batch(
