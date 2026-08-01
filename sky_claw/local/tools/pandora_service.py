@@ -276,7 +276,7 @@ class PandoraPipelineService:
         return [output] if output is not None else []
 
     @staticmethod
-    def _validar_output_generado(output: pathlib.Path) -> None:
+    def _validar_output_generado(output: pathlib.Path) -> os.stat_result:
         """Exige un árbol físico estable con al menos un archivo no vacío."""
 
         try:
@@ -309,6 +309,9 @@ class PandoraPipelineService:
                             identidad_direntry = entrada.stat(follow_symlinks=False)
                             inode_direntry = entrada.inode()
                             hijo = actual / entrada.name
+                            tipo_padre, identidad_padre = link_kind_and_identity_or_raise_with_retry(actual)
+                            if tipo_padre is not None or not same_file_identity(estado, identidad_padre):
+                                raise PandoraExecutionError(f"'{actual}' cambió durante la captura de sus hijos.")
                             tipo_hijo, identidad_hijo = link_kind_and_identity_or_raise_with_retry(hijo)
                             if tipo_hijo is not None or not same_direntry_identity(
                                 identidad_direntry, inode_direntry, identidad_hijo
@@ -331,6 +334,7 @@ class PandoraPipelineService:
                     raise PandoraExecutionError(f"'{observado}' cambió al finalizar la inspección.")
             if not archivo_positivo:
                 raise PandoraExecutionError(f"Pandora no generó ningún archivo regular con contenido en '{output}'.")
+            return identidad_raiz
         except PandoraExecutionError:
             raise
         except OSError as exc:
@@ -593,6 +597,7 @@ class PandoraPipelineService:
         # El AsyncExitStack corre los __aexit__ (restore) ANTES que los except
         # handlers, así que los flags ya están seteados cuando se leen.
         dir_rollbacks: list[DirectoryRollback] = []
+        identidades_validadas: dict[pathlib.Path, os.stat_result] = {}
         # Distingue "el cuerpo falló y el restore se intentó" de "el cuerpo terminó
         # y reventó el teardown" — sin esto, un LockLeaseLostError tras un run
         # exitoso dejaba la TX PENDING como si el rollback hubiera fallado, cuando
@@ -620,7 +625,18 @@ class PandoraPipelineService:
                     # rollback tras perder la lease para no pisar a un dueño
                     # concurrente, pero este context sale ANTES que él y sin el
                     # veto restauraría igual (review Codex #399).
-                    dr = DirectoryRollback(output_dir, should_rollback=lambda: not tx.lease_lost)
+                    def _target_final_valido(output: pathlib.Path = output_dir) -> bool:
+                        esperada = identidades_validadas.get(output)
+                        if esperada is None:
+                            return False
+                        tipo_actual, identidad_actual = link_kind_and_identity_or_raise_with_retry(output)
+                        return tipo_actual is None and same_file_identity(esperada, identidad_actual)
+
+                    dr = DirectoryRollback(
+                        output_dir,
+                        should_rollback=lambda: not tx.lease_lost,
+                        validate_final_target=_target_final_valido,
+                    )
                     dir_rollbacks.append(dr)
                     await tx_stack.enter_async_context(dr)
 
@@ -631,7 +647,9 @@ class PandoraPipelineService:
                 # árbol parcial queda en disco. Ver _RunFallidoError.
                 if not result.success:
                     raise _RunFallidoError(result)
-                await asyncio.to_thread(self._validar_output_generado, managed_output)
+                identidades_validadas[managed_output] = await asyncio.to_thread(
+                    self._validar_output_generado, managed_output
+                )
                 run_exitoso = True
             finalizaciones_fallidas = [dr for dr in dir_rollbacks if not dr.finalization_completed]
             if finalizaciones_fallidas:

@@ -132,6 +132,18 @@ class TestLinkKind:
 
         assert links.same_direntry_identity(capturada, inode_capturado, observada) is True
 
+    def test_identidades_lstat_cero_son_inciertas_aunque_coincidan(self) -> None:
+        identidad_antes = SimpleNamespace(st_dev=0, st_ino=0, st_mode=0o100644, st_reparse_tag=0)
+        identidad_despues = SimpleNamespace(st_dev=0, st_ino=0, st_mode=0o100644, st_reparse_tag=0)
+
+        assert links.same_file_identity(identidad_antes, identidad_despues) is False
+
+    def test_identidad_direntry_cero_es_incierta_aunque_el_modo_coincida(self) -> None:
+        capturada = SimpleNamespace(st_dev=0, st_ino=0, st_mode=0o040755)
+        observada = SimpleNamespace(st_dev=1, st_ino=123, st_mode=0o040755)
+
+        assert links.same_direntry_identity(capturada, 0, observada) is False
+
     def test_ruta_inexistente_no_es_enlace_y_no_hace_ruido(self, tmp_path: pathlib.Path) -> None:
         """Una ruta que no existe no es un enlace, y preguntarlo no debe lanzar.
 
@@ -306,7 +318,7 @@ class TestRmtreeLinkAware:
             st_reparse_tag = 0
 
             def __init__(self, inode: int) -> None:
-                self.st_ino = inode
+                self.st_ino = inode + 1
 
         class _RutaVirtual:
             def __init__(self, valor: str | int) -> None:

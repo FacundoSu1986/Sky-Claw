@@ -1163,6 +1163,67 @@ async def test_exit_cero_rechaza_junction_anidado_sin_atravesarlo_y_restaura(
 
 
 @pytest.mark.asyncio
+@junction_guard
+async def test_primer_run_swap_tras_validacion_deja_tx_pendiente_y_no_toca_ajeno(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """El primer run también exige confirmar la identidad al cerrar el rollback."""
+    from sky_claw.local.tools import pandora_service
+
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    ajeno = tmp_path / "ajeno_final"
+    _escribir_output(ajeno, "no tocar")
+    desplazado = tmp_path / "output_generado_recovery"
+    validacion_terminada = False
+    intercambio_hecho = False
+
+    async def _corre_ok() -> PandoraResult:
+        _escribir_output(salida, "generado")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok, journal=mock_journal
+    )
+    validar_real = svc._validar_output_generado
+    inspector_real = pandora_service.link_kind_and_identity_or_raise_with_retry
+
+    def _validar_y_marcar(output: pathlib.Path) -> os.stat_result:
+        nonlocal validacion_terminada
+        identidad = validar_real(output)
+        validacion_terminada = True
+        return identidad
+
+    def _swap_en_revalidacion_final(ruta: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
+        nonlocal intercambio_hecho
+        if validacion_terminada and ruta == salida and not intercambio_hecho:
+            intercambio_hecho = True
+            salida.rename(desplazado)
+            motivo = crear_junction(salida, ajeno)
+            assert motivo is None, motivo
+        return inspector_real(ruta)
+
+    with (
+        patch.object(svc, "_validar_output_generado", side_effect=_validar_y_marcar),
+        patch(
+            "sky_claw.local.tools.pandora_service.link_kind_and_identity_or_raise_with_retry",
+            side_effect=_swap_en_revalidacion_final,
+        ),
+    ):
+        result = await svc.generate_animations()
+
+    assert intercambio_hecho is True
+    assert result["success"] is False
+    assert _leer_output(ajeno) == "no tocar"
+    assert _leer_output(desplazado) == "generado"
+    assert not list(salida.parent.glob(f"{salida.name}.rollback-*"))
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_output_con_archivo_regular_positivo_commitea(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
@@ -1568,8 +1629,14 @@ async def test_cancelacion_durante_move_aside_refleja_el_undo_en_journal(
             *,
             enabled: bool = True,
             should_rollback: Callable[[], bool] | None = None,
+            validate_final_target: Callable[[], bool] | None = None,
         ) -> None:
-            super().__init__(target_dir, enabled=enabled, should_rollback=should_rollback)
+            super().__init__(
+                target_dir,
+                enabled=enabled,
+                should_rollback=should_rollback,
+                validate_final_target=validate_final_target,
+            )
             capturados.append(self)
 
     def _rename_controlado(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
@@ -1646,6 +1713,8 @@ async def test_swap_del_padre_durante_scandir_no_acepta_arbol_ajeno(
     mock_journal: AsyncMock,
 ) -> None:
     """La identidad capturada impide validar hijos a través de un padre reemplazado."""
+    from sky_claw.local.tools import pandora_service
+
     game, exe, salida = _rutas_de_salida(tmp_path)
     _escribir_output(salida, "previo")
     esperado = _leer_output(salida)
@@ -1658,7 +1727,9 @@ async def test_swap_del_padre_durante_scandir_no_acepta_arbol_ajeno(
         return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
 
     scandir_real = os.scandir
+    inspector_real = pandora_service.link_kind_and_identity_or_raise_with_retry
     intercambio_hecho = False
+    inspecciones_descendientes_tras_swap: list[pathlib.Path] = []
 
     class _EntradaControlada:
         def __init__(self, entrada: os.DirEntry[str]) -> None:
@@ -1702,13 +1773,25 @@ async def test_swap_del_padre_durante_scandir_no_acepta_arbol_ajeno(
             return _ScandirControlado(salida)
         return scandir_real(ruta)
 
+    def _inspector_instrumentado(ruta: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
+        if intercambio_hecho and ruta != salida and ruta.is_relative_to(salida):
+            inspecciones_descendientes_tras_swap.append(ruta)
+        return inspector_real(ruta)
+
     svc = _svc_con_salida_real(
         lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok, journal=mock_journal
     )
-    with patch("sky_claw.local.tools.pandora_service.os.scandir", side_effect=_scandir_intercambiado):
+    with (
+        patch("sky_claw.local.tools.pandora_service.os.scandir", side_effect=_scandir_intercambiado),
+        patch(
+            "sky_claw.local.tools.pandora_service.link_kind_and_identity_or_raise_with_retry",
+            side_effect=_inspector_instrumentado,
+        ),
+    ):
         result = await svc.generate_animations()
 
     assert intercambio_hecho is True
+    assert inspecciones_descendientes_tras_swap == []
     assert result["success"] is False
     assert _leer_output(salida) == esperado
     assert _leer_output(ajeno) == "no tocar"

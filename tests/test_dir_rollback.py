@@ -178,6 +178,52 @@ async def test_finalization_completed_false_si_falla_el_discard_limpio(
     assert list(tmp_path.glob("Output.rollback-*"))
 
 
+async def test_primer_run_no_finaliza_si_el_validador_final_rechaza_el_target(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "Output"
+    rb = DirectoryRollback(target, validate_final_target=lambda: False)
+
+    async with rb:
+        target.mkdir()
+        (target / "residuo.txt").write_text("conservar para recovery", encoding="utf-8")
+
+    assert rb.finalization_completed is False
+    assert (target / "residuo.txt").read_text(encoding="utf-8") == "conservar para recovery"
+
+
+async def test_excepcion_del_validador_final_es_fail_closed_y_no_escapa(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "Output"
+
+    def _validador_roto() -> bool:
+        raise OSError("inspección bloqueada")
+
+    rb = DirectoryRollback(target, validate_final_target=_validador_roto)
+    async with rb:
+        target.mkdir()
+
+    assert rb.finalization_completed is False
+    assert target.exists()
+
+
+async def test_validador_final_no_enmascara_la_excepcion_del_body(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "Output"
+    llamadas = 0
+
+    def _validador_roto() -> bool:
+        nonlocal llamadas
+        llamadas += 1
+        raise OSError("no debe ejecutarse durante rollback")
+
+    rb = DirectoryRollback(target, validate_final_target=_validador_roto)
+    with pytest.raises(RuntimeError, match="boom original"):
+        async with rb:
+            target.mkdir()
+            raise RuntimeError("boom original")
+
+    assert llamadas == 0
+    assert rb.rollback_completed is True
+    assert rb.finalization_completed is True
+
+
 async def test_first_run_no_backup_success(tmp_path: pathlib.Path) -> None:
     """Primer run (dir no existe): en éxito conserva el dir nuevo."""
     target = tmp_path / "Output"

@@ -179,6 +179,7 @@ class DirectoryRollback:
         *,
         enabled: bool = True,
         should_rollback: Callable[[], bool] | None = None,
+        validate_final_target: Callable[[], bool] | None = None,
     ) -> None:
         self._target = target_dir
         self._enabled = enabled
@@ -191,6 +192,7 @@ class DirectoryRollback:
         #: viejo. El caller cablea ``lambda: not lock.lease_lost`` para que las dos
         #: capas apliquen el MISMO criterio.
         self._should_rollback = should_rollback
+        self._validate_final_target = validate_final_target
         self._backup: pathlib.Path | None = None
         #: M-7: ``True`` significa que NO queda una mutación de este context sin
         #: resolver. Empieza True porque preflight/link-check todavía no tocaron el
@@ -331,7 +333,28 @@ class DirectoryRollback:
             self.rollback_completed = True
             self.finalization_completed = True
         else:
+            if not await asyncio.to_thread(self._final_target_is_valid):
+                logger.critical(
+                    "Finalización de '%s' OMITIDA: la identidad final no pudo confirmarse. "
+                    "El target y el backup quedan sin tocar para recovery manual.",
+                    self._target,
+                )
+                return
             self.finalization_completed = await self._discard_backup(permitir_restore=True)
+
+    def _final_target_is_valid(self) -> bool:
+        """Evalúa el validador final opcional sin dejar escapar fallos del caller."""
+        if self._validate_final_target is None:
+            return True
+        try:
+            return bool(self._validate_final_target())
+        except Exception:  # noqa: BLE001 — boundary: callback provisto por el caller
+            logger.critical(
+                "El validador final de '%s' falló; se omite toda mutación de cleanup.",
+                self._target,
+                exc_info=True,
+            )
+            return False
 
     async def commit(self) -> None:
         """Confirma el estado nuevo tras un punto de no-retorno (review Codex #312).

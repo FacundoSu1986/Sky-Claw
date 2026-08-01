@@ -251,6 +251,10 @@ def same_file_identity(antes: os.stat_result, despues: os.stat_result | None) ->
     """True si dos ``lstat`` describen la misma entrada del directorio."""
     return (
         despues is not None
+        and antes.st_dev > 0
+        and antes.st_ino > 0
+        and despues.st_dev > 0
+        and despues.st_ino > 0
         and antes.st_dev == despues.st_dev
         and antes.st_ino == despues.st_ino
         and stat.S_IFMT(antes.st_mode) == stat.S_IFMT(despues.st_mode)
@@ -270,6 +274,10 @@ def same_direntry_identity(
     """
     return (
         observada is not None
+        and inode_capturado > 0
+        and observada.st_dev > 0
+        and observada.st_ino > 0
+        and (capturada.st_dev == 0 or capturada.st_dev == observada.st_dev)
         and inode_capturado == observada.st_ino
         and stat.S_IFMT(capturada.st_mode) == stat.S_IFMT(observada.st_mode)
     )
