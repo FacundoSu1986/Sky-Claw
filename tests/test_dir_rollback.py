@@ -141,6 +141,43 @@ async def test_rollback_completed_false_on_success_path(tmp_path: pathlib.Path) 
     assert rb.rollback_completed is False
 
 
+async def test_finalization_completed_observa_el_cleanup_limpio(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+    rb = DirectoryRollback(target)
+
+    assert rb.finalization_completed is True
+    async with rb:
+        assert rb.finalization_completed is False
+        target.mkdir()
+        (target / "new.txt").write_text("NEW", encoding="utf-8")
+
+    assert rb.rollback_completed is False
+    assert rb.finalization_completed is True
+
+
+async def test_finalization_completed_false_si_falla_el_discard_limpio(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+    rb = DirectoryRollback(target)
+
+    async def _discard_fallido(*, permitir_restore: bool) -> bool:
+        del permitir_restore
+        raise OSError("backup bloqueado")
+
+    async with rb:
+        target.mkdir()
+        (target / "new.txt").write_text("NEW", encoding="utf-8")
+        monkeypatch.setattr(rb, "_discard_backup", _discard_fallido)
+
+    assert rb.finalization_completed is False
+    assert list(tmp_path.glob("Output.rollback-*"))
+
+
 async def test_first_run_no_backup_success(tmp_path: pathlib.Path) -> None:
     """Primer run (dir no existe): en éxito conserva el dir nuevo."""
     target = tmp_path / "Output"
@@ -682,6 +719,7 @@ async def test_veto_de_lease_tambien_protege_el_restore_del_camino_limpio(tmp_pa
     backups = list(tmp_path.glob("Output.rollback-*"))
     assert len(backups) == 1, "el backup del dueño viejo debe conservarse, ni perderse ni restaurarse"
     assert (backups[0] / "previo.txt").read_text(encoding="utf-8") == "del dueño viejo"
+    assert rb.finalization_completed is False
 
 
 async def test_commit_con_target_vacio_no_revierte_el_estado_comprometido(tmp_path: pathlib.Path) -> None:

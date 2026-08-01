@@ -14,8 +14,9 @@ manifiesto y el rollback; el preflight sondea el árbol o su padre si aún no ex
 from __future__ import annotations
 
 import asyncio
+import os
+import pathlib
 from collections.abc import Callable
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,9 +29,6 @@ from sky_claw.local.tools.pandora_service import (
     PandoraPipelineService,
 )
 from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
-
-if TYPE_CHECKING:
-    import pathlib
 
 
 @pytest.fixture
@@ -714,6 +712,41 @@ async def test_fallo_de_ejecucion_marca_la_tx_rolled_back(
     assert result["success"] is False
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
     mock_journal.commit_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_limpio_incierto_no_commitea_y_conserva_backup(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El éxito del runner no tapa un descarte de backup no confirmado."""
+    from sky_claw.local.tools._dir_rollback import DirectoryRollback
+
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "previo")
+
+    async def _corre_ok() -> PandoraResult:
+        _escribir_output(salida, "nuevo")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    async def _rechaza_discard(self: object, *, permitir_restore: bool) -> bool:
+        del self, permitir_restore
+        return False
+
+    monkeypatch.setattr(DirectoryRollback, "_discard_backup", _rechaza_discard)
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok, journal=mock_journal
+    )
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert list(salida.parent.glob(f"{salida.name}.rollback-*"))
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1601,4 +1634,82 @@ async def test_preflight_de_rollback_falla_sin_mutar_y_cierra_journal(
     assert not list(salida.parent.glob(f"{salida.name}.rollback-*"))
     assert runner.await_count == 0
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.commit_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+@junction_guard
+async def test_swap_del_padre_durante_scandir_no_acepta_arbol_ajeno(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """La identidad capturada impide validar hijos a través de un padre reemplazado."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "previo")
+    esperado = _leer_output(salida)
+    ajeno = tmp_path / "ajeno"
+    _escribir_output(ajeno, "no tocar")
+    desplazado = tmp_path / "output_inspeccionado"
+
+    async def _corre_ok() -> PandoraResult:
+        _escribir_output(salida, "generado")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    scandir_real = os.scandir
+    intercambio_hecho = False
+
+    class _EntradaControlada:
+        def __init__(self, entrada: os.DirEntry[str]) -> None:
+            self._entrada = entrada
+
+        def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+            return self._entrada.stat(follow_symlinks=follow_symlinks)
+
+        def inode(self) -> int:
+            return self._entrada.inode()
+
+        @property
+        def name(self) -> str:
+            nonlocal intercambio_hecho
+            if not intercambio_hecho:
+                intercambio_hecho = True
+                salida.rename(desplazado)
+                motivo = crear_junction(salida, ajeno)
+                assert motivo is None, motivo
+            return self._entrada.name
+
+    class _ScandirControlado:
+        def __init__(self, ruta: pathlib.Path) -> None:
+            self._real = scandir_real(ruta)
+
+        def __enter__(self) -> _ScandirControlado:
+            self._real.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self._real.__exit__(*args)
+
+        def __iter__(self) -> _ScandirControlado:
+            return self
+
+        def __next__(self) -> _EntradaControlada:
+            return _EntradaControlada(next(self._real))
+
+    def _scandir_intercambiado(ruta: os.PathLike[str] | str) -> object:
+        if pathlib.Path(ruta) == salida and not intercambio_hecho:
+            return _ScandirControlado(salida)
+        return scandir_real(ruta)
+
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok, journal=mock_journal
+    )
+    with patch("sky_claw.local.tools.pandora_service.os.scandir", side_effect=_scandir_intercambiado):
+        result = await svc.generate_animations()
+
+    assert intercambio_hecho is True
+    assert result["success"] is False
+    assert _leer_output(salida) == esperado
+    assert _leer_output(ajeno) == "no tocar"
     mock_journal.commit_transaction.assert_not_called()

@@ -74,6 +74,64 @@ class TestLinkKind:
         assert detector(objetivo) is None
         assert intentos == 3
 
+    def test_inspeccion_canonica_devuelve_clasificacion_e_identidad_no_follow(self, tmp_path: pathlib.Path) -> None:
+        objetivo = tmp_path / "real"
+        objetivo.mkdir()
+
+        tipo, identidad = links.link_kind_and_identity_or_raise_with_retry(objetivo)
+
+        assert tipo is None
+        assert identidad is not None
+        assert identidad.st_mode == objetivo.lstat().st_mode
+
+    def test_inspeccion_canonica_reintenta_lstat_transitorio(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        objetivo = tmp_path / "real"
+        objetivo.mkdir()
+        lstat_real = pathlib.Path.lstat
+        intentos = 0
+
+        def _lstat_transitorio(self: pathlib.Path) -> os.stat_result:
+            nonlocal intentos
+            if self == objetivo:
+                intentos += 1
+                if intentos < 3:
+                    raise PermissionError("WinError 5: bloqueo transitorio del indexer")
+            return lstat_real(self)
+
+        monkeypatch.setattr(pathlib.Path, "lstat", _lstat_transitorio)
+
+        tipo, identidad = links.link_kind_and_identity_or_raise_with_retry(objetivo)
+
+        assert tipo is None
+        assert identidad is not None
+        assert intentos == 3
+
+    def test_comparador_canonico_detecta_reemplazo_de_entrada(self, tmp_path: pathlib.Path) -> None:
+        primero = tmp_path / "primero"
+        segundo = tmp_path / "segundo"
+        primero.write_text("uno", encoding="utf-8")
+        segundo.write_text("dos", encoding="utf-8")
+        _, identidad_primera = links.link_kind_and_identity_or_raise(primero)
+        _, identidad_segunda = links.link_kind_and_identity_or_raise(segundo)
+
+        assert identidad_primera is not None
+        assert identidad_segunda is not None
+        assert links.same_file_identity(identidad_primera, identidad_primera) is True
+        assert links.same_file_identity(identidad_primera, identidad_segunda) is False
+
+    def test_comparador_de_direntry_usa_inode_no_follow(self, tmp_path: pathlib.Path) -> None:
+        hijo = tmp_path / "hijo"
+        hijo.mkdir()
+        with os.scandir(tmp_path) as entradas:
+            entrada = next(entradas)
+            capturada = entrada.stat(follow_symlinks=False)
+            inode_capturado = entrada.inode()
+        _, observada = links.link_kind_and_identity_or_raise(hijo)
+
+        assert links.same_direntry_identity(capturada, inode_capturado, observada) is True
+
     def test_ruta_inexistente_no_es_enlace_y_no_hace_ruido(self, tmp_path: pathlib.Path) -> None:
         """Una ruta que no existe no es un enlace, y preguntarlo no debe lanzar.
 

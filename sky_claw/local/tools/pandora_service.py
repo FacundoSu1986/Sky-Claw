@@ -34,7 +34,11 @@ from sky_claw.app.db.locks import (
     LockAcquisitionError,
     SnapshotTransactionLock,
 )
-from sky_claw.app.security.links import link_kind_or_raise_with_retry
+from sky_claw.app.security.links import (
+    link_kind_and_identity_or_raise_with_retry,
+    same_direntry_identity,
+    same_file_identity,
+)
 from sky_claw.local.tools._dir_rollback import DirectoryRollback
 from sky_claw.local.tools.output_targets import pandora_output_target
 from sky_claw.local.tools.pandora_runner import (
@@ -273,61 +277,58 @@ class PandoraPipelineService:
 
     @staticmethod
     def _validar_output_generado(output: pathlib.Path) -> None:
-        """Exige un árbol físico con al menos un archivo regular no vacío.
-
-        No se congelan nombres ni extensiones: el rig real todavía debe demostrar
-        la forma exacta. Todo nodo se clasifica antes de enumerarlo y cualquier
-        enlace/reparse invalida el árbol completo sin atravesarlo.
-        """
-
-        def _misma_entrada(antes: os.stat_result, despues: os.stat_result) -> bool:
-            return (
-                antes.st_dev == despues.st_dev
-                and antes.st_ino == despues.st_ino
-                and stat.S_IFMT(antes.st_mode) == stat.S_IFMT(despues.st_mode)
-                and getattr(antes, "st_reparse_tag", 0) == getattr(despues, "st_reparse_tag", 0)
-            )
+        """Exige un árbol físico estable con al menos un archivo no vacío."""
 
         try:
-            pendientes = [output]
+            tipo_raiz, identidad_raiz = link_kind_and_identity_or_raise_with_retry(output)
+            if tipo_raiz is not None or identidad_raiz is None or not stat.S_ISDIR(identidad_raiz.st_mode):
+                raise PandoraExecutionError(f"Pandora no generó un directorio físico seguro en '{output}'.")
+            pendientes: list[tuple[pathlib.Path, os.stat_result, tuple[tuple[pathlib.Path, os.stat_result], ...]]] = [
+                (output, identidad_raiz, ())
+            ]
+            observados: list[tuple[pathlib.Path, os.stat_result]] = []
             archivo_positivo = False
             while pendientes:
-                actual = pendientes.pop()
-                tipo_de_enlace = link_kind_or_raise_with_retry(actual)
-                if tipo_de_enlace is not None:
-                    raise PandoraExecutionError(
-                        f"Pandora no generó un output físico seguro en '{output}': "
-                        f"'{actual}' es un enlace ({tipo_de_enlace})."
-                    )
-                estado = actual.lstat()
-                if getattr(estado, "st_reparse_tag", 0):
-                    raise PandoraExecutionError(
-                        f"Pandora no generó un output físico seguro en '{output}': '{actual}' es un reparse point."
-                    )
+                actual, identidad_capturada, ancestros = pendientes.pop()
+                for ancestro, identidad_ancestro in ancestros:
+                    tipo_ancestro, identidad_actual = link_kind_and_identity_or_raise_with_retry(ancestro)
+                    if tipo_ancestro is not None or not same_file_identity(identidad_ancestro, identidad_actual):
+                        raise PandoraExecutionError(f"'{ancestro}' cambió durante la inspección de '{output}'.")
+                tipo_actual, estado = link_kind_and_identity_or_raise_with_retry(actual)
+                if tipo_actual is not None or not same_file_identity(identidad_capturada, estado):
+                    raise PandoraExecutionError(f"'{actual}' cambió o es un enlace durante la inspección.")
+                assert estado is not None
+                observados.append((actual, estado))
                 if stat.S_ISDIR(estado.st_mode):
-                    # Mismo patrón que ``links._borrar_recursivo``: abrir primero,
-                    # revalidar identidad y sólo entonces consumir las entradas.
-                    # Si la ruta cambió a un junction en la ventana, no se enumera
-                    # el árbol al que apunta.
                     with os.scandir(actual) as entradas:
-                        tipo_despues = link_kind_or_raise_with_retry(actual)
-                        estado_despues = actual.lstat()
-                        if tipo_despues is not None or not _misma_entrada(estado, estado_despues):
-                            raise PandoraExecutionError(
-                                f"Pandora no generó un output físico estable en '{output}': "
-                                f"'{actual}' cambió durante la inspección."
-                            )
-                        hijos = [pathlib.Path(entrada.path) for entrada in entradas]
-                    pendientes.extend(reversed(hijos))
+                        tipo_despues, estado_despues = link_kind_and_identity_or_raise_with_retry(actual)
+                        if tipo_despues is not None or not same_file_identity(estado, estado_despues):
+                            raise PandoraExecutionError(f"'{actual}' cambió durante la inspección.")
+                        hijos: list[tuple[pathlib.Path, os.stat_result]] = []
+                        for entrada in entradas:
+                            identidad_direntry = entrada.stat(follow_symlinks=False)
+                            inode_direntry = entrada.inode()
+                            hijo = actual / entrada.name
+                            tipo_hijo, identidad_hijo = link_kind_and_identity_or_raise_with_retry(hijo)
+                            if tipo_hijo is not None or not same_direntry_identity(
+                                identidad_direntry, inode_direntry, identidad_hijo
+                            ):
+                                raise PandoraExecutionError(f"'{hijo}' cambió o es un enlace durante la captura.")
+                            tipo_padre, identidad_padre = link_kind_and_identity_or_raise_with_retry(actual)
+                            if tipo_padre is not None or not same_file_identity(estado, identidad_padre):
+                                raise PandoraExecutionError(f"'{actual}' cambió durante la captura de sus hijos.")
+                            assert identidad_hijo is not None
+                            hijos.append((hijo, identidad_hijo))
+                    nuevos_ancestros = (*ancestros, (actual, estado))
+                    pendientes.extend((hijo, identidad, nuevos_ancestros) for hijo, identidad in reversed(hijos))
                 elif stat.S_ISREG(estado.st_mode):
-                    if actual == output:
-                        raise PandoraExecutionError(f"Pandora no generó un directorio físico seguro en '{output}'.")
                     archivo_positivo = archivo_positivo or estado.st_size > 0
                 else:
-                    raise PandoraExecutionError(
-                        f"Pandora no generó un output físico seguro en '{output}': "
-                        f"'{actual}' no es un archivo regular ni un directorio."
-                    )
+                    raise PandoraExecutionError(f"'{actual}' no es un archivo regular ni un directorio.")
+            for observado, identidad_observada in observados:
+                tipo_final, identidad_final = link_kind_and_identity_or_raise_with_retry(observado)
+                if tipo_final is not None or not same_file_identity(identidad_observada, identidad_final):
+                    raise PandoraExecutionError(f"'{observado}' cambió al finalizar la inspección.")
             if not archivo_positivo:
                 raise PandoraExecutionError(f"Pandora no generó ningún archivo regular con contenido en '{output}'.")
         except PandoraExecutionError:
@@ -632,6 +633,12 @@ class PandoraPipelineService:
                     raise _RunFallidoError(result)
                 await asyncio.to_thread(self._validar_output_generado, managed_output)
                 run_exitoso = True
+            finalizaciones_fallidas = [dr for dr in dir_rollbacks if not dr.finalization_completed]
+            if finalizaciones_fallidas:
+                raise PandoraExecutionError(
+                    "Pandora generó salida, pero no pudo finalizar de forma segura "
+                    "la protección de rollback; la transacción queda pendiente."
+                )
             # Lock liberado y salida confirmada: el run fue exitoso (un fallo habría
             # salido por _RunFallidoError / PandoraExecutionError).
             if journal_tx_id is not None and self._journal is not None:
