@@ -749,6 +749,8 @@ async def test_cleanup_limpio_incierto_no_commitea_y_conserva_backup(
     mock_journal.commit_transaction.assert_not_called()
     mock_journal.mark_transaction_rolled_back.assert_not_called()
     assert "sin restore confirmado; TX pendiente" in caplog.text
+    assert "desenlace de la salida" in caplog.text
+    assert "rollback de la salida" not in caplog.text
     assert "salida parcial sigue en disco" not in caplog.text
 
 

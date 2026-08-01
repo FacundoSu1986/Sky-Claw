@@ -714,7 +714,7 @@ class PandoraPipelineService:
                 dir_rollbacks,
                 hubo_restore=not run_exitoso,
             )
-            logger.error("Pandora execution failed: %s; rollback de la salida: %s", exc, desenlace)
+            logger.error("Pandora execution failed: %s; desenlace de la salida: %s", exc, desenlace)
             return _attach_preflight(
                 {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}, preflight_report
             )
