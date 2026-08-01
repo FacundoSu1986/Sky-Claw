@@ -55,6 +55,7 @@ dev = [
     "pytest-aiohttp>=1.0,<2",
     "pytest-cov",
     "pytest-timeout>=2.3,<3",
+    "pytest-bdd>=8.1.0,<9",
     "ruff>=0.4",
     "pre-commit>=3.7,<5",
     "mypy>=1.10",
