@@ -366,12 +366,20 @@ class DynDOLODPipelineService:
         if tx_id is None:
             return rolled_back
         if not rolled_back:
-            logger.critical(
-                "Rollback DynDOLOD INCOMPLETO tras %s (TX %d): la TX queda PENDIENTE; "
-                "revisar backups move-aside y targets no cubiertos manualmente.",
-                contexto,
-                tx_id,
-            )
+            if mutation_started and not mutation_coverage_complete and rollbacks_resueltos:
+                logger.warning(
+                    "Cobertura de staging DynDOLOD no demostrada tras %s (TX %d): "
+                    "la TX queda PENDIENTE hasta aislar los targets crudos.",
+                    contexto,
+                    tx_id,
+                )
+            else:
+                logger.critical(
+                    "Rollback DynDOLOD INCOMPLETO tras %s (TX %d): la TX queda PENDIENTE; "
+                    "revisar backups move-aside y targets no cubiertos manualmente.",
+                    contexto,
+                    tx_id,
+                )
             return False
         try:
             await self._journal.mark_transaction_rolled_back(tx_id)
@@ -527,17 +535,12 @@ class DynDOLODPipelineService:
         for _root in _staging_roots:
             manifest_targets += [_root / _name for _name in _staging_names]
 
-        # Cobertura honesta: los mods empaquetados pueden estar bajo move-aside,
-        # pero DynDOLOD/TexGen también escriben staging crudo. Ese staging no se
-        # protege porque sus ubicaciones pueden ser compartidas; no se amplía el
-        # rollback sin evidencia de propiedad exclusiva. Por tanto, una vez que el
-        # runner empieza, no hay rollback TOTAL demostrable aunque los outputs
-        # administrados sí vuelvan byte-a-byte.
-        protected_targets = set(rollback_dirs)
-        unprotected_staging_expected = bool(_staging_names)
-        mutation_coverage_complete = not unprotected_staging_expected and all(
-            target in protected_targets for target in manifest_targets
-        )
+        # Cobertura honesta: DynDOLOD/TexGen también escriben staging crudo. Esas
+        # ubicaciones pueden ser compartidas y todavía no están bajo move-aside;
+        # no se amplía el rollback sin evidencia de propiedad exclusiva. Por tanto,
+        # una vez que el runner empieza, no hay rollback TOTAL demostrable aunque
+        # los outputs administrados sí vuelvan byte-a-byte.
+        mutation_coverage_complete = False
 
         # 3. Ejecutar bajo lock transaccional + rollback de directorios.
         # AsyncExitStack: el lock se adquiere primero y se libera último; los

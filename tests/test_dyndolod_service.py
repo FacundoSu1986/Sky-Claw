@@ -7,6 +7,7 @@ publication, journal lifecycle, and rollback on unexpected errors.
 from __future__ import annotations
 
 import asyncio
+import logging
 import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -114,6 +115,31 @@ def service(
         path_resolver=mock_path_resolver,
         event_bus=mock_event_bus,
     )
+
+
+@pytest.mark.asyncio
+async def test_cobertura_de_staging_no_confirmada_no_es_critical(
+    service: DynDOLODPipelineService,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """La cobertura cruda pendiente es una limitación conocida, no un fallo de rollback."""
+    rollback = MagicMock(rollback_completed=True)
+
+    with caplog.at_level(logging.DEBUG, logger="SkyClaw.DynDOLOD"):
+        rolled_back = await service._cerrar_tx_tras_rollback(
+            42,
+            [rollback],
+            journal_committed=False,
+            mutation_started=True,
+            mutation_coverage_complete=False,
+            contexto="fallo del pipeline",
+        )
+
+    assert rolled_back is False
+    assert caplog.records[-1].levelno == logging.WARNING
+    assert "staging" in caplog.records[-1].message
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+    service._journal.mark_transaction_rolled_back.assert_not_awaited()
 
 
 def _make_success_result(
