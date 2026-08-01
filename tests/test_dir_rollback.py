@@ -235,11 +235,10 @@ async def test_commit_es_idempotente(tmp_path: pathlib.Path) -> None:
 async def test_exito_sin_regeneracion_conserva_el_contenido_previo(tmp_path: pathlib.Path) -> None:
     """Descartar el backup sólo es seguro si la herramienta regeneró el dir.
 
-    La propiedad se ancla acá —y no sólo en el caller que la destapó (Pandora, con
-    sus dos ``Pandora_Output`` candidatos)— porque no es de Pandora: cualquiera que
-    proteja varios destinos candidatos, o cuya herramienta pueda no producir
-    salida, tiene el mismo agujero. Y es el peor tipo de agujero: ocurre en el
-    camino de ÉXITO, así que no hay excepción que lo delate (review Codex #399).
+    La propiedad se ancla acá porque no pertenece a una herramienta concreta:
+    cualquier tool que termine con éxito sin regenerar su target debe preservar
+    el backup. El agujero ocurre en el camino de ÉXITO, así que no hay excepción
+    que lo delate (review Codex #399).
     """
     target = tmp_path / "Output"
     target.mkdir()
@@ -401,10 +400,9 @@ def test_todos_los_callers_de_move_aside_cablean_el_veto_de_lease() -> None:
 async def test_exito_con_target_vacio_conserva_el_contenido_previo(tmp_path: pathlib.Path) -> None:
     """ "Existe" no es "lo regeneró" (review CodeRabbit #399).
 
-    Una herramienta que crea el directorio candidato y no escribe nada dentro
-    dejaba pasar el ``rmtree`` del backup: la misma pérdida silenciosa que el test
-    anterior ataja, un paso más allá — y plausible justo en el escenario
-    multi-candidato de Pandora que motivó todo esto.
+    Una herramienta que crea su target pero no escribe nada dentro tampoco lo
+    regeneró. Descartar el backup perdería silenciosamente el estado previo en un
+    camino que, por no lanzar, parece exitoso.
     """
     target = tmp_path / "Output"
     target.mkdir()

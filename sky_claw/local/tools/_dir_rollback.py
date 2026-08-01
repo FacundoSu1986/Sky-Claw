@@ -395,10 +395,9 @@ class DirectoryRollback:
 
         def _sin_regenerar() -> bool:
             """ "Existe" no es "lo regeneró" (review CodeRabbit #399): una herramienta
-            que crea el directorio candidato y no escribe nada dentro dejaba pasar
-            el ``rmtree`` del backup — la misma pérdida silenciosa, un paso más
-            allá, y plausible justo en el escenario multi-candidato que motivó este
-            método.
+            que crea su target y no escribe nada dentro no regeneró el contenido.
+            Descartar el backup en ese estado perdería silenciosamente el único
+            ejemplar previo, aunque el body haya terminado sin excepción.
 
             También cuenta como "no regenerado" un target que se volvió un enlace
             (review CodeRabbit #404): un symlink/junction a un directorio AJENO
