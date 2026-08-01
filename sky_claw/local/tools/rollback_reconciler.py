@@ -43,7 +43,8 @@ from typing import TYPE_CHECKING
 
 from sky_claw.app.db.locks import LockAcquisitionError
 from sky_claw.app.security.links import is_link, path_present, rmtree_link_aware
-from sky_claw.local.tools.output_targets import pandora_rollback_dirs
+from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
+from sky_claw.local.tools.output_targets import pandora_output_target
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
 
 if TYPE_CHECKING:
@@ -64,10 +65,9 @@ _RECONCILE_TTL_SECONDS = 60.0
 #: Sufijo que ``DirectoryRollback.__aenter__`` le pone al directorio movido aparte:
 #: ``.rollback-<time.time_ns()>``.
 #:
-#: Se exigen **≥12 dígitos** a propósito. Con una sola raíz bajo `<mo2>/mods` el
-#: patrón laxo (``\d+``) era inofensivo, pero desde que se barre también la raíz del
-#: juego y el dir del ejecutable de Pandora —directorios del usuario, no nuestros—
-#: un ``Algo.rollback-1`` ajeno entraría al barrido y podría terminar renombrado.
+#: Se exigen **≥12 dígitos** a propósito. Aunque cada productor declara destinos
+#: exactos, sus padres son directorios que pueden contener artefactos del usuario;
+#: el piso distingue nuestros nonces de un backup corto con el mismo basename.
 #: ``time_ns()`` devuelve 19 dígitos (y ≥16 desde 1970), así que el piso no deja
 #: afuera ningún backup real y vuelve el falso positivo prácticamente imposible.
 _SUFIJO_MOVE_ASIDE = re.compile(r"\.rollback-\d{12,}$")
@@ -102,27 +102,29 @@ PRODUCTORES_CABLEADOS: frozenset[str] = frozenset({"dyndolod", "pandora"})
 
 @dataclass(frozen=True, slots=True)
 class ProductorDeMoveAside:
-    """Un ritual que deja residuo ``<dir>.rollback-<nonce>``, con dónde y bajo qué lock.
+    """Un ritual que deja residuo ``<dir>.rollback-<nonce>``, con qué y bajo qué lock.
 
     **Por qué los tres datos viajan juntos.** La primera versión de este módulo
     asumía que había *una* familia move-aside: una raíz (``<mo2>/mods``) y un lock
     (``dyndolod-pipeline``). Las dos suposiciones son propiedades de DynDOLOD, no
-    del mecanismo — Pandora mueve aparte sus ``Pandora_Output``, que cuelgan del
-    juego y del dir de su ejecutable, y se serializa con ``behavior-graphs``.
+    del mecanismo — Pandora mueve aparte su único ``Pandora_Output`` administrado,
+    que cuelga del juego y se serializa con ``behavior-graphs``.
     Barrer su residuo mirando el lock de DynDOLOD sería peor que no barrerlo:
     restauraría un backup mientras el ritual que lo creó sigue corriendo.
 
     Enunciado como propiedad del mecanismo: *cada residuo se reconcilia bajo el
-    lock del ritual que lo produjo, y solo bajo las raíces donde ese ritual
-    escribe.* Un productor nuevo declara ambas cosas o no se barre.
+    lock del ritual que lo produjo, y solo si corresponde a un destino exacto que
+    ese ritual regenera por completo.* Un productor nuevo declara ambas cosas o
+    no se barre. Declarar solo el directorio padre daría autoridad sobre siblings
+    ajenos que compartan la forma ``*.rollback-<nonce>``.
     """
 
     #: Identificador corto, para logs y para el reporte de omitidos.
     nombre: str
     #: Lock del ritual: mientras esté vivo, su residuo es legítimo y no se toca.
     lock_resource_id: str
-    #: Directorios PADRE donde buscar los ``<dir>.rollback-<nonce>``.
-    raices: tuple[pathlib.Path, ...]
+    #: Directorios exactos que el ritual regenera y puede restaurar.
+    destinos: tuple[pathlib.Path, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +174,7 @@ async def reconcile_orphan_rollback_backups(
 
     Args:
         productores: Rituales que dejan residuo move-aside, cada uno con sus
-            raíces y su lock (ver :class:`ProductorDeMoveAside`). Lista vacía →
+            destinos exactos y su lock (ver :class:`ProductorDeMoveAside`). Lista vacía →
             no se barre ninguno. Construir con
             :func:`construir_productores_de_move_aside`.
         sandbox_root: ``<mo2>/.skyclaw_sandbox``. ``None`` → no-op.
@@ -189,7 +191,7 @@ async def reconcile_orphan_rollback_backups(
             resource_id=productor.lock_resource_id,
             lock_manager=lock_manager,
             acc=acc,
-            accion=functools.partial(_reconciliar_move_aside, productor.raices, acc),
+            accion=functools.partial(_reconciliar_move_aside, productor.destinos, acc),
         )
     if sandbox_root is not None:
         await _bajo_el_lock_del_ritual(
@@ -206,44 +208,46 @@ def construir_productores_de_move_aside(
     *,
     mo2_root: pathlib.Path | None,
     game: pathlib.Path | None = None,
-    pandora_exe: pathlib.Path | None = None,
 ) -> list[ProductorDeMoveAside]:
-    """Los productores reales, con sus raíces resueltas — fuente única del cableado.
+    """Los productores reales, con destinos exactos — fuente única del cableado.
 
     Vive acá y no en ``app_context`` para que el conjunto de rituales barridos sea
     testeable sin levantar la app, y para que agregar uno sea un cambio en un solo
     lugar. ``PRODUCTORES_CABLEADOS`` enumera los nombres que esta función puede
     devolver; el ancla exige que todo usuario de ``DirectoryRollback`` mapee a uno.
 
-    Un productor cuyas raíces no resuelven se omite —no se inventa una ruta— y el
-    resto barre igual.
+    Un productor cuyos destinos no resuelven se omite —no se inventa una ruta— y
+    el resto barre igual.
     """
     productores: list[ProductorDeMoveAside] = []
     if mo2_root is not None:
-        # DynDOLOD/TexGen mueven aparte sus mods de salida empaquetados, que por
-        # construcción cuelgan de `<mo2>/mods` (`dyndolod_service`: `mods_path /
-        # runner.DYNDOLLOD_MOD_NAME`).
+        # DynDOLOD/TexGen mueven aparte estos dos mods de salida empaquetados. Las
+        # constantes son las mismas que consume `dyndolod_service` al construir
+        # sus `DirectoryRollback`; declarar el padre daría autoridad sobre otros
+        # mods con un sufijo de rollback válido.
+        mods = mo2_root / "mods"
         productores.append(
             ProductorDeMoveAside(
                 nombre="dyndolod",
                 lock_resource_id="dyndolod-pipeline",
-                raices=(mo2_root / "mods",),
+                destinos=(
+                    mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME,
+                    mods / DynDOLODRunner.TEXGEN_MOD_NAME,
+                ),
             )
         )
 
-    # Pandora mueve aparte sus `Pandora_Output`, que NO cuelgan de `<mo2>/mods`: el
-    # `pandora_service` los toma de `output_targets.pandora_rollback_dirs`, o sea el
-    # juego (su `cwd`) y el dir de su ejecutable. Se derivan de esa MISMA función y
-    # no de una lista escrita acá: si el rollback gana o pierde una raíz, el barrido
-    # la sigue sin que nadie tenga que acordarse — es el hermano de #388, donde el
-    # sondeo de permisos y la búsqueda de salida divergieron por tener dos fuentes.
-    raices_pandora = tuple(dict.fromkeys(d.parent for d in pandora_rollback_dirs(game=game, exe=pandora_exe)))
-    if raices_pandora:
+    # Pandora mueve aparte su único `Pandora_Output` administrado, que NO cuelga
+    # de `<mo2>/mods` sino del juego. El reconciliador deriva la raíz de la MISMA
+    # función que usa el servicio: si cambia el destino administrado, el barrido lo
+    # sigue sin duplicar el cálculo (hermano del defecto #388).
+    output_pandora = pandora_output_target(game=game)
+    if output_pandora is not None:
         productores.append(
             ProductorDeMoveAside(
                 nombre="pandora",
                 lock_resource_id=BEHAVIOR_GRAPHS_RESOURCE_ID,
-                raices=raices_pandora,
+                destinos=(output_pandora,),
             )
         )
     return productores
@@ -296,7 +300,7 @@ async def _bajo_el_lock_del_ritual(
         await lock_manager.release_lock(resource_id, _RECONCILE_AGENT_ID)
 
 
-async def _reconciliar_move_aside(raices: Sequence[pathlib.Path], acc: _Acumulador) -> None:
+async def _reconciliar_move_aside(destinos: Sequence[pathlib.Path], acc: _Acumulador) -> None:
     """Familia ``<dir>.rollback-<nonce>``: el marcador durable es el target.
 
     - **Target ausente** → el run murió entre el move-aside y la regeneración; el
@@ -309,7 +313,7 @@ async def _reconciliar_move_aside(raices: Sequence[pathlib.Path], acc: _Acumulad
       borrar el backup tira la generación anterior, pisar el target tira la nueva.
       Se preservan ambos y se avisa.
     """
-    for backup in await asyncio.to_thread(_listar_backups_move_aside, raices):
+    for backup in await asyncio.to_thread(_listar_backups_move_aside, destinos):
         destino = backup.with_name(_SUFIJO_MOVE_ASIDE.sub("", backup.name))
         # ``path_present`` y no ``exists``: si el destino es un enlace ROTO,
         # ``exists()`` da False y caeríamos al ``rename`` de abajo, que **reemplaza**
@@ -340,26 +344,35 @@ async def _reconciliar_move_aside(raices: Sequence[pathlib.Path], acc: _Acumulad
         acc.restaurados.append(destino)
 
 
-def _listar_backups_move_aside(raices: Sequence[pathlib.Path]) -> list[pathlib.Path]:
-    """Backups bajo cualquiera de las raíces del productor, sin repetir.
+def _listar_backups_move_aside(destinos: Sequence[pathlib.Path]) -> list[pathlib.Path]:
+    """Backups de los destinos exactos del productor, sin repetir.
 
-    Se deduplica porque dos raíces pueden coincidir en una instalación real (p. ej.
-    Pandora instalado dentro del directorio del juego), y restaurar dos veces el
-    mismo backup haría que el segundo intento fallara con el target ya presente.
+    Cada parent puede contener residuos de otros componentes. Solo entra un hijo
+    real cuyo basename, tras quitar un sufijo válido, coincide exactamente con el
+    nombre del destino declarado. No se usa glob: nombres con metacaracteres no
+    amplían el alcance. Destinos y backups se deduplican defensivamente.
     """
+    destinos_vistos: set[pathlib.Path] = set()
     vistos: set[pathlib.Path] = set()
     backups: list[pathlib.Path] = []
-    for raiz in raices:
+    for destino in destinos:
+        if destino in destinos_vistos:
+            continue
+        destinos_vistos.add(destino)
+        raiz = destino.parent
         if not raiz.is_dir():
             continue
         for hijo in sorted(raiz.iterdir()):
+            sufijo = _SUFIJO_MOVE_ASIDE.search(hijo.name)
+            if sufijo is None or _SUFIJO_MOVE_ASIDE.sub("", hijo.name) != destino.name:
+                continue
             # ``is_dir()`` **sigue** el enlace, así que un symlink/junction a
             # directorio llamado ``X.rollback-<nonce>`` entraba como backup legítimo
             # y el ``backup.rename(destino)`` de abajo lo movía encima del target
             # real: el target quedaba siendo un enlace a un árbol ajeno, reportado
-            # como "restaurado desde el último estado bueno". Las raíces que se
-            # barren incluyen directorios del USUARIO (la del juego y la del exe de
-            # Pandora), no sólo las nuestras, así que el impostor no es hipotético.
+            # como "restaurado desde el último estado bueno". Los parents que se
+            # inspeccionan incluyen directorios del USUARIO (el juego para Pandora),
+            # no sólo los nuestros, así que el impostor no es hipotético.
             #
             # Este módulo es el que NO tiene el fail-closed de
             # ``DirectoryRollback.__aenter__``: opera sobre lo que encuentra en disco
@@ -374,7 +387,7 @@ def _listar_backups_move_aside(raices: Sequence[pathlib.Path]) -> list[pathlib.P
                     "DirectoryRollback",
                 )
                 continue
-            if hijo.is_dir() and _SUFIJO_MOVE_ASIDE.search(hijo.name) and hijo not in vistos:
+            if hijo.is_dir() and hijo not in vistos:
                 vistos.add(hijo)
                 backups.append(hijo)
     return backups

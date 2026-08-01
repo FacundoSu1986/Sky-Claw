@@ -12,14 +12,31 @@ from __future__ import annotations
 
 import json
 import pathlib
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sky_claw.app.agent.tools import AsyncToolRegistry
+from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools.bodyslide_runner import BodySlideRunner
-from sky_claw.local.tools.pandora_runner import PandoraRunner
+from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
+
+
+@pytest.fixture
+async def proteccion_pandora(
+    tmp_path: pathlib.Path,
+) -> AsyncIterator[tuple[DistributedLockManager, FileSnapshotManager]]:
+    lock_manager = DistributedLockManager(tmp_path / "pandora_locks.db")
+    await lock_manager.initialize()
+    snapshots = tmp_path / "snapshots"
+    snapshots.mkdir()
+    try:
+        yield lock_manager, FileSnapshotManager(snapshot_dir=snapshots)
+    finally:
+        await lock_manager.close()
 
 
 def _make_registry(
@@ -230,10 +247,32 @@ def test_resolver_picks_up_same_session_install(tmp_path: pathlib.Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_pandora_tool_uses_injected_runner(tmp_path: pathlib.Path) -> None:
+async def test_run_pandora_tool_uses_injected_runner(
+    tmp_path: pathlib.Path,
+    proteccion_pandora: tuple[DistributedLockManager, FileSnapshotManager],
+) -> None:
     injected = MagicMock(spec=PandoraRunner)
-    injected.run_pandora = AsyncMock(return_value=_runner_result())
-    reg = _make_registry(tmp_path=tmp_path, pandora_runner=injected)
+    game = tmp_path / "game"
+    game.mkdir(parents=True)
+    injected.config = PandoraConfig(
+        pandora_exe=tmp_path / "Pandora" / "Pandora.exe",
+        game_path=game,
+    )
+
+    async def _run_exitoso() -> MagicMock:
+        output = game.resolve() / "Pandora_Output"
+        output.mkdir()
+        (output / "generado.hkx").write_bytes(b"pandora")
+        return _runner_result()
+
+    injected.run_pandora = AsyncMock(side_effect=_run_exitoso)
+    lock_manager, snapshot_manager = proteccion_pandora
+    reg = _make_registry(
+        tmp_path=tmp_path,
+        pandora_runner=injected,
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+    )
 
     result = json.loads(await reg.tools["run_pandora"].fn())
 

@@ -58,7 +58,9 @@ _LINK_INSPECTION_RETRIES = 5
 _LINK_INSPECTION_BACKOFF_SECONDS = 0.1
 
 
-def _inspeccionar_enlace(path: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
+def link_kind_and_identity_or_raise(
+    path: pathlib.Path,
+) -> tuple[str | None, os.stat_result | None]:
     """Inspecciona *path* con un único ``lstat`` y devuelve también su identidad."""
     try:
         st = path.lstat()
@@ -106,7 +108,7 @@ def link_kind_or_raise(path: pathlib.Path) -> str | None:
     # si vale la pena mirarlo, así que un junction roto (destino borrado)
     # quedaba invisible — el mismo modo de falla que este módulo existe para
     # evitar, pero sin cubrir.
-    tipo, _st = _inspeccionar_enlace(path)
+    tipo, _st = link_kind_and_identity_or_raise(path)
     return tipo
 
 
@@ -122,7 +124,24 @@ def link_kind_or_raise_with_retry(path: pathlib.Path) -> str | None:
     last_exc: OSError | None = None
     for attempt in range(_LINK_INSPECTION_RETRIES):
         try:
-            return link_kind_or_raise(path)
+            tipo, _identidad = link_kind_and_identity_or_raise(path)
+            return tipo
+        except OSError as exc:
+            last_exc = exc
+            if attempt < _LINK_INSPECTION_RETRIES - 1:
+                time.sleep(_LINK_INSPECTION_BACKOFF_SECONDS * (attempt + 1))
+    assert last_exc is not None
+    raise last_exc
+
+
+def link_kind_and_identity_or_raise_with_retry(
+    path: pathlib.Path,
+) -> tuple[str | None, os.stat_result | None]:
+    """Clasifica e identifica *path* reintentando errores transitorios."""
+    last_exc: OSError | None = None
+    for attempt in range(_LINK_INSPECTION_RETRIES):
+        try:
+            return link_kind_and_identity_or_raise(path)
         except OSError as exc:
             last_exc = exc
             if attempt < _LINK_INSPECTION_RETRIES - 1:
@@ -228,14 +247,39 @@ def _borrar_con_reintento_de_readonly(
         operacion()
 
 
-def _misma_entrada(antes: os.stat_result, despues: os.stat_result | None) -> bool:
+def same_file_identity(antes: os.stat_result, despues: os.stat_result | None) -> bool:
     """True si dos ``lstat`` describen la misma entrada del directorio."""
     return (
         despues is not None
+        and antes.st_dev > 0
+        and antes.st_ino > 0
+        and despues.st_dev > 0
+        and despues.st_ino > 0
         and antes.st_dev == despues.st_dev
         and antes.st_ino == despues.st_ino
         and stat.S_IFMT(antes.st_mode) == stat.S_IFMT(despues.st_mode)
         and getattr(antes, "st_reparse_tag", 0) == getattr(despues, "st_reparse_tag", 0)
+    )
+
+
+def same_direntry_identity(
+    capturada: os.stat_result,
+    inode_capturado: int,
+    observada: os.stat_result | None,
+) -> bool:
+    """Compara una captura de ``DirEntry`` con el ``lstat`` canónico.
+
+    Python 3.11 en Windows devuelve ceros en ``DirEntry.stat().st_ino/st_dev``,
+    pero ``DirEntry.inode()`` sí expone el file ID real.
+    """
+    return (
+        observada is not None
+        and inode_capturado > 0
+        and observada.st_dev > 0
+        and observada.st_ino > 0
+        and (capturada.st_dev == 0 or capturada.st_dev == observada.st_dev)
+        and inode_capturado == observada.st_ino
+        and stat.S_IFMT(capturada.st_mode) == stat.S_IFMT(observada.st_mode)
     )
 
 
@@ -245,14 +289,14 @@ def _borrar_recursivo(ruta: pathlib.Path, *, limpiar_readonly: bool) -> None:
     while pendientes:
         actual, identidad_para_rmdir = pendientes.pop()
         if identidad_para_rmdir is not None:
-            tipo_final, identidad_final = _inspeccionar_enlace(actual)
-            if tipo_final is not None or not _misma_entrada(identidad_para_rmdir, identidad_final):
+            tipo_final, identidad_final = link_kind_and_identity_or_raise(actual)
+            if tipo_final is not None or not same_file_identity(identidad_para_rmdir, identidad_final):
                 raise OSError(f"La entrada cambió antes de quitar el directorio: {actual}")
             _borrar_con_reintento_de_readonly(actual.rmdir, actual, limpiar_readonly=limpiar_readonly)
             continue
 
         tipo = link_kind_or_raise(actual)
-        tipo_revalidado, identidad_antes = _inspeccionar_enlace(actual)
+        tipo_revalidado, identidad_antes = link_kind_and_identity_or_raise(actual)
         if identidad_antes is None:
             continue
         if tipo != tipo_revalidado:
@@ -265,8 +309,8 @@ def _borrar_recursivo(ruta: pathlib.Path, *, limpiar_readonly: bool) -> None:
             continue
 
         with os.scandir(actual) as entradas:
-            tipo_despues, identidad_despues = _inspeccionar_enlace(actual)
-            if tipo_despues is not None or not _misma_entrada(identidad_antes, identidad_despues):
+            tipo_despues, identidad_despues = link_kind_and_identity_or_raise(actual)
+            if tipo_despues is not None or not same_file_identity(identidad_antes, identidad_despues):
                 raise OSError(f"La entrada cambió mientras se abría para borrar: {actual}")
             hijos = [pathlib.Path(entrada.path) for entrada in entradas]
 

@@ -95,19 +95,22 @@ De ahí la regla: **el `overwrite` solo se alcanza por (b), nunca por (a)**. Qui
 no lleva su ruta de salida en el comando escribe relativo a su directorio de
 trabajo.
 
+<!-- markdownlint-disable MD013 -->
+
 | Herramienta | Dónde aterriza su salida |
 |---|---|
 | **Wrye Bash** | `<juego>/Data/Bashed Patch, 0.esp` — sin ruta en el comando, `cwd` = juego |
-| **Pandora** | `<juego>/Data`, el directorio del ejecutable, o `<dir del exe>/Pandora_Output`. Cuál de los tres depende de la versión/config de Pandora |
+| **Pandora** | `<juego resuelto>/Pandora_Output` — ruta absoluta explícita mediante `--output` |
 | **BodySlide** | `<juego>/<output_path>` — el `-o` es **relativo** al `cwd`, que es el juego |
 | **Synthesis** | Ruta explícita (caso (b)): el `overwrite` de MO2 si existe, si no `<mo2>/mods/Synthesis Output` |
 | **DynDOLOD / TexGen** | Staging crudo (`DynDOLOD_Output` / `TexGen_Output`) bajo la raíz MO2, el directorio del exe o el directorio de trabajo del proceso; los mods empaquetados van a `<mo2>/mods/` |
 | **LOOT** | No produce artefacto nuevo: reordena el `plugins.txt` / `loadorder.txt` del perfil |
 | **xEdit (QuickAutoClean)** | Reescribe el plugin **in-place**, sobre su propia ruta de entrada |
 
-Para Pandora y BodySlide, que el destino sea una lista o un parámetro es
-**ambigüedad de la herramienta** (versión, configuración), no del modo de
-lanzamiento.
+Para BodySlide, que el destino sea una lista o un parámetro es **ambigüedad de
+la herramienta** (versión, configuración), no del modo de lanzamiento.
+
+<!-- markdownlint-enable MD013 -->
 
 La fuente única de estas rutas es `sky_claw/local/tools/output_targets.py`; esta
 tabla es su versión legible, no una segunda definición.
@@ -122,17 +125,20 @@ El destino de salida define qué se puede deshacer cuando un ritual falla:
   puede snapshotear antes de correr y restaurar si el run falla.
   *Estado: implementado en el PR #395; hasta que ese PR esté mergeado, tratá a
   Wrye Bash como el caso de abajo.*
-- **Pandora y BodySlide** — escriben en **directorios compartidos** (el `Data` del
-  juego, el directorio del ejecutable). **No hay rollback automático:** un fallo a
-  mitad de camino deja la salida parcial en disco. Es una limitación conocida y
-  declarada, no un descuido — revertir automáticamente un directorio compartido
-  sería más destructivo que el fallo que intenta reparar. Ante un run fallido de
-  Pandora o BodySlide, asumí que el árbol quedó modificado.
+- **Pandora** — escribe en el directorio dedicado
+  `<juego resuelto>/Pandora_Output`. `DirectoryRollback` mueve aparte el árbol
+  previo y lo restaura ante fallo; el reconciliador de arranque vigente opera
+  sobre ese destino exacto bajo el lock `behavior-graphs`.
+- **BodySlide** — escribe en directorios compartidos. **No hay rollback
+  automático:** un fallo a mitad de camino deja la salida parcial en disco.
+  Revertir automáticamente un directorio compartido sería más destructivo que
+  el fallo que intenta reparar.
 
 Si el proceso muere de forma dura (corte de luz, cierre forzado) durante un
-ritual, mirá [Recuperación](recovery.md). *Estado: la reconciliación automática
-de los backups que quedan a mitad de camino llega en el PR #396; hasta
-entonces, el residuo queda en disco para revisión manual.*
+ritual, mirá [Recuperación](recovery.md). Para Pandora, el reconciliador actual
+reconoce los backups de su destino exacto. Sigue pendiente un smoke en un rig
+real que confirme que Pandora respeta `--output` y determine la forma exacta de
+sus artefactos; los tests no sustituyen esa evidencia.
 
 ## La única excepción: el broker VFS
 

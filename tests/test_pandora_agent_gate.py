@@ -4,8 +4,8 @@ El tool ``run_pandora`` del ``AsyncToolRegistry`` (capa LLM) corría
 ``PandoraRunner.run_pandora()`` directo, sin pasar por el lock ``behavior-graphs``
 que sí toma el Ritual de la GUI → un agente podía competir con la GUI sobre los
 mismos behavior graphs. Se enruta por ``PandoraPipelineService`` (que toma el lock),
-espejando el patrón de ``run_loot_sort`` (Audit #190). Sin lock manager (callers
-legacy / tests) se preserva la corrida directa.
+espejando el patrón de ``run_loot_sort`` (Audit #190). Sin ambos managers de
+protección, la capa LLM falla cerrada antes de invocar el runner.
 
 También cubre el #3 (P2): ``GenerateAnimationsStrategy`` rechaza payload con claves
 no honradas antes de pedir aprobación.
@@ -25,6 +25,7 @@ from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.app.orchestrator.tool_strategies.generate_animations import (
     GenerateAnimationsStrategy,
 )
+from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraResult
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
 
 if TYPE_CHECKING:
@@ -56,18 +57,38 @@ def _runner_result() -> MagicMock:
     return MagicMock(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
 
 
+def _configurar_runner(runner: MagicMock, tmp_path: pathlib.Path) -> pathlib.Path:
+    game = tmp_path / "game"
+    game.mkdir(parents=True)
+    runner.config = PandoraConfig(
+        pandora_exe=tmp_path / "Pandora" / "Pandora.exe",
+        game_path=game,
+    )
+    return game
+
+
+def _materializar_output(game: pathlib.Path) -> None:
+    output = game.resolve() / "Pandora_Output"
+    output.mkdir(parents=True)
+    (output / "generado.hkx").write_bytes(b"pandora")
+
+
 # ── P1: el camino del agente serializa en el lock behavior-graphs ────────────────
 @pytest.mark.asyncio
 async def test_run_pandora_serializes_on_behavior_graphs_lock(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
 ) -> None:
     seen: dict[str, object] = {}
 
     async def on_run() -> MagicMock:
         seen["info"] = await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID)
+        _materializar_output(game)
         return _runner_result()
 
     runner = MagicMock()
+    game = _configurar_runner(runner, tmp_path)
     runner.run_pandora = AsyncMock(side_effect=on_run)
 
     out = json.loads(await run_pandora(runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager))
@@ -79,11 +100,14 @@ async def test_run_pandora_serializes_on_behavior_graphs_lock(
 
 @pytest.mark.asyncio
 async def test_run_pandora_blocked_when_gui_ritual_holds_lock(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
 ) -> None:
     # Simula el Ritual de la GUI corriendo: el lock está tomado.
     await lock_manager.acquire_lock(BEHAVIOR_GRAPHS_RESOURCE_ID, "gui-ritual", ttl=30.0)
     runner = MagicMock()
+    _configurar_runner(runner, tmp_path)
     runner.run_pandora = AsyncMock(return_value=_runner_result())
 
     out = json.loads(await run_pandora(runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager))
@@ -92,16 +116,34 @@ async def test_run_pandora_blocked_when_gui_ritual_holds_lock(
     runner.run_pandora.assert_not_awaited()  # no corrió — serializado contra la GUI
 
 
+@pytest.mark.parametrize(
+    ("lock_manager", "snapshot_manager", "faltantes"),
+    [
+        (None, MagicMock(), "lock_manager"),
+        (MagicMock(), None, "snapshot_manager"),
+        (None, None, "lock_manager, snapshot_manager"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_run_pandora_direct_path_preserved_without_lock() -> None:
-    # Callers legacy / tests sin lock manager → corre directo (comportamiento previo).
+async def test_run_pandora_falla_cerrado_sin_managers_de_proteccion(
+    lock_manager: MagicMock | None,
+    snapshot_manager: MagicMock | None,
+    faltantes: str,
+) -> None:
     runner = MagicMock()
     runner.run_pandora = AsyncMock(return_value=_runner_result())
 
-    out = json.loads(await run_pandora(runner))
+    out = json.loads(
+        await run_pandora(
+            runner,
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+        )
+    )
 
-    assert out["success"] is True
-    runner.run_pandora.assert_awaited_once()
+    detail = f"Pandora requiere protección; faltan: {faltantes}"
+    assert out == {"success": False, "message": detail, "error": detail}
+    runner.run_pandora.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -113,7 +155,9 @@ async def test_run_pandora_none_runner_is_structured_error() -> None:
 # ── T-26/T-28 (review Codex #318): el path del agente TAMBIÉN emite la caja negra ──
 @pytest.mark.asyncio
 async def test_run_pandora_agent_path_emite_caja_negra_con_journal(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
 ) -> None:
     """El path del agente, con journal cableado (via app_context), emite el
     ActionManifest + FlightReport igual que run_loot_sort — sin esto un run de
@@ -127,7 +171,13 @@ async def test_run_pandora_agent_path_emite_caja_negra_con_journal(
     journal.persist_action_manifest = AsyncMock()
     journal.persist_flight_report = AsyncMock()
     runner = MagicMock()
-    runner.run_pandora = AsyncMock(return_value=_runner_result())
+    game = _configurar_runner(runner, tmp_path)
+
+    async def _run_exitoso() -> MagicMock:
+        _materializar_output(game)
+        return _runner_result()
+
+    runner.run_pandora = AsyncMock(side_effect=_run_exitoso)
 
     with patch(
         "sky_claw.app.orchestrator.preview.flight_report.compose_flight_report_from_journal",
@@ -177,13 +227,12 @@ async def test_run_pandora_agent_path_tambien_revierte_la_salida(
     podría romperse en silencio, y por eso se afirma en vez de razonarse.
     """
     from sky_claw.local.tools.output_targets import PANDORA_OUTPUT_DIR
-    from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraResult
 
-    game = tmp_path / "Skyrim"
-    (game / "Data").mkdir(parents=True)
+    game = tmp_path / "game"
+    game.mkdir(parents=True)
     exe = tmp_path / "Pandora" / "Pandora.exe"
     exe.parent.mkdir(parents=True)
-    salida = exe.parent / PANDORA_OUTPUT_DIR
+    salida = game.resolve() / PANDORA_OUTPUT_DIR
     salida.mkdir()
     (salida / "defaultmale.hkx").write_text("bueno", encoding="utf-8")
 

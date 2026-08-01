@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import pathlib
 
 import pytest
 
 from sky_claw.app.security import links
-from sky_claw.local.tools._dir_rollback import DirectoryRollback, _borrar_arbol_o_enlace
+from sky_claw.local.tools._dir_rollback import (
+    DirectoryRollback,
+    _borrar_arbol_o_enlace,
+    _esperar_hasta_terminal,
+)
 from tests._symlink_guard import crear_junction, is_junction_real, junction_guard, symlink_guard
 
 
@@ -141,6 +146,89 @@ async def test_rollback_completed_false_on_success_path(tmp_path: pathlib.Path) 
     assert rb.rollback_completed is False
 
 
+async def test_finalization_completed_observa_el_cleanup_limpio(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+    rb = DirectoryRollback(target)
+
+    assert rb.finalization_completed is True
+    async with rb:
+        assert rb.finalization_completed is False
+        target.mkdir()
+        (target / "new.txt").write_text("NEW", encoding="utf-8")
+
+    assert rb.rollback_completed is False
+    assert rb.finalization_completed is True
+
+
+async def test_finalization_completed_false_si_falla_el_discard_limpio(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+    rb = DirectoryRollback(target)
+
+    async def _discard_fallido(*, permitir_restore: bool) -> bool:
+        del permitir_restore
+        raise OSError("backup bloqueado")
+
+    async with rb:
+        target.mkdir()
+        (target / "new.txt").write_text("NEW", encoding="utf-8")
+        monkeypatch.setattr(rb, "_discard_backup", _discard_fallido)
+
+    assert rb.finalization_completed is False
+    assert list(tmp_path.glob("Output.rollback-*"))
+
+
+async def test_primer_run_no_finaliza_si_el_validador_final_rechaza_el_target(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "Output"
+    rb = DirectoryRollback(target, validate_final_target=lambda: False)
+
+    async with rb:
+        target.mkdir()
+        (target / "residuo.txt").write_text("conservar para recovery", encoding="utf-8")
+
+    assert rb.finalization_completed is False
+    assert (target / "residuo.txt").read_text(encoding="utf-8") == "conservar para recovery"
+
+
+async def test_excepcion_del_validador_final_es_fail_closed_y_no_escapa(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "Output"
+
+    def _validador_roto() -> bool:
+        raise OSError("inspección bloqueada")
+
+    rb = DirectoryRollback(target, validate_final_target=_validador_roto)
+    async with rb:
+        target.mkdir()
+
+    assert rb.finalization_completed is False
+    assert target.exists()
+
+
+async def test_validador_final_no_enmascara_la_excepcion_del_body(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "Output"
+    llamadas = 0
+
+    def _validador_roto() -> bool:
+        nonlocal llamadas
+        llamadas += 1
+        raise OSError("no debe ejecutarse durante rollback")
+
+    rb = DirectoryRollback(target, validate_final_target=_validador_roto)
+    with pytest.raises(RuntimeError, match="boom original"):
+        async with rb:
+            target.mkdir()
+            raise RuntimeError("boom original")
+
+    assert llamadas == 0
+    assert rb.rollback_completed is True
+    assert rb.finalization_completed is True
+
+
 async def test_first_run_no_backup_success(tmp_path: pathlib.Path) -> None:
     """Primer run (dir no existe): en éxito conserva el dir nuevo."""
     target = tmp_path / "Output"
@@ -151,6 +239,47 @@ async def test_first_run_no_backup_success(tmp_path: pathlib.Path) -> None:
         (target / "new.txt").write_text("NEW", encoding="utf-8")
 
     assert (target / "new.txt").read_text(encoding="utf-8") == "NEW"
+
+
+async def test_target_existente_que_es_archivo_falla_antes_del_move_aside(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "Output"
+    target.write_bytes(b"irremplazable")
+    rb = DirectoryRollback(target)
+
+    with pytest.raises(OSError, match="directorio físico real"):
+        await rb.__aenter__()
+
+    assert target.read_bytes() == b"irremplazable"
+    assert rb.rollback_completed is True
+    assert rb.finalization_completed is True
+    assert not list(tmp_path.glob("Output.rollback-*"))
+
+
+async def test_espera_terminal_cede_el_loop_tras_cancelacion_del_waiter() -> None:
+    liberar = asyncio.Event()
+    ticks = 0
+
+    async def _hija() -> None:
+        await liberar.wait()
+
+    async def _ticker() -> None:
+        nonlocal ticks
+        while not liberar.is_set():
+            ticks += 1
+            await asyncio.sleep(0)
+
+    hija = asyncio.create_task(_hija())
+    waiter = asyncio.create_task(_esperar_hasta_terminal(hija))
+    ticker = asyncio.create_task(_ticker())
+    await asyncio.sleep(0)
+    waiter.cancel()
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert ticks > 1
+    liberar.set()
+    assert await waiter is True
+    await ticker
 
 
 async def test_first_run_failure_removes_partial(tmp_path: pathlib.Path) -> None:
@@ -235,11 +364,10 @@ async def test_commit_es_idempotente(tmp_path: pathlib.Path) -> None:
 async def test_exito_sin_regeneracion_conserva_el_contenido_previo(tmp_path: pathlib.Path) -> None:
     """Descartar el backup sólo es seguro si la herramienta regeneró el dir.
 
-    La propiedad se ancla acá —y no sólo en el caller que la destapó (Pandora, con
-    sus dos ``Pandora_Output`` candidatos)— porque no es de Pandora: cualquiera que
-    proteja varios destinos candidatos, o cuya herramienta pueda no producir
-    salida, tiene el mismo agujero. Y es el peor tipo de agujero: ocurre en el
-    camino de ÉXITO, así que no hay excepción que lo delate (review Codex #399).
+    La propiedad se ancla acá porque no pertenece a una herramienta concreta:
+    cualquier tool que termine con éxito sin regenerar su target debe preservar
+    el backup. El agujero ocurre en el camino de ÉXITO, así que no hay excepción
+    que lo delate (review Codex #399).
     """
     target = tmp_path / "Output"
     target.mkdir()
@@ -284,7 +412,6 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
     """
     import asyncio
     import threading
-    import time
     from unittest.mock import patch
 
     target = tmp_path / "Output"
@@ -295,6 +422,7 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
     # Sincroniza con el HILO, no con el reloj: sin esto el test afirmaba antes de
     # que el rename ocurriera y pasaba igual sin el shield — o sea, no probaba nada.
     primer_rename = threading.Event()
+    permitir_rename = threading.Event()
     # Y el ARRANQUE también (review CodeRabbit #399): con un `sleep` de reloj, en
     # CI cargada la task puede no haber llegado al rename cuando se la cancela, y
     # entonces el verde no ejerce el shield — el mismo falso verde de nuevo, un
@@ -305,20 +433,23 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
         if primer_rename.is_set():
             return rename_real(self, dst)  # el deshacer no se demora
         rename_empezo.set()
-        time.sleep(0.3)  # el hilo sigue pese a la cancelación de quien lo espera
+        assert permitir_rename.wait(5.0), "el test no liberó el rename"
         try:
             return rename_real(self, dst)
         finally:
             primer_rename.set()
 
+    rollback = DirectoryRollback(target)
+
     async def _entrar() -> None:
-        async with DirectoryRollback(target):
+        async with rollback:
             pass
 
     with patch.object(pathlib.Path, "rename", _rename_lento):
         task = asyncio.ensure_future(_entrar())
         assert await asyncio.to_thread(rename_empezo.wait, 5.0), "el rename nunca arrancó"
         task.cancel()
+        permitir_rename.set()
         with pytest.raises(asyncio.CancelledError):
             await task
         # El move-aside corre en un hilo que la cancelación no interrumpe: hay que
@@ -327,6 +458,219 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
 
     assert target.exists(), "el dir previo quedó varado bajo el nombre de backup"
     assert (target / "previo.txt").read_text(encoding="utf-8") == "irremplazable"
+    assert not list(tmp_path.glob("Output.rollback-*"))
+    assert rollback.rollback_completed is True
+
+
+async def test_cancelaciones_repetidas_esperan_el_undo_hasta_terminal(tmp_path: pathlib.Path) -> None:
+    """Una segunda cancelación no libera al caller mientras el undo sigue en vuelo."""
+    import asyncio
+    import threading
+    from unittest.mock import patch
+
+    from sky_claw.local.tools import _dir_rollback
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("irremplazable", encoding="utf-8")
+
+    rename_real = pathlib.Path.rename
+    move_empezo = threading.Event()
+    permitir_move = threading.Event()
+    undo_empezo = threading.Event()
+    permitir_undo = threading.Event()
+    rollback = DirectoryRollback(target)
+
+    def _rename_con_barreras(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
+        if self == target:
+            move_empezo.set()
+            assert permitir_move.wait(5.0), "el test no liberó el move-aside"
+        else:
+            undo_empezo.set()
+            assert permitir_undo.wait(5.0), "el test no liberó el undo"
+        return rename_real(self, dst)
+
+    async def _entrar() -> None:
+        async with rollback:
+            pytest.fail("el body no debe empezar tras cancelar __aenter__")
+
+    with patch.object(pathlib.Path, "rename", _rename_con_barreras):
+        task = asyncio.create_task(_entrar())
+        assert await asyncio.to_thread(move_empezo.wait, 5.0)
+        task.cancel()
+        permitir_move.set()
+        assert await asyncio.to_thread(undo_empezo.wait, 5.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        try:
+            assert not task.done(), "la segunda cancelación liberó al caller antes del undo"
+        finally:
+            permitir_undo.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    assert rollback.rollback_completed is True
+    assert (target / "previo.txt").read_text(encoding="utf-8") == "irremplazable"
+    assert not list(tmp_path.glob("Output.rollback-*"))
+    assert not _dir_rollback._background_tasks
+
+
+async def test_cancelaciones_repetidas_esperan_discard_antes_de_liberar_lock(tmp_path: pathlib.Path) -> None:
+    """El backup se borra por completo antes de propagar cancelación y soltar lock."""
+    import asyncio
+    import threading
+    from unittest.mock import patch
+
+    from sky_claw.local.tools import _dir_rollback
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+    delete_empezo = threading.Event()
+    permitir_delete = threading.Event()
+    delete_termino = threading.Event()
+    lock_liberado = asyncio.Event()
+    borrar_real = _dir_rollback.rmtree_link_aware
+
+    class _LockExterior:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *_args: object) -> None:
+            lock_liberado.set()
+
+    def _borrar_bloqueado(path: pathlib.Path) -> None:
+        delete_empezo.set()
+        assert permitir_delete.wait(5.0), "el test no liberó el delete"
+        try:
+            borrar_real(path)
+        finally:
+            delete_termino.set()
+
+    async def _run() -> None:
+        async with _LockExterior(), DirectoryRollback(target):
+            target.mkdir()
+            (target / "new.txt").write_text("NEW", encoding="utf-8")
+
+    with patch.object(_dir_rollback, "rmtree_link_aware", _borrar_bloqueado):
+        task = asyncio.create_task(_run())
+        assert await asyncio.to_thread(delete_empezo.wait, 5.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        try:
+            assert not task.done(), "el caller retornó mientras delete seguía mutando"
+            assert not lock_liberado.is_set(), "el lock exterior se liberó antes del delete"
+        finally:
+            permitir_delete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await asyncio.to_thread(delete_termino.wait, 5.0)
+        await asyncio.sleep(0)
+
+    assert lock_liberado.is_set()
+    assert (target / "new.txt").read_text(encoding="utf-8") == "NEW"
+    assert not list(tmp_path.glob("Output.rollback-*"))
+    assert not _dir_rollback._background_tasks
+
+
+async def test_cancelaciones_durante_restore_preservan_excepcion_original_y_lock(tmp_path: pathlib.Path) -> None:
+    """El restore termina bajo lock y no reemplaza el error del body por cancelación."""
+    import asyncio
+    import threading
+    from unittest.mock import patch
+
+    from sky_claw.local.tools import _dir_rollback
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+    rename_real = pathlib.Path.rename
+    restore_empezo = threading.Event()
+    permitir_restore = threading.Event()
+    restore_termino = threading.Event()
+    lock_liberado = asyncio.Event()
+
+    class _LockExterior:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *_args: object) -> None:
+            lock_liberado.set()
+
+    def _rename_bloqueado(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
+        if self == target:
+            return rename_real(self, dst)
+        restore_empezo.set()
+        assert permitir_restore.wait(5.0), "el test no liberó el restore"
+        try:
+            return rename_real(self, dst)
+        finally:
+            restore_termino.set()
+
+    async def _run() -> None:
+        async with _LockExterior(), DirectoryRollback(target):
+            target.mkdir()
+            (target / "partial.txt").write_text("PARTIAL", encoding="utf-8")
+            raise RuntimeError("fallo original del body")
+
+    with patch.object(pathlib.Path, "rename", _rename_bloqueado):
+        task = asyncio.create_task(_run())
+        assert await asyncio.to_thread(restore_empezo.wait, 5.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        try:
+            assert not task.done(), "el caller retornó mientras rename seguía mutando"
+            assert not lock_liberado.is_set(), "el lock exterior se liberó antes del restore"
+        finally:
+            permitir_restore.set()
+        with pytest.raises(RuntimeError, match="fallo original del body"):
+            await task
+        assert await asyncio.to_thread(restore_termino.wait, 5.0)
+        await asyncio.sleep(0)
+
+    assert lock_liberado.is_set()
+    assert (target / "old.txt").read_text(encoding="utf-8") == "OLD"
+    assert not (target / "partial.txt").exists()
+    assert not list(tmp_path.glob("Output.rollback-*"))
+    assert not _dir_rollback._background_tasks
+
+
+async def test_cancelacion_en_preflight_conserva_estado_sin_mutacion(tmp_path: pathlib.Path) -> None:
+    """Cancelar antes del rename deja el target intacto y el outcome confirmado."""
+    import asyncio
+    import threading
+    from unittest.mock import patch
+
+    from sky_claw.local.tools import _dir_rollback
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("intacto", encoding="utf-8")
+    inspeccion_empezo = threading.Event()
+    permitir_inspeccion = threading.Event()
+    inspeccion_real = _dir_rollback.link_kind_and_identity_or_raise
+    rollback = DirectoryRollback(target)
+
+    def _inspeccion_bloqueada(path: pathlib.Path) -> object:
+        inspeccion_empezo.set()
+        assert permitir_inspeccion.wait(5.0), "el test no liberó el preflight"
+        return inspeccion_real(path)
+
+    with patch.object(_dir_rollback, "link_kind_and_identity_or_raise", _inspeccion_bloqueada):
+        task = asyncio.create_task(rollback.__aenter__())
+        assert await asyncio.to_thread(inspeccion_empezo.wait, 5.0)
+        task.cancel()
+        permitir_inspeccion.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert rollback.rollback_completed is True
+    assert (target / "previo.txt").read_text(encoding="utf-8") == "intacto"
     assert not list(tmp_path.glob("Output.rollback-*"))
 
 
@@ -397,10 +741,9 @@ def test_todos_los_callers_de_move_aside_cablean_el_veto_de_lease() -> None:
 async def test_exito_con_target_vacio_conserva_el_contenido_previo(tmp_path: pathlib.Path) -> None:
     """ "Existe" no es "lo regeneró" (review CodeRabbit #399).
 
-    Una herramienta que crea el directorio candidato y no escribe nada dentro
-    dejaba pasar el ``rmtree`` del backup: la misma pérdida silenciosa que el test
-    anterior ataja, un paso más allá — y plausible justo en el escenario
-    multi-candidato de Pandora que motivó todo esto.
+    Una herramienta que crea su target pero no escribe nada dentro tampoco lo
+    regeneró. Descartar el backup perdería silenciosamente el estado previo en un
+    camino que, por no lanzar, parece exitoso.
     """
     target = tmp_path / "Output"
     target.mkdir()
@@ -468,6 +811,7 @@ async def test_veto_de_lease_tambien_protege_el_restore_del_camino_limpio(tmp_pa
     backups = list(tmp_path.glob("Output.rollback-*"))
     assert len(backups) == 1, "el backup del dueño viejo debe conservarse, ni perderse ni restaurarse"
     assert (backups[0] / "previo.txt").read_text(encoding="utf-8") == "del dueño viejo"
+    assert rb.finalization_completed is False
 
 
 async def test_commit_con_target_vacio_no_revierte_el_estado_comprometido(tmp_path: pathlib.Path) -> None:
@@ -649,14 +993,16 @@ async def test_target_enlazado_es_fail_closed_y_no_deja_backup(tmp_path: pathlib
     target = tmp_path / "Output"
     target.symlink_to(real, target_is_directory=True)
 
+    rollback = DirectoryRollback(target)
     with pytest.raises(OSError, match="enlace"):
-        async with DirectoryRollback(target):
+        async with rollback:
             pytest.fail("el body no debe correr: el rollback no se puede garantizar")
 
     # Nada se movió ni se borró: el enlace sigue en su lugar y su destino intacto.
     assert target.is_symlink()
     assert (real / "dato.txt").read_text(encoding="utf-8") == "del usuario"
     assert not list(tmp_path.glob("Output.rollback-*"))
+    assert rollback.rollback_completed is True
 
 
 @symlink_guard

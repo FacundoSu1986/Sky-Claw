@@ -17,9 +17,11 @@ Synthesis apuntando al ``overwrite``.
 
 De ahí sale la regla que este módulo materializa: **el ``overwrite`` solo se
 alcanza por (b), nunca por (a)**. Quien no lleva la ruta en su línea de comandos
-—Wrye Bash (``[bash, -b, "Bashed Patch, 0.esp"]`` con ``cwd=game_path``), Pandora
-(``--auto``), BodySlide (``-o`` relativo al ``cwd``)— escribe **físicamente**
-relativo a su ``cwd``, y su destino es resoluble sin adivinar.
+—Wrye Bash (``[bash, -b, "Bashed Patch, 0.esp"]`` con ``cwd=game_path``) y
+BodySlide (``-o`` relativo al ``cwd``)— escribe **físicamente** relativo a su
+``cwd``. Pandora usa (b): Sky-Claw le pasa una ruta explícita absoluta y
+administrada bajo ``Pandora_Output``. Esta propiedad está verificada por código
+y tests; no afirma un rig real de Pandora/MO2.
 
 **Por qué es un módulo y no un comentario.** La premisa contraria ("el destino es
 dependiente del entorno") estaba reescrita a mano en nueve lugares del árbol, y
@@ -50,14 +52,25 @@ from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
 if TYPE_CHECKING:
     import pathlib
 
-#: Subdirectorio que Pandora crea junto a su ejecutable cuando no escribe en el
-#: ``Data``. Vive acá (y no en ``pandora_service``) para que el servicio consuma
-#: el resolver sin ciclo de imports.
+#: Subdirectorio administrado que Sky-Claw pasa a Pandora como ruta de salida
+#: explícita absoluta. Vive acá para que todos los consumidores compartan el
+#: resolver sin ciclos de imports.
 PANDORA_OUTPUT_DIR = "Pandora_Output"
 
 #: Nombre del directorio de salida de Synthesis bajo ``mods/`` cuando no hay
 #: ``overwrite`` en disco.
 SYNTHESIS_MOD_NAME = "Synthesis Output"
+
+
+def pandora_output_target(*, game: pathlib.Path | None) -> pathlib.Path | None:
+    """Salida física única administrada, pasada por ``--output``.
+
+    No admite override externo porque el mismo árbol se restaura
+    transaccionalmente.
+    """
+    if game is None:
+        return None
+    return game.resolve() / PANDORA_OUTPUT_DIR
 
 
 def bashed_patch_target(game: pathlib.Path | None) -> pathlib.Path | None:
@@ -71,86 +84,6 @@ def bashed_patch_target(game: pathlib.Path | None) -> pathlib.Path | None:
     if game is None:
         return None
     return game / "Data" / BASHED_PATCH_NAME
-
-
-def pandora_output_candidates(
-    *,
-    game: pathlib.Path | None,
-    exe: pathlib.Path | None,
-) -> list[pathlib.Path]:
-    """Destinos físicos posibles de los behavior graphs de Pandora, sin duplicados.
-
-    Pandora corre ``--auto`` con ``cwd=game_path``, sin ruta de salida: escribe
-    físicamente, en el ``Data`` del juego o junto a su ejecutable (``Pandora_Output``
-    incluido — un output hijo read-only con el padre escribible pasaría
-    inadvertido, review #314 F2). **El ``overwrite`` no está**: llegar ahí exigiría
-    la redirección USVFS que Pandora no puede heredar.
-
-    **El ``game`` también es raíz de ``Pandora_Output``**, por el mismo hecho
-    verificado en el spawn que hizo entrar el ``cwd`` en
-    :func:`dyndolod_staging_roots`: ``PandoraRunner.run_pandora`` pasa
-    ``cwd=str(self.config.game_path)`` explícito a ``run_capture``, así que una
-    herramienta que crea su dir de salida relativo al directorio de trabajo lo crea
-    ahí. Omitirlo dejaría al sondeo de permisos —y al rollback de U-04— opinando
-    sobre un lugar donde Pandora no escribió.
-
-    Sigue siendo una lista y no un destino único porque cuál elige depende de la
-    versión/config de Pandora, no del modo de lanzamiento — es una ambigüedad del
-    tool, no del entorno.
-    """
-    candidates: list[pathlib.Path] = []
-    if game is not None:
-        candidates.append(game / "Data")
-        candidates.append(game / PANDORA_OUTPUT_DIR)
-    if exe is not None:
-        candidates.append(exe.parent)
-        candidates.append(exe.parent / PANDORA_OUTPUT_DIR)
-    return _sin_duplicados(candidates)
-
-
-def pandora_rollback_dirs(
-    *,
-    game: pathlib.Path | None,
-    exe: pathlib.Path | None,
-) -> list[pathlib.Path]:
-    """Subconjunto de las candidatas que es **seguro revertir con move-aside** (U-04).
-
-    :class:`~sky_claw.local.tools._dir_rollback.DirectoryRollback` **renombra el
-    directorio entero** a un sibling y lo restaura ante excepción. Enunciado como
-    propiedad del mecanismo: *eso sólo es correcto sobre un directorio que la
-    herramienta regenera por completo*. De ahí se deduce, sin criterio caso por
-    caso, cuáles de las candidatas entran y cuáles no:
-
-    - ``Pandora_Output`` (bajo el ``cwd`` y bajo el dir del exe) → **sí**. Pandora
-      lo crea y lo regenera entero; su estado previo es exactamente lo que un run
-      fallido debe devolver.
-    - ``game/Data`` → **no**. Contiene todo el setup de mods del usuario, del que
-      Pandora escribe una fracción. Un move-aside ahí revertiría cientos de mods
-      ajenos al run: un remedio peor que la enfermedad que U-04 describe.
-    - ``exe.parent`` → **no**. Contiene el ejecutable que está por correr.
-
-    Por eso el resultado es un subconjunto **estricto** de
-    :func:`pandora_output_candidates`, y el test lo afirma contra esa función en
-    vez de contra una lista escrita a mano: agregar una raíz de salida obliga a
-    decidir si es revertible. Sondear dónde *podría* escribir una herramienta es
-    barato y seguro; revertir ahí, no.
-
-    **Se selecciona por identidad, no por nombre** (review CodeRabbit #399): un
-    filtro ``c.name == PANDORA_OUTPUT_DIR`` sobre las candidatas parece
-    equivalente y no lo es — si el usuario instala Pandora en una carpeta llamada
-    literalmente ``Pandora_Output``, ``exe.parent`` satisface el nombre y entra
-    como revertible, o sea justo el caso que el párrafo de arriba declara
-    inseguro. Construir las rutas seguras y quedarse con las que la función de
-    candidatas efectivamente emite mantiene las dos propiedades —subconjunto y
-    exclusión— sin depender de que ningún directorio del usuario se llame igual.
-    """
-    seguras: list[pathlib.Path] = []
-    if game is not None:
-        seguras.append(game / PANDORA_OUTPUT_DIR)
-    if exe is not None:
-        seguras.append(exe.parent / PANDORA_OUTPUT_DIR)
-    candidatas = set(pandora_output_candidates(game=game, exe=exe))
-    return [ruta for ruta in _sin_duplicados(seguras) if ruta in candidatas]
 
 
 def synthesis_output_target(

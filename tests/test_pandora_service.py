@@ -6,28 +6,29 @@ corridas concurrentes. Espeja el estilo de fixtures de ``test_loot_service.py``.
 El snapshot se difiere (``target_files=[]``) y la protección que aplica hoy es la
 serialización, igual que en ``LootSortingService``. **El motivo ya no es que la
 salida sea "dependiente del entorno"** — U-01 parte 2 desmontó esa premisa: Pandora
-se spawnea directo, no hereda la USVFS y escribe físicamente en las candidatas de
-``output_targets.pandora_output_candidates``. Snapshotearlas es alcance de U-04.
+se spawnea directo, no hereda la USVFS y escribe físicamente en
+``game.resolve() / Pandora_Output``. Ese único árbol administrado se usa para el
+manifiesto y el rollback; el preflight sondea el árbol o su padre si aún no existe.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+import os
+import pathlib
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sky_claw.app.db.locks import DistributedLockManager, LockLeaseLostError
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
-from sky_claw.local.tools.pandora_runner import PandoraExecutionError, PandoraResult
+from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraExecutionError, PandoraResult
 from sky_claw.local.tools.pandora_service import (
     BEHAVIOR_GRAPHS_RESOURCE_ID,
     PandoraPipelineService,
 )
-
-if TYPE_CHECKING:
-    import pathlib
+from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
 
 @pytest.fixture
@@ -58,11 +59,29 @@ async def snapshot_manager(tmp_path: pathlib.Path) -> FileSnapshotManager:
     return mgr
 
 
-def _runner_returning(result: PandoraResult | None = None) -> MagicMock:
+def _crear_game(tmp_path: pathlib.Path) -> pathlib.Path:
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+    return game
+
+
+def _runner_returning(game_path: pathlib.Path, result: PandoraResult | None = None) -> MagicMock:
     runner = MagicMock()
-    runner.run_pandora = AsyncMock(
-        return_value=result or PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+    runner.config = PandoraConfig(pandora_exe=game_path.parent / "Pandora.exe", game_path=game_path)
+    resultado = result or PandoraResult(
+        success=True,
+        return_code=0,
+        stdout="ok",
+        stderr="",
+        duration_seconds=1.0,
     )
+
+    async def _run() -> PandoraResult:
+        if resultado.success:
+            _escribir_output(game_path.resolve() / "Pandora_Output", "generado")
+        return resultado
+
+    runner.run_pandora = AsyncMock(side_effect=_run)
     return runner
 
 
@@ -70,19 +89,23 @@ def _make_service(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
     runner: MagicMock,
+    game_path: pathlib.Path,
 ) -> PandoraPipelineService:
+    runner.config = PandoraConfig(pandora_exe=game_path.parent / "Pandora.exe", game_path=game_path)
     return PandoraPipelineService(
         lock_manager=lock_manager,
         snapshot_manager=snapshot_manager,
-        path_resolver=MagicMock(),
         pandora_runner=runner,
     )
 
 
 @pytest.mark.asyncio
-async def test_run_returns_success(lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager) -> None:
-    runner = _runner_returning()
-    svc = _make_service(lock_manager, snapshot_manager, runner)
+async def test_run_returns_success(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    game = _crear_game(tmp_path)
+    runner = _runner_returning(game)
+    svc = _make_service(lock_manager, snapshot_manager, runner, game)
 
     result = await svc.generate_animations()
 
@@ -93,7 +116,7 @@ async def test_run_returns_success(lock_manager: DistributedLockManager, snapsho
 
 @pytest.mark.asyncio
 async def test_holds_lock_during_run(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
     """Mientras Pandora corre, el lock de behavior-graphs lo tiene este servicio."""
     seen: dict[str, object] = {}
@@ -104,7 +127,8 @@ async def test_holds_lock_during_run(
 
     runner = MagicMock()
     runner.run_pandora = AsyncMock(side_effect=on_run)
-    svc = _make_service(lock_manager, snapshot_manager, runner)
+    game = _crear_game(tmp_path)
+    svc = _make_service(lock_manager, snapshot_manager, runner, game)
 
     await svc.generate_animations()
 
@@ -117,12 +141,13 @@ async def test_holds_lock_during_run(
 
 @pytest.mark.asyncio
 async def test_serializes_when_lock_already_held(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
     """Un holder en competencia del lock bloquea la corrida (serialización)."""
     await lock_manager.acquire_lock(BEHAVIOR_GRAPHS_RESOURCE_ID, "other-runner", ttl=30.0)
-    runner = _runner_returning()
-    svc = _make_service(lock_manager, snapshot_manager, runner)
+    game = _crear_game(tmp_path)
+    runner = _runner_returning(game)
+    svc = _make_service(lock_manager, snapshot_manager, runner, game)
 
     result = await svc.generate_animations()
 
@@ -133,12 +158,13 @@ async def test_serializes_when_lock_already_held(
 
 @pytest.mark.asyncio
 async def test_releases_lock_on_runner_failure(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
     """Si Pandora lanza a mitad de corrida, el lock igual se libera (sin leak)."""
     runner = MagicMock()
     runner.run_pandora = AsyncMock(side_effect=PandoraExecutionError("boom"))
-    svc = _make_service(lock_manager, snapshot_manager, runner)
+    game = _crear_game(tmp_path)
+    svc = _make_service(lock_manager, snapshot_manager, runner, game)
 
     result = await svc.generate_animations()
 
@@ -148,13 +174,14 @@ async def test_releases_lock_on_runner_failure(
 
 @pytest.mark.asyncio
 async def test_unsuccessful_result_maps_to_error_status(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
     """Un PandoraResult con success=False (p.ej. timeout) → status error."""
+    game = _crear_game(tmp_path)
     runner = _runner_returning(
-        PandoraResult(success=False, return_code=-1, stdout="", stderr="timeout", duration_seconds=2.0)
+        game, PandoraResult(success=False, return_code=-1, stdout="", stderr="timeout", duration_seconds=2.0)
     )
-    svc = _make_service(lock_manager, snapshot_manager, runner)
+    svc = _make_service(lock_manager, snapshot_manager, runner, game)
 
     result = await svc.generate_animations()
 
@@ -185,6 +212,7 @@ async def test_builds_runner_from_resolver(
             captured["config"] = config
 
         async def run_pandora(self) -> PandoraResult:
+            _escribir_output(game_path.resolve() / "Pandora_Output", "generado")
             return PandoraResult(success=True, return_code=0, stdout="", stderr="", duration_seconds=0.1)
 
     svc = PandoraPipelineService(
@@ -256,11 +284,12 @@ def _svc_with_preflight(
     snapshot_manager: FileSnapshotManager,
     runner: MagicMock,
     preflight: object,
+    game_path: pathlib.Path,
 ) -> PandoraPipelineService:
+    runner.config = PandoraConfig(pandora_exe=game_path.parent / "Pandora.exe", game_path=game_path)
     return PandoraPipelineService(
         lock_manager=lock_manager,
         snapshot_manager=snapshot_manager,
-        path_resolver=MagicMock(),
         pandora_runner=runner,
         preflight=preflight,  # type: ignore[arg-type]  # fake duck-typed en tests
     )
@@ -268,13 +297,14 @@ def _svc_with_preflight(
 
 @pytest.mark.asyncio
 async def test_preflight_red_blocks_pandora_without_running(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
     """Un preflight ROJO (p. ej. el dir de salida sin permisos) frena Pandora ANTES
     de tocar nada: no corre el subproceso, no toma el lock."""
-    runner = _runner_returning()
-    red = _perm_report(PreflightStatus.RED, "Data/overwrite sin permisos de escritura.")
-    svc = _svc_with_preflight(lock_manager, snapshot_manager, runner, _FakePreflight(red))
+    game = _crear_game(tmp_path)
+    runner = _runner_returning(game)
+    red = _perm_report(PreflightStatus.RED, "Pandora_Output sin permisos de escritura.")
+    svc = _svc_with_preflight(lock_manager, snapshot_manager, runner, _FakePreflight(red), game)
 
     result = await svc.generate_animations()
 
@@ -287,12 +317,13 @@ async def test_preflight_red_blocks_pandora_without_running(
 
 @pytest.mark.asyncio
 async def test_preflight_yellow_no_bloquea_y_surface(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
     """Un preflight AMARILLO no bloquea, pero se adjunta al result para el panel."""
-    runner = _runner_returning()
+    game = _crear_game(tmp_path)
+    runner = _runner_returning(game)
     yellow = _perm_report(PreflightStatus.YELLOW, "Overwrite con residuos.")
-    svc = _svc_with_preflight(lock_manager, snapshot_manager, runner, _FakePreflight(yellow))
+    svc = _svc_with_preflight(lock_manager, snapshot_manager, runner, _FakePreflight(yellow), game)
 
     result = await svc.generate_animations()
 
@@ -303,12 +334,13 @@ async def test_preflight_yellow_no_bloquea_y_surface(
 
 @pytest.mark.asyncio
 async def test_preflight_green_no_ensucia_el_result(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
     """Un preflight VERDE no agrega la clave ``preflight`` (comportamiento actual intacto)."""
-    runner = _runner_returning()
+    game = _crear_game(tmp_path)
+    runner = _runner_returning(game)
     green = _perm_report(PreflightStatus.GREEN, "Escritura verificada.")
-    svc = _svc_with_preflight(lock_manager, snapshot_manager, runner, _FakePreflight(green))
+    svc = _svc_with_preflight(lock_manager, snapshot_manager, runner, _FakePreflight(green), game)
 
     result = await svc.generate_animations()
 
@@ -321,7 +353,7 @@ async def test_ensure_preflight_construye_sensores_con_paths_resolubles(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
     """Con game/MO2/exe resolubles, ``_ensure_preflight`` arma un PreflightService
-    real (no None) y sondea los dirs candidatos de salida FÍSICOS (Data/exe).
+    real (no None) y sondea el padre del output administrado mientras no existe.
 
     El ``overwrite`` de MO2 salió del sondeo en U-01 parte 2: llegar ahí exige la
     redirección USVFS y Pandora se spawnea directo, así que sondearlo modelaba un
@@ -346,28 +378,80 @@ async def test_ensure_preflight_construye_sensores_con_paths_resolubles(
 
     assert svc._ensure_preflight() is not None
     targets = svc._permission_targets()
-    assert game / "Data" in targets
+    assert targets == [game.resolve()]
     assert mo2 / "overwrite" not in targets
-    assert exe.parent in targets
 
 
-def test_permission_targets_incluye_pandora_output_concreto(
+def test_preflight_real_usa_el_game_del_runner_inyectado(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
-    """Freshness/F2 (review #314): sondea el dir del exe Y el Pandora_Output hijo —
-    un output read-only con el padre escribible pasaría inadvertido si no."""
-    exe = tmp_path / "Pandora" / "Pandora.exe"
-    exe.parent.mkdir(parents=True)
+    """Los sensores reciben el game/cwd real del runner, no el resolver divergente."""
+    game_resolver = tmp_path / "SkyrimResolver"
+    game_runner = tmp_path / "SkyrimRunner"
+    (game_resolver / "Data").mkdir(parents=True)
+    (game_runner / "Data").mkdir(parents=True)
+    mo2 = tmp_path / "MO2"
+    (mo2 / "overwrite").mkdir(parents=True)
+    exe_resolver = tmp_path / "PandoraResolver" / "Pandora.exe"
+    exe_runner = tmp_path / "PandoraRunner" / "Pandora.exe"
+    exe_resolver.parent.mkdir()
+    exe_runner.parent.mkdir()
+
     resolver = MagicMock()
-    resolver.get_skyrim_path = MagicMock(return_value=None)
-    resolver.get_mo2_path = MagicMock(return_value=None)
-    resolver.get_pandora_exe = MagicMock(return_value=exe)
+    resolver.get_skyrim_path = MagicMock(return_value=game_resolver)
+    resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_pandora_exe = MagicMock(return_value=exe_resolver)
+    resolver.get_skyrim_path_raw = MagicMock(return_value=game_resolver)
+    resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
+    resolver.get_active_profile = MagicMock(return_value="Default")
 
-    svc = PandoraPipelineService(lock_manager=lock_manager, snapshot_manager=snapshot_manager, path_resolver=resolver)
-    targets = svc._permission_targets()
+    runner = _runner_returning(game_runner)
+    runner.config = PandoraConfig(pandora_exe=exe_runner, game_path=game_runner)
+    svc = PandoraPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=resolver,
+        pandora_runner=runner,
+    )
 
-    assert exe.parent in targets
-    assert exe.parent / "Pandora_Output" in targets
+    with (
+        patch(
+            "sky_claw.local.validators.preflight_sensors.build_vfs_sensor",
+            return_value=MagicMock(),
+        ) as build_vfs,
+        patch(
+            "sky_claw.local.validators.preflight_sensors.build_vfs_visibility_sensor",
+            return_value=MagicMock(),
+        ) as build_visibility,
+        patch(
+            "sky_claw.local.validators.preflight_sensors.build_mo2_profile_sources_resolver",
+            return_value=MagicMock(),
+        ),
+    ):
+        assert svc._ensure_preflight() is not None
+
+    build_vfs.assert_called_once_with(raw_game=game_runner, raw_mo2=mo2, scan_mods_dir=True)
+    assert build_visibility.call_args.kwargs["game"] == game_runner
+    assert svc._resolve_pandora_paths()[2] == exe_runner
+    assert svc._managed_output() == game_runner.resolve() / "Pandora_Output"
+
+
+def test_preflight_sondea_output_existente_o_su_padre(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """El preflight sondea una ruta existente sin perder el target administrado."""
+    game = _crear_game(tmp_path)
+    runner = _runner_returning(game)
+    svc = _make_service(lock_manager, snapshot_manager, runner, game)
+    managed = game.resolve() / "Pandora_Output"
+
+    assert svc._permission_targets() == [game.resolve()]
+    assert svc._rollback_output_dirs() == [managed]
+
+    managed.mkdir()
+
+    assert svc._permission_targets() == [managed]
+    assert svc._rollback_output_dirs() == [managed]
 
 
 def test_preflight_con_runner_inyectado_sin_resolver(
@@ -375,7 +459,7 @@ def test_preflight_con_runner_inyectado_sin_resolver(
 ) -> None:
     """F1 (review #314): el agent tool construye el servicio con un PandoraRunner
     pero SIN resolver — el gate NO debe desactivarse; se deriva del config del runner."""
-    from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
+    from sky_claw.local.tools.pandora_runner import PandoraRunner
 
     game = tmp_path / "Skyrim"
     (game / "Data").mkdir(parents=True)
@@ -387,15 +471,14 @@ def test_preflight_con_runner_inyectado_sin_resolver(
 
     assert svc._ensure_preflight() is not None  # gate activo pese a no haber resolver
     targets = svc._permission_targets()
-    assert game / "Data" in targets
-    assert exe.parent in targets
+    assert targets == [game.resolve()]
 
 
 def test_preflight_standalone_sin_mo2(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
     """F3 (review #314): standalone con SKYRIM_PATH/PANDORA_EXE pero sin MO2_PATH —
-    el gate igual protege Data + el output del exe; solo se omite el sensor de overwrite."""
+    el gate igual protege el output administrado; solo se omite el sensor de overwrite."""
     game = tmp_path / "Skyrim"
     (game / "Data").mkdir(parents=True)
     exe = tmp_path / "Pandora" / "Pandora.exe"
@@ -411,8 +494,7 @@ def test_preflight_standalone_sin_mo2(
 
     assert svc._ensure_preflight() is not None  # no exige MO2
     targets = svc._permission_targets()
-    assert game / "Data" in targets
-    assert exe.parent in targets
+    assert targets == [game.resolve()]
     assert not any("overwrite" in str(t) for t in targets)  # sin MO2 → sin overwrite
 
 
@@ -440,11 +522,12 @@ def _svc_with_journal(
     snapshot_manager: FileSnapshotManager,
     runner: MagicMock,
     journal: AsyncMock,
+    game_path: pathlib.Path,
 ) -> PandoraPipelineService:
+    runner.config = PandoraConfig(pandora_exe=game_path.parent / "Pandora.exe", game_path=game_path)
     return PandoraPipelineService(
         lock_manager=lock_manager,
         snapshot_manager=snapshot_manager,
-        path_resolver=MagicMock(),
         pandora_runner=runner,
         journal=journal,
     )
@@ -452,7 +535,10 @@ def _svc_with_journal(
 
 @pytest.mark.asyncio
 async def test_emite_manifest_antes_de_correr_y_flight_report_tras_commit(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
 ) -> None:
     """T-26/T-28: con journal cableado, el manifiesto se persiste ANTES de correr
     Pandora y el informe de vuelo tras el commit (éxito)."""
@@ -463,12 +549,14 @@ async def test_emite_manifest_antes_de_correr_y_flight_report_tras_commit(
 
     async def on_run() -> PandoraResult:
         orden.append("run")
+        _escribir_output(game.resolve() / "Pandora_Output", "generado")
         return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=0.1)
 
     mock_journal.persist_action_manifest = AsyncMock(side_effect=_persist_manifest)
     runner = MagicMock()
     runner.run_pandora = AsyncMock(side_effect=on_run)
-    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+    game = _crear_game(tmp_path)
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal, game)
 
     with patch(
         "sky_claw.app.orchestrator.preview.flight_report.compose_flight_report_from_journal",
@@ -478,6 +566,8 @@ async def test_emite_manifest_antes_de_correr_y_flight_report_tras_commit(
 
     assert result["success"] is True
     assert orden == ["manifest", "run"]  # caja negra ANTES de mutar
+    manifest = mock_journal.persist_action_manifest.await_args.args[0]
+    assert manifest.files_touched == [str(game.resolve() / "Pandora_Output")]
     mock_journal.begin_transaction.assert_awaited_once()
     mock_journal.commit_transaction.assert_awaited_once_with(77)
     mock_journal.persist_flight_report.assert_awaited_once()
@@ -485,14 +575,72 @@ async def test_emite_manifest_antes_de_correr_y_flight_report_tras_commit(
 
 
 @pytest.mark.asyncio
+async def test_runner_inyectado_define_output_aunque_el_resolver_apunte_a_otro_game(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El config del runner manda sobre un resolver divergente para todo safeguard."""
+    game_resolver = tmp_path / "SkyrimResolver"
+    game_runner = tmp_path / "SkyrimRunner"
+    (game_resolver / "Data").mkdir(parents=True)
+    (game_runner / "Data").mkdir(parents=True)
+    exe = tmp_path / "Pandora" / "Pandora.exe"
+    exe.parent.mkdir()
+    output_resolver = game_resolver.resolve() / "Pandora_Output"
+    output_runner = game_runner.resolve() / "Pandora_Output"
+    _escribir_output(output_resolver, "resolver-intacto")
+    _escribir_output(output_runner, "bueno")
+
+    resolver = MagicMock()
+    resolver.get_skyrim_path = MagicMock(return_value=game_resolver)
+    resolver.get_mo2_path = MagicMock(return_value=None)
+    resolver.get_pandora_exe = MagicMock(return_value=exe)
+    resolver.get_skyrim_path_raw = MagicMock(return_value=game_resolver)
+    resolver.get_mo2_path_raw = MagicMock(return_value=None)
+
+    async def _corre_y_falla() -> PandoraResult:
+        _escribir_output(output_runner, "corrupto")
+        return PandoraResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=1.0)
+
+    runner = MagicMock()
+    runner.config = PandoraConfig(pandora_exe=exe, game_path=game_runner)
+    runner.run_pandora = AsyncMock(side_effect=_corre_y_falla)
+    svc = PandoraPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        path_resolver=resolver,
+        pandora_runner=runner,
+        preflight=_FakePreflight(_perm_report(PreflightStatus.GREEN, "Escritura verificada.")),  # type: ignore[arg-type]
+        journal=mock_journal,
+    )
+
+    result = await svc.generate_animations()
+
+    manifest = mock_journal.persist_action_manifest.await_args.args[0]
+    assert svc._managed_output() == output_runner
+    assert svc._permission_targets() == [output_runner]
+    assert svc._rollback_output_dirs() == [output_runner]
+    assert manifest.files_touched == [str(output_runner)]
+    assert result["success"] is False
+    assert _leer_output(output_runner) == "bueno"
+    assert _leer_output(output_resolver) == "resolver-intacto"
+
+
+@pytest.mark.asyncio
 async def test_manifest_fail_closed_aborta_sin_correr_pandora(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
 ) -> None:
     """T-26 fail-closed: si el manifiesto no se puede persistir, Pandora NO corre —
     la caja negra no es opcional cuando el journal está cableado."""
     mock_journal.persist_action_manifest = AsyncMock(side_effect=RuntimeError("journal DB locked"))
-    runner = _runner_returning()
-    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+    game = _crear_game(tmp_path)
+    runner = _runner_returning(game)
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal, game)
 
     result = await svc.generate_animations()
 
@@ -507,13 +655,14 @@ async def test_manifest_fail_closed_aborta_sin_correr_pandora(
 
 @pytest.mark.asyncio
 async def test_sin_journal_no_emite_manifest_pero_corre(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
     """Sin journal (callers legacy / tests), Pandora corre normal sin emitir la caja
     negra — el gating es por presencia del journal, no por path. En producción AMBOS
     paths (GUI y agente) lo cablean vía app_context (review Codex #318)."""
-    runner = _runner_returning()
-    svc = _make_service(lock_manager, snapshot_manager, runner)  # sin journal
+    game = _crear_game(tmp_path)
+    runner = _runner_returning(game)
+    svc = _make_service(lock_manager, snapshot_manager, runner, game)  # sin journal
 
     result = await svc.generate_animations()
 
@@ -523,12 +672,16 @@ async def test_sin_journal_no_emite_manifest_pero_corre(
 
 @pytest.mark.asyncio
 async def test_flight_report_best_effort_no_rompe_el_exito(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
 ) -> None:
     """T-28 best-effort: un fallo al persistir el informe NO tumba un run exitoso."""
     mock_journal.persist_flight_report = AsyncMock(side_effect=RuntimeError("journal caído"))
-    runner = _runner_returning()
-    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+    game = _crear_game(tmp_path)
+    runner = _runner_returning(game)
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal, game)
 
     with patch(
         "sky_claw.app.orchestrator.preview.flight_report.compose_flight_report_from_journal",
@@ -542,13 +695,17 @@ async def test_flight_report_best_effort_no_rompe_el_exito(
 
 @pytest.mark.asyncio
 async def test_fallo_de_ejecucion_marca_la_tx_rolled_back(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
 ) -> None:
     """Un PandoraExecutionError tras emitir el manifiesto marca la TX rolled-back
     (no queda PENDING) y no commitea."""
     runner = MagicMock()
     runner.run_pandora = AsyncMock(side_effect=PandoraExecutionError("boom"))
-    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+    game = _crear_game(tmp_path)
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal, game)
 
     result = await svc.generate_animations()
 
@@ -558,15 +715,54 @@ async def test_fallo_de_ejecucion_marca_la_tx_rolled_back(
 
 
 @pytest.mark.asyncio
+async def test_cleanup_limpio_incierto_no_commitea_y_conserva_backup(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El éxito del runner no tapa un descarte de backup no confirmado."""
+    from sky_claw.local.tools._dir_rollback import DirectoryRollback
+
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "previo")
+
+    async def _corre_ok() -> PandoraResult:
+        _escribir_output(salida, "nuevo")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    async def _rechaza_discard(self: object, *, permitir_restore: bool) -> bool:
+        del self, permitir_restore
+        return False
+
+    monkeypatch.setattr(DirectoryRollback, "_discard_backup", _rechaza_discard)
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok, journal=mock_journal
+    )
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert list(salida.parent.glob(f"{salida.name}.rollback-*"))
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_resultado_non_zero_marca_la_tx_rolled_back(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
 ) -> None:
     """Un PandoraResult con success=False (timeout/exit non-zero) también cierra
     la TX como rolled-back en vez de dejarla PENDING."""
+    game = _crear_game(tmp_path)
     runner = _runner_returning(
-        PandoraResult(success=False, return_code=-1, stdout="", stderr="timeout", duration_seconds=2.0)
+        game, PandoraResult(success=False, return_code=-1, stdout="", stderr="timeout", duration_seconds=2.0)
     )
-    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal, game)
 
     result = await svc.generate_animations()
 
@@ -577,13 +773,17 @@ async def test_resultado_non_zero_marca_la_tx_rolled_back(
 
 @pytest.mark.asyncio
 async def test_lock_contention_no_abre_transaccion(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
 ) -> None:
     """La emisión del manifiesto ocurre DENTRO del lock: si no se pudo tomar,
     el journal ni se toca."""
     await lock_manager.acquire_lock(BEHAVIOR_GRAPHS_RESOURCE_ID, "other-runner", ttl=30.0)
-    runner = _runner_returning()
-    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+    game = _crear_game(tmp_path)
+    runner = _runner_returning(game)
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal, game)
 
     result = await svc.generate_animations()
 
@@ -594,14 +794,18 @@ async def test_lock_contention_no_abre_transaccion(
 
 @pytest.mark.asyncio
 async def test_manifest_rollback_falla_igual_devuelve_dict(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
 ) -> None:
     """Si marcar la TX rolled-back falla tras el fallo del manifiesto, el servicio
     igual devuelve un dict serializable (no propaga — contrato T11)."""
     mock_journal.persist_action_manifest = AsyncMock(side_effect=RuntimeError("persist falló"))
     mock_journal.mark_transaction_rolled_back = AsyncMock(side_effect=OSError("journal DB locked"))
-    runner = _runner_returning()
-    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+    game = _crear_game(tmp_path)
+    runner = _runner_returning(game)
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal, game)
 
     result = await svc.generate_animations()
 
@@ -631,40 +835,92 @@ class _LeaseLostLock:
 
 
 @pytest.mark.asyncio
-async def test_lease_perdida_devuelve_dict_y_marca_rolled_back(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+async def test_lease_perdida_devuelve_dict_y_deja_tx_pendiente(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
 ) -> None:
-    """Si el heartbeat pierde el lease en un clean-exit (LockLeaseLostError en
-    __aexit__), generate_animations devuelve el dict de error (no propaga) y cierra la
-    TX rolled-back (no queda PENDING) — la exclusividad no estuvo garantizada."""
-    runner = _runner_returning()  # el run "termina con éxito" antes del __aexit__
-    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+    """Si el heartbeat pierde el lease en un clean-exit, devuelve un dict de
+    error y deja la TX PENDING porque no hubo restore confirmado."""
+    game = _crear_game(tmp_path)
+    runner = _runner_returning(game)  # el run "termina con éxito" antes del __aexit__
+    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal, game)
 
     with patch("sky_claw.local.tools.pandora_service.SnapshotTransactionLock", _LeaseLostLock):
         result = await svc.generate_animations()
 
     assert result["success"] is False
     assert "lease" in result["message"].lower()
-    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
     mock_journal.commit_transaction.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_cancelacion_marca_rolled_back_y_propaga(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, mock_journal: AsyncMock
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
 ) -> None:
-    """Una cancelación (shutdown/timeout) mientras corre Pandora cierra la TX
-    rolled-back (no PENDING) y re-lanza la CancelledError (review Codex #318)."""
-    runner = MagicMock()
-    runner.run_pandora = AsyncMock(side_effect=asyncio.CancelledError())
-    svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal)
+    """La cancelación restaura bytes, cierra journal/lock y se propaga."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "bueno")
+    esperado = (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes()
+
+    async def _corre_y_se_cancela() -> PandoraResult:
+        _escribir_output(salida, "corrupto")
+        raise asyncio.CancelledError
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_y_se_cancela,
+        journal=mock_journal,
+    )
 
     with pytest.raises(asyncio.CancelledError):
         await svc.generate_animations()
 
+    assert (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes() == esperado
+    assert not list(salida.parent.glob(f"{salida.name}.rollback-*"))
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
     mock_journal.commit_transaction.assert_not_called()
-    # El lock se liberó pese a la cancelación.
+    assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_en_primer_run_elimina_parcial_y_libera_recursos(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Sin output previo, cancelar elimina el parcial y no deja backup residual."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+
+    async def _corre_y_se_cancela() -> PandoraResult:
+        _escribir_output(salida, "parcial")
+        raise asyncio.CancelledError
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_y_se_cancela,
+        journal=mock_journal,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await svc.generate_animations()
+
+    assert not salida.exists()
+    assert not list(salida.parent.glob(f"{salida.name}.rollback-*"))
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.commit_transaction.assert_not_called()
     assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None
 
 
@@ -722,34 +978,376 @@ def _svc_con_salida_real(
     )
 
 
-def _rutas_de_salida(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, list[pathlib.Path]]:
-    """``(game, exe, [las dos raíces de Pandora_Output])``, ya creadas en disco."""
+def _rutas_de_salida(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+    """``(game, exe, Pandora_Output administrado)`` con padres ya creados."""
     from sky_claw.local.tools.output_targets import PANDORA_OUTPUT_DIR
 
     game = tmp_path / "Skyrim"
     (game / "Data").mkdir(parents=True)
     exe = tmp_path / "Pandora" / "Pandora Behaviour Engine+.exe"
     exe.parent.mkdir(parents=True)
-    return game, exe, [game / PANDORA_OUTPUT_DIR, exe.parent / PANDORA_OUTPUT_DIR]
+    return game, exe, game.resolve() / PANDORA_OUTPUT_DIR
 
 
 @pytest.mark.asyncio
-async def test_fallo_non_zero_restaura_las_dos_raices_de_salida(
+async def test_exit_cero_sin_output_en_primer_run_falla_y_no_commitea(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """Exit 0 sin artefacto no puede convertir el primer run en falso verde."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+
+    async def _corre_sin_output() -> PandoraResult:
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_sin_output,
+        journal=mock_journal,
+    )
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert "Pandora_Output" in result["message"]
+    assert not salida.exists()
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
+@pytest.mark.asyncio
+async def test_exit_cero_sin_output_restaurado_conserva_el_arbol_previo(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """Si Pandora no regenera, el move-aside previo vuelve byte a byte."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "irremplazable")
+    esperado = (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes()
+
+    async def _corre_sin_output() -> PandoraResult:
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_sin_output,
+        journal=mock_journal,
+    )
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes() == esperado
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forma", ["solo_directorios", "archivo_cero"])
+async def test_exit_cero_rechaza_arbol_sin_archivo_regular_positivo_y_restaura(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+    forma: str,
+) -> None:
+    """Directorios vacíos y placeholders de 0 bytes no prueban generación."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "irremplazable")
+    esperado = (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes()
+
+    async def _corre_output_invalido() -> PandoraResult:
+        (salida / "nivel" / "profundo").mkdir(parents=True)
+        if forma == "archivo_cero":
+            (salida / "nivel" / "profundo" / "placeholder").write_bytes(b"")
+        else:
+            (salida / "otro_directorio").mkdir()
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_output_invalido,
+        journal=mock_journal,
+    )
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes() == esperado
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
+@pytest.mark.asyncio
+async def test_exit_cero_rechaza_pandora_output_que_es_archivo(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """El artefacto raíz sigue siendo un árbol, no un archivo suelto."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+
+    async def _corre_con_archivo_raiz() -> PandoraResult:
+        salida.write_bytes(b"contenido")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_con_archivo_raiz,
+        journal=mock_journal,
+    )
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert not salida.exists()
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
+@pytest.mark.asyncio
+async def test_pandora_output_archivo_preexistente_falla_sin_moverlo_ni_ejecutar(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    salida.write_bytes(b"irremplazable")
+    corrida = AsyncMock(
+        return_value=PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+    )
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=corrida, journal=mock_journal
+    )
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert salida.read_bytes() == b"irremplazable"
+    assert not list(salida.parent.glob(f"{salida.name}.rollback-*"))
+    corrida.assert_not_awaited()
+    mock_journal.commit_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
+@junction_guard
+async def test_exit_cero_rechaza_junction_anidado_sin_atravesarlo_y_restaura(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """Un enlace en cualquier nivel invalida todo el árbol y no se recorre."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "irremplazable")
+    esperado = (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes()
+    ajeno = tmp_path / "arbol_ajeno_anidado"
+    _escribir_output(ajeno, "no tocar")
+
+    async def _corre_con_junction_anidado() -> PandoraResult:
+        salida.mkdir()
+        (salida / "archivo_fisico").write_bytes(b"contenido")
+        motivo = crear_junction(salida / "enlace_anidado", ajeno)
+        assert motivo is None, motivo
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_con_junction_anidado,
+        journal=mock_journal,
+    )
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes() == esperado
+    assert _leer_output(ajeno) == "no tocar"
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
+@pytest.mark.asyncio
+@junction_guard
+async def test_primer_run_swap_tras_validacion_deja_tx_pendiente_y_no_toca_ajeno(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """El primer run también exige confirmar la identidad al cerrar el rollback."""
+    from sky_claw.local.tools import pandora_service
+
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    ajeno = tmp_path / "ajeno_final"
+    _escribir_output(ajeno, "no tocar")
+    desplazado = tmp_path / "output_generado_recovery"
+    validacion_terminada = False
+    intercambio_hecho = False
+
+    async def _corre_ok() -> PandoraResult:
+        _escribir_output(salida, "generado")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok, journal=mock_journal
+    )
+    validar_real = svc._validar_output_generado
+    inspector_real = pandora_service.link_kind_and_identity_or_raise_with_retry
+
+    def _validar_y_marcar(output: pathlib.Path) -> os.stat_result:
+        nonlocal validacion_terminada
+        identidad = validar_real(output)
+        validacion_terminada = True
+        return identidad
+
+    def _swap_en_revalidacion_final(ruta: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
+        nonlocal intercambio_hecho
+        if validacion_terminada and ruta == salida and not intercambio_hecho:
+            intercambio_hecho = True
+            salida.rename(desplazado)
+            motivo = crear_junction(salida, ajeno)
+            assert motivo is None, motivo
+        return inspector_real(ruta)
+
+    with (
+        patch.object(svc, "_validar_output_generado", side_effect=_validar_y_marcar),
+        patch(
+            "sky_claw.local.tools.pandora_service.link_kind_and_identity_or_raise_with_retry",
+            side_effect=_swap_en_revalidacion_final,
+        ),
+    ):
+        result = await svc.generate_animations()
+
+    assert intercambio_hecho is True
+    assert result["success"] is False
+    assert _leer_output(ajeno) == "no tocar"
+    assert _leer_output(desplazado) == "generado"
+    assert not list(salida.parent.glob(f"{salida.name}.rollback-*"))
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_output_con_archivo_regular_positivo_commitea(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """No se congela una extensión: cualquier archivo físico positivo alcanza."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+
+    async def _corre_con_archivo() -> PandoraResult:
+        (salida / "nivel" / "profundo").mkdir(parents=True)
+        (salida / "nivel" / "profundo" / "artefacto_sin_extension").write_bytes(b"x")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_con_archivo,
+        journal=mock_journal,
+    )
+
+    with patch(
+        "sky_claw.app.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        result = await svc.generate_animations()
+
+    assert result["success"] is True
+    mock_journal.commit_transaction.assert_awaited_once_with(77)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+
+
+@pytest.mark.asyncio
+@symlink_guard
+async def test_exit_cero_rechaza_output_enlazado_sin_atravesar_el_destino(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un enlace no es el árbol físico administrado y su destino queda intacto."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    ajeno = tmp_path / "output_ajeno"
+    _escribir_output(ajeno, "no tocar")
+
+    async def _corre_con_enlace() -> PandoraResult:
+        salida.symlink_to(ajeno, target_is_directory=True)
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_con_enlace)
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert not salida.exists() and not salida.is_symlink()
+    assert _leer_output(ajeno) == "no tocar"
+
+
+@pytest.mark.asyncio
+@junction_guard
+async def test_exit_cero_rechaza_output_junction_sin_atravesar_el_destino(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El reparse point peligroso de Windows tampoco valida un output ajeno."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    ajeno = tmp_path / "output_ajeno_junction"
+    _escribir_output(ajeno, "no tocar junction")
+
+    async def _corre_con_junction() -> PandoraResult:
+        motivo = crear_junction(salida, ajeno)
+        assert motivo is None, motivo
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_con_junction)
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert not salida.exists()
+    assert _leer_output(ajeno) == "no tocar junction"
+
+
+@pytest.mark.asyncio
+async def test_fallo_restaura_bytes_y_no_toca_data_ni_el_directorio_del_exe(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
-    """Un exit non-zero revierte el árbol de salida en AMBAS raíces.
-
-    Se afirman las dos —la del ``cwd`` (``game_path``) y la del exe— en el mismo
-    test a propósito: son hermanas exactas y cubrir sólo una es el defecto #1 del
-    repo. Cuál de las dos usa Pandora depende de su versión, no del entorno.
-    """
-    game, exe, salidas = _rutas_de_salida(tmp_path)
-    for salida in salidas:
-        _escribir_output(salida, "bueno")
+    """Un fallo restaura el output exacto sin afectar Data ni el ejecutable."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    data_canary = game / "Data" / "Skyrim.esm"
+    data_canary.write_bytes(b"data-intocable\x00")
+    exe.write_bytes(b"exe-intocable\x00")
+    _escribir_output(salida, "bueno")
+    esperado = (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes()
 
     async def _corre_y_falla() -> PandoraResult:
-        for salida in salidas:
-            _escribir_output(salida, "corrupto")  # parcial a medio escribir
+        _escribir_output(salida, "corrupto")  # parcial a medio escribir
         return PandoraResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=1.0)
 
     svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_y_falla)
@@ -759,8 +1357,9 @@ async def test_fallo_non_zero_restaura_las_dos_raices_de_salida(
     assert result["success"] is False
     assert result["return_code"] == 1  # el contrato del dict no cambia
     assert result["stderr"] == "boom"
-    for salida in salidas:
-        assert _leer_output(salida) == "bueno", f"la salida de {salida} no se restauró"
+    assert (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes() == esperado
+    assert data_canary.read_bytes() == b"data-intocable\x00"
+    assert exe.read_bytes() == b"exe-intocable\x00"
 
 
 @pytest.mark.asyncio
@@ -771,13 +1370,11 @@ async def test_timeout_restaura_la_salida_previa(
     así que con el move-aside cableado restaura sin código dedicado."""
     from sky_claw.local.tools.pandora_runner import PandoraTimeoutError
 
-    game, exe, salidas = _rutas_de_salida(tmp_path)
-    for salida in salidas:
-        _escribir_output(salida, "bueno")
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "bueno")
 
     async def _corre_y_cuelga() -> PandoraResult:
-        for salida in salidas:
-            _escribir_output(salida, "corrupto")
+        _escribir_output(salida, "corrupto")
         raise PandoraTimeoutError(300.0)
 
     svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_y_cuelga)
@@ -785,8 +1382,7 @@ async def test_timeout_restaura_la_salida_previa(
     result = await svc.generate_animations()
 
     assert result["success"] is False
-    for salida in salidas:
-        assert _leer_output(salida) == "bueno", f"la salida de {salida} no se restauró tras el timeout"
+    assert _leer_output(salida) == "bueno"
 
 
 @pytest.mark.asyncio
@@ -795,13 +1391,11 @@ async def test_exito_conserva_la_salida_nueva_y_descarta_el_backup(
 ) -> None:
     """El camino feliz no debe revertir nada ni dejar backups huérfanos ocupando
     disco (los behavior graphs pesan)."""
-    game, exe, salidas = _rutas_de_salida(tmp_path)
-    for salida in salidas:
-        _escribir_output(salida, "viejo")
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "viejo")
 
     async def _corre_ok() -> PandoraResult:
-        for salida in salidas:
-            _escribir_output(salida, "nuevo")
+        _escribir_output(salida, "nuevo")
         return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
 
     svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok)
@@ -809,13 +1403,12 @@ async def test_exito_conserva_la_salida_nueva_y_descarta_el_backup(
     result = await svc.generate_animations()
 
     assert result["success"] is True
-    for salida in salidas:
-        assert _leer_output(salida) == "nuevo"
-        assert not list(salida.parent.glob(f"{salida.name}.rollback-*")), "quedó un backup huérfano"
+    assert _leer_output(salida) == "nuevo"
+    assert not list(salida.parent.glob(f"{salida.name}.rollback-*")), "quedó un backup huérfano"
 
 
 @pytest.mark.asyncio
-async def test_primer_run_fallido_borra_el_parcial(
+async def test_primer_run_fallido_elimina_la_salida_parcial(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
     """Sin salida previa, el move-aside igual revierte: borra el parcial.
@@ -826,11 +1419,10 @@ async def test_primer_run_fallido_borra_el_parcial(
     estado previo" cuando el estado previo era "no existía" es borrarlo, y eso no
     necesita backup.
     """
-    game, exe, salidas = _rutas_de_salida(tmp_path)  # sin Pandora_Output previo
+    game, exe, salida = _rutas_de_salida(tmp_path)  # sin Pandora_Output previo
 
     async def _corre_y_falla() -> PandoraResult:
-        for salida in salidas:
-            _escribir_output(salida, "parcial")
+        _escribir_output(salida, "parcial")
         return PandoraResult(success=False, return_code=2, stdout="", stderr="crash", duration_seconds=1.0)
 
     svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_y_falla)
@@ -838,8 +1430,7 @@ async def test_primer_run_fallido_borra_el_parcial(
     result = await svc.generate_animations()
 
     assert result["success"] is False
-    for salida in salidas:
-        assert not salida.exists(), f"el parcial de {salida} quedó en disco"
+    assert not salida.exists(), f"el parcial de {salida} quedó en disco"
 
 
 @pytest.mark.asyncio
@@ -856,13 +1447,13 @@ async def test_el_rollback_no_toca_el_data_del_juego_ni_el_dir_del_exe(
 
     **Se observa DURANTE el run, no después.** Un move-aside indebido va y vuelve
     —renombra al entrar, restaura al fallar—, así que mirar el disco al final lo
-    taparía por completo: verificado simulando la regresión (devolver todas las
-    candidatas como revertibles) contra la versión que sólo miraba el estado final,
+    taparía por completo: verificado simulando la regresión (devolver Data y el dir
+    del exe como revertibles) contra la versión que sólo miraba el estado final,
     y pasaba igual. El único instante en que el daño es visible es mientras Pandora
     corre, que además es exactamente cuando importa: si el ``Data`` está renombrado
     ahí, la herramienta lee un juego sin mods.
     """
-    game, exe, salidas = _rutas_de_salida(tmp_path)
+    game, exe, salida = _rutas_de_salida(tmp_path)
     (game / "Data" / "Skyrim.esm").write_text("master intocable", encoding="utf-8")
     exe.write_text("exe intocable", encoding="utf-8")
     durante: dict[str, bool] = {}
@@ -870,8 +1461,7 @@ async def test_el_rollback_no_toca_el_data_del_juego_ni_el_dir_del_exe(
     async def _corre_y_falla() -> PandoraResult:
         durante["data_en_su_lugar"] = (game / "Data" / "Skyrim.esm").exists()
         durante["exe_en_su_lugar"] = exe.exists()
-        for salida in salidas:
-            _escribir_output(salida, "corrupto")
+        _escribir_output(salida, "corrupto")
         return PandoraResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=1.0)
 
     svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_y_falla)
@@ -903,9 +1493,8 @@ async def test_restore_fallido_deja_la_tx_pendiente(
     """
     from sky_claw.local.tools._dir_rollback import DirectoryRollback
 
-    game, exe, salidas = _rutas_de_salida(tmp_path)
-    for salida in salidas:
-        _escribir_output(salida, "bueno")
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "bueno")
 
     async def _corre_y_falla() -> PandoraResult:
         return PandoraResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=1.0)
@@ -930,13 +1519,11 @@ async def test_fallo_con_journal_cierra_la_tx_tras_un_rollback_honesto(
     mock_journal: AsyncMock,
 ) -> None:
     """El hermano del test anterior: con el rollback COMPLETADO, la TX sí se cierra."""
-    game, exe, salidas = _rutas_de_salida(tmp_path)
-    for salida in salidas:
-        _escribir_output(salida, "bueno")
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "bueno")
 
     async def _corre_y_falla() -> PandoraResult:
-        for salida in salidas:
-            _escribir_output(salida, "corrupto")
+        _escribir_output(salida, "corrupto")
         return PandoraResult(success=False, return_code=1, stdout="", stderr="boom", duration_seconds=1.0)
 
     svc = _svc_con_salida_real(
@@ -948,33 +1535,20 @@ async def test_fallo_con_journal_cierra_la_tx_tras_un_rollback_honesto(
     assert result["success"] is False
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
     mock_journal.commit_transaction.assert_not_called()
-    for salida in salidas:
-        assert _leer_output(salida) == "bueno"
+    assert _leer_output(salida) == "bueno"
 
 
 @pytest.mark.asyncio
-async def test_exito_no_borra_el_candidato_que_pandora_no_regenero(
+async def test_exito_no_toca_el_directorio_del_exe(
     lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
 ) -> None:
-    """El candidato INACTIVO no puede desaparecer tras un run exitoso (review Codex #399).
-
-    Las dos raíces de ``Pandora_Output`` son candidatas porque cuál usa Pandora
-    depende de su versión: en una instalación real se escribe **una sola**. El
-    move-aside entra en las dos, así que si el descarte del backup no mira si la
-    herramienta regeneró el dir, el candidato que Pandora no tocó pierde su único
-    ejemplar — borrado permanente, en el camino FELIZ, y sin excepción que lo
-    delate.
-
-    El test anterior (``test_exito_conserva_la_salida_nueva``) escribía en ambos y
-    tapaba exactamente esto.
-    """
-    game, exe, salidas = _rutas_de_salida(tmp_path)
-    for salida in salidas:
-        _escribir_output(salida, "viejo")
-    activa, inactiva = exe.parent / "Pandora_Output", game / "Pandora_Output"
+    """Un run exitoso reemplaza sólo el output explícito bajo el juego."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "viejo")
+    exe.write_bytes(b"exe-intocable")
 
     async def _corre_ok() -> PandoraResult:
-        _escribir_output(activa, "nuevo")  # esta versión de Pandora usa UNA sola
+        _escribir_output(salida, "nuevo")
         return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
 
     svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok)
@@ -982,32 +1556,28 @@ async def test_exito_no_borra_el_candidato_que_pandora_no_regenero(
     result = await svc.generate_animations()
 
     assert result["success"] is True
-    assert _leer_output(activa) == "nuevo"
-    assert _leer_output(inactiva) == "viejo", "se borró el candidato que Pandora no regeneró"
+    assert _leer_output(salida) == "nuevo"
+    assert exe.read_bytes() == b"exe-intocable"
 
 
 @pytest.mark.asyncio
-async def test_lease_perdida_tras_run_exitoso_cierra_la_tx_sin_falso_positivo(
+async def test_lease_perdida_tras_run_exitoso_deja_la_tx_pendiente(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
     tmp_path: pathlib.Path,
     mock_journal: AsyncMock,
 ) -> None:
-    """Un teardown fallido tras un run exitoso NO es un rollback fallido.
+    """Un teardown fallido tras un run exitoso deja la TX pendiente.
 
-    ``rollback_completed`` también es False en la salida limpia —nunca hubo restore
-    que hacer—, así que un ``LockLeaseLostError`` desde el ``__aexit__`` del lock
-    dejaba la TX PENDING como si el restore hubiera reventado (review CodeRabbit
-    #399). Es el mismo error de razonamiento del P1 de #397, cometido esta vez en
-    el párrafo que explicaba por qué no podía pasar.
+    Al perder la lease no se puede afirmar que el output nuevo sea nuestro ni que
+    se haya restaurado el estado previo. ``rollback_completed=False`` significa
+    justamente que no hay restore confirmado: cerrar como ROLLED_BACK mentiría.
     """
-    game, exe, salidas = _rutas_de_salida(tmp_path)
-    for salida in salidas:
-        _escribir_output(salida, "viejo")
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "viejo")
 
     async def _corre_ok() -> PandoraResult:
-        for salida in salidas:
-            _escribir_output(salida, "nuevo")
+        _escribir_output(salida, "nuevo")
         return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
 
     svc = _svc_con_salida_real(
@@ -1018,8 +1588,240 @@ async def test_lease_perdida_tras_run_exitoso_cierra_la_tx_sin_falso_positivo(
         result = await svc.generate_animations()
 
     assert result["success"] is False  # la exclusividad no estuvo garantizada
-    # La TX se cierra: no hay salida parcial escondida que el recovery deba ver.
+    mock_journal.mark_transaction_rolled_back.assert_not_called()  # queda PENDING
+    mock_journal.commit_transaction.assert_not_called()
+    assert _leer_output(salida) == "nuevo", "no había restore que hacer; nada debió revertirse"
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_post_stack_pre_commit_deja_tx_pendiente_y_libera_lock(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """Cancelar el commit no convierte un output aplicado en rollback ficticio."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "viejo")
+
+    async def _corre_ok() -> PandoraResult:
+        _escribir_output(salida, "nuevo")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    mock_journal.commit_transaction.side_effect = asyncio.CancelledError
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok, journal=mock_journal
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await svc.generate_animations()
+
+    assert _leer_output(salida) == "nuevo"
+    mock_journal.commit_transaction.assert_awaited_once_with(77)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+    assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restore_falla", [False, True], ids=["restore_confirmado", "restore_fallido"])
+async def test_cancelacion_durante_move_aside_refleja_el_undo_en_journal(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+    restore_falla: bool,
+) -> None:
+    """El journal observa el undo aunque ``__aenter__`` no haya completado."""
+    import threading
+
+    from sky_claw.local.tools import _dir_rollback
+    from sky_claw.local.tools._dir_rollback import DirectoryRollback
+
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "previo")
+    runner = AsyncMock()
+    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=runner, journal=mock_journal)
+
+    rename_real = type(salida).rename
+    rename_empezo = threading.Event()
+    permitir_move = threading.Event()
+    capturados: list[DirectoryRollback] = []
+
+    class _RollbackCapturado(DirectoryRollback):
+        def __init__(
+            self,
+            target_dir: pathlib.Path,
+            *,
+            enabled: bool = True,
+            should_rollback: Callable[[], bool] | None = None,
+            validate_final_target: Callable[[], bool] | None = None,
+        ) -> None:
+            super().__init__(
+                target_dir,
+                enabled=enabled,
+                should_rollback=should_rollback,
+                validate_final_target=validate_final_target,
+            )
+            capturados.append(self)
+
+    def _rename_controlado(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
+        if self == salida:
+            rename_empezo.set()
+            assert permitir_move.wait(5.0), "el test no liberó el move-aside"
+            return rename_real(self, dst)
+        if restore_falla and self.name.startswith(f"{salida.name}.rollback-") and dst == salida:
+            raise PermissionError("restore bloqueado persistentemente")
+        return rename_real(self, dst)
+
+    with (
+        patch("sky_claw.local.tools.pandora_service.DirectoryRollback", _RollbackCapturado),
+        patch.object(type(salida), "rename", _rename_controlado),
+        patch.object(_dir_rollback, "_FS_BACKOFF_SECONDS", 0.0),
+    ):
+        task = asyncio.create_task(svc.generate_animations())
+        assert await asyncio.to_thread(rename_empezo.wait, 5.0), "el move-aside nunca arrancó"
+        task.cancel()
+        permitir_move.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    assert len(capturados) == 1
+    assert capturados[0].rollback_completed is (not restore_falla)
+    assert runner.await_count == 0
+    backups = list(salida.parent.glob(f"{salida.name}.rollback-*"))
+    if restore_falla:
+        assert not salida.exists()
+        assert len(backups) == 1
+        mock_journal.mark_transaction_rolled_back.assert_not_called()
+    else:
+        assert _leer_output(salida) == "previo"
+        assert not backups
+        mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.commit_transaction.assert_not_called()
+    assert not _dir_rollback._background_tasks
+    assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_preflight_de_rollback_falla_sin_mutar_y_cierra_journal(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """Un rechazo link-aware anterior al rename no deja una TX pendiente ficticia."""
+    from sky_claw.local.tools import _dir_rollback
+
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "intacto")
+    runner = AsyncMock()
+    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=runner, journal=mock_journal)
+
+    with patch.object(
+        _dir_rollback,
+        "link_kind_and_identity_or_raise",
+        return_value=("symlink", salida.lstat()),
+    ):
+        result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert _leer_output(salida) == "intacto"
+    assert not list(salida.parent.glob(f"{salida.name}.rollback-*"))
+    assert runner.await_count == 0
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
     mock_journal.commit_transaction.assert_not_called()
-    for salida in salidas:
-        assert _leer_output(salida) == "nuevo", "no había restore que hacer; nada debió revertirse"
+
+
+@pytest.mark.asyncio
+@junction_guard
+async def test_swap_del_padre_durante_scandir_no_acepta_arbol_ajeno(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """La identidad capturada impide validar hijos a través de un padre reemplazado."""
+    from sky_claw.local.tools import pandora_service
+
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "previo")
+    esperado = _leer_output(salida)
+    ajeno = tmp_path / "ajeno"
+    _escribir_output(ajeno, "no tocar")
+    desplazado = tmp_path / "output_inspeccionado"
+
+    async def _corre_ok() -> PandoraResult:
+        _escribir_output(salida, "generado")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    scandir_real = os.scandir
+    inspector_real = pandora_service.link_kind_and_identity_or_raise_with_retry
+    intercambio_hecho = False
+    inspecciones_descendientes_tras_swap: list[pathlib.Path] = []
+
+    class _EntradaControlada:
+        def __init__(self, entrada: os.DirEntry[str]) -> None:
+            self._entrada = entrada
+
+        def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+            return self._entrada.stat(follow_symlinks=follow_symlinks)
+
+        def inode(self) -> int:
+            return self._entrada.inode()
+
+        @property
+        def name(self) -> str:
+            nonlocal intercambio_hecho
+            if not intercambio_hecho:
+                intercambio_hecho = True
+                salida.rename(desplazado)
+                motivo = crear_junction(salida, ajeno)
+                assert motivo is None, motivo
+            return self._entrada.name
+
+    class _ScandirControlado:
+        def __init__(self, ruta: pathlib.Path) -> None:
+            self._real = scandir_real(ruta)
+
+        def __enter__(self) -> _ScandirControlado:
+            self._real.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self._real.__exit__(*args)
+
+        def __iter__(self) -> _ScandirControlado:
+            return self
+
+        def __next__(self) -> _EntradaControlada:
+            return _EntradaControlada(next(self._real))
+
+    def _scandir_intercambiado(ruta: os.PathLike[str] | str) -> object:
+        if pathlib.Path(ruta) == salida and not intercambio_hecho:
+            return _ScandirControlado(salida)
+        return scandir_real(ruta)
+
+    def _inspector_instrumentado(ruta: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
+        if intercambio_hecho and ruta != salida and ruta.is_relative_to(salida):
+            inspecciones_descendientes_tras_swap.append(ruta)
+        return inspector_real(ruta)
+
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok, journal=mock_journal
+    )
+    with (
+        patch("sky_claw.local.tools.pandora_service.os.scandir", side_effect=_scandir_intercambiado),
+        patch(
+            "sky_claw.local.tools.pandora_service.link_kind_and_identity_or_raise_with_retry",
+            side_effect=_inspector_instrumentado,
+        ),
+    ):
+        result = await svc.generate_animations()
+
+    assert intercambio_hecho is True
+    assert inspecciones_descendientes_tras_swap == []
+    assert result["success"] is False
+    assert _leer_output(salida) == esperado
+    assert _leer_output(ajeno) == "no tocar"
+    mock_journal.commit_transaction.assert_not_called()

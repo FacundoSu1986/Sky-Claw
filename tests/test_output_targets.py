@@ -29,8 +29,7 @@ from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.output_targets import (
     bashed_patch_target,
     dyndolod_staging_roots,
-    pandora_output_candidates,
-    pandora_rollback_dirs,
+    pandora_output_target,
     synthesis_output_target,
 )
 from sky_claw.local.tools.pandora_service import PandoraPipelineService
@@ -144,110 +143,25 @@ def test_wrye_bash_no_sondea_el_overwrite(tmp_path: pathlib.Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pandora — mismo invariante, candidatas físicas
+# Pandora — un único destino administrado
 # ---------------------------------------------------------------------------
 
 
-def test_pandora_no_sondea_el_overwrite(tmp_path: pathlib.Path) -> None:
-    """Pandora corre ``--auto`` con ``cwd=game_path``, sin ruta de salida en el
-    comando: escribe físicamente. Las candidatas reales son el ``Data``, el dir
-    del exe y el ``Pandora_Output`` de AMBAS raíces; el ``overwrite`` no es
-    alcanzable.
+def test_pandora_tiene_un_unico_destino_administrado(tmp_path: pathlib.Path) -> None:
+    game = tmp_path / "segmento" / ".." / "game"
 
-    Igualdad literal, no ``in``: sacar una candidata rompe el test.
-    """
-    game = tmp_path / "game"
-    exe = tmp_path / "pandora" / "Pandora Behaviour Engine+.exe"
-
-    candidatas = pandora_output_candidates(game=game, exe=exe)
-
-    assert candidatas == [
-        game / "Data",
-        game / "Pandora_Output",
-        exe.parent,
-        exe.parent / "Pandora_Output",
-    ]
+    assert pandora_output_target(game=game) == game.resolve() / "Pandora_Output"
+    assert pandora_output_target(game=None) is None
 
 
-def test_pandora_incluye_el_output_bajo_el_cwd(tmp_path: pathlib.Path) -> None:
-    """El ``game_path`` es raíz de salida porque es el ``cwd`` REAL del subproceso.
-
-    Verificado contra el spawn, no contra un comentario vecino (la lección de
-    #388): ``PandoraRunner.run_pandora`` pasa ``cwd=str(self.config.game_path)`` a
-    ``run_capture`` de forma explícita. Una herramienta que crea su dir de salida
-    relativo al cwd aterriza ahí, así que omitirlo dejaría el sondeo de permisos
-    —y el rollback de U-04— opinando sobre un lugar donde Pandora no escribió.
-    """
-    import inspect
-
-    from sky_claw.local.tools.pandora_runner import PandoraRunner
-
-    fuente = inspect.getsource(PandoraRunner.run_pandora)
-    assert "cwd=str(self.config.game_path)" in fuente, (
-        "PandoraRunner ya no fija cwd=game_path: revisar si game sigue siendo raíz de salida"
-    )
-
-    game = tmp_path / "game"
-    assert game / "Pandora_Output" in pandora_output_candidates(game=game, exe=None)
-
-
-def test_pandora_rollback_dirs_es_subconjunto_estricto_de_las_candidatas(tmp_path: pathlib.Path) -> None:
-    """La restricción de seguridad del move-aside, enunciada como propiedad.
-
-    ``DirectoryRollback`` **renombra el directorio entero** aparte, así que sólo es
-    correcto sobre un dir que la herramienta regenera por completo. El ``Data`` del
-    juego tiene todo el setup de mods del usuario y ``exe.parent`` tiene el
-    ejecutable que está por correr: revertirlos destruiría estado que Pandora no
-    produjo. De ahí que las dirs de rollback sean un subconjunto **estricto** de
-    las candidatas de permisos — sondear dónde podría escribir es seguro; revertir
-    ahí, no.
-
-    El subconjunto se afirma contra ``pandora_output_candidates`` en vez de contra
-    una lista escrita a mano: agregar una raíz de salida sin decidir si es
-    revertible rompe acá.
-    """
-    game = tmp_path / "game"
-    exe = tmp_path / "pandora" / "Pandora Behaviour Engine+.exe"
-
-    candidatas = pandora_output_candidates(game=game, exe=exe)
-    revertibles = pandora_rollback_dirs(game=game, exe=exe)
-
-    assert set(revertibles) < set(candidatas)  # estricto: hay candidatas NO revertibles
-    assert game / "Data" not in revertibles
-    assert exe.parent not in revertibles
-    assert revertibles == [game / "Pandora_Output", exe.parent / "Pandora_Output"]
-
-
-def test_pandora_rollback_dirs_no_clasifica_por_nombre(tmp_path: pathlib.Path) -> None:
-    """El dir del exe NO es revertible aunque se llame ``Pandora_Output``.
-
-    Un filtro por nombre sobre las candidatas parece equivalente y no lo es
-    (review CodeRabbit #399): si el usuario instala Pandora en una carpeta
-    llamada así, ``exe.parent`` satisface el nombre y entraría como revertible —
-    el move-aside renombraría el directorio del ejecutable justo antes de
-    spawnearlo. La selección es por identidad de la ruta construida.
-    """
-    exe = tmp_path / "tools" / "Pandora_Output" / "Pandora Behaviour Engine+.exe"
-    game = tmp_path / "game"
-
-    revertibles = pandora_rollback_dirs(game=game, exe=exe)
-
-    assert exe.parent not in revertibles
-    assert revertibles == [game / "Pandora_Output", exe.parent / "Pandora_Output"]
-
-
-def test_pandora_rollback_dirs_sin_rutas_no_inventa_nada(tmp_path: pathlib.Path) -> None:
-    """Sin game ni exe resolubles no hay nada que revertir — lista vacía, no un
-    path relativo que un move-aside podría aplicar sobre el cwd del agente."""
-    assert pandora_rollback_dirs(game=None, exe=None) == []
-
-
-def test_pandora_service_no_sondea_el_overwrite(tmp_path: pathlib.Path) -> None:
-    """El servicio consume el resolver: sin esto el fix aterrizaba en el helper y
-    dejaba intacto al llamador (el defecto #1 del repo)."""
+def test_pandora_service_sondea_solo_el_destino_administrado(tmp_path: pathlib.Path) -> None:
+    """El servicio consume el destino singular; no conserva candidatas legacy."""
     game = tmp_path / "game"
     mo2 = tmp_path / "mo2"
     exe = tmp_path / "pandora" / "pandora.exe"
+    output = pandora_output_target(game=game)
+    assert output is not None
+    output.mkdir(parents=True)
     resolver = _resolver(game=game, mo2=mo2)
     resolver.get_pandora_exe.return_value = exe
     svc = PandoraPipelineService(
@@ -259,7 +173,7 @@ def test_pandora_service_no_sondea_el_overwrite(tmp_path: pathlib.Path) -> None:
 
     targets = svc._permission_targets()
 
-    assert mo2 / "overwrite" not in targets
+    assert targets == [output]
 
 
 # ---------------------------------------------------------------------------

@@ -14,11 +14,17 @@ import asyncio
 import contextlib
 import logging
 import pathlib
+import stat
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
-from sky_claw.app.security.links import link_kind_or_raise, path_present, rmtree_link_aware
+from sky_claw.app.security.links import (
+    link_kind_and_identity_or_raise,
+    link_kind_or_raise,
+    path_present,
+    rmtree_link_aware,
+)
 
 logger = logging.getLogger("SkyClaw.DirectoryRollback")
 
@@ -85,31 +91,76 @@ def _track(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
     return task
 
 
+async def _esperar_hasta_terminal(task: asyncio.Task[Any]) -> bool:
+    """Espera ``task`` hasta terminal pese a cancelaciones repetidas del caller.
+
+    Devuelve ``True`` si llegó alguna cancelación mientras esperaba. ``shield``
+    evita transferirla a la task de filesystem; el loop evita que el caller siga
+    y libere su lock exterior mientras un hilo continúa mutando.
+    """
+    cancelado = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Si la task hija se canceló a sí misma, ``result()`` lo propaga al
+            # caller. Sólo se registra aparte la cancelación del waiter exterior.
+            if not task.cancelled():
+                cancelado = True
+        except Exception:  # noqa: BLE001 — el caller obtiene la excepción exacta con task.result()
+            pass
+    return cancelado
+
+
 async def _deshacer_rename_cancelado(
     rename_task: asyncio.Task[Any],
     backup: pathlib.Path,
     target: pathlib.Path,
-) -> None:
+) -> bool:
     """Observa el desenlace REAL de un move-aside cancelado y lo revierte.
 
-    Si el rename terminó en excepción no movió nada. Si terminó bien, el dir
-    previo quedó bajo el nombre de backup **sin dueño**: el context nunca se
-    registró en el ``AsyncExitStack`` del caller, así que no habrá ``__aexit__``
-    que lo restaure. Devolverlo a su lugar acá es lo único que evita que una
-    cancelación bien temporizada haga desaparecer la salida previa sin que
-    ninguna herramienta llegara a correr.
+    No infiere el estado desde el desenlace de la task: un rename de filesystem
+    puede mutar antes de reportar un error. Inspecciona ``target`` y ``backup``
+    con semántica link-aware, devuelve el backup si quedó desplazado y retorna
+    ``True`` sólo cuando el estado previo queda confirmado en ``target``.
     """
-    try:
+    with contextlib.suppress(asyncio.CancelledError, Exception):
         await asyncio.shield(rename_task)
-    except (asyncio.CancelledError, Exception):  # noqa: BLE001 — sólo interesa SI movió, no por qué falló
-        # Cualquier desenlace que no sea "terminó bien" significa que el rename no
-        # dejó el dir bajo el nombre de backup: no hay nada que deshacer. Se listan
-        # las dos porque CancelledError deriva de BaseException, no de Exception.
-        return
-    with contextlib.suppress(OSError):
-        if await asyncio.to_thread(backup.exists) and not await asyncio.to_thread(target.exists):
+        # Un ``rename`` puede mutar y aun así terminar en error en ciertos FS. No
+        # se infiere el estado desde la excepción: se confirma mirando ambos paths.
+
+    backup_presente = await asyncio.to_thread(path_present, backup)
+    target_presente = await asyncio.to_thread(path_present, target)
+    if target_presente and not backup_presente:
+        # El rename no se realizó, o el estado previo ya volvió a su lugar.
+        return True
+    if backup_presente and not target_presente:
+        try:
             await _fs_op_with_retry(backup.rename, target)
+        except OSError:
+            logger.critical(
+                "Move-aside cancelado: NO se pudo devolver '%s' desde '%s'; "
+                "el backup queda desplazado para recuperación manual.",
+                target,
+                backup,
+                exc_info=True,
+            )
+            return False
+        backup_presente = await asyncio.to_thread(path_present, backup)
+        target_presente = await asyncio.to_thread(path_present, target)
+        if target_presente and not backup_presente:
             logger.warning("Move-aside cancelado: '%s' devuelto a su lugar desde '%s'", target, backup)
+            return True
+
+    logger.critical(
+        "Move-aside cancelado en estado INCIERTO para '%s' (target_presente=%s, backup_presente=%s). "
+        "No se confirma el rollback; revisar '%s' manualmente.",
+        target,
+        target_presente,
+        backup_presente,
+        backup,
+    )
+    return False
 
 
 class DirectoryRollback:
@@ -134,6 +185,7 @@ class DirectoryRollback:
         *,
         enabled: bool = True,
         should_rollback: Callable[[], bool] | None = None,
+        validate_final_target: Callable[[], bool] | None = None,
     ) -> None:
         self._target = target_dir
         self._enabled = enabled
@@ -146,13 +198,15 @@ class DirectoryRollback:
         #: viejo. El caller cablea ``lambda: not lock.lease_lost`` para que las dos
         #: capas apliquen el MISMO criterio.
         self._should_rollback = should_rollback
+        self._validate_final_target = validate_final_target
         self._backup: pathlib.Path | None = None
-        #: M-7: refleja si el rollback en el path de excepción se COMPLETÓ. El
-        #: restore es best-effort (traga OSError sin re-raise), así que el caller no
-        #: puede confiar en "hubo excepción ⇒ rolled_back=True". Este flag distingue
-        #: un restore exitoso de un fallo silencioso de rmtree/rename que dejó el
-        #: output parcial en disco. Espeja SnapshotTransactionLock.rollback_completed.
-        self.rollback_completed: bool = False
+        #: M-7: outcome exclusivo del ROLLBACK. Empieza True porque el preflight
+        #: todavía no mutó; cambia a False al habilitar un primer run o move-aside
+        #: y sólo vuelve a True tras restaurar/confirmar el estado previo. En una
+        #: salida limpia queda False por diseño: el desenlace de su cleanup se
+        #: consulta mediante ``finalization_completed``.
+        self.rollback_completed: bool = True
+        self.finalization_completed: bool = True
 
     @property
     def target(self) -> pathlib.Path:
@@ -181,12 +235,12 @@ class DirectoryRollback:
         # ``mkdir()`` posterior de la herramienta moría con un ``FileExistsError``
         # que no menciona enlaces y manda a depurar el lugar equivocado.
         #
-        # ``link_kind_or_raise`` con retry, no ``link_kind`` pelado (review
+        # ``link_kind_and_identity_or_raise`` con retry, no ``link_kind`` pelado (review
         # CodeRabbit #404): un bloqueo TRANSITORIO de AV/indexer acá se leía
         # como "no es un enlace" y dejaba pasar el move-aside — el mismo modo
         # de falla que ``_borrar_arbol_o_enlace`` ya cerró, sin cerrar en este
         # preflight.
-        tipo_de_enlace = await _fs_op_with_retry(link_kind_or_raise, self._target)
+        tipo_de_enlace, identidad_target = await _fs_op_with_retry(link_kind_and_identity_or_raise, self._target)
         if tipo_de_enlace is not None:
             raise OSError(
                 f"'{self._target}' es un enlace ({tipo_de_enlace}) y no un directorio real: "
@@ -194,10 +248,25 @@ class DirectoryRollback:
                 "no puede garantizar la restauración prometida. Reemplazá el enlace por "
                 "una carpeta real para correr este ritual con rollback."
             )
-        if not await asyncio.to_thread(path_present, self._target):
+        if identidad_target is None:
             # Primer run: no hay estado previo que preservar.
+            # Desde este punto el body puede crear un parcial; queda pendiente
+            # hasta que __aexit__ confirme su eliminación ante una excepción.
+            self.rollback_completed = False
+            self.finalization_completed = False
             return self
+        if not stat.S_ISDIR(identidad_target.st_mode):
+            raise OSError(
+                f"'{self._target}' existe pero no es un directorio físico real; "
+                "el rollback move-aside sólo protege directorios administrados."
+            )
         backup = self._target.with_name(f"{self._target.name}.rollback-{time.time_ns()}")
+        # Se publica ANTES del rename: si la corrutina se cancela mientras el hilo
+        # mueve el árbol, el caller puede inspeccionar el destino del backup aunque
+        # ``__aenter__`` nunca llegue a devolver.
+        self._backup = backup
+        self.rollback_completed = False
+        self.finalization_completed = False
         # El rename corre en un hilo (``asyncio.to_thread``): cancelar la corrutina
         # que lo espera NO lo interrumpe. Sin shield, una cancelación acá dejaba el
         # rename completándose en background mientras el caller nunca llegaba a
@@ -210,14 +279,22 @@ class DirectoryRollback:
             await asyncio.shield(rename_task)
         except asyncio.CancelledError:
             deshacer = _track(asyncio.ensure_future(_deshacer_rename_cancelado(rename_task, backup, self._target)))
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.shield(deshacer)
+            # Una cancelación adicional no puede liberar al caller ni, por ende,
+            # el lock exterior mientras el undo siga mutando el filesystem. Se
+            # consumen las señales adicionales sólo para esperar esta task HASTA
+            # terminal; la CancelledError original se repropaga abajo.
+            await _esperar_hasta_terminal(deshacer)
+            self.rollback_completed = deshacer.result()
+            self.finalization_completed = self.rollback_completed
             raise
         except OSError as exc:
+            # No todo OSError garantiza "no mutó": confirmar el estado real y, si
+            # el backup quedó desplazado, intentar devolverlo antes de abortar.
+            self.rollback_completed = await _deshacer_rename_cancelado(rename_task, backup, self._target)
+            self.finalization_completed = self.rollback_completed
             # Fail-closed: sin move-aside no podemos garantizar el rollback que el
             # caller pidió; abortar antes de correr la operación destructiva.
             raise OSError(f"No se pudo mover '{self._target}' aparte para rollback: {exc}") from exc
-        self._backup = backup
         logger.debug("Directorio movido aparte para rollback: %s -> %s", self._target, backup)
         return self
 
@@ -229,29 +306,10 @@ class DirectoryRollback:
     ) -> None:
         if not self._enabled:
             return
+        cleanup_task = _track(asyncio.ensure_future(self._cleanup_on_exit(exc_type)))
+        cancelado_durante_cleanup = await _esperar_hasta_terminal(cleanup_task)
         try:
-            if exc_type is not None:
-                if not self._veto_permite_restaurar():
-                    # Perdimos la exclusividad: otro dueño pudo haber mutado ya, así
-                    # que restaurar pisaría SU salida con nuestro backup viejo. El
-                    # backup NO se descarta —queda en disco bajo su nombre
-                    # ``.rollback-*``— porque es el único ejemplar del estado previo
-                    # y el recovery manual lo necesita. ``rollback_completed`` queda
-                    # False a propósito: el caller debe dejar la TX PENDIENTE.
-                    logger.critical(
-                        "Rollback de '%s' OMITIDO: se perdió la exclusividad del recurso. "
-                        "El backup queda en '%s' para recuperación manual.",
-                        self._target,
-                        self._backup,
-                    )
-                    return
-                await self._restore_backup()
-                # M-7: sólo aquí el rollback se considera COMPLETADO. Si
-                # _restore_backup lanza, no se llega a esta línea y el flag queda
-                # False, señalando al caller un rollback fallido.
-                self.rollback_completed = True
-            else:
-                await self._discard_backup(permitir_restore=True)
+            cleanup_task.result()
         except OSError:
             # Nunca enmascarar la excepción del body ni romper un cierre limpio.
             logger.critical(
@@ -260,6 +318,52 @@ class DirectoryRollback:
                 exc_type.__name__ if exc_type else None,
                 exc_info=True,
             )
+        if cancelado_durante_cleanup and exc_type is None:
+            # En salida limpia la cancelación se propaga, pero sólo DESPUÉS de
+            # terminar el cleanup. Si ya había una excepción del body, retornar
+            # preserva esa excepción original en vez de reemplazarla.
+            raise asyncio.CancelledError
+
+    async def _cleanup_on_exit(self, exc_type: type[BaseException] | None) -> None:
+        """Ejecuta restore/discard completo dentro de una task rastreada."""
+        if exc_type is not None:
+            if not self._veto_permite_restaurar():
+                # Perdimos la exclusividad: otro dueño pudo haber mutado ya, así
+                # que restaurar pisaría SU salida con nuestro backup viejo. El
+                # backup queda para recovery manual y la TX debe seguir PENDING.
+                logger.critical(
+                    "Rollback de '%s' OMITIDO: se perdió la exclusividad del recurso. "
+                    "El backup queda en '%s' para recuperación manual.",
+                    self._target,
+                    self._backup,
+                )
+                return
+            await self._restore_backup()
+            self.rollback_completed = True
+            self.finalization_completed = True
+        else:
+            if not await asyncio.to_thread(self._final_target_is_valid):
+                logger.critical(
+                    "Finalización de '%s' OMITIDA: la identidad final no pudo confirmarse. "
+                    "El target y el backup quedan sin tocar para recovery manual.",
+                    self._target,
+                )
+                return
+            self.finalization_completed = await self._discard_backup(permitir_restore=True)
+
+    def _final_target_is_valid(self) -> bool:
+        """Evalúa el validador final opcional sin dejar escapar fallos del caller."""
+        if self._validate_final_target is None:
+            return True
+        try:
+            return bool(self._validate_final_target())
+        except Exception:  # noqa: BLE001 — boundary: callback provisto por el caller
+            logger.critical(
+                "El validador final de '%s' falló; se omite toda mutación de cleanup.",
+                self._target,
+                exc_info=True,
+            )
+            return False
 
     async def commit(self) -> None:
         """Confirma el estado nuevo tras un punto de no-retorno (review Codex #312).
@@ -271,22 +375,15 @@ class DirectoryRollback:
         restore, así el ``__aexit__`` posterior es un no-op. Idempotente; el discard
         es best-effort (un backup huérfano solo ocupa espacio, no corrompe).
         """
+        await _commit_directory_rollbacks((self,))
+
+    def _seal_for_commit(self) -> bool:
+        """Desactiva el restore sin ceder control al event loop."""
         if not self._enabled:
-            return
+            return False
         self._enabled = False
-        try:
-            # permitir_restore=False (review Codex #401): commit() es un punto de
-            # no-retorno — un target vacío EN ESE INSTANTE es el estado final que
-            # el caller eligió, no algo que la propia limpieza deba revertir. La
-            # lógica de "restaurar si está vacío" que _discard_backup ganó en este
-            # mismo PR es correcta para el camino limpio SIN commit, pero viola el
-            # contrato de commit() si se aplica acá también.
-            await self._discard_backup(permitir_restore=False)
-        except OSError:
-            logger.warning(
-                "commit(): no se pudo descartar el backup de '%s' (queda huérfano)", self._target, exc_info=True
-            )
-        self._backup = None
+        self.finalization_completed = False
+        return True
 
     def _veto_permite_restaurar(self) -> bool:
         """Evalúa el veto de ``should_rollback`` **fail-closed** (review CodeRabbit #399).
@@ -324,7 +421,7 @@ class DirectoryRollback:
             await _fs_op_with_retry(self._backup.rename, self._target)
             logger.warning("Rollback: '%s' restaurado desde backup tras fallo del pipeline", self._target)
 
-    async def _discard_backup(self, *, permitir_restore: bool) -> None:
+    async def _discard_backup(self, *, permitir_restore: bool) -> bool:
         """Descarta el backup tras un run exitoso — **salvo que nada lo haya reemplazado**.
 
         Enunciado como propiedad del mecanismo (review Codex #399): descartar el
@@ -334,12 +431,10 @@ class DirectoryRollback:
         pérdida de datos disfrazada de limpieza — silenciosa, porque ocurre en el
         camino de ÉXITO, sin excepción que la delate.
 
-        El caso que lo destapó: Pandora tiene dos ``Pandora_Output`` candidatos
-        —cuál usa depende de su versión— y el servicio mueve aparte los dos. En una
-        instalación real se escribe uno solo, así que el otro se perdía entero tras
-        un run exitoso. Vive acá y no en ``pandora_service`` porque la propiedad no
-        es de Pandora: cualquier caller que proteja más de un destino candidato
-        —o cuya herramienta pueda no producir salida— tiene el mismo agujero.
+        El caso que lo destapó fue un target administrado que la herramienta no
+        regeneró. Vive acá y no en un servicio concreto porque la propiedad no es
+        de Pandora: cualquier caller cuyo target pueda no producir salida tiene el
+        mismo agujero.
 
         ``permitir_restore=False`` lo pide ``commit()`` (review Codex #401): un
         target vacío en el instante del commit es el estado FINAL elegido por el
@@ -352,7 +447,7 @@ class DirectoryRollback:
         # ``_borrar_arbol_o_enlace``. Con ``exists()`` un enlace ROTO se saltaba
         # entero y quedaba huérfano para siempre.
         if self._backup is None or not await asyncio.to_thread(path_present, self._backup):
-            return
+            return True
 
         # Inspección del target con retry, separada de ``_sin_regenerar`` (review
         # CodeRabbit #404): ``link_kind`` pelado tragaba un bloqueo TRANSITORIO
@@ -367,10 +462,9 @@ class DirectoryRollback:
 
         def _sin_regenerar() -> bool:
             """ "Existe" no es "lo regeneró" (review CodeRabbit #399): una herramienta
-            que crea el directorio candidato y no escribe nada dentro dejaba pasar
-            el ``rmtree`` del backup — la misma pérdida silenciosa, un paso más
-            allá, y plausible justo en el escenario multi-candidato que motivó este
-            método.
+            que crea su target y no escribe nada dentro no regeneró el contenido.
+            Descartar el backup en ese estado perdería silenciosamente el único
+            ejemplar previo, aunque el body haya terminado sin excepción.
 
             También cuenta como "no regenerado" un target que se volvió un enlace
             (review CodeRabbit #404): un symlink/junction a un directorio AJENO
@@ -394,17 +488,19 @@ class DirectoryRollback:
             # ventana y el fail-closed no lo vería — exactamente el escenario que
             # existe para prevenir. Fusionarlo con la mutación es la misma razón
             # por la que rmdir+rename ya iban juntos (ver el docstring del método).
-            if await _fs_op_with_retry(self._restaurar_target_vacio_sync):
+            restaurado = await _fs_op_with_retry(self._restaurar_target_vacio_sync)
+            if restaurado:
                 logger.info(
                     "'%s' no fue regenerado por la herramienta; se conserva el contenido previo.",
                     self._target,
                 )
-            return
+            return restaurado
         # El sitio que motivó todo: sobre un backup enlazado, ``rmtree`` lanza
         # ``OSError`` (symlink) o borra el contenido del destino ajeno (junction de
         # Windows), y esto corre en el camino de ÉXITO — donde ``__aexit__`` traga el
         # OSError y nadie se entera.
         await _borrar_arbol_o_enlace(self._backup)
+        return True
 
     def _restaurar_target_vacio_sync(self) -> bool:
         """Chequeos fail-closed + rmdir del target vacío + rename del backup.
@@ -460,3 +556,44 @@ class DirectoryRollback:
         assert self._backup is not None  # invariante: el caller ya lo verificó
         self._backup.rename(self._target)
         return True
+
+
+async def _commit_directory_rollbacks(rollbacks: Iterable[DirectoryRollback]) -> None:
+    """Confirma un lote como una sola unidad terminal y cancel-safe.
+
+    Todos los protectores se sellan antes del primer ``await``: desde ese punto
+    ninguno puede restaurar un output ya final aunque el caller sea cancelado.
+    Los descartes corren best-effort dentro de una única task rastreada y el
+    waiter no libera el lock exterior hasta que esa task termina.
+    """
+    sealed = [rollback for rollback in rollbacks if rollback._seal_for_commit()]
+    if not sealed:
+        return
+
+    async def _discard_all() -> None:
+        for rollback in sealed:
+            try:
+                # Tras el commit, un target vacío es estado final; la limpieza
+                # sólo descarta el backup y nunca restaura el estado anterior.
+                finalizado = await rollback._discard_backup(permitir_restore=False)
+                rollback.finalization_completed = finalizado
+                if finalizado:
+                    rollback._backup = None
+            except OSError:
+                rollback.finalization_completed = False
+                logger.warning(
+                    "commit(): no se pudo descartar el backup de '%s' (queda huérfano)",
+                    rollback.target,
+                    exc_info=True,
+                )
+            finally:
+                # Sólo se suelta la referencia tras un descarte confirmado; si
+                # falla, el backup sigue localizable para recovery manual.
+                if rollback.finalization_completed:
+                    rollback._backup = None
+
+    discard_task = _track(asyncio.create_task(_discard_all()))
+    cancelado = await _esperar_hasta_terminal(discard_task)
+    discard_task.result()
+    if cancelado:
+        raise asyncio.CancelledError

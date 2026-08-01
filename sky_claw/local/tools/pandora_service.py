@@ -13,17 +13,10 @@ rollback": el rollback de la salida lo hace el **move-aside** de
 ``dyndolod_service``. La salida de Pandora es un ÁRBOL de behavior graphs, no un
 archivo único, así que el snapshot copy-based del lock es la primitiva equivocada.
 
-**El destino de la salida NO es "dependiente del entorno"** (U-01 parte 2): Pandora
-se spawnea directo con ``cwd=game_path``, nunca hereda la USVFS de MO2 y por lo tanto
-escribe **físicamente** en una de las candidatas de
-``output_targets.pandora_output_candidates`` — el ``overwrite`` de MO2 no es
-alcanzable. Que queden varias candidatas es ambigüedad del tool (versión/config), no
-del modo de lanzamiento.
-
-**Lo que se revierte es un subconjunto estricto de lo que se sondea**
-(``output_targets.pandora_rollback_dirs``): sólo los ``Pandora_Output``, que Pandora
-regenera enteros. El ``Data`` del juego y el dir del exe se sondean por permisos pero
-NO se revierten — un move-aside ahí arrastraría estado que Pandora no produjo.
+Pandora se spawnea directo con ``cwd=game_path`` y ``--output`` explícito. Su único
+artefacto administrado es ``game.resolve() / Pandora_Output``: esa misma ruta se
+declara en el manifiesto y se protege con rollback. El preflight sondea el output si
+ya existe o su padre existente en el primer run, porque el checker omite inexistentes.
 """
 
 from __future__ import annotations
@@ -31,7 +24,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import pathlib
+import stat
 from typing import TYPE_CHECKING, Any
 
 from sky_claw.app.db.locks import (
@@ -39,11 +34,13 @@ from sky_claw.app.db.locks import (
     LockAcquisitionError,
     SnapshotTransactionLock,
 )
-from sky_claw.local.tools._dir_rollback import DirectoryRollback
-from sky_claw.local.tools.output_targets import (
-    pandora_output_candidates,
-    pandora_rollback_dirs,
+from sky_claw.app.security.links import (
+    link_kind_and_identity_or_raise_with_retry,
+    same_direntry_identity,
+    same_file_identity,
 )
+from sky_claw.local.tools._dir_rollback import DirectoryRollback
+from sky_claw.local.tools.output_targets import pandora_output_target
 from sky_claw.local.tools.pandora_runner import (
     PandoraConfig,
     PandoraExecutionError,
@@ -149,10 +146,10 @@ class PandoraPipelineService:
         """Reúne ``(game, mo2, exe, raw_game, raw_mo2)`` desde el ``path_resolver``
         **O** el config del runner inyectado (review Codex #314).
 
-        El agent tool (``system_tools.run_pandora``) construye el servicio con un
-        ``PandoraRunner`` pero SIN resolver — el gate no debe desactivarse por eso,
-        así que si falta el resolver se deriva ``game``/``exe`` del ``config`` del
-        runner. MO2 solo lo conoce el resolver (el config de Pandora no lo tiene).
+        El runner inyectado domina ``game``/``raw_game``/``exe`` cuando su config
+        contiene rutas: es quien construye los ``argv`` y ``cwd`` reales. El
+        resolver queda como fallback y sigue siendo la única fuente de
+        ``mo2``/``raw_mo2``, que el config de Pandora no conserva.
         """
         game = mo2 = exe = raw_game = raw_mo2 = None
         resolver = self._path_resolver
@@ -167,17 +164,18 @@ class PandoraPipelineService:
             raw_mo2 = rm if isinstance(rm, pathlib.Path) else None
             e = resolver.get_pandora_exe()
             exe = e if isinstance(e, pathlib.Path) else None
+        if self._pandora_exe is not None:
+            exe = self._pandora_exe
         runner = self._pandora_runner
         if runner is not None:
             cfg = getattr(runner, "config", None)
             cfg_game = getattr(cfg, "game_path", None)
             cfg_exe = getattr(cfg, "pandora_exe", None)
-            if game is None and isinstance(cfg_game, pathlib.Path):
+            if isinstance(cfg_game, pathlib.Path):
                 game = cfg_game
-            if exe is None and isinstance(cfg_exe, pathlib.Path):
+                raw_game = cfg_game
+            if isinstance(cfg_exe, pathlib.Path):
                 exe = cfg_exe
-        if self._pandora_exe is not None:
-            exe = self._pandora_exe
         # Fallback de raw: sin resolver (runner inyectado) no hay rutas crudas; usar
         # las resueltas es mejor que no cablear vfs (detecta symlinks en la ruta).
         raw_game = raw_game or game
@@ -188,10 +186,9 @@ class PandoraPipelineService:
         """Construye perezosamente el preflight de Pandora (T-16c·4, STAGE 4).
 
         Pandora regenera los behavior graphs (animaciones/IA). Sensores relevantes:
-        **permisos de escritura** sobre los dirs candidatos de salida FÍSICOS (ver
-        ``_permission_targets``; cuál de ellos elige depende de la versión de
-        Pandora, no del modo de lanzamiento), **symlinks/junctions** en las rutas
-        crudas, y **overwrite sucio** (un overwrite sucio hace el diff
+        **permisos de escritura** sobre el output administrado explícito o su padre
+        en el primer run (ver ``_permission_targets``), **symlinks/junctions** en
+        las rutas crudas, y **overwrite sucio** (un overwrite sucio hace el diff
         inatribuible aunque Pandora no escriba ahí). NO cablea masters/límites:
         Pandora procesa mods de ANIMACIÓN (estilo FNIS/Nemesis), no el load order
         de plugins.
@@ -199,7 +196,7 @@ class PandoraPipelineService:
         Se construye con lo que HAYA (review #314): basta game **o** exe **o** MO2
         resoluble (desde el resolver o el config del runner). El overwrite solo se
         cablea con MO2; en standalone (SKYRIM_PATH/PANDORA_EXE sin MO2_PATH) se
-        omite ese sensor pero el gate igual protege ``Data`` y el output del exe.
+        omite ese sensor pero el gate igual protege el output administrado.
         Sin NINGUNA raíz → ``None`` (sin gate, honesto).
         """
         if self._preflight is not None:
@@ -257,38 +254,91 @@ class PandoraPipelineService:
         )
         return self._preflight
 
+    def _managed_output(self) -> pathlib.Path | None:
+        """Devuelve el único output resuelto que Pandora recibe por ``--output``."""
+        game, _, _, _, _ = self._resolve_pandora_paths()
+        return pandora_output_target(game=game)
+
     def _permission_targets(self) -> list[pathlib.Path]:
-        """Rutas candidatas donde Pandora escribe los behavior graphs (review-hardened).
+        """Sondea el output administrado o su padre existente en el primer run.
 
-        Delega en ``output_targets.pandora_output_candidates``: el ``Data`` del
-        juego, el dir del exe **y el ``Pandora_Output`` concreto** (un output hijo
-        read-only con el padre escribible pasaría inadvertido — review #314 F2).
-
-        **Ya no se sondea el ``overwrite`` de MO2** (U-01 parte 2): llegar ahí
-        exigiría la redirección USVFS, y Pandora se spawnea directo con
-        ``cwd=game_path`` y sin ruta de salida en el comando, así que no hereda la
-        VFS. Siguen siendo varias candidatas porque cuál elige depende de la
-        versión de Pandora, no del modo de lanzamiento.
-
-        El ``WritePermissionsChecker`` se salta los inexistentes; se resuelve por
-        corrida (freshness).
+        ``WritePermissionsChecker`` omite rutas inexistentes; usar el padre hasta
+        que nazca ``Pandora_Output`` mantiene efectivo el gate de permisos.
         """
-        game, _, exe, _, _ = self._resolve_pandora_paths()
-        return pandora_output_candidates(game=game, exe=exe)
+        output = self._managed_output()
+        if output is None:
+            return []
+        return [output if output.exists() else output.parent]
 
     def _rollback_output_dirs(self) -> list[pathlib.Path]:
-        """Dirs de salida a proteger con move-aside (U-04).
+        """Protege únicamente el output explícito que Pandora regenera completo."""
+        output = self._managed_output()
+        return [output] if output is not None else []
 
-        Sale de la **misma resolución de rutas** que ``_permission_targets`` — no
-        de una segunda derivación que pudiera divergir del lugar que el preflight
-        sondea. ``pandora_rollback_dirs`` se queda con el subconjunto que Pandora
-        regenera entero (los ``Pandora_Output``) y descarta el ``Data`` del juego y
-        el dir del exe, donde un rename del árbol completo arrastraría estado
-        ajeno al run. Vacío si no hay rutas resolubles: sin destino conocido no se
-        inventa uno.
-        """
-        game, _, exe, _, _ = self._resolve_pandora_paths()
-        return pandora_rollback_dirs(game=game, exe=exe)
+    @staticmethod
+    def _validar_output_generado(output: pathlib.Path) -> os.stat_result:
+        """Exige un árbol físico estable con al menos un archivo no vacío."""
+
+        try:
+            tipo_raiz, identidad_raiz = link_kind_and_identity_or_raise_with_retry(output)
+            if tipo_raiz is not None or identidad_raiz is None or not stat.S_ISDIR(identidad_raiz.st_mode):
+                raise PandoraExecutionError(f"Pandora no generó un directorio físico seguro en '{output}'.")
+            pendientes: list[tuple[pathlib.Path, os.stat_result, tuple[tuple[pathlib.Path, os.stat_result], ...]]] = [
+                (output, identidad_raiz, ())
+            ]
+            observados: list[tuple[pathlib.Path, os.stat_result]] = []
+            archivo_positivo = False
+            while pendientes:
+                actual, identidad_capturada, ancestros = pendientes.pop()
+                for ancestro, identidad_ancestro in ancestros:
+                    tipo_ancestro, identidad_actual = link_kind_and_identity_or_raise_with_retry(ancestro)
+                    if tipo_ancestro is not None or not same_file_identity(identidad_ancestro, identidad_actual):
+                        raise PandoraExecutionError(f"'{ancestro}' cambió durante la inspección de '{output}'.")
+                tipo_actual, estado = link_kind_and_identity_or_raise_with_retry(actual)
+                if tipo_actual is not None or not same_file_identity(identidad_capturada, estado):
+                    raise PandoraExecutionError(f"'{actual}' cambió o es un enlace durante la inspección.")
+                assert estado is not None
+                observados.append((actual, estado))
+                if stat.S_ISDIR(estado.st_mode):
+                    with os.scandir(actual) as entradas:
+                        tipo_despues, estado_despues = link_kind_and_identity_or_raise_with_retry(actual)
+                        if tipo_despues is not None or not same_file_identity(estado, estado_despues):
+                            raise PandoraExecutionError(f"'{actual}' cambió durante la inspección.")
+                        hijos: list[tuple[pathlib.Path, os.stat_result]] = []
+                        for entrada in entradas:
+                            identidad_direntry = entrada.stat(follow_symlinks=False)
+                            inode_direntry = entrada.inode()
+                            hijo = actual / entrada.name
+                            tipo_padre, identidad_padre = link_kind_and_identity_or_raise_with_retry(actual)
+                            if tipo_padre is not None or not same_file_identity(estado, identidad_padre):
+                                raise PandoraExecutionError(f"'{actual}' cambió durante la captura de sus hijos.")
+                            tipo_hijo, identidad_hijo = link_kind_and_identity_or_raise_with_retry(hijo)
+                            if tipo_hijo is not None or not same_direntry_identity(
+                                identidad_direntry, inode_direntry, identidad_hijo
+                            ):
+                                raise PandoraExecutionError(f"'{hijo}' cambió o es un enlace durante la captura.")
+                            tipo_padre, identidad_padre = link_kind_and_identity_or_raise_with_retry(actual)
+                            if tipo_padre is not None or not same_file_identity(estado, identidad_padre):
+                                raise PandoraExecutionError(f"'{actual}' cambió durante la captura de sus hijos.")
+                            assert identidad_hijo is not None
+                            hijos.append((hijo, identidad_hijo))
+                    nuevos_ancestros = (*ancestros, (actual, estado))
+                    pendientes.extend((hijo, identidad, nuevos_ancestros) for hijo, identidad in reversed(hijos))
+                elif stat.S_ISREG(estado.st_mode):
+                    archivo_positivo = archivo_positivo or estado.st_size > 0
+                else:
+                    raise PandoraExecutionError(f"'{actual}' no es un archivo regular ni un directorio.")
+            for observado, identidad_observada in observados:
+                tipo_final, identidad_final = link_kind_and_identity_or_raise_with_retry(observado)
+                if tipo_final is not None or not same_file_identity(identidad_observada, identidad_final):
+                    raise PandoraExecutionError(f"'{observado}' cambió al finalizar la inspección.")
+            if not archivo_positivo:
+                raise PandoraExecutionError(f"Pandora no generó ningún archivo regular con contenido en '{output}'.")
+            return identidad_raiz
+        except PandoraExecutionError:
+            raise
+        except OSError as exc:
+            raise PandoraExecutionError(f"Pandora no dejó un output válido en '{output}': {exc}") from exc
 
     async def _cerrar_tx_tras_rollback(
         self,
@@ -306,26 +356,24 @@ class PandoraPipelineService:
         recuperó — exactamente el defecto que Codex encontró en el hermano de este
         cambio.
 
-        ``hubo_restore`` distingue las **dos** causas de ``rollback_completed ==
-        False``, que es la corrección del review CodeRabbit #399 (una versión
-        previa de esta docstring afirmaba que acá había una sola, y era falso —
-        el mismo error de razonamiento que el P1 de #397, cometido en el texto que
-        decía que no podía pasar):
+        ``hubo_restore`` distingue si el error atravesó una ruta de recuperación:
 
-        - **el cuerpo falló y el restore se intentó** → False significa que el
-          restore reventó. La TX queda PENDING a propósito.
-        - **el cuerpo terminó bien y la excepción vino del teardown** (p. ej.
-          ``LockLeaseLostError`` desde el ``__aexit__`` del lock, con los backups
-          ya descartados) → False sólo significa "nunca hubo restore que hacer".
-          Dejar la TX PENDING ahí sería un falso positivo; se cierra como
-          revertida, porque la exclusividad no estuvo garantizada y reportar éxito
-          mentiría igual.
+        - **se esperaba recuperar estado** → cada ``DirectoryRollback`` observado
+          participa aunque ``__aenter__`` no haya completado. True cubre tanto
+          "preflight falló antes de mutar" como restore/undo confirmado; False
+          significa que quedó una mutación sin resolver y la TX queda PENDING.
+        - **el cuerpo terminó bien y la excepción vino después** (teardown o
+          commit del journal) → no hubo restore y la mutación puede seguir en
+          disco. La TX queda PENDING: marcarla ROLLED_BACK también mentiría.
 
         Devuelve una descripción del desenlace para el log del caller.
         """
         if not hubo_restore:
-            await self._mark_journal_rolled_back(journal_tx_id)
-            return "sin restore que hacer (el run terminó; falló el teardown)"
+            logger.critical(
+                "Cierre incierto de Pandora (TX %s): sin restore confirmado; TX pendiente.",
+                journal_tx_id,
+            )
+            return "sin restore confirmado; TX pendiente"
         fallidos = [dr for dr in dir_rollbacks if not dr.rollback_completed]
         if not fallidos:
             await self._mark_journal_rolled_back(journal_tx_id)
@@ -409,8 +457,8 @@ class PandoraPipelineService:
         move-aside de ``DirectoryRollback`` (U-04), que no pasa por el snapshot
         store porque un árbol de behavior graphs no es un archivo. Los dos
         conceptos se separan igual que en ``dyndolod_service``: el manifiesto
-        registra QUÉ se tocó (``files_touched``, para auditoría); revertirlo es
-        trabajo del move-aside.
+        registra el único output explícito (``files_touched``, para auditoría);
+        revertirlo es trabajo del move-aside.
 
         Se emite ANTES del move-aside (primera mutación de FS): si el proceso muere
         en el gap, el journal ya tiene el manifiesto de la mutación (review Codex
@@ -521,6 +569,15 @@ class PandoraPipelineService:
                 {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}, preflight_report
             )
 
+        managed_output = self._managed_output()
+        if managed_output is None:
+            detail = "Cannot run Pandora: SKYRIM_PATH is not configured."
+            logger.error("Pandora runner unavailable: %s", detail)
+            return _attach_preflight(
+                {"status": "error", "success": False, "message": detail, "logs": detail}, preflight_report
+            )
+        rollback_outputs = [managed_output]
+
         # Lock ligado a una variable para leer sus snapshots (manifiesto) tras el with.
         tx = SnapshotTransactionLock(
             lock_manager=self._lock_manager,
@@ -540,6 +597,7 @@ class PandoraPipelineService:
         # El AsyncExitStack corre los __aexit__ (restore) ANTES que los except
         # handlers, así que los flags ya están seteados cuando se leen.
         dir_rollbacks: list[DirectoryRollback] = []
+        identidades_validadas: dict[pathlib.Path, os.stat_result] = {}
         # Distingue "el cuerpo falló y el restore se intentó" de "el cuerpo terminó
         # y reventó el teardown" — sin esto, un LockLeaseLostError tras un run
         # exitoso dejaba la TX PENDING como si el rollback hubiera fallado, cuando
@@ -555,21 +613,32 @@ class PandoraPipelineService:
                 # del lock → __aexit__ libera; nada mutó todavía). El path del agente
                 # (sin journal) salta esto — no hay caja negra que emitir.
                 if self._journal is not None:
-                    journal_tx_id = await self._emit_action_manifest(tx, self._permission_targets())
+                    journal_tx_id = await self._emit_action_manifest(tx, [managed_output])
 
                 # U-04: move-aside de los árboles de salida (primera mutación de FS,
                 # después del manifiesto a propósito). Fail-closed: si el rename no
                 # se puede hacer, DirectoryRollback lanza OSError y Pandora no corre
                 # — mejor no correr que correr sin el rollback que se prometió.
-                for output_dir in self._rollback_output_dirs():
+                for output_dir in rollback_outputs:
                     # El veto de lease hace que el move-aside y el lock que lo
                     # envuelve apliquen el MISMO criterio: el lock saltea su
                     # rollback tras perder la lease para no pisar a un dueño
                     # concurrente, pero este context sale ANTES que él y sin el
                     # veto restauraría igual (review Codex #399).
-                    dr = DirectoryRollback(output_dir, should_rollback=lambda: not tx.lease_lost)
-                    await tx_stack.enter_async_context(dr)
+                    def _target_final_valido(output: pathlib.Path = output_dir) -> bool:
+                        esperada = identidades_validadas.get(output)
+                        if esperada is None:
+                            return False
+                        tipo_actual, identidad_actual = link_kind_and_identity_or_raise_with_retry(output)
+                        return tipo_actual is None and same_file_identity(esperada, identidad_actual)
+
+                    dr = DirectoryRollback(
+                        output_dir,
+                        should_rollback=lambda: not tx.lease_lost,
+                        validate_final_target=_target_final_valido,
+                    )
                     dir_rollbacks.append(dr)
+                    await tx_stack.enter_async_context(dr)
 
                 result = await runner.run_pandora()
 
@@ -578,7 +647,16 @@ class PandoraPipelineService:
                 # árbol parcial queda en disco. Ver _RunFallidoError.
                 if not result.success:
                     raise _RunFallidoError(result)
+                identidades_validadas[managed_output] = await asyncio.to_thread(
+                    self._validar_output_generado, managed_output
+                )
                 run_exitoso = True
+            finalizaciones_fallidas = [dr for dr in dir_rollbacks if not dr.finalization_completed]
+            if finalizaciones_fallidas:
+                raise PandoraExecutionError(
+                    "Pandora generó salida, pero no pudo finalizar de forma segura "
+                    "la protección de rollback; la transacción queda pendiente."
+                )
             # Lock liberado y salida confirmada: el run fue exitoso (un fallo habría
             # salido por _RunFallidoError / PandoraExecutionError).
             if journal_tx_id is not None and self._journal is not None:

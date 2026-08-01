@@ -1,3 +1,4 @@
+<!-- markdownlint-disable-next-line MD013 -->
 # ADR 0005 — Promoción del sandbox: síncrona, bloqueando en HITL dentro del mismo dispatch
 
 **Fecha:** 2026-07-14
@@ -32,6 +33,7 @@ orquestarlo.
 
 ## Alternativas evaluadas (Tree of Thoughts)
 
+<!-- markdownlint-disable-next-line MD013 -->
 ### (a) Promoción síncrona: bloquear en `HITLGuard.request_approval` dentro del mismo dispatch — **elegida**
 
 - Toda la infraestructura existe (guard + modal GUI + Telegram + timeout
@@ -45,6 +47,7 @@ orquestarlo.
   (`HitlGateMiddleware`) — mismo shape de UX, cero conceptos nuevos para el
   operador.
 
+<!-- markdownlint-disable-next-line MD013 -->
 ### (b) Promoción asíncrona: estado "pendiente de promoción" que la GUI resuelve después — descartada
 
 - Exige persistencia del estado pendiente, ciclo de vida de clones entre
@@ -54,6 +57,7 @@ orquestarlo.
   real de "aprobar más tarde" es negativo mientras el gate re-clone-y-re-corré
   sea la respuesta correcta al drift.
 
+<!-- markdownlint-disable-next-line MD013 -->
 ### (c) Auto-políticas (auto-promote si el diff "parece seguro", auto-promote con «Modo local») — descartada
 
 - Auto-promote sin revisión vacía al sandbox de sentido: la transparencia del
@@ -61,7 +65,8 @@ orquestarlo.
   (`sandbox_promotion`) **nunca** se auto-aprueba por «Modo local» (mismo
   trato que `download`), y el fallback headless de `app_context._hitl_notify`
   la deniega fail-closed (sin canal de operador, ese closure auto-aprobaba
-  cualquier categoría desconocida — se cerró ese agujero en este mismo cambio).
+  cualquier categoría desconocida — se cerró ese agujero en este mismo
+  cambio).
 - Auto-discard silencioso rompería Synthesis sin que el usuario sepa por qué;
   todas las ramas del flow dejan la decisión y el diff en el result.
 
@@ -100,6 +105,13 @@ sin GUI que lo inspeccione. La excepción es `SandboxRollbackError` (arriba).
   tras una aprobación explícita sobre el diff. Pandora/DynDOLOD/Wrye Bash
   siguen fuera (sin palanca de redirección de output — follow-up documentado
   en `sandbox_run.py`); T-27 queda **parcialmente** cerrado, no cerrado.
+
+  > **Addendum 2026-07-31 — premisa supersedida:** Pandora incorporó soporte
+  > oficial para `--output` y Sky-Claw fija una salida administrada absoluta en
+  > `<game>/Pandora_Output`. La decisión restante es aceptar el override del
+  > clon y cablear Pandora al sandbox/perfil USVFS con diff/promoción. El
+  > comportamiento en un runtime real de Pandora/MO2 no está verificado.
+
 - Comportamiento nuevo visible: ejecutar Synthesis ahora pide una aprobación
   post-run (modal GUI / Telegram). Sin operador, el timeout de 300 s descarta
   — explícito en el result, nunca silencioso.
@@ -112,8 +124,8 @@ sin GUI que lo inspeccione. La excepción es `SandboxRollbackError` (arriba).
 
 ## Criterio de reversión
 
-Reabrir la evaluación de la rama (b) — asíncrona — solo si aparece un caso de
-uso real de aprobación diferida (p. ej. pipeline nocturno desatendido donde el
-operador revisa a la mañana) **y** para entonces existe una respuesta al drift
-mejor que "reclonar y re-ejecutar" (p. ej. re-basar el diff). Mientras el
-drift-gate mande, la ventana corta es la correcta.
+Reabrir la evaluación de la rama (b) — asíncrona — solo si aparece un
+caso de uso real de aprobación diferida (p. ej. pipeline nocturno desatendido
+donde el operador revisa a la mañana) **y** para entonces existe una respuesta
+al drift mejor que "reclonar y re-ejecutar" (p. ej. re-basar el diff). Mientras
+el drift-gate mande, la ventana corta es la correcta.

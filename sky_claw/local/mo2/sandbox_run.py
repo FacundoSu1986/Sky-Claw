@@ -24,9 +24,11 @@ El dueño de producción de este ciclo es
 (T-27b·2, ADR 0005): corre el ritual acá, presenta el diff al operador vía
 HITL y resuelve promote/discard según la decisión.
 
-Follow-up: Pandora no es redirigible hoy (sin palanca de output — el
-subproceso escribe vía el VFS de MO2 con ``cwd``); su aislamiento requiere
-diseño de redirección aparte. DynDOLOD/bashed, ídem cuando toque cablearlos.
+Follow-up: Pandora sí soporta ``--output`` absoluto y Sky-Claw lo fija a
+``<game>/Pandora_Output``. Aún no acepta un override hacia el clon del sandbox
+ni está cableado al broker/perfil USVFS con diff/promoción; por eso T-27 sigue
+parcial. Esta integración está verificada por código y tests, no en un rig real
+de Pandora/MO2. DynDOLOD/bashed, ídem cuando toque cablearlos.
 """
 
 from __future__ import annotations

@@ -245,13 +245,13 @@ async def test_execute_success_returns_pipeline_data(
 
 
 @pytest.mark.asyncio
-async def test_execute_domain_error_marks_rollback(
+async def test_execute_domain_error_sin_snapshot_deja_tx_pendiente(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     mock_event_bus: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """DynDOLODExecutionError inside the lock triggers journal rollback."""
+    """Sin snapshot, un error posterior al runner no puede afirmar rollback."""
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_failure_result())
 
@@ -265,10 +265,9 @@ async def test_execute_domain_error_marks_rollback(
     result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
-    assert result["rolled_back"] is True
+    assert result["rolled_back"] is False
 
-    # Journal transaction rolled back
-    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
     mock_journal.commit_transaction.assert_not_called()
 
     # Completed event emitted with error
@@ -280,12 +279,12 @@ async def test_execute_domain_error_marks_rollback(
 
 
 @pytest.mark.asyncio
-async def test_execute_timeout_error_marks_rollback(
+async def test_execute_timeout_error_deja_tx_pendiente(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """DynDOLODTimeoutError triggers journal rollback."""
+    """Un timeout puede haber tocado staging no protegido: la TX queda pendiente."""
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(
         side_effect=DynDOLODTimeoutError(timeout_seconds=14400, tool_name="DynDOLOD")
@@ -301,8 +300,8 @@ async def test_execute_timeout_error_marks_rollback(
     result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
-    assert result["rolled_back"] is True
-    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    assert result["rolled_back"] is False
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
 
 
 # =============================================================================
@@ -311,16 +310,13 @@ async def test_execute_timeout_error_marks_rollback(
 
 
 @pytest.mark.asyncio
-async def test_unexpected_oserror_marks_rollback_and_emits_completed(
+async def test_unexpected_oserror_reports_pending_and_emits_completed(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     mock_event_bus: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Unexpected OSError marks TX rolled back and emits completed event.
-
-    Lección T11: NUNCA dejar una transacción en estado PENDING.
-    """
+    """Un OSError post-run deja PENDING si las mutaciones no están cubiertas."""
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(side_effect=OSError("Disk full during validation"))
 
@@ -335,11 +331,10 @@ async def test_unexpected_oserror_marks_rollback_and_emits_completed(
 
     # Must NOT raise — returns error dict
     assert result["success"] is False
-    assert result["rolled_back"] is True
+    assert result["rolled_back"] is False
     assert "Disk full" in result["errors"][0]
 
-    # Journal rollback called
-    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
     mock_journal.commit_transaction.assert_not_called()
 
     # Completed event emitted with error details
@@ -349,20 +344,19 @@ async def test_unexpected_oserror_marks_rollback_and_emits_completed(
     assert len(completed_calls) == 1
     payload = completed_calls[0][0][0].payload
     assert payload["success"] is False
-    assert payload["rolled_back"] is True
+    assert payload["rolled_back"] is False
 
 
 @pytest.mark.asyncio
-async def test_unexpected_error_with_journal_failure(
+async def test_unexpected_error_no_intenta_cerrar_journal_sin_cobertura(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     mock_event_bus: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Even if journal.mark_transaction_rolled_back fails, the service still returns error dict."""
+    """Sin cobertura completa ni siquiera intenta el cierre best-effort del journal."""
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(side_effect=RuntimeError("Unexpected crash"))
-    mock_journal.mark_transaction_rolled_back = AsyncMock(side_effect=OSError("Journal DB locked"))
 
     mock_config = MagicMock()
     mock_config.mo2_mods_path = tmp_path / "mods"
@@ -371,11 +365,11 @@ async def test_unexpected_error_with_journal_failure(
 
     service._runner = mock_runner
 
-    # Must NOT raise even with double failure
     result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
-    assert result["rolled_back"] is True
+    assert result["rolled_back"] is False
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
 
     # Completed event still emitted
     completed_calls = [
@@ -446,12 +440,12 @@ async def test_runner_init_failure_returns_error(
 
 
 @pytest.mark.asyncio
-async def test_validation_failure_triggers_rollback(
+async def test_validation_failure_deja_tx_pendiente(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Failed DynDOLOD output validation triggers journal rollback."""
+    """La validación falla después del runner: staging puede quedar parcial."""
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=False)
@@ -466,8 +460,8 @@ async def test_validation_failure_triggers_rollback(
     result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
-    assert result["rolled_back"] is True
-    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    assert result["rolled_back"] is False
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -499,9 +493,9 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
-    assert result["rolled_back"] is True
+    assert result["rolled_back"] is False
     mock_journal.commit_transaction.assert_not_called()
-    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
     # Sin path no hay nada que validar: el fallo es anterior a la validación.
     mock_runner.validate_dyndolod_output.assert_not_awaited()
 
@@ -541,8 +535,9 @@ async def test_exit_cero_sin_dyndolod_result_no_se_reporta_como_exito(
     result = await service.execute(preset="High", run_texgen=False, create_snapshot=False)
 
     assert result["success"] is False
+    assert result["rolled_back"] is False
     mock_journal.commit_transaction.assert_not_called()
-    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
     mock_runner.validate_dyndolod_output.assert_not_awaited()
 
 
@@ -622,9 +617,10 @@ def _mock_runner_with_output(mods: pathlib.Path) -> AsyncMock:
 async def test_directory_rollback_restores_output_on_failure(
     service: DynDOLODPipelineService,
     mock_snapshot_manager: AsyncMock,
+    mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """create_snapshot=True: un fallo del pipeline restaura DynDOLOD Output/ intacto."""
+    """El output vuelve, pero staging no cubierto impide afirmar rollback total."""
     mods = tmp_path / "mods"
     output_dir = mods / "DynDOLOD Output"
     output_dir.mkdir(parents=True)
@@ -646,7 +642,8 @@ async def test_directory_rollback_restores_output_on_failure(
     result = await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
 
     assert result["success"] is False
-    assert result["rolled_back"] is True
+    assert result["rolled_back"] is False
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
     # Directorio original restaurado byte-a-byte; el parcial se descartó.
     assert (output_dir / "sentinel.esp").read_text(encoding="utf-8") == "ORIGINAL"
     assert (output_dir / "textures" / "a.dds").read_bytes() == b"\xde\xad"
@@ -654,6 +651,47 @@ async def test_directory_rollback_restores_output_on_failure(
     assert not list(mods.glob("DynDOLOD Output.rollback-*"))  # sin backups huérfanos
     # El .esp ya NO se snapshotea vía FileSnapshotManager (target_files=[]).
     mock_snapshot_manager.create_snapshot.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_staging_parcial_deja_tx_pendiente_aunque_output_se_restaure(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """No se declara rollback total sobre staging que el move-aside no protege."""
+    mods = tmp_path / "mods"
+    output_dir = mods / "DynDOLOD Output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "original.esp").write_text("ORIGINAL", encoding="utf-8")
+    mo2 = tmp_path / "MO2"
+    mo2.mkdir()
+    staging = mo2 / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    tools = tmp_path / "DynDOLOD"
+    tools.mkdir()
+
+    runner = _mock_runner_with_output(mods)
+    runner._config.mo2_path = mo2
+    runner._config.dyndolod_exe = tools / "DynDOLODx64.exe"
+
+    async def _pipeline_parcial(**_kwargs: object) -> DynDOLODPipelineResult:
+        output_dir.mkdir(parents=True)
+        (output_dir / "partial.esp").write_text("PARTIAL", encoding="utf-8")
+        staging.mkdir()
+        (staging / "partial.txt").write_text("STAGING", encoding="utf-8")
+        raise DynDOLODExecutionError("fallo tras escribir staging")
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_parcial)
+    service._runner = runner
+
+    result = await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert result["success"] is False
+    assert result["rolled_back"] is False
+    assert (output_dir / "original.esp").read_text(encoding="utf-8") == "ORIGINAL"
+    assert not (output_dir / "partial.esp").exists()
+    assert (staging / "partial.txt").read_text(encoding="utf-8") == "STAGING"
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -684,6 +722,203 @@ async def test_directory_rollback_discards_backup_on_success(
     assert (output_dir / "new.esp").read_text(encoding="utf-8") == "NEW"
     assert not (output_dir / "old.esp").exists()  # el output previo se descartó (regenerado)
     assert not list(mods.glob("DynDOLOD Output.rollback-*"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restore_falla", [False, True], ids=["restore_confirmado", "restore_fallido"])
+async def test_cancelacion_durante_enter_refleja_undo_en_journal(
+    service: DynDOLODPipelineService,
+    mock_lock_manager: AsyncMock,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+    restore_falla: bool,
+) -> None:
+    """DynDOLOD registra el rollback antes de entrar y respeta su outcome real."""
+    import threading
+    from collections.abc import Callable
+
+    from sky_claw.local.tools import _dir_rollback
+    from sky_claw.local.tools._dir_rollback import DirectoryRollback
+
+    mods = tmp_path / "mods"
+    output_dir = mods / "DynDOLOD Output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "sentinel.esp").write_text("ORIGINAL", encoding="utf-8")
+    runner = _mock_runner_with_output(mods)
+    runner.run_full_pipeline = AsyncMock()
+    service._runner = runner
+
+    rename_real = pathlib.Path.rename
+    move_empezo = threading.Event()
+    permitir_move = threading.Event()
+    capturados: list[DirectoryRollback] = []
+
+    class _RollbackCapturado(DirectoryRollback):
+        def __init__(
+            self,
+            target_dir: pathlib.Path,
+            *,
+            enabled: bool = True,
+            should_rollback: Callable[[], bool] | None = None,
+        ) -> None:
+            super().__init__(target_dir, enabled=enabled, should_rollback=should_rollback)
+            capturados.append(self)
+
+    def _rename_controlado(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
+        if self == output_dir:
+            move_empezo.set()
+            assert permitir_move.wait(5.0), "el test no liberó el move-aside"
+            return rename_real(self, dst)
+        if restore_falla and self.name.startswith(f"{output_dir.name}.rollback-") and dst == output_dir:
+            raise PermissionError("restore bloqueado persistentemente")
+        return rename_real(self, dst)
+
+    with (
+        patch("sky_claw.local.tools.dyndolod_service.DirectoryRollback", _RollbackCapturado),
+        patch.object(pathlib.Path, "rename", _rename_controlado),
+        patch.object(_dir_rollback, "_FS_BACKOFF_SECONDS", 0.0),
+    ):
+        task = asyncio.create_task(service.execute(preset="Medium", run_texgen=False, create_snapshot=True))
+        assert await asyncio.to_thread(move_empezo.wait, 5.0)
+        task.cancel()
+        permitir_move.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    assert len(capturados) == 1
+    assert capturados[0].rollback_completed is (not restore_falla)
+    runner.run_full_pipeline.assert_not_awaited()
+    backups = list(mods.glob("DynDOLOD Output.rollback-*"))
+    if restore_falla:
+        assert not output_dir.exists()
+        assert len(backups) == 1
+        mock_journal.mark_transaction_rolled_back.assert_not_called()
+    else:
+        assert (output_dir / "sentinel.esp").read_text(encoding="utf-8") == "ORIGINAL"
+        assert not backups
+        mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(42)
+    assert not _dir_rollback._background_tasks
+    mock_lock_manager.release_lock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_post_commit_no_remarca_journal_ni_revierte_output(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Una cancelación del flight report ocurre después del punto de no retorno."""
+    mods = tmp_path / "mods"
+    output_dir = mods / "DynDOLOD Output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "old.esp").write_text("OLD", encoding="utf-8")
+    runner = _mock_runner_with_output(mods)
+
+    async def _pipeline_ok(**_kwargs: object) -> DynDOLODPipelineResult:
+        output_dir.mkdir(parents=True)
+        (output_dir / "new.esp").write_text("NEW", encoding="utf-8")
+        return _make_success_result(run_texgen=False)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_ok)
+    runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    service._runner = runner
+
+    with (
+        patch.object(service, "_emit_flight_report", AsyncMock(side_effect=asyncio.CancelledError)),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    mock_journal.commit_transaction.assert_awaited_once_with(42)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+    assert (output_dir / "new.esp").read_text(encoding="utf-8") == "NEW"
+    assert not (output_dir / "old.esp").exists()
+    assert not list(mods.glob("DynDOLOD Output.rollback-*"))
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_durante_commit_sella_todos_los_outputs_antes_de_liberar_lock(
+    service: DynDOLODPipelineService,
+    mock_lock_manager: AsyncMock,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El commit de dos outputs es una sola unidad terminal pese a cancelaciones repetidas."""
+    import threading
+
+    from sky_claw.local.tools import _dir_rollback
+
+    mods = tmp_path / "mods"
+    dyndolod_dir = mods / "DynDOLOD Output"
+    texgen_dir = mods / "TexGen Output"
+    for output_dir in (dyndolod_dir, texgen_dir):
+        output_dir.mkdir(parents=True)
+        (output_dir / "old.txt").write_text("OLD", encoding="utf-8")
+
+    runner = _mock_runner_with_output(mods)
+
+    async def _pipeline_ok(**_kwargs: object) -> DynDOLODPipelineResult:
+        for output_dir in (dyndolod_dir, texgen_dir):
+            output_dir.mkdir(parents=True)
+            (output_dir / "new.txt").write_text("NEW", encoding="utf-8")
+        return _make_success_result(run_texgen=True)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_ok)
+    runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    service._runner = runner
+
+    rmtree_real = _dir_rollback.rmtree_link_aware
+    primer_discard_empezo = threading.Event()
+    permitir_primer_discard = threading.Event()
+    orden: list[str] = []
+
+    def _rmtree_controlado(ruta: pathlib.Path, *, limpiar_readonly: bool = False) -> None:
+        if ruta.name.startswith("DynDOLOD Output.rollback-"):
+            orden.append("dyndolod_discard_empezo")
+            primer_discard_empezo.set()
+            assert permitir_primer_discard.wait(5.0), "el test no liberó el primer discard"
+            rmtree_real(ruta, limpiar_readonly=limpiar_readonly)
+            orden.append("dyndolod_discard_termino")
+            return
+        if ruta.name.startswith("TexGen Output.rollback-"):
+            orden.append("texgen_discard_empezo")
+            rmtree_real(ruta, limpiar_readonly=limpiar_readonly)
+            orden.append("texgen_discard_termino")
+            return
+        rmtree_real(ruta, limpiar_readonly=limpiar_readonly)
+
+    async def _release_lock(*_args: object, **_kwargs: object) -> bool:
+        orden.append("lock_liberado")
+        return True
+
+    mock_lock_manager.release_lock.side_effect = _release_lock
+
+    with patch.object(_dir_rollback, "rmtree_link_aware", _rmtree_controlado):
+        task = asyncio.create_task(service.execute(preset="High", run_texgen=True, create_snapshot=True))
+        try:
+            assert await asyncio.to_thread(primer_discard_empezo.wait, 5.0)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+        finally:
+            permitir_primer_discard.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    assert orden.index("dyndolod_discard_termino") < orden.index("texgen_discard_empezo")
+    assert orden.index("texgen_discard_termino") < orden.index("lock_liberado")
+    for output_dir in (dyndolod_dir, texgen_dir):
+        assert (output_dir / "new.txt").read_text(encoding="utf-8") == "NEW"
+        assert not (output_dir / "old.txt").exists()
+    assert not list(mods.glob("*.rollback-*"))
+    mock_journal.commit_transaction.assert_awaited_once_with(42)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+    mock_lock_manager.release_lock.assert_awaited_once()
+    assert not _dir_rollback._background_tasks
 
 
 # =============================================================================

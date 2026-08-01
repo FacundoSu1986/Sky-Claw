@@ -22,7 +22,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from sky_claw.app.db.locks import DistributedLockManager
-from sky_claw.local.tools.output_targets import pandora_rollback_dirs
+from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
+from sky_claw.local.tools.output_targets import pandora_output_target
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
 from sky_claw.local.tools.rollback_reconciler import (
     PRODUCTORES_CABLEADOS,
@@ -54,10 +55,10 @@ PRODUCTORES_DEL_NOMBRE: dict[str, str] = {
 
 #: Módulos que **usan** ``DirectoryRollback`` sobre un directorio propio, y el
 #: productor con el que el reconciliador los barre. Se enumeran aparte porque el
-#: riesgo que traen no es un nombre nuevo sino una **raíz** nueva: un servicio que
-#: mueva aparte un dir bajo otra raíz —o serializado por otro lock— deja residuo
-#: donde el reconciliador no mira. Un usuario nuevo rompe el ancla hasta que se le
-#: declare su ``ProductorDeMoveAside``.
+#: riesgo que traen no es un nombre nuevo sino un **destino exacto** nuevo: un
+#: servicio que mueva aparte otro dir —o use otro lock— deja residuo donde el
+#: reconciliador no mira. Un usuario nuevo rompe el ancla hasta que se le declare
+#: su ``ProductorDeMoveAside``.
 USUARIOS_DEL_MOVE_ASIDE: dict[str, str] = {
     "sky_claw/local/tools/dyndolod_service.py": "dyndolod",
     "sky_claw/local/tools/pandora_service.py": "pandora",
@@ -82,9 +83,9 @@ def test_todo_productor_de_backups_tiene_su_familia_reconciliada() -> None:
 
 
 def test_todo_usuario_del_move_aside_tiene_su_productor_declarado() -> None:
-    """Cada usuario de ``DirectoryRollback`` deja residuo bajo SUS raíces y bajo SU
-    lock. Un usuario nuevo rompe acá hasta que alguien decida ambas cosas — que es
-    la pregunta que importa, no el nombre del archivo."""
+    """Cada usuario de ``DirectoryRollback`` deja residuo de destinos exactos bajo
+    SU lock. Un usuario nuevo rompe acá hasta que alguien decida ambas cosas — que
+    es la pregunta que importa, no el nombre del archivo."""
     usuarios = _modulos_con_el_nombre("DirectoryRollback(") - {
         "sky_claw/local/tools/_dir_rollback.py",  # define la clase
     }
@@ -153,7 +154,11 @@ def sandbox(tmp_path: pathlib.Path) -> pathlib.Path:
 
 def _dyndolod(mods: pathlib.Path) -> ProductorDeMoveAside:
     """Productor de DynDOLOD: mueve aparte sus mods de salida bajo ``<mo2>/mods``."""
-    return ProductorDeMoveAside(nombre="dyndolod", lock_resource_id="dyndolod-pipeline", raices=(mods,))
+    return ProductorDeMoveAside(
+        nombre="dyndolod",
+        lock_resource_id="dyndolod-pipeline",
+        destinos=(mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME, mods / DynDOLODRunner.TEXGEN_MOD_NAME),
+    )
 
 
 def _backup_move_aside(mods: pathlib.Path, nombre: str, *, contenido: str) -> pathlib.Path:
@@ -234,11 +239,10 @@ async def test_barre_un_productor_cuya_salida_no_cuelga_de_mods(
     """El residuo NO siempre vive bajo ``<mo2>/mods``.
 
     DynDOLOD mueve aparte sus mods de salida, que sí cuelgan de ahí. Pandora
-    mueve aparte sus ``Pandora_Output``, que cuelgan del juego y del dir de su
-    ejecutable (``output_targets.pandora_rollback_dirs``). Un reconciliador con
-    una sola raíz cableada es **ciego** al segundo: el backup queda huérfano
-    para siempre y los behavior graphs previos no vuelven — el modo de falla
-    exacto que U-08 mitad 2 existe para cubrir.
+    mueve aparte su único ``Pandora_Output`` administrado junto al juego. Un
+    reconciliador que solo barra ``<mo2>/mods`` es ciego a ese residuo: el backup
+    queda huérfano para siempre y los behavior graphs previos no vuelven — el
+    modo de falla exacto que U-08 mitad 2 existe para cubrir.
     """
     game = tmp_path / "game"
     game.mkdir()
@@ -247,7 +251,13 @@ async def test_barre_un_productor_cuya_salida_no_cuelga_de_mods(
     (backup / "behaviors.hkx").write_text("behavior graphs previos", encoding="utf-8")
 
     resultado = await reconcile_orphan_rollback_backups(
-        productores=[ProductorDeMoveAside(nombre="pandora", lock_resource_id="behavior-graphs", raices=(game,))],
+        productores=[
+            ProductorDeMoveAside(
+                nombre="pandora",
+                lock_resource_id="behavior-graphs",
+                destinos=(game / "Pandora_Output",),
+            )
+        ],
         sandbox_root=sandbox,
         lock_manager=lock_manager,
     )
@@ -256,6 +266,42 @@ async def test_barre_un_productor_cuya_salida_no_cuelga_de_mods(
     assert destino.is_dir()
     assert (destino / "behaviors.hkx").read_text(encoding="utf-8") == "behavior graphs previos"
     assert resultado.restaurados == (destino,)
+
+
+async def test_pandora_no_restaura_un_sibling_ajeno_con_sufijo_valido(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+    sandbox: pathlib.Path,
+) -> None:
+    """El productor declara el target exacto; un sibling no le pertenece.
+
+    El sufijo prueba que el directorio podría ser un backup real de otro
+    componente. Pandora no puede restaurarlo bajo el lock de behavior graphs.
+    """
+    game = tmp_path / "game"
+    game.mkdir()
+    pandora_backup = game / "Pandora_Output.rollback-1753700000000000000"
+    pandora_backup.mkdir()
+    crashlogs_backup = game / "CrashLogs.rollback-1753700000000000001"
+    crashlogs_backup.mkdir()
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[
+            ProductorDeMoveAside(
+                nombre="pandora",
+                lock_resource_id="behavior-graphs",
+                destinos=(game / "Pandora_Output",),
+            )
+        ],
+        sandbox_root=sandbox,
+        lock_manager=lock_manager,
+    )
+
+    assert (game / "Pandora_Output").is_dir()
+    assert not pandora_backup.exists()
+    assert crashlogs_backup.is_dir()
+    assert not (game / "CrashLogs").exists()
+    assert resultado.restaurados == (game / "Pandora_Output",)
 
 
 async def test_cada_productor_se_guarda_con_su_propio_lock(
@@ -280,8 +326,12 @@ async def test_cada_productor_se_guarda_con_su_propio_lock(
 
     resultado = await reconcile_orphan_rollback_backups(
         productores=[
-            ProductorDeMoveAside(nombre="dyndolod", lock_resource_id="dyndolod-pipeline", raices=(mods,)),
-            ProductorDeMoveAside(nombre="pandora", lock_resource_id="behavior-graphs", raices=(game,)),
+            _dyndolod(mods),
+            ProductorDeMoveAside(
+                nombre="pandora",
+                lock_resource_id="behavior-graphs",
+                destinos=(game / "Pandora_Output",),
+            ),
         ],
         sandbox_root=sandbox,
         lock_manager=lock_manager,
@@ -296,45 +346,45 @@ async def test_cada_productor_se_guarda_con_su_propio_lock(
     assert "dyndolod" not in resultado.omitidos_por_lock
 
 
-def test_el_constructor_resuelve_las_raices_reales_de_cada_productor(tmp_path: pathlib.Path) -> None:
+def test_el_constructor_resuelve_los_destinos_reales_de_cada_productor(tmp_path: pathlib.Path) -> None:
     """El cableado de producción sale de acá, no de una lista escrita a mano en
     ``app_context``: los nombres que devuelve deben ser los que el ancla declara
-    como cableados, y las raíces las que el servicio realmente usa."""
+    como cableados, y los destinos los que el servicio realmente usa."""
     mo2 = tmp_path / "mo2"
 
     productores = construir_productores_de_move_aside(mo2_root=mo2)
 
     assert {p.nombre for p in productores} <= PRODUCTORES_CABLEADOS
     dyndolod = next(p for p in productores if p.nombre == "dyndolod")
-    # dyndolod_service mueve aparte `mods_path / runner.DYNDOLLOD_MOD_NAME`.
-    assert dyndolod.raices == (mo2 / "mods",)
+    assert dyndolod.destinos == (
+        mo2 / "mods" / DynDOLODRunner.DYNDOLLOD_MOD_NAME,
+        mo2 / "mods" / DynDOLODRunner.TEXGEN_MOD_NAME,
+    )
     assert dyndolod.lock_resource_id == "dyndolod-pipeline"
 
 
-def test_el_constructor_barre_donde_pandora_realmente_mueve_aparte(tmp_path: pathlib.Path) -> None:
-    """Las raíces de Pandora salen de ``pandora_rollback_dirs`` —la MISMA función que
-    usa el rollback— y no de una lista escrita en el reconciliador.
+def test_el_constructor_barre_solo_el_destino_administrado_de_pandora(tmp_path: pathlib.Path) -> None:
+    """El destino de Pandora es el único output que administra el servicio.
 
     Es el hermano de #388: allá el sondeo de permisos y la búsqueda de salida
-    divergieron por tener dos fuentes. Acá, si el rollback gana o pierde una raíz,
-    el barrido la sigue sin que nadie tenga que acordarse.
+    divergieron por tener dos fuentes. Acá el rollback y el barrido comparten
+    ``pandora_output_target``.
     """
-    game = tmp_path / "game"
-    exe = tmp_path / "pandora" / "Pandora Behaviour Engine+.exe"
+    game = tmp_path / "segmento" / ".." / "game"
 
-    productores = construir_productores_de_move_aside(mo2_root=None, game=game, pandora_exe=exe)
+    productores = construir_productores_de_move_aside(mo2_root=None, game=game)
 
     pandora = next(p for p in productores if p.nombre == "pandora")
     assert pandora.lock_resource_id == BEHAVIOR_GRAPHS_RESOURCE_ID
-    # Los PADRES de los dirs que el rollback mueve aparte: ahí aterriza el residuo.
-    assert set(pandora.raices) == {d.parent for d in pandora_rollback_dirs(game=game, exe=exe)}
-    assert set(pandora.raices) == {game, exe.parent}
+    output = pandora_output_target(game=game)
+    assert output is not None
+    assert pandora.destinos == (game.resolve() / "Pandora_Output",)
+    assert pandora.destinos == (output,)
 
 
 def test_el_constructor_sin_rutas_resolubles_no_inventa_nada() -> None:
-    """Sin MO2 ni juego ni exe resolubles no se barre nada, en vez de sondear una
-    ruta inventada."""
-    assert construir_productores_de_move_aside(mo2_root=None, game=None, pandora_exe=None) == []
+    """Sin MO2 ni juego resolubles no se barre nada ni se inventa una ruta."""
+    assert construir_productores_de_move_aside(mo2_root=None, game=None) == []
 
 
 async def test_no_toca_nada_si_el_ritual_de_dyndolod_esta_en_curso(
@@ -453,8 +503,8 @@ async def test_no_toca_un_directorio_ajeno_que_se_parece_a_un_backup(
     tmp_path: pathlib.Path,
     sandbox: pathlib.Path,
 ) -> None:
-    """Desde que se barre la raíz del JUEGO —un directorio del usuario, no nuestro—
-    el patrón tiene que ser específico. ``DirectoryRollback`` usa
+    """Aunque se declara un target exacto bajo el JUEGO, el sufijo también debe ser
+    específico. ``DirectoryRollback`` usa
     ``time.time_ns()`` (19 dígitos); cualquier cosa con un sufijo corto es del
     operador y no se toca."""
     game = tmp_path / "game"
@@ -464,7 +514,13 @@ async def test_no_toca_un_directorio_ajeno_que_se_parece_a_un_backup(
     (ajeno / "nota.txt").write_text("no borrar", encoding="utf-8")
 
     resultado = await reconcile_orphan_rollback_backups(
-        productores=[ProductorDeMoveAside(nombre="pandora", lock_resource_id="behavior-graphs", raices=(game,))],
+        productores=[
+            ProductorDeMoveAside(
+                nombre="pandora",
+                lock_resource_id="behavior-graphs",
+                destinos=(game / "MisCosas",),
+            )
+        ],
         sandbox_root=sandbox,
         lock_manager=lock_manager,
     )
@@ -549,7 +605,7 @@ def test_un_enlace_con_nombre_de_backup_no_se_toma_como_backup(tmp_path: pathlib
     impostor.symlink_to(ajeno, target_is_directory=True)
 
     assert impostor.is_dir(), "is_dir() sigue el enlace — el motivo del bug"
-    assert _listar_backups_move_aside([raiz]) == []
+    assert _listar_backups_move_aside([raiz / "Pandora_Output"]) == []
 
 
 @symlink_guard
@@ -562,4 +618,4 @@ def test_un_backup_real_si_se_lista(tmp_path: pathlib.Path) -> None:
     real.mkdir()
     (real / "previo.hkx").write_text("estado previo", encoding="utf-8")
 
-    assert _listar_backups_move_aside([raiz]) == [real]
+    assert _listar_backups_move_aside([raiz / "Pandora_Output"]) == [real]
