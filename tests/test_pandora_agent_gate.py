@@ -67,6 +67,12 @@ def _configurar_runner(runner: MagicMock, tmp_path: pathlib.Path) -> pathlib.Pat
     return game
 
 
+def _materializar_output(game: pathlib.Path) -> None:
+    output = game.resolve() / "Pandora_Output"
+    output.mkdir(parents=True)
+    (output / "generado.hkx").write_bytes(b"pandora")
+
+
 # ── P1: el camino del agente serializa en el lock behavior-graphs ────────────────
 @pytest.mark.asyncio
 async def test_run_pandora_serializes_on_behavior_graphs_lock(
@@ -78,10 +84,11 @@ async def test_run_pandora_serializes_on_behavior_graphs_lock(
 
     async def on_run() -> MagicMock:
         seen["info"] = await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID)
+        _materializar_output(game)
         return _runner_result()
 
     runner = MagicMock()
-    _configurar_runner(runner, tmp_path)
+    game = _configurar_runner(runner, tmp_path)
     runner.run_pandora = AsyncMock(side_effect=on_run)
 
     out = json.loads(await run_pandora(runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager))
@@ -164,8 +171,13 @@ async def test_run_pandora_agent_path_emite_caja_negra_con_journal(
     journal.persist_action_manifest = AsyncMock()
     journal.persist_flight_report = AsyncMock()
     runner = MagicMock()
-    _configurar_runner(runner, tmp_path)
-    runner.run_pandora = AsyncMock(return_value=_runner_result())
+    game = _configurar_runner(runner, tmp_path)
+
+    async def _run_exitoso() -> MagicMock:
+        _materializar_output(game)
+        return _runner_result()
+
+    runner.run_pandora = AsyncMock(side_effect=_run_exitoso)
 
     with patch(
         "sky_claw.app.orchestrator.preview.flight_report.compose_flight_report_from_journal",

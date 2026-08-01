@@ -25,6 +25,7 @@ import asyncio
 import contextlib
 import logging
 import pathlib
+import stat
 from typing import TYPE_CHECKING, Any
 
 from sky_claw.app.db.locks import (
@@ -32,6 +33,7 @@ from sky_claw.app.db.locks import (
     LockAcquisitionError,
     SnapshotTransactionLock,
 )
+from sky_claw.app.security.links import link_kind_or_raise_with_retry
 from sky_claw.local.tools._dir_rollback import DirectoryRollback
 from sky_claw.local.tools.output_targets import pandora_output_target
 from sky_claw.local.tools.pandora_runner import (
@@ -267,6 +269,29 @@ class PandoraPipelineService:
         """Protege únicamente el output explícito que Pandora regenera completo."""
         output = self._managed_output()
         return [output] if output is not None else []
+
+    @staticmethod
+    def _validar_output_generado(output: pathlib.Path) -> None:
+        """Exige un ``Pandora_Output`` físico, directorio y no vacío.
+
+        La validación es deliberadamente superficial: todavía no existe evidencia
+        de rig real para congelar nombres o formas internas de los artefactos.
+        """
+        try:
+            tipo_de_enlace = link_kind_or_raise_with_retry(output)
+            if tipo_de_enlace is not None:
+                raise PandoraExecutionError(
+                    f"Pandora no generó un output físico seguro en '{output}': la ruta es un enlace ({tipo_de_enlace})."
+                )
+            estado = output.lstat()
+            if getattr(estado, "st_reparse_tag", 0) or not stat.S_ISDIR(estado.st_mode):
+                raise PandoraExecutionError(f"Pandora no generó un directorio físico seguro en '{output}'.")
+            if next(output.iterdir(), None) is None:
+                raise PandoraExecutionError(f"Pandora generó un directorio vacío en '{output}'.")
+        except PandoraExecutionError:
+            raise
+        except OSError as exc:
+            raise PandoraExecutionError(f"Pandora no dejó un output válido en '{output}': {exc}") from exc
 
     async def _cerrar_tx_tras_rollback(
         self,
@@ -563,6 +588,7 @@ class PandoraPipelineService:
                 # árbol parcial queda en disco. Ver _RunFallidoError.
                 if not result.success:
                     raise _RunFallidoError(result)
+                await asyncio.to_thread(self._validar_output_generado, managed_output)
                 run_exitoso = True
             # Lock liberado y salida confirmada: el run fue exitoso (un fallo habría
             # salido por _RunFallidoError / PandoraExecutionError).

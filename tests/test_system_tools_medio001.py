@@ -76,15 +76,20 @@ class TestSystemToolsSanitization:
             pandora_exe=tmp_path / "Pandora" / "Pandora.exe",
             game_path=game,
         )
-        runner.run_pandora = AsyncMock(
-            return_value=MagicMock(
+
+        async def _run_exitoso() -> MagicMock:
+            output = game.resolve() / "Pandora_Output"
+            output.mkdir()
+            (output / "generado.hkx").write_bytes(b"pandora")
+            return MagicMock(
                 success=True,
                 return_code=0,
                 stdout=bad_stdout,
                 stderr=bad_stderr,
                 duration_seconds=2.0,
             )
-        )
+
+        runner.run_pandora = AsyncMock(side_effect=_run_exitoso)
         lock_manager, snapshot_manager = proteccion_pandora
         result = json.loads(
             await run_pandora(

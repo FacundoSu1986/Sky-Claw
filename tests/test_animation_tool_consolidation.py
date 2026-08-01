@@ -258,7 +258,14 @@ async def test_run_pandora_tool_uses_injected_runner(
         pandora_exe=tmp_path / "Pandora" / "Pandora.exe",
         game_path=game,
     )
-    injected.run_pandora = AsyncMock(return_value=_runner_result())
+
+    async def _run_exitoso() -> MagicMock:
+        output = game.resolve() / "Pandora_Output"
+        output.mkdir()
+        (output / "generado.hkx").write_bytes(b"pandora")
+        return _runner_result()
+
+    injected.run_pandora = AsyncMock(side_effect=_run_exitoso)
     lock_manager, snapshot_manager = proteccion_pandora
     reg = _make_registry(
         tmp_path=tmp_path,
