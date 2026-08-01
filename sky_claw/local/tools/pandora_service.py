@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import pathlib
 import stat
 from typing import TYPE_CHECKING, Any
@@ -272,22 +273,63 @@ class PandoraPipelineService:
 
     @staticmethod
     def _validar_output_generado(output: pathlib.Path) -> None:
-        """Exige un ``Pandora_Output`` físico, directorio y no vacío.
+        """Exige un árbol físico con al menos un archivo regular no vacío.
 
-        La validación es deliberadamente superficial: todavía no existe evidencia
-        de rig real para congelar nombres o formas internas de los artefactos.
+        No se congelan nombres ni extensiones: el rig real todavía debe demostrar
+        la forma exacta. Todo nodo se clasifica antes de enumerarlo y cualquier
+        enlace/reparse invalida el árbol completo sin atravesarlo.
         """
+
+        def _misma_entrada(antes: os.stat_result, despues: os.stat_result) -> bool:
+            return (
+                antes.st_dev == despues.st_dev
+                and antes.st_ino == despues.st_ino
+                and stat.S_IFMT(antes.st_mode) == stat.S_IFMT(despues.st_mode)
+                and getattr(antes, "st_reparse_tag", 0) == getattr(despues, "st_reparse_tag", 0)
+            )
+
         try:
-            tipo_de_enlace = link_kind_or_raise_with_retry(output)
-            if tipo_de_enlace is not None:
-                raise PandoraExecutionError(
-                    f"Pandora no generó un output físico seguro en '{output}': la ruta es un enlace ({tipo_de_enlace})."
-                )
-            estado = output.lstat()
-            if getattr(estado, "st_reparse_tag", 0) or not stat.S_ISDIR(estado.st_mode):
-                raise PandoraExecutionError(f"Pandora no generó un directorio físico seguro en '{output}'.")
-            if next(output.iterdir(), None) is None:
-                raise PandoraExecutionError(f"Pandora generó un directorio vacío en '{output}'.")
+            pendientes = [output]
+            archivo_positivo = False
+            while pendientes:
+                actual = pendientes.pop()
+                tipo_de_enlace = link_kind_or_raise_with_retry(actual)
+                if tipo_de_enlace is not None:
+                    raise PandoraExecutionError(
+                        f"Pandora no generó un output físico seguro en '{output}': "
+                        f"'{actual}' es un enlace ({tipo_de_enlace})."
+                    )
+                estado = actual.lstat()
+                if getattr(estado, "st_reparse_tag", 0):
+                    raise PandoraExecutionError(
+                        f"Pandora no generó un output físico seguro en '{output}': '{actual}' es un reparse point."
+                    )
+                if stat.S_ISDIR(estado.st_mode):
+                    # Mismo patrón que ``links._borrar_recursivo``: abrir primero,
+                    # revalidar identidad y sólo entonces consumir las entradas.
+                    # Si la ruta cambió a un junction en la ventana, no se enumera
+                    # el árbol al que apunta.
+                    with os.scandir(actual) as entradas:
+                        tipo_despues = link_kind_or_raise_with_retry(actual)
+                        estado_despues = actual.lstat()
+                        if tipo_despues is not None or not _misma_entrada(estado, estado_despues):
+                            raise PandoraExecutionError(
+                                f"Pandora no generó un output físico estable en '{output}': "
+                                f"'{actual}' cambió durante la inspección."
+                            )
+                        hijos = [pathlib.Path(entrada.path) for entrada in entradas]
+                    pendientes.extend(reversed(hijos))
+                elif stat.S_ISREG(estado.st_mode):
+                    if actual == output:
+                        raise PandoraExecutionError(f"Pandora no generó un directorio físico seguro en '{output}'.")
+                    archivo_positivo = archivo_positivo or estado.st_size > 0
+                else:
+                    raise PandoraExecutionError(
+                        f"Pandora no generó un output físico seguro en '{output}': "
+                        f"'{actual}' no es un archivo regular ni un directorio."
+                    )
+            if not archivo_positivo:
+                raise PandoraExecutionError(f"Pandora no generó ningún archivo regular con contenido en '{output}'.")
         except PandoraExecutionError:
             raise
         except OSError as exc:

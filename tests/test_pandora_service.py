@@ -1020,29 +1020,148 @@ async def test_exit_cero_sin_output_restaurado_conserva_el_arbol_previo(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("forma", ["vacio", "archivo"])
-async def test_exit_cero_rechaza_output_que_no_es_un_arbol_no_vacio(
+@pytest.mark.parametrize("forma", ["solo_directorios", "archivo_cero"])
+async def test_exit_cero_rechaza_arbol_sin_archivo_regular_positivo_y_restaura(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
     tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
     forma: str,
 ) -> None:
-    """Un directorio vacío o un archivo no prueban que Pandora generó artefactos."""
+    """Directorios vacíos y placeholders de 0 bytes no prueban generación."""
     game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "irremplazable")
+    esperado = (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes()
 
     async def _corre_output_invalido() -> PandoraResult:
-        if forma == "vacio":
-            salida.mkdir()
+        (salida / "nivel" / "profundo").mkdir(parents=True)
+        if forma == "archivo_cero":
+            (salida / "nivel" / "profundo" / "placeholder").write_bytes(b"")
         else:
-            salida.write_text("no es un árbol", encoding="utf-8")
+            (salida / "otro_directorio").mkdir()
         return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
 
-    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_output_invalido)
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_output_invalido,
+        journal=mock_journal,
+    )
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes() == esperado
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
+@pytest.mark.asyncio
+async def test_exit_cero_rechaza_pandora_output_que_es_archivo(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """El artefacto raíz sigue siendo un árbol, no un archivo suelto."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+
+    async def _corre_con_archivo_raiz() -> PandoraResult:
+        salida.write_bytes(b"contenido")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_con_archivo_raiz,
+        journal=mock_journal,
+    )
 
     result = await svc.generate_animations()
 
     assert result["success"] is False
     assert not salida.exists()
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
+@pytest.mark.asyncio
+@junction_guard
+async def test_exit_cero_rechaza_junction_anidado_sin_atravesarlo_y_restaura(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """Un enlace en cualquier nivel invalida todo el árbol y no se recorre."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "irremplazable")
+    esperado = (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes()
+    ajeno = tmp_path / "arbol_ajeno_anidado"
+    _escribir_output(ajeno, "no tocar")
+
+    async def _corre_con_junction_anidado() -> PandoraResult:
+        salida.mkdir()
+        (salida / "archivo_fisico").write_bytes(b"contenido")
+        motivo = crear_junction(salida / "enlace_anidado", ajeno)
+        assert motivo is None, motivo
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_con_junction_anidado,
+        journal=mock_journal,
+    )
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert (salida / "meshes" / "actors" / "defaultmale.hkx").read_bytes() == esperado
+    assert _leer_output(ajeno) == "no tocar"
+    mock_journal.commit_transaction.assert_not_called()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
+@pytest.mark.asyncio
+async def test_output_con_archivo_regular_positivo_commitea(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """No se congela una extensión: cualquier archivo físico positivo alcanza."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+
+    async def _corre_con_archivo() -> PandoraResult:
+        (salida / "nivel" / "profundo").mkdir(parents=True)
+        (salida / "nivel" / "profundo" / "artefacto_sin_extension").write_bytes(b"x")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    svc = _svc_con_salida_real(
+        lock_manager,
+        snapshot_manager,
+        game=game,
+        exe=exe,
+        corrida=_corre_con_archivo,
+        journal=mock_journal,
+    )
+
+    with patch(
+        "sky_claw.app.orchestrator.preview.flight_report.compose_flight_report_from_journal",
+        AsyncMock(return_value=MagicMock()),
+    ):
+        result = await svc.generate_animations()
+
+    assert result["success"] is True
+    mock_journal.commit_transaction.assert_awaited_once_with(77)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
 
 
 @pytest.mark.asyncio

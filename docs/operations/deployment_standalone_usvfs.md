@@ -125,17 +125,20 @@ El destino de salida define qué se puede deshacer cuando un ritual falla:
   puede snapshotear antes de correr y restaurar si el run falla.
   *Estado: implementado en el PR #395; hasta que ese PR esté mergeado, tratá a
   Wrye Bash como el caso de abajo.*
-- **Pandora y BodySlide** — escriben en **directorios compartidos** (el `Data` del
-  juego, el directorio del ejecutable). **No hay rollback automático:**
-  un fallo a mitad de camino deja la salida parcial en disco. Es una limitación
-  conocida y declarada, no un descuido — revertir automáticamente un directorio compartido
-  sería más destructivo que el fallo que intenta reparar. Ante un run fallido de
-  Pandora o BodySlide, asumí que el árbol quedó modificado.
+- **Pandora** — escribe en el directorio dedicado
+  `<juego resuelto>/Pandora_Output`. `DirectoryRollback` mueve aparte el árbol
+  previo y lo restaura ante fallo; el reconciliador de arranque vigente opera
+  sobre ese destino exacto bajo el lock `behavior-graphs`.
+- **BodySlide** — escribe en directorios compartidos. **No hay rollback
+  automático:** un fallo a mitad de camino deja la salida parcial en disco.
+  Revertir automáticamente un directorio compartido sería más destructivo que
+  el fallo que intenta reparar.
 
 Si el proceso muere de forma dura (corte de luz, cierre forzado) durante un
-ritual, mirá [Recuperación](recovery.md). *Estado: la reconciliación automática
-de los backups que quedan a mitad de camino llega en el PR #396; hasta
-entonces, el residuo queda en disco para revisión manual.*
+ritual, mirá [Recuperación](recovery.md). Para Pandora, el reconciliador actual
+reconoce los backups de su destino exacto. Sigue pendiente un smoke en un rig
+real que confirme que Pandora respeta `--output` y determine la forma exacta de
+sus artefactos; los tests no sustituyen esa evidencia.
 
 ## La única excepción: el broker VFS
 
