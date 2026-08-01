@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import pathlib
 
 import pytest
 
 from sky_claw.app.security import links
-from sky_claw.local.tools._dir_rollback import DirectoryRollback, _borrar_arbol_o_enlace
+from sky_claw.local.tools._dir_rollback import (
+    DirectoryRollback,
+    _borrar_arbol_o_enlace,
+    _esperar_hasta_terminal,
+)
 from tests._symlink_guard import crear_junction, is_junction_real, junction_guard, symlink_guard
 
 
@@ -234,6 +239,47 @@ async def test_first_run_no_backup_success(tmp_path: pathlib.Path) -> None:
         (target / "new.txt").write_text("NEW", encoding="utf-8")
 
     assert (target / "new.txt").read_text(encoding="utf-8") == "NEW"
+
+
+async def test_target_existente_que_es_archivo_falla_antes_del_move_aside(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "Output"
+    target.write_bytes(b"irremplazable")
+    rb = DirectoryRollback(target)
+
+    with pytest.raises(OSError, match="directorio físico real"):
+        await rb.__aenter__()
+
+    assert target.read_bytes() == b"irremplazable"
+    assert rb.rollback_completed is True
+    assert rb.finalization_completed is True
+    assert not list(tmp_path.glob("Output.rollback-*"))
+
+
+async def test_espera_terminal_cede_el_loop_tras_cancelacion_del_waiter() -> None:
+    liberar = asyncio.Event()
+    ticks = 0
+
+    async def _hija() -> None:
+        await liberar.wait()
+
+    async def _ticker() -> None:
+        nonlocal ticks
+        while not liberar.is_set():
+            ticks += 1
+            await asyncio.sleep(0)
+
+    hija = asyncio.create_task(_hija())
+    waiter = asyncio.create_task(_esperar_hasta_terminal(hija))
+    ticker = asyncio.create_task(_ticker())
+    await asyncio.sleep(0)
+    waiter.cancel()
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert ticks > 1
+    liberar.set()
+    assert await waiter is True
+    await ticker
 
 
 async def test_first_run_failure_removes_partial(tmp_path: pathlib.Path) -> None:
@@ -607,7 +653,7 @@ async def test_cancelacion_en_preflight_conserva_estado_sin_mutacion(tmp_path: p
     (target / "previo.txt").write_text("intacto", encoding="utf-8")
     inspeccion_empezo = threading.Event()
     permitir_inspeccion = threading.Event()
-    inspeccion_real = _dir_rollback.link_kind_or_raise
+    inspeccion_real = _dir_rollback.link_kind_and_identity_or_raise
     rollback = DirectoryRollback(target)
 
     def _inspeccion_bloqueada(path: pathlib.Path) -> object:
@@ -615,7 +661,7 @@ async def test_cancelacion_en_preflight_conserva_estado_sin_mutacion(tmp_path: p
         assert permitir_inspeccion.wait(5.0), "el test no liberó el preflight"
         return inspeccion_real(path)
 
-    with patch.object(_dir_rollback, "link_kind_or_raise", _inspeccion_bloqueada):
+    with patch.object(_dir_rollback, "link_kind_and_identity_or_raise", _inspeccion_bloqueada):
         task = asyncio.create_task(rollback.__aenter__())
         assert await asyncio.to_thread(inspeccion_empezo.wait, 5.0)
         task.cancel()

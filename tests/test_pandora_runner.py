@@ -3,7 +3,9 @@ from __future__ import annotations
 import pathlib
 from unittest.mock import AsyncMock, patch
 
-from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
+import pytest
+
+from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraExecutionError, PandoraRunner
 
 
 async def test_pandora_pasa_una_sola_salida_absoluta_y_preserva_espacios(
@@ -32,3 +34,12 @@ def test_output_path_del_runner_es_el_destino_administrado(tmp_path: pathlib.Pat
     runner = PandoraRunner(PandoraConfig(pandora_exe=exe, game_path=game))
 
     assert runner.output_path == game.resolve() / "Pandora_Output"
+
+
+def test_output_path_falla_con_error_de_dominio_si_falta_game_path(tmp_path: pathlib.Path) -> None:
+    config = PandoraConfig(pandora_exe=tmp_path / "Pandora.exe", game_path=tmp_path)
+    object.__setattr__(config, "game_path", None)
+    runner = PandoraRunner(config)
+
+    with pytest.raises(PandoraExecutionError, match="game_path.*Pandora_Output"):
+        _ = runner.output_path

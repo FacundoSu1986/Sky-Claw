@@ -100,11 +100,12 @@ def test_u04_sigue_parcial_hasta_bodyslide_y_el_smoke_real_de_pandora() -> None:
 def test_pandora_documenta_la_salida_administrada_sin_cerrar_el_sandbox() -> None:
     sandbox = (_RAIZ / "sky_claw" / "local" / "mo2" / "sandbox_run.py").read_text(encoding="utf-8")
     adr = (_RAIZ / "docs" / "adr" / "0005-sandbox-promocion-sincrona-hitl.md").read_text(encoding="utf-8")
+    deployment = (_RAIZ / "docs" / "operations" / "deployment_standalone_usvfs.md").read_text(encoding="utf-8")
 
-    for texto in (sandbox, adr):
-        assert "--output" in texto
-        assert "Pandora_Output" in texto
-        assert "sandbox" in texto.lower()
+    assert "<game>/Pandora_Output" in sandbox
+    assert "<game>/Pandora_Output" in adr
+    assert "<juego resuelto>/Pandora_Output" in deployment
+    for texto in (sandbox, adr, deployment):
         assert "USVFS" in texto
     assert "supersedida" in adr.lower()
 

@@ -110,14 +110,18 @@ En `tests/test_output_targets.py`, importar `pandora_output_target` en lugar de
 plurales de Pandora por:
 
 ```python
-def test_pandora_tiene_un_unico_destino_administrado(tmp_path: pathlib.Path) -> None:
+def test_pandora_tiene_un_unico_destino_administrado(
+    tmp_path: pathlib.Path,
+) -> None:
     game = tmp_path / "game" / ".." / "Skyrim Special Edition"
 
     assert pandora_output_target(game=game) == game.resolve() / "Pandora_Output"
     assert pandora_output_target(game=None) is None
 
 
-def test_pandora_service_usa_el_destino_administrado(tmp_path: pathlib.Path) -> None:
+def test_pandora_service_usa_el_destino_administrado(
+    tmp_path: pathlib.Path,
+) -> None:
     game = tmp_path / "game"
     exe = tmp_path / "pandora" / "Pandora.exe"
     resolver = _resolver(game=game, mo2=tmp_path / "mo2")
@@ -587,7 +591,7 @@ git add tests/test_pandora_agent_gate.py sky_claw/app/agent/tools/system_tools.p
 git commit -m "fix: fail closed Pandora agent runs"
 ```
 
-### Task 4: Limitar el reconciliador a la raíz administrada
+### Task 4: Limitar el reconciliador al destino administrado
 
 **Files:**
 
@@ -595,12 +599,12 @@ git commit -m "fix: fail closed Pandora agent runs"
 - Modify: `sky_claw/local/tools/rollback_reconciler.py:46,205-249`
 - Modify: `sky_claw/app_context.py:1038-1042`
 
-- [ ] **Step 1: Escribir la expectativa de una única raíz**
+- [ ] **Step 1: Escribir la expectativa de un único destino**
 
 Cambiar el test del constructor de Pandora por:
 
 ```python
-def test_el_constructor_barre_solo_la_raiz_administrada_de_pandora(
+def test_el_constructor_barre_solo_el_destino_administrado_de_pandora(
     tmp_path: pathlib.Path,
 ) -> None:
     game = tmp_path / "game" / ".." / "Skyrim"
@@ -609,7 +613,9 @@ def test_el_constructor_barre_solo_la_raiz_administrada_de_pandora(
 
     pandora = next(p for p in productores if p.nombre == "pandora")
     assert pandora.lock_resource_id == BEHAVIOR_GRAPHS_RESOURCE_ID
-    assert pandora.raices == (game.resolve(),)
+    output_pandora = pandora_output_target(game=game)
+    assert output_pandora is not None
+    assert pandora.destinos == (output_pandora,)
 ```
 
 Actualizar las llamadas a `construir_productores_de_move_aside` para retirar
@@ -626,7 +632,7 @@ E:\Skyclaw_Main_Sync\.venv\Scripts\python.exe -m pytest `
 ```
 
 Expected: FAIL porque el constructor todavía requiere el ejecutable para añadir
-su segunda raíz.
+su segundo destino.
 
 - [ ] **Step 3: Derivar el productor desde `pandora_output_target`**
 
@@ -640,7 +646,7 @@ if output_pandora is not None:
         ProductorDeMoveAside(
             nombre="pandora",
             lock_resource_id=BEHAVIOR_GRAPHS_RESOURCE_ID,
-            raices=(output_pandora.parent,),
+            destinos=(output_pandora,),
         )
     )
 ```
@@ -667,7 +673,7 @@ estar junto a `<game>/Pandora_Output`.
 Run: el mismo comando del Step 2 con `red-4` reemplazado por `green-4`.
 
 Expected: PASS; las anclas exhaustivas siguen detectando todos los usuarios de
-`DirectoryRollback` y el productor Pandora tiene una sola raíz.
+`DirectoryRollback` y el productor Pandora tiene un solo destino exacto.
 
 - [ ] **Step 5: Commit**
 

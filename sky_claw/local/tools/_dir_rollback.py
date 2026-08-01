@@ -14,11 +14,17 @@ import asyncio
 import contextlib
 import logging
 import pathlib
+import stat
 import time
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from sky_claw.app.security.links import link_kind_or_raise, path_present, rmtree_link_aware
+from sky_claw.app.security.links import (
+    link_kind_and_identity_or_raise,
+    link_kind_or_raise,
+    path_present,
+    rmtree_link_aware,
+)
 
 logger = logging.getLogger("SkyClaw.DirectoryRollback")
 
@@ -194,13 +200,11 @@ class DirectoryRollback:
         self._should_rollback = should_rollback
         self._validate_final_target = validate_final_target
         self._backup: pathlib.Path | None = None
-        #: M-7: ``True`` significa que NO queda una mutación de este context sin
-        #: resolver. Empieza True porque preflight/link-check todavía no tocaron el
-        #: filesystem; cambia a False justo antes de activar un primer run o un
-        #: move-aside, y vuelve a True sólo tras confirmar/restaurar el estado
-        #: previo. Así un caller puede cerrar honestamente el journal aunque
-        #: ``__aenter__`` falle antes de mutar, sin confundirlo con un restore
-        #: fallido que dejó backup/parcial en disco.
+        #: M-7: outcome exclusivo del ROLLBACK. Empieza True porque el preflight
+        #: todavía no mutó; cambia a False al habilitar un primer run o move-aside
+        #: y sólo vuelve a True tras restaurar/confirmar el estado previo. En una
+        #: salida limpia queda False por diseño: el desenlace de su cleanup se
+        #: consulta mediante ``finalization_completed``.
         self.rollback_completed: bool = True
         self.finalization_completed: bool = True
 
@@ -231,12 +235,12 @@ class DirectoryRollback:
         # ``mkdir()`` posterior de la herramienta moría con un ``FileExistsError``
         # que no menciona enlaces y manda a depurar el lugar equivocado.
         #
-        # ``link_kind_or_raise`` con retry, no ``link_kind`` pelado (review
+        # ``link_kind_and_identity_or_raise`` con retry, no ``link_kind`` pelado (review
         # CodeRabbit #404): un bloqueo TRANSITORIO de AV/indexer acá se leía
         # como "no es un enlace" y dejaba pasar el move-aside — el mismo modo
         # de falla que ``_borrar_arbol_o_enlace`` ya cerró, sin cerrar en este
         # preflight.
-        tipo_de_enlace = await _fs_op_with_retry(link_kind_or_raise, self._target)
+        tipo_de_enlace, identidad_target = await _fs_op_with_retry(link_kind_and_identity_or_raise, self._target)
         if tipo_de_enlace is not None:
             raise OSError(
                 f"'{self._target}' es un enlace ({tipo_de_enlace}) y no un directorio real: "
@@ -244,13 +248,18 @@ class DirectoryRollback:
                 "no puede garantizar la restauración prometida. Reemplazá el enlace por "
                 "una carpeta real para correr este ritual con rollback."
             )
-        if not await asyncio.to_thread(path_present, self._target):
+        if identidad_target is None:
             # Primer run: no hay estado previo que preservar.
             # Desde este punto el body puede crear un parcial; queda pendiente
             # hasta que __aexit__ confirme su eliminación ante una excepción.
             self.rollback_completed = False
             self.finalization_completed = False
             return self
+        if not stat.S_ISDIR(identidad_target.st_mode):
+            raise OSError(
+                f"'{self._target}' existe pero no es un directorio físico real; "
+                "el rollback move-aside sólo protege directorios administrados."
+            )
         backup = self._target.with_name(f"{self._target.name}.rollback-{time.time_ns()}")
         # Se publica ANTES del rename: si la corrutina se cancela mientras el hilo
         # mueve el árbol, el caller puede inspeccionar el destino del backup aunque

@@ -1123,6 +1123,31 @@ async def test_exit_cero_rechaza_pandora_output_que_es_archivo(
 
 
 @pytest.mark.asyncio
+async def test_pandora_output_archivo_preexistente_falla_sin_moverlo_ni_ejecutar(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    salida.write_bytes(b"irremplazable")
+    corrida = AsyncMock(
+        return_value=PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+    )
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=corrida, journal=mock_journal
+    )
+
+    result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert salida.read_bytes() == b"irremplazable"
+    assert not list(salida.parent.glob(f"{salida.name}.rollback-*"))
+    corrida.assert_not_awaited()
+    mock_journal.commit_transaction.assert_not_called()
+
+
+@pytest.mark.asyncio
 @junction_guard
 async def test_exit_cero_rechaza_junction_anidado_sin_atravesarlo_y_restaura(
     lock_manager: DistributedLockManager,
@@ -1693,7 +1718,11 @@ async def test_preflight_de_rollback_falla_sin_mutar_y_cierra_journal(
     runner = AsyncMock()
     svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=runner, journal=mock_journal)
 
-    with patch.object(_dir_rollback, "link_kind_or_raise", return_value="symlink"):
+    with patch.object(
+        _dir_rollback,
+        "link_kind_and_identity_or_raise",
+        return_value=("symlink", salida.lstat()),
+    ):
         result = await svc.generate_animations()
 
     assert result["success"] is False

@@ -63,11 +63,14 @@ class PandoraRunner:
     @property
     def output_path(self) -> pathlib.Path:
         output_path = pandora_output_target(game=self.config.game_path)
-        assert output_path is not None
+        if output_path is None:
+            raise PandoraExecutionError(
+                "No se pudo resolver game_path para construir el destino administrado Pandora_Output."
+            )
         return output_path
 
     async def run_pandora(self) -> PandoraResult:
-        """Execute Pandora in auto mode for Skyrim Special Edition."""
+        """Ejecuta Pandora en modo automático para Skyrim Special Edition."""
         logger.info("[M-02] Executing Pandora Behavior Engine...")
         start_time = time.monotonic()
         game_path = self.config.game_path.resolve()
