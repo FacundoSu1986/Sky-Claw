@@ -721,6 +721,7 @@ async def test_cleanup_limpio_incierto_no_commitea_y_conserva_backup(
     tmp_path: pathlib.Path,
     mock_journal: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """El éxito del runner no tapa un descarte de backup no confirmado."""
     from sky_claw.local.tools._dir_rollback import DirectoryRollback
@@ -747,6 +748,8 @@ async def test_cleanup_limpio_incierto_no_commitea_y_conserva_backup(
     assert list(salida.parent.glob(f"{salida.name}.rollback-*"))
     mock_journal.commit_transaction.assert_not_called()
     mock_journal.mark_transaction_rolled_back.assert_not_called()
+    assert "sin restore confirmado; TX pendiente" in caplog.text
+    assert "salida parcial sigue en disco" not in caplog.text
 
 
 @pytest.mark.asyncio

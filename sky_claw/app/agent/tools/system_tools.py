@@ -495,9 +495,8 @@ async def run_pandora(
     (callers legacy / tests) el comportamiento no cambia.
     """
     if pandora_runner is None:
-        return json.dumps(
-            {"error": ("PandoraRunner is not configured. Set pandora_exe in config or install it via setup_tools.")}
-        )
+        detail = "PandoraRunner is not configured. Set pandora_exe in config or install it via setup_tools."
+        return json.dumps({"success": False, "message": detail, "error": detail})
 
     missing_managers = [
         name
@@ -525,9 +524,11 @@ async def run_pandora(
     try:
         res = await service.generate_animations()
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        detail = str(exc)
+        return json.dumps({"success": False, "message": detail, "error": detail})
     out: dict[str, Any] = {
         "success": res.get("success", False),
+        "message": str(res.get("message", "")),
         "return_code": res.get("return_code", -1),
         "stdout": sanitize_for_prompt(str(res.get("stdout", ""))) if res.get("stdout") else "",
         "stderr": sanitize_for_prompt(str(res.get("stderr", ""))) if res.get("stderr") else "",

@@ -704,10 +704,16 @@ class PandoraPipelineService:
             logger.error("Pandora falló (rc=%s); rollback de la salida: %s", exc.result.return_code, desenlace)
             return _attach_preflight(self._dict_de_resultado(exc.result), preflight_report)
         except PandoraExecutionError as exc:
-            # El runner lanzó DENTRO del stack (incluye PandoraTimeoutError, U-10): la
-            # excepción ya propagó por los DirectoryRollback y restauraron. Cerrar la
-            # TX según ese resultado real, no asumiendo que se revirtió.
-            desenlace = await self._cerrar_tx_tras_rollback(journal_tx_id, dir_rollbacks, hubo_restore=True)
+            # Puede venir del runner DENTRO del stack (incluye PandoraTimeoutError,
+            # U-10), tras atravesar los DirectoryRollback, o de la comprobación de
+            # finalización DESPUÉS de un run exitoso. Este segundo caso no atravesó
+            # una ruta de restore y debe quedar PENDING sin diagnosticar falsamente
+            # una salida parcial.
+            desenlace = await self._cerrar_tx_tras_rollback(
+                journal_tx_id,
+                dir_rollbacks,
+                hubo_restore=not run_exitoso,
+            )
             logger.error("Pandora execution failed: %s; rollback de la salida: %s", exc, desenlace)
             return _attach_preflight(
                 {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}, preflight_report
