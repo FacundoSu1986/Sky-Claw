@@ -1303,3 +1303,29 @@ async def test_cancelacion_durante_move_aside_refleja_el_undo_en_journal(
     mock_journal.commit_transaction.assert_not_called()
     assert not _dir_rollback._background_tasks
     assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_preflight_de_rollback_falla_sin_mutar_y_cierra_journal(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """Un rechazo link-aware anterior al rename no deja una TX pendiente ficticia."""
+    from sky_claw.local.tools import _dir_rollback
+
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "intacto")
+    runner = AsyncMock()
+    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=runner, journal=mock_journal)
+
+    with patch.object(_dir_rollback, "link_kind_or_raise", return_value="symlink"):
+        result = await svc.generate_animations()
+
+    assert result["success"] is False
+    assert _leer_output(salida) == "intacto"
+    assert not list(salida.parent.glob(f"{salida.name}.rollback-*"))
+    assert runner.await_count == 0
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.commit_transaction.assert_not_called()

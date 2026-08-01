@@ -334,6 +334,47 @@ class DynDOLODPipelineService:
         except Exception:  # noqa: BLE001 — boundary best-effort del journal
             logger.error("Fallo al persistir el informe de vuelo de la TX %d", tx_id, exc_info=True)
 
+    async def _cerrar_tx_tras_rollback(
+        self,
+        tx_id: int | None,
+        dir_rollbacks: list[DirectoryRollback],
+        *,
+        journal_committed: bool,
+        contexto: str,
+    ) -> bool:
+        """Marca ROLLED_BACK sólo cuando todos los move-aside quedaron resueltos.
+
+        Un ``DirectoryRollback`` registrado antes de completar ``__aenter__``
+        también participa: ``rollback_completed=True`` cubre preflight sin mutación
+        o undo confirmado; False conserva la TX PENDING y el backup visible para
+        recovery manual. Una TX ya commiteada es un punto de no-retorno y nunca se
+        re-marca por una cancelación post-run.
+        """
+        if journal_committed:
+            return False
+        rolled_back = all(dr.rollback_completed for dr in dir_rollbacks)
+        if tx_id is None:
+            return rolled_back
+        if not rolled_back:
+            logger.critical(
+                "Rollback DynDOLOD INCOMPLETO tras %s (TX %d): la TX queda PENDIENTE; "
+                "revisar backups move-aside manualmente.",
+                contexto,
+                tx_id,
+            )
+            return False
+        try:
+            await self._journal.mark_transaction_rolled_back(tx_id)
+        except Exception as journal_exc:  # noqa: BLE001 — boundary best-effort del journal
+            logger.error(
+                "Failed to mark TX %d as rolled back after %s: %s",
+                tx_id,
+                contexto,
+                journal_exc,
+                exc_info=True,
+            )
+        return True
+
     # ------------------------------------------------------------------
     # Pipeline principal
     # ------------------------------------------------------------------
@@ -398,6 +439,7 @@ class DynDOLODPipelineService:
         start_time = time.monotonic()
         rolled_back = False
         tx_id: int | None = None
+        journal_committed = False
         # M-7: rastrear los DirectoryRollback para reportar el resultado REAL del
         # rollback (dr.rollback_completed) en vez de hardcodear rolled_back=True.
         # El AsyncExitStack ejecuta los __aexit__ (restore) ANTES de que corran los
@@ -515,8 +557,8 @@ class DynDOLODPipelineService:
                 # (review Codex #399 sobre el hermano Pandora — mismo agujero acá).
                 for output_dir in rollback_dirs:
                     dr = DirectoryRollback(output_dir, should_rollback=lambda: not tx_lock.lease_lost)
-                    await tx_stack.enter_async_context(dr)
                     dir_rollbacks.append(dr)
+                    await tx_stack.enter_async_context(dr)
 
                 # Ejecutar pipeline
                 result = await runner.run_full_pipeline(
@@ -563,6 +605,7 @@ class DynDOLODPipelineService:
 
                 # Commit en journal
                 await self._journal.commit_transaction(tx_id)
+                journal_committed = True
 
                 # F1 (review Codex #312): tras el commit el output es FINAL —
                 # confirmar los move-aside para que un fallo post-commit (incl. una
@@ -621,22 +664,16 @@ class DynDOLODPipelineService:
                 )
 
         except _ActionManifestError as exc:
-            # La caja negra no se pudo emitir: ningún LOD se generó. Los
-            # DirectoryRollback ya restauraron (nada mutó); marcar la TX para no
-            # dejarla PENDING (guardado — el journal que ya reventó podría fallar
-            # de nuevo). rolled_back real vía dir_rollbacks (M-7).
-            rolled_back = all(dr.rollback_completed for dr in dir_rollbacks)
+            # La caja negra no se pudo emitir: ningún LOD se generó. Cerrar la TX
+            # sólo si todos los DirectoryRollback observados confirman que no quedó
+            # mutación sin resolver (M-7).
+            rolled_back = await self._cerrar_tx_tras_rollback(
+                tx_id,
+                dir_rollbacks,
+                journal_committed=journal_committed,
+                contexto="fallo del manifiesto",
+            )
             duration = time.monotonic() - start_time
-            if tx_id is not None:
-                try:
-                    await self._journal.mark_transaction_rolled_back(tx_id)
-                except Exception as journal_exc:  # noqa: BLE001 — boundary best-effort del journal
-                    logger.error(
-                        "Failed to mark TX %d rolled back after manifest failure: %s",
-                        tx_id,
-                        journal_exc,
-                        exc_info=True,
-                    )
             logger.error("DynDOLOD (stage 9): no se pudo emitir el ActionManifest; abortado: %s", exc)
             await self._publish_completed(
                 preset=preset,
@@ -689,20 +726,14 @@ class DynDOLODPipelineService:
             # DirectoryRollback ya corrieron (restore best-effort); rolled_back es
             # True sólo si TODOS completaron. Un rmtree/rename fallido deja el output
             # parcial en disco y debe reflejarse como rolled_back=False.
-            rolled_back = all(dr.rollback_completed for dr in dir_rollbacks)
+            rolled_back = await self._cerrar_tx_tras_rollback(
+                tx_id,
+                dir_rollbacks,
+                journal_committed=journal_committed,
+                contexto="error de dominio",
+            )
             duration = time.monotonic() - start_time
             logger.error("DynDOLOD pipeline domain error: %s (rolled_back=%s)", exc, rolled_back)
-
-            if tx_id is not None:
-                try:
-                    await self._journal.mark_transaction_rolled_back(tx_id)
-                except Exception as journal_exc:
-                    logger.error(
-                        "Failed to mark TX %d as rolled back: %s",
-                        tx_id,
-                        journal_exc,
-                        exc_info=True,
-                    )
 
             await self._log_result_error(preset, str(exc))
             await self._publish_completed(
@@ -730,41 +761,30 @@ class DynDOLODPipelineService:
             # Cancelación de task — hacer cleanup mínimo y re-lanzar.
             duration = time.monotonic() - start_time
             logger.warning("DynDOLOD pipeline cancelled after %.1fs", duration)
-            if tx_id is not None:
-                try:
-                    await self._journal.mark_transaction_rolled_back(tx_id)
-                except Exception as journal_exc:
-                    # Aislar el fallo secundario para no enmascarar la
-                    # cancelación; traceback al log como sus handlers hermanos.
-                    logger.error(
-                        "Failed to mark TX %d as rolled back on cancel: %s",
-                        tx_id,
-                        journal_exc,
-                        exc_info=True,
-                    )
+            await self._cerrar_tx_tras_rollback(
+                tx_id,
+                dir_rollbacks,
+                journal_committed=journal_committed,
+                contexto="cancelación",
+            )
             raise
 
         except Exception as exc:
-            # PREVENCIÓN T11: Red de seguridad final — NUNCA dejar TX en PENDING
-            # M-7: resultado real del rollback (ver handler de dominio arriba).
-            rolled_back = all(dr.rollback_completed for dr in dir_rollbacks)
+            # PREVENCIÓN T11: red de seguridad final con resultado REAL del
+            # rollback. Una TX queda PENDING a propósito si algún move-aside no
+            # pudo confirmar su recuperación (ver handler de dominio arriba).
+            rolled_back = await self._cerrar_tx_tras_rollback(
+                tx_id,
+                dir_rollbacks,
+                journal_committed=journal_committed,
+                contexto="error inesperado",
+            )
             duration = time.monotonic() - start_time
             logger.error(
                 "Unexpected error in DynDOLOD pipeline: %s",
                 exc,
                 exc_info=True,
             )
-
-            if tx_id is not None:
-                try:
-                    await self._journal.mark_transaction_rolled_back(tx_id)
-                except Exception as journal_exc:
-                    logger.error(
-                        "Failed to mark TX %d as rolled back after unexpected error: %s",
-                        tx_id,
-                        journal_exc,
-                        exc_info=True,
-                    )
 
             await self._log_result_error(preset, str(exc))
             await self._publish_completed(

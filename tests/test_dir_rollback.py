@@ -333,6 +333,94 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
     assert rollback.rollback_completed is True
 
 
+async def test_cancelaciones_repetidas_esperan_el_undo_hasta_terminal(tmp_path: pathlib.Path) -> None:
+    """Una segunda cancelación no libera al caller mientras el undo sigue en vuelo."""
+    import asyncio
+    import threading
+    from unittest.mock import patch
+
+    from sky_claw.local.tools import _dir_rollback
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("irremplazable", encoding="utf-8")
+
+    rename_real = pathlib.Path.rename
+    move_empezo = threading.Event()
+    permitir_move = threading.Event()
+    undo_empezo = threading.Event()
+    permitir_undo = threading.Event()
+    rollback = DirectoryRollback(target)
+
+    def _rename_con_barreras(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
+        if self == target:
+            move_empezo.set()
+            assert permitir_move.wait(5.0), "el test no liberó el move-aside"
+        else:
+            undo_empezo.set()
+            assert permitir_undo.wait(5.0), "el test no liberó el undo"
+        return rename_real(self, dst)
+
+    async def _entrar() -> None:
+        async with rollback:
+            pytest.fail("el body no debe empezar tras cancelar __aenter__")
+
+    with patch.object(pathlib.Path, "rename", _rename_con_barreras):
+        task = asyncio.create_task(_entrar())
+        assert await asyncio.to_thread(move_empezo.wait, 5.0)
+        task.cancel()
+        permitir_move.set()
+        assert await asyncio.to_thread(undo_empezo.wait, 5.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        try:
+            assert not task.done(), "la segunda cancelación liberó al caller antes del undo"
+        finally:
+            permitir_undo.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    assert rollback.rollback_completed is True
+    assert (target / "previo.txt").read_text(encoding="utf-8") == "irremplazable"
+    assert not list(tmp_path.glob("Output.rollback-*"))
+    assert not _dir_rollback._background_tasks
+
+
+async def test_cancelacion_en_preflight_conserva_estado_sin_mutacion(tmp_path: pathlib.Path) -> None:
+    """Cancelar antes del rename deja el target intacto y el outcome confirmado."""
+    import asyncio
+    import threading
+    from unittest.mock import patch
+
+    from sky_claw.local.tools import _dir_rollback
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "previo.txt").write_text("intacto", encoding="utf-8")
+    inspeccion_empezo = threading.Event()
+    permitir_inspeccion = threading.Event()
+    inspeccion_real = _dir_rollback.link_kind_or_raise
+    rollback = DirectoryRollback(target)
+
+    def _inspeccion_bloqueada(path: pathlib.Path) -> object:
+        inspeccion_empezo.set()
+        assert permitir_inspeccion.wait(5.0), "el test no liberó el preflight"
+        return inspeccion_real(path)
+
+    with patch.object(_dir_rollback, "link_kind_or_raise", _inspeccion_bloqueada):
+        task = asyncio.create_task(rollback.__aenter__())
+        assert await asyncio.to_thread(inspeccion_empezo.wait, 5.0)
+        task.cancel()
+        permitir_inspeccion.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert rollback.rollback_completed is True
+    assert (target / "previo.txt").read_text(encoding="utf-8") == "intacto"
+    assert not list(tmp_path.glob("Output.rollback-*"))
+
+
 async def test_veto_de_lease_omite_el_restore_y_conserva_el_backup(tmp_path: pathlib.Path) -> None:
     """Perdida la exclusividad, NO se restaura — pero el backup se conserva.
 
@@ -651,14 +739,16 @@ async def test_target_enlazado_es_fail_closed_y_no_deja_backup(tmp_path: pathlib
     target = tmp_path / "Output"
     target.symlink_to(real, target_is_directory=True)
 
+    rollback = DirectoryRollback(target)
     with pytest.raises(OSError, match="enlace"):
-        async with DirectoryRollback(target):
+        async with rollback:
             pytest.fail("el body no debe correr: el rollback no se puede garantizar")
 
     # Nada se movió ni se borró: el enlace sigue en su lugar y su destino intacto.
     assert target.is_symlink()
     assert (real / "dato.txt").read_text(encoding="utf-8") == "del usuario"
     assert not list(tmp_path.glob("Output.rollback-*"))
+    assert rollback.rollback_completed is True
 
 
 @symlink_guard

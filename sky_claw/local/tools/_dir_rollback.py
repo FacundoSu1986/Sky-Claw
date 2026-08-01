@@ -171,12 +171,14 @@ class DirectoryRollback:
         #: capas apliquen el MISMO criterio.
         self._should_rollback = should_rollback
         self._backup: pathlib.Path | None = None
-        #: M-7: refleja si el rollback en el path de excepción se COMPLETÓ. El
-        #: restore es best-effort (traga OSError sin re-raise), así que el caller no
-        #: puede confiar en "hubo excepción ⇒ rolled_back=True". Este flag distingue
-        #: un restore exitoso de un fallo silencioso de rmtree/rename que dejó el
-        #: output parcial en disco. Espeja SnapshotTransactionLock.rollback_completed.
-        self.rollback_completed: bool = False
+        #: M-7: ``True`` significa que NO queda una mutación de este context sin
+        #: resolver. Empieza True porque preflight/link-check todavía no tocaron el
+        #: filesystem; cambia a False justo antes de activar un primer run o un
+        #: move-aside, y vuelve a True sólo tras confirmar/restaurar el estado
+        #: previo. Así un caller puede cerrar honestamente el journal aunque
+        #: ``__aenter__`` falle antes de mutar, sin confundirlo con un restore
+        #: fallido que dejó backup/parcial en disco.
+        self.rollback_completed: bool = True
 
     @property
     def target(self) -> pathlib.Path:
@@ -220,12 +222,16 @@ class DirectoryRollback:
             )
         if not await asyncio.to_thread(path_present, self._target):
             # Primer run: no hay estado previo que preservar.
+            # Desde este punto el body puede crear un parcial; queda pendiente
+            # hasta que __aexit__ confirme su eliminación ante una excepción.
+            self.rollback_completed = False
             return self
         backup = self._target.with_name(f"{self._target.name}.rollback-{time.time_ns()}")
         # Se publica ANTES del rename: si la corrutina se cancela mientras el hilo
         # mueve el árbol, el caller puede inspeccionar el destino del backup aunque
         # ``__aenter__`` nunca llegue a devolver.
         self._backup = backup
+        self.rollback_completed = False
         # El rename corre en un hilo (``asyncio.to_thread``): cancelar la corrutina
         # que lo espera NO lo interrumpe. Sin shield, una cancelación acá dejaba el
         # rename completándose en background mientras el caller nunca llegaba a
@@ -238,8 +244,16 @@ class DirectoryRollback:
             await asyncio.shield(rename_task)
         except asyncio.CancelledError:
             deshacer = _track(asyncio.ensure_future(_deshacer_rename_cancelado(rename_task, backup, self._target)))
-            with contextlib.suppress(asyncio.CancelledError):
-                self.rollback_completed = await asyncio.shield(deshacer)
+            # Una cancelación adicional no puede liberar al caller ni, por ende,
+            # el lock exterior mientras el undo siga mutando el filesystem. Se
+            # consumen las señales adicionales sólo para esperar esta task HASTA
+            # terminal; la CancelledError original se repropaga abajo.
+            while not deshacer.done():
+                try:
+                    await asyncio.shield(deshacer)
+                except asyncio.CancelledError:
+                    continue
+            self.rollback_completed = deshacer.result()
             raise
         except OSError as exc:
             # No todo OSError garantiza "no mutó": confirmar el estado real y, si

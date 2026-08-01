@@ -686,6 +686,119 @@ async def test_directory_rollback_discards_backup_on_success(
     assert not list(mods.glob("DynDOLOD Output.rollback-*"))
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restore_falla", [False, True], ids=["restore_confirmado", "restore_fallido"])
+async def test_cancelacion_durante_enter_refleja_undo_en_journal(
+    service: DynDOLODPipelineService,
+    mock_lock_manager: AsyncMock,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+    restore_falla: bool,
+) -> None:
+    """DynDOLOD registra el rollback antes de entrar y respeta su outcome real."""
+    import threading
+    from collections.abc import Callable
+
+    from sky_claw.local.tools import _dir_rollback
+    from sky_claw.local.tools._dir_rollback import DirectoryRollback
+
+    mods = tmp_path / "mods"
+    output_dir = mods / "DynDOLOD Output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "sentinel.esp").write_text("ORIGINAL", encoding="utf-8")
+    runner = _mock_runner_with_output(mods)
+    runner.run_full_pipeline = AsyncMock()
+    service._runner = runner
+
+    rename_real = pathlib.Path.rename
+    move_empezo = threading.Event()
+    permitir_move = threading.Event()
+    capturados: list[DirectoryRollback] = []
+
+    class _RollbackCapturado(DirectoryRollback):
+        def __init__(
+            self,
+            target_dir: pathlib.Path,
+            *,
+            enabled: bool = True,
+            should_rollback: Callable[[], bool] | None = None,
+        ) -> None:
+            super().__init__(target_dir, enabled=enabled, should_rollback=should_rollback)
+            capturados.append(self)
+
+    def _rename_controlado(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
+        if self == output_dir:
+            move_empezo.set()
+            assert permitir_move.wait(5.0), "el test no liberó el move-aside"
+            return rename_real(self, dst)
+        if restore_falla and self.name.startswith(f"{output_dir.name}.rollback-") and dst == output_dir:
+            raise PermissionError("restore bloqueado persistentemente")
+        return rename_real(self, dst)
+
+    with (
+        patch("sky_claw.local.tools.dyndolod_service.DirectoryRollback", _RollbackCapturado),
+        patch.object(pathlib.Path, "rename", _rename_controlado),
+        patch.object(_dir_rollback, "_FS_BACKOFF_SECONDS", 0.0),
+    ):
+        task = asyncio.create_task(service.execute(preset="Medium", run_texgen=False, create_snapshot=True))
+        assert await asyncio.to_thread(move_empezo.wait, 5.0)
+        task.cancel()
+        permitir_move.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    assert len(capturados) == 1
+    assert capturados[0].rollback_completed is (not restore_falla)
+    runner.run_full_pipeline.assert_not_awaited()
+    backups = list(mods.glob("DynDOLOD Output.rollback-*"))
+    if restore_falla:
+        assert not output_dir.exists()
+        assert len(backups) == 1
+        mock_journal.mark_transaction_rolled_back.assert_not_called()
+    else:
+        assert (output_dir / "sentinel.esp").read_text(encoding="utf-8") == "ORIGINAL"
+        assert not backups
+        mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(42)
+    assert not _dir_rollback._background_tasks
+    mock_lock_manager.release_lock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_post_commit_no_remarca_journal_ni_revierte_output(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Una cancelación del flight report ocurre después del punto de no retorno."""
+    mods = tmp_path / "mods"
+    output_dir = mods / "DynDOLOD Output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "old.esp").write_text("OLD", encoding="utf-8")
+    runner = _mock_runner_with_output(mods)
+
+    async def _pipeline_ok(**_kwargs: object) -> DynDOLODPipelineResult:
+        output_dir.mkdir(parents=True)
+        (output_dir / "new.esp").write_text("NEW", encoding="utf-8")
+        return _make_success_result(run_texgen=False)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_ok)
+    runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    service._runner = runner
+
+    with (
+        patch.object(service, "_emit_flight_report", AsyncMock(side_effect=asyncio.CancelledError)),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    mock_journal.commit_transaction.assert_awaited_once_with(42)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+    assert (output_dir / "new.esp").read_text(encoding="utf-8") == "NEW"
+    assert not (output_dir / "old.esp").exists()
+    assert not list(mods.glob("DynDOLOD Output.rollback-*"))
+
+
 # =============================================================================
 # S-4: drain con cota en el path de éxito
 # =============================================================================

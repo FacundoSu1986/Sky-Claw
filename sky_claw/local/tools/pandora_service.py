@@ -284,11 +284,12 @@ class PandoraPipelineService:
         recuperó — exactamente el defecto que Codex encontró en el hermano de este
         cambio.
 
-        ``hubo_restore`` distingue las **dos** causas de ``rollback_completed ==
-        False``:
+        ``hubo_restore`` distingue si el error atravesó una ruta de recuperación:
 
-        - **el cuerpo falló y el restore se intentó** → False significa que el
-          restore reventó. La TX queda PENDING a propósito.
+        - **se esperaba recuperar estado** → cada ``DirectoryRollback`` observado
+          participa aunque ``__aenter__`` no haya completado. True cubre tanto
+          "preflight falló antes de mutar" como restore/undo confirmado; False
+          significa que quedó una mutación sin resolver y la TX queda PENDING.
         - **el cuerpo terminó bien y la excepción vino después** (teardown o
           commit del journal) → no hubo restore y la mutación puede seguir en
           disco. La TX queda PENDING: marcarla ROLLED_BACK también mentiría.
