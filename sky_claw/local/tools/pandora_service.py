@@ -285,25 +285,22 @@ class PandoraPipelineService:
         cambio.
 
         ``hubo_restore`` distingue las **dos** causas de ``rollback_completed ==
-        False``, que es la corrección del review CodeRabbit #399 (una versión
-        previa de esta docstring afirmaba que acá había una sola, y era falso —
-        el mismo error de razonamiento que el P1 de #397, cometido en el texto que
-        decía que no podía pasar):
+        False``:
 
         - **el cuerpo falló y el restore se intentó** → False significa que el
           restore reventó. La TX queda PENDING a propósito.
-        - **el cuerpo terminó bien y la excepción vino del teardown** (p. ej.
-          ``LockLeaseLostError`` desde el ``__aexit__`` del lock, con los backups
-          ya descartados) → False sólo significa "nunca hubo restore que hacer".
-          Dejar la TX PENDING ahí sería un falso positivo; se cierra como
-          revertida, porque la exclusividad no estuvo garantizada y reportar éxito
-          mentiría igual.
+        - **el cuerpo terminó bien y la excepción vino después** (teardown o
+          commit del journal) → no hubo restore y la mutación puede seguir en
+          disco. La TX queda PENDING: marcarla ROLLED_BACK también mentiría.
 
         Devuelve una descripción del desenlace para el log del caller.
         """
         if not hubo_restore:
-            await self._mark_journal_rolled_back(journal_tx_id)
-            return "sin restore que hacer (el run terminó; falló el teardown)"
+            logger.critical(
+                "Cierre incierto de Pandora (TX %s): sin restore confirmado; TX pendiente.",
+                journal_tx_id,
+            )
+            return "sin restore confirmado; TX pendiente"
         fallidos = [dr for dr in dir_rollbacks if not dr.rollback_completed]
         if not fallidos:
             await self._mark_journal_rolled_back(journal_tx_id)
@@ -555,8 +552,8 @@ class PandoraPipelineService:
                     # concurrente, pero este context sale ANTES que él y sin el
                     # veto restauraría igual (review Codex #399).
                     dr = DirectoryRollback(output_dir, should_rollback=lambda: not tx.lease_lost)
-                    await tx_stack.enter_async_context(dr)
                     dir_rollbacks.append(dr)
+                    await tx_stack.enter_async_context(dr)
 
                 result = await runner.run_pandora()
 

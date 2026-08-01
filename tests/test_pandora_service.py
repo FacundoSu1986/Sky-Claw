@@ -14,6 +14,7 @@ manifiesto y el rollback; el preflight sondea el árbol o su padre si aún no ex
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -787,15 +788,14 @@ class _LeaseLostLock:
 
 
 @pytest.mark.asyncio
-async def test_lease_perdida_devuelve_dict_y_marca_rolled_back(
+async def test_lease_perdida_devuelve_dict_y_deja_tx_pendiente(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Si el heartbeat pierde el lease en un clean-exit (LockLeaseLostError en
-    __aexit__), generate_animations devuelve el dict de error (no propaga) y cierra la
-    TX rolled-back (no queda PENDING) — la exclusividad no estuvo garantizada."""
+    """Si el heartbeat pierde el lease en un clean-exit, devuelve un dict de
+    error y deja la TX PENDING porque no hubo restore confirmado."""
     game = _crear_game(tmp_path)
     runner = _runner_returning(game)  # el run "termina con éxito" antes del __aexit__
     svc = _svc_with_journal(lock_manager, snapshot_manager, runner, mock_journal, game)
@@ -805,7 +805,7 @@ async def test_lease_perdida_devuelve_dict_y_marca_rolled_back(
 
     assert result["success"] is False
     assert "lease" in result["message"].lower()
-    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
     mock_journal.commit_transaction.assert_not_called()
 
 
@@ -1169,19 +1169,17 @@ async def test_exito_no_toca_el_directorio_del_exe(
 
 
 @pytest.mark.asyncio
-async def test_lease_perdida_tras_run_exitoso_cierra_la_tx_sin_falso_positivo(
+async def test_lease_perdida_tras_run_exitoso_deja_la_tx_pendiente(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
     tmp_path: pathlib.Path,
     mock_journal: AsyncMock,
 ) -> None:
-    """Un teardown fallido tras un run exitoso NO es un rollback fallido.
+    """Un teardown fallido tras un run exitoso deja la TX pendiente.
 
-    ``rollback_completed`` también es False en la salida limpia —nunca hubo restore
-    que hacer—, así que un ``LockLeaseLostError`` desde el ``__aexit__`` del lock
-    dejaba la TX PENDING como si el restore hubiera reventado (review CodeRabbit
-    #399). Es el mismo error de razonamiento del P1 de #397, cometido esta vez en
-    el párrafo que explicaba por qué no podía pasar.
+    Al perder la lease no se puede afirmar que el output nuevo sea nuestro ni que
+    se haya restaurado el estado previo. ``rollback_completed=False`` significa
+    justamente que no hay restore confirmado: cerrar como ROLLED_BACK mentiría.
     """
     game, exe, salida = _rutas_de_salida(tmp_path)
     _escribir_output(salida, "viejo")
@@ -1198,7 +1196,110 @@ async def test_lease_perdida_tras_run_exitoso_cierra_la_tx_sin_falso_positivo(
         result = await svc.generate_animations()
 
     assert result["success"] is False  # la exclusividad no estuvo garantizada
-    # La TX se cierra: no hay salida parcial escondida que el recovery deba ver.
-    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()  # queda PENDING
     mock_journal.commit_transaction.assert_not_called()
     assert _leer_output(salida) == "nuevo", "no había restore que hacer; nada debió revertirse"
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_post_stack_pre_commit_deja_tx_pendiente_y_libera_lock(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+) -> None:
+    """Cancelar el commit no convierte un output aplicado en rollback ficticio."""
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "viejo")
+
+    async def _corre_ok() -> PandoraResult:
+        _escribir_output(salida, "nuevo")
+        return PandoraResult(success=True, return_code=0, stdout="ok", stderr="", duration_seconds=1.0)
+
+    mock_journal.commit_transaction.side_effect = asyncio.CancelledError
+    svc = _svc_con_salida_real(
+        lock_manager, snapshot_manager, game=game, exe=exe, corrida=_corre_ok, journal=mock_journal
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await svc.generate_animations()
+
+    assert _leer_output(salida) == "nuevo"
+    mock_journal.commit_transaction.assert_awaited_once_with(77)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+    assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restore_falla", [False, True], ids=["restore_confirmado", "restore_fallido"])
+async def test_cancelacion_durante_move_aside_refleja_el_undo_en_journal(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    mock_journal: AsyncMock,
+    restore_falla: bool,
+) -> None:
+    """El journal observa el undo aunque ``__aenter__`` no haya completado."""
+    import threading
+
+    from sky_claw.local.tools import _dir_rollback
+    from sky_claw.local.tools._dir_rollback import DirectoryRollback
+
+    game, exe, salida = _rutas_de_salida(tmp_path)
+    _escribir_output(salida, "previo")
+    runner = AsyncMock()
+    svc = _svc_con_salida_real(lock_manager, snapshot_manager, game=game, exe=exe, corrida=runner, journal=mock_journal)
+
+    rename_real = type(salida).rename
+    rename_empezo = threading.Event()
+    permitir_move = threading.Event()
+    capturados: list[DirectoryRollback] = []
+
+    class _RollbackCapturado(DirectoryRollback):
+        def __init__(
+            self,
+            target_dir: pathlib.Path,
+            *,
+            enabled: bool = True,
+            should_rollback: Callable[[], bool] | None = None,
+        ) -> None:
+            super().__init__(target_dir, enabled=enabled, should_rollback=should_rollback)
+            capturados.append(self)
+
+    def _rename_controlado(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
+        if self == salida:
+            rename_empezo.set()
+            assert permitir_move.wait(5.0), "el test no liberó el move-aside"
+            return rename_real(self, dst)
+        if restore_falla and self.name.startswith(f"{salida.name}.rollback-") and dst == salida:
+            raise PermissionError("restore bloqueado persistentemente")
+        return rename_real(self, dst)
+
+    with (
+        patch("sky_claw.local.tools.pandora_service.DirectoryRollback", _RollbackCapturado),
+        patch.object(type(salida), "rename", _rename_controlado),
+        patch.object(_dir_rollback, "_FS_BACKOFF_SECONDS", 0.0),
+    ):
+        task = asyncio.create_task(svc.generate_animations())
+        assert await asyncio.to_thread(rename_empezo.wait, 5.0), "el move-aside nunca arrancó"
+        task.cancel()
+        permitir_move.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    assert len(capturados) == 1
+    assert capturados[0].rollback_completed is (not restore_falla)
+    assert runner.await_count == 0
+    backups = list(salida.parent.glob(f"{salida.name}.rollback-*"))
+    if restore_falla:
+        assert not salida.exists()
+        assert len(backups) == 1
+        mock_journal.mark_transaction_rolled_back.assert_not_called()
+    else:
+        assert _leer_output(salida) == "previo"
+        assert not backups
+        mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    mock_journal.commit_transaction.assert_not_called()
+    assert not _dir_rollback._background_tasks
+    assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None

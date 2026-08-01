@@ -89,27 +89,51 @@ async def _deshacer_rename_cancelado(
     rename_task: asyncio.Task[Any],
     backup: pathlib.Path,
     target: pathlib.Path,
-) -> None:
+) -> bool:
     """Observa el desenlace REAL de un move-aside cancelado y lo revierte.
 
-    Si el rename terminó en excepción no movió nada. Si terminó bien, el dir
-    previo quedó bajo el nombre de backup **sin dueño**: el context nunca se
-    registró en el ``AsyncExitStack`` del caller, así que no habrá ``__aexit__``
-    que lo restaure. Devolverlo a su lugar acá es lo único que evita que una
-    cancelación bien temporizada haga desaparecer la salida previa sin que
-    ninguna herramienta llegara a correr.
+    No infiere el estado desde el desenlace de la task: un rename de filesystem
+    puede mutar antes de reportar un error. Inspecciona ``target`` y ``backup``
+    con semántica link-aware, devuelve el backup si quedó desplazado y retorna
+    ``True`` sólo cuando el estado previo queda confirmado en ``target``.
     """
-    try:
+    with contextlib.suppress(asyncio.CancelledError, Exception):
         await asyncio.shield(rename_task)
-    except (asyncio.CancelledError, Exception):  # noqa: BLE001 — sólo interesa SI movió, no por qué falló
-        # Cualquier desenlace que no sea "terminó bien" significa que el rename no
-        # dejó el dir bajo el nombre de backup: no hay nada que deshacer. Se listan
-        # las dos porque CancelledError deriva de BaseException, no de Exception.
-        return
-    with contextlib.suppress(OSError):
-        if await asyncio.to_thread(backup.exists) and not await asyncio.to_thread(target.exists):
+        # Un ``rename`` puede mutar y aun así terminar en error en ciertos FS. No
+        # se infiere el estado desde la excepción: se confirma mirando ambos paths.
+
+    backup_presente = await asyncio.to_thread(path_present, backup)
+    target_presente = await asyncio.to_thread(path_present, target)
+    if target_presente and not backup_presente:
+        # El rename no se realizó, o el estado previo ya volvió a su lugar.
+        return True
+    if backup_presente and not target_presente:
+        try:
             await _fs_op_with_retry(backup.rename, target)
+        except OSError:
+            logger.critical(
+                "Move-aside cancelado: NO se pudo devolver '%s' desde '%s'; "
+                "el backup queda desplazado para recuperación manual.",
+                target,
+                backup,
+                exc_info=True,
+            )
+            return False
+        backup_presente = await asyncio.to_thread(path_present, backup)
+        target_presente = await asyncio.to_thread(path_present, target)
+        if target_presente and not backup_presente:
             logger.warning("Move-aside cancelado: '%s' devuelto a su lugar desde '%s'", target, backup)
+            return True
+
+    logger.critical(
+        "Move-aside cancelado en estado INCIERTO para '%s' (target_presente=%s, backup_presente=%s). "
+        "No se confirma el rollback; revisar '%s' manualmente.",
+        target,
+        target_presente,
+        backup_presente,
+        backup,
+    )
+    return False
 
 
 class DirectoryRollback:
@@ -198,6 +222,10 @@ class DirectoryRollback:
             # Primer run: no hay estado previo que preservar.
             return self
         backup = self._target.with_name(f"{self._target.name}.rollback-{time.time_ns()}")
+        # Se publica ANTES del rename: si la corrutina se cancela mientras el hilo
+        # mueve el árbol, el caller puede inspeccionar el destino del backup aunque
+        # ``__aenter__`` nunca llegue a devolver.
+        self._backup = backup
         # El rename corre en un hilo (``asyncio.to_thread``): cancelar la corrutina
         # que lo espera NO lo interrumpe. Sin shield, una cancelación acá dejaba el
         # rename completándose en background mientras el caller nunca llegaba a
@@ -211,13 +239,15 @@ class DirectoryRollback:
         except asyncio.CancelledError:
             deshacer = _track(asyncio.ensure_future(_deshacer_rename_cancelado(rename_task, backup, self._target)))
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.shield(deshacer)
+                self.rollback_completed = await asyncio.shield(deshacer)
             raise
         except OSError as exc:
+            # No todo OSError garantiza "no mutó": confirmar el estado real y, si
+            # el backup quedó desplazado, intentar devolverlo antes de abortar.
+            self.rollback_completed = await _deshacer_rename_cancelado(rename_task, backup, self._target)
             # Fail-closed: sin move-aside no podemos garantizar el rollback que el
             # caller pidió; abortar antes de correr la operación destructiva.
             raise OSError(f"No se pudo mover '{self._target}' aparte para rollback: {exc}") from exc
-        self._backup = backup
         logger.debug("Directorio movido aparte para rollback: %s -> %s", self._target, backup)
         return self
 
@@ -334,12 +364,10 @@ class DirectoryRollback:
         pérdida de datos disfrazada de limpieza — silenciosa, porque ocurre en el
         camino de ÉXITO, sin excepción que la delate.
 
-        El caso que lo destapó: Pandora tiene dos ``Pandora_Output`` candidatos
-        —cuál usa depende de su versión— y el servicio mueve aparte los dos. En una
-        instalación real se escribe uno solo, así que el otro se perdía entero tras
-        un run exitoso. Vive acá y no en ``pandora_service`` porque la propiedad no
-        es de Pandora: cualquier caller que proteja más de un destino candidato
-        —o cuya herramienta pueda no producir salida— tiene el mismo agujero.
+        El caso que lo destapó fue un target administrado que la herramienta no
+        regeneró. Vive acá y no en un servicio concreto porque la propiedad no es
+        de Pandora: cualquier caller cuyo target pueda no producir salida tiene el
+        mismo agujero.
 
         ``permitir_restore=False`` lo pide ``commit()`` (review Codex #401): un
         target vacío en el instante del commit es el estado FINAL elegido por el

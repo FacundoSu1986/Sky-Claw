@@ -284,7 +284,6 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
     """
     import asyncio
     import threading
-    import time
     from unittest.mock import patch
 
     target = tmp_path / "Output"
@@ -295,6 +294,7 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
     # Sincroniza con el HILO, no con el reloj: sin esto el test afirmaba antes de
     # que el rename ocurriera y pasaba igual sin el shield — o sea, no probaba nada.
     primer_rename = threading.Event()
+    permitir_rename = threading.Event()
     # Y el ARRANQUE también (review CodeRabbit #399): con un `sleep` de reloj, en
     # CI cargada la task puede no haber llegado al rename cuando se la cancela, y
     # entonces el verde no ejerce el shield — el mismo falso verde de nuevo, un
@@ -305,20 +305,23 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
         if primer_rename.is_set():
             return rename_real(self, dst)  # el deshacer no se demora
         rename_empezo.set()
-        time.sleep(0.3)  # el hilo sigue pese a la cancelación de quien lo espera
+        assert permitir_rename.wait(5.0), "el test no liberó el rename"
         try:
             return rename_real(self, dst)
         finally:
             primer_rename.set()
 
+    rollback = DirectoryRollback(target)
+
     async def _entrar() -> None:
-        async with DirectoryRollback(target):
+        async with rollback:
             pass
 
     with patch.object(pathlib.Path, "rename", _rename_lento):
         task = asyncio.ensure_future(_entrar())
         assert await asyncio.to_thread(rename_empezo.wait, 5.0), "el rename nunca arrancó"
         task.cancel()
+        permitir_rename.set()
         with pytest.raises(asyncio.CancelledError):
             await task
         # El move-aside corre en un hilo que la cancelación no interrumpe: hay que
@@ -328,6 +331,7 @@ async def test_cancelacion_durante_el_move_aside_devuelve_el_dir(tmp_path: pathl
     assert target.exists(), "el dir previo quedó varado bajo el nombre de backup"
     assert (target / "previo.txt").read_text(encoding="utf-8") == "irremplazable"
     assert not list(tmp_path.glob("Output.rollback-*"))
+    assert rollback.rollback_completed is True
 
 
 async def test_veto_de_lease_omite_el_restore_y_conserva_el_backup(tmp_path: pathlib.Path) -> None:
