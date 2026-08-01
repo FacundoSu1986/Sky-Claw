@@ -118,14 +118,14 @@ def service(
 
 
 @pytest.mark.asyncio
-async def test_cobertura_de_staging_no_confirmada_no_es_critical(
+async def test_cobertura_de_staging_no_confirmada_no_es_critica(
     service: DynDOLODPipelineService,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """La cobertura cruda pendiente es una limitación conocida, no un fallo de rollback."""
     rollback = MagicMock(rollback_completed=True)
 
-    with caplog.at_level(logging.DEBUG, logger="SkyClaw.DynDOLOD"):
+    with caplog.at_level(logging.DEBUG, logger="SkyClaw.DynDOLODPipelineService"):
         rolled_back = await service._cerrar_tx_tras_rollback(
             42,
             [rollback],
