@@ -38,8 +38,8 @@ def loot_sin_flight_report(ctx: dict[str, Any]) -> None:
     assert ctx["journal"] is not None
 
 
-@when(parsers.parse('el agente despacha "{tool_name}" para el worldspace "{worldspace}"'))
-def agente_despacha_tool(
+@when(parsers.parse('el dispatcher despacha "{tool_name}" para el worldspace "{worldspace}"'))
+def dispatcher_despacha_tool(
     bdd_loop: asyncio.AbstractEventLoop,
     ctx: dict[str, Any],
     tool_name: str,
@@ -78,8 +78,10 @@ def contrato_reporta_recuento(ctx: dict[str, Any], outcome: str) -> None:
 
 @then(parsers.parse('se solicitan los locks "{primero}" y "{segundo}" en ese orden'))
 def locks_solicitados_en_orden(ctx: dict[str, Any], primero: str, segundo: str) -> None:
-    pedidos = [llamada["resource_id"] for llamada in ctx["colaboradores"]["llamadas_lock"]]
-    assert pedidos == [primero, segundo]
+    colaboradores = ctx["colaboradores"]
+    assert colaboradores["entradas_lock"] == [primero, segundo]
+    for resource_id in (primero, segundo):
+        colaboradores["locks_creados"][resource_id].__aenter__.assert_awaited_once_with()
 
 
 @then(parsers.parse('el journal registra "{descripcion}" como commiteado'))
@@ -124,6 +126,11 @@ def sin_locks_mutantes(ctx: dict[str, Any]) -> None:
 @then("no se crea ningún runner del juego")
 def sin_runner_de_juego(ctx: dict[str, Any]) -> None:
     ctx["colaboradores"]["runner_factory"].assert_not_called()
+
+
+@then("no se prepara ni desmonta ningún perfil temporal")
+def sin_mutacion_de_perfil(ctx: dict[str, Any]) -> None:
+    assert ctx["colaboradores"]["profile_manager"].mock_calls == []
 
 
 @then("el journal no contiene una transacción de grass commiteada")
