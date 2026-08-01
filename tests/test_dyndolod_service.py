@@ -837,6 +837,90 @@ async def test_cancelacion_post_commit_no_remarca_journal_ni_revierte_output(
     assert not list(mods.glob("DynDOLOD Output.rollback-*"))
 
 
+@pytest.mark.asyncio
+async def test_cancelacion_durante_commit_sella_todos_los_outputs_antes_de_liberar_lock(
+    service: DynDOLODPipelineService,
+    mock_lock_manager: AsyncMock,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El commit de dos outputs es una sola unidad terminal pese a cancelaciones repetidas."""
+    import threading
+
+    from sky_claw.local.tools import _dir_rollback
+
+    mods = tmp_path / "mods"
+    dyndolod_dir = mods / "DynDOLOD Output"
+    texgen_dir = mods / "TexGen Output"
+    for output_dir in (dyndolod_dir, texgen_dir):
+        output_dir.mkdir(parents=True)
+        (output_dir / "old.txt").write_text("OLD", encoding="utf-8")
+
+    runner = _mock_runner_with_output(mods)
+
+    async def _pipeline_ok(**_kwargs: object) -> DynDOLODPipelineResult:
+        for output_dir in (dyndolod_dir, texgen_dir):
+            output_dir.mkdir(parents=True)
+            (output_dir / "new.txt").write_text("NEW", encoding="utf-8")
+        return _make_success_result(run_texgen=True)
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_ok)
+    runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    service._runner = runner
+
+    rmtree_real = _dir_rollback.rmtree_link_aware
+    primer_discard_empezo = threading.Event()
+    permitir_primer_discard = threading.Event()
+    orden: list[str] = []
+
+    def _rmtree_controlado(ruta: pathlib.Path, *, limpiar_readonly: bool = False) -> None:
+        if ruta.name.startswith("DynDOLOD Output.rollback-"):
+            orden.append("dyndolod_discard_empezo")
+            primer_discard_empezo.set()
+            assert permitir_primer_discard.wait(5.0), "el test no liberó el primer discard"
+            rmtree_real(ruta, limpiar_readonly=limpiar_readonly)
+            orden.append("dyndolod_discard_termino")
+            return
+        if ruta.name.startswith("TexGen Output.rollback-"):
+            orden.append("texgen_discard_empezo")
+            rmtree_real(ruta, limpiar_readonly=limpiar_readonly)
+            orden.append("texgen_discard_termino")
+            return
+        rmtree_real(ruta, limpiar_readonly=limpiar_readonly)
+
+    async def _release_lock(*_args: object, **_kwargs: object) -> bool:
+        orden.append("lock_liberado")
+        return True
+
+    mock_lock_manager.release_lock.side_effect = _release_lock
+
+    with patch.object(_dir_rollback, "rmtree_link_aware", _rmtree_controlado):
+        task = asyncio.create_task(service.execute(preset="High", run_texgen=True, create_snapshot=True))
+        try:
+            assert await asyncio.to_thread(primer_discard_empezo.wait, 5.0)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+        finally:
+            permitir_primer_discard.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    assert orden.index("dyndolod_discard_termino") < orden.index("texgen_discard_empezo")
+    assert orden.index("texgen_discard_termino") < orden.index("lock_liberado")
+    for output_dir in (dyndolod_dir, texgen_dir):
+        assert (output_dir / "new.txt").read_text(encoding="utf-8") == "NEW"
+        assert not (output_dir / "old.txt").exists()
+    assert not list(mods.glob("*.rollback-*"))
+    mock_journal.commit_transaction.assert_awaited_once_with(42)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
+    mock_lock_manager.release_lock.assert_awaited_once()
+    assert not _dir_rollback._background_tasks
+
+
 # =============================================================================
 # S-4: drain con cota en el path de éxito
 # =============================================================================

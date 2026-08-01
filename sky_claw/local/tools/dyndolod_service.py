@@ -30,7 +30,7 @@ from sky_claw.app.db.locks import (
     SnapshotTransactionLock,
 )
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
-from sky_claw.local.tools._dir_rollback import DirectoryRollback
+from sky_claw.local.tools._dir_rollback import DirectoryRollback, _commit_directory_rollbacks
 from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODConfig,
     DynDOLODExecutionError,
@@ -637,8 +637,7 @@ class DynDOLODPipelineService:
                 # CancelledError durante el informe best-effort, que evade el
                 # ``except Exception``) NO revierta una generación ya committeada al
                 # desenrollar el AsyncExitStack.
-                for dr in dir_rollbacks:
-                    await dr.commit()
+                await _commit_directory_rollbacks(dir_rollbacks)
 
                 # T-28: cerrar la caja negra tras el commit (best-effort — los
                 # LODs ya se generaron; un fallo del informe no tumba el run).

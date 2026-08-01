@@ -15,7 +15,7 @@ import contextlib
 import logging
 import pathlib
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from sky_claw.app.security.links import link_kind_or_raise, path_present, rmtree_link_aware
@@ -337,22 +337,14 @@ class DirectoryRollback:
         restore, así el ``__aexit__`` posterior es un no-op. Idempotente; el discard
         es best-effort (un backup huérfano solo ocupa espacio, no corrompe).
         """
+        await _commit_directory_rollbacks((self,))
+
+    def _seal_for_commit(self) -> bool:
+        """Desactiva el restore sin ceder control al event loop."""
         if not self._enabled:
-            return
+            return False
         self._enabled = False
-        try:
-            # permitir_restore=False (review Codex #401): commit() es un punto de
-            # no-retorno — un target vacío EN ESE INSTANTE es el estado final que
-            # el caller eligió, no algo que la propia limpieza deba revertir. La
-            # lógica de "restaurar si está vacío" que _discard_backup ganó en este
-            # mismo PR es correcta para el camino limpio SIN commit, pero viola el
-            # contrato de commit() si se aplica acá también.
-            await self._discard_backup(permitir_restore=False)
-        except OSError:
-            logger.warning(
-                "commit(): no se pudo descartar el backup de '%s' (queda huérfano)", self._target, exc_info=True
-            )
-        self._backup = None
+        return True
 
     def _veto_permite_restaurar(self) -> bool:
         """Evalúa el veto de ``should_rollback`` **fail-closed** (review CodeRabbit #399).
@@ -523,3 +515,39 @@ class DirectoryRollback:
         assert self._backup is not None  # invariante: el caller ya lo verificó
         self._backup.rename(self._target)
         return True
+
+
+async def _commit_directory_rollbacks(rollbacks: Iterable[DirectoryRollback]) -> None:
+    """Confirma un lote como una sola unidad terminal y cancel-safe.
+
+    Todos los protectores se sellan antes del primer ``await``: desde ese punto
+    ninguno puede restaurar un output ya final aunque el caller sea cancelado.
+    Los descartes corren best-effort dentro de una única task rastreada y el
+    waiter no libera el lock exterior hasta que esa task termina.
+    """
+    sealed = [rollback for rollback in rollbacks if rollback._seal_for_commit()]
+    if not sealed:
+        return
+
+    async def _discard_all() -> None:
+        for rollback in sealed:
+            try:
+                # Tras el commit, un target vacío es estado final; la limpieza
+                # sólo descarta el backup y nunca restaura el estado anterior.
+                await rollback._discard_backup(permitir_restore=False)
+            except OSError:
+                logger.warning(
+                    "commit(): no se pudo descartar el backup de '%s' (queda huérfano)",
+                    rollback.target,
+                    exc_info=True,
+                )
+            finally:
+                # Si falló, el árbol permanece en disco para recovery manual;
+                # soltar la referencia evita reintentos accidentales posteriores.
+                rollback._backup = None
+
+    discard_task = _track(asyncio.create_task(_discard_all()))
+    cancelado = await _esperar_hasta_terminal(discard_task)
+    discard_task.result()
+    if cancelado:
+        raise asyncio.CancelledError
