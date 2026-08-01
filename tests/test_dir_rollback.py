@@ -387,6 +387,130 @@ async def test_cancelaciones_repetidas_esperan_el_undo_hasta_terminal(tmp_path: 
     assert not _dir_rollback._background_tasks
 
 
+async def test_cancelaciones_repetidas_esperan_discard_antes_de_liberar_lock(tmp_path: pathlib.Path) -> None:
+    """El backup se borra por completo antes de propagar cancelación y soltar lock."""
+    import asyncio
+    import threading
+    from unittest.mock import patch
+
+    from sky_claw.local.tools import _dir_rollback
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+    delete_empezo = threading.Event()
+    permitir_delete = threading.Event()
+    delete_termino = threading.Event()
+    lock_liberado = asyncio.Event()
+    borrar_real = _dir_rollback.rmtree_link_aware
+
+    class _LockExterior:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *_args: object) -> None:
+            lock_liberado.set()
+
+    def _borrar_bloqueado(path: pathlib.Path) -> None:
+        delete_empezo.set()
+        assert permitir_delete.wait(5.0), "el test no liberó el delete"
+        try:
+            borrar_real(path)
+        finally:
+            delete_termino.set()
+
+    async def _run() -> None:
+        async with _LockExterior(), DirectoryRollback(target):
+            target.mkdir()
+            (target / "new.txt").write_text("NEW", encoding="utf-8")
+
+    with patch.object(_dir_rollback, "rmtree_link_aware", _borrar_bloqueado):
+        task = asyncio.create_task(_run())
+        assert await asyncio.to_thread(delete_empezo.wait, 5.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        try:
+            assert not task.done(), "el caller retornó mientras delete seguía mutando"
+            assert not lock_liberado.is_set(), "el lock exterior se liberó antes del delete"
+        finally:
+            permitir_delete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await asyncio.to_thread(delete_termino.wait, 5.0)
+        await asyncio.sleep(0)
+
+    assert lock_liberado.is_set()
+    assert (target / "new.txt").read_text(encoding="utf-8") == "NEW"
+    assert not list(tmp_path.glob("Output.rollback-*"))
+    assert not _dir_rollback._background_tasks
+
+
+async def test_cancelaciones_durante_restore_preservan_excepcion_original_y_lock(tmp_path: pathlib.Path) -> None:
+    """El restore termina bajo lock y no reemplaza el error del body por cancelación."""
+    import asyncio
+    import threading
+    from unittest.mock import patch
+
+    from sky_claw.local.tools import _dir_rollback
+
+    target = tmp_path / "Output"
+    target.mkdir()
+    (target / "old.txt").write_text("OLD", encoding="utf-8")
+    rename_real = pathlib.Path.rename
+    restore_empezo = threading.Event()
+    permitir_restore = threading.Event()
+    restore_termino = threading.Event()
+    lock_liberado = asyncio.Event()
+
+    class _LockExterior:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *_args: object) -> None:
+            lock_liberado.set()
+
+    def _rename_bloqueado(self: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
+        if self == target:
+            return rename_real(self, dst)
+        restore_empezo.set()
+        assert permitir_restore.wait(5.0), "el test no liberó el restore"
+        try:
+            return rename_real(self, dst)
+        finally:
+            restore_termino.set()
+
+    async def _run() -> None:
+        async with _LockExterior(), DirectoryRollback(target):
+            target.mkdir()
+            (target / "partial.txt").write_text("PARTIAL", encoding="utf-8")
+            raise RuntimeError("fallo original del body")
+
+    with patch.object(pathlib.Path, "rename", _rename_bloqueado):
+        task = asyncio.create_task(_run())
+        assert await asyncio.to_thread(restore_empezo.wait, 5.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        try:
+            assert not task.done(), "el caller retornó mientras rename seguía mutando"
+            assert not lock_liberado.is_set(), "el lock exterior se liberó antes del restore"
+        finally:
+            permitir_restore.set()
+        with pytest.raises(RuntimeError, match="fallo original del body"):
+            await task
+        assert await asyncio.to_thread(restore_termino.wait, 5.0)
+        await asyncio.sleep(0)
+
+    assert lock_liberado.is_set()
+    assert (target / "old.txt").read_text(encoding="utf-8") == "OLD"
+    assert not (target / "partial.txt").exists()
+    assert not list(tmp_path.glob("Output.rollback-*"))
+    assert not _dir_rollback._background_tasks
+
+
 async def test_cancelacion_en_preflight_conserva_estado_sin_mutacion(tmp_path: pathlib.Path) -> None:
     """Cancelar antes del rename deja el target intacto y el outcome confirmado."""
     import asyncio

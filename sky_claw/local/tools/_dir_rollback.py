@@ -85,6 +85,27 @@ def _track(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
     return task
 
 
+async def _esperar_hasta_terminal(task: asyncio.Task[Any]) -> bool:
+    """Espera ``task`` hasta terminal pese a cancelaciones repetidas del caller.
+
+    Devuelve ``True`` si llegó alguna cancelación mientras esperaba. ``shield``
+    evita transferirla a la task de filesystem; el loop evita que el caller siga
+    y libere su lock exterior mientras un hilo continúa mutando.
+    """
+    cancelado = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Si la task hija se canceló a sí misma, ``result()`` lo propaga al
+            # caller. Sólo se registra aparte la cancelación del waiter exterior.
+            if not task.cancelled():
+                cancelado = True
+        except Exception:  # noqa: BLE001 — el caller obtiene la excepción exacta con task.result()
+            pass
+    return cancelado
+
+
 async def _deshacer_rename_cancelado(
     rename_task: asyncio.Task[Any],
     backup: pathlib.Path,
@@ -248,11 +269,7 @@ class DirectoryRollback:
             # el lock exterior mientras el undo siga mutando el filesystem. Se
             # consumen las señales adicionales sólo para esperar esta task HASTA
             # terminal; la CancelledError original se repropaga abajo.
-            while not deshacer.done():
-                try:
-                    await asyncio.shield(deshacer)
-                except asyncio.CancelledError:
-                    continue
+            await _esperar_hasta_terminal(deshacer)
             self.rollback_completed = deshacer.result()
             raise
         except OSError as exc:
@@ -273,29 +290,10 @@ class DirectoryRollback:
     ) -> None:
         if not self._enabled:
             return
+        cleanup_task = _track(asyncio.ensure_future(self._cleanup_on_exit(exc_type)))
+        cancelado_durante_cleanup = await _esperar_hasta_terminal(cleanup_task)
         try:
-            if exc_type is not None:
-                if not self._veto_permite_restaurar():
-                    # Perdimos la exclusividad: otro dueño pudo haber mutado ya, así
-                    # que restaurar pisaría SU salida con nuestro backup viejo. El
-                    # backup NO se descarta —queda en disco bajo su nombre
-                    # ``.rollback-*``— porque es el único ejemplar del estado previo
-                    # y el recovery manual lo necesita. ``rollback_completed`` queda
-                    # False a propósito: el caller debe dejar la TX PENDIENTE.
-                    logger.critical(
-                        "Rollback de '%s' OMITIDO: se perdió la exclusividad del recurso. "
-                        "El backup queda en '%s' para recuperación manual.",
-                        self._target,
-                        self._backup,
-                    )
-                    return
-                await self._restore_backup()
-                # M-7: sólo aquí el rollback se considera COMPLETADO. Si
-                # _restore_backup lanza, no se llega a esta línea y el flag queda
-                # False, señalando al caller un rollback fallido.
-                self.rollback_completed = True
-            else:
-                await self._discard_backup(permitir_restore=True)
+            cleanup_task.result()
         except OSError:
             # Nunca enmascarar la excepción del body ni romper un cierre limpio.
             logger.critical(
@@ -304,6 +302,30 @@ class DirectoryRollback:
                 exc_type.__name__ if exc_type else None,
                 exc_info=True,
             )
+        if cancelado_durante_cleanup and exc_type is None:
+            # En salida limpia la cancelación se propaga, pero sólo DESPUÉS de
+            # terminar el cleanup. Si ya había una excepción del body, retornar
+            # preserva esa excepción original en vez de reemplazarla.
+            raise asyncio.CancelledError
+
+    async def _cleanup_on_exit(self, exc_type: type[BaseException] | None) -> None:
+        """Ejecuta restore/discard completo dentro de una task rastreada."""
+        if exc_type is not None:
+            if not self._veto_permite_restaurar():
+                # Perdimos la exclusividad: otro dueño pudo haber mutado ya, así
+                # que restaurar pisaría SU salida con nuestro backup viejo. El
+                # backup queda para recovery manual y la TX debe seguir PENDING.
+                logger.critical(
+                    "Rollback de '%s' OMITIDO: se perdió la exclusividad del recurso. "
+                    "El backup queda en '%s' para recuperación manual.",
+                    self._target,
+                    self._backup,
+                )
+                return
+            await self._restore_backup()
+            self.rollback_completed = True
+        else:
+            await self._discard_backup(permitir_restore=True)
 
     async def commit(self) -> None:
         """Confirma el estado nuevo tras un punto de no-retorno (review Codex #312).

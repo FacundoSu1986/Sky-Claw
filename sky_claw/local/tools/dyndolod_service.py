@@ -340,6 +340,8 @@ class DynDOLODPipelineService:
         dir_rollbacks: list[DirectoryRollback],
         *,
         journal_committed: bool,
+        mutation_started: bool,
+        mutation_coverage_complete: bool,
         contexto: str,
     ) -> bool:
         """Marca ROLLED_BACK sólo cuando todos los move-aside quedaron resueltos.
@@ -347,18 +349,26 @@ class DynDOLODPipelineService:
         Un ``DirectoryRollback`` registrado antes de completar ``__aenter__``
         también participa: ``rollback_completed=True`` cubre preflight sin mutación
         o undo confirmado; False conserva la TX PENDING y el backup visible para
-        recovery manual. Una TX ya commiteada es un punto de no-retorno y nunca se
-        re-marca por una cancelación post-run.
+        recovery manual. Una vez iniciado el runner, además se exige cobertura de
+        TODAS las superficies mutables esperadas; una sola salida/staging sin
+        protección fuerza PENDING. Una TX ya commiteada es un punto de no-retorno y
+        nunca se re-marca por una cancelación post-run.
         """
         if journal_committed:
             return False
-        rolled_back = all(dr.rollback_completed for dr in dir_rollbacks)
+        # No usar ``all([])`` como prueba: lista vacía sólo es honesta antes de
+        # que el runner pueda mutar. Después de empezarlo, ausencia de protectores
+        # observados es falta de cobertura, no rollback exitoso.
+        rollbacks_resueltos = (
+            all(dr.rollback_completed for dr in dir_rollbacks) if dir_rollbacks else not mutation_started
+        )
+        rolled_back = rollbacks_resueltos and (not mutation_started or mutation_coverage_complete)
         if tx_id is None:
             return rolled_back
         if not rolled_back:
             logger.critical(
                 "Rollback DynDOLOD INCOMPLETO tras %s (TX %d): la TX queda PENDIENTE; "
-                "revisar backups move-aside manualmente.",
+                "revisar backups move-aside y targets no cubiertos manualmente.",
                 contexto,
                 tx_id,
             )
@@ -440,6 +450,8 @@ class DynDOLODPipelineService:
         rolled_back = False
         tx_id: int | None = None
         journal_committed = False
+        mutation_started = False
+        mutation_coverage_complete = False
         # M-7: rastrear los DirectoryRollback para reportar el resultado REAL del
         # rollback (dr.rollback_completed) en vez de hardcodear rolled_back=True.
         # El AsyncExitStack ejecuta los __aexit__ (restore) ANTES de que corran los
@@ -515,6 +527,18 @@ class DynDOLODPipelineService:
         for _root in _staging_roots:
             manifest_targets += [_root / _name for _name in _staging_names]
 
+        # Cobertura honesta: los mods empaquetados pueden estar bajo move-aside,
+        # pero DynDOLOD/TexGen también escriben staging crudo. Ese staging no se
+        # protege porque sus ubicaciones pueden ser compartidas; no se amplía el
+        # rollback sin evidencia de propiedad exclusiva. Por tanto, una vez que el
+        # runner empieza, no hay rollback TOTAL demostrable aunque los outputs
+        # administrados sí vuelvan byte-a-byte.
+        protected_targets = set(rollback_dirs)
+        unprotected_staging_expected = bool(_staging_names)
+        mutation_coverage_complete = not unprotected_staging_expected and all(
+            target in protected_targets for target in manifest_targets
+        )
+
         # 3. Ejecutar bajo lock transaccional + rollback de directorios.
         # AsyncExitStack: el lock se adquiere primero y se libera último; los
         # DirectoryRollback se restauran ANTES de soltar el lock.
@@ -561,6 +585,7 @@ class DynDOLODPipelineService:
                     await tx_stack.enter_async_context(dr)
 
                 # Ejecutar pipeline
+                mutation_started = True
                 result = await runner.run_full_pipeline(
                     run_texgen=run_texgen,
                     preset=preset,
@@ -671,6 +696,8 @@ class DynDOLODPipelineService:
                 tx_id,
                 dir_rollbacks,
                 journal_committed=journal_committed,
+                mutation_started=mutation_started,
+                mutation_coverage_complete=mutation_coverage_complete,
                 contexto="fallo del manifiesto",
             )
             duration = time.monotonic() - start_time
@@ -730,6 +757,8 @@ class DynDOLODPipelineService:
                 tx_id,
                 dir_rollbacks,
                 journal_committed=journal_committed,
+                mutation_started=mutation_started,
+                mutation_coverage_complete=mutation_coverage_complete,
                 contexto="error de dominio",
             )
             duration = time.monotonic() - start_time
@@ -765,6 +794,8 @@ class DynDOLODPipelineService:
                 tx_id,
                 dir_rollbacks,
                 journal_committed=journal_committed,
+                mutation_started=mutation_started,
+                mutation_coverage_complete=mutation_coverage_complete,
                 contexto="cancelación",
             )
             raise
@@ -777,6 +808,8 @@ class DynDOLODPipelineService:
                 tx_id,
                 dir_rollbacks,
                 journal_committed=journal_committed,
+                mutation_started=mutation_started,
+                mutation_coverage_complete=mutation_coverage_complete,
                 contexto="error inesperado",
             )
             duration = time.monotonic() - start_time

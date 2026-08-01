@@ -245,13 +245,13 @@ async def test_execute_success_returns_pipeline_data(
 
 
 @pytest.mark.asyncio
-async def test_execute_domain_error_marks_rollback(
+async def test_execute_domain_error_sin_snapshot_deja_tx_pendiente(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     mock_event_bus: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """DynDOLODExecutionError inside the lock triggers journal rollback."""
+    """Sin snapshot, un error posterior al runner no puede afirmar rollback."""
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_failure_result())
 
@@ -265,10 +265,9 @@ async def test_execute_domain_error_marks_rollback(
     result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
-    assert result["rolled_back"] is True
+    assert result["rolled_back"] is False
 
-    # Journal transaction rolled back
-    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
     mock_journal.commit_transaction.assert_not_called()
 
     # Completed event emitted with error
@@ -280,12 +279,12 @@ async def test_execute_domain_error_marks_rollback(
 
 
 @pytest.mark.asyncio
-async def test_execute_timeout_error_marks_rollback(
+async def test_execute_timeout_error_deja_tx_pendiente(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """DynDOLODTimeoutError triggers journal rollback."""
+    """Un timeout puede haber tocado staging no protegido: la TX queda pendiente."""
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(
         side_effect=DynDOLODTimeoutError(timeout_seconds=14400, tool_name="DynDOLOD")
@@ -301,8 +300,8 @@ async def test_execute_timeout_error_marks_rollback(
     result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
-    assert result["rolled_back"] is True
-    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    assert result["rolled_back"] is False
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
 
 
 # =============================================================================
@@ -311,16 +310,13 @@ async def test_execute_timeout_error_marks_rollback(
 
 
 @pytest.mark.asyncio
-async def test_unexpected_oserror_marks_rollback_and_emits_completed(
+async def test_unexpected_oserror_reports_pending_and_emits_completed(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     mock_event_bus: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Unexpected OSError marks TX rolled back and emits completed event.
-
-    Lección T11: NUNCA dejar una transacción en estado PENDING.
-    """
+    """Un OSError post-run deja PENDING si las mutaciones no están cubiertas."""
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(side_effect=OSError("Disk full during validation"))
 
@@ -335,11 +331,10 @@ async def test_unexpected_oserror_marks_rollback_and_emits_completed(
 
     # Must NOT raise — returns error dict
     assert result["success"] is False
-    assert result["rolled_back"] is True
+    assert result["rolled_back"] is False
     assert "Disk full" in result["errors"][0]
 
-    # Journal rollback called
-    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
     mock_journal.commit_transaction.assert_not_called()
 
     # Completed event emitted with error details
@@ -349,20 +344,19 @@ async def test_unexpected_oserror_marks_rollback_and_emits_completed(
     assert len(completed_calls) == 1
     payload = completed_calls[0][0][0].payload
     assert payload["success"] is False
-    assert payload["rolled_back"] is True
+    assert payload["rolled_back"] is False
 
 
 @pytest.mark.asyncio
-async def test_unexpected_error_with_journal_failure(
+async def test_unexpected_error_no_intenta_cerrar_journal_sin_cobertura(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     mock_event_bus: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Even if journal.mark_transaction_rolled_back fails, the service still returns error dict."""
+    """Sin cobertura completa ni siquiera intenta el cierre best-effort del journal."""
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(side_effect=RuntimeError("Unexpected crash"))
-    mock_journal.mark_transaction_rolled_back = AsyncMock(side_effect=OSError("Journal DB locked"))
 
     mock_config = MagicMock()
     mock_config.mo2_mods_path = tmp_path / "mods"
@@ -371,11 +365,11 @@ async def test_unexpected_error_with_journal_failure(
 
     service._runner = mock_runner
 
-    # Must NOT raise even with double failure
     result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
-    assert result["rolled_back"] is True
+    assert result["rolled_back"] is False
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
 
     # Completed event still emitted
     completed_calls = [
@@ -446,12 +440,12 @@ async def test_runner_init_failure_returns_error(
 
 
 @pytest.mark.asyncio
-async def test_validation_failure_triggers_rollback(
+async def test_validation_failure_deja_tx_pendiente(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Failed DynDOLOD output validation triggers journal rollback."""
+    """La validación falla después del runner: staging puede quedar parcial."""
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=False)
@@ -466,8 +460,8 @@ async def test_validation_failure_triggers_rollback(
     result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
-    assert result["rolled_back"] is True
-    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    assert result["rolled_back"] is False
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -499,9 +493,9 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
-    assert result["rolled_back"] is True
+    assert result["rolled_back"] is False
     mock_journal.commit_transaction.assert_not_called()
-    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
     # Sin path no hay nada que validar: el fallo es anterior a la validación.
     mock_runner.validate_dyndolod_output.assert_not_awaited()
 
@@ -541,8 +535,9 @@ async def test_exit_cero_sin_dyndolod_result_no_se_reporta_como_exito(
     result = await service.execute(preset="High", run_texgen=False, create_snapshot=False)
 
     assert result["success"] is False
+    assert result["rolled_back"] is False
     mock_journal.commit_transaction.assert_not_called()
-    mock_journal.mark_transaction_rolled_back.assert_called_once_with(42)
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
     mock_runner.validate_dyndolod_output.assert_not_awaited()
 
 
@@ -622,9 +617,10 @@ def _mock_runner_with_output(mods: pathlib.Path) -> AsyncMock:
 async def test_directory_rollback_restores_output_on_failure(
     service: DynDOLODPipelineService,
     mock_snapshot_manager: AsyncMock,
+    mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """create_snapshot=True: un fallo del pipeline restaura DynDOLOD Output/ intacto."""
+    """El output vuelve, pero staging no cubierto impide afirmar rollback total."""
     mods = tmp_path / "mods"
     output_dir = mods / "DynDOLOD Output"
     output_dir.mkdir(parents=True)
@@ -646,7 +642,8 @@ async def test_directory_rollback_restores_output_on_failure(
     result = await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
 
     assert result["success"] is False
-    assert result["rolled_back"] is True
+    assert result["rolled_back"] is False
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
     # Directorio original restaurado byte-a-byte; el parcial se descartó.
     assert (output_dir / "sentinel.esp").read_text(encoding="utf-8") == "ORIGINAL"
     assert (output_dir / "textures" / "a.dds").read_bytes() == b"\xde\xad"
@@ -654,6 +651,47 @@ async def test_directory_rollback_restores_output_on_failure(
     assert not list(mods.glob("DynDOLOD Output.rollback-*"))  # sin backups huérfanos
     # El .esp ya NO se snapshotea vía FileSnapshotManager (target_files=[]).
     mock_snapshot_manager.create_snapshot.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_staging_parcial_deja_tx_pendiente_aunque_output_se_restaure(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """No se declara rollback total sobre staging que el move-aside no protege."""
+    mods = tmp_path / "mods"
+    output_dir = mods / "DynDOLOD Output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "original.esp").write_text("ORIGINAL", encoding="utf-8")
+    mo2 = tmp_path / "MO2"
+    mo2.mkdir()
+    staging = mo2 / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    tools = tmp_path / "DynDOLOD"
+    tools.mkdir()
+
+    runner = _mock_runner_with_output(mods)
+    runner._config.mo2_path = mo2
+    runner._config.dyndolod_exe = tools / "DynDOLODx64.exe"
+
+    async def _pipeline_parcial(**_kwargs: object) -> DynDOLODPipelineResult:
+        output_dir.mkdir(parents=True)
+        (output_dir / "partial.esp").write_text("PARTIAL", encoding="utf-8")
+        staging.mkdir()
+        (staging / "partial.txt").write_text("STAGING", encoding="utf-8")
+        raise DynDOLODExecutionError("fallo tras escribir staging")
+
+    runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_parcial)
+    service._runner = runner
+
+    result = await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert result["success"] is False
+    assert result["rolled_back"] is False
+    assert (output_dir / "original.esp").read_text(encoding="utf-8") == "ORIGINAL"
+    assert not (output_dir / "partial.esp").exists()
+    assert (staging / "partial.txt").read_text(encoding="utf-8") == "STAGING"
+    mock_journal.mark_transaction_rolled_back.assert_not_called()
 
 
 @pytest.mark.asyncio
