@@ -75,7 +75,7 @@ def _github_release_json(
 
 def _xedit_release_json(
     tag: str = "4.1.5",
-    asset_name: str = "SSEEdit_4.1.5.7z",
+    asset_name: str = "xEdit_4.1.5.7z",
     size: int = 30_000_000,
 ) -> dict[str, Any]:
     return {
@@ -355,11 +355,21 @@ class TestEnsureXedit:
         )
 
     @pytest.mark.asyncio
+    async def test_downloads_and_extracts_when_missing(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
+        install_dir = tmp_path / "install"
+        install_dir.mkdir()
+
+        release_json = _xedit_release_json(asset_name="xEdit_4.1.5.zip")
+        mock_api_resp = AsyncMock()
+        mock_api_resp.status = 200
+        mock_api_resp.json = AsyncMock(return_value=release_json)
+
+    @pytest.mark.asyncio
     async def test_hitl_denial_raises(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
         install_dir = tmp_path / "install"
         install_dir.mkdir()
 
-        release_json = _xedit_release_json(asset_name="SSEEdit_4.1.5.zip")
+        release_json = _xedit_release_json(asset_name="xEdit_4.1.5.zip")
         mock_api_resp = MagicMock()
         mock_api_resp.status = 200
         mock_api_resp.json = AsyncMock(return_value=release_json)
@@ -376,6 +386,79 @@ class TestEnsureXedit:
         with pytest.raises(ToolInstallError, match="denied"):
             await installer.ensure_xedit(install_dir, session)
 
+    @pytest.mark.asyncio
+    async def test_ensure_xedit_renames_executable(self, installer: ToolsInstaller, tmp_path: pathlib.Path, mocker) -> None:
+        from sky_claw.app.security.hitl import Decision
+        install_dir = tmp_path / "xedit"
+        install_dir.mkdir()
+
+        mocker.patch("sky_claw.local.tools_installer.ToolsInstaller._find_github_asset", return_value=(mocker.MagicMock(name="xEdit.7z", browser_download_url="http://fake", size=1024), "4.1.5"))
+        mocker.patch("sky_claw.local.tools_installer.HITLGuard.request_approval", return_value=Decision.APPROVED)
+        mocker.patch("sky_claw.local.tools_installer.ToolsInstaller._download_asset", return_value=tmp_path / "xEdit.7z")
+        
+        # Mock _extract to simulate extraction creating xEdit.exe instead of SSEEdit.exe
+        def mock_extract(archive, directory):
+            (directory / "xEdit.exe").touch()
+        
+        mocker.patch("sky_claw.local.tools_installer.ToolsInstaller._extract", side_effect=mock_extract)
+        mocker.patch("pathlib.Path.unlink")
+        
+        session = MagicMock(spec=aiohttp.ClientSession)
+        
+        result = await installer.ensure_xedit(install_dir, session)
+        
+        assert result.tool_name == "SSEEdit"
+        assert result.exe_path == install_dir / "SSEEdit.exe"
+        assert (install_dir / "SSEEdit.exe").exists()
+        assert not (install_dir / "xEdit.exe").exists()
+
+class TestEnsurePandora:
+    @pytest.mark.asyncio
+    async def test_ensure_pandora_expects_correct_exe_name(self, installer: ToolsInstaller, tmp_path: pathlib.Path, mocker) -> None:
+        from sky_claw.app.security.hitl import Decision
+        install_dir = tmp_path / "pandora"
+        install_dir.mkdir()
+
+        call_count = [0]
+        # Mock find_exe_in_dir to return None on the first call, but the path on the second call
+        def mock_find_exe(directory, name):
+            if name == "Pandora Behaviour Engine+.exe":
+                call_count[0] += 1
+                if call_count[0] == 2:
+                    return directory / name
+            return None
+            
+        mocker.patch("sky_claw.local.tools_installer.find_exe_in_dir", side_effect=mock_find_exe)
+        mocker.patch("sky_claw.local.tools_installer.ToolsInstaller._find_github_asset", return_value=(mocker.MagicMock(name="Pandora.zip", browser_download_url="http://fake", size=1024), "1.0.0"))
+        mocker.patch("sky_claw.local.tools_installer.HITLGuard.request_approval", return_value=Decision.APPROVED)
+        mocker.patch("sky_claw.local.tools_installer.ToolsInstaller._download_asset", return_value=tmp_path / "Pandora.zip")
+        mocker.patch("sky_claw.local.tools_installer.ToolsInstaller._extract")
+        mocker.patch("pathlib.Path.unlink")
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        
+        result = await installer.ensure_pandora(install_dir, session)
+        
+        assert result.tool_name == "Pandora"
+        assert result.exe_path == install_dir / "Pandora Behaviour Engine+.exe"
+        assert result.already_existed is False
+
+class TestExtract7zFallback:
+    def test_extract_7z_safe_fallback_to_system_7z(self, mocker, tmp_path: pathlib.Path) -> None:
+        # Mock py7zr to throw an exception to simulate BCJ2 failure
+        mocker.patch("py7zr.SevenZipFile", side_effect=Exception("BCJ2 filter is not supported"))
+        
+        # Mock subprocess.run to pretend 7z x succeeded
+        mock_run = mocker.patch("subprocess.run")
+        
+        from sky_claw.local.tools_installer import _extract_7z_safe
+        
+        archive = tmp_path / "dummy.7z"
+        dest = tmp_path / "out"
+        _extract_7z_safe(archive, dest)
+        
+        mock_run.assert_called_once()
+        assert "7z" in mock_run.call_args[0][0]
 
 # ---------------------------------------------------------------------------
 # local_config

@@ -174,14 +174,25 @@ def _extract_7z_safe(archive: pathlib.Path, dest: pathlib.Path) -> None:
     """Extract a 7z archive with zip-slip protection."""
     try:
         import py7zr
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("py7zr is required for .7z extraction — pip install py7zr") from exc
-
-    with py7zr.SevenZipFile(archive, "r") as szf:
-        for name in szf.getnames():
-            if not _is_safe_path(name):
-                raise PathViolationError(f"Zip-slip detected in 7z: {name!r}")
-        szf.extractall(dest)
+        with py7zr.SevenZipFile(archive, "r") as szf:
+            for name in szf.getnames():
+                if not _is_safe_path(name):
+                    raise PathViolationError(f"Zip-slip detected in 7z: {name!r}")
+            szf.extractall(dest)
+    except Exception as exc:
+        import subprocess
+        logger.warning(f"py7zr extraction failed ({exc}). Falling back to system 7z.exe")
+        try:
+            # 7z natively prevents path traversals. Use -y to assume Yes on queries.
+            subprocess.run(
+                ["7z", "x", f"-o{dest}", "-y", str(archive)], 
+                check=True, 
+                capture_output=True
+            )
+        except subprocess.CalledProcessError as sub_e:
+            raise ToolInstallError(f"7z extraction failed: {sub_e.stderr.decode('utf-8', errors='ignore')}") from sub_e
+        except FileNotFoundError:
+            raise ToolInstallError("7z.exe is required in PATH to extract this archive because py7zr failed.") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +430,7 @@ class ToolsInstaller:
         asset, version = await self._find_github_asset(
             session,
             _XEDIT_RELEASES_URL,
-            keyword="SSEEdit",
+            keyword="xEdit",
         )
 
         decision = await self._hitl.request_approval(
@@ -440,9 +451,14 @@ class ToolsInstaller:
         self._extract(archive, install_dir)
         archive.unlink(missing_ok=True)
 
+        # xEdit ships generically; rename xEdit.exe to SSEEdit.exe to skip game selection popups
+        xedit_exe = find_exe_in_dir(install_dir, "xEdit.exe")
+        if xedit_exe:
+            xedit_exe.rename(xedit_exe.with_name("SSEEdit.exe"))
+
         exe = find_exe_in_dir(install_dir, "SSEEdit.exe")
         if exe is None:
-            raise ToolInstallError("SSEEdit extraction succeeded but SSEEdit.exe not found in output")
+            raise ToolInstallError("SSEEdit extraction succeeded but neither SSEEdit.exe nor xEdit.exe found in output")
 
         logger.info("SSEEdit %s installed at %s", version, exe)
         return InstallResult(
@@ -468,7 +484,7 @@ class ToolsInstaller:
         """
         self._validator.validate(install_dir)
         # Check if already installed
-        exe = find_exe_in_dir(install_dir, "Pandora.exe")
+        exe = find_exe_in_dir(install_dir, "Pandora Behaviour Engine+.exe")
         if exe is not None:
             logger.info("Pandora already installed at %s", exe)
             return InstallResult(
@@ -502,9 +518,9 @@ class ToolsInstaller:
         self._extract(archive, install_dir)
         archive.unlink(missing_ok=True)
 
-        exe = find_exe_in_dir(install_dir, "Pandora.exe")
+        exe = find_exe_in_dir(install_dir, "Pandora Behaviour Engine+.exe")
         if exe is None:
-            raise ToolInstallError("Pandora extraction succeeded but Pandora.exe not found in output")
+            raise ToolInstallError("Pandora extraction succeeded but Pandora Behaviour Engine+.exe not found in output")
 
         logger.info("Pandora %s installed at %s", version, exe)
         return InstallResult(

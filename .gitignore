@@ -143,3 +143,7 @@ output_real.txt
 pytest_links.txt
 pytest_out.txt
 skills-lock.json
+
+# Agentes y Temporales
+.github/agents/
+.pytest-test-eng-tmp/
