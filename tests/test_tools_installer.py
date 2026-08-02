@@ -770,19 +770,25 @@ class TestExtraccion7zConFallback:
 
         assert [c.args[0][:2] for c in mock_run.call_args_list] == [["7z", "l"]]
 
-    def test_rechaza_los_enlaces_del_archive(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
-        """Un symlink con Path seguro pero destino afuera → no se extrae.
+    @pytest.mark.parametrize("clave_de_link", tools_installer._7Z_CLAVES_DE_LINK)
+    def test_rechaza_los_enlaces_del_archive(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, clave_de_link: str
+    ) -> None:
+        """Un enlace con Path seguro pero destino afuera → no se extrae.
 
         El destino del enlace no viaja en ``Path``, así que validar los nombres no
         dice nada sobre a dónde apunta: `7z x` lo materializa y después escribe a
         través de él, fuera de dest, con todos los nombres "seguros".
+
+        Parametrizado SOBRE el tuple: agregar una clave de enlace nueva sin
+        cubrirla no queda fuera de la cobertura por descuido.
         """
         _mockear_py7zr_roto(monkeypatch)
 
         listado = (
             "7-Zip 21.07\n--\nPath = dummy.7z\n\n----------\n"
             "Path = inocente.txt\nSize = 10\n\n"
-            "Path = enlace\nSize = 0\nSymbolic Link = ../../../etc\n\n"
+            f"Path = enlace\nSize = 0\n{clave_de_link}../../../etc\n\n"
         )
 
         def _run(cmd: list[str], **kwargs: Any) -> MagicMock:
@@ -828,6 +834,38 @@ class TestExtraccion7zConFallback:
 
         with pytest.raises(ToolInstallError, match="listar"):
             _extract_7z_safe(tmp_path / "dummy.7z", tmp_path / "out")
+
+    def test_rechaza_la_continuacion_disfrazada_de_clave_valor(self) -> None:
+        """PoC del reviewer: la continuación del nombre PARECE un par clave-valor.
+
+        El atacante elige el nombre del miembro, así que puede hacer que la línea
+        que sigue al salto tenga forma ``Algo = valor`` y pase cualquier chequeo
+        de forma. Lo que no puede evitar es llevar el traversal: sin ``..`` no
+        escapa de dest y el ataque no sirve. Por eso se valida el VALOR de toda
+        clave que no sea Path.
+        """
+        salida = "7-Zip\n--\nPath = dummy.7z\n\n----------\nPath = ok.txt\nSomeKey = ../../evil.txt\nSize = 12\n\n"
+        with pytest.raises(ToolInstallError, match="traversal"):
+            _parse_7z_listing(salida)
+
+    def test_rechaza_la_continuacion_con_ruta_absoluta(self) -> None:
+        """Hermano del anterior: el payload es absoluto en vez de relativo."""
+        salida = "7-Zip\n--\nPath = dummy.7z\n\n----------\nPath = ok.txt\nSomeKey = C:\\Windows\\evil.dll\nSize = 1\n"
+        with pytest.raises(ToolInstallError, match="traversal"):
+            _parse_7z_listing(salida)
+
+    def test_no_rechaza_valores_legitimos_con_puntos(self) -> None:
+        """No debe haber falso positivo: versiones, CRCs y métodos pasan.
+
+        Si esto rompiera, el fallback abortaría instalaciones válidas de xEdit —
+        el escenario que este PR viene justo a arreglar.
+        """
+        salida = (
+            "7-Zip\n--\nPath = dummy.7z\n\n----------\n"
+            "Path = SSEEdit.exe\nSize = 1234\nCRC = A1B2C3D4\n"
+            "Method = BCJ2 LZMA:20\nModified = 2024-01-02 03:04:05\nAttributes = A_ -rw-r--r--\n\n"
+        )
+        assert _parse_7z_listing(salida) == ["SSEEdit.exe"]
 
     def test_rechaza_una_linea_que_no_entiende(self) -> None:
         """Continuación de un nombre con salto de línea embebido → listado rechazado.

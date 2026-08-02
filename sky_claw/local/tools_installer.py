@@ -187,6 +187,19 @@ _7Z_CLAVE_VALOR = re.compile(r"^[A-Za-z][A-Za-z0-9 ()-]* = ")
 #: que validar el path del miembro no dice nada sobre a dónde apunta.
 _7Z_CLAVES_DE_LINK = ("Symbolic Link = ", "Hard Link = ")
 
+#: ``C:``/``d:`` al principio de un valor — ruta absoluta con letra de unidad.
+_7Z_LETRA_DE_UNIDAD = re.compile(r"^[A-Za-z]:")
+
+
+def _valor_con_traversal(valor: str) -> bool:
+    """True si *valor* trae componentes ``..``, raíz, o letra de unidad."""
+    normalizado = valor.strip().replace("\\", "/")
+    if not normalizado:
+        return False
+    if normalizado.startswith("/") or _7Z_LETRA_DE_UNIDAD.match(normalizado):
+        return True
+    return any(parte == ".." for parte in normalizado.split("/"))
+
 
 def _parse_7z_listing(stdout: str) -> list[str]:
     """Extrae los nombres de miembro de la salida de ``7z l -slt``.
@@ -196,16 +209,23 @@ def _parse_7z_listing(stdout: str) -> list[str]:
     ``Path = ...`` POSTERIORES a ese separador: antes del separador ``Path``
     es la ruta del propio archive, no un miembro.
 
-    Rechaza el listado entero si aparece una línea que no tiene esa forma. El
-    ataque que eso cierra: un nombre de miembro con un salto de línea embebido
-    (legal en NTFS) parte el bloque en dos — el parser valida solo el prefijo
-    ``ok.txt`` y ``7z x`` escribe el nombre completo ``ok.txt\\n../../evil``. Una
-    línea suelta que no es ``clave = valor`` es exactamente esa continuación, y
-    tragarla en silencio devuelve una lista "validada" que no cubre lo que se va
-    a extraer.
+    El ataque que cierra: un nombre de miembro con un salto de línea embebido
+    (legal en NTFS) parte el bloque en dos. El parser ve ``Path = ok.txt``,
+    valida eso, y ``7z x`` escribe el nombre COMPLETO
+    ``ok.txt\\nAlgo = ../../evil.txt`` — cuyos ``../..`` son separadores reales y
+    escapan de *dest*. La segunda línea es la continuación del nombre.
+
+    Exigir forma ``clave = valor`` NO alcanza: el atacante elige el nombre, así
+    que puede hacer que la continuación parezca un par válido. Lo que no puede
+    evitar es que el payload contenga traversal — sin ``..`` no escapa de *dest*
+    y el ataque no sirve. Por eso se valida el valor de TODAS las líneas, no solo
+    el de las ``Path =``: la inyección se delata por lo que necesita llevar, no
+    por cómo se llama la clave que falsifica.
 
     Raises:
-        ToolInstallError: Si el listado tiene líneas que este parser no entiende.
+        ToolInstallError: Si el listado tiene líneas que este parser no entiende
+            o que delatan un nombre partido por un salto de línea.
+        PathViolationError: Si el archive trae enlaces.
     """
     members: list[str] = []
     en_cuerpo = False
@@ -229,8 +249,20 @@ def _parse_7z_listing(stdout: str) -> list[str]:
             # igual perforado. Ningún release de las tools que instalamos trae
             # links, así que rechazarlos de plano no cuesta nada.
             raise PathViolationError(f"El archive trae un enlace y no se extrae con el 7z del sistema: {linea!r}")
+        _clave, _, valor = linea.partition(" = ")
+        if not linea.startswith("Path = ") and _valor_con_traversal(valor):
+            # Ninguna clave legítima de `-slt` (Size, CRC, Modified, Attributes,
+            # Method…) lleva rutas con `..`. Un valor así es la continuación de un
+            # nombre partido, disfrazada de par clave-valor.
+            raise ToolInstallError(
+                f"Valor con traversal en una clave que no es Path: {linea!r}. Delata un nombre de miembro "
+                "partido por un salto de línea — no se extrae."
+            )
         if linea.startswith("Path = "):
-            members.append(linea[len("Path = ") :].strip())
+            nombre = linea[len("Path = ") :].strip()
+            if any(ord(ch) < 32 for ch in nombre):
+                raise ToolInstallError(f"Nombre de miembro con caracteres de control: {nombre!r}. No se extrae.")
+            members.append(nombre)
     return members
 
 
