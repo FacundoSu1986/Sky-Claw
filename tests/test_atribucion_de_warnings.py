@@ -32,6 +32,8 @@ import subprocess
 import sys
 import tomllib
 
+from tests.conftest import GC_POR_TEST
+
 _RAIZ = pathlib.Path(__file__).resolve().parent.parent
 
 #: Dos tests en orden: el que fuga y el que sólo asigna memoria. El ciclo
@@ -73,12 +75,15 @@ def ini_del_hijo() -> str:
     return f"[pytest]\nfilterwarnings =\n{lineas}\n"
 
 
-#: Reexporta el fixture REAL. ``noqa: F401`` porque pytest lo consume por
-#: registro, no por referencia.
-_CONFTEST_PROTEGIDO = "from tests.conftest import _gc_al_cerrar_cada_test  # noqa: F401\n"
+#: Reexporta el fixture y la opción REALES. ``noqa: F401`` porque pytest los
+#: consume por registro, no por referencia. Los DOS escenarios usan este mismo
+#: conftest: la única variable que cambia entre ellos es si se pasa
+#: ``--gc-por-test`` en la línea de comandos, que es exactamente la decisión que
+#: el ancla tiene que medir.
+_CONFTEST = "from tests.conftest import _gc_al_cerrar_cada_test, pytest_addoption  # noqa: F401\n"
 
 
-def correr_pytest_hijo(carpeta: pathlib.Path) -> str:
+def correr_pytest_hijo(carpeta: pathlib.Path, *args: str) -> str:
     """Levanta un pytest aislado en *carpeta* y devuelve su reporte.
 
     Subproceso y no ``pytester``: el escenario necesita un intérprete donde el
@@ -92,7 +97,18 @@ def correr_pytest_hijo(carpeta: pathlib.Path) -> str:
     entorno = os.environ.copy()
     entorno["PYTHONPATH"] = str(_RAIZ)
     proceso = subprocess.run(
-        [sys.executable, "-m", "pytest", "-p", "no:randomly", "-p", "no:cacheprovider", "-v", "--no-header"],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:randomly",
+            "-p",
+            "no:cacheprovider",
+            "-v",
+            "--no-header",
+            *args,
+        ],
         cwd=carpeta,
         capture_output=True,
         text=True,
@@ -103,37 +119,38 @@ def correr_pytest_hijo(carpeta: pathlib.Path) -> str:
     return proceso.stdout + proceso.stderr
 
 
-def _preparar(carpeta: pathlib.Path, *, con_fixture: bool) -> pathlib.Path:
-    escenario = carpeta / ("protegido" if con_fixture else "desnudo")
+def _preparar(carpeta: pathlib.Path, *, con_flag: bool) -> pathlib.Path:
+    escenario = carpeta / ("con_flag" if con_flag else "sin_flag")
     escenario.mkdir()
     (escenario / "test_fuga.py").write_text(_MODULO_DE_PRUEBA, encoding="utf-8")
     (escenario / "pytest.ini").write_text(ini_del_hijo(), encoding="utf-8")
-    if con_fixture:
-        (escenario / "conftest.py").write_text(_CONFTEST_PROTEGIDO, encoding="utf-8")
+    (escenario / "conftest.py").write_text(_CONFTEST, encoding="utf-8")
     return escenario
 
 
-def test_sin_el_fixture_el_warning_acusa_al_test_inocente(tmp_path: pathlib.Path) -> None:
+def test_sin_el_flag_el_warning_acusa_al_test_inocente(tmp_path: pathlib.Path) -> None:
     """El peligro es real: sin GC determinista, la falla cae en el que no fugó.
 
-    Este test es el control del experimento. Si algún día pytest cambiara y
-    atribuyera bien por su cuenta, ESTE test se pone rojo primero — y ahí el
-    fixture pasa a ser código muerto que se puede retirar con evidencia.
+    Es el control del experimento, y también la razón de que el flag exista: éste
+    es el estado por defecto de la suite, el que produjo tres acusaciones falsas
+    en #413 y #414. Si algún día pytest atribuyera bien por su cuenta, ESTE test
+    se pone rojo primero — y ahí el flag pasa a ser código muerto que se puede
+    retirar con evidencia, en vez de quedarse "por las dudas".
     """
-    reporte = correr_pytest_hijo(_preparar(tmp_path, con_fixture=False))
+    reporte = correr_pytest_hijo(_preparar(tmp_path, con_flag=False))
 
     assert "test_inocente_solo_asigna_memoria FAILED" in reporte, reporte
     assert "test_culpable_fuga_un_socket_en_un_ciclo PASSED" in reporte, reporte
 
 
-def test_con_el_fixture_el_warning_acusa_al_test_que_fugo(tmp_path: pathlib.Path) -> None:
-    """La propiedad restaurada: la falla nombra al culpable y el inocente pasa.
+def test_con_el_flag_el_warning_acusa_al_test_que_fugo(tmp_path: pathlib.Path) -> None:
+    """La propiedad que compra ``--gc-por-test``: la falla nombra al culpable.
 
     Es la mitad que importa. El inocente en verde es lo que vuelve accionable un
-    rojo de CI: deja de haber corridas donde el nombre del test acusado no tiene
+    rojo: deja de haber corridas donde el nombre del test acusado no tiene
     relación con lo que se rompió.
     """
-    reporte = correr_pytest_hijo(_preparar(tmp_path, con_fixture=True))
+    reporte = correr_pytest_hijo(_preparar(tmp_path, con_flag=True), GC_POR_TEST)
 
     assert "test_inocente_solo_asigna_memoria PASSED" in reporte, reporte
     assert "test_culpable_fuga_un_socket_en_un_ciclo" in reporte, reporte

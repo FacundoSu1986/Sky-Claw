@@ -34,9 +34,27 @@ from sky_claw.app.security.network_gateway import NetworkGateway
 from sky_claw.logging_config import correlation_id_var
 from tests._lifecycle_guard import close_registry_then_lifecycle, find_leaked_threads
 
+#: Flag que enciende el GC determinista por test. Ver ``_gc_al_cerrar_cada_test``.
+GC_POR_TEST = "--gc-por-test"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Registra ``--gc-por-test``, el modo de diagnóstico de fugas de lifecycle."""
+    parser.addoption(
+        GC_POR_TEST,
+        action="store_true",
+        default=False,
+        help=(
+            "Corre gc.collect() al cerrar cada test para que un "
+            "PytestUnraisableExceptionWarning acuse al test que fugó el recurso "
+            "y no a uno posterior al azar. Cuadruplica la duración de la suite: "
+            "encendelo para diagnosticar, no en cada corrida."
+        ),
+    )
+
 
 @pytest.fixture(autouse=True)
-def _gc_al_cerrar_cada_test() -> Iterator[None]:
+def _gc_al_cerrar_cada_test(request: pytest.FixtureRequest) -> Iterator[None]:
     """Corre el GC cíclico en el teardown, para que el warning acuse al culpable.
 
     ``pyproject.toml`` convierte ``PytestUnraisableExceptionWarning`` en error
@@ -65,11 +83,39 @@ def _gc_al_cerrar_cada_test() -> Iterator[None]:
     resto de los fixtures soltó sus referencias, que es cuando el recurso fugado
     recién queda inalcanzable.
 
+    **Va apagado por defecto, y eso se decidió con números.** Medido sobre esta
+    suite (3863 tests, misma máquina, misma corrida completa):
+
+    ===============================================  ==========
+    sin ``gc.collect()``                              129 s
+    con ``gc.collect()`` por test                     536 s
+    lo mismo + ``gc.freeze()`` al arrancar la sesión   583 s
+    ===============================================  ==========
+
+    Son ~105 ms por test: un recorrido completo del heap, que ``gc.freeze()`` no
+    abarata porque el costo lo ponen los objetos que asignan los propios tests,
+    no los del import. Cuadruplicar cada corrida de CI para adelantarse a una
+    mala atribución hipotética es mal negocio; el diagnóstico se paga sólo
+    cuando hace falta.
+
+    **Cuando haga falta**, que es al ver un ``PytestUnraisableExceptionWarning``
+    en un test que no abre recursos::
+
+        pytest --gc-por-test
+
+    Eso convierte la acusación falsa en el nombre del culpable. Es el camino que
+    a #413 y #414 les faltó: entre los dos gastaron dos PRs sin poder reproducir
+    la falla, y la fuga real —el event loop que fabrica pytest-asyncio, cerrado
+    en ``pytest_sessionstart``— apareció en la primera corrida con este flag.
+
     No arregla ninguna fuga: la vuelve atribuible. El ancla de esta propiedad
-    vive en ``tests/test_atribucion_de_warnings.py``.
+    vive en ``tests/test_atribucion_de_warnings.py``, y corre en CI con el flag
+    encendido en un pytest hijo — así que el mecanismo está verificado aunque la
+    suite grande no lo use.
     """
     yield
-    gc.collect()
+    if request.config.getoption(GC_POR_TEST):
+        gc.collect()
 
 
 @pytest.fixture()

@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import pathlib
 
+from tests.conftest import GC_POR_TEST
 from tests.test_atribucion_de_warnings import correr_pytest_hijo, ini_del_hijo
 
 #: Un test async —que hace entrar a pytest-asyncio— seguido de uno que suelta el
@@ -49,15 +50,17 @@ def test_suelta_el_loop_actual():
     asyncio.set_event_loop(None)
 """
 
-#: Sin el hook: sólo el GC determinista, para que la fuga se detecte YA y no en
-#: un test al azar más adelante.
-_CONFTEST_SIN_HOOK = "from tests.conftest import _gc_al_cerrar_cada_test  # noqa: F401\n"
+#: Sin el hook de sesión: sólo el GC determinista (``--gc-por-test``), para que
+#: la fuga se detecte YA y no en un test al azar más adelante.
+_CONFTEST_SIN_HOOK = "from tests.conftest import _gc_al_cerrar_cada_test, pytest_addoption  # noqa: F401\n"
 
-#: Con el hook REAL de ``tests/conftest.py``. Se importa en vez de replicarse:
-#: una copia local dejaría pasar que alguien borre el original.
+#: Con los hooks REALES de ``tests/conftest.py``. Se importan en vez de
+#: replicarse: una copia local anclaría un clon y dejaría pasar que alguien borre
+#: el original.
 _CONFTEST_CON_HOOK = (
     "from tests.conftest import (  # noqa: F401\n"
     "    _gc_al_cerrar_cada_test,\n"
+    "    pytest_addoption,\n"
     "    pytest_sessionfinish,\n"
     "    pytest_sessionstart,\n"
     ")\n"
@@ -82,14 +85,14 @@ def test_sin_el_hook_de_sesion_queda_un_event_loop_sin_cerrar(tmp_path: pathlib.
     — y ahí el hook pasa a ser código muerto que se puede retirar con evidencia,
     en vez de quedarse para siempre "por las dudas".
     """
-    reporte = correr_pytest_hijo(_preparar(tmp_path, con_hook=False))
+    reporte = correr_pytest_hijo(_preparar(tmp_path, con_hook=False), GC_POR_TEST)
 
     assert "unclosed event loop" in reporte, reporte
 
 
 def test_con_el_hook_de_sesion_no_queda_ningun_loop_sin_cerrar(tmp_path: pathlib.Path) -> None:
     """La propiedad: con un loop actual instalado de entrada, no hay huérfano."""
-    reporte = correr_pytest_hijo(_preparar(tmp_path, con_hook=True))
+    reporte = correr_pytest_hijo(_preparar(tmp_path, con_hook=True), GC_POR_TEST)
 
     assert "unclosed event loop" not in reporte, reporte
     assert "2 passed" in reporte, reporte
