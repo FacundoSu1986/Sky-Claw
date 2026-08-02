@@ -160,6 +160,24 @@ def test_borrado_recursivo_no_puede_cerrarse_con_modulos_pendientes() -> None:
     assert "test_borrado_recursivo.py" in fila["Verificado por"]
 
 
+def _ruta_del_test_citado(nombre: str) -> pathlib.Path:
+    """Resuelve un ``.py`` citado en la tabla, conservando su directorio.
+
+    Acepta tanto el nombre pelado (``test_links.py``, que es como está citada
+    hoy toda la tabla) como una ruta con subdirectorio (``bdd/test_x.py``) o con
+    el prefijo ``tests/`` explícito.
+
+    **No se colapsa a ``.name``**: quedarse con el nombre del archivo haría que
+    un ``tests/test_x.py`` cualquiera satisficiera una cita de
+    ``bdd/test_x.py``, y el gate diría que existe un test que no existe — el
+    mismo error que este gate existe para atajar, un nivel más abajo. Con
+    ``tests/bdd/`` ya en el árbol, la ruta con subdirectorio es una cita
+    plausible.
+    """
+    ruta = pathlib.Path(nombre)
+    return _RAIZ / (ruta if ruta.parts[0] == "tests" else "tests" / ruta)
+
+
 def test_todo_test_citado_como_verificacion_existe() -> None:
     """Ningún ``.py`` citado en «Verificado por» puede ser un archivo inexistente.
 
@@ -176,7 +194,7 @@ def test_todo_test_citado_como_verificacion_existe() -> None:
     un caso escrito a mano para la fila de hoy no ataja a la de mañana.
     """
     citados = {nombre for fila in _tabla().values() for nombre in re.findall(r"[\w/]+\.py", fila["Verificado por"])}
-    faltantes = {nombre for nombre in citados if not (_RAIZ / "tests" / pathlib.Path(nombre).name).exists()}
+    faltantes = {nombre for nombre in citados if not _ruta_del_test_citado(nombre).is_file()}
 
     assert not faltantes, f"el inventario cita tests que no existen: {sorted(faltantes)}"
 
