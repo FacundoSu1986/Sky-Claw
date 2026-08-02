@@ -9,13 +9,13 @@ build/
 *.egg
 
 # Virtual environments
-.venv/
-venv/
-env/
+/.venv/
+/venv/
+/env/
 
 # IDE
-.vscode/
-.idea/
+/.vscode/
+/.idea/
 *.swp
 *.swo
 
@@ -68,10 +68,10 @@ dummy_*.py
 nul
 .kilo/
 # Scratch / temporary exploration directories (not part of the project)
-scratch/
-autoskills_tmp/
-scrapskyclaw/
-plans/
+/scratch/
+/autoskills_tmp/
+/scrapskyclaw/
+/plans/
 
 # Git worktrees (isolated workspaces)
 .worktrees/
@@ -136,3 +136,15 @@ sky_claw/.llm-chat-history/
 
 # Reporte de auditoría — mantener fuera del repo
 AUDIT_PANEL_REPORT.md
+
+# Local test and skills output (anclados a la raíz: sin la `/` inicial estos
+# nombres también matchean archivos homónimos en subdirectorios del repo)
+/.junie/
+/output_real.txt
+/pytest_links.txt
+/pytest_out.txt
+/skills-lock.json
+
+# Agentes y Temporales
+/.github/agents/
+/.pytest-test-eng-tmp/

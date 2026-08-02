@@ -8,18 +8,25 @@ import pathlib
 import zipfile
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import aiohttp
 import pytest
 
-from sky_claw.app.security.hitl import HITLGuard
+from sky_claw.app.security.hitl import Decision, HITLGuard
 from sky_claw.app.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.app.security.path_validator import PathValidator, PathViolationError
+from sky_claw.local import tools_installer
+from sky_claw.local.discovery import scanner
+from sky_claw.local.discovery.scanner import PANDORA_EXE_NAMES
 from sky_claw.local.tools_installer import (
+    _SEVENZIP_TIMEOUT_SECONDS,
+    ReleaseAsset,
     ToolInstallError,
     ToolsInstaller,
+    _extract_7z_safe,
     _extract_zip_safe,
+    _parse_7z_listing,
     find_exe_in_dir,
     scan_common_paths,
 )
@@ -75,7 +82,7 @@ def _github_release_json(
 
 def _xedit_release_json(
     tag: str = "4.1.5",
-    asset_name: str = "SSEEdit_4.1.5.7z",
+    asset_name: str = "xEdit_4.1.5.7z",
     size: int = 30_000_000,
 ) -> dict[str, Any]:
     return {
@@ -89,6 +96,68 @@ def _xedit_release_json(
             },
         ],
     }
+
+
+def _mockear_descarga_de_tool(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    *,
+    asset_name: str,
+    version: str,
+) -> None:
+    """Corta red y HITL: deja el ``ensure_*`` corriendo hasta la extracción."""
+    asset = ReleaseAsset(
+        name=asset_name,
+        size=1024,
+        download_url="https://api.github.com/x",
+        browser_download_url="https://github.com/x",
+    )
+    monkeypatch.setattr(
+        "sky_claw.local.tools_installer.ToolsInstaller._find_github_asset",
+        AsyncMock(return_value=(asset, version)),
+    )
+    monkeypatch.setattr(
+        "sky_claw.local.tools_installer.HITLGuard.request_approval",
+        AsyncMock(return_value=Decision.APPROVED),
+    )
+    monkeypatch.setattr(
+        "sky_claw.local.tools_installer.ToolsInstaller._download_asset",
+        AsyncMock(return_value=tmp_path / asset_name),
+    )
+
+
+def _mockear_py7zr(monkeypatch: pytest.MonkeyPatch, *, miembros: list[str]) -> None:
+    """py7zr abre bien y lista *miembros* (para ejercitar su propia validación)."""
+    szf = MagicMock()
+    szf.getnames = MagicMock(return_value=miembros)
+    szf.__enter__ = MagicMock(return_value=szf)
+    szf.__exit__ = MagicMock(return_value=False)
+    monkeypatch.setattr("py7zr.SevenZipFile", MagicMock(return_value=szf))
+
+
+def _mockear_py7zr_roto(monkeypatch: pytest.MonkeyPatch) -> None:
+    """py7zr revienta al ABRIR — nunca llega a enumerar miembros (caso BCJ2)."""
+
+    def _reventar(*args: Any, **kwargs: Any) -> None:
+        raise ValueError("BCJ2 filter is not supported")
+
+    monkeypatch.setattr("py7zr.SevenZipFile", _reventar)
+
+
+def _mockear_7z_del_sistema(monkeypatch: pytest.MonkeyPatch, *, miembros: list[str]) -> MagicMock:
+    """Simula el binario ``7z``: ``l -slt`` devuelve *miembros*, ``x`` no hace nada."""
+    listado = "7-Zip 21.07\n--\nPath = dummy.7z\nType = 7z\n\n----------\n"
+    listado += "".join(f"Path = {m}\nSize = 1\n\n" for m in miembros)
+
+    def _run(cmd: list[str], **kwargs: Any) -> MagicMock:
+        resultado = MagicMock()
+        resultado.stdout = listado.encode("utf-8") if cmd[1] == "l" else b""
+        resultado.stderr = b""
+        return resultado
+
+    mock_run = MagicMock(side_effect=_run)
+    monkeypatch.setattr("subprocess.run", mock_run)
+    return mock_run
 
 
 # ---------------------------------------------------------------------------
@@ -141,8 +210,8 @@ class TestScanCommonPaths:
 class TestEnsureLoot:
     @pytest.mark.asyncio
     async def test_approval_uses_download_category(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
-        """The download approval is tagged category='download' so the GUI HITL bridge
-        can park it in the modal (Follow-up C) instead of falling through to Telegram."""
+        """La aprobación de descarga se etiqueta con category='download' para que el puente
+        HITL de la GUI pueda retenerla en el modal (Follow-up C) en vez de caer a Telegram."""
         from unittest.mock import AsyncMock
 
         from sky_claw.app.security.hitl import Decision
@@ -168,7 +237,7 @@ class TestEnsureLoot:
 
     @pytest.mark.asyncio
     async def test_returns_existing_without_download(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
-        """When loot.exe already exists, return it immediately."""
+        """Cuando loot.exe ya existe, lo devuelve inmediatamente sin descargar."""
         exe = tmp_path / "loot.exe"
         exe.write_text("fake", encoding="utf-8")
 
@@ -181,7 +250,7 @@ class TestEnsureLoot:
 
     @pytest.mark.asyncio
     async def test_downloads_and_extracts_when_missing(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
-        """When loot.exe is absent, download from GitHub and extract."""
+        """Cuando loot.exe está ausente, descarga de GitHub y extrae el archivo."""
         import zipfile
 
         # Prepare a fake zip containing loot.exe.
@@ -244,7 +313,7 @@ class TestEnsureLoot:
 
     @pytest.mark.asyncio
     async def test_hitl_denial_raises(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
-        """When operator denies, raise ToolInstallError."""
+        """Cuando el operador lo deniega, lanza ToolInstallError."""
         install_dir = tmp_path / "install"
         install_dir.mkdir()
 
@@ -267,7 +336,7 @@ class TestEnsureLoot:
 
     @pytest.mark.asyncio
     async def test_github_api_failure_raises(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
-        """When GitHub API fails, raise ToolInstallError."""
+        """Cuando la API de GitHub falla, lanza ToolInstallError."""
         install_dir = tmp_path / "install"
         install_dir.mkdir()
 
@@ -314,7 +383,7 @@ class TestEnsureXedit:
         install_dir.mkdir()
 
         # Use a .zip asset name to match.
-        release_json = _xedit_release_json(asset_name="SSEEdit_4.1.5.zip", size=len(zip_bytes))
+        release_json = _xedit_release_json(asset_name="xEdit_4.1.5.zip", size=len(zip_bytes))
 
         mock_api_resp = MagicMock()
         mock_api_resp.status = 200
@@ -359,7 +428,7 @@ class TestEnsureXedit:
         install_dir = tmp_path / "install"
         install_dir.mkdir()
 
-        release_json = _xedit_release_json(asset_name="SSEEdit_4.1.5.zip")
+        release_json = _xedit_release_json(asset_name="xEdit_4.1.5.zip")
         mock_api_resp = MagicMock()
         mock_api_resp.status = 200
         mock_api_resp.json = AsyncMock(return_value=release_json)
@@ -375,6 +444,457 @@ class TestEnsureXedit:
 
         with pytest.raises(ToolInstallError, match="denied"):
             await installer.ensure_xedit(install_dir, session)
+
+    @pytest.mark.asyncio
+    async def test_renombra_xedit_a_sseedit(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """El archive trae el nombre genérico xEdit.exe → queda como SSEEdit.exe.
+
+        Sin el renombrado, SSEEdit arranca con el popup de selección de juego y
+        bloquea la GUI esperando un click que nadie da.
+        """
+        install_dir = tmp_path / "xedit"
+        install_dir.mkdir()
+        _mockear_descarga_de_tool(monkeypatch, tmp_path, asset_name="xEdit_4.1.5.7z", version="4.1.5")
+
+        # _extract simulado: la extracción real deja xEdit.exe, no SSEEdit.exe.
+        def _extract_falso(self_obj: ToolsInstaller, archive: pathlib.Path, directory: pathlib.Path) -> None:
+            (directory / "xEdit.exe").write_text("binario-xedit", encoding="utf-8")
+
+        monkeypatch.setattr("sky_claw.local.tools_installer.ToolsInstaller._extract", _extract_falso)
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        result = await installer.ensure_xedit(install_dir, session)
+
+        assert result.tool_name == "SSEEdit"
+        assert result.exe_path == install_dir / "SSEEdit.exe"
+        assert (install_dir / "SSEEdit.exe").exists()
+        assert not (install_dir / "xEdit.exe").exists()
+
+    @pytest.mark.asyncio
+    async def test_no_pisa_un_sseedit_existente(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Si el archive trae AMBOS exes, el SSEEdit.exe real sobrevive intacto.
+
+        El renombrado incondicional destruía el binario bueno (o reventaba con
+        FileExistsError en Windows, donde os.rename no pisa el destino).
+        """
+        install_dir = tmp_path / "xedit"
+        install_dir.mkdir()
+        _mockear_descarga_de_tool(monkeypatch, tmp_path, asset_name="xEdit_4.1.5.7z", version="4.1.5")
+
+        def _extract_falso(self_obj: ToolsInstaller, archive: pathlib.Path, directory: pathlib.Path) -> None:
+            (directory / "SSEEdit.exe").write_text("binario-sseedit", encoding="utf-8")
+            (directory / "xEdit.exe").write_text("binario-xedit", encoding="utf-8")
+
+        monkeypatch.setattr("sky_claw.local.tools_installer.ToolsInstaller._extract", _extract_falso)
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        result = await installer.ensure_xedit(install_dir, session)
+
+        assert result.exe_path == install_dir / "SSEEdit.exe"
+        assert (install_dir / "SSEEdit.exe").read_text(encoding="utf-8") == "binario-sseedit"
+        assert (install_dir / "xEdit.exe").exists(), "xEdit.exe no debe desaparecer si ya había un SSEEdit.exe"
+
+    @pytest.mark.asyncio
+    async def test_no_pisa_si_el_sseedit_aparece_en_la_carrera(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TOCTOU: el destino aparece ENTRE el chequeo y el renombrado.
+
+        Es el motivo de usar ``rename()`` y no ``replace()``: os.replace pisa el
+        destino, que es exactamente lo que hay que evitar. En Windows os.rename
+        levanta FileExistsError y el SSEEdit.exe bueno sobrevive.
+        """
+        install_dir = tmp_path / "xedit"
+        install_dir.mkdir()
+        _mockear_descarga_de_tool(monkeypatch, tmp_path, asset_name="xEdit_4.1.5.7z", version="4.1.5")
+
+        def _extract_falso(self_obj: ToolsInstaller, archive: pathlib.Path, directory: pathlib.Path) -> None:
+            (directory / "xEdit.exe").write_text("binario-xedit", encoding="utf-8")
+
+        monkeypatch.setattr("sky_claw.local.tools_installer.ToolsInstaller._extract", _extract_falso)
+
+        # El rename se comporta como en Windows: el destino ya existe al momento
+        # del syscall, aunque el `exists()` previo lo haya visto libre.
+        rename_real = pathlib.Path.rename
+
+        def _rename_que_choca(self_path: pathlib.Path, target: Any) -> pathlib.Path:
+            if pathlib.Path(target).name == "SSEEdit.exe":
+                pathlib.Path(target).write_text("binario-sseedit", encoding="utf-8")
+                raise FileExistsError(17, "File exists", str(target))
+            return rename_real(self_path, target)
+
+        monkeypatch.setattr(pathlib.Path, "rename", _rename_que_choca)
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        result = await installer.ensure_xedit(install_dir, session)
+
+        assert result.exe_path == install_dir / "SSEEdit.exe"
+        assert (install_dir / "SSEEdit.exe").read_text(encoding="utf-8") == "binario-sseedit"
+
+
+class TestEnsurePandora:
+    def test_los_nombres_de_pandora_son_una_sola_fuente_de_verdad(self) -> None:
+        """Ancla que ENUMERA: el instalador y el scanner comparten el mismo tuple.
+
+        Igualdad literal a propósito. Agregar una variante de nombre al scanner sin
+        que el instalador la reconozca (o al revés) rompe acá: son dos superficies
+        del mismo recurso y el defecto histórico es arreglar una sola.
+        """
+        assert PANDORA_EXE_NAMES == ("Pandora Behaviour Engine+.exe", "Pandora Engine.exe", "Pandora.exe")
+        assert tools_installer.PANDORA_EXE_NAMES is scanner.PANDORA_EXE_NAMES
+        # El alias interno es lo que consume la detección DENTRO del scanner: si
+        # alguien lo redefine con su propia tupla, la detección diverge del
+        # instalador y las dos aserciones de arriba siguen en verde.
+        assert scanner._PANDORA_NAMES is scanner.PANDORA_EXE_NAMES
+
+    @pytest.mark.asyncio
+    async def test_prefiere_el_ejecutable_del_release_actual(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Conviviendo el legacy y el actual, devuelve el actual.
+
+        Tras un upgrade manual in-place quedan los dos. Devolver `Pandora.exe`
+        exporta el binario viejo por `PANDORA_EXE` y los rituales siguen
+        lanzando ése pese a estar el nuevo instalado.
+        """
+        install_dir = tmp_path / "pandora"
+        install_dir.mkdir()
+        (install_dir / "Pandora.exe").write_text("viejo", encoding="utf-8")
+        (install_dir / "Pandora Behaviour Engine+.exe").write_text("actual", encoding="utf-8")
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        result = await installer.ensure_pandora(install_dir, session)
+
+        assert result.exe_path == install_dir / "Pandora Behaviour Engine+.exe"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("exe_name", PANDORA_EXE_NAMES)
+    async def test_detecta_cualquier_variante_ya_instalada(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, exe_name: str
+    ) -> None:
+        """Pandora ya instalado bajo CUALQUIER nombre conocido → ni red ni HITL.
+
+        Buscando un solo nombre, una instalación previa como ``Pandora.exe`` se
+        reportaba como faltante y disparaba re-descarga + aprobación redundante.
+        """
+        install_dir = tmp_path / "pandora"
+        install_dir.mkdir()
+        (install_dir / exe_name).write_text("fake", encoding="utf-8")
+
+        installer._gateway.request = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("no debe salir a la red si Pandora ya está instalado")
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+        result = await installer.ensure_pandora(install_dir, session)
+
+        assert result.already_existed is True
+        assert result.exe_path == install_dir / exe_name
+        assert result.tool_name == "Pandora"
+
+    @pytest.mark.asyncio
+    async def test_usa_el_nombre_real_del_ejecutable(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tras extraer, encuentra el ``Pandora Behaviour Engine+.exe`` del release actual."""
+        install_dir = tmp_path / "pandora"
+        install_dir.mkdir()
+        _mockear_descarga_de_tool(monkeypatch, tmp_path, asset_name="Pandora.zip", version="1.0.0")
+
+        def _extract_falso(self_obj: ToolsInstaller, archive: pathlib.Path, directory: pathlib.Path) -> None:
+            (directory / "Pandora Behaviour Engine+.exe").write_text("fake", encoding="utf-8")
+
+        monkeypatch.setattr("sky_claw.local.tools_installer.ToolsInstaller._extract", _extract_falso)
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        result = await installer.ensure_pandora(install_dir, session)
+
+        assert result.tool_name == "Pandora"
+        assert result.exe_path == install_dir / "Pandora Behaviour Engine+.exe"
+        assert result.already_existed is False
+
+
+class TestExtraccion7zConFallback:
+    """Fallback al ``7z`` del sistema cuando py7zr no soporta el archive (BCJ2)."""
+
+    def test_cae_al_7z_del_sistema_cuando_py7zr_falla(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Un fallo de FORMATO de py7zr sí degrada al binario del sistema."""
+        _mockear_py7zr_roto(monkeypatch)
+        mock_run = _mockear_7z_del_sistema(monkeypatch, miembros=["SSEEdit.exe", "Edit Scripts/algo.pas"])
+
+        archive = tmp_path / "dummy.7z"
+        dest = tmp_path / "out"
+        _extract_7z_safe(archive, dest)
+
+        assert [c.args[0][:2] for c in mock_run.call_args_list] == [["7z", "l"], ["7z", "x"]]
+
+    def test_invoca_7z_con_los_argumentos_exactos(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Igualdad sobre la llamada COMPLETA: flags, destino, check, capture y timeout."""
+        _mockear_py7zr_roto(monkeypatch)
+        mock_run = _mockear_7z_del_sistema(monkeypatch, miembros=["SSEEdit.exe"])
+
+        archive = tmp_path / "dummy.7z"
+        dest = tmp_path / "out"
+        _extract_7z_safe(archive, dest)
+
+        assert mock_run.call_args_list == [
+            call(
+                ["7z", "l", "-slt", "-y", str(archive)],
+                check=True,
+                capture_output=True,
+                timeout=_SEVENZIP_TIMEOUT_SECONDS,
+            ),
+            call(
+                ["7z", "x", f"-o{dest}", "-y", str(archive)],
+                check=True,
+                capture_output=True,
+                timeout=_SEVENZIP_TIMEOUT_SECONDS,
+            ),
+        ]
+
+    def test_no_cae_al_7z_si_la_falla_fue_de_seguridad(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Zip-slip detectado por py7zr → se propaga SIN tocar el 7z del sistema.
+
+        Degradar a otro extractor tras una falla de seguridad es exactamente el
+        bypass del sandbox: el archive malicioso terminaría extraído por un binario
+        que no aplica ``_is_safe_path``.
+        """
+        _mockear_py7zr(monkeypatch, miembros=["../evil.txt"])
+        mock_run = MagicMock()
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        with pytest.raises(PathViolationError):
+            _extract_7z_safe(tmp_path / "malicioso.7z", tmp_path / "out")
+
+        mock_run.assert_not_called()
+
+    def test_rechaza_el_archive_si_el_listado_de_7z_tiene_traversal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """py7zr falla ANTES de enumerar → el listado de 7z se valida igual.
+
+        Este es el hueco real: con el header corrupto py7zr revienta al abrir, así
+        que sus nombres nunca pasaron por ``_is_safe_path``. El fallback no puede
+        confiar en la protección nativa de ``7z`` — valida el listado él mismo y
+        aborta antes de escribir un solo byte.
+        """
+        _mockear_py7zr_roto(monkeypatch)
+        mock_run = _mockear_7z_del_sistema(monkeypatch, miembros=["ok.txt", "../../evil.txt"])
+
+        with pytest.raises(PathViolationError, match="listado de 7z"):
+            _extract_7z_safe(tmp_path / "malicioso.7z", tmp_path / "out")
+
+        assert [c.args[0][:2] for c in mock_run.call_args_list] == [["7z", "l"]], "no debe llegar a `7z x`"
+
+    def test_rechaza_rutas_absolutas_en_el_listado(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Hermano del anterior: la ruta absoluta también escapa del destino."""
+        _mockear_py7zr_roto(monkeypatch)
+        mock_run = _mockear_7z_del_sistema(monkeypatch, miembros=[r"C:\Windows\System32\evil.dll"])
+
+        with pytest.raises(PathViolationError):
+            _extract_7z_safe(tmp_path / "malicioso.7z", tmp_path / "out")
+
+        assert [c.args[0][:2] for c in mock_run.call_args_list] == [["7z", "l"]]
+
+    def test_el_timeout_de_7z_se_traduce_a_toolinstallerror(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Un 7z colgado no puede quedarse esperando para siempre."""
+        import subprocess
+
+        _mockear_py7zr_roto(monkeypatch)
+        monkeypatch.setattr(
+            "subprocess.run",
+            MagicMock(side_effect=subprocess.TimeoutExpired(cmd=["7z"], timeout=_SEVENZIP_TIMEOUT_SECONDS)),
+        )
+
+        with pytest.raises(ToolInstallError, match="timeout"):
+            _extract_7z_safe(tmp_path / "dummy.7z", tmp_path / "out")
+
+    def test_sin_7z_en_el_path_falla_con_mensaje_accionable(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """py7zr no puede y no hay binario: el operador necesita saber qué instalar."""
+        _mockear_py7zr_roto(monkeypatch)
+        monkeypatch.setattr("subprocess.run", MagicMock(side_effect=FileNotFoundError("7z")))
+
+        with pytest.raises(ToolInstallError, match="PATH"):
+            _extract_7z_safe(tmp_path / "dummy.7z", tmp_path / "out")
+
+    def test_falla_cerrado_si_el_listado_no_se_puede_parsear(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Listado sin el separador esperado → NO se extrae (fail-closed).
+
+        Otra versión de 7z, otro locale, u otro formato de salida dejan la lista de
+        miembros vacía. El loop de validación itera cero veces y `7z x` correría sin
+        haber validado un solo nombre — el mismo bypass del sandbox, pero silencioso.
+        No poder validar no es lo mismo que estar validado.
+        """
+        _mockear_py7zr_roto(monkeypatch)
+
+        def _run(cmd: list[str], **kwargs: Any) -> MagicMock:
+            resultado = MagicMock()
+            resultado.stdout = b"7-Zip 21.07\nSalida inesperada sin separador\n"
+            resultado.stderr = b""
+            return resultado
+
+        mock_run = MagicMock(side_effect=_run)
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        with pytest.raises(ToolInstallError, match="listado de 7z"):
+            _extract_7z_safe(tmp_path / "dummy.7z", tmp_path / "out")
+
+        assert [c.args[0][:2] for c in mock_run.call_args_list] == [["7z", "l"]], "no debe llegar a `7z x`"
+
+    def test_falla_cerrado_si_el_listado_viene_vacio(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Separador presente pero sin ningún miembro: tampoco se extrae."""
+        _mockear_py7zr_roto(monkeypatch)
+        mock_run = _mockear_7z_del_sistema(monkeypatch, miembros=[])
+
+        with pytest.raises(ToolInstallError, match="listado de 7z"):
+            _extract_7z_safe(tmp_path / "dummy.7z", tmp_path / "out")
+
+        assert [c.args[0][:2] for c in mock_run.call_args_list] == [["7z", "l"]]
+
+    @pytest.mark.parametrize("clave_de_link", tools_installer._7Z_CLAVES_DE_LINK)
+    def test_rechaza_los_enlaces_del_archive(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, clave_de_link: str
+    ) -> None:
+        """Un enlace con Path seguro pero destino afuera → no se extrae.
+
+        El destino del enlace no viaja en ``Path``, así que validar los nombres no
+        dice nada sobre a dónde apunta: `7z x` lo materializa y después escribe a
+        través de él, fuera de dest, con todos los nombres "seguros".
+
+        Parametrizado SOBRE el tuple: agregar una clave de enlace nueva sin
+        cubrirla no queda fuera de la cobertura por descuido.
+        """
+        _mockear_py7zr_roto(monkeypatch)
+
+        listado = (
+            "7-Zip 21.07\n--\nPath = dummy.7z\n\n----------\n"
+            "Path = inocente.txt\nSize = 10\n\n"
+            f"Path = enlace\nSize = 0\n{clave_de_link}../../../etc\n\n"
+        )
+
+        def _run(cmd: list[str], **kwargs: Any) -> MagicMock:
+            resultado = MagicMock()
+            resultado.stdout = listado.encode("utf-8") if cmd[1] == "l" else b""
+            resultado.stderr = b""
+            return resultado
+
+        mock_run = MagicMock(side_effect=_run)
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        with pytest.raises(PathViolationError, match="enlace"):
+            _extract_7z_safe(tmp_path / "malicioso.7z", tmp_path / "out")
+
+        assert [c.args[0][:2] for c in mock_run.call_args_list] == [["7z", "l"]], "no debe llegar a `7z x`"
+
+    def test_el_fallo_de_7z_se_traduce_a_toolinstallerror(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Código de salida != 0 (archive corrupto, disco lleno): el operador ve el stderr."""
+        import subprocess
+
+        _mockear_py7zr_roto(monkeypatch)
+        monkeypatch.setattr(
+            "subprocess.run",
+            MagicMock(side_effect=subprocess.CalledProcessError(2, ["7z"], stderr=b"archive corrupto")),
+        )
+
+        with pytest.raises(ToolInstallError, match="archive corrupto"):
+            _extract_7z_safe(tmp_path / "dummy.7z", tmp_path / "out")
+
+    def test_el_fallo_de_7z_sin_stderr_no_revienta_al_formatear(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """``stderr`` es None cuando 7z muere sin escribir nada: no debe romper el mensaje."""
+        import subprocess
+
+        _mockear_py7zr_roto(monkeypatch)
+        monkeypatch.setattr(
+            "subprocess.run",
+            MagicMock(side_effect=subprocess.CalledProcessError(2, ["7z"], stderr=None)),
+        )
+
+        with pytest.raises(ToolInstallError, match="listar"):
+            _extract_7z_safe(tmp_path / "dummy.7z", tmp_path / "out")
+
+    def test_rechaza_la_continuacion_disfrazada_de_clave_valor(self) -> None:
+        """PoC del reviewer: la continuación del nombre PARECE un par clave-valor.
+
+        El atacante elige el nombre del miembro, así que puede hacer que la línea
+        que sigue al salto tenga forma ``Algo = valor`` y pase cualquier chequeo
+        de forma. Lo que no puede evitar es llevar el traversal: sin ``..`` no
+        escapa de dest y el ataque no sirve. Por eso se valida el VALOR de toda
+        clave que no sea Path.
+        """
+        salida = "7-Zip\n--\nPath = dummy.7z\n\n----------\nPath = ok.txt\nSomeKey = ../../evil.txt\nSize = 12\n\n"
+        with pytest.raises(ToolInstallError, match="traversal"):
+            _parse_7z_listing(salida)
+
+    def test_rechaza_la_continuacion_con_ruta_absoluta(self) -> None:
+        """Hermano del anterior: el payload es absoluto en vez de relativo."""
+        salida = "7-Zip\n--\nPath = dummy.7z\n\n----------\nPath = ok.txt\nSomeKey = C:\\Windows\\evil.dll\nSize = 1\n"
+        with pytest.raises(ToolInstallError, match="traversal"):
+            _parse_7z_listing(salida)
+
+    def test_no_rechaza_valores_legitimos_con_puntos(self) -> None:
+        """No debe haber falso positivo: versiones, CRCs y métodos pasan.
+
+        Si esto rompiera, el fallback abortaría instalaciones válidas de xEdit —
+        el escenario que este PR viene justo a arreglar.
+        """
+        salida = (
+            "7-Zip\n--\nPath = dummy.7z\n\n----------\n"
+            "Path = SSEEdit.exe\nSize = 1234\nCRC = A1B2C3D4\n"
+            "Method = BCJ2 LZMA:20\nModified = 2024-01-02 03:04:05\nAttributes = A_ -rw-r--r--\n\n"
+        )
+        assert _parse_7z_listing(salida) == ["SSEEdit.exe"]
+
+    def test_rechaza_una_linea_que_no_entiende(self) -> None:
+        """Continuación de un nombre con salto de línea embebido → listado rechazado.
+
+        El parser vería ``Path = ok.txt`` y validaría eso, mientras `7z x` escribe
+        el nombre completo con el traversal. La línea suelta es la evidencia.
+        """
+        salida = "7-Zip\n--\nPath = dummy.7z\n\n----------\nPath = ok.txt\n../../evil\nSize = 1\n"
+        with pytest.raises(ToolInstallError, match="Línea inesperada"):
+            _parse_7z_listing(salida)
+
+    def test_parsea_solo_los_miembros_del_listado(self) -> None:
+        """El ``Path`` del encabezado es el archive mismo, no un miembro: se ignora."""
+        salida = (
+            "7-Zip 21.07\n"
+            "Listing archive: dummy.7z\n"
+            "\n"
+            "--\n"
+            "Path = dummy.7z\n"
+            "Type = 7z\n"
+            "\n"
+            "----------\n"
+            "Path = SSEEdit.exe\n"
+            "Size = 1234\n"
+            "\n"
+            "Path = Edit Scripts/algo.pas\n"
+            "Size = 10\n"
+        )
+        assert _parse_7z_listing(salida) == ["SSEEdit.exe", "Edit Scripts/algo.pas"]
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +1120,7 @@ class TestExtractZipSafe:
     """Tests for zip-slip protection in _extract_zip_safe."""
 
     def test_normal_extraction_succeeds(self, tmp_path: pathlib.Path) -> None:
-        """A clean zip file extracts correctly."""
+        """Un archivo zip limpio se extrae correctamente."""
         zip_path = tmp_path / "archive.zip"
         dest = tmp_path / "dest"
         dest.mkdir()
@@ -614,7 +1134,7 @@ class TestExtractZipSafe:
         assert (dest / "readme.txt").read_text(encoding="utf-8") == "hello world"
 
     def test_dotdot_path_raises(self, tmp_path: pathlib.Path) -> None:
-        """Zip with '../evil.txt' raises PathViolation."""
+        """Zip con '../evil.txt' lanza PathViolationError."""
         zip_path = tmp_path / "malicious.zip"
         dest = tmp_path / "dest"
         dest.mkdir()
@@ -629,7 +1149,7 @@ class TestExtractZipSafe:
         assert not (tmp_path / "evil.txt").exists()
 
     def test_absolute_path_raises(self, tmp_path: pathlib.Path) -> None:
-        """Zip with '/etc/passwd' raises PathViolation."""
+        """Zip con ruta absoluta '/etc/passwd' lanza PathViolationError."""
         zip_path = tmp_path / "absolute.zip"
         dest = tmp_path / "dest"
         dest.mkdir()
@@ -644,7 +1164,7 @@ class TestExtractZipSafe:
         assert not any(dest.iterdir()), "No files should be extracted from malicious zip"
 
     def test_nested_normal_path_succeeds(self, tmp_path: pathlib.Path) -> None:
-        """A zip with 'subdir/file.txt' extracts correctly."""
+        """Un zip con 'subdir/file.txt' se extrae correctamente."""
         zip_path = tmp_path / "nested.zip"
         dest = tmp_path / "dest"
         dest.mkdir()
