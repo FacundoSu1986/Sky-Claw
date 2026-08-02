@@ -140,19 +140,25 @@ def construir_dispatcher_grass(
 ) -> tuple[OrchestrationToolDispatcher, HITLGuard | None]:
     """Construye el dispatcher de producción con Grass Cache real y demás boundaries mockeados.
 
-    ``con_guard=False`` deja ``hitl_gate=None`` para que
-    ``build_orchestration_dispatcher`` arme su propio ``HitlGateMiddleware()``:
-    el default de producción, que deniega las tools destructivas por política
-    fail-closed. Es el cableado que ancla la regresión del HITL fail-open —
-    por eso NUNCA se pasa ``allow_unattended=True``, que la desactivaría.
+    ``con_guard=False`` deja ``hitl_guard=None``. El ``HitlGateMiddleware`` se
+    construye SIEMPRE de forma explícita — igual que ``SupervisorAgent.__init__``
+    (``tool_dispatcher.py:303-308``: ``hitl_gate=HitlGateMiddleware(hitl_guard=hitl_guard)``,
+    nunca ``hitl_gate=None``) — y NO se delega en el fallback propio de
+    ``build_orchestration_dispatcher`` (``gate = hitl_gate or HitlGateMiddleware()``).
+    Ese fallback es el "hermano" que nunca corre en producción: el único caller
+    real siempre pasa un ``HitlGateMiddleware`` armado, así que el fail-closed
+    que importa anclar es el de ``HitlGateMiddleware(hitl_guard=None)`` — no el
+    de ``build_orchestration_dispatcher`` ante un ``hitl_gate`` ausente (review
+    #420: probar el segundo dejaba sin cubrir el primero, que es el que
+    realmente se alcanza). NUNCA se pasa ``allow_unattended=True``, que
+    desactivaría el fail-closed en vez de anclarlo.
     """
     assert superficie_dispatcher_supervisor() == SUPERFICIE_DISPATCHER_SUPERVISOR
     hitl_guard: HITLGuard | None = None
-    gate: HitlGateMiddleware | None = None
     if con_guard:
         hitl_guard = MagicMock(spec=HITLGuard)
         hitl_guard.request_approval = AsyncMock(return_value=Decision.DENIED)
-        gate = HitlGateMiddleware(hitl_guard=hitl_guard)
+    gate = HitlGateMiddleware(hitl_guard=hitl_guard)
     supervisor = SupervisorAgent.__new__(SupervisorAgent)
     supervisor.scraper = MagicMock()
     supervisor.snapshot_manager = MagicMock()

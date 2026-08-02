@@ -53,6 +53,7 @@ Feature: Generación de Grass Cache después de estabilizar el load order
     And que LOOT no tiene un FlightReport commiteado en el journal
     When el dispatcher despacha "generate_grass_cache" para "Tamriel" con force_stage_guard
     Then el contrato normalizado responde con éxito y mensaje vacío
+    And se solicita aprobación HITL para "generate_grass_cache"
     And se solicitan los locks "grass-cache" y "load-order" en ese orden
 
   # Estos escenarios afirman el contrato de orquestación con el runner mockeado.

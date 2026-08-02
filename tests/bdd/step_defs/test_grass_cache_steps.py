@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from pytest_bdd import given, parsers, scenario, then, when
+from pytest_bdd import given, parsers, scenarios, then, when
 from tests.bdd.support.async_harness import run
 from tests.bdd.support.grass_cache_harness import sembrar_loot_completado
 
@@ -27,30 +27,13 @@ from sky_claw.local.tools.tool_result import normalize_tool_result
 
 FEATURE = "../features/sop_modding/generacion_grass_cache.feature"
 
-
-@scenario(FEATURE, "El agente ejecuta Grass Cache después de un LOOT commiteado")
-def test_grass_cache_con_stage5_completado() -> None:
-    """El dispatcher aprobado ejecuta Stage 8 después de un LOOT confirmado."""
-
-
-@scenario(FEATURE, "El guard rechaza Grass Cache cuando LOOT no está confirmado")
-def test_grass_cache_guard_fail_closed() -> None:
-    """Sin FlightReport de LOOT, el dispatcher no alcanza ninguna mutación."""
-
-
-@scenario(FEATURE, "El operador deniega la aprobación y el ritual no toca nada")
-def test_grass_cache_hitl_denegado() -> None:
-    """Una negativa del operador corta el ritual antes de cualquier mutación."""
-
-
-@scenario(FEATURE, "Sin HITLGuard cableado el gate deniega por política fail-closed")
-def test_grass_cache_hitl_gate_no_cableado() -> None:
-    """Sin guard inyectado el gate deniega: ancla de la regresión HITL fail-open."""
-
-
-@scenario(FEATURE, "El bypass del guard de stage exige opt-in explícito")
-def test_grass_cache_force_stage_guard() -> None:
-    """El bypass del orden Stage 5→8 sólo se alcanza pidiéndolo explícitamente."""
+# ``scenarios()`` liga TODOS los escenarios del feature automáticamente — a
+# diferencia de un `@scenario(FEATURE, "...")` por escenario, un escenario
+# nuevo agregado al .feature sin este cambio ya queda ligado (o falla al
+# recolectar si le faltan steps) en vez de quedar silenciosamente sin test
+# (review #420). Es el patrón que ``test_mapa_sop_features.py`` exige para
+# cerrar una entrada del mapa SOP↔feature.
+scenarios(FEATURE)
 
 
 # ---------------------------------------------------------------------------
