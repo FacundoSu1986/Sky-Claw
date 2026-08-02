@@ -1,16 +1,23 @@
-"""Tests unitarios del helper de seed del journal REAL (T3).
+"""Contrato del helper de seed del journal REAL.
 
-Contra un journal real (SQLite tmp), no un mock: el guard Stage 5→8 lee
-``get_last_operation`` + ``is_flight_report_committed``, y esta capa afirma
-que la receta de seed produce exactamente lo que el guard acepta — y que un
-journal vacío lo deja fail-closed.
+Contra un journal real (SQLite tmp), no un mock: afirma que la receta de seed
+produce exactamente lo que el guard Stage 5→8 lee (``get_last_operation`` +
+``is_flight_report_committed``). Si el seed miente, los escenarios Gherkin
+pasarían por la razón equivocada.
+
+Alcance deliberado: acá NO se testea el guard. Su comportamiento ya está
+cubierto por los unitarios de ``tests/test_grass_cache_service.py`` y, end-to-end
+y a través de la API pública, por los escenarios de
+``features/sop_modding/generacion_grass_cache.feature``. Los tests que llamaban
+``service._stage_guard(...)`` acoplaban esta capa a un método privado sin
+comprar cobertura.
 """
 
 from __future__ import annotations
 
 import pathlib
 
-from tests.bdd.support.grass_cache_harness import construir_servicio_grass, sembrar_loot_completado
+from tests.bdd.support.grass_cache_harness import sembrar_loot_completado
 
 from sky_claw.app.db.journal import OperationJournal, OperationStatus
 from sky_claw.app.db.journal_contracts import is_flight_report_committed
@@ -32,27 +39,14 @@ async def test_sembrar_loot_deja_flight_report_commiteado_legible(tmp_path: path
         await journal.close()
 
 
-async def test_journal_vacio_deja_al_guard_fail_closed(tmp_path: pathlib.Path) -> None:
+async def test_journal_vacio_no_deja_flight_report_legible(tmp_path: pathlib.Path) -> None:
+    """La variante "sin LOOT" del seed es la ausencia total: journal vacío."""
     journal = OperationJournal(tmp_path / "seed.db")
     await journal.open()
     try:
-        service, _ = construir_servicio_grass(tmp_path, journal=journal)
-
-        mensaje_guard = await service._stage_guard(force=False)
-
-        assert mensaje_guard is not None, "sin LOOT el guard debe rechazar (fail-closed)"
-        assert "execute_loot_sorting" in mensaje_guard
-    finally:
-        await journal.close()
-
-
-async def test_journal_sembrado_deja_al_guard_abierto(tmp_path: pathlib.Path) -> None:
-    journal = OperationJournal(tmp_path / "seed.db")
-    await journal.open()
-    try:
-        await sembrar_loot_completado(journal)
-        service, _ = construir_servicio_grass(tmp_path, journal=journal)
-
-        assert await service._stage_guard(force=False) is None
+        entrada = await journal.get_last_operation(
+            GrassCacheService.LOOT_AGENT_ID, statuses=[OperationStatus.COMPLETED]
+        )
+        assert entrada is None, "sin seed no puede haber FlightReport de LOOT que el guard acepte"
     finally:
         await journal.close()

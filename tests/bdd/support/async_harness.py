@@ -3,7 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
 from types import TracebackType
+from typing import Any, TypeVar
+
+T = TypeVar("T")
+
+
+def run(loop: asyncio.AbstractEventLoop, coro: Coroutine[Any, Any, T]) -> T:
+    """Ejecuta una corrutina de step en el loop del escenario.
+
+    Vive acá y NO en ``conftest.py``: importar desde un conftest crea una
+    segunda copia del módulo (pytest lo carga como ``conftest`` top-level
+    porque ``tests/bdd/`` no es paquete, mientras el import lo resuelve como
+    ``tests.bdd.conftest``), duplicando el registro de steps.
+    """
+    return loop.run_until_complete(coro)
 
 
 class ScenarioLoop:
