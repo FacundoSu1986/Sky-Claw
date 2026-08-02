@@ -326,6 +326,11 @@ def _borrar_recursivo(ruta: pathlib.Path, *, limpiar_readonly: bool) -> int:
         try:
             with os.scandir(actual) as entradas:
                 tipo_despues, identidad_despues = link_kind_and_identity_or_raise(actual)
+                if identidad_despues is None:
+                    # Igual que en el recorrido de medición: desaparecer después
+                    # del scandir es lo mismo que desaparecer antes, y para un
+                    # BORRADO además cumplió el objetivo.
+                    continue
                 if tipo_despues is not None or not same_file_identity(identidad_antes, identidad_despues):
                     raise OSError(f"La entrada cambió mientras se abría para borrar: {actual}")
                 hijos = [pathlib.Path(entrada.path) for entrada in entradas]
@@ -337,7 +342,6 @@ def _borrar_recursivo(ruta: pathlib.Path, *, limpiar_readonly: bool) -> int:
             # los niveles de adentro seria el defecto #1 del repo.
             continue
 
-        assert identidad_despues is not None
         pendientes.append((actual, identidad_despues))
         pendientes.extend((hijo, None) for hijo in reversed(hijos))
     return bytes_borrados
@@ -414,6 +418,12 @@ def iter_archivos_propios(ruta: pathlib.Path) -> Iterator[tuple[pathlib.Path, os
                 # revalidara y éste no era el defecto #1 del repo, cometido
                 # dentro del cambio que lo denuncia (review Codex #416).
                 tipo_despues, identidad_despues = link_kind_and_identity_or_raise(actual)
+                if identidad_despues is None:
+                    # Se fue DESPUÉS del scandir. Es la misma desaparición
+                    # concurrente y benigna que el ``except`` de abajo tolera
+                    # cuando ocurre ANTES; distinguirlas por milisegundos daría
+                    # dos desenlaces para la misma causa (review qodo-merge #416).
+                    continue
                 if tipo_despues is not None or not same_file_identity(identidad_antes, identidad_despues):
                     raise OSError(f"La entrada cambió mientras se abría para medir: {actual}")
                 pendientes.extend(pathlib.Path(entrada.path) for entrada in entradas)

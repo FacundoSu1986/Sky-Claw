@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import pathlib
 import shutil
 import time
@@ -21,7 +22,9 @@ from typing import Any
 from sky_claw.app.db.journal import JournalSnapshotError
 from sky_claw.app.security.links import (
     iter_archivos_propios,
+    link_kind_and_identity_or_raise,
     rmtree_link_aware,
+    same_file_identity,
     tamano_de_arbol_propio,
 )
 
@@ -468,15 +471,46 @@ class FileSnapshotManager:
                     ajenos. La interseccion deja pasar solo lo que ademas es
                     alcanzable sin atravesar un enlace.
                     """
-                    propios = {ruta: identidad.st_size for ruta, identidad in iter_archivos_propios(self._snapshot_dir)}
+                    propios = dict(iter_archivos_propios(self._snapshot_dir))
                     return [(ruta, propios[ruta]) for ruta in self._snapshot_dir.rglob(pattern) if ruta in propios]
 
-                for snapshot_file, file_size in await asyncio.to_thread(_coincidencias):
-                    if not dry_run:
-                        await asyncio.to_thread(snapshot_file.unlink)
+                def _borrar_si_sigue_siendo_el_mismo(ruta: pathlib.Path, identidad: os.stat_result) -> int | None:
+                    """Revalida identidad JUSTO antes del ``unlink``; ``None`` si ya no esta.
+
+                    La interseccion de arriba se hace con rutas LEXICAS, y eso
+                    protege contra un junction que ya existia al enumerar pero no
+                    contra uno puesto despues: si entre la enumeracion y este
+                    borrado alguien reemplaza un directorio propio por un
+                    junction, `rglob` produce la misma ruta lexica, `ruta in
+                    propios` pasa, y el `unlink` se lleva el archivo AJENO.
+
+                    Comparar el `lstat` capturado en el recorrido contra el de
+                    ahora cierra esa ventana, que es la misma tecnica que usa
+                    `_borrar_recursivo` antes de cada `rmdir`. Un cambio de
+                    identidad no se borra: se propaga y el caller decide.
+                    """
+                    tipo, ahora = link_kind_and_identity_or_raise(ruta)
+                    if ahora is None:
+                        return None
+                    if tipo is not None or not same_file_identity(identidad, ahora):
+                        raise OSError(f"La entrada cambió antes de borrarla por patrón: {ruta}")
+                    ruta.unlink()
+                    return ahora.st_size
+
+                for snapshot_file, identidad_al_enumerar in await asyncio.to_thread(_coincidencias):
+                    if dry_run:
+                        deleted_count += 1
+                        freed_bytes += identidad_al_enumerar.st_size
+                        continue
+
+                    liberados = await asyncio.to_thread(
+                        _borrar_si_sigue_siendo_el_mismo, snapshot_file, identidad_al_enumerar
+                    )
+                    if liberados is None:
+                        continue
 
                     deleted_count += 1
-                    freed_bytes += file_size
+                    freed_bytes += liberados
 
             except OSError as e:
                 errors.append(f"Error cleaning pattern {pattern}: {e}")
