@@ -229,6 +229,7 @@ def test_quien_dice_delegar_por_wrapper_usa_el_wrapper() -> None:
 MECANISMO_DE_MEDICION: dict[str, str] = {
     "sky_claw/app/db/snapshot_manager.py": "link-aware",
     "sky_claw/local/assets/asset_scanner.py": "sin-contraparte-que-borre",
+    "sky_claw/local/tools/grass_cache_runner.py": "sin-contraparte-que-borre",
 }
 
 
@@ -236,18 +237,65 @@ MECANISMO_DE_MEDICION: dict[str, str] = {
 _MEDIDORES_LINK_AWARE = {"tamano_de_arbol_propio", "iter_archivos_propios"}
 
 
-def _mide_crudo(ruta: pathlib.Path) -> bool:
-    """True si *ruta* suma ``st_size`` a lo largo de un recorrido recursivo CRUDO.
+#: Formas de recorrer un árbol entero. Cualquiera de ellas junto a una lectura
+#: de ``st_size`` es una medición cruda.
+#:
+#: Están las cinco y no sólo ``rglob``/``walk`` porque el censo vale lo que vale
+#: su cobertura: ``Path.glob("**/*")`` recorre igual y el atributo es otro, y una
+#: recursión propia se arma con ``scandir`` o ``iterdir``. Un medidor escrito con
+#: cualquiera de esas formas no entraba al censo NI importaba la primitiva, así
+#: que el guard de completitud se quedaba verde y el medidor sin declarar — el
+#: mismo agujero que este archivo existe para cerrar.
+_RECORRIDOS_CRUDOS = {"rglob", "glob", "walk", "scandir", "iterdir"}
 
-    Detecta el patrón por AST y no por substring: hace falta que en el mismo
-    módulo convivan un recorrido recursivo (``rglob``/``walk``) y una lectura de
-    ``st_size``. Un ``stat().st_size`` sobre UN archivo puntual no es medir un
-    árbol y no debe entrar al censo. Que sea AST también hace que un comentario
-    que *nombre* ``rglob`` para explicar por qué no se usa no cuente como uso.
+
+def _es_recorrido_crudo(nodo: ast.expr) -> bool:
+    """True si *nodo* es una llamada a un recorrido de árbol de la stdlib."""
+    if not isinstance(nodo, ast.Call):
+        return False
+    llamado = nodo.func
+    if isinstance(llamado, ast.Attribute):
+        return llamado.attr in _RECORRIDOS_CRUDOS
+    return isinstance(llamado, ast.Name) and llamado.id in _RECORRIDOS_CRUDOS
+
+
+def _lee_st_size(nodo: ast.AST) -> bool:
+    return any(isinstance(hijo, ast.Attribute) and hijo.attr == "st_size" for hijo in ast.walk(nodo))
+
+
+def _mide_crudo(ruta: pathlib.Path) -> bool:
+    """True si *ruta* lee ``st_size`` **recorriendo** un árbol sin política de enlaces.
+
+    Exige que las dos cosas estén **ligadas**, no que coexistan en el archivo:
+    el ``st_size`` tiene que leerse dentro del cuerpo de un ``for`` —o de una
+    comprensión— que itera sobre un recorrido crudo. La versión anterior pedía
+    sólo que ambos nombres aparecieran en el módulo, y eso confunde dos cosas
+    distintas: un ``glob`` para encontrar archivos y un ``st_size`` sobre uno
+    solo, en funciones que ni se tocan, no es medir un árbol. Medido: con la
+    regla laxa el censo pasaba de 2 a 7 módulos, y cinco eran falsos positivos.
+
+    Cubre las dos formas reales, porque el repo tiene una de cada:
+    ``sum(f.stat().st_size for f in d.rglob("*"))`` (comprensión) y
+    ``for fp in d.rglob("*"): ts += fp.stat().st_size`` (bucle).
+
+    Y mira ``Attribute`` **y** ``Name`` en el recorrido: ``from os import walk``
+    seguido de ``walk(...)`` es un ``Name`` pelado.
     """
     arbol = ast.parse(ruta.read_text(encoding="utf-8"))
-    atributos = {nodo.attr for nodo in ast.walk(arbol) if isinstance(nodo, ast.Attribute)}
-    return bool({"rglob", "walk"} & atributos) and "st_size" in atributos
+    for nodo in ast.walk(arbol):
+        if (
+            isinstance(nodo, ast.For)
+            and _es_recorrido_crudo(nodo.iter)
+            and any(_lee_st_size(sentencia) for sentencia in nodo.body)
+        ):
+            return True
+        if (
+            isinstance(nodo, ast.GeneratorExp | ast.ListComp | ast.SetComp | ast.DictComp)
+            and any(_es_recorrido_crudo(generador.iter) for generador in nodo.generators)
+            and _lee_st_size(nodo)
+        ):
+            return True
+    return False
 
 
 def _mide_con_primitiva(ruta: pathlib.Path) -> bool:
@@ -257,12 +305,9 @@ def _mide_con_primitiva(ruta: pathlib.Path) -> bool:
 def test_la_enumeracion_cubre_a_todo_el_que_mide_arboles() -> None:
     """Un medidor nuevo obliga a declarar con qué política de enlaces mide.
 
-    Es el guard que le faltaba a esta familia: el censo de BORRADO estaba
-    completo y el de MEDICIÓN no existía, así que los cuatro medidores de
-    ``snapshot_manager`` quedaron fuera de toda enumeración. Los encontré
-    grepeando un patrón, conté tres, y el cuarto (``_collect_stats``) apareció
-    recién al leer el archivo entero — muestrear en vez de enumerar, el error
-    que estas anclas existen para atajar.
+    El censo de BORRADO existía y el de MEDICIÓN no, así que los medidores
+    quedaban fuera de toda enumeración: se los encontraba muestreando, y
+    muestrear deja siempre uno afuera.
     """
     medidores = {
         ruta.relative_to(_PAQUETE.parent).as_posix()
@@ -298,16 +343,11 @@ def test_quien_se_exime_por_no_borrar_efectivamente_no_borra() -> None:
 def test_quien_dice_medir_link_aware_no_conserva_ningun_recorrido_crudo() -> None:
     """``"link-aware"`` exige importar la primitiva **y no medir crudo en ningún lado**.
 
-    La primera versión de este test sólo pedía el import, y eso resultó
-    insuficiente de una forma que verifiqué: revertí ``_calc_dir_size_and_remove``
-    al ``rglob`` original y **el ancla siguió verde**, porque el módulo seguía
-    importando la primitiva para sus otros medidores. La clasificación afirmaba
-    "este módulo mide link-aware" cuando lo cierto era "este módulo mide
-    link-aware *en algunos lados*".
-
-    Es la misma debilidad que este archivo le reprocha a los demás —afirmar
-    menos de lo que se dice verificar— dentro del ancla escrita para evitarla.
-    Con la conjunción, revertir cualquiera de los cuatro medidores lo pone rojo.
+    Pedir sólo el import es insuficiente y se verifica: con un medidor
+    revertido al recorrido crudo, el módulo SIGUE importando la primitiva para
+    los otros, así que el ancla se quedaría verde afirmando "este módulo mide
+    link-aware" cuando lo cierto sería "mide link-aware *en algunos lados*".
+    Con la conjunción, revertir cualquiera de ellos lo pone rojo.
     """
     declarados = {m for m, mecanismo in MECANISMO_DE_MEDICION.items() if mecanismo == "link-aware"}
     reales = {
@@ -393,3 +433,42 @@ class TestMedirYBorrarNoPuedenDivergir:
     def test_una_ruta_ausente_mide_cero_y_borra_cero(self, tmp_path: pathlib.Path) -> None:
         assert tamano_de_arbol_propio(tmp_path / "no-esta") == (0, 0)
         assert rmtree_link_aware(tmp_path / "no-esta") == 0
+
+    @symlink_guard
+    def test_una_raiz_que_es_un_enlace_mide_cero_y_borra_solo_el_enlace(self, tmp_path: pathlib.Path) -> None:
+        """El caso donde medir y borrar toman caminos DISTINTOS y aun asi coinciden.
+
+        La medicion sale temprano por ``tipo is not None``; el borrado si quita
+        el reparse point. Que el numero sea el mismo —cero— no es trivial: es la
+        unica rama donde una de las dos hace trabajo y la otra no.
+        """
+        ajeno = tmp_path / "ajeno"
+        ajeno.mkdir()
+        (ajeno / "grande.bin").write_bytes(b"x" * 10_000)
+
+        raiz = tmp_path / "enlace"
+        raiz.symlink_to(ajeno, target_is_directory=True)
+
+        medido, archivos = tamano_de_arbol_propio(raiz)
+        borrado = rmtree_link_aware(raiz)
+
+        assert (medido, archivos) == (0, 0)
+        assert borrado == medido
+        assert not raiz.is_symlink()
+        assert (ajeno / "grande.bin").read_bytes() == b"x" * 10_000
+
+    @symlink_guard
+    def test_un_enlace_roto_como_raiz_mide_cero_y_se_borra(self, tmp_path: pathlib.Path) -> None:
+        """Ejerce el motivo por el que la primitiva usa ``path_present``, no ``exists()``.
+
+        Un enlace colgante NO pasa ``exists()`` —que sigue al destino— asi que
+        con ese guard se tomaria por "no hay nada aca" y el enlace quedaria sin
+        borrar. Su docstring lo declara; hasta ahora nadie lo anclaba.
+        """
+        raiz = tmp_path / "colgante"
+        raiz.symlink_to(tmp_path / "no-esta")
+
+        assert not raiz.exists()
+        assert tamano_de_arbol_propio(raiz) == (0, 0)
+        assert rmtree_link_aware(raiz) == 0
+        assert not raiz.is_symlink()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import os
 import pathlib
 
 import pytest
@@ -1397,9 +1398,11 @@ async def test_borrar_arbol_o_enlace_reintenta_la_inspeccion_ante_bloqueo_transi
     (real / "dato.txt").write_text("contenido", encoding="utf-8")
 
     llamadas = {"n": 0}
-    original = links.link_kind_or_raise
+    original = links.link_kind_and_identity_or_raise
 
-    def _con_un_bloqueo_transitorio(path: pathlib.Path) -> str | None:
+    def _con_un_bloqueo_transitorio(
+        path: pathlib.Path,
+    ) -> tuple[str | None, os.stat_result | None]:
         llamadas["n"] += 1
         if llamadas["n"] == 1:
             raise OSError("WinError 32: el proceso no tiene acceso al archivo")
@@ -1408,7 +1411,14 @@ async def test_borrar_arbol_o_enlace_reintenta_la_inspeccion_ante_bloqueo_transi
     # Se parchea en ``links`` y no en ``_dir_rollback``: el recorrido se promovió
     # allá, así que resuelve el símbolo en SU módulo. Parchear el import local
     # dejaría el test verde sin ejercer nada.
-    monkeypatch.setattr(links, "link_kind_or_raise", _con_un_bloqueo_transitorio)
+    #
+    # El seam es ``link_kind_and_identity_or_raise`` y no ``link_kind_or_raise``
+    # porque el recorrido dejó de hacer DOS lstat por entrada: el primero sólo
+    # se comparaba contra el segundo y no cerraba ninguna ventana (la que
+    # importa va del último lstat al unlink/rmdir), pero se pagaba en cada
+    # archivo. La garantía que este test ancla —un OSError de inspección no se
+    # lee como "no es un enlace"— es la misma; cambió por dónde entra.
+    monkeypatch.setattr(links, "link_kind_and_identity_or_raise", _con_un_bloqueo_transitorio)
 
     await _borrar_arbol_o_enlace(real)
 
@@ -1431,10 +1441,10 @@ async def test_borrar_arbol_o_enlace_falla_cerrado_si_la_inspeccion_no_se_recupe
     real.mkdir()
     (real / "dato.txt").write_text("contenido", encoding="utf-8")
 
-    def _siempre_bloqueado(path: pathlib.Path) -> str | None:
+    def _siempre_bloqueado(path: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
         raise OSError("WinError 32: el proceso no tiene acceso al archivo")
 
-    monkeypatch.setattr(links, "link_kind_or_raise", _siempre_bloqueado)
+    monkeypatch.setattr(links, "link_kind_and_identity_or_raise", _siempre_bloqueado)
 
     with pytest.raises(OSError):
         await _borrar_arbol_o_enlace(real)

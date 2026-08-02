@@ -299,12 +299,16 @@ def _borrar_recursivo(ruta: pathlib.Path, *, limpiar_readonly: bool) -> int:
             _borrar_con_reintento_de_readonly(actual.rmdir, actual, limpiar_readonly=limpiar_readonly)
             continue
 
-        tipo = link_kind_or_raise(actual)
+        # UN solo lstat por entrada. Antes había dos seguidos —``link_kind_or_raise``
+        # y después ``link_kind_and_identity_or_raise``— y se comparaban entre sí.
+        # Esa comparación no compraba nada: la ventana que importa es la que va
+        # del ÚLTIMO lstat al ``unlink``/``rmdir``, y contra eso protegen las
+        # revalidaciones de identidad de más abajo. Duplicar el syscall por
+        # entrada sí se paga en un output de mods de decenas de miles de
+        # archivos, y ahora este recorrido además sostiene la medición.
         tipo_revalidado, identidad_antes = link_kind_and_identity_or_raise(actual)
         if identidad_antes is None:
             continue
-        if tipo != tipo_revalidado:
-            raise OSError(f"La entrada cambió mientras se inspeccionaba para borrar: {actual}")
         if tipo_revalidado is not None:
             # Un enlace aporta CERO: se quita el reparse point y el destino queda
             # intacto. Contar su `st_size` —o peor, el del árbol al que apunta—
@@ -319,11 +323,19 @@ def _borrar_recursivo(ruta: pathlib.Path, *, limpiar_readonly: bool) -> int:
             bytes_borrados += identidad_antes.st_size
             continue
 
-        with os.scandir(actual) as entradas:
-            tipo_despues, identidad_despues = link_kind_and_identity_or_raise(actual)
-            if tipo_despues is not None or not same_file_identity(identidad_antes, identidad_despues):
-                raise OSError(f"La entrada cambió mientras se abría para borrar: {actual}")
-            hijos = [pathlib.Path(entrada.path) for entrada in entradas]
+        try:
+            with os.scandir(actual) as entradas:
+                tipo_despues, identidad_despues = link_kind_and_identity_or_raise(actual)
+                if tipo_despues is not None or not same_file_identity(identidad_antes, identidad_despues):
+                    raise OSError(f"La entrada cambió mientras se abría para borrar: {actual}")
+                hijos = [pathlib.Path(entrada.path) for entrada in entradas]
+        except FileNotFoundError:
+            # El directorio desaparecio entre su lstat y el scandir. Para un
+            # BORRADO eso cumplio el objetivo, que es lo que ya declara el
+            # docstring de `rmtree_link_aware` para su raiz: "borrar lo que ya no
+            # existe cumplio el objetivo". Hacerlo valer solo en la raiz y no en
+            # los niveles de adentro seria el defecto #1 del repo.
+            continue
 
         assert identidad_despues is not None
         pendientes.append((actual, identidad_despues))
@@ -385,14 +397,33 @@ def iter_archivos_propios(ruta: pathlib.Path) -> Iterator[tuple[pathlib.Path, os
     pendientes = [ruta]
     while pendientes:
         actual = pendientes.pop()
-        tipo, identidad = link_kind_and_identity_or_raise(actual)
-        if identidad is None or tipo is not None:
+        tipo, identidad_antes = link_kind_and_identity_or_raise(actual)
+        if identidad_antes is None or tipo is not None:
             continue
-        if not stat.S_ISDIR(identidad.st_mode):
-            yield actual, identidad
+        if not stat.S_ISDIR(identidad_antes.st_mode):
+            yield actual, identidad_antes
             continue
-        with os.scandir(actual) as entradas:
-            pendientes.extend(pathlib.Path(entrada.path) for entrada in entradas)
+        try:
+            with os.scandir(actual) as entradas:
+                # Revalidar DESPUÉS de abrir, igual que ``_borrar_recursivo``.
+                # Sin esto, un directorio reemplazado por un enlace entre su
+                # ``lstat`` y este ``scandir`` hace que el recorrido entre al
+                # árbol externo y devuelva rutas de afuera del store — y
+                # ``cleanup_by_pattern`` se las pasa a ``unlink``, así que la
+                # carrera borra archivos ajenos. Que el hermano destructivo ya
+                # revalidara y éste no era el defecto #1 del repo, cometido
+                # dentro del cambio que lo denuncia (review Codex #416).
+                tipo_despues, identidad_despues = link_kind_and_identity_or_raise(actual)
+                if tipo_despues is not None or not same_file_identity(identidad_antes, identidad_despues):
+                    raise OSError(f"La entrada cambió mientras se abría para medir: {actual}")
+                pendientes.extend(pathlib.Path(entrada.path) for entrada in entradas)
+        except FileNotFoundError:
+            # Un directorio que se fue entre su lstat y el scandir no aporta
+            # bytes. Medir NO toma el lock del store —`_calculate_total_size` no
+            # lo hace— asi que convivir con una limpieza concurrente es el caso
+            # esperado, no la excepcion: reventar la medicion porque otra tarea
+            # hizo su trabajo seria peor que contar de menos algo que ya no esta.
+            continue
 
 
 def rmtree_link_aware(ruta: pathlib.Path, *, limpiar_readonly: bool = False) -> int:

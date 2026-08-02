@@ -453,11 +453,23 @@ class FileSnapshotManager:
                 # pertenecen al store. El recorrido link-aware no entra, asi que
                 # el patron solo puede alcanzar lo que es del store.
                 def _coincidencias() -> list[tuple[pathlib.Path, int]]:
-                    return [
-                        (ruta, identidad.st_size)
-                        for ruta, identidad in iter_archivos_propios(self._snapshot_dir)
-                        if ruta.match(pattern)
-                    ]
+                    """Los archivos del store que matchean *pattern*, sin salir de el.
+
+                    La semantica del patron la sigue poniendo `rglob`, INTACTA:
+                    reimplementarla con `Path.match` cambiaba el resultado de dos
+                    formas distintas —matcheaba contra la ruta absoluta, y perdia
+                    la recursion de `a/**/x`, que `rglob` resuelve a `a/x`,
+                    `a/b/x` y mas hondo—. Un caller con un patron valido se
+                    quedaba sin borrar nada.
+
+                    Lo que aporta el recorrido link-aware es la AUTORIDAD sobre
+                    que puede borrarse: `rglob` entra a un junction y devuelve
+                    rutas de adentro, y el `unlink` de abajo se llevaba archivos
+                    ajenos. La interseccion deja pasar solo lo que ademas es
+                    alcanzable sin atravesar un enlace.
+                    """
+                    propios = {ruta: identidad.st_size for ruta, identidad in iter_archivos_propios(self._snapshot_dir)}
+                    return [(ruta, propios[ruta]) for ruta in self._snapshot_dir.rglob(pattern) if ruta in propios]
 
                 for snapshot_file, file_size in await asyncio.to_thread(_coincidencias):
                     if not dry_run:
@@ -518,14 +530,11 @@ class FileSnapshotManager:
                 # El numero sale del MISMO recorrido que borro: son los bytes que
                 # `rmtree_link_aware` efectivamente desenlazo.
                 #
-                # El comentario anterior afirmaba lo contrario de lo que hacia el
-                # codigo ("la cuenta y el efecto real dejan de divergir"). Antes
-                # coincidian: `rglob` y `shutil.rmtree` eran igual de ciegos al
-                # junction y los dos entraban. Volver link-aware SOLO el borrado
-                # fue lo que ABRIO la divergencia, y este `current_size -=` es
-                # donde se paga: descuenta bytes que siguen ocupados, el loop
-                # corta en `<= max*0.9` creyendo que libero espacio, y el store
-                # crece pasado su limite.
+                # Medir aparte con `rglob` divergia en Windows —entra al junction,
+                # el borrado link-aware no— y este `current_size -=` es donde se
+                # paga: descuenta bytes que siguen ocupados, el loop corta en
+                # `<= max*0.9` creyendo que libero espacio, y el store crece
+                # pasado su limite.
                 return rmtree_link_aware(d)
 
             dir_size = await asyncio.to_thread(_calc_dir_size_and_remove, date_dir)
