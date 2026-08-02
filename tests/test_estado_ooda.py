@@ -39,6 +39,7 @@ _ITEMS = frozenset(
         "F8 USVFS",
         "Detección de enlaces",
         "Borrado recursivo",
+        "Fugas de lifecycle en tests",
         "Smoke real de QuickAutoClean",
         "Smokes reales restantes",
         "Residuos OODA de bajo valor",
