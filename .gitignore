@@ -9,13 +9,13 @@ build/
 *.egg
 
 # Virtual environments
-.venv/
-venv/
-env/
+/.venv/
+/venv/
+/env/
 
 # IDE
-.vscode/
-.idea/
+/.vscode/
+/.idea/
 *.swp
 *.swo
 
@@ -68,10 +68,10 @@ dummy_*.py
 nul
 .kilo/
 # Scratch / temporary exploration directories (not part of the project)
-scratch/
-autoskills_tmp/
-scrapskyclaw/
-plans/
+/scratch/
+/autoskills_tmp/
+/scrapskyclaw/
+/plans/
 
 # Git worktrees (isolated workspaces)
 .worktrees/

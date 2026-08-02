@@ -141,8 +141,8 @@ class TestScanCommonPaths:
 class TestEnsureLoot:
     @pytest.mark.asyncio
     async def test_approval_uses_download_category(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
-        """The download approval is tagged category='download' so the GUI HITL bridge
-        can park it in the modal (Follow-up C) instead of falling through to Telegram."""
+        """La aprobación de descarga se etiqueta con category='download' para que el puente
+        HITL de la GUI pueda retenerla en el modal (Follow-up C) en vez de caer a Telegram."""
         from unittest.mock import AsyncMock
 
         from sky_claw.app.security.hitl import Decision
@@ -168,7 +168,7 @@ class TestEnsureLoot:
 
     @pytest.mark.asyncio
     async def test_returns_existing_without_download(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
-        """When loot.exe already exists, return it immediately."""
+        """Cuando loot.exe ya existe, lo devuelve inmediatamente sin descargar."""
         exe = tmp_path / "loot.exe"
         exe.write_text("fake", encoding="utf-8")
 
@@ -181,7 +181,7 @@ class TestEnsureLoot:
 
     @pytest.mark.asyncio
     async def test_downloads_and_extracts_when_missing(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
-        """When loot.exe is absent, download from GitHub and extract."""
+        """Cuando loot.exe está ausente, descarga de GitHub y extrae el archivo."""
         import zipfile
 
         # Prepare a fake zip containing loot.exe.
@@ -244,7 +244,7 @@ class TestEnsureLoot:
 
     @pytest.mark.asyncio
     async def test_hitl_denial_raises(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
-        """When operator denies, raise ToolInstallError."""
+        """Cuando el operador lo deniega, lanza ToolInstallError."""
         install_dir = tmp_path / "install"
         install_dir.mkdir()
 
@@ -267,7 +267,7 @@ class TestEnsureLoot:
 
     @pytest.mark.asyncio
     async def test_github_api_failure_raises(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
-        """When GitHub API fails, raise ToolInstallError."""
+        """Cuando la API de GitHub falla, lanza ToolInstallError."""
         install_dir = tmp_path / "install"
         install_dir.mkdir()
 
@@ -314,7 +314,7 @@ class TestEnsureXedit:
         install_dir.mkdir()
 
         # Use a .zip asset name to match.
-        release_json = _xedit_release_json(asset_name="SSEEdit_4.1.5.zip", size=len(zip_bytes))
+        release_json = _xedit_release_json(asset_name="xEdit_4.1.5.zip", size=len(zip_bytes))
 
         mock_api_resp = MagicMock()
         mock_api_resp.status = 200
@@ -355,16 +355,6 @@ class TestEnsureXedit:
         )
 
     @pytest.mark.asyncio
-    async def test_downloads_and_extracts_when_missing(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
-        install_dir = tmp_path / "install"
-        install_dir.mkdir()
-
-        release_json = _xedit_release_json(asset_name="xEdit_4.1.5.zip")
-        mock_api_resp = AsyncMock()
-        mock_api_resp.status = 200
-        mock_api_resp.json = AsyncMock(return_value=release_json)
-
-    @pytest.mark.asyncio
     async def test_hitl_denial_raises(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
         install_dir = tmp_path / "install"
         install_dir.mkdir()
@@ -387,39 +377,54 @@ class TestEnsureXedit:
             await installer.ensure_xedit(install_dir, session)
 
     @pytest.mark.asyncio
-    async def test_ensure_xedit_renames_executable(self, installer: ToolsInstaller, tmp_path: pathlib.Path, mocker) -> None:
+    async def test_ensure_xedit_renames_executable(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch
+    ) -> None:
         from sky_claw.app.security.hitl import Decision
+        from unittest.mock import MagicMock, AsyncMock
+
         install_dir = tmp_path / "xedit"
         install_dir.mkdir()
 
-        mocker.patch("sky_claw.local.tools_installer.ToolsInstaller._find_github_asset", return_value=(mocker.MagicMock(name="xEdit.7z", browser_download_url="http://fake", size=1024), "4.1.5"))
-        mocker.patch("sky_claw.local.tools_installer.HITLGuard.request_approval", return_value=Decision.APPROVED)
-        mocker.patch("sky_claw.local.tools_installer.ToolsInstaller._download_asset", return_value=tmp_path / "xEdit.7z")
-        
+        monkeypatch.setattr(
+            "sky_claw.local.tools_installer.ToolsInstaller._find_github_asset",
+            AsyncMock(return_value=(MagicMock(name="xEdit.7z", browser_download_url="http://fake", size=1024), "4.1.5")),
+        )
+        monkeypatch.setattr("sky_claw.local.tools_installer.HITLGuard.request_approval", AsyncMock(return_value=Decision.APPROVED))
+        monkeypatch.setattr(
+            "sky_claw.local.tools_installer.ToolsInstaller._download_asset", AsyncMock(return_value=tmp_path / "xEdit.7z")
+        )
+
         # Mock _extract to simulate extraction creating xEdit.exe instead of SSEEdit.exe
-        def mock_extract(archive, directory):
+        def mock_extract(self_obj, archive, directory):
             (directory / "xEdit.exe").touch()
-        
-        mocker.patch("sky_claw.local.tools_installer.ToolsInstaller._extract", side_effect=mock_extract)
-        mocker.patch("pathlib.Path.unlink")
-        
+
+        monkeypatch.setattr("sky_claw.local.tools_installer.ToolsInstaller._extract", mock_extract)
+        monkeypatch.setattr("pathlib.Path.unlink", MagicMock())
+
         session = MagicMock(spec=aiohttp.ClientSession)
-        
+
         result = await installer.ensure_xedit(install_dir, session)
-        
+
         assert result.tool_name == "SSEEdit"
         assert result.exe_path == install_dir / "SSEEdit.exe"
         assert (install_dir / "SSEEdit.exe").exists()
         assert not (install_dir / "xEdit.exe").exists()
 
+
 class TestEnsurePandora:
     @pytest.mark.asyncio
-    async def test_ensure_pandora_expects_correct_exe_name(self, installer: ToolsInstaller, tmp_path: pathlib.Path, mocker) -> None:
+    async def test_ensure_pandora_expects_correct_exe_name(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch
+    ) -> None:
         from sky_claw.app.security.hitl import Decision
+        from unittest.mock import MagicMock, AsyncMock
+
         install_dir = tmp_path / "pandora"
         install_dir.mkdir()
 
         call_count = [0]
+
         # Mock find_exe_in_dir to return None on the first call, but the path on the second call
         def mock_find_exe(directory, name):
             if name == "Pandora Behaviour Engine+.exe":
@@ -427,38 +432,51 @@ class TestEnsurePandora:
                 if call_count[0] == 2:
                     return directory / name
             return None
-            
-        mocker.patch("sky_claw.local.tools_installer.find_exe_in_dir", side_effect=mock_find_exe)
-        mocker.patch("sky_claw.local.tools_installer.ToolsInstaller._find_github_asset", return_value=(mocker.MagicMock(name="Pandora.zip", browser_download_url="http://fake", size=1024), "1.0.0"))
-        mocker.patch("sky_claw.local.tools_installer.HITLGuard.request_approval", return_value=Decision.APPROVED)
-        mocker.patch("sky_claw.local.tools_installer.ToolsInstaller._download_asset", return_value=tmp_path / "Pandora.zip")
-        mocker.patch("sky_claw.local.tools_installer.ToolsInstaller._extract")
-        mocker.patch("pathlib.Path.unlink")
+
+        monkeypatch.setattr("sky_claw.local.tools_installer.find_exe_in_dir", mock_find_exe)
+        monkeypatch.setattr(
+            "sky_claw.local.tools_installer.ToolsInstaller._find_github_asset",
+            AsyncMock(return_value=(MagicMock(name="Pandora.zip", browser_download_url="http://fake", size=1024), "1.0.0")),
+        )
+        monkeypatch.setattr("sky_claw.local.tools_installer.HITLGuard.request_approval", AsyncMock(return_value=Decision.APPROVED))
+        monkeypatch.setattr(
+            "sky_claw.local.tools_installer.ToolsInstaller._download_asset", AsyncMock(return_value=tmp_path / "Pandora.zip")
+        )
+        monkeypatch.setattr("sky_claw.local.tools_installer.ToolsInstaller._extract", MagicMock())
+        monkeypatch.setattr("pathlib.Path.unlink", MagicMock())
 
         session = MagicMock(spec=aiohttp.ClientSession)
-        
+
         result = await installer.ensure_pandora(install_dir, session)
-        
+
         assert result.tool_name == "Pandora"
         assert result.exe_path == install_dir / "Pandora Behaviour Engine+.exe"
         assert result.already_existed is False
 
+
 class TestExtract7zFallback:
-    def test_extract_7z_safe_fallback_to_system_7z(self, mocker, tmp_path: pathlib.Path) -> None:
+    def test_extract_7z_safe_fallback_to_system_7z(self, monkeypatch, tmp_path: pathlib.Path) -> None:
+        from unittest.mock import MagicMock
+        
+        def mock_sevenzip(*args, **kwargs):
+            raise Exception("BCJ2 filter is not supported")
+
         # Mock py7zr to throw an exception to simulate BCJ2 failure
-        mocker.patch("py7zr.SevenZipFile", side_effect=Exception("BCJ2 filter is not supported"))
-        
+        monkeypatch.setattr("py7zr.SevenZipFile", mock_sevenzip)
+
         # Mock subprocess.run to pretend 7z x succeeded
-        mock_run = mocker.patch("subprocess.run")
-        
+        mock_run = MagicMock()
+        monkeypatch.setattr("subprocess.run", mock_run)
+
         from sky_claw.local.tools_installer import _extract_7z_safe
-        
+
         archive = tmp_path / "dummy.7z"
         dest = tmp_path / "out"
         _extract_7z_safe(archive, dest)
-        
+
         mock_run.assert_called_once()
         assert "7z" in mock_run.call_args[0][0]
+
 
 # ---------------------------------------------------------------------------
 # local_config
@@ -683,7 +701,7 @@ class TestExtractZipSafe:
     """Tests for zip-slip protection in _extract_zip_safe."""
 
     def test_normal_extraction_succeeds(self, tmp_path: pathlib.Path) -> None:
-        """A clean zip file extracts correctly."""
+        """Un archivo zip limpio se extrae correctamente."""
         zip_path = tmp_path / "archive.zip"
         dest = tmp_path / "dest"
         dest.mkdir()
@@ -697,7 +715,7 @@ class TestExtractZipSafe:
         assert (dest / "readme.txt").read_text(encoding="utf-8") == "hello world"
 
     def test_dotdot_path_raises(self, tmp_path: pathlib.Path) -> None:
-        """Zip with '../evil.txt' raises PathViolation."""
+        """Zip con '../evil.txt' lanza PathViolationError."""
         zip_path = tmp_path / "malicious.zip"
         dest = tmp_path / "dest"
         dest.mkdir()
@@ -712,7 +730,7 @@ class TestExtractZipSafe:
         assert not (tmp_path / "evil.txt").exists()
 
     def test_absolute_path_raises(self, tmp_path: pathlib.Path) -> None:
-        """Zip with '/etc/passwd' raises PathViolation."""
+        """Zip con ruta absoluta '/etc/passwd' lanza PathViolationError."""
         zip_path = tmp_path / "absolute.zip"
         dest = tmp_path / "dest"
         dest.mkdir()
@@ -727,7 +745,7 @@ class TestExtractZipSafe:
         assert not any(dest.iterdir()), "No files should be extracted from malicious zip"
 
     def test_nested_normal_path_succeeds(self, tmp_path: pathlib.Path) -> None:
-        """A zip with 'subdir/file.txt' extracts correctly."""
+        """Un zip con 'subdir/file.txt' se extrae correctamente."""
         zip_path = tmp_path / "nested.zip"
         dest = tmp_path / "dest"
         dest.mkdir()

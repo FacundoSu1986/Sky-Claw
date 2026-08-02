@@ -7,6 +7,7 @@ passes through :class:`NetworkGateway` for egress control.
 
 from __future__ import annotations
 
+import asyncio
 import configparser
 import hashlib
 import logging
@@ -174,21 +175,28 @@ def _extract_7z_safe(archive: pathlib.Path, dest: pathlib.Path) -> None:
     """Extract a 7z archive with zip-slip protection."""
     try:
         import py7zr
+
         with py7zr.SevenZipFile(archive, "r") as szf:
             for name in szf.getnames():
                 if not _is_safe_path(name):
                     raise PathViolationError(f"Zip-slip detected in 7z: {name!r}")
             szf.extractall(dest)
+    except PathViolationError:
+        raise
     except Exception as exc:
         import subprocess
+
         logger.warning(f"py7zr extraction failed ({exc}). Falling back to system 7z.exe")
         try:
             # 7z natively prevents path traversals. Use -y to assume Yes on queries.
             subprocess.run(
-                ["7z", "x", f"-o{dest}", "-y", str(archive)], 
-                check=True, 
-                capture_output=True
+                ["7z", "x", f"-o{dest}", "-y", str(archive)],
+                check=True,
+                capture_output=True,
+                timeout=30,
             )
+        except subprocess.TimeoutExpired as sub_to:
+            raise ToolInstallError("7z extraction failed due to timeout.") from sub_to
         except subprocess.CalledProcessError as sub_e:
             raise ToolInstallError(f"7z extraction failed: {sub_e.stderr.decode('utf-8', errors='ignore')}") from sub_e
         except FileNotFoundError:
@@ -387,7 +395,7 @@ class ToolsInstaller:
             raise ToolInstallError(f"LOOT installation denied by operator (decision={decision.value})")
 
         archive = await self._download_asset(session, asset, install_dir)
-        self._extract(archive, install_dir)
+        await asyncio.to_thread(self._extract, archive, install_dir)
         archive.unlink(missing_ok=True)
 
         exe = find_exe_in_dir(install_dir, "loot.exe")
@@ -448,13 +456,13 @@ class ToolsInstaller:
             raise ToolInstallError(f"SSEEdit installation denied by operator (decision={decision.value})")
 
         archive = await self._download_asset(session, asset, install_dir)
-        self._extract(archive, install_dir)
+        await asyncio.to_thread(self._extract, archive, install_dir)
         archive.unlink(missing_ok=True)
 
         # xEdit ships generically; rename xEdit.exe to SSEEdit.exe to skip game selection popups
         xedit_exe = find_exe_in_dir(install_dir, "xEdit.exe")
         if xedit_exe:
-            xedit_exe.rename(xedit_exe.with_name("SSEEdit.exe"))
+            xedit_exe.replace(xedit_exe.with_name("SSEEdit.exe"))
 
         exe = find_exe_in_dir(install_dir, "SSEEdit.exe")
         if exe is None:
@@ -515,7 +523,7 @@ class ToolsInstaller:
             raise ToolInstallError(f"Pandora installation denied by operator (decision={decision.value})")
 
         archive = await self._download_asset(session, asset, install_dir)
-        self._extract(archive, install_dir)
+        await asyncio.to_thread(self._extract, archive, install_dir)
         archive.unlink(missing_ok=True)
 
         exe = find_exe_in_dir(install_dir, "Pandora Behaviour Engine+.exe")
@@ -585,7 +593,7 @@ class ToolsInstaller:
         archive_path = await downloader.download(file_info, session)
 
         # Extract into the specialized tools directory
-        self._extract(archive_path, install_dir)
+        await asyncio.to_thread(self._extract, archive_path, install_dir)
 
         # Cleanup archive in staging
         archive_path.unlink(missing_ok=True)
@@ -747,7 +755,7 @@ class ToolsInstaller:
             mod_dir,
             expected_sha256=_PINNED_SHA256.get(asset.name),
         )
-        self._extract(archive, mod_dir)
+        await asyncio.to_thread(self._extract, archive, mod_dir)
         archive.unlink(missing_ok=True)
         _flatten_single_root(mod_dir)
         self._verify_mod_payload(mod_dir, mod_name, sentinel_glob)
@@ -812,7 +820,7 @@ class ToolsInstaller:
 
         archive = await downloader.download(file_info, session)
         mod_dir.mkdir(parents=True, exist_ok=True)
-        self._extract(archive, mod_dir)
+        await asyncio.to_thread(self._extract, archive, mod_dir)
         archive.unlink(missing_ok=True)
         _flatten_single_root(mod_dir)
         self._verify_mod_payload(mod_dir, mod_name, sentinel_glob)

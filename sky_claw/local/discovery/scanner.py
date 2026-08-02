@@ -89,7 +89,7 @@ def _parse_steam_libraries() -> list[pathlib.Path]:
 
 _WRYE_BASH_NAMES = ("Wrye Bash.exe", "Wrye Bash Launcher.exe")
 _DYNDOLOD_NAMES = ("DynDOLOD64.exe", "DynDOLOD.exe", "DynDOLODx64.exe")
-_PANDORA_NAMES = ("Pandora.exe", "Pandora Engine.exe")
+_PANDORA_NAMES = ("Pandora.exe", "Pandora Engine.exe", "Pandora Behaviour Engine+.exe")
 _LOOT_NAMES = ("LOOT.exe", "loot.exe")
 _XEDIT_NAMES = ("SSEEdit.exe", "TES5Edit.exe", "xEdit.exe")
 
