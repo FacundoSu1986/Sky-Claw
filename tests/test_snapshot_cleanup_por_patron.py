@@ -182,3 +182,68 @@ async def test_un_padre_reemplazado_tras_enumerar_no_saca_el_borrado_del_store(
     assert victima.read_bytes() == b"de otro proceso"
     assert resultado.errors, "un cambio de identidad se reporta, no se borra en silencio"
     assert resultado.deleted_count == 0
+
+
+@symlink_guard
+async def test_un_store_apuntado_por_un_enlace_no_se_ve_vacio(tmp_path: pathlib.Path) -> None:
+    """La raíz es del caller; los enlaces de adentro no.
+
+    Los recorridos link-aware no atraviesan un enlace, así que un store
+    relocalizado a otro disco por junction —práctica corriente— se veía **vacío**:
+    cero bytes medidos, ninguna limpieza efectiva y estadísticas en blanco, sin
+    ningún error que lo delatara (hallazgo de qodo-merge en #416, reproducido
+    antes de aceptarlo).
+
+    El arreglo va en el manager y no en la primitiva. Quien construye el manager
+    **nombró** esa ruta, así que seguirla es obedecerlo; un enlace que aparece
+    dentro del árbol no lo nombró nadie, y ahí seguirlo es salirse del store.
+    Aflojar la primitiva habría roto la igualdad medir==borrar para una raíz
+    enlazada, que es justo lo que este PR ancla.
+    """
+    real = tmp_path / "store_real"
+    real.mkdir()
+    (real / "a" / "b").mkdir(parents=True)
+    (real / "a" / "b" / "x").write_bytes(b"z" * 500)
+
+    enlace = tmp_path / "store"
+    enlace.symlink_to(real, target_is_directory=True)
+
+    manager = FileSnapshotManager(snapshot_dir=enlace)
+
+    assert await manager._calculate_total_size() == 500, "el store apuntado por un enlace NO está vacío"
+
+    resultado = await manager.cleanup_by_pattern("**/x")
+
+    assert (resultado.deleted_count, resultado.freed_bytes) == (1, 500)
+    assert not (real / "a" / "b" / "x").exists()
+
+
+@symlink_guard
+async def test_seguir_la_raiz_no_afloja_los_enlaces_de_adentro(tmp_path: pathlib.Path) -> None:
+    """La otra mitad: resolver la raíz no puede volver alcanzable lo de afuera.
+
+    Sin este test, "resolver la raíz" podría degenerar en "seguir cualquier
+    enlace" y nadie se enteraría — que es exactamente la forma en que una
+    excepción razonable se come la regla que la contiene.
+    """
+    real = tmp_path / "store_real"
+    real.mkdir()
+    (real / "propio").write_bytes(b"mio")
+
+    ajeno = tmp_path / "ajeno"
+    ajeno.mkdir()
+    victima = ajeno / "propio"
+    victima.write_bytes(b"de otro proceso")
+    (real / "puente").symlink_to(ajeno, target_is_directory=True)
+
+    enlace = tmp_path / "store"
+    enlace.symlink_to(real, target_is_directory=True)
+
+    manager = FileSnapshotManager(snapshot_dir=enlace)
+
+    assert await manager._calculate_total_size() == 3, "sólo los bytes propios; el puente no aporta"
+
+    resultado = await manager.cleanup_by_pattern("**/propio")
+
+    assert resultado.deleted_count == 1
+    assert victima.read_bytes() == b"de otro proceso", "lo de afuera sigue fuera de alcance"

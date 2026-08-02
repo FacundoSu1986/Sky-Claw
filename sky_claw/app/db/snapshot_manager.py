@@ -109,14 +109,33 @@ class FileSnapshotManager:
         Args:
             snapshot_dir: Directorio donde almacenar los snapshots.
             max_size_mb: Tamaño máximo en MB para todos los snapshots.
+
+        La raíz se **resuelve**, y eso es deliberado. Los recorridos link-aware
+        de este módulo no atraviesan un enlace, así que un store apuntado por un
+        junction —relocalizar el almacen a otro disco es practica corriente— se
+        veria VACIO: cero bytes medidos, ninguna limpieza efectiva y
+        estadisticas en blanco, sin ningun error que lo delate.
+
+        La regla, enunciada como propiedad: **la raiz es del caller y los
+        enlaces de adentro no**. Quien construye el manager NOMBRO esa ruta, asi
+        que seguirla es obedecerlo; un enlace que aparece dentro del arbol no lo
+        nombro nadie, y ahi seguirlo es salirse del store. Resolver aca —y no
+        aflojar la primitiva— mantiene esa distincion en el unico lugar que
+        conoce la intencion, y deja intacta la igualdad medir==borrar que
+        `tests/test_borrado_recursivo.py` ancla para una raiz enlazada.
         """
-        self._snapshot_dir = snapshot_dir
+        self._snapshot_dir = snapshot_dir.resolve()
         self._max_size_bytes = max_size_mb * 1024 * 1024
         self._lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         """Crea el directorio de snapshots si no existe."""
         self._snapshot_dir.mkdir(parents=True, exist_ok=True)
+        # Re-resolver: en el constructor la ruta podia no existir todavia, y un
+        # `resolve()` no estricto sobre algo ausente solo normaliza. Si el
+        # directorio aparecio despues como enlace, esta es la primera vez que se
+        # lo puede seguir.
+        self._snapshot_dir = self._snapshot_dir.resolve()
         logger.info(
             "Snapshot manager initialized",
             extra={
