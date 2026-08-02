@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import tomllib
+from importlib.metadata import version
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -52,6 +53,26 @@ def test_pytest_trata_warnings_de_lifecycle_como_errores() -> None:
     }
 
 
+def _piso_declarado_de_pytest_asyncio() -> tuple[tuple[int, int], str]:
+    """``((mayor, menor), especificador)`` del piso que ``[dev]`` declara."""
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+
+    dev: list[str] = pyproject["project"]["optional-dependencies"]["dev"]
+    candidatos = [d for d in dev if d.replace(" ", "").startswith("pytest-asyncio")]
+
+    # Aserción explícita en vez de `next(...)`: si la dependencia se renombra o
+    # desaparece, un StopIteration deja un traceback sin decir qué propiedad se
+    # rompió, y estas anclas existen justamente para nombrarla.
+    assert len(candidatos) == 1, f"se esperaba exactamente un pytest-asyncio en [dev], hay {candidatos}"
+
+    especificador = candidatos[0]
+    piso = re.search(r">=\s*(\d+)\.(\d+)", especificador)
+
+    assert piso is not None, f"pytest-asyncio tiene que declarar un piso `>=X.Y`, dice: {especificador}"
+    return (int(piso.group(1)), int(piso.group(2))), especificador
+
+
 def test_pytest_asyncio_no_puede_bajar_del_piso_que_fuga_el_loop() -> None:
     """El piso de ``pytest-asyncio`` es la corrección real de la fuga de #414.
 
@@ -71,23 +92,37 @@ def test_pytest_asyncio_no_puede_bajar_del_piso_que_fuga_el_loop() -> None:
     divergencia es la razón de que #413 y #414 vieran un flake local que CI no
     reproducía.
     """
-    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
-        pyproject = tomllib.load(file)
+    piso, especificador = _piso_declarado_de_pytest_asyncio()
 
-    dev: list[str] = pyproject["project"]["optional-dependencies"]["dev"]
-    candidatos = [d for d in dev if d.replace(" ", "").startswith("pytest-asyncio")]
+    assert piso >= (1, 4), f"el piso de pytest-asyncio no puede bajar de 1.4 (fuga de #414), dice: {especificador}"
 
-    # Aserción explícita en vez de `next(...)`: si la dependencia se renombra o
-    # desaparece, un StopIteration deja un traceback sin decir qué propiedad se
-    # rompió, y este ancla existe justamente para nombrarla.
-    assert len(candidatos) == 1, f"se esperaba exactamente un pytest-asyncio en [dev], hay {candidatos}"
 
-    especificador = candidatos[0]
-    piso = re.search(r">=\s*(\d+)\.(\d+)", especificador)
+def test_el_pytest_asyncio_instalado_respeta_el_piso_declarado() -> None:
+    """El piso declarado no protege nada si el entorno quedó viejo.
 
-    assert piso is not None, f"pytest-asyncio tiene que declarar un piso `>=X.Y`, dice: {especificador}"
-    assert (int(piso.group(1)), int(piso.group(2))) >= (1, 4), (
-        f"el piso de pytest-asyncio no puede bajar de 1.4 (fuga de #414), dice: {especificador}"
+    El ancla de arriba mira lo *declarado*; quien corre la suite es lo
+    *instalado*. Un venv sin re-sincronizar sigue en 1.3.0 y reproduce la fuga
+    entera de #415 — la suite en rojo en un test al azar, con la firma que ya
+    costó dos PRs (#413, #414) de diagnóstico y tres víctimas inocentes
+    distintas en tres corridas. Sin esta mitad, el síntoma vuelve a parecer un
+    test de cancelación inestable en vez de un entorno desactualizado, que es
+    exactamente el rodeo que hay que evitar.
+
+    Se afirma contra el piso declarado y no contra ``(1, 4)`` literal para que
+    subir el piso no deje esta mitad atrás: es el mismo par declarado/efectivo
+    que ya mordió una vez.
+    """
+    instalado = version("pytest-asyncio")
+    leida = re.match(r"(\d+)\.(\d+)", instalado)
+
+    assert leida is not None, f"no se pudo leer la versión instalada de pytest-asyncio: {instalado!r}"
+
+    piso, especificador = _piso_declarado_de_pytest_asyncio()
+
+    assert (int(leida.group(1)), int(leida.group(2))) >= piso, (
+        f"el entorno tiene pytest-asyncio {instalado} y [dev] pide {especificador}. "
+        "Hasta 1.3.0 la sesión fabrica y filtra un event loop, y el GC acusa a un "
+        "test al azar (#415). Re-sincronizá el entorno: `uv sync --extra dev`."
     )
 
 

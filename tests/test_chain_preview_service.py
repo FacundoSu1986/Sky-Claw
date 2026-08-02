@@ -213,17 +213,41 @@ async def test_preview_chain_reverts_when_a_stage_crashes(tmp_path: pathlib.Path
 
 @pytest.mark.asyncio
 async def test_preview_chain_cancellation_leaves_no_orphan(tmp_path: pathlib.Path) -> None:
-    """Cancelling mid-preview reverts the file and leaves no orphan lock."""
+    """Cancelar mid-preview revierte el archivo y no deja lock huérfano.
+
+    La cancelación se dispara sobre el **desenlace observado** —el scan de xEdit
+    ya entró, y entró después de que LOOT reescribiera ``plugins.txt``— y no
+    sobre una ventana de reloj. La forma anterior (``await asyncio.sleep(0.1)``
+    antes de ``cancel()``) asumía que 100 ms alcanzaban para llegar a ese punto,
+    y en el camino hay dos ``to_thread`` y la adquisición real del lock contra
+    SQLite. Medido bajo ``--cov`` en la suite completa, el scan entra a los
+    ~8 ms: el margen existía, pero es del host y no del test. Se elimina la
+    dependencia del reloj en vez de afinarla, que es la lección de #402 y #406.
+
+    Además ahora se *afirman* las dos premisas que antes solo se esperaban:
+    que LOOT mutó el archivo y que la mutación seguía viva al cancelar.
+    """
     plugins_txt = tmp_path / "plugins.txt"
     plugins_txt.write_text("*B.esp\n*A.esm\n", encoding="utf-8")
     original_bytes = plugins_txt.read_bytes()
 
+    escaneo_iniciado = asyncio.Event()
+    bytes_tras_loot: bytes | None = None
+    bytes_durante_el_scan: bytes | None = None
+
     async def loot_sort() -> LOOTResult:
+        nonlocal bytes_tras_loot
         plugins_txt.write_text("*A.esm\n*B.esp\n", encoding="utf-8")
+        bytes_tras_loot = plugins_txt.read_bytes()
         return LOOTResult(return_code=0, sorted_plugins=["A.esm", "B.esp"])
 
     async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
-        await asyncio.sleep(10)  # cancelled here, after LOOT mutated the file
+        nonlocal bytes_durante_el_scan
+        bytes_durante_el_scan = plugins_txt.read_bytes()
+        escaneo_iniciado.set()
+        # Bloquea indefinidamente: el desenlace es la cancelación, y si nunca
+        # llegara, el `--timeout` de pytest corta (no hace falta una red propia).
+        await asyncio.Event().wait()
         return _critical_report()
 
     event_bus = AsyncMock(spec=CoreEventBus)
@@ -232,11 +256,16 @@ async def test_preview_chain_cancellation_leaves_no_orphan(tmp_path: pathlib.Pat
     service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
     try:
         task = asyncio.create_task(service.preview_chain(workflow_id="wf-3", load_order_file=plugins_txt))
-        await asyncio.sleep(0.1)  # let LOOT run and the scan begin
+        await escaneo_iniciado.wait()  # LOOT ya corrió y el scan entró
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
+        # Se canceló con la mutación de LOOT viva...
+        assert bytes_tras_loot is not None
+        assert bytes_tras_loot != original_bytes
+        assert bytes_durante_el_scan == bytes_tras_loot
+        # ...y el rollback la revirtió igual, sin dejar lock huérfano.
         assert plugins_txt.read_bytes() == original_bytes
         assert await lock_mgr.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
     finally:
