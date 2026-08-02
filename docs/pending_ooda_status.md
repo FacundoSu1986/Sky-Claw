@@ -7,8 +7,8 @@
 > **Fuentes canónicas:** código y tests del árbol actual; ADRs aceptados para
 > decisiones; este documento únicamente consolida su estado.
 >
-> **Última verificación:** 2026-07-31 en la rama actual, basada en
-> `origin/main` `f986ffe`; los cambios posteriores de esta rama no se afirman
+> **Última verificación:** 2026-08-02 en la rama actual, basada en
+> `origin/main` `bdd0b1e`; los cambios posteriores de esta rama no se afirman
 > integrados en `origin/main`.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
@@ -58,7 +58,8 @@ confirmarlo contra código y tests.
 | F9 | Abierto | — | Reducir el composition root de `SupervisorAgent` incrementalmente | auditoría de resiliencia #319 |
 | F8 USVFS | Parcial | ADR 0007 y smoke `vfs-health` | Migrar runners restantes y completar smokes reales de cancelación, perfil y rollback | historial OODA, addendum F8 USVFS |
 | Detección de enlaces | Cerrado | #404 y #405 | — | `test_links.py` |
-| Borrado recursivo | Cerrado | #405 | — | `test_borrado_recursivo.py` |
+| Borrado recursivo | Cerrado | #405 y #416 | — | `test_borrado_recursivo.py` |
+| Medición de árboles | Cerrado | #416 | — | `test_borrado_recursivo.py` |
 | Fugas de lifecycle en tests | Cerrado | #408, #409 y #415 | — | `test_atribucion_de_warnings.py`, `test_project_config.py` |
 | Smoke real de QuickAutoClean | Bloqueado (rig humano) | — | Ejecutar SSEEdit QuickAutoClean en una instalación real | humano |
 | Smokes reales restantes | Bloqueado (rig humano) | — | NGIO, scripts `.pas`, GUI/FOMOD y Telegram end-to-end | humano |
