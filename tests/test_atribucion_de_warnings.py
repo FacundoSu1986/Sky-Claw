@@ -57,7 +57,7 @@ def test_inocente_solo_asigna_memoria():
 """
 
 
-def _ini_del_hijo() -> str:
+def ini_del_hijo() -> str:
     """Reproduce en el hijo el ``filterwarnings`` REAL de ``pyproject.toml``.
 
     Se lee en vez de copiarse porque el escenario depende de la lista completa y
@@ -78,7 +78,7 @@ def _ini_del_hijo() -> str:
 _CONFTEST_PROTEGIDO = "from tests.conftest import _gc_al_cerrar_cada_test  # noqa: F401\n"
 
 
-def _correr_pytest_hijo(carpeta: pathlib.Path) -> str:
+def correr_pytest_hijo(carpeta: pathlib.Path) -> str:
     """Levanta un pytest aislado en *carpeta* y devuelve su reporte.
 
     Subproceso y no ``pytester``: el escenario necesita un intérprete donde el
@@ -107,7 +107,7 @@ def _preparar(carpeta: pathlib.Path, *, con_fixture: bool) -> pathlib.Path:
     escenario = carpeta / ("protegido" if con_fixture else "desnudo")
     escenario.mkdir()
     (escenario / "test_fuga.py").write_text(_MODULO_DE_PRUEBA, encoding="utf-8")
-    (escenario / "pytest.ini").write_text(_ini_del_hijo(), encoding="utf-8")
+    (escenario / "pytest.ini").write_text(ini_del_hijo(), encoding="utf-8")
     if con_fixture:
         (escenario / "conftest.py").write_text(_CONFTEST_PROTEGIDO, encoding="utf-8")
     return escenario
@@ -120,7 +120,7 @@ def test_sin_el_fixture_el_warning_acusa_al_test_inocente(tmp_path: pathlib.Path
     atribuyera bien por su cuenta, ESTE test se pone rojo primero — y ahí el
     fixture pasa a ser código muerto que se puede retirar con evidencia.
     """
-    reporte = _correr_pytest_hijo(_preparar(tmp_path, con_fixture=False))
+    reporte = correr_pytest_hijo(_preparar(tmp_path, con_fixture=False))
 
     assert "test_inocente_solo_asigna_memoria FAILED" in reporte, reporte
     assert "test_culpable_fuga_un_socket_en_un_ciclo PASSED" in reporte, reporte
@@ -133,7 +133,7 @@ def test_con_el_fixture_el_warning_acusa_al_test_que_fugo(tmp_path: pathlib.Path
     rojo de CI: deja de haber corridas donde el nombre del test acusado no tiene
     relación con lo que se rompió.
     """
-    reporte = _correr_pytest_hijo(_preparar(tmp_path, con_fixture=True))
+    reporte = correr_pytest_hijo(_preparar(tmp_path, con_fixture=True))
 
     assert "test_inocente_solo_asigna_memoria PASSED" in reporte, reporte
     assert "test_culpable_fuga_un_socket_en_un_ciclo" in reporte, reporte

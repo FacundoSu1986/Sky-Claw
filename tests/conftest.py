@@ -12,6 +12,7 @@ Current gate: 60% (raised from 55% on 2026-05-28, P0.4). Actual: ~65%.
 
 from __future__ import annotations
 
+import asyncio
 import gc
 import os
 import pathlib
@@ -162,6 +163,44 @@ def correlation_id() -> Iterator[str]:
     correlation_id_var.reset(token)
 
 
+#: Loop de la sesión, del que este conftest es DUEÑO. Ver ``pytest_sessionstart``.
+_LOOP_DE_SESION: asyncio.AbstractEventLoop | None = None
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:  # noqa: ARG001
+    """Instala un event loop propio antes del primer test, y lo cierra al final.
+
+    Sin esto la sesión arranca **sin loop actual**, y ahí pytest-asyncio fabrica
+    uno que nadie cierra: ``_temporary_event_loop_policy`` abre con
+    ``old_loop = _get_event_loop_no_warn()`` (``plugin.py:618``), que en Python
+    3.11 llama a ``asyncio.get_event_loop()`` con el ``DeprecationWarning``
+    silenciado — y esa función **crea** un loop cuando no hay ninguno. El loop
+    fabricado queda de "actual", nunca se corre y nunca se cierra.
+
+    Medido: el loop nace en el setup del PRIMER test de la sesión y sobrevive
+    hasta que alguien pone el loop actual en ``None``. En la suite completa el
+    que lo suelta es ``test_scenario_loop_restaura_el_loop_exterior``, que hace
+    exactamente eso en su ``finally`` — de ahí que la falla apareciera ahí y no
+    donde se creó el objeto. Al perder su última referencia, el GC lo finaliza y
+    protesta: un ``unclosed event loop`` más los dos sockets ``AF_UNIX`` de su
+    self-pipe. Es la misma firma que #414 reportó en Windows —donde el
+    fabricado es un ``ProactorEventLoop``— y que declaró fuera de su alcance.
+
+    **El culpable no es quien lo soltó.** Soltar el loop actual es higiene
+    correcta, y hacer que ``ScenarioLoop`` deje de hacerlo sólo escondería el
+    objeto sin cerrarlo. Lo que se corrige es la precondición: si al llegar el
+    primer test ya hay un loop actual, pytest-asyncio no fabrica nada, y el que
+    hay tiene dueño explícito que lo cierra.
+
+    Un hook y no un fixture a propósito: la fabricación ocurre **dentro** del
+    llenado de fixtures del primer test (``plugin.py:458`` → ``_fillfixtures``),
+    así que ningún fixture —ni de scope ``session``— llega a tiempo de evitarla.
+    """
+    global _LOOP_DE_SESION
+    _LOOP_DE_SESION = asyncio.new_event_loop()
+    asyncio.set_event_loop(_LOOP_DE_SESION)
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # noqa: ARG001
     """Remove .pytest-tmp after every session to prevent Windows ACL lock buildup.
 
@@ -173,6 +212,14 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # n
     their config, so we skip cleanup there to avoid deleting the shared basetemp
     root while sibling workers are still writing to it.
     """
+    # Cierra el loop que abrió ``pytest_sessionstart``. Va antes del early-return
+    # de xdist: cada worker abrió el suyo y cada worker tiene que cerrarlo.
+    global _LOOP_DE_SESION
+    if _LOOP_DE_SESION is not None:
+        asyncio.set_event_loop(None)
+        _LOOP_DE_SESION.close()
+        _LOOP_DE_SESION = None
+
     if hasattr(session.config, "workerinput"):
         return  # xdist worker — controller handles cleanup
 
