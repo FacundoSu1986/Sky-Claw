@@ -137,13 +137,14 @@ sky_claw/.llm-chat-history/
 # Reporte de auditoría — mantener fuera del repo
 AUDIT_PANEL_REPORT.md
 
-# Local test and skills output
-.junie/
-output_real.txt
-pytest_links.txt
-pytest_out.txt
-skills-lock.json
+# Local test and skills output (anclados a la raíz: sin la `/` inicial estos
+# nombres también matchean archivos homónimos en subdirectorios del repo)
+/.junie/
+/output_real.txt
+/pytest_links.txt
+/pytest_out.txt
+/skills-lock.json
 
 # Agentes y Temporales
-.github/agents/
-.pytest-test-eng-tmp/
+/.github/agents/
+/.pytest-test-eng-tmp/

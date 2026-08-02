@@ -283,3 +283,13 @@ GA de T-25**: la matriz de smoke real debe ejercitar el flujo must-have completo
 - **Test rojo por sensor:** fixture con la condición → check amarillo/rojo con remediación accionable; sin la condición → verde. La regla de composición del semáforo se extiende con tests propios.
 - **Aceptación por iteración:** un sensor por PR, cableado al `PreflightService` y visible en el panel de T-16.
 - **Dependencias:** T-15 (cerrada); (2) se apoya en T-17/T-18. No bloquear un sensor por otro.
+
+### T-31 · Lock cross-process por directorio de instalación en `ToolsInstaller` (M)
+- **Archivos:** `sky_claw/local/tools_installer.py`, `sky_claw/app_context.py` (wiring), `sky_claw/app/db/locks.py` (`DistributedLockManager`, ya existe).
+- **Origen:** review de CodeRabbit en el PR #418 (marcado 🟠 Mayor, diferido explícitamente ahí por alcance).
+- **Problema:** `ToolsInstaller` no tiene lock, journal ni preflight. Es la clase "dos superficies, un recurso" de `AGENTS.md`: el agente LLM alcanza las seis rutas de instalación (`ensure_loot`, `ensure_xedit`, `ensure_pandora`, `ensure_bodyslide`, `_ensure_github_mod`, `_ensure_nexus_mod`) y la GUI alcanza LOOT/SSEEdit/Pandora. Dos instalaciones concurrentes sobre el mismo `install_dir`/`mod_dir` intercalan chequeo-de-existencia, extracción, renombrado, verificación de payload, `meta.ini` y `unlink` del archive — con corrupción silenciosa del directorio como resultado.
+- **Cambio:** tomar un lock cross-process keyed por `install_dir`/`mod_dir`, sostenido **desde** el chequeo de "ya instalado" **hasta** la validación y limpieza final (no solo alrededor de la extracción, o el TOCTOU sigue vivo).
+- **Test rojo:** dos `ensure_*` concurrentes sobre el mismo directorio se serializan (el segundo observa el resultado del primero y devuelve `already_existed=True`, sin segunda descarga ni segundo HITL).
+- **Ancla que enumera (no muestrea):** la familia de mutadores de `ToolsInstaller` se detecta por introspección y se congela, al estilo de `tests/test_hitl_client_scoping.py` — un `ensure_*` nuevo rompe el ancla hasta que se le cablea el lock. *La propiedad, no el recordatorio: el lock cross-process solo protege si TODOS los mutadores participan.*
+- **Aceptación:** las seis rutas participan del mismo lock; ancla por introspección en verde; `docs/pending_ooda_status.md` actualizado en el mismo PR.
+- **Dependencias:** ninguna. `DistributedLockManager` ya está en uso en `sky_claw/local/tools/rollback_reconciler.py` (patrón `_bajo_el_lock_del_ritual`) — reusar ese patrón, no inventar uno nuevo.
