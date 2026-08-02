@@ -675,7 +675,12 @@ class DynDOLODRunner:
             # Crear directorio del mod (o limpiar si existe)
             if mod_path.exists():
                 logger.debug("Limpiando directorio existente: %s", mod_path)
-                rmtree_link_aware(mod_path)
+                # `limpiar_readonly`: el arbol es la salida de una corrida previa
+                # de DynDOLOD, y una herramienta externa de Windows puede dejar
+                # sus archivos con FILE_ATTRIBUTE_READONLY. Sin el flag, el
+                # borrado falla con PermissionError y el empaquetado aborta sobre
+                # su propia salida vieja.
+                rmtree_link_aware(mod_path, limpiar_readonly=True)
 
             mod_path.mkdir(parents=True, exist_ok=True)
 
