@@ -413,7 +413,13 @@ class VRAMrPipelineService:
                 # `ignore_errors=True` el daño era además invisible. La
                 # primitiva decide por entrada y borra el enlace, nunca su
                 # destino.
-                rmtree_link_aware(entry)
+                # `limpiar_readonly`: estas entradas son la salida fresca de una
+                # corrida de VRAMr —herramienta externa de Windows—, mismo caso
+                # que DynDOLOD: puede dejar archivos con FILE_ATTRIBUTE_READONLY,
+                # y sin el flag el rollback falla con OSError, queda logueado
+                # como warning nada más, y el output parcial queda huérfano en
+                # disco pese a que la transacción se marca rolled-back.
+                rmtree_link_aware(entry, limpiar_readonly=True)
             except OSError as exc:
                 logger.warning("No pude limpiar %s: %s", entry, exc)
 

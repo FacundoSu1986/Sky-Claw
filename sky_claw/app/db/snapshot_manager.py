@@ -425,7 +425,12 @@ class FileSnapshotManager:
                     dir_size, file_count = await asyncio.to_thread(_scan_dir_stats, date_dir)
 
                     if not dry_run:
-                        await asyncio.to_thread(rmtree_link_aware, date_dir)
+                        # `limpiar_readonly`: mismo motivo que en
+                        # `_calc_dir_size_and_remove` mas abajo — un snapshot es
+                        # una copia (`shutil.copy2`) que propaga el modo de la
+                        # fuente, y sin el flag esta rama aborta con OSError a
+                        # mitad del loop de limpieza por antiguedad.
+                        await asyncio.to_thread(rmtree_link_aware, date_dir, limpiar_readonly=True)
 
                     deleted_count += file_count
                     freed_bytes += dir_size
@@ -598,7 +603,16 @@ class FileSnapshotManager:
                 # paga: descuenta bytes que siguen ocupados, el loop corta en
                 # `<= max*0.9` creyendo que libero espacio, y el store crece
                 # pasado su limite.
-                return rmtree_link_aware(d)
+                #
+                # `limpiar_readonly`: cada snapshot es un `shutil.copy2` del
+                # archivo original (`create_snapshot`), y `copy2` propaga los
+                # metadatos de la fuente — si el mod snapshoteado estaba
+                # FILE_ATTRIBUTE_READONLY en Windows (frecuente en archivos
+                # extraidos de un archive), la copia queda read-only tambien. Sin
+                # el flag, el borrado de ese directorio aborta con OSError a
+                # mitad del loop de enforcement y el store sigue creciendo
+                # pasado su limite.
+                return rmtree_link_aware(d, limpiar_readonly=True)
 
             dir_size = await asyncio.to_thread(_calc_dir_size_and_remove, date_dir)
             current_size -= dir_size

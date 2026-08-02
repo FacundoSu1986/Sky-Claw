@@ -672,24 +672,38 @@ class DynDOLODRunner:
                     output_path=mod_path,
                 )
 
-            # Crear directorio del mod (o limpiar si existe)
-            if mod_path.exists():
-                logger.debug("Limpiando directorio existente: %s", mod_path)
-                rmtree_link_aware(mod_path)
+            def _empaquetar_sincrono() -> None:
+                # Todo el cuerpo de abajo es I/O bloqueante — copiar la salida
+                # de DynDOLOD mueve miles de archivos de LOD, texturas y
+                # meshes. Un solo `to_thread` para toda la fase, no uno por
+                # llamada: el mismo idioma que `snapshot_manager.py` usa para
+                # sus fases de borrado/copia (`_limpiar`, `_calc_dir_size_and_remove`).
+                # Correrlo en el hilo del event loop congelaba la UI de
+                # NiceGUI y desconectaba WebSockets durante el empaquetado.
+                if mod_path.exists():
+                    logger.debug("Limpiando directorio existente: %s", mod_path)
+                    # `limpiar_readonly`: el árbol es la salida de una corrida
+                    # previa de DynDOLOD, y una herramienta externa de Windows
+                    # puede dejar sus archivos con FILE_ATTRIBUTE_READONLY. Sin
+                    # el flag, el borrado falla con PermissionError y el
+                    # empaquetado aborta sobre su propia salida vieja.
+                    rmtree_link_aware(mod_path, limpiar_readonly=True)
 
-            mod_path.mkdir(parents=True, exist_ok=True)
+                mod_path.mkdir(parents=True, exist_ok=True)
 
-            # Copiar contenido
-            for item in output_path.iterdir():
-                src = item
-                dst = mod_path / item.name
-                if src.is_dir():
-                    shutil.copytree(src, dst)
-                else:
-                    shutil.copy2(src, dst)
+                # Copiar contenido
+                for item in output_path.iterdir():
+                    src = item
+                    dst = mod_path / item.name
+                    if src.is_dir():
+                        shutil.copytree(src, dst)
+                    else:
+                        shutil.copy2(src, dst)
 
-            # Generar meta.ini
-            self._generate_meta_ini(mod_path, mod_name)
+                # Generar meta.ini
+                self._generate_meta_ini(mod_path, mod_name)
+
+            await asyncio.to_thread(_empaquetar_sincrono)
 
             logger.info("Mod empaquetado exitosamente: %s", mod_path)
             return mod_path
