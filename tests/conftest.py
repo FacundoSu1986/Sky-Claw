@@ -12,6 +12,7 @@ Current gate: 60% (raised from 55% on 2026-05-28, P0.4). Actual: ~65%.
 
 from __future__ import annotations
 
+import gc
 import os
 import pathlib
 import shutil
@@ -31,6 +32,98 @@ from sky_claw.app.db.async_registry import AsyncModRegistry
 from sky_claw.app.security.network_gateway import NetworkGateway
 from sky_claw.logging_config import correlation_id_var
 from tests._lifecycle_guard import close_registry_then_lifecycle, find_leaked_threads
+
+#: Flag que enciende el GC determinista por test. Ver ``_gc_al_cerrar_cada_test``.
+GC_POR_TEST = "--gc-por-test"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Registra ``--gc-por-test``, el modo de diagnóstico de fugas de lifecycle."""
+    parser.addoption(
+        GC_POR_TEST,
+        action="store_true",
+        default=False,
+        help=(
+            "Corre gc.collect() al cerrar cada test para que un "
+            "PytestUnraisableExceptionWarning acuse al test que fugó el recurso "
+            "y no a uno posterior al azar. Cuadruplica la duración de la suite: "
+            "encendelo para diagnosticar, no en cada corrida."
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _gc_al_cerrar_cada_test(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Corre el GC cíclico en el teardown, para que el warning acuse al culpable.
+
+    ``pyproject.toml`` convierte ``PytestUnraisableExceptionWarning`` en error
+    (#409). Ese warning se emite cuando el intérprete finaliza un objeto cuyo
+    ``__del__`` protesta —un socket o un event loop sin cerrar—, y **eso ocurre
+    cuando corre el GC, no cuando el test fugó el recurso**. Si el recurso quedó
+    atrapado en un ciclo de referencias, el refcount nunca llega a cero y sólo lo
+    libera el GC generacional, que se dispara por presión de asignación en un
+    test *posterior* y arbitrario. pytest le carga la falla a ese test.
+
+    El resultado medido, antes de este fixture: #413 acusó a
+    ``test_ningun_modulo_borra_arboles_con_shutil_rmtree`` —que sólo hace
+    ``ast.parse`` en memoria y no abre un solo descriptor— y en otra corrida a
+    ``test_wrong_token_returns_false``; #414 reprodujo la misma firma sobre
+    ``origin/main`` limpio, en un tercer test distinto. Tres víctimas inocentes,
+    todas verdes al reejecutarse enfocadas: la marca de una acusación falsa, no
+    de un test inestable.
+
+    **La propiedad que se restaura:** *un warning emitido durante el GC
+    pertenece al test que dejó el objeto inalcanzable, y eso sólo es cierto si el
+    GC corre dentro del teardown de ese test.* Con el ciclo recolectado acá, la
+    falla es reproducible y nombra a quien la causó.
+
+    **El orden se fija por dependencia, no por declaración.** pytest ordena por
+    scope → dependencias → autouse, y el orden en que los fixtures se declaran
+    *no* ordena nada (docs de pytest, «Fixture instantiation order»). Para que
+    este ``gc.collect()`` corra después de que el resto soltó sus referencias
+    —que es cuando el recurso fugado recién queda inalcanzable— los otros
+    autouse de este módulo lo **piden** explícitamente: quien lo pide se arma
+    después y se desarma antes. Frente a los fixtures NO autouse alcanza con ser
+    autouse, que sí los precede por regla.
+
+    Una versión previa decía «se declara primero a propósito». Era falso: lo
+    atajó un revisor automático citando la documentación, y con dos autouse
+    hermanos en el mismo archivo el orden quedaba sin definir.
+
+    **Va apagado por defecto, y eso se decidió con números.** Medido sobre esta
+    suite (3863 tests, misma máquina, misma corrida completa):
+
+    ===============================================  ==========
+    sin ``gc.collect()``                              129 s
+    con ``gc.collect()`` por test                     536 s
+    lo mismo + ``gc.freeze()`` al arrancar la sesión   583 s
+    ===============================================  ==========
+
+    Son ~105 ms por test: un recorrido completo del heap, que ``gc.freeze()`` no
+    abarata porque el costo lo ponen los objetos que asignan los propios tests,
+    no los del import. Cuadruplicar cada corrida de CI para adelantarse a una
+    mala atribución hipotética es mal negocio; el diagnóstico se paga sólo
+    cuando hace falta.
+
+    **Cuando haga falta**, que es al ver un ``PytestUnraisableExceptionWarning``
+    en un test que no abre recursos::
+
+        pytest --gc-por-test
+
+    Eso convierte la acusación falsa en el nombre del culpable. Es el camino que
+    a #413 y #414 les faltó: entre los dos gastaron dos PRs sin poder reproducir
+    la falla, y la fuga real —el event loop huérfano que fabricaba pytest-asyncio
+    hasta 1.3.0, cerrado subiendo el piso de la dependencia— apareció en la
+    primera corrida con este flag.
+
+    No arregla ninguna fuga: la vuelve atribuible. El ancla de esta propiedad
+    vive en ``tests/test_atribucion_de_warnings.py``, y corre en CI con el flag
+    encendido en un pytest hijo — así que el mecanismo está verificado aunque la
+    suite grande no lo use.
+    """
+    yield
+    if request.config.getoption(GC_POR_TEST):
+        gc.collect()
 
 
 @pytest.fixture()
@@ -78,8 +171,12 @@ def mock_network_gateway() -> MagicMock:
 
 
 @pytest.fixture(autouse=True)
-def _reset_governance_singleton() -> Iterator[None]:
+def _reset_governance_singleton(_gc_al_cerrar_cada_test: None) -> Iterator[None]:
     """Reset the GovernanceManager singleton around every test.
+
+    Pide ``_gc_al_cerrar_cada_test`` para FIJAR EL ORDEN, no porque use su
+    valor: quien pide un fixture se desarma antes que él, así que el
+    ``gc.collect()`` corre después de que este singleton soltó su instancia.
 
     Tests that call ``GovernanceManager.get_instance()`` would otherwise leak
     a base_path-bound instance into unrelated tests (order-dependent failures).
@@ -96,7 +193,11 @@ def _reset_governance_singleton() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _localappdata_aislado(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+def _localappdata_aislado(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    _gc_al_cerrar_cada_test: None,
+) -> None:
     """Redirige LOCALAPPDATA a un directorio vacío por test (aislamiento del host).
 
     ``LoadOrderFileResolver`` (y todo lo que lo construye por defecto, como

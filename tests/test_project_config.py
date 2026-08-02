@@ -52,6 +52,45 @@ def test_pytest_trata_warnings_de_lifecycle_como_errores() -> None:
     }
 
 
+def test_pytest_asyncio_no_puede_bajar_del_piso_que_fuga_el_loop() -> None:
+    """El piso de ``pytest-asyncio`` es la corrección real de la fuga de #414.
+
+    Hasta 1.3.0 inclusive, ``_temporary_event_loop_policy`` abría con
+    ``old_loop = _get_event_loop_no_warn()``, que llama a
+    ``asyncio.get_event_loop()`` con el ``DeprecationWarning`` silenciado — y esa
+    función **crea** un loop cuando la sesión no tiene uno actual. El huérfano
+    nunca se corre ni se cierra: queda de "actual" hasta que alguien ponga el
+    loop en ``None``, y ahí el GC lo finaliza con un ``unclosed event loop`` más
+    los dos sockets de su self-pipe. Con ``error::ResourceWarning`` (#409), eso
+    es la suite en rojo, en un test al azar.
+
+    Se ancla el piso y no la ausencia del síntoma porque **bajar la versión es
+    la única forma de traer el bug de vuelta**, y un rango sin piso lo permite en
+    silencio: el ``>=1.0`` anterior resolvía a 1.3.0 vía ``uv.lock`` mientras CI
+    —que instala con ``pip install -e ".[dev]"``, sin lock— tomaba 1.4.0. Esa
+    divergencia es la razón de que #413 y #414 vieran un flake local que CI no
+    reproducía.
+    """
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+
+    dev: list[str] = pyproject["project"]["optional-dependencies"]["dev"]
+    candidatos = [d for d in dev if d.replace(" ", "").startswith("pytest-asyncio")]
+
+    # Aserción explícita en vez de `next(...)`: si la dependencia se renombra o
+    # desaparece, un StopIteration deja un traceback sin decir qué propiedad se
+    # rompió, y este ancla existe justamente para nombrarla.
+    assert len(candidatos) == 1, f"se esperaba exactamente un pytest-asyncio en [dev], hay {candidatos}"
+
+    especificador = candidatos[0]
+    piso = re.search(r">=\s*(\d+)\.(\d+)", especificador)
+
+    assert piso is not None, f"pytest-asyncio tiene que declarar un piso `>=X.Y`, dice: {especificador}"
+    assert (int(piso.group(1)), int(piso.group(2))) >= (1, 4), (
+        f"el piso de pytest-asyncio no puede bajar de 1.4 (fuga de #414), dice: {especificador}"
+    )
+
+
 def test_pytest_tmp_dir_is_gitignored() -> None:
     """.pytest-tmp/ must be listed in .gitignore to avoid committing temp artifacts.
 
