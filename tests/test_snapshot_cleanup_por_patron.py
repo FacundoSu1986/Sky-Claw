@@ -247,3 +247,35 @@ async def test_seguir_la_raiz_no_afloja_los_enlaces_de_adentro(tmp_path: pathlib
 
     assert resultado.deleted_count == 1
     assert victima.read_bytes() == b"de otro proceso", "lo de afuera sigue fuera de alcance"
+
+
+@symlink_guard
+async def test_initialize_sobrevive_a_un_enlace_roto_como_raiz(tmp_path: pathlib.Path) -> None:
+    """Un enlace ROTO como store no puede tirar abajo la inicialización.
+
+    ``Path.mkdir(exist_ok=True)`` re-lanza ``FileExistsError`` sobre un enlace
+    colgante: el ``exist_ok`` sólo perdona cuando la ruta ``is_dir()``, y un
+    enlace roto no lo es. Medido, ése era el comportamiento **antes** de que el
+    manager resolviera su raíz::
+
+        sin resolve() -> FileExistsError: 17
+        con resolve() -> initialize() OK, y el enlace queda resuelto
+
+    Es decir: resolver la raíz —que se agregó por el store que se veía vacío—
+    además cierra este crash, porque un ``resolve()`` no estricto sigue el
+    enlace y ``mkdir`` termina creando el destino que faltaba.
+
+    Se ancla porque la relación es contraintuitiva y un futuro "esto no hace
+    falta, saquemos el resolve" la rompería en silencio (revisión qodo-merge en
+    #416, que atribuía el crash a este cambio cuando en verdad lo evita).
+    """
+    roto = tmp_path / "store"
+    destino = tmp_path / "destino_todavia_inexistente"
+    roto.symlink_to(destino, target_is_directory=True)
+    assert roto.is_symlink() and not roto.exists(), "el escenario arranca con un enlace colgante"
+
+    manager = FileSnapshotManager(snapshot_dir=roto)
+    await manager.initialize()
+
+    assert destino.is_dir(), "el destino que faltaba se creó"
+    assert roto.exists(), "el enlace dejó de estar colgante"
