@@ -77,10 +77,18 @@ def _gc_al_cerrar_cada_test(request: pytest.FixtureRequest) -> Iterator[None]:
     GC corre dentro del teardown de ese test.* Con el ciclo recolectado acá, la
     falla es reproducible y nombra a quien la causó.
 
-    Es autouse y se declara primero a propósito: pytest desarma en orden inverso
-    al de creación, así que este teardown corre **último** — después de que el
-    resto de los fixtures soltó sus referencias, que es cuando el recurso fugado
-    recién queda inalcanzable.
+    **El orden se fija por dependencia, no por declaración.** pytest ordena por
+    scope → dependencias → autouse, y el orden en que los fixtures se declaran
+    *no* ordena nada (docs de pytest, «Fixture instantiation order»). Para que
+    este ``gc.collect()`` corra después de que el resto soltó sus referencias
+    —que es cuando el recurso fugado recién queda inalcanzable— los otros
+    autouse de este módulo lo **piden** explícitamente: quien lo pide se arma
+    después y se desarma antes. Frente a los fixtures NO autouse alcanza con ser
+    autouse, que sí los precede por regla.
+
+    Una versión previa decía «se declara primero a propósito». Era falso: lo
+    atajó un revisor automático citando la documentación, y con dos autouse
+    hermanos en el mismo archivo el orden quedaba sin definir.
 
     **Va apagado por defecto, y eso se decidió con números.** Medido sobre esta
     suite (3863 tests, misma máquina, misma corrida completa):
@@ -163,8 +171,12 @@ def mock_network_gateway() -> MagicMock:
 
 
 @pytest.fixture(autouse=True)
-def _reset_governance_singleton() -> Iterator[None]:
+def _reset_governance_singleton(_gc_al_cerrar_cada_test: None) -> Iterator[None]:
     """Reset the GovernanceManager singleton around every test.
+
+    Pide ``_gc_al_cerrar_cada_test`` para FIJAR EL ORDEN, no porque use su
+    valor: quien pide un fixture se desarma antes que él, así que el
+    ``gc.collect()`` corre después de que este singleton soltó su instancia.
 
     Tests that call ``GovernanceManager.get_instance()`` would otherwise leak
     a base_path-bound instance into unrelated tests (order-dependent failures).
@@ -181,7 +193,11 @@ def _reset_governance_singleton() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _localappdata_aislado(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+def _localappdata_aislado(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    _gc_al_cerrar_cada_test: None,
+) -> None:
     """Redirige LOCALAPPDATA a un directorio vacío por test (aislamiento del host).
 
     ``LoadOrderFileResolver`` (y todo lo que lo construye por defecto, como

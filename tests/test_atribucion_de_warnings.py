@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tomllib
@@ -89,13 +90,17 @@ def correr_pytest_hijo(carpeta: pathlib.Path, *args: str) -> str:
     Subproceso y no ``pytester``: el escenario necesita un intérprete donde el
     estado del GC no venga contaminado por los ~3900 tests de esta misma sesión.
 
-    El entorno se **hereda** y sólo se le agrega ``PYTHONPATH``: armar un env
-    mínimo a mano rompe en Windows —que necesita ``SYSTEMROOT`` y su ``PATH``
-    real para levantar el intérprete—, y el job ``windows-latest`` es el único
-    bloqueante del gate.
+    El entorno se **hereda** y a ``PYTHONPATH`` se le **antepone** la raíz en vez
+    de reemplazarlo: armar un env mínimo a mano rompe en Windows —que necesita
+    ``SYSTEMROOT`` y su ``PATH`` real para levantar el intérprete—, y pisar un
+    ``PYTHONPATH`` preexistente rompería en cualquier entorno que resuelva sus
+    dependencias por ahí (virtualenvs armados a mano, imágenes de CI, Nix), con
+    un ``ModuleNotFoundError`` que se leería como un fallo de este ancla y no del
+    entorno.
     """
     entorno = os.environ.copy()
-    entorno["PYTHONPATH"] = str(_RAIZ)
+    heredado = entorno.get("PYTHONPATH", "")
+    entorno["PYTHONPATH"] = f"{_RAIZ}{os.pathsep}{heredado}" if heredado else str(_RAIZ)
     proceso = subprocess.run(
         [
             sys.executable,
@@ -128,6 +133,27 @@ def _preparar(carpeta: pathlib.Path, *, con_flag: bool) -> pathlib.Path:
     return escenario
 
 
+def acusados(reporte: str) -> set[str]:
+    """Los tests que el reporte marca como ``FAILED`` o ``ERROR``, por nombre.
+
+    Lee el bloque *short test summary info*, que es donde pytest escribe una
+    línea por test señalado y en qué fase cayó.
+
+    **Se extrae el conjunto y se compara por igualdad** en vez de preguntar si un
+    nombre aparece: el nombre del culpable figura en el reporte aunque haya
+    pasado —la línea ``... PASSED`` lo contiene— así que un ``in reporte`` se
+    queda verde sin que la acusación sea la correcta. Ese era el agujero de la
+    primera versión de este ancla, y es la misma clase de defecto que el ancla
+    existe para atajar: afirmar menos de lo que se dice verificar.
+
+    Un test puede pasar en la fase ``call`` y romper en ``teardown`` —que es
+    justo lo que pasa acá, porque el warning se emite al recolectar— así que
+    ``PASSED`` y ``ERROR`` conviven para el mismo nombre. Por eso la pregunta
+    correcta es a quién señala el resumen, no si el nombre está.
+    """
+    return set(re.findall(r"^(?:FAILED|ERROR)\s+\S+::(\w+)", reporte, re.MULTILINE))
+
+
 def test_sin_el_flag_el_warning_acusa_al_test_inocente(tmp_path: pathlib.Path) -> None:
     """El peligro es real: sin GC determinista, la falla cae en el que no fugó.
 
@@ -139,19 +165,17 @@ def test_sin_el_flag_el_warning_acusa_al_test_inocente(tmp_path: pathlib.Path) -
     """
     reporte = correr_pytest_hijo(_preparar(tmp_path, con_flag=False))
 
-    assert "test_inocente_solo_asigna_memoria FAILED" in reporte, reporte
-    assert "test_culpable_fuga_un_socket_en_un_ciclo PASSED" in reporte, reporte
+    assert acusados(reporte) == {"test_inocente_solo_asigna_memoria"}, reporte
 
 
 def test_con_el_flag_el_warning_acusa_al_test_que_fugo(tmp_path: pathlib.Path) -> None:
     """La propiedad que compra ``--gc-por-test``: la falla nombra al culpable.
 
-    Es la mitad que importa. El inocente en verde es lo que vuelve accionable un
-    rojo: deja de haber corridas donde el nombre del test acusado no tiene
+    Es la mitad que importa. Por igualdad y no por presencia: el señalado tiene
+    que ser el culpable **y nadie más**, que es lo que vuelve accionable un rojo
+    de CI. Deja de haber corridas donde el nombre del test acusado no tiene
     relación con lo que se rompió.
     """
     reporte = correr_pytest_hijo(_preparar(tmp_path, con_flag=True), GC_POR_TEST)
 
-    assert "test_inocente_solo_asigna_memoria PASSED" in reporte, reporte
-    assert "test_culpable_fuga_un_socket_en_un_ciclo" in reporte, reporte
-    assert "ERROR" in reporte or "FAILED" in reporte, reporte
+    assert acusados(reporte) == {"test_culpable_fuga_un_socket_en_un_ciclo"}, reporte

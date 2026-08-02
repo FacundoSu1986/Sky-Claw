@@ -74,12 +74,21 @@ def test_pytest_asyncio_no_puede_bajar_del_piso_que_fuga_el_loop() -> None:
     with (REPO_ROOT / "pyproject.toml").open("rb") as file:
         pyproject = tomllib.load(file)
 
-    dev = pyproject["project"]["optional-dependencies"]["dev"]
-    especificador = next(d for d in dev if d.replace(" ", "").startswith("pytest-asyncio"))
+    dev: list[str] = pyproject["project"]["optional-dependencies"]["dev"]
+    candidatos = [d for d in dev if d.replace(" ", "").startswith("pytest-asyncio")]
+
+    # Aserción explícita en vez de `next(...)`: si la dependencia se renombra o
+    # desaparece, un StopIteration deja un traceback sin decir qué propiedad se
+    # rompió, y este ancla existe justamente para nombrarla.
+    assert len(candidatos) == 1, f"se esperaba exactamente un pytest-asyncio en [dev], hay {candidatos}"
+
+    especificador = candidatos[0]
     piso = re.search(r">=\s*(\d+)\.(\d+)", especificador)
 
-    assert piso is not None, especificador
-    assert (int(piso.group(1)), int(piso.group(2))) >= (1, 4), especificador
+    assert piso is not None, f"pytest-asyncio tiene que declarar un piso `>=X.Y`, dice: {especificador}"
+    assert (int(piso.group(1)), int(piso.group(2))) >= (1, 4), (
+        f"el piso de pytest-asyncio no puede bajar de 1.4 (fuga de #414), dice: {especificador}"
+    )
 
 
 def test_pytest_tmp_dir_is_gitignored() -> None:

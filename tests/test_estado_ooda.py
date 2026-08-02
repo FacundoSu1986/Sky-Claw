@@ -7,6 +7,7 @@ con las anclas de familia que enumeran el código productivo.
 from __future__ import annotations
 
 import pathlib
+import re
 
 from tests.test_borrado_recursivo import MECANISMO_DE_BORRADO
 from tests.test_rollback_reconciler import (
@@ -157,6 +158,27 @@ def test_borrado_recursivo_no_puede_cerrarse_con_modulos_pendientes() -> None:
     assert not pendientes
     assert fila["Estado"] == "Cerrado"
     assert "test_borrado_recursivo.py" in fila["Verificado por"]
+
+
+def test_todo_test_citado_como_verificacion_existe() -> None:
+    """Ningún ``.py`` citado en «Verificado por» puede ser un archivo inexistente.
+
+    Una fila que se apoya en un test borrado sigue diciendo «Cerrado» y ya no la
+    respalda nada: el inventario pasa de consolidar estado a inventarlo, que es
+    exactamente lo que este documento existe para no hacer.
+
+    Pasó en #415: la fila de lifecycle citaba ``test_lifecycle_de_la_sesion.py``,
+    que el propio PR eliminó al cambiar de un hook defensivo al fix de raíz. Los
+    gates de Python siguieron verdes —ninguno lee este documento— y lo atajó un
+    revisor automático. Este test lo convierte en rojo.
+
+    Se enumeran **todas** las filas en vez de revisar la que se acaba de tocar:
+    un caso escrito a mano para la fila de hoy no ataja a la de mañana.
+    """
+    citados = {nombre for fila in _tabla().values() for nombre in re.findall(r"[\w/]+\.py", fila["Verificado por"])}
+    faltantes = {nombre for nombre in citados if not (_RAIZ / "tests" / pathlib.Path(nombre).name).exists()}
+
+    assert not faltantes, f"el inventario cita tests que no existen: {sorted(faltantes)}"
 
 
 def test_los_smokes_sin_ancla_automatizable_declaran_verificacion_humana() -> None:
