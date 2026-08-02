@@ -11,6 +11,11 @@ import tomllib
 from importlib.metadata import version
 from pathlib import Path
 
+# `packaging` no se declara en [dev] porque es dependencia dura de pytest
+# (`packaging>=20`): si no está, este archivo no puede ni colectarse.
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
+
 REPO_ROOT = Path(__file__).parent.parent
 
 
@@ -53,8 +58,8 @@ def test_pytest_trata_warnings_de_lifecycle_como_errores() -> None:
     }
 
 
-def _piso_declarado_de_pytest_asyncio() -> tuple[tuple[int, int], str]:
-    """``((mayor, menor), especificador)`` del piso que ``[dev]`` declara."""
+def _especificador_de_pytest_asyncio() -> str:
+    """El requisito literal que ``[dev]`` declara para ``pytest-asyncio``."""
     with (REPO_ROOT / "pyproject.toml").open("rb") as file:
         pyproject = tomllib.load(file)
 
@@ -66,7 +71,18 @@ def _piso_declarado_de_pytest_asyncio() -> tuple[tuple[int, int], str]:
     # rompió, y estas anclas existen justamente para nombrarla.
     assert len(candidatos) == 1, f"se esperaba exactamente un pytest-asyncio en [dev], hay {candidatos}"
 
-    especificador = candidatos[0]
+    return candidatos[0]
+
+
+def _piso_declarado_de_pytest_asyncio() -> tuple[tuple[int, int], str]:
+    """``((mayor, menor), especificador)`` del piso que ``[dev]`` declara.
+
+    Trunca a ``(mayor, menor)`` a propósito: su único consumidor pregunta si el
+    piso bajó de 1.4, y eso se decide en esa granularidad. La comprobación de
+    *satisfacción* del requisito NO usa esto — ver
+    :func:`test_el_pytest_asyncio_instalado_respeta_el_piso_declarado`.
+    """
+    especificador = _especificador_de_pytest_asyncio()
     piso = re.search(r">=\s*(\d+)\.(\d+)", especificador)
 
     assert piso is not None, f"pytest-asyncio tiene que declarar un piso `>=X.Y`, dice: {especificador}"
@@ -108,22 +124,45 @@ def test_el_pytest_asyncio_instalado_respeta_el_piso_declarado() -> None:
     test de cancelación inestable en vez de un entorno desactualizado, que es
     exactamente el rodeo que hay que evitar.
 
-    Se afirma contra el piso declarado y no contra ``(1, 4)`` literal para que
-    subir el piso no deje esta mitad atrás: es el mismo par declarado/efectivo
-    que ya mordió una vez.
+    Se afirma contra el requisito declarado y no contra ``>=1.4`` literal para
+    que subir el piso no deje esta mitad atrás: es el mismo par
+    declarado/efectivo que ya mordió una vez.
+
+    La comparación la hace ``packaging`` (PEP 440) y no un par
+    ``(mayor, menor)`` propio: truncar dejaba pasar ``1.4.0rc1`` contra
+    ``>=1.4`` —que PEP 440 considera *anterior*— y un ``1.4.0`` instalado contra
+    un piso futuro ``>=1.4.1``. Un ancla que no puede afirmar lo que dice
+    afirmar es peor que no tenerla (review Codex).
     """
     instalado = version("pytest-asyncio")
-    leida = re.match(r"(\d+)\.(\d+)", instalado)
+    especificador = _especificador_de_pytest_asyncio()
+    requisito = Requirement(especificador)
 
-    assert leida is not None, f"no se pudo leer la versión instalada de pytest-asyncio: {instalado!r}"
-
-    piso, especificador = _piso_declarado_de_pytest_asyncio()
-
-    assert (int(leida.group(1)), int(leida.group(2))) >= piso, (
+    # prereleases=True para preguntar por el orden PEP 440 real y no por la
+    # política de "ignorar prereleases": un 1.5.0rc1 SÍ satisface `>=1.4`.
+    assert requisito.specifier.contains(instalado, prereleases=True), (
         f"el entorno tiene pytest-asyncio {instalado} y [dev] pide {especificador}. "
         "Hasta 1.3.0 la sesión fabrica y filtra un event loop, y el GC acusa a un "
         "test al azar (#415). Re-sincronizá el entorno: `uv sync --extra dev`."
     )
+
+
+def test_el_comparador_de_versiones_no_trunca_el_patch_ni_las_prerelease() -> None:
+    """Los dos agujeros que tenía comparar solo ``(mayor, menor)``.
+
+    Sin esto, el ancla de arriba se apoya en una semántica que nadie verifica:
+    es el mismo defecto —afirmar menos de lo que se declara— un nivel más
+    abajo. Se enumeran los dos casos que un truncado a dos componentes resuelve
+    mal, cada uno con su contraparte correcta, más el caso que motivó el ancla.
+    """
+    # Prerelease: PEP 440 la ordena ANTES de la final; truncar la daba por 1.4.
+    assert not SpecifierSet(">=1.4").contains("1.4.0rc1", prereleases=True)
+    assert SpecifierSet(">=1.4").contains("1.4.0", prereleases=True)
+    # Patch: un piso futuro `>=1.4.1` no puede quedar satisfecho por 1.4.0.
+    assert not SpecifierSet(">=1.4.1").contains("1.4.0", prereleases=True)
+    assert SpecifierSet(">=1.4.1").contains("1.4.1", prereleases=True)
+    # El caso que motivó todo: 1.3.0 nunca satisface el piso.
+    assert not SpecifierSet(">=1.4").contains("1.3.0", prereleases=True)
 
 
 def test_pytest_tmp_dir_is_gitignored() -> None:

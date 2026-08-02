@@ -245,8 +245,7 @@ async def test_preview_chain_cancellation_leaves_no_orphan(tmp_path: pathlib.Pat
         nonlocal bytes_durante_el_scan
         bytes_durante_el_scan = plugins_txt.read_bytes()
         escaneo_iniciado.set()
-        # Bloquea indefinidamente: el desenlace es la cancelación, y si nunca
-        # llegara, el `--timeout` de pytest corta (no hace falta una red propia).
+        # Bloquea indefinidamente: el desenlace de este test es la cancelación.
         await asyncio.Event().wait()
         return _critical_report()
 
@@ -256,8 +255,25 @@ async def test_preview_chain_cancellation_leaves_no_orphan(tmp_path: pathlib.Pat
     service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
     try:
         task = asyncio.create_task(service.preview_chain(workflow_id="wf-3", load_order_file=plugins_txt))
-        await escaneo_iniciado.wait()  # LOOT ya corrió y el scan entró
-        task.cancel()
+
+        # Esperar el scan Y el preview a la vez. Si el preview termina SIN entrar
+        # al scan —regresión en la validación de rutas, en el lock o en la etapa
+        # LOOT— el evento no se prende nunca y esperarlo solo a él colgaría hasta
+        # el `--timeout` global, sepultando la excepción causal en un volcado de
+        # hilos (review Copilot/Codex). Un timeout local corto tampoco sirve:
+        # reintroduce exactamente la ventana de reloj que este cambio elimina.
+        espera_scan = asyncio.ensure_future(escaneo_iniciado.wait())
+        try:
+            await asyncio.wait({task, espera_scan}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            espera_scan.cancel()
+            await asyncio.gather(espera_scan, return_exceptions=True)
+
+        if not escaneo_iniciado.is_set():
+            task.result()  # relanza la causa real si preview_chain falló
+            raise AssertionError("preview_chain terminó sin entrar al scan de xEdit")
+
+        task.cancel()  # LOOT ya corrió y el scan entró
         with pytest.raises(asyncio.CancelledError):
             await task
 
