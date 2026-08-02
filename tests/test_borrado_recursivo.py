@@ -359,6 +359,137 @@ def test_quien_dice_medir_link_aware_no_conserva_ningun_recorrido_crudo() -> Non
     assert declarados == reales
 
 
+# ---------------------------------------------------------------------------
+# La política de `limpiar_readonly`: quién necesita pedirlo, y quién no
+# ---------------------------------------------------------------------------
+
+#: Módulo → si sus invocaciones de ``rmtree_link_aware`` necesitan
+#: ``limpiar_readonly=True``.
+#:
+#: ``"requiere"``    — el árbol que borra puede traer ``FILE_ATTRIBUTE_READONLY``
+#:                     de Windows: salida de una herramienta externa, contenido
+#:                     extraído de un archive, o una copia que propaga el modo
+#:                     de la fuente. Sin el flag el borrado falla con
+#:                     ``OSError`` — silencioso si está dentro de un
+#:                     ``suppress(OSError)``, o abortando a mitad de un loop si
+#:                     no.
+#: ``"no-requiere"`` — el motivo NOMBRADO abajo, no argumentado nomás: escribir
+#:                     el racional de por qué se excluye un sitio no cuenta
+#:                     como verificarlo (AGENTS.md, #318/#373).
+#:
+#: Nace del PR #419: arregló ``dyndolod_runner.py`` y ``fomod/installer.py``,
+#: dejó ``vramr_service.py`` con el mismo patrón sin el flag —lo agarró un
+#: revisor, no un ancla— y este censo, al construirse, encontró DOS hermanos
+#: más que nadie había señalado: ``snapshot_manager.py`` (dos sitios) y
+#: ``rollback_reconciler.py`` snapshotean/clonan con ``shutil.copy2``
+#: (directo o vía ``copytree(copy_function=...)``), que propaga el modo de la
+#: fuente.
+POLITICA_DE_LIMPIAR_READONLY: dict[str, str] = {
+    "sky_claw/app/db/snapshot_manager.py": "requiere",
+    "sky_claw/local/fomod/installer.py": "requiere",
+    "sky_claw/local/mo2/bridge_installer.py": "no-requiere",
+    "sky_claw/local/mo2/vfs.py": "requiere",
+    "sky_claw/local/tools/dyndolod_runner.py": "requiere",
+    "sky_claw/local/tools/rollback_reconciler.py": "requiere",
+    "sky_claw/local/tools/vramr_service.py": "requiere",
+}
+
+#: Motivo, para los que NO lo requieren.
+MOTIVO_DE_NO_REQUIERE: dict[str, str] = {
+    "sky_claw/local/mo2/bridge_installer.py": (
+        "staging/backup salen de copiar self._bundle -del propio repo, no de "
+        "una herramienta externa- y _harden_tree los endurece con "
+        "restrict_to_owner: en Windows eso es `icacls /grant:r usuario:(F)`, "
+        "que otorga Control Total al owner y nunca toca "
+        "FILE_ATTRIBUTE_READONLY. No hay modo por el que el borrado, hecho por "
+        "el mismo proceso, se tope con un archivo read-only."
+    ),
+}
+
+
+def _invocaciones_de_rmtree_link_aware(ruta: pathlib.Path) -> list[ast.Call]:
+    """Toda invocación de ``rmtree_link_aware``: directa o pasada por referencia
+    a ``asyncio.to_thread`` (la otra forma real que usa el paquete).
+
+    Para la forma indirecta, ``limpiar_readonly`` no puede vivir en un ``Call``
+    propio a ``rmtree_link_aware`` —no hay ninguno, se lo pasa por nombre—, así
+    que el nodo relevante es el ``Call`` a ``to_thread``: ahí es donde el
+    keyword aparece de verdad.
+    """
+    arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+    invocaciones: list[ast.Call] = []
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        objetivo = nodo.func
+        if isinstance(objetivo, ast.Attribute):
+            nombre = objetivo.attr
+        elif isinstance(objetivo, ast.Name):
+            nombre = objetivo.id
+        else:
+            continue
+        es_directa = nombre == "rmtree_link_aware"
+        es_por_referencia = (
+            nombre == "to_thread"
+            and bool(nodo.args)
+            and isinstance(nodo.args[0], ast.Name)
+            and nodo.args[0].id == "rmtree_link_aware"
+        )
+        if es_directa or es_por_referencia:
+            invocaciones.append(nodo)
+    return invocaciones
+
+
+def _pide_limpiar_readonly(invocacion: ast.Call) -> bool:
+    return any(
+        kw.arg == "limpiar_readonly" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+        for kw in invocacion.keywords
+    )
+
+
+def _modulos_que_invocan_rmtree_link_aware() -> set[str]:
+    return {
+        ruta.relative_to(_PAQUETE.parent).as_posix()
+        for ruta in _PAQUETE.rglob("*.py")
+        if _invocaciones_de_rmtree_link_aware(ruta)
+    }
+
+
+def test_la_enumeracion_cubre_a_todo_el_que_invoca_rmtree_link_aware() -> None:
+    """Un caller nuevo de la primitiva obliga a declarar si necesita el flag.
+
+    Guard de completitud, mismo molde que ``MECANISMO_DE_BORRADO``: sin esto,
+    el próximo módulo que llame a ``rmtree_link_aware`` sobre un árbol ajeno
+    hereda el silencio de ``vramr_service.py`` en vez de la pregunta.
+    """
+    assert _modulos_que_invocan_rmtree_link_aware() == set(POLITICA_DE_LIMPIAR_READONLY)
+
+
+def test_todo_sitio_eximido_de_limpiar_readonly_nombra_su_motivo() -> None:
+    """ "No-requiere" sin motivo escrito es indistinguible de un olvido."""
+    eximidos = {m for m, politica in POLITICA_DE_LIMPIAR_READONLY.items() if politica == "no-requiere"}
+
+    assert eximidos == set(MOTIVO_DE_NO_REQUIERE)
+    assert all(MOTIVO_DE_NO_REQUIERE[m].strip() for m in eximidos)
+
+
+def test_todo_sitio_que_requiere_el_flag_lo_pide_en_cada_invocacion() -> None:
+    """No alcanza con que ALGUNA invocación lo pida: tiene que ser todas.
+
+    Un módulo con dos llamadas —una con el flag y otra sin— pasaría un chequeo
+    que sólo pregunte "¿alguna la pide?" y dejaría la segunda como el próximo
+    huérfano silencioso.
+    """
+    requeridos = {m for m, politica in POLITICA_DE_LIMPIAR_READONLY.items() if politica == "requiere"}
+
+    for modulo in requeridos:
+        invocaciones = _invocaciones_de_rmtree_link_aware(_PAQUETE.parent / modulo)
+        assert invocaciones, modulo
+        assert all(_pide_limpiar_readonly(invocacion) for invocacion in invocaciones), (
+            f"{modulo} está clasificado 'requiere' pero tiene una invocación sin limpiar_readonly=True"
+        )
+
+
 class TestMedirYBorrarNoPuedenDivergir:
     """El invariante conductual: ``tamano_de_arbol_propio`` == lo que borra.
 

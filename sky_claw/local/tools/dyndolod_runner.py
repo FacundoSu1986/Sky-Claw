@@ -675,7 +675,7 @@ class DynDOLODRunner:
             # Crear directorio del mod (o limpiar si existe)
             if mod_path.exists():
                 logger.debug("Limpiando directorio existente: %s", mod_path)
-                # `limpiar_readonly`: el arbol es la salida de una corrida previa
+                # `limpiar_readonly`: el árbol es la salida de una corrida previa
                 # de DynDOLOD, y una herramienta externa de Windows puede dejar
                 # sus archivos con FILE_ATTRIBUTE_READONLY. Sin el flag, el
                 # borrado falla con PermissionError y el empaquetado aborta sobre
