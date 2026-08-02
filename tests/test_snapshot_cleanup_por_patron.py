@@ -125,52 +125,60 @@ async def test_un_junction_no_deja_borrar_lo_de_afuera(tmp_path: pathlib.Path) -
 
 
 @symlink_guard
-async def test_un_enlace_puesto_tras_enumerar_no_se_borra_a_ciegas(
+async def test_un_padre_reemplazado_tras_enumerar_no_saca_el_borrado_del_store(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """La ventana que la intersección NO cubre: el swap DESPUÉS de enumerar.
 
     La intersección se hace con rutas LÉXICAS, así que protege contra un enlace
     que ya existía al recorrer, pero no contra uno puesto entre la enumeración y
-    el ``unlink``: la ruta léxica es la misma y ``ruta in propios`` pasa igual, y
-    el ``unlink`` se llevaría el archivo AJENO al que ahora apunta (hallazgo de
-    CodeRabbit en #416, que no aceptó como cerrada la intersección sola).
+    el ``unlink``: la ruta léxica sigue siendo la misma y ``ruta in propios``
+    pasa igual (hallazgo de CodeRabbit en #416, que no aceptó como cerrada la
+    intersección sola).
 
-    Lo que cierra la ventana es revalidar justo antes de borrar. Se ejerce con el
-    reemplazo por un **enlace**, que es la forma que importa: se detecta por el
-    tipo y no depende de comparar inodes.
+    **Se reemplaza el DIRECTORIO PADRE, no el archivo hoja.** Esa distinción es
+    la que hace que el escenario pruebe algo: si se reemplazara ``a/x`` por un
+    symlink, el ``unlink`` borraría el symlink y **nunca** la víctima, así que la
+    aserción sobre el archivo externo pasaría con revalidación y sin ella — un
+    test verde que no ejerce la pérdida de datos que dice prevenir. Con el padre
+    convertido en enlace, la misma ruta léxica ``a/x`` resuelve al archivo de
+    afuera y el ``unlink`` sí se lo lleva.
 
-    Ese detalle no es cosmético. Un escenario que borrara y recreara el archivo
-    NO serviría de prueba: medido acá, el filesystem **reutiliza el inode**, así
-    que ``same_file_identity`` diría que es el mismo y la revalidación dejaría
-    pasar el borrado. La identidad por inode es una defensa parcial en POSIX; el
-    chequeo de tipo es el que ataja el caso que puede sacar el borrado del store.
+    Lo detecta el chequeo de identidad y no el de tipo: ``lstat("a/x")`` sigue el
+    componente intermedio, así que la hoja se ve como un archivo regular — lo que
+    no coincide es el inode contra el capturado al enumerar.
     """
     ajeno = tmp_path / "ajeno"
     ajeno.mkdir()
-    victima = ajeno / "secreto"
+    victima = ajeno / "x"
     victima.write_bytes(b"de otro proceso")
 
     manager = _store(tmp_path)
-    objetivo = _archivo(manager._snapshot_dir, "a/x", b"original")
+    propio = _archivo(manager._snapshot_dir, "a/x", b"original")
+    padre = manager._snapshot_dir / "a"
 
     import sky_claw.app.db.snapshot_manager as modulo
 
     original = modulo.link_kind_and_identity_or_raise
     intercambiado = {"hecho": False}
 
-    def _poner_un_enlace_antes_de_revalidar(ruta: pathlib.Path):  # type: ignore[no-untyped-def]
-        if ruta == objetivo and not intercambiado["hecho"]:
+    def _reemplazar_el_padre_antes_de_revalidar(ruta: pathlib.Path):  # type: ignore[no-untyped-def]
+        if ruta == propio and not intercambiado["hecho"]:
             intercambiado["hecho"] = True
-            objetivo.unlink()
-            objetivo.symlink_to(victima)
+            propio.unlink()
+            padre.rmdir()
+            padre.symlink_to(ajeno, target_is_directory=True)
         return original(ruta)
 
-    monkeypatch.setattr(modulo, "link_kind_and_identity_or_raise", _poner_un_enlace_antes_de_revalidar)
+    monkeypatch.setattr(modulo, "link_kind_and_identity_or_raise", _reemplazar_el_padre_antes_de_revalidar)
 
     resultado = await manager.cleanup_by_pattern("**/x")
 
     assert intercambiado["hecho"], "el escenario tiene que haber ejercido el reemplazo"
+    # La aserción que carga el peso: sin la revalidación esto no existe. Medido
+    # neutralizándola — el `unlink` sobre la ruta léxica `a/x` atraviesa el padre
+    # enlazado y se lleva el archivo de afuera del store.
+    assert victima.exists(), "el archivo de AFUERA del store fue borrado: la revalidación no protegió"
+    assert victima.read_bytes() == b"de otro proceso"
     assert resultado.errors, "un cambio de identidad se reporta, no se borra en silencio"
     assert resultado.deleted_count == 0
-    assert victima.read_bytes() == b"de otro proceso", "el destino del enlace queda intacto"

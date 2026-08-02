@@ -11,7 +11,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 import pathlib
 import shutil
 import time
@@ -449,68 +448,68 @@ class FileSnapshotManager:
 
         async with self._lock:
             try:
-                # NO `rglob`: aca no se contaba mal, se BORRABA de mas. `rglob`
-                # entra a un junction —lo ve como directorio comun, porque
-                # IO_REPARSE_TAG_MOUNT_POINT no es un symlink para islink()— y
-                # el `unlink` de abajo se llevaba archivos AJENOS que ni
-                # pertenecen al store. El recorrido link-aware no entra, asi que
-                # el patron solo puede alcanzar lo que es del store.
-                def _coincidencias() -> list[tuple[pathlib.Path, int]]:
-                    """Los archivos del store que matchean *pattern*, sin salir de el.
+
+                def _limpiar() -> tuple[int, int, str | None]:
+                    """Enumera y borra en UN solo hilo; devuelve (borrados, bytes, error).
+
+                    Todo junto y no un `to_thread` por archivo: el bucle corre
+                    bajo `self._lock`, asi que un salto de hilo por entrada
+                    mantiene el lock tomado mientras el event loop conmuta N
+                    veces. Ademas deja la revalidacion y el `unlink` adyacentes
+                    en el mismo hilo, que es donde la ventana tiene que ser
+                    minima (review qodo-merge #416).
 
                     La semantica del patron la sigue poniendo `rglob`, INTACTA:
-                    reimplementarla con `Path.match` cambiaba el resultado de dos
-                    formas distintas —matcheaba contra la ruta absoluta, y perdia
-                    la recursion de `a/**/x`, que `rglob` resuelve a `a/x`,
-                    `a/b/x` y mas hondo—. Un caller con un patron valido se
-                    quedaba sin borrar nada.
-
+                    reimplementarla con `Path.match` la cambiaba por dos lados
+                    —matcheaba contra la ruta absoluta, y perdia la recursion de
+                    `a/**/x`, que rglob resuelve a `a/x`, `a/b/x` y mas hondo—.
                     Lo que aporta el recorrido link-aware es la AUTORIDAD sobre
                     que puede borrarse: `rglob` entra a un junction y devuelve
-                    rutas de adentro, y el `unlink` de abajo se llevaba archivos
-                    ajenos. La interseccion deja pasar solo lo que ademas es
-                    alcanzable sin atravesar un enlace.
+                    rutas de adentro, y el `unlink` se llevaba archivos ajenos.
+                    Son dos recorridos porque son dos preguntas distintas.
                     """
+                    # Dos fases, y separadas a proposito. La primera contesta
+                    # QUE rutas pide el patron y no toca ningun tamaño; la
+                    # segunda contesta CUANTO se llevo, y sus bytes salen del
+                    # `lstat` link-aware, nunca de la entrada que devolvio
+                    # `rglob`. Mezclarlas en un solo bucle hacia que el censo de
+                    # `tests/test_borrado_recursivo.py` marcara este modulo como
+                    # medidor crudo — con razon: leer `st_size` dentro de un
+                    # recorrido sin politica de enlaces es indistinguible, desde
+                    # afuera, de medir con el.
                     propios = dict(iter_archivos_propios(self._snapshot_dir))
-                    return [(ruta, propios[ruta]) for ruta in self._snapshot_dir.rglob(pattern) if ruta in propios]
+                    candidatos = [
+                        (ruta, propios[ruta]) for ruta in self._snapshot_dir.rglob(pattern) if ruta in propios
+                    ]
 
-                def _borrar_si_sigue_siendo_el_mismo(ruta: pathlib.Path, identidad: os.stat_result) -> int | None:
-                    """Revalida identidad JUSTO antes del ``unlink``; ``None`` si ya no esta.
+                    borrados = 0
+                    liberados = 0
+                    for ruta, identidad in candidatos:
+                        if dry_run:
+                            borrados += 1
+                            liberados += identidad.st_size
+                            continue
 
-                    La interseccion de arriba se hace con rutas LEXICAS, y eso
-                    protege contra un junction que ya existia al enumerar pero no
-                    contra uno puesto despues: si entre la enumeracion y este
-                    borrado alguien reemplaza un directorio propio por un
-                    junction, `rglob` produce la misma ruta lexica, `ruta in
-                    propios` pasa, y el `unlink` se lleva el archivo AJENO.
+                        # Revalidar JUSTO antes del unlink. La interseccion de
+                        # arriba usa rutas LEXICAS: protege contra un enlace que
+                        # ya existia al enumerar, pero no contra uno puesto
+                        # despues. Si entre la enumeracion y este borrado alguien
+                        # reemplaza un directorio padre por un enlace, la ruta
+                        # lexica es la misma, `ruta in propios` pasa, y el unlink
+                        # se lleva el archivo AJENO al que ahora resuelve.
+                        tipo, ahora = link_kind_and_identity_or_raise(ruta)
+                        if ahora is None:
+                            continue
+                        if tipo is not None or not same_file_identity(identidad, ahora):
+                            return borrados, liberados, f"La entrada cambió antes de borrarla por patrón: {ruta}"
+                        ruta.unlink()
+                        borrados += 1
+                        liberados += ahora.st_size
+                    return borrados, liberados, None
 
-                    Comparar el `lstat` capturado en el recorrido contra el de
-                    ahora cierra esa ventana, que es la misma tecnica que usa
-                    `_borrar_recursivo` antes de cada `rmdir`. Un cambio de
-                    identidad no se borra: se propaga y el caller decide.
-                    """
-                    tipo, ahora = link_kind_and_identity_or_raise(ruta)
-                    if ahora is None:
-                        return None
-                    if tipo is not None or not same_file_identity(identidad, ahora):
-                        raise OSError(f"La entrada cambió antes de borrarla por patrón: {ruta}")
-                    ruta.unlink()
-                    return ahora.st_size
-
-                for snapshot_file, identidad_al_enumerar in await asyncio.to_thread(_coincidencias):
-                    if dry_run:
-                        deleted_count += 1
-                        freed_bytes += identidad_al_enumerar.st_size
-                        continue
-
-                    liberados = await asyncio.to_thread(
-                        _borrar_si_sigue_siendo_el_mismo, snapshot_file, identidad_al_enumerar
-                    )
-                    if liberados is None:
-                        continue
-
-                    deleted_count += 1
-                    freed_bytes += liberados
+                deleted_count, freed_bytes, manipulada = await asyncio.to_thread(_limpiar)
+                if manipulada is not None:
+                    errors.append(manipulada)
 
             except OSError as e:
                 errors.append(f"Error cleaning pattern {pattern}: {e}")
