@@ -26,7 +26,7 @@ from sky_claw.app.orchestrator.tool_strategies.generate_animations import (
     GenerateAnimationsStrategy,
 )
 from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraResult
-from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
+from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID, PandoraPipelineService
 
 if TYPE_CHECKING:
     import pathlib
@@ -94,6 +94,7 @@ async def test_run_pandora_serializes_on_behavior_graphs_lock(
     out = json.loads(await run_pandora(runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager))
 
     assert out["success"] is True
+    assert out["message"] == ""
     assert seen["info"] is not None  # el lock se mantuvo durante la corrida
     assert await lock_manager.get_lock_info(BEHAVIOR_GRAPHS_RESOURCE_ID) is None  # liberado al salir
 
@@ -113,6 +114,7 @@ async def test_run_pandora_blocked_when_gui_ritual_holds_lock(
     out = json.loads(await run_pandora(runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager))
 
     assert out["success"] is False
+    assert out["message"] == out["error"]
     runner.run_pandora.assert_not_awaited()  # no corrió — serializado contra la GUI
 
 
@@ -149,7 +151,31 @@ async def test_run_pandora_falla_cerrado_sin_managers_de_proteccion(
 @pytest.mark.asyncio
 async def test_run_pandora_none_runner_is_structured_error() -> None:
     out = json.loads(await run_pandora(None))
-    assert "error" in out
+    detail = "PandoraRunner is not configured. Set pandora_exe in config or install it via setup_tools."
+    assert out == {"success": False, "message": detail, "error": detail}
+
+
+@pytest.mark.asyncio
+async def test_run_pandora_excepcion_inesperada_cumple_contrato(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _falla(self: PandoraPipelineService) -> dict[str, object]:
+        del self
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(PandoraPipelineService, "generate_animations", _falla)
+
+    out = json.loads(
+        await run_pandora(
+            MagicMock(),
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+        )
+    )
+
+    assert out == {"success": False, "message": "boom", "error": "boom"}
 
 
 # ── T-26/T-28 (review Codex #318): el path del agente TAMBIÉN emite la caja negra ──

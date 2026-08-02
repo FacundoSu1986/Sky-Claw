@@ -495,9 +495,8 @@ async def run_pandora(
     (callers legacy / tests) el comportamiento no cambia.
     """
     if pandora_runner is None:
-        return json.dumps(
-            {"error": ("PandoraRunner is not configured. Set pandora_exe in config or install it via setup_tools.")}
-        )
+        detail = "PandoraRunner is not configured. Set pandora_exe in config or install it via setup_tools."
+        return json.dumps({"success": False, "message": detail, "error": detail})
 
     missing_managers = [
         name
@@ -525,16 +524,19 @@ async def run_pandora(
     try:
         res = await service.generate_animations()
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        detail = sanitize_for_prompt(str(exc))
+        return json.dumps({"success": False, "message": detail, "error": detail})
+    raw_message = str(res.get("message", ""))
     out: dict[str, Any] = {
         "success": res.get("success", False),
+        "message": sanitize_for_prompt(raw_message) if raw_message else "",
         "return_code": res.get("return_code", -1),
         "stdout": sanitize_for_prompt(str(res.get("stdout", ""))) if res.get("stdout") else "",
         "stderr": sanitize_for_prompt(str(res.get("stderr", ""))) if res.get("stderr") else "",
         "duration_seconds": res.get("duration_seconds", 0.0),
     }
     if not out["success"] and res.get("logs"):
-        out["error"] = res["logs"]
+        out["error"] = sanitize_for_prompt(str(res["logs"]))
     return json.dumps(out)
 
 
