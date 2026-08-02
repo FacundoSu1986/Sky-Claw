@@ -52,6 +52,36 @@ def test_pytest_trata_warnings_de_lifecycle_como_errores() -> None:
     }
 
 
+def test_pytest_asyncio_no_puede_bajar_del_piso_que_fuga_el_loop() -> None:
+    """El piso de ``pytest-asyncio`` es la corrección real de la fuga de #414.
+
+    Hasta 1.3.0 inclusive, ``_temporary_event_loop_policy`` abría con
+    ``old_loop = _get_event_loop_no_warn()``, que llama a
+    ``asyncio.get_event_loop()`` con el ``DeprecationWarning`` silenciado — y esa
+    función **crea** un loop cuando la sesión no tiene uno actual. El huérfano
+    nunca se corre ni se cierra: queda de "actual" hasta que alguien ponga el
+    loop en ``None``, y ahí el GC lo finaliza con un ``unclosed event loop`` más
+    los dos sockets de su self-pipe. Con ``error::ResourceWarning`` (#409), eso
+    es la suite en rojo, en un test al azar.
+
+    Se ancla el piso y no la ausencia del síntoma porque **bajar la versión es
+    la única forma de traer el bug de vuelta**, y un rango sin piso lo permite en
+    silencio: el ``>=1.0`` anterior resolvía a 1.3.0 vía ``uv.lock`` mientras CI
+    —que instala con ``pip install -e ".[dev]"``, sin lock— tomaba 1.4.0. Esa
+    divergencia es la razón de que #413 y #414 vieran un flake local que CI no
+    reproducía.
+    """
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+
+    dev = pyproject["project"]["optional-dependencies"]["dev"]
+    especificador = next(d for d in dev if d.replace(" ", "").startswith("pytest-asyncio"))
+    piso = re.search(r">=\s*(\d+)\.(\d+)", especificador)
+
+    assert piso is not None, especificador
+    assert (int(piso.group(1)), int(piso.group(2))) >= (1, 4), especificador
+
+
 def test_pytest_tmp_dir_is_gitignored() -> None:
     """.pytest-tmp/ must be listed in .gitignore to avoid committing temp artifacts.
 
