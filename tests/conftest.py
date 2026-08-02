@@ -12,6 +12,7 @@ Current gate: 60% (raised from 55% on 2026-05-28, P0.4). Actual: ~65%.
 
 from __future__ import annotations
 
+import gc
 import os
 import pathlib
 import shutil
@@ -31,6 +32,43 @@ from sky_claw.app.db.async_registry import AsyncModRegistry
 from sky_claw.app.security.network_gateway import NetworkGateway
 from sky_claw.logging_config import correlation_id_var
 from tests._lifecycle_guard import close_registry_then_lifecycle, find_leaked_threads
+
+
+@pytest.fixture(autouse=True)
+def _gc_al_cerrar_cada_test() -> Iterator[None]:
+    """Corre el GC cíclico en el teardown, para que el warning acuse al culpable.
+
+    ``pyproject.toml`` convierte ``PytestUnraisableExceptionWarning`` en error
+    (#409). Ese warning se emite cuando el intérprete finaliza un objeto cuyo
+    ``__del__`` protesta —un socket o un event loop sin cerrar—, y **eso ocurre
+    cuando corre el GC, no cuando el test fugó el recurso**. Si el recurso quedó
+    atrapado en un ciclo de referencias, el refcount nunca llega a cero y sólo lo
+    libera el GC generacional, que se dispara por presión de asignación en un
+    test *posterior* y arbitrario. pytest le carga la falla a ese test.
+
+    El resultado medido, antes de este fixture: #413 acusó a
+    ``test_ningun_modulo_borra_arboles_con_shutil_rmtree`` —que sólo hace
+    ``ast.parse`` en memoria y no abre un solo descriptor— y en otra corrida a
+    ``test_wrong_token_returns_false``; #414 reprodujo la misma firma sobre
+    ``origin/main`` limpio, en un tercer test distinto. Tres víctimas inocentes,
+    todas verdes al reejecutarse enfocadas: la marca de una acusación falsa, no
+    de un test inestable.
+
+    **La propiedad que se restaura:** *un warning emitido durante el GC
+    pertenece al test que dejó el objeto inalcanzable, y eso sólo es cierto si el
+    GC corre dentro del teardown de ese test.* Con el ciclo recolectado acá, la
+    falla es reproducible y nombra a quien la causó.
+
+    Es autouse y se declara primero a propósito: pytest desarma en orden inverso
+    al de creación, así que este teardown corre **último** — después de que el
+    resto de los fixtures soltó sus referencias, que es cuando el recurso fugado
+    recién queda inalcanzable.
+
+    No arregla ninguna fuga: la vuelve atribuible. El ancla de esta propiedad
+    vive en ``tests/test_atribucion_de_warnings.py``.
+    """
+    yield
+    gc.collect()
 
 
 @pytest.fixture()
