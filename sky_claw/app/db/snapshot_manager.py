@@ -516,12 +516,23 @@ class FileSnapshotManager:
                         # reemplaza un directorio padre por un enlace, la ruta
                         # lexica es la misma, `ruta in propios` pasa, y el unlink
                         # se lleva el archivo AJENO al que ahora resuelve.
-                        tipo, ahora = link_kind_and_identity_or_raise(ruta)
-                        if ahora is None:
-                            continue
-                        if tipo is not None or not same_file_identity(identidad, ahora):
-                            return borrados, liberados, f"La entrada cambió antes de borrarla por patrón: {ruta}"
-                        ruta.unlink()
+                        # El OSError se atrapa ACA y no se deja subir. Si sube,
+                        # la asignacion de `deleted_count`/`freed_bytes` de abajo
+                        # nunca ocurre y quedan en cero — pero los archivos
+                        # anteriores YA se borraron. El reporte diria "liberé 0
+                        # bytes" con N archivos menos en disco: la cuenta
+                        # divergiendo del efecto, que es el defecto que este
+                        # mismo PR cierra, reintroducido al mover el bucle
+                        # adentro del hilo (review qodo-merge #416).
+                        try:
+                            tipo, ahora = link_kind_and_identity_or_raise(ruta)
+                            if ahora is None:
+                                continue
+                            if tipo is not None or not same_file_identity(identidad, ahora):
+                                return borrados, liberados, f"La entrada cambió antes de borrarla por patrón: {ruta}"
+                            ruta.unlink()
+                        except OSError as exc:
+                            return borrados, liberados, f"Error borrando {ruta}: {exc}"
                         borrados += 1
                         liberados += ahora.st_size
                     return borrados, liberados, None

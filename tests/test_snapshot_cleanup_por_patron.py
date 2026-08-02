@@ -279,3 +279,42 @@ async def test_initialize_sobrevive_a_un_enlace_roto_como_raiz(tmp_path: pathlib
 
     assert destino.is_dir(), "el destino que faltaba se creó"
     assert roto.exists(), "el enlace dejó de estar colgante"
+
+
+async def test_un_error_a_mitad_de_camino_no_pierde_la_cuenta_de_lo_ya_borrado(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lo que ya se borró tiene que aparecer en el reporte, aunque el resto falle.
+
+    Si el ``OSError`` sube desde el hilo, la asignación de ``deleted_count`` y
+    ``freed_bytes`` nunca ocurre y quedan en cero — pero los archivos anteriores
+    **ya no están**. El reporte diría «liberé 0 bytes» con N archivos menos en
+    disco, y quien resta ese número de un presupuesto queda desincronizado.
+
+    Es el defecto que este PR cierra —la cuenta divergiendo del efecto— en otra
+    forma, y lo introduje al mover el bucle adentro del hilo. Medido antes del
+    arreglo: 2 archivos borrados, ``deleted_count=0``.
+    """
+    manager = _store(tmp_path)
+    for indice in range(3):
+        _archivo(manager._snapshot_dir, f"x{indice}", b"z" * 100)
+
+    unlink_real = pathlib.Path.unlink
+    llamadas = {"n": 0}
+
+    def _falla_al_tercero(self: pathlib.Path, *args: object, **kwargs: object) -> None:
+        llamadas["n"] += 1
+        if llamadas["n"] == 3:
+            raise PermissionError("WinError 32: archivo bloqueado")
+        unlink_real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _falla_al_tercero)
+
+    resultado = await manager.cleanup_by_pattern("x*")
+
+    borrados_de_verdad = 3 - len(list(manager._snapshot_dir.iterdir()))
+
+    assert borrados_de_verdad == 2, "el escenario tiene que haber borrado dos antes de fallar"
+    assert resultado.deleted_count == borrados_de_verdad, "la cuenta refleja lo que realmente se fue"
+    assert resultado.freed_bytes == 200
+    assert resultado.errors, "y el fallo se reporta igual"
