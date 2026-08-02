@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from sky_claw.app.security.hitl import HITLGuard
+from sky_claw.app.security.hitl import Decision, HITLGuard
 from sky_claw.app.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.tools_installer import (
@@ -380,19 +380,21 @@ class TestEnsureXedit:
     async def test_ensure_xedit_renames_executable(
         self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch
     ) -> None:
-        from sky_claw.app.security.hitl import Decision
-        from unittest.mock import MagicMock, AsyncMock
-
         install_dir = tmp_path / "xedit"
         install_dir.mkdir()
 
         monkeypatch.setattr(
             "sky_claw.local.tools_installer.ToolsInstaller._find_github_asset",
-            AsyncMock(return_value=(MagicMock(name="xEdit.7z", browser_download_url="http://fake", size=1024), "4.1.5")),
+            AsyncMock(
+                return_value=(MagicMock(name="xEdit.7z", browser_download_url="http://fake", size=1024), "4.1.5")
+            ),
         )
-        monkeypatch.setattr("sky_claw.local.tools_installer.HITLGuard.request_approval", AsyncMock(return_value=Decision.APPROVED))
         monkeypatch.setattr(
-            "sky_claw.local.tools_installer.ToolsInstaller._download_asset", AsyncMock(return_value=tmp_path / "xEdit.7z")
+            "sky_claw.local.tools_installer.HITLGuard.request_approval", AsyncMock(return_value=Decision.APPROVED)
+        )
+        monkeypatch.setattr(
+            "sky_claw.local.tools_installer.ToolsInstaller._download_asset",
+            AsyncMock(return_value=tmp_path / "xEdit.7z"),
         )
 
         # Mock _extract to simulate extraction creating xEdit.exe instead of SSEEdit.exe
@@ -417,9 +419,6 @@ class TestEnsurePandora:
     async def test_ensure_pandora_expects_correct_exe_name(
         self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch
     ) -> None:
-        from sky_claw.app.security.hitl import Decision
-        from unittest.mock import MagicMock, AsyncMock
-
         install_dir = tmp_path / "pandora"
         install_dir.mkdir()
 
@@ -436,11 +435,16 @@ class TestEnsurePandora:
         monkeypatch.setattr("sky_claw.local.tools_installer.find_exe_in_dir", mock_find_exe)
         monkeypatch.setattr(
             "sky_claw.local.tools_installer.ToolsInstaller._find_github_asset",
-            AsyncMock(return_value=(MagicMock(name="Pandora.zip", browser_download_url="http://fake", size=1024), "1.0.0")),
+            AsyncMock(
+                return_value=(MagicMock(name="Pandora.zip", browser_download_url="http://fake", size=1024), "1.0.0")
+            ),
         )
-        monkeypatch.setattr("sky_claw.local.tools_installer.HITLGuard.request_approval", AsyncMock(return_value=Decision.APPROVED))
         monkeypatch.setattr(
-            "sky_claw.local.tools_installer.ToolsInstaller._download_asset", AsyncMock(return_value=tmp_path / "Pandora.zip")
+            "sky_claw.local.tools_installer.HITLGuard.request_approval", AsyncMock(return_value=Decision.APPROVED)
+        )
+        monkeypatch.setattr(
+            "sky_claw.local.tools_installer.ToolsInstaller._download_asset",
+            AsyncMock(return_value=tmp_path / "Pandora.zip"),
         )
         monkeypatch.setattr("sky_claw.local.tools_installer.ToolsInstaller._extract", MagicMock())
         monkeypatch.setattr("pathlib.Path.unlink", MagicMock())
@@ -456,8 +460,6 @@ class TestEnsurePandora:
 
 class TestExtract7zFallback:
     def test_extract_7z_safe_fallback_to_system_7z(self, monkeypatch, tmp_path: pathlib.Path) -> None:
-        from unittest.mock import MagicMock
-        
         def mock_sevenzip(*args, **kwargs):
             raise Exception("BCJ2 filter is not supported")
 
