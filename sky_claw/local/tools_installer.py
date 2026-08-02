@@ -12,6 +12,7 @@ import configparser
 import hashlib
 import logging
 import pathlib
+import re
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -178,6 +179,15 @@ def _extract_zip_safe(archive: pathlib.Path, dest: pathlib.Path) -> None:
             zf.extract(info, dest)
 
 
+#: Forma ``Clave = valor`` de cada línea del listado ``-slt``. Todo lo que no
+#: matchee (ni sea línea en blanco) es salida que este parser no entiende.
+_7Z_CLAVE_VALOR = re.compile(r"^[A-Za-z][A-Za-z0-9 ()-]* = ")
+
+#: Claves de ``-slt`` que delatan un enlace. Su destino NO está en ``Path``, así
+#: que validar el path del miembro no dice nada sobre a dónde apunta.
+_7Z_CLAVES_DE_LINK = ("Symbolic Link = ", "Hard Link = ")
+
+
 def _parse_7z_listing(stdout: str) -> list[str]:
     """Extrae los nombres de miembro de la salida de ``7z l -slt``.
 
@@ -185,6 +195,17 @@ def _parse_7z_listing(stdout: str) -> list[str]:
     encabezado del archive por una línea ``----------``. Solo se leen las líneas
     ``Path = ...`` POSTERIORES a ese separador: antes del separador ``Path``
     es la ruta del propio archive, no un miembro.
+
+    Rechaza el listado entero si aparece una línea que no tiene esa forma. El
+    ataque que eso cierra: un nombre de miembro con un salto de línea embebido
+    (legal en NTFS) parte el bloque en dos — el parser valida solo el prefijo
+    ``ok.txt`` y ``7z x`` escribe el nombre completo ``ok.txt\\n../../evil``. Una
+    línea suelta que no es ``clave = valor`` es exactamente esa continuación, y
+    tragarla en silencio devuelve una lista "validada" que no cubre lo que se va
+    a extraer.
+
+    Raises:
+        ToolInstallError: Si el listado tiene líneas que este parser no entiende.
     """
     members: list[str] = []
     en_cuerpo = False
@@ -193,6 +214,21 @@ def _parse_7z_listing(stdout: str) -> list[str]:
             if linea.strip() == "----------":
                 en_cuerpo = True
             continue
+        if not linea.strip():
+            continue
+        if not _7Z_CLAVE_VALOR.match(linea):
+            raise ToolInstallError(
+                f"Línea inesperada en el listado de 7z: {linea!r}. No se extrae: un listado que no se "
+                "entiende por completo no permite garantizar que todos los miembros fueron validados."
+            )
+        if linea.startswith(_7Z_CLAVES_DE_LINK):
+            # Validar el `Path` de un symlink no alcanza: el destino viaja en OTRA
+            # clave del bloque. `7z x` materializa el link (siempre en POSIX, y en
+            # Windows con privilegios) apuntando fuera de dest, y después escribe
+            # contenido A TRAVÉS de él — todos los nombres "seguros", el sandbox
+            # igual perforado. Ningún release de las tools que instalamos trae
+            # links, así que rechazarlos de plano no cuesta nada.
+            raise PathViolationError(f"El archive trae un enlace y no se extrae con el 7z del sistema: {linea!r}")
         if linea.startswith("Path = "):
             members.append(linea[len("Path = ") :].strip())
     return members
@@ -215,7 +251,9 @@ def _extract_7z_via_system(archive: pathlib.Path, dest: pathlib.Path) -> None:
 
     Raises:
         PathViolationError: Si algún miembro del archive escapa de *dest*.
-        ToolInstallError: Timeout, fallo de ``7z``, o ``7z`` ausente del PATH.
+        ToolInstallError: Timeout, fallo de ``7z``, ``7z`` ausente del PATH, o un
+            listado que no se puede parsear (fail-closed: sin nombres validados no
+            se extrae).
     """
     import subprocess
 
@@ -239,6 +277,16 @@ def _extract_7z_via_system(archive: pathlib.Path, dest: pathlib.Path) -> None:
 
     stdout = listado.stdout.decode("utf-8", errors="ignore") if listado.stdout else ""
     miembros = _parse_7z_listing(stdout)
+    if not miembros:
+        # Fail-closed. Un listado que no parsea (otra versión de 7z, otro locale,
+        # formato de salida distinto) deja la lista vacía, el loop de abajo itera
+        # cero veces y `7z x` correría SIN haber validado un solo nombre: el mismo
+        # bypass del sandbox que esta función existe para cerrar, pero silencioso.
+        # No poder validar no es lo mismo que estar validado.
+        raise ToolInstallError(
+            f"No pude parsear el listado de 7z para {archive.name}: sin miembros que validar, "
+            "no se extrae (posible versión o locale de 7z no soportado)."
+        )
     for name in miembros:
         if not _is_safe_path(name):
             raise PathViolationError(f"Zip-slip detectado en el listado de 7z: {name!r}")
@@ -549,14 +597,25 @@ class ToolsInstaller:
         # xEdit se publica con nombre genérico; renombrarlo a SSEEdit.exe evita el
         # popup de selección de juego que bloquea la GUI. Solo si NO hay ya un
         # SSEEdit.exe al lado: el archive puede traer ambos y pisarlo destruiría el
-        # binario bueno. `.replace()` (os.replace) y no `.rename()`, que en Windows
-        # falla con FileExistsError si el destino aparece entre el chequeo y el
-        # renombrado.
+        # binario bueno.
+        #
+        # `.rename()` y NO `.replace()`: os.replace PISA el destino, que es
+        # justo lo que hay que evitar. En Windows os.rename falla con
+        # FileExistsError si el destino apareció entre el chequeo y el renombrado
+        # → fail-closed, se conserva el SSEEdit.exe bueno. En POSIX os.rename
+        # pisa igual, así que el guard de abajo es lo único que protege ahí; la
+        # protección real contra instalaciones concurrentes es el lock de T-31,
+        # no este bloque.
         xedit_exe = find_exe_in_dir(install_dir, "xEdit.exe")
         if xedit_exe is not None:
             target = xedit_exe.with_name("SSEEdit.exe")
-            if not target.exists():
-                xedit_exe.replace(target)
+            if target.exists():
+                logger.info("SSEEdit.exe ya presente en %s; se conserva y no se renombra xEdit.exe", install_dir)
+            else:
+                try:
+                    xedit_exe.rename(target)
+                except FileExistsError:
+                    logger.info("SSEEdit.exe apareció durante la instalación; se conserva el existente.")
 
         exe = find_exe_in_dir(install_dir, "SSEEdit.exe")
         if exe is None:

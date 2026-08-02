@@ -498,6 +498,43 @@ class TestEnsureXedit:
         assert (install_dir / "SSEEdit.exe").read_text(encoding="utf-8") == "binario-sseedit"
         assert (install_dir / "xEdit.exe").exists(), "xEdit.exe no debe desaparecer si ya había un SSEEdit.exe"
 
+    @pytest.mark.asyncio
+    async def test_no_pisa_si_el_sseedit_aparece_en_la_carrera(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TOCTOU: el destino aparece ENTRE el chequeo y el renombrado.
+
+        Es el motivo de usar ``rename()`` y no ``replace()``: os.replace pisa el
+        destino, que es exactamente lo que hay que evitar. En Windows os.rename
+        levanta FileExistsError y el SSEEdit.exe bueno sobrevive.
+        """
+        install_dir = tmp_path / "xedit"
+        install_dir.mkdir()
+        _mockear_descarga_de_tool(monkeypatch, tmp_path, asset_name="xEdit_4.1.5.7z", version="4.1.5")
+
+        def _extract_falso(self_obj: ToolsInstaller, archive: pathlib.Path, directory: pathlib.Path) -> None:
+            (directory / "xEdit.exe").write_text("binario-xedit", encoding="utf-8")
+
+        monkeypatch.setattr("sky_claw.local.tools_installer.ToolsInstaller._extract", _extract_falso)
+
+        # El rename se comporta como en Windows: el destino ya existe al momento
+        # del syscall, aunque el `exists()` previo lo haya visto libre.
+        rename_real = pathlib.Path.rename
+
+        def _rename_que_choca(self_path: pathlib.Path, target: Any) -> pathlib.Path:
+            if pathlib.Path(target).name == "SSEEdit.exe":
+                pathlib.Path(target).write_text("binario-sseedit", encoding="utf-8")
+                raise FileExistsError(17, "File exists", str(target))
+            return rename_real(self_path, target)
+
+        monkeypatch.setattr(pathlib.Path, "rename", _rename_que_choca)
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        result = await installer.ensure_xedit(install_dir, session)
+
+        assert result.exe_path == install_dir / "SSEEdit.exe"
+        assert (install_dir / "SSEEdit.exe").read_text(encoding="utf-8") == "binario-sseedit"
+
 
 class TestEnsurePandora:
     def test_los_nombres_de_pandora_son_una_sola_fuente_de_verdad(self) -> None:
@@ -507,8 +544,32 @@ class TestEnsurePandora:
         que el instalador la reconozca (o al revés) rompe acá: son dos superficies
         del mismo recurso y el defecto histórico es arreglar una sola.
         """
-        assert PANDORA_EXE_NAMES == ("Pandora.exe", "Pandora Engine.exe", "Pandora Behaviour Engine+.exe")
+        assert PANDORA_EXE_NAMES == ("Pandora Behaviour Engine+.exe", "Pandora Engine.exe", "Pandora.exe")
         assert tools_installer.PANDORA_EXE_NAMES is scanner.PANDORA_EXE_NAMES
+        # El alias interno es lo que consume la detección DENTRO del scanner: si
+        # alguien lo redefine con su propia tupla, la detección diverge del
+        # instalador y las dos aserciones de arriba siguen en verde.
+        assert scanner._PANDORA_NAMES is scanner.PANDORA_EXE_NAMES
+
+    @pytest.mark.asyncio
+    async def test_prefiere_el_ejecutable_del_release_actual(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Conviviendo el legacy y el actual, devuelve el actual.
+
+        Tras un upgrade manual in-place quedan los dos. Devolver `Pandora.exe`
+        exporta el binario viejo por `PANDORA_EXE` y los rituales siguen
+        lanzando ése pese a estar el nuevo instalado.
+        """
+        install_dir = tmp_path / "pandora"
+        install_dir.mkdir()
+        (install_dir / "Pandora.exe").write_text("viejo", encoding="utf-8")
+        (install_dir / "Pandora Behaviour Engine+.exe").write_text("actual", encoding="utf-8")
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        result = await installer.ensure_pandora(install_dir, session)
+
+        assert result.exe_path == install_dir / "Pandora Behaviour Engine+.exe"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("exe_name", PANDORA_EXE_NAMES)
@@ -670,6 +731,113 @@ class TestExtraccion7zConFallback:
 
         with pytest.raises(ToolInstallError, match="PATH"):
             _extract_7z_safe(tmp_path / "dummy.7z", tmp_path / "out")
+
+    def test_falla_cerrado_si_el_listado_no_se_puede_parsear(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Listado sin el separador esperado → NO se extrae (fail-closed).
+
+        Otra versión de 7z, otro locale, u otro formato de salida dejan la lista de
+        miembros vacía. El loop de validación itera cero veces y `7z x` correría sin
+        haber validado un solo nombre — el mismo bypass del sandbox, pero silencioso.
+        No poder validar no es lo mismo que estar validado.
+        """
+        _mockear_py7zr_roto(monkeypatch)
+
+        def _run(cmd: list[str], **kwargs: Any) -> MagicMock:
+            resultado = MagicMock()
+            resultado.stdout = b"7-Zip 21.07\nSalida inesperada sin separador\n"
+            resultado.stderr = b""
+            return resultado
+
+        mock_run = MagicMock(side_effect=_run)
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        with pytest.raises(ToolInstallError, match="listado de 7z"):
+            _extract_7z_safe(tmp_path / "dummy.7z", tmp_path / "out")
+
+        assert [c.args[0][:2] for c in mock_run.call_args_list] == [["7z", "l"]], "no debe llegar a `7z x`"
+
+    def test_falla_cerrado_si_el_listado_viene_vacio(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Separador presente pero sin ningún miembro: tampoco se extrae."""
+        _mockear_py7zr_roto(monkeypatch)
+        mock_run = _mockear_7z_del_sistema(monkeypatch, miembros=[])
+
+        with pytest.raises(ToolInstallError, match="listado de 7z"):
+            _extract_7z_safe(tmp_path / "dummy.7z", tmp_path / "out")
+
+        assert [c.args[0][:2] for c in mock_run.call_args_list] == [["7z", "l"]]
+
+    def test_rechaza_los_enlaces_del_archive(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+        """Un symlink con Path seguro pero destino afuera → no se extrae.
+
+        El destino del enlace no viaja en ``Path``, así que validar los nombres no
+        dice nada sobre a dónde apunta: `7z x` lo materializa y después escribe a
+        través de él, fuera de dest, con todos los nombres "seguros".
+        """
+        _mockear_py7zr_roto(monkeypatch)
+
+        listado = (
+            "7-Zip 21.07\n--\nPath = dummy.7z\n\n----------\n"
+            "Path = inocente.txt\nSize = 10\n\n"
+            "Path = enlace\nSize = 0\nSymbolic Link = ../../../etc\n\n"
+        )
+
+        def _run(cmd: list[str], **kwargs: Any) -> MagicMock:
+            resultado = MagicMock()
+            resultado.stdout = listado.encode("utf-8") if cmd[1] == "l" else b""
+            resultado.stderr = b""
+            return resultado
+
+        mock_run = MagicMock(side_effect=_run)
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        with pytest.raises(PathViolationError, match="enlace"):
+            _extract_7z_safe(tmp_path / "malicioso.7z", tmp_path / "out")
+
+        assert [c.args[0][:2] for c in mock_run.call_args_list] == [["7z", "l"]], "no debe llegar a `7z x`"
+
+    def test_el_fallo_de_7z_se_traduce_a_toolinstallerror(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Código de salida != 0 (archive corrupto, disco lleno): el operador ve el stderr."""
+        import subprocess
+
+        _mockear_py7zr_roto(monkeypatch)
+        monkeypatch.setattr(
+            "subprocess.run",
+            MagicMock(side_effect=subprocess.CalledProcessError(2, ["7z"], stderr=b"archive corrupto")),
+        )
+
+        with pytest.raises(ToolInstallError, match="archive corrupto"):
+            _extract_7z_safe(tmp_path / "dummy.7z", tmp_path / "out")
+
+    def test_el_fallo_de_7z_sin_stderr_no_revienta_al_formatear(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """``stderr`` es None cuando 7z muere sin escribir nada: no debe romper el mensaje."""
+        import subprocess
+
+        _mockear_py7zr_roto(monkeypatch)
+        monkeypatch.setattr(
+            "subprocess.run",
+            MagicMock(side_effect=subprocess.CalledProcessError(2, ["7z"], stderr=None)),
+        )
+
+        with pytest.raises(ToolInstallError, match="listar"):
+            _extract_7z_safe(tmp_path / "dummy.7z", tmp_path / "out")
+
+    def test_rechaza_una_linea_que_no_entiende(self) -> None:
+        """Continuación de un nombre con salto de línea embebido → listado rechazado.
+
+        El parser vería ``Path = ok.txt`` y validaría eso, mientras `7z x` escribe
+        el nombre completo con el traversal. La línea suelta es la evidencia.
+        """
+        salida = "7-Zip\n--\nPath = dummy.7z\n\n----------\nPath = ok.txt\n../../evil\nSize = 1\n"
+        with pytest.raises(ToolInstallError, match="Línea inesperada"):
+            _parse_7z_listing(salida)
 
     def test_parsea_solo_los_miembros_del_listado(self) -> None:
         """El ``Path`` del encabezado es el archive mismo, no un miembro: se ignora."""

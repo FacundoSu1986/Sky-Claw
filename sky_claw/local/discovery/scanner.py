@@ -96,7 +96,13 @@ _DYNDOLOD_NAMES = ("DynDOLOD64.exe", "DynDOLOD.exe", "DynDOLODx64.exe")
 #: nombre que el scanner no busca reporta "falta Pandora" tras reiniciar y ofrece
 #: reinstalarlo (defecto reportado por Codex en el PR #418).
 #: Anclado por igualdad literal en ``tests/test_tools_installer.py``.
-PANDORA_EXE_NAMES = ("Pandora.exe", "Pandora Engine.exe", "Pandora Behaviour Engine+.exe")
+#:
+#: El ORDEN es preferencia, no cosmética: tanto el scanner como
+#: ``find_any_exe_in_dir`` devuelven el primero que encuentran. Va primero el
+#: nombre del release actual — con un `Pandora.exe` viejo conviviendo con el
+#: nuevo (upgrade manual in-place), listar el legacy primero exportaba el binario
+#: viejo por `PANDORA_EXE` y los rituales seguían lanzando ése.
+PANDORA_EXE_NAMES = ("Pandora Behaviour Engine+.exe", "Pandora Engine.exe", "Pandora.exe")
 _PANDORA_NAMES = PANDORA_EXE_NAMES
 _LOOT_NAMES = ("LOOT.exe", "loot.exe")
 _XEDIT_NAMES = ("SSEEdit.exe", "TES5Edit.exe", "xEdit.exe")
