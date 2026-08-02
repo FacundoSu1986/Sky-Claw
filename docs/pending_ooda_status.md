@@ -58,7 +58,8 @@ confirmarlo contra código y tests.
 | F9 | Abierto | — | Reducir el composition root de `SupervisorAgent` incrementalmente | auditoría de resiliencia #319 |
 | F8 USVFS | Parcial | ADR 0007 y smoke `vfs-health` | Migrar runners restantes y completar smokes reales de cancelación, perfil y rollback | historial OODA, addendum F8 USVFS |
 | Detección de enlaces | Cerrado | #404 y #405 | — | `test_links.py` |
-| Borrado recursivo | Cerrado | #405 | — | `test_borrado_recursivo.py` |
+| Borrado recursivo | Cerrado | #405 y #416 | — | `test_borrado_recursivo.py` |
+| Medición de árboles | Cerrado | #416 | — | `test_borrado_recursivo.py` |
 | Fugas de lifecycle en tests | Cerrado | #408, #409 y #415 | — | `test_atribucion_de_warnings.py`, `test_project_config.py` |
 | Smoke real de QuickAutoClean | Bloqueado (rig humano) | — | Ejecutar SSEEdit QuickAutoClean en una instalación real | humano |
 | Smokes reales restantes | Bloqueado (rig humano) | — | NGIO, scripts `.pas`, GUI/FOMOD y Telegram end-to-end | humano |

@@ -9,7 +9,7 @@ from __future__ import annotations
 import pathlib
 import re
 
-from tests.test_borrado_recursivo import MECANISMO_DE_BORRADO
+from tests.test_borrado_recursivo import MECANISMO_DE_BORRADO, MECANISMO_DE_MEDICION
 from tests.test_rollback_reconciler import (
     PRODUCTORES_DEL_NOMBRE,
     RECONCILIADORES_DE_ARRANQUE,
@@ -40,6 +40,7 @@ _ITEMS = frozenset(
         "F8 USVFS",
         "Detección de enlaces",
         "Borrado recursivo",
+        "Medición de árboles",
         "Fugas de lifecycle en tests",
         "Smoke real de QuickAutoClean",
         "Smokes reales restantes",
@@ -205,3 +206,16 @@ def test_los_smokes_sin_ancla_automatizable_declaran_verificacion_humana() -> No
     for item in ("Smoke real de QuickAutoClean", "Smokes reales restantes"):
         assert filas[item]["Estado"] == "Bloqueado (rig humano)"
         assert filas[item]["Verificado por"] == "humano"
+
+
+def test_medicion_de_arboles_se_apoya_en_el_censo_de_medidores() -> None:
+    """La fila nueva no puede decir «Cerrado» con un medidor sin clasificar.
+
+    Mismo criterio que la fila de borrado: el estado del documento se lee del
+    censo de código, no de la palabra del PR que lo escribió.
+    """
+    fila = _tabla()["Medición de árboles"]
+
+    assert set(MECANISMO_DE_MEDICION.values()) <= {"link-aware", "sin-contraparte-que-borre"}
+    assert fila["Estado"] == "Cerrado"
+    assert "test_borrado_recursivo.py" in fila["Verificado por"]

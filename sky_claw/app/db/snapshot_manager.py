@@ -19,7 +19,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sky_claw.app.db.journal import JournalSnapshotError
-from sky_claw.app.security.links import rmtree_link_aware
+from sky_claw.app.security.links import (
+    iter_archivos_propios,
+    rmtree_link_aware,
+    tamano_de_arbol_propio,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -370,8 +374,11 @@ class FileSnapshotManager:
         # Delegamos las operaciones de FS a thread pools fuera y dentro del lock
         # donde sea posible.
         def _scan_dir_stats(d: pathlib.Path) -> tuple[int, int]:
-            files = [f for f in d.rglob("*") if f.is_file()]
-            return sum(f.stat().st_size for f in files), len(files)
+            # Misma politica de enlaces que el borrado de abajo: `rglob` entra a
+            # un junction y `rmtree_link_aware` no, asi que medir con uno y
+            # borrar con el otro haria que `freed_bytes` reporte bytes que
+            # siguen ocupados.
+            return tamano_de_arbol_propio(d)
 
         async with self._lock:
             try:
@@ -439,12 +446,20 @@ class FileSnapshotManager:
 
         async with self._lock:
             try:
-                for snapshot_file in self._snapshot_dir.rglob(pattern):
-                    if not snapshot_file.is_file():
-                        continue
+                # NO `rglob`: aca no se contaba mal, se BORRABA de mas. `rglob`
+                # entra a un junction —lo ve como directorio comun, porque
+                # IO_REPARSE_TAG_MOUNT_POINT no es un symlink para islink()— y
+                # el `unlink` de abajo se llevaba archivos AJENOS que ni
+                # pertenecen al store. El recorrido link-aware no entra, asi que
+                # el patron solo puede alcanzar lo que es del store.
+                def _coincidencias() -> list[tuple[pathlib.Path, int]]:
+                    return [
+                        (ruta, identidad.st_size)
+                        for ruta, identidad in iter_archivos_propios(self._snapshot_dir)
+                        if ruta.match(pattern)
+                    ]
 
-                    file_size = (await asyncio.to_thread(snapshot_file.stat)).st_size
-
+                for snapshot_file, file_size in await asyncio.to_thread(_coincidencias):
                     if not dry_run:
                         await asyncio.to_thread(snapshot_file.unlink)
 
@@ -500,13 +515,18 @@ class FileSnapshotManager:
 
             # SSP-002: Delegar cálculo de tamaño y eliminación a thread pool
             def _calc_dir_size_and_remove(d: pathlib.Path) -> int:
-                # `rglob` sigue los enlaces al sumar tamaños, así que un junction
-                # dentro del store haría contar bytes ajenos y reportarlos como
-                # "liberados"; el borrado link-aware no los toca, así que la cuenta
-                # y el efecto real dejan de divergir.
-                sz = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
-                rmtree_link_aware(d)
-                return sz
+                # El numero sale del MISMO recorrido que borro: son los bytes que
+                # `rmtree_link_aware` efectivamente desenlazo.
+                #
+                # El comentario anterior afirmaba lo contrario de lo que hacia el
+                # codigo ("la cuenta y el efecto real dejan de divergir"). Antes
+                # coincidian: `rglob` y `shutil.rmtree` eran igual de ciegos al
+                # junction y los dos entraban. Volver link-aware SOLO el borrado
+                # fue lo que ABRIO la divergencia, y este `current_size -=` es
+                # donde se paga: descuenta bytes que siguen ocupados, el loop
+                # corta en `<= max*0.9` creyendo que libero espacio, y el store
+                # crece pasado su limite.
+                return rmtree_link_aware(d)
 
             dir_size = await asyncio.to_thread(_calc_dir_size_and_remove, date_dir)
             current_size -= dir_size
@@ -524,7 +544,9 @@ class FileSnapshotManager:
 
         # SSP-002: Delegar recorrido de filesystem a thread pool
         def _walk_size(directory: pathlib.Path) -> int:
-            return sum(f.stat().st_size for f in directory.rglob("*") if f.is_file())
+            # Misma politica que el purgado que consume este numero: si arrancara
+            # inflado por un junction, el enforcement se disparia sin necesidad.
+            return tamano_de_arbol_propio(directory)[0]
 
         return await asyncio.to_thread(_walk_size, self._snapshot_dir)
 
@@ -554,11 +576,11 @@ class FileSnapshotManager:
             old: datetime | None = None
             new: datetime | None = None
             ext_map: dict[str, int] = {}
-            for fp in directory.rglob("*"):
-                if not fp.is_file():
-                    continue
+            # Mismo recorrido link-aware que el resto del modulo: un junction
+            # dentro del store inflaria estas estadisticas con bytes ajenos.
+            for fp, identidad in iter_archivos_propios(directory):
                 count += 1
-                sz = fp.stat().st_size
+                sz = identidad.st_size
                 ts += sz
                 try:
                     fd = datetime.strptime(fp.parent.name, "%Y-%m-%d")

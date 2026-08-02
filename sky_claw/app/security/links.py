@@ -40,7 +40,7 @@ import os
 import pathlib
 import stat
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -283,8 +283,12 @@ def same_direntry_identity(
     )
 
 
-def _borrar_recursivo(ruta: pathlib.Path, *, limpiar_readonly: bool) -> None:
-    """Recorrido postorden iterativo de :func:`rmtree_link_aware`."""
+def _borrar_recursivo(ruta: pathlib.Path, *, limpiar_readonly: bool) -> int:
+    """Recorrido postorden iterativo de :func:`rmtree_link_aware`.
+
+    Devuelve los bytes de los archivos regulares que efectivamente desenlazó.
+    """
+    bytes_borrados = 0
     pendientes: list[tuple[pathlib.Path, os.stat_result | None]] = [(ruta, None)]
     while pendientes:
         actual, identidad_para_rmdir = pendientes.pop()
@@ -302,10 +306,17 @@ def _borrar_recursivo(ruta: pathlib.Path, *, limpiar_readonly: bool) -> None:
         if tipo != tipo_revalidado:
             raise OSError(f"La entrada cambió mientras se inspeccionaba para borrar: {actual}")
         if tipo_revalidado is not None:
+            # Un enlace aporta CERO: se quita el reparse point y el destino queda
+            # intacto. Contar su `st_size` —o peor, el del árbol al que apunta—
+            # es justo la divergencia que esta función existe para cerrar.
             borrar_enlace(actual, tipo_revalidado)
             continue
         if not stat.S_ISDIR(identidad_antes.st_mode):
             _borrar_con_reintento_de_readonly(actual.unlink, actual, limpiar_readonly=limpiar_readonly)
+            # El tamaño sale del lstat que ya se hizo para el chequeo de
+            # identidad: medir no cuesta un syscall extra, y sale del MISMO
+            # stat con el que se decidió borrar.
+            bytes_borrados += identidad_antes.st_size
             continue
 
         with os.scandir(actual) as entradas:
@@ -317,9 +328,74 @@ def _borrar_recursivo(ruta: pathlib.Path, *, limpiar_readonly: bool) -> None:
         assert identidad_despues is not None
         pendientes.append((actual, identidad_despues))
         pendientes.extend((hijo, None) for hijo in reversed(hijos))
+    return bytes_borrados
 
 
-def rmtree_link_aware(ruta: pathlib.Path, *, limpiar_readonly: bool = False) -> None:
+def tamano_de_arbol_propio(ruta: pathlib.Path) -> tuple[int, int]:
+    """Bytes y cantidad de archivos de *ruta*, SIN atravesar enlaces.
+
+    Es la mitad "medir" de :func:`rmtree_link_aware`, para los callers que
+    necesitan el número sin borrar —un ``dry_run``, un reporte de estadísticas—.
+
+    **Por qué existe en vez de usar ``rglob``.** ``Path.rglob`` decide si
+    desciende con ``entry.is_dir(follow_symlinks=False)``: eso frena en un
+    symlink, pero **no en un junction de Windows**, porque el reparse point
+    ``IO_REPARSE_TAG_MOUNT_POINT`` no es un symlink para ``os.path.islink`` —la
+    misma ceguera que hizo falta cerrar en el borrado (#404, #405), y la razón
+    de que ``tests/_symlink_guard.py`` verifique justamente esa propiedad—. Un
+    ``rglob`` que suma tamaños **entra** al junction y cuenta bytes ajenos; el
+    borrado link-aware no los toca. Medir con uno y borrar con el otro hace que
+    la cuenta y el efecto diverjan, y quien resta esos bytes de un presupuesto
+    cree haber liberado espacio que sigue ocupado.
+
+    Un enlace aporta cero y no se recursa: se cuenta lo que un borrado sobre
+    este mismo árbol se llevaría, ni más ni menos. Esa igualdad es el invariante
+    y está anclada en ``tests/test_borrado_recursivo.py``.
+    """
+    total = 0
+    archivos = 0
+    for _, identidad in iter_archivos_propios(ruta):
+        total += identidad.st_size
+        archivos += 1
+    return total, archivos
+
+
+def iter_archivos_propios(ruta: pathlib.Path) -> Iterator[tuple[pathlib.Path, os.stat_result]]:
+    """Itera los archivos regulares bajo *ruta* SIN atravesar enlaces.
+
+    Es el recorrido que comparten los que necesitan mirar un árbol sin entrar a
+    lo ajeno. Existe como generador —y no como una función que sólo suma— porque
+    los consumidores quieren cosas distintas del mismo camino: bytes, cantidad,
+    fechas, extensiones. Que cada uno rehiciera el recorrido es exactamente cómo
+    dos caminos con la misma intención terminan con políticas distintas.
+
+    Rinde el ``lstat`` ya hecho junto a la ruta: quien necesita el tamaño no
+    tiene que volver a llamar a ``stat()``, y sobre todo **no puede** obtenerlo
+    de un stat distinto del que decidió que la entrada era un archivo propio.
+
+    Reemplaza a ``Path.rglob("*")`` para este uso. ``rglob`` decide si desciende
+    con ``entry.is_dir(follow_symlinks=False)``: frena en un symlink pero **no
+    en un junction de Windows**, porque ``IO_REPARSE_TAG_MOUNT_POINT`` no es un
+    symlink para ``os.path.islink`` — la misma ceguera que hubo que cerrar en el
+    borrado (#404, #405).
+    """
+    if not path_present(ruta):
+        return
+
+    pendientes = [ruta]
+    while pendientes:
+        actual = pendientes.pop()
+        tipo, identidad = link_kind_and_identity_or_raise(actual)
+        if identidad is None or tipo is not None:
+            continue
+        if not stat.S_ISDIR(identidad.st_mode):
+            yield actual, identidad
+            continue
+        with os.scandir(actual) as entradas:
+            pendientes.extend(pathlib.Path(entrada.path) for entrada in entradas)
+
+
+def rmtree_link_aware(ruta: pathlib.Path, *, limpiar_readonly: bool = False) -> int:
     """Borra *ruta* recursivamente SIN atravesar enlaces, ni siquiera anidados.
 
     Reemplaza a ``shutil.rmtree`` en todo el paquete. ``rmtree`` sólo protege su
@@ -342,7 +418,19 @@ def rmtree_link_aware(ruta: pathlib.Path, *, limpiar_readonly: bool = False) -> 
     objetivo, y la ausencia se mide con :func:`path_present` —no con
     ``exists()``— para que un enlace ROTO cuente como presente y se borre el
     enlace en vez de tomarse por "no hay nada acá".
+
+    **Devuelve los bytes que realmente borró**, medidos DENTRO del mismo
+    recorrido que decidió qué borrar. Ése es el punto: quien necesita el número
+    ya no puede obtenerlo por un camino con otra política de enlaces. La
+    alternativa que había —medir con ``rglob`` y borrar con esta función—
+    divergía en Windows, porque ``rglob`` entra a un junction y esto no; el
+    caller restaba de su presupuesto bytes que seguían ocupados. Un enlace suma
+    cero: se quitó el reparse point y el destino sigue entero.
+
+    :func:`tamano_de_arbol_propio` es la mitad "medir sin borrar", para los
+    ``dry_run``. Que las dos den el mismo número sobre el mismo árbol está
+    anclado en ``tests/test_borrado_recursivo.py``.
     """
     if not path_present(ruta):
-        return
-    _borrar_recursivo(ruta, limpiar_readonly=limpiar_readonly)
+        return 0
+    return _borrar_recursivo(ruta, limpiar_readonly=limpiar_readonly)

@@ -31,6 +31,9 @@ from __future__ import annotations
 import ast
 import pathlib
 
+from sky_claw.app.security.links import rmtree_link_aware, tamano_de_arbol_propio
+from tests._symlink_guard import crear_junction, is_junction_real, junction_guard, symlink_guard
+
 _PAQUETE = pathlib.Path(__file__).resolve().parent.parent / "sky_claw"
 
 #: Símbolos que borran un árbol entero. ``os.removedirs`` no se usa hoy en el
@@ -199,3 +202,194 @@ def test_quien_dice_delegar_por_wrapper_usa_el_wrapper() -> None:
     declarados = {m for m, mecanismo in MECANISMO_DE_BORRADO.items() if mecanismo == "vía-wrapper"}
 
     assert declarados == _modulos_que_importan("_rmtree_force")
+
+
+# ---------------------------------------------------------------------------
+# La otra mitad del invariante: MEDIR un árbol usa la misma política que BORRARLO
+# ---------------------------------------------------------------------------
+
+#: Módulo → con qué política mide el tamaño de un árbol.
+#:
+#: ``"link-aware"``               — usa ``tamano_de_arbol_propio`` o el retorno
+#:                                  de ``rmtree_link_aware``: no entra a un
+#:                                  enlace, así que mide lo mismo que borraría.
+#: ``"sin-contraparte-que-borre"`` — mide con un recorrido crudo, pero el módulo
+#:                                  NO borra árboles, así que no hay ningún
+#:                                  número que pueda divergir de un efecto.
+#:
+#: Existe porque arreglar el borrado ABRIÓ esta divergencia en vez de cerrarla.
+#: Antes, ``rglob`` y ``shutil.rmtree`` eran igual de ciegos al junction: los dos
+#: entraban, así que la cuenta y el efecto coincidían —mal, pero coincidían—.
+#: Al volver link-aware sólo el borrado, el medidor quedó contando bytes que el
+#: borrado ya no se lleva, y quien resta ese número de un presupuesto cree haber
+#: liberado espacio que sigue ocupado.
+#:
+#: Enumera módulos que MIDEN, no que borran: son dos familias distintas y un
+#: módulo puede estar en una sola.
+MECANISMO_DE_MEDICION: dict[str, str] = {
+    "sky_claw/app/db/snapshot_manager.py": "link-aware",
+    "sky_claw/local/assets/asset_scanner.py": "sin-contraparte-que-borre",
+}
+
+
+#: Lo que ofrece la primitiva para recorrer un árbol sin entrar a lo ajeno.
+_MEDIDORES_LINK_AWARE = {"tamano_de_arbol_propio", "iter_archivos_propios"}
+
+
+def _mide_crudo(ruta: pathlib.Path) -> bool:
+    """True si *ruta* suma ``st_size`` a lo largo de un recorrido recursivo CRUDO.
+
+    Detecta el patrón por AST y no por substring: hace falta que en el mismo
+    módulo convivan un recorrido recursivo (``rglob``/``walk``) y una lectura de
+    ``st_size``. Un ``stat().st_size`` sobre UN archivo puntual no es medir un
+    árbol y no debe entrar al censo. Que sea AST también hace que un comentario
+    que *nombre* ``rglob`` para explicar por qué no se usa no cuente como uso.
+    """
+    arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+    atributos = {nodo.attr for nodo in ast.walk(arbol) if isinstance(nodo, ast.Attribute)}
+    return bool({"rglob", "walk"} & atributos) and "st_size" in atributos
+
+
+def _mide_con_primitiva(ruta: pathlib.Path) -> bool:
+    return any(_importa(ruta, simbolo, desde="sky_claw.app.security.links") for simbolo in _MEDIDORES_LINK_AWARE)
+
+
+def test_la_enumeracion_cubre_a_todo_el_que_mide_arboles() -> None:
+    """Un medidor nuevo obliga a declarar con qué política de enlaces mide.
+
+    Es el guard que le faltaba a esta familia: el censo de BORRADO estaba
+    completo y el de MEDICIÓN no existía, así que los cuatro medidores de
+    ``snapshot_manager`` quedaron fuera de toda enumeración. Los encontré
+    grepeando un patrón, conté tres, y el cuarto (``_collect_stats``) apareció
+    recién al leer el archivo entero — muestrear en vez de enumerar, el error
+    que estas anclas existen para atajar.
+    """
+    medidores = {
+        ruta.relative_to(_PAQUETE.parent).as_posix()
+        for ruta in _PAQUETE.rglob("*.py")
+        if _mide_crudo(ruta) or _mide_con_primitiva(ruta)
+    }
+
+    assert medidores == set(MECANISMO_DE_MEDICION)
+
+
+def test_quien_se_exime_por_no_borrar_efectivamente_no_borra() -> None:
+    """La exención se VERIFICA contra el censo de borrado, no se argumenta.
+
+    ``asset_scanner`` mide con un ``rglob`` crudo y está bien que lo haga: un
+    asset dentro de una carpeta junctioneada sigue siendo del mod, y saltearlo
+    dejaría ciega a la detección de conflictos. Su ``st_size`` es metadata por
+    archivo de un inventario — no se resta de ningún presupuesto ni decide qué
+    se borra.
+
+    Pero eso es un argumento, y ``AGENTS.md`` es explícito en que escribir el
+    racional de por qué se excluye una rama **no cuenta como verificarla**
+    (#318, #373). Así que la exención se ata a un hecho comprobable: el módulo
+    no puede figurar en :data:`MECANISMO_DE_BORRADO`, que es el censo COMPLETO
+    de quien borra árboles. Si mañana alguien le agrega un borrado, la exención
+    deja de valer y este test se pone rojo hasta que se decida de nuevo — en vez
+    de quedar amparada por un comentario que envejeció.
+    """
+    eximidos = {m for m, mecanismo in MECANISMO_DE_MEDICION.items() if mecanismo == "sin-contraparte-que-borre"}
+
+    assert eximidos and not (eximidos & set(MECANISMO_DE_BORRADO))
+
+
+def test_quien_dice_medir_link_aware_no_conserva_ningun_recorrido_crudo() -> None:
+    """``"link-aware"`` exige importar la primitiva **y no medir crudo en ningún lado**.
+
+    La primera versión de este test sólo pedía el import, y eso resultó
+    insuficiente de una forma que verifiqué: revertí ``_calc_dir_size_and_remove``
+    al ``rglob`` original y **el ancla siguió verde**, porque el módulo seguía
+    importando la primitiva para sus otros medidores. La clasificación afirmaba
+    "este módulo mide link-aware" cuando lo cierto era "este módulo mide
+    link-aware *en algunos lados*".
+
+    Es la misma debilidad que este archivo le reprocha a los demás —afirmar
+    menos de lo que se dice verificar— dentro del ancla escrita para evitarla.
+    Con la conjunción, revertir cualquiera de los cuatro medidores lo pone rojo.
+    """
+    declarados = {m for m, mecanismo in MECANISMO_DE_MEDICION.items() if mecanismo == "link-aware"}
+    reales = {
+        ruta.relative_to(_PAQUETE.parent).as_posix()
+        for ruta in _PAQUETE.rglob("*.py")
+        if _mide_con_primitiva(ruta) and not _mide_crudo(ruta)
+    }
+
+    assert declarados == reales
+
+
+class TestMedirYBorrarNoPuedenDivergir:
+    """El invariante conductual: ``tamano_de_arbol_propio`` == lo que borra.
+
+    Los censos de arriba verifican que cada módulo declare su mecanismo; esto
+    verifica que los dos mecanismos **coincidan**. Sin esta mitad, medir y
+    borrar podrían seguir caminos distintos y ambos estar "clasificados".
+    """
+
+    def test_en_un_arbol_sin_enlaces_medir_y_borrar_coinciden(self, tmp_path: pathlib.Path) -> None:
+        raiz = tmp_path / "arbol"
+        (raiz / "sub" / "hondo").mkdir(parents=True)
+        (raiz / "a.bin").write_bytes(b"x" * 100)
+        (raiz / "sub" / "b.bin").write_bytes(b"y" * 250)
+        (raiz / "sub" / "hondo" / "c.bin").write_bytes(b"z" * 7)
+
+        medido, archivos = tamano_de_arbol_propio(raiz)
+        borrado = rmtree_link_aware(raiz)
+
+        assert (medido, archivos) == (357, 3)
+        assert borrado == medido
+
+    @symlink_guard
+    def test_un_symlink_no_aporta_bytes_ni_a_la_cuenta_ni_al_borrado(self, tmp_path: pathlib.Path) -> None:
+        """El destino queda entero, y NINGUNO de los dos caminos lo cuenta."""
+        ajeno = tmp_path / "ajeno"
+        ajeno.mkdir()
+        (ajeno / "grande.bin").write_bytes(b"x" * 10_000)
+
+        raiz = tmp_path / "arbol"
+        raiz.mkdir()
+        (raiz / "propio.bin").write_bytes(b"y" * 30)
+        (raiz / "enlace").symlink_to(ajeno, target_is_directory=True)
+
+        medido, archivos = tamano_de_arbol_propio(raiz)
+        borrado = rmtree_link_aware(raiz)
+
+        assert (medido, archivos) == (30, 1)
+        assert borrado == medido
+        assert (ajeno / "grande.bin").read_bytes() == b"x" * 10_000
+
+    @junction_guard
+    def test_un_junction_tampoco_aporta_bytes(self, tmp_path: pathlib.Path) -> None:
+        """El caso que ``rglob`` SÍ contaba de más, y por el que existe la primitiva.
+
+        Es la mitad Windows del invariante: ``Path.rglob`` frena en un symlink
+        —decide con ``is_dir(follow_symlinks=False)``— pero **entra** a un
+        junction, porque ``IO_REPARSE_TAG_MOUNT_POINT`` no es un symlink para
+        ``os.path.islink``. Medir con ``rglob`` y borrar link-aware divergía
+        exactamente acá, y en ningún otro lado: el caso de symlink de arriba ya
+        coincidía antes del fix.
+        """
+        ajeno = tmp_path / "ajeno"
+        ajeno.mkdir()
+        (ajeno / "grande.bin").write_bytes(b"x" * 10_000)
+
+        raiz = tmp_path / "arbol"
+        raiz.mkdir()
+        (raiz / "propio.bin").write_bytes(b"y" * 30)
+        assert crear_junction(raiz / "enlace", ajeno) is None
+        assert is_junction_real(raiz / "enlace")
+
+        # La medición ingenua que este módulo reemplaza: entra al junction.
+        rglob_ingenuo = sum(f.stat().st_size for f in raiz.rglob("*") if f.is_file())
+        medido, archivos = tamano_de_arbol_propio(raiz)
+        borrado = rmtree_link_aware(raiz)
+
+        assert rglob_ingenuo == 10_030, "el rglob crudo tiene que contar los bytes ajenos"
+        assert (medido, archivos) == (30, 1)
+        assert borrado == medido
+        assert (ajeno / "grande.bin").read_bytes() == b"x" * 10_000
+
+    def test_una_ruta_ausente_mide_cero_y_borra_cero(self, tmp_path: pathlib.Path) -> None:
+        assert tamano_de_arbol_propio(tmp_path / "no-esta") == (0, 0)
+        assert rmtree_link_aware(tmp_path / "no-esta") == 0
