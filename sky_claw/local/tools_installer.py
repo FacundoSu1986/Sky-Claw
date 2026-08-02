@@ -12,6 +12,7 @@ import configparser
 import hashlib
 import logging
 import pathlib
+import re
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -30,6 +31,7 @@ from sky_claw.config import (
     SystemPaths,
 )
 from sky_claw.local.discovery.environment import SkyrimEdition
+from sky_claw.local.discovery.scanner import PANDORA_EXE_NAMES
 
 if TYPE_CHECKING:
     from sky_claw.app.scraper.nexus_downloader import NexusDownloader
@@ -75,6 +77,12 @@ XEDIT_COMMON_PATHS: tuple[pathlib.Path, ...] = (
 
 # Chunk size for streaming downloads (1 MB).
 _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+
+#: Techo para cada subproceso de ``7z`` (listado y extracción por separado). Un
+#: xEdit de ~30 MB con BCJ2 tarda segundos, pero el binario puede quedarse
+#: esperando input si el archive está corrupto: sin timeout el hilo queda colgado
+#: para siempre. 5 min es holgado para el caso legítimo y acota el patológico.
+_SEVENZIP_TIMEOUT_SECONDS = 300
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +179,164 @@ def _extract_zip_safe(archive: pathlib.Path, dest: pathlib.Path) -> None:
             zf.extract(info, dest)
 
 
+#: Forma ``Clave = valor`` de cada línea del listado ``-slt``. Todo lo que no
+#: matchee (ni sea línea en blanco) es salida que este parser no entiende.
+_7Z_CLAVE_VALOR = re.compile(r"^[A-Za-z][A-Za-z0-9 ()-]* = ")
+
+#: Claves de ``-slt`` que delatan un enlace. Su destino NO está en ``Path``, así
+#: que validar el path del miembro no dice nada sobre a dónde apunta.
+_7Z_CLAVES_DE_LINK = ("Symbolic Link = ", "Hard Link = ")
+
+#: ``C:``/``d:`` al principio de un valor — ruta absoluta con letra de unidad.
+_7Z_LETRA_DE_UNIDAD = re.compile(r"^[A-Za-z]:")
+
+
+def _valor_con_traversal(valor: str) -> bool:
+    """True si *valor* trae componentes ``..``, raíz, o letra de unidad."""
+    normalizado = valor.strip().replace("\\", "/")
+    if not normalizado:
+        return False
+    if normalizado.startswith("/") or _7Z_LETRA_DE_UNIDAD.match(normalizado):
+        return True
+    return any(parte == ".." for parte in normalizado.split("/"))
+
+
+def _parse_7z_listing(stdout: str) -> list[str]:
+    """Extrae los nombres de miembro de la salida de ``7z l -slt``.
+
+    ``-slt`` imprime un bloque ``clave = valor`` por entrada, separado del
+    encabezado del archive por una línea ``----------``. Solo se leen las líneas
+    ``Path = ...`` POSTERIORES a ese separador: antes del separador ``Path``
+    es la ruta del propio archive, no un miembro.
+
+    El ataque que cierra: un nombre de miembro con un salto de línea embebido
+    (legal en NTFS) parte el bloque en dos. El parser ve ``Path = ok.txt``,
+    valida eso, y ``7z x`` escribe el nombre COMPLETO
+    ``ok.txt\\nAlgo = ../../evil.txt`` — cuyos ``../..`` son separadores reales y
+    escapan de *dest*. La segunda línea es la continuación del nombre.
+
+    Exigir forma ``clave = valor`` NO alcanza: el atacante elige el nombre, así
+    que puede hacer que la continuación parezca un par válido. Lo que no puede
+    evitar es que el payload contenga traversal — sin ``..`` no escapa de *dest*
+    y el ataque no sirve. Por eso se valida el valor de TODAS las líneas, no solo
+    el de las ``Path =``: la inyección se delata por lo que necesita llevar, no
+    por cómo se llama la clave que falsifica.
+
+    Raises:
+        ToolInstallError: Si el listado tiene líneas que este parser no entiende
+            o que delatan un nombre partido por un salto de línea.
+        PathViolationError: Si el archive trae enlaces.
+    """
+    members: list[str] = []
+    en_cuerpo = False
+    for linea in stdout.splitlines():
+        if not en_cuerpo:
+            if linea.strip() == "----------":
+                en_cuerpo = True
+            continue
+        if not linea.strip():
+            continue
+        if not _7Z_CLAVE_VALOR.match(linea):
+            raise ToolInstallError(
+                f"Línea inesperada en el listado de 7z: {linea!r}. No se extrae: un listado que no se "
+                "entiende por completo no permite garantizar que todos los miembros fueron validados."
+            )
+        if linea.startswith(_7Z_CLAVES_DE_LINK):
+            # Validar el `Path` de un symlink no alcanza: el destino viaja en OTRA
+            # clave del bloque. `7z x` materializa el link (siempre en POSIX, y en
+            # Windows con privilegios) apuntando fuera de dest, y después escribe
+            # contenido A TRAVÉS de él — todos los nombres "seguros", el sandbox
+            # igual perforado. Ningún release de las tools que instalamos trae
+            # links, así que rechazarlos de plano no cuesta nada.
+            raise PathViolationError(f"El archive trae un enlace y no se extrae con el 7z del sistema: {linea!r}")
+        _clave, _, valor = linea.partition(" = ")
+        if not linea.startswith("Path = ") and _valor_con_traversal(valor):
+            # Ninguna clave legítima de `-slt` (Size, CRC, Modified, Attributes,
+            # Method…) lleva rutas con `..`. Un valor así es la continuación de un
+            # nombre partido, disfrazada de par clave-valor.
+            raise ToolInstallError(
+                f"Valor con traversal en una clave que no es Path: {linea!r}. Delata un nombre de miembro "
+                "partido por un salto de línea — no se extrae."
+            )
+        if linea.startswith("Path = "):
+            nombre = linea[len("Path = ") :].strip()
+            if any(ord(ch) < 32 for ch in nombre):
+                raise ToolInstallError(f"Nombre de miembro con caracteres de control: {nombre!r}. No se extrae.")
+            members.append(nombre)
+    return members
+
+
+def _extract_7z_via_system(archive: pathlib.Path, dest: pathlib.Path) -> None:
+    """Extrae un ``.7z`` con el binario ``7z`` del sistema, validando las rutas primero.
+
+    Fallback para lo que ``py7zr`` no soporta (filtros BCJ2 de x86, que es como
+    vienen empaquetados los releases de xEdit).
+
+    El sandbox de rutas solo vale si TODOS los extractores validan los nombres de
+    miembro: delegar en el ``-y`` de ``7z`` sería delegar el control de seguridad a
+    un binario externo cuya versión no controlamos. Por eso el listado (``7z l``)
+    pasa entero por :func:`_is_safe_path` ANTES de correr ``7z x`` — un solo nombre
+    con traversal aborta sin haber escrito un byte.
+
+    Bloqueante por diseño: los callers entran vía ``asyncio.to_thread`` (ver
+    ``ToolsInstaller._extract``), y el ``timeout`` explícito acota el cuelgue.
+
+    Raises:
+        PathViolationError: Si algún miembro del archive escapa de *dest*.
+        ToolInstallError: Timeout, fallo de ``7z``, ``7z`` ausente del PATH, o un
+            listado que no se puede parsear (fail-closed: sin nombres validados no
+            se extrae).
+    """
+    import subprocess
+
+    base_cmd = ["7z", "l", "-slt", "-y", str(archive)]
+    try:
+        listado = subprocess.run(
+            base_cmd,
+            check=True,
+            capture_output=True,
+            timeout=_SEVENZIP_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ToolInstallError(f"El listado de 7z para {archive.name} superó el timeout.") from exc
+    except subprocess.CalledProcessError as exc:
+        detalle = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
+        raise ToolInstallError(f"7z no pudo listar {archive.name}: {detalle}") from exc
+    except FileNotFoundError as exc:
+        raise ToolInstallError(
+            f"Hace falta 7z en el PATH para extraer {archive.name} porque py7zr falló con este archive."
+        ) from exc
+
+    stdout = listado.stdout.decode("utf-8", errors="ignore") if listado.stdout else ""
+    miembros = _parse_7z_listing(stdout)
+    if not miembros:
+        # Fail-closed. Un listado que no parsea (otra versión de 7z, otro locale,
+        # formato de salida distinto) deja la lista vacía, el loop de abajo itera
+        # cero veces y `7z x` correría SIN haber validado un solo nombre: el mismo
+        # bypass del sandbox que esta función existe para cerrar, pero silencioso.
+        # No poder validar no es lo mismo que estar validado.
+        raise ToolInstallError(
+            f"No pude parsear el listado de 7z para {archive.name}: sin miembros que validar, "
+            "no se extrae (posible versión o locale de 7z no soportado)."
+        )
+    for name in miembros:
+        if not _is_safe_path(name):
+            raise PathViolationError(f"Zip-slip detectado en el listado de 7z: {name!r}")
+
+    try:
+        subprocess.run(
+            ["7z", "x", f"-o{dest}", "-y", str(archive)],
+            check=True,
+            capture_output=True,
+            timeout=_SEVENZIP_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ToolInstallError(f"La extracción con 7z de {archive.name} superó el timeout.") from exc
+    except subprocess.CalledProcessError as exc:
+        detalle = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
+        raise ToolInstallError(f"La extracción con 7z falló: {detalle}") from exc
+
+
 def _extract_7z_safe(archive: pathlib.Path, dest: pathlib.Path) -> None:
     """Extract a 7z archive with zip-slip protection."""
     try:
@@ -182,25 +348,12 @@ def _extract_7z_safe(archive: pathlib.Path, dest: pathlib.Path) -> None:
                     raise PathViolationError(f"Zip-slip detected in 7z: {name!r}")
             szf.extractall(dest)
     except PathViolationError:
+        # Una falla de SEGURIDAD nunca degrada a fallback: reintentar con otro
+        # extractor sería exactamente el bypass del sandbox que se está atajando.
         raise
     except Exception as exc:
-        import subprocess
-
-        logger.warning(f"py7zr extraction failed ({exc}). Falling back to system 7z.exe")
-        try:
-            # 7z natively prevents path traversals. Use -y to assume Yes on queries.
-            subprocess.run(
-                ["7z", "x", f"-o{dest}", "-y", str(archive)],
-                check=True,
-                capture_output=True,
-                timeout=30,
-            )
-        except subprocess.TimeoutExpired as sub_to:
-            raise ToolInstallError("7z extraction failed due to timeout.") from sub_to
-        except subprocess.CalledProcessError as sub_e:
-            raise ToolInstallError(f"7z extraction failed: {sub_e.stderr.decode('utf-8', errors='ignore')}") from sub_e
-        except FileNotFoundError:
-            raise ToolInstallError("7z.exe is required in PATH to extract this archive because py7zr failed.") from exc
+        logger.warning("La extracción con py7zr falló (%s). Cayendo al 7z del sistema.", exc)
+        _extract_7z_via_system(archive, dest)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +368,20 @@ def find_exe_in_dir(directory: pathlib.Path, exe_name: str) -> pathlib.Path | No
     for path in directory.rglob(exe_name):
         if path.is_file():
             return path
+    return None
+
+
+def find_any_exe_in_dir(directory: pathlib.Path, exe_names: tuple[str, ...]) -> pathlib.Path | None:
+    """Busca en *directory* el primero de *exe_names* que exista.
+
+    Para las tools que el upstream renombra entre releases (Pandora pasó de
+    ``Pandora.exe`` a ``Pandora Behaviour Engine+.exe``): buscar un solo nombre
+    hace que una instalación previa válida se reporte como faltante.
+    """
+    for exe_name in exe_names:
+        found = find_exe_in_dir(directory, exe_name)
+        if found is not None:
+            return found
     return None
 
 
@@ -459,10 +626,28 @@ class ToolsInstaller:
         await asyncio.to_thread(self._extract, archive, install_dir)
         archive.unlink(missing_ok=True)
 
-        # xEdit ships generically; rename xEdit.exe to SSEEdit.exe to skip game selection popups
+        # xEdit se publica con nombre genérico; renombrarlo a SSEEdit.exe evita el
+        # popup de selección de juego que bloquea la GUI. Solo si NO hay ya un
+        # SSEEdit.exe al lado: el archive puede traer ambos y pisarlo destruiría el
+        # binario bueno.
+        #
+        # `.rename()` y NO `.replace()`: os.replace PISA el destino, que es
+        # justo lo que hay que evitar. En Windows os.rename falla con
+        # FileExistsError si el destino apareció entre el chequeo y el renombrado
+        # → fail-closed, se conserva el SSEEdit.exe bueno. En POSIX os.rename
+        # pisa igual, así que el guard de abajo es lo único que protege ahí; la
+        # protección real contra instalaciones concurrentes es el lock de T-31,
+        # no este bloque.
         xedit_exe = find_exe_in_dir(install_dir, "xEdit.exe")
-        if xedit_exe:
-            xedit_exe.replace(xedit_exe.with_name("SSEEdit.exe"))
+        if xedit_exe is not None:
+            target = xedit_exe.with_name("SSEEdit.exe")
+            if target.exists():
+                logger.info("SSEEdit.exe ya presente en %s; se conserva y no se renombra xEdit.exe", install_dir)
+            else:
+                try:
+                    xedit_exe.rename(target)
+                except FileExistsError:
+                    logger.info("SSEEdit.exe apareció durante la instalación; se conserva el existente.")
 
         exe = find_exe_in_dir(install_dir, "SSEEdit.exe")
         if exe is None:
@@ -488,11 +673,14 @@ class ToolsInstaller:
             session: Active HTTP session.
 
         Returns:
-            :class:`InstallResult` with the path to ``Pandora.exe``.
+            :class:`InstallResult` con la ruta al ejecutable de Pandora — el
+            release actual lo publica como ``Pandora Behaviour Engine+.exe``,
+            pero se acepta cualquiera de :data:`PANDORA_EXE_NAMES` (las releases
+            viejas usaban ``Pandora.exe``).
         """
         self._validator.validate(install_dir)
         # Check if already installed
-        exe = find_exe_in_dir(install_dir, "Pandora Behaviour Engine+.exe")
+        exe = find_any_exe_in_dir(install_dir, PANDORA_EXE_NAMES)
         if exe is not None:
             logger.info("Pandora already installed at %s", exe)
             return InstallResult(
@@ -526,9 +714,11 @@ class ToolsInstaller:
         await asyncio.to_thread(self._extract, archive, install_dir)
         archive.unlink(missing_ok=True)
 
-        exe = find_exe_in_dir(install_dir, "Pandora Behaviour Engine+.exe")
+        exe = find_any_exe_in_dir(install_dir, PANDORA_EXE_NAMES)
         if exe is None:
-            raise ToolInstallError("Pandora extraction succeeded but Pandora Behaviour Engine+.exe not found in output")
+            raise ToolInstallError(
+                f"La extracción de Pandora terminó pero no apareció ninguno de {list(PANDORA_EXE_NAMES)} en la salida"
+            )
 
         logger.info("Pandora %s installed at %s", version, exe)
         return InstallResult(

@@ -89,7 +89,21 @@ def _parse_steam_libraries() -> list[pathlib.Path]:
 
 _WRYE_BASH_NAMES = ("Wrye Bash.exe", "Wrye Bash Launcher.exe")
 _DYNDOLOD_NAMES = ("DynDOLOD64.exe", "DynDOLOD.exe", "DynDOLODx64.exe")
-_PANDORA_NAMES = ("Pandora.exe", "Pandora Engine.exe", "Pandora Behaviour Engine+.exe")
+#: Nombres bajo los que puede venir el ejecutable de Pandora. Público a propósito:
+#: es la ÚNICA fuente de verdad, compartida con ``ToolsInstaller.ensure_pandora``
+#: (``sky_claw/local/tools_installer.py``). Detectar e instalar son dos superficies
+#: del mismo recurso — si el instalador conociera su propia lista, instalar bajo un
+#: nombre que el scanner no busca reporta "falta Pandora" tras reiniciar y ofrece
+#: reinstalarlo (defecto reportado por Codex en el PR #418).
+#: Anclado por igualdad literal en ``tests/test_tools_installer.py``.
+#:
+#: El ORDEN es preferencia, no cosmética: tanto el scanner como
+#: ``find_any_exe_in_dir`` devuelven el primero que encuentran. Va primero el
+#: nombre del release actual — con un `Pandora.exe` viejo conviviendo con el
+#: nuevo (upgrade manual in-place), listar el legacy primero exportaba el binario
+#: viejo por `PANDORA_EXE` y los rituales seguían lanzando ése.
+PANDORA_EXE_NAMES = ("Pandora Behaviour Engine+.exe", "Pandora Engine.exe", "Pandora.exe")
+_PANDORA_NAMES = PANDORA_EXE_NAMES
 _LOOT_NAMES = ("LOOT.exe", "loot.exe")
 _XEDIT_NAMES = ("SSEEdit.exe", "TES5Edit.exe", "xEdit.exe")
 
