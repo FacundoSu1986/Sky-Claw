@@ -135,12 +135,24 @@ def construir_servicio_grass(
     return service, colaboradores
 
 
-def construir_dispatcher_grass(service: GrassCacheService) -> tuple[OrchestrationToolDispatcher, HITLGuard]:
-    """Construye el dispatcher de producción con Grass Cache real y demás boundaries mockeados."""
+def construir_dispatcher_grass(
+    service: GrassCacheService, *, con_guard: bool = True
+) -> tuple[OrchestrationToolDispatcher, HITLGuard | None]:
+    """Construye el dispatcher de producción con Grass Cache real y demás boundaries mockeados.
+
+    ``con_guard=False`` deja ``hitl_gate=None`` para que
+    ``build_orchestration_dispatcher`` arme su propio ``HitlGateMiddleware()``:
+    el default de producción, que deniega las tools destructivas por política
+    fail-closed. Es el cableado que ancla la regresión del HITL fail-open —
+    por eso NUNCA se pasa ``allow_unattended=True``, que la desactivaría.
+    """
     assert superficie_dispatcher_supervisor() == SUPERFICIE_DISPATCHER_SUPERVISOR
-    hitl_guard = MagicMock(spec=HITLGuard)
-    hitl_guard.request_approval = AsyncMock(return_value=Decision.DENIED)
-    gate = HitlGateMiddleware(hitl_guard=hitl_guard)
+    hitl_guard: HITLGuard | None = None
+    gate: HitlGateMiddleware | None = None
+    if con_guard:
+        hitl_guard = MagicMock(spec=HITLGuard)
+        hitl_guard.request_approval = AsyncMock(return_value=Decision.DENIED)
+        gate = HitlGateMiddleware(hitl_guard=hitl_guard)
     supervisor = SupervisorAgent.__new__(SupervisorAgent)
     supervisor.scraper = MagicMock()
     supervisor.snapshot_manager = MagicMock()
