@@ -8,7 +8,7 @@
 > decisiones; este documento únicamente consolida su estado.
 >
 > **Última verificación:** 2026-08-02 en la rama actual, basada en
-> `origin/main` `bdd0b1e`; los cambios posteriores de esta rama no se afirman
+> `origin/main` `bf635e0`; los cambios posteriores de esta rama no se afirman
 > integrados en `origin/main`.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
@@ -35,6 +35,7 @@ confirmarlo contra código y tests.
 | T-28 | Cerrado | #309, #318 y cierres posteriores | — | productores de `persist_flight_report` |
 | T-29 | Cerrado | Oleada 7 | — | historial Git y tests |
 | T-30 | Cerrado | Oleada 7 | — | historial Git y tests |
+| T-31 | Abierto | — | Lock cross-process por `install_dir`/`mod_dir` en `ToolsInstaller` (6 rutas de instalación + wiring en `app_context.py`) | `TECHNICAL_REVIEW_TASKS.md` |
 | U-01 | Cerrado | #381, #388 y documentación operativa | — | `test_output_targets.py` |
 | U-02 | Cerrado | #360 | — | tests de Job Object |
 | U-03 | Cerrado | #356 | — | tests de reconciliación de precache |
