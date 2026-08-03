@@ -10,11 +10,15 @@ instalación, decisión del puente) sin un cliente NiceGUI vivo.
 
 from __future__ import annotations
 
+import inspect
 import os
+import pathlib
+import re
 from dataclasses import dataclass
 
 import pytest
 
+from sky_claw.app.agent.tools import external_tools
 from sky_claw.app.gui.controllers.ritual_runner import (
     RITUAL_INSTALL_ENV,
     RITUAL_INSTALLER_MAP,
@@ -64,6 +68,9 @@ class _FakeInstaller:
     async def ensure_pandora(self, install_dir: object, session: object) -> _FakeInstallResult:
         return await self._ensure("ensure_pandora", install_dir, session)
 
+    async def ensure_skse(self, install_dir: object, session: object) -> _FakeInstallResult:
+        return await self._ensure("ensure_skse", install_dir, session)
+
 
 class _FakeAppContext:
     def __init__(self, installer: object, *, install_dir: object = "C:/Modding", session: object = "sess") -> None:
@@ -73,12 +80,33 @@ class _FakeAppContext:
 
 
 # ── Ritual → installer mapping ──────────────────────────────────────────────────
-def test_ritual_installer_map_covers_only_github_backed_tools() -> None:
+def test_ritual_installer_map_congela_las_tools_autoinstalables() -> None:
+    # Wrye Bash y DynDOLOD siguen afuera (no están en GitHub releases). SKSE entra
+    # por su propio origen oficial (skse.silverlock.org), habilitado en ALLOWED_HOSTS.
     assert RITUAL_INSTALLER_MAP == {
         "loot": "ensure_loot",
         "xedit": "ensure_xedit",
         "pandora": "ensure_pandora",
+        "skse": "ensure_skse",
     }
+
+
+def test_skse_es_gui_only_y_no_lo_alcanza_el_agente_llm() -> None:
+    """Instalar SKSE escribe ejecutables en el directorio del juego tras un egress.
+
+    Esa aprobación tiene que ser la del operador frente a la GUI, no una decisión del
+    modelo. Se afirma por igualdad literal sobre el set de tools que ``setup_tools``
+    despacha: agregar una rama nueva ahí rompe el ancla, que es exactamente el aviso
+    que hace falta cuando la rama nueva es una mutación.
+    """
+    fuente = inspect.getsource(external_tools.setup_tools)
+    despachadas = set(re.findall(r'tool_name_lower == "(\w+)"', fuente))
+
+    assert despachadas == {"loot", "xedit", "pandora", "bodyslide", "ngio"}
+    assert "skse" not in despachadas
+    # …y sí está del lado de la GUI, para que el recorte sea una decisión visible y no
+    # un olvido que deja la feature inalcanzable desde ambas superficies.
+    assert RITUAL_INSTALLER_MAP["skse"] == "ensure_skse"
 
 
 def test_ritual_installer_name_known_and_unmapped() -> None:
@@ -114,6 +142,50 @@ async def test_install_success_seeds_env_and_publishes_positive(monkeypatch: pyt
     fb = store.get("ritual_feedback")
     assert fb is not None and fb["type"] == "positive"
     assert not store.get("ritual_in_flight")
+
+
+async def test_install_skse_usa_la_ruta_del_juego_no_el_install_dir_generico() -> None:
+    """SKSE se instala DENTRO del directorio del juego, no en `install_dir`.
+
+    `install_dir` (`app_context.install_dir`) es el directorio genérico donde van
+    LOOT/xEdit/Pandora — MO2 y los tools viven aparte de Skyrim. Sin este ruteo,
+    `ensure_skse` recibe esa carpeta genérica, busca `SkyrimSE.exe` ahí adentro,
+    no lo encuentra, y el botón "Instalar" de SKSE falla siempre.
+    """
+    from sky_claw.app.gui.views.forge_dashboard import STORE_KEY_ENV
+    from sky_claw.local.discovery.environment import EnvironmentSnapshot, SkyrimEdition, SkyrimInfo
+
+    game_path = pathlib.Path("D:/Steam/steamapps/common/Skyrim Special Edition")
+    store = ReactiveStore()
+    store.set(
+        STORE_KEY_ENV,
+        EnvironmentSnapshot(skyrim=SkyrimInfo(path=game_path, exe_name="SkyrimSE.exe", edition=SkyrimEdition.AE)),
+    )
+    installer = _FakeInstaller(exe_path=str(game_path / "skse64_loader.exe"))
+    ctx = _FakeAppContext(installer, install_dir="C:/Modding")
+
+    await run_ritual_install("skse", app_context=ctx, store=store)
+
+    assert installer.calls == [("ensure_skse", game_path, "sess")]
+    fb = store.get("ritual_feedback")
+    assert fb is not None and fb["type"] == "positive"
+
+
+async def test_install_skse_sin_snapshot_de_skyrim_no_instala_en_install_dir() -> None:
+    """Sin la carpeta del juego detectada, cortar es preferible a instalar en el
+    directorio genérico (que llevaría al mismo fallo de siempre buscando el .exe
+    donde no está, ya cubierto por `test_sin_ejecutable_del_juego_no_adivina_la_edicion`
+    en tools_installer — acá se cubre que la GUI ni siquiera llega a intentarlo).
+    """
+    store = ReactiveStore()
+    installer = _FakeInstaller()
+    ctx = _FakeAppContext(installer, install_dir="C:/Modding")
+
+    await run_ritual_install("skse", app_context=ctx, store=store)
+
+    assert installer.calls == []
+    fb = store.get("ritual_feedback")
+    assert fb is not None and fb["type"] == "negative"
 
 
 async def test_install_unmapped_tool_does_not_install(monkeypatch: pytest.MonkeyPatch) -> None:

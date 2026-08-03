@@ -106,6 +106,93 @@ PANDORA_EXE_NAMES = ("Pandora Behaviour Engine+.exe", "Pandora Engine.exe", "Pan
 _PANDORA_NAMES = PANDORA_EXE_NAMES
 _LOOT_NAMES = ("LOOT.exe", "loot.exe")
 _XEDIT_NAMES = ("SSEEdit.exe", "TES5Edit.exe", "xEdit.exe")
+# NO agregar `sksevr_loader.exe` acá (se intentó y se revirtió — revisión de #425):
+# a diferencia de _XEDIT_NAMES, donde las tres variantes SON el mismo tool renombrado
+# por upstream entre releases, los loaders de SKSE son binarios DISTINTOS por edición.
+# `_find_tool` matchea cualquiera de los nombres sin saber qué edición se detectó, así
+# que sumar el de VR no ayuda al caso que buscaba cubrir (`_find_skyrim` no reconoce
+# SkyrimVR.exe, así que un setup VR-only corta en CRITICAL antes de llegar a este
+# chequeo) y sí amplía el riesgo de que una instalación SE/AE se reporte "SKSE
+# encontrado" con un loader de VR que no le sirve. Arreglarlo bien requiere matchear
+# el loader a la edición ya detectada, no ampliar el OR compartido.
+_SKSE_LOADER_NAMES = ("skse64_loader.exe", "skse_loader.exe")
+#: Loader que le corresponde a cada edición. SE/AE cargan la familia ``skse64_*`` y LE
+#: la familia ``skse_*``: no son intercambiables, así que con la edición ya detectada
+#: se busca el que aplica en vez del OR de ambos.
+_SKSE_LOADERS_BY_EDITION: dict[SkyrimEdition, tuple[str, ...]] = {
+    SkyrimEdition.AE: ("skse64_loader.exe",),
+    SkyrimEdition.SE: ("skse64_loader.exe",),
+    SkyrimEdition.LE: ("skse_loader.exe",),
+}
+#: DLLs que matchean ``skse*.dll`` en la raíz del juego pero NO son el DLL de runtime:
+#: su nombre no codifica versión de juego y su presencia no implica que SKSE cargue.
+_SKSE_NON_RUNTIME_DLLS = frozenset({"skse64_steam_loader.dll", "skse_steam_loader.dll"})
+
+
+# ── SKSE ──────────────────────────────────────────────────────────────
+
+
+def skse_dll_game_version(dll_name: str) -> str:
+    """Versión exacta del juego (major.minor.patch) que targetea un DLL de SKSE.
+
+    Se deriva del propio nombre del archivo (``skse64_1_6_1170.dll`` -> ``"1.6.1170"``)
+    en vez de guardarla en un campo separado de ``SKSE_CONFIG``: un campo redundante
+    puede desincronizarse del DLL real si alguien actualiza uno sin el otro.
+    """
+    stem = dll_name.removesuffix(".dll")
+    return ".".join(stem.split("_")[-3:])
+
+
+def skyrim_version_matches(detected: str, expected: str) -> bool:
+    """¿*detected* (PE del ejecutable) es compatible con *expected* (la que targetea el DLL)?
+
+    Compara por PREFIJO de segmentos, no por igualdad estricta: algunos recursos
+    PE incluyen un cuarto segmento de build (``1.6.1170.0``) que no cambia la
+    compatibilidad real con un DLL targeteado a ``1.6.1170``.
+    """
+    detected_parts = detected.split(".")
+    expected_parts = expected.split(".")
+    return detected_parts[: len(expected_parts)] == expected_parts
+
+
+def find_skse_installation(
+    game_dir: pathlib.Path,
+    *,
+    edition: SkyrimEdition = SkyrimEdition.UNKNOWN,
+    game_version: str = "",
+) -> pathlib.Path | None:
+    """Loader de una instalación de SKSE **utilizable** en *game_dir*, o ``None``.
+
+    SKSE no es un tool que Sky-Claw ejecute desde donde esté (como LOOT o xEdit): es un
+    runtime que el JUEGO carga por ruta fija, y solo carga si el loader **y** el DLL de
+    runtime del build exacto del ejecutable están en la raíz de Skyrim. Por eso no pasa
+    por ``_resolve_tool_path``, que acepta cualquier loader que aparezca en MO2, en la
+    carpeta de tools, en el PATH o pinneado por config: con ese resolver el snapshot
+    reporta ✅ para un loader suelto en otra carpeta, o para un upgrade que quedó a mitad
+    de camino (loader sí, DLL no), y el usuario se entera recién al arrancar el juego.
+
+    Cuando *game_version* viene vacío (sin ``pefile``, o PE sin recurso de versión) el
+    chequeo se degrada a "loader + algún DLL de runtime" en vez de fallar cerrado:
+    reportar faltante toda instalación buena de las máquinas sin pefile sería peor que
+    no verificar el build, y el caso del upgrade a medias se sigue atajando igual.
+    """
+    expected_loaders = _SKSE_LOADERS_BY_EDITION.get(edition, _SKSE_LOADER_NAMES)
+    loader = next((game_dir / name for name in expected_loaders if (game_dir / name).is_file()), None)
+    if loader is None:
+        return None
+
+    runtime_dlls = [
+        dll for dll in game_dir.glob("skse*.dll") if dll.is_file() and dll.name.lower() not in _SKSE_NON_RUNTIME_DLLS
+    ]
+    if not runtime_dlls:
+        return None
+
+    if game_version and not any(
+        skyrim_version_matches(game_version, skse_dll_game_version(dll.name)) for dll in runtime_dlls
+    ):
+        return None
+
+    return loader
 
 
 # ── Skyrim Version Detection ─────────────────────────────────────────
@@ -187,6 +274,16 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
 def detect_skyrim_edition(exe_path: pathlib.Path) -> SkyrimEdition:
     """Edición (SE/AE/LE/UNKNOWN) del ejecutable de Skyrim en *exe_path*."""
     return _detect_skyrim_version(exe_path)[1]
+
+
+def read_skyrim_version(exe_path: pathlib.Path) -> str:
+    """ProductVersion (PE) del ejecutable de Skyrim en *exe_path*, o ``""`` si no se pudo leer.
+
+    Distinto de la edición: dos ejecutables pueden compartir edición (ambos AE)
+    y tener versiones exactas distintas (1.6.640 vs 1.6.1170), lo que sí importa
+    para binarios pinneados a la versión exacta del juego como SKSE.
+    """
+    return _detect_skyrim_version(exe_path)[0]
 
 
 # ── Scanner ───────────────────────────────────────────────────────────
@@ -276,6 +373,13 @@ class EnvironmentScanner:
         # ── 3. Detect Tools ───────────────────────────────────────────
         tool_defs = [
             (
+                "skse",
+                _SKSE_LOADER_NAMES,
+                "Extensor del motor (SKSE) - Requiere instalación manual o auto-instalador",
+                "https://skse.silverlock.org/",
+                True,
+            ),
+            (
                 "loot",
                 _LOOT_NAMES,
                 "Ordenar mods automáticamente",
@@ -316,7 +420,19 @@ class EnvironmentScanner:
         search_roots = self._build_search_roots(mo2_root, skyrim_path)
 
         for key, exe_names, friendly, url, is_critical in tool_defs:
-            found = self._resolve_tool_path(key, exe_names, search_roots)
+            if key == "skse":
+                # SKSE no usa el resolver genérico: ver `find_skse_installation`.
+                found = (
+                    find_skse_installation(
+                        skyrim_path,
+                        edition=snap.skyrim.edition if snap.skyrim else SkyrimEdition.UNKNOWN,
+                        game_version=snap.skyrim.version if snap.skyrim else "",
+                    )
+                    if skyrim_path is not None
+                    else None
+                )
+            else:
+                found = self._resolve_tool_path(key, exe_names, search_roots)
             if found:
                 human_name = key.upper().replace("_", " ")
                 snap.tools[key] = ToolInfo(
