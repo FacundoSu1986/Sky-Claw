@@ -29,16 +29,29 @@ class WryeBashHeadlessUnsupportedError(WryeBashExecutionError):
     """Wrye Bash no expone ninguna forma de construir el Bashed Patch sin GUI.
 
     Verificado contra ``wrye-bash/wrye-bash``, ``Mopy/bash/barg.py``: el parser
-    declara ``-b``/``--backup`` (hace un backup de la configuración de Wrye
-    Bash a un archivo antes de que arranque la app), ``-o``/``--oblivionPath``
-    (directorio del juego) y ``--no-uac``. **No hay ningún argumento que
-    reconstruya el parche.**
+    (``argparse``) declara ``-b``/``--backup`` como ``action='store_true'``
+    —backup de la configuración de Wrye Bash *antes* de que arranque la app, y
+    exige el destino aparte en ``-f``/``--filename``—, ``-o``/``--oblivionPath``
+    (directorio del juego), ``-r``/``--restore``, ``-q``/``--quiet-quit`` y
+    ``--no-uac``, entre otros. **Ninguno reconstruye el parche**, y el parser no
+    declara ningún argumento posicional.
 
-    Este runner pasaba ``-b "Bashed Patch, 0.esp"`` creyendo que construía: en
-    realidad disparaba el backup de settings y devolvía ``success=True``. Reportar
-    éxito sobre un no-op es peor que fallar, porque las etapas siguientes del DAG
-    (Synthesis en la 7, DynDOLOD en la 9) consumen un parche que nunca se
-    regeneró.
+    Este runner pasaba ``-b "Bashed Patch, 0.esp"`` creyendo que construía. Lo que
+    hacía en realidad no era ni siquiera el backup: ``-b`` no toma valor, así que
+    ``"Bashed Patch, 0.esp"`` llegaba como posicional suelto y ``parse_args()``
+    abortaba con *unrecognized arguments*; y aun sin el posicional, el propio
+    ``barg.parse()`` corta con *"You must specify a filename for use with
+    backup/restore"* porque falta ``-f``. O sea: la etapa 6 nunca corrió, fallaba
+    con un exit code de ``argparse`` que el runner traducía a un
+    ``success=False`` opaco sobre el que nadie podía actuar. Fallar cerrado con
+    la causa nombrada es lo que permite que el operador sepa que la etapa 6
+    requiere GUI, en vez de leer un stderr de ``argparse`` sin contexto.
+
+    El riesgo que esto cierra hacia adelante es el simétrico: cualquier variante
+    del comando que SÍ parsee (p. ej. agregarle ``-f``) haría un backup de
+    settings y saldría con código 0, y el runner reportaría ``success=True``
+    sobre un parche que no se generó — con las etapas siguientes del DAG
+    (Synthesis en la 7, DynDOLOD en la 9) consumiendo un artefacto viejo.
 
     Deriva de :class:`WryeBashExecutionError` para que los callers que ya capturan
     la base la traduzcan al contrato ``success=False``/``message`` sin cambios.
@@ -53,8 +66,9 @@ class WryeBashHeadlessUnsupportedError(WryeBashExecutionError):
 
     def __init__(self) -> None:
         super().__init__(
-            "Wrye Bash no soporta construir el Bashed Patch en modo headless: su CLI "
-            "solo expone --backup, --oblivionPath y --no-uac (Mopy/bash/barg.py). "
+            "Wrye Bash no soporta construir el Bashed Patch en modo headless: su CLI solo "
+            "expone backup/restore de settings (--backup/--restore/--filename), rutas "
+            "(--oblivionPath y hermanas) y --no-uac (Mopy/bash/barg.py). "
             "La etapa 6 requiere intervención humana en la GUI."
         )
 
@@ -105,8 +119,9 @@ class WryeBashRunner:
 
         No se lanza el proceso a propósito. La implementación anterior ejecutaba
         ``bash.py -b "Bashed Patch, 0.esp"``, que en el parser real de Wrye Bash
-        significa *backup de settings* con ese nombre como archivo destino — un
-        efecto lateral silencioso sobre el que además reportaba éxito.
+        no construye nada: ``-b`` es el switch de *backup de settings* (sin valor,
+        y con el destino en ``-f``), así que la invocación moría en ``argparse``
+        y la etapa 6 devolvía un fallo sin causa legible.
         """
         logger.error(
             "[M-01] Wrye Bash no expone build headless del Bashed Patch; "

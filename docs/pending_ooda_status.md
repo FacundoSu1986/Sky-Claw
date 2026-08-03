@@ -92,11 +92,19 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
 
 - **LOOT** (`src/gui/qt/main.cpp`) declara `--auto-sort`; el repo pasaba `--sort`
   desde **dos** lanzadores (`local/loot/cli.py` y `app/core/windows_interop.py`).
-- **Wrye Bash** (`Mopy/bash/barg.py`): `-b` es `--backup` de settings. **No existe
-  flag de build headless**; el runner reportaba éxito sobre un no-op.
-- **BodySlide** (`src/program/BodySlideApp.cpp`) declara `gbuild`/`t`; el repo
-  pasaba `-b`/`-o`.
-- **Pandora** (README, "Startup Arguments"): `--game` y `--auto` no existen.
+  `--auto-sort` exige que se pase también `--game` (los dos lanzadores lo hacen) y
+  cierra la GUI al terminar si no hubo errores (`main_window.cpp`,
+  `handlePluginsAutoSorted` → `on_actionQuit_triggered`), así que esperar la
+  terminación del proceso es correcto para este runner.
+- **Wrye Bash** (`Mopy/bash/barg.py`): `-b` es el switch `--backup` de settings
+  (`store_true`, con destino en `-f`). **No existe flag de build headless**; el
+  comando que usaba el repo ni siquiera parseaba, así que la etapa 6 fallaba con
+  un exit code de `argparse` sin causa legible.
+- **BodySlide** (`src/program/BodySlideApp.cpp`, descriptor en `BodySlideApp.h`)
+  declara `gbuild`/`t` como nombres **cortos** de `wxCmdLineParser` (de ahí el
+  guion simple); el repo pasaba `-b`/`-o`.
+- **Pandora** (README, "Startup Arguments"): `--game` y `--auto` no existen; los
+  documentados para correr desatendido son `--auto_run`/`--auto_close`.
 
 Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un
 flag en vez de enumerar el vector. El ancla `test_contrato_argumentos_cli.py`
@@ -106,6 +114,24 @@ DynDOLOD (binario cerrado, sin fuente pública) y VRAMr (scripts en Nexus).
 
 `vramr_service.py` además no usa Job Object, a diferencia de DynDOLOD (U-07) y
 grass: si VRAMr spawnea compresores externos, un timeout deja huérfanos.
+
+Dos deudas que deja abiertas el fail-closed de la etapa 6, para no confundirlas
+con el defecto ya cerrado:
+
+- `WryeBashPipelineService.execute_pipeline` **no** cortocircuita: sigue corriendo
+  el preflight, tomando los locks `bashed-patch` + `load-order` y persistiendo un
+  `ActionManifest` que declara una mutación, y recién ahí el runner eleva
+  `WryeBashHeadlessUnsupportedError` y la TX queda `rolled_back`. El resultado
+  hacia el caller es honesto (`success=False` con la causa nombrada), pero cada
+  invocación escribe una TX en la caja negra por un ritual que no puede correr y
+  retiene los locks mientras tanto. Cortocircuitar antes del preflight es trivial;
+  se dejó para la misma decisión que define la etapa 6 (asistida vs. retirarla del
+  dispatcher), porque el resto del pipeline —snapshot, journal, rollback— es
+  exactamente lo que hay que reusar si vuelve como etapa asistida.
+- `--auto_run` de Pandora corre "using the same active mods as cached from the last
+  successful run": en una instalación sin corrida previa exitosa no hay caché, y no
+  está verificado en rig real qué hace el motor en ese caso. Es el escenario que
+  cubriría el smoke pendiente de U-04.
 
 ## Decide — recomendación de próximo frente
 

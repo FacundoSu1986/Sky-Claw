@@ -74,7 +74,8 @@ def _pandora(tmp_path, timeout: float) -> tuple[PandoraRunner, tuple]:
 #: `wrye-bash/wrye-bash` `Mopy/bash/barg.py`, Wrye Bash no expone ningún flag que
 #: construya el Bashed Patch sin GUI, así que `generate_bashed_patch` ahora falla
 #: cerrado con `WryeBashHeadlessUnsupportedError` sin spawnear (antes corría
-#: `-b`, que en el parser real es `--backup` de settings, y reportaba éxito).
+#: `-b`, que en el parser real es el switch `--backup` de settings y no toma
+#: valor: la invocación moría en `argparse` sin causa legible).
 #: Sin proceso hijo no hay huérfano que prevenir. Si la etapa 6 vuelve a lanzar
 #: un proceso —p. ej. al modelarla como etapa asistida— hay que agregar acá su
 #: factory y su excepción de timeout dedicada.

@@ -9,12 +9,16 @@ fuente de cada herramienta:
   existe: ``QCommandLineParser`` rechaza opciones desconocidas. Y lo pasaba desde
   **dos** lanzadores distintos (`local/loot/cli.py` y `app/core/windows_interop.py`),
   el patrón exacto de "dos superficies, un recurso" de `AGENTS.md`.
-- Wrye Bash (`Mopy/bash/barg.py`) declara ``-b``/``--backup`` como *"Backup all
-  Wrye Bash settings to an archive file"*. El repo lo usaba creyendo que
-  construía el parche. **No existe ningún flag que construya el Bashed Patch.**
-- BodySlide (`src/program/BodySlideApp.cpp::OnCmdLineParsed`) declara ``gbuild``,
-  ``t``, ``p``, ``tri`` y ``preview``. El repo pasaba ``-b``/``-o``: ambos nombres
-  inválidos.
+- Wrye Bash (`Mopy/bash/barg.py`) declara ``-b``/``--backup`` como
+  ``action='store_true'`` (*"Backup all Wrye Bash settings to an archive file"*,
+  con el destino aparte en ``-f``/``--filename``). El repo lo usaba creyendo que
+  construía el parche, y le pasaba el nombre del .esp como valor: ``-b`` no toma
+  valor y el parser no declara posicionales, así que ``parse_args()`` abortaba.
+  **No existe ningún flag que construya el Bashed Patch.**
+- BodySlide (`src/program/BodySlideApp.cpp::OnCmdLineParsed`, con el descriptor
+  en `BodySlideApp.h::g_cmdLineDesc`) declara ``gbuild``, ``t``, ``p``, ``tri`` y
+  ``preview`` como nombres CORTOS de `wxCmdLineParser` — de ahí el guion simple
+  en ``-gbuild``/``-t``. El repo pasaba ``-b``/``-o``: ambos nombres inválidos.
 - Pandora (README oficial, "Startup Arguments") declara ``--output``/``-o``,
   ``--auto_run``, ``--auto_close``, ``--tesv``. El repo agregaba ``--game`` y
   ``--auto``, que no existen.
@@ -524,12 +528,16 @@ async def test_pandora_construye_el_vector_verificado(tmp_path: pathlib.Path) ->
     ], "Pandora no declara `--game` ni `--auto` (README: `--tesv`, `--auto_run`/`--auto_close`)"
 
 
-async def test_wrye_bash_falla_cerrado_en_vez_de_hacer_un_backup(tmp_path: pathlib.Path) -> None:
-    """Wrye Bash no expone build headless: antes corría ``-b`` (=``--backup``) y decía éxito.
+async def test_wrye_bash_falla_cerrado_en_vez_de_lanzar_un_comando_invalido(tmp_path: pathlib.Path) -> None:
+    """Wrye Bash no expone build headless: antes corría ``-b`` (=``--backup``, sin valor).
 
-    Reportar ``success`` sobre un backup de settings es peor que fallar: las
-    etapas siguientes del DAG (Synthesis, DynDOLOD) consumen un parche que nunca
-    se regeneró.
+    El comando anterior ni siquiera parseaba —``argparse`` cortaba por el .esp
+    posicional y por el ``-f`` faltante—, así que la etapa 6 fallaba con un exit
+    code sin causa legible. Elevar la excepción nombrada es lo que le dice al
+    operador que la etapa requiere GUI; y cierra el riesgo simétrico de que una
+    variante que SÍ parsee haga un backup de settings, salga con código 0 y
+    reporte ``success`` sobre un parche que las etapas 7 y 9 del DAG consumen sin
+    haberse regenerado.
     """
     runner = WryeBashRunner(
         WryeBashConfig(
