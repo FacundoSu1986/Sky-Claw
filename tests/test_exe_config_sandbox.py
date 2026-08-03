@@ -206,6 +206,44 @@ class TestInstallDirSandbox:
         validator.validate(pathlib.Path("D:/Modding/LOOT/LOOT.exe"))
         validator.validate(pathlib.Path("D:/Modding/SSEEdit/SSEEdit.exe"))
 
+    def test_skyrim_path_added_to_sandbox(self) -> None:
+        """skyrim_path se agrega como raíz propia — MO2 y los tools se instalan
+        aparte del juego, así que ni mo2_root ni install_dir lo cubren. Sin esta
+        raíz, `ensure_skse` no puede pasar su propio `validate(install_dir)` de
+        entrada aunque el ruteo de la GUI ya apunte a la carpeta correcta (#425).
+        """
+        mo2_root = pathlib.Path("C:/Modding/MO2")
+        skyrim_path = pathlib.Path("D:/Steam/steamapps/common/Skyrim Special Edition")
+
+        sandbox_roots: list[pathlib.Path] = [
+            mo2_root,
+            pathlib.Path(tempfile.gettempdir()) / "sky_claw",
+        ]
+        if skyrim_path and skyrim_path not in sandbox_roots:
+            sandbox_roots.append(skyrim_path)
+
+        validator = PathValidator(roots=sandbox_roots)
+        validator.validate(skyrim_path / "skse64_loader.exe")
+
+    def test_without_skyrim_path_skse_target_is_rejected(self) -> None:
+        """Documenta el bug que corrige `test_skyrim_path_added_to_sandbox`: sin esa
+        raíz, el directorio del juego queda fuera del sandbox aunque mo2_root e
+        install_dir sí estén registrados.
+        """
+        mo2_root = pathlib.Path("C:/Modding/MO2")
+        install_dir = pathlib.Path("C:/Modding")
+        skyrim_path = pathlib.Path("D:/Steam/steamapps/common/Skyrim Special Edition")
+
+        sandbox_roots = [
+            mo2_root,
+            pathlib.Path(tempfile.gettempdir()) / "sky_claw",
+            install_dir,
+        ]  # skyrim_path deliberadamente ausente
+        validator = PathValidator(roots=sandbox_roots)
+
+        with pytest.raises(PathViolationError):
+            validator.validate(skyrim_path / "skse64_loader.exe")
+
 
 # ---------------------------------------------------------------------------
 # Frozen config path resolution

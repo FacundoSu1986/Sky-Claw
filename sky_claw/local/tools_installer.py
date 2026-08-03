@@ -13,6 +13,7 @@ import hashlib
 import logging
 import pathlib
 import re
+import tempfile
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -31,7 +32,7 @@ from sky_claw.config import (
     SystemPaths,
 )
 from sky_claw.local.discovery.environment import SkyrimEdition
-from sky_claw.local.discovery.scanner import PANDORA_EXE_NAMES
+from sky_claw.local.discovery.scanner import PANDORA_EXE_NAMES, detect_skyrim_edition, read_skyrim_version
 
 if TYPE_CHECKING:
     from sky_claw.app.scraper.nexus_downloader import NexusDownloader
@@ -72,6 +73,30 @@ SKSE_CONFIG: dict[str, dict[str, str | None]] = {
         "steam_loader": None,  # LE no tiene steam_loader
     },
 }
+
+
+def _skse_dll_game_version(dll_name: str) -> str:
+    """Versión exacta del juego (major.minor.patch) que targetea un DLL de SKSE.
+
+    Se deriva del propio nombre del archivo (``skse64_1_6_1170.dll`` -> ``"1.6.1170"``)
+    en vez de guardarla en un campo separado de SKSE_CONFIG: un campo redundante
+    puede desincronizarse del DLL real si alguien actualiza uno sin el otro.
+    """
+    stem = dll_name.removesuffix(".dll")
+    return ".".join(stem.split("_")[-3:])
+
+
+def _game_version_matches(detected: str, expected: str) -> bool:
+    """¿*detected* (PE del ejecutable) es compatible con *expected* (la que targetea el DLL)?
+
+    Compara por PREFIJO de segmentos, no por igualdad estricta: algunos recursos
+    PE incluyen un cuarto segmento de build (``1.6.1170.0``) que no cambia la
+    compatibilidad real con un DLL targeteado a ``1.6.1170``.
+    """
+    detected_parts = detected.split(".")
+    expected_parts = expected.split(".")
+    return detected_parts[: len(expected_parts)] == expected_parts
+
 
 # Dependencias del precache de grass (SOP §2.8): NGIO-NG desde GitHub; Address
 # Library y Grass Cache Helper NG desde Nexus. Los nombres son los directorios
@@ -769,7 +794,8 @@ class ToolsInstaller:
         Args:
             install_dir: Directorio raíz del juego Skyrim (donde reside SkyrimSE.exe).
             session: Sesión HTTP activa.
-            edition: Override opcional de la edición de Skyrim. Si es None, autodetecta por la presencia de DLLs.
+            edition: Override opcional de la edición de Skyrim. Si es None, se deriva
+                de la versión del PE del ejecutable del juego.
 
         Returns:
             :class:`InstallResult` con la ruta a ``skse64_loader.exe``.
@@ -779,9 +805,18 @@ class ToolsInstaller:
         """
         self._validator.validate(install_dir)
 
-        # Determinar edición
+        # Determinar edición. La autoridad es la versión del PE del juego, NO qué DLL
+        # de SKSE ya está en disco: si SKSE ya estuviera instalado saldríamos por el
+        # early-return de idempotencia de más abajo, así que en el único caso donde
+        # esto corre —máquina limpia— no hay DLL que mirar. Defaultear a AE ahí le
+        # instala `skse64_1_6_1170.dll` a un runtime 1.5.97 y SKSE no carga.
+        #
+        # `detected_version` solo se llena en el camino de autodetección: si el
+        # caller pasa `edition` explícito confiamos en su elección sin exigir un
+        # .exe real en disco (staging, tests, instalación en curso).
+        detected_version = ""
         if edition is None:
-            edition = self._detect_skse_edition_from_existing(install_dir)
+            edition, detected_version = await self._detect_skyrim_edition_from_exe(install_dir)
 
         ed_key = self._edition_to_config_key(edition)
         cfg = SKSE_CONFIG.get(ed_key)
@@ -792,6 +827,20 @@ class ToolsInstaller:
         # Idempotencia: verificar si ya está instalado correctamente
         assert cfg["loader"] is not None
         assert cfg["dll"] is not None
+
+        # Gate de versión exacta: SKSE está pinneado al BUILD exacto del juego, no
+        # solo a su edición — dos AE distintos (1.6.640 vs 1.6.1170) comparten
+        # edición pero el DLL de uno no carga sobre el otro. Solo se evalúa cuando
+        # hay versión detectada (autodetección + pefile presente); si no, se
+        # degrada al comportamiento previo (edición sola) en vez de bloquear.
+        expected_version = _skse_dll_game_version(cfg["dll"])
+        if detected_version and not _game_version_matches(detected_version, expected_version):
+            raise ToolInstallError(
+                f"Tu Skyrim {ed_key} está en la versión {detected_version}, pero el único "
+                f"SKSE {ed_key} soportado acá es para {expected_version} (SKSE está pinneado "
+                "a la versión EXACTA del ejecutable, no solo a la edición). Instalá "
+                "manualmente el build correspondiente desde https://skse.silverlock.org/."
+            )
         loader_path = install_dir / cfg["loader"]
         dll_path = install_dir / cfg["dll"]
 
@@ -821,9 +870,11 @@ class ToolsInstaller:
         if decision is not Decision.APPROVED:
             raise ToolInstallError(f"SKSE installation denied by operator (decision={decision.value})")
 
-        import tempfile
-
-        skse_sandbox = SystemPaths.get_base_drive() / "tmp/sky_claw"
+        # Staging: la MISMA raíz que `AppContext` registra en el PathValidator
+        # (`tempfile.gettempdir() / "sky_claw"`). Inventar otra —p. ej. C:/tmp— hace
+        # que el `validate(tmp_path)` de acá abajo falle siempre, porque esa ruta no
+        # es ninguna de las raíces del sandbox.
+        skse_sandbox = pathlib.Path(tempfile.gettempdir()) / "sky_claw"
         skse_sandbox.mkdir(parents=True, exist_ok=True)
 
         with tempfile.TemporaryDirectory(dir=skse_sandbox) as tmpdir:
@@ -838,10 +889,6 @@ class ToolsInstaller:
             # Descarga segura vía NetworkGateway con timeout
             await self._download_skse_archive(session, cfg, archive_path)
 
-            # LIMPIEZA DE DIRTY UPGRADES: Eliminar DLLs huérfanos de otras versiones
-            # Se ejecuta solo después de descargar el payload en staging exitosamente.
-            await self._cleanup_orphaned_skse_dlls(install_dir, cfg)
-
             # Extraer con protección zip-slip
             extract_path = tmp_path / "extracted"
             await asyncio.to_thread(self._extract, archive_path, extract_path)
@@ -849,26 +896,47 @@ class ToolsInstaller:
             # Buscar loader excluyendo __MACOSX
             skse_root = self._find_skse_root(extract_path, cfg)
 
-            # Copiar archivos al directorio del juego
+            # Copiar archivos al directorio del juego. `_copy_skse_files` solo toca
+            # nombres presentes en el payload nuevo (loader/dll de esta edición +
+            # Data) — no depende de que los DLL huérfanos ya estén borrados.
             await self._copy_skse_files(skse_root, install_dir, cfg)
+
+            # LIMPIEZA DE DIRTY UPGRADES: recién acá, después de que la copia haya
+            # terminado sin excepción. Es el verdadero punto de no retorno: si se
+            # borrara antes y `_copy_skse_files` fallara a mitad de camino (disco
+            # lleno, permisos), el juego se queda sin la versión vieja Y sin la
+            # nueva completa, sin rollback que lo recupere. Corriendo al final, un
+            # fallo de copia deja los DLL de otra edición intactos y el juego sigue
+            # arrancando con el SKSE que tenía antes.
+            await self._cleanup_orphaned_skse_dlls(install_dir, cfg)
 
         logger.info("SKSE %s instalado en %s", ed_key, loader_path)
         return InstallResult(
             tool_name="SKSE",
             exe_path=loader_path,
-            version=cfg["url"].split("_")[-1].replace(".7z", ""),
+            version=pathlib.Path(cfg["url"]).stem,
             already_existed=False,
         )
 
-    def _detect_skse_edition_from_existing(self, game_dir: pathlib.Path) -> SkyrimEdition:
-        """Detecta la edición de SKSE a partir de los DLL existentes en el directorio del juego."""
-        if (game_dir / "skse64_1_6_1170.dll").exists():
-            return SkyrimEdition.AE
-        if (game_dir / "skse64_1_5_97.dll").exists():
-            return SkyrimEdition.SE
-        if (game_dir / "skse_1_9_32.dll").exists():
-            return SkyrimEdition.LE
-        return SkyrimEdition.AE
+    async def _detect_skyrim_edition_from_exe(self, game_dir: pathlib.Path) -> tuple[SkyrimEdition, str]:
+        """Deriva edición y versión exacta leyendo el PE del ejecutable en *game_dir*.
+
+        Devuelve ambos: SKSE está pinneado a la versión EXACTA del juego, no solo
+        a su edición, así que el caller necesita la versión para el gate de
+        compatibilidad además de la edición para elegir el payload.
+        """
+        for exe_name in ("SkyrimSE.exe", "SkyrimVR.exe", "Skyrim.exe"):
+            exe = game_dir / exe_name
+            if exe.is_file():
+                # pefile hace I/O síncrono de PE: fuera del event loop.
+                edition = await asyncio.to_thread(detect_skyrim_edition, exe)
+                version = await asyncio.to_thread(read_skyrim_version, exe)
+                return edition, version
+
+        raise ToolInstallError(
+            f"No encontré el ejecutable de Skyrim en {game_dir}: no puedo determinar "
+            "la edición para elegir el SKSE correcto. Revisá skyrim_path."
+        )
 
     def _edition_to_config_key(self, edition: SkyrimEdition) -> str:
         """Convierte el enum SkyrimEdition a una clave del diccionario SKSE_CONFIG."""
@@ -879,7 +947,13 @@ class ToolsInstaller:
             SkyrimEdition.SE: "SE",
             SkyrimEdition.LE: "LE",
         }
-        return mapping.get(edition, "AE")
+        # Fail-closed: una edición nueva en el enum (p. ej. VR) sin entrada acá debe
+        # cortar, no caer a "AE". Defaultear silenciosamente elige el payload de otra
+        # edición y escribe un DLL incompatible en el directorio del juego.
+        key = mapping.get(edition)
+        if key is None:
+            raise ToolInstallError(f"La edición {edition.value} no tiene payload de SKSE configurado en SKSE_CONFIG.")
+        return key
 
     async def _cleanup_orphaned_skse_dlls(
         self,
@@ -889,7 +963,16 @@ class ToolsInstaller:
         """Elimina archivos DLL huérfanos de SKSE de versiones previas (limpieza de dirty upgrades)."""
         import stat
 
-        protected_names = {current_cfg["dll"], current_cfg.get("steam_loader"), "skse64_steam_loader.dll"}
+        # El glob de abajo es `skse*.dll`, que también matchea los steam loaders de
+        # AMBAS familias. El de LE (`skse_steam_loader.dll`) no se deducía de
+        # `current_cfg` porque LE tiene `steam_loader=None`, así que se lo nombra
+        # explícito: borrarlo deja la instalación de LE sin loader de Steam.
+        protected_names = {
+            current_cfg["dll"],
+            current_cfg.get("steam_loader"),
+            "skse64_steam_loader.dll",
+            "skse_steam_loader.dll",
+        }
         protected_names.discard(None)
 
         for old_dll in game_dir.glob("skse*.dll"):
@@ -940,14 +1023,19 @@ class ToolsInstaller:
 
         logger.info("Descargando SKSE desde %s ...", url)
 
-        resp = await self._gateway.request(
-            "GET",
-            url,
-            session,
-            headers={"Accept": "application/octet-stream"},
-            timeout=timeout,
-            allowed_redirect_hosts=frozenset(["skse.silverlock.org"]),
-        )
+        try:
+            resp = await self._gateway.request(
+                "GET",
+                url,
+                session,
+                headers={"Accept": "application/octet-stream"},
+                timeout=timeout,
+                allowed_redirect_hosts=frozenset(["skse.silverlock.org"]),
+            )
+        except (EgressViolationError, NetworkGatewayTimeoutError) as exc:
+            # El contrato del método es ToolInstallError; sin este wrap una denegación
+            # de egress escapa cruda y el caller la reporta como fallo desconocido.
+            raise ToolInstallError(f"Egress denegado o expirado para SKSE ({url}): {exc}") from exc
 
         try:
             resp.raise_for_status()
