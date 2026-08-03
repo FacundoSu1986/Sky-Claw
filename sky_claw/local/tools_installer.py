@@ -32,7 +32,7 @@ from sky_claw.config import (
     SystemPaths,
 )
 from sky_claw.local.discovery.environment import SkyrimEdition
-from sky_claw.local.discovery.scanner import PANDORA_EXE_NAMES, detect_skyrim_edition
+from sky_claw.local.discovery.scanner import PANDORA_EXE_NAMES, detect_skyrim_edition, read_skyrim_version
 
 if TYPE_CHECKING:
     from sky_claw.app.scraper.nexus_downloader import NexusDownloader
@@ -73,6 +73,30 @@ SKSE_CONFIG: dict[str, dict[str, str | None]] = {
         "steam_loader": None,  # LE no tiene steam_loader
     },
 }
+
+
+def _skse_dll_game_version(dll_name: str) -> str:
+    """Versión exacta del juego (major.minor.patch) que targetea un DLL de SKSE.
+
+    Se deriva del propio nombre del archivo (``skse64_1_6_1170.dll`` -> ``"1.6.1170"``)
+    en vez de guardarla en un campo separado de SKSE_CONFIG: un campo redundante
+    puede desincronizarse del DLL real si alguien actualiza uno sin el otro.
+    """
+    stem = dll_name.removesuffix(".dll")
+    return ".".join(stem.split("_")[-3:])
+
+
+def _game_version_matches(detected: str, expected: str) -> bool:
+    """¿*detected* (PE del ejecutable) es compatible con *expected* (la que targetea el DLL)?
+
+    Compara por PREFIJO de segmentos, no por igualdad estricta: algunos recursos
+    PE incluyen un cuarto segmento de build (``1.6.1170.0``) que no cambia la
+    compatibilidad real con un DLL targeteado a ``1.6.1170``.
+    """
+    detected_parts = detected.split(".")
+    expected_parts = expected.split(".")
+    return detected_parts[: len(expected_parts)] == expected_parts
+
 
 # Dependencias del precache de grass (SOP §2.8): NGIO-NG desde GitHub; Address
 # Library y Grass Cache Helper NG desde Nexus. Los nombres son los directorios
@@ -786,8 +810,13 @@ class ToolsInstaller:
         # early-return de idempotencia de más abajo, así que en el único caso donde
         # esto corre —máquina limpia— no hay DLL que mirar. Defaultear a AE ahí le
         # instala `skse64_1_6_1170.dll` a un runtime 1.5.97 y SKSE no carga.
+        #
+        # `detected_version` solo se llena en el camino de autodetección: si el
+        # caller pasa `edition` explícito confiamos en su elección sin exigir un
+        # .exe real en disco (staging, tests, instalación en curso).
+        detected_version = ""
         if edition is None:
-            edition = await self._detect_skyrim_edition_from_exe(install_dir)
+            edition, detected_version = await self._detect_skyrim_edition_from_exe(install_dir)
 
         ed_key = self._edition_to_config_key(edition)
         cfg = SKSE_CONFIG.get(ed_key)
@@ -798,6 +827,20 @@ class ToolsInstaller:
         # Idempotencia: verificar si ya está instalado correctamente
         assert cfg["loader"] is not None
         assert cfg["dll"] is not None
+
+        # Gate de versión exacta: SKSE está pinneado al BUILD exacto del juego, no
+        # solo a su edición — dos AE distintos (1.6.640 vs 1.6.1170) comparten
+        # edición pero el DLL de uno no carga sobre el otro. Solo se evalúa cuando
+        # hay versión detectada (autodetección + pefile presente); si no, se
+        # degrada al comportamiento previo (edición sola) en vez de bloquear.
+        expected_version = _skse_dll_game_version(cfg["dll"])
+        if detected_version and not _game_version_matches(detected_version, expected_version):
+            raise ToolInstallError(
+                f"Tu Skyrim {ed_key} está en la versión {detected_version}, pero el único "
+                f"SKSE {ed_key} soportado acá es para {expected_version} (SKSE está pinneado "
+                "a la versión EXACTA del ejecutable, no solo a la edición). Instalá "
+                "manualmente el build correspondiente desde https://skse.silverlock.org/."
+            )
         loader_path = install_dir / cfg["loader"]
         dll_path = install_dir / cfg["dll"]
 
@@ -853,15 +896,19 @@ class ToolsInstaller:
             # Buscar loader excluyendo __MACOSX
             skse_root = self._find_skse_root(extract_path, cfg)
 
-            # LIMPIEZA DE DIRTY UPGRADES: recién acá. El punto de no retorno es este:
-            # borrar el DLL viejo solo es seguro cuando el reemplazo ya está extraído
-            # Y validado en staging. Hacerlo antes de `_extract`/`_find_skse_root`
-            # deja al juego sin la versión vieja y sin la nueva si el .7z venía
-            # corrupto, y no hay rollback que lo recupere.
-            await self._cleanup_orphaned_skse_dlls(install_dir, cfg)
-
-            # Copiar archivos al directorio del juego
+            # Copiar archivos al directorio del juego. `_copy_skse_files` solo toca
+            # nombres presentes en el payload nuevo (loader/dll de esta edición +
+            # Data) — no depende de que los DLL huérfanos ya estén borrados.
             await self._copy_skse_files(skse_root, install_dir, cfg)
+
+            # LIMPIEZA DE DIRTY UPGRADES: recién acá, después de que la copia haya
+            # terminado sin excepción. Es el verdadero punto de no retorno: si se
+            # borrara antes y `_copy_skse_files` fallara a mitad de camino (disco
+            # lleno, permisos), el juego se queda sin la versión vieja Y sin la
+            # nueva completa, sin rollback que lo recupere. Corriendo al final, un
+            # fallo de copia deja los DLL de otra edición intactos y el juego sigue
+            # arrancando con el SKSE que tenía antes.
+            await self._cleanup_orphaned_skse_dlls(install_dir, cfg)
 
         logger.info("SKSE %s instalado en %s", ed_key, loader_path)
         return InstallResult(
@@ -871,13 +918,20 @@ class ToolsInstaller:
             already_existed=False,
         )
 
-    async def _detect_skyrim_edition_from_exe(self, game_dir: pathlib.Path) -> SkyrimEdition:
-        """Deriva la edición leyendo la versión del PE del ejecutable en *game_dir*."""
+    async def _detect_skyrim_edition_from_exe(self, game_dir: pathlib.Path) -> tuple[SkyrimEdition, str]:
+        """Deriva edición y versión exacta leyendo el PE del ejecutable en *game_dir*.
+
+        Devuelve ambos: SKSE está pinneado a la versión EXACTA del juego, no solo
+        a su edición, así que el caller necesita la versión para el gate de
+        compatibilidad además de la edición para elegir el payload.
+        """
         for exe_name in ("SkyrimSE.exe", "SkyrimVR.exe", "Skyrim.exe"):
             exe = game_dir / exe_name
             if exe.is_file():
                 # pefile hace I/O síncrono de PE: fuera del event loop.
-                return await asyncio.to_thread(detect_skyrim_edition, exe)
+                edition = await asyncio.to_thread(detect_skyrim_edition, exe)
+                version = await asyncio.to_thread(read_skyrim_version, exe)
+                return edition, version
 
         raise ToolInstallError(
             f"No encontré el ejecutable de Skyrim en {game_dir}: no puedo determinar "

@@ -776,6 +776,15 @@ class AppContext:
             ]
             if install_dir and install_dir not in sandbox_roots:
                 sandbox_roots.append(install_dir)
+            # El directorio del juego suele vivir fuera de mo2_root/install_dir (MO2 y
+            # los tools se instalan aparte de Skyrim), así que sin esta raíz explícita
+            # `ensure_skse` no puede pasar su propio `validate(install_dir)` de entrada
+            # — el "Instalar" de SKSE de la GUI fallaría siempre con
+            # PathViolationError, egress y HITL ya aprobados y todo.
+            if local_cfg.skyrim_path:
+                skyrim_path = pathlib.Path(local_cfg.skyrim_path)
+                if skyrim_path not in sandbox_roots:
+                    sandbox_roots.append(skyrim_path)
             # --- DESPUÉS (Seguro - Zero Trust) ---
             # Solo definir las carpetas estrictamente necesarias
             # Se elimina explícitamente mo2_parent para evitar Path Traversal encubierto

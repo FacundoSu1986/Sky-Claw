@@ -1263,10 +1263,15 @@ class TestEnsureSkse:
         assert old_dll.exists(), "Debe conservar los DLLs existentes si el operador deniega la instalación."
 
     @pytest.mark.asyncio
-    async def test_limpia_dlls_despues_de_descarga_y_extraccion(
-        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    async def test_no_borra_el_dll_viejo_si_la_copia_falla(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
     ) -> None:
-        """Debe eliminar DLLs antiguas (incluso de solo lectura) pero solo DESPUÉS del staging."""
+        """Tercer hermano de la familia: la copia es el último paso antes de limpiar.
+
+        Si `_copy_skse_files` falla (disco lleno, permisos a mitad de camino), el
+        cleanup nunca corrió — el DLL de la edición vieja sigue ahí y el juego sigue
+        arrancando con el SKSE que tenía, aunque la instalación nueva no haya cuajado.
+        """
         install_dir = tmp_path / "skyrim"
         install_dir.mkdir()
 
@@ -1278,9 +1283,6 @@ class TestEnsureSkse:
 
         session = MagicMock(spec=aiohttp.ClientSession)
         installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
-
-        # El payload llega y valida; la copia es lo único que falla. Para entonces el
-        # borrado ya ocurrió, y eso está bien: el reemplazo estaba listo en staging.
         installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
         installer._extract = MagicMock(return_value=None)  # type: ignore[method-assign]
         installer._find_skse_root = MagicMock(return_value=tmp_path / "extracted" / "root")  # type: ignore[method-assign]
@@ -1295,7 +1297,37 @@ class TestEnsureSkse:
         with pytest.raises(ToolInstallError, match="Simulated copy failure"):
             await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
 
-        assert not old_dll.exists(), "Debe limpiar DLLs de otras versiones incluso si eran readonly"
+        assert old_dll.exists(), "Una copia fallida no puede dejar el juego sin ningún SKSE"
+
+    @pytest.mark.asyncio
+    async def test_limpia_dlls_huerfanos_tras_una_copia_exitosa(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Camino feliz de la familia: recién con la copia OK se limpian los DLL huérfanos.
+
+        Cubre además que un DLL de solo lectura no bloquea la limpieza.
+        """
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+
+        old_dll = install_dir / "skse64_1_5_97.dll"
+        old_dll.write_text("viejo", encoding="utf-8")
+        import stat
+
+        old_dll.chmod(stat.S_IREAD)
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+        installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        installer._extract = MagicMock(return_value=None)  # type: ignore[method-assign]
+        installer._find_skse_root = MagicMock(return_value=tmp_path / "extracted" / "root")  # type: ignore[method-assign]
+        installer._copy_skse_files = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        from sky_claw.local.discovery.environment import SkyrimEdition
+
+        await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        assert not old_dll.exists(), "Tras una copia exitosa, los DLL de la edición vieja deben limpiarse"
 
     @pytest.mark.asyncio
     async def test_no_borra_el_dll_viejo_si_la_extraccion_falla(
@@ -1374,6 +1406,9 @@ class TestEnsureSkse:
         installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
         installer._extract = MagicMock(return_value=None)  # type: ignore[method-assign]
         installer._find_skse_root = MagicMock(return_value=tmp_path / "extracted" / "root")  # type: ignore[method-assign]
+        # La copia corre antes que la limpieza; se mockea para llegar al escenario
+        # bajo prueba (limpieza bloqueada) sin depender de un payload real en disco.
+        installer._copy_skse_files = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
         # Acotado al DLL del juego: parchear `pathlib.Path.unlink` global también
         # rompería el cleanup del TemporaryDirectory del staging.
@@ -1570,6 +1605,89 @@ class TestEnsureSkse:
 
         assert res.version == "skse64_2_00_20", "SE debe recibir el payload de SE"
         assert res.exe_path == install_dir / "skse64_loader.exe"
+
+    @pytest.mark.asyncio
+    async def test_bloquea_si_el_build_exacto_no_coincide(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Dos AE pueden compartir edición y tener DLL de SKSE incompatibles entre sí.
+
+        `SKSE_CONFIG["AE"]` solo targetea 1.6.1170; un downgrade a un 1.6.x más viejo
+        (1.6.640 es un pin común para compatibilidad de mods) sigue clasificando como
+        AE por edición, pero el DLL de 1.6.1170 no carga sobre ese runtime.
+        """
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+        (install_dir / "SkyrimSE.exe").write_text("pe", encoding="utf-8")
+
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.AE)
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "1.6.640")
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+
+        with pytest.raises(ToolInstallError, match="1.6.640") as exc_info:
+            await installer.ensure_skse(install_dir, session)
+
+        assert "1.6.1170" in str(exc_info.value), "El mensaje debe nombrar ambas versiones para ser accionable"
+
+    @pytest.mark.asyncio
+    async def test_tolera_un_cuarto_segmento_de_build_en_la_version_detectada(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`1.6.1170.0` (con build) sigue siendo compatible con el DLL targeteado a `1.6.1170`."""
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+        (install_dir / "SkyrimSE.exe").write_text("pe", encoding="utf-8")
+
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.AE)
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "1.6.1170.0")
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+        installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        installer._extract = MagicMock(return_value=None)  # type: ignore[method-assign]
+        installer._find_skse_root = MagicMock(return_value=tmp_path / "root")  # type: ignore[method-assign]
+        installer._copy_skse_files = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        res = await installer.ensure_skse(install_dir, session)
+
+        assert res.version == "skse64_2_02_06"
+
+    @pytest.mark.asyncio
+    async def test_edicion_explicita_no_dispara_el_gate_de_version(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Un override explícito de edición no exige un .exe real en disco.
+
+        Cubre el resto de la suite: casi todos los tests de esta clase pasan
+        `edition=` sin crear `SkyrimSE.exe`, y siguen debiendo funcionar.
+        """
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+        installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        installer._extract = MagicMock(return_value=None)  # type: ignore[method-assign]
+        installer._find_skse_root = MagicMock(return_value=tmp_path / "root")  # type: ignore[method-assign]
+        installer._copy_skse_files = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        res = await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        assert res.version == "skse64_2_02_06"
+
+    def test_skse_dll_game_version_reconstruye_el_build_del_nombre(self) -> None:
+        assert tools_installer._skse_dll_game_version("skse64_1_6_1170.dll") == "1.6.1170"
+        assert tools_installer._skse_dll_game_version("skse64_1_5_97.dll") == "1.5.97"
+        assert tools_installer._skse_dll_game_version("skse_1_9_32.dll") == "1.9.32"
+
+    def test_game_version_matches_tolera_build_extra_no_mismatch_real(self) -> None:
+        matches = tools_installer._game_version_matches
+        assert matches("1.6.1170", "1.6.1170") is True
+        assert matches("1.6.1170.0", "1.6.1170") is True, "un 4to segmento de build no es un mismatch"
+        assert matches("1.6.640", "1.6.1170") is False
+        assert matches("1.5.97", "1.6.1170") is False
 
     @pytest.mark.asyncio
     async def test_sin_ejecutable_del_juego_no_adivina_la_edicion(

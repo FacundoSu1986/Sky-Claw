@@ -170,8 +170,9 @@ RITUAL_INSTALLER_MAP: dict[str, str] = {
     "pandora": "ensure_pandora",
     # SKSE vive acá y NO en la superficie del agente LLM (`setup_tools`): escribe
     # ejecutables en el directorio del juego, así que la aprobación tiene que ser la
-    # del operador frente a la GUI. `test_skse_aislado_del_agente_llm` congela el
-    # recorte por igualdad literal.
+    # del operador frente a la GUI.
+    # `test_skse_es_gui_only_y_no_lo_alcanza_el_agente_llm` (tests/test_ritual_install.py)
+    # congela el recorte por igualdad literal.
     "skse": "ensure_skse",
 }
 
@@ -461,7 +462,28 @@ async def run_ritual_install(
         )
         return
 
-    install_dir = getattr(app_context, "install_dir", None)
+    if tool_key == "skse":
+        # SKSE se instala DENTRO del directorio del juego, no en el directorio
+        # genérico de tools (`app_context.install_dir`, donde van LOOT/xEdit/
+        # Pandora — MO2 y los tools viven aparte de Skyrim). Se lee del último
+        # snapshot del scanner: la misma fuente que decidió mostrar la tarjeta
+        # de "SKSE faltante" en primer lugar.
+        from sky_claw.app.gui.views.forge_dashboard import STORE_KEY_ENV
+
+        snapshot = store.get(STORE_KEY_ENV)
+        skyrim = getattr(snapshot, "skyrim", None)
+        install_dir = getattr(skyrim, "path", None)
+        if install_dir is None:
+            store.set(
+                STORE_KEY_RITUAL_FEEDBACK,
+                {
+                    "text": "No se detectó la carpeta de Skyrim: corré el escaneo de entorno primero.",
+                    "type": "negative",
+                },
+            )
+            return
+    else:
+        install_dir = getattr(app_context, "install_dir", None)
     session = getattr(app_context, "session", None)
     ensure = getattr(installer, method_name)
 

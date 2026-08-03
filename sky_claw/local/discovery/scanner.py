@@ -106,11 +106,16 @@ PANDORA_EXE_NAMES = ("Pandora Behaviour Engine+.exe", "Pandora Engine.exe", "Pan
 _PANDORA_NAMES = PANDORA_EXE_NAMES
 _LOOT_NAMES = ("LOOT.exe", "loot.exe")
 _XEDIT_NAMES = ("SSEEdit.exe", "TES5Edit.exe", "xEdit.exe")
-# `sksevr_loader.exe` va acá aunque SKSE_CONFIG no tenga payload de VR: son dos cosas
-# distintas. DETECTAR un SKSEVR ya instalado evita reportárselo al usuario de VR como
-# herramienta crítica faltante; instalarlo sigue sin estar soportado (la edición VR
-# resuelve a UNKNOWN y `ensure_skse` corta).
-_SKSE_LOADER_NAMES = ("skse64_loader.exe", "skse_loader.exe", "sksevr_loader.exe")
+# NO agregar `sksevr_loader.exe` acá (se intentó y se revirtió — revisión de #425):
+# a diferencia de _XEDIT_NAMES, donde las tres variantes SON el mismo tool renombrado
+# por upstream entre releases, los loaders de SKSE son binarios DISTINTOS por edición.
+# `_find_tool` matchea cualquiera de los nombres sin saber qué edición se detectó, así
+# que sumar el de VR no ayuda al caso que buscaba cubrir (`_find_skyrim` no reconoce
+# SkyrimVR.exe, así que un setup VR-only corta en CRITICAL antes de llegar a este
+# chequeo) y sí amplía el riesgo de que una instalación SE/AE se reporte "SKSE
+# encontrado" con un loader de VR que no le sirve. Arreglarlo bien requiere matchear
+# el loader a la edición ya detectada, no ampliar el OR compartido.
+_SKSE_LOADER_NAMES = ("skse64_loader.exe", "skse_loader.exe")
 
 
 # ── Skyrim Version Detection ─────────────────────────────────────────
@@ -192,6 +197,16 @@ def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
 def detect_skyrim_edition(exe_path: pathlib.Path) -> SkyrimEdition:
     """Edición (SE/AE/LE/UNKNOWN) del ejecutable de Skyrim en *exe_path*."""
     return _detect_skyrim_version(exe_path)[1]
+
+
+def read_skyrim_version(exe_path: pathlib.Path) -> str:
+    """ProductVersion (PE) del ejecutable de Skyrim en *exe_path*, o ``""`` si no se pudo leer.
+
+    Distinto de la edición: dos ejecutables pueden compartir edición (ambos AE)
+    y tener versiones exactas distintas (1.6.640 vs 1.6.1170), lo que sí importa
+    para binarios pinneados a la versión exacta del juego como SKSE.
+    """
+    return _detect_skyrim_version(exe_path)[0]
 
 
 # ── Scanner ───────────────────────────────────────────────────────────
