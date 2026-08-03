@@ -457,8 +457,14 @@ class TestLOOTRunner:
         ):
             await runner.sort(update_masterlist=True)
 
-        assert "--update-masterlist" not in captured["args"]
-        assert "--auto-sort" in captured["args"]
+        assert captured["args"] == [
+            str(config.loot_exe),
+            "--game",
+            "SkyrimSE",
+            "--game-path",
+            str(config.game_path),
+            "--auto-sort",
+        ], "un flag inválido de más pasaría con asserts de membership; se afirma el vector completo"
 
     @pytest.mark.asyncio
     async def test_sort_omits_update_masterlist_by_default(self, tmp_path: pathlib.Path) -> None:

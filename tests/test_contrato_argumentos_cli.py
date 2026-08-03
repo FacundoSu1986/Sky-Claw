@@ -477,9 +477,14 @@ async def test_loot_con_update_masterlist_no_agrega_el_flag_inexistente(tmp_path
     ):
         await runner.sort(update_masterlist=True)
 
-    argv = capturado["args"]
-    assert "--update-masterlist" not in argv, "--update-masterlist no es un flag real de LOOT"
-    assert "--auto-sort" in argv, "el resto del vector sigue siendo válido con update_masterlist=True"
+    assert capturado["args"] == [
+        str(loot_exe),
+        "--game",
+        "Skyrim Special Edition",
+        "--game-path",
+        str(juego),
+        "--auto-sort",
+    ], "--update-masterlist no es un flag real de LOOT; se afirma el vector completo, no un membership"
 
 
 async def test_bodyslide_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:
