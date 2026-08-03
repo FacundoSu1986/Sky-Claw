@@ -95,6 +95,8 @@ async def setup_tools(
                         "status": "already_installed" if result.already_existed else "installed",
                         "exe_path": str(result.exe_path),
                         "version": result.version,
+                        "success": True,
+                        "message": "",
                     }
                 elif tool_name_lower == "xedit":
                     result = await tools_installer.ensure_xedit(install_dir, session)
@@ -104,6 +106,8 @@ async def setup_tools(
                         "status": "already_installed" if result.already_existed else "installed",
                         "exe_path": str(result.exe_path),
                         "version": result.version,
+                        "success": True,
+                        "message": "",
                     }
                 elif tool_name_lower == "pandora":
                     result = await tools_installer.ensure_pandora(install_dir, session)
@@ -113,6 +117,8 @@ async def setup_tools(
                         "status": "already_installed" if result.already_existed else "installed",
                         "exe_path": str(result.exe_path),
                         "version": result.version,
+                        "success": True,
+                        "message": "",
                     }
                 elif tool_name_lower == "bodyslide":
                     result = await tools_installer.ensure_bodyslide(install_dir, session, downloader)
@@ -122,6 +128,8 @@ async def setup_tools(
                         "status": "already_installed" if result.already_existed else "installed",
                         "exe_path": str(result.exe_path),
                         "version": result.version,
+                        "success": True,
+                        "message": "",
                     }
                 elif tool_name_lower == "ngio":
                     # Dependencias del precache de grass (Stage 8): se instalan
@@ -165,6 +173,8 @@ async def setup_tools(
                         "mods": [m.mod_name for m in mods],
                         "mod_dirs": [str(m.mod_dir) for m in mods],
                         "versions": {m.mod_name: m.version for m in mods},
+                        "success": True,
+                        "message": "",
                     }
                 else:
                     results[tool_name] = {
