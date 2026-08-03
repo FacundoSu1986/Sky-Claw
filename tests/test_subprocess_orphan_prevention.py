@@ -30,9 +30,7 @@ from sky_claw.local.tools.pandora_runner import (
     PandoraTimeoutError,
 )
 from sky_claw.local.tools.wrye_bash_runner import (
-    WryeBashConfig,
     WryeBashExecutionError,
-    WryeBashRunner,
     WryeBashTimeoutError,
 )
 
@@ -71,27 +69,15 @@ def _pandora(tmp_path, timeout: float) -> tuple[PandoraRunner, tuple]:
     return runner, ()
 
 
-def _wrye(tmp_path, timeout: float) -> tuple[WryeBashRunner, tuple]:
-    runner = WryeBashRunner(
-        WryeBashConfig(
-            wrye_bash_path=tmp_path / "bash.exe",
-            game_path=tmp_path,
-            mo2_path=tmp_path,
-            timeout_seconds=timeout,
-        )
-    )
-    return runner, ()
-
-
 #: Runners que efectivamente lanzan un proceso hijo y por lo tanto pueden dejar
-#: un huérfano. `_wrye` quedó FUERA a propósito: verificado contra
+#: un huérfano. Wrye Bash quedó FUERA a propósito: verificado contra
 #: `wrye-bash/wrye-bash` `Mopy/bash/barg.py`, Wrye Bash no expone ningún flag que
 #: construya el Bashed Patch sin GUI, así que `generate_bashed_patch` ahora falla
 #: cerrado con `WryeBashHeadlessUnsupportedError` sin spawnear (antes corría
 #: `-b`, que en el parser real es `--backup` de settings, y reportaba éxito).
 #: Sin proceso hijo no hay huérfano que prevenir. Si la etapa 6 vuelve a lanzar
-#: un proceso —p. ej. al modelarla como etapa asistida— hay que devolver `_wrye`
-#: a esta lista y darle su excepción de timeout.
+#: un proceso —p. ej. al modelarla como etapa asistida— hay que agregar acá su
+#: factory y su excepción de timeout dedicada.
 _FACTORIES_QUE_SPAWNEAN = [_bodyslide, _pandora]
 
 _CALLS = {
@@ -103,7 +89,6 @@ _CALLS = {
 _TIMEOUT_EXC = {
     BodySlideRunner: BodySlideTimeoutError,
     PandoraRunner: PandoraTimeoutError,
-    WryeBashRunner: WryeBashTimeoutError,
 }
 
 
