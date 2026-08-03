@@ -32,7 +32,13 @@ from sky_claw.config import (
     SystemPaths,
 )
 from sky_claw.local.discovery.environment import SkyrimEdition
-from sky_claw.local.discovery.scanner import PANDORA_EXE_NAMES, detect_skyrim_edition, read_skyrim_version
+from sky_claw.local.discovery.scanner import (
+    PANDORA_EXE_NAMES,
+    detect_skyrim_edition,
+    read_skyrim_version,
+    skse_dll_game_version,
+    skyrim_version_matches,
+)
 
 if TYPE_CHECKING:
     from sky_claw.app.scraper.nexus_downloader import NexusDownloader
@@ -75,27 +81,51 @@ SKSE_CONFIG: dict[str, dict[str, str | None]] = {
 }
 
 
-def _skse_dll_game_version(dll_name: str) -> str:
-    """Versión exacta del juego (major.minor.patch) que targetea un DLL de SKSE.
+#: Tamaño máximo aceptado para el archive de SKSE. Los payloads oficiales pesan ~10-15 MB;
+#: el techo existe para que un origen comprometido o mal configurado no pueda llenar el
+#: disco de staging: el timeout de la descarga acota el TIEMPO, no los BYTES.
+_SKSE_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 
-    Se deriva del propio nombre del archivo (``skse64_1_6_1170.dll`` -> ``"1.6.1170"``)
-    en vez de guardarla en un campo separado de SKSE_CONFIG: un campo redundante
-    puede desincronizarse del DLL real si alguien actualiza uno sin el otro.
+# El decodificador de versión de los DLL de SKSE vive en `discovery.scanner` porque el
+# scanner necesita la MISMA regla para decidir si la instalación en disco sirve. Se
+# importa en vez de duplicarse: dos copias divergen en cuanto alguien agregue un payload.
+_skse_dll_game_version = skse_dll_game_version
+_game_version_matches = skyrim_version_matches
+
+
+def _reject_oversized_skse_content_length(resp: Any) -> None:
+    """Corta la descarga de SKSE si el origen ya declara un tamaño imposible.
+
+    Es un atajo, no la defensa: un ``Content-Length`` ausente, malformado o mentiroso
+    no habilita nada, porque el contador real de bytes se sigue evaluando por chunk.
     """
-    stem = dll_name.removesuffix(".dll")
-    return ".".join(stem.split("_")[-3:])
+    raw = getattr(resp, "headers", {}) or {}
+    declared = raw.get("Content-Length")
+    if declared is None:
+        return
+    try:
+        size = int(declared)
+    except (TypeError, ValueError):
+        return
+    if size > _SKSE_MAX_ARCHIVE_BYTES:
+        raise ToolInstallError(
+            f"El origen declara un archive de SKSE de {size} bytes, que excede el tamaño "
+            f"máximo permitido ({_SKSE_MAX_ARCHIVE_BYTES} bytes)."
+        )
 
 
-def _game_version_matches(detected: str, expected: str) -> bool:
-    """¿*detected* (PE del ejecutable) es compatible con *expected* (la que targetea el DLL)?
+def _skse_cfg_field(cfg: dict[str, str | None], field: str) -> str:
+    """Lee un campo obligatorio de un payload de ``SKSE_CONFIG``, fallando explícito si falta.
 
-    Compara por PREFIJO de segmentos, no por igualdad estricta: algunos recursos
-    PE incluyen un cuarto segmento de build (``1.6.1170.0``) que no cambia la
-    compatibilidad real con un DLL targeteado a ``1.6.1170``.
+    No usa ``assert``: con ``python -O`` los asserts se compilan fuera y un payload
+    incompleto sigue de largo hasta construir un ``install_dir / None`` (``TypeError``
+    críptico a mitad de la instalación, después de la aprobación HITL) en vez de cortar
+    con el contrato del método.
     """
-    detected_parts = detected.split(".")
-    expected_parts = expected.split(".")
-    return detected_parts[: len(expected_parts)] == expected_parts
+    value = cfg.get(field)
+    if not value:
+        raise ToolInstallError(f"Payload de SKSE mal configurado: falta el campo obligatorio '{field}' en SKSE_CONFIG.")
+    return value
 
 
 # Dependencias del precache de grass (SOP §2.8): NGIO-NG desde GitHub; Address
@@ -825,15 +855,15 @@ class ToolsInstaller:
             raise ToolInstallError(f"Edición {ed_key} no compatible (probablemente MS Store, que no soporta SKSE).")
 
         # Idempotencia: verificar si ya está instalado correctamente
-        assert cfg["loader"] is not None
-        assert cfg["dll"] is not None
+        loader_name = _skse_cfg_field(cfg, "loader")
+        dll_name = _skse_cfg_field(cfg, "dll")
 
         # Gate de versión exacta: SKSE está pinneado al BUILD exacto del juego, no
         # solo a su edición — dos AE distintos (1.6.640 vs 1.6.1170) comparten
         # edición pero el DLL de uno no carga sobre el otro. Solo se evalúa cuando
         # hay versión detectada (autodetección + pefile presente); si no, se
         # degrada al comportamiento previo (edición sola) en vez de bloquear.
-        expected_version = _skse_dll_game_version(cfg["dll"])
+        expected_version = _skse_dll_game_version(dll_name)
         if detected_version and not _game_version_matches(detected_version, expected_version):
             raise ToolInstallError(
                 f"Tu Skyrim {ed_key} está en la versión {detected_version}, pero el único "
@@ -841,8 +871,8 @@ class ToolsInstaller:
                 "a la versión EXACTA del ejecutable, no solo a la edición). Instalá "
                 "manualmente el build correspondiente desde https://skse.silverlock.org/."
             )
-        loader_path = install_dir / cfg["loader"]
-        dll_path = install_dir / cfg["dll"]
+        loader_path = install_dir / loader_name
+        dll_path = install_dir / dll_name
 
         if loader_path.exists() and dll_path.exists():
             logger.info("SKSE ya instalado en %s", loader_path)
@@ -853,17 +883,14 @@ class ToolsInstaller:
                 already_existed=True,
             )
 
+        url = _skse_cfg_field(cfg, "url")
+
         # Solicitar aprobación HITL
         decision = await self._hitl.request_approval(
             request_id=f"install-skse-{ed_key}",
             reason=f"Install SKSE for Skyrim {ed_key}?",
-            url=cfg["url"],
-            detail=(
-                f"URL: {cfg['url']}\n"
-                f"Loader: {cfg['loader']}\n"
-                f"DLL: {cfg['dll']}\n"
-                f"Source: skse.silverlock.org (sitio oficial)"
-            ),
+            url=url,
+            detail=(f"URL: {url}\nLoader: {loader_name}\nDLL: {dll_name}\nSource: skse.silverlock.org (sitio oficial)"),
             category="download",
         )
 
@@ -881,8 +908,7 @@ class ToolsInstaller:
             tmp_path = pathlib.Path(tmpdir)
             self._validator.validate(tmp_path)
 
-            assert cfg["url"] is not None
-            archive_name = cfg["url"].split("/")[-1]
+            archive_name = url.split("/")[-1]
             archive_path = tmp_path / archive_name
             self._validator.validate(archive_path)
 
@@ -914,7 +940,7 @@ class ToolsInstaller:
         return InstallResult(
             tool_name="SKSE",
             exe_path=loader_path,
-            version=pathlib.Path(cfg["url"]).stem,
+            version=pathlib.Path(url).stem,
             already_existed=False,
         )
 
@@ -1017,9 +1043,8 @@ class ToolsInstaller:
         downloaded = 0
         hasher = hashlib.sha256()
 
-        url = cfg["url"]
+        url = _skse_cfg_field(cfg, "url")
         expected_sha256 = cfg.get("sha256")
-        assert url is not None
 
         logger.info("Descargando SKSE desde %s ...", url)
 
@@ -1039,14 +1064,34 @@ class ToolsInstaller:
 
         try:
             resp.raise_for_status()
+
+            # Techo de bytes. El `ClientTimeout` de arriba acota cuánto TIEMPO puede
+            # durar la descarga, no cuántos bytes entran: contra un origen comprometido
+            # o mal configurado que sirva una respuesta infinita, el streaming llena el
+            # filesystem de staging sin que ningún timeout lo corte. El Content-Length
+            # declarado se chequea primero para ni empezar cuando ya se sabe imposible,
+            # pero no se confía en él: puede mentir o faltar, así que el contador real
+            # se sigue evaluando chunk a chunk.
+            _reject_oversized_skse_content_length(resp)
+
             with dest_path.open("wb") as fh:
                 async for chunk in resp.content.iter_chunked(_DOWNLOAD_CHUNK_SIZE):
+                    downloaded += len(chunk)
+                    if downloaded > _SKSE_MAX_ARCHIVE_BYTES:
+                        raise ToolInstallError(
+                            f"La descarga de SKSE excede el tamaño máximo permitido "
+                            f"({_SKSE_MAX_ARCHIVE_BYTES} bytes): se aborta antes de llenar el disco."
+                        )
                     fh.write(chunk)
                     hasher.update(chunk)
-                    downloaded += len(chunk)
 
                     if downloaded % (10 * _DOWNLOAD_CHUNK_SIZE) == 0:
                         logger.info("  ... %d bytes descargados", downloaded)
+        except ToolInstallError:
+            # El techo de bytes ya trae su propio mensaje accionable: propagarlo tal cual
+            # y limpiar el parcial (el `finally` de abajo libera la respuesta).
+            dest_path.unlink(missing_ok=True)
+            raise
         except (aiohttp.ClientError, OSError, TimeoutError) as exc:
             logger.error("Download failed for SKSE: %s", exc)
             if dest_path.exists():
@@ -1074,10 +1119,8 @@ class ToolsInstaller:
 
     def _find_skse_root(self, extract_path: pathlib.Path, cfg: dict[str, str | None]) -> pathlib.Path:
         """Encuentra el directorio raíz de SKSE, excluyendo __MACOSX y validando estructura."""
-        loader_name = cfg["loader"]
-        dll_name = cfg["dll"]
-        assert loader_name is not None
-        assert dll_name is not None
+        loader_name = _skse_cfg_field(cfg, "loader")
+        dll_name = _skse_cfg_field(cfg, "dll")
 
         valid_loaders = [p for p in extract_path.rglob(loader_name) if "__MACOSX" not in p.parts and p.is_file()]
 
@@ -1100,6 +1143,38 @@ class ToolsInstaller:
         logger.debug("SKSE root encontrado: %s", skse_root)
         return skse_root
 
+    def _assert_safe_copy_target(self, target: pathlib.Path, game_dir: pathlib.Path) -> None:
+        """Rechaza *target* como destino de copia si puede escribir fuera de *game_dir*.
+
+        ``shutil.copy2`` sigue los enlaces al escribir, y ``PathValidator`` opina sobre la
+        ruta tal cual se la pasa. Con eso solo, un enlace precreado en el directorio del
+        juego —o un ancestro enlazado, p. ej. ``Data/`` apuntando afuera— hace que la
+        escritura aterrice fuera del sandbox aunque la ruta sin resolver caiga adentro.
+        Por eso se rechaza cualquier enlace existente, no solo los que apuntan afuera: un
+        enlace a otro archivo DENTRO del juego igual sobrescribe algo que no es el destino.
+        """
+        if target.is_symlink():
+            raise ToolInstallError(
+                f"Destino {target} es un enlace simbólico: SKSE no sobrescribe enlaces "
+                "(la copia terminaría escribiendo en el archivo apuntado). Borralo y reintentá."
+            )
+
+        self._validator.validate(target)
+
+        # El padre real puede no existir todavía (`Data/Scripts/`): se sube hasta el
+        # primer ancestro que sí exista, que es el que `mkdir`/`copy2` van a atravesar.
+        anchor = target.parent
+        while not anchor.exists() and anchor != anchor.parent:
+            anchor = anchor.parent
+
+        game_root = game_dir.resolve()
+        resolved = anchor.resolve()
+        if resolved != game_root and game_root not in resolved.parents:
+            raise ToolInstallError(
+                f"Destino {target} resuelve fuera del directorio del juego ({resolved}): "
+                "hay un enlace simbólico en el camino. Se aborta la instalación."
+            )
+
     async def _copy_skse_files(
         self,
         skse_root: pathlib.Path,
@@ -1116,10 +1191,7 @@ class ToolsInstaller:
 
             if item.is_file():
                 if item.suffix.lower() in (".dll", ".exe"):
-                    if target.is_symlink() and not str(target.readlink()).startswith(str(game_dir)):
-                        raise ToolInstallError(f"Symlink detectado en destino fuera del install_dir: {target}")
-
-                    self._validator.validate(target)
+                    self._assert_safe_copy_target(target, game_dir)
 
                     if target.exists():
                         try:
@@ -1130,7 +1202,11 @@ class ToolsInstaller:
                                 target.chmod(mode | stat.S_IWRITE)
                         except OSError:
                             pass
-                    shutil.copy2(item, target)
+                    # `copy2` es I/O de disco sincrónico: en árboles como el `Data/` de
+                    # SKSE bloquea el event loop de NiceGUI (y con él las aprobaciones
+                    # HITL) todo lo que dure la copia. Va al threadpool, igual que la
+                    # extracción.
+                    await asyncio.to_thread(shutil.copy2, item, target)
                     copied_count += 1
                     logger.debug("Copiado: %s → %s", item.name, target)
             elif item.is_dir() and item.name == "Data":
@@ -1140,12 +1216,9 @@ class ToolsInstaller:
                         rel_path = data_item.relative_to(item.parent)
                         data_target = game_dir / rel_path
 
-                        if data_target.is_symlink() and not str(data_target.readlink()).startswith(str(game_dir)):
-                            raise ToolInstallError(f"Symlink detectado en destino fuera del install_dir: {data_target}")
-
-                        self._validator.validate(data_target)
+                        self._assert_safe_copy_target(data_target, game_dir)
                         data_target.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(data_item, data_target)
+                        await asyncio.to_thread(shutil.copy2, data_item, data_target)
                         copied_count += 1
                 logger.info("Copiada carpeta Data de SKSE")
 
@@ -1155,7 +1228,36 @@ class ToolsInstaller:
                 "Verifica que el archivo descargado contenga los binarios esperados."
             )
 
+        self._verify_skse_installed(game_dir, cfg)
         logger.info("SKSE: archivos copiados a %s", game_dir)
+
+    def _verify_skse_installed(self, game_dir: pathlib.Path, cfg: dict[str, str | None]) -> None:
+        """Verifica en DESTINO que la instalación de SKSE quedó completa.
+
+        Contar archivos copiados no alcanza: un payload con el loader y un ``Data/``
+        poblado deja ``copied_count > 0`` y reportaba éxito aunque el DLL de runtime
+        —lo único que hace que SKSE cargue— nunca llegara al directorio del juego.
+        """
+        loader_name = _skse_cfg_field(cfg, "loader")
+        dll_name = _skse_cfg_field(cfg, "dll")
+
+        faltantes = [name for name in (loader_name, dll_name) if not (game_dir / name).is_file()]
+        if faltantes:
+            raise ToolInstallError(
+                f"La instalación de SKSE quedó incompleta en {game_dir}: falta {', '.join(faltantes)}. "
+                "El juego no cargaría SKSE. Revisá el archive descargado."
+            )
+
+        # El steam loader no entra en el corte duro: solo hace falta para arrancar desde
+        # Steam, y MO2 lanza el loader directo. Fallar acá tiraría abajo una instalación
+        # que funciona; avisar deja el rastro sin romperla.
+        steam_loader = cfg.get("steam_loader")
+        if steam_loader and not (game_dir / steam_loader).is_file():
+            logger.warning(
+                "SKSE instalado sin %s: el arranque desde Steam puede no cargar SKSE "
+                "(lanzándolo desde MO2 o desde el loader funciona igual).",
+                steam_loader,
+            )
 
     async def ensure_bodyslide(
         self,

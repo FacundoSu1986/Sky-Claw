@@ -1556,10 +1556,17 @@ class TestEnsureSkse:
             assert cfg["loader"].startswith(familia), f"{key}: loader de otra familia"
 
     def test_el_host_de_skse_esta_habilitado_en_el_egress(self) -> None:
-        """Sin la entrada en ALLOWED_HOSTS la descarga muere DESPUÉS de la aprobación HITL."""
+        """Sin la entrada en ALLOWED_HOSTS la descarga muere DESPUÉS de la aprobación HITL.
+
+        La pertenencia se escribe como inclusión de conjuntos y no como
+        ``"skse.silverlock.org" in ALLOWED_HOSTS``: CodeQL lee ese ``in`` como el patrón
+        de saneamiento de URLs por substring (``py/incomplete-url-substring-sanitization``)
+        y lo reporta, aunque acá el operando derecho sea un ``frozenset`` de hosts y la
+        comparación sea exacta. La aserción es la misma; solo cambia la forma de decirla.
+        """
         from sky_claw.config import ALLOWED_HOSTS, ALLOWED_METHODS
 
-        assert "skse.silverlock.org" in ALLOWED_HOSTS
+        assert {"skse.silverlock.org"} <= ALLOWED_HOSTS
         assert ALLOWED_METHODS["skse.silverlock.org"] == frozenset(["GET"])
 
     @pytest.mark.asyncio
@@ -1701,6 +1708,190 @@ class TestEnsureSkse:
 
         with pytest.raises(ToolInstallError, match="No encontré el ejecutable"):
             await installer.ensure_skse(install_dir, session)
+
+    # ── Payload mal configurado: sin `assert` ────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_payload_sin_dll_falla_con_el_error_del_contrato(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un campo faltante en SKSE_CONFIG corta con ToolInstallError, no con AssertionError.
+
+        Los `assert` que validaban esto se compilan fuera con `python -O`: ahí el
+        payload incompleto llegaba hasta `install_dir / None` (TypeError críptico)
+        DESPUÉS de haber consumido la aprobación del operador.
+        """
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+        monkeypatch.setitem(tools_installer.SKSE_CONFIG["AE"], "dll", None)
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(ToolInstallError, match="falta el campo obligatorio 'dll'"):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+    def test_campo_obligatorio_no_depende_de_assert(self) -> None:
+        """Ancla directa del helper: mismo comportamiento corra o no con `-O`."""
+        with pytest.raises(ToolInstallError, match="falta el campo obligatorio 'url'"):
+            tools_installer._skse_cfg_field({"url": None}, "url")
+
+        assert tools_installer._skse_cfg_field({"url": "https://x/y.7z"}, "url") == "https://x/y.7z"
+
+    # ── Destinos de copia: symlinks y verificación post-copia ────────────────
+
+    def _payload(self, tmp_path: pathlib.Path, *, con_dll: bool = True) -> pathlib.Path:
+        """Payload extraído mínimo: loader + DLL de runtime en la raíz."""
+        skse_root = tmp_path / "payload"
+        skse_root.mkdir(parents=True, exist_ok=True)
+        (skse_root / "skse64_loader.exe").write_bytes(b"MZ-loader")
+        if con_dll:
+            (skse_root / "skse64_1_6_1170.dll").write_bytes(b"MZ-dll")
+        return skse_root
+
+    @pytest.mark.asyncio
+    async def test_rechaza_destino_symlink_que_apunta_afuera(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """`shutil.copy2` sigue el link: escribiría fuera del directorio validado."""
+        game_dir = tmp_path / "skyrim"
+        game_dir.mkdir()
+        afuera = tmp_path / "afuera.dll"
+        afuera.write_bytes(b"victima")
+        (game_dir / "skse64_1_6_1170.dll").symlink_to(afuera)
+
+        with pytest.raises(ToolInstallError, match="enlace"):
+            await installer._copy_skse_files(self._payload(tmp_path), game_dir, tools_installer.SKSE_CONFIG["AE"])
+
+        assert afuera.read_bytes() == b"victima", "el archivo apuntado no debió tocarse"
+
+    @pytest.mark.asyncio
+    async def test_rechaza_destino_symlink_aunque_apunte_adentro(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Un link a otro archivo DENTRO del juego igual sobrescribe algo que no es el destino."""
+        game_dir = tmp_path / "skyrim"
+        game_dir.mkdir()
+        vecino = game_dir / "otro.dll"
+        vecino.write_bytes(b"vecino")
+        (game_dir / "skse64_1_6_1170.dll").symlink_to(vecino)
+
+        with pytest.raises(ToolInstallError, match="enlace"):
+            await installer._copy_skse_files(self._payload(tmp_path), game_dir, tools_installer.SKSE_CONFIG["AE"])
+
+        assert vecino.read_bytes() == b"vecino"
+
+    @pytest.mark.asyncio
+    async def test_rechaza_data_cuyo_ancestro_es_un_symlink(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Validar la ruta sin resolver deja pasar `Data/` linkeado afuera del juego."""
+        game_dir = tmp_path / "skyrim"
+        game_dir.mkdir()
+        afuera = tmp_path / "data_afuera"
+        afuera.mkdir()
+        (game_dir / "Data").symlink_to(afuera, target_is_directory=True)
+
+        skse_root = self._payload(tmp_path)
+        scripts = skse_root / "Data" / "Scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "Actor.pex").write_bytes(b"pex")
+
+        with pytest.raises(ToolInstallError, match="enlace"):
+            await installer._copy_skse_files(skse_root, game_dir, tools_installer.SKSE_CONFIG["AE"])
+
+        assert not (afuera / "Scripts").exists(), "no debió escribir fuera del directorio del juego"
+
+    @pytest.mark.asyncio
+    async def test_copia_normal_deja_loader_y_dll_en_destino(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """El camino feliz sigue funcionando con las validaciones nuevas."""
+        game_dir = tmp_path / "skyrim"
+        game_dir.mkdir()
+        skse_root = self._payload(tmp_path)
+        scripts = skse_root / "Data" / "Scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "Actor.pex").write_bytes(b"pex")
+
+        await installer._copy_skse_files(skse_root, game_dir, tools_installer.SKSE_CONFIG["AE"])
+
+        assert (game_dir / "skse64_loader.exe").read_bytes() == b"MZ-loader"
+        assert (game_dir / "skse64_1_6_1170.dll").read_bytes() == b"MZ-dll"
+        assert (game_dir / "Data" / "Scripts" / "Actor.pex").read_bytes() == b"pex"
+
+    @pytest.mark.asyncio
+    async def test_falla_si_el_dll_de_runtime_no_quedo_en_destino(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Contar archivos copiados no alcanza: sin el DLL del build, SKSE no carga.
+
+        Un payload con el loader y un `Data/` poblado deja `copied_count > 0` y
+        reportaba instalación exitosa aunque el runtime DLL nunca llegara al juego.
+        """
+        game_dir = tmp_path / "skyrim"
+        game_dir.mkdir()
+        skse_root = self._payload(tmp_path, con_dll=False)
+        scripts = skse_root / "Data" / "Scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "Actor.pex").write_bytes(b"pex")
+
+        with pytest.raises(ToolInstallError, match="skse64_1_6_1170.dll"):
+            await installer._copy_skse_files(skse_root, game_dir, tools_installer.SKSE_CONFIG["AE"])
+
+    # ── Descarga acotada en bytes ────────────────────────────────────────────
+
+    def _mock_stream(self, installer: ToolsInstaller, chunks: list[bytes], content_length: str | None = None) -> None:
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock(return_value=None)
+        resp.release = MagicMock(return_value=None)
+        resp.headers = {} if content_length is None else {"Content-Length": content_length}
+        resp.content.iter_chunked.return_value = _async_iter(chunks)
+        installer._gateway = MagicMock()
+        installer._gateway.request = AsyncMock(return_value=resp)
+
+    @pytest.mark.asyncio
+    async def test_aborta_si_el_stream_excede_el_techo_de_bytes(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """El timeout acota el TIEMPO, no los BYTES: un origen comprometido llenaría el disco."""
+        monkeypatch.setattr(tools_installer, "_SKSE_MAX_ARCHIVE_BYTES", 1024)
+        dest = tmp_path / "skse.7z"
+        session = MagicMock(spec=aiohttp.ClientSession)
+        self._mock_stream(installer, [b"x" * 600, b"y" * 600, b"z" * 600])
+
+        with pytest.raises(ToolInstallError, match="excede el tamaño máximo"):
+            await installer._download_skse_archive(session, tools_installer.SKSE_CONFIG["AE"], dest)
+
+        assert not dest.exists(), "el parcial tiene que borrarse"
+
+    @pytest.mark.asyncio
+    async def test_rechaza_content_length_desmedido_antes_de_leer_el_cuerpo(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Si el origen ya declara un tamaño imposible, no hace falta bajar nada."""
+        monkeypatch.setattr(tools_installer, "_SKSE_MAX_ARCHIVE_BYTES", 1024)
+        dest = tmp_path / "skse.7z"
+        session = MagicMock(spec=aiohttp.ClientSession)
+        self._mock_stream(installer, [b"x" * 10], content_length=str(50 * 1024))
+
+        with pytest.raises(ToolInstallError, match="excede el tamaño máximo"):
+            await installer._download_skse_archive(session, tools_installer.SKSE_CONFIG["AE"], dest)
+
+        assert not dest.exists()
+
+    @pytest.mark.asyncio
+    async def test_descarga_dentro_del_techo_pasa(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """El techo no puede romper la descarga legítima."""
+        monkeypatch.setitem(tools_installer.SKSE_CONFIG["AE"], "sha256", None)
+        dest = tmp_path / "skse.7z"
+        session = MagicMock(spec=aiohttp.ClientSession)
+        self._mock_stream(installer, [b"payload"], content_length="7")
+
+        await installer._download_skse_archive(session, tools_installer.SKSE_CONFIG["AE"], dest)
+
+        assert dest.read_bytes() == b"payload"
 
 
 async def _async_iter(items: list[bytes]):

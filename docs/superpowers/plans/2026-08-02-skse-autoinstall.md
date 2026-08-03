@@ -670,12 +670,18 @@ tool_defs = [
 
 ## Notas Importantes
 
-### ARCHIVOS GUI NO EXISTEN
-Los archivos mencionados en el plan original:
-- `sky_claw/app/gui/controllers/ritual_runner.py` ❌ NO EXISTE
-- `sky_claw/app/gui/views/forge_dashboard.py` ❌ NO EXISTE
+### LA CAPA GUI SÍ EXISTE (corrección de una nota previa de este plan)
+Una versión anterior de esta sección afirmaba que estos archivos no existían y que el
+repo **no tenía capa GUI**. Es falso, y dejarlo escrito desviaba a quien viniera después:
 
-La arquitectura actual del proyecto **no tiene capa GUI** en este repositorio. La integración GUI deberá hacerse en un PR separado cuando exista la capa de presentación.
+- `sky_claw/app/gui/controllers/ritual_runner.py` ✅ EXISTE — es donde vive `RITUAL_INSTALLER_MAP`.
+- `sky_claw/app/gui/views/forge_dashboard.py` ✅ EXISTE — de ahí sale `STORE_KEY_ENV`.
+
+El repo tiene GUI NiceGUI completa bajo `sky_claw/app/gui/`. La integración de SKSE se
+hace **en este PR y ahí**: `"skse": "ensure_skse"` en `RITUAL_INSTALLER_MAP`, con
+`run_ritual_install` leyendo la carpeta del juego del último snapshot del scanner. La
+GUI es justamente la superficie que el diseño exige (aprobación del operador), no una
+que falte.
 
 ### SkyrimEdition Import Correcto
 
