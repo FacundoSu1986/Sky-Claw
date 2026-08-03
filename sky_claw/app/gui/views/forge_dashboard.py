@@ -226,21 +226,29 @@ def _ritual_status(snapshot: Any, tool_key: str) -> str:
 
 
 def _ritual_action(tool_key: str, state: str) -> str:
-    """Qué puede ofrecer el botón de una tarjeta: ``"run"``, ``"install"`` o ``"none"``.
+    """Qué ofrece el botón de una tarjeta: ``run``, ``install``, ``installed`` o ``none``.
 
     Se deriva de los dos mapas de cableado en vez de un flag por tarjeta, para que una
     tarjeta nunca prometa un botón que no tiene a dónde ir:
 
     * ``run`` exige estar en ``RITUAL_TOOL_MAP`` (el dispatcher que lo ejecuta).
     * ``install`` exige estar en ``RITUAL_INSTALLER_MAP`` (el método de ``ToolsInstaller``).
+    * ``installed`` es un tool presente que Sky-Claw no ejecuta: no hay acción, pero
+      tampoco es "falta algo".
+    * ``none`` es el resto: sin scan todavía, o faltante sin auto-instalador.
 
-    SKSE es el caso que lo motiva: tiene instalador y **no** tiene —ni puede tener—
-    dispatcher, porque es un runtime que carga el juego, no una tool que Sky-Claw
-    ejecute. Con el estado genérico, una tarjeta ``available`` cableaba el botón a
-    ``on_ritual_run`` y prometía "Ejecutar" sobre un dispatcher inexistente.
+    SKSE es el caso que motiva las dos ramas del medio: tiene instalador y **no** tiene
+    —ni puede tener— dispatcher, porque es un runtime que carga el juego, no una tool
+    que Sky-Claw ejecute. Con el estado genérico, una tarjeta ``available`` cableaba el
+    botón a ``on_ritual_run`` y prometía "Ejecutar" sobre un dispatcher inexistente.
+
+    ``installed`` y ``none`` están separados a propósito, aunque ninguno dispare una
+    acción: colapsarlos mandaba el botón "Instalado" a la rama del aviso interino de
+    :func:`_ritual_card`, que notifica "disponible en la próxima iteración" — sobre un
+    componente que ya está instalado (revisión adversarial de #429).
     """
-    if state == "available" and tool_key in RITUAL_TOOL_MAP:
-        return "run"
+    if state == "available":
+        return "run" if tool_key in RITUAL_TOOL_MAP else "installed"
     if state == "missing" and tool_key in RITUAL_INSTALLER_MAP:
         return "install"
     return "none"
@@ -1032,8 +1040,11 @@ def _ritual_card(
     action = _ritual_action(r["tool"], state)
     # Un tool detectado que Sky-Claw no ejecuta (SKSE) está instalado y listo, pero no
     # hay nada que "ejecutar": el label genérico del estado mentiría.
-    if state == "available" and action == "none":
+    if action == "installed":
         btn_label = "Instalado"
+        # El botón queda como indicador, no como acción: sin esto el cursor prometía
+        # un click que no lleva a ninguna parte.
+        btn_style += " cursor:default;"
     card = (
         f"position:relative; display:flex; flex-direction:column; gap:9px; padding:18px 16px; border-radius:4px; opacity:{opacity};"
         "background:linear-gradient(168deg, rgba(30,22,14,.9), rgba(14,10,7,.92)); border:1px solid rgba(200,168,106,.22);"
@@ -1060,6 +1071,16 @@ def _ritual_card(
             b.on("click", lambda _=None, tool=r["tool"]: on_ritual_run(tool))
         elif action == "install" and on_ritual_install is not None:
             b.on("click", lambda _=None, tool=r["tool"]: on_ritual_install(tool))
+        elif action == "installed":
+            # Rama propia, y no el aviso interino de abajo: ese le diría "disponible en
+            # la próxima iteración" a un componente que YA está instalado.
+            b.on(
+                "click",
+                lambda _=None, lbl=r["label"], tech=r["tech"]: ui.notify(
+                    f"{lbl} ({tech}) ya está instalado: lo carga el juego, no hay nada que ejecutar.",
+                    type="positive",
+                ),
+            )
         else:
             b.on(
                 "click",

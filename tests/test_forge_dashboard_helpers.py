@@ -134,15 +134,34 @@ def test_tool_instalable_faltante_ofrece_instalar() -> None:
     assert _ritual_action("loot", "missing") == "install"
 
 
-def test_skse_instalado_no_ofrece_ejecutar() -> None:
+def test_skse_instalado_no_ofrece_ejecutar_sino_que_informa() -> None:
     """SKSE es un runtime que carga el juego, no una tool que Sky-Claw ejecute.
 
     Con el estado genérico, una tarjeta `available` cablea el botón a
     `on_ritual_run`, que resuelve el dispatcher por `RITUAL_TOOL_MAP` — donde
     `skse` no está ni puede estar. El botón prometía "Ejecutar" y no tenía a
     dónde ir.
+
+    El desenlace es `installed` y NO `none`: son dos situaciones distintas que
+    `_ritual_card` tiene que poder separar (ver el test de abajo).
     """
-    assert _ritual_action("skse", "available") == "none"
+    assert _ritual_action("skse", "available") == "installed"
+
+
+def test_instalado_y_sin_accion_no_son_el_mismo_desenlace() -> None:
+    """Señalado por la revisión adversarial de Qodo sobre este mismo PR.
+
+    Colapsar ambos en `none` hacía que el botón "Instalado" cayera en la rama del
+    aviso interino de `_ritual_card` y notificara "disponible en la próxima
+    iteración" sobre un componente que YA está instalado. El label decía la verdad
+    y el handler la contradecía.
+    """
+    instalado = _ritual_action("skse", "available")
+    sin_accion = _ritual_action("wrye_bash", "missing")
+
+    assert instalado != sin_accion, "la tarjeta no puede tratar «ya instalado» como «no hay nada que hacer»"
+    assert instalado == "installed"
+    assert sin_accion == "none"
 
 
 def test_tool_sin_instalador_y_faltante_no_ofrece_instalar() -> None:
@@ -205,3 +224,71 @@ def test_hud_html_paints_nd_for_unknown_metrics() -> None:
     html = _hud_html()
     # GPU + CPU both unknown → two "N/D".
     assert html.count("N/D") == 2
+
+
+def test_ritual_card_distingue_todos_los_desenlaces_del_helper() -> None:
+    """Cada valor que `_ritual_action` puede devolver tiene que tener rama propia.
+
+    El defecto que motiva este ancla (revisión adversarial de #429) no fue un valor
+    mal calculado sino un desenlace que el consumidor no distinguía: `installed`
+    caía en el `else` del aviso interino y le decía "disponible en la próxima
+    iteración" a un componente ya instalado. Agregar un desenlace al helper sin
+    cablearlo en `_ritual_card` tiene que romper acá, no en la cara del usuario.
+
+    `none` es la única excepción legítima: es justamente lo que atiende el `else`.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from sky_claw.app.gui.views import forge_dashboard as fd
+
+    def _constantes_de_retorno(fn: object) -> set[str]:
+        arbol = ast.parse(textwrap.dedent(inspect.getsource(fn)))  # type: ignore[arg-type]
+        valores: set[str] = set()
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Return) and nodo.value is not None:
+                valores |= {
+                    c.value for c in ast.walk(nodo.value) if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                }
+        return valores
+
+    def _cableados_en_los_handlers(fn: object) -> set[str]:
+        """Desenlaces con rama propia **en la cadena que cablea el click**.
+
+        Mirar cualquier `action == "..."` del cuerpo no alcanza: `_ritual_card` también
+        compara contra `action` para elegir el label, así que un handler borrado seguía
+        "manejado" a ojos del test. Verificado por mutación: con la rama del handler
+        removida, esta versión falla y la otra pasaba.
+        """
+        arbol = ast.parse(textwrap.dedent(inspect.getsource(fn)))  # type: ignore[arg-type]
+        valores: set[str] = set()
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.If):
+                continue
+            cablea_click = any(
+                isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) and c.func.attr == "on"
+                for rama in nodo.body
+                for c in ast.walk(rama)
+            )
+            if not cablea_click:
+                continue
+            for comparacion in ast.walk(nodo.test):
+                if (
+                    isinstance(comparacion, ast.Compare)
+                    and isinstance(comparacion.left, ast.Name)
+                    and comparacion.left.id == "action"
+                ):
+                    valores |= {
+                        c.value
+                        for c in comparacion.comparators
+                        if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                    }
+        return valores
+
+    desenlaces = _constantes_de_retorno(fd._ritual_action)
+    manejados = _cableados_en_los_handlers(fd._ritual_card)
+
+    assert desenlaces, "no se pudo leer los desenlaces de _ritual_action"
+    sin_rama = desenlaces - manejados - {"none"}
+    assert not sin_rama, f"desenlaces sin rama propia en _ritual_card: {sorted(sin_rama)}"
