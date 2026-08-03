@@ -9,7 +9,7 @@ from __future__ import annotations
 import pathlib
 import re
 
-from tests.test_borrado_recursivo import MECANISMO_DE_BORRADO
+from tests.test_borrado_recursivo import MECANISMO_DE_BORRADO, MECANISMO_DE_MEDICION
 from tests.test_rollback_reconciler import (
     PRODUCTORES_DEL_NOMBRE,
     RECONCILIADORES_DE_ARRANQUE,
@@ -35,11 +35,13 @@ _ITEMS = frozenset(
         "T-28",
         "T-29",
         "T-30",
+        "T-31",
         *(f"U-{numero:02d}" for numero in range(1, 13)),
         *(f"F{numero}" for numero in range(1, 10)),
         "F8 USVFS",
         "Detección de enlaces",
         "Borrado recursivo",
+        "Medición de árboles",
         "Fugas de lifecycle en tests",
         "Smoke real de QuickAutoClean",
         "Smokes reales restantes",
@@ -207,3 +209,28 @@ def test_los_smokes_sin_ancla_automatizable_declaran_verificacion_humana() -> No
     for item in ("Smoke real de QuickAutoClean", "Smokes reales restantes"):
         assert filas[item]["Estado"] == "Bloqueado (rig humano)"
         assert filas[item]["Verificado por"] == "humano"
+
+
+def test_medicion_de_arboles_se_apoya_en_el_censo_de_medidores() -> None:
+    """La fila sólo cierra con un censo poblado y de vocabulario cerrado.
+
+    El docstring anterior decía que la fila «no puede decir Cerrado con un
+    medidor sin clasificar», y la aserción no verificaba eso: un medidor sin
+    clasificar no está en el dict, así que no aporta ningún valor y la
+    comprobación de vocabulario seguía verde. Afirmaba más de lo que probaba,
+    que es el defecto que este archivo persigue.
+
+    La cobertura —que ningún medidor quede afuera— la verifica
+    ``test_borrado_recursivo.py::test_la_enumeracion_cubre_a_todo_el_que_mide_arboles``,
+    que es a lo que apunta la celda «Verificado por». Acá se ata lo que sí es
+    comprobable desde este archivo: que el censo no esté vacío y que todo lo
+    declarado ``"sin-contraparte-que-borre"`` efectivamente no borre.
+    """
+    fila = _tabla()["Medición de árboles"]
+    eximidos = {m for m, mecanismo in MECANISMO_DE_MEDICION.items() if mecanismo == "sin-contraparte-que-borre"}
+
+    assert MECANISMO_DE_MEDICION
+    assert set(MECANISMO_DE_MEDICION.values()) <= {"link-aware", "sin-contraparte-que-borre"}
+    assert not (eximidos & set(MECANISMO_DE_BORRADO))
+    assert fila["Estado"] == "Cerrado"
+    assert "test_borrado_recursivo.py" in fila["Verificado por"]

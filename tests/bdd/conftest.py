@@ -21,24 +21,20 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
-from collections.abc import Coroutine, Iterator
-from typing import Any, TypeVar
+from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from pytest_bdd import given, parsers
-from tests.bdd.support.async_harness import ScenarioLoop
+from tests.bdd.support.async_harness import ScenarioLoop, run
 from tests.bdd.support.grass_cache_harness import (
     abrir_journal_real,
     construir_dispatcher_grass,
     construir_servicio_grass,
-    preparar_entorno_mo2,
 )
 
 from sky_claw.app.db.journal import OperationJournal
 from sky_claw.app.security.hitl import Decision
-
-T = TypeVar("T")
-
 
 # ---------------------------------------------------------------------------
 # Harness asíncrono: loop propio por escenario (3.11/3.12-safe)
@@ -50,11 +46,6 @@ def bdd_loop() -> Iterator[asyncio.AbstractEventLoop]:
     """Loop propio por escenario, administrado por una primitiva testeable."""
     with ScenarioLoop() as harness:
         yield harness.loop
-
-
-def run(loop: asyncio.AbstractEventLoop, coro: Coroutine[Any, Any, T]) -> T:
-    """Helper: ejecuta una corrutina de step en el loop del escenario."""
-    return loop.run_until_complete(coro)
 
 
 @pytest.fixture()
@@ -80,8 +71,11 @@ def ctx(bdd_loop: asyncio.AbstractEventLoop) -> Iterator[dict[str, Any]]:
 
 @given("que el entorno de Mod Organizer 2 usa rutas de prueba aisladas")
 def entorno_mo2_resuelto(bdd_loop: asyncio.AbstractEventLoop, ctx: dict[str, Any], tmp_path: pathlib.Path) -> None:
-    """Entorno MO2 aislado en tmp + journal REAL abierto en el loop del escenario."""
-    preparar_entorno_mo2(tmp_path)
+    """Journal REAL abierto en el loop del escenario, bajo el tmp_path aislado.
+
+    El árbol MO2 lo crea ``construir_servicio_grass`` (dueño único): duplicarlo
+    acá dejaba ambiguo quién lo posee.
+    """
     ctx["journal"] = run(bdd_loop, abrir_journal_real(tmp_path / "bdd_journal.db"))
 
 
@@ -96,8 +90,26 @@ def servicio_grass_cableado(ctx: dict[str, Any], tmp_path: pathlib.Path) -> None
     ctx["colaboradores"] = colaboradores
 
 
+@given("que el dispatcher se cablea sin ningún HITLGuard")
+def dispatcher_sin_hitl_guard(ctx: dict[str, Any]) -> None:
+    """Recablea el dispatcher sin guard: ``build_orchestration_dispatcher`` arma
+    su ``HitlGateMiddleware()`` por defecto, que es fail-closed. NUNCA se usa
+    ``allow_unattended=True`` — sería desactivar justo lo que se quiere anclar.
+    """
+    dispatcher, hitl_guard = construir_dispatcher_grass(ctx["service"], con_guard=False)
+    ctx["dispatcher"] = dispatcher
+    ctx["colaboradores"]["hitl_guard"] = hitl_guard
+
+
 @given(parsers.parse('que el operador aprueba la ejecución destructiva de "{tool_name}"'))
 def operador_aprueba_tool(ctx: dict[str, Any], tool_name: str) -> None:
     """Configura una aprobación explícita; nunca habilita ejecución unattended."""
     assert tool_name == "generate_grass_cache"
     ctx["colaboradores"]["hitl_guard"].request_approval.return_value = Decision.APPROVED
+
+
+@given(parsers.parse('que el operador deniega la ejecución destructiva de "{tool_name}"'))
+def operador_deniega_tool(ctx: dict[str, Any], tool_name: str) -> None:
+    """Deniega explícitamente: el gate HITL debe cortar antes de cualquier mutación."""
+    assert tool_name == "generate_grass_cache"
+    ctx["colaboradores"]["hitl_guard"].request_approval.return_value = Decision.DENIED

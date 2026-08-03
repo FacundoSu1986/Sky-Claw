@@ -265,8 +265,12 @@ class FomodInstaller:
             # hipotético: `shutil.rmtree` lo habría atravesado, y con
             # `ignore_errors=True` sin dejar rastro. La primitiva borra el
             # enlace, nunca su destino.
+            # `limpiar_readonly`: lo extraído de un archive trae los modos del
+            # zip, y en Windows un archivo read-only hace fallar el unlink. Como
+            # el fallo va dentro de `suppress(OSError)`, sin el flag el tmp
+            # quedaba huérfano EN SILENCIO y la fuga de disco crecía por corrida.
             with contextlib.suppress(OSError):
-                await asyncio.to_thread(rmtree_link_aware, tmp_dir)
+                await asyncio.to_thread(rmtree_link_aware, tmp_dir, limpiar_readonly=True)
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -135,11 +135,29 @@ def construir_servicio_grass(
     return service, colaboradores
 
 
-def construir_dispatcher_grass(service: GrassCacheService) -> tuple[OrchestrationToolDispatcher, HITLGuard]:
-    """Construye el dispatcher de producción con Grass Cache real y demás boundaries mockeados."""
+def construir_dispatcher_grass(
+    service: GrassCacheService, *, con_guard: bool = True
+) -> tuple[OrchestrationToolDispatcher, HITLGuard | None]:
+    """Construye el dispatcher de producción con Grass Cache real y demás boundaries mockeados.
+
+    ``con_guard=False`` deja ``hitl_guard=None``. El ``HitlGateMiddleware`` se
+    construye SIEMPRE de forma explícita — igual que ``SupervisorAgent.__init__``
+    (``tool_dispatcher.py:303-308``: ``hitl_gate=HitlGateMiddleware(hitl_guard=hitl_guard)``,
+    nunca ``hitl_gate=None``) — y NO se delega en el fallback propio de
+    ``build_orchestration_dispatcher`` (``gate = hitl_gate or HitlGateMiddleware()``).
+    Ese fallback es el "hermano" que nunca corre en producción: el único caller
+    real siempre pasa un ``HitlGateMiddleware`` armado, así que el fail-closed
+    que importa anclar es el de ``HitlGateMiddleware(hitl_guard=None)`` — no el
+    de ``build_orchestration_dispatcher`` ante un ``hitl_gate`` ausente (review
+    #420: probar el segundo dejaba sin cubrir el primero, que es el que
+    realmente se alcanza). NUNCA se pasa ``allow_unattended=True``, que
+    desactivaría el fail-closed en vez de anclarlo.
+    """
     assert superficie_dispatcher_supervisor() == SUPERFICIE_DISPATCHER_SUPERVISOR
-    hitl_guard = MagicMock(spec=HITLGuard)
-    hitl_guard.request_approval = AsyncMock(return_value=Decision.DENIED)
+    hitl_guard: HITLGuard | None = None
+    if con_guard:
+        hitl_guard = MagicMock(spec=HITLGuard)
+        hitl_guard.request_approval = AsyncMock(return_value=Decision.DENIED)
     gate = HitlGateMiddleware(hitl_guard=hitl_guard)
     supervisor = SupervisorAgent.__new__(SupervisorAgent)
     supervisor.scraper = MagicMock()

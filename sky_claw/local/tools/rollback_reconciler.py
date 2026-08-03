@@ -425,7 +425,14 @@ async def _reconciliar_clones_sandbox(sandbox_root: pathlib.Path, acc: _Acumulad
             logger.debug("Clon de sandbox '%s' dentro de la ventana de gracia (%.0fs); no se toca.", clon, edad)
             continue
         try:
-            await asyncio.to_thread(rmtree_link_aware, clon)
+            # `limpiar_readonly`: el clon sale de `shutil.copytree(...,
+            # copy_function=shutil.copy2)` sobre el perfil real, y `copy2`
+            # propaga el modo de la fuente — un mod extraído de un archive
+            # read-only produce un clon read-only. Sin el flag, este descarte
+            # falla en silencio (el `except` de abajo lo traga) y el clon de
+            # varios GB queda huérfano, que es justo el leak que este
+            # reconciliador existe para cerrar (U-08).
+            await asyncio.to_thread(rmtree_link_aware, clon, limpiar_readonly=True)
         except OSError:
             logger.warning("No se pudo descartar el clon de sandbox huérfano '%s'", clon, exc_info=True)
             continue

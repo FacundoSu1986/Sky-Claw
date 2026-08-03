@@ -19,7 +19,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sky_claw.app.db.journal import JournalSnapshotError
-from sky_claw.app.security.links import rmtree_link_aware
+from sky_claw.app.security.links import (
+    iter_archivos_propios,
+    link_kind_and_identity_or_raise,
+    rmtree_link_aware,
+    same_file_identity,
+    tamano_de_arbol_propio,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,14 +109,33 @@ class FileSnapshotManager:
         Args:
             snapshot_dir: Directorio donde almacenar los snapshots.
             max_size_mb: Tamaño máximo en MB para todos los snapshots.
+
+        La raíz se **resuelve**, y eso es deliberado. Los recorridos link-aware
+        de este módulo no atraviesan un enlace, así que un store apuntado por un
+        junction —relocalizar el almacen a otro disco es practica corriente— se
+        veria VACIO: cero bytes medidos, ninguna limpieza efectiva y
+        estadisticas en blanco, sin ningun error que lo delate.
+
+        La regla, enunciada como propiedad: **la raiz es del caller y los
+        enlaces de adentro no**. Quien construye el manager NOMBRO esa ruta, asi
+        que seguirla es obedecerlo; un enlace que aparece dentro del arbol no lo
+        nombro nadie, y ahi seguirlo es salirse del store. Resolver aca —y no
+        aflojar la primitiva— mantiene esa distincion en el unico lugar que
+        conoce la intencion, y deja intacta la igualdad medir==borrar que
+        `tests/test_borrado_recursivo.py` ancla para una raiz enlazada.
         """
-        self._snapshot_dir = snapshot_dir
+        self._snapshot_dir = snapshot_dir.resolve()
         self._max_size_bytes = max_size_mb * 1024 * 1024
         self._lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         """Crea el directorio de snapshots si no existe."""
         self._snapshot_dir.mkdir(parents=True, exist_ok=True)
+        # Re-resolver: en el constructor la ruta podia no existir todavia, y un
+        # `resolve()` no estricto sobre algo ausente solo normaliza. Si el
+        # directorio aparecio despues como enlace, esta es la primera vez que se
+        # lo puede seguir.
+        self._snapshot_dir = self._snapshot_dir.resolve()
         logger.info(
             "Snapshot manager initialized",
             extra={
@@ -370,8 +395,11 @@ class FileSnapshotManager:
         # Delegamos las operaciones de FS a thread pools fuera y dentro del lock
         # donde sea posible.
         def _scan_dir_stats(d: pathlib.Path) -> tuple[int, int]:
-            files = [f for f in d.rglob("*") if f.is_file()]
-            return sum(f.stat().st_size for f in files), len(files)
+            # Misma politica de enlaces que el borrado de abajo: `rglob` entra a
+            # un junction y `rmtree_link_aware` no, asi que medir con uno y
+            # borrar con el otro haria que `freed_bytes` reporte bytes que
+            # siguen ocupados.
+            return tamano_de_arbol_propio(d)
 
         async with self._lock:
             try:
@@ -397,7 +425,12 @@ class FileSnapshotManager:
                     dir_size, file_count = await asyncio.to_thread(_scan_dir_stats, date_dir)
 
                     if not dry_run:
-                        await asyncio.to_thread(rmtree_link_aware, date_dir)
+                        # `limpiar_readonly`: mismo motivo que en
+                        # `_calc_dir_size_and_remove` mas abajo — un snapshot es
+                        # una copia (`shutil.copy2`) que propaga el modo de la
+                        # fuente, y sin el flag esta rama aborta con OSError a
+                        # mitad del loop de limpieza por antiguedad.
+                        await asyncio.to_thread(rmtree_link_aware, date_dir, limpiar_readonly=True)
 
                     deleted_count += file_count
                     freed_bytes += dir_size
@@ -439,17 +472,79 @@ class FileSnapshotManager:
 
         async with self._lock:
             try:
-                for snapshot_file in self._snapshot_dir.rglob(pattern):
-                    if not snapshot_file.is_file():
-                        continue
 
-                    file_size = (await asyncio.to_thread(snapshot_file.stat)).st_size
+                def _limpiar() -> tuple[int, int, str | None]:
+                    """Enumera y borra en UN solo hilo; devuelve (borrados, bytes, error).
 
-                    if not dry_run:
-                        await asyncio.to_thread(snapshot_file.unlink)
+                    Todo junto y no un `to_thread` por archivo: el bucle corre
+                    bajo `self._lock`, asi que un salto de hilo por entrada
+                    mantiene el lock tomado mientras el event loop conmuta N
+                    veces. Ademas deja la revalidacion y el `unlink` adyacentes
+                    en el mismo hilo, que es donde la ventana tiene que ser
+                    minima (review qodo-merge #416).
 
-                    deleted_count += 1
-                    freed_bytes += file_size
+                    La semantica del patron la sigue poniendo `rglob`, INTACTA:
+                    reimplementarla con `Path.match` la cambiaba por dos lados
+                    —matcheaba contra la ruta absoluta, y perdia la recursion de
+                    `a/**/x`, que rglob resuelve a `a/x`, `a/b/x` y mas hondo—.
+                    Lo que aporta el recorrido link-aware es la AUTORIDAD sobre
+                    que puede borrarse: `rglob` entra a un junction y devuelve
+                    rutas de adentro, y el `unlink` se llevaba archivos ajenos.
+                    Son dos recorridos porque son dos preguntas distintas.
+                    """
+                    # Dos fases, y separadas a proposito. La primera contesta
+                    # QUE rutas pide el patron y no toca ningun tamaño; la
+                    # segunda contesta CUANTO se llevo, y sus bytes salen del
+                    # `lstat` link-aware, nunca de la entrada que devolvio
+                    # `rglob`. Mezclarlas en un solo bucle hacia que el censo de
+                    # `tests/test_borrado_recursivo.py` marcara este modulo como
+                    # medidor crudo — con razon: leer `st_size` dentro de un
+                    # recorrido sin politica de enlaces es indistinguible, desde
+                    # afuera, de medir con el.
+                    propios = dict(iter_archivos_propios(self._snapshot_dir))
+                    candidatos = [
+                        (ruta, propios[ruta]) for ruta in self._snapshot_dir.rglob(pattern) if ruta in propios
+                    ]
+
+                    borrados = 0
+                    liberados = 0
+                    for ruta, identidad in candidatos:
+                        if dry_run:
+                            borrados += 1
+                            liberados += identidad.st_size
+                            continue
+
+                        # Revalidar JUSTO antes del unlink. La interseccion de
+                        # arriba usa rutas LEXICAS: protege contra un enlace que
+                        # ya existia al enumerar, pero no contra uno puesto
+                        # despues. Si entre la enumeracion y este borrado alguien
+                        # reemplaza un directorio padre por un enlace, la ruta
+                        # lexica es la misma, `ruta in propios` pasa, y el unlink
+                        # se lleva el archivo AJENO al que ahora resuelve.
+                        # El OSError se atrapa ACA y no se deja subir. Si sube,
+                        # la asignacion de `deleted_count`/`freed_bytes` de abajo
+                        # nunca ocurre y quedan en cero — pero los archivos
+                        # anteriores YA se borraron. El reporte diria "liberé 0
+                        # bytes" con N archivos menos en disco: la cuenta
+                        # divergiendo del efecto, que es el defecto que este
+                        # mismo PR cierra, reintroducido al mover el bucle
+                        # adentro del hilo (review qodo-merge #416).
+                        try:
+                            tipo, ahora = link_kind_and_identity_or_raise(ruta)
+                            if ahora is None:
+                                continue
+                            if tipo is not None or not same_file_identity(identidad, ahora):
+                                return borrados, liberados, f"La entrada cambió antes de borrarla por patrón: {ruta}"
+                            ruta.unlink()
+                        except OSError as exc:
+                            return borrados, liberados, f"Error borrando {ruta}: {exc}"
+                        borrados += 1
+                        liberados += ahora.st_size
+                    return borrados, liberados, None
+
+                deleted_count, freed_bytes, manipulada = await asyncio.to_thread(_limpiar)
+                if manipulada is not None:
+                    errors.append(manipulada)
 
             except OSError as e:
                 errors.append(f"Error cleaning pattern {pattern}: {e}")
@@ -500,13 +595,24 @@ class FileSnapshotManager:
 
             # SSP-002: Delegar cálculo de tamaño y eliminación a thread pool
             def _calc_dir_size_and_remove(d: pathlib.Path) -> int:
-                # `rglob` sigue los enlaces al sumar tamaños, así que un junction
-                # dentro del store haría contar bytes ajenos y reportarlos como
-                # "liberados"; el borrado link-aware no los toca, así que la cuenta
-                # y el efecto real dejan de divergir.
-                sz = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
-                rmtree_link_aware(d)
-                return sz
+                # El numero sale del MISMO recorrido que borro: son los bytes que
+                # `rmtree_link_aware` efectivamente desenlazo.
+                #
+                # Medir aparte con `rglob` divergia en Windows —entra al junction,
+                # el borrado link-aware no— y este `current_size -=` es donde se
+                # paga: descuenta bytes que siguen ocupados, el loop corta en
+                # `<= max*0.9` creyendo que libero espacio, y el store crece
+                # pasado su limite.
+                #
+                # `limpiar_readonly`: cada snapshot es un `shutil.copy2` del
+                # archivo original (`create_snapshot`), y `copy2` propaga los
+                # metadatos de la fuente — si el mod snapshoteado estaba
+                # FILE_ATTRIBUTE_READONLY en Windows (frecuente en archivos
+                # extraidos de un archive), la copia queda read-only tambien. Sin
+                # el flag, el borrado de ese directorio aborta con OSError a
+                # mitad del loop de enforcement y el store sigue creciendo
+                # pasado su limite.
+                return rmtree_link_aware(d, limpiar_readonly=True)
 
             dir_size = await asyncio.to_thread(_calc_dir_size_and_remove, date_dir)
             current_size -= dir_size
@@ -524,7 +630,9 @@ class FileSnapshotManager:
 
         # SSP-002: Delegar recorrido de filesystem a thread pool
         def _walk_size(directory: pathlib.Path) -> int:
-            return sum(f.stat().st_size for f in directory.rglob("*") if f.is_file())
+            # Misma politica que el purgado que consume este numero: si arrancara
+            # inflado por un junction, el enforcement se disparia sin necesidad.
+            return tamano_de_arbol_propio(directory)[0]
 
         return await asyncio.to_thread(_walk_size, self._snapshot_dir)
 
@@ -554,11 +662,11 @@ class FileSnapshotManager:
             old: datetime | None = None
             new: datetime | None = None
             ext_map: dict[str, int] = {}
-            for fp in directory.rglob("*"):
-                if not fp.is_file():
-                    continue
+            # Mismo recorrido link-aware que el resto del modulo: un junction
+            # dentro del store inflaria estas estadisticas con bytes ajenos.
+            for fp, identidad in iter_archivos_propios(directory):
                 count += 1
-                sz = fp.stat().st_size
+                sz = identidad.st_size
                 ts += sz
                 try:
                     fd = datetime.strptime(fp.parent.name, "%Y-%m-%d")
