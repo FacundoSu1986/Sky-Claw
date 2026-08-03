@@ -44,7 +44,11 @@ from typing import TYPE_CHECKING
 from sky_claw.app.db.locks import LockAcquisitionError
 from sky_claw.app.security.links import is_link, path_present, rmtree_link_aware
 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
-from sky_claw.local.tools.output_targets import pandora_output_target
+from sky_claw.local.tools.output_targets import (
+    BODYSLIDE_MESHES_RESOURCE_ID,
+    bodyslide_output_root,
+    pandora_output_target,
+)
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
 
 if TYPE_CHECKING:
@@ -97,7 +101,7 @@ LOCK_DEL_SANDBOX = "Synthesis.esp"
 #: (:func:`construir_productores_de_move_aside`). El ancla de
 #: ``tests/test_rollback_reconciler.py`` exige que todo módulo que use
 #: ``DirectoryRollback`` esté mapeado a uno de estos.
-PRODUCTORES_CABLEADOS: frozenset[str] = frozenset({"dyndolod", "pandora"})
+PRODUCTORES_CABLEADOS: frozenset[str] = frozenset({"dyndolod", "pandora", "bodyslide"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,7 +254,47 @@ def construir_productores_de_move_aside(
                 destinos=(output_pandora,),
             )
         )
+
+    # BodySlide, a diferencia de DynDOLOD/Pandora, no tiene un nombre de
+    # destino fijo: el LLM elige `group` en cada corrida, así que no hay una
+    # lista que declarar de antemano. `BodySlide_Output` sí es una raíz
+    # EXCLUSIVA de Sky-Claw (ver `output_targets.bodyslide_output_root`), así
+    # que sus destinos se DESCUBREN escaneando los backups `.rollback-*` que
+    # ya existen, en vez de declararse — sin el riesgo de "autoridad sobre
+    # siblings ajenos" que correría hacerlo sobre un padre COMPARTIDO como
+    # `mods/` o `game/`.
+    raiz_bodyslide = bodyslide_output_root(game=game)
+    if raiz_bodyslide is not None:
+        productores.append(
+            ProductorDeMoveAside(
+                nombre="bodyslide",
+                lock_resource_id=BODYSLIDE_MESHES_RESOURCE_ID,
+                destinos=_destinos_bodyslide_por_escaneo(raiz_bodyslide),
+            )
+        )
     return productores
+
+
+def _destinos_bodyslide_por_escaneo(raiz: pathlib.Path) -> tuple[pathlib.Path, ...]:
+    """Backups huérfanos YA presentes bajo la raíz exclusiva de BodySlide.
+
+    ``raiz`` puede no existir todavía (ningún run corrió) — no es un error,
+    simplemente no hay nada que reconciliar. Solo cuentan los hijos DIRECTOS
+    cuyo nombre termina en el sufijo de move-aside; un grupo ya commiteado
+    (sin backup pendiente) no es un destino.
+    """
+    if not raiz.is_dir():
+        return ()
+    # Un hijo cuyo nombre ENTERO es el sufijo (p.ej. ".rollback-123456789012",
+    # nada antes del punto) deja basename vacío tras el ``sub`` — y
+    # ``with_name("")`` levanta ``ValueError`` (Copilot, PR #430). No es un
+    # destino real: se ignora en vez de tirar abajo el constructor entero.
+    destinos = {
+        hijo.with_name(basename)
+        for hijo in raiz.iterdir()
+        if _SUFIJO_MOVE_ASIDE.search(hijo.name) and (basename := _SUFIJO_MOVE_ASIDE.sub("", hijo.name))
+    }
+    return tuple(sorted(destinos))
 
 
 async def _bajo_el_lock_del_ritual(

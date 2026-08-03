@@ -39,7 +39,7 @@ confirmarlo contra código y tests.
 | U-01 | Cerrado | #381, #388 y documentación operativa | — | `test_output_targets.py` |
 | U-02 | Cerrado | #360 | — | tests de Job Object |
 | U-03 | Cerrado | #356 | — | tests de reconciliación de precache |
-| U-04 | Parcial | #397, #399 y salida administrada de Pandora | BodySlide y smoke real de rollback de Pandora | `test_rollback_salida.py`, `test_pandora_service.py` y humano |
+| U-04 | Parcial | #397, #399, salida administrada de Pandora y subárbol administrado por grupo de BodySlide | Smoke real de rollback de Pandora | `test_rollback_salida.py`, `test_pandora_service.py`, `test_bodyslide_lock.py` y humano |
 | U-05 | Cerrado | #354 | — | `test_vramr_service.py` |
 | U-06 | Parcial | #375 para DynDOLOD | Post-check de Wrye Bash y BodySlide; criterio seguro para QuickAutoClean | tests de cada runner |
 | U-07 | Cerrado | #355 | — | tests de Job Object de DynDOLOD |

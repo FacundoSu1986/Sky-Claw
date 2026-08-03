@@ -18,12 +18,9 @@ from typing import Any
 from sky_claw.app.core.models import LootExecutionParams
 from sky_claw.app.security.hitl import Decision
 from sky_claw.app.security.sanitize import sanitize_for_prompt
+from sky_claw.local.tools.output_targets import BODYSLIDE_MESHES_RESOURCE_ID
 
 logger = logging.getLogger(__name__)
-
-#: Lock resource id para BodySlide (genera meshes en el overwrite/output). Serializa el
-#: tool del agente contra otros mutadores, igual que LOAD_ORDER / BEHAVIOR_GRAPHS.
-BODYSLIDE_MESHES_RESOURCE_ID = "bodyslide-meshes"
 
 
 async def check_load_order(mo2: Any, profile: str) -> str:
@@ -540,6 +537,49 @@ async def run_pandora(
     return json.dumps(out)
 
 
+class _BodySlideRunFallidoError(Exception):
+    """Interno (U-04): un resultado con ``success=False`` se convierte en excepción
+    DENTRO del lock para disparar el rollback real de la salida.
+
+    Mismo patrón que ``wrye_bash_service._RunFallidoError`` / ``pandora_service.
+    _RunFallidoError``: tanto ``SnapshotTransactionLock`` como
+    ``DirectoryRollback`` sólo restauran en la rama de excepción de su
+    ``__aexit__``; un resultado ``success=False`` (exit non-zero) sale "limpio"
+    del ``async with`` si no se puentea, y el backup se descartaría con el
+    parcial fallido pisando la salida previa.
+
+    Carga el resultado completo para que el ``except`` arme el MISMO dict de
+    salida que el camino no-excepcional — el contrato de la tool no cambia,
+    sólo gana el rollback que le faltaba.
+    """
+
+    def __init__(self, result: Any) -> None:
+        self.result = result
+        super().__init__(getattr(result, "stderr", "") or getattr(result, "stdout", "") or "BodySlide run failed")
+
+
+def _bodyslide_dict_de_resultado(result: Any) -> dict[str, Any]:
+    """Dict de salida compartido por el camino exitoso y el de ``_BodySlideRunFallidoError``.
+
+    Contrato ``success``/``message`` (AGENTS.md, mismo patrón que
+    ``pandora_service._dict_de_resultado``): ``message`` canónico vacío en
+    éxito, detalle de fallo si no (CodeRabbit, PR #430). Saneado con
+    ``sanitize_for_prompt`` como ``stdout``/``stderr`` acá mismo, y como ya hace
+    ``run_pandora`` (mismo archivo) con su propio ``message`` — sin esto, el
+    detalle de fallo (stderr/stdout de BodySlide) llegaría CRUDO al LLM por una
+    llave mientras las otras dos del mismo dict van saneadas.
+    """
+    detalle_fallo = result.stderr or result.stdout or ""
+    return {
+        "success": result.success,
+        "message": "" if result.success else sanitize_for_prompt(detalle_fallo),
+        "return_code": result.return_code,
+        "stdout": sanitize_for_prompt(result.stdout) if result.stdout else "",
+        "stderr": sanitize_for_prompt(result.stderr) if result.stderr else "",
+        "duration_seconds": result.duration_seconds,
+    }
+
+
 async def run_bodyslide_batch(
     bodyslide_runner: Any,
     group: str = "CBBE",
@@ -560,13 +600,17 @@ async def run_bodyslide_batch(
     ``app_context``) this agent path runs under the shared ``bodyslide-meshes``
     lock — the cross-process lock only protects if every mutator participates.
 
-    ``target_files=[]`` (solo serializa). U-01 parte 2 retiró el motivo que este
-    bloque daba antes ("el destino de salida depende del entorno"): BodySlide se
-    lanza directamente, nunca hereda la USVFS de MO2 y escribe ``-o <output_path>``
-    resuelto FÍSICAMENTE contra ``cwd=game_path``. El destino SÍ es conocible;
-    snapshotearlo es alcance de U-04, no un problema bloqueado. El invariante vive
-    en ``sky_claw/local/tools/output_targets.py``. Sin lock manager o snapshot
-    manager, la ejecución falla cerrada para no permitir una mutación sin protección.
+    U-04: el destino físico deja de ser el ``output_path`` que manda el LLM.
+    Ese valor podía resolver bajo ``Data/meshes``, un árbol compartido por
+    miles de archivos de otros mods — un move-aside de directorio completo ahí
+    sería catastrófico (restauraría/descartaría mallas ajenas, no sólo las de
+    BodySlide). En cambio se usa ``output_targets.bodyslide_output_target``:
+    un subárbol propio POR GRUPO que Sky-Claw administra, la misma propiedad
+    ("la herramienta regenera el target por completo") que habilita el
+    move-aside de Pandora/DynDOLOD. ``output_path`` se conserva en la firma
+    por compatibilidad de contrato pero ya no determina dónde escribe
+    BodySlide. Sin lock manager o snapshot manager, la ejecución falla cerrada
+    para no permitir una mutación sin protección.
     """
     if bodyslide_runner is None:
         return json.dumps(
@@ -584,29 +628,57 @@ async def run_bodyslide_batch(
     if missing_managers:
         return json.dumps({"error": f"BodySlide requiere protección; faltan: {', '.join(missing_managers)}"})
 
+    import contextlib
+
     from sky_claw.app.db.locks import LockAcquisitionError, SnapshotTransactionLock
+    from sky_claw.local.tools._dir_rollback import DirectoryRollback
+    from sky_claw.local.tools.output_targets import bodyslide_output_target
+
+    game_path = getattr(getattr(bodyslide_runner, "config", None), "game_path", None)
+    target = bodyslide_output_target(game=game_path, group=group)
+    if target is None:
+        detail = "No se pudo resolver el destino administrado de BodySlide (game_path no configurado)."
+        return json.dumps({"success": False, "message": detail, "error": detail})
 
     try:
-        async with SnapshotTransactionLock(
-            lock_manager=lock_manager,
-            snapshot_manager=snapshot_manager,
-            resource_id=BODYSLIDE_MESHES_RESOURCE_ID,
-            agent_id="bodyslide-tool",
-            target_files=[],
-            metadata={"source": "bodyslide_batch", "group": group},
-        ):
-            result = await bodyslide_runner.run_batch(group, output_path)
+        async with contextlib.AsyncExitStack() as stack:
+            tx = await stack.enter_async_context(
+                SnapshotTransactionLock(
+                    lock_manager=lock_manager,
+                    snapshot_manager=snapshot_manager,
+                    resource_id=BODYSLIDE_MESHES_RESOURCE_ID,
+                    agent_id="bodyslide-tool",
+                    target_files=[],
+                    metadata={"source": "bodyslide_batch", "group": group},
+                )
+            )
+            # U-04: move-aside DENTRO del lock (mismo orden que pandora_service) —
+            # el AsyncExitStack cierra los context en orden LIFO, así que el
+            # restore corre mientras todavía se tiene la exclusividad del lock.
+            # El veto de lease (`not tx.lease_lost`) hace que el move-aside y el
+            # lock que lo envuelve apliquen el MISMO criterio: si el heartbeat
+            # perdió el lease durante la corrida, no se restaura pisando a un
+            # dueño concurrente (review Codex #399, mismo patrón en Pandora).
+            await stack.enter_async_context(DirectoryRollback(target, should_rollback=lambda: not tx.lease_lost))
+            result = await bodyslide_runner.run_batch(group, str(target))
+            if not result.success:
+                # U-04: el puente fallo→excepción. Sin esto, un exit non-zero sale
+                # limpio del stack, DirectoryRollback DESCARTA el backup y el
+                # árbol parcial queda en disco.
+                raise _BodySlideRunFallidoError(result)
     except LockAcquisitionError as exc:
-        return json.dumps({"error": f"Could not acquire '{BODYSLIDE_MESHES_RESOURCE_ID}' lock: {exc}"})
+        # Saneado igual que el catch-all de abajo (CodeRabbit, PR #430): hoy
+        # resource_id/agent_id son constantes, pero el mensaje de la excepción
+        # no está bajo control de este módulo — mismo criterio defensivo que
+        # ``run_pandora`` ya aplica a su propio catch-all.
+        detail = sanitize_for_prompt(f"Could not acquire '{BODYSLIDE_MESHES_RESOURCE_ID}' lock: {exc}")
+        return json.dumps({"success": False, "message": detail, "error": detail})
+    except _BodySlideRunFallidoError as exc:
+        return json.dumps(_bodyslide_dict_de_resultado(exc.result))
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        # Mismo patrón que ``run_pandora`` (mismo archivo): una excepción
+        # inesperada puede envolver salida cruda del runner.
+        detail = sanitize_for_prompt(str(exc))
+        return json.dumps({"success": False, "message": detail, "error": detail})
 
-    return json.dumps(
-        {
-            "success": result.success,
-            "return_code": result.return_code,
-            "stdout": sanitize_for_prompt(result.stdout) if result.stdout else "",
-            "stderr": sanitize_for_prompt(result.stderr) if result.stderr else "",
-            "duration_seconds": result.duration_seconds,
-        }
-    )
+    return json.dumps(_bodyslide_dict_de_resultado(result))

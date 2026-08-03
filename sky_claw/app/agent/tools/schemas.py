@@ -297,13 +297,19 @@ class BodySlideBatchParams(pydantic.BaseModel):
         default="CBBE",
         min_length=1,
         max_length=128,
+        pattern=_SAFE_NAME_PATTERN,
         description="BodySlide preset group name.",
     )
     output_path: str = pydantic.Field(
         default="meshes",
         min_length=1,
         max_length=256,
-        description="Output directory for generated meshes, relative to the game directory.",
+        description=(
+            "Legacy hint for where generated meshes should conceptually land. U-04: no longer the "
+            "literal write destination — Sky-Claw manages BodySlide's physical output as an isolated "
+            "per-group directory (see output_targets.bodyslide_output_target) so a directory-level "
+            "rollback can never touch the shared Data/meshes tree that other mods write to."
+        ),
     )
 
     @field_validator("output_path")
@@ -315,12 +321,36 @@ class BodySlideBatchParams(pydantic.BaseModel):
         ``BodySlide.exe -o`` with the game directory as cwd. An absolute
         path, a drive-relative path (``C:evil``), a UNC share, or ``..``
         segments would direct generated meshes outside the sandbox.
+
+        U-04: el valor ya no llega literal a ``-o`` (ver el ``description``
+        del campo), pero la validación se conserva sin cambios — no hay
+        motivo para relajar un chequeo de sandboxing existente sólo porque
+        cambió el consumidor.
         """
         candidate = pathlib.PureWindowsPath(v)
         if candidate.is_absolute() or candidate.drive or v.startswith(("/", "\\")):
             raise ValueError("output_path must be a relative path (no absolute paths, drive letters, or UNC shares)")
         if ".." in candidate.parts:
             raise ValueError("output_path must not contain '..' traversal segments")
+        return v
+
+    @field_validator("group")
+    @classmethod
+    def _group_is_not_a_bare_dot_segment(cls, v: str) -> str:
+        """Reject ``"."`` / ``".."`` as the full value.
+
+        U-04: ``group`` pasa a ser el componente único de ruta bajo
+        ``BodySlide_Output/<group>`` (``output_targets.bodyslide_output_target``).
+        ``_SAFE_NAME_PATTERN`` ya bloquea separadores de ruta, así que ningún
+        valor puede formar MÁS de un componente — pero sí permite ``.``
+        (nombres reales como "Preset 1.0"), y un valor de solo puntos es
+        exactamente el componente especial que el filesystem resuelve como
+        "acá mismo"/"un nivel arriba". Mismo chequeo que ``output_path`` ya
+        aplica para ``..`` (PR #171), acá para un campo que antes no tocaba
+        el filesystem.
+        """
+        if v in {".", ".."}:
+            raise ValueError("group must not be a bare '.' or '..' path segment")
         return v
 
 

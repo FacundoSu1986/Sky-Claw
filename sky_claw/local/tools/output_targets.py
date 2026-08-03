@@ -61,6 +61,21 @@ PANDORA_OUTPUT_DIR = "Pandora_Output"
 #: ``overwrite`` en disco.
 SYNTHESIS_MOD_NAME = "Synthesis Output"
 
+#: Directorio administrado por Sky-Claw para la salida de BodySlide (U-04).
+#: Sustituye al ``output_path`` que antes elegía el LLM como ruta física
+#: literal: ese valor podía resolver bajo ``Data/meshes``, un árbol compartido
+#: por miles de archivos de otros mods donde un move-aside de directorio
+#: completo sería destructivo. Vive acá, no en ``system_tools``, por el mismo
+#: motivo que ``PANDORA_OUTPUT_DIR``: que todos los consumidores compartan el
+#: resolver sin ciclos de imports.
+BODYSLIDE_OUTPUT_DIR = "BodySlide_Output"
+
+#: Lock resource id de BodySlide. Vive acá (no en ``system_tools``) para que
+#: ``rollback_reconciler`` lo consuma sin cruzar de ``local/tools`` hacia
+#: ``app/agent/tools`` — mismo motivo que ``BEHAVIOR_GRAPHS_RESOURCE_ID`` vive
+#: en ``pandora_service`` y no en ``system_tools.run_pandora``.
+BODYSLIDE_MESHES_RESOURCE_ID = "bodyslide-meshes"
+
 
 def pandora_output_target(*, game: pathlib.Path | None) -> pathlib.Path | None:
     """Salida física única administrada, pasada por ``--output``.
@@ -110,6 +125,49 @@ def synthesis_output_target(
     if overwrite.exists():
         return overwrite
     return mo2 / "mods" / SYNTHESIS_MOD_NAME
+
+
+def bodyslide_output_root(*, game: pathlib.Path | None) -> pathlib.Path | None:
+    """Raíz EXCLUSIVA de Sky-Claw para la salida de BodySlide.
+
+    "Exclusiva" no es un adjetivo suelto: nada más que ``run_bodyslide_batch``
+    crea contenido acá (a diferencia de ``mods/`` o ``game/``, que sí son
+    compartidos). Esa propiedad es la que ``rollback_reconciler`` usa para
+    descubrir destinos por escaneo en vez de declararlos a mano — ver
+    :mod:`sky_claw.local.tools.rollback_reconciler`.
+    """
+    if game is None:
+        return None
+    return game.resolve() / BODYSLIDE_OUTPUT_DIR
+
+
+def bodyslide_output_target(*, game: pathlib.Path | None, group: str) -> pathlib.Path | None:
+    """Salida física administrada de BodySlide: un subárbol propio POR GRUPO.
+
+    Un directorio único compartido entre grupos violaría la propiedad que
+    :class:`~sky_claw.local.tools._dir_rollback.DirectoryRollback` exige (*"la
+    herramienta regenera el target por completo"*): ``-b <group>`` sólo
+    (re)escribe las mallas de ESE grupo, así que un rebuild de ``"CBBE"``
+    sobre un directorio compartido descartaría lo que ya existía de ``"3BA"``
+    al restaurar/descartar el backup. Un subárbol por grupo hace que cada
+    corrida sea, para su propio target, exactamente la propiedad que el
+    move-aside necesita.
+
+    ``group`` llega ya validado (patrón + rechazo de ``"."``/``".."`` como
+    componente completo, PR de U-04) por ``AsyncToolRegistry.execute()`` vía
+    ``BodySlideBatchParams`` antes de llegar acá — pero esta función es
+    pública y nada en su firma impide un llamador futuro que la invoque sin
+    pasar por ese validador. Defensa en profundidad (review CodeRabbit, PR
+    #430): revalida ``"."``/``".."`` como valor completo y separadores de ruta
+    ANTES de construir el target, con el mismo comportamiento de error que ya
+    usa esta función para ``game=None`` (``None``, no una excepción).
+    """
+    if group in (".", "..") or "/" in group or "\\" in group:
+        return None
+    root = bodyslide_output_root(game=game)
+    if root is None:
+        return None
+    return root / group
 
 
 def dyndolod_staging_roots(

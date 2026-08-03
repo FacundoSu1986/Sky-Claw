@@ -23,7 +23,11 @@ import pytest
 
 from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
-from sky_claw.local.tools.output_targets import pandora_output_target
+from sky_claw.local.tools.output_targets import (
+    BODYSLIDE_MESHES_RESOURCE_ID,
+    bodyslide_output_root,
+    pandora_output_target,
+)
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
 from sky_claw.local.tools.rollback_reconciler import (
     PRODUCTORES_CABLEADOS,
@@ -62,6 +66,7 @@ PRODUCTORES_DEL_NOMBRE: dict[str, str] = {
 USUARIOS_DEL_MOVE_ASIDE: dict[str, str] = {
     "sky_claw/local/tools/dyndolod_service.py": "dyndolod",
     "sky_claw/local/tools/pandora_service.py": "pandora",
+    "sky_claw/app/agent/tools/system_tools.py": "bodyslide",
 }
 
 #: Excluido con motivo: consume el prefijo, no lo produce (es este reconciliador).
@@ -385,6 +390,108 @@ def test_el_constructor_barre_solo_el_destino_administrado_de_pandora(tmp_path: 
 def test_el_constructor_sin_rutas_resolubles_no_inventa_nada() -> None:
     """Sin MO2 ni juego resolubles no se barre nada ni se inventa una ruta."""
     assert construir_productores_de_move_aside(mo2_root=None, game=None) == []
+
+
+# ---------------------------------------------------------------------------
+# BodySlide — raíz EXCLUSIVA, destinos descubiertos por escaneo (no declarados)
+# ---------------------------------------------------------------------------
+#
+# A diferencia de DynDOLOD/Pandora, el nombre del hijo (``group``) lo elige el
+# LLM en cada corrida: no hay una lista fija que declarar de antemano. Pero
+# ``BodySlide_Output`` es un namespace EXCLUSIVO de Sky-Claw (nada más escribe
+# ahí), así que el constructor puede descubrir los destinos escaneando sus
+# hijos directos con el sufijo de move-aside, sin el riesgo de "autoridad
+# sobre siblings ajenos" que el docstring de ``ProductorDeMoveAside`` nombra
+# para un padre COMPARTIDO como ``mods/`` o ``game/``.
+
+
+async def test_bodyslide_restaura_su_backup_huerfano(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+    sandbox: pathlib.Path,
+) -> None:
+    """Muerte dura entre el move-aside del subárbol de un grupo y su regeneración:
+    el backup es el último estado bueno de ESE grupo, igual que DynDOLOD/Pandora."""
+    game = tmp_path / "game"
+    root = game / "BodySlide_Output"
+    root.mkdir(parents=True)
+    backup = root / "CBBE.rollback-1753700000000000000"
+    backup.mkdir()
+    (backup / "vieja.nif").write_text("malla previa", encoding="utf-8")
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=construir_productores_de_move_aside(mo2_root=None, game=game),
+        sandbox_root=sandbox,
+        lock_manager=lock_manager,
+    )
+
+    destino = root / "CBBE"
+    assert destino.is_dir()
+    assert (destino / "vieja.nif").read_text(encoding="utf-8") == "malla previa"
+    assert not backup.exists()
+    assert resultado.restaurados == (destino,)
+
+
+def test_el_constructor_descubre_los_destinos_de_bodyslide_por_escaneo(tmp_path: pathlib.Path) -> None:
+    """El constructor no declara nombres de grupo a mano: los descubre de los
+    backups ``.rollback-*`` que YA existen bajo la raíz exclusiva. Dos grupos
+    huérfanos a la vez no se pisan entre sí — cada uno es su propio destino."""
+    game = tmp_path / "game"
+    root = game / "BodySlide_Output"
+    root.mkdir(parents=True)
+    (root / "CBBE.rollback-1753700000000000000").mkdir()
+    (root / "3BA.rollback-1753700000000000001").mkdir()
+
+    productores = construir_productores_de_move_aside(mo2_root=None, game=game)
+
+    bodyslide = next(p for p in productores if p.nombre == "bodyslide")
+    assert bodyslide.lock_resource_id == BODYSLIDE_MESHES_RESOURCE_ID
+    assert set(bodyslide.destinos) == {root / "CBBE", root / "3BA"}
+    assert bodyslide_output_root(game=game) == root
+
+
+def test_el_constructor_de_bodyslide_ignora_un_backup_con_basename_vacio(tmp_path: pathlib.Path) -> None:
+    """Un hijo cuyo nombre completo ES el sufijo de move-aside (``.rollback-<12+
+    dígitos>``, sin nada antes del punto) deja basename vacío tras quitarle el
+    sufijo. ``pathlib.Path.with_name("")`` levanta ``ValueError`` — sin este
+    guard, un solo directorio con ese nombre tira abajo el constructor entero
+    (Copilot, PR #430), no solo el descubrimiento de BodySlide: los demás
+    productores (DynDOLOD, Pandora) que arma la misma función nunca llegan a
+    declararse."""
+    game = tmp_path / "game"
+    root = game / "BodySlide_Output"
+    root.mkdir(parents=True)
+    (root / ".rollback-123456789012").mkdir()
+
+    productores = construir_productores_de_move_aside(mo2_root=None, game=game)
+
+    bodyslide = next(p for p in productores if p.nombre == "bodyslide")
+    assert bodyslide.destinos == ()
+
+
+def test_el_constructor_de_bodyslide_ignora_un_hijo_sin_sufijo_de_rollback(tmp_path: pathlib.Path) -> None:
+    """Un grupo YA regenerado (sin backup pendiente) no es un destino: el escaneo
+    solo reconoce hijos con el sufijo ``.rollback-<nonce>``, nunca por nombre."""
+    game = tmp_path / "game"
+    root = game / "BodySlide_Output"
+    (root / "CBBE").mkdir(parents=True)  # grupo normal, ya commiteado — sin backup
+
+    productores = construir_productores_de_move_aside(mo2_root=None, game=game)
+
+    bodyslide = next(p for p in productores if p.nombre == "bodyslide")
+    assert bodyslide.destinos == ()
+
+
+def test_el_constructor_de_bodyslide_sin_raiz_en_disco_no_declara_destinos(tmp_path: pathlib.Path) -> None:
+    """``BodySlide_Output`` todavía no existe (ningún run corrió): el productor
+    se declara igual (mismo criterio que Pandora, "resoluble" no es "presente"),
+    pero sin destinos que barrer."""
+    game = tmp_path / "game"
+
+    productores = construir_productores_de_move_aside(mo2_root=None, game=game)
+
+    bodyslide = next(p for p in productores if p.nombre == "bodyslide")
+    assert bodyslide.destinos == ()
 
 
 async def test_no_toca_nada_si_el_ritual_de_dyndolod_esta_en_curso(

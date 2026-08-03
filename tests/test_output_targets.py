@@ -28,6 +28,7 @@ from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.output_targets import (
     bashed_patch_target,
+    bodyslide_output_target,
     dyndolod_staging_roots,
     pandora_output_target,
     synthesis_output_target,
@@ -309,3 +310,47 @@ def test_synthesis_respeta_el_override_del_sandbox(tmp_path: pathlib.Path) -> No
     clon = tmp_path / "sandbox" / "overwrite"
 
     assert synthesis_output_target(mo2=mo2, override=clon) == clon
+
+
+# ---------------------------------------------------------------------------
+# BodySlide — un subárbol propio POR GRUPO (U-04)
+# ---------------------------------------------------------------------------
+
+
+def test_bodyslide_tiene_un_destino_propio_por_grupo(tmp_path: pathlib.Path) -> None:
+    game = tmp_path / "segmento" / ".." / "game"
+
+    assert bodyslide_output_target(game=game, group="CBBE") == game.resolve() / "BodySlide_Output" / "CBBE"
+    assert bodyslide_output_target(game=None, group="CBBE") is None
+
+
+def test_bodyslide_rechaza_group_invalido_en_vez_de_confiar_en_el_llamador(tmp_path: pathlib.Path) -> None:
+    """``group`` llega ya validado por ``BodySlideBatchParams`` en el único
+    llamador de producción (CodeRabbit, PR #430), pero esta función es pública
+    y su contrato de tipo es sólo ``str`` — nada impide un llamador futuro (o un
+    test) que la invoque directo. Defensa en profundidad: rechaza "."/".." como
+    valor completo y separadores de ruta ANTES de construir el target, con el
+    mismo comportamiento de error que ya usa esta función (``None``)."""
+    game = tmp_path / "game"
+
+    assert bodyslide_output_target(game=game, group=".") is None
+    assert bodyslide_output_target(game=game, group="..") is None
+    assert bodyslide_output_target(game=game, group="a/b") is None
+    assert bodyslide_output_target(game=game, group="a\\b") is None
+
+
+def test_bodyslide_grupos_distintos_no_comparten_directorio(tmp_path: pathlib.Path) -> None:
+    """Un rebuild de un grupo no puede pisar lo que ya existía de otro: cada
+    grupo obtiene su propio subárbol, la misma propiedad que ``DirectoryRollback``
+    exige (\"la herramienta regenera el target por completo\"). Un directorio
+    compartido entre grupos violaría esa propiedad — un rebuild de ``CBBE``
+    borraría lo que había de ``3BA``."""
+    game = tmp_path / "game"
+
+    cbbe = bodyslide_output_target(game=game, group="CBBE")
+    tresa = bodyslide_output_target(game=game, group="3BA")
+
+    assert cbbe is not None
+    assert tresa is not None
+    assert cbbe != tresa
+    assert cbbe.parent == tresa.parent == game.resolve() / "BodySlide_Output"

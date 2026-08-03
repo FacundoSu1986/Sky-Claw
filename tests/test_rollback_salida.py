@@ -54,7 +54,7 @@ MECANISMO_DE_ROLLBACK: dict[str, str] = {
     "sky_claw/local/tools/dyndolod_service.py": "directorio",
     "sky_claw/local/tools/pandora_service.py": "directorio",
     "sky_claw/local/tools/vramr_service.py": "no-muta",
-    "sky_claw/app/agent/tools/system_tools.py": "pendiente",
+    "sky_claw/app/agent/tools/system_tools.py": "directorio",
 }
 
 #: Motivo, para los que no revierten su salida. Escribir el racional NO cuenta como
@@ -64,13 +64,6 @@ MOTIVO: dict[str, str] = {
     "sky_claw/local/tools/vramr_service.py": (
         "VRAMr optimiza texturas hacia su propio output y no muta la entrada; el "
         "lock serializa, no snapshotea. Anclado en tests/test_vramr_service.py."
-    ),
-    "sky_claw/app/agent/tools/system_tools.py": (
-        "run_bodyslide_batch escribe en game_path/<output_path>, un DIRECTORIO cuyo "
-        "nombre elige el LLM (BodySlideBatchParams.output_path, default 'meshes'). "
-        "El move-aside que resolvió Pandora no aplica: su destino es una constante "
-        "del código y este es un parámetro del modelo, así que apuntar a un árbol "
-        "compartido (Data/meshes) haría destructivo al propio rollback."
     ),
 }
 
