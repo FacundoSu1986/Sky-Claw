@@ -61,7 +61,7 @@ confirmarlo contra código y tests.
 | Borrado recursivo | Cerrado | #405 | — | `test_borrado_recursivo.py` |
 | Fugas de lifecycle en tests | Cerrado | #408, #409 y #415 | — | `test_atribucion_de_warnings.py`, `test_project_config.py` |
 | Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash | Verificar contra fuente xEdit, Synthesis, MO2, DynDOLOD y VRAMr | `test_contrato_argumentos_cli.py` |
-| Etapa 6 (Wrye Bash) sin build headless | Abierto | — | Decidir entre etapa asistida o retirarla del dispatcher | `Mopy/bash/barg.py`; humano |
+| Etapa 6 (Wrye Bash) sin build headless | Abierto | — | Decidir entre etapa asistida o retirarla del dispatcher | `test_contrato_argumentos_cli.py`; humano |
 | Smoke real de QuickAutoClean | Bloqueado (rig humano) | — | Ejecutar SSEEdit QuickAutoClean en una instalación real | humano |
 | Smokes reales restantes | Bloqueado (rig humano) | — | NGIO, scripts `.pas`, GUI/FOMOD y Telegram end-to-end | humano |
 | Residuos OODA de bajo valor | Abierto | — | Solo retomar agrupados si cambia su relación esfuerzo/impacto | historial OODA §3 |
