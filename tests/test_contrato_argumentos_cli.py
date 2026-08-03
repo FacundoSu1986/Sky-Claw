@@ -29,6 +29,24 @@ subprocesos y exigen que cada lanzador de herramienta de terceros tenga
 procedencia declarada. Un lanzador nuevo —o uno existente que empiece a spawnear—
 rompe el ancla hasta que se le documente contra qué fuente se verificaron sus
 flags.
+
+Segunda ronda (revisión automática de PR #426), el mismo defecto en el propio
+ancla y en el propio fix:
+
+- El detector NO contaba ``subprocess.run``/``.call``/``.check_call``/
+  ``.check_output`` ni ``os.system``/``.popen`` — 9 spawns reales en
+  `windows_interop.py`, `_process.py` y `file_permissions.py` quedaban fuera del
+  inventario que este archivo dice congelar.
+- `test_todo_lanzador_de_herramienta_declara_procedencia` solo validaba que las
+  entradas YA EXISTENTES de `PROCEDENCIA_DE_FLAGS` no estuvieran vacías — un
+  lanzador nuevo podía sumarse a `LANZADORES_ESPERADOS` sin declarar procedencia
+  y el test seguía en verde.
+- El propio fix de LOOT dejó un segundo flag inventado sin corregir:
+  ``--update-masterlist`` tampoco es un flag real de LOOT (mismo
+  `src/gui/qt/main.cpp`) — arreglar `--sort` sin verificar el flag de al lado
+  fue, otra vez, el defecto de "arreglar un hermano y no al otro".
+- Pandora quedó sin ningún flag de automatización tras quitar los inventados:
+  peor que antes, porque el proceso queda esperando en GUI hasta el timeout.
 """
 
 from __future__ import annotations
@@ -50,14 +68,37 @@ from sky_claw.local.tools.wrye_bash_runner import (
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 PAQUETE = RAIZ / "sky_claw"
 
-#: Funciones que crean un proceso externo. `run_capture` es el helper propio
-#: (`local/tools/_process.py`); el resto son las primitivas de asyncio/subprocess.
+#: Funciones que crean un proceso externo, sin necesitar resolver el alias del
+#: módulo que las expone. `run_capture` es el helper propio (`local/tools/_process.py`);
+#: el resto son las primitivas de asyncio/subprocess cuyo nombre de atributo no
+#: coincide con ningún método de dominio del repo (a diferencia de `run`, ver abajo).
 FUNCIONES_LANZADORAS = {
     "create_subprocess_exec",
     "create_subprocess_shell",
     "run_capture",
     "Popen",
 }
+
+#: `subprocess.run`/`.call`/`.check_call`/`.check_output` y `os.system`/`.popen`
+#: SÍ necesitan resolver el alias del módulo importado: `.run(...)` a secas
+#: matchea de más — el repo tiene decenas de `preflight.run()`, `daemon.run()`,
+#: `flow.run()` que no lanzan ningún proceso. Sin este alias-tracking, agregar
+#: "run" a `FUNCIONES_LANZADORAS` infla el inventario con falsos positivos y
+#: rompe el propósito del ancla (señalado en revisión: PR #426).
+ATRIBUTOS_DE_SUBPROCESS = {"run", "call", "check_call", "check_output"}
+ATRIBUTOS_DE_OS = {"system", "popen"}
+
+
+def _alias_de_modulo(arbol: ast.AST, modulo: str) -> set[str]:
+    """Nombres bajo los que `arbol` importa `modulo` (`import X as Y` → `{Y}`)."""
+    alias: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            for nombre in nodo.names:
+                if nombre.name == modulo:
+                    alias.add(nombre.asname or modulo)
+    return alias
+
 
 #: Inventario congelado de módulos que lanzan procesos, con la cantidad exacta de
 #: llamadas. Se congela el conteo y no solo el nombre: agregar un segundo spawn
@@ -66,12 +107,18 @@ FUNCIONES_LANZADORAS = {
 #: lanzador de LOOT vivió en `windows_interop.py` sin que nadie lo notara.
 LANZADORES_ESPERADOS = {
     # Infraestructura: lanzan procesos pero no cargan flags de herramientas de
-    # terceros (helpers, brokers USVFS, wslpath, workers de prueba).
+    # terceros (helpers, brokers USVFS, wslpath, workers de prueba, utilidades
+    # de sistema como taskkill/icacls/whoami/powershell).
     "sky_claw/app/agent/executor.py": 1,
     "sky_claw/app/core/vfs_orchestrator.py": 1,
-    "sky_claw/app/core/windows_interop.py": 2,
+    "sky_claw/app/security/file_permissions.py": 7,
     "sky_claw/local/mo2/vfs_worker.py": 1,
-    "sky_claw/local/tools/_process.py": 2,
+    "sky_claw/local/tools/_process.py": 3,
+    # Mixto: además del `create_subprocess_exec` legacy que SÍ es lanzador de
+    # LOOT (con entrada propia en PROCEDENCIA_DE_FLAGS), este módulo tiene un
+    # `subprocess.run(["taskkill", ...])` puramente infra — mismo módulo, dos
+    # naturalezas distintas, un solo conteo agregado.
+    "sky_claw/app/core/windows_interop.py": 3,
     # Lanzadores de herramienta: cada uno debe tener entrada en PROCEDENCIA_DE_FLAGS.
     "sky_claw/local/loot/cli.py": 1,
     "sky_claw/local/loot/version.py": 1,
@@ -83,6 +130,28 @@ LANZADORES_ESPERADOS = {
     "sky_claw/local/tools/vramr_service.py": 1,
     "sky_claw/local/xedit/runner.py": 1,
 }
+
+#: Subconjunto de `LANZADORES_ESPERADOS` que lanza una herramienta de terceros
+#: (no infraestructura pura) y por lo tanto DEBE tener entrada en
+#: `PROCEDENCIA_DE_FLAGS`. Separado del dict de arriba porque la pertenencia a
+#: este set es una decisión de clasificación, no algo derivable del conteo de
+#: llamadas — un módulo puede spawnear una sola vez y aun así ser infra
+#: (`vfs_worker.py`) o spawnear para un tercero (`pandora_runner.py`).
+LANZADORES_DE_HERRAMIENTA = frozenset(
+    {
+        "sky_claw/local/loot/cli.py",
+        "sky_claw/local/loot/version.py",
+        "sky_claw/app/core/windows_interop.py",
+        "sky_claw/local/mo2/vfs.py",
+        "sky_claw/local/tools/bodyslide_runner.py",
+        "sky_claw/local/tools/dyndolod_runner.py",
+        "sky_claw/local/tools/pandora_runner.py",
+        "sky_claw/local/tools/synthesis_runner.py",
+        "sky_claw/local/tools/vramr_service.py",
+        "sky_claw/local/xedit/runner.py",
+        "sky_claw/local/tools/wrye_bash_runner.py",
+    }
+)
 
 #: Módulos que construyen un vector de argumentos para una herramienta de
 #: terceros. Cada uno declara **contra qué fuente** se verificaron sus flags.
@@ -114,15 +183,26 @@ PROCEDENCIA_DE_FLAGS = {
 }
 
 
-def _es_llamada_lanzadora(func: ast.expr) -> bool:
-    """``asyncio.create_subprocess_exec(...)`` o ``run_capture(...)`` importado directo."""
+def _es_llamada_lanzadora(func: ast.expr, alias_subprocess: set[str], alias_os: set[str]) -> bool:
+    """``asyncio.create_subprocess_exec(...)``, ``subprocess.run(...)``, etc."""
     if isinstance(func, ast.Attribute):
-        return func.attr in FUNCIONES_LANZADORAS
+        if func.attr in FUNCIONES_LANZADORAS:
+            return True
+        base = func.value.id if isinstance(func.value, ast.Name) else None
+        if func.attr in ATRIBUTOS_DE_SUBPROCESS and base in alias_subprocess:
+            return True
+        return func.attr in ATRIBUTOS_DE_OS and base in alias_os
     return isinstance(func, ast.Name) and func.id in FUNCIONES_LANZADORAS
 
 
 def _contar_lanzamientos(arbol: ast.AST) -> int:
-    return sum(1 for nodo in ast.walk(arbol) if isinstance(nodo, ast.Call) and _es_llamada_lanzadora(nodo.func))
+    alias_subprocess = _alias_de_modulo(arbol, "subprocess")
+    alias_os = _alias_de_modulo(arbol, "os")
+    return sum(
+        1
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Call) and _es_llamada_lanzadora(nodo.func, alias_subprocess, alias_os)
+    )
 
 
 def _lanzadores_por_modulo() -> dict[str, int]:
@@ -150,6 +230,28 @@ def test_detector_reconoce_las_formas_de_lanzar_un_proceso() -> None:
     assert _contar("import asyncio\nasyncio.create_subprocess_shell('a')\n") == 1
     assert _contar("from x import run_capture\nrun_capture(['a'])\n") == 1
     assert _contar("import subprocess\nsubprocess.Popen(['a'])\n") == 1
+    assert _contar("import subprocess\nsubprocess.run(['a'])\n") == 1
+    assert _contar("import subprocess\nsubprocess.call(['a'])\n") == 1
+    assert _contar("import subprocess\nsubprocess.check_call(['a'])\n") == 1
+    assert _contar("import subprocess\nsubprocess.check_output(['a'])\n") == 1
+    assert _contar("import os\nos.system('a')\n") == 1
+    assert _contar("import os\nos.popen('a')\n") == 1
+    # Alias de import: `subprocess.run` sigue siendo `subprocess.run` con otro nombre.
+    assert _contar("import subprocess as sp\nsp.run(['a'])\n") == 1
+
+
+def test_detector_no_confunde_metodo_run_de_dominio_con_spawn() -> None:
+    """`.run()` a secas NO es una señal de spawn: el repo tiene decenas de
+    `preflight.run()` / `daemon.run()` / `flow.run()` que no lanzan ningún
+    proceso. Agregar "run" a `FUNCIONES_LANZADORAS` sin resolver el alias del
+    módulo (el error que motivó este test, señalado en revisión) infla el
+    inventario con falsos positivos.
+    """
+    assert _contar("preflight = _Preflight()\npreflight.run()\n") == 0
+    assert _contar("await self._maintenance_daemon.run()\n") == 0
+    # Ni siquiera si el objeto se llama literalmente `subprocess` sin haberlo
+    # importado como tal — el alias se resuelve por el `import`, no por el nombre.
+    assert _contar("subprocess = MiWrapper()\nsubprocess.run(['a'])\n") == 0
 
 
 def test_detector_ignora_menciones_que_no_son_llamadas() -> None:
@@ -186,6 +288,19 @@ def test_todo_lanzador_de_herramienta_declara_procedencia() -> None:
     assert not faltantes, f"Procedencia vacía en {faltantes}"
 
 
+def test_todo_lanzador_de_herramienta_tiene_entrada_en_procedencia() -> None:
+    """Un lanzador de herramienta nuevo debe romper este test hasta declarar procedencia.
+
+    El test anterior solo valida que las entradas EXISTENTES de
+    `PROCEDENCIA_DE_FLAGS` no estén vacías — un módulo agregado a
+    `LANZADORES_DE_HERRAMIENTA` sin agregar también su entrada en
+    `PROCEDENCIA_DE_FLAGS` pasaría sin romper nada, exactamente el hueco que el
+    ancla dice cerrar (señalado en revisión: PR #426).
+    """
+    faltantes = sorted(LANZADORES_DE_HERRAMIENTA - set(PROCEDENCIA_DE_FLAGS))
+    assert not faltantes, f"Lanzadores de herramienta sin PROCEDENCIA_DE_FLAGS: {faltantes}"
+
+
 def test_la_procedencia_apunta_a_modulos_que_existen() -> None:
     """Evita que la tabla envejezca apuntando a archivos renombrados o borrados."""
     inexistentes = sorted(m for m in PROCEDENCIA_DE_FLAGS if not (RAIZ / m).is_file())
@@ -212,6 +327,26 @@ def test_ningun_lanzador_de_loot_usa_el_flag_inexistente() -> None:
     assert not ofensores, (
         f"`--sort` reaparece en {ofensores}. LOOT declara `--auto-sort` "
         "(src/gui/qt/main.cpp); `--sort` hace que QCommandLineParser rechace la invocación."
+    )
+
+
+def test_ningun_lanzador_de_loot_usa_el_flag_de_masterlist_inexistente() -> None:
+    """``--update-masterlist`` tampoco está declarado en el parser de LOOT.
+
+    El hermano del defecto de arriba, encontrado por revisión automática dentro
+    del propio fix: corregir `--sort` sin verificar el flag de al lado dejó
+    `--update-masterlist` pasando el filtro entero — que rompe la invocación
+    exactamente igual que `--sort` la rompía.
+    """
+    ofensores = sorted(
+        archivo.relative_to(RAIZ).as_posix()
+        for archivo in PAQUETE.rglob("*.py")
+        if '"--update-masterlist"' in archivo.read_text(encoding="utf-8")
+        or "'--update-masterlist'" in archivo.read_text(encoding="utf-8")
+    )
+    assert not ofensores, (
+        f"`--update-masterlist` reaparece en {ofensores}. No es un flag declarado por LOOT "
+        "(src/gui/qt/main.cpp); refrescar el masterlist requiere MasterlistDownloader, no un flag CLI."
     )
 
 
@@ -247,6 +382,43 @@ async def test_loot_construye_el_vector_verificado(tmp_path: pathlib.Path) -> No
     assert "--game-path" in argv
 
 
+async def test_loot_con_update_masterlist_no_agrega_el_flag_inexistente(tmp_path: pathlib.Path) -> None:
+    """``update_masterlist=True`` (default de producción) no debe romper la invocación.
+
+    Antes de este fix, `sort(update_masterlist=True)` —el camino que usa
+    `loot_service.py` por defecto en producción— agregaba `--update-masterlist`,
+    que `QCommandLineParser` rechaza junto con TODO el resto de argumentos
+    válidos. Ejercitar solo la rama `False` (como hacía la versión anterior de
+    este test) dejaba pasar exactamente el caso que más importa: el real.
+    """
+    from sky_claw.local.loot.cli import LOOTConfig, LOOTRunner
+
+    loot_exe = tmp_path / "loot.exe"
+    loot_exe.touch()
+    juego = tmp_path / "Skyrim Special Edition"
+    juego.mkdir()
+    runner = LOOTRunner(LOOTConfig(loot_exe=loot_exe, game_path=juego, game="Skyrim Special Edition"))
+
+    capturado: dict[str, list[str]] = {}
+
+    async def fake_exec(*args: str, **_kwargs: object) -> AsyncMock:
+        capturado["args"] = list(args)
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = 0
+        return proc
+
+    with (
+        patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", fake_exec),
+        patch("sky_claw.local.loot.cli.translate_path_if_wsl", return_value=str(juego)),
+    ):
+        await runner.sort(update_masterlist=True)
+
+    argv = capturado["args"]
+    assert "--update-masterlist" not in argv, "--update-masterlist no es un flag real de LOOT"
+    assert "--auto-sort" in argv, "el resto del vector sigue siendo válido con update_masterlist=True"
+
+
 async def test_bodyslide_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:
     """BodySlide declara ``gbuild`` y ``t``; ``-b``/``-o`` no son opciones válidas."""
     runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=tmp_path / "BodySlide.exe", game_path=tmp_path))
@@ -261,8 +433,13 @@ async def test_bodyslide_construye_el_vector_verificado(tmp_path: pathlib.Path) 
     assert "-o" not in argv, "`-o` no es una opción declarada por BodySlide"
 
 
-async def test_pandora_no_pasa_flags_inexistentes(tmp_path: pathlib.Path) -> None:
-    """``--game`` y ``--auto`` no existen en Pandora; el output sí es ``--output``."""
+async def test_pandora_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:
+    """Vector completo contra el README de Pandora, no flags muestreados.
+
+    ``count("--output") == 1`` pasaba igual con ``--game``/``--auto`` inventados
+    al lado (señalado en revisión: PR #426) — exactamente la clase de test que
+    este ancla existe para reemplazar. Se afirma igualdad de lista completa.
+    """
     juego = tmp_path / "Skyrim"
     runner = PandoraRunner(PandoraConfig(pandora_exe=tmp_path / "Pandora.exe", game_path=juego))
     run_capture = AsyncMock(return_value=(b"ok", b"", 0))
@@ -271,10 +448,12 @@ async def test_pandora_no_pasa_flags_inexistentes(tmp_path: pathlib.Path) -> Non
         await runner.run_pandora()
 
     argv = run_capture.await_args.args[0]
-    assert "--game" not in argv, "Pandora no declara `--game` (la ruta del juego es `--tesv`)"
-    assert "--auto" not in argv, "Pandora declara `--auto_run`/`--auto_close`, no `--auto`"
-    assert argv.count("--output") == 1
-    assert pathlib.Path(argv[argv.index("--output") + 1]) == juego.resolve() / "Pandora_Output"
+    assert argv[1:] == [
+        "--auto_run",
+        "--auto_close",
+        "--output",
+        str(juego.resolve() / "Pandora_Output"),
+    ], "Pandora no declara `--game` ni `--auto` (README: `--tesv`, `--auto_run`/`--auto_close`)"
 
 
 async def test_wrye_bash_falla_cerrado_en_vez_de_hacer_un_backup(tmp_path: pathlib.Path) -> None:

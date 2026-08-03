@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 if TYPE_CHECKING:
     import pathlib
@@ -96,7 +96,7 @@ class WryeBashRunner:
     def __init__(self, config: WryeBashConfig):
         self.config = config
 
-    async def generate_bashed_patch(self) -> WryeBashResult:
+    async def generate_bashed_patch(self) -> NoReturn:
         """Falla cerrado: Wrye Bash no puede construir el parche sin GUI.
 
         Ver :class:`WryeBashHeadlessUnsupportedError` para la verificación contra

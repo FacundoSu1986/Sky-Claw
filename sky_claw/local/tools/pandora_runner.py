@@ -80,13 +80,22 @@ class PandoraRunner:
         # `-o`), `--auto_run`, `--auto_close`, `--tesv` y `--skyrim_debug64`.
         #
         # Este runner pasaba además `--game "Skyrim Special Edition"` y `--auto`:
-        # ninguno de los dos existe. No se los reemplaza por `--auto_run`/
-        # `--auto_close` acá porque su semántica exacta (¿`--auto_run` dispara la
-        # corrida, o reusa la selección de mods cacheada de la última exitosa?) no
-        # está verificada, y cambiar un flag inventado por otro adivinado no
-        # arregla nada. Pendiente de smoke en rig real.
+        # ninguno de los dos existe.
+        #
+        # `--auto_run`/`--auto_close` sí están confirmados en el README ("Runs the
+        # engine using the same active mods as cached from the last successful
+        # run." / "Closes the engine automatically upon finishing a single
+        # launch."). Su semántica exacta de disparo (¿corre de inmediato, o solo
+        # habilita cerrar sin intervención una vez que corrió?) no está probada en
+        # rig real — pero omitirlos por completo es estrictamente peor: sin ellos
+        # Pandora queda esperando en la GUI hasta el timeout de 300s y hace
+        # rollback, con cero chance de completar. Con ellos hay lectura verificada
+        # de que es el par documentado para correr desatendido. Pendiente de smoke
+        # en rig real (`docs/pending_ooda_status.md`, U-04).
         args = [
             str(self.config.pandora_exe),
+            "--auto_run",
+            "--auto_close",
             "--output",
             str(self.output_path),
         ]

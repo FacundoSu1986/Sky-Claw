@@ -104,10 +104,20 @@ class LOOTRunner:
         """Run LOOT CLI to sort the load order.
 
         Args:
-            update_masterlist: When True, append ``--update-masterlist`` so LOOT
-                downloads the latest masterlist before sorting. Defaults to False
-                so read-only callers (e.g. the dry-run preview) never hit the
-                network; the real-execution service passes the user's preference.
+            update_masterlist: Kept for caller compatibility (`loot_service.py`
+                threads it through with a default of ``True`` for real runs).
+                Verified against ``loot/loot`` `src/gui/qt/main.cpp`:
+                **`--update-masterlist` is not a declared option** — passing it
+                made ``QCommandLineParser`` reject the ENTIRE invocation,
+                including the valid `--auto-sort`. It is no longer appended.
+                Masterlist refresh has a real, unwired implementation at
+                :class:`sky_claw.local.loot.masterlist.MasterlistDownloader`
+                (fetches via ``NetworkGateway`` with a 24h TTL cache) that no
+                caller has ever invoked — wiring it requires confirming the
+                exact directory layout LOOT expects for `--loot-data-path`
+                against `libloot` sources, which is out of scope for a CLI-flag
+                fix. Until then this parameter is a documented no-op: LOOT
+                sorts against whatever masterlist it already has locally.
 
         Returns:
             Parsed LOOT result with warnings, errors, and suggested order.
@@ -142,7 +152,11 @@ class LOOTRunner:
         ]
 
         if update_masterlist:
-            args.append("--update-masterlist")
+            logger.warning(
+                "LOOT: se pidió update_masterlist=True pero `--update-masterlist` no es un "
+                "flag válido de LOOT (verificado contra src/gui/qt/main.cpp) y "
+                "MasterlistDownloader no está cableado a este runner; se ordena sin refrescar."
+            )
 
         logger.info("Running LOOT: %s", " ".join(args))
 
