@@ -1427,9 +1427,7 @@ class TestEnsureSkse:
             await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
 
     @pytest.mark.asyncio
-    async def test_descarga_y_extrae_correctamente(
-        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_descarga_y_extrae_correctamente(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
         """Flujo feliz: descarga, extrae excluyendo MAC OSX, y copia Data y binarios."""
         install_dir = tmp_path / "skyrim"
         install_dir.mkdir()
