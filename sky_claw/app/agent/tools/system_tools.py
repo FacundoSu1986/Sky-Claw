@@ -667,12 +667,18 @@ async def run_bodyslide_batch(
                 # árbol parcial queda en disco.
                 raise _BodySlideRunFallidoError(result)
     except LockAcquisitionError as exc:
-        detail = f"Could not acquire '{BODYSLIDE_MESHES_RESOURCE_ID}' lock: {exc}"
+        # Saneado igual que el catch-all de abajo (CodeRabbit, PR #430): hoy
+        # resource_id/agent_id son constantes, pero el mensaje de la excepción
+        # no está bajo control de este módulo — mismo criterio defensivo que
+        # ``run_pandora`` ya aplica a su propio catch-all.
+        detail = sanitize_for_prompt(f"Could not acquire '{BODYSLIDE_MESHES_RESOURCE_ID}' lock: {exc}")
         return json.dumps({"success": False, "message": detail, "error": detail})
     except _BodySlideRunFallidoError as exc:
         return json.dumps(_bodyslide_dict_de_resultado(exc.result))
     except Exception as exc:
-        detail = str(exc)
+        # Mismo patrón que ``run_pandora`` (mismo archivo): una excepción
+        # inesperada puede envolver salida cruda del runner.
+        detail = sanitize_for_prompt(str(exc))
         return json.dumps({"success": False, "message": detail, "error": detail})
 
     return json.dumps(_bodyslide_dict_de_resultado(result))
