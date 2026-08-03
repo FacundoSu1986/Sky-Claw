@@ -140,18 +140,39 @@ class TestParidadPorFuente:
 
         assert await _detectan_ambos(juego) == (juego, juego)
 
-    async def test_las_rutas_comunes_configuradas_cubren_ambas_ediciones(self) -> None:
-        """El chequeo de arriba sería cosmético si `SKYRIM_COMMON_PATHS` no tuviera LE.
-
-        Aceptar `Skyrim.exe` en esa rama no sirve de nada mientras la tupla solo liste
-        carpetas `Skyrim Special Edition`: la rama sería inalcanzable para LE.
-        """
-        from sky_claw.config import SKYRIM_COMMON_PATHS
-
-        rutas = [r.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower() for r in SKYRIM_COMMON_PATHS]
-        assert any(nombre == "skyrim special edition" for nombre in rutas), "faltan rutas de SE/AE"
-        assert any(nombre == "skyrim" for nombre in rutas), "faltan rutas de LE"
-
     async def test_sin_juego_ninguno_inventa_una_ruta(self, tmp_path: pathlib.Path) -> None:
         """Fail-closed: sin fuentes activas los dos devuelven None, no un candidato."""
         assert await _detectan_ambos(tmp_path) == (None, None)
+
+
+# ── Rutas comunes: una sola tupla, no tres copias ───────────────────────────────
+# Fuera de `TestParidadPorFuente` a propósito: su fixture autouse apaga las fuentes
+# parcheando estas mismas tuplas a (), así que adentro compararía los mocks entre sí
+# en vez de la configuración real.
+def test_los_dos_detectores_leen_la_misma_tupla_de_rutas_comunes() -> None:
+    """Ambos módulos tienen que apuntar a la tupla canónica de `config`, no a una copia.
+
+    `auto_detect._SKYRIM_COMMON` es un alias de `config.SKYRIM_COMMON_PATHS`, y el
+    scanner la importa. Verificar solo la canónica —como hacía la primera versión de
+    este test— no ancla nada: si alguien reemplaza el alias por una lista literal
+    propia, la cobertura de ediciones sigue en verde y la paridad se rompe en
+    producción, que es justo el defecto que esta suite existe para atajar.
+    """
+    from sky_claw.config import SKYRIM_COMMON_PATHS
+
+    canonicas = tuple(SKYRIM_COMMON_PATHS)
+    assert tuple(scanner_mod.SKYRIM_COMMON_PATHS) == canonicas, "el scanner divergió de config"
+    assert tuple(auto_mod._SKYRIM_COMMON) == canonicas, "el AutoDetector divergió de config"
+
+
+def test_las_rutas_comunes_configuradas_cubren_ambas_ediciones() -> None:
+    """Aceptar `Skyrim.exe` en esa rama es cosmético si la tupla no lista carpetas de LE.
+
+    Sin entradas `common\\Skyrim`, la rama de rutas comunes es inalcanzable para LE por
+    más que el detector la acepte: el arreglo quedaría decorativo y en verde.
+    """
+    from sky_claw.config import SKYRIM_COMMON_PATHS
+
+    hojas = [r.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower() for r in SKYRIM_COMMON_PATHS]
+    assert any(nombre == "skyrim special edition" for nombre in hojas), "faltan rutas de SE/AE"
+    assert any(nombre == "skyrim" for nombre in hojas), "faltan rutas de LE"
