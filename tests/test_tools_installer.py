@@ -1203,29 +1203,47 @@ class TestEnsureSkse:
         assert result.exe_path == install_dir / "skse64_loader.exe"
 
     @pytest.mark.asyncio
-    async def test_falla_con_edicion_ms_store(
-        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Si la edición no está en el dicccionario (ej. MS Store), lanza error antes de la red."""
+    @pytest.mark.parametrize(
+        "edition",
+        [
+            e
+            for e in __import__("sky_claw.local.discovery.environment", fromlist=["SkyrimEdition"]).SkyrimEdition
+            if e != __import__("sky_claw.local.discovery.environment", fromlist=["SkyrimEdition"]).SkyrimEdition.UNKNOWN
+        ],
+    )
+    async def test_ediciones_soportadas(self, installer: ToolsInstaller, tmp_path: pathlib.Path, edition: Any) -> None:
+        """Verifica que las ediciones conocidas pasen la validación inicial sin error de MS Store."""
         install_dir = tmp_path / "skyrim"
         install_dir.mkdir()
         session = MagicMock(spec=aiohttp.ClientSession)
 
-        monkeypatch.setattr(
-            "sky_claw.local.tools_installer.ToolsInstaller._edition_to_config_key", lambda s, e: "MS_STORE"
-        )
+        # Mock HITL to abort early but after edition check
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.DENIED)  # type: ignore[method-assign]
+
+        with pytest.raises(ToolInstallError, match="denied"):
+            await installer.ensure_skse(install_dir, session, edition=edition)
+
+    @pytest.mark.asyncio
+    async def test_falla_con_edicion_ms_store(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
+        """Si la edición es UNKNOWN (MS Store), lanza error antes de la red sin necesidad de monkeypatch."""
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+        session = MagicMock(spec=aiohttp.ClientSession)
 
         from sky_claw.local.discovery.environment import SkyrimEdition
 
-        with pytest.raises(ToolInstallError, match="no compatible"):
+        with pytest.raises(ToolInstallError, match="no es compatible"):
             await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.UNKNOWN)
 
     @pytest.mark.asyncio
     async def test_hitl_denial_raises(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
-        """Cuando el operador lo deniega, lanza ToolInstallError."""
+        """Cuando el operador lo deniega, lanza ToolInstallError y conserva los DLLs existentes."""
         install_dir = tmp_path / "skyrim"
         install_dir.mkdir()
         session = MagicMock(spec=aiohttp.ClientSession)
+
+        old_dll = install_dir / "skse64_1_5_97.dll"
+        old_dll.write_text("viejo", encoding="utf-8")
 
         installer._hitl.request_approval = AsyncMock(return_value=Decision.DENIED)  # type: ignore[method-assign]
 
@@ -1234,11 +1252,13 @@ class TestEnsureSkse:
         with pytest.raises(ToolInstallError, match="denied"):
             await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
 
+        assert old_dll.exists(), "Debe conservar los DLLs existentes si el operador deniega la instalación."
+
     @pytest.mark.asyncio
-    async def test_limpia_dlls_huerfanos_antes_de_instalar(
+    async def test_limpia_dlls_despues_de_descarga_y_extraccion(
         self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Debe eliminar DLLs antiguas (incluso de solo lectura) antes de solicitar HITL."""
+        """Debe eliminar DLLs antiguas (incluso de solo lectura) pero solo DESPUÉS del staging."""
         install_dir = tmp_path / "skyrim"
         install_dir.mkdir()
 
@@ -1249,11 +1269,22 @@ class TestEnsureSkse:
         old_dll.chmod(stat.S_IREAD)
 
         session = MagicMock(spec=aiohttp.ClientSession)
-        installer._hitl.request_approval = AsyncMock(return_value=Decision.DENIED)  # type: ignore[method-assign]
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+
+        # Simular falla durante copia para verificar que la limpieza sí ocurrió antes de copiar,
+        # pero después de descargar (lo cual ocurre por defecto en la clase base si mockeamos copy).
+        installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        installer._extract = MagicMock(return_value=None)  # type: ignore[method-assign]
+        installer._find_skse_root = MagicMock(return_value=tmp_path / "extracted" / "root")  # type: ignore[method-assign]
+
+        async def mock_copy_fail(*args, **kwargs):
+            raise ToolInstallError("Simulated copy failure")
+
+        installer._copy_skse_files = mock_copy_fail  # type: ignore[method-assign]
 
         from sky_claw.local.discovery.environment import SkyrimEdition
 
-        with pytest.raises(ToolInstallError, match="denied"):
+        with pytest.raises(ToolInstallError, match="Simulated copy failure"):
             await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
 
         assert not old_dll.exists(), "Debe limpiar DLLs de otras versiones incluso si eran readonly"
@@ -1298,18 +1329,79 @@ class TestEnsureSkse:
             skse_dir.mkdir()
             (skse_dir / "skse64_loader.exe").write_text("loader", encoding="utf-8")
             (skse_dir / "skse64_1_6_1170.dll").write_text("dll", encoding="utf-8")
-            (skse_dir / "Data").mkdir()
-            (skse_dir / "Data" / "Scripts").mkdir()
-            (skse_dir / "Data" / "Scripts" / "skse.pex").write_text("pex", encoding="utf-8")
+            # Simulamos el Data
+            data_dir = skse_dir / "Data"
+            data_dir.mkdir()
+            (data_dir / "scripts").mkdir()
+            (data_dir / "scripts" / "test.pex").write_text("pex", encoding="utf-8")
 
-        monkeypatch.setattr("sky_claw.local.tools_installer.ToolsInstaller._extract", mock_extract)
+        installer._extract = mock_extract  # type: ignore[method-assign]
 
         from sky_claw.local.discovery.environment import SkyrimEdition
 
-        result = await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+        res = await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
 
-        assert result.already_existed is False
-        assert result.tool_name == "SKSE"
-        assert (install_dir / "skse64_loader.exe").exists()
+        assert res.tool_name == "SKSE"
+        assert res.exe_path == install_dir / "skse64_loader.exe"
+        assert res.already_existed is False
         assert (install_dir / "skse64_1_6_1170.dll").exists()
-        assert (install_dir / "Data" / "Scripts" / "skse.pex").exists()
+        assert (install_dir / "Data" / "scripts" / "test.pex").exists()
+
+    @pytest.mark.asyncio
+    async def test_descarga_falla_hash(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """La validación de hash rechaza payloads modificados."""
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        # Patch config with bad hash
+        monkeypatch.setitem(installer.__class__.SKSE_CONFIG["AE"], "sha256", "DEADBEEF")
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+
+        # Simular descarga de "basura"
+        installer._gateway = MagicMock()
+        mock_resp = AsyncMock()
+        mock_resp.content.iter_chunked.return_value = _async_iter([b"fake data"])
+        installer._gateway.request.return_value = mock_resp
+
+        from sky_claw.local.discovery.environment import SkyrimEdition
+
+        with pytest.raises(ToolInstallError, match="Validación de hash fallida"):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+    @pytest.mark.asyncio
+    async def test_encuentra_loader_ambiguo(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
+        """Si hay múltiples loaders, lanza error."""
+        extract_path = tmp_path / "extracted"
+        extract_path.mkdir(parents=True)
+        (extract_path / "dir1").mkdir()
+        (extract_path / "dir2").mkdir()
+
+        cfg = {"loader": "skse64_loader.exe", "dll": "skse64_1_6_1170.dll"}
+
+        (extract_path / "dir1" / "skse64_loader.exe").write_text("a")
+        (extract_path / "dir2" / "skse64_loader.exe").write_text("b")
+
+        with pytest.raises(ToolInstallError, match="ambigua"):
+            installer._find_skse_root(extract_path, cfg)
+
+    @pytest.mark.asyncio
+    async def test_falta_dll_en_payload(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
+        """Si está el loader pero no el dll, lanza error."""
+        extract_path = tmp_path / "extracted"
+        skse_root = extract_path / "skse"
+        skse_root.mkdir(parents=True)
+
+        cfg = {"loader": "skse64_loader.exe", "dll": "skse64_1_6_1170.dll"}
+        (skse_root / "skse64_loader.exe").write_text("a")
+        # falta dll
+
+        with pytest.raises(ToolInstallError, match="incompleto"):
+            installer._find_skse_root(extract_path, cfg)
+
+
+async def _async_iter(items: list[bytes]):
+    for item in items:
+        yield item

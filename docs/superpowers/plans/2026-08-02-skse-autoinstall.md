@@ -520,8 +520,8 @@ class TestEnsureSkse:
         import zipfile
         from sky_claw.local.discovery.environment import SkyrimEdition
 
-        # Crear archivo .7z falso con estructura realista + trampa __MACOSX
-        archive_path = tmp_path / "skse_fake.7z"
+        # Crear archivo .zip falso con estructura realista + trampa __MACOSX
+        archive_path = tmp_path / "skse_fake.zip"
 
         with zipfile.ZipFile(archive_path, "w") as zf:
             # Estructura real de SKSE
@@ -700,11 +700,11 @@ El método `_extract` ya soporta `.7z` vía `py7zr`. **Verificado**: el paquete 
 python -m pytest tests/test_tools_installer.py::TestEnsureSkse -v
 
 # Linting
-ruff check sky_claw/local/tools_installer.py
-ruff format sky_claw/local/tools_installer.py
+ruff check sky_claw/ tests/
+ruff format --check sky_claw/ tests/
 
 # Type checking
-mypy sky_claw/local/tools_installer.py
+mypy sky_claw/ tests/
 
 # Verificar imports
 python -c "from sky_claw.local.tools_installer import SKSE_CONFIG, ToolsInstaller; print('OK')"
