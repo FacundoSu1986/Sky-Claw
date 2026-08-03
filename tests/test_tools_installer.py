@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import pathlib
+import tempfile
 import zipfile
 from collections.abc import AsyncIterator
 from typing import Any
@@ -18,6 +19,7 @@ from sky_claw.app.security.network_gateway import EgressPolicy, NetworkGateway
 from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local import tools_installer
 from sky_claw.local.discovery import scanner
+from sky_claw.local.discovery.environment import SkyrimEdition
 from sky_claw.local.discovery.scanner import PANDORA_EXE_NAMES
 from sky_claw.local.tools_installer import (
     _SEVENZIP_TIMEOUT_SECONDS,
@@ -38,7 +40,13 @@ from sky_claw.local.tools_installer import (
 
 @pytest.fixture
 def validator(tmp_path: pathlib.Path) -> PathValidator:
-    return PathValidator(roots=[tmp_path])
+    """Espeja las raíces que ``AppContext.start_full`` le da al validator real.
+
+    La raíz de staging (``gettempdir()/sky_claw``) no es decorativa: los instaladores
+    que descargan a un temporal la necesitan, y omitirla acá hacía que el fixture
+    aceptara código que en producción muere con ``PathViolationError``.
+    """
+    return PathValidator(roots=[tmp_path, pathlib.Path(tempfile.gettempdir()) / "sky_claw"])
 
 
 @pytest.fixture
@@ -1271,8 +1279,8 @@ class TestEnsureSkse:
         session = MagicMock(spec=aiohttp.ClientSession)
         installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
 
-        # Simular falla durante copia para verificar que la limpieza sí ocurrió antes de copiar,
-        # pero después de descargar (lo cual ocurre por defecto en la clase base si mockeamos copy).
+        # El payload llega y valida; la copia es lo único que falla. Para entonces el
+        # borrado ya ocurrió, y eso está bien: el reemplazo estaba listo en staging.
         installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
         installer._extract = MagicMock(return_value=None)  # type: ignore[method-assign]
         installer._find_skse_root = MagicMock(return_value=tmp_path / "extracted" / "root")  # type: ignore[method-assign]
@@ -1290,6 +1298,66 @@ class TestEnsureSkse:
         assert not old_dll.exists(), "Debe limpiar DLLs de otras versiones incluso si eran readonly"
 
     @pytest.mark.asyncio
+    async def test_no_borra_el_dll_viejo_si_la_extraccion_falla(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Un .7z corrupto no puede dejar al juego sin la versión vieja NI la nueva.
+
+        Es el punto de no retorno del flujo: hasta que el payload no está extraído y
+        validado en staging, el directorio del juego no se toca. Sin rollback, borrar
+        antes de validar es pérdida de datos irreversible.
+        """
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+
+        old_dll = install_dir / "skse64_1_5_97.dll"
+        old_dll.write_text("viejo", encoding="utf-8")
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+        installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        def extraccion_corrupta(*args: object, **kwargs: object) -> None:
+            raise ToolInstallError("archivo 7z corrupto")
+
+        installer._extract = MagicMock(side_effect=extraccion_corrupta)  # type: ignore[method-assign]
+
+        from sky_claw.local.discovery.environment import SkyrimEdition
+
+        with pytest.raises(ToolInstallError, match="corrupto"):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        assert old_dll.exists(), "Una extracción fallida no puede dejar el juego sin ningún SKSE"
+
+    @pytest.mark.asyncio
+    async def test_no_borra_el_dll_viejo_si_el_payload_es_invalido(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Hermano del anterior: extrae bien pero la estructura no valida."""
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+
+        old_dll = install_dir / "skse64_1_5_97.dll"
+        old_dll.write_text("viejo", encoding="utf-8")
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+        installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        installer._extract = MagicMock(return_value=None)  # type: ignore[method-assign]
+
+        def root_invalido(*args: object, **kwargs: object) -> pathlib.Path:
+            raise ToolInstallError("No se encontró skse64_loader.exe válido")
+
+        installer._find_skse_root = MagicMock(side_effect=root_invalido)  # type: ignore[method-assign]
+
+        from sky_claw.local.discovery.environment import SkyrimEdition
+
+        with pytest.raises(ToolInstallError, match="loader"):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        assert old_dll.exists(), "Un payload inválido no puede dejar el juego sin ningún SKSE"
+
+    @pytest.mark.asyncio
     async def test_permiso_denegado_si_juego_abierto(
         self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1299,12 +1367,24 @@ class TestEnsureSkse:
         old_dll = install_dir / "skse64_1_5_97.dll"
         old_dll.write_text("viejo", encoding="utf-8")
 
-        def unlink_mock(*args, **kwargs) -> None:
-            raise PermissionError("Access denied")
+        session = MagicMock(spec=aiohttp.ClientSession)
+        # Sin esto la aprobación sale DENIED y el test verificaba el mensaje equivocado
+        # (moría en el HITL, no en la limpieza).
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+        installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        installer._extract = MagicMock(return_value=None)  # type: ignore[method-assign]
+        installer._find_skse_root = MagicMock(return_value=tmp_path / "extracted" / "root")  # type: ignore[method-assign]
+
+        # Acotado al DLL del juego: parchear `pathlib.Path.unlink` global también
+        # rompería el cleanup del TemporaryDirectory del staging.
+        original_unlink = pathlib.Path.unlink
+
+        def unlink_mock(self: pathlib.Path, *args: object, **kwargs: object) -> None:
+            if self.name == "skse64_1_5_97.dll":
+                raise PermissionError("Access denied")
+            original_unlink(self, *args, **kwargs)
 
         monkeypatch.setattr(pathlib.Path, "unlink", unlink_mock)
-
-        session = MagicMock(spec=aiohttp.ClientSession)
 
         from sky_claw.local.discovery.environment import SkyrimEdition
 
@@ -1323,7 +1403,9 @@ class TestEnsureSkse:
         installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
         installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
-        def mock_extract(self_obj: ToolsInstaller, archive: pathlib.Path, dest: pathlib.Path) -> None:
+        # Se asigna sobre la INSTANCIA, así que no recibe self: firmarla con `self_obj`
+        # la dejaba pidiendo un argumento que nadie pasa.
+        def mock_extract(archive: pathlib.Path, dest: pathlib.Path) -> None:
             dest.mkdir(parents=True, exist_ok=True)
             skse_dir = dest / "skse64_2_02_06"
             skse_dir.mkdir()
@@ -1356,15 +1438,20 @@ class TestEnsureSkse:
         install_dir.mkdir()
         session = MagicMock(spec=aiohttp.ClientSession)
 
-        # Patch config with bad hash
-        monkeypatch.setitem(installer.__class__.SKSE_CONFIG["AE"], "sha256", "DEADBEEF")
+        # Patch config with bad hash. SKSE_CONFIG es constante de MÓDULO, no atributo
+        # de clase: `installer.__class__.SKSE_CONFIG` levanta AttributeError y el test
+        # moría en el setup sin llegar nunca a validar un hash.
+        monkeypatch.setitem(tools_installer.SKSE_CONFIG["AE"], "sha256", "DEADBEEF")
         installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
 
-        # Simular descarga de "basura"
+        # Simular descarga de "basura". `request` se AWAITEA: con MagicMock devuelve un
+        # Mock no-awaitable y el test explota antes de llegar a comparar el hash.
         installer._gateway = MagicMock()
-        mock_resp = AsyncMock()
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock(return_value=None)
+        mock_resp.release = MagicMock(return_value=None)
         mock_resp.content.iter_chunked.return_value = _async_iter([b"fake data"])
-        installer._gateway.request.return_value = mock_resp
+        installer._gateway.request = AsyncMock(return_value=mock_resp)
 
         from sky_claw.local.discovery.environment import SkyrimEdition
 
@@ -1400,6 +1487,102 @@ class TestEnsureSkse:
 
         with pytest.raises(ToolInstallError, match="incompleto"):
             installer._find_skse_root(extract_path, cfg)
+
+    def test_toda_edicion_del_enum_resuelve_o_falla_cerrado(self, installer: ToolsInstaller) -> None:
+        """Ninguna edición puede caer silenciosamente al payload de otra.
+
+        Se recorre el enum COMPLETO en vez de muestrear AE/SE/LE. La propiedad es
+        binaria: cada miembro o resuelve a una clave que existe en SKSE_CONFIG, o
+        levanta. Agregar `VR` al enum sin su payload cae en la segunda rama —que es
+        el desenlace correcto— en vez de instalarle el `skse64_1_6_1170.dll` de AE a
+        un usuario de VR, que es lo que hacía el `mapping.get(edition, "AE")` viejo.
+        """
+        for edition in SkyrimEdition:
+            if edition is SkyrimEdition.UNKNOWN:
+                with pytest.raises(ToolInstallError, match="UNKNOWN"):
+                    installer._edition_to_config_key(edition)
+                continue
+            try:
+                key = installer._edition_to_config_key(edition)
+            except ToolInstallError as exc:
+                assert "no tiene payload" in str(exc)
+                continue
+            assert key in tools_installer.SKSE_CONFIG, f"{edition} mapea a una clave inexistente"
+
+    def test_cada_payload_declara_dll_y_loader_coherentes(self) -> None:
+        """El triplete URL/DLL/loader de cada edición tiene que ser internamente consistente."""
+        for key, cfg in tools_installer.SKSE_CONFIG.items():
+            assert cfg["url"].startswith("https://skse.silverlock.org/"), key
+            assert cfg["dll"].endswith(".dll"), key
+            assert cfg["loader"].endswith("_loader.exe"), key
+            # LE usa la familia `skse_`; SE/AE la familia `skse64_`.
+            familia = "skse64_" if key in {"AE", "SE"} else "skse_"
+            assert cfg["dll"].startswith(familia), f"{key}: dll de otra familia"
+            assert cfg["loader"].startswith(familia), f"{key}: loader de otra familia"
+
+    def test_el_host_de_skse_esta_habilitado_en_el_egress(self) -> None:
+        """Sin la entrada en ALLOWED_HOSTS la descarga muere DESPUÉS de la aprobación HITL."""
+        from sky_claw.config import ALLOWED_HOSTS, ALLOWED_METHODS
+
+        assert "skse.silverlock.org" in ALLOWED_HOSTS
+        assert ALLOWED_METHODS["skse.silverlock.org"] == frozenset(["GET"])
+
+    @pytest.mark.asyncio
+    async def test_version_reporta_el_build_completo(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
+        """La versión sale del stem del archivo, no del último segmento entre guiones bajos."""
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+        installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        installer._extract = MagicMock(return_value=None)  # type: ignore[method-assign]
+        installer._find_skse_root = MagicMock(return_value=tmp_path / "root")  # type: ignore[method-assign]
+        installer._copy_skse_files = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        res = await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        assert res.version == "skse64_2_02_06"
+
+    @pytest.mark.asyncio
+    async def test_edicion_se_deriva_del_pe_no_de_los_dll_presentes(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """En una instalación SE limpia hay que bajar el SKSE de SE, no el de AE.
+
+        Es el caso que el autodetect viejo erraba siempre: sin DLL de SKSE en disco
+        —el único escenario en que la instalación corre— defaulteaba a AE.
+        """
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+        (install_dir / "SkyrimSE.exe").write_text("pe", encoding="utf-8")
+
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.SE)
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+        installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        installer._extract = MagicMock(return_value=None)  # type: ignore[method-assign]
+        installer._find_skse_root = MagicMock(return_value=tmp_path / "root")  # type: ignore[method-assign]
+        installer._copy_skse_files = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        res = await installer.ensure_skse(install_dir, session)
+
+        assert res.version == "skse64_2_00_20", "SE debe recibir el payload de SE"
+        assert res.exe_path == install_dir / "skse64_loader.exe"
+
+    @pytest.mark.asyncio
+    async def test_sin_ejecutable_del_juego_no_adivina_la_edicion(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Sin exe no hay edición: cortar es preferible a instalar el payload equivocado."""
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(ToolInstallError, match="No encontré el ejecutable"):
+            await installer.ensure_skse(install_dir, session)
 
 
 async def _async_iter(items: list[bytes]):

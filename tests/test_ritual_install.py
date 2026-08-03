@@ -10,11 +10,14 @@ instalación, decisión del puente) sin un cliente NiceGUI vivo.
 
 from __future__ import annotations
 
+import inspect
 import os
+import re
 from dataclasses import dataclass
 
 import pytest
 
+from sky_claw.app.agent.tools import external_tools
 from sky_claw.app.gui.controllers.ritual_runner import (
     RITUAL_INSTALL_ENV,
     RITUAL_INSTALLER_MAP,
@@ -73,12 +76,33 @@ class _FakeAppContext:
 
 
 # ── Ritual → installer mapping ──────────────────────────────────────────────────
-def test_ritual_installer_map_covers_only_github_backed_tools() -> None:
+def test_ritual_installer_map_congela_las_tools_autoinstalables() -> None:
+    # Wrye Bash y DynDOLOD siguen afuera (no están en GitHub releases). SKSE entra
+    # por su propio origen oficial (skse.silverlock.org), habilitado en ALLOWED_HOSTS.
     assert RITUAL_INSTALLER_MAP == {
         "loot": "ensure_loot",
         "xedit": "ensure_xedit",
         "pandora": "ensure_pandora",
+        "skse": "ensure_skse",
     }
+
+
+def test_skse_es_gui_only_y_no_lo_alcanza_el_agente_llm() -> None:
+    """Instalar SKSE escribe ejecutables en el directorio del juego tras un egress.
+
+    Esa aprobación tiene que ser la del operador frente a la GUI, no una decisión del
+    modelo. Se afirma por igualdad literal sobre el set de tools que ``setup_tools``
+    despacha: agregar una rama nueva ahí rompe el ancla, que es exactamente el aviso
+    que hace falta cuando la rama nueva es una mutación.
+    """
+    fuente = inspect.getsource(external_tools.setup_tools)
+    despachadas = set(re.findall(r'tool_name_lower == "(\w+)"', fuente))
+
+    assert despachadas == {"loot", "xedit", "pandora", "bodyslide", "ngio"}
+    assert "skse" not in despachadas
+    # …y sí está del lado de la GUI, para que el recorte sea una decisión visible y no
+    # un olvido que deja la feature inalcanzable desde ambas superficies.
+    assert RITUAL_INSTALLER_MAP["skse"] == "ensure_skse"
 
 
 def test_ritual_installer_name_known_and_unmapped() -> None:

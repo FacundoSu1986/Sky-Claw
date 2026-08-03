@@ -106,7 +106,11 @@ PANDORA_EXE_NAMES = ("Pandora Behaviour Engine+.exe", "Pandora Engine.exe", "Pan
 _PANDORA_NAMES = PANDORA_EXE_NAMES
 _LOOT_NAMES = ("LOOT.exe", "loot.exe")
 _XEDIT_NAMES = ("SSEEdit.exe", "TES5Edit.exe", "xEdit.exe")
-_SKSE_LOADER_NAMES = ("skse64_loader.exe", "skse_loader.exe")
+# `sksevr_loader.exe` va acá aunque SKSE_CONFIG no tenga payload de VR: son dos cosas
+# distintas. DETECTAR un SKSEVR ya instalado evita reportárselo al usuario de VR como
+# herramienta crítica faltante; instalarlo sigue sin estar soportado (la edición VR
+# resuelve a UNKNOWN y `ensure_skse` corta).
+_SKSE_LOADER_NAMES = ("skse64_loader.exe", "skse_loader.exe", "sksevr_loader.exe")
 
 
 # ── Skyrim Version Detection ─────────────────────────────────────────

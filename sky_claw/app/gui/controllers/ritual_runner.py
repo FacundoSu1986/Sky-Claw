@@ -168,11 +168,19 @@ RITUAL_INSTALLER_MAP: dict[str, str] = {
     "loot": "ensure_loot",
     "xedit": "ensure_xedit",
     "pandora": "ensure_pandora",
+    # SKSE vive acá y NO en la superficie del agente LLM (`setup_tools`): escribe
+    # ejecutables en el directorio del juego, así que la aprobación tiene que ser la
+    # del operador frente a la GUI. `test_skse_aislado_del_agente_llm` congela el
+    # recorte por igualdad literal.
+    "skse": "ensure_skse",
 }
 
 #: Ritual tool key → the resolver env var seeded with the freshly installed exe path,
 #: so a just-installed tool can run without waiting for the next environment scan.
 #: Mirrors the var names in :class:`PathResolutionService` / ``_SNAPSHOT_TOOL_ENV``.
+#: ``skse`` está deliberadamente ausente y por eso este mapa tiene una clave menos que
+#: ``RITUAL_INSTALLER_MAP``: SKSE no es una tool que Sky-Claw ejecute (es un runtime que
+#: carga el juego), no hay exe que resolver ni var en ``_SNAPSHOT_TOOL_ENV``.
 RITUAL_INSTALL_ENV: dict[str, str] = {
     "loot": "LOOT_EXE",
     "xedit": "XEDIT_PATH",
