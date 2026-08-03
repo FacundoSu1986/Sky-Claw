@@ -559,9 +559,20 @@ class _BodySlideRunFallidoError(Exception):
 
 
 def _bodyslide_dict_de_resultado(result: Any) -> dict[str, Any]:
-    """Dict de salida compartido por el camino exitoso y el de ``_BodySlideRunFallidoError``."""
+    """Dict de salida compartido por el camino exitoso y el de ``_BodySlideRunFallidoError``.
+
+    Contrato ``success``/``message`` (AGENTS.md, mismo patrón que
+    ``pandora_service._dict_de_resultado``): ``message`` canónico vacío en
+    éxito, detalle de fallo si no (CodeRabbit, PR #430). Saneado con
+    ``sanitize_for_prompt`` como ``stdout``/``stderr`` acá mismo, y como ya hace
+    ``run_pandora`` (mismo archivo) con su propio ``message`` — sin esto, el
+    detalle de fallo (stderr/stdout de BodySlide) llegaría CRUDO al LLM por una
+    llave mientras las otras dos del mismo dict van saneadas.
+    """
+    detalle_fallo = result.stderr or result.stdout or ""
     return {
         "success": result.success,
+        "message": "" if result.success else sanitize_for_prompt(detalle_fallo),
         "return_code": result.return_code,
         "stdout": sanitize_for_prompt(result.stdout) if result.stdout else "",
         "stderr": sanitize_for_prompt(result.stderr) if result.stderr else "",
@@ -656,10 +667,12 @@ async def run_bodyslide_batch(
                 # árbol parcial queda en disco.
                 raise _BodySlideRunFallidoError(result)
     except LockAcquisitionError as exc:
-        return json.dumps({"error": f"Could not acquire '{BODYSLIDE_MESHES_RESOURCE_ID}' lock: {exc}"})
+        detail = f"Could not acquire '{BODYSLIDE_MESHES_RESOURCE_ID}' lock: {exc}"
+        return json.dumps({"success": False, "message": detail, "error": detail})
     except _BodySlideRunFallidoError as exc:
         return json.dumps(_bodyslide_dict_de_resultado(exc.result))
     except Exception as exc:
-        return json.dumps({"error": str(exc)})
+        detail = str(exc)
+        return json.dumps({"success": False, "message": detail, "error": detail})
 
     return json.dumps(_bodyslide_dict_de_resultado(result))

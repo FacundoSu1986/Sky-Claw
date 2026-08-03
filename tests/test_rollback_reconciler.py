@@ -450,6 +450,25 @@ def test_el_constructor_descubre_los_destinos_de_bodyslide_por_escaneo(tmp_path:
     assert bodyslide_output_root(game=game) == root
 
 
+def test_el_constructor_de_bodyslide_ignora_un_backup_con_basename_vacio(tmp_path: pathlib.Path) -> None:
+    """Un hijo cuyo nombre completo ES el sufijo de move-aside (``.rollback-<12+
+    dígitos>``, sin nada antes del punto) deja basename vacío tras quitarle el
+    sufijo. ``pathlib.Path.with_name("")`` levanta ``ValueError`` — sin este
+    guard, un solo directorio con ese nombre tira abajo el constructor entero
+    (Copilot, PR #430), no solo el descubrimiento de BodySlide: los demás
+    productores (DynDOLOD, Pandora) que arma la misma función nunca llegan a
+    declararse."""
+    game = tmp_path / "game"
+    root = game / "BodySlide_Output"
+    root.mkdir(parents=True)
+    (root / ".rollback-123456789012").mkdir()
+
+    productores = construir_productores_de_move_aside(mo2_root=None, game=game)
+
+    bodyslide = next(p for p in productores if p.nombre == "bodyslide")
+    assert bodyslide.destinos == ()
+
+
 def test_el_constructor_de_bodyslide_ignora_un_hijo_sin_sufijo_de_rollback(tmp_path: pathlib.Path) -> None:
     """Un grupo YA regenerado (sin backup pendiente) no es un destino: el escaneo
     solo reconoce hijos con el sufijo ``.rollback-<nonce>``, nunca por nombre."""

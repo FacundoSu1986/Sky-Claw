@@ -285,10 +285,14 @@ def _destinos_bodyslide_por_escaneo(raiz: pathlib.Path) -> tuple[pathlib.Path, .
     """
     if not raiz.is_dir():
         return ()
+    # Un hijo cuyo nombre ENTERO es el sufijo (p.ej. ".rollback-123456789012",
+    # nada antes del punto) deja basename vacío tras el ``sub`` — y
+    # ``with_name("")`` levanta ``ValueError`` (Copilot, PR #430). No es un
+    # destino real: se ignora en vez de tirar abajo el constructor entero.
     destinos = {
-        hijo.with_name(_SUFIJO_MOVE_ASIDE.sub("", hijo.name))
+        hijo.with_name(basename)
         for hijo in raiz.iterdir()
-        if _SUFIJO_MOVE_ASIDE.search(hijo.name)
+        if _SUFIJO_MOVE_ASIDE.search(hijo.name) and (basename := _SUFIJO_MOVE_ASIDE.sub("", hijo.name))
     }
     return tuple(sorted(destinos))
 

@@ -324,6 +324,21 @@ def test_bodyslide_tiene_un_destino_propio_por_grupo(tmp_path: pathlib.Path) -> 
     assert bodyslide_output_target(game=None, group="CBBE") is None
 
 
+def test_bodyslide_rechaza_group_invalido_en_vez_de_confiar_en_el_llamador(tmp_path: pathlib.Path) -> None:
+    """``group`` llega ya validado por ``BodySlideBatchParams`` en el único
+    llamador de producción (CodeRabbit, PR #430), pero esta función es pública
+    y su contrato de tipo es sólo ``str`` — nada impide un llamador futuro (o un
+    test) que la invoque directo. Defensa en profundidad: rechaza "."/".." como
+    valor completo y separadores de ruta ANTES de construir el target, con el
+    mismo comportamiento de error que ya usa esta función (``None``)."""
+    game = tmp_path / "game"
+
+    assert bodyslide_output_target(game=game, group=".") is None
+    assert bodyslide_output_target(game=game, group="..") is None
+    assert bodyslide_output_target(game=game, group="a/b") is None
+    assert bodyslide_output_target(game=game, group="a\\b") is None
+
+
 def test_bodyslide_grupos_distintos_no_comparten_directorio(tmp_path: pathlib.Path) -> None:
     """Un rebuild de un grupo no puede pisar lo que ya existía de otro: cada
     grupo obtiene su propio subárbol, la misma propiedad que ``DirectoryRollback``

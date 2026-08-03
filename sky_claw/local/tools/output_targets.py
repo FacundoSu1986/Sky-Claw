@@ -155,9 +155,15 @@ def bodyslide_output_target(*, game: pathlib.Path | None, group: str) -> pathlib
 
     ``group`` llega ya validado (patrón + rechazo de ``"."``/``".."`` como
     componente completo, PR de U-04) por ``AsyncToolRegistry.execute()`` vía
-    ``BodySlideBatchParams`` antes de llegar acá: esta función no revalida su
-    contenido, sólo lo usa como componente único de ruta.
+    ``BodySlideBatchParams`` antes de llegar acá — pero esta función es
+    pública y nada en su firma impide un llamador futuro que la invoque sin
+    pasar por ese validador. Defensa en profundidad (review CodeRabbit, PR
+    #430): revalida ``"."``/``".."`` como valor completo y separadores de ruta
+    ANTES de construir el target, con el mismo comportamiento de error que ya
+    usa esta función para ``game=None`` (``None``, no una excepción).
     """
+    if group in (".", "..") or "/" in group or "\\" in group:
+        return None
     root = bodyslide_output_root(game=game)
     if root is None:
         return None

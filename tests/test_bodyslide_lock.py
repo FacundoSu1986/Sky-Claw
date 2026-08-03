@@ -70,6 +70,7 @@ async def test_serializes_on_bodyslide_meshes_lock(
     out = json.loads(await run_bodyslide_batch(runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager))
 
     assert out["success"] is True
+    assert out["message"] == ""  # contrato success/message (AGENTS.md): vacío canónico en éxito
     assert seen["info"] is not None  # lock tomado durante la corrida
     assert await lock_manager.get_lock_info(BODYSLIDE_MESHES_RESOURCE_ID) is None  # liberado al salir
 
@@ -85,6 +86,8 @@ async def test_blocked_when_lock_already_held(
     out = json.loads(await run_bodyslide_batch(runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager))
 
     assert "error" in out
+    assert out["success"] is False
+    assert out["message"]  # contrato success/message (AGENTS.md): no vacío en fallo
     runner.run_batch.assert_not_awaited()  # serializado: no corrió
 
 
@@ -99,6 +102,23 @@ async def test_fails_closed_without_lock() -> None:
     assert "lock_manager" in out["error"]
     assert "snapshot_manager" in out["error"]
     runner.run_batch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_error_returns_success_false_with_message(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """CodeRabbit (PR #430): el catch-all no puede volver a la forma legacy
+    ``{"error": ...}`` sin ``success``/``message`` — es el mismo contrato que
+    ``pandora_service._dict_de_resultado`` ya respeta para su propio catch-all."""
+    runner = MagicMock()
+    runner.config = SimpleNamespace(game_path=tmp_path / "game")
+    runner.run_batch = AsyncMock(side_effect=RuntimeError("boom inesperado"))
+
+    out = json.loads(await run_bodyslide_batch(runner, lock_manager=lock_manager, snapshot_manager=snapshot_manager))
+
+    assert out["success"] is False
+    assert out["message"] == "boom inesperado"
 
 
 async def test_fails_closed_when_one_protection_manager_is_missing(
@@ -156,6 +176,7 @@ async def test_failed_run_restores_previous_output(
     )
 
     assert out["success"] is False
+    assert out["message"] == "boom"  # contrato success/message: el detalle de fallo, no vacío
     assert (target / "vieja.nif").exists(), "el estado previo debe volver tras el rollback"
     assert not (target / "parcial.nif").exists(), "la escritura parcial del run fallido no debe sobrevivir"
 
