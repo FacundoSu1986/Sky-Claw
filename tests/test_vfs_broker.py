@@ -509,7 +509,24 @@ async def test_timeout_espera_worker_exit_antes_de_propagarse(tmp_path: pathlib.
         await broker.close()
 
 
-async def test_cancelacion_despues_del_resultado_preserva_confirmacion_terminal(tmp_path: pathlib.Path) -> None:
+async def test_cancelacion_despues_del_resultado_preserva_confirmacion_terminal(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelar DESPUÉS de que el resultado ya llegó igual exige worker_exit.
+
+    La cancelación se dispara sobre el desenlace observado —``submit()`` ya
+    entró a la segunda fase de ``_await_job_completion`` (resultado resuelto,
+    esperando ``worker_exit``)— y no sobre una ventana de reloj. Entre que
+    ``_reportar_como_worker`` confirma el ack (el resultado ya está en
+    ``result_future``, ``vfs_broker.py:685`` corre antes que el ack) y que la
+    task de ``submit()`` avanza hasta parquearse en
+    ``_await_exit_or_bridge_loss`` hay varios saltos de scheduler encadenados
+    (``wait_for`` → ``shield`` → segundo ``while`` → ``wait``). Un
+    ``sleep(0.05)`` asumía que alcanzaban; si no alcanzan, el cancel cae ANTES
+    de esa fase y el test deja de probar lo que su nombre promete. Mismo
+    invariante que #402/#406/#415/#417.
+    """
     mo2, data, challenge, job = _entorno(tmp_path)
     broker = VfsExecutionBroker(
         instance_id="portable-main",
@@ -520,10 +537,40 @@ async def test_cancelacion_despues_del_resultado_preserva_confirmacion_terminal(
     await broker.start()
     reader, writer, secret = await _conectar_bridge(broker)
     try:
+        # Instrumentar el método real de producción ANTES de crear la task de
+        # submit() (no un doble, y no después): `create_task` no corre el
+        # cuerpo hasta el próximo `await` del caller, pero los `await` de acá
+        # abajo (leer el launch, reportar el resultado) sí le dan turnos al
+        # scheduler — si el patch se instala después de esos `await`, submit()
+        # puede haber llamado YA a la versión original y sin parchear, y el
+        # probe nunca dispara (se verificó en rojo: cuelga hasta el timeout,
+        # exactamente por esta razón). Patchear antes de `create_task` no deja
+        # ninguna ventana en la que la llamada pueda escaparle al probe.
+        entro_a_esperar_worker_exit = asyncio.Event()
+        await_original = broker._await_exit_or_bridge_loss
+
+        async def _instrumentado(exit_future, deadline):
+            entro_a_esperar_worker_exit.set()
+            await await_original(exit_future, deadline)
+
+        monkeypatch.setattr(broker, "_await_exit_or_bridge_loss", _instrumentado)
+
         pending = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
         await read_authenticated_message(reader, secret)
         await _reportar_como_worker(broker, job_id=job.job_id, result=_resultado(job.job_id, challenge))
-        await asyncio.sleep(0.05)
+
+        # Esperar el probe Y la task a la vez: si `submit()` termina sin llegar
+        # a esa fase (regresión previa), `pending.result()` relanza la causa
+        # real en vez de colgar hasta el `--timeout` global.
+        espera_fase = asyncio.ensure_future(entro_a_esperar_worker_exit.wait())
+        try:
+            await asyncio.wait({pending, espera_fase}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            espera_fase.cancel()
+            await asyncio.gather(espera_fase, return_exceptions=True)
+        if not entro_a_esperar_worker_exit.is_set():
+            pending.result()
+            raise AssertionError("submit() no llegó a esperar worker_exit tras el resultado")
 
         pending.cancel()
         cancel = await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=1)
@@ -641,6 +688,17 @@ async def test_bridge_error_de_launch_falla_sin_esperar_timeout(tmp_path: pathli
 
 
 async def test_cancelacion_durante_fence_de_error_no_libera_antes_de_worker_exit(tmp_path: pathlib.Path) -> None:
+    """Cancelar mientras el bridge está caído no libera antes de worker_exit.
+
+    Se espera el desenlace observado —el broker ya notó la pérdida del
+    bridge— y no una ventana de reloj. ``_bridge_lost`` no es un doble: es el
+    ``asyncio.Event`` real de producción que ``_handle_connection`` prende en
+    su ``finally`` al perder la conexión (``vfs_broker.py:566``), y es
+    justamente la precondición que el nombre del test promete: que el fence
+    de error corra contra un bridge ya SABIDO muerto, no contra un socket
+    recién cerrado que el broker todavía no procesó. Mismo invariante que
+    #402/#406/#415/#417.
+    """
     mo2, data, challenge, job = _entorno(tmp_path)
     broker = VfsExecutionBroker(
         instance_id="portable-main",
@@ -654,7 +712,16 @@ async def test_cancelacion_durante_fence_de_error_no_libera_antes_de_worker_exit
     await read_authenticated_message(reader, _secret)
     writer.close()
     await writer.wait_closed()
-    await asyncio.sleep(0.05)
+
+    espera_bridge_perdido = asyncio.ensure_future(broker._bridge_lost.wait())
+    try:
+        await asyncio.wait({pending, espera_bridge_perdido}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        espera_bridge_perdido.cancel()
+        await asyncio.gather(espera_bridge_perdido, return_exceptions=True)
+    if not broker._bridge_lost.is_set():
+        pending.result()
+        raise AssertionError("el broker no detectó la pérdida del bridge")
 
     pending.cancel()
     pending.cancel()
