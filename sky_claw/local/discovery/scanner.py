@@ -544,7 +544,9 @@ class EnvironmentScanner:
         # 4. Common direct paths
         for raw in SKYRIM_COMMON_PATHS:
             p = pathlib.Path(raw)
-            if (p / "SkyrimSE.exe").exists():
+            # `Skyrim.exe` además de `SkyrimSE.exe`: las otras tres fuentes de este
+            # método ya reconocían LE y esta se había quedado atrás.
+            if (p / "SkyrimSE.exe").exists() or (p / "Skyrim.exe").exists():
                 return p
 
         return None

@@ -126,6 +126,32 @@ class TestParidadPorFuente:
 
         assert await _detectan_ambos(juego) == (juego, juego)
 
+    async def test_ruta_comun_legendary_edition(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """La cuarta fuente también tiene que ver LE, no solo las otras tres.
+
+        Señalado por Copilot: el resto del método ya reconocía LE por registro y por
+        librería de Steam, pero la rama de rutas comunes seguía exigiendo
+        `SkyrimSE.exe`. La paridad entre detectores no se rompía —el scanner hacía lo
+        mismo—, así que ningún test lo atajaba; era una asimetría simétrica.
+        """
+        juego = _crear_juego(tmp_path / "Skyrim", "Skyrim.exe")
+        monkeypatch.setattr(scanner_mod, "SKYRIM_COMMON_PATHS", (str(juego),))
+        monkeypatch.setattr(auto_mod, "_SKYRIM_COMMON", (str(juego),))
+
+        assert await _detectan_ambos(juego) == (juego, juego)
+
+    async def test_las_rutas_comunes_configuradas_cubren_ambas_ediciones(self) -> None:
+        """El chequeo de arriba sería cosmético si `SKYRIM_COMMON_PATHS` no tuviera LE.
+
+        Aceptar `Skyrim.exe` en esa rama no sirve de nada mientras la tupla solo liste
+        carpetas `Skyrim Special Edition`: la rama sería inalcanzable para LE.
+        """
+        from sky_claw.config import SKYRIM_COMMON_PATHS
+
+        rutas = [r.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower() for r in SKYRIM_COMMON_PATHS]
+        assert any(nombre == "skyrim special edition" for nombre in rutas), "faltan rutas de SE/AE"
+        assert any(nombre == "skyrim" for nombre in rutas), "faltan rutas de LE"
+
     async def test_sin_juego_ninguno_inventa_una_ruta(self, tmp_path: pathlib.Path) -> None:
         """Fail-closed: sin fuentes activas los dos devuelven None, no un candidato."""
         assert await _detectan_ambos(tmp_path) == (None, None)

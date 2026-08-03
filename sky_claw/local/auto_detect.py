@@ -212,7 +212,7 @@ class AutoDetector:
 
     @staticmethod
     async def find_skyrim() -> pathlib.Path | None:
-        """Locate Skyrim (SE/AE/LE) via registry, Steam libraries and common paths."""
+        """Ubica Skyrim (SE/AE/LE) vía registro, librerías de Steam y rutas comunes."""
         return await asyncio.wait_for(
             run_off_loop(AutoDetector._find_skyrim_inner),
             timeout=_SEARCH_TIMEOUT,
@@ -269,7 +269,7 @@ class AutoDetector:
         # 4. Common direct paths
         for raw in _SKYRIM_COMMON:
             p = pathlib.Path(raw)
-            if (p / "SkyrimSE.exe").exists():
+            if (p / "SkyrimSE.exe").exists() or (p / "Skyrim.exe").exists():
                 logger.info("Auto-detected Skyrim at %s", p)
                 return p
 

@@ -130,8 +130,8 @@ def test_tool_ejecutable_disponible_ofrece_correr() -> None:
 
 
 def test_tool_instalable_faltante_ofrece_instalar() -> None:
-    assert _ritual_action("loot", "available") == "run"
     assert _ritual_action("skse", "missing") == "install"
+    assert _ritual_action("loot", "missing") == "install"
 
 
 def test_skse_instalado_no_ofrece_ejecutar() -> None:
