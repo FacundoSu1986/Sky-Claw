@@ -21,7 +21,7 @@ import pytest
 from sky_claw.app.agent.tools import AsyncToolRegistry
 from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
-from sky_claw.local.tools.bodyslide_runner import BodySlideRunner
+from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunner
 from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
 
 
@@ -282,7 +282,15 @@ async def test_run_pandora_tool_uses_injected_runner(
 
 @pytest.mark.asyncio
 async def test_run_bodyslide_tool_forwards_group_and_output(tmp_path: pathlib.Path) -> None:
+    """U-04: el destino físico ya no es el ``output_path`` que manda el LLM —
+    es el subárbol administrado por grupo (``bodyslide_output_target``). El
+    parámetro ``output_path`` se conserva en el contrato de la tool (no rompe
+    a callers existentes) pero deja de determinar dónde escribe BodySlide."""
+    from sky_claw.local.tools.output_targets import bodyslide_output_target
+
+    game = tmp_path / "game"
     injected = MagicMock(spec=BodySlideRunner)
+    injected.config = BodySlideConfig(bodyslide_exe=tmp_path / "BodySlide.exe", game_path=game)
     injected.run_batch = AsyncMock(return_value=_runner_result())
     reg = _make_registry(
         tmp_path=tmp_path,
@@ -292,7 +300,8 @@ async def test_run_bodyslide_tool_forwards_group_and_output(tmp_path: pathlib.Pa
     )
 
     transaction = MagicMock()
-    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.lease_lost = False
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
     transaction.__aexit__ = AsyncMock(return_value=None)
     with patch(
         "sky_claw.app.db.locks.SnapshotTransactionLock",
@@ -300,8 +309,9 @@ async def test_run_bodyslide_tool_forwards_group_and_output(tmp_path: pathlib.Pa
     ):
         result = json.loads(await reg.tools["run_bodyslide"].fn(group="3BA", output_path="out"))
 
+    esperado = bodyslide_output_target(game=game, group="3BA")
     assert result["success"] is True
-    injected.run_batch.assert_awaited_once_with("3BA", "out")
+    injected.run_batch.assert_awaited_once_with("3BA", str(esperado))
 
 
 @pytest.mark.asyncio
@@ -348,3 +358,38 @@ def test_bodyslide_output_path_accepts_relative(good_path: str) -> None:
 
     params = BodySlideBatchParams(output_path=good_path)
     assert params.output_path == good_path
+
+
+# ---------------------------------------------------------------------------
+# group sandboxing en el schema (U-04): ahora se usa como componente de ruta
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_group", [".", ".."])
+def test_bodyslide_group_rejects_bare_dot_segments(bad_group: str) -> None:
+    """``group`` pasa a ser el componente único de ruta bajo
+    ``BodySlide_Output/<group>`` (U-04, ``output_targets.bodyslide_output_target``).
+    ``_SAFE_NAME_PATTERN`` permite '.', así que un valor de solo puntos pasaría el
+    patrón de caracteres intacto y, resuelto contra el filesystem, ``..`` subiría
+    un nivel — el mismo componente especial que ``output_path`` ya rechaza
+    explícitamente (PR #171), acá para un campo que antes no tocaba una ruta."""
+    from sky_claw.app.agent.tools.schemas import BodySlideBatchParams
+
+    with pytest.raises(ValueError):
+        BodySlideBatchParams(group=bad_group)
+
+
+@pytest.mark.parametrize("bad_group", ["a/b", "a\\b", "../evil", "CBBE/../../evil"])
+def test_bodyslide_group_rejects_path_separators(bad_group: str) -> None:
+    from sky_claw.app.agent.tools.schemas import BodySlideBatchParams
+
+    with pytest.raises(ValueError):
+        BodySlideBatchParams(group=bad_group)
+
+
+@pytest.mark.parametrize("good_group", ["CBBE", "3BA", "CBBE Body Physics", "Preset-1.0"])
+def test_bodyslide_group_accepts_safe_names(good_group: str) -> None:
+    from sky_claw.app.agent.tools.schemas import BodySlideBatchParams
+
+    params = BodySlideBatchParams(group=good_group)
+    assert params.group == good_group

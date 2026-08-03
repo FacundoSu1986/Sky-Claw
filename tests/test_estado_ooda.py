@@ -89,18 +89,24 @@ def test_el_parser_tolera_espacios_exteriores_en_la_tabla() -> None:
     assert _celdas("  | Ítem | Estado | Cerrado en | Qué falta | Verificado por |   ") == _COLUMNAS
 
 
-def test_u04_sigue_parcial_hasta_bodyslide_y_el_smoke_real_de_pandora() -> None:
+def test_u04_sigue_parcial_solo_por_el_smoke_real_de_pandora() -> None:
+    """BodySlide se cerró vía subárbol administrado por grupo
+    (``output_targets.bodyslide_output_target`` + ``DirectoryRollback`` en
+    ``run_bodyslide_batch``): ya no queda ningún módulo clasificado
+    ``"pendiente"``. Lo único que mantiene a U-04 en ``Parcial`` es el smoke
+    real de rollback de Pandora — deuda de rig humano, no de código."""
     fila = _tabla()["U-04"]
     pendientes = {modulo for modulo, mecanismo in MECANISMO_DE_ROLLBACK.items() if mecanismo == "pendiente"}
-    modulo_bodyslide = "sky_claw/app/agent/tools/system_tools.py"
 
-    assert pendientes == {modulo_bodyslide}
-    assert "BodySlide" in MOTIVO[modulo_bodyslide]
+    assert pendientes == set()
+    assert set(MOTIVO) == {"sky_claw/local/tools/vramr_service.py"}
     assert fila["Estado"] == "Parcial"
-    assert "BodySlide" in fila["Qué falta"]
-    assert "smoke real de rollback de Pandora" in fila["Qué falta"]
+    assert "Pandora" in fila["Qué falta"]
+    assert "BodySlide" not in fila["Qué falta"]
+    assert "Smoke real de rollback de Pandora" in fila["Qué falta"]
     assert "test_rollback_salida.py" in fila["Verificado por"]
     assert "test_pandora_service.py" in fila["Verificado por"]
+    assert "test_bodyslide_lock.py" in fila["Verificado por"]
 
 
 def test_pandora_documenta_la_salida_administrada_sin_cerrar_el_sandbox() -> None:
