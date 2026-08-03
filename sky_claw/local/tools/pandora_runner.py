@@ -82,12 +82,12 @@ class PandoraRunner:
         # Este runner pasaba además `--game "Skyrim Special Edition"` y `--auto`:
         # ninguno de los dos existe.
         #
-        # `--auto_run`/`--auto_close` sí están confirmados en el README ("Runs the
-        # engine using the same active mods as cached from the last successful
-        # run." / "Closes the engine automatically upon finishing a single
-        # launch."). Su semántica exacta de disparo (¿corre de inmediato, o solo
-        # habilita cerrar sin intervención una vez que corrió?) no está probada en
-        # rig real — pero omitirlos por completo es estrictamente peor: sin ellos
+        # `--auto_run`/`--auto_close` sí están confirmados en el README: corre el
+        # motor reusando los mismos mods activos cacheados de la última corrida
+        # exitosa, y cierra el motor automáticamente al terminar un lanzamiento.
+        # Su semántica exacta de disparo (¿corre de inmediato, o solo habilita
+        # cerrar sin intervención una vez que corrió?) no está probada en rig
+        # real — pero omitirlos por completo es estrictamente peor: sin ellos
         # Pandora queda esperando en la GUI hasta el timeout de 300s y hace
         # rollback, con cero chance de completar. Con ellos hay lectura verificada
         # de que es el par documentado para correr desatendido. Pendiente de smoke

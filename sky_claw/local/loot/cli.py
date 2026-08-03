@@ -104,20 +104,21 @@ class LOOTRunner:
         """Run LOOT CLI to sort the load order.
 
         Args:
-            update_masterlist: Kept for caller compatibility (`loot_service.py`
-                threads it through with a default of ``True`` for real runs).
-                Verified against ``loot/loot`` `src/gui/qt/main.cpp`:
-                **`--update-masterlist` is not a declared option** — passing it
-                made ``QCommandLineParser`` reject the ENTIRE invocation,
-                including the valid `--auto-sort`. It is no longer appended.
-                Masterlist refresh has a real, unwired implementation at
+            update_masterlist: Se conserva por compatibilidad con el caller
+                (`loot_service.py` lo propaga con default ``True`` en corridas
+                reales). Verificado contra ``loot/loot`` `src/gui/qt/main.cpp`:
+                **`--update-masterlist` no es una opción declarada** — pasarlo
+                hacía que ``QCommandLineParser`` rechazara TODA la invocación,
+                incluido el `--auto-sort` válido. Ya no se agrega. El refresco
+                de masterlist tiene una implementación real pero sin cablear en
                 :class:`sky_claw.local.loot.masterlist.MasterlistDownloader`
-                (fetches via ``NetworkGateway`` with a 24h TTL cache) that no
-                caller has ever invoked — wiring it requires confirming the
-                exact directory layout LOOT expects for `--loot-data-path`
-                against `libloot` sources, which is out of scope for a CLI-flag
-                fix. Until then this parameter is a documented no-op: LOOT
-                sorts against whatever masterlist it already has locally.
+                (descarga vía ``NetworkGateway`` con cache TTL de 24h) que
+                ningún caller invocó jamás — cablearlo requiere confirmar el
+                layout exacto de directorio que LOOT espera para
+                `--loot-data-path` contra el fuente de `libloot`, fuera de
+                alcance para una corrección de flag CLI. Hasta entonces este
+                parámetro es un no-op documentado: LOOT ordena contra el
+                masterlist que ya tenga localmente.
 
         Returns:
             Parsed LOOT result with warnings, errors, and suggested order.

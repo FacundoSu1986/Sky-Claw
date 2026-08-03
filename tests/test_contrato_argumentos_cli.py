@@ -90,7 +90,15 @@ ATRIBUTOS_DE_OS = {"system", "popen"}
 
 
 def _alias_de_modulo(arbol: ast.AST, modulo: str) -> set[str]:
-    """Nombres bajo los que `arbol` importa `modulo` (`import X as Y` → `{Y}`)."""
+    """Nombres bajo los que `arbol` importa `modulo` entero (`import X as Y` → `{Y}`).
+
+    Solo cubre ``import X``/``import X as Y``. ``from X import atributo`` se
+    resuelve aparte en :func:`_nombres_directos_de`, porque ahí el nombre local
+    apunta a la FUNCIÓN, no al módulo — mezclarlos en un solo set produciría
+    falsos negativos (`from subprocess import run` nunca matchea `base in alias`
+    porque no hay `base`, es una llamada a secas) o falsos positivos si se
+    tratara como alias de módulo.
+    """
     alias: set[str] = set()
     for nodo in ast.walk(arbol):
         if isinstance(nodo, ast.Import):
@@ -98,6 +106,24 @@ def _alias_de_modulo(arbol: ast.AST, modulo: str) -> set[str]:
                 if nombre.name == modulo:
                     alias.add(nombre.asname or modulo)
     return alias
+
+
+def _nombres_directos_de(arbol: ast.AST, modulo: str, atributos: set[str]) -> set[str]:
+    """Nombres locales para ``from modulo import atributo [as alias]``.
+
+    Sin esto, ``from subprocess import run`` seguido de ``run(['a'])`` evade el
+    detector por completo: `_alias_de_modulo` solo mira `ast.Import`, nunca
+    `ast.ImportFrom` (hallazgo de revisión automática, PR #426) — el spawn más
+    fácil de introducir por accidente quedaba fuera del inventario que este
+    archivo dice congelar.
+    """
+    nombres: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.ImportFrom) and nodo.module == modulo:
+            for alias in nodo.names:
+                if alias.name in atributos:
+                    nombres.add(alias.asname or alias.name)
+    return nombres
 
 
 #: Inventario congelado de módulos que lanzan procesos, con la cantidad exacta de
@@ -114,6 +140,12 @@ LANZADORES_ESPERADOS = {
     "sky_claw/app/security/file_permissions.py": 7,
     "sky_claw/local/mo2/vfs_worker.py": 1,
     "sky_claw/local/tools/_process.py": 3,
+    # `subprocess.run(["7z", ...])` para listar/extraer archives descargados
+    # (xEdit/Pandora) con sandbox de zip-slip — utilidad de archivado, no el
+    # CLI propio de ninguna herramienta de modding. Aterrizó en `main` (#418)
+    # mientras este PR estaba abierto; detectado por el ancla al mergear, que
+    # es exactamente el trabajo para el que existe.
+    "sky_claw/local/tools_installer.py": 2,
     # Mixto: además del `create_subprocess_exec` legacy que SÍ es lanzador de
     # LOOT (con entrada propia en PROCEDENCIA_DE_FLAGS), este módulo tiene un
     # `subprocess.run(["taskkill", ...])` puramente infra — mismo módulo, dos
@@ -183,8 +215,14 @@ PROCEDENCIA_DE_FLAGS = {
 }
 
 
-def _es_llamada_lanzadora(func: ast.expr, alias_subprocess: set[str], alias_os: set[str]) -> bool:
-    """``asyncio.create_subprocess_exec(...)``, ``subprocess.run(...)``, etc."""
+def _es_llamada_lanzadora(
+    func: ast.expr,
+    alias_subprocess: set[str],
+    alias_os: set[str],
+    nombres_directos: set[str],
+) -> bool:
+    """``asyncio.create_subprocess_exec(...)``, ``subprocess.run(...)``,
+    ``from subprocess import run; run(...)``, etc."""
     if isinstance(func, ast.Attribute):
         if func.attr in FUNCIONES_LANZADORAS:
             return True
@@ -192,16 +230,19 @@ def _es_llamada_lanzadora(func: ast.expr, alias_subprocess: set[str], alias_os: 
         if func.attr in ATRIBUTOS_DE_SUBPROCESS and base in alias_subprocess:
             return True
         return func.attr in ATRIBUTOS_DE_OS and base in alias_os
-    return isinstance(func, ast.Name) and func.id in FUNCIONES_LANZADORAS
+    return isinstance(func, ast.Name) and (func.id in FUNCIONES_LANZADORAS or func.id in nombres_directos)
 
 
 def _contar_lanzamientos(arbol: ast.AST) -> int:
     alias_subprocess = _alias_de_modulo(arbol, "subprocess")
     alias_os = _alias_de_modulo(arbol, "os")
+    nombres_directos = _nombres_directos_de(arbol, "subprocess", ATRIBUTOS_DE_SUBPROCESS) | _nombres_directos_de(
+        arbol, "os", ATRIBUTOS_DE_OS
+    )
     return sum(
         1
         for nodo in ast.walk(arbol)
-        if isinstance(nodo, ast.Call) and _es_llamada_lanzadora(nodo.func, alias_subprocess, alias_os)
+        if isinstance(nodo, ast.Call) and _es_llamada_lanzadora(nodo.func, alias_subprocess, alias_os, nombres_directos)
     )
 
 
@@ -238,6 +279,28 @@ def test_detector_reconoce_las_formas_de_lanzar_un_proceso() -> None:
     assert _contar("import os\nos.popen('a')\n") == 1
     # Alias de import: `subprocess.run` sigue siendo `subprocess.run` con otro nombre.
     assert _contar("import subprocess as sp\nsp.run(['a'])\n") == 1
+
+
+def test_detector_reconoce_from_import_de_subprocess_y_os() -> None:
+    """``from subprocess import run`` seguido de ``run(...)`` a secas es un spawn.
+
+    `_alias_de_modulo` solo caza ``import subprocess``; sin resolver también
+    ``ast.ImportFrom`` (hallazgo de revisión automática, PR #426), este es el
+    spawn más fácil de introducir por accidente — y el que efectivamente vive
+    en `tools_installer.py` en su forma `import subprocess` LOCAL dentro de una
+    función, que sigue cubierta porque `ast.walk` no distingue scope; el caso
+    que faltaba era la forma `from`.
+    """
+    assert _contar("from subprocess import run\nrun(['a'])\n") == 1
+    assert _contar("from subprocess import call\ncall(['a'])\n") == 1
+    assert _contar("from subprocess import check_call\ncheck_call(['a'])\n") == 1
+    assert _contar("from subprocess import check_output\ncheck_output(['a'])\n") == 1
+    assert _contar("from os import system\nsystem('a')\n") == 1
+    assert _contar("from os import popen\npopen('a')\n") == 1
+    # Alias: `from subprocess import run as ejecutar` sigue siendo un spawn.
+    assert _contar("from subprocess import run as ejecutar\nejecutar(['a'])\n") == 1
+    # Un `from` de un módulo ajeno con un atributo homónimo no cuenta.
+    assert _contar("from otro_modulo import run\nrun(['a'])\n") == 0
 
 
 def test_detector_no_confunde_metodo_run_de_dominio_con_spawn() -> None:

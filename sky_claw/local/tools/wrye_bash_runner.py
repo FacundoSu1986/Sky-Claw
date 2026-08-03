@@ -29,9 +29,10 @@ class WryeBashHeadlessUnsupportedError(WryeBashExecutionError):
     """Wrye Bash no expone ninguna forma de construir el Bashed Patch sin GUI.
 
     Verificado contra ``wrye-bash/wrye-bash``, ``Mopy/bash/barg.py``: el parser
-    declara ``-b``/``--backup`` (*"Backup all Wrye Bash settings to an archive
-    file before the app launches"*), ``-o``/``--oblivionPath`` (directorio del
-    juego) y ``--no-uac``. **No hay ningún argumento que reconstruya el parche.**
+    declara ``-b``/``--backup`` (hace un backup de la configuración de Wrye
+    Bash a un archivo antes de que arranque la app), ``-o``/``--oblivionPath``
+    (directorio del juego) y ``--no-uac``. **No hay ningún argumento que
+    reconstruya el parche.**
 
     Este runner pasaba ``-b "Bashed Patch, 0.esp"`` creyendo que construía: en
     realidad disparaba el backup de settings y devolvía ``success=True``. Reportar
