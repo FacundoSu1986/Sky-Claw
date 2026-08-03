@@ -1176,3 +1176,140 @@ class TestExtractZipSafe:
 
         assert (dest / "subdir" / "file.txt").exists()
         assert (dest / "subdir" / "file.txt").read_text(encoding="utf-8") == "nested content"
+
+
+# ---------------------------------------------------------------------------
+# ToolsInstaller.ensure_skse
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureSkse:
+    @pytest.mark.asyncio
+    async def test_retorna_existente_sin_descarga(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
+        """Cuando SKSE ya está instalado, no descarga y devuelve already_existed=True."""
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+        (install_dir / "skse64_1_6_1170.dll").write_text("fake", encoding="utf-8")
+        (install_dir / "skse64_loader.exe").write_text("fake", encoding="utf-8")
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        from sky_claw.local.discovery.environment import SkyrimEdition
+
+        result = await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        assert result.already_existed is True
+        assert result.tool_name == "SKSE"
+        assert result.exe_path == install_dir / "skse64_loader.exe"
+
+    @pytest.mark.asyncio
+    async def test_falla_con_edicion_ms_store(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Si la edición no está en el dicccionario (ej. MS Store), lanza error antes de la red."""
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        monkeypatch.setattr(
+            "sky_claw.local.tools_installer.ToolsInstaller._edition_to_config_key", lambda s, e: "MS_STORE"
+        )
+
+        from sky_claw.local.discovery.environment import SkyrimEdition
+
+        with pytest.raises(ToolInstallError, match="no compatible"):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.UNKNOWN)
+
+    @pytest.mark.asyncio
+    async def test_hitl_denial_raises(self, installer: ToolsInstaller, tmp_path: pathlib.Path) -> None:
+        """Cuando el operador lo deniega, lanza ToolInstallError."""
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.DENIED)  # type: ignore[method-assign]
+
+        from sky_claw.local.discovery.environment import SkyrimEdition
+
+        with pytest.raises(ToolInstallError, match="denied"):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+    @pytest.mark.asyncio
+    async def test_limpia_dlls_huerfanos_antes_de_instalar(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Debe eliminar DLLs antiguas (incluso de solo lectura) antes de solicitar HITL."""
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+
+        old_dll = install_dir / "skse64_1_5_97.dll"
+        old_dll.write_text("viejo", encoding="utf-8")
+        import stat
+
+        old_dll.chmod(stat.S_IREAD)
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.DENIED)  # type: ignore[method-assign]
+
+        from sky_claw.local.discovery.environment import SkyrimEdition
+
+        with pytest.raises(ToolInstallError, match="denied"):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        assert not old_dll.exists(), "Debe limpiar DLLs de otras versiones incluso si eran readonly"
+
+    @pytest.mark.asyncio
+    async def test_permiso_denegado_si_juego_abierto(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Si un DLL está bloqueado (juego abierto), levanta un ToolInstallError accionable."""
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+        old_dll = install_dir / "skse64_1_5_97.dll"
+        old_dll.write_text("viejo", encoding="utf-8")
+
+        def unlink_mock(*args, **kwargs) -> None:
+            raise PermissionError("Access denied")
+
+        monkeypatch.setattr(pathlib.Path, "unlink", unlink_mock)
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        from sky_claw.local.discovery.environment import SkyrimEdition
+
+        with pytest.raises(ToolInstallError, match="Permiso denegado al limpiar"):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+    @pytest.mark.asyncio
+    async def test_descarga_y_extrae_correctamente(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flujo feliz: descarga, extrae excluyendo MAC OSX, y copia Data y binarios."""
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+        installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        def mock_extract(self_obj: ToolsInstaller, archive: pathlib.Path, dest: pathlib.Path) -> None:
+            dest.mkdir(parents=True, exist_ok=True)
+            skse_dir = dest / "skse64_2_02_06"
+            skse_dir.mkdir()
+            (skse_dir / "skse64_loader.exe").write_text("loader", encoding="utf-8")
+            (skse_dir / "skse64_1_6_1170.dll").write_text("dll", encoding="utf-8")
+            (skse_dir / "Data").mkdir()
+            (skse_dir / "Data" / "Scripts").mkdir()
+            (skse_dir / "Data" / "Scripts" / "skse.pex").write_text("pex", encoding="utf-8")
+
+        monkeypatch.setattr("sky_claw.local.tools_installer.ToolsInstaller._extract", mock_extract)
+
+        from sky_claw.local.discovery.environment import SkyrimEdition
+
+        result = await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        assert result.already_existed is False
+        assert result.tool_name == "SKSE"
+        assert (install_dir / "skse64_loader.exe").exists()
+        assert (install_dir / "skse64_1_6_1170.dll").exists()
+        assert (install_dir / "Data" / "Scripts" / "skse.pex").exists()

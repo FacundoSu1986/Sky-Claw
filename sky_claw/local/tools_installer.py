@@ -45,6 +45,37 @@ _XEDIT_RELEASES_URL = "https://api.github.com/repos/TES5Edit/TES5Edit/releases/l
 _PANDORA_RELEASES_URL = "https://api.github.com/repos/Monitor221hz/Pandora-Behaviour-Engine-Plus/releases/latest"
 _NGIO_RELEASES_URL = "https://api.github.com/repos/DwemerEngineer/No-Grass-In-Objects-NG/releases/latest"
 
+# ---------------------------------------------------------------------------
+# SKSE Configuration
+# ---------------------------------------------------------------------------
+
+SKSE_CONFIG: dict[str, dict[str, str | None]] = {
+    "AE": {
+        "url": "https://skse.silverlock.org/beta/skse64_2_02_06.7z",
+        "dll": "skse64_1_6_1170.dll",
+        "loader": "skse64_loader.exe",
+        "steam_loader": "skse64_steam_loader.dll",
+    },
+    "SE": {
+        "url": "https://skse.silverlock.org/beta/skse64_2_00_20.7z",
+        "dll": "skse64_1_5_97.dll",
+        "loader": "skse64_loader.exe",
+        "steam_loader": "skse64_steam_loader.dll",
+    },
+    "GOG": {
+        "url": "https://skse.silverlock.org/beta/skse64_2_02_06_gog.7z",
+        "dll": "skse64_1_6_1170.dll",
+        "loader": "skse64_loader.exe",
+        "steam_loader": "skse64_steam_loader.dll",
+    },
+    "LE": {
+        "url": "https://skse.silverlock.org/beta/skse_1_07_03.7z",
+        "dll": "skse_1_9_32.dll",
+        "loader": "skse_loader.exe",
+        "steam_loader": None,  # LE no tiene steam_loader
+    },
+}
+
 # Dependencias del precache de grass (SOP §2.8): NGIO-NG desde GitHub; Address
 # Library y Grass Cache Helper NG desde Nexus. Los nombres son los directorios
 # que ensure_ngio crea bajo mods/ (el orquestador los activa en modlist.txt).
@@ -727,6 +758,270 @@ class ToolsInstaller:
             version=version,
             already_existed=False,
         )
+
+    async def ensure_skse(
+        self,
+        install_dir: pathlib.Path,
+        session: aiohttp.ClientSession,
+        edition: SkyrimEdition | None = None,
+    ) -> InstallResult:
+        """Ensure SKSE is available in the game directory, downloading if necessary.
+
+        Args:
+            install_dir: Skyrim game root directory (where SkyimSE.exe lives).
+            session: Active HTTP session.
+            edition: Optional Skyrim edition override. If None, auto-detect from DLL presence.
+
+        Returns:
+            :class:`InstallResult` with the path to ``skse64_loader.exe``.
+
+        Raises:
+            ToolInstallError: If installation fails or edition is unsupported (MS Store).
+        """
+        self._validator.validate(install_dir)
+
+        # Determinar edición
+        if edition is None:
+            edition = self._detect_skse_edition_from_existing(install_dir)
+
+        ed_key = self._edition_to_config_key(edition)
+        cfg = SKSE_CONFIG.get(ed_key)
+
+        if cfg is None:
+            raise ToolInstallError(f"Edición {ed_key} no compatible (probablemente MS Store, que no soporta SKSE).")
+
+        # Idempotencia: verificar si ya está instalado correctamente
+        assert cfg["loader"] is not None
+        assert cfg["dll"] is not None
+        loader_path = install_dir / cfg["loader"]
+        dll_path = install_dir / cfg["dll"]
+
+        if loader_path.exists() and dll_path.exists():
+            logger.info("SKSE ya instalado en %s", loader_path)
+            return InstallResult(
+                tool_name="SKSE",
+                exe_path=loader_path,
+                version="existing",
+                already_existed=True,
+            )
+
+        # LIMPIEZA DE DIRTY UPGRADES: Eliminar DLLs huérfanos de otras versiones
+        await self._cleanup_orphaned_skse_dlls(install_dir, cfg)
+
+        # Solicitar aprobación HITL
+        decision = await self._hitl.request_approval(
+            request_id=f"install-skse-{ed_key}",
+            reason=f"Install SKSE for Skyrim {ed_key}?",
+            url=cfg["url"],
+            detail=(
+                f"URL: {cfg['url']}\n"
+                f"Loader: {cfg['loader']}\n"
+                f"DLL: {cfg['dll']}\n"
+                f"Source: skse.silverlock.org (sitio oficial)"
+            ),
+            category="download",
+        )
+
+        if decision is not Decision.APPROVED:
+            raise ToolInstallError(f"SKSE installation denied by operator (decision={decision.value})")
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = pathlib.Path(tmpdir)
+            assert cfg["url"] is not None
+            archive_name = cfg["url"].split("/")[-1]
+            archive_path = tmp_path / archive_name
+
+            # Descarga segura vía NetworkGateway con timeout
+            await self._download_skse_archive(session, cfg["url"], archive_path)
+
+            # Extraer con protección zip-slip
+            extract_path = tmp_path / "extracted"
+            await asyncio.to_thread(self._extract, archive_path, extract_path)
+
+            # Buscar loader excluyendo __MACOSX
+            skse_root = self._find_skse_root(extract_path, cfg["loader"])
+
+            # Copiar archivos al directorio del juego
+            await self._copy_skse_files(skse_root, install_dir, cfg)
+
+        logger.info("SKSE %s instalado en %s", ed_key, loader_path)
+        return InstallResult(
+            tool_name="SKSE",
+            exe_path=loader_path,
+            version=cfg["url"].split("_")[-1].replace(".7z", ""),
+            already_existed=False,
+        )
+
+    def _detect_skse_edition_from_existing(self, game_dir: pathlib.Path) -> SkyrimEdition:
+        """Detect SKSE edition from existing DLLs in game directory."""
+        if (game_dir / "skse64_1_6_1170.dll").exists():
+            return SkyrimEdition.AE
+        if (game_dir / "skse64_1_5_97.dll").exists():
+            return SkyrimEdition.SE
+        if (game_dir / "skse_1_9_32.dll").exists():
+            return SkyrimEdition.LE
+        return SkyrimEdition.AE
+
+    def _edition_to_config_key(self, edition: SkyrimEdition) -> str:
+        """Convert SkyrimEdition enum to SKSE_CONFIG dictionary key."""
+        mapping = {
+            SkyrimEdition.AE: "AE",
+            SkyrimEdition.SE: "SE",
+            SkyrimEdition.LE: "LE",
+        }
+        return mapping.get(edition, "AE")
+
+    async def _cleanup_orphaned_skse_dlls(
+        self,
+        game_dir: pathlib.Path,
+        current_cfg: dict[str, str | None],
+    ) -> None:
+        """Remove orphaned SKSE DLLs from previous versions (dirty upgrade cleanup)."""
+        import stat
+
+        protected_names = {current_cfg["dll"], current_cfg.get("steam_loader"), "skse64_steam_loader.dll"}
+        protected_names.discard(None)
+
+        for old_dll in game_dir.glob("skse*.dll"):
+            if old_dll.name in protected_names:
+                continue
+
+            try:
+                if old_dll.exists():
+                    try:
+                        mode = old_dll.stat().st_mode
+                        if not (mode & stat.S_IWRITE):
+                            old_dll.chmod(mode | stat.S_IWRITE)
+                            logger.debug("Cleared read-only flag on %s", old_dll)
+                    except OSError:
+                        pass
+                    old_dll.unlink()
+                    logger.info("Removed orphaned SKSE DLL: %s", old_dll.name)
+            except PermissionError as exc:
+                logger.warning(
+                    "No se pudo eliminar %s (¿Skyrim o MO2 están abiertos?): %s",
+                    old_dll.name,
+                    exc,
+                )
+                raise ToolInstallError(
+                    f"Permiso denegado al limpiar {old_dll.name}. Cierra Skyrim y Mod Organizer."
+                ) from exc
+            except OSError as exc:
+                logger.warning("Error limpiando %s: %s", old_dll.name, exc)
+
+    async def _download_skse_archive(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        dest_path: pathlib.Path,
+    ) -> None:
+        """Download SKSE archive via NetworkGateway with timeout and validation."""
+        import hashlib
+
+        self._validator.validate(dest_path)
+
+        timeout = aiohttp.ClientTimeout(total=120, sock_read=60)
+        downloaded = 0
+        hasher = hashlib.sha256()
+
+        logger.info("Descargando SKSE desde %s ...", url)
+
+        resp = await self._gateway.request(
+            "GET",
+            url,
+            session,
+            headers={"Accept": "application/octet-stream"},
+            timeout=timeout,
+            allowed_redirect_hosts=("skse.silverlock.org",),
+        )
+
+        try:
+            resp.raise_for_status()
+            with dest_path.open("wb") as fh:
+                async for chunk in resp.content.iter_chunked(_DOWNLOAD_CHUNK_SIZE):
+                    fh.write(chunk)
+                    hasher.update(chunk)
+                    downloaded += len(chunk)
+
+                    if downloaded % (10 * _DOWNLOAD_CHUNK_SIZE) == 0:
+                        logger.info("  ... %d bytes descargados", downloaded)
+        except (aiohttp.ClientError, OSError, TimeoutError) as exc:
+            logger.error("Download failed for SKSE: %s", exc)
+            if dest_path.exists():
+                dest_path.unlink(missing_ok=True)
+            raise ToolInstallError(f"Error descargando SKSE: {exc}") from exc
+        finally:
+            resp.release()
+
+        if downloaded == 0:
+            dest_path.unlink(missing_ok=True)
+            raise ToolInstallError("SKSE download returned empty content")
+
+        logger.info(
+            "SKSE descargado (%d bytes, sha256=%s...)",
+            downloaded,
+            hasher.hexdigest()[:16],
+        )
+
+    def _find_skse_root(self, extract_path: pathlib.Path, loader_name: str) -> pathlib.Path:
+        """Find SKSE root directory, excluding __MACOSX and other artifacts."""
+        valid_loaders = [p for p in extract_path.rglob(loader_name) if "__MACOSX" not in p.parts and p.is_file()]
+
+        if not valid_loaders:
+            raise ToolInstallError(
+                f"No se encontró {loader_name} válido en el archivo SKSE. "
+                "El archivo puede estar corrupto o tener una estructura inesperada."
+            )
+
+        skse_root = valid_loaders[0].parent
+        logger.debug("SKSE root encontrado: %s", skse_root)
+        return skse_root
+
+    async def _copy_skse_files(
+        self,
+        skse_root: pathlib.Path,
+        game_dir: pathlib.Path,
+        cfg: dict[str, str | None],
+    ) -> None:
+        """Copy SKSE binaries and Data folder to game directory."""
+        import shutil
+
+        copied_count = 0
+
+        for item in skse_root.iterdir():
+            target = game_dir / item.name
+
+            if item.is_file():
+                if item.suffix.lower() in (".dll", ".exe"):
+                    if target.exists():
+                        try:
+                            import stat
+
+                            mode = target.stat().st_mode
+                            if not (mode & stat.S_IWRITE):
+                                target.chmod(mode | stat.S_IWRITE)
+                        except OSError:
+                            pass
+                    shutil.copy2(item, target)
+                    copied_count += 1
+                    logger.debug("Copiado: %s → %s", item.name, target)
+            elif item.is_dir() and item.name == "Data":
+                if target.exists():
+                    shutil.copytree(item, target, dirs_exist_ok=True)
+                else:
+                    shutil.copytree(item, target)
+                copied_count += 1
+                logger.info("Copiada carpeta Data de SKSE")
+
+        if copied_count == 0:
+            raise ToolInstallError(
+                f"No se copiaron archivos SKSE desde {skse_root}. "
+                "Verifica que el archivo descargado contenga los binarios esperados."
+            )
+
+        logger.info("SKSE: archivos copiados a %s", game_dir)
 
     async def ensure_bodyslide(
         self,

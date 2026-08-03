@@ -106,6 +106,7 @@ PANDORA_EXE_NAMES = ("Pandora Behaviour Engine+.exe", "Pandora Engine.exe", "Pan
 _PANDORA_NAMES = PANDORA_EXE_NAMES
 _LOOT_NAMES = ("LOOT.exe", "loot.exe")
 _XEDIT_NAMES = ("SSEEdit.exe", "TES5Edit.exe", "xEdit.exe")
+_SKSE_LOADER_NAMES = ("skse64_loader.exe", "skse_loader.exe")
 
 
 # ── Skyrim Version Detection ─────────────────────────────────────────
@@ -275,6 +276,13 @@ class EnvironmentScanner:
 
         # ── 3. Detect Tools ───────────────────────────────────────────
         tool_defs = [
+            (
+                "skse",
+                _SKSE_LOADER_NAMES,
+                "Extensor del motor (SKSE) - Requiere instalación manual o auto-instalador",
+                "https://skse.silverlock.org/",
+                True,
+            ),
             (
                 "loot",
                 _LOOT_NAMES,
