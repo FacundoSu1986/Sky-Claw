@@ -35,6 +35,7 @@ _ITEMS = frozenset(
         "T-28",
         "T-29",
         "T-30",
+        "T-31",
         *(f"U-{numero:02d}" for numero in range(1, 13)),
         *(f"F{numero}" for numero in range(1, 10)),
         "F8 USVFS",
