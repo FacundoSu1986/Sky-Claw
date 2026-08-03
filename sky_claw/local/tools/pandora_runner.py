@@ -75,11 +75,18 @@ class PandoraRunner:
         start_time = time.monotonic()
         game_path = self.config.game_path.resolve()
 
+        # Verificado contra el README de Monitor221hz/Pandora-Behaviour-Engine-Plus,
+        # sección "Startup Arguments": las opciones declaradas son `--output` (o
+        # `-o`), `--auto_run`, `--auto_close`, `--tesv` y `--skyrim_debug64`.
+        #
+        # Este runner pasaba además `--game "Skyrim Special Edition"` y `--auto`:
+        # ninguno de los dos existe. No se los reemplaza por `--auto_run`/
+        # `--auto_close` acá porque su semántica exacta (¿`--auto_run` dispara la
+        # corrida, o reusa la selección de mods cacheada de la última exitosa?) no
+        # está verificada, y cambiar un flag inventado por otro adivinado no
+        # arregla nada. Pendiente de smoke en rig real.
         args = [
             str(self.config.pandora_exe),
-            "--game",
-            "Skyrim Special Edition",
-            "--auto",
             "--output",
             str(self.output_path),
         ]

@@ -83,10 +83,20 @@ def _wrye(tmp_path, timeout: float) -> tuple[WryeBashRunner, tuple]:
     return runner, ()
 
 
+#: Runners que efectivamente lanzan un proceso hijo y por lo tanto pueden dejar
+#: un huérfano. `_wrye` quedó FUERA a propósito: verificado contra
+#: `wrye-bash/wrye-bash` `Mopy/bash/barg.py`, Wrye Bash no expone ningún flag que
+#: construya el Bashed Patch sin GUI, así que `generate_bashed_patch` ahora falla
+#: cerrado con `WryeBashHeadlessUnsupportedError` sin spawnear (antes corría
+#: `-b`, que en el parser real es `--backup` de settings, y reportaba éxito).
+#: Sin proceso hijo no hay huérfano que prevenir. Si la etapa 6 vuelve a lanzar
+#: un proceso —p. ej. al modelarla como etapa asistida— hay que devolver `_wrye`
+#: a esta lista y darle su excepción de timeout.
+_FACTORIES_QUE_SPAWNEAN = [_bodyslide, _pandora]
+
 _CALLS = {
     BodySlideRunner: lambda r, a: r.run_batch(*a),
     PandoraRunner: lambda r, a: r.run_pandora(*a),
-    WryeBashRunner: lambda r, a: r.generate_bashed_patch(*a),
 }
 
 #: U-10: cada runner eleva SU excepción de timeout dedicada (ya no traga struct).
@@ -111,7 +121,7 @@ def test_timeout_errors_derivan_de_su_execution_error() -> None:
     assert issubclass(PandoraTimeoutError, PandoraExecutionError)
 
 
-@pytest.mark.parametrize("factory", [_bodyslide, _pandora, _wrye])
+@pytest.mark.parametrize("factory", _FACTORIES_QUE_SPAWNEAN)
 async def test_runner_kills_process_on_timeout(tmp_path, factory):
     """En timeout, el runner debe matar+reapear el proceso hijo Y elevar su
     excepción de timeout dedicada (U-10).
@@ -139,7 +149,7 @@ async def test_runner_kills_process_on_timeout(tmp_path, factory):
     proc.wait.assert_awaited()
 
 
-@pytest.mark.parametrize("factory", [_bodyslide, _pandora, _wrye])
+@pytest.mark.parametrize("factory", _FACTORIES_QUE_SPAWNEAN)
 async def test_runner_kills_process_on_cancel(tmp_path, factory):
     """On task cancellation (graceful shutdown) the runner must kill the child
     and re-raise ``CancelledError`` (never swallow cancellation)."""

@@ -230,7 +230,10 @@ class ModdingToolsAgent:
             "SkyrimSE",
             "--game-path",
             game_path_win,
-            "--sort",
+            # Mismo fix que `local/loot/cli.py`: LOOT declara `--auto-sort`, no
+            # `--sort` (loot/loot `src/gui/qt/main.cpp`). Este lanzador legacy es
+            # el "hermano" que quedaba fuera de cualquier corrección puntual.
+            "--auto-sort",
         ]
 
         if params.update_masterlist:

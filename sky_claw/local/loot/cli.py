@@ -135,7 +135,10 @@ class LOOTRunner:
             self._config.game,
             "--game-path",
             game_path_win,
-            "--sort",
+            # Verificado en loot/loot `src/gui/qt/main.cpp`: las opciones
+            # declaradas son --game, --game-path, --loot-data-path y --auto-sort.
+            # `--sort` no existe y QCommandLineParser rechaza opciones desconocidas.
+            "--auto-sort",
         ]
 
         if update_masterlist:

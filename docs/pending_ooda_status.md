@@ -60,6 +60,8 @@ confirmarlo contra código y tests.
 | Detección de enlaces | Cerrado | #404 y #405 | — | `test_links.py` |
 | Borrado recursivo | Cerrado | #405 | — | `test_borrado_recursivo.py` |
 | Fugas de lifecycle en tests | Cerrado | #408, #409 y #415 | — | `test_atribucion_de_warnings.py`, `test_project_config.py` |
+| Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash | Verificar contra fuente xEdit, Synthesis, MO2, DynDOLOD y VRAMr | `test_contrato_argumentos_cli.py` |
+| Etapa 6 (Wrye Bash) sin build headless | Abierto | — | Decidir entre etapa asistida o retirarla del dispatcher | `Mopy/bash/barg.py`; humano |
 | Smoke real de QuickAutoClean | Bloqueado (rig humano) | — | Ejecutar SSEEdit QuickAutoClean en una instalación real | humano |
 | Smokes reales restantes | Bloqueado (rig humano) | — | NGIO, scripts `.pas`, GUI/FOMOD y Telegram end-to-end | humano |
 | Residuos OODA de bajo valor | Abierto | — | Solo retomar agrupados si cambia su relación esfuerzo/impacto | historial OODA §3 |
@@ -80,6 +82,28 @@ Persisten dos trabajos no urgentes heredados del inventario Zero-Trust:
 La escritura de una variable de entorno tras instalar una herramienta no
 contradice por sí sola el primer punto: la deuda pendiente es la fuente
 centralizada de lectura.
+
+## Argumentos CLI verificados contra fuente
+
+Cuatro runners salían a producción pasando flags que las herramientas **no
+declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
+
+- **LOOT** (`src/gui/qt/main.cpp`) declara `--auto-sort`; el repo pasaba `--sort`
+  desde **dos** lanzadores (`local/loot/cli.py` y `app/core/windows_interop.py`).
+- **Wrye Bash** (`Mopy/bash/barg.py`): `-b` es `--backup` de settings. **No existe
+  flag de build headless**; el runner reportaba éxito sobre un no-op.
+- **BodySlide** (`src/program/BodySlideApp.cpp`) declara `gbuild`/`t`; el repo
+  pasaba `-b`/`-o`.
+- **Pandora** (README, "Startup Arguments"): `--game` y `--auto` no existen.
+
+Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un
+flag en vez de enumerar el vector. El ancla `test_contrato_argumentos_cli.py`
+congela el inventario de módulos que spawnean y exige procedencia declarada por
+lanzador. Quedan marcados `SIN VERIFICAR` en esa tabla: xEdit, Synthesis, MO2,
+DynDOLOD (binario cerrado, sin fuente pública) y VRAMr (scripts en Nexus).
+
+`vramr_service.py` además no usa Job Object, a diferencia de DynDOLOD (U-07) y
+grass: si VRAMr spawnea compresores externos, un timeout deja huérfanos.
 
 ## Decide — recomendación de próximo frente
 

@@ -6,11 +6,8 @@ Implements M-01 Wrye Bash Runner specifications.
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-
-from sky_claw.local.tools._process import run_capture
 
 if TYPE_CHECKING:
     import pathlib
@@ -26,6 +23,39 @@ BASHED_PATCH_NAME = "Bashed Patch, 0.esp"
 
 class WryeBashExecutionError(Exception):
     pass
+
+
+class WryeBashHeadlessUnsupportedError(WryeBashExecutionError):
+    """Wrye Bash no expone ninguna forma de construir el Bashed Patch sin GUI.
+
+    Verificado contra ``wrye-bash/wrye-bash``, ``Mopy/bash/barg.py``: el parser
+    declara ``-b``/``--backup`` (*"Backup all Wrye Bash settings to an archive
+    file before the app launches"*), ``-o``/``--oblivionPath`` (directorio del
+    juego) y ``--no-uac``. **No hay ningún argumento que reconstruya el parche.**
+
+    Este runner pasaba ``-b "Bashed Patch, 0.esp"`` creyendo que construía: en
+    realidad disparaba el backup de settings y devolvía ``success=True``. Reportar
+    éxito sobre un no-op es peor que fallar, porque las etapas siguientes del DAG
+    (Synthesis en la 7, DynDOLOD en la 9) consumen un parche que nunca se
+    regeneró.
+
+    Deriva de :class:`WryeBashExecutionError` para que los callers que ya capturan
+    la base la traduzcan al contrato ``success=False``/``message`` sin cambios.
+
+    Decisión pendiente del equipo: modelar la etapa 6 como *etapa asistida*
+    (Sky-Claw hace preflight/sandbox y lanza vía MO2, el humano completa el paso
+    GUI, Sky-Claw verifica el artefacto y promueve por HITL) o retirarla del
+    dispatcher. Automatizarla por RPA de coordenadas queda descartado: no es
+    determinista, no corre en el CI headless y no puede participar del contrato
+    de journal/rollback.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Wrye Bash no soporta construir el Bashed Patch en modo headless: su CLI "
+            "solo expone --backup, --oblivionPath y --no-uac (Mopy/bash/barg.py). "
+            "La etapa 6 requiere intervención humana en la GUI."
+        )
 
 
 class WryeBashTimeoutError(WryeBashExecutionError):
@@ -67,34 +97,18 @@ class WryeBashRunner:
         self.config = config
 
     async def generate_bashed_patch(self) -> WryeBashResult:
-        """Execute bash.py to generate 'Bashed Patch, 0.esp'."""
-        logger.info("[M-01] Generating Bashed Patch, 0.esp using Wrye Bash...")
-        start_time = time.monotonic()
+        """Falla cerrado: Wrye Bash no puede construir el parche sin GUI.
 
-        program = str(self.config.wrye_bash_path)
-        # A .py entry point is launched through the interpreter; an .exe directly.
-        if program.endswith(".py"):
-            args = ["python", program, "-b", BASHED_PATCH_NAME]
-        else:
-            args = [program, "-b", BASHED_PATCH_NAME]
+        Ver :class:`WryeBashHeadlessUnsupportedError` para la verificación contra
+        el parser oficial y la decisión de arquitectura pendiente.
 
-        try:
-            stdout, stderr, return_code = await run_capture(
-                args,
-                timeout=self.config.timeout_seconds,
-                cwd=str(self.config.game_path),
-            )
-        except TimeoutError as exc:
-            logger.error("Wrye Bash generation timed out.")
-            raise WryeBashTimeoutError(self.config.timeout_seconds) from exc
-        except Exception as e:
-            logger.error(f"Wrye Bash execution failed: {e}")
-            raise WryeBashExecutionError(f"Failed to execute Wrye Bash: {e}") from e
-
-        return WryeBashResult(
-            success=return_code == 0,
-            return_code=return_code,
-            stdout=stdout.decode(errors="replace"),
-            stderr=stderr.decode(errors="replace"),
-            duration_seconds=time.monotonic() - start_time,
+        No se lanza el proceso a propósito. La implementación anterior ejecutaba
+        ``bash.py -b "Bashed Patch, 0.esp"``, que en el parser real de Wrye Bash
+        significa *backup de settings* con ese nombre como archivo destino — un
+        efecto lateral silencioso sobre el que además reportaba éxito.
+        """
+        logger.error(
+            "[M-01] Wrye Bash no expone build headless del Bashed Patch; "
+            "la etapa 6 no puede completarse de forma desatendida."
         )
+        raise WryeBashHeadlessUnsupportedError
