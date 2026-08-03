@@ -24,6 +24,7 @@ from nicegui import app, ui
 from sky_claw.app.gui.controllers.ritual_runner import (
     CLIENT_KEY_AUTO_APPROVE,
     RITUAL_INSTALLER_MAP,
+    RITUAL_TOOL_MAP,
     STORE_KEY_RITUAL_FEEDBACK,
     STORE_KEY_RITUAL_PREFLIGHT,
     clear_answered_hitl,
@@ -135,6 +136,20 @@ _RITUALS: list[dict[str, str]] = [
         "tool": "dyndolod",
         "tone": ACCENT,
     },
+    # SKSE no es un ritual que se "ejecute" como los otros cinco: es el runtime que
+    # el juego carga. Vive igual en esta grilla porque es la ÚNICA superficie donde
+    # el operador puede aprobar su instalación (`RITUAL_INSTALLER_MAP["skse"]`), y sin
+    # tarjeta ese instalador es código muerto — nadie puede apretarlo. Que no tenga
+    # entrada en `RITUAL_TOOL_MAP` es lo que hace que `_ritual_action` no le prometa
+    # un botón "Ejecutar" cuando ya está instalado.
+    {
+        "rune": "ᛊ",
+        "label": "Extender el Motor",
+        "desc": "Instala SKSE, requerido por la mayoría de los mods con scripts.",
+        "tech": "SKSE",
+        "tool": "skse",
+        "tone": "#9c7a40",
+    },
 ]
 
 _STAT_RUNES = {"mods": "ᛗ", "pending": "ᛒ", "conflicts": "ᚤ", "space": "ᛜ"}
@@ -208,6 +223,27 @@ def _ritual_status(snapshot: Any, tool_key: str) -> str:
     if not callable(has_tool):
         return "unknown"
     return "available" if has_tool(tool_key) else "missing"
+
+
+def _ritual_action(tool_key: str, state: str) -> str:
+    """Qué puede ofrecer el botón de una tarjeta: ``"run"``, ``"install"`` o ``"none"``.
+
+    Se deriva de los dos mapas de cableado en vez de un flag por tarjeta, para que una
+    tarjeta nunca prometa un botón que no tiene a dónde ir:
+
+    * ``run`` exige estar en ``RITUAL_TOOL_MAP`` (el dispatcher que lo ejecuta).
+    * ``install`` exige estar en ``RITUAL_INSTALLER_MAP`` (el método de ``ToolsInstaller``).
+
+    SKSE es el caso que lo motiva: tiene instalador y **no** tiene —ni puede tener—
+    dispatcher, porque es un runtime que carga el juego, no una tool que Sky-Claw
+    ejecute. Con el estado genérico, una tarjeta ``available`` cableaba el botón a
+    ``on_ritual_run`` y prometía "Ejecutar" sobre un dispatcher inexistente.
+    """
+    if state == "available" and tool_key in RITUAL_TOOL_MAP:
+        return "run"
+    if state == "missing" and tool_key in RITUAL_INSTALLER_MAP:
+        return "install"
+    return "none"
 
 
 def _derive_status(m: dict[str, Any]) -> str:
@@ -935,7 +971,9 @@ def _rituales(callbacks: dict[str, Callable]) -> None:
         '<div style="display:flex; align-items:center; gap:16px; margin-bottom:6px;">'
         "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">RITUALES DE LA FORJA</h2>"
         '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
-        "<p style=\"margin:0 0 18px; font-family:'EB Garamond',serif; font-style:italic; font-size:14px; color:#8a8068;\">El Motor Invisible — cinco herramientas legendarias, un solo gesto.</p>"
+        # El conteo sale de `_RITUALS` y no de un literal: la copia decía "cinco" y se
+        # quedó desactualizada apenas la grilla creció.
+        f"<p style=\"margin:0 0 18px; font-family:'EB Garamond',serif; font-style:italic; font-size:14px; color:#8a8068;\">El Motor Invisible — {len(_RITUALS)} herramientas legendarias, un solo gesto.</p>"
     )
     snapshot = get_store().get(STORE_KEY_ENV)
     on_ritual_run = _cb(callbacks, "on_ritual_run")
@@ -991,6 +1029,11 @@ def _ritual_card(
     status_color = style["color"]
     btn_label = style["btn_label"]
     btn_style = style["btn_style"]
+    action = _ritual_action(r["tool"], state)
+    # Un tool detectado que Sky-Claw no ejecuta (SKSE) está instalado y listo, pero no
+    # hay nada que "ejecutar": el label genérico del estado mentiría.
+    if state == "available" and action == "none":
+        btn_label = "Instalado"
     card = (
         f"position:relative; display:flex; flex-direction:column; gap:9px; padding:18px 16px; border-radius:4px; opacity:{opacity};"
         "background:linear-gradient(168deg, rgba(30,22,14,.9), rgba(14,10,7,.92)); border:1px solid rgba(200,168,106,.22);"
@@ -1013,9 +1056,9 @@ def _ritual_card(
         # (HITL-gated). Follow-up C: a "missing" tool with an auto-installer downloads
         # it through ToolsInstaller (download approval parks the GUI modal). Tools with
         # no installer (Wrye Bash / DynDOLOD) keep the honest interim notice.
-        if state == "available" and on_ritual_run is not None:
+        if action == "run" and on_ritual_run is not None:
             b.on("click", lambda _=None, tool=r["tool"]: on_ritual_run(tool))
-        elif state == "missing" and on_ritual_install is not None and r["tool"] in RITUAL_INSTALLER_MAP:
+        elif action == "install" and on_ritual_install is not None:
             b.on("click", lambda _=None, tool=r["tool"]: on_ritual_install(tool))
         else:
             b.on(
