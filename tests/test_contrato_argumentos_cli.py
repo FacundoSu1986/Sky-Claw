@@ -523,6 +523,8 @@ async def test_pandora_construye_el_vector_verificado(tmp_path: pathlib.Path) ->
     assert argv[1:] == [
         "--auto_run",
         "--auto_close",
+        "--tesv",
+        str(juego.resolve()),
         "--output",
         str(juego.resolve() / "Pandora_Output"),
     ], "Pandora no declara `--game` ni `--auto` (README: `--tesv`, `--auto_run`/`--auto_close`)"
@@ -546,9 +548,16 @@ async def test_wrye_bash_falla_cerrado_en_vez_de_lanzar_un_comando_invalido(tmp_
             mo2_path=tmp_path,
         )
     )
-    with pytest.raises(WryeBashHeadlessUnsupportedError, match="headless"):
+    # Guardia estática (inventario AST) + guardia en runtime (el punto de
+    # entrada real de creación de procesos, interceptado): la primera protege
+    # contra un import nuevo de `run_capture`/`subprocess`; la segunda contra
+    # que algún camino oculto —p. ej. un wrapper que no pasa por esos nombres—
+    # spawnee sin que el AST lo vea (señalado en revisión: PR #426).
+    with (
+        patch("asyncio.create_subprocess_exec") as spawn_mock,
+        pytest.raises(WryeBashHeadlessUnsupportedError, match="headless"),
+    ):
         await runner.generate_bashed_patch()
 
-    # Que además no lance ningún proceso lo garantiza `LANZADORES_ESPERADOS`:
-    # `wrye_bash_runner.py` ya no figura en el inventario de módulos que spawnean.
+    spawn_mock.assert_not_called()
     assert "sky_claw/local/tools/wrye_bash_runner.py" not in _lanzadores_por_modulo()
