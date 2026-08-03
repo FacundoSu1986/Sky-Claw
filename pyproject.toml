@@ -9,10 +9,13 @@ description = "Autonomous Skyrim mod management agent via Mod Organizer 2"
 requires-python = ">=3.11"
 dependencies = [
     "aiofiles>=24.1,<25",
-    "aiohttp>=3.14.1,<4",  # >=3.14.1: fixes CVE-2026-54273..54280 (8 CVEs)
+    # >=3.14.3: fixes CVE-2026-54273..54280 (8 CVEs) + CVE-2026-59881,
+    # CVE-2026-69243, CVE-2026-69244 (destapadas por avance de la DB de
+    # advisories, sin cambio de código propio — mismo patrón que #193/#194).
+    "aiohttp>=3.14.3,<4",
     "aiosqlite>=0.19,<1",
     "certifi",
-    "cryptography>=48.0.1",  # >=48.0.1: fixes GHSA-537c-gmf6-5ccf
+    "cryptography>=50.0.0",  # >=50.0.0: fixes GHSA-537c-gmf6-5ccf + CVE-2026-69247
     "defusedxml>=0.7.1,<1",
     "pydantic>=2.0,<3",
     "py7zr>=1.1.3,<2",  # >=1.1.3: fixes CVE-2026-23879 (major bump from 0.x)
