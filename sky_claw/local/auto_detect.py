@@ -148,11 +148,16 @@ def _parse_steam_library_folders(vdf_path: pathlib.Path) -> list[pathlib.Path]:
 def _find_skyrim_in_steam_libraries(
     libraries: list[pathlib.Path],
 ) -> pathlib.Path | None:
-    """Check each Steam library for the Skyrim SE install."""
+    """Check each Steam library for a Skyrim install (SE/AE first, then LE)."""
     for lib in libraries:
         candidate = lib / "steamapps" / "common" / "Skyrim Special Edition"
         if (candidate / "SkyrimSE.exe").exists():
             return candidate
+        # LE se instala en `common/Skyrim` con `Skyrim.exe`. Ver `_find_skyrim_inner`
+        # para por qué esta rama tiene que existir también acá.
+        candidate_le = lib / "steamapps" / "common" / "Skyrim"
+        if (candidate_le / "Skyrim.exe").exists():
+            return candidate_le
     return None
 
 
@@ -207,7 +212,7 @@ class AutoDetector:
 
     @staticmethod
     async def find_skyrim() -> pathlib.Path | None:
-        """Locate Skyrim Special Edition."""
+        """Ubica Skyrim (SE/AE/LE) vía registro, librerías de Steam y rutas comunes."""
         return await asyncio.wait_for(
             run_off_loop(AutoDetector._find_skyrim_inner),
             timeout=_SEARCH_TIMEOUT,
@@ -215,19 +220,43 @@ class AutoDetector:
 
     @staticmethod
     def _find_skyrim_inner() -> pathlib.Path | None:
-        # 1. Windows registry
-        reg_path = _read_registry_value(
-            winreg.HKEY_LOCAL_MACHINE if _HAS_WINREG else 0,
+        """Raíz del juego para el zero-config de ``local_cfg.skyrim_path``.
+
+        Tiene que reconocer **al menos** las mismas instalaciones que
+        ``EnvironmentScanner._find_skyrim``, y no por prolijidad: de este detector sale
+        la raíz que ``AppContext.start_full`` mete en el sandbox del ``PathValidator``,
+        mientras que la carpeta que la GUI le pasa a ``ensure_skse`` sale del snapshot
+        del scanner. Una fuente que el scanner reconozca y este no deja el sandbox sin
+        la raíz del juego, y el "Instalar SKSE" muere con ``PathViolationError`` en la
+        primera línea del instalador, con la aprobación del operador ya consumida.
+        Faltaban cuatro: la vista WOW6432Node de SSE, el registro de LE, el de GOG y la
+        librería de Steam de LE. ``tests/test_paridad_deteccion_skyrim.py`` enumera las
+        fuentes y congela la paridad.
+        """
+        hive = winreg.HKEY_LOCAL_MACHINE if _HAS_WINREG else 0
+
+        # 1. Registro — Steam (SE/AE en ambas vistas del registro, y LE)
+        for subkey in (
             r"SOFTWARE\Bethesda Softworks\Skyrim Special Edition",
-            "Installed Path",
-        )
-        if reg_path:
-            p = pathlib.Path(reg_path)
+            r"SOFTWARE\WOW6432Node\Bethesda Softworks\Skyrim Special Edition",
+            r"SOFTWARE\Bethesda Softworks\Skyrim",
+        ):
+            reg_path = _read_registry_value(hive, subkey, "Installed Path")
+            if reg_path:
+                p = pathlib.Path(reg_path)
+                if (p / "SkyrimSE.exe").exists() or (p / "Skyrim.exe").exists():
+                    logger.info("Auto-detected Skyrim (registry) at %s", p)
+                    return p
+
+        # 2. Registro — GOG
+        gog_path = _read_registry_value(hive, r"SOFTWARE\WOW6432Node\GOG.com\Games\1711230643", "path")
+        if gog_path:
+            p = pathlib.Path(gog_path)
             if (p / "SkyrimSE.exe").exists():
-                logger.info("Auto-detected Skyrim (registry) at %s", p)
+                logger.info("Auto-detected Skyrim (GOG) at %s", p)
                 return p
 
-        # 2. Steam libraryfolders.vdf
+        # 3. Steam libraryfolders.vdf
         for steam_root in _STEAM_DEFAULT_PATHS:
             vdf = pathlib.Path(steam_root) / "steamapps" / "libraryfolders.vdf"
             libs = _parse_steam_library_folders(vdf)
@@ -237,10 +266,10 @@ class AutoDetector:
                     logger.info("Auto-detected Skyrim (Steam) at %s", found)
                     return found
 
-        # 3. Common direct paths
+        # 4. Common direct paths
         for raw in _SKYRIM_COMMON:
             p = pathlib.Path(raw)
-            if (p / "SkyrimSE.exe").exists():
+            if (p / "SkyrimSE.exe").exists() or (p / "Skyrim.exe").exists():
                 logger.info("Auto-detected Skyrim at %s", p)
                 return p
 

@@ -55,6 +55,18 @@ _NGIO_RELEASES_URL = "https://api.github.com/repos/DwemerEngineer/No-Grass-In-Ob
 # ---------------------------------------------------------------------------
 # Configuración de SKSE
 # ---------------------------------------------------------------------------
+#
+# GOG queda FUERA a propósito, y no es un pendiente: es una decisión de producto
+# (base de usuarios chica y catálogo de mods compatibles pobre). Silverlock publica
+# un archive aparte para GOG (`skse64_*_gog.7z`), así que soportarlo sería agregar su
+# entrada acá y pasarle el `store` del snapshot a la selección de payload — no está
+# hecho porque no se quiere, no porque falte.
+#
+# El recorte ya es fail-closed sin costo: el gate de versión exacta de `ensure_skse`
+# corre ANTES del HITL y de la descarga, y GOG AE (1.6.1179) no matchea el 1.6.1170
+# del payload de Steam, así que un usuario de GOG recibe el error sin que se le pida
+# aprobación, sin egress y sin que se escriba nada en el directorio del juego. El
+# mensaje lo manda a https://skse.silverlock.org/, que es donde está su build.
 
 SKSE_CONFIG: dict[str, dict[str, str | None]] = {
     "AE": {

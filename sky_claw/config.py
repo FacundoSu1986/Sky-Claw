@@ -376,6 +376,16 @@ SKYRIM_COMMON_PATHS: tuple[str, ...] = (
     r"E:\SteamLibrary\steamapps\common\Skyrim Special Edition",
     r"D:\Games\Skyrim Special Edition",
     r"E:\Games\Skyrim Special Edition",
+    # LE se instala en `common\Skyrim` con `Skyrim.exe`. Sin estas entradas, la rama
+    # de rutas comunes de los dos detectores es inalcanzable para LE por más que
+    # acepte `Skyrim.exe` — y LE es una de las tres ediciones que soporta SKSE_CONFIG.
+    r"C:\Program Files (x86)\Steam\steamapps\common\Skyrim",
+    r"C:\Program Files\Steam\steamapps\common\Skyrim",
+    r"D:\SteamLibrary\steamapps\common\Skyrim",
+    r"D:\Steam\steamapps\common\Skyrim",
+    r"E:\SteamLibrary\steamapps\common\Skyrim",
+    r"D:\Games\Skyrim",
+    r"E:\Games\Skyrim",
 )
 
 LOOT_SEARCH_PATHS: tuple[str, ...] = (
