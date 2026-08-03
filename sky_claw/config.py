@@ -286,6 +286,11 @@ ALLOWED_HOSTS = frozenset(
         "api.search.brave.com",
         "api.anthropic.com",
         "www.reddit.com",
+        # SKSE — sitio oficial de Silverlock, único origen de los binarios del
+        # script extender (no hay mirror en GitHub). GET only; ver ALLOWED_METHODS.
+        # Sin esta entrada `ensure_skse` muere en el hop 0 del gateway DESPUÉS de
+        # consumir la aprobación HITL del operador.
+        "skse.silverlock.org",
     ]
 )
 OUT_OF_SCOPE_HOSTS = frozenset(
@@ -335,6 +340,7 @@ ALLOWED_METHODS = {
     "staticdelivery.nexusmods.com": frozenset(["GET"]),
     "www.reddit.com": frozenset(["GET"]),
     "api.search.brave.com": frozenset(["GET"]),
+    "skse.silverlock.org": frozenset(["GET"]),
 }
 TELEGRAM_PATH_PREFIX = "/bot"
 NEXUS_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
