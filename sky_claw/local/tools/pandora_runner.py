@@ -75,11 +75,37 @@ class PandoraRunner:
         start_time = time.monotonic()
         game_path = self.config.game_path.resolve()
 
+        # Verificado contra el README de Monitor221hz/Pandora-Behaviour-Engine-Plus,
+        # sección "Startup Arguments": las opciones declaradas son `--output` (o
+        # `-o`), `--auto_run`, `--auto_close`, `--tesv` y `--skyrim_debug64`.
+        #
+        # Este runner pasaba además `--game "Skyrim Special Edition"` y `--auto`:
+        # ninguno de los dos existe.
+        #
+        # `--auto_run`/`--auto_close` sí están confirmados en el README: corre el
+        # motor reusando los mismos mods activos cacheados de la última corrida
+        # exitosa, y cierra el motor automáticamente al terminar un lanzamiento.
+        # Su semántica exacta de disparo (¿corre de inmediato, o solo habilita
+        # cerrar sin intervención una vez que corrió?) no está probada en rig
+        # real — pero omitirlos por completo es estrictamente peor: sin ellos
+        # Pandora queda esperando en la GUI hasta el timeout de 300s y hace
+        # rollback, con cero chance de completar. Con ellos hay lectura verificada
+        # de que es el par documentado para correr desatendido. Pendiente de smoke
+        # en rig real (`docs/pending_ooda_status.md`, U-04).
+        #
+        # `--tesv <ruta>` también está confirmado en el README ("Sets the path to
+        # the game directory... Intended for users with Wabbajack 'Stock Game'
+        # setup or with multiple installations."), o sea que declara el directorio
+        # de juego explícitamente en vez de depender de que Pandora lo infiera de
+        # `cwd` (que este runner ya fija a `game_path` más abajo, vía
+        # ``run_capture(..., cwd=str(game_path))``). Pasarlo de más no rompe nada
+        # y saca la corrida de depender de una detección implícita no verificada.
         args = [
             str(self.config.pandora_exe),
-            "--game",
-            "Skyrim Special Edition",
-            "--auto",
+            "--auto_run",
+            "--auto_close",
+            "--tesv",
+            str(game_path),
             "--output",
             str(self.output_path),
         ]

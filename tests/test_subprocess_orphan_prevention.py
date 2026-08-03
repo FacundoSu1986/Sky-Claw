@@ -30,9 +30,7 @@ from sky_claw.local.tools.pandora_runner import (
     PandoraTimeoutError,
 )
 from sky_claw.local.tools.wrye_bash_runner import (
-    WryeBashConfig,
     WryeBashExecutionError,
-    WryeBashRunner,
     WryeBashTimeoutError,
 )
 
@@ -71,29 +69,27 @@ def _pandora(tmp_path, timeout: float) -> tuple[PandoraRunner, tuple]:
     return runner, ()
 
 
-def _wrye(tmp_path, timeout: float) -> tuple[WryeBashRunner, tuple]:
-    runner = WryeBashRunner(
-        WryeBashConfig(
-            wrye_bash_path=tmp_path / "bash.exe",
-            game_path=tmp_path,
-            mo2_path=tmp_path,
-            timeout_seconds=timeout,
-        )
-    )
-    return runner, ()
-
+#: Runners que efectivamente lanzan un proceso hijo y por lo tanto pueden dejar
+#: un huérfano. Wrye Bash quedó FUERA a propósito: verificado contra
+#: `wrye-bash/wrye-bash` `Mopy/bash/barg.py`, Wrye Bash no expone ningún flag que
+#: construya el Bashed Patch sin GUI, así que `generate_bashed_patch` ahora falla
+#: cerrado con `WryeBashHeadlessUnsupportedError` sin spawnear (antes corría
+#: `-b`, que en el parser real es el switch `--backup` de settings y no toma
+#: valor: la invocación moría en `argparse` sin causa legible).
+#: Sin proceso hijo no hay huérfano que prevenir. Si la etapa 6 vuelve a lanzar
+#: un proceso —p. ej. al modelarla como etapa asistida— hay que agregar acá su
+#: factory y su excepción de timeout dedicada.
+_FACTORIES_QUE_SPAWNEAN = [_bodyslide, _pandora]
 
 _CALLS = {
     BodySlideRunner: lambda r, a: r.run_batch(*a),
     PandoraRunner: lambda r, a: r.run_pandora(*a),
-    WryeBashRunner: lambda r, a: r.generate_bashed_patch(*a),
 }
 
 #: U-10: cada runner eleva SU excepción de timeout dedicada (ya no traga struct).
 _TIMEOUT_EXC = {
     BodySlideRunner: BodySlideTimeoutError,
     PandoraRunner: PandoraTimeoutError,
-    WryeBashRunner: WryeBashTimeoutError,
 }
 
 
@@ -111,7 +107,7 @@ def test_timeout_errors_derivan_de_su_execution_error() -> None:
     assert issubclass(PandoraTimeoutError, PandoraExecutionError)
 
 
-@pytest.mark.parametrize("factory", [_bodyslide, _pandora, _wrye])
+@pytest.mark.parametrize("factory", _FACTORIES_QUE_SPAWNEAN)
 async def test_runner_kills_process_on_timeout(tmp_path, factory):
     """En timeout, el runner debe matar+reapear el proceso hijo Y elevar su
     excepción de timeout dedicada (U-10).
@@ -139,7 +135,7 @@ async def test_runner_kills_process_on_timeout(tmp_path, factory):
     proc.wait.assert_awaited()
 
 
-@pytest.mark.parametrize("factory", [_bodyslide, _pandora, _wrye])
+@pytest.mark.parametrize("factory", _FACTORIES_QUE_SPAWNEAN)
 async def test_runner_kills_process_on_cancel(tmp_path, factory):
     """On task cancellation (graceful shutdown) the runner must kill the child
     and re-raise ``CancelledError`` (never swallow cancellation)."""

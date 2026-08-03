@@ -47,6 +47,8 @@ _ITEMS = frozenset(
         "Smokes reales restantes",
         "Residuos OODA de bajo valor",
         "Residuos de crash logging",
+        "Contrato de argumentos CLI",
+        "Etapa 6 (Wrye Bash) sin build headless",
     }
 )
 

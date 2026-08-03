@@ -104,10 +104,21 @@ class LOOTRunner:
         """Run LOOT CLI to sort the load order.
 
         Args:
-            update_masterlist: When True, append ``--update-masterlist`` so LOOT
-                downloads the latest masterlist before sorting. Defaults to False
-                so read-only callers (e.g. the dry-run preview) never hit the
-                network; the real-execution service passes the user's preference.
+            update_masterlist: Se conserva por compatibilidad con el caller
+                (`loot_service.py` lo propaga con default ``True`` en corridas
+                reales). Verificado contra ``loot/loot`` `src/gui/qt/main.cpp`:
+                **`--update-masterlist` no es una opción declarada** — pasarlo
+                hacía que ``QCommandLineParser`` rechazara TODA la invocación,
+                incluido el `--auto-sort` válido. Ya no se agrega. El refresco
+                de masterlist tiene una implementación real pero sin cablear en
+                :class:`sky_claw.local.loot.masterlist.MasterlistDownloader`
+                (descarga vía ``NetworkGateway`` con cache TTL de 24h) que
+                ningún caller invocó jamás — cablearlo requiere confirmar el
+                layout exacto de directorio que LOOT espera para
+                `--loot-data-path` contra el fuente de `libloot`, fuera de
+                alcance para una corrección de flag CLI. Hasta entonces este
+                parámetro es un no-op documentado: LOOT ordena contra el
+                masterlist que ya tenga localmente.
 
         Returns:
             Parsed LOOT result with warnings, errors, and suggested order.
@@ -135,11 +146,18 @@ class LOOTRunner:
             self._config.game,
             "--game-path",
             game_path_win,
-            "--sort",
+            # Verificado en loot/loot `src/gui/qt/main.cpp`: las opciones
+            # declaradas son --game, --game-path, --loot-data-path y --auto-sort.
+            # `--sort` no existe y QCommandLineParser rechaza opciones desconocidas.
+            "--auto-sort",
         ]
 
         if update_masterlist:
-            args.append("--update-masterlist")
+            logger.warning(
+                "LOOT: se pidió update_masterlist=True pero `--update-masterlist` no es un "
+                "flag válido de LOOT (verificado contra src/gui/qt/main.cpp) y "
+                "MasterlistDownloader no está cableado a este runner; se ordena sin refrescar."
+            )
 
         logger.info("Running LOOT: %s", " ".join(args))
 

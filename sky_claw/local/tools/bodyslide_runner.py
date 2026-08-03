@@ -62,12 +62,19 @@ class BodySlideRunner:
     async def run_batch(self, group: str, output_path: str) -> BodySlideResult:
         """Execute BodySlide in batch mode for a specific group and output path.
 
-        Format: BodySlide.exe -b <Group> -o <Output>
+        Format: ``BodySlide.exe -gbuild <Group> -t <Output>``
+
+        Los nombres de opción están verificados contra
+        ``ousnius/BodySlide-and-Outfit-Studio``,
+        ``src/program/BodySlideApp.cpp::OnCmdLineParsed``, que declara ``gbuild``
+        (batch build por grupos), ``t`` (directorio de salida), ``p`` (preset),
+        ``tri`` y ``preview``. Este runner pasaba ``-b``/``-o``: ninguno de los dos
+        es una opción declarada, así que el batch nunca se ejecutó.
         """
         logger.info(f"[M-03] Executing BodySlide batch for group {group}...")
         start_time = time.monotonic()
 
-        args = [str(self.config.bodyslide_exe), "-b", group, "-o", output_path]
+        args = [str(self.config.bodyslide_exe), "-gbuild", group, "-t", output_path]
 
         try:
             stdout, stderr, return_code = await run_capture(

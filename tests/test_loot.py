@@ -427,8 +427,18 @@ class TestLOOTRunner:
         assert record.pipeline_stage == 5
 
     @pytest.mark.asyncio
-    async def test_sort_appends_update_masterlist_flag(self, tmp_path: pathlib.Path) -> None:
-        """update_masterlist=True appends --update-masterlist to the LOOT args."""
+    async def test_sort_no_agrega_update_masterlist_ni_con_true(self, tmp_path: pathlib.Path) -> None:
+        """update_masterlist=True NO agrega --update-masterlist: no es un flag real de LOOT.
+
+        Verificado contra ``loot/loot`` `src/gui/qt/main.cpp`: las únicas opciones
+        declaradas son ``--game``, ``--game-path``, ``--loot-data-path`` y
+        ``--auto-sort``. Pasar `--update-masterlist` hacía que
+        ``QCommandLineParser`` rechazara la invocación COMPLETA — no solo el
+        refresco de masterlist, sino el `--auto-sort` que sí es válido. Esta
+        prueba afirmaba antes el comportamiento roto; ver
+        ``sky_claw.local.loot.masterlist.MasterlistDownloader`` para el mecanismo
+        real de refresco, todavía sin cablear a este runner.
+        """
         config = self._make_config(tmp_path)
         runner = LOOTRunner(config)
         captured: dict[str, list[str]] = {}
@@ -447,7 +457,14 @@ class TestLOOTRunner:
         ):
             await runner.sort(update_masterlist=True)
 
-        assert "--update-masterlist" in captured["args"]
+        assert captured["args"] == [
+            str(config.loot_exe),
+            "--game",
+            "SkyrimSE",
+            "--game-path",
+            str(config.game_path),
+            "--auto-sort",
+        ], "un flag inválido de más pasaría con asserts de membership; se afirma el vector completo"
 
     @pytest.mark.asyncio
     async def test_sort_omits_update_masterlist_by_default(self, tmp_path: pathlib.Path) -> None:

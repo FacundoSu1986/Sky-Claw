@@ -230,11 +230,22 @@ class ModdingToolsAgent:
             "SkyrimSE",
             "--game-path",
             game_path_win,
-            "--sort",
+            # Mismo fix que `local/loot/cli.py`: LOOT declara `--auto-sort`, no
+            # `--sort` (loot/loot `src/gui/qt/main.cpp`). Este lanzador legacy es
+            # el "hermano" que quedaba fuera de cualquier corrección puntual.
+            "--auto-sort",
         ]
 
         if params.update_masterlist:
-            args.append("--update-masterlist")
+            # Mismo hermano que el flag de arriba: `--update-masterlist` no es un
+            # flag válido de LOOT (verificado contra src/gui/qt/main.cpp) y
+            # `MasterlistDownloader` (local/loot/masterlist.py) no está cableado a
+            # ningún lanzador. Se ordena sin refrescar en vez de romper la
+            # invocación completa.
+            logger.warning(
+                "LOOT (legacy): se pidió update_masterlist=True pero `--update-masterlist` "
+                "no existe; se ordena sin refrescar el masterlist."
+            )
 
         try:
             proc = await asyncio.create_subprocess_exec(
