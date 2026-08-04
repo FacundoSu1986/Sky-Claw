@@ -32,12 +32,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from sky_claw.local.mo2.plugin_sources import PluginSources
+    from sky_claw.local.validators.master_order import OrderIssue
     from sky_claw.local.validators.missing_masters import MasterIssue
     from sky_claw.local.validators.overwrite_health import OverwriteScan
     from sky_claw.local.validators.plugin_limits import LoadOrderLimits
     from sky_claw.local.validators.preflight import (
         LimitsCheck,
         MastersCheck,
+        OrderCheck,
         OverwriteCheck,
         VisibilityCheck,
     )
@@ -77,6 +79,11 @@ def build_modlist_sensors(
     mentir verde (lección #250). Los closures re-resuelven ``sources_resolver()``
     en cada llamada (freshness, review Codex #252): si el usuario instala/activa
     plugins entre corridas, la siguiente los ve.
+
+    El sensor de **orden** de masters se construye aparte con
+    :func:`build_master_order_sensor` (mismo feed, misma condición de gate) para
+    no romper la aridad de esta tupla en los tres servicios que ya la
+    desempaquetan.
     """
     from sky_claw.local.validators.missing_masters import MissingMastersChecker
     from sky_claw.local.validators.plugin_limits import PluginLimitsChecker
@@ -94,6 +101,29 @@ def build_modlist_sensors(
         return PluginLimitsChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
 
     return _masters, _limits
+
+
+def build_master_order_sensor(
+    sources_resolver: Callable[[], PluginSources],
+) -> OrderCheck | None:
+    """Closure del sensor de orden de masters.
+
+    Mismo feed y mismo gate de honestidad que :func:`build_modlist_sensors`: un
+    master que carga *después* de su dependiente es CTD, pero afirmarlo sin
+    fuentes utilizables sería mentir verde. Se re-resuelve por llamada, igual
+    que sus hermanos, para no envejecer entre corridas.
+    """
+    from sky_claw.local.validators.master_order import MasterOrderChecker
+
+    initial = sources_resolver()
+    if not initial.plugin_dirs or not initial.enabled_plugins:
+        return None
+
+    def _order() -> list[OrderIssue]:
+        sources = sources_resolver()
+        return MasterOrderChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
+
+    return _order
 
 
 def build_mo2_profile_sources_resolver(

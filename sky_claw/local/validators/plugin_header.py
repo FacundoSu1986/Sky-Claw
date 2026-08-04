@@ -18,8 +18,17 @@ Formato del record TES4 (Skyrim SE): ``TES4`` + ``dataSize`` (u32) + ``flags``
 
 from __future__ import annotations
 
+import logging
 import pathlib
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+#: Extensiones de plugin que el juego carga. Vive acá —junto al parser— porque
+#: los tres sensores que indexan plugins necesitan exactamente el mismo criterio.
+PLUGIN_SUFFIXES: frozenset[str] = frozenset({".esp", ".esm", ".esl"})
 
 #: Tamaño del header del record TES4 en Skyrim SE.
 _TES4_HEADER_SIZE = 24
@@ -86,6 +95,47 @@ def read_plugin_header(plugin: pathlib.Path) -> PluginHeader:
         is_light=bool(flags & _FLAG_LIGHT),
         form_version=int.from_bytes(head[20:22], "little"),
     )
+
+
+def index_plugin_files(
+    plugin_dirs: Sequence[pathlib.Path],
+    *,
+    log: logging.Logger,
+) -> dict[str, pathlib.Path]:
+    """Nombre casefold → ruta del plugin (primer directorio gana).
+
+    Fuera del VFS de MO2 los plugins están repartidos entre ``mods/<Mod>/``, el
+    ``overwrite`` y el ``Data`` del juego, por eso se aceptan varios directorios
+    y el orden importa: es la precedencia del VFS, y el primero que tenga el
+    nombre gana. El casefold del nombre es lo que hace que el matching sea
+    case-insensitive como en Windows.
+
+    Un directorio o una entrada inaccesible degrada a best-effort (se loguea en
+    ``log`` y se sigue): el preflight no puede tumbarse porque una carpeta de
+    mods tenga permisos raros.
+
+    Args:
+        plugin_dirs: Directorios a indexar, en orden de precedencia. No se
+            recorre recursivo: los plugins van en la raíz de cada carpeta.
+        log: Logger del sensor que llama, para que los mensajes de degradación
+            queden bajo su propio nombre.
+    """
+    available: dict[str, pathlib.Path] = {}
+    for directory in plugin_dirs:
+        try:
+            if not directory.is_dir():
+                continue
+            entries = sorted(directory.iterdir())
+        except OSError as exc:
+            log.debug("No se pudo inspeccionar %s: %s", directory, exc)
+            continue
+        for entry in entries:
+            try:
+                if entry.is_file() and entry.suffix.lower() in PLUGIN_SUFFIXES:
+                    available.setdefault(entry.name.casefold(), entry)
+            except OSError as exc:
+                log.debug("No se pudo inspeccionar %s: %s", entry, exc)
+    return available
 
 
 def _parse_masters(name: str, data: bytes) -> tuple[str, ...]:

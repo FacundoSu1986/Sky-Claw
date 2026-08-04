@@ -63,7 +63,9 @@ confirmarlo contra código y tests.
 | Medición de árboles | Cerrado | #416 | — | `test_borrado_recursivo.py` |
 | Fugas de lifecycle en tests | Cerrado | #408, #409 y #415 | — | `test_atribucion_de_warnings.py`, `test_project_config.py` |
 | Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash | Verificar contra fuente xEdit, Synthesis, MO2, DynDOLOD y VRAMr | `test_contrato_argumentos_cli.py` |
-| Etapa 6 (Wrye Bash) sin build headless | Abierto | — | Decidir entre etapa asistida o retirarla del dispatcher | `test_contrato_argumentos_cli.py`; humano |
+| Etapa 6 (Wrye Bash) sin build headless | Abierto | — | Decidir entre etapa asistida o retirarla del dispatcher | `test_contrato_argumentos_cli.py`; humano; auditoría 2026-08-04 |
+| Orden de masters sin validar | Cerrado | `master_order.py`, cableado en Wrye Bash / Synthesis / DynDOLOD | — | `test_master_order.py` (ancla de cableado); auditoría 2026-08-04 (V-7) |
+| Segundo parser TES4 sin gate | Cerrado | `test_tes4_parser_invariant.py` | — | auditoría 2026-08-04 |
 | Smoke real de QuickAutoClean | Bloqueado (rig humano) | — | Ejecutar SSEEdit QuickAutoClean en una instalación real | humano |
 | Smokes reales restantes | Bloqueado (rig humano) | — | NGIO, scripts `.pas`, GUI/FOMOD y Telegram end-to-end | humano |
 | Residuos OODA de bajo valor | Abierto | — | Solo retomar agrupados si cambia su relación esfuerzo/impacto | historial OODA §3 |

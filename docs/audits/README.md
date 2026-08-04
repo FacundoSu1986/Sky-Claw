@@ -9,6 +9,9 @@
 > fechados de este directorio son evidencia histórica.
 >
 > **Última verificación del índice:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> Esa fecha es el **baseline contra el que se re-verificaron las auditorías
+> previas**, no la fecha de la entrada más reciente: cada informe lleva la suya
+> en el nombre del archivo y vale contra el commit que declara en su cabecera.
 
 Las auditorías preservan escenario, evidencia y hallazgos al momento de su
 ejecución. Un hallazgo puede haber sido corregido después. Antes de actuar:
@@ -22,6 +25,7 @@ Archivos actuales:
 
 - `2026-07-18_orchestrator_resilience_audit.md`
 - `2026-07-18_zero_trust_network_gateway_audit.md`
+- `2026-08-04_wrye_bash_headless_snippet.md`
 - `2026-07_historial_ooda.md`
 - `auditoria_03_pipeline_consolidada.md`
 - `auditoria_prs_300-304_verificacion.md`
