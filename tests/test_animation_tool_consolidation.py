@@ -311,7 +311,9 @@ async def test_run_bodyslide_tool_forwards_group_and_output(tmp_path: pathlib.Pa
 
     esperado = bodyslide_output_target(game=game, group="3BA")
     assert result["success"] is True
-    injected.run_batch.assert_awaited_once_with("3BA", str(esperado))
+    # ``build_morphs=True`` por defecto también EN EL BORDE de la tool: es donde
+    # el default importa, porque es el que usa el agente LLM cuando no lo pide.
+    injected.run_batch.assert_awaited_once_with("3BA", str(esperado), preset=None, build_morphs=True)
 
 
 @pytest.mark.asyncio

@@ -492,17 +492,45 @@ async def test_loot_con_update_masterlist_no_agrega_el_flag_inexistente(tmp_path
 
 
 async def test_bodyslide_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:
-    """BodySlide declara ``gbuild`` y ``t``; ``-b``/``-o`` no son opciones válidas."""
+    """BodySlide declara ``gbuild``, ``t``, ``p`` y ``tri``; ``-b``/``-o`` no son válidas.
+
+    ``-tri`` va por defecto: sin él, ``GroupBuild`` pasa ``cmdTri=false`` a
+    ``BuildListBodies`` y no se emiten los ``.tri``, que son los que OBody NG /
+    RaceMenu cargan en memoria para los morfos dinámicos. Compilar sin morfos es
+    un build silenciosamente incompleto, no una variante válida por defecto.
+    """
     runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=tmp_path / "BodySlide.exe", game_path=tmp_path))
     run_capture = AsyncMock(return_value=(b"ok", b"", 0))
+    salida = tmp_path / "salida"
+    salida.mkdir()
+    (salida / "cuerpo.nif").write_bytes(b"\x00")
 
     with patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture):
-        await runner.run_batch("CBBE Body", str(tmp_path / "salida"))
+        await runner.run_batch("CBBE Body", str(salida), preset="Zeroed Sliders")
 
     argv = run_capture.await_args.args[0]
-    assert argv[1:] == ["-gbuild", "CBBE Body", "-t", str(tmp_path / "salida")]
+    assert argv[1:] == ["-gbuild", "CBBE Body", "-t", str(salida), "-p", "Zeroed Sliders", "-tri"]
     assert "-b" not in argv, "`-b` no es una opción declarada por BodySlide"
     assert "-o" not in argv, "`-o` no es una opción declarada por BodySlide"
+
+
+async def test_bodyslide_omite_preset_y_tri_cuando_no_se_piden(tmp_path: pathlib.Path) -> None:
+    """``-p`` se omite sin preset (no se emite vacío) y ``-tri`` es opt-out real.
+
+    Emitir ``-p ""`` haría que BodySlide sobrescriba ``SelectedPreset`` con vacío;
+    omitirlo conserva el comportamiento declarado ("defaults to last used preset").
+    """
+    runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=tmp_path / "BodySlide.exe", game_path=tmp_path))
+    run_capture = AsyncMock(return_value=(b"ok", b"", 0))
+    salida = tmp_path / "salida"
+    salida.mkdir()
+    (salida / "cuerpo.nif").write_bytes(b"\x00")
+
+    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture):
+        await runner.run_batch("CBBE Body", str(salida), build_morphs=False)
+
+    argv = run_capture.await_args.args[0]
+    assert argv[1:] == ["-gbuild", "CBBE Body", "-t", str(salida)]
 
 
 async def test_pandora_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:

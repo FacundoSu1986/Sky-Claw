@@ -12,6 +12,7 @@ TASK-011 Single Source of Truth:
 from __future__ import annotations
 
 import pathlib
+import re
 from typing import Any
 
 import pydantic
@@ -311,6 +312,38 @@ class BodySlideBatchParams(pydantic.BaseModel):
             "rollback can never touch the shared Data/meshes tree that other mods write to."
         ),
     )
+    preset: str | None = pydantic.Field(
+        default=None,
+        description=(
+            "BodySlide preset to build with (forwarded as -p). Omitted from the command when null, "
+            "which keeps BodySlide's documented default ('last used preset'). Use 'Zeroed Sliders' "
+            "when the meshes will be morphed at runtime by OBody NG / AutoBody, so a static "
+            "deformation is not baked in on top of the dynamic one."
+        ),
+    )
+    build_morphs: bool = pydantic.Field(
+        default=True,
+        description=(
+            "Emit .tri morph files (forwarded as -tri). On by default: without it BodySlide builds "
+            "meshes with no morph data, which OBody NG / RaceMenu need to deform bodies at runtime."
+        ),
+    )
+
+    @field_validator("preset")
+    @classmethod
+    def _preset_es_un_nombre_seguro(cls, v: str | None) -> str | None:
+        """Mismo vocabulario que ``group``, aplicado por validador y no por ``pattern``.
+
+        Pydantic v2 rechaza aplicar una constraint de string sobre un tipo unión
+        (``str | None``), así que el chequeo se hace acá en vez de en el ``Field``.
+        No es sanitización de shell —``create_subprocess_exec`` no pasa por shell—
+        sino el mismo criterio de nombre razonable que ya rige para ``group``.
+        """
+        if v is None:
+            return None
+        if not (1 <= len(v) <= 128) or not re.fullmatch(_SAFE_NAME_PATTERN, v):
+            raise ValueError("preset must be a safe name (letters, digits, spaces, '_', '.', '-'), 1-128 chars")
+        return v
 
     @field_validator("output_path")
     @classmethod

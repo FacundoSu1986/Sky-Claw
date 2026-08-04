@@ -59,7 +59,7 @@ async def test_serializes_on_bodyslide_meshes_lock(
 ) -> None:
     seen: dict[str, object] = {}
 
-    async def on_run(group: str, output_path: str) -> MagicMock:
+    async def on_run(group: str, output_path: str, **_opciones: object) -> MagicMock:
         seen["info"] = await lock_manager.get_lock_info(BODYSLIDE_MESHES_RESOURCE_ID)
         return _runner_result()
 
@@ -161,7 +161,7 @@ async def test_failed_run_restores_previous_output(
     target.mkdir(parents=True)
     (target / "vieja.nif").write_text("estado previo", encoding="utf-8")
 
-    async def on_run(group: str, output_path: str) -> MagicMock:
+    async def on_run(group: str, output_path: str, **_opciones: object) -> MagicMock:
         destino = pathlib.Path(output_path)
         destino.mkdir(parents=True, exist_ok=True)
         (destino / "parcial.nif").write_text("a medio escribir", encoding="utf-8")
@@ -192,7 +192,7 @@ async def test_distintos_grupos_no_se_pisan(
     de ``3BA``."""
     game = tmp_path / "game"
 
-    async def on_run(group: str, output_path: str) -> MagicMock:
+    async def on_run(group: str, output_path: str, **_opciones: object) -> MagicMock:
         destino = pathlib.Path(output_path)
         destino.mkdir(parents=True, exist_ok=True)
         (destino / f"{group}.nif").write_text("malla", encoding="utf-8")
