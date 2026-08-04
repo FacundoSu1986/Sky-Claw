@@ -827,6 +827,30 @@ class TestEndToEndHITLFlow:
         assert tool_result["file_id"] == 7
         assert len(enqueued) == 1
 
+        # ---- Drain the background download task under mock ----
+        # Without this, `_do_download()` runs AFTER the aiohttp.ClientSession /
+        # downloader.get_file_info patches above have already been torn down
+        # (asyncio.create_task only schedules; it doesn't run the body
+        # synchronously), so it opens a REAL aiohttp session against the real
+        # NetworkGateway/api.nexusmods.com allow-list entry and is never
+        # awaited/closed — an orphaned socket that ResourceWarning fires for
+        # during some unrelated later test's garbage collection.
+        try:
+            mock_dl_session = AsyncMock()
+            mock_dl_session.__aenter__ = AsyncMock(return_value=mock_dl_session)
+            mock_dl_session.__aexit__ = AsyncMock(return_value=False)
+            with (
+                patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession", return_value=mock_dl_session),
+                patch.object(downloader, "get_file_info", return_value=fi),
+                patch.object(downloader, "download", return_value=tmp_path / "staging" / fi.file_name),
+            ):
+                await asyncio.gather(*enqueued, return_exceptions=True)
+        finally:
+            for t in enqueued:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*enqueued, return_exceptions=True)
+
         # Notification was sent.
         assert expected_request_id in notifications
 
