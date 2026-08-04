@@ -158,7 +158,18 @@ def _leer_log(exe: pathlib.Path) -> tuple[str, bool]:
                     break
                 paso = min(_COLA_DEL_LOG_BYTES, fin - leido, _MAX_BYTES_DE_BUSQUEDA - leido)
                 handle.seek(fin - leido - paso)
-                crudo = handle.read(paso) + crudo
+                trozo = handle.read(paso)
+                if not trozo:
+                    # Sin progreso ⇒ se corta. El tamaño se capturó una vez al
+                    # abrir; si BodySlide rota el log mientras leemos
+                    # (``Log::Initialize`` lo trunca al arrancar la quinta
+                    # corrida) los ``read`` devuelven vacío y ``crudo`` deja de
+                    # crecer. Sin esta guarda el ``while`` gira para siempre
+                    # quemando un hilo del pool de ``asyncio.to_thread`` — una
+                    # denegación de servicio del daemon, no un error de lectura
+                    # (review qodo #433).
+                    break
+                crudo = trozo + crudo
                 if _FIRMA_DE_CORRIDA.encode() in crudo:
                     break
     except OSError:

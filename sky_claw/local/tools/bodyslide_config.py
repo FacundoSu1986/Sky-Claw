@@ -122,10 +122,17 @@ def sembrar_config_de_bodyslide(
     # arreglar un modal: exactamente lo contrario del contrato que este módulo
     # declara. Mismo patrón que ``mo2.ini_editor._write_atomic`` (review
     # CodeRabbit #433).
-    tmp = config.with_name(f"{config.name}.{uuid.uuid4().hex}.tmp")
+    # Se escribe A TRAVÉS de un eventual enlace (review qodo #433): ``os.replace``
+    # sobre un symlink reemplaza el ENLACE por un archivo regular, así que un
+    # usuario que comparte su ``Config.xml`` entre perfiles quedaría con una copia
+    # desincronizada sin enterarse. Resolviendo primero, el enlace sobrevive y el
+    # contenido llega adonde él lo apuntó. El tmp va junto al destino REAL para que
+    # el rename siga siendo intra-volumen (y por lo tanto atómico).
+    destino = config.resolve() if config.is_symlink() else config
+    tmp = destino.with_name(f"{destino.name}.{uuid.uuid4().hex}.tmp")
     try:
         ET.ElementTree(raiz).write(tmp, encoding="utf-8", xml_declaration=False)
-        os.replace(tmp, config)
+        os.replace(tmp, destino)
     except OSError as exc:
         logger.warning("No se pudo escribir '%s' (%s): se sigue sin sembrar.", config, exc)
         return False

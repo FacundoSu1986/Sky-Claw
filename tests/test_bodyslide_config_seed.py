@@ -27,6 +27,7 @@ import pathlib
 import xml.etree.ElementTree as ET
 
 from sky_claw.local.tools.bodyslide_config import sembrar_config_de_bodyslide
+from tests._symlink_guard import symlink_guard
 
 _CONFIG_DEL_USUARIO = """<Config>
     <TargetGame>-1</TargetGame>
@@ -285,6 +286,38 @@ def test_una_escritura_fallida_no_deja_temporales(tmp_path: pathlib.Path) -> Non
             output_root=tmp_path / "game" / "BodySlide_Output",
         )
 
+    assert [p.name for p in exe_dir.iterdir()] == ["Config.xml"]
+
+
+@symlink_guard
+def test_un_config_enlazado_conserva_el_enlace(tmp_path: pathlib.Path) -> None:
+    """Sembrar sobre un ``Config.xml`` symlinkeado no puede romper el enlace (review qodo #433).
+
+    ``os.replace`` sobre un enlace reemplaza el ENLACE por un archivo regular:
+    el usuario que compartía su config entre perfiles se queda con una copia
+    desincronizada y sin darse cuenta. Se escribe a través del enlace —tmp junto
+    al destino REAL y ``os.replace`` sobre ese destino— así el enlace sobrevive y
+    el contenido llega adonde el usuario lo apuntó.
+    """
+    real = tmp_path / "configs" / "Config.xml"
+    real.parent.mkdir(parents=True)
+    real.write_text(_CONFIG_DEL_USUARIO, encoding="utf-8")
+
+    exe_dir = tmp_path / "tools" / "BodySlide"
+    exe_dir.mkdir(parents=True)
+    enlace = exe_dir / "Config.xml"
+    enlace.symlink_to(real)
+
+    resultado = sembrar_config_de_bodyslide(
+        exe_dir=exe_dir,
+        game_path=tmp_path / "game",
+        output_root=tmp_path / "game" / "BodySlide_Output",
+    )
+
+    assert resultado is True
+    assert enlace.is_symlink(), "el enlace del usuario no puede reemplazarse por un archivo regular"
+    # Y el contenido aterrizó en el destino real, no en una copia suelta.
+    assert _texto(_leer(real), "WarnMissingGamePath") == "false"
     assert [p.name for p in exe_dir.iterdir()] == ["Config.xml"]
 
 

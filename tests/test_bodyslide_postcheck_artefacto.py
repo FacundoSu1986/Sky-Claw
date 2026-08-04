@@ -30,6 +30,7 @@ vuelve alcanzable.
 from __future__ import annotations
 
 import pathlib
+import threading
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -275,6 +276,52 @@ async def test_fallo_parcial_se_detecta_aunque_el_log_de_la_corrida_sea_enorme(t
 
     assert result.success is False, "el tamaño del log no puede decidir si se detecta el fallo parcial"
     assert "Vestido" in result.message
+
+
+def test_leer_log_termina_si_el_archivo_se_trunca_a_mitad(tmp_path: pathlib.Path) -> None:
+    """La búsqueda hacia atrás no puede quedar girando (review qodo #433).
+
+    El tamaño se captura una vez al abrir. Si BodySlide rota el log mientras se
+    lee —``Log::Initialize`` lo trunca al arrancar la quinta corrida— los ``read``
+    posteriores devuelven ``b""``: sin garantía de progreso el ``while`` gira para
+    siempre quemando un hilo del pool de ``asyncio.to_thread``, que es una
+    denegación de servicio del daemon, no un error de lectura.
+
+    Se ejercita en un hilo con ``join(timeout)`` para que un bucle infinito se
+    manifieste como fallo acotado en vez de colgar la suite.
+    """
+    from sky_claw.local.tools.bodyslide_runner import _leer_log
+
+    exe = tmp_path / "BodySlide.exe"
+    log = tmp_path / "Log_BS.txt"
+    log.write_bytes(b"x" * 100_000)  # sin la firma: fuerza el recorrido completo
+
+    class _HandleQueSeVacia:
+        """Reporta el tamaño original pero ya no tiene bytes que entregar."""
+
+        def __enter__(self) -> _HandleQueSeVacia:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def seek(self, *_args: object) -> int:
+            return 0
+
+        def tell(self) -> int:
+            return 100_000
+
+        def read(self, *_args: object) -> bytes:
+            return b""
+
+    resultado: list[tuple[str, bool]] = []
+    with patch.object(pathlib.Path, "open", lambda *_a, **_k: _HandleQueSeVacia()):
+        hilo = threading.Thread(target=lambda: resultado.append(_leer_log(exe)), daemon=True)
+        hilo.start()
+        hilo.join(timeout=5.0)
+
+    assert not hilo.is_alive(), "_leer_log quedó girando: la lectura sin progreso no corta el bucle"
+    assert resultado == [("", False)]
 
 
 @junction_guard
