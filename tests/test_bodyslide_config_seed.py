@@ -226,16 +226,31 @@ def test_un_fallo_al_escribir_tampoco_aborta_la_corrida(tmp_path: pathlib.Path) 
     archivo tomado por el AV, permisos— el contrato tiene que ser el mismo:
     ``False`` sin excepción, porque ``run_batch`` sigue llamando a esto antes del
     spawn. Una regresión acá volvería a impedir CORRER BodySlide.
+
+    Y sobre todo: el ``Config.xml`` del usuario tiene que quedar **byte a byte**
+    como estaba (review CodeRabbit #433). Escribir directo sobre el destino lo
+    trunca si el ``write`` muere a mitad — destruir la config del usuario por un
+    disco lleno es peor que no sembrar. La versión anterior de este test usaba un
+    directorio VACÍO, así que pasaba sin ejercitar la preservación.
     """
     from unittest.mock import patch
 
     exe_dir = tmp_path / "tools" / "BodySlide"
     exe_dir.mkdir(parents=True)
+    config = exe_dir / "Config.xml"
+    config.write_text(_CONFIG_DEL_USUARIO, encoding="utf-8")
+    original = config.read_bytes()
 
-    with patch(
-        "sky_claw.local.tools.bodyslide_config.ET.ElementTree.write",
-        side_effect=OSError("disco lleno"),
-    ):
+    # El fallo se simula A MITAD de escritura, no antes: un mock que sólo lanza
+    # nunca toca el disco, así que la preservación sería trivialmente cierta y el
+    # test pasaría con la implementación rota. Se escribe contenido parcial en la
+    # ruta que reciba el ``write`` —el destino real si la escritura es directa, el
+    # temporal si es atómica— y recién ahí se levanta el error.
+    def _muere_a_mitad(destino: object, **_kwargs: object) -> None:
+        pathlib.Path(str(destino)).write_bytes(b"<Config><GameDataPath>a-medio-escri")
+        raise OSError("disco lleno")
+
+    with patch("sky_claw.local.tools.bodyslide_config.ET.ElementTree.write", side_effect=_muere_a_mitad):
         resultado = sembrar_config_de_bodyslide(
             exe_dir=exe_dir,
             game_path=tmp_path / "game",
@@ -243,6 +258,34 @@ def test_un_fallo_al_escribir_tampoco_aborta_la_corrida(tmp_path: pathlib.Path) 
         )
 
     assert resultado is False
+    assert config.read_bytes() == original, "un write fallido no puede dejar el Config.xml del usuario truncado"
+
+
+def test_una_escritura_fallida_no_deja_temporales(tmp_path: pathlib.Path) -> None:
+    """El temporal de la escritura atómica no queda huérfano en el directorio del exe.
+
+    Es el directorio de instalación de BodySlide: acumular ``Config.xml.*.tmp``
+    ahí es basura visible para el usuario, y encima confunde a cualquiera que
+    mire la carpeta buscando por qué no toma la config.
+    """
+    from unittest.mock import patch
+
+    exe_dir = tmp_path / "tools" / "BodySlide"
+    exe_dir.mkdir(parents=True)
+    (exe_dir / "Config.xml").write_text(_CONFIG_DEL_USUARIO, encoding="utf-8")
+
+    def _muere_a_mitad(destino: object, **_kwargs: object) -> None:
+        pathlib.Path(str(destino)).write_bytes(b"<Config>parcial")
+        raise OSError("disco lleno")
+
+    with patch("sky_claw.local.tools.bodyslide_config.ET.ElementTree.write", side_effect=_muere_a_mitad):
+        sembrar_config_de_bodyslide(
+            exe_dir=exe_dir,
+            game_path=tmp_path / "game",
+            output_root=tmp_path / "game" / "BodySlide_Output",
+        )
+
+    assert [p.name for p in exe_dir.iterdir()] == ["Config.xml"]
 
 
 def test_rechaza_un_config_con_referencia_externa(tmp_path: pathlib.Path) -> None:

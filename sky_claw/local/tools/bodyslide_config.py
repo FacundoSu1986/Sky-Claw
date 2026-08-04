@@ -29,8 +29,11 @@ la capa de VFS.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import pathlib
+import uuid
 import xml.etree.ElementTree as ET
 
 import defusedxml.ElementTree as DefusedElementTree
@@ -112,11 +115,26 @@ def sembrar_config_de_bodyslide(
             nodo = ET.SubElement(raiz, clave)
         nodo.text = valor
 
+    # Escritura ATÓMICA: tmp en el MISMO directorio (misma unidad → rename real)
+    # y ``os.replace`` recién cuando el árbol se serializó entero. Escribir
+    # directo sobre el destino lo trunca si el ``write`` muere a mitad —disco
+    # lleno, AV que toma el handle—, y eso destruiría la config del usuario para
+    # arreglar un modal: exactamente lo contrario del contrato que este módulo
+    # declara. Mismo patrón que ``mo2.ini_editor._write_atomic`` (review
+    # CodeRabbit #433).
+    tmp = config.with_name(f"{config.name}.{uuid.uuid4().hex}.tmp")
     try:
-        ET.ElementTree(raiz).write(config, encoding="utf-8", xml_declaration=False)
+        ET.ElementTree(raiz).write(tmp, encoding="utf-8", xml_declaration=False)
+        os.replace(tmp, config)
     except OSError as exc:
         logger.warning("No se pudo escribir '%s' (%s): se sigue sin sembrar.", config, exc)
         return False
+    finally:
+        # Best-effort: si la escritura o el replace fallaron, un error de unlink
+        # acá enmascararía la causa raíz. Se suprime, igual que el hermano de
+        # ``ini_editor``.
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
     return True
 
 
