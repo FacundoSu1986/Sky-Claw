@@ -95,15 +95,23 @@ async def test_release_nonexistent_lock(lock_manager: DistributedLockManager) ->
 @pytest.mark.asyncio
 async def test_acquire_lock_idempotent_same_agent(
     lock_manager: DistributedLockManager,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Same agent re-acquiring the same resource succeeds (owns the lock)."""
-    # When the same agent already holds the lock, the expires_at check will
-    # fail (lock is NOT expired). The SQL does not insert/update.
-    # This is by design — the agent already holds it.
+    """Un agente distinto no puede robar un lock cuyo TTL todavia no expiro.
+
+    Reloj congelado: bajo carga (suite completa, --cov) el tiempo real entre
+    las dos llamadas puede superar el TTL nominal y volver el segundo acquire
+    en un reclamo legitimo por expiracion, dando "DID NOT RAISE" sin que haya
+    defecto — mismo mecanismo que el flake de heartbeat cerrado en #392.
+    Controlar time.time() saca la aserción del reloj de pared real.
+    """
+    fake_now = [1_000_000.0]
+    monkeypatch.setattr("sky_claw.app.db.locks.time.time", lambda: fake_now[0])
+
     lock1 = await lock_manager.acquire_lock("res", "agent_1", ttl=10.0)
     assert lock1 is not None
 
-    # The second call should fail because the lock is NOT expired.
+    fake_now[0] += 0.001  # avanza lo minimo -- el lease de agent_1 sigue vivo
     with pytest.raises(LockAcquisitionError):
         await lock_manager.acquire_lock("res", "agent_2", ttl=10.0)
 
