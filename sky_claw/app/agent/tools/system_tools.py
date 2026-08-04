@@ -569,7 +569,16 @@ def _bodyslide_dict_de_resultado(result: Any) -> dict[str, Any]:
     detalle de fallo (stderr/stdout de BodySlide) llegaría CRUDO al LLM por una
     llave mientras las otras dos del mismo dict van saneadas.
     """
-    detalle_fallo = result.stderr or result.stdout or ""
+    # ``message`` del runner primero: para un binario ``/SUBSYSTEM:Windows``
+    # ``stdout``/``stderr`` son SIEMPRE vacíos, así que derivar el detalle sólo de
+    # ellos producía ``success=False`` con ``message=""`` — un fallo sin causa
+    # sobre el que nadie puede actuar. El runner puebla la causa real (veredicto
+    # del post-check de artefacto + cola de ``Log_BS.txt``). Se exige ``str`` para
+    # que un doble de test que no fije el atributo no filtre un repr de mock al LLM.
+    mensaje_del_runner = getattr(result, "message", "")
+    if not isinstance(mensaje_del_runner, str):
+        mensaje_del_runner = ""
+    detalle_fallo = mensaje_del_runner or result.stderr or result.stdout or ""
     return {
         "success": result.success,
         "message": "" if result.success else sanitize_for_prompt(detalle_fallo),
@@ -584,6 +593,8 @@ async def run_bodyslide_batch(
     bodyslide_runner: Any,
     group: str = "CBBE",
     output_path: str = "meshes",
+    preset: str | None = None,
+    build_morphs: bool = True,
     *,
     lock_manager: Any | None = None,
     snapshot_manager: Any | None = None,
@@ -660,7 +671,12 @@ async def run_bodyslide_batch(
             # perdió el lease durante la corrida, no se restaura pisando a un
             # dueño concurrente (review Codex #399, mismo patrón en Pandora).
             await stack.enter_async_context(DirectoryRollback(target, should_rollback=lambda: not tx.lease_lost))
-            result = await bodyslide_runner.run_batch(group, str(target))
+            result = await bodyslide_runner.run_batch(
+                group,
+                str(target),
+                preset=preset,
+                build_morphs=build_morphs,
+            )
             if not result.success:
                 # U-04: el puente fallo→excepción. Sin esto, un exit non-zero sale
                 # limpio del stack, DirectoryRollback DESCARTA el backup y el

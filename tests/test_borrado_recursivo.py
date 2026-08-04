@@ -228,6 +228,13 @@ def test_quien_dice_delegar_por_wrapper_usa_el_wrapper() -> None:
 #: módulo puede estar en una sola.
 MECANISMO_DE_MEDICION: dict[str, str] = {
     "sky_claw/app/db/snapshot_manager.py": "link-aware",
+    # Cuenta los ``.nif``/``.tri`` del target para decidir si BodySlide construyó
+    # de verdad (su exit code es 0 aunque no construya nada). Mide link-aware
+    # porque su contraparte que borra es ``DirectoryRollback``: si el conteo
+    # entrara a un árbol ajeno por un junction, mallas de otro mod validarían el
+    # build y el rollback descartaría el backup dando por buena una salida que no
+    # existe.
+    "sky_claw/local/tools/bodyslide_runner.py": "link-aware",
     "sky_claw/local/assets/asset_scanner.py": "sin-contraparte-que-borre",
     "sky_claw/local/tools/grass_cache_runner.py": "sin-contraparte-que-borre",
 }
