@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunner
+from tests._symlink_guard import crear_junction, is_junction_real, junction_guard
 
 
 def _runner(tmp_path: pathlib.Path) -> BodySlideRunner:
@@ -240,6 +241,41 @@ async def test_no_cuenta_artefactos_detras_de_un_enlace(tmp_path: pathlib.Path) 
 
     assert result.artifacts_built == 0, "las mallas detrás del enlace no son salida de este build"
     assert result.success is False
+
+
+@junction_guard
+async def test_no_cuenta_artefactos_detras_de_un_junction(tmp_path: pathlib.Path) -> None:
+    """El caso que ``rglob`` SÍ contaba de más — la mitad Windows del invariante.
+
+    El test de symlink de arriba no ancla nada por sí solo: ``Path.rglob`` **ya**
+    frenaba en un symlink (decide con ``is_dir(follow_symlinks=False)``), así que
+    un revert a ``rglob`` seguiría pasándolo. El junction es donde las dos
+    políticas divergen, porque ``IO_REPARSE_TAG_MOUNT_POINT`` no es un symlink
+    para ``os.path.islink`` (review CodeRabbit #433).
+
+    Se afirma también lo que habría contado el recorrido ingenuo: sin eso, el
+    test no demuestra que atrapa la regresión que dice atrapar.
+    """
+    ajeno = tmp_path / "mallas_ajenas"
+    ajeno.mkdir()
+    (ajeno / "de_otro_mod.nif").write_bytes(b"\x00")
+
+    runner = _runner(tmp_path)
+    destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
+    destino.mkdir(parents=True)
+    assert crear_junction(destino / "enlace", ajeno) is None
+    assert is_junction_real(destino / "enlace")
+
+    # El recorrido que este post-check reemplaza: entra al junction y cuenta ajeno.
+    rglob_ingenuo = sum(1 for f in destino.rglob("*") if f.suffix.lower() == ".nif" and f.is_file())
+
+    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", _captura(0)):
+        result = await runner.run_batch("CBBE", str(destino))
+
+    assert rglob_ingenuo == 1, "el rglob crudo tiene que contar la malla ajena (si no, el test no prueba nada)"
+    assert result.artifacts_built == 0, "las mallas detrás del junction no son salida de este build"
+    assert result.success is False
+    assert (ajeno / "de_otro_mod.nif").exists(), "no se toca el árbol ajeno"
 
 
 async def test_log_de_bodyslide_se_incorpora_al_mensaje(tmp_path: pathlib.Path) -> None:

