@@ -39,6 +39,12 @@ _COLA_DEL_LOG_BYTES = 4096
 #: de las tres anteriores que el archivo todavía conserva.
 _FIRMA_DE_CORRIDA = "[#Log"
 
+#: Tope de lo que se recorre hacia atrás buscando la firma. El log conserva hasta
+#: cuatro corridas y un batch grande puede loguear megabytes, así que la búsqueda
+#: necesita un techo; superarlo devuelve "no atribuible" (conservador) en vez de
+#: cargar el archivo entero en memoria.
+_MAX_BYTES_DE_BUSQUEDA = 8 * 1024 * 1024
+
 #: Prefijo con que ``GroupBuild`` (línea 4752) reporta cada outfit que no pudo
 #: construir: ``wxLogError("Failed to build '%s': %s", ...)``. Es la ÚNICA señal
 #: acotada de fallo parcial, porque el exit code sigue siendo 0 con ``ret == 3``.
@@ -137,15 +143,40 @@ def _leer_log(exe: pathlib.Path) -> tuple[str, bool]:
     try:
         with log.open("rb") as handle:
             handle.seek(0, 2)
-            handle.seek(max(0, handle.tell() - _COLA_DEL_LOG_BYTES))
-            texto = handle.read().decode("utf-8", errors="replace")
+            fin = handle.tell()
+            # Se busca la firma HACIA ATRÁS en vez de asumir que entra en una
+            # ventana fija (review qodo #433). La firma va al PRINCIPIO de la
+            # corrida, así que con un batch de muchos outfits una cola fija la deja
+            # afuera: el texto pasaría a "no atribuible", la detección de fallo
+            # parcial se apagaría sola y el build volvería a reportarse como éxito
+            # — el mismo falso verde que este módulo existe para cerrar, pero
+            # dependiente del TAMAÑO del log, que es la peor forma de tenerlo.
+            crudo = b""
+            while True:
+                leido = len(crudo)
+                if leido >= fin or leido >= _MAX_BYTES_DE_BUSQUEDA:
+                    break
+                paso = min(_COLA_DEL_LOG_BYTES, fin - leido, _MAX_BYTES_DE_BUSQUEDA - leido)
+                handle.seek(fin - leido - paso)
+                crudo = handle.read(paso) + crudo
+                if _FIRMA_DE_CORRIDA.encode() in crudo:
+                    break
     except OSError:
         return "", False
 
+    texto = crudo.decode("utf-8", errors="replace")
     corte = texto.rfind(_FIRMA_DE_CORRIDA)
     if corte == -1:
-        return texto.strip(), False
-    return texto[corte:].strip(), True
+        # No se pudo atribuir: se muestra la cola como diagnóstico pero no decide.
+        return texto[-_COLA_DEL_LOG_BYTES:].strip(), False
+
+    # La búsqueda del fallo corre sobre la corrida ENTERA y vive acá, no en el
+    # caller: lo que se devuelve para mostrar es sólo la cola —un batch grande
+    # loguea megabytes y ese texto termina en el prompt de un LLM—, así que un
+    # caller que buscara sobre el texto recortado perdería un "Failed to build"
+    # ocurrido temprano. Decidir y mostrar son dos recortes distintos.
+    corrida = texto[corte:]
+    return corrida[-_COLA_DEL_LOG_BYTES:].strip(), _MARCA_DE_FALLO_PARCIAL in corrida
 
 
 class BodySlideRunner:
@@ -239,11 +270,11 @@ class BodySlideRunner:
         # el event loop del daemon (mismo criterio que ``_process.kill_and_reap``).
         destino = pathlib.Path(output_path)
         artefactos = await asyncio.to_thread(_contar_artefactos, destino)
-        log, log_es_de_esta_corrida = await asyncio.to_thread(_leer_log, self.config.bodyslide_exe)
         # Fallo PARCIAL: algunos outfits fallaron y otros no, así que hay artefactos
         # en disco y el exit code sigue siendo 0 — el conteo por sí solo no lo ve.
-        # Sólo se afirma si el texto se pudo atribuir a ESTA corrida (ver _leer_log).
-        fallo_parcial = log_es_de_esta_corrida and _MARCA_DE_FALLO_PARCIAL in log
+        # ``_leer_log`` ya resuelve la atribución a ESTA corrida y busca sobre su
+        # texto completo; acá sólo se consume el veredicto.
+        log, fallo_parcial = await asyncio.to_thread(_leer_log, self.config.bodyslide_exe)
         success = return_code == 0 and artefactos > 0 and not fallo_parcial
 
         message = ""

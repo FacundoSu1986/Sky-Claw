@@ -243,6 +243,40 @@ async def test_no_cuenta_artefactos_detras_de_un_enlace(tmp_path: pathlib.Path) 
     assert result.success is False
 
 
+async def test_fallo_parcial_se_detecta_aunque_el_log_de_la_corrida_sea_enorme(tmp_path: pathlib.Path) -> None:
+    """Un log grande no puede desactivar la detección de fallo parcial (review qodo #433).
+
+    La firma ``[#Log`` va al PRINCIPIO de la corrida. Leyendo una cola fija, un
+    batch con muchos outfits la deja fuera de la ventana: el texto pasa a ser
+    "no atribuible", la detección se apaga y el build parcial vuelve a reportarse
+    como éxito — evadiendo el ``DirectoryRollback`` y dejando mallas incompletas.
+    Es el mismo falso verde que este post-check existe para cerrar, reintroducido
+    por el recorte.
+
+    Se busca la firma hacia atrás en vez de asumir que entra en una ventana fija.
+    """
+    runner = _runner(tmp_path)
+    runner.config.bodyslide_exe.parent.mkdir(parents=True, exist_ok=True)
+    relleno = "\n".join(f"Processing outfit numero {i:05d} con un nombre largo para ocupar bytes" for i in range(400))
+    (runner.config.bodyslide_exe.parent / "Log_BS.txt").write_text(
+        f"[#Log 2026-08-04]\nStarted batch build\n{relleno}\nFailed to build 'Vestido': missing shape data\n",
+        encoding="utf-8",
+    )
+    assert (runner.config.bodyslide_exe.parent / "Log_BS.txt").stat().st_size > 20_000, (
+        "el log tiene que superar la cola"
+    )
+
+    destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
+    destino.mkdir(parents=True)
+    (destino / "cuerpo.nif").write_bytes(b"\x00")
+
+    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", _captura(0)):
+        result = await runner.run_batch("CBBE", str(destino))
+
+    assert result.success is False, "el tamaño del log no puede decidir si se detecta el fallo parcial"
+    assert "Vestido" in result.message
+
+
 @junction_guard
 async def test_no_cuenta_artefactos_detras_de_un_junction(tmp_path: pathlib.Path) -> None:
     """El caso que ``rglob`` SÍ contaba de más — la mitad Windows del invariante.
