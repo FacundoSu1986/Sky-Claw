@@ -162,6 +162,86 @@ async def test_exit_no_cero_sigue_siendo_fallo_aunque_haya_artefactos(tmp_path: 
     assert result.return_code == 3
 
 
+async def test_build_parcial_no_es_exito_aunque_haya_artefactos(tmp_path: pathlib.Path) -> None:
+    """`ret == 3` con salida parcial en disco NO es éxito (review CodeRabbit #433).
+
+    Es el falso verde que el conteo de artefactos por sí solo no ataja: algunos
+    outfits fallaron y otros no, así que el target queda NO vacío y el exit code
+    sigue siendo 0. La señal acotada que emite la herramienta es
+    ``wxLogError("Failed to build '%s': %s", ...)`` en ``GroupBuild`` (línea 4752),
+    que aterriza en ``Log_BS.txt``.
+    """
+    runner = _runner(tmp_path)
+    runner.config.bodyslide_exe.parent.mkdir(parents=True, exist_ok=True)
+    (runner.config.bodyslide_exe.parent / "Log_BS.txt").write_text(
+        "[#Log 2026-08-04]\nStarted batch build\nFailed to build 'Vestido': missing shape data\n",
+        encoding="utf-8",
+    )
+    destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
+    destino.mkdir(parents=True)
+    (destino / "cuerpo.nif").write_bytes(b"\x00")  # algunos SÍ se construyeron
+
+    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", _captura(0)):
+        result = await runner.run_batch("CBBE", str(destino))
+
+    assert result.artifacts_built == 1
+    assert result.success is False, "un build parcial no puede reportarse como éxito"
+    assert "Vestido" in result.message
+
+
+async def test_fallo_de_una_corrida_anterior_no_contamina_la_actual(tmp_path: pathlib.Path) -> None:
+    """El log acumula hasta 4 corridas: sólo cuenta lo posterior al último ``[#Log``.
+
+    ``Log::Initialize`` (``src/utils/Log.cpp``) escribe una firma ``[#Log <fecha>]``
+    al arrancar cada corrida y sólo rota tras la cuarta. Sin acotar por esa firma,
+    un "Failed to build" viejo convertiría en fallo a un build actual perfectamente
+    exitoso — un falso ROJO, que es tan malo como el falso verde que este PR cierra.
+    """
+    runner = _runner(tmp_path)
+    runner.config.bodyslide_exe.parent.mkdir(parents=True, exist_ok=True)
+    (runner.config.bodyslide_exe.parent / "Log_BS.txt").write_text(
+        "[#Log 2026-08-01]\nFailed to build 'Vestido': missing shape data\n"
+        "[#Log 2026-08-04]\nAll group build sets processed successfully!\n",
+        encoding="utf-8",
+    )
+    destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
+    destino.mkdir(parents=True)
+    (destino / "cuerpo.nif").write_bytes(b"\x00")
+
+    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", _captura(0)):
+        result = await runner.run_batch("CBBE", str(destino))
+
+    assert result.success is True, "un fallo de una corrida previa no es un fallo de esta"
+    assert result.message == ""
+
+
+async def test_no_cuenta_artefactos_detras_de_un_enlace(tmp_path: pathlib.Path) -> None:
+    """El conteo no atraviesa enlaces (review Copilot #433).
+
+    ``Path.rglob`` decide si desciende con ``is_dir(follow_symlinks=False)``: frena
+    en un symlink pero **no en un junction de Windows**, porque
+    ``IO_REPARSE_TAG_MOUNT_POINT`` no es un symlink para ``os.path.islink``. Contar
+    a través de un enlace haría que mallas AJENAS validaran nuestro build — el
+    post-check pasaría sin que la herramienta hubiera escrito nada.
+    """
+    runner = _runner(tmp_path)
+    destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
+    destino.mkdir(parents=True)
+    ajeno = tmp_path / "mallas_ajenas"
+    ajeno.mkdir()
+    (ajeno / "de_otro_mod.nif").write_bytes(b"\x00")
+    try:
+        (destino / "enlace").symlink_to(ajeno, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("crear symlinks requiere privilegios no disponibles en este entorno")
+
+    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", _captura(0)):
+        result = await runner.run_batch("CBBE", str(destino))
+
+    assert result.artifacts_built == 0, "las mallas detrás del enlace no son salida de este build"
+    assert result.success is False
+
+
 async def test_log_de_bodyslide_se_incorpora_al_mensaje(tmp_path: pathlib.Path) -> None:
     """``Log_BS.txt`` es el ÚNICO diagnóstico real que produce BodySlide.
 

@@ -33,6 +33,14 @@ import logging
 import pathlib
 import xml.etree.ElementTree as ET
 
+import defusedxml.ElementTree as DefusedElementTree
+from defusedxml import (
+    DefusedXmlException,
+    DTDForbidden,
+    EntitiesForbidden,
+    ExternalReferenceForbidden,
+)
+
 logger = logging.getLogger("SkyClaw.BodySlideConfig")
 
 #: Nombre del archivo que ``BodySlideApp::OnInit`` (línea 142) carga desde el
@@ -63,16 +71,30 @@ def sembrar_config_de_bodyslide(
         # BodySlide considera "su salida" al subárbol administrado, en vez de al
         # Data del juego que puede no ser escribible.
         "OutputDataPath": str(output_root.resolve()),
-        # Apaga el "Continue saving files to the working directory?" de
-        # BuildListBodies. Hoy ese camino ya no se alcanza porque siempre pasamos
-        # ``-t`` (``datapath`` no queda vacío), pero dejarlo en ``true`` mantiene
-        # viva una ruta modal para cualquier invocación futura sin ``-t``.
+        # Se fuerza a "false" para apagar el "Continue saving files to the working
+        # directory?" de BuildListBodies. Hoy ese modal ya no se alcanza porque
+        # siempre pasamos ``-t`` (``datapath`` no queda vacío), pero el default de
+        # BodySlide es "true": dejarlo así mantendría viva una ruta modal para
+        # cualquier invocación futura que no pase ``-t``.
         "WarnMissingGamePath": "false",
     }
 
     try:
         raiz = _cargar_o_crear(config)
-    except ET.ParseError as exc:
+    except (DTDForbidden, EntitiesForbidden, ExternalReferenceForbidden) as exc:
+        # Mismo criterio que ``fomod.parser``: un DTD/entidad/referencia externa en
+        # un XML que no escribimos nosotros es un intento de inyección, no un
+        # archivo mal formado. Se loguea como crítico y NO se siembra — pero no se
+        # lanza, porque esta función es best-effort y abortar el ritual acá le daría
+        # al atacante un modo de denegación de servicio sobre el build.
+        logger.critical("Intento de inyección XML detectado en el Config.xml de BodySlide: '%s' — %s", config, exc)
+        return False
+    except (DefusedElementTree.ParseError, DefusedXmlException, OSError) as exc:
+        # ``OSError`` incluido a propósito (review CodeRabbit #433): el archivo es
+        # del usuario y tiene sus permisos, así que un ``PermissionError`` al abrirlo
+        # es un desenlace esperable. Como ``run_batch`` llama acá ANTES de spawnear,
+        # dejarlo propagar impediría CORRER BodySlide por no haber podido escribir
+        # una config opcional — justo lo contrario del best-effort documentado.
         logger.warning(
             "Config.xml de BodySlide ilegible en '%s' (%s): se deja intacto y se sigue sin sembrar.",
             config,
@@ -106,5 +128,15 @@ def _cargar_o_crear(config: pathlib.Path) -> ET.Element:
     por registro.
     """
     if config.is_file():
-        return ET.parse(config).getroot()
+        # ``defusedxml`` y no el ``ElementTree`` de la stdlib (Bandit B314): este
+        # archivo vive junto al exe, en un directorio que Sky-Claw no controla del
+        # todo —lo puede haber puesto un instalador de mods—, así que es entrada no
+        # confiable. Mismo tratamiento que ``fomod.parser`` ya le da al
+        # ``ModuleConfig.xml``, que llega por la misma vía.
+        return DefusedElementTree.parse(
+            config,
+            forbid_dtd=True,
+            forbid_entities=True,
+            forbid_external=True,
+        ).getroot()
     return ET.Element("Config")

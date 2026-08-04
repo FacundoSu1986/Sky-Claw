@@ -190,3 +190,56 @@ def test_un_config_corrupto_no_aborta_la_corrida(tmp_path: pathlib.Path) -> None
     assert resultado is False
     # Y no se destruyó el archivo del usuario en el intento.
     assert (exe_dir / "Config.xml").read_text(encoding="utf-8") == "<Config><roto>"
+
+
+def test_un_config_ilegible_no_aborta_la_corrida(tmp_path: pathlib.Path) -> None:
+    """Un ``OSError`` al abrir tampoco puede tumbar el ritual (review CodeRabbit #433).
+
+    ``run_batch`` llama a esta función ANTES de spawnear, así que un
+    ``PermissionError`` sobre el ``Config.xml`` —archivo del usuario, permisos del
+    usuario— impediría correr BodySlide en vez de degradar a "no sembré". El
+    contrato documentado es best-effort; sólo lo es si también cubre el I/O.
+    """
+    from unittest.mock import patch
+
+    exe_dir = tmp_path / "tools" / "BodySlide"
+    exe_dir.mkdir(parents=True)
+    (exe_dir / "Config.xml").write_text(_CONFIG_DEL_USUARIO, encoding="utf-8")
+
+    with patch(
+        "sky_claw.local.tools.bodyslide_config.DefusedElementTree.parse",
+        side_effect=PermissionError("acceso denegado"),
+    ):
+        resultado = sembrar_config_de_bodyslide(
+            exe_dir=exe_dir,
+            game_path=tmp_path / "game",
+            output_root=tmp_path / "game" / "BodySlide_Output",
+        )
+
+    assert resultado is False
+
+
+def test_rechaza_un_config_con_entidades_xml(tmp_path: pathlib.Path) -> None:
+    """Billion-laughs / XXE se rechazan sin sembrar (Bandit B314).
+
+    El ``Config.xml`` vive junto al exe, en un directorio que Sky-Claw no controla
+    del todo (lo puede haber puesto un instalador de mods). Se parsea con
+    ``defusedxml``, igual que ``fomod.parser`` ya hace con ``ModuleConfig.xml``.
+    """
+    exe_dir = tmp_path / "tools" / "BodySlide"
+    exe_dir.mkdir(parents=True)
+    (exe_dir / "Config.xml").write_text(
+        '<?xml version="1.0"?>\n'
+        "<!DOCTYPE Config [<!ENTITY lol 'lol'><!ENTITY lol2 '&lol;&lol;&lol;'>]>\n"
+        "<Config><GameDataPath>&lol2;</GameDataPath></Config>",
+        encoding="utf-8",
+    )
+
+    resultado = sembrar_config_de_bodyslide(
+        exe_dir=exe_dir,
+        game_path=tmp_path / "game",
+        output_root=tmp_path / "game" / "BodySlide_Output",
+    )
+
+    assert resultado is False
+    assert "&lol2;" in (exe_dir / "Config.xml").read_text(encoding="utf-8"), "no se toca el archivo del usuario"

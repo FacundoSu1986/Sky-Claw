@@ -11,6 +11,7 @@ import pathlib
 import time
 from dataclasses import dataclass
 
+from sky_claw.app.security.links import iter_archivos_propios
 from sky_claw.local.tools._process import run_capture
 from sky_claw.local.tools.bodyslide_config import sembrar_config_de_bodyslide
 from sky_claw.local.tools.output_targets import bodyslide_output_root
@@ -31,6 +32,17 @@ _NOMBRE_DEL_LOG = "Log_BS.txt"
 #: Cuánto del final del log se adjunta al mensaje de fallo. El log acumula hasta
 #: cuatro corridas antes de rotar, así que leerlo entero traería ruido viejo.
 _COLA_DEL_LOG_BYTES = 4096
+
+#: Firma que ``Log::Initialize`` escribe al arrancar cada corrida
+#: (``src/utils/Log.cpp``: ``signature = "[#Log"`` + fecha). Es el único
+#: delimitador que permite atribuir una línea del log a ESTA corrida y no a una
+#: de las tres anteriores que el archivo todavía conserva.
+_FIRMA_DE_CORRIDA = "[#Log"
+
+#: Prefijo con que ``GroupBuild`` (línea 4752) reporta cada outfit que no pudo
+#: construir: ``wxLogError("Failed to build '%s': %s", ...)``. Es la ÚNICA señal
+#: acotada de fallo parcial, porque el exit code sigue siendo 0 con ``ret == 3``.
+_MARCA_DE_FALLO_PARCIAL = "Failed to build"
 
 
 class BodySlideExecutionError(Exception):
@@ -77,38 +89,63 @@ class BodySlideResult:
 
 
 def _contar_artefactos(destino: pathlib.Path) -> int:
-    """Cuenta ``.nif``/``.tri`` bajo *destino*, recursivamente.
+    """Cuenta ``.nif``/``.tri`` bajo *destino*, recursivamente y sin cruzar enlaces.
 
     Recursivo porque ``BuildListBodies`` compone cada salida como
     ``datapath + currentSet.GetOutputPath()``: las mallas aterrizan en subárboles
     (``meshes/actors/character/...``), nunca sueltas en la raíz del target. Un
     conteo plano daría cero en todo build real.
 
+    ``iter_archivos_propios`` y no ``Path.rglob`` (review Copilot #433): ``rglob``
+    decide si desciende con ``is_dir(follow_symlinks=False)``, que frena en un
+    symlink pero **no en un junction de Windows** —``IO_REPARSE_TAG_MOUNT_POINT``
+    no es un symlink para ``os.path.islink``—, la misma ceguera que hubo que
+    cerrar en el borrado (#404, #405). Acá el costo sería que mallas AJENAS
+    detrás de un enlace validaran nuestro build: el post-check daría por
+    construido algo que la herramienta nunca escribió, que es exactamente el
+    falso verde que este post-check existe para cerrar.
+
     Un destino inexistente cuenta cero en vez de lanzar: que BodySlide no haya
     creado siquiera el directorio es justamente uno de los desenlaces que este
     conteo tiene que poder reportar.
     """
-    if not destino.is_dir():
-        return 0
-    return sum(1 for ruta in destino.rglob("*") if ruta.suffix.lower() in _EXTENSIONES_DE_ARTEFACTO and ruta.is_file())
+    return sum(
+        1 for ruta, _identidad in iter_archivos_propios(destino) if ruta.suffix.lower() in _EXTENSIONES_DE_ARTEFACTO
+    )
 
 
-def _leer_cola_del_log(exe: pathlib.Path) -> str:
-    """Devuelve la cola de ``Log_BS.txt``, o ``""`` si no se puede leer.
+def _leer_log(exe: pathlib.Path) -> tuple[str, bool]:
+    """Devuelve ``(texto de la corrida actual, si quedó acotado a ella)``.
 
-    Best-effort a propósito: el log es diagnóstico adicional, no la condición de
-    éxito. Si falta (``LogLevel=-1`` en ``Config.xml``, o un fallo tan temprano
-    que ``Log::Initialize`` no llegó a correr) el fallo se reporta igual con la
-    causa que sí conocemos.
+    ``Log::Initialize`` (``src/utils/Log.cpp``) escribe una firma ``[#Log <fecha>]``
+    al arrancar cada corrida y **sólo rota el archivo tras la cuarta**, así que el
+    log contiene hasta cuatro corridas superpuestas. Acotar por la ÚLTIMA firma es
+    lo que separa "esta corrida falló" de "alguna de las tres anteriores falló".
+
+    El segundo elemento dice si ese recorte se pudo hacer. Importa porque si la
+    firma no aparece en la cola leída no hay forma de saber a qué corrida pertenece
+    cada línea, y afirmar un fallo sobre texto no atribuible convertiría un build
+    exitoso en un falso ROJO — tan malo como el falso verde que este módulo cierra.
+    En ese caso el texto se sigue mostrando como diagnóstico, pero no se usa para
+    decidir.
+
+    Best-effort ante I/O: el log es diagnóstico adicional, no la condición de
+    éxito. Si falta (``LogLevel=-1`` en ``Config.xml``, o un fallo tan temprano que
+    ``Log::Initialize`` no llegó a correr) el resto del veredicto no cambia.
     """
     log = exe.parent / _NOMBRE_DEL_LOG
     try:
         with log.open("rb") as handle:
             handle.seek(0, 2)
             handle.seek(max(0, handle.tell() - _COLA_DEL_LOG_BYTES))
-            return handle.read().decode("utf-8", errors="replace").strip()
+            texto = handle.read().decode("utf-8", errors="replace")
     except OSError:
-        return ""
+        return "", False
+
+    corte = texto.rfind(_FIRMA_DE_CORRIDA)
+    if corte == -1:
+        return texto.strip(), False
+    return texto[corte:].strip(), True
 
 
 class BodySlideRunner:
@@ -202,7 +239,12 @@ class BodySlideRunner:
         # el event loop del daemon (mismo criterio que ``_process.kill_and_reap``).
         destino = pathlib.Path(output_path)
         artefactos = await asyncio.to_thread(_contar_artefactos, destino)
-        success = return_code == 0 and artefactos > 0
+        log, log_es_de_esta_corrida = await asyncio.to_thread(_leer_log, self.config.bodyslide_exe)
+        # Fallo PARCIAL: algunos outfits fallaron y otros no, así que hay artefactos
+        # en disco y el exit code sigue siendo 0 — el conteo por sí solo no lo ve.
+        # Sólo se afirma si el texto se pudo atribuir a ESTA corrida (ver _leer_log).
+        fallo_parcial = log_es_de_esta_corrida and _MARCA_DE_FALLO_PARCIAL in log
+        success = return_code == 0 and artefactos > 0 and not fallo_parcial
 
         message = ""
         if not success:
@@ -210,7 +252,8 @@ class BodySlideRunner:
                 return_code=return_code,
                 artefactos=artefactos,
                 destino=destino,
-                log=await asyncio.to_thread(_leer_cola_del_log, self.config.bodyslide_exe),
+                log=log,
+                fallo_parcial=fallo_parcial,
             )
             logger.error("[M-03] BodySlide no produjo un build válido: %s", message)
 
@@ -225,7 +268,14 @@ class BodySlideRunner:
         )
 
     @staticmethod
-    def _diagnostico(*, return_code: int, artefactos: int, destino: pathlib.Path, log: str) -> str:
+    def _diagnostico(
+        *,
+        return_code: int,
+        artefactos: int,
+        destino: pathlib.Path,
+        log: str,
+        fallo_parcial: bool,
+    ) -> str:
         """Arma la causa legible del fallo, nombrando el destino inspeccionado.
 
         Nombrar el destino no es decorativo: el fallo más frecuente y más difícil
@@ -234,6 +284,12 @@ class BodySlideRunner:
         """
         if return_code != 0:
             causa = f"BodySlide terminó con código {return_code} (artefactos en '{destino}': {artefactos})."
+        elif fallo_parcial:
+            causa = (
+                f"BodySlide construyó {artefactos} artefacto(s) en '{destino}' pero reportó outfits "
+                "fallidos en su log. Es un build PARCIAL: el exit code sigue siendo 0, así que la "
+                "única señal es el log. Las mallas de los outfits fallidos no existen."
+            )
         else:
             causa = (
                 f"BodySlide terminó con código 0 pero no generó ninguna malla en '{destino}'. "
