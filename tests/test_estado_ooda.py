@@ -49,6 +49,8 @@ _ITEMS = frozenset(
         "Residuos de crash logging",
         "Contrato de argumentos CLI",
         "Etapa 6 (Wrye Bash) sin build headless",
+        "Orden de masters sin validar",
+        "Segundo parser TES4 sin gate",
     }
 )
 

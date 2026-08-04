@@ -38,6 +38,7 @@ from sky_claw.local.loot.version import (
 from sky_claw.local.validators.vfs_health import VfsHealthChecker
 
 if TYPE_CHECKING:
+    from sky_claw.local.validators.master_order import OrderIssue
     from sky_claw.local.validators.missing_masters import MasterIssue
     from sky_claw.local.validators.overwrite_health import OverwriteScan
     from sky_claw.local.validators.plugin_limits import LoadOrderLimits
@@ -56,6 +57,10 @@ MastersCheck = Callable[[], "list[MasterIssue]"]
 #: Sensor de límites de plugins inyectable (T-30·2): closure sobre
 #: PluginLimitsChecker + el load order habilitado.
 LimitsCheck = Callable[[], "LoadOrderLimits"]
+
+#: Sensor de orden de masters inyectable: closure sobre MasterOrderChecker.
+#: Complementa a ``MastersCheck`` — ese responde "¿está?", este "¿está antes?".
+OrderCheck = Callable[[], "list[OrderIssue]"]
 
 #: Sensor de overwrite sucio inyectable (T-30·3): closure sobre
 #: OverwriteHealthChecker (escanea el overwrite compartido de MO2).
@@ -149,6 +154,10 @@ class PreflightService:
         limits_check: Sensor de límites full/light (T-30·2): callable que
             devuelve el :class:`LoadOrderLimits` (closure sobre
             ``PluginLimitsChecker.check``). Corre en un thread.
+        order_check: Sensor de orden de masters: callable que devuelve los
+            :class:`OrderIssue` del load order (closure sobre
+            ``MasterOrderChecker.check``). Complementa a ``masters_check``: ese
+            verifica presencia, este posición. Corre en un thread (lee headers).
         overwrite_check: Sensor de overwrite sucio (T-30·3): callable que
             devuelve el :class:`OverwriteScan` (closure sobre
             ``OverwriteHealthChecker.check``). Corre en un thread (escanea
@@ -172,6 +181,7 @@ class PreflightService:
         loot_version_detector: VersionDetector | None = None,
         masters_check: MastersCheck | None = None,
         limits_check: LimitsCheck | None = None,
+        order_check: OrderCheck | None = None,
         overwrite_check: OverwriteCheck | None = None,
         permissions_check: PermissionsCheck | None = None,
         visibility_check: VisibilityCheck | None = None,
@@ -180,6 +190,7 @@ class PreflightService:
         self._vfs_checker = vfs_checker
         self._masters_check = masters_check
         self._limits_check = limits_check
+        self._order_check = order_check
         self._overwrite_check = overwrite_check
         self._permissions_check = permissions_check
         self._visibility_check = visibility_check
@@ -258,6 +269,13 @@ class PreflightService:
         if self._keep(self._limits_check is not None):
             checks.append(self._limits_checkpoint(limits))
 
+        order_issues: list[OrderIssue] = []
+        if self._order_check is not None:
+            # Lee headers de plugins en disco: fuera del event loop.
+            order_issues = await asyncio.to_thread(self._order_check)
+        if self._keep(self._order_check is not None):
+            checks.append(self._order_checkpoint(order_issues, checker_configured=self._order_check is not None))
+
         overwrite: OverwriteScan | None = None
         if self._overwrite_check is not None:
             # Escanea el overwrite en disco: fuera del event loop.
@@ -327,6 +345,21 @@ class PreflightService:
         from sky_claw.local.validators.missing_masters import masters_preflight_check
 
         return masters_preflight_check(issues)
+
+    @staticmethod
+    def _order_checkpoint(issues: list[OrderIssue], *, checker_configured: bool) -> PreflightCheck:
+        if not checker_configured:
+            # No mentir: "orden OK" implica que se verificó; acá no hubo sensor.
+            return PreflightCheck(
+                name="master_order",
+                status=PreflightStatus.GREEN,
+                summary="Sensor de orden de masters no configurado.",
+            )
+        # Import a nivel función: mismo ciclo que masters (master_order importa
+        # PreflightCheck de este módulo).
+        from sky_claw.local.validators.master_order import order_preflight_check
+
+        return order_preflight_check(issues)
 
     @staticmethod
     def _limits_checkpoint(limits: LoadOrderLimits | None) -> PreflightCheck:

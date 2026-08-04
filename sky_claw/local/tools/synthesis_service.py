@@ -260,6 +260,9 @@ class SynthesisPipelineService:
 
         overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
         masters_check, limits_check = self._build_modlist_checks(game, mo2)
+        # Synthesis (stage 7) corre sobre el load order ya estabilizado por LOOT
+        # y parcheado por Wrye Bash: un master invertido es CTD, no un warning.
+        order_check = self._build_master_order_check(game, mo2)
 
         # U-01: Synthesis procesa TODO el modlist; sin la USVFS heredada el patch
         # saldría del juego base. Mismo perfil que alimenta masters/límites.
@@ -276,10 +279,30 @@ class SynthesisPipelineService:
             overwrite_check=overwrite_check,
             masters_check=masters_check,
             limits_check=limits_check,
+            order_check=order_check,
             visibility_check=visibility_check,
             omit_unconfigured=True,
         )
         return self._preflight
+
+    def _build_master_order_check(self, game: pathlib.Path, mo2: pathlib.Path) -> Any:
+        """Closure del sensor de orden de masters del **perfil MO2 activo**.
+
+        Mismo feed y mismo gate que :meth:`_build_modlist_checks`; sin
+        perfil/fuentes resolubles → ``None`` → checkpoint "no configurado"
+        (omitido). No miente verde (lección #250).
+        """
+        from sky_claw.local.validators.preflight_sensors import (
+            build_master_order_sensor,
+            build_mo2_profile_sources_resolver,
+        )
+
+        resolver = build_mo2_profile_sources_resolver(
+            game=game, mo2=mo2, profile=self._path_resolver.get_active_profile()
+        )
+        if resolver is None:
+            return None
+        return build_master_order_sensor(resolver)
 
     def _build_modlist_checks(self, game: pathlib.Path, mo2: pathlib.Path) -> tuple[Any, Any]:
         """Closures de masters/límites del **perfil MO2 activo**.

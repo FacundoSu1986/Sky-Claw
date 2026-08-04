@@ -183,6 +183,7 @@ class DynDOLODPipelineService:
         # Imports perezosos (anti-ciclo: validators.preflight llega a tools._process).
         from sky_claw.local.validators.preflight import PreflightService
         from sky_claw.local.validators.preflight_sensors import (
+            build_master_order_sensor,
             build_mo2_profile_sources_resolver,
             build_modlist_sensors,
             build_overwrite_sensor,
@@ -213,6 +214,9 @@ class DynDOLODPipelineService:
             game=game, mo2=mo2, profile=self._path_resolver.get_active_profile()
         )
         masters_check, limits_check = build_modlist_sensors(resolver) if resolver is not None else (None, None)
+        # DynDOLOD (stage 9) lee todo el load order ya estabilizado: un master
+        # invertido invalida 30+ min de generación de LODs.
+        order_check = build_master_order_sensor(resolver) if resolver is not None else None
 
         # U-01: DynDOLOD lee TODO el load order; si la USVFS no se heredó,
         # generaría LODs del juego base durante 30+ min y reportaría éxito.
@@ -224,6 +228,7 @@ class DynDOLODPipelineService:
             overwrite_check=overwrite_check,
             masters_check=masters_check,
             limits_check=limits_check,
+            order_check=order_check,
             visibility_check=visibility_check,
             omit_unconfigured=True,
         )

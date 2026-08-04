@@ -27,16 +27,17 @@ import pathlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from sky_claw.local.validators.plugin_header import PluginHeaderError, read_plugin_header
+from sky_claw.local.validators.plugin_header import (
+    PluginHeaderError,
+    index_plugin_files,
+    read_plugin_header,
+)
 from sky_claw.local.validators.preflight import PreflightCheck, PreflightStatus
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
-
-#: Extensiones de plugin que el juego carga.
-_PLUGIN_SUFFIXES: frozenset[str] = frozenset({".esp", ".esm", ".esl"})
 
 # ``PluginHeaderError`` se re-exporta (el parser TES4 vive ahora en
 # ``plugin_header``): los consumidores históricos lo importan desde acá.
@@ -182,22 +183,7 @@ class MissingMastersChecker:
 
     def _index_available(self) -> dict[str, pathlib.Path]:
         """Nombre casefold → ruta del plugin (primer directorio gana)."""
-        available: dict[str, pathlib.Path] = {}
-        for directory in self._plugin_dirs:
-            try:
-                if not directory.is_dir():
-                    continue
-                entries = sorted(directory.iterdir())
-            except OSError as exc:
-                logger.debug("No se pudo inspeccionar %s: %s", directory, exc)
-                continue
-            for entry in entries:
-                try:
-                    if entry.is_file() and entry.suffix.lower() in _PLUGIN_SUFFIXES:
-                        available.setdefault(entry.name.casefold(), entry)
-                except OSError as exc:
-                    logger.debug("No se pudo inspeccionar %s: %s", entry, exc)
-        return available
+        return index_plugin_files(self._plugin_dirs, log=logger)
 
 
 def masters_preflight_check(issues: Sequence[MasterIssue]) -> PreflightCheck:

@@ -26,7 +26,11 @@ import pathlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from sky_claw.local.validators.plugin_header import PluginHeaderError, read_plugin_header
+from sky_claw.local.validators.plugin_header import (
+    PluginHeaderError,
+    index_plugin_files,
+    read_plugin_header,
+)
 from sky_claw.local.validators.preflight import PreflightCheck, PreflightStatus
 
 if TYPE_CHECKING:
@@ -40,9 +44,6 @@ LIGHT_PLUGIN_LIMIT = 4096
 
 #: Umbral de advertencia "acercándose" al límite full (margen de 4 slots).
 _FULL_NEAR_THRESHOLD = FULL_PLUGIN_LIMIT - 4
-
-#: Extensiones de plugin que el juego carga.
-_PLUGIN_SUFFIXES: frozenset[str] = frozenset({".esp", ".esm", ".esl"})
 
 Severity = Literal["critical", "warning"]
 LimitKind = Literal["full_exceeded", "light_exceeded", "full_near", "unreadable"]
@@ -189,22 +190,7 @@ class PluginLimitsChecker:
 
     def _index_available(self) -> dict[str, pathlib.Path]:
         """Nombre casefold → ruta del plugin (primer directorio gana)."""
-        available: dict[str, pathlib.Path] = {}
-        for directory in self._plugin_dirs:
-            try:
-                if not directory.is_dir():
-                    continue
-                entries = sorted(directory.iterdir())
-            except OSError as exc:
-                logger.debug("No se pudo inspeccionar %s: %s", directory, exc)
-                continue
-            for entry in entries:
-                try:
-                    if entry.is_file() and entry.suffix.lower() in _PLUGIN_SUFFIXES:
-                        available.setdefault(entry.name.casefold(), entry)
-                except OSError as exc:
-                    logger.debug("No se pudo inspeccionar %s: %s", entry, exc)
-        return available
+        return index_plugin_files(self._plugin_dirs, log=logger)
 
 
 def limits_preflight_check(limits: LoadOrderLimits) -> PreflightCheck:
