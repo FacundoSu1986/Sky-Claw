@@ -41,7 +41,7 @@ confirmarlo contra código y tests.
 | U-03 | Cerrado | #356 | — | tests de reconciliación de precache |
 | U-04 | Parcial | #397, #399, salida administrada de Pandora y subárbol administrado por grupo de BodySlide | Smoke real de rollback de Pandora | `test_rollback_salida.py`, `test_pandora_service.py`, `test_bodyslide_lock.py` y humano |
 | U-05 | Cerrado | #354 | — | `test_vramr_service.py` |
-| U-06 | Parcial | #375 para DynDOLOD | Post-check de Wrye Bash y BodySlide; criterio seguro para QuickAutoClean | tests de cada runner |
+| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide | Post-check de Wrye Bash; criterio seguro para QuickAutoClean | tests de cada runner, `test_bodyslide_postcheck_artefacto.py` |
 | U-07 | Cerrado | #355 | — | tests de Job Object de DynDOLOD |
 | U-08 | Cerrado | #378 y reconciliador de arranque | — | `test_rollback_reconciler.py` |
 | U-09 | Cerrado | #376 | — | tests del journal de grass |
@@ -104,7 +104,11 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
   un exit code de `argparse` sin causa legible.
 - **BodySlide** (`src/program/BodySlideApp.cpp`, descriptor en `BodySlideApp.h`)
   declara `gbuild`/`t` como nombres **cortos** de `wxCmdLineParser` (de ahí el
-  guion simple); el repo pasaba `-b`/`-o`.
+  guion simple); el repo pasaba `-b`/`-o`. El descriptor declara además `p`
+  (preset) y `tri` (morfos), que quedaron sin usar en el fix del vector: sin
+  `-tri`, `GroupBuild` pasa `cmdTri=false` y no se emiten los `.tri` que OBody NG
+  / RaceMenu cargan en memoria — un build silenciosamente incompleto. Ambos se
+  cablearon después, con `-tri` por defecto.
 - **Pandora** (README, "Startup Arguments"): `--game` y `--auto` no existen; los
   documentados para correr desatendido son `--auto_run`/`--auto_close`.
 

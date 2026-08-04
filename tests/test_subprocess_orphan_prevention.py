@@ -138,14 +138,29 @@ async def test_runner_kills_process_on_timeout(tmp_path, factory):
 @pytest.mark.parametrize("factory", _FACTORIES_QUE_SPAWNEAN)
 async def test_runner_kills_process_on_cancel(tmp_path, factory):
     """On task cancellation (graceful shutdown) the runner must kill the child
-    and re-raise ``CancelledError`` (never swallow cancellation)."""
+    and re-raise ``CancelledError`` (never swallow cancellation).
+
+    La cancelación se dispara cuando el spawn YA ocurrió, no tras un ``sleep``
+    fijo. El invariante que este test protege es "si hay un hijo, se mata"; con
+    un sleep arbitrario el test también dependía de que el runner llegara a
+    spawnear dentro de esa ventana, y eso es una propiedad del RUNNER, no del
+    invariante. Cualquier trabajo previo al spawn —BodySlide siembra su
+    ``Config.xml`` para evitar los modales de arranque— corría la ventana y el
+    test fallaba en un runner de CI cargado con "kill llamado 0 veces", que
+    describe un escenario donde no había proceso que matar.
+    """
     proc = _hanging_proc()
     runner, args = factory(tmp_path, 30.0)
     call = _CALLS[type(runner)]
+    spawneado = asyncio.Event()
 
-    with patch("asyncio.create_subprocess_exec", return_value=proc):
+    async def _spawnear(*_args: object, **_kwargs: object):
+        spawneado.set()
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=_spawnear):
         task = asyncio.create_task(call(runner, args))
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(spawneado.wait(), timeout=10.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
