@@ -74,20 +74,38 @@ def _menciona_firma_tes4(arbol: ast.AST) -> bool:
     return False
 
 
+def _aliases_de_struct(arbol: ast.AST) -> set[str]:
+    """Nombres con que este módulo puede llamar a `unpack`/`unpack_from`.
+
+    `from struct import unpack as decode` liga el desempaquetador a `decode`, y
+    sin resolverlo el ancla se esquiva renombrando el import — que es la forma
+    natural de escribirlo, no una evasión rebuscada.
+    """
+    return {
+        alias.asname or alias.name
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.ImportFrom) and nodo.module == "struct"
+        for alias in nodo.names
+        if alias.name in _DESEMPAQUETADORES_STRUCT
+    }
+
+
 def _desempaqueta_binario(arbol: ast.AST) -> bool:
     """True si el módulo llama a `struct.unpack*` o `<algo>.from_bytes(...)`.
 
     Se matchea por nombre de atributo/función y no por el módulo importado: lo
     que importa es que haya conversión de bytes a enteros, escrita como se
-    escriba (`struct.unpack`, `unpack_from` importado directo, `int.from_bytes`).
+    escriba (`struct.unpack`, `unpack_from` importado directo o con alias,
+    `int.from_bytes`).
     """
+    nombres_directos = _DESEMPAQUETADORES_STRUCT | _aliases_de_struct(arbol)
     for nodo in ast.walk(arbol):
         if not isinstance(nodo, ast.Call):
             continue
         func = nodo.func
         if isinstance(func, ast.Attribute) and (func.attr in _DESEMPAQUETADORES_STRUCT or func.attr == _METODO_INT):
             return True
-        if isinstance(func, ast.Name) and func.id in _DESEMPAQUETADORES_STRUCT:
+        if isinstance(func, ast.Name) and func.id in nombres_directos:
             return True
     return False
 
@@ -118,6 +136,13 @@ def test_detector_reconoce_las_formas_de_desempaquetar() -> None:
     assert _es_parser_tes4("d = b''\nif d[:4] == b'TES4':\n    int.from_bytes(d[4:8], 'little')\n")
     # La firma como str también cuenta (el snippet auditado decodificaba y comparaba).
     assert _es_parser_tes4("import struct\nt, = struct.unpack('<4s', d)\nif t.decode() == 'TES4':\n    pass\n")
+    # Alias del import: la forma que esquivaba el ancla (review Copilot/CodeRabbit PR #434).
+    assert _es_parser_tes4(
+        "from struct import unpack as decode\nt, _ = decode('<4sI', d)\nif t == b'TES4':\n    pass\n"
+    )
+    assert _es_parser_tes4("from struct import unpack_from as leer\nt, = leer('<4s', d, 0)\nS = b'TES4'\n")
+    # El alias solo vale si viene de `struct`: un homónimo de otro módulo no cuenta.
+    assert not _es_parser_tes4("from otra_lib import unpack as decode\ndecode('x')\nS = b'TES4'\n")
 
 
 def test_detector_ignora_menciones_en_docstrings() -> None:

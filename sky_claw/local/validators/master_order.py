@@ -97,10 +97,12 @@ def effective_load_order(
     """Reordena el load order como lo hace el motor: masters primero.
 
     Skyrim carga el bloque de masters completo antes que los ``.esp`` planos,
-    conservando el orden relativo dentro de cada bloque. Un plugin ausente de
-    ``is_master`` (no está en disco o su header no se pudo leer) se trata como
-    no-master: es el caso conservador, porque asumirlo master lo movería hacia
-    adelante y podría **ocultar** una inversión real.
+    conservando el orden relativo dentro de cada bloque.
+
+    El caller debe clasificar **por extensión antes que por header**: un
+    ``.esm``/``.esl`` se hoistea aunque su header sea ilegible, y tratarlo como
+    no-master lo dejaría al final del orden efectivo, inventando una inversión
+    que no existe. Un plugin ausente de ``is_master`` se trata como no-master.
 
     Args:
         enabled_plugins: Load order habilitado, en orden de ``plugins.txt``.
@@ -132,10 +134,19 @@ class MasterOrderChecker:
         available = index_plugin_files(self._plugin_dirs, log=logger)
         headers = self._read_headers(enabled_plugins, available)
 
+        # La extensión decide primero, y sobre TODO el load order: un `.esm`
+        # cuyo header no se pudo leer igual carga en el bloque de masters. Si se
+        # clasificara solo con los headers legibles, ese `.esm` caería al final
+        # del orden efectivo y su dependiente lo vería "después" — un ROJO
+        # inventado sobre un archivo que `missing_masters` ya reporta ilegible.
         is_master = {
-            key: header.is_master or pathlib.Path(key).suffix in _MASTER_BLOCK_SUFFIXES
-            for key, header in headers.items()
+            nombre.casefold(): pathlib.Path(nombre).suffix.casefold() in _MASTER_BLOCK_SUFFIXES
+            for nombre in enabled_plugins
         }
+        # El flag ESM del header solo puede AGREGAR al bloque (caso ESPFE/ESM
+        # flaggeado con extensión `.esp`); nunca sacar a un `.esm` de él.
+        for key_legible, header_legible in headers.items():
+            is_master[key_legible] = is_master[key_legible] or header_legible.is_master
         efectivo = effective_load_order(enabled_plugins, is_master=is_master)
 
         # Primera aparición gana: un plugins.txt malformado con nombres
@@ -152,9 +163,15 @@ class MasterOrderChecker:
                 continue  # ausente o ilegible: lo reporta `missing_masters`.
             indice_plugin = posicion[key]
             for master in header.masters:
-                indice_master = posicion.get(master.casefold())
-                if indice_master is None:
-                    continue  # no está en el load order: `missing_masters` lo cubre.
+                master_key = master.casefold()
+                if master_key not in headers:
+                    # Ausente del load order, no está en disco, o su header es
+                    # ilegible: en los tres casos `missing_masters` ya emite el
+                    # issue (`missing`/`disabled`/`unreadable`). Afirmar además
+                    # una inversión sobre un archivo que no se pudo clasificar
+                    # sería duplicar señal y, si es un `.esm`, inventarla.
+                    continue
+                indice_master = posicion[master_key]
                 if indice_master < indice_plugin:
                     continue
                 issues.append(

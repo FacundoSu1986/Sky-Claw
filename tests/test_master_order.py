@@ -200,6 +200,36 @@ def test_plugin_ilegible_no_se_reporta_aca(tmp_path: pathlib.Path) -> None:
     assert issues == []
 
 
+def test_un_master_ilegible_no_inventa_una_inversion(tmp_path: pathlib.Path) -> None:
+    """Un `.esm` ilegible listado después NO es una inversión (review PR #434).
+
+    Clasificar el bloque de masters solo con los headers legibles dejaba a este
+    `.esm` al final del orden efectivo, y su dependiente lo veía "después": un
+    ROJO inventado que bloqueaba Wrye Bash / Synthesis / DynDOLOD sobre un
+    archivo que `missing_masters` ya reporta como `unreadable`.
+    """
+    data = tmp_path / "Data"
+    data.mkdir()
+    _tes4_plugin(data / "Parche.esp", ["Base.esm"])
+    (data / "Base.esm").write_bytes(b"garbage")  # existe, pero header ilegible
+
+    issues = MasterOrderChecker(plugin_dirs=[data]).check(["Parche.esp", "Base.esm"])
+
+    assert issues == []
+
+
+def test_un_master_esp_ilegible_tampoco_inventa_inversion(tmp_path: pathlib.Path) -> None:
+    """Sin extensión de master tampoco alcanza: sin header no se afirma posición."""
+    data = tmp_path / "Data"
+    data.mkdir()
+    _tes4_plugin(data / "Parche.esp", ["Base.esp"])
+    (data / "Base.esp").write_bytes(b"garbage")
+
+    issues = MasterOrderChecker(plugin_dirs=[data]).check(["Parche.esp", "Base.esp"])
+
+    assert issues == []
+
+
 def test_plugin_del_load_order_ausente_en_disco_no_rompe(tmp_path: pathlib.Path) -> None:
     data = tmp_path / "Data"
     data.mkdir()

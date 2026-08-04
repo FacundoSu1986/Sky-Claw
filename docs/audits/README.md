@@ -9,6 +9,9 @@
 > fechados de este directorio son evidencia histórica.
 >
 > **Última verificación del índice:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> Esa fecha es el **baseline contra el que se re-verificaron las auditorías
+> previas**, no la fecha de la entrada más reciente: cada informe lleva la suya
+> en el nombre del archivo y vale contra el commit que declara en su cabecera.
 
 Las auditorías preservan escenario, evidencia y hallazgos al momento de su
 ejecución. Un hallazgo puede haber sido corregido después. Antes de actuar:
