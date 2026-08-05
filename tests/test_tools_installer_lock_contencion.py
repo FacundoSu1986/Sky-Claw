@@ -122,6 +122,16 @@ def test_segundo_llamador_queda_bloqueado_y_ve_already_existed(
             proc_a.wait()
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason=(
+        "El invariante es semantica de Windows: `os.path.normcase` solo baja "
+        "mayusculas y convierte `/`->`\\\\` ahi. En POSIX es la identidad, las "
+        "rutas son case-sensitive y `\\\\` es un caracter valido de nombre, asi "
+        "que `C:\\\\Tools\\\\LOOT` y `c:/tools/loot` son dos archivos DISTINTOS y "
+        "exigir la misma clave seria incorrecto."
+    ),
+)
 def test_misma_clave_para_grafias_distintas(tmp_path: pathlib.Path) -> None:
     """C:\\Tools\\LOOT y c:\\tools\\loot toman el MISMO lock (casefold + normcase).
 

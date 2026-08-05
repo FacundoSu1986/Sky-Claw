@@ -123,7 +123,7 @@ def _build_installer(lock_fake: _LockFake) -> ToolsInstaller:
 
 
 @pytest.mark.asyncio
-async def test_lock_tomado_incluso_en_el_early_return() -> None:
+async def test_lock_tomado_incluso_en_el_early_return(tmp_path: pathlib.Path) -> None:
     """El lock se toma ANTES del chequeo de existencia y se libera al final.
 
     Adquirir el lock solo alrededor de la extracción deja vivo el TOCTOU del
@@ -133,7 +133,7 @@ async def test_lock_tomado_incluso_en_el_early_return() -> None:
     lock_fake = _LockFake()
     installer = _build_installer(lock_fake)
 
-    install_dir = pathlib.Path("C:/Modding/LOOT")
+    install_dir = tmp_path / "LOOT"
     install_dir.mkdir(parents=True, exist_ok=True)
     (install_dir / "loot.exe").write_text("fake", encoding="utf-8")
 
@@ -153,12 +153,12 @@ async def test_lock_tomado_incluso_en_el_early_return() -> None:
 
 
 @pytest.mark.asyncio
-async def test_lock_se_libera_con_error_a_mitad_de_instalacion() -> None:
+async def test_lock_se_libera_con_error_a_mitad_de_instalacion(tmp_path: pathlib.Path) -> None:
     """Un error a mitad NO deja el lock tomado (finally)."""
     lock_fake = _LockFake()
     installer = _build_installer(lock_fake)
 
-    install_dir = pathlib.Path("C:/Modding/LOOT") / "no-existe"
+    install_dir = tmp_path / "LOOT" / "no-existe"
     install_dir.mkdir(parents=True, exist_ok=True)
 
     # ensure_loot sin loot.exe: va a la red. El gateway mockeado devuelve el
@@ -170,12 +170,12 @@ async def test_lock_se_libera_con_error_a_mitad_de_instalacion() -> None:
 
 
 @pytest.mark.asyncio
-async def test_lock_se_libera_con_cancelacion() -> None:
+async def test_lock_se_libera_con_cancelacion(tmp_path: pathlib.Path) -> None:
     """asyncio.CancelledError tampoco deja el lock tomado (finally, no except)."""
     lock_fake = _LockFake()
     installer = _build_installer(lock_fake)
 
-    install_dir = pathlib.Path("C:/Modding/LOOT") / "no-existe-2"
+    install_dir = tmp_path / "LOOT" / "no-existe-2"
     install_dir.mkdir(parents=True, exist_ok=True)
 
     # El gateway se CUELGA (no falla): la task queda bloqueada en el request y
