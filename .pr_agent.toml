@@ -1,8 +1,8 @@
 [config]
-# Motor principal. DeepSeek Chat (Altamente optimizado para código y conversacional)
-model = "deepseek/deepseek-chat"
-# Fallback a deepseek-coder si es necesario
-fallback_models = ["deepseek/deepseek-coder"]
+# Motor principal. DeepSeek v4 Flash (Modelo de alta velocidad y razonamiento)
+model = "deepseek/deepseek-v4-flash"
+# Fallback a DeepSeek v4 Pro (Capacidad máxima de la API)
+fallback_models = ["deepseek/deepseek-v4-pro"]
 
 # F-2: sin fijarlo, el default de PR-Agent (max_model_tokens = 32000) recorta la
 # ventana de 1M de Flash a 32k. El PASE 1 (superficies hermanas) exige mirar
