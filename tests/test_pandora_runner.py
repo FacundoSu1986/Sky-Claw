@@ -13,6 +13,7 @@ from sky_claw.local.tools.pandora_runner import (
     PandoraExecutionError,
     PandoraRunner,
     _leer_engine_log,
+    _MarcaDelLog,
     _marcas_del_log,
     _VeredictoDelLog,
 )
@@ -294,7 +295,7 @@ def test_marca_distingue_ausente_de_no_verificable(tmp_path: pathlib.Path, monke
 
     marcas = _marcas_del_log((ausente, bloqueado))
 
-    assert marcas[ausente] == 0
+    assert marcas[ausente] == _MarcaDelLog(tamano=0, ino=0, dev=0)
     assert marcas[bloqueado] is None
 
 
@@ -320,7 +321,7 @@ def test_leer_log_no_avisa_cuando_la_candidata_simplemente_no_existe(
     inexistente = tmp_path / "no_existe" / NOMBRE_DEL_LOG_DE_PANDORA
 
     with caplog.at_level(logging.WARNING):
-        veredicto = _leer_engine_log({inexistente: 0})
+        veredicto = _leer_engine_log({inexistente: _MarcaDelLog(tamano=0, ino=0, dev=0)})
 
     assert veredicto == _VeredictoDelLog()
     assert not caplog.records, [r.message for r in caplog.records]
@@ -345,7 +346,7 @@ def test_leer_log_avisa_ante_un_error_de_io_real(
     monkeypatch.setattr(pathlib.Path, "stat", _stat_que_falla)
 
     with caplog.at_level(logging.WARNING):
-        veredicto = _leer_engine_log({log: 0})
+        veredicto = _leer_engine_log({log: _MarcaDelLog(tamano=0, ino=0, dev=0)})
 
     assert veredicto == _VeredictoDelLog()
     assert any("bloqueado" in r.message for r in caplog.records)
@@ -385,3 +386,87 @@ async def test_el_log_bajo_output_path_tambien_decide(tmp_path: pathlib.Path) ->
 
     assert resultado.success is False
     assert "ERROR" in resultado.message
+
+
+# --------------------------------------------------------------------------- #
+# Identidad del log, no sólo tamaño (hallazgo qodo, PR #439)
+#
+# Si Pandora trunca y RECREA `Engine.log` en vez de apendear —comportamiento
+# no verificado contra un rig real—, un chequeo de sólo tamaño puede fallar:
+# archivo viejo de 1000 bytes, el motor lo trunca y escribe 1500 bytes nuevos
+# con el ERROR en los primeros bytes → `tamano(1500) > marca(1000)` sale
+# True, pero leer desde el byte 1000 del archivo NUEVO saltea justo el ERROR
+# que debería invalidar la corrida. La identidad (inode/device) distingue
+# "este archivo creció" de "este archivo es OTRO que casualmente es más
+# grande", sin necesitar verificar la semántica real de truncado de Pandora.
+# --------------------------------------------------------------------------- #
+
+
+def test_identidad_distinta_no_atribuye_pese_a_tamano_mayor(tmp_path: pathlib.Path) -> None:
+    """El escenario exacto de la revisión: archivo recreado, más grande, con el
+    ERROR en los primeros bytes — el tamaño solo lo dejaría pasar como éxito.
+
+    La identidad se FABRICA en vez de simularse con ``unlink()`` + recrear: en
+    este filesystem (y potencialmente en CI) el inode liberado se reutiliza de
+    inmediato para el archivo siguiente, así que ``unlink``+recrear no garantiza
+    una identidad distinta — el test sería flaky por una razón ajena a la lógica
+    que se quiere probar. Fabricar la marca prueba la COMPARACIÓN en aislamiento.
+    """
+    log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
+    # El ERROR queda en los primeros bytes del archivo, pero el tamaño total es
+    # mayor que la marca vieja — exactamente lo que dejaría pasar un chequeo
+    # de sólo tamaño.
+    log.write_text("ERROR: Assembler > mod.xml > parse > nodo > falló\n" + "x" * 1500, encoding="utf-8")
+    identidad_real = log.stat()
+    marca_vieja = _MarcaDelLog(
+        tamano=1000,
+        ino=identidad_real.st_ino + 1,  # deliberadamente OTRA identidad
+        dev=identidad_real.st_dev,
+    )
+
+    veredicto = _leer_engine_log({log: marca_vieja})
+
+    assert veredicto.fallas == (), "una identidad distinta no es atribuible aunque el tamaño haya crecido"
+    assert veredicto.texto == ""
+
+
+def test_identidad_distinta_deja_un_breadcrumb(tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture) -> None:
+    log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
+    log.write_text("contenido nuevo\n", encoding="utf-8")
+    identidad_real = log.stat()
+    marca_vieja = _MarcaDelLog(tamano=1, ino=identidad_real.st_ino + 1, dev=identidad_real.st_dev)
+
+    with caplog.at_level(logging.WARNING):
+        _leer_engine_log({log: marca_vieja})
+
+    assert any("identidad" in r.message for r in caplog.records)
+
+
+def test_misma_identidad_con_crecimiento_normal_si_decide(tmp_path: pathlib.Path) -> None:
+    """El caso común (apéndice real, sin truncar) no debe romperse por el
+    chequeo de identidad nuevo: es el MISMO archivo, sólo creció."""
+    log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
+    log.write_text("x" * 100, encoding="utf-8")
+    marcas = _marcas_del_log((log,))
+
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write("ERROR: Assembler > mod.xml > parse > nodo > falló\n")
+
+    veredicto = _leer_engine_log(marcas)
+
+    assert veredicto.fallas != ()
+    assert "mod.xml" in veredicto.texto
+
+
+def test_marca_ausente_no_dispara_el_chequeo_de_identidad(tmp_path: pathlib.Path) -> None:
+    """Sin identidad previa (marca en cero, archivo no existía al medir) no hay
+    nada que comparar: se lee el archivo nuevo desde el byte 0 normalmente."""
+    log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
+    marcas = _marcas_del_log((log,))
+    assert marcas[log] == _MarcaDelLog(tamano=0, ino=0, dev=0)
+
+    log.write_text("ERROR: Assembler > mod.xml > parse > nodo > falló\n", encoding="utf-8")
+
+    veredicto = _leer_engine_log(marcas)
+
+    assert veredicto.fallas != ()

@@ -166,6 +166,30 @@ con el defecto ya cerrado:
   surface en `PandoraResult.warnings`, no decide el veredicto.
   El mismo smoke de rig de U-04 debería empezar por confirmar qué acepta el
   binario pinneado.
+- **Ventana de lectura de 8 MiB, sólo el tramo apendeado: sin verificar contra
+  un run real de gran volumen.** `_MAX_BYTES_DE_LECTURA` conserva el PRIMER
+  tramo del apéndice desde la marca; una corrida que loguee más de 8 MiB de
+  `INFO` antes de un `ERROR` final lo perdería (hallazgo qodo, PR #439). No se
+  cambió a una lectura de cola (`tamano - 8 MiB`) porque el tope existe
+  también para no cargar un log enorme entero en memoria en el hilo del pool
+  (`asyncio.to_thread`), y no hay evidencia de que Pandora realmente loguee a
+  ese volumen en una corrida normal — cambiarlo sería otra suposición sin
+  cita, igual que la de `WARN` de arriba. La identidad del archivo (inode/
+  device, cerrada en este mismo PR) sí se corrigió porque es una propiedad
+  del filesystem verificable sin depender de ningún supuesto sobre el binario.
+- **Ambas rutas candidatas de `Engine.log` sin verificar: si las dos están
+  mal, el mecanismo se apaga sin ninguna señal.** El breadcrumb de formato no
+  reconocido (`sky_claw/local/tools/pandora_runner.py`, tarea del contrato de
+  veredicto) sólo se emite cuando ALGUNA candidata existe y creció; si Pandora
+  escribe el log en un tercer lugar (`Data`, `%TEMP%`, AppData), ninguna marca
+  crece nunca y el veredicto cae al exit code en silencio absoluto —el mismo
+  desenlace que el mecanismo tenía antes de este PR, sin regresión, pero
+  tampoco con la mejora que promete (hallazgo qodo, PR #439). No se agregó un
+  warning para "ninguna candidata creció" porque no hay forma de distinguir
+  eso de una corrida sana que simplemente no logueó nada — sin un rig no se
+  sabe si Pandora escribe algo en un run limpio, y advertir en ese caso podría
+  ser ruido en el 100% de las corridas sanas. Confirmar la ruta real es parte
+  del mismo smoke de U-04.
 - **Ubicación de `Engine.log`: asumida, no verificada.** El veredicto por log de
   Pandora (`pandora_runner._leer_engine_log`) sondea `<dir del exe>/Engine.log` y
   `<Pandora_Output>/Engine.log`. Ninguna de las dos está confirmada contra una

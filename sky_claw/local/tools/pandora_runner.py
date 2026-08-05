@@ -69,6 +69,13 @@ _MAX_LINEAS_REPORTADAS = 20
 
 #: Techo de lectura del tramo nuevo del log. Un run que loguee cientos de MB no
 #: debe cargarse entero en memoria dentro de un hilo del pool.
+#:
+#: Conserva el PRIMER tramo del apéndice, no la cola: un run que loguee más de
+#: 8 MiB de ``INFO`` antes de un ``ERROR`` final lo perdería (hallazgo qodo, PR
+#: #439). No se cambió a leer desde el final porque no hay evidencia de que
+#: Pandora loguee a ese volumen en una corrida normal — hacerlo sería otra
+#: suposición sin cita, la misma clase de riesgo que la severidad de ``WARN``
+#: de arriba. Ver ``docs/pending_ooda_status.md``.
 _MAX_BYTES_DE_LECTURA = 8 * 1024 * 1024
 
 #: Cuánto de la cola cruda del log se adjunta cuando no hay severidades parseadas.
@@ -153,8 +160,30 @@ def _rutas_candidatas_del_log(exe: pathlib.Path, output: pathlib.Path | None) ->
     return tuple(dict.fromkeys(candidatas))
 
 
-def _marcas_del_log(rutas: tuple[pathlib.Path, ...]) -> dict[pathlib.Path, int | None]:
-    """Tamaño de cada candidata ANTES de spawnear; ausente ⇒ 0.
+@dataclass(frozen=True, slots=True)
+class _MarcaDelLog:
+    """Tamaño E IDENTIDAD de una candidata, capturados ANTES de spawnear.
+
+    La identidad (``st_dev``/``st_ino``) es lo que cierra un hueco que el
+    tamaño solo no puede: si Pandora trunca y recrea ``Engine.log`` en vez de
+    apendear —comportamiento no verificado contra un rig real—, el archivo
+    nuevo puede crecer más allá de la marca vieja aunque sea un archivo
+    DISTINTO. Comparar sólo tamaños (``tamano_nuevo > marca``) leería desde un
+    offset que ya no tiene relación con el contenido real: un ``ERROR`` en los
+    primeros bytes del archivo recreado quedaría fuera del tramo leído,
+    produciendo el mismo falso verde que este módulo existe para cerrar
+    (hallazgo qodo, PR #439). ``ino=0``/``dev=0`` marca "sin identidad previa"
+    (archivo ausente al medir): no hay nada contra qué comparar, así que el
+    chequeo de identidad se omite y se lee desde el byte 0 del archivo nuevo.
+    """
+
+    tamano: int
+    ino: int
+    dev: int
+
+
+def _marcas_del_log(rutas: tuple[pathlib.Path, ...]) -> dict[pathlib.Path, _MarcaDelLog | None]:
+    """Tamaño e identidad de cada candidata ANTES de spawnear; ausente ⇒ marca en cero.
 
     Esta marca es la que hace la atribución, y es deliberadamente distinta del
     mecanismo del hermano ``bodyslide_runner._leer_log``: BodySlide acota la
@@ -165,19 +194,21 @@ def _marcas_del_log(rutas: tuple[pathlib.Path, ...]) -> dict[pathlib.Path, int |
 
     ``None`` = marca NO VERIFICABLE (la ruta existe pero no se pudo medir: lock de
     otro proceso, permisos, error transitorio de red en un share). Deliberadamente
-    distinto de ``0`` (ausente): con ``0`` se lee el archivo COMPLETO, y sobre un
-    log que ya acumula corridas anteriores eso atribuiría a ESTA corrida los
-    ``ERROR``/``FATAL`` de las anteriores — un falso rojo, tan malo como el falso
-    verde que este módulo cierra (review CodeRabbit, PR #439). Sólo
-    ``FileNotFoundError`` justifica ``0``: es el caso esperado y frecuente, dado
-    que se sondean DOS candidatas y lo normal es que sólo una exista.
+    distinto de la marca en cero (ausente): con cero se lee el archivo COMPLETO, y
+    sobre un log que ya acumula corridas anteriores eso atribuiría a ESTA corrida
+    los ``ERROR``/``FATAL`` de las anteriores — un falso rojo, tan malo como el
+    falso verde que este módulo cierra (review CodeRabbit, PR #439). Sólo
+    ``FileNotFoundError`` justifica la marca en cero: es el caso esperado y
+    frecuente, dado que se sondean DOS candidatas y lo normal es que sólo una
+    exista.
     """
-    marcas: dict[pathlib.Path, int | None] = {}
+    marcas: dict[pathlib.Path, _MarcaDelLog | None] = {}
     for ruta in rutas:
         try:
-            marcas[ruta] = ruta.stat().st_size
+            estado = ruta.stat()
+            marcas[ruta] = _MarcaDelLog(tamano=estado.st_size, ino=estado.st_ino, dev=estado.st_dev)
         except FileNotFoundError:
-            marcas[ruta] = 0
+            marcas[ruta] = _MarcaDelLog(tamano=0, ino=0, dev=0)
         except OSError as exc:
             logger.warning(
                 "No se pudo medir '%s' antes de la corrida; su contenido no se usa para decidir: %s", ruta, exc
@@ -186,13 +217,14 @@ def _marcas_del_log(rutas: tuple[pathlib.Path, ...]) -> dict[pathlib.Path, int |
     return marcas
 
 
-def _leer_engine_log(marcas: dict[pathlib.Path, int | None]) -> _VeredictoDelLog:
+def _leer_engine_log(marcas: dict[pathlib.Path, _MarcaDelLog | None]) -> _VeredictoDelLog:
     """Lee el tramo APENDEADO por esta corrida y lo clasifica por severidad.
 
     Best-effort ante I/O: el log es señal adicional, no la condición de éxito. Si
-    falta, si no creció, si se rotó (quedó más chico que su marca) o si su marca
-    no es verificable (``None``), se devuelve un veredicto no atribuible: el texto
-    se conserva como diagnóstico pero no decide.
+    falta, si no creció, si se rotó (quedó más chico que su marca), si CAMBIÓ DE
+    IDENTIDAD (truncado y recreado, ver ``_MarcaDelLog``) o si su marca no es
+    verificable (``None``), se devuelve un veredicto no atribuible: el texto se
+    conserva como diagnóstico pero no decide.
     """
     for ruta, marca in marcas.items():
         if marca is None:
@@ -200,16 +232,31 @@ def _leer_engine_log(marcas: dict[pathlib.Path, int | None]) -> _VeredictoDelLog
             # esta corrida. Ya se logueó el warning al medir; no repetirlo acá.
             continue
         try:
-            tamano = ruta.stat().st_size
-            if tamano <= marca:
+            estado = ruta.stat()
+            tamano = estado.st_size
+            # Identidad distinta ⇒ el archivo que existía a la marca ya NO es
+            # este: se truncó y recreó, se borró y recreó, o lo rotó otra
+            # herramienta. El tamaño puede haber crecido de casualidad más allá
+            # de la marca vieja; leer desde ese offset leería contenido sin
+            # relación con lo que la marca midió. Sin identidad previa
+            # (``marca.ino == 0``, archivo ausente al medir) no hay nada que
+            # comparar y se sigue de largo al chequeo de tamaño normal.
+            identidad_cambio = marca.ino != 0 and (estado.st_ino != marca.ino or estado.st_dev != marca.dev)
+            if identidad_cambio:
+                logger.warning(
+                    "'%s' cambió de identidad durante la corrida (truncado/recreado); su contenido no se usa para decidir.",
+                    ruta,
+                )
+                continue
+            if tamano <= marca.tamano:
                 # No creció (log ausente o sin escritura) o se rotó (más chico que
                 # la marca). En ambos casos no hay tramo atribuible a esta corrida.
-                if tamano < marca:
+                if tamano < marca.tamano:
                     logger.warning("'%s' se achicó durante la corrida; su contenido no se usa para decidir.", ruta)
                 continue
             with ruta.open("rb") as handle:
-                handle.seek(marca)
-                crudo = handle.read(min(tamano - marca, _MAX_BYTES_DE_LECTURA))
+                handle.seek(marca.tamano)
+                crudo = handle.read(min(tamano - marca.tamano, _MAX_BYTES_DE_LECTURA))
         except FileNotFoundError:
             # Esperado: la marca fue 0 porque no existía, y sigue sin existir (o
             # dejó de existir entre la marca y la lectura). No es una condición

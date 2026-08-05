@@ -310,6 +310,11 @@ async def test_xedit_con_exit_cero_y_errores_parseados_no_es_exito(
         stderr="",
         records_processed=0,
         errors=["Error: no se pudo aplicar el override"],
+        # No vacío a propósito (review CodeRabbit, PR #439): con warnings=()
+        # este test no distingue "el handler propaga la lista real" de "el
+        # handler siempre devuelve []", que es exactamente la regresión que
+        # perdería advertencias parseadas durante un XEditWriteError.
+        warnings=["Advertencia: nodo huérfano ignorado"],
     )
     runner.execute_patch = AsyncMock(
         side_effect=XEditWriteError(
@@ -330,6 +335,9 @@ async def test_xedit_con_exit_cero_y_errores_parseados_no_es_exito(
     # ejercita realmente la extracción de ``exc.result``).
     assert "salió con código 0 pero reportó errores" in result["message"]
     assert "no se pudo aplicar el override" in result["message"]
+    # ``dataclasses.asdict`` no convierte tuplas a listas: ``PatchResult.warnings``
+    # es ``tuple`` en el contrato del dataclass, y así llega serializado.
+    assert result["warnings"] == ("Advertencia: nodo huérfano ignorado",)
     mock_journal.mark_transaction_rolled_back.assert_awaited()
 
 
@@ -384,6 +392,71 @@ async def test_xedit_con_exit_code_real_no_cero_reporta_ese_codigo(
     assert result["xedit_exit_code"] == 1
     assert "código 1" in result["message"]
     assert "código 0" not in result["message"]
+    # Sin errores parseados (``errors=[]``), el diagnóstico real vive en
+    # ``stderr`` — descartarlo deja al caller sólo con "Patch execution failed:
+    # []" del ``str(exc)`` crudo, sin ninguna causa legible (review CodeRabbit,
+    # PR #439).
+    assert "fatal: crashed" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_xedit_write_error_no_deja_que_un_journal_roto_oculte_el_fallo(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    mock_conflict_report: ConflictReport,
+    target_plugin: pathlib.Path,
+) -> None:
+    """Un ``mark_transaction_rolled_back`` que revienta no puede reemplazar el
+    fallo REAL de xEdit por una excepción sin manejar.
+
+    Antes de este fix, el ``except XEditWriteError`` llamaba al journal
+    directo (sin el helper best-effort ``_mark_journal_rolled_back``): un
+    fallo ahí escapaba el handler entero, ningún ``except`` hermano lo
+    capturaba, y ``execute_patch()`` terminaba en una excepción sin manejar en
+    vez del dict que el contrato T11 exige — perdiendo el resultado fallido
+    real de xEdit (review CodeRabbit, PR #439).
+    """
+    from sky_claw.local.xedit.runner import ScriptExecutionResult, XEditWriteError
+
+    mock_patch_result = PatchResult(
+        success=True,
+        output_path=target_plugin,
+        records_patched=5,
+        conflicts_resolved=2,
+        xedit_exit_code=0,
+        warnings=(),
+        error=None,
+    )
+    mock_orchestrator = AsyncMock()
+    mock_orchestrator.resolve = AsyncMock(return_value=mock_patch_result)
+    mock_orchestrator._strategies = []
+
+    mock_journal.mark_transaction_rolled_back = AsyncMock(side_effect=RuntimeError("journal roto"))
+
+    service = make_service(lock_manager, snapshot_manager, mock_journal, mock_path_resolver, mock_event_bus)
+    runner = MagicMock()
+    script_result = ScriptExecutionResult(
+        success=False,
+        exit_code=0,
+        stdout="",
+        stderr="",
+        records_processed=0,
+        errors=["Error: no se pudo aplicar el override"],
+    )
+    runner.execute_patch = AsyncMock(
+        side_effect=XEditWriteError(f"Patch execution failed: {script_result.errors}", result=script_result)
+    )
+    service._xedit_runner = runner
+
+    with patch.object(service, "_ensure_patch_orchestrator", return_value=mock_orchestrator):
+        # No debe propagar: el fallo del journal es best-effort.
+        result = await service.execute_patch(mock_conflict_report, target_plugin)
+
+    assert result["success"] is False
+    assert "no se pudo aplicar el override" in result["message"]
 
 
 # =============================================================================
@@ -421,6 +494,37 @@ async def test_execute_patch_failure_marks_rollback_and_publishes_completed(
     completed_call = next(c for c in calls if c.args[0].topic == "xedit.patch.completed")
     assert completed_call.args[0].payload["rolled_back"] is True
     assert completed_call.args[0].payload["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_patching_error_no_deja_que_un_journal_roto_oculte_el_fallo(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    mock_conflict_report: ConflictReport,
+    target_plugin: pathlib.Path,
+) -> None:
+    """El hermano del test de ``XEditWriteError``: ``except PatchingError`` tenía
+    el MISMO defecto (llamada directa al journal, sin el helper best-effort)
+    antes de este fix — encontrado en un handler distinto al que señaló la
+    revisión, mismo patrón "arreglar un hermano y no al otro" que AGENTS.md
+    nombra como el defecto dominante del repo."""
+    mock_orchestrator = AsyncMock()
+    mock_orchestrator.resolve = AsyncMock(side_effect=PatchingError("xEdit crashed"))
+    mock_orchestrator._strategies = []
+
+    mock_journal.mark_transaction_rolled_back = AsyncMock(side_effect=RuntimeError("journal roto"))
+
+    service = make_service(lock_manager, snapshot_manager, mock_journal, mock_path_resolver, mock_event_bus)
+
+    with patch.object(service, "_ensure_patch_orchestrator", return_value=mock_orchestrator):
+        # No debe propagar: el fallo del journal es best-effort.
+        result = await service.execute_patch(mock_conflict_report, target_plugin)
+
+    assert result["success"] is False
+    assert "xEdit crashed" in result["error"]
 
 
 @pytest.mark.asyncio

@@ -407,7 +407,11 @@ class XEditPipelineService:
             # código 0" se lee como un bug del repo en vez de un desenlace real.
             rolled_back = bool(tx_lock and tx_lock.rollback_completed)
             if tx_id is not None and rolled_back:
-                await self._journal.mark_transaction_rolled_back(tx_id)
+                # Best-effort: un fallo del journal ACÁ no puede reemplazar el
+                # fallo real de xEdit ni romper el contrato de dict serializable
+                # (T11) — mismo defecto que el hermano ``except PatchingError``
+                # de abajo, ambos corregidos juntos (review CodeRabbit, PR #439).
+                await self._mark_journal_rolled_back(tx_id)
             elif tx_id is not None:
                 logger.critical(
                     "Rollback xEdit incompleto para TX %d; se mantiene pendiente para recuperación manual.",
@@ -424,7 +428,12 @@ class XEditPipelineService:
                     f"xEdit salió con código 0 pero reportó errores en su salida; el parche no es confiable: {detalle}"
                 )
             elif script_result is not None:
-                mensaje = f"xEdit falló con código {xedit_exit_code}: {exc}"
+                # Mismo orden de prioridad que la rama de arriba: con un exit
+                # code real pero SIN errores parseados, ``str(exc)`` es sólo
+                # "Patch execution failed: []" — sin stderr/stdout el caller se
+                # queda sin el diagnóstico real (review CodeRabbit, PR #439).
+                detalle = "; ".join(script_result.errors) or script_result.stderr or script_result.stdout or str(exc)
+                mensaje = f"xEdit falló con código {xedit_exit_code}: {detalle}"
             else:
                 mensaje = str(exc)
             logger.error("Parcheo xEdit falló: %s", mensaje)
@@ -444,7 +453,12 @@ class XEditPipelineService:
             # silenciosamente, dejando los masters en estado parcial.
             rolled_back = bool(tx_lock and tx_lock.rollback_completed)
             if tx_id is not None and rolled_back:
-                await self._journal.mark_transaction_rolled_back(tx_id)
+                # Best-effort (review CodeRabbit, PR #439): sin el helper, un
+                # fallo del journal ACÁ escapa el ``except`` entero — ninguno de
+                # los handlers hermanos lo captura, así que ``execute_patch()``
+                # termina con una excepción sin manejar en vez del dict que
+                # T11 exige, y el caller nunca ve el fallo REAL de xEdit.
+                await self._mark_journal_rolled_back(tx_id)
             elif tx_id is not None:
                 logger.critical(
                     "Rollback xEdit incompleto para TX %d; se mantiene pendiente para recuperación manual.",
