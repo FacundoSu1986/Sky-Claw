@@ -6,7 +6,7 @@ LODs de forma automatizada con empaquetado para Mod Organizer 2.
 
 Reference:
     - Patrón subprocess: synthesis_runner.py:303-348
-    - DynDOLOD CLI: https://dyndolod.info/Help/Command-Line-Interface
+    - DynDOLOD CLI: https://dyndolod.info/Help/Command-Line-Argument
 """
 
 from __future__ import annotations
@@ -19,13 +19,14 @@ import pathlib
 import re
 import shutil
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from sky_claw.app.security.links import link_kind_or_raise_with_retry, rmtree_link_aware
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
-from sky_claw.local.tools.output_targets import dyndolod_staging_roots
+from sky_claw.local.tools.output_targets import dyndolod_output_target
 
 logger = logging.getLogger(__name__)
 
@@ -103,9 +104,26 @@ class DynDOLODConfig:
         mo2_mods_path: Ruta a la carpeta mods de MO2.
         dyndolod_exe: Ruta al ejecutable de DynDOLOD.
         texgen_exe: Ruta al ejecutable de TexGen (opcional).
+        data_dir: Carpeta Data del juego (default: ``game_path/Data``).
+        ini_dir: Carpeta de los INI del juego (``My Games/Skyrim Special
+            Edition``). Sin default derivado: la carpeta Documentos del rig está
+            redirigida a OneDrive, así que derivarla a ciegas es frágil. Si es
+            ``None`` el switch ``-m:`` no se emite y la herramienta resuelve su
+            default por registro.
+        plugins_file: Ruta a ``plugins.txt``. Idem: sin default derivado; si es
+            ``None`` el switch ``-p:`` no se emite.
+        output_root: Raíz administrada única donde la herramienta crea sus
+            carpeta de salida (default: ``dyndolod_output_target(game_path)``,
+            ver ``output_targets.py``).
+        temp_dir: Carpeta temporal (default: ``tempfile.gettempdir()``).
         timeout_seconds: Timeout en segundos para la ejecución (default: 4 horas).
+            En modo asistido el reloj del proceso cubre la ventana de interacción
+            humana (el humano elige preset/worldspaces en la GUI); el default de
+            4 h cubre ambos tiempos a propósito.
         heartbeat_interval: Segundos entre logs de heartbeat.
-        preset: Nivel de calidad del preset (Low, Medium, High).
+        preset: Nivel de calidad (Low, Medium, High) — metadato de la corrida
+            (eventos, journal, preview). NO viaja en el argv: lo elige el humano
+            en el asistente de la herramienta.
     """
 
     game_path: pathlib.Path
@@ -113,12 +131,38 @@ class DynDOLODConfig:
     mo2_mods_path: pathlib.Path
     dyndolod_exe: pathlib.Path
     texgen_exe: pathlib.Path | None = None
+    data_dir: pathlib.Path | None = None
+    ini_dir: pathlib.Path | None = None
+    plugins_file: pathlib.Path | None = None
+    output_root: pathlib.Path | None = None
+    temp_dir: pathlib.Path | None = None
     timeout_seconds: int = 14400  # 4 horas por defecto
     heartbeat_interval: int = 60  # Segundos entre logs de heartbeat
     preset: str = "Medium"  # Low, Medium, High
 
     def __post_init__(self) -> None:
-        """Valida que los paths requeridos existan."""
+        """Resuelve defaults derivables y valida que los paths requeridos existan.
+
+        ``data_dir``/``output_root``/``temp_dir`` tienen default DERIVADO (no
+        pueden ser ``default_factory``: dependen de ``game_path``). ``ini_dir`` y
+        ``plugins_file`` NO se derivan a ciegas: la auto-resolución de la
+        herramienta es frágil — en el rig (Documentos redirigida a OneDrive) una
+        corrida sin ``-m:`` explícito muere con ``Fatal: Could not find ini``
+        (spike 2026-08-05 con TexGen 2.98). Se pasan explícitos cuando el
+        operador los configura; si faltan, el switch se omite y el preflight del
+        servicio lo advierte.
+        """
+        object.__setattr__(self, "data_dir", self.data_dir if self.data_dir is not None else self.game_path / "Data")
+        object.__setattr__(
+            self,
+            "output_root",
+            self.output_root if self.output_root is not None else dyndolod_output_target(game=self.game_path),
+        )
+        object.__setattr__(
+            self,
+            "temp_dir",
+            self.temp_dir if self.temp_dir is not None else pathlib.Path(tempfile.gettempdir()),
+        )
         if not self.game_path.exists():
             raise ValueError(f"Game path does not exist: {self.game_path}")
         if not self.dyndolod_exe.exists():
@@ -206,11 +250,9 @@ class DynDOLODRunner:
             print(f"DynDOLOD mod: {result.dyndolod_mod_path}")
     """
 
-    # Patrones regex para parsing de salida
-    _SUCCESS_PATTERN = re.compile(
-        r"(?:Successfully|Complete|Finished|Generated|Created)\s+(?:LOD|output|textures|plugin)",
-        re.IGNORECASE,
-    )
+    # Patrones regex para el post-check por LOG (los binarios son apps GUI, PE
+    # Subsystem 2: no escriben a stdout/stderr; la evidencia real de una corrida
+    # vive en ``Logs/{Tool}_{modo}_log.txt``).
     _ERROR_PATTERN = re.compile(
         r"(?:ERROR|Error|FAIL|Exception|Critical|FATAL):\s*(.+?)(?:\n|$)",
         re.IGNORECASE | re.MULTILINE,
@@ -218,10 +260,6 @@ class DynDOLODRunner:
     _WARNING_PATTERN = re.compile(
         r"(?:WARNING|Warning|WARN):\s*(.+?)(?:\n|$)",
         re.IGNORECASE | re.MULTILINE,
-    )
-    _PROGRESS_PATTERN = re.compile(
-        r"(?:Processing|Generating|Creating|Writing)\s*[:\[]?\s*['\"]?([A-Za-z0-9_./\\]+)",
-        re.IGNORECASE,
     )
 
     # Nombres de directorios de salida estándar
@@ -247,9 +285,11 @@ class DynDOLODRunner:
 
     async def run_texgen(self, extra_args: list[str] | None = None) -> ToolExecutionResult:
         """
-        Ejecuta TexGen en modo headless.
+        Ejecuta TexGen (etapa 9, asistida).
 
-        CLI esperado: TexGenx64.exe -t (para Skyrim SE/AE)
+        CLI verificado: TexGenx64.exe -sse -o:"…" -d:"…" [-m:"…"] [-p:"…"] -t:"…".
+        La herramienta es una app GUI (PE Subsystem 2): no escribe a stdout; el
+        éxito se decide por exit code + artefacto + log (ver post-check).
 
         Args:
             extra_args: Argumentos adicionales de línea de comandos.
@@ -273,7 +313,7 @@ class DynDOLODRunner:
 
         logger.info("Iniciando TexGen para generación de texturas LOD")
 
-        args = self._build_texgen_args(extra_args)
+        args = self._build_xedit_args(extra_args)
 
         try:
             execution_cwd = pathlib.Path.cwd()
@@ -296,12 +336,15 @@ class DynDOLODRunner:
                 errors=[str(e)],
             )
 
-        # Parsear salida
-        errors, warnings = self._parse_output(stdout, stderr)
-        success = return_code == 0 and not errors
+        # Post-check por LOG: los binarios son apps GUI (PE Subsystem 2), los
+        # pipes vuelven vacíos siempre; la evidencia vive en Logs/TexGen_SSE_log.txt.
+        log_texto = self._leer_log("TexGen")
+        errors, warnings = self._parse_log(log_texto) if log_texto is not None else ([], [])
 
-        # Determinar path de salida
-        output_path = self._find_texgen_output(cwd=execution_cwd)
+        # Path de salida: determinista bajo la raíz administrada (-o:).
+        output_path = self._find_texgen_output()
+        artefacto = output_path is not None and output_path.exists() and any(output_path.iterdir())
+        success = return_code == 0 and artefacto and not errors
 
         result = ToolExecutionResult(
             success=success,
@@ -336,12 +379,16 @@ class DynDOLODRunner:
         extra_args: list[str] | None = None,
     ) -> ToolExecutionResult:
         """
-        Ejecuta DynDOLOD en modo headless.
+        Ejecuta DynDOLOD (etapa 9, asistida).
 
-        CLI esperado: DynDOLODx64.exe -p <preset> -t (para Skyrim SE/AE)
+        CLI verificado: DynDOLODx64.exe -sse -o:"…" -d:"…" [-m:"…"] [-p:"…"] -t:"…".
+        La herramienta es una app GUI (PE Subsystem 2): no escribe a stdout; el
+        éxito se decide por exit code + artefacto + log (ver post-check).
 
         Args:
-            preset: Nivel de calidad (Low, Medium, High).
+            preset: Nivel de calidad (Low, Medium, High) — METADATO de la corrida
+                (viaja por eventos, journal y preview). NO va en el argv: el
+                preset lo elige el humano en el asistente GUI.
             extra_args: Argumentos adicionales de línea de comandos.
 
         Returns:
@@ -353,7 +400,7 @@ class DynDOLODRunner:
         """
         logger.info("Iniciando DynDOLOD con preset: %s", preset)
 
-        args = self._build_dyndolod_args(preset, extra_args)
+        args = self._build_xedit_args(extra_args)
 
         try:
             execution_cwd = pathlib.Path.cwd()
@@ -376,12 +423,15 @@ class DynDOLODRunner:
                 errors=[str(e)],
             )
 
-        # Parsear salida
-        errors, warnings = self._parse_output(stdout, stderr)
-        success = return_code == 0 and not errors
+        # Post-check por LOG (ídem TexGen): Logs/DynDOLOD_SSE_log.txt.
+        log_texto = self._leer_log("DynDOLOD")
+        errors, warnings = self._parse_log(log_texto) if log_texto is not None else ([], [])
 
-        # Determinar path de salida
-        output_path = self._find_dyndolod_output(cwd=execution_cwd)
+        # Path de salida: determinista bajo la raíz administrada (-o:). El
+        # artefacto reusa validate_dyndolod_output (exige DynDOLOD.esp, U-06).
+        output_path = self._find_dyndolod_output()
+        artefacto = output_path is not None and await self.validate_dyndolod_output(output_path)
+        success = return_code == 0 and artefacto and not errors
 
         result = ToolExecutionResult(
             success=success,
@@ -856,91 +906,114 @@ class DynDOLODRunner:
     # Métodos Auxiliares
     # =========================================================================
 
-    def _build_texgen_args(self, extra_args: list[str] | None) -> list[str]:
-        """
-        Construye argumentos CLI para TexGen.
+    def _build_xedit_args(self, extra_args: list[str] | None) -> list[str]:
+        """Construye el argv de TexGen/DynDOLOD contra el contrato verificado.
+
+        Fuente: ``dyndolod.info/Help/Command-Line-Argument`` (doc oficial),
+        ``Docs/DynDOLOD-Shortcut.txt`` del paquete y el parser que ambos binarios
+        heredan de xEdit (``xeInit.pas``: ``-T:``/``-P:`` con dos puntos y valor).
+        El vector viejo (``-game SSE``, ``-p <preset>``, ``-t`` pelado,
+        ``--expert``) no existe: se ignora en silencio. ``--expert`` no es un
+        argumento (se activa con ``Expert=1`` en el INI) y el preset lo elige el
+        humano en el asistente GUI — la etapa 9 es asistida.
+
+        Un ÚNICO helper para los dos ejecutables: comparten el parser; que fueran
+        dos funciones distintas es exactamente cómo un fix aterriza en uno y no
+        en el otro (el defecto hermano dominante de este repo).
 
         Args:
-            extra_args: Argumentos adicionales.
+            extra_args: Argumentos adicionales (API pública existente).
 
         Returns:
             Lista de argumentos para create_subprocess_exec.
         """
-        args: list[str] = [
-            "-game",
-            "TES5VR" if "VR" in str(self._config.game_path) else "SSE",
-            "-t",  # Modo headless
-        ]
+        # Game mode: switch suelto, sin valor. Sin él DynDOLOD arranca en modo
+        # -tes5 (Skyrim LE), busca la clave de registro de LE y muere con
+        # "Fatal: Could not determine ... installation path" — el error del rig.
+        game_mode = "-tes5vr" if "VR" in str(self._config.game_path) else "-sse"
+        args: list[str] = [game_mode]
+
+        # Los cinco -X:"ruta" de la doc (sin espacios; directorios con \ final).
+        # -o:/-d:/-t: siempre (tienen default derivado); -m:/-p: solo explícitos.
+        switches = (
+            ("o", self._config.output_root, True),
+            ("d", self._config.data_dir, True),
+            ("m", self._config.ini_dir, True),
+            ("p", self._config.plugins_file, False),
+            ("t", self._config.temp_dir, True),
+        )
+        for letra, ruta, es_directorio in switches:
+            if ruta is not None:
+                args.append(self._switch_de_ruta(letra, ruta, directorio=es_directorio))
 
         if extra_args:
             args.extend(extra_args)
 
-        logger.debug("TexGen CLI args: %s", " ".join(args))
+        logger.debug("DynDOLOD/TexGen CLI args: %s", " ".join(args))
         return args
 
-    def _build_dyndolod_args(
-        self,
-        preset: str,
-        extra_args: list[str] | None,
-    ) -> list[str]:
+    @staticmethod
+    def _switch_de_ruta(letra: str, ruta: pathlib.Path, *, directorio: bool) -> str:
+        """Formatea ``-X:"ruta"`` según la doc oficial: dos puntos, comillas y
+        ``\\`` final en directorios (``-p:`` es un archivo: sin ``\\``). Sin los
+        dos puntos el parser de xEdit ignora el switch en silencio."""
+        texto = str(ruta)
+        if directorio and not texto.endswith("\\"):
+            texto += "\\"
+        return f'-{letra}:"{texto}"'
+
+    def _modo(self) -> str:
+        """Modo del juego para el nombre del log (``DynDOLOD_SSE_log.txt``/``_TES5VR``)."""
+        return "TES5VR" if "VR" in str(self._config.game_path) else "SSE"
+
+    def _leer_log(self, tool: str) -> str | None:
+        """Lee el log real de la herramienta: ``Logs/{tool}_{modo}_log.txt``.
+
+        Los binarios son apps GUI (PE Subsystem 2): no escriben a stdout ni
+        stderr, así que la evidencia de una corrida vive en su log. Ausencia del
+        log → ``None`` (warning, no fallo duro): el gate duro es el artefacto en
+        el ``-o:``.
         """
-        Construye argumentos CLI para DynDOLOD.
+        exe = (
+            self._config.texgen_exe
+            if tool == "TexGen" and self._config.texgen_exe is not None
+            else self._config.dyndolod_exe
+        )
+        log_path = exe.parent / "Logs" / f"{tool}_{self._modo()}_log.txt"
+        try:
+            return log_path.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            logger.warning("Log de %s no encontrado: %s", tool, log_path)
+            return None
+        except OSError as e:
+            logger.warning("No se pudo leer el log de %s (%s): %s", tool, log_path, e)
+            return None
 
-        Args:
-            preset: Nivel de calidad (Low, Medium, High).
-            extra_args: Argumentos adicionales.
+    def _parse_log(self, texto: str) -> tuple[list[str], list[str]]:
+        """Extrae errores/warnings del log REAL y registra las rutas resueltas.
 
-        Returns:
-            Lista de argumentos para create_subprocess_exec.
+        Reutiliza los patrones que antes se aplicaban a stdout: el texto cambió,
+        el criterio no. Las rutas que la herramienta resolvió (``Using Temp
+        Path:``, ``Using plugin list:``) se loguean a info — evidencia de efecto,
+        mejor que un ``--help`` — para el post-check (U-06).
         """
-        args: list[str] = [
-            "-game",
-            "TES5VR" if "VR" in str(self._config.game_path) else "SSE",
-            "-p",
-            preset,
-            "-t",  # Modo headless
-            "--expert",  # Prevenir bloqueos UI
-        ]
-
-        if extra_args:
-            args.extend(extra_args)
-
-        logger.debug("DynDOLOD CLI args: %s", " ".join(args))
-        return args
-
-    def _parse_output(self, stdout: str, stderr: str) -> tuple[list[str], list[str]]:
-        """
-        Extrae errores y warnings del output usando regex.
-
-        Args:
-            stdout: Salida estándar del proceso.
-            stderr: Salida de error del proceso.
-
-        Returns:
-            Tupla con (errors, warnings).
-        """
-        combined_output = stdout + "\n" + stderr
-
-        # Detectar errores
         errors: list[str] = []
-        for match in self._ERROR_PATTERN.finditer(combined_output):
+        for match in self._ERROR_PATTERN.finditer(texto):
             error_msg = match.group(1).strip()
             if error_msg and error_msg not in errors:
                 errors.append(error_msg)
 
-        # Detectar warnings
         warnings: list[str] = []
-        for match in self._WARNING_PATTERN.finditer(combined_output):
+        for match in self._WARNING_PATTERN.finditer(texto):
             warning_msg = match.group(1).strip()
             if warning_msg and warning_msg not in warnings:
                 warnings.append(warning_msg)
 
-        logger.debug(
-            "Parse output: errors=%d, warnings=%d",
-            len(errors),
-            len(warnings),
-        )
+        for linea in texto.splitlines():
+            if "Using" in linea:
+                logger.info("Rutas resueltas por la herramienta: %s", linea.strip())
 
+        logger.debug("Parse log: errors=%d, warnings=%d", len(errors), len(warnings))
         return errors, warnings
 
     def _generate_meta_ini(self, mod_path: pathlib.Path, mod_name: str) -> None:
@@ -978,61 +1051,36 @@ class DynDOLODRunner:
             logger.error("Error generando meta.ini: %s", e)
             raise
 
-    def _staging_search_paths(
-        self,
-        staging_name: str,
-        *,
-        cwd: pathlib.Path | None = None,
-    ) -> list[pathlib.Path]:
-        """Rutas donde puede vivir el staging crudo *staging_name*, en orden.
+    def _find_texgen_output(self) -> pathlib.Path | None:
+        """Staging de TexGen: determinista bajo la raíz administrada (``-o:``).
 
-        Las raíces salen de ``output_targets.dyndolod_staging_roots`` — la misma
-        fuente que usa ``dyndolod_service._permission_targets``. El ``cwd`` se
-        fija explícitamente al subproceso y se pasa también a esta búsqueda (U-01
-        parte 2, review CodeRabbit #388). Compartir la fuente y el valor concreto
-        impide que el sondeo de permisos y la búsqueda de salida miren lugares
-        distintos.
+        Dos candidatos ACOTADOS a la raíz: ``root/TexGen_Output`` (la herramienta
+        crea su carpeta dentro del ``-o:`` — layout por default) y ``root``
+        (fallback si escribiera directo). Si ninguno existe devuelve el primero:
+        el gate de artefacto decide el éxito, no esta resolución. Ya NO se
+        adivina entre raíces ajenas (MO2/dir del exe/cwd).
         """
-        roots = dyndolod_staging_roots(
-            mo2=self._config.mo2_path,
-            exe=self._config.dyndolod_exe,
-            cwd=cwd if cwd is not None else pathlib.Path.cwd(),
-        )
-        return [root / staging_name for root in roots]
+        root = self._config.output_root
+        if root is None:
+            return None
+        for candidato in (root / self.TEXGEN_OUTPUT_NAME, root):
+            if candidato.exists() and any(candidato.iterdir()):
+                return candidato
+        return root / self.TEXGEN_OUTPUT_NAME
 
-    def _find_texgen_output(self, *, cwd: pathlib.Path | None = None) -> pathlib.Path | None:
+    def _find_dyndolod_output(self) -> pathlib.Path | None:
+        """Staging de DynDOLOD: determinista bajo la raíz administrada (``-o:``).
+
+        Mismo contrato que :meth:`_find_texgen_output` con
+        ``root/DynDOLOD_Output`` como candidato primario.
         """
-        Busca el directorio de salida de TexGen.
-
-        Returns:
-            Path al directorio de salida o None si no se encuentra.
-        """
-        search_paths = self._staging_search_paths(self.TEXGEN_OUTPUT_NAME, cwd=cwd)
-
-        for path in search_paths:
-            if path.exists() and any(path.iterdir()):
-                logger.debug("TexGen output encontrado: %s", path)
-                return path
-
-        logger.warning("No se encontró directorio de salida de TexGen")
-        return None
-
-    def _find_dyndolod_output(self, *, cwd: pathlib.Path | None = None) -> pathlib.Path | None:
-        """
-        Busca el directorio de salida de DynDOLOD.
-
-        Returns:
-            Path al directorio de salida o None si no se encuentra.
-        """
-        search_paths = self._staging_search_paths(self.DYNDOLLOD_OUTPUT_NAME, cwd=cwd)
-
-        for path in search_paths:
-            if path.exists() and any(path.iterdir()):
-                logger.debug("DynDOLOD output encontrado: %s", path)
-                return path
-
-        logger.warning("No se encontró directorio de salida de DynDOLOD")
-        return None
+        root = self._config.output_root
+        if root is None:
+            return None
+        for candidato in (root / self.DYNDOLLOD_OUTPUT_NAME, root):
+            if candidato.exists() and any(candidato.iterdir()):
+                return candidato
+        return root / self.DYNDOLLOD_OUTPUT_NAME
 
     async def validate_dyndolod_output(self, output_path: pathlib.Path) -> bool:
         """

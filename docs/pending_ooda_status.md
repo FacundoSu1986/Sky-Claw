@@ -41,7 +41,7 @@ confirmarlo contra código y tests.
 | U-03 | Cerrado | #356 | — | tests de reconciliación de precache |
 | U-04 | Parcial | #397, #399, salida administrada de Pandora y subárbol administrado por grupo de BodySlide | Smoke real de rollback de Pandora | `test_rollback_salida.py`, `test_pandora_service.py`, `test_bodyslide_lock.py` y humano |
 | U-05 | Cerrado | #354 | — | `test_vramr_service.py` |
-| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide | Post-check de Wrye Bash; criterio seguro para QuickAutoClean | tests de cada runner, `test_bodyslide_postcheck_artefacto.py` |
+| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide; post-check por LOG de DynDOLOD/TexGen (binarios GUI sin stdout: el exit code ya no alcanza) | Post-check de Wrye Bash; criterio seguro para QuickAutoClean | tests de cada runner, `test_bodyslide_postcheck_artefacto.py`, `test_dyndolod_service.py` (post-check por log) |
 | U-07 | Cerrado | #355 | — | tests de Job Object de DynDOLOD |
 | U-08 | Cerrado | #378 y reconciliador de arranque | — | `test_rollback_reconciler.py` |
 | U-09 | Cerrado | #376 | — | tests del journal de grass |
@@ -62,7 +62,7 @@ confirmarlo contra código y tests.
 | Borrado recursivo | Cerrado | #405 y #416 | — | `test_borrado_recursivo.py` |
 | Medición de árboles | Cerrado | #416 | — | `test_borrado_recursivo.py` |
 | Fugas de lifecycle en tests | Cerrado | #408, #409 y #415 | — | `test_atribucion_de_warnings.py`, `test_project_config.py` |
-| Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash | Verificar contra fuente xEdit, Synthesis, MO2, DynDOLOD y VRAMr | `test_contrato_argumentos_cli.py` |
+| Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash, DynDOLOD, xEdit | Verificar contra fuente Synthesis, MO2 y VRAMr | `test_contrato_argumentos_cli.py` |
 | Etapa 6 (Wrye Bash) sin build headless | Abierto | — | Decidir entre etapa asistida o retirarla del dispatcher | `test_contrato_argumentos_cli.py`; humano; auditoría 2026-08-04 |
 | Orden de masters sin validar | Cerrado | `master_order.py`, cableado en Wrye Bash / Synthesis / DynDOLOD | — | `test_master_order.py` (ancla de cableado); auditoría 2026-08-04 (V-7) |
 | Segundo parser TES4 sin gate | Cerrado | `test_tes4_parser_invariant.py` | — | auditoría 2026-08-04 |
@@ -115,8 +115,12 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
 Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un
 flag en vez de enumerar el vector. El ancla `test_contrato_argumentos_cli.py`
 congela el inventario de módulos que spawnean y exige procedencia declarada por
-lanzador. Quedan marcados `SIN VERIFICAR` en esa tabla: xEdit, Synthesis, MO2,
-DynDOLOD (binario cerrado, sin fuente pública) y VRAMr (scripts en Nexus).
+lanzador. Verificados contra fuente: xEdit (`xeInit.pas` — `-T:`/`-P:`, game
+mode) y DynDOLOD (doc oficial `Command-Line-Argument` + doc del paquete
+`DynDOLOD-Shortcut.txt` + strings del binario, y por efecto en rig 2026-08-05:
+`Game Mode: SSE`, `Using Temp Path:`; la etapa 9 es asistida — sin modo
+desatendido). Quedan marcados `SIN VERIFICAR` en esa tabla: Synthesis, MO2 y
+VRAMr (scripts en Nexus).
 
 `vramr_service.py` además no usa Job Object, a diferencia de DynDOLOD (U-07) y
 grass: si VRAMr spawnea compresores externos, un timeout deja huérfanos.

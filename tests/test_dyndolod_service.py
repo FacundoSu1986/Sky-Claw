@@ -21,6 +21,7 @@ from sky_claw.app.db.locks import (
 )
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
 from sky_claw.local.tools.dyndolod_runner import (
+    DynDOLODConfig,
     DynDOLODExecutionError,
     DynDOLODPipelineResult,
     DynDOLODRunner,
@@ -1338,11 +1339,13 @@ def test_permission_targets_incluye_staging_y_empaquetado(
     tmp_path: pathlib.Path,
 ) -> None:
     """El sensor de permisos sondea el empaquetado (mods/*) Y el staging crudo
-    (raíz MO2 + dir del exe) donde DynDOLOD escribe primero (review #311 F2)."""
+    bajo la raíz administrada única (game/DynDOLOD) donde la herramienta escribe
+    con ``-o:`` (review #311 F2, reescrito con la raíz única)."""
     resolver = _resolver_para_permisos(tmp_path)
     svc = _svc(resolver, mock_lock_manager, mock_snapshot_manager, mock_journal, mock_event_bus)
     mo2 = tmp_path / "MO2"
     exe_dir = tmp_path / "DynDOLOD"
+    game = tmp_path / "Skyrim"
 
     targets = svc._permission_targets()
 
@@ -1350,11 +1353,15 @@ def test_permission_targets_incluye_staging_y_empaquetado(
     assert mo2 / "mods" in targets
     assert mo2 / "mods" / "DynDOLOD Output" in targets
     assert mo2 / "mods" / "TexGen Output" in targets
-    # Staging crudo bajo la raíz MO2 y el dir del exe
-    assert mo2 / "DynDOLOD_Output" in targets
-    assert mo2 / "TexGen_Output" in targets
-    assert exe_dir / "DynDOLOD_Output" in targets
-    assert exe_dir / "TexGen_Output" in targets
+    # Staging crudo bajo la raíz administrada única
+    assert game / "DynDOLOD" in targets
+    assert game / "DynDOLOD" / "DynDOLOD_Output" in targets
+    assert game / "DynDOLOD" / "TexGen_Output" in targets
+    # La adivinanza de raíces ajenas (mo2/exe) murió con -o:
+    assert mo2 / "DynDOLOD_Output" not in targets
+    assert mo2 / "TexGen_Output" not in targets
+    assert exe_dir / "DynDOLOD_Output" not in targets
+    assert exe_dir / "TexGen_Output" not in targets
 
 
 def test_permission_targets_incluye_output_inexistente_freshness(
@@ -1441,6 +1448,7 @@ def _wire_runner_ok(service: DynDOLODPipelineService, tmp_path: pathlib.Path) ->
     mock_config.mo2_mods_path = tmp_path / "mods"
     mock_config.mo2_path = tmp_path / "MO2"
     mock_config.dyndolod_exe = tmp_path / "DynDOLOD" / "DynDOLODx64.exe"
+    mock_config.output_root = tmp_path / "DynDOLOD"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
     service._runner = mock_runner
@@ -1468,9 +1476,10 @@ async def test_dyndolod_persiste_manifiesto_y_informe(
     assert manifest.tool == "DynDOLOD"
     # Empaquetado bajo mods/
     assert str(tmp_path / "mods" / "DynDOLOD Output") in manifest.files_touched
-    # Staging crudo bajo la raíz MO2 y el dir del exe (review #312)
-    assert str(tmp_path / "MO2" / "DynDOLOD_Output") in manifest.files_touched
+    # Staging crudo bajo la raíz administrada única (subcarpetas + la raíz)
     assert str(tmp_path / "DynDOLOD" / "DynDOLOD_Output") in manifest.files_touched
+    assert str(tmp_path / "DynDOLOD" / "TexGen_Output") in manifest.files_touched
+    assert str(tmp_path / "DynDOLOD") in manifest.files_touched
     informes = await _informe_ultima_tx(real_journal)
     assert len(informes) == 1
     assert informes[0].transaction_status == "committed"
@@ -1590,3 +1599,264 @@ async def test_validate_output_rechaza_dir_inexistente_o_vacio(tmp_path: pathlib
     sin_esp.mkdir()
     (sin_esp / "textura.dds").touch()
     assert await runner.validate_dyndolod_output(sin_esp) is False
+
+
+# =============================================================================
+# U-06 — post-check por LOG (los binarios son GUI: no escriben a stdout)
+#
+# Los casos de arriba mockean el proceso; acá se ejercita el runner REAL con
+# logs escritos en tmp_path: un exit code 0 con línea de error en el log (o sin
+# artefacto en el -o:) NO es éxito — el falso verde que U-06 persigue.
+# =============================================================================
+
+
+class _EjecucionFalsa:
+    """Fake de ``_execute_process``: resultado fijo y captura del argv."""
+
+    def __init__(self, return_code: int = 0) -> None:
+        self.return_code = return_code
+        self.argvs: list[list[str]] = []
+
+    async def __call__(self, *args: object, **kwargs: object) -> tuple[str, str, int, float]:
+        self.argvs.append(list(kwargs["args"]))
+        return "", "", self.return_code, 1.0
+
+
+def _runner_texgen(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunner]:
+    """Runner real con config mínima: game + exes existen, Logs/ controlable."""
+    game = tmp_path / "game"
+    game.mkdir()
+    exe_dir = tmp_path / "DynDOLOD"
+    exe_dir.mkdir()
+    dyndolod_exe = exe_dir / "DynDOLODx64.exe"
+    dyndolod_exe.touch()
+    texgen_exe = exe_dir / "TexGenx64.exe"
+    texgen_exe.touch()
+    config = DynDOLODConfig(
+        game_path=game,
+        mo2_path=tmp_path / "MO2",
+        mo2_mods_path=tmp_path / "MO2" / "mods",
+        dyndolod_exe=dyndolod_exe,
+        texgen_exe=texgen_exe,
+    )
+    return config, DynDOLODRunner(config)
+
+
+def _escribir_log(tmp_path: pathlib.Path, tool: str, contenido: str) -> pathlib.Path:
+    log = tmp_path / "DynDOLOD" / "Logs" / f"{tool}_SSE_log.txt"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(contenido, encoding="utf-8")
+    return log
+
+
+@pytest.mark.asyncio
+async def test_exit_cero_con_error_en_log_no_es_exito(tmp_path: pathlib.Path) -> None:
+    """U-06: exit 0 + línea de error en el log real → success=False (TexGen)."""
+    config, runner = _runner_texgen(tmp_path)
+    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    assert staging is not None
+    staging.mkdir(parents=True)
+    (staging / "a.dds").write_bytes(b"\x00")
+    _escribir_log(tmp_path, "TexGen", "[00:00:01] Error: object LOD generation failed\n")
+
+    fake = _EjecucionFalsa(return_code=0)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_texgen()
+
+    assert result.success is False
+    assert result.errors == ["object LOD generation failed"]
+    assert fake.argvs[0][0] == "-sse"
+
+
+@pytest.mark.asyncio
+async def test_exit_cero_con_error_en_log_no_es_exito_dyndolod(tmp_path: pathlib.Path) -> None:
+    """El mismo criterio para DynDOLOD: exit 0 + log en error → success=False."""
+    config, runner = _runner_texgen(tmp_path)
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert staging is not None
+    staging.mkdir(parents=True)
+    (staging / "DynDOLOD.esp").write_text("esp", encoding="utf-8")
+    _escribir_log(tmp_path, "DynDOLOD", "[00:00:10] Fatal: exception while processing\n")
+
+    fake = _EjecucionFalsa(return_code=0)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    assert result.errors == ["exception while processing"]
+
+
+@pytest.mark.asyncio
+async def test_exit_cero_sin_artefacto_no_es_exito(tmp_path: pathlib.Path) -> None:
+    """U-06: exit 0 sin ``DynDOLOD.esp`` en el -o: → success=False."""
+    _, runner = _runner_texgen(tmp_path)
+    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+
+    fake = _EjecucionFalsa(return_code=0)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    assert result.output_path is not None  # el staging se resuelve aunque no exista
+
+
+@pytest.mark.asyncio
+async def test_exit_cero_con_artefacto_y_log_limpio_es_exito(tmp_path: pathlib.Path) -> None:
+    """Contracara: exit 0 + DynDOLOD.esp + log sin errores → success=True."""
+    config, runner = _runner_texgen(tmp_path)
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert staging is not None
+    staging.mkdir(parents=True)
+    (staging / "DynDOLOD.esp").write_text("esp", encoding="utf-8")
+    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+
+    fake = _EjecucionFalsa(return_code=0)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="High")
+
+    assert result.success is True
+    assert result.output_path == staging
+    assert result.warnings == []
+
+
+@pytest.mark.asyncio
+async def test_warning_en_log_no_tumba_el_exito(tmp_path: pathlib.Path) -> None:
+    """Un warning (no error) con artefacto y exit 0 sigue siendo éxito."""
+    config, runner = _runner_texgen(tmp_path)
+    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    assert staging is not None
+    staging.mkdir(parents=True)
+    (staging / "a.dds").write_bytes(b"\x00")
+    _escribir_log(tmp_path, "TexGen", "[00:00:02] Warning: 2 LOD textures skipped\n")
+
+    fake = _EjecucionFalsa(return_code=0)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_texgen()
+
+    assert result.success is True
+    assert result.warnings == ["2 LOD textures skipped"]
+
+
+@pytest.mark.asyncio
+async def test_log_ausente_no_es_fallo_si_el_artefacto_existe(tmp_path: pathlib.Path) -> None:
+    """Sin log (el proceso no lo flusheó) el gate es el artefacto: success=True."""
+    config, runner = _runner_texgen(tmp_path)
+    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    assert staging is not None
+    staging.mkdir(parents=True)
+    (staging / "a.dds").write_bytes(b"\x00")
+
+    fake = _EjecucionFalsa(return_code=0)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_texgen()
+
+    assert result.success is True
+    assert result.errors == []
+
+
+@pytest.mark.asyncio
+async def test_la_herramienta_puede_escribir_directo_en_la_raiz(tmp_path: pathlib.Path) -> None:
+    """Interpretación B de -o: (escribe directo, sin subcarpeta): fallback acotado.
+
+    El candidato ``root/<StagingName>`` no existe pero ``root`` sí tiene el
+    artefacto: la resolución no puede perder la salida real del run.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    root = config.output_root
+    assert root is not None
+    root.mkdir(parents=True)
+    (root / "DynDOLOD.esp").write_text("directo", encoding="utf-8")
+
+    fake = _EjecucionFalsa(return_code=0)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is True
+    assert result.output_path == root
+
+
+# =============================================================================
+# Etapa 9 ASISTIDA — evento, resultado y chequeo de rutas de config
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_started_event_anuncia_etapa_asistida(
+    service: DynDOLODPipelineService,
+    mock_event_bus: AsyncMock,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El started event lleva ``assisted=True`` e instrucciones para el operador.
+
+    La etapa 9 no tiene modo desatendido (preset y worldspaces son botones de la
+    GUI): el evento debe decírselo a quien lo consuma, con qué hacer.
+    """
+    mock_runner = AsyncMock(spec=DynDOLODRunner)
+    mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
+    mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    mock_config = MagicMock()
+    mock_config.mo2_mods_path = tmp_path / "mods"
+    (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
+    mock_runner._config = mock_config
+    service._runner = mock_runner
+
+    await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    started_event = mock_event_bus.publish.call_args_list[0][0][0]
+    payload = started_event.payload
+    assert payload["assisted"] is True
+    assert payload["operator_instructions"].strip() != ""
+
+
+@pytest.mark.asyncio
+async def test_resultado_exitoso_lleva_assisted(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El dict que consume el panel anuncia la etapa asistida (canal visible)."""
+    mock_runner = AsyncMock(spec=DynDOLODRunner)
+    mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
+    mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    mock_config = MagicMock()
+    mock_config.mo2_mods_path = tmp_path / "mods"
+    (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
+    mock_runner._config = mock_config
+    service._runner = mock_runner
+
+    result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    assert result["success"] is True
+    assert result["assisted"] is True
+
+
+@pytest.mark.asyncio
+async def test_ruta_de_config_faltante_bloquea_antes_del_lock(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un ``plugins_file`` declarado que no existe frena el run ANTES del lock.
+
+    El mismo fallo adentro costaría un diálogo modal de la herramienta y horas
+    de timeout. ``data_dir`` existe; el que falta es el plugins_file declarado.
+    """
+    mock_runner = AsyncMock(spec=DynDOLODRunner)
+    mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
+    mock_config = MagicMock()
+    mock_config.mo2_mods_path = tmp_path / "mods"
+    (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
+    (tmp_path / "Data").mkdir()
+    mock_config.data_dir = tmp_path / "Data"
+    mock_config.ini_dir = None
+    mock_config.plugins_file = tmp_path / "no_existe" / "Plugins.txt"
+    mock_runner._config = mock_config
+    service._runner = mock_runner
+
+    result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    assert result["success"] is False
+    assert "Plugins.txt" in result["message"]
+    mock_runner.run_full_pipeline.assert_not_awaited()
+    mock_journal.begin_transaction.assert_not_awaited()
+    mock_journal.commit_transaction.assert_not_called()

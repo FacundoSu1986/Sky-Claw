@@ -22,6 +22,17 @@ fuente de cada herramienta:
 - Pandora (README oficial, "Startup Arguments") declara ``--output``/``-o``,
   ``--auto_run``, ``--auto_close``, ``--tesv``. El repo agregaba ``--game`` y
   ``--auto``, que no existen.
+- DynDOLOD/TexGen (``dyndolod.info/Help/Command-Line-Argument``, doc del paquete
+  ``Docs/DynDOLOD-Shortcut.txt`` y strings del binario — PE Subsystem 2, GUI): el
+  repo pasaba ``-game SSE``, ``-p <preset>``, ``-t`` pelado y ``--expert``. El
+  parser que ambos binarios heredan de xEdit (``xeInit.pas``) solo conoce el game
+  mode como switch suelto (``-sse``/``-tes5vr``) y los ``-X:"ruta"`` con dos
+  puntos; ``--expert`` no es un argumento (se activa con ``Expert=1`` en el INI)
+  y el preset se elige en el asistente GUI — la etapa 9 es asistida. Verificado
+  por efecto en rig 2026-08-05 (``Game Mode: SSE``, ``Using Temp Path:``). xEdit
+  (``xeInit.pas``: ``-T:``/``-P:``) emitía el vector correcto
+  (``-SSE``/``-autoload``/``-autoexit``, anclado en ``test_xedit_quick_clean.py``);
+  solo faltaba la procedencia declarada, que se agrega acá.
 
 Por qué los tests previos no lo vieron: **muestreaban**. `test_pandora_runner.py`
 afirmaba ``argv.count("--output") == 1``, lo cual pasa igual con dos flags
@@ -212,10 +223,13 @@ PROCEDENCIA_DE_FLAGS = {
     # SIN VERIFICAR — pendientes de contrastar contra fuente. Se declaran
     # explícitamente para que la deuda sea visible en vez de silenciosa.
     "sky_claw/local/mo2/vfs.py": "SIN VERIFICAR — MO2 `-p` / `moshortcut://`",
-    "sky_claw/local/tools/dyndolod_runner.py": "SIN VERIFICAR — DynDOLOD es binario cerrado, sin fuente pública",
+    "sky_claw/local/tools/dyndolod_runner.py": (
+        "DynDOLOD — dyndolod.info/Help/Command-Line-Argument + Docs/DynDOLOD-Shortcut.txt "
+        "del paquete + strings del binario (Subsystem=2, GUI)"
+    ),
     "sky_claw/local/tools/synthesis_runner.py": "SIN VERIFICAR — Mutagen-Modding/Synthesis, proyecto Synthesis.Bethesda.CLI",
     "sky_claw/local/tools/vramr_service.py": "SIN VERIFICAR — VRAMr se distribuye como scripts PowerShell en Nexus",
-    "sky_claw/local/xedit/runner.py": "SIN VERIFICAR — TES5Edit/TES5Edit, Core/wbInit.pas",
+    "sky_claw/local/xedit/runner.py": "TES5Edit/TES5Edit — xEdit/xeInit.pas (-T:/-P:, game mode)",
 }
 
 
@@ -417,6 +431,66 @@ def test_ningun_lanzador_de_loot_usa_el_flag_de_masterlist_inexistente() -> None
     )
 
 
+def test_ningun_lanzador_usa_el_flag_inexistente_de_dyndolod() -> None:
+    """``-game`` no existe en el parser de xEdit/DynDOLOD: el game mode es el
+    switch suelto ``-sse``/``-tes5vr`` (xeInit.pas).
+
+    Token EXACTO (``"-game"`` con comilla final): ``--game`` de LOOT contiene
+    ``-game`` como substring, así que buscar el substring daría un falso positivo
+    en el módulo de LOOT — el mismo flag, dos superficies, una legítima.
+    """
+    ofensores = sorted(
+        archivo.relative_to(RAIZ).as_posix()
+        for archivo in PAQUETE.rglob("*.py")
+        if '"-game"' in (texto := archivo.read_text(encoding="utf-8")) or "'-game'" in texto
+    )
+    assert not ofensores, (
+        f"`-game` reaparece en {ofensores}. El game mode de xEdit/DynDOLOD es el switch "
+        "suelto `-sse`/`-tes5vr` (xeInit.pas); `-game` se ignora en silencio y SSE queda "
+        "como posicional suelto."
+    )
+
+
+def test_ningun_lanzador_usa_el_expert_inexistente() -> None:
+    """``--expert`` no es un argumento de DynDOLOD: se activa con ``Expert=1`` en
+    el INI. El vector viejo lo pasaba "para prevenir bloqueos UI" — inventado."""
+    ofensores = sorted(
+        archivo.relative_to(RAIZ).as_posix()
+        for archivo in PAQUETE.rglob("*.py")
+        if '"--expert"' in (texto := archivo.read_text(encoding="utf-8")) or "'--expert'" in texto
+    )
+    assert not ofensores, (
+        f"`--expert` reaparece en {ofensores}. No es un argumento declarado por DynDOLOD: "
+        "se activa con Expert=1 en DynDOLOD_SSE.ini."
+    )
+
+
+def test_switches_de_ruta_de_dyndolod_siempre_llevan_dos_puntos() -> None:
+    """``-t``/``-p`` pelados (sin ``:``) se ignoran en silencio en el parser de
+    xEdit (``xeInit.pas``) — así vivió el defecto sin dar señal.
+
+    ACOTADO al módulo DynDOLOD a propósito: BodySlide declara ``-t``/``-p`` como
+    nombres cortos de ``wxCmdLineParser`` y MO2 usa ``-p`` (perfil); en esos
+    módulos el token pelado es legítimo. La razón de la exclusión se declara acá
+    (regla "Hermanos"): el barrido de árbol entero no aplica a este par.
+    """
+    ofensores = sorted(
+        archivo.relative_to(RAIZ).as_posix()
+        for archivo in PAQUETE.rglob("*.py")
+        if archivo.name in ("dyndolod_runner.py", "dyndolod_service.py")
+        and (
+            '"-t"' in (texto := archivo.read_text(encoding="utf-8"))
+            or "'-t'" in texto
+            or '"-p"' in texto
+            or "'-p'" in texto
+        )
+    )
+    assert not ofensores, (
+        f'`-t`/`-p` pelados reaparecen en {ofensores}. El contrato exige `-t:"…"`/`-p:"…"` '
+        "con dos puntos: sin `:` el switch se ignora en silencio."
+    )
+
+
 async def test_loot_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:
     """Vector completo contra el parser de LOOT, no un flag muestreado."""
     from sky_claw.local.loot.cli import LOOTConfig, LOOTRunner
@@ -531,6 +605,118 @@ async def test_bodyslide_omite_preset_y_tri_cuando_no_se_piden(tmp_path: pathlib
 
     argv = run_capture.await_args.args[0]
     assert argv[1:] == ["-gbuild", "CBBE Body", "-t", str(salida)]
+
+
+async def test_dyndolod_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:
+    """Vector completo contra la doc oficial de DynDOLOD, no flags muestreados.
+
+    El vector viejo (``-game SSE``, ``-p <preset>``, ``-t`` pelado, ``--expert``)
+    no existe en la herramienta: el parser de xEdit (``xeInit.pas``) solo conoce
+    el game mode como switch suelto (``-sse``) y los ``-X:"ruta"`` con dos puntos.
+    ``--expert`` no es un argumento (se activa con ``Expert=1`` en el INI) y el
+    preset lo elige el humano en el asistente — por eso NO puede aparecer en el
+    argv bajo ninguna config. TexGen y DynDOLOD comparten el parser: mismo vector.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
+
+    game = tmp_path / "Skyrim Special Edition"
+    game.mkdir()
+    exe_dir = tmp_path / "DynDOLOD"
+    exe_dir.mkdir()
+    dyndolod_exe = exe_dir / "DynDOLODx64.exe"
+    dyndolod_exe.touch()
+    texgen_exe = exe_dir / "TexGenx64.exe"
+    texgen_exe.touch()
+    ini_dir = tmp_path / "My Games" / "Skyrim Special Edition"
+    ini_dir.mkdir(parents=True)
+    plugins_file = tmp_path / "Plugins.txt"
+    plugins_file.touch()
+    output_root = tmp_path / "salida"
+    temp_dir = tmp_path / "temp"
+
+    config = DynDOLODConfig(
+        game_path=game,
+        mo2_path=tmp_path / "MO2",
+        mo2_mods_path=tmp_path / "MO2" / "mods",
+        dyndolod_exe=dyndolod_exe,
+        texgen_exe=texgen_exe,
+        data_dir=game / "Data",
+        ini_dir=ini_dir,
+        plugins_file=plugins_file,
+        output_root=output_root,
+        temp_dir=temp_dir,
+    )
+    runner = DynDOLODRunner(config)
+
+    esperado = [
+        "-sse",
+        f'-o:"{output_root}\\"',
+        f'-d:"{game / "Data"}\\"',
+        f'-m:"{ini_dir}\\"',
+        f'-p:"{plugins_file}"',
+        f'-t:"{temp_dir}\\"',
+    ]
+
+    with patch.object(runner, "_execute_process", AsyncMock(return_value=("", "", 0, 1.0))) as ejecutar:
+        await runner.run_texgen()
+        await runner.run_dyndolod(preset="Medium")
+        assert ejecutar.call_count == 2
+        texgen_argv = ejecutar.call_args_list[0].kwargs["args"]
+        dyndolod_argv = ejecutar.call_args_list[1].kwargs["args"]
+
+    assert texgen_argv == esperado, "TexGen debe emitir exactamente el vector verificado"
+    assert dyndolod_argv == esperado, "DynDOLOD comparte el parser de xEdit: mismo vector"
+    assert "Medium" not in dyndolod_argv, "el preset lo elige el humano en el asistente; no viaja en el argv"
+    assert "-game" not in texgen_argv and "-game" not in dyndolod_argv
+    assert "--expert" not in dyndolod_argv
+    assert "-t" not in texgen_argv and "-p" not in dyndolod_argv, "switches pelados: sin ':' se ignoran en silencio"
+
+
+async def test_dyndolod_config_default_omite_m_y_p(tmp_path: pathlib.Path) -> None:
+    """Sin ``-m:``/``-p:`` explícitos el argv lleva solo ``-sse`` + ``-o:``/``-d:``/``-t:``.
+
+    Derivar la carpeta Documentos a ciegas es frágil (OneDrive del rig), así que
+    se omiten y la herramienta resuelve sus defaults por registro. ``-o:``/``-d:``/
+    ``-t:`` siempre se emiten porque tienen default derivado de la config.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
+
+    game = tmp_path / "Skyrim Special Edition"
+    game.mkdir()
+    exe_dir = tmp_path / "DynDOLOD"
+    exe_dir.mkdir()
+    dyndolod_exe = exe_dir / "DynDOLODx64.exe"
+    dyndolod_exe.touch()
+
+    runner = DynDOLODRunner(
+        DynDOLODConfig(
+            game_path=game,
+            mo2_path=tmp_path / "MO2",
+            mo2_mods_path=tmp_path / "MO2" / "mods",
+            dyndolod_exe=dyndolod_exe,
+        )
+    )
+
+    argv = runner._build_xedit_args(None)
+    assert argv[0] == "-sse"
+    assert len(argv) == 4, f"-sse + -o: + -d: + -t:, sin -m:/-p:; obtenido: {argv}"
+    assert argv[1].startswith('-o:"')
+    assert argv[2].startswith('-d:"')
+    assert argv[3].startswith('-t:"')
+    assert all("-m:" not in a and "-p:" not in a for a in argv)
+
+
+def test_dyndolod_switch_de_ruta_formato_de_doc() -> None:
+    """El formato ``-X:"ruta"`` con ``\\`` final en directorios es contrato, no estilo.
+
+    Sin los dos puntos el parser de xEdit ignora el switch en silencio — así es
+    como el defecto vivió sin dar señal. ``-p:`` es un archivo: sin ``\\`` final.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
+
+    assert DynDOLODRunner._switch_de_ruta("t", pathlib.Path("TempTest"), directorio=True) == '-t:"TempTest\\"'
+    assert DynDOLODRunner._switch_de_ruta("o", pathlib.Path("Salida"), directorio=True) == '-o:"Salida\\"'
+    assert DynDOLODRunner._switch_de_ruta("p", pathlib.Path("plugins.txt"), directorio=False) == '-p:"plugins.txt"'
 
 
 async def test_pandora_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:
