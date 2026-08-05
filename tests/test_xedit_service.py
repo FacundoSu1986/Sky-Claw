@@ -457,6 +457,9 @@ async def test_xedit_write_error_no_deja_que_un_journal_roto_oculte_el_fallo(
 
     assert result["success"] is False
     assert "no se pudo aplicar el override" in result["message"]
+    # El rollback best-effort se INTENTÓ (y falló) — sin esta aserción, borrar
+    # la llamada entera dejaría el test en verde igual (review CodeRabbit, PR #439).
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
 
 
 # =============================================================================
@@ -525,6 +528,9 @@ async def test_patching_error_no_deja_que_un_journal_roto_oculte_el_fallo(
 
     assert result["success"] is False
     assert "xEdit crashed" in result["error"]
+    # El rollback best-effort se INTENTÓ (y falló) — sin esta aserción, borrar
+    # la llamada entera dejaría el test en verde igual (review CodeRabbit, PR #439).
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
 
 
 @pytest.mark.asyncio
