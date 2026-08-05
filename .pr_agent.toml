@@ -1,9 +1,8 @@
 [config]
-# Motor principal. Verificado contra MAX_TOKENS de pr-agent (v0.41.0): los tres
-# IDs están registrados con ventana de 1.048.576 tokens.
-model = "gemini/gemini-3.5-flash"
-# Fallback en cascada ante rate limit o fallo transitorio
-fallback_models = ["gemini/gemini-3.6-flash", "gemini/gemini-3.5-flash-lite"]
+# Motor principal. DeepSeek v4 Flash (Modelo de alta velocidad y razonamiento)
+model = "deepseek/deepseek-v4-flash"
+# Fallback a DeepSeek v4 Pro (Capacidad máxima de la API)
+fallback_models = ["deepseek/deepseek-v4-pro"]
 
 # F-2: sin fijarlo, el default de PR-Agent (max_model_tokens = 32000) recorta la
 # ventana de 1M de Flash a 32k. El PASE 1 (superficies hermanas) exige mirar
