@@ -73,13 +73,19 @@ async def _rol_a_async(
     install_dir: pathlib.Path,
     sentinel_dir: pathlib.Path,
 ) -> None:
+    # H-2: la clave canónica se importa del instalador, no se replica a mano
+    # — si la normalización cambiara, A y B usarían filas DISTINTAS y el
+    # test fallaría por contrato sin decir por qué.
+    #
+    # Se calcula ANTES del try: si `resolve()` fallara adentro, el `finally`
+    # leeria un local sin asignar y el NameError reemplazaria a la excepcion
+    # original (y `suppress(LockReleaseError)` no lo cubre).
+    resource_id = _install_lock_resource_id(install_dir)
     await dlm.initialize()
+    adquirido = False
     try:
-        # H-2: la clave canónica se importa del instalador, no se replica a mano
-        # — si la normalización cambiara, A y B usarían filas DISTINTAS y el
-        # test fallaría por contrato sin decir por qué.
-        resource_id = _install_lock_resource_id(install_dir)
         await dlm.acquire_lock(resource_id, "tools-installer", ttl=600.0)
+        adquirido = True
         # A tiene el lock: avisa al orquestador.
         (sentinel_dir / "a_listo").write_text("1", encoding="utf-8")
         # Espera a que el orquestador libere a B para intentar el acquire.
@@ -101,10 +107,16 @@ async def _rol_a_async(
         # liberar en el finally.
         await asyncio.sleep(0.3)
     finally:
-        # release_lock lanza LockReleaseError (no LockAcquisitionError) si el
-        # DELETE de la fila falla o no la encuentra — espejo de locks.py:421.
-        with contextlib.suppress(LockReleaseError):
-            await dlm.release_lock(resource_id, "tools-installer")
+        # Solo se libera lo que se llego a adquirir: si `acquire_lock` fallo
+        # (A corre con max_retries=1), liberar igual disparaba un
+        # LockReleaseError que `suppress` se tragaba, y A salia con rc=0 sin
+        # escribir sentinel — el orquestador se quedaba esperando `a_listo`
+        # hasta el timeout de 30 s sin ninguna causa declarada.
+        if adquirido:
+            # release_lock lanza LockReleaseError (no LockAcquisitionError) si el
+            # DELETE de la fila falla o no la encuentra — espejo de locks.py:421.
+            with contextlib.suppress(LockReleaseError):
+                await dlm.release_lock(resource_id, "tools-installer")
         await dlm.close()
 
 

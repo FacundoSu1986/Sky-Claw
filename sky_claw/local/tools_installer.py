@@ -163,8 +163,20 @@ async def _bajo_lock_de_instalacion(
     finally:
         if heartbeat is not None:
             heartbeat.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await heartbeat
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001 — el heartbeat NO puede abortar el finally
+                # `_mantener_lock_vivo` deja almacenada cualquier excepcion que
+                # `renew_lock` no atrape (sqlite3.Error si esta cubierto, pero no
+                # una conexion cerrada a mitad del shutdown), y `await heartbeat`
+                # la re-lanza. Si escapara de aca se saltearian las DOS lineas
+                # que siguen: el `reset` dejaria el resource_id colgado en la
+                # cadena —y una reentrada posterior se saltearia el lock, que es
+                # justo lo que este modulo existe para impedir— y el release no
+                # correria, reteniendo el recurso hasta que venza el TTL de 1 h.
+                logger.error("Heartbeat del lock de instalacion '%s' fallo: %s", resource_id, exc)
         _cadena_de_locks.reset(token)
         try:
             # El release también es cancelable (await + commit): una segunda

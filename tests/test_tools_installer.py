@@ -994,15 +994,17 @@ class TestSetupToolsTool:
             backoff_base=0.01,
             backoff_max=0.01,
         )
-        await lock_mgr.initialize()
+        # El try abre ANTES del initialize: si abre la conexion y despues falla,
+        # el finally tiene que cerrar igual el manager y la DB.
         try:
+            await lock_mgr.initialize()
             guard = HITLGuard(notify_fn=None, timeout=5)
             ti = ToolsInstaller(hitl=guard, gateway=gw, path_validator=validator, lock_manager=lock_mgr)
 
             install_dir = tmp_path / "tools"
             install_dir.mkdir()
 
-            # Pre-create the executables so ensure_loot/ensure_xedit find them.
+            # Se crean los ejecutables de antemano para que ensure_loot/ensure_xedit los encuentren.
             loot_dir = install_dir / "LOOT"
             loot_dir.mkdir()
             (loot_dir / "loot.exe").write_text("fake", encoding="utf-8")
@@ -1095,8 +1097,11 @@ class TestSetupToolsTool:
             backoff_base=0.01,
             backoff_max=0.01,
         )
-        await lock_mgr.initialize()
+        # El try abre ANTES del initialize y cubre tambien el cierre de la DB:
+        # un fallo de initialize() —o de registry.execute()— dejaba abiertos el
+        # manager y la base.
         try:
+            await lock_mgr.initialize()
             guard = HITLGuard(notify_fn=None, timeout=5)
             ti = ToolsInstaller(hitl=guard, gateway=gw, path_validator=validator, lock_manager=lock_mgr)
 
@@ -1111,14 +1116,13 @@ class TestSetupToolsTool:
             )
 
             result_str = await registry.execute("setup_tools", {"tools": ["unknown_tool"]})
+
+            result = json.loads(result_str)
+            assert "unknown_tool" in result
+            assert "error" in result["unknown_tool"]
         finally:
             await lock_mgr.close()
-
-        result = json.loads(result_str)
-        assert "unknown_tool" in result
-        assert "error" in result["unknown_tool"]
-
-        await db.close()
+            await db.close()
 
 
 # ---------------------------------------------------------------------------
