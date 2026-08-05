@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sky_claw.local.tools.pandora_runner import (
+    _MAX_BYTES_DE_LINEA_PENDIENTE,
     _SEVERIDADES_QUE_FALLAN,
     _TAMANO_DE_BLOQUE,
     NOMBRE_DEL_LOG_DE_PANDORA,
@@ -297,7 +298,7 @@ def test_marca_distingue_ausente_de_no_verificable(tmp_path: pathlib.Path, monke
 
     marcas = _marcas_del_log((ausente, bloqueado))
 
-    assert marcas[ausente] == _MarcaDelLog(tamano=0, ino=0, dev=0)
+    assert marcas[ausente] == _MarcaDelLog(tamano=0, ino=0, dev=0, huella=b"")
     assert marcas[bloqueado] is None
 
 
@@ -323,7 +324,7 @@ def test_leer_log_no_avisa_cuando_la_candidata_simplemente_no_existe(
     inexistente = tmp_path / "no_existe" / NOMBRE_DEL_LOG_DE_PANDORA
 
     with caplog.at_level(logging.WARNING):
-        veredicto = _leer_engine_log({inexistente: _MarcaDelLog(tamano=0, ino=0, dev=0)})
+        veredicto = _leer_engine_log({inexistente: _MarcaDelLog(tamano=0, ino=0, dev=0, huella=b"")})
 
     assert veredicto == _VeredictoDelLog()
     assert not caplog.records, [r.message for r in caplog.records]
@@ -348,7 +349,7 @@ def test_leer_log_avisa_ante_un_error_de_io_real(
     monkeypatch.setattr(pathlib.Path, "stat", _stat_que_falla)
 
     with caplog.at_level(logging.WARNING):
-        veredicto = _leer_engine_log({log: _MarcaDelLog(tamano=0, ino=0, dev=0)})
+        veredicto = _leer_engine_log({log: _MarcaDelLog(tamano=0, ino=0, dev=0, huella=b"")})
 
     assert veredicto == _VeredictoDelLog()
     assert any("bloqueado" in r.message for r in caplog.records)
@@ -424,6 +425,7 @@ def test_identidad_distinta_no_atribuye_pese_a_tamano_mayor(tmp_path: pathlib.Pa
         tamano=1000,
         ino=identidad_real.st_ino + 1,  # deliberadamente OTRA identidad
         dev=identidad_real.st_dev,
+        huella=b"",
     )
 
     veredicto = _leer_engine_log({log: marca_vieja})
@@ -436,12 +438,68 @@ def test_identidad_distinta_deja_un_breadcrumb(tmp_path: pathlib.Path, caplog: p
     log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
     log.write_text("contenido nuevo\n", encoding="utf-8")
     identidad_real = log.stat()
-    marca_vieja = _MarcaDelLog(tamano=1, ino=identidad_real.st_ino + 1, dev=identidad_real.st_dev)
+    marca_vieja = _MarcaDelLog(tamano=1, ino=identidad_real.st_ino + 1, dev=identidad_real.st_dev, huella=b"")
 
     with caplog.at_level(logging.WARNING):
         _leer_engine_log({log: marca_vieja})
 
     assert any("identidad" in r.message for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# Truncado IN PLACE (hallazgo qodo, PR #439, 4ta ronda)
+#
+# ``open(ruta, "w")`` trunca sin recrear el archivo: el inode NO cambia. El
+# chequeo de identidad (arriba) no ve esto — sólo la huella de contenido lo
+# distingue de un apéndice real.
+# --------------------------------------------------------------------------- #
+
+
+def test_truncado_in_place_no_atribuye_pese_a_identidad_igual(tmp_path: pathlib.Path) -> None:
+    """El escenario exacto de la revisión, real (no fabricado): ``open("w")``
+    conserva el inode, así que sólo la huella puede detectarlo."""
+    log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
+    log.write_text("x" * 1000, encoding="utf-8")
+    marcas = _marcas_del_log((log,))
+
+    # Truncado IN PLACE: mismo inode, contenido reemplazado, más grande que
+    # la marca vieja, con el ERROR en los primeros bytes.
+    with log.open("w", encoding="utf-8") as handle:
+        handle.write("ERROR: Assembler > mod.xml > parse > nodo > falló\n" + "x" * 1500)
+
+    veredicto = _leer_engine_log(marcas)
+
+    assert veredicto.fallas == (), "un truncado in-place no es atribuible aunque el tamaño haya crecido"
+
+
+def test_truncado_in_place_deja_un_breadcrumb(tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture) -> None:
+    log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
+    log.write_text("x" * 1000, encoding="utf-8")
+    marcas = _marcas_del_log((log,))
+
+    with log.open("w", encoding="utf-8") as handle:
+        handle.write("y" * 1500)
+
+    with caplog.at_level(logging.WARNING):
+        _leer_engine_log(marcas)
+
+    assert any("truncado in-place" in r.message for r in caplog.records)
+
+
+def test_apendice_real_con_misma_identidad_no_dispara_la_huella(tmp_path: pathlib.Path) -> None:
+    """El caso común (apéndice real) no debe romperse por el chequeo de huella
+    nuevo: el contenido previo a la marca no cambió, sólo se agregó al final."""
+    log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
+    log.write_text("x" * 1000, encoding="utf-8")
+    marcas = _marcas_del_log((log,))
+
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write("ERROR: Assembler > mod.xml > parse > nodo > falló\n")
+
+    veredicto = _leer_engine_log(marcas)
+
+    assert veredicto.fallas != ()
+    assert "mod.xml" in veredicto.fallas[0]
 
 
 def test_misma_identidad_con_crecimiento_normal_si_decide(tmp_path: pathlib.Path) -> None:
@@ -465,7 +523,7 @@ def test_marca_ausente_no_dispara_el_chequeo_de_identidad(tmp_path: pathlib.Path
     nada que comparar: se lee el archivo nuevo desde el byte 0 normalmente."""
     log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
     marcas = _marcas_del_log((log,))
-    assert marcas[log] == _MarcaDelLog(tamano=0, ino=0, dev=0)
+    assert marcas[log] == _MarcaDelLog(tamano=0, ino=0, dev=0, huella=b"")
 
     log.write_text("ERROR: Assembler > mod.xml > parse > nodo > falló\n", encoding="utf-8")
 
@@ -538,3 +596,73 @@ def test_linea_sin_salto_no_crece_sin_cota(tmp_path: pathlib.Path) -> None:
 
     assert veredicto.fallas == ()
     assert veredicto.advertencias == ()
+
+
+# --------------------------------------------------------------------------- #
+# Combinar candidatas, no devolver en la primera (review CodeRabbit, PR #439,
+# 4ta ronda)
+#
+# Hay DOS candidatas sondeadas (exe.parent y output). Devolver el veredicto de
+# la PRIMERA que creció dejaba una candidata posterior con un ERROR/FATAL real
+# sin escanear si la primera sólo tenía INFO/WARN — el mismo falso verde a
+# nivel de candidata.
+# --------------------------------------------------------------------------- #
+
+
+def test_error_en_la_segunda_candidata_se_detecta_aunque_la_primera_solo_tenga_info(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Las dos candidatas crecen; sólo la SEGUNDA tiene el ERROR."""
+    primera = tmp_path / "primera.log"
+    segunda = tmp_path / "segunda.log"
+    primera.write_text("INFO: viejo\n", encoding="utf-8")
+    segunda.write_text("INFO: viejo\n", encoding="utf-8")
+    marcas = _marcas_del_log((primera, segunda))
+
+    with primera.open("a", encoding="utf-8") as handle:
+        handle.write("INFO: Assembler > x > parse > y > ok\n")
+    with segunda.open("a", encoding="utf-8") as handle:
+        handle.write("ERROR: Assembler > mod.xml > parse > nodo > falló\n")
+
+    veredicto = _leer_engine_log(marcas)
+
+    assert veredicto.fallas != (), "el ERROR de la segunda candidata no puede perderse"
+    assert "mod.xml" in veredicto.fallas[0]
+
+
+def test_advertencias_de_ambas_candidatas_se_combinan(tmp_path: pathlib.Path) -> None:
+    """Cada candidata aporta sus propias advertencias al veredicto combinado."""
+    primera = tmp_path / "primera.log"
+    segunda = tmp_path / "segunda.log"
+    primera.write_text("", encoding="utf-8")
+    segunda.write_text("", encoding="utf-8")
+    marcas = _marcas_del_log((primera, segunda))
+
+    with primera.open("a", encoding="utf-8") as handle:
+        handle.write("WARN: Validator > a > check > b > revertido-primera\n")
+    with segunda.open("a", encoding="utf-8") as handle:
+        handle.write("WARN: Validator > c > check > d > revertido-segunda\n")
+
+    veredicto = _leer_engine_log(marcas)
+
+    assert len(veredicto.advertencias) == 2
+    assert any("revertido-primera" in w for w in veredicto.advertencias)
+    assert any("revertido-segunda" in w for w in veredicto.advertencias)
+
+
+def test_linea_sin_salto_que_empieza_con_error_se_clasifica_antes_de_descartarse(
+    tmp_path: pathlib.Path,
+) -> None:
+    """``ERROR:`` seguido de más de ``_MAX_BYTES_DE_LINEA_PENDIENTE`` sin ``\\n``
+    tiene que invalidar la corrida — descartarla sin clasificar sería el mismo
+    falso verde que este módulo existe para cerrar (review CodeRabbit, PR #439).
+    """
+    log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
+    linea_patologica = b"ERROR: Assembler > mod.xml > " + b"x" * (_MAX_BYTES_DE_LINEA_PENDIENTE + 10)
+    log.write_bytes(linea_patologica)
+
+    with log.open("rb") as handle:
+        veredicto = _escanear_severidades(handle, 0, log.stat().st_size)
+
+    assert veredicto.fallas != ()
+    assert "mod.xml" in veredicto.fallas[0]

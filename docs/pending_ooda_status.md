@@ -168,7 +168,7 @@ con el defecto ya cerrado:
   binario pinneado.
 - **Ventana de lectura de 8 MiB, sólo el PRIMER tramo del apéndice: cerrado.**
   `_MAX_BYTES_DE_LECTURA` truncaba el escaneo a un `read()` único desde la
-  marca; una corrida que logueara más de 8 MiB de `INFO` antes de un `ERROR`
+  marca; una corrida que registrara más de 8 MiB de mensajes `INFO` antes de un `ERROR`
   final lo perdía en silencio (hallazgo qodo, PR #439, insistido en una
   segunda ronda con un fix concreto). A diferencia de la severidad de `WARN` o
   la sintaxis CLI, esto NO dependía de ningún supuesto sobre el binario — era
@@ -183,6 +183,26 @@ con el defecto ya cerrado:
   (`test_pandora_runner.py`). La identidad del archivo (inode/device, cerrada
   en la ronda anterior de este mismo PR) sigue siendo el ejemplo hermano: una
   propiedad verificable sin depender de ningún supuesto sobre el binario.
+  También cerrados en la misma ronda: el veredicto se combinaba de la
+  PRIMERA candidata que crecía en vez de las DOS (`exe.parent` y `output`),
+  dejando un `ERROR` real en la segunda sin escanear si la primera sólo tenía
+  `INFO`/`WARN`; y una línea sin salto que empieza con `ERROR:` y supera
+  `_MAX_BYTES_DE_LINEA_PENDIENTE` se descartaba sin clasificar.
+- **Truncado IN PLACE (`open(ruta, "w")`), mismo inode: cerrado.** El chequeo
+  de identidad (inode/device) sólo detecta un archivo RECREADO (borrado +
+  creado, o rotado). Un truncado in-place —abrir en modo escritura sin
+  truncar-y-recrear— conserva el MISMO inode en POSIX (verificado
+  experimentalmente), así que ese chequeo no lo veía: si el contenido
+  reescrito crecía más allá de la marca vieja con un `ERROR` en los primeros
+  bytes, el escaneo arrancaba en un offset sin relación con el contenido real
+  (hallazgo qodo, PR #439, quinta ronda). Igual que el resto de esta familia
+  de fixes, no depende de ningún supuesto sobre CÓMO abre Pandora su log —
+  es una propiedad general de cualquier mecanismo de truncado. Cerrado con
+  una huella (`hashlib.sha256`) de una muestra acotada (64 KiB) del contenido
+  justo antes de la marca: si esa ventana cambió entre la medición y la
+  lectura, la candidata queda no atribuible, igual que un cambio de
+  identidad. Test con `open("w")` real (no fabricado) reescribiendo contenido
+  más grande con `ERROR` al principio.
 - **Ambas rutas candidatas de `Engine.log` sin verificar: si las dos están
   mal, el mecanismo se apaga sin ninguna señal.** El breadcrumb de formato no
   reconocido (`sky_claw/local/tools/pandora_runner.py`, tarea del contrato de

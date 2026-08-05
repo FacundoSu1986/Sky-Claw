@@ -6,6 +6,7 @@ Implements M-02 Pandora Runner specifications.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -169,30 +170,62 @@ def _rutas_candidatas_del_log(exe: pathlib.Path, output: pathlib.Path | None) ->
     return tuple(dict.fromkeys(candidatas))
 
 
+#: Cuántos bytes, contados hacia atrás desde ``marca.tamano``, se hashean para
+#: la huella de contenido. No hace falta hashear el archivo entero: alcanza con
+#: una muestra acotada de lo que YA existía justo antes del punto de corte —
+#: que un truncado-y-reescrito in-place produzca por azar el mismo contenido
+#: en esa ventana es astronómicamente improbable para texto real (timestamps,
+#: nombres de nodo, contadores).
+_TAMANO_DE_MUESTRA_DE_HUELLA = 64 * 1024
+
+
+def _huella_de_prefijo(ruta: pathlib.Path, hasta: int) -> bytes:
+    """Hash de los últimos ``_TAMANO_DE_MUESTRA_DE_HUELLA`` bytes de ``ruta`` hasta el offset ``hasta``.
+
+    Se llama DOS veces sobre la MISMA ventana lógica ``[hasta - muestra, hasta)``:
+    una vez al medir (``hasta = tamano en ese momento``) y otra al leer
+    (``hasta = marca.tamano``, la misma constante, contra el archivo como
+    existe AHORA). Si difieren, el contenido que precede a la marca cambió —
+    ver ``_MarcaDelLog.huella``.
+    """
+    if hasta <= 0:
+        return b""
+    inicio = max(0, hasta - _TAMANO_DE_MUESTRA_DE_HUELLA)
+    with ruta.open("rb") as handle:
+        handle.seek(inicio)
+        muestra = handle.read(hasta - inicio)
+    return hashlib.sha256(muestra).digest()
+
+
 @dataclass(frozen=True, slots=True)
 class _MarcaDelLog:
-    """Tamaño E IDENTIDAD de una candidata, capturados ANTES de spawnear.
+    """Tamaño, IDENTIDAD y HUELLA de contenido de una candidata, capturados ANTES de spawnear.
 
-    La identidad (``st_dev``/``st_ino``) es lo que cierra un hueco que el
-    tamaño solo no puede: si Pandora trunca y recrea ``Engine.log`` en vez de
-    apendear —comportamiento no verificado contra un rig real—, el archivo
-    nuevo puede crecer más allá de la marca vieja aunque sea un archivo
-    DISTINTO. Comparar sólo tamaños (``tamano_nuevo > marca``) leería desde un
-    offset que ya no tiene relación con el contenido real: un ``ERROR`` en los
-    primeros bytes del archivo recreado quedaría fuera del tramo leído,
-    produciendo el mismo falso verde que este módulo existe para cerrar
-    (hallazgo qodo, PR #439). ``ino=0``/``dev=0`` marca "sin identidad previa"
-    (archivo ausente al medir): no hay nada contra qué comparar, así que el
-    chequeo de identidad se omite y se lee desde el byte 0 del archivo nuevo.
+    La identidad (``st_dev``/``st_ino``) cierra el hueco de un archivo
+    truncado y RECREADO (borrado + vuelto a crear, o rotado por otra
+    herramienta): eso cambia el inode. Pero ``open(ruta, "w")`` —truncado IN
+    PLACE— conserva el MISMO inode (verificado: en POSIX, truncar no
+    reasigna la entrada de directorio). Sin la huella, ese caso pasaba el
+    chequeo de identidad intacto, y si el contenido reescrito crecía más allá
+    de la marca vieja, el escaneo arrancaba en un offset que ya no tiene
+    relación con el contenido real — el mismo falso verde que la identidad
+    cierra para el caso de recreación, pero sin cubrir éste (hallazgo qodo,
+    PR #439, ronda de la ventana de lectura). La huella es un hash de la
+    ventana de bytes justo antes del punto de corte: si ese contenido YA
+    existente cambió, el offset ya no es confiable, sin importar qué diga la
+    identidad. ``ino=0``/``dev=0``/``huella=b""`` marca "sin identidad previa"
+    (archivo ausente al medir): no hay nada contra qué comparar, así que
+    ambos chequeos se omiten y se lee desde el byte 0 del archivo nuevo.
     """
 
     tamano: int
     ino: int
     dev: int
+    huella: bytes
 
 
 def _marcas_del_log(rutas: tuple[pathlib.Path, ...]) -> dict[pathlib.Path, _MarcaDelLog | None]:
-    """Tamaño e identidad de cada candidata ANTES de spawnear; ausente ⇒ marca en cero.
+    """Tamaño, identidad y huella de cada candidata ANTES de spawnear; ausente ⇒ marca en cero.
 
     Esta marca es la que hace la atribución, y es deliberadamente distinta del
     mecanismo del hermano ``bodyslide_runner._leer_log``: BodySlide acota la
@@ -215,9 +248,10 @@ def _marcas_del_log(rutas: tuple[pathlib.Path, ...]) -> dict[pathlib.Path, _Marc
     for ruta in rutas:
         try:
             estado = ruta.stat()
-            marcas[ruta] = _MarcaDelLog(tamano=estado.st_size, ino=estado.st_ino, dev=estado.st_dev)
+            huella = _huella_de_prefijo(ruta, estado.st_size)
+            marcas[ruta] = _MarcaDelLog(tamano=estado.st_size, ino=estado.st_ino, dev=estado.st_dev, huella=huella)
         except FileNotFoundError:
-            marcas[ruta] = _MarcaDelLog(tamano=0, ino=0, dev=0)
+            marcas[ruta] = _MarcaDelLog(tamano=0, ino=0, dev=0, huella=b"")
         except OSError as exc:
             logger.warning(
                 "No se pudo medir '%s' antes de la corrida; su contenido no se usa para decidir: %s", ruta, exc
@@ -278,8 +312,13 @@ def _escanear_severidades(handle: IO[bytes], inicio: int, fin: int) -> _Veredict
         if ultimo_salto == -1:
             if len(pendiente) > _MAX_BYTES_DE_LINEA_PENDIENTE:
                 # Línea patológicamente larga sin salto (binario/corrupto): no
-                # crecer sin cota — se descarta del escaneo de severidad, pero
-                # su cola sigue sirviendo como diagnóstico crudo.
+                # crecer sin cota. Clasificar ANTES de vaciar es lo que importa
+                # acá — un ``ERROR:`` seguido de más de este techo sin `\n`
+                # (posible, el patrón no exige línea corta) se perdía si se
+                # descartaba sin pasar por `_acumular_severidades` (review
+                # CodeRabbit, PR #439). La cola sigue sirviendo como
+                # diagnóstico crudo aunque se corte el buffer.
+                _acumular_severidades(pendiente, fallas, advertencias)
                 cola = (cola + pendiente)[-_MAX_BYTES_DE_COLA:]
                 pendiente = b""
             continue
@@ -298,14 +337,25 @@ def _escanear_severidades(handle: IO[bytes], inicio: int, fin: int) -> _Veredict
 
 
 def _leer_engine_log(marcas: dict[pathlib.Path, _MarcaDelLog | None]) -> _VeredictoDelLog:
-    """Lee el tramo APENDEADO por esta corrida y lo clasifica por severidad.
+    """Lee el tramo APENDEADO por esta corrida en TODAS las candidatas y combina los veredictos.
 
     Best-effort ante I/O: el log es señal adicional, no la condición de éxito. Si
     falta, si no creció, si se rotó (quedó más chico que su marca), si CAMBIÓ DE
     IDENTIDAD (truncado y recreado, ver ``_MarcaDelLog``) o si su marca no es
-    verificable (``None``), se devuelve un veredicto no atribuible: el texto se
-    conserva como diagnóstico pero no decide.
+    verificable (``None``), esa candidata puntual queda no atribuible y se pasa
+    a la siguiente.
+
+    Combina en vez de retornar en la primera candidata que creció: hay DOS
+    candidatas sondeadas (``exe.parent`` y ``output``, ver
+    ``_rutas_candidatas_del_log``), y devolver apenas la primera con contenido
+    dejaba una candidata posterior con un ``ERROR``/``FATAL`` real SIN
+    escanear si la primera sólo tenía ``INFO``/``WARN`` — el mismo falso verde
+    que este módulo existe para cerrar, sólo que a nivel de candidata en vez
+    de a nivel de bloque de lectura (review CodeRabbit, PR #439).
     """
+    fallas: list[str] = []
+    advertencias: list[str] = []
+    colas: list[str] = []
     for ruta, marca in marcas.items():
         if marca is None:
             # Marca no verificable: no hay base fiable para acotar el tramo a
@@ -328,6 +378,22 @@ def _leer_engine_log(marcas: dict[pathlib.Path, _MarcaDelLog | None]) -> _Veredi
                     ruta,
                 )
                 continue
+            # Truncado IN PLACE (``open(ruta, "w")``): la identidad NO cambia
+            # (mismo inode), así que el chequeo de arriba no lo ve. Si el
+            # contenido que precede a la marca cambió, el offset ya no es
+            # confiable aunque el tamaño haya crecido más allá de la marca
+            # vieja. Sólo vale la pena mirar cuando ``tamano > marca.tamano``:
+            # sin crecimiento el chequeo de "se achicó"/"no atribuible" de
+            # abajo ya hace ``continue`` sin necesitar la huella.
+            if marca.tamano > 0 and tamano > marca.tamano:
+                huella_actual = _huella_de_prefijo(ruta, marca.tamano)
+                if huella_actual != marca.huella:
+                    logger.warning(
+                        "'%s' cambió su contenido previo a la marca durante la corrida "
+                        "(truncado in-place); su contenido no se usa para decidir.",
+                        ruta,
+                    )
+                    continue
             if tamano <= marca.tamano:
                 # No creció (log ausente o sin escritura) o se rotó (más chico que
                 # la marca). En ambos casos no hay tramo atribuible a esta corrida.
@@ -335,7 +401,7 @@ def _leer_engine_log(marcas: dict[pathlib.Path, _MarcaDelLog | None]) -> _Veredi
                     logger.warning("'%s' se achicó durante la corrida; su contenido no se usa para decidir.", ruta)
                 continue
             with ruta.open("rb") as handle:
-                return _escanear_severidades(handle, marca.tamano, tamano)
+                veredicto_candidata = _escanear_severidades(handle, marca.tamano, tamano)
         except FileNotFoundError:
             # Esperado: la marca fue 0 porque no existía, y sigue sin existir (o
             # dejó de existir entre la marca y la lectura). No es una condición
@@ -345,7 +411,24 @@ def _leer_engine_log(marcas: dict[pathlib.Path, _MarcaDelLog | None]) -> _Veredi
         except OSError as exc:
             logger.warning("No se pudo leer '%s': %s", ruta, exc)
             continue
-    return _VeredictoDelLog()
+
+        # Mismo tope por categoría que aplica cada `_escanear_severidades`
+        # individual, ahora sobre el TOTAL combinado: dos candidatas con 15
+        # fallas cada una no deben sumar 30 líneas al reporte.
+        for linea in veredicto_candidata.fallas:
+            if len(fallas) < _MAX_LINEAS_REPORTADAS:
+                fallas.append(linea)
+        for linea in veredicto_candidata.advertencias:
+            if len(advertencias) < _MAX_LINEAS_REPORTADAS:
+                advertencias.append(linea)
+        if veredicto_candidata.texto:
+            colas.append(veredicto_candidata.texto)
+
+    return _VeredictoDelLog(
+        texto="\n---\n".join(colas),
+        fallas=tuple(fallas),
+        advertencias=tuple(advertencias),
+    )
 
 
 class PandoraRunner:
