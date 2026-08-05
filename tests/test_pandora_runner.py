@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import logging
 import pathlib
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from sky_claw.local.tools.pandora_runner import (
+    _SEVERIDADES_QUE_FALLAN,
     NOMBRE_DEL_LOG_DE_PANDORA,
     PandoraConfig,
     PandoraExecutionError,
     PandoraRunner,
+    _leer_engine_log,
+    _marcas_del_log,
+    _VeredictoDelLog,
 )
 
 
@@ -213,6 +218,41 @@ async def test_exit_non_zero_adjunta_la_cola_cruda_si_no_reconocio_severidades(
     assert "formato inesperado" in resultado.message
 
 
+async def test_exit_cero_con_formato_no_reconocido_deja_un_breadcrumb(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """La contraparte del test de arriba, en la rama de ÉXITO.
+
+    ``_diagnostico`` sólo adjunta la cola cruda cuando ``not success`` — con
+    exit 0 y ningún patrón de severidad reconocido, ``success`` sale ``True`` y
+    esa cola nunca llega a ``message``. Sin un breadcrumb en el log de la
+    aplicación, el operador se queda sin NINGUNA señal de que el patrón de
+    severidad no matcheó, exactamente el escenario que este módulo existe para
+    cerrar (hallazgo qodo, PR #439).
+    """
+    runner, log = _preparar(tmp_path)
+
+    with caplog.at_level(logging.WARNING):
+        resultado = await _correr(runner, escribe="algo salió mal en un formato inesperado\n", return_code=0, log=log)
+
+    assert resultado.success is True
+    assert any("formato inesperado" in r.message for r in caplog.records)
+
+
+async def test_exit_cero_sin_crecimiento_de_log_no_deja_breadcrumb(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Una corrida sana y silenciosa (sin ninguna línea nueva en el log) no debe
+    generar ruido en los logs de la aplicación."""
+    runner, log = _preparar(tmp_path)
+
+    with caplog.at_level(logging.WARNING):
+        resultado = await _correr(runner, escribe="", return_code=0, log=log)
+
+    assert resultado.success is True
+    assert not caplog.records
+
+
 async def test_reconoce_la_severidad_con_y_sin_corchetes(tmp_path: pathlib.Path) -> None:
     """El README documenta la plantilla ``[Severity]: ...`` con los corchetes como
     marcador de campo. No está verificado contra un log real si la línea sale
@@ -222,3 +262,126 @@ async def test_reconoce_la_severidad_con_y_sin_corchetes(tmp_path: pathlib.Path)
     resultado = await _correr(runner, escribe="[ERROR]: Assembler > a > b > c > d\n", log=log)
 
     assert resultado.success is False
+
+
+# --------------------------------------------------------------------------- #
+# Marca no verificable ≠ marca ausente (review CodeRabbit + Copilot, PR #439)
+#
+# Un ``stat()`` fallido (permisos, lock de otro proceso, error transitorio de
+# red en un share) sobre un log EXISTENTE no es lo mismo que un log ausente:
+# tratar ambos como ``0`` hace que ``_leer_engine_log`` lea el archivo COMPLETO
+# y atribuya a esta corrida los ``ERROR``/``FATAL`` de corridas anteriores — un
+# falso rojo, tan malo como el falso verde que este módulo cierra.
+# --------------------------------------------------------------------------- #
+
+
+def test_marca_distingue_ausente_de_no_verificable(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``FileNotFoundError`` ⇒ ``0`` (ausente, el caso esperado con dos
+    candidatas sondeadas). Cualquier OTRO ``OSError`` ⇒ ``None`` (no
+    verificable) — nunca ``0``, que significaría "leer todo el archivo"."""
+    ausente = tmp_path / "ausente.log"
+    bloqueado = tmp_path / "bloqueado.log"
+    bloqueado.write_text("contenido preexistente\n", encoding="utf-8")
+
+    stat_original = pathlib.Path.stat
+
+    def _stat_que_falla(self: pathlib.Path, *args: object, **kwargs: object) -> object:
+        if self == bloqueado:
+            raise PermissionError("bloqueado por otro proceso")
+        return stat_original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "stat", _stat_que_falla)
+
+    marcas = _marcas_del_log((ausente, bloqueado))
+
+    assert marcas[ausente] == 0
+    assert marcas[bloqueado] is None
+
+
+def test_marca_no_verificable_no_atribuye_contenido_de_corridas_anteriores() -> None:
+    """Con marca ``None``, ``_leer_engine_log`` SALTA esa candidata: un ``ERROR``
+    preexistente no puede convertirse en el veredicto de una corrida que nunca
+    se pudo acotar. Sin esta guarda, ``None`` colapsaría a "leer desde 0" y
+    produciría exactamente el falso rojo que la marca ``None`` existe para evitar.
+    """
+    log = pathlib.Path("/no/se/lee/nunca/Engine.log")
+
+    veredicto = _leer_engine_log({log: None})
+
+    assert veredicto == _VeredictoDelLog()
+
+
+def test_leer_log_no_avisa_cuando_la_candidata_simplemente_no_existe(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Con dos candidatas sondeadas (``exe.parent`` y ``output``), lo normal es
+    que UNA no exista. Eso no es una condición de error digna de warning en cada
+    corrida sana del pipeline (review Copilot, PR #439)."""
+    inexistente = tmp_path / "no_existe" / NOMBRE_DEL_LOG_DE_PANDORA
+
+    with caplog.at_level(logging.WARNING):
+        veredicto = _leer_engine_log({inexistente: 0})
+
+    assert veredicto == _VeredictoDelLog()
+    assert not caplog.records, [r.message for r in caplog.records]
+
+
+def test_leer_log_avisa_ante_un_error_de_io_real(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Un ``OSError`` real durante la lectura (no un ``FileNotFoundError``
+    esperado) sí debe quedar visible en los logs de la aplicación — es la
+    contraparte del test de arriba: no todo I/O fallido debe silenciarse."""
+    log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
+    log.write_text("contenido\n", encoding="utf-8")
+
+    stat_original = pathlib.Path.stat
+
+    def _stat_que_falla(self: pathlib.Path, *args: object, **kwargs: object) -> object:
+        if self == log:
+            raise PermissionError("bloqueado")
+        return stat_original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "stat", _stat_que_falla)
+
+    with caplog.at_level(logging.WARNING):
+        veredicto = _leer_engine_log({log: 0})
+
+    assert veredicto == _VeredictoDelLog()
+    assert any("bloqueado" in r.message for r in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# Anclas de enumeración (nitpick CodeRabbit, PR #439): muestrear ERROR/FATAL/WARN
+# a mano no ataja una severidad nueva que se agregue a `_PATRON_DE_SEVERIDAD`
+# sin cablearla en `_SEVERIDADES_QUE_FALLAN`. Y las dos candidatas de
+# `_rutas_candidatas_del_log` (junto al exe, bajo `--output`) necesitan las DOS
+# ejercitadas: sólo la primera se prueba en el resto del archivo.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("severidad", _SEVERIDADES_QUE_FALLAN)
+async def test_toda_severidad_declarada_invalida_la_corrida(tmp_path: pathlib.Path, severidad: str) -> None:
+    """Ancla de igualdad: cada severidad en ``_SEVERIDADES_QUE_FALLAN`` tiene que
+    decidir el veredicto. Agregar una severidad al patrón sin cablearla acá
+    rompe este test, en vez de pasar en silencio."""
+    runner, log = _preparar(tmp_path)
+
+    resultado = await _correr(runner, escribe=f"{severidad}: Assembler > a > b > c > d\n", log=log)
+
+    assert resultado.success is False
+    assert severidad in resultado.message
+
+
+async def test_el_log_bajo_output_path_tambien_decide(tmp_path: pathlib.Path) -> None:
+    """La segunda candidata de ``_rutas_candidatas_del_log`` (``runner.output_path``)
+    tiene que estar cableada — el resto del archivo sólo ejercita la primera
+    (``exe.parent``). Si un refactor la elimina, la suite debe notarlo."""
+    runner, _log_junto_al_exe = _preparar(tmp_path)
+    log_de_output = runner.output_path / NOMBRE_DEL_LOG_DE_PANDORA
+    log_de_output.parent.mkdir(parents=True, exist_ok=True)
+
+    resultado = await _correr(runner, escribe="ERROR: Assembler > mod.xml > parse > nodo > falló\n", log=log_de_output)
+
+    assert resultado.success is False
+    assert "ERROR" in resultado.message

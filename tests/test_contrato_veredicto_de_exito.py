@@ -72,12 +72,22 @@ def _referencias(expr: ast.expr) -> set[str]:
     objeto contenedor en el set y volvería inútil la comparación de subconjunto:
     ``{proc, returncode}`` ya no está contenido en los nombres de exit code, así
     que el ofensor más frecuente pasaría sin romper nada.
+
+    Una vez que un ``Attribute``/``Subscript`` nombra el exit code (``.attr`` o
+    una clave string), lo que PRODUJO ese objeto —una llamada, una cadena de
+    métodos, otro subíndice— no es evidencia independiente y no vale la pena
+    bajar a inspeccionarlo: ``subprocess.run(argv).returncode`` es el mismo
+    defecto que ``proc.returncode``, sólo que con la llamada de por medio. Sin
+    este corte, ``run``/``argv`` se colaban en el set y la comparación de
+    subconjunto dejaba de marcarlo (review CodeRabbit, PR #439).
     """
     refs: set[str] = set()
 
     def visitar(nodo: ast.AST) -> None:
         if isinstance(nodo, ast.Attribute):
             refs.add(nodo.attr)
+            if nodo.attr in NOMBRES_DE_EXIT_CODE:
+                return
             base: ast.AST = nodo.value
             while isinstance(base, ast.Attribute):
                 base = base.value
@@ -87,6 +97,14 @@ def _referencias(expr: ast.expr) -> set[str]:
             if not isinstance(base, ast.Name):
                 visitar(base)
             return
+        if isinstance(nodo, ast.Subscript):
+            clave = nodo.slice
+            if isinstance(clave, ast.Constant) and isinstance(clave.value, str) and clave.value in NOMBRES_DE_EXIT_CODE:
+                refs.add(clave.value)
+                return
+            for hijo in ast.iter_child_nodes(nodo):
+                visitar(hijo)
+            return
         if isinstance(nodo, ast.Name):
             refs.add(nodo.id)
             return
@@ -95,6 +113,83 @@ def _referencias(expr: ast.expr) -> set[str]:
 
     visitar(expr)
     return refs
+
+
+#: Nodos que delimitan un alcance de variables locales. El módulo entra acá
+#: también: una asignación suelta fuera de toda función comparte alcance con
+#: otras asignaciones sueltas del mismo archivo.
+_NODOS_DE_ALCANCE = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _padres(arbol: ast.AST) -> dict[ast.AST, ast.AST]:
+    """Mapa hijo → padre de todo el árbol, para resolver el alcance de un nodo."""
+    padres: dict[ast.AST, ast.AST] = {}
+    for nodo in ast.walk(arbol):
+        for hijo in ast.iter_child_nodes(nodo):
+            padres[hijo] = nodo
+    return padres
+
+
+def _alcance_de(nodo: ast.AST, padres: dict[ast.AST, ast.AST]) -> ast.AST:
+    """La función (o el módulo) que contiene a *nodo* más de cerca.
+
+    Subir hasta la PRIMERA función ancestro —no hasta el módulo— es lo que hace
+    que dos funciones distintas puedan reusar el mismo nombre de variable
+    (``rc``) con significados no relacionados sin contaminarse entre sí.
+    """
+    actual = nodo
+    while not isinstance(actual, _NODOS_DE_ALCANCE):
+        actual = padres[actual]
+    return actual
+
+
+def _asignacion_simple(nodo: ast.AST) -> tuple[str, ast.expr] | None:
+    """``(nombre, valor)`` si *nodo* asigna a un único nombre simple, si no ``None``."""
+    if isinstance(nodo, ast.Assign) and len(nodo.targets) == 1 and isinstance(nodo.targets[0], ast.Name):
+        return nodo.targets[0].id, nodo.value
+    if isinstance(nodo, ast.AnnAssign) and isinstance(nodo.target, ast.Name) and nodo.value is not None:
+        return nodo.target.id, nodo.value
+    return None
+
+
+def _nombres_contaminados_por_alcance(arbol: ast.AST, padres: dict[ast.AST, ast.AST]) -> dict[ast.AST, frozenset[str]]:
+    """Nombres locales cuyo valor depende ÚNICAMENTE del exit code, agrupados por alcance.
+
+    Cierra el hueco de los alias locales: ``exit_ok = proc.returncode == 0``
+    seguido de ``Resultado(success=exit_ok)`` evade un chequeo que sólo mira la
+    expresión final, porque ``exit_ok`` por sí solo no es un nombre de exit code
+    (review CodeRabbit, PR #439). Punto fijo acotado sobre las asignaciones de
+    CADA alcance por separado: una variable queda contaminada si su expresión
+    sólo referencia nombres de exit code u otras variables YA contaminadas en
+    el MISMO alcance. Por alcance y no por archivo, porque dos funciones
+    distintas usando el mismo nombre de variable para cosas no relacionadas no
+    deben contaminarse entre sí.
+    """
+    asignaciones_por_alcance: dict[ast.AST, list[tuple[str, ast.expr]]] = {}
+    for nodo in ast.walk(arbol):
+        asignacion = _asignacion_simple(nodo)
+        if asignacion is None or asignacion[0] == "success":
+            continue
+        alcance = _alcance_de(nodo, padres)
+        asignaciones_por_alcance.setdefault(alcance, []).append(asignacion)
+
+    contaminados_por_alcance: dict[ast.AST, frozenset[str]] = {}
+    for alcance, asignaciones in asignaciones_por_alcance.items():
+        contaminados: set[str] = set()
+        # Una cadena de N alias converge en a lo sumo N rondas; el tope evita un
+        # bucle patológico ante un ciclo de alias.
+        for _ in range(len(asignaciones) + 1):
+            crecio = False
+            for nombre, expr in asignaciones:
+                if nombre in contaminados:
+                    continue
+                if _es_solo_exit_code(expr, frozenset(contaminados)):
+                    contaminados.add(nombre)
+                    crecio = True
+            if not crecio:
+                break
+        contaminados_por_alcance[alcance] = frozenset(contaminados)
+    return contaminados_por_alcance
 
 
 def _expresiones_de_success(arbol: ast.AST) -> list[ast.expr]:
@@ -129,29 +224,43 @@ def _expresiones_de_success(arbol: ast.AST) -> list[ast.expr]:
     return expresiones
 
 
-def _es_solo_exit_code(expr: ast.expr) -> bool:
+def _es_solo_exit_code(expr: ast.expr, contaminados: frozenset[str] = frozenset()) -> bool:
     """¿La expresión decide mirando ÚNICAMENTE el código de salida?
 
     Un literal (``success=False`` en una rama de error explícita) no consulta
     nada y no es un veredicto sobre el trabajo de la herramienta: no cuenta. Lo
-    que se persigue es la expresión que afirma ÉXITO apoyada sólo en el exit code.
+    que se persigue es la expresión que afirma ÉXITO apoyada sólo en el exit
+    code — directo o a través de variables locales ya contaminadas en su mismo
+    alcance (``contaminados``, ver ``_nombres_contaminados_por_alcance``).
     """
     refs = _referencias(expr)
-    return bool(refs) and refs <= NOMBRES_DE_EXIT_CODE
+    return bool(refs) and refs <= (NOMBRES_DE_EXIT_CODE | contaminados)
+
+
+def _analizar(arbol: ast.AST) -> list[ast.expr]:
+    """Expresiones de ``success`` que resultan solo-exit-code, resolviendo alias locales."""
+    padres = _padres(arbol)
+    contaminados_por_alcance = _nombres_contaminados_por_alcance(arbol, padres)
+    culpables: list[ast.expr] = []
+    for expr in _expresiones_de_success(arbol):
+        contaminados = contaminados_por_alcance.get(_alcance_de(expr, padres), frozenset())
+        if _es_solo_exit_code(expr, contaminados):
+            culpables.append(expr)
+    return culpables
 
 
 def _ofensores() -> dict[str, list[str]]:
     ofensores: dict[str, list[str]] = {}
     for archivo in PAQUETE.rglob("*.py"):
         arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
-        culpables = [ast.unparse(e) for e in _expresiones_de_success(arbol) if _es_solo_exit_code(e)]
+        culpables = [ast.unparse(e) for e in _analizar(arbol)]
         if culpables:
             ofensores[archivo.relative_to(RAIZ).as_posix()] = culpables
     return ofensores
 
 
 def _detecta(fuente: str) -> list[str]:
-    return [ast.unparse(e) for e in _expresiones_de_success(ast.parse(fuente)) if _es_solo_exit_code(e)]
+    return [ast.unparse(e) for e in _analizar(ast.parse(fuente))]
 
 
 # --------------------------------------------------------------------------- #
@@ -176,6 +285,57 @@ def test_detecta_el_exit_code_leido_desde_un_objeto() -> None:
     """
     assert _detecta("success = proc.returncode == 0")
     assert _detecta("success = self._proc.exit_code == 0")
+
+
+def test_detecta_el_exit_code_detras_de_una_llamada_o_un_alias_local() -> None:
+    """Los dos caminos de evasión señalados por revisión (PR #439):
+
+    (a) el atributo llega detrás de una llamada (``subprocess.run(argv)``), no
+    de un ``Name`` puro — un colector que sigue bajando a inspeccionar la base
+    ve ``run``/``argv`` y la comparación de subconjunto deja de marcarlo;
+    (b) el exit code se guarda en una variable local ANTES de asignarla a
+    ``success`` — un chequeo que sólo mira la expresión final no ve el origen.
+    """
+    assert _detecta("Resultado(success=subprocess.run(argv).returncode == 0)") == [
+        "subprocess.run(argv).returncode == 0"
+    ]
+    assert _detecta("exit_ok = proc.returncode == 0\nResultado(success=exit_ok)") == ["exit_ok"]
+
+
+def test_detecta_el_exit_code_en_un_subindice_de_diccionario() -> None:
+    """``d["returncode"]`` es el mismo defecto que ``d.returncode`` vía dict.
+
+    Explícitamente nombrado en la revisión ("subíndices"): un resultado que
+    viaja como dict en vez de dataclass usa esta forma para lo mismo.
+    """
+    assert _detecta('success = resultado["returncode"] == 0')
+
+
+def test_alias_local_no_contamina_entre_funciones_distintas() -> None:
+    """El taint tracking es POR FUNCIÓN: dos funciones que reusan el mismo
+    nombre de variable con significados no relacionados no deben cruzarse.
+
+    ``estado`` no es un nombre de exit code (a diferencia de ``rc``, que SÍ
+    está en ``NOMBRES_DE_EXIT_CODE`` por convención propia y se marcaría de
+    todas formas): sólo se contamina si el taint tracking lo deriva de su
+    propia asignación. Si la contaminación fuera global al archivo en vez de
+    por función, la función B de abajo —cuyo ``estado`` viene de un string, no
+    de un exit code— se marcaría como ofensora sólo porque la función A, en
+    otra parte del mismo archivo, sí usa ``estado`` para el exit code. Eso
+    sería un falso positivo que ningún runner real podría evitar con un simple
+    rename ajeno a su propia función.
+    """
+    fuente = (
+        "def funcion_a():\n"
+        "    estado = proc.returncode\n"
+        "    return Resultado(success=estado == 0)\n"
+        "\n"
+        "def funcion_b():\n"
+        "    estado = 'listo'\n"
+        "    return Resultado(success=(estado == 'listo'))\n"
+    )
+    culpables = _detecta(fuente)
+    assert culpables == ["estado == 0"], culpables
 
 
 def test_no_marca_un_veredicto_que_cruza_otra_evidencia() -> None:

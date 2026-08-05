@@ -275,14 +275,17 @@ async def test_xedit_con_exit_cero_y_errores_parseados_no_es_exito(
 ) -> None:
     """El hermano del falso verde de Pandora, encontrado por el ancla de veredicto.
 
-    ``XEditRunner`` ya cruza el exit code con los errores parseados de la salida
-    (``success = return_code == 0 and not errors``), pero este call site
-    RECOMPUTABA el veredicto como ``exit_code == 0`` y tiraba ese cruce. xEdit no
-    propaga el fallo de un script Pascal a su código de salida, así que un script
-    que loguea ``Error:`` y sale 0 se reportaba como parche exitoso — y el
-    ``raise`` que dispara el rollback nunca se alcanzaba.
+    ``XEditRunner._parse_script_output`` ya cruza el exit code con los errores
+    parseados de la salida (``success = return_code == 0 and not errors``), y
+    ``execute_patch()`` levanta ``XEditWriteError`` SIEMPRE que ``not
+    result.success`` — nunca retorna un resultado fallido. Este test mockea
+    ``execute_patch`` levantando esa excepción con el ``ScriptExecutionResult``
+    adjunto, que es el contrato REAL: la primera versión de este test mockeaba
+    ``execute_patch`` para que RETORNARA ``success=False``, algo que el runner
+    real nunca hace, y por eso no detectó que el call site del service recomputaba
+    el veredicto en una rama inalcanzable en producción (review CodeRabbit, PR #439).
     """
-    from sky_claw.local.xedit.runner import ScriptExecutionResult
+    from sky_claw.local.xedit.runner import ScriptExecutionResult, XEditWriteError
 
     mock_patch_result = PatchResult(
         success=True,
@@ -299,15 +302,19 @@ async def test_xedit_con_exit_cero_y_errores_parseados_no_es_exito(
 
     service = make_service(lock_manager, snapshot_manager, mock_journal, mock_path_resolver, mock_event_bus)
     runner = MagicMock()
+    script_result = ScriptExecutionResult(
+        # Lo que arma el runner real internamente: salió 0, pero parseó un error.
+        success=False,
+        exit_code=0,
+        stdout="Error: no se pudo aplicar el override",
+        stderr="",
+        records_processed=0,
+        errors=["Error: no se pudo aplicar el override"],
+    )
     runner.execute_patch = AsyncMock(
-        return_value=ScriptExecutionResult(
-            # Lo que devolvería el runner real: salió 0, pero parseó un error.
-            success=False,
-            exit_code=0,
-            stdout="Error: no se pudo aplicar el override",
-            stderr="",
-            records_processed=0,
-            errors=["Error: no se pudo aplicar el override"],
+        side_effect=XEditWriteError(
+            f"Patch execution failed: {script_result.errors}",
+            result=script_result,
         )
     )
     service._xedit_runner = runner
@@ -316,10 +323,67 @@ async def test_xedit_con_exit_cero_y_errores_parseados_no_es_exito(
         result = await service.execute_patch(mock_conflict_report, target_plugin)
 
     assert result["success"] is False, "exit 0 con errores parseados no es un parche exitoso"
-    # El detalle no puede quedar vacío: con exit 0 el stderr viene vacío, y sin los
-    # errores parseados el mensaje caería a "error desconocido" (tool_result.py).
+    assert result["xedit_exit_code"] == 0
+    # El texto distintivo del desenlace "exit 0 con errores" — no el genérico de
+    # ``str(exc)`` (que también contendría el detalle por accidente, vía el
+    # mensaje crudo de ``XEditWriteError``, y dejaría pasar un test que no
+    # ejercita realmente la extracción de ``exc.result``).
+    assert "salió con código 0 pero reportó errores" in result["message"]
     assert "no se pudo aplicar el override" in result["message"]
     mock_journal.mark_transaction_rolled_back.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_xedit_con_exit_code_real_no_cero_reporta_ese_codigo(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    mock_conflict_report: ConflictReport,
+    target_plugin: pathlib.Path,
+) -> None:
+    """El hermano sano del caso de arriba: exit non-zero real, no ambiguo.
+
+    Distingue el desenlace "exit 0 con errores parseados" del desenlace "xEdit
+    realmente terminó mal" — el mensaje y el ``xedit_exit_code`` reportados deben
+    reflejar CUÁL de los dos pasó, no aplanar ambos al mismo texto genérico.
+    """
+    from sky_claw.local.xedit.runner import ScriptExecutionResult, XEditWriteError
+
+    mock_patch_result = PatchResult(
+        success=True,
+        output_path=target_plugin,
+        records_patched=5,
+        conflicts_resolved=2,
+        xedit_exit_code=0,
+        warnings=(),
+        error=None,
+    )
+    mock_orchestrator = AsyncMock()
+    mock_orchestrator.resolve = AsyncMock(return_value=mock_patch_result)
+    mock_orchestrator._strategies = []
+
+    service = make_service(lock_manager, snapshot_manager, mock_journal, mock_path_resolver, mock_event_bus)
+    runner = MagicMock()
+    script_result = ScriptExecutionResult(
+        success=False,
+        exit_code=1,
+        stdout="",
+        stderr="fatal: crashed",
+        records_processed=0,
+        errors=[],
+    )
+    runner.execute_patch = AsyncMock(side_effect=XEditWriteError("Patch execution failed: []", result=script_result))
+    service._xedit_runner = runner
+
+    with patch.object(service, "_ensure_patch_orchestrator", return_value=mock_orchestrator):
+        result = await service.execute_patch(mock_conflict_report, target_plugin)
+
+    assert result["success"] is False
+    assert result["xedit_exit_code"] == 1
+    assert "código 1" in result["message"]
+    assert "código 0" not in result["message"]
 
 
 # =============================================================================

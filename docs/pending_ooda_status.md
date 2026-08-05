@@ -63,7 +63,7 @@ confirmarlo contra código y tests.
 | Medición de árboles | Cerrado | #416 | — | `test_borrado_recursivo.py` |
 | Fugas de lifecycle en tests | Cerrado | #408, #409 y #415 | — | `test_atribucion_de_warnings.py`, `test_project_config.py` |
 | Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash | Verificar contra fuente xEdit, Synthesis, MO2, DynDOLOD y VRAMr; re-verificar Pandora contra el binario 4.3.1-beta pinneado (el README de `main` puede no describirlo) | `test_contrato_argumentos_cli.py` |
-| Contrato de veredicto de éxito | Cerrado | Veredicto por `Engine.log` de Pandora; cruce con errores parseados en el call site de xEdit; ancla que enumera | — | `test_contrato_veredicto_de_exito.py` (inventario congelado en vacío), `test_pandora_runner.py`, `test_xedit_service.py` |
+| Contrato de veredicto de éxito | Parcial | Veredicto por `Engine.log` de Pandora; cruce con errores parseados en el call site de xEdit; ancla que enumera | Verificar contra rig real qué severidad usa Pandora para la reversión de un nodo inválido — ver nota abajo | `test_contrato_veredicto_de_exito.py` (inventario congelado en vacío), `test_pandora_runner.py`, `test_xedit_service.py` |
 | Etapa 6 (Wrye Bash) sin build headless | Abierto | — | Decidir entre etapa asistida o retirarla del dispatcher | `test_contrato_argumentos_cli.py`; humano; auditoría 2026-08-04 |
 | Orden de masters sin validar | Cerrado | `master_order.py`, cableado en Wrye Bash / Synthesis / DynDOLOD | — | `test_master_order.py` (ancla de cableado); auditoría 2026-08-04 (V-7) |
 | Segundo parser TES4 sin gate | Cerrado | `test_tes4_parser_invariant.py` | — | auditoría 2026-08-04 |
@@ -150,6 +150,20 @@ con el defecto ya cerrado:
   afirmación fuera cierta, la automatización degrada **en silencio**: Pandora
   abriría la GUI y esperaría, hasta el timeout de 300 s y el rollback
   consiguiente, sin ninguna señal de que la causa fue el vector de argumentos.
+- **Severidad exacta de la reversión de un nodo inválido: sin verificar.** El
+  veredicto de `pandora_runner.py` (contrato de veredicto de éxito) hace fallar
+  la corrida ante `ERROR`/`FATAL` en `Engine.log`, dejando `WARN` afuera a
+  propósito. La lectura más literal de la definición del README para `ERROR`
+  (*"prevented [this] work from completing"*) es justamente la reversión de un
+  nodo —el motor no completó ESE nodo— así que bajo esa lectura el veredicto SÍ
+  cierra el escenario que lo motiva (mods de animación descartados en
+  silencio). Pero ninguna fuente cita explícitamente qué severidad usa la
+  reversión, y si resultara ser `WARN` en vez de `ERROR`, este fix **no
+  cerraría** el escenario original (hallazgo qodo, PR #439): una corrida que
+  sólo revierte nodos —sin ningún `ERROR`/`FATAL`— seguiría reportando
+  `success=True` con los mods descartados igual. El smoke de rig real (ídem
+  U-04) es lo único que puede confirmarlo; hasta entonces `WARN` se cuenta y se
+  surface en `PandoraResult.warnings`, no decide el veredicto.
   El mismo smoke de rig de U-04 debería empezar por confirmar qué acepta el
   binario pinneado.
 - **Ubicación de `Engine.log`: asumida, no verificada.** El veredicto por log de

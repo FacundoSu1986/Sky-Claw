@@ -33,11 +33,24 @@ NOMBRE_DEL_LOG_DE_PANDORA = "Engine.log"
 
 #: Severidades que invalidan la corrida. Verificado contra el README: ``ERROR`` es
 #: *"prevented engine from completing work"* y ``FATAL`` *"complete engine
-#: failure"*. ``WARN`` (*"unexpected condition"*) queda AFUERA a propósito: es la
-#: severidad con que aparece la reversión de un nodo inválido —el comportamiento
-#: error-tolerant— y también las advertencias rutinarias. Hacerla fallar
-#: convertiría corridas sanas en falsos rojos, que es tan malo como el falso
-#: verde que este módulo cierra. Se cuenta y se surface, no decide.
+#: failure"*. La lectura más literal de ``ERROR`` —"impidió que ESTE trabajo se
+#: completara"— es justamente la reversión de un nodo inválido: el motor no
+#: completó ESE nodo (lo revirtió) aunque siguió con el resto. Bajo esa lectura,
+#: el escenario que motiva este módulo (mods de animación descartados en
+#: silencio) ya cae en ``ERROR`` y ``_SEVERIDADES_QUE_FALLAN`` lo cubre.
+#:
+#: **La severidad EXACTA de la reversión no está verificada contra un rig
+#: real.** No hay cita del README que la nombre explícitamente (a diferencia de
+#: ``ERROR``/``FATAL``, que sí citan su propia definición) — es la lectura más
+#: literal, no un hecho confirmado. ``WARN`` (*"unexpected condition, potential
+#: issue"*) queda AFUERA a propósito: si la reversión resultara loguearse como
+#: ``WARN`` en vez de ``ERROR``, este veredicto NO cerraría el escenario que lo
+#: motiva y ``_SEVERIDADES_QUE_FALLAN`` necesitaría crecer (hallazgo qodo, PR
+#: #439; el smoke pendiente de rig real, U-04, es lo único que puede confirmar
+#: cuál de las dos lecturas es la correcta — ver ``docs/pending_ooda_status.md``).
+#: Hasta entonces, WARN se cuenta y se surface, no decide: hacerla fallar sin
+#: verificación convertiría corridas sanas en falsos rojos, que es tan malo como
+#: el falso verde que este módulo cierra.
 _SEVERIDADES_QUE_FALLAN = ("ERROR", "FATAL")
 
 #: ``[Severity]: [Component] > [Data] > [Operation] > [Input] > [Status]``. Los
@@ -140,7 +153,7 @@ def _rutas_candidatas_del_log(exe: pathlib.Path, output: pathlib.Path | None) ->
     return tuple(dict.fromkeys(candidatas))
 
 
-def _marcas_del_log(rutas: tuple[pathlib.Path, ...]) -> dict[pathlib.Path, int]:
+def _marcas_del_log(rutas: tuple[pathlib.Path, ...]) -> dict[pathlib.Path, int | None]:
     """Tamaño de cada candidata ANTES de spawnear; ausente ⇒ 0.
 
     Esta marca es la que hace la atribución, y es deliberadamente distinta del
@@ -149,25 +162,43 @@ def _marcas_del_log(rutas: tuple[pathlib.Path, ...]) -> dict[pathlib.Path, int]:
     Pandora **no hay una firma verificada**. Un offset en bytes no depende de
     ningún formato de log, así que no puede envejecer mal con una versión nueva
     del motor.
+
+    ``None`` = marca NO VERIFICABLE (la ruta existe pero no se pudo medir: lock de
+    otro proceso, permisos, error transitorio de red en un share). Deliberadamente
+    distinto de ``0`` (ausente): con ``0`` se lee el archivo COMPLETO, y sobre un
+    log que ya acumula corridas anteriores eso atribuiría a ESTA corrida los
+    ``ERROR``/``FATAL`` de las anteriores — un falso rojo, tan malo como el falso
+    verde que este módulo cierra (review CodeRabbit, PR #439). Sólo
+    ``FileNotFoundError`` justifica ``0``: es el caso esperado y frecuente, dado
+    que se sondean DOS candidatas y lo normal es que sólo una exista.
     """
-    marcas: dict[pathlib.Path, int] = {}
+    marcas: dict[pathlib.Path, int | None] = {}
     for ruta in rutas:
         try:
             marcas[ruta] = ruta.stat().st_size
-        except OSError:
+        except FileNotFoundError:
             marcas[ruta] = 0
+        except OSError as exc:
+            logger.warning(
+                "No se pudo medir '%s' antes de la corrida; su contenido no se usa para decidir: %s", ruta, exc
+            )
+            marcas[ruta] = None
     return marcas
 
 
-def _leer_engine_log(marcas: dict[pathlib.Path, int]) -> _VeredictoDelLog:
+def _leer_engine_log(marcas: dict[pathlib.Path, int | None]) -> _VeredictoDelLog:
     """Lee el tramo APENDEADO por esta corrida y lo clasifica por severidad.
 
     Best-effort ante I/O: el log es señal adicional, no la condición de éxito. Si
-    falta, si no creció o si se rotó (quedó más chico que su marca), se devuelve
-    un veredicto no atribuible: el texto se conserva como diagnóstico pero no
-    decide.
+    falta, si no creció, si se rotó (quedó más chico que su marca) o si su marca
+    no es verificable (``None``), se devuelve un veredicto no atribuible: el texto
+    se conserva como diagnóstico pero no decide.
     """
     for ruta, marca in marcas.items():
+        if marca is None:
+            # Marca no verificable: no hay base fiable para acotar el tramo a
+            # esta corrida. Ya se logueó el warning al medir; no repetirlo acá.
+            continue
         try:
             tamano = ruta.stat().st_size
             if tamano <= marca:
@@ -179,6 +210,12 @@ def _leer_engine_log(marcas: dict[pathlib.Path, int]) -> _VeredictoDelLog:
             with ruta.open("rb") as handle:
                 handle.seek(marca)
                 crudo = handle.read(min(tamano - marca, _MAX_BYTES_DE_LECTURA))
+        except FileNotFoundError:
+            # Esperado: la marca fue 0 porque no existía, y sigue sin existir (o
+            # dejó de existir entre la marca y la lectura). No es una condición
+            # de error digna de warning en cada corrida normal (review Copilot,
+            # PR #439) — con dos candidatas sondeadas, lo típico es que una falte.
+            continue
         except OSError as exc:
             logger.warning("No se pudo leer '%s': %s", ruta, exc)
             continue
@@ -285,6 +322,20 @@ class PandoraRunner:
         if not success:
             message = self._diagnostico(return_code=return_code, veredicto=veredicto)
             logger.error("[M-02] Pandora no produjo una corrida válida: %s", message)
+        elif veredicto.texto and not veredicto.fallas and not veredicto.advertencias:
+            # El log creció pero ninguna línea matcheó `_PATRON_DE_SEVERIDAD`: o
+            # el formato real de Pandora difiere del asumido (README, sección de
+            # logging, no verificado contra un log real), o la corrida escribió
+            # texto sin severidad reconocible. `_diagnostico` sólo adjunta la
+            # cola cruda cuando `not success` — acá `success` es True, así que
+            # sin este log la única red del formato no verificado se descarta en
+            # silencio, dejando CERO señal diagnóstica para el escenario exacto
+            # que este módulo existe para cerrar (hallazgo qodo, PR #439).
+            logger.warning(
+                "[M-02] Engine.log creció pero ninguna línea matcheó el patrón de severidad esperado; "
+                "el veredicto sigue por exit code. Cola: %s",
+                veredicto.texto,
+            )
 
         return PandoraResult(
             success=success,
