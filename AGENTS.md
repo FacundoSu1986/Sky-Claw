@@ -91,7 +91,8 @@ el revisor lo revirtió igual.
 
 Leer [`sky_claw/local/AGENTS.md`](sky_claw/local/AGENTS.md) — **SOP del pipeline de
 modding de Skyrim** (orden de stages, reglas por tool, failure modes) — antes de
-modificar `local/tools/`, `local/xedit/` u `orchestrator/tool_strategies/`.
+modificar `sky_claw/local/tools/`, `sky_claw/local/xedit/` o
+`sky_claw/app/orchestrator/tool_strategies/`.
 
 ## Contratos vigentes
 
