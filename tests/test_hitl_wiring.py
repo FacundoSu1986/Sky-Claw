@@ -786,70 +786,67 @@ class TestEndToEndHITLFlow:
             enqueued.append(task)
             return task
 
-        # ---- Trigger tool call in a background task ----
+        # ---- Disparar la tool en una task de fondo ----
         tool_result: dict[str, Any] = {}
 
-        async def _run_tool() -> None:
-            with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_cls:
-                mock_sess = AsyncMock()
-                mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
-                mock_sess.__aexit__ = AsyncMock(return_value=False)
-                mock_cls.return_value = mock_sess
+        mock_sess = AsyncMock()
+        mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
+        mock_sess.__aexit__ = AsyncMock(return_value=False)
 
-                with (
-                    patch.object(downloader, "get_file_info", return_value=fi),
-                    patch.object(sync_engine, "enqueue_download", side_effect=_fake_enqueue),
-                ):
-                    result_str = await tool_registry.execute("download_mod", {"nexus_id": 42, "file_id": 7})
+        async def _run_tool() -> None:
+            result_str = await tool_registry.execute("download_mod", {"nexus_id": 42, "file_id": 7})
             tool_result.update(json.loads(result_str))
 
-        tool_task = asyncio.create_task(_run_tool())
+        # Los parches envuelven TODO el ciclo de vida de la descarga, desde
+        # antes de crear `tool_task` hasta despues de drenarla. `_fake_enqueue`
+        # solo PROGRAMA la corutina (`asyncio.create_task` no corre el cuerpo),
+        # asi que `_do_download()` puede arrancar en cualquier await posterior
+        # —incluido el propio `await tool_task`—. Si los parches vivieran solo
+        # dentro de `_run_tool`, esa ventana la encontraria sin mockear: abriria
+        # una ClientSession REAL contra la entrada de api.nexusmods.com del
+        # NetworkGateway y nadie la cerraria, dejando el socket huerfano cuyo
+        # ResourceWarning estalla durante el GC de un test posterior sin
+        # relacion. Tambien se mockea `downloader.download`, que `_do_download()`
+        # llama junto con `get_file_info`.
+        with (
+            patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession", return_value=mock_sess),
+            patch.object(downloader, "get_file_info", return_value=fi),
+            patch.object(downloader, "download", return_value=tmp_path / "staging" / fi.file_name),
+            patch.object(sync_engine, "enqueue_download", side_effect=_fake_enqueue),
+        ):
+            tool_task = asyncio.create_task(_run_tool())
+            try:
+                # Sincronizacion por evento: _notify setea request_registered en
+                # cuanto HITLGuard guarda la solicitud pendiente.
+                await asyncio.wait_for(request_registered.wait(), timeout=5.0)
 
-        # Event-based sync: _notify sets request_registered once HITLGuard
-        # stores the pending request. Replaces `await asyncio.sleep(0.05)`.
-        await asyncio.wait_for(request_registered.wait(), timeout=5.0)
+                # ---- El operador aprueba via Telegram ----
+                # _install_webhook_sync hace que client.post recien retorne
+                # cuando las tasks de fondo del webhook terminaron.
+                expected_request_id = "download-42-7"
+                await client.post(
+                    "/webhook",
+                    json=_make_update(100, chat_id=operator_chat_id, text=f"/approve {expected_request_id}"),
+                )
 
-        # ---- Operator sends /approve via Telegram ----
-        # _install_webhook_sync ensures client.post only returns after the
-        # webhook's background tasks have completed, replacing `sleep(0.1)`.
-        expected_request_id = "download-42-7"
-        await client.post(
-            "/webhook",
-            json=_make_update(100, chat_id=operator_chat_id, text=f"/approve {expected_request_id}"),
-        )
+                await tool_task
 
-        # ---- Await tool completion ----
-        await tool_task
+                assert tool_result["status"] == "enqueued", f"Got: {tool_result}"
+                assert tool_result["nexus_id"] == 42
+                assert tool_result["file_id"] == 7
+                assert len(enqueued) == 1
 
-        # ---- Assertions ----
-        assert tool_result["status"] == "enqueued", f"Got: {tool_result}"
-        assert tool_result["nexus_id"] == 42
-        assert tool_result["file_id"] == 7
-        assert len(enqueued) == 1
-
-        # ---- Drain the background download task under mock ----
-        # Without this, `_do_download()` runs AFTER the aiohttp.ClientSession /
-        # downloader.get_file_info patches above have already been torn down
-        # (asyncio.create_task only schedules; it doesn't run the body
-        # synchronously), so it opens a REAL aiohttp session against the real
-        # NetworkGateway/api.nexusmods.com allow-list entry and is never
-        # awaited/closed — an orphaned socket that ResourceWarning fires for
-        # during some unrelated later test's garbage collection.
-        try:
-            mock_dl_session = AsyncMock()
-            mock_dl_session.__aenter__ = AsyncMock(return_value=mock_dl_session)
-            mock_dl_session.__aexit__ = AsyncMock(return_value=False)
-            with (
-                patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession", return_value=mock_dl_session),
-                patch.object(downloader, "get_file_info", return_value=fi),
-                patch.object(downloader, "download", return_value=tmp_path / "staging" / fi.file_name),
-            ):
-                await asyncio.gather(*enqueued, return_exceptions=True)
-        finally:
-            for t in enqueued:
-                if not t.done():
-                    t.cancel()
-            await asyncio.gather(*enqueued, return_exceptions=True)
+                # Drenaje SIN return_exceptions: `_fake_enqueue` crea las tasks
+                # sin el wrapper que loguea errores, asi que tragarse una
+                # excepcion aca dejaria pasar el test con la descarga rota.
+                await asyncio.gather(*enqueued)
+            finally:
+                # Red de seguridad: que ninguna task quede viva al salir del
+                # bloque de parches, sin importar por donde se haya salido.
+                for pendiente in (tool_task, *enqueued):
+                    if not pendiente.done():
+                        pendiente.cancel()
+                await asyncio.gather(tool_task, *enqueued, return_exceptions=True)
 
         # Notification was sent.
         assert expected_request_id in notifications

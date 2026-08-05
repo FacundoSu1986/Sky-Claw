@@ -93,17 +93,28 @@ async def test_release_nonexistent_lock(lock_manager: DistributedLockManager) ->
 
 
 @pytest.mark.asyncio
-async def test_acquire_lock_idempotent_same_agent(
+async def test_acquire_lock_no_es_reentrante_ni_para_el_mismo_agente(
     lock_manager: DistributedLockManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Un agente distinto no puede robar un lock cuyo TTL todavia no expiro.
+    """El MISMO agente tampoco puede re-adquirir su propio lease vigente.
+
+    `_ACQUIRE_SQL` decide por `expires_at` y no mira `agent_id`: mientras el
+    lease siga vivo el upsert no matchea y los reintentos se agotan en
+    `LockAcquisitionError`. No es un detalle interno — `ToolsInstaller` (T-31)
+    se apoya en esta propiedad: lleva su propia cadena de reentrada en una
+    ContextVar justamente porque re-adquirir NO es barato ni idempotente.
+
+    El caso del agente distinto ya lo cubre
+    `test_non_expired_ttl_blocks_acquisition` (con aserciones sobre el
+    `resource_id`/`agent_id` de la excepcion); este test cubre el hermano que
+    faltaba, en vez de duplicarlo bajo un nombre que decia "idempotent".
 
     Reloj congelado: bajo carga (suite completa, --cov) el tiempo real entre
-    las dos llamadas puede superar el TTL nominal y volver el segundo acquire
-    en un reclamo legitimo por expiracion, dando "DID NOT RAISE" sin que haya
-    defecto — mismo mecanismo que el flake de heartbeat cerrado en #392.
-    Controlar time.time() saca la aserción del reloj de pared real.
+    las dos llamadas puede superar el TTL nominal y volver la segunda
+    adquisicion un reclamo legitimo por expiracion, dando "DID NOT RAISE" sin
+    que haya defecto — mismo mecanismo que el flake de heartbeat cerrado en
+    #392. Controlar time.time() saca la asercion del reloj de pared real.
     """
     fake_now = [1_000_000.0]
     monkeypatch.setattr("sky_claw.app.db.locks.time.time", lambda: fake_now[0])
@@ -113,7 +124,7 @@ async def test_acquire_lock_idempotent_same_agent(
 
     fake_now[0] += 0.001  # avanza lo minimo -- el lease de agent_1 sigue vivo
     with pytest.raises(LockAcquisitionError):
-        await lock_manager.acquire_lock("res", "agent_2", ttl=10.0)
+        await lock_manager.acquire_lock("res", "agent_1", ttl=10.0)
 
 
 # =============================================================================
