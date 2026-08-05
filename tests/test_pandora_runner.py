@@ -8,10 +8,12 @@ import pytest
 
 from sky_claw.local.tools.pandora_runner import (
     _SEVERIDADES_QUE_FALLAN,
+    _TAMANO_DE_BLOQUE,
     NOMBRE_DEL_LOG_DE_PANDORA,
     PandoraConfig,
     PandoraExecutionError,
     PandoraRunner,
+    _escanear_severidades,
     _leer_engine_log,
     _MarcaDelLog,
     _marcas_del_log,
@@ -470,3 +472,69 @@ def test_marca_ausente_no_dispara_el_chequeo_de_identidad(tmp_path: pathlib.Path
     veredicto = _leer_engine_log(marcas)
 
     assert veredicto.fallas != ()
+
+
+# --------------------------------------------------------------------------- #
+# La ventana de lectura ya no trunca el escaneo (hallazgo qodo, PR #439, 3ra ronda)
+#
+# Antes, un ``read()`` único acotado a un techo fijo desde la marca sólo veía
+# el PRIMER bloque del apéndice: un run que logueara más que ese techo antes
+# de un ``ERROR`` final lo perdía en silencio — el mismo falso verde que este
+# módulo existe para cerrar. Ahora el tramo se recorre ENTERO en bloques
+# acotados en memoria (``_TAMANO_DE_BLOQUE``), sin importar su tamaño total.
+# --------------------------------------------------------------------------- #
+
+
+async def test_error_mas_alla_de_varios_bloques_de_info_se_detecta(tmp_path: pathlib.Path) -> None:
+    """El escenario exacto de la revisión: mucho ``INFO`` antes de un ``ERROR`` final."""
+    runner, log = _preparar(tmp_path)
+    mucho_info = "INFO: Assembler > x > parse > y > ok\n" * 400_000
+    assert len(mucho_info.encode("utf-8")) > _TAMANO_DE_BLOQUE * 8, "el fixture debe cruzar varios bloques"
+
+    resultado = await _correr(
+        runner,
+        escribe=mucho_info + "ERROR: Assembler > mod.xml > parse > nodo > falló\n",
+        log=log,
+    )
+
+    assert resultado.success is False
+    assert "mod.xml" in resultado.message
+
+
+def test_severidad_partida_exactamente_en_un_limite_de_bloque_se_detecta(tmp_path: pathlib.Path) -> None:
+    """Corrección de límite: el corte del PRIMER bloque leído cae EXACTAMENTE
+    dentro de la línea que matchea. Sin reensamblar la línea pendiente entre
+    bloques, el corte partiría el match y ninguno de los dos lados lo
+    reconocería.
+    """
+    log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
+    linea_de_relleno = b"INFO: relleno\n"
+    linea_de_error = b"ERROR: Assembler > mod.xml > parse > nodo > fallo\n"  # ASCII, sin acentos a proposito
+
+    relleno = bytearray()
+    while len(relleno) + len(linea_de_relleno) <= _TAMANO_DE_BLOQUE - 10:
+        relleno += linea_de_relleno
+    contenido = bytes(relleno) + linea_de_error
+    # El primer read() de _escanear_severidades trae exactamente _TAMANO_DE_BLOQUE
+    # bytes: confirmar que ese corte cae DENTRO de linea_de_error, no antes ni después.
+    assert len(relleno) < _TAMANO_DE_BLOQUE < len(relleno) + len(linea_de_error)
+    log.write_bytes(contenido)
+
+    with log.open("rb") as handle:
+        veredicto = _escanear_severidades(handle, 0, len(contenido))
+
+    assert veredicto.fallas != ()
+    assert "mod.xml" in veredicto.fallas[0]
+
+
+def test_linea_sin_salto_no_crece_sin_cota(tmp_path: pathlib.Path) -> None:
+    """Un archivo sin ningún ``\\n`` (binario/corrupto) no debe hacer crecer el
+    buffer de línea pendiente sin límite ni reventar el escaneo."""
+    log = tmp_path / NOMBRE_DEL_LOG_DE_PANDORA
+    log.write_bytes(b"x" * (_TAMANO_DE_BLOQUE * 5))
+
+    with log.open("rb") as handle:
+        veredicto = _escanear_severidades(handle, 0, log.stat().st_size)
+
+    assert veredicto.fallas == ()
+    assert veredicto.advertencias == ()

@@ -17,6 +17,7 @@ from sky_claw.local.tools.output_targets import pandora_output_target
 
 if TYPE_CHECKING:
     import pathlib
+    from typing import IO
 
 logger = logging.getLogger(__name__)
 
@@ -67,20 +68,28 @@ _PATRON_DE_SEVERIDAD = re.compile(
 #: primeros.
 _MAX_LINEAS_REPORTADAS = 20
 
-#: Techo de lectura del tramo nuevo del log. Un run que loguee cientos de MB no
-#: debe cargarse entero en memoria dentro de un hilo del pool.
-#:
-#: Conserva el PRIMER tramo del apéndice, no la cola: un run que loguee más de
-#: 8 MiB de ``INFO`` antes de un ``ERROR`` final lo perdería (hallazgo qodo, PR
-#: #439). No se cambió a leer desde el final porque no hay evidencia de que
-#: Pandora loguee a ese volumen en una corrida normal — hacerlo sería otra
-#: suposición sin cita, la misma clase de riesgo que la severidad de ``WARN``
-#: de arriba. Ver ``docs/pending_ooda_status.md``.
-_MAX_BYTES_DE_LECTURA = 8 * 1024 * 1024
-
 #: Cuánto de la cola cruda del log se adjunta cuando no hay severidades parseadas.
 #: Igual que el tope de líneas: ese texto termina en el prompt de un LLM.
 _MAX_BYTES_DE_COLA = 2000
+
+#: Tamaño de cada lectura del tramo apendeado. Ya NO es un techo de CUÁNTO se
+#: escanea —eso era el bug (hallazgo qodo, PR #439): un ``read()`` único
+#: acotado a 8 MiB desde la marca sólo veía el PRIMER tramo del apéndice, así
+#: que un run que logueara más de 8 MiB de ``INFO``/``WARN`` antes de un
+#: ``ERROR`` final lo perdía en silencio — el mismo falso verde que este
+#: módulo existe para cerrar. Ahora el tramo completo, desde la marca hasta el
+#: tamaño actual, se recorre entero sin importar qué tan grande sea, en
+#: bloques de este tamaño para no cargarlo todo en memoria dentro de un hilo
+#: del pool. Sólo el RESULTADO retenido queda acotado (``_MAX_LINEAS_REPORTADAS``/
+#: ``_MAX_BYTES_DE_COLA`` de arriba) — cortar la ENTRADA era lo que producía el
+#: hueco; cortar la SALIDA es una decisión de cuánto mostrar, no de qué se ve.
+_TAMANO_DE_BLOQUE = 1024 * 1024
+
+#: Techo defensivo de una "línea" sin salto de línea antes de descartarla del
+#: escaneo. No es una regla de negocio sobre el formato de Pandora: protege
+#: contra un archivo sin ``\n`` (binario, corrupto) que haría crecer el buffer
+#: de línea pendiente sin cota mientras se recorre el tramo entero.
+_MAX_BYTES_DE_LINEA_PENDIENTE = 4 * 1024 * 1024
 
 
 class PandoraExecutionError(Exception):
@@ -217,6 +226,77 @@ def _marcas_del_log(rutas: tuple[pathlib.Path, ...]) -> dict[pathlib.Path, _Marc
     return marcas
 
 
+def _acumular_severidades(bloque_crudo: bytes, fallas: list[str], advertencias: list[str]) -> None:
+    """Parsea un bloque de LÍNEAS COMPLETAS y acumula en las listas del caller.
+
+    El caller garantiza que ``bloque_crudo`` termina en un ``\\n`` (o es el
+    resto final del tramo): nunca una línea partida a la mitad por un corte de
+    bloque, que rompería un match de ``_PATRON_DE_SEVERIDAD`` (patrón de una
+    sola línea).
+
+    Deja de acumular en cada lista al llegar a ``_MAX_LINEAS_REPORTADAS`` —no
+    al final, sobre la lista completa— para que el escaneo de un tramo enorme
+    con miles de líneas que matchean no crezca en memoria sin cota.
+    """
+    texto = bloque_crudo.decode("utf-8", errors="replace")
+    for severidad, resto in _PATRON_DE_SEVERIDAD.findall(texto):
+        linea = f"{severidad}: {resto}".strip()
+        if severidad in _SEVERIDADES_QUE_FALLAN:
+            if len(fallas) < _MAX_LINEAS_REPORTADAS:
+                fallas.append(linea)
+        elif severidad == "WARN" and len(advertencias) < _MAX_LINEAS_REPORTADAS:
+            advertencias.append(linea)
+
+
+def _escanear_severidades(handle: IO[bytes], inicio: int, fin: int) -> _VeredictoDelLog:
+    """Recorre ``[inicio, fin)`` en bloques acotados en memoria y clasifica por severidad.
+
+    Reemplaza un ``read()`` único con techo —que sólo veía el PRIMER bloque del
+    tramo, el bug que motivó esto (hallazgo qodo, PR #439)— por un recorrido
+    COMPLETO: un ``ERROR``/``FATAL`` en cualquier posición del apéndice se
+    detecta, sin importar qué tan grande sea. El techo de memoria lo da
+    ``_TAMANO_DE_BLOQUE``, no el tamaño del tramo escaneado.
+
+    Cortar exactamente en el último ``\\n`` de cada bloque es lo que hace esto
+    seguro: ninguna línea queda partida entre dos bloques, y el byte ``\\n``
+    nunca es parte de una secuencia UTF-8 multibyte, así que decodificar cada
+    lado del corte por separado no puede partir un carácter a la mitad.
+    """
+    handle.seek(inicio)
+    fallas: list[str] = []
+    advertencias: list[str] = []
+    cola = b""
+    pendiente = b""
+    restante = fin - inicio
+    while restante > 0:
+        bloque = handle.read(min(_TAMANO_DE_BLOQUE, restante))
+        if not bloque:
+            break
+        restante -= len(bloque)
+        pendiente += bloque
+        ultimo_salto = pendiente.rfind(b"\n")
+        if ultimo_salto == -1:
+            if len(pendiente) > _MAX_BYTES_DE_LINEA_PENDIENTE:
+                # Línea patológicamente larga sin salto (binario/corrupto): no
+                # crecer sin cota — se descarta del escaneo de severidad, pero
+                # su cola sigue sirviendo como diagnóstico crudo.
+                cola = (cola + pendiente)[-_MAX_BYTES_DE_COLA:]
+                pendiente = b""
+            continue
+        procesable, pendiente = pendiente[: ultimo_salto + 1], pendiente[ultimo_salto + 1 :]
+        _acumular_severidades(procesable, fallas, advertencias)
+        cola = (cola + procesable)[-_MAX_BYTES_DE_COLA:]
+    if pendiente:
+        # Tramo final sin salto de línea de cierre (fin de archivo).
+        _acumular_severidades(pendiente, fallas, advertencias)
+        cola = (cola + pendiente)[-_MAX_BYTES_DE_COLA:]
+    return _VeredictoDelLog(
+        texto=cola.decode("utf-8", errors="replace").strip(),
+        fallas=tuple(fallas),
+        advertencias=tuple(advertencias),
+    )
+
+
 def _leer_engine_log(marcas: dict[pathlib.Path, _MarcaDelLog | None]) -> _VeredictoDelLog:
     """Lee el tramo APENDEADO por esta corrida y lo clasifica por severidad.
 
@@ -255,8 +335,7 @@ def _leer_engine_log(marcas: dict[pathlib.Path, _MarcaDelLog | None]) -> _Veredi
                     logger.warning("'%s' se achicó durante la corrida; su contenido no se usa para decidir.", ruta)
                 continue
             with ruta.open("rb") as handle:
-                handle.seek(marca.tamano)
-                crudo = handle.read(min(tamano - marca.tamano, _MAX_BYTES_DE_LECTURA))
+                return _escanear_severidades(handle, marca.tamano, tamano)
         except FileNotFoundError:
             # Esperado: la marca fue 0 porque no existía, y sigue sin existir (o
             # dejó de existir entre la marca y la lectura). No es una condición
@@ -266,21 +345,6 @@ def _leer_engine_log(marcas: dict[pathlib.Path, _MarcaDelLog | None]) -> _Veredi
         except OSError as exc:
             logger.warning("No se pudo leer '%s': %s", ruta, exc)
             continue
-
-        texto = crudo.decode("utf-8", errors="replace")
-        fallas: list[str] = []
-        advertencias: list[str] = []
-        for severidad, resto in _PATRON_DE_SEVERIDAD.findall(texto):
-            linea = f"{severidad}: {resto}".strip()
-            if severidad in _SEVERIDADES_QUE_FALLAN:
-                fallas.append(linea)
-            elif severidad == "WARN":
-                advertencias.append(linea)
-        return _VeredictoDelLog(
-            texto=texto.strip()[-_MAX_BYTES_DE_COLA:],
-            fallas=tuple(fallas[:_MAX_LINEAS_REPORTADAS]),
-            advertencias=tuple(advertencias[:_MAX_LINEAS_REPORTADAS]),
-        )
     return _VeredictoDelLog()
 
 

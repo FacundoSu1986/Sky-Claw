@@ -166,17 +166,23 @@ con el defecto ya cerrado:
   surface en `PandoraResult.warnings`, no decide el veredicto.
   El mismo smoke de rig de U-04 debería empezar por confirmar qué acepta el
   binario pinneado.
-- **Ventana de lectura de 8 MiB, sólo el tramo apendeado: sin verificar contra
-  un run real de gran volumen.** `_MAX_BYTES_DE_LECTURA` conserva el PRIMER
-  tramo del apéndice desde la marca; una corrida que loguee más de 8 MiB de
-  `INFO` antes de un `ERROR` final lo perdería (hallazgo qodo, PR #439). No se
-  cambió a una lectura de cola (`tamano - 8 MiB`) porque el tope existe
-  también para no cargar un log enorme entero en memoria en el hilo del pool
-  (`asyncio.to_thread`), y no hay evidencia de que Pandora realmente loguee a
-  ese volumen en una corrida normal — cambiarlo sería otra suposición sin
-  cita, igual que la de `WARN` de arriba. La identidad del archivo (inode/
-  device, cerrada en este mismo PR) sí se corrigió porque es una propiedad
-  del filesystem verificable sin depender de ningún supuesto sobre el binario.
+- **Ventana de lectura de 8 MiB, sólo el PRIMER tramo del apéndice: cerrado.**
+  `_MAX_BYTES_DE_LECTURA` truncaba el escaneo a un `read()` único desde la
+  marca; una corrida que logueara más de 8 MiB de `INFO` antes de un `ERROR`
+  final lo perdía en silencio (hallazgo qodo, PR #439, insistido en una
+  segunda ronda con un fix concreto). A diferencia de la severidad de `WARN` o
+  la sintaxis CLI, esto NO dependía de ningún supuesto sobre el binario — era
+  enteramente una limitación de la propia estrategia de lectura, así que se
+  corrigió: `_escanear_severidades` (`pandora_runner.py`) recorre el tramo
+  ENTERO en bloques de `_TAMANO_DE_BLOQUE` (1 MiB) sin cargarlo completo en
+  memoria, cortando siempre en un salto de línea para no partir un match a la
+  mitad. Sólo el RESULTADO retenido queda acotado (`_MAX_LINEAS_REPORTADAS`/
+  `_MAX_BYTES_DE_COLA`), no la entrada escaneada. Test de regresión con >8 MiB
+  de `INFO` antes de un `ERROR`, y de corrección de límite con el corte de
+  bloque cayendo exactamente dentro de la línea que matchea
+  (`test_pandora_runner.py`). La identidad del archivo (inode/device, cerrada
+  en la ronda anterior de este mismo PR) sigue siendo el ejemplo hermano: una
+  propiedad verificable sin depender de ningún supuesto sobre el binario.
 - **Ambas rutas candidatas de `Engine.log` sin verificar: si las dos están
   mal, el mecanismo se apaga sin ninguna señal.** El breadcrumb de formato no
   reconocido (`sky_claw/local/tools/pandora_runner.py`, tarea del contrato de
