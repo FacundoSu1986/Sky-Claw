@@ -153,6 +153,14 @@ The pipeline is a strict DAG. Each stage consumes the output of the previous sta
 
 **Outputs:** Compiled behavior files injected into the engine's behavior graph.
 
+**Verdict:** The exit code does NOT report the patching result. Pandora is
+error-tolerant by design — on a malformed node it reverts that node to its
+original state and keeps generating the rest, so it exits 0 having silently
+dropped animation mods. That is exactly the "stale behaviors" state described
+above, reached while reporting success. `Engine.log` is the only signal of what
+was actually applied: `ERROR`/`FATAL` invalidate the run, `WARN` is reported but
+does not decide.
+
 ---
 
 ### 2.5 LOOT (Load Order Optimisation Tool)
@@ -300,6 +308,7 @@ To escape the paralyzing effect of the Rule of One, two patchers are used and th
 | DynDOLOD: "Resources SE version information not found" | DLL hierarchy wrong | Place DynDOLOD DLL NG folder BENEATH Resources SE |
 | DynDOLOD: engine crash / pointer overflow | Reference limit exceeded | Set `Temporary=1` in `DynDOLOD_SSE.ini` |
 | No Grass In Objects: empty output (zero-bounds) | Third-party mod has null bounds `(0,0,0)` | Purge broken mesh via Creation Kit |
+| Pandora: exit code 0 but animation mods silently missing (T-poses in game) | Engine is error-tolerant: it reverts the invalid node and keeps going, so the exit code does not report the patching result | Read `Engine.log`; `ERROR`/`FATAL` lines invalidate the run. Wired in `pandora_runner._leer_engine_log` — do NOT derive Pandora's verdict from the exit code alone |
 | Grass clipping through roads after DynDOLOD | Grass precache ran AFTER DynDOLOD | Re-run pipeline: precache FIRST, DynDOLOD LAST |
 
 ---

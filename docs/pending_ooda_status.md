@@ -41,7 +41,7 @@ confirmarlo contra código y tests.
 | U-03 | Cerrado | #356 | — | tests de reconciliación de precache |
 | U-04 | Parcial | #397, #399, salida administrada de Pandora y subárbol administrado por grupo de BodySlide | Smoke real de rollback de Pandora | `test_rollback_salida.py`, `test_pandora_service.py`, `test_bodyslide_lock.py` y humano |
 | U-05 | Cerrado | #354 | — | `test_vramr_service.py` |
-| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide | Post-check de Wrye Bash; criterio seguro para QuickAutoClean | tests de cada runner, `test_bodyslide_postcheck_artefacto.py` |
+| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide; veredicto por `Engine.log` de Pandora | Post-check de Wrye Bash; criterio seguro para QuickAutoClean | tests de cada runner, `test_bodyslide_postcheck_artefacto.py`, `test_pandora_runner.py` |
 | U-07 | Cerrado | #355 | — | tests de Job Object de DynDOLOD |
 | U-08 | Cerrado | #378 y reconciliador de arranque | — | `test_rollback_reconciler.py` |
 | U-09 | Cerrado | #376 | — | tests del journal de grass |
@@ -62,7 +62,7 @@ confirmarlo contra código y tests.
 | Borrado recursivo | Cerrado | #405 y #416 | — | `test_borrado_recursivo.py` |
 | Medición de árboles | Cerrado | #416 | — | `test_borrado_recursivo.py` |
 | Fugas de lifecycle en tests | Cerrado | #408, #409 y #415 | — | `test_atribucion_de_warnings.py`, `test_project_config.py` |
-| Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash | Verificar contra fuente xEdit, Synthesis, MO2, DynDOLOD y VRAMr | `test_contrato_argumentos_cli.py` |
+| Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash | Verificar contra fuente xEdit, Synthesis, MO2, DynDOLOD y VRAMr; re-verificar Pandora contra el binario 4.3.1-beta pinneado (el README de `main` puede no describirlo) | `test_contrato_argumentos_cli.py` |
 | Etapa 6 (Wrye Bash) sin build headless | Abierto | — | Decidir entre etapa asistida o retirarla del dispatcher | `test_contrato_argumentos_cli.py`; humano; auditoría 2026-08-04 |
 | Orden de masters sin validar | Cerrado | `master_order.py`, cableado en Wrye Bash / Synthesis / DynDOLOD | — | `test_master_order.py` (ancla de cableado); auditoría 2026-08-04 (V-7) |
 | Segundo parser TES4 sin gate | Cerrado | `test_tes4_parser_invariant.py` | — | auditoría 2026-08-04 |
@@ -138,6 +138,26 @@ con el defecto ya cerrado:
   successful run": en una instalación sin corrida previa exitosa no hay caché, y no
   está verificado en rig real qué hace el motor en ese caso. Es el escenario que
   cubriría el smoke pendiente de U-04.
+- **Sintaxis CLI de Pandora y soporte por versión: sin verificar.** El vector
+  actual está verificado contra el README de la rama `main` del repositorio
+  upstream, pero el repo pinnea el binario **4.3.1-beta**, que es otra cosa. La
+  wiki de STEP documenta una sintaxis **distinta** para el mismo motor
+  (`-autorun`, `-autoclose`, `-tesv:{path}`: guion simple y dos puntos en vez de
+  `--auto_run`/`--tesv <ruta>`) y afirma además que *"command line arguments are
+  not supported on newer Pandora versions"*. No fue posible verificarlo desde el
+  entorno de desarrollo (403 tanto en STEP como en la API de GitHub). Si la
+  afirmación fuera cierta, la automatización degrada **en silencio**: Pandora
+  abriría la GUI y esperaría, hasta el timeout de 300 s y el rollback
+  consiguiente, sin ninguna señal de que la causa fue el vector de argumentos.
+  El mismo smoke de rig de U-04 debería empezar por confirmar qué acepta el
+  binario pinneado.
+- **Ubicación de `Engine.log`: asumida, no verificada.** El veredicto por log de
+  Pandora (`pandora_runner._leer_engine_log`) sondea `<dir del exe>/Engine.log` y
+  `<Pandora_Output>/Engine.log`. Ninguna de las dos está confirmada contra una
+  instalación real. La consecuencia de errarle está acotada por diseño —un log
+  que no aparece deja el veredicto en el exit code, o sea el comportamiento
+  previo, nunca un falso rojo—, pero mientras no se confirme, el mecanismo puede
+  estar apagado en producción sin que nada lo indique. Va al smoke de U-04.
 
 ## Decide — recomendación de próximo frente
 
