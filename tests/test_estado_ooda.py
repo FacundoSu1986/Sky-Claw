@@ -48,6 +48,7 @@ _ITEMS = frozenset(
         "Residuos OODA de bajo valor",
         "Residuos de crash logging",
         "Contrato de argumentos CLI",
+        "Contrato de veredicto de éxito",
         "Etapa 6 (Wrye Bash) sin build headless",
         "Orden de masters sin validar",
         "Segundo parser TES4 sin gate",

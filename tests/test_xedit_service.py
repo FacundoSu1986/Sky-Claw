@@ -263,6 +263,65 @@ async def test_execute_patch_success_publishes_events(
     mock_journal.mark_transaction_rolled_back.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_xedit_con_exit_cero_y_errores_parseados_no_es_exito(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    mock_event_bus: AsyncMock,
+    mock_conflict_report: ConflictReport,
+    target_plugin: pathlib.Path,
+) -> None:
+    """El hermano del falso verde de Pandora, encontrado por el ancla de veredicto.
+
+    ``XEditRunner`` ya cruza el exit code con los errores parseados de la salida
+    (``success = return_code == 0 and not errors``), pero este call site
+    RECOMPUTABA el veredicto como ``exit_code == 0`` y tiraba ese cruce. xEdit no
+    propaga el fallo de un script Pascal a su código de salida, así que un script
+    que loguea ``Error:`` y sale 0 se reportaba como parche exitoso — y el
+    ``raise`` que dispara el rollback nunca se alcanzaba.
+    """
+    from sky_claw.local.xedit.runner import ScriptExecutionResult
+
+    mock_patch_result = PatchResult(
+        success=True,
+        output_path=target_plugin,
+        records_patched=5,
+        conflicts_resolved=2,
+        xedit_exit_code=0,
+        warnings=(),
+        error=None,
+    )
+    mock_orchestrator = AsyncMock()
+    mock_orchestrator.resolve = AsyncMock(return_value=mock_patch_result)
+    mock_orchestrator._strategies = []
+
+    service = make_service(lock_manager, snapshot_manager, mock_journal, mock_path_resolver, mock_event_bus)
+    runner = MagicMock()
+    runner.execute_patch = AsyncMock(
+        return_value=ScriptExecutionResult(
+            # Lo que devolvería el runner real: salió 0, pero parseó un error.
+            success=False,
+            exit_code=0,
+            stdout="Error: no se pudo aplicar el override",
+            stderr="",
+            records_processed=0,
+            errors=["Error: no se pudo aplicar el override"],
+        )
+    )
+    service._xedit_runner = runner
+
+    with patch.object(service, "_ensure_patch_orchestrator", return_value=mock_orchestrator):
+        result = await service.execute_patch(mock_conflict_report, target_plugin)
+
+    assert result["success"] is False, "exit 0 con errores parseados no es un parche exitoso"
+    # El detalle no puede quedar vacío: con exit 0 el stderr viene vacío, y sin los
+    # errores parseados el mensaje caería a "error desconocido" (tool_result.py).
+    assert "no se pudo aplicar el override" in result["message"]
+    mock_journal.mark_transaction_rolled_back.assert_awaited()
+
+
 # =============================================================================
 # Tests: XEditPipelineService — failure paths
 # =============================================================================

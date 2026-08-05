@@ -338,14 +338,25 @@ class XEditPipelineService:
                     )
 
                     script_result: ScriptExecutionResult = await self._xedit_runner.execute_patch(plan)
+                    # ``script_result.success`` ya es ``exit_code == 0 and not errors``
+                    # (``XEditRunner._parse_script_output`` extrae ``ERROR:`` /
+                    # ``Exception:`` / ``Failed to`` de la salida). Recomputarlo acá
+                    # como ``exit_code == 0`` DESCARTABA ese cruce: un script que
+                    # loguea errores y sale 0 —xEdit no propaga el fallo del script
+                    # a su código de salida— se reportaba como parche exitoso, y el
+                    # `raise` de abajo nunca disparaba el rollback.
+                    detalle = "; ".join(script_result.errors) or script_result.stderr or script_result.stdout
                     result = PatchResult(
-                        success=script_result.exit_code == 0,
+                        success=script_result.success,
                         output_path=result.output_path,
                         records_patched=script_result.records_processed,
                         conflicts_resolved=len(report.plugin_pairs),
                         xedit_exit_code=script_result.exit_code,
                         warnings=tuple(script_result.warnings),
-                        error=(None if script_result.exit_code == 0 else script_result.stderr),
+                        # Los errores parseados van PRIMERO: con exit 0 y errores en
+                        # la salida, ``stderr`` puede venir vacío y el mensaje
+                        # terminaría en "error desconocido" (``tool_result.py``).
+                        error=(None if script_result.success else detalle),
                         strategy_type=strategy_type,
                     )
 
@@ -355,6 +366,14 @@ class XEditPipelineService:
                         # El advisor no ejecuta xEdit: el exit code -1 sintético
                         # solo ensuciaría el mensaje accionable.
                         raise PatchingError(result.error or "El advisor de IA no pudo producir recomendaciones.")
+                    if result.xedit_exit_code == 0:
+                        # Desenlace nuevo tras cruzar el veredicto con los errores
+                        # parseados: sin nombrar que el código fue 0 el mensaje
+                        # ("xEdit falló con código 0") se lee como un bug del repo.
+                        raise PatchingError(
+                            "xEdit salió con código 0 pero reportó errores en su salida; "
+                            f"el parche no es confiable: {result.error}"
+                        )
                     raise PatchingError(f"xEdit falló con código {result.xedit_exit_code}: {result.error}")
 
             # Normal exit — lock context exited without error. El commit del

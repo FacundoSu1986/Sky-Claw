@@ -63,6 +63,7 @@ confirmarlo contra código y tests.
 | Medición de árboles | Cerrado | #416 | — | `test_borrado_recursivo.py` |
 | Fugas de lifecycle en tests | Cerrado | #408, #409 y #415 | — | `test_atribucion_de_warnings.py`, `test_project_config.py` |
 | Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash | Verificar contra fuente xEdit, Synthesis, MO2, DynDOLOD y VRAMr; re-verificar Pandora contra el binario 4.3.1-beta pinneado (el README de `main` puede no describirlo) | `test_contrato_argumentos_cli.py` |
+| Contrato de veredicto de éxito | Cerrado | Veredicto por `Engine.log` de Pandora; cruce con errores parseados en el call site de xEdit; ancla que enumera | — | `test_contrato_veredicto_de_exito.py` (inventario congelado en vacío), `test_pandora_runner.py`, `test_xedit_service.py` |
 | Etapa 6 (Wrye Bash) sin build headless | Abierto | — | Decidir entre etapa asistida o retirarla del dispatcher | `test_contrato_argumentos_cli.py`; humano; auditoría 2026-08-04 |
 | Orden de masters sin validar | Cerrado | `master_order.py`, cableado en Wrye Bash / Synthesis / DynDOLOD | — | `test_master_order.py` (ancla de cableado); auditoría 2026-08-04 (V-7) |
 | Segundo parser TES4 sin gate | Cerrado | `test_tes4_parser_invariant.py` | — | auditoría 2026-08-04 |
