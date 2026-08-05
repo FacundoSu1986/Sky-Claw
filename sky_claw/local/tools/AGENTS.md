@@ -20,3 +20,10 @@ El runner, su service, `tool_result.py`, tests contractuales y el
 
 Tests unitarios para argumentos y contratos; integración para lifecycle; rig
 real por runner antes de una garantía operativa.
+
+## Pendiente: smoke real de "Limpiar Archivos" (QuickAutoClean)
+
+Toca a `xedit_service.py`. Los tests mockean el subproceso: validan los argumentos
+(`-quickautoclean -autoexit -autoload`, los mismos que usa PACT) pero no que SSEEdit
+limpie de verdad. Falta un smoke del Ritual en una instalación real con SSEEdit antes
+de confiar al 100%.

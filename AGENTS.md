@@ -9,12 +9,9 @@ drift, leer [docs/README.md](docs/README.md) y
 [docs/documentation/source_of_truth.md](docs/documentation/source_of_truth.md).
 Los `AGENTS.md` de subárbol son punteros de alcance y no reemplazan esta guía.
 
-## Stack real (verificado contra el código)
+## Dominio
 
-- **Python ≥ 3.11** (`pyproject.toml`; CI corre 3.11 y 3.12 en `windows-latest`).
-- **GUI: NiceGUI** (web/escritorio) en `sky_claw/app/gui/`.
-- SQLite (WAL), multi-LLM (Anthropic / OpenAI / DeepSeek / Ollama), gateway de Telegram (Node).
-- Dominio: gestión de mods de Skyrim SE/AE vía Mod Organizer 2 (LOOT, xEdit, DynDOLOD…).
+Gestión de mods de Skyrim SE/AE vía Mod Organizer 2 (LOOT, xEdit, DynDOLOD…).
 
 ## Convenciones
 
@@ -90,23 +87,12 @@ el revisor lo revirtió igual.
 > un comando o rompen un test. Si agregás una regla acá, traé con qué se verifica
 > — o va a envejecer como las demás.
 
-## Mapa del repo
+## Antes de tocar el pipeline de modding
 
-| Ruta | Qué es |
-|------|--------|
-| `sky_claw/app/core/` | Núcleo: `database.py` (`DatabaseAgent`), `errors.py` (`AppNexusError`), `contracts.py` (Protocols) |
-| `sky_claw/app/gui/` | GUI NiceGUI (vistas, controllers, `models/app_state.py`) |
-| `sky_claw/app/web/` | App web / daemon |
-| `sky_claw/app/security/` | `path_validator.py` (`PathValidator` — sandboxing de rutas) |
-| `sky_claw/app/comms/` | Comunicaciones (Python) + gateway de Telegram (Node en `telegram_gateway_node/`) |
-| `sky_claw/local/mo2/` | Integración con Mod Organizer 2 (perfiles, sandbox, modlist) |
-| `sky_claw/local/tools/` | Tools del agente (`tool_result.py`, runners de LOOT/xEdit/etc.) |
-| `sky_claw/local/AGENTS.md` | **SOP del pipeline de modding de Skyrim** (orden de stages, reglas por tool, failure modes) — leer antes de tocar `local/tools/`, `local/xedit/` u `orchestrator/tool_strategies/` |
-| `sky_claw/config.py` | `SystemPaths` y configuración global |
-| `sky_claw/app_context.py` | `AppContext.start_full()` — inicialización protegida con `asyncio.Lock` |
-| `tests/conftest.py` | Fixtures compartidas (DB en memoria, LLM mockeado) |
-| `.github/workflows/ci.yml` | CI de 5 gates (Lint / Mypy / Tests / Security / Build) |
-| `docs/README.md` | Portal documental para usuarios, operadores, desarrolladores y agentes |
+Leer [`sky_claw/local/AGENTS.md`](sky_claw/local/AGENTS.md) — **SOP del pipeline de
+modding de Skyrim** (orden de stages, reglas por tool, failure modes) — antes de
+modificar `sky_claw/local/tools/`, `sky_claw/local/xedit/` o
+`sky_claw/app/orchestrator/tool_strategies/`.
 
 ## Contratos vigentes
 
@@ -127,10 +113,7 @@ general** (decisión documentada en #217). Los handlers que reciben un
 
 Ver [`docs/pending_ooda_status.md`](docs/pending_ooda_status.md) para el inventario
 completo verificado contra el código (reemplaza mantener la lista acá, que se
-desactualiza igual que cualquier otro doc estático). Un ítem persiste acá por ser
-transversal a toda tarea que toque `local/tools/xedit_service.py`:
-
-- **Smoke real de "Limpiar Archivos" (QuickAutoClean).** Los tests mockean el subproceso:
-  validan los argumentos (`-quickautoclean -autoexit -autoload`, los mismos que usa PACT)
-  pero no que SSEEdit limpie de verdad. Falta un smoke del Ritual en una instalación real
-  con SSEEdit antes de confiar al 100%.
+desactualiza igual que cualquier otro doc estático). El pendiente de QuickAutoClean
+—transversal a toda tarea que toque `local/tools/xedit_service.py`— vive en
+[`sky_claw/local/tools/AGENTS.md`](sky_claw/local/tools/AGENTS.md), que carga al
+trabajar ahí.
