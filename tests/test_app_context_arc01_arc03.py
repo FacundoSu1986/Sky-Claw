@@ -877,7 +877,20 @@ class TestAppContextPartialFullAcquisition:
                 release_scan.wait(timeout=2.0)
             return None
 
-        def fallar_despues_del_scan(**_kwargs: object) -> None:
+        def fallar_despues_del_scan(**_kwargs: object) -> object:
+            # El corte de este test es DESPUES del scan (de ahi el nombre): lo
+            # que se mide es que `scan_common_paths` no bloquee el loop, y el
+            # RuntimeError solo existe para no correr el arranque entero.
+            # T-31 sumo una segunda construccion de DistributedLockManager (el
+            # lock de instalacion de ToolsInstaller) que ocurre ANTES del scan:
+            # abortar ahi mataria el arranque sin que el scan llegue a correr y
+            # el heartbeat nunca se seteria. Las construcciones previas al scan
+            # devuelven un doble usable; solo la posterior corta.
+            if scan_calls == 0:
+                manager = MagicMock()
+                manager.initialize = AsyncMock()
+                manager.close = AsyncMock()
+                return manager
             raise RuntimeError("stop after scan")
 
         patches = [

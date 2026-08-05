@@ -35,7 +35,7 @@ confirmarlo contra código y tests.
 | T-28 | Cerrado | #309, #318 y cierres posteriores | — | productores de `persist_flight_report` |
 | T-29 | Cerrado | Oleada 7 | — | historial Git y tests |
 | T-30 | Cerrado | Oleada 7 | — | historial Git y tests |
-| T-31 | Abierto | — | Lock cross-process por `install_dir`/`mod_dir` en `ToolsInstaller` (6 rutas de instalación + wiring en `app_context.py`) | `TECHNICAL_REVIEW_TASKS.md` |
+| T-31 | Cerrado | #436 — lock cross-process por `install_dir`/`mod_dir` en `ToolsInstaller` (8 rutas de instalación incl. `ensure_skse` + wiring en `app_context.py`; ancla de familia e introspección) | — | `test_tools_installer_lock_scoping.py`, `test_tools_installer_lock_contencion.py` |
 | U-01 | Cerrado | #381, #388 y documentación operativa | — | `test_output_targets.py` |
 | U-02 | Cerrado | #360 | — | tests de Job Object |
 | U-03 | Cerrado | #356 | — | tests de reconciliación de precache |

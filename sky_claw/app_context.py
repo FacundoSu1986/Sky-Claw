@@ -920,10 +920,30 @@ class AppContext:
                 except Exception as exc:
                     logger.exception("Initial synchronization failed: %s", exc)
 
+            # T-31: lock cross-process de instalación. Se crea ANTES de
+            # ToolsInstaller (que lo exige obligatorio) y apunta al MISMO
+            # locks.db que serializa los rituales — la exclusión es por fila
+            # SQLite, así que dos instancias del manager sobre el mismo .db
+            # funcionan. Config de instalación: TTL largo (1 h) y espera total
+            # real ~30 min (backoff 1+2+4+8 + 176×10 s = 1775 s) para que un
+            # segundo llamador vea already_existed=True en vez de
+            # LockAcquisitionError.
+            _LOCK_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+            tools_installer_lock_manager = DistributedLockManager(
+                db_path=_LOCK_STAGING_DIR / "locks.db",
+                default_ttl=3600.0,
+                max_retries=180,
+                backoff_base=1.0,
+                backoff_max=10.0,
+            )
+            self._push_startup_cleanup(tools_installer_lock_manager.close)
+            await self._await_startup(tools_installer_lock_manager.initialize())
+
             tools_installer = ToolsInstaller(
                 hitl=hitl,
                 gateway=self.network.gateway,
                 path_validator=validator,
+                lock_manager=tools_installer_lock_manager,
             )
 
             loot_exe = self._args.loot_exe
