@@ -260,6 +260,7 @@ def test_dyndolod_preflight_sondea_los_mismos_candidatos_que_el_runner(
     targets = svc._permission_targets()
     root = runner._config.output_root
     assert root is not None
+    assert root.parent in targets  # para poder CREAR la raíz en el primer run
     assert root in targets
     assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME in targets
     assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME in targets

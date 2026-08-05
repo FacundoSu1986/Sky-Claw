@@ -52,7 +52,13 @@ def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) ->
     Mismo criterio que ``loot_service``/``xedit_service``/``synthesis_service``
     (T-16b/T-16c): un semáforo verde no ensucia el dict; amarillo/rojo viajan
     como ``result["preflight"]`` para que el panel vivo lo renderice.
+
+    También fija ``assisted`` UNA sola vez: la etapa 9 es asistida en TODOS los
+    retornos (éxito, error de dominio, fallos tempranos), así que el consumidor
+    del resultado no tiene que interpretar la ausencia de la clave. El retorno
+    de preflight en rojo también pasa por acá para el mismo contrato.
     """
+    result.setdefault("assisted", True)
     if report is not None and report.status.value != "green":
         result["preflight"] = report.to_dict()
     return result
@@ -241,6 +247,8 @@ class DynDOLODPipelineService:
           (``DynDOLOD Output``/``TexGen Output``).
         - El **staging crudo** bajo la raíz administrada única
           (``output_targets.dyndolod_output_target`` → ``game/DynDOLOD``):
+          ``root.parent`` (para poder CREAR la raíz en el primer run, cuando
+          ``root`` todavía no existe y el checker se salta las inexistentes),
           ``root``, ``root/DynDOLOD_Output`` y ``root/TexGen_Output``. Con
           ``-o:`` el subproceso escribe SOLO ahí — el cwd, el dir del exe y la
           raíz MO2 dejaron de ser raíces de staging, así que tampoco se sondean
@@ -259,6 +267,7 @@ class DynDOLODPipelineService:
         root = dyndolod_output_target(game=game if isinstance(game, pathlib.Path) else None)
         if root is not None:
             candidates += [
+                root.parent,  # para poder CREAR la raíz (primer run: root no existe)
                 root,
                 root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME,
                 root / DynDOLODRunner.TEXGEN_OUTPUT_NAME,
@@ -455,14 +464,16 @@ class DynDOLODPipelineService:
             if preflight_report.blocks_mutations:
                 red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
                 logger.warning("DynDOLOD (stage 9) bloqueado por preflight en rojo: %s", red)
-                return {
-                    "status": "error",
-                    "success": False,
-                    "reason": "PreflightBlocked",
-                    "message": f"Preflight en rojo, DynDOLOD cancelado: {red}",
-                    "errors": [red],
-                    "preflight": preflight_report.to_dict(),
-                }
+                return _attach_preflight(
+                    {
+                        "status": "error",
+                        "success": False,
+                        "reason": "PreflightBlocked",
+                        "message": f"Preflight en rojo, DynDOLOD cancelado: {red}",
+                        "errors": [red],
+                    },
+                    preflight_report,
+                )
 
         start_time = time.monotonic()
         rolled_back = False
@@ -725,7 +736,6 @@ class DynDOLODPipelineService:
                         "message": "",
                         **result_dict,
                         "duration_seconds": duration,
-                        "assisted": True,
                     },
                     preflight_report,
                 )
@@ -824,7 +834,6 @@ class DynDOLODPipelineService:
                     "errors": [str(exc)],
                     "duration_seconds": duration,
                     "rolled_back": rolled_back,
-                    "assisted": True,
                 },
                 preflight_report,
             )

@@ -7,8 +7,8 @@
 > **Fuentes canónicas:** código y tests del árbol actual; ADRs aceptados para
 > decisiones; este documento únicamente consolida su estado.
 >
-> **Última verificación:** 2026-08-02 en la rama actual, basada en
-> `origin/main` `bf635e0`; los cambios posteriores de esta rama no se afirman
+> **Última verificación:** 2026-08-05 en la rama actual, basada en
+> `origin/main` `1a92cdf`; los cambios posteriores de esta rama no se afirman
 > integrados en `origin/main`.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se

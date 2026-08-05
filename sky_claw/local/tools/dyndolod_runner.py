@@ -1052,20 +1052,22 @@ class DynDOLODRunner:
             raise
 
     def _find_texgen_output(self) -> pathlib.Path | None:
-        """Staging de TexGen: determinista bajo la raíz administrada (``-o:``).
+        """Staging de TexGen: SOLO ``root/TexGen_Output`` (la herramienta crea su
+        carpeta dentro del ``-o:`` — layout por default).
 
-        Dos candidatos ACOTADOS a la raíz: ``root/TexGen_Output`` (la herramienta
-        crea su carpeta dentro del ``-o:`` — layout por default) y ``root``
-        (fallback si escribiera directo). Si ninguno existe devuelve el primero:
-        el gate de artefacto decide el éxito, no esta resolución. Ya NO se
-        adivina entre raíces ajenas (MO2/dir del exe/cwd).
+        A diferencia de DynDOLOD, TexGen NO tiene un artefacto con nombre propio
+        que gatear (su salida son texturas), así que un fallback a ``root`` sería
+        un falso verde: si una corrida previa de DynDOLOD dejó
+        ``root/DynDOLOD_Output``, ``any(root.iterdir())`` lo aceptaría como salida
+        de TexGen y el empaquetado copiaría el staging de DynDOLOD dentro de
+        "TexGen Output". Por eso acá NO hay fallback: si ``root/TexGen_Output`` no
+        existe se devuelve igual el candidato y el gate de artefacto de
+        ``run_texgen`` falla (fail-closed). DynDOLOD conserva el fallback a
+        ``root`` porque su gate exige ``DynDOLOD.esp`` como archivo.
         """
         root = self._config.output_root
         if root is None:
             return None
-        for candidato in (root / self.TEXGEN_OUTPUT_NAME, root):
-            if candidato.exists() and any(candidato.iterdir()):
-                return candidato
         return root / self.TEXGEN_OUTPUT_NAME
 
     def _find_dyndolod_output(self) -> pathlib.Path | None:

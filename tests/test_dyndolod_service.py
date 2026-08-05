@@ -1208,6 +1208,7 @@ async def test_preflight_red_blocks_dyndolod_without_running(
     assert result["success"] is False
     assert result["reason"] == "PreflightBlocked"
     assert result["preflight"]["status"] == "red"
+    assert result["assisted"] is True  # contrato único: la etapa es asistida también en preflight rojo
     runner.run_full_pipeline.assert_not_awaited()
     mock_journal.begin_transaction.assert_not_awaited()
 
@@ -1357,6 +1358,9 @@ def test_permission_targets_incluye_staging_y_empaquetado(
     assert game / "DynDOLOD" in targets
     assert game / "DynDOLOD" / "DynDOLOD_Output" in targets
     assert game / "DynDOLOD" / "TexGen_Output" in targets
+    # El padre de la raíz se sondea para poder CREARLA en el primer run
+    # (cuando la raíz no existe, el checker se salta las rutas inexistentes).
+    assert game in targets
     # La adivinanza de raíces ajenas (mo2/exe) murió con -o:
     assert mo2 / "DynDOLOD_Output" not in targets
     assert mo2 / "TexGen_Output" not in targets
@@ -1653,8 +1657,8 @@ def _escribir_log(tmp_path: pathlib.Path, tool: str, contenido: str) -> pathlib.
 async def test_exit_cero_con_error_en_log_no_es_exito(tmp_path: pathlib.Path) -> None:
     """U-06: exit 0 + línea de error en el log real → success=False (TexGen)."""
     config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
-    assert staging is not None
     staging.mkdir(parents=True)
     (staging / "a.dds").write_bytes(b"\x00")
     _escribir_log(tmp_path, "TexGen", "[00:00:01] Error: object LOD generation failed\n")
@@ -1672,8 +1676,8 @@ async def test_exit_cero_con_error_en_log_no_es_exito(tmp_path: pathlib.Path) ->
 async def test_exit_cero_con_error_en_log_no_es_exito_dyndolod(tmp_path: pathlib.Path) -> None:
     """El mismo criterio para DynDOLOD: exit 0 + log en error → success=False."""
     config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
-    assert staging is not None
     staging.mkdir(parents=True)
     (staging / "DynDOLOD.esp").write_text("esp", encoding="utf-8")
     _escribir_log(tmp_path, "DynDOLOD", "[00:00:10] Fatal: exception while processing\n")
@@ -1704,8 +1708,8 @@ async def test_exit_cero_sin_artefacto_no_es_exito(tmp_path: pathlib.Path) -> No
 async def test_exit_cero_con_artefacto_y_log_limpio_es_exito(tmp_path: pathlib.Path) -> None:
     """Contracara: exit 0 + DynDOLOD.esp + log sin errores → success=True."""
     config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
-    assert staging is not None
     staging.mkdir(parents=True)
     (staging / "DynDOLOD.esp").write_text("esp", encoding="utf-8")
     _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
@@ -1723,8 +1727,8 @@ async def test_exit_cero_con_artefacto_y_log_limpio_es_exito(tmp_path: pathlib.P
 async def test_warning_en_log_no_tumba_el_exito(tmp_path: pathlib.Path) -> None:
     """Un warning (no error) con artefacto y exit 0 sigue siendo éxito."""
     config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
-    assert staging is not None
     staging.mkdir(parents=True)
     (staging / "a.dds").write_bytes(b"\x00")
     _escribir_log(tmp_path, "TexGen", "[00:00:02] Warning: 2 LOD textures skipped\n")
@@ -1741,8 +1745,8 @@ async def test_warning_en_log_no_tumba_el_exito(tmp_path: pathlib.Path) -> None:
 async def test_log_ausente_no_es_fallo_si_el_artefacto_existe(tmp_path: pathlib.Path) -> None:
     """Sin log (el proceso no lo flusheó) el gate es el artefacto: success=True."""
     config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
-    assert staging is not None
     staging.mkdir(parents=True)
     (staging / "a.dds").write_bytes(b"\x00")
 
@@ -1773,6 +1777,33 @@ async def test_la_herramienta_puede_escribir_directo_en_la_raiz(tmp_path: pathli
 
     assert result.success is True
     assert result.output_path == root
+
+
+@pytest.mark.asyncio
+async def test_texgen_no_acepta_el_staging_de_dyndolod_como_salida(tmp_path: pathlib.Path) -> None:
+    """Regresión (review PR #440, Major): el staging previo de DynDOLOD en la
+    raíz NO puede pasar por salida de TexGen.
+
+    Si ``root/TexGen_Output`` no existe y la raíz contiene ``DynDOLOD_Output``
+    de una corrida anterior, un fallback a ``root`` lo aceptaría como salida de
+    TexGen y el empaquetado copiaría el staging de DynDOLOD dentro de
+    "TexGen Output". TexGen se resuelve SOLO bajo ``root/TexGen_Output``:
+    sin salida real, fail-closed.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    root = config.output_root
+    assert root is not None
+    stale = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    stale.mkdir(parents=True)
+    (stale / "DynDOLOD.esp").write_text("stale", encoding="utf-8")
+    _escribir_log(tmp_path, "TexGen", "[00:00:02] TexGen completed\n")
+
+    fake = _EjecucionFalsa(return_code=0)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_texgen()
+
+    assert result.output_path == root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    assert result.success is False  # sin salida de TexGen real: fail-closed
 
 
 # =============================================================================
