@@ -6,13 +6,18 @@ publication, journal lifecycle, and rollback on unexpected errors.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import logging
+import os
 import pathlib
+import time
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import sky_claw.local.tools.dyndolod_runner
 from sky_claw.app.core.event_bus import CoreEventBus
 from sky_claw.app.db.locks import (
     DistributedLockManager,
@@ -762,7 +767,6 @@ async def test_cancelacion_durante_enter_refleja_undo_en_journal(
 ) -> None:
     """DynDOLOD registra el rollback antes de entrar y respeta su outcome real."""
     import threading
-    from collections.abc import Callable
 
     from sky_claw.local.tools import _dir_rollback
     from sky_claw.local.tools._dir_rollback import DirectoryRollback
@@ -1339,14 +1343,16 @@ def test_permission_targets_incluye_staging_y_empaquetado(
     mock_event_bus: AsyncMock,
     tmp_path: pathlib.Path,
 ) -> None:
-    """El sensor de permisos sondea el empaquetado (mods/*) Y el staging crudo
-    bajo la raíz administrada única (game/DynDOLOD) donde la herramienta escribe
-    con ``-o:`` (review #311 F2, reescrito con la raíz única)."""
+    """El sensor de permisos sondea el empaquetado (mods/*), el staging crudo bajo
+    la raíz administrada única (game/Sky-Claw/DynDOLOD) donde la herramienta
+    escribe con ``-o:``, y el dir del exe donde escribe su log e INI
+    (review #311 F2, reescrito con la raíz única)."""
     resolver = _resolver_para_permisos(tmp_path)
     svc = _svc(resolver, mock_lock_manager, mock_snapshot_manager, mock_journal, mock_event_bus)
     mo2 = tmp_path / "MO2"
     exe_dir = tmp_path / "DynDOLOD"
     game = tmp_path / "Skyrim"
+    root = game / "Sky-Claw" / "DynDOLOD"
 
     targets = svc._permission_targets()
 
@@ -1355,13 +1361,17 @@ def test_permission_targets_incluye_staging_y_empaquetado(
     assert mo2 / "mods" / "DynDOLOD Output" in targets
     assert mo2 / "mods" / "TexGen Output" in targets
     # Staging crudo bajo la raíz administrada única
-    assert game / "DynDOLOD" in targets
-    assert game / "DynDOLOD" / "DynDOLOD_Output" in targets
-    assert game / "DynDOLOD" / "TexGen_Output" in targets
-    # El padre de la raíz se sondea para poder CREARLA en el primer run
-    # (cuando la raíz no existe, el checker se salta las rutas inexistentes).
+    assert root in targets
+    assert root / "DynDOLOD_Output" in targets
+    assert root / "TexGen_Output" in targets
+    # El primer ancestro EXISTENTE se sondea para poder CREAR la raíz en el primer
+    # run: `root.parent` (game/Sky-Claw) tampoco existe todavía, y el checker se
+    # salta las rutas inexistentes.
     assert game in targets
-    # La adivinanza de raíces ajenas (mo2/exe) murió con -o:
+    # Dir del exe: el log que `_leer_log` lee para dar el veredicto vive ahí.
+    assert exe_dir in targets
+    assert exe_dir / "Logs" in targets
+    # La adivinanza de raíces de STAGING ajenas (mo2/exe) murió con -o:
     assert mo2 / "DynDOLOD_Output" not in targets
     assert mo2 / "TexGen_Output" not in targets
     assert exe_dir / "DynDOLOD_Output" not in targets
@@ -1615,15 +1625,37 @@ async def test_validate_output_rechaza_dir_inexistente_o_vacio(tmp_path: pathlib
 
 
 class _EjecucionFalsa:
-    """Fake de ``_execute_process``: resultado fijo y captura del argv."""
+    """Fake de ``_execute_process``: resultado fijo y captura del argv.
 
-    def __init__(self, return_code: int = 0) -> None:
+    ``al_ejecutar`` corre DENTRO de la llamada, que es donde la herramienta real
+    escribe su salida. Los tests que crean el staging antes del ``with`` modelan
+    una corrida ANTERIOR, no ésta: la distinción es justamente lo que el gate de
+    frescura decide.
+    """
+
+    def __init__(self, return_code: int = 0, al_ejecutar: Callable[[], None] | None = None) -> None:
+        """Fija el código de salida y, opcionalmente, qué escribe la corrida."""
         self.return_code = return_code
+        self.al_ejecutar = al_ejecutar
         self.argvs: list[list[str]] = []
 
     async def __call__(self, *args: object, **kwargs: object) -> tuple[str, str, int, float]:
         self.argvs.append(list(kwargs["args"]))
+        if self.al_ejecutar is not None:
+            self.al_ejecutar()
         return "", "", self.return_code, 1.0
+
+
+def _escribir_salida(directorio: pathlib.Path, nombre: str, contenido: bytes = b"\x00") -> None:
+    """Escribe un archivo en el staging, como hace la herramienta DURANTE la corrida.
+
+    Los tests lo pasan por ``al_ejecutar`` en vez de crear el staging antes del
+    ``with``: la diferencia entre "hay un artefacto" y "esta corrida produjo un
+    artefacto" es justo lo que decide el gate de frescura, así que un test que
+    lo pre-crea estaría afirmando el caso equivocado.
+    """
+    directorio.mkdir(parents=True, exist_ok=True)
+    (directorio / nombre).write_bytes(contenido)
 
 
 def _runner_texgen(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunner]:
@@ -1659,11 +1691,9 @@ async def test_exit_cero_con_error_en_log_no_es_exito(tmp_path: pathlib.Path) ->
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
-    staging.mkdir(parents=True)
-    (staging / "a.dds").write_bytes(b"\x00")
     _escribir_log(tmp_path, "TexGen", "[00:00:01] Error: object LOD generation failed\n")
 
-    fake = _EjecucionFalsa(return_code=0)
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "a.dds"))
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_texgen()
 
@@ -1678,11 +1708,9 @@ async def test_exit_cero_con_error_en_log_no_es_exito_dyndolod(tmp_path: pathlib
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
-    staging.mkdir(parents=True)
-    (staging / "DynDOLOD.esp").write_text("esp", encoding="utf-8")
     _escribir_log(tmp_path, "DynDOLOD", "[00:00:10] Fatal: exception while processing\n")
 
-    fake = _EjecucionFalsa(return_code=0)
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "DynDOLOD.esp"))
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_dyndolod(preset="Medium")
 
@@ -1710,11 +1738,9 @@ async def test_exit_cero_con_artefacto_y_log_limpio_es_exito(tmp_path: pathlib.P
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
-    staging.mkdir(parents=True)
-    (staging / "DynDOLOD.esp").write_text("esp", encoding="utf-8")
     _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
 
-    fake = _EjecucionFalsa(return_code=0)
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "DynDOLOD.esp"))
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_dyndolod(preset="High")
 
@@ -1729,11 +1755,9 @@ async def test_warning_en_log_no_tumba_el_exito(tmp_path: pathlib.Path) -> None:
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
-    staging.mkdir(parents=True)
-    (staging / "a.dds").write_bytes(b"\x00")
     _escribir_log(tmp_path, "TexGen", "[00:00:02] Warning: 2 LOD textures skipped\n")
 
-    fake = _EjecucionFalsa(return_code=0)
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "a.dds"))
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_texgen()
 
@@ -1747,10 +1771,8 @@ async def test_log_ausente_no_es_fallo_si_el_artefacto_existe(tmp_path: pathlib.
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
-    staging.mkdir(parents=True)
-    (staging / "a.dds").write_bytes(b"\x00")
 
-    fake = _EjecucionFalsa(return_code=0)
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "a.dds"))
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_texgen()
 
@@ -1768,10 +1790,8 @@ async def test_la_herramienta_puede_escribir_directo_en_la_raiz(tmp_path: pathli
     config, runner = _runner_texgen(tmp_path)
     root = config.output_root
     assert root is not None
-    root.mkdir(parents=True)
-    (root / "DynDOLOD.esp").write_text("directo", encoding="utf-8")
 
-    fake = _EjecucionFalsa(return_code=0)
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(root, "DynDOLOD.esp"))
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_dyndolod(preset="Medium")
 
@@ -1804,6 +1824,482 @@ async def test_texgen_no_acepta_el_staging_de_dyndolod_como_salida(tmp_path: pat
 
     assert result.output_path == root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     assert result.success is False  # sin salida de TexGen real: fail-closed
+
+
+# =============================================================================
+# U-06 (parte 2) — FRESCURA: el artefacto tiene que ser de ESTA corrida
+#
+# El gate de artefacto por sí solo no distingue la salida de este run de la que
+# dejó el anterior: el staging bajo `-o:` no se limpia ni entra al move-aside
+# (`dyndolod_service`: mutation_coverage_complete = False). Con exit 0 —lo que
+# devuelve una app GUI que el operador cerró a mitad— y sin log que lo desmienta,
+# el artefacto viejo se reportaba como éxito y el empaquetado copiaba LODs
+# obsoletos como resultado fresco. El falso verde de U-06 movido de "exit code"
+# a "artefacto sin fecha".
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_staging_previo_sin_escritura_no_es_exito_texgen(tmp_path: pathlib.Path) -> None:
+    """Staging poblado por una corrida ANTERIOR + exit 0 + sin log → success=False.
+
+    Es la secuencia exacta del hallazgo: corrida 1 deja ``TexGen_Output`` con
+    texturas; en la corrida 2 el operador cierra la ventana a los dos minutos, la
+    GUI sale con 0 y no flushea log. Nada en el disco cambió, así que no hay
+    salida nueva que empaquetar.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging.mkdir(parents=True)
+    (staging / "vieja.dds").write_bytes(b"\x00")
+
+    fake = _EjecucionFalsa(return_code=0)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_texgen()
+
+    assert result.success is False
+    assert any("corrida" in e for e in result.errors), result.errors
+
+
+@pytest.mark.asyncio
+async def test_staging_previo_sin_escritura_no_es_exito_dyndolod(tmp_path: pathlib.Path) -> None:
+    """El hermano: un ``DynDOLOD.esp`` viejo tampoco alcanza.
+
+    El gate de `validate_dyndolod_output` exige el plugin como archivo, pero un
+    plugin de la corrida anterior lo satisface igual — la frescura es el único
+    criterio que los separa.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    staging.mkdir(parents=True)
+    (staging / "DynDOLOD.esp").write_text("de la corrida anterior", encoding="utf-8")
+
+    fake = _EjecucionFalsa(return_code=0)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    assert any("corrida" in e for e in result.errors), result.errors
+
+
+@pytest.mark.asyncio
+async def test_escritura_durante_la_corrida_si_es_exito(tmp_path: pathlib.Path) -> None:
+    """Contracara: el staging viejo existe pero la corrida escribe encima → éxito.
+
+    Sin esta mitad, el gate de frescura sería un "fallá siempre que haya staging
+    previo", que rompería el caso normal de regenerar LODs sobre una salida
+    anterior — el flujo habitual del operador.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    staging.mkdir(parents=True)
+    (staging / "DynDOLOD.esp").write_text("vieja", encoding="utf-8")
+
+    def _regenerar() -> None:
+        """La herramienta reescribe el plugin, como en una corrida completa."""
+        (staging / "DynDOLOD.esp").write_text("recien generada", encoding="utf-8")
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_regenerar)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is True
+    assert result.errors == []
+
+
+@pytest.mark.asyncio
+async def test_staging_previo_recien_escrito_tampoco_pasa(tmp_path: pathlib.Path) -> None:
+    """Regresión (review PR #441): el staging previo NO pasa ni recién escrito.
+
+    La primera versión de este gate comparaba el mtime del artefacto contra el
+    reloj de pared con 2 s de holgura, para no dar falso rojo por la granularidad
+    de FAT32. Esa holgura era una ventana: un staging que la corrida anterior
+    dejó uno o dos segundos antes pasaba por fresco y el falso verde volvía. Acá
+    el staging se escribe inmediatamente antes de lanzar —sin envejecerlo— y
+    tiene que fallar igual, porque la comparación es del árbol contra sí mismo
+    (mtime contra mtime), no contra un reloj externo.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    _escribir_salida(staging, "DynDOLOD.esp", b"de la corrida anterior")
+
+    fake = _EjecucionFalsa(return_code=0)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    assert any("corrida" in e for e in result.errors), result.errors
+
+
+@pytest.mark.asyncio
+async def test_elige_el_candidato_fresco_cuando_los_dos_coexisten(tmp_path: pathlib.Path) -> None:
+    """Regresión (review PR #441): con ambos candidatos en disco gana el FRESCO.
+
+    Resolver el path primero y validarlo después descartaba una corrida buena:
+    ``_find_dyndolod_output`` prefiere ``root/DynDOLOD_Output`` si existe no
+    vacío, así que un staging viejo ahí ganaba sobre el ``DynDOLOD.esp`` que la
+    corrida acababa de escribir directo en la raíz (interpretación B de ``-o:``),
+    y el veredicto salía rojo sobre una salida real. Falla cerrado, pero pierde
+    30+ minutos de generación.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    root = config.output_root
+    assert root is not None
+    viejo = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    _escribir_salida(viejo, "DynDOLOD.esp", b"corrida anterior")
+    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(root, "DynDOLOD.esp", b"fresco"))
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is True
+    assert result.output_path == root, "debe elegir la salida de ESTA corrida, no el staging viejo"
+    assert result.errors == []
+
+
+@pytest.mark.asyncio
+async def test_corrida_abortada_sin_regenerar_el_esp_no_es_exito(tmp_path: pathlib.Path) -> None:
+    """Regresión (review adversarial PR #441): escrituras parciales NO son veredicto.
+
+    El escenario que sobrevivía a la primera versión del gate: el staging conserva
+    la salida completa de la corrida 1; en la corrida 2 DynDOLOD alcanza a
+    sobrescribir LODs dentro de ``meshes/`` y el operador cierra la GUI antes de
+    que se regenere el plugin. Sale con código 0, el log no tiene línea de error,
+    y el árbol "cambió" — así que firmar el ÁRBOL daba fresco y
+    ``_validar_salida_dyndolod`` aceptaba el ``DynDOLOD.esp`` de la corrida
+    anterior. Se empaquetaba un árbol a medio generar con un plugin ajeno.
+
+    Por eso la firma es del artefacto que DECIDE el veredicto, no de sus vecinos.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    meshes = staging / "meshes" / "lod"
+    meshes.mkdir(parents=True)
+    (staging / "DynDOLOD.esp").write_text("de la corrida anterior", encoding="utf-8")
+    (meshes / "tree.nif").write_bytes(b"\x00")
+    _escribir_log(tmp_path, "DynDOLOD", "[00:00:30] Building LOD meshes\n")
+
+    def _abortar_a_mitad() -> None:
+        """Escribe LODs y crea directorios, pero NUNCA regenera el plugin."""
+        (meshes / "tree.nif").write_bytes(b"\x01\x02")
+        (staging / "textures" / "lod").mkdir(parents=True)
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_abortar_a_mitad)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    assert any("corrida" in e for e in result.errors), result.errors
+
+
+@pytest.mark.asyncio
+async def test_reescritura_con_el_mismo_mtime_sigue_siendo_fresca(tmp_path: pathlib.Path) -> None:
+    """Regresión (CI Windows py3.12): el mtime solo no ve todos los cambios.
+
+    El reloj de archivos de Windows avanza de a ~15 ms, así que una reescritura
+    que cae en el mismo tick que la firma previa deja el mtime IDÉNTICO y una
+    firma de solo-mtime la declara "no regenerada" — falso rojo sobre una corrida
+    buena. Acá se fuerza el mtime a ser el mismo antes y después: lo que separa
+    las dos versiones es el tamaño, y la firma tiene que verlo.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    esp = staging / "DynDOLOD.esp"
+    _escribir_salida(staging, "DynDOLOD.esp", b"corta")
+    congelado = esp.stat().st_mtime
+    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+
+    def _regenerar_en_el_mismo_tick() -> None:
+        """Reescribe con contenido distinto pero el mismo mtime exacto."""
+        esp.write_bytes(b"contenido regenerado, mas largo")
+        os.utime(esp, (congelado, congelado))
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_regenerar_en_el_mismo_tick)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert esp.stat().st_mtime == congelado, "el test debe dejar el mtime intacto"
+    assert result.success is True, "una reescritura real no puede depender del tick del reloj"
+    assert result.errors == []
+
+
+@pytest.mark.asyncio
+async def test_firma_previa_ilegible_no_cuenta_como_artefacto_fresco(tmp_path: pathlib.Path) -> None:
+    """Regresión (review adversarial PR #441): lo no verificable no es fresco.
+
+    El centinela de la firma colapsaba dos cosas distintas: "no hay artefacto" y
+    "no pude sondearlo". Si la firma PREVIA fallaba por un error transitorio
+    —permisos, antivirus, volumen de red— sobre un ``.esp`` que sí existía, el
+    post-check lo leía sin problema, lo veía distinto del centinela y lo daba por
+    fresco: exit 0 + esp rancio + log sin errores → LODs obsoletos empaquetados
+    como resultado nuevo. El falso verde reconstituido por un ``except``.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    _escribir_salida(staging, "DynDOLOD.esp", b"de la corrida anterior")
+    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+
+    stat_real = pathlib.Path.stat
+    ilegible = {"activo": True}
+
+    def _stat_falible(self: pathlib.Path, *args: object, **kwargs: object) -> os.stat_result:
+        """Falla al sondear el .esp SOLO durante la firma previa."""
+        if ilegible["activo"] and self.name == "DynDOLOD.esp":
+            raise PermissionError("el antivirus tiene el archivo tomado")
+        return stat_real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    def _corrida_que_no_escribe() -> None:
+        """El proceso sale con 0 sin regenerar nada; el .esp vuelve a ser legible."""
+        ilegible["activo"] = False
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_corrida_que_no_escribe)
+    with patch.object(pathlib.Path, "stat", _stat_falible), patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False, "un artefacto no verificable no puede reportarse como fresco"
+    assert any("verificar" in e for e in result.errors), result.errors
+
+
+@pytest.mark.asyncio
+async def test_artefacto_previo_con_mtime_adelantado_no_descarta_la_corrida(tmp_path: pathlib.Path) -> None:
+    """Regresión (review PR #441): la frescura es "cambió", no "creció".
+
+    Comparar por ``>`` asumía que el mtime solo puede aumentar. Un snapshot
+    restaurado, una copia con timestamps preservados (``copy2``, extracción de un
+    archivo) o un reloj corrido dejan un ``DynDOLOD.esp`` con fecha adelantada;
+    la corrida real lo reescribe con la fecha de hoy —MENOR— y el veredicto salía
+    rojo sobre una salida buena. La comparación es por desigualdad.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    esp = staging / "DynDOLOD.esp"
+    _escribir_salida(staging, "DynDOLOD.esp", b"restaurada de un snapshot")
+    futuro = time.time() + 86400
+    os.utime(esp, (futuro, futuro))
+    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+
+    def _regenerar_con_fecha_de_hoy() -> None:
+        """La corrida real reescribe el plugin: mtime de ahora, menor que el previo."""
+        esp.write_text("regenerada", encoding="utf-8")
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_regenerar_con_fecha_de_hoy)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is True, "un mtime previo adelantado no puede descartar una corrida real"
+    assert result.errors == []
+
+
+@pytest.mark.asyncio
+async def test_esp_regenerado_dentro_de_un_arbol_existente_es_exito(tmp_path: pathlib.Path) -> None:
+    """Contracara: regenerar sobre una salida previa es el flujo NORMAL del operador.
+
+    Sin esta mitad, el gate sería "fallá siempre que haya staging previo", que
+    rompe el caso habitual de rehacer LODs encima de una corrida anterior.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    meshes = staging / "meshes" / "lod"
+    meshes.mkdir(parents=True)
+    (staging / "DynDOLOD.esp").write_text("vieja", encoding="utf-8")
+    (meshes / "tree.nif").write_bytes(b"\x00")
+    _escribir_log(tmp_path, "DynDOLOD", "[00:00:45] LOD generation completed\n")
+
+    def _regenerar() -> None:
+        """Corrida completa: reescribe los LODs Y el plugin."""
+        (meshes / "tree.nif").write_bytes(b"\x01\x02")
+        (staging / "DynDOLOD.esp").write_text("regenerada", encoding="utf-8")
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_regenerar)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is True
+    assert result.errors == []
+
+
+# =============================================================================
+# ANCLA de la familia del post-check
+#
+# La propiedad, enunciada como mecanismo y no como recordatorio de proceso:
+#
+#   Todo post-check de una etapa asistida decide sobre evidencia de ESTA corrida,
+#   leída sin bloquear el event loop.
+#
+# Los dos hallazgos que este ancla ataja llegaron juntos y por la misma vía: el
+# post-check nuevo se escribió al lado de `_package_output_as_mod` —que ya cruzaba
+# a un hilo con un comentario explicando por qué— y no lo siguió; y el gate de
+# artefacto se escribió sin fecha, así que la salida de la corrida anterior lo
+# satisfacía igual. Un caso escrito a mano para cada uno no ataja al tercero: acá
+# se DETECTA la familia por AST y se congela, así que un post-check nuevo rompe
+# el ancla hasta que declare su frontera de hilo y su gate de frescura.
+# =============================================================================
+
+
+def _clase_runner_ast() -> ast.ClassDef:
+    """AST de ``DynDOLODRunner``, leído del fuente real del módulo."""
+    fuente = pathlib.Path(sky_claw.local.tools.dyndolod_runner.__file__).read_text(encoding="utf-8")
+    return next(n for n in ast.parse(fuente).body if isinstance(n, ast.ClassDef) and n.name == "DynDOLODRunner")
+
+
+def _llamadas(nodo: ast.AST) -> set[str]:
+    """Nombres de atributo llamados dentro de ``nodo`` (``self.x()`` → ``x``)."""
+    return {n.func.attr for n in ast.walk(nodo) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+
+
+def _corre_en_hilo(nodo: ast.AST, metodo: str) -> bool:
+    """¿Hay un ``asyncio.to_thread(self.<metodo>, …)`` dentro de ``nodo``?
+
+    Mira la llamada COMPLETA —función y argumento— en vez de constatar que los
+    dos nombres aparecen sueltos: una implementación que corre ``self.<metodo>()``
+    en el event loop y threadea cualquier otra cosa satisface lo segundo y no lo
+    primero (review CodeRabbit, PR #441).
+    """
+    return any(
+        isinstance(llamada.func, ast.Attribute)
+        and llamada.func.attr == "to_thread"
+        and any(isinstance(arg, ast.Attribute) and arg.attr == metodo for arg in llamada.args)
+        for llamada in ast.walk(nodo)
+        if isinstance(llamada, ast.Call)
+    )
+
+
+def _referencias(nodo: ast.AST) -> set[str]:
+    """Atributos MENCIONADOS dentro de ``nodo``, se llamen o no.
+
+    Hace falta porque el método que cruza a un hilo viaja como *argumento*
+    (``to_thread(self._post_check, …)``), no como llamada: mirar solo los
+    ``Call`` lo daría por ausente.
+    """
+    return {n.attr for n in ast.walk(nodo) if isinstance(n, ast.Attribute)}
+
+
+def _miembros_de_la_familia(cls: ast.ClassDef) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Miembros que sondean el disco para dar el veredicto. Predicado ÚNICO.
+
+    Vive en un solo lugar porque los dos anclas —el congelamiento del conjunto y
+    el chequeo de que ninguno sea ``async``— tienen que hablar del MISMO
+    universo. Con el predicado duplicado, agregar un prefijo en uno y no en el
+    otro deja al miembro nuevo fuera del ancla de event loop sin que falle nadie:
+    la clase de defecto que estos tests existen para atajar, dentro de los tests
+    mismos (review CodeRabbit, PR #441).
+    """
+    return {
+        m.name: m
+        for m in cls.body
+        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and (
+            m.name.startswith(("_find_", "_leer_", "_parse_log", "_valida", "validate_", "_firma"))
+            or m.name in {"_post_check", "_candidatos_de_salida", "_tiene_artefacto"}
+        )
+    }
+
+
+def test_la_familia_del_post_check_esta_congelada() -> None:
+    """El conjunto de métodos que sondean el disco para dar el veredicto.
+
+    Igualdad LITERAL: agregar un `_find_*`/`_leer_*`/`_valida*` sin cablearlo al
+    post-check rompe acá. Es el mismo instrumento que `RITUAL_TOOL_MAP` en
+    `test_ritual_dispatch.py` — enumerar, no muestrear.
+    """
+    cls = _clase_runner_ast()
+    familia = {
+        m.name
+        for m in cls.body
+        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and (
+            m.name.startswith(("_find_", "_leer_", "_parse_log", "_valida", "validate_", "_firma"))
+            or m.name in {"_post_check", "_candidatos_de_salida", "_tiene_artefacto"}
+        )
+    }
+    assert familia == {
+        "_post_check",
+        "_candidatos_de_salida",
+        "_tiene_artefacto",
+        "_firmas_de_salida",
+        "_firma_de_veredicto",
+        "_leer_log",
+        "_parse_log",
+        "_find_texgen_output",
+        "_find_dyndolod_output",
+        "validate_dyndolod_output",
+        "_validar_salida_dyndolod",
+    }
+
+
+def test_la_familia_del_post_check_no_corre_en_el_event_loop() -> None:
+    """Cada miembro es síncrono, salvo el wrapper público que delega a un hilo.
+
+    Un miembro ``async def`` que toque disco directo es I/O bloqueante en el hilo
+    del loop (P2 de ``coding_conventions.md``): congela la UI de NiceGUI mientras
+    lee un log que llega a decenas de MB.
+    """
+    cls = _clase_runner_ast()
+    miembros = {
+        m.name: m
+        for m in cls.body
+        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and (
+            m.name.startswith(("_find_", "_leer_", "_parse_log", "_valida", "validate_", "_firma"))
+            or m.name in {"_post_check", "_candidatos_de_salida", "_tiene_artefacto"}
+        )
+    }
+
+    asincronicos = {n for n, m in miembros.items() if isinstance(m, ast.AsyncFunctionDef)}
+    # `validate_dyndolod_output` es API pública (la consume el servicio): sigue
+    # siendo async, pero delega. Cualquier otro async en la familia es el defecto.
+    assert asincronicos == {"validate_dyndolod_output"}
+    assert "to_thread" in _llamadas(miembros["validate_dyndolod_output"])
+
+
+def test_los_lanzadores_cruzan_el_post_check_a_un_hilo() -> None:
+    """Los DOS lanzadores llevan el post-check a `to_thread`. Enumerados, no elegidos.
+
+    `run_texgen` y `run_dyndolod` son la pareja hermana clásica de este repo: el
+    defecto original del contrato CLI fue exactamente un fix que aterrizó en uno
+    y no en el otro.
+    """
+    cls = _clase_runner_ast()
+    lanzadores = {
+        m.name: m for m in cls.body if isinstance(m, ast.AsyncFunctionDef) and m.name in {"run_texgen", "run_dyndolod"}
+    }
+    assert set(lanzadores) == {"run_texgen", "run_dyndolod"}
+
+    for nombre, nodo in lanzadores.items():
+        assert _corre_en_hilo(nodo, "_post_check"), (
+            f"{nombre} debe ejecutar _post_check vía asyncio.to_thread. Afirmar que "
+            "to_thread y _post_check aparecen sueltos en el mismo método no alcanza: "
+            "pasa igual si el post-check corre en el loop y se threadea otra cosa."
+        )
+
+
+def test_el_post_check_consulta_el_gate_de_frescura() -> None:
+    """El veredicto pasa por la frescura: sin esto el artefacto viejo vuelve a pasar.
+
+    Congela el cableado, no el comportamiento (eso lo cubren los tests de U-06
+    parte 2): si alguien saca la llamada, el falso verde se reconstituye entero y
+    los tests de comportamiento son los únicos que lo verían — este ancla lo dice
+    en el lugar donde se rompe.
+    """
+    cls = _clase_runner_ast()
+    post_check = next(m for m in cls.body if isinstance(m, ast.FunctionDef) and m.name == "_post_check")
+    assert "_firma_de_veredicto" in _llamadas(post_check)
+
+    # Y la firma PREVIA se toma en los dos lanzadores, antes de lanzar: sin ella
+    # no hay contra qué comparar y la frescura degrada a "existe el artefacto".
+    for nombre in ("run_texgen", "run_dyndolod"):
+        lanzador = next(m for m in cls.body if isinstance(m, ast.AsyncFunctionDef) and m.name == nombre)
+        assert "_firmas_de_salida" in _referencias(lanzador), f"{nombre} no toma la firma previa del staging"
 
 
 # =============================================================================

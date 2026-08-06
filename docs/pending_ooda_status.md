@@ -7,8 +7,8 @@
 > **Fuentes canónicas:** código y tests del árbol actual; ADRs aceptados para
 > decisiones; este documento únicamente consolida su estado.
 >
-> **Última verificación:** 2026-08-05 en la rama actual, basada en
-> `origin/main` `1a92cdf`; los cambios posteriores de esta rama no se afirman
+> **Última verificación:** 2026-08-06 en la rama actual, basada en
+> `origin/main` `37231dc`; los cambios posteriores de esta rama no se afirman
 > integrados en `origin/main`.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
@@ -41,7 +41,7 @@ confirmarlo contra código y tests.
 | U-03 | Cerrado | #356 | — | tests de reconciliación de precache |
 | U-04 | Parcial | #397, #399, salida administrada de Pandora y subárbol administrado por grupo de BodySlide | Smoke real de rollback de Pandora | `test_rollback_salida.py`, `test_pandora_service.py`, `test_bodyslide_lock.py` y humano |
 | U-05 | Cerrado | #354 | — | `test_vramr_service.py` |
-| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide; veredicto por `Engine.log` de Pandora; post-check por LOG de DynDOLOD/TexGen (binarios GUI sin stdout: el exit code ya no alcanza) | Post-check de Wrye Bash; criterio seguro para QuickAutoClean | tests de cada runner, `test_bodyslide_postcheck_artefacto.py`, `test_pandora_runner.py`, `test_dyndolod_service.py` (post-check por log) |
+| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide; veredicto por `Engine.log` de Pandora; post-check por LOG **+ gate de frescura** de DynDOLOD/TexGen (binarios GUI sin stdout: ni el exit code ni un artefacto sin fecha alcanzan — el staging no se limpia entre corridas, así que la salida vieja satisfacía el gate) | Post-check de Wrye Bash; criterio seguro para QuickAutoClean; **completitud** de la etapa 9: el gate prueba que el artefacto cambió, no que la corrida terminó — falta verificar en rig cuándo DynDOLOD persiste el `.esp` (si fuera temprano, una corrida cerrada a mitad pasaría), y TexGen no tiene marcador de completitud | tests de cada runner, `test_bodyslide_postcheck_artefacto.py`, `test_pandora_runner.py`, `test_dyndolod_service.py` (post-check por log, frescura y ancla enumerativa de la familia) |
 | U-07 | Cerrado | #355 | — | tests de Job Object de DynDOLOD |
 | U-08 | Cerrado | #378 y reconciliador de arranque | — | `test_rollback_reconciler.py` |
 | U-09 | Cerrado | #376 | — | tests del journal de grass |
