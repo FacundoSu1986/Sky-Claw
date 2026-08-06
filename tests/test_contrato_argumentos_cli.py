@@ -469,16 +469,17 @@ def test_switches_de_ruta_de_dyndolod_siempre_llevan_dos_puntos() -> None:
     """``-t``/``-p`` pelados (sin ``:``) se ignoran en silencio en el parser de
     xEdit (``xeInit.pas``) — así vivió el defecto sin dar señal.
 
-    ACOTADO al módulo DynDOLOD a propósito: BodySlide declara ``-t``/``-p`` como
-    nombres cortos de ``wxCmdLineParser`` y MO2 usa ``-p`` (perfil); en esos
-    módulos el token pelado es legítimo. La razón de la exclusión se declara acá
-    (regla "Hermanos"): el barrido de árbol entero no aplica a este par.
+    El alcance lo da el GLOB (``*dyndolod*.py``), no una tupla manual de nombres:
+    un módulo futuro ``dyndolod_*.py`` (un split del runner, un CLI nuevo) entra
+    al ancla automáticamente — regla "enumerar, no muestrear". BodySlide declara
+    ``-t``/``-p`` como nombres cortos de ``wxCmdLineParser`` y MO2 usa ``-p``
+    (perfil): tokens legítimos que el glob nunca matchea, por eso la exclusión
+    no necesita enumerarlos.
     """
     ofensores = sorted(
         archivo.relative_to(RAIZ).as_posix()
-        for archivo in PAQUETE.rglob("*.py")
-        if archivo.name in ("dyndolod_runner.py", "dyndolod_service.py")
-        and (
+        for archivo in PAQUETE.rglob("*dyndolod*.py")
+        if (
             '"-t"' in (texto := archivo.read_text(encoding="utf-8"))
             or "'-t'" in texto
             or '"-p"' in texto
@@ -717,6 +718,50 @@ def test_dyndolod_switch_de_ruta_formato_de_doc() -> None:
     assert DynDOLODRunner._switch_de_ruta("t", pathlib.Path("TempTest"), directorio=True) == '-t:"TempTest\\"'
     assert DynDOLODRunner._switch_de_ruta("o", pathlib.Path("Salida"), directorio=True) == '-o:"Salida\\"'
     assert DynDOLODRunner._switch_de_ruta("p", pathlib.Path("plugins.txt"), directorio=False) == '-p:"plugins.txt"'
+
+
+async def test_dyndolod_modo_vr_se_fija_por_config_no_por_ruta(tmp_path: pathlib.Path) -> None:
+    """El game mode es un campo tipado de la config, no una heurística de ruta.
+
+    La heurística ("VR" en el string del path) vivía duplicada en el runner y un
+    path con "VR" (CVR, VRam) volcaba un SSE a ``-tes5vr`` en silencio. El campo
+    se resuelve UNA vez en ``__post_init__`` (default retrocompatible para
+    instalaciones VR reales) y los consumidores —argv y nombre del log— lo leen.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
+
+    exe_dir = tmp_path / "DynDOLOD"
+    exe_dir.mkdir()
+    exe = exe_dir / "DynDOLODx64.exe"
+    exe.touch()
+
+    def _runner(game: pathlib.Path, game_mode: str | None) -> DynDOLODRunner:
+        game.mkdir(parents=True)
+        return DynDOLODRunner(
+            DynDOLODConfig(
+                game_path=game,
+                mo2_path=tmp_path / "MO2",
+                mo2_mods_path=tmp_path / "MO2" / "mods",
+                dyndolod_exe=exe,
+                game_mode=game_mode,
+            )
+        )
+
+    # SSE explícito aunque el path contenga "VR": la ruta NO decide.
+    sse = _runner(tmp_path / "CVR" / "Skyrim Special Edition", "sse")
+    assert sse._build_xedit_args(None)[0] == "-sse"
+    assert sse._modo() == "SSE"
+
+    # VR explícito: switch suelto y nombre de log TES5VR.
+    vr = _runner(tmp_path / "Skyrim VR", "tes5vr")
+    assert vr._build_xedit_args(None)[0] == "-tes5vr"
+    assert vr._modo() == "TES5VR"
+
+    # Default inferido (retrocompat): instalaciones reales de VR se detectan solas.
+    inferido_vr = _runner(tmp_path / "Skyrim VR 2", None)
+    assert inferido_vr._build_xedit_args(None)[0] == "-tes5vr"
+    inferido_sse = _runner(tmp_path / "Skyrim Special Edition 2", None)
+    assert inferido_sse._build_xedit_args(None)[0] == "-sse"
 
 
 async def test_pandora_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:

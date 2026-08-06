@@ -22,7 +22,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from sky_claw.app.security.links import link_kind_or_raise_with_retry, rmtree_link_aware
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
@@ -116,6 +116,12 @@ class DynDOLODConfig:
             carpeta de salida (default: ``dyndolod_output_target(game_path)``,
             ver ``output_targets.py``).
         temp_dir: Carpeta temporal (default: ``tempfile.gettempdir()``).
+        game_mode: Modo del juego (``"sse"``/``"tes5vr"``). Decisión ÚNICA y
+            tipada; si es ``None`` se infiere una vez en ``__post_init__`` desde
+            el path (``"VR"`` en el string). Los consumidores (argv y nombre del
+            log) leen el campo, nunca la heurística — que vivía duplicada y un
+            path con "VR" (p. ej. ``CVR``) volcaba un SSE a ``-tes5vr`` en
+            silencio.
         timeout_seconds: Timeout en segundos para la ejecución (default: 4 horas).
             En modo asistido el reloj del proceso cubre la ventana de interacción
             humana (el humano elige preset/worldspaces en la GUI); el default de
@@ -136,6 +142,7 @@ class DynDOLODConfig:
     plugins_file: pathlib.Path | None = None
     output_root: pathlib.Path | None = None
     temp_dir: pathlib.Path | None = None
+    game_mode: Literal["sse", "tes5vr"] | None = None
     timeout_seconds: int = 14400  # 4 horas por defecto
     heartbeat_interval: int = 60  # Segundos entre logs de heartbeat
     preset: str = "Medium"  # Low, Medium, High
@@ -163,6 +170,17 @@ class DynDOLODConfig:
             "temp_dir",
             self.temp_dir if self.temp_dir is not None else pathlib.Path(tempfile.gettempdir()),
         )
+        # Modo del juego: decisión ÚNICA y tipada. La heurística ("VR" en el
+        # string del path) vivía duplicada en _build_xedit_args y _modo — un fix
+        # en uno y no en el otro era el defecto hermano en persona, y un path con
+        # "VR" (CVR, VRam) volcaba un SSE a -tes5vr en silencio. Acá se resuelve
+        # UNA vez; el caller puede pasarlo explícito (Literal, no substring).
+        if self.game_mode is None:
+            object.__setattr__(
+                self,
+                "game_mode",
+                "tes5vr" if "VR" in str(self.game_path) else "sse",
+            )
         if not self.game_path.exists():
             raise ValueError(f"Game path does not exist: {self.game_path}")
         if not self.dyndolod_exe.exists():
@@ -927,10 +945,11 @@ class DynDOLODRunner:
         Returns:
             Lista de argumentos para create_subprocess_exec.
         """
-        # Game mode: switch suelto, sin valor. Sin él DynDOLOD arranca en modo
+        # Game mode: switch suelto, sin valor, desde el campo tipado de la config
+        # (decisión única en __post_init__). Sin él DynDOLOD arranca en modo
         # -tes5 (Skyrim LE), busca la clave de registro de LE y muere con
         # "Fatal: Could not determine ... installation path" — el error del rig.
-        game_mode = "-tes5vr" if "VR" in str(self._config.game_path) else "-sse"
+        game_mode = "-tes5vr" if self._config.game_mode == "tes5vr" else "-sse"
         args: list[str] = [game_mode]
 
         # Los cinco -X:"ruta" de la doc (sin espacios; directorios con \ final).
@@ -963,8 +982,12 @@ class DynDOLODRunner:
         return f'-{letra}:"{texto}"'
 
     def _modo(self) -> str:
-        """Modo del juego para el nombre del log (``DynDOLOD_SSE_log.txt``/``_TES5VR``)."""
-        return "TES5VR" if "VR" in str(self._config.game_path) else "SSE"
+        """Modo del juego para el nombre del log (``DynDOLOD_SSE_log.txt``/``_TES5VR``).
+
+        Lee el campo tipado de la config — nunca la heurística de ruta, que
+        quedó resuelta en un único punto (``__post_init__``).
+        """
+        return "TES5VR" if self._config.game_mode == "tes5vr" else "SSE"
 
     def _leer_log(self, tool: str) -> str | None:
         """Lee el log real de la herramienta: ``Logs/{tool}_{modo}_log.txt``.
