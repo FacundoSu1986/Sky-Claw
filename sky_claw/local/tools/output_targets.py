@@ -34,8 +34,10 @@ familia y falla ante un servicio nuevo sin clasificar.
 **Y las afirmaciones de este módulo se verifican contra el spawn, no contra otro
 comentario.** El primer intento de U-01 parte 2 excluyó el ``cwd`` de las raíces
 de DynDOLOD porque un comentario vecino decía que no era el del subproceso; el
-``create_subprocess_exec`` decía lo contrario (review CodeRabbit #388). Cada
-rama de acá cita el mecanismo concreto que la sostiene.
+``create_subprocess_exec`` decía lo contrario (review CodeRabbit #388). Con
+``-o:`` esa discusión murió: DynDOLOD/TexGen reciben la raíz administrada única
+y escriben solo ahí — la rama "el cwd es una raíz legítima" dejó de ser verdadera.
+Cada rama de acá cita el mecanismo concreto que la sostiene.
 
 Hermano del lado de la ENTRADA:
 ``LootSortingService._routes_through_physical_data`` (``loot_service.py``)
@@ -75,6 +77,13 @@ BODYSLIDE_OUTPUT_DIR = "BodySlide_Output"
 #: ``app/agent/tools`` — mismo motivo que ``BEHAVIOR_GRAPHS_RESOURCE_ID`` vive
 #: en ``pandora_service`` y no en ``system_tools.run_pandora``.
 BODYSLIDE_MESHES_RESOURCE_ID = "bodyslide-meshes"
+
+#: Raíz administrada única de Sky-Claw para la salida de DynDOLOD/TexGen. Lleva
+#: el nombre de la FAMILIA, no el de una salida: la herramienta crea sus propias
+#: carpetas (``DynDOLOD_Output``/``TexGen_Output``) DENTRO del valor de ``-o:`` —
+#: el layout por default (la salida aparece junto al exe) lo confirma. Nombrarla
+#: con el staging anidaría ``DynDOLOD_Output/DynDOLOD_Output``.
+DYNDOLOD_OUTPUT_ROOT = "DynDOLOD"
 
 
 def pandora_output_target(*, game: pathlib.Path | None) -> pathlib.Path | None:
@@ -170,52 +179,20 @@ def bodyslide_output_target(*, game: pathlib.Path | None, group: str) -> pathlib
     return root / group
 
 
-def dyndolod_staging_roots(
-    *,
-    mo2: pathlib.Path | None,
-    exe: pathlib.Path | None,
-    cwd: pathlib.Path | None,
-) -> list[pathlib.Path]:
-    """Raíces bajo las que DynDOLOD/TexGen crean su staging crudo, sin duplicados.
+def dyndolod_output_target(*, game: pathlib.Path | None) -> pathlib.Path | None:
+    """Raíz administrada única de Sky-Claw para la salida de DynDOLOD/TexGen.
 
-    Devuelve las RAÍCES (no las rutas completas) porque los nombres de los dos
-    stagings —``DynDOLOD_Output`` y ``TexGen_Output``— son constantes de clase del
-    runner; que las una el llamador evita un ciclo de imports.
+    Los binarios la reciben vía ``-o:`` (patrón (b): ruta explícita en el comando)
+    y crean sus carpetas de salida —``DynDOLOD_Output``/``TexGen_Output``, las
+    constantes del runner— adentro. Que el destino sea único y conocido reemplaza
+    la adivinanza entre tres raíces (MO2, dir del exe, cwd) y es lo que habilita
+    el post-check de artefacto (U-06) sobre un target administrado.
 
-    **El ``cwd`` es un parámetro explícito, y es una raíz legítima**, por un hecho
-    verificado en el spawn: ``DynDOLODRunner._execute_process`` llama a
-    ``asyncio.create_subprocess_exec`` **sin** ``cwd=`` (solo pasa
-    ``creationflags`` en Windows), así que el subproceso **hereda el cwd del
-    proceso Python**. Mientras eso siga así, un staging en el directorio de
-    trabajo del agente SÍ puede ser salida de este run, y excluirlo haría que un
-    run exitoso se reporte como salida no localizable.
-
-    Se pide explícito —en vez de llamar a ``pathlib.Path.cwd()`` acá adentro— para
-    que la dependencia sea visible en los dos llamadores y testeable sin parchear
-    globals. Los dos DEBEN pasar el mismo valor: si el sondeo de permisos mira un
-    conjunto de raíces distinto del que mira la búsqueda de salida, el preflight
-    opina sobre un lugar donde el tool no escribe.
-
-    *Estado (review CodeRabbit #388):* el runner ya **fija** el ``cwd`` en vez de
-    dejarlo heredar implícitamente — lo captura una vez por corrida y pasa el
-    mismo valor al subproceso y a esta búsqueda, así que un ``chdir`` a mitad de
-    run no puede separarlos. Pero lo fija **al cwd del proceso Python**, o sea que
-    la rama de arriba sigue siendo verdadera: el staging todavía puede aterrizar
-    ahí. Lo que la volvería falsa es apuntar el subproceso a un directorio de
-    staging dedicado; eso cambia cómo DynDOLOD resuelve rutas relativas y
-    encuentra su INI, así que no se hace de arrastre.
+    El runner resuelve el staging real con un fallback acotado a esta raíz
+    (``root/<StagingName>`` y, si la herramienta escribiera directo, ``root``);
+    acá vive solo la raíz. ``None`` sin juego, mismo contrato que
+    :func:`pandora_output_target`.
     """
-    roots: list[pathlib.Path] = []
-    if mo2 is not None:
-        roots.append(mo2)
-    if exe is not None:
-        roots.append(exe.parent)
-    if cwd is not None:
-        roots.append(cwd)
-    return _sin_duplicados(roots)
-
-
-def _sin_duplicados(rutas: list[pathlib.Path]) -> list[pathlib.Path]:
-    """Preserva el orden y descarta repetidos (el exe puede vivir bajo la raíz MO2)."""
-    vistas: set[pathlib.Path] = set()
-    return [p for p in rutas if not (p in vistas or vistas.add(p))]
+    if game is None:
+        return None
+    return game.resolve() / DYNDOLOD_OUTPUT_ROOT

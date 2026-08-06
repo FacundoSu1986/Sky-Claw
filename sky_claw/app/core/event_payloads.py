@@ -166,8 +166,13 @@ class DynDOLODPipelineStartedPayload(BaseModel):
     del pipeline de generación de LODs (TexGen + DynDOLOD).
 
     Attributes:
-        preset: Nivel de calidad del preset (Low, Medium, High).
+        preset: Nivel de calidad del preset (Low, Medium, High) — metadato:
+            lo elige el humano en el asistente de la herramienta.
         run_texgen: Si se ejecutará TexGen antes de DynDOLOD.
+        assisted: La etapa 9 es ASISTIDA: los binarios no tienen modo
+            desatendido (preset y worldspaces son botones de la GUI), así que
+            el operador debe interactuar con la ventana del asistente.
+        operator_instructions: Qué debe hacer el operador en la ventana.
         started_at: Timestamp de inicio (epoch float, autogenerado).
     """
 
@@ -175,6 +180,11 @@ class DynDOLODPipelineStartedPayload(BaseModel):
 
     preset: str
     run_texgen: bool
+    assisted: bool = True
+    operator_instructions: str = (
+        "La etapa 9 es asistida: seleccioná el preset y los worldspaces en la "
+        "ventana de TexGen/DynDOLOD y completá el asistente; el pipeline espera."
+    )
     started_at: float = Field(default_factory=time.time)
 
     def to_log_dict(self) -> dict[str, object]:
