@@ -36,14 +36,6 @@ logger = logging.getLogger(__name__)
 # esta cota, el `gather` del path de éxito colgaría `_execute_process` para siempre.
 _DRAIN_GRACE_SECONDS = 10.0
 
-# U-06 parte 2: holgura del gate de frescura. El mtime del artefacto se compara
-# contra el reloj de pared del inicio de la corrida, y los dos relojes pueden no
-# coincidir: FAT32 guarda mtime con granularidad de 2 s, y un `-o:` en una unidad
-# de red puede traer skew. La holgura evita el falso ROJO sobre una corrida buena;
-# es inofensiva para el falso VERDE que el gate persigue, porque el artefacto que
-# se quiere rechazar es de una corrida anterior (minutos u horas atrás, no 2 s).
-_TOLERANCIA_MTIME_SEGUNDOS = 2.0
-
 
 # =============================================================================
 # EXCEPTIONS
@@ -125,11 +117,12 @@ class DynDOLODConfig:
             ver ``output_targets.py``).
         temp_dir: Carpeta temporal (default: ``tempfile.gettempdir()``).
         game_mode: Modo del juego (``"sse"``/``"tes5vr"``). Decisión ÚNICA y
-            tipada; si es ``None`` se infiere una vez en ``__post_init__`` desde
-            el path (``"VR"`` en el string). Los consumidores (argv y nombre del
-            log) leen el campo, nunca la heurística — que vivía duplicada y un
-            path con "VR" (p. ej. ``CVR``) volcaba un SSE a ``-tes5vr`` en
-            silencio.
+            tipada; si es ``None`` se infiere una vez en ``__post_init__`` por el
+            NOMBRE de la carpeta del juego (``Skyrim VR``/``SkyrimVR``). Los
+            consumidores (argv y nombre del log) leen el campo, nunca la
+            heurística — que vivía duplicada y, buscando ``"VR"`` como substring
+            de la ruta entera, volcaba a ``-tes5vr`` cualquier SSE colgado de un
+            directorio con esas letras (``CVR``, ``VRamDisk``).
         timeout_seconds: Timeout en segundos para la ejecución (default: 4 horas).
             En modo asistido el reloj del proceso cubre la ventana de interacción
             humana (el humano elige preset/worldspaces en la GUI); el default de
@@ -360,10 +353,9 @@ class DynDOLODRunner:
 
         args = self._build_xedit_args(extra_args)
 
-        # Reloj de PARED (no monotonic): se compara contra el st_mtime del
-        # artefacto. Se toma antes de lanzar para que toda escritura del run
-        # quede del lado nuevo del umbral.
-        inicio_wall = time.time()
+        # Firma del staging ANTES de lanzar: la frescura se decide comparando el
+        # árbol consigo mismo (mtime contra mtime), no contra el reloj de pared.
+        firmas_previas = await asyncio.to_thread(self._firmas_de_salida, "TexGen")
 
         try:
             execution_cwd = pathlib.Path.cwd()
@@ -386,7 +378,7 @@ class DynDOLODRunner:
                 errors=[str(e)],
             )
 
-        post = await asyncio.to_thread(self._post_check, "TexGen", inicio_wall)
+        post = await asyncio.to_thread(self._post_check, "TexGen", firmas_previas)
         errors, warnings, output_path = post.errors, post.warnings, post.output_path
         success = return_code == 0 and post.artefacto and not errors
 
@@ -446,8 +438,8 @@ class DynDOLODRunner:
 
         args = self._build_xedit_args(extra_args)
 
-        # Ver run_texgen: reloj de pared para el gate de frescura del artefacto.
-        inicio_wall = time.time()
+        # Ver run_texgen: firma previa del staging para el gate de frescura.
+        firmas_previas = await asyncio.to_thread(self._firmas_de_salida, "DynDOLOD")
 
         try:
             execution_cwd = pathlib.Path.cwd()
@@ -470,7 +462,7 @@ class DynDOLODRunner:
                 errors=[str(e)],
             )
 
-        post = await asyncio.to_thread(self._post_check, "DynDOLOD", inicio_wall)
+        post = await asyncio.to_thread(self._post_check, "DynDOLOD", firmas_previas)
         errors, warnings, output_path = post.errors, post.warnings, post.output_path
         success = return_code == 0 and post.artefacto and not errors
 
@@ -1012,7 +1004,82 @@ class DynDOLODRunner:
         """
         return "TES5VR" if self._config.game_mode == "tes5vr" else "SSE"
 
-    def _post_check(self, tool: str, inicio_wall: float) -> _PostCheck:
+    def _candidatos_de_salida(self, tool: str) -> list[pathlib.Path]:
+        """Dónde puede haber aterrizado la salida de ``tool``, en orden de preferencia.
+
+        Fuente ÚNICA de la lista: la resolución de salida (``_find_*_output``) y
+        el post-check tienen que mirar el mismo conjunto. Que cada uno tuviera el
+        suyo es cómo se llega a que el preflight opine sobre un lugar donde el
+        tool no escribe.
+
+        TexGen lleva UN solo candidato a propósito (review de #440): su salida son
+        texturas, sin artefacto con nombre propio que gatear, así que aceptar la
+        raíz como fallback dejaría pasar el ``DynDOLOD_Output`` de una corrida
+        previa como si fuera salida de TexGen. DynDOLOD sí puede caer en la raíz
+        (interpretación B de ``-o:``) porque su gate exige ``DynDOLOD.esp``.
+        """
+        root = self._config.output_root
+        if root is None:
+            return []
+        if tool == "TexGen":
+            return [root / self.TEXGEN_OUTPUT_NAME]
+        return [root / self.DYNDOLLOD_OUTPUT_NAME, root]
+
+    def _firmas_de_salida(self, tool: str) -> dict[pathlib.Path, float]:
+        """Firma de cada candidato ANTES de lanzar, para comparar contra la de después.
+
+        La frescura se decide comparando **mtime contra mtime**, no mtime contra
+        el reloj de pared. Un umbral temporal necesita una holgura por la
+        granularidad del filesystem (FAT32 redondea a 2 s) y esa holgura es
+        exactamente una ventana por la que un staging previo pasa por fresco
+        (review CodeRabbit, PR #441). Comparando el artefacto consigo mismo no
+        hace falta holgura alguna: los dos valores salen del mismo reloj y del
+        mismo filesystem.
+        """
+        return {candidato: self._firma_de_veredicto(tool, candidato) for candidato in self._candidatos_de_salida(tool)}
+
+    @staticmethod
+    def _firma_de_veredicto(tool: str, directorio: pathlib.Path) -> float:
+        """mtime del artefacto que DECIDE el veredicto, o ``-1.0`` si no hay.
+
+        **Del artefacto, no del árbol.** Firmar el árbol entero deja pasar una
+        corrida abortada: DynDOLOD recrea directorios y sobrescribe LODs
+        parcialmente, el operador cierra la GUI antes de que se regenere el
+        plugin, el proceso sale con 0 y sin línea de error — y el árbol "cambió",
+        así que un ``DynDOLOD.esp`` de la corrida ANTERIOR pasaba por veredicto
+        fresco y se empaquetaba un árbol a medio generar (review adversarial,
+        PR #441). El gate exige ``DynDOLOD.esp``, así que es ESE archivo el que
+        tiene que ser de esta corrida.
+
+        TexGen no tiene artefacto con nombre propio (su salida son texturas): se
+        firma el ARCHIVO más reciente del árbol. Que sean archivos y no
+        directorios importa — recrear una carpeta no es haber generado texturas.
+        Limitación conocida y no cerrada: sin marcador de completitud, una corrida
+        de TexGen abortada que alcanzó a escribir algunas texturas sigue contando
+        como fresca. El log es la única evidencia de completitud disponible y
+        puede faltar.
+        """
+        if tool != "TexGen":
+            try:
+                return (directorio / "DynDOLOD.esp").stat().st_mtime
+            except OSError:
+                return -1.0
+
+        ultimo = -1.0
+        try:
+            for hijo in directorio.rglob("*"):
+                try:
+                    if hijo.is_file():
+                        ultimo = max(ultimo, hijo.stat().st_mtime)
+                except OSError:  # noqa: PERF203 — un hijo ilegible no invalida el barrido
+                    continue
+        except OSError as e:
+            # Fail-closed: sin poder sondear no se puede afirmar que hubo escritura.
+            logger.warning("No se pudo firmar el staging %s: %s", directorio, e)
+            return -1.0
+        return ultimo
+
+    def _post_check(self, tool: str, firmas_previas: dict[pathlib.Path, float]) -> _PostCheck:
         """Veredicto de la corrida: log + artefacto + frescura. TODO el I/O, acá.
 
         **Es una función síncrona a propósito, y sus llamadores la envuelven en
@@ -1024,72 +1091,65 @@ class DynDOLODRunner:
         ``to_thread`` por llamada — el mismo idioma que ``_empaquetar_sincrono``
         usa en ``_package_output_as_mod``.
 
+        Evalúa TODOS los candidatos y se queda con el primero que tiene artefacto
+        válido **y** fresco. Elegir el path primero y validarlo después descartaba
+        una corrida buena cuando los dos candidatos coexisten: con un
+        ``DynDOLOD_Output`` viejo en disco y el ``DynDOLOD.esp`` nuevo escrito
+        directo en la raíz, la resolución se quedaba con el viejo y el veredicto
+        salía rojo sobre una salida real (review CodeRabbit, PR #441).
+
         Args:
             tool: ``"TexGen"`` o ``"DynDOLOD"``.
-            inicio_wall: ``time.time()`` tomado ANTES de lanzar el proceso.
+            firmas_previas: salida de :meth:`_firmas_de_salida` tomada ANTES de
+                lanzar el proceso.
 
         Returns:
-            :class:`_PostCheck` con el staging resuelto, el veredicto de artefacto
+            :class:`_PostCheck` con el staging elegido, el veredicto de artefacto
             y los errores/warnings del log.
         """
         texto = self._leer_log(tool)
         errors, warnings = self._parse_log(texto) if texto is not None else ([], [])
 
-        es_texgen = tool == "TexGen"
-        output_path = self._find_texgen_output() if es_texgen else self._find_dyndolod_output()
-
-        if output_path is None:
+        candidatos = self._candidatos_de_salida(tool)
+        if not candidatos:
             return _PostCheck(output_path=None, artefacto=False, errors=errors, warnings=warnings)
 
-        if es_texgen:
-            # TexGen no tiene un artefacto con nombre propio que gatear (su salida
-            # son texturas): el criterio es "el staging existe y no está vacío".
-            try:
-                artefacto = output_path.exists() and any(output_path.iterdir())
-            except OSError as e:
-                logger.warning("No se pudo sondear el staging de TexGen (%s): %s", output_path, e)
-                artefacto = False
-        else:
-            artefacto = self._validar_salida_dyndolod(output_path)
+        hubo_artefacto_rancio = False
+        for candidato in candidatos:
+            if not self._tiene_artefacto(tool, candidato):
+                continue
+            # Frescura: el artefacto tiene que ser de ESTA corrida. Sin esto, un
+            # staging que dejó la corrida anterior satisface el gate igual, y una
+            # app GUI que el operador cerró a mitad sale con código 0 sin escribir
+            # nada ni dejar línea de error — el falso verde se reconstituye entero.
+            if self._firma_de_veredicto(tool, candidato) > firmas_previas.get(candidato, -1.0):
+                return _PostCheck(output_path=candidato, artefacto=True, errors=errors, warnings=warnings)
+            hubo_artefacto_rancio = True
 
-        # Frescura: el artefacto tiene que ser de ESTA corrida. Sin esto, un
-        # staging que dejó la corrida anterior satisface el gate igual, y una app
-        # GUI que el operador cerró a mitad sale con código 0 sin escribir nada
-        # ni dejar línea de error — el falso verde se reconstituye entero.
-        if artefacto and not self._hay_escritura_desde(output_path, inicio_wall):
-            artefacto = False
+        if hubo_artefacto_rancio:
             errors.append(
-                f"El staging de {tool} ({output_path}) no cambió durante la corrida: "
+                f"El artefacto de {tool} no se regeneró durante la corrida: "
                 "es la salida de una corrida anterior, no de ésta."
             )
 
-        return _PostCheck(output_path=output_path, artefacto=artefacto, errors=errors, warnings=warnings)
+        # Ninguno pasó: se reporta el candidato primario para que el operador
+        # sepa dónde se buscó.
+        return _PostCheck(output_path=candidatos[0], artefacto=False, errors=errors, warnings=warnings)
 
-    @staticmethod
-    def _hay_escritura_desde(directorio: pathlib.Path, inicio_wall: float) -> bool:
-        """¿Algo bajo ``directorio`` se escribió a partir de ``inicio_wall``?
+    def _tiene_artefacto(self, tool: str, candidato: pathlib.Path) -> bool:
+        """¿``candidato`` contiene una salida válida de ``tool``?
 
-        Recorre el ÁRBOL, no solo la raíz: DynDOLOD reescribe archivos dentro de
-        subárboles que ya existían (``meshes/``, ``textures/``) y sobrescribir en
-        el lugar no toca el mtime del directorio padre — mirar solo la raíz daría
-        un falso ROJO sobre una corrida buena. Corta en la primera evidencia, así
-        que la corrida exitosa (el caso normal) no paga el recorrido completo.
+        TexGen no tiene un artefacto con nombre propio que gatear (su salida son
+        texturas): el criterio es "existe y no está vacío". DynDOLOD exige
+        ``DynDOLOD.esp`` como archivo (U-06).
         """
-        umbral = inicio_wall - _TOLERANCIA_MTIME_SEGUNDOS
+        if tool != "TexGen":
+            return self._validar_salida_dyndolod(candidato)
         try:
-            if directorio.stat().st_mtime >= umbral:
-                return True
-            for hijo in directorio.rglob("*"):
-                try:
-                    if hijo.stat().st_mtime >= umbral:
-                        return True
-                except OSError:  # noqa: PERF203 — un hijo ilegible no invalida el barrido
-                    continue
+            return candidato.exists() and any(candidato.iterdir())
         except OSError as e:
-            # Fail-closed: si no se puede sondear, no se puede afirmar frescura.
-            logger.warning("No se pudo verificar la frescura de %s: %s", directorio, e)
+            logger.warning("No se pudo sondear el staging de TexGen (%s): %s", candidato, e)
             return False
-        return False
 
     def _leer_log(self, tool: str) -> str | None:
         """Lee el log real de la herramienta: ``Logs/{tool}_{modo}_log.txt``.
@@ -1188,29 +1248,27 @@ class DynDOLODRunner:
         un falso verde: si una corrida previa de DynDOLOD dejó
         ``root/DynDOLOD_Output``, ``any(root.iterdir())`` lo aceptaría como salida
         de TexGen y el empaquetado copiaría el staging de DynDOLOD dentro de
-        "TexGen Output". Por eso acá NO hay fallback: si ``root/TexGen_Output`` no
-        existe se devuelve igual el candidato y el gate de artefacto de
-        ``run_texgen`` falla (fail-closed). DynDOLOD conserva el fallback a
-        ``root`` porque su gate exige ``DynDOLOD.esp`` como archivo.
+        "TexGen Output". Por eso ``_candidatos_de_salida`` le da UN solo
+        candidato: si no existe, el gate de artefacto falla (fail-closed).
         """
-        root = self._config.output_root
-        if root is None:
-            return None
-        return root / self.TEXGEN_OUTPUT_NAME
+        candidatos = self._candidatos_de_salida("TexGen")
+        return candidatos[0] if candidatos else None
 
     def _find_dyndolod_output(self) -> pathlib.Path | None:
         """Staging de DynDOLOD: determinista bajo la raíz administrada (``-o:``).
 
-        Mismo contrato que :meth:`_find_texgen_output` con
-        ``root/DynDOLOD_Output`` como candidato primario.
+        Resolución por PATH, sin mirar frescura — la usa quien solo necesita saber
+        dónde miraría el post-check. El veredicto real lo da :meth:`_post_check`,
+        que evalúa todos los candidatos y elige el que tiene artefacto válido y
+        fresco: acá el primero no vacío alcanza.
         """
-        root = self._config.output_root
-        if root is None:
+        candidatos = self._candidatos_de_salida("DynDOLOD")
+        if not candidatos:
             return None
-        for candidato in (root / self.DYNDOLLOD_OUTPUT_NAME, root):
+        for candidato in candidatos:
             if candidato.exists() and any(candidato.iterdir()):
                 return candidato
-        return root / self.DYNDOLLOD_OUTPUT_NAME
+        return candidatos[0]
 
     async def validate_dyndolod_output(self, output_path: pathlib.Path) -> bool:
         """Valida la salida de DynDOLOD sin bloquear el event loop.
