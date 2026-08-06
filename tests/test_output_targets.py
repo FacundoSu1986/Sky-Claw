@@ -319,6 +319,42 @@ def test_preflight_no_sondea_fuera_del_juego_si_el_game_path_no_existe(tmp_path:
     assert not any(t == pathlib.Path(t.anchor) for t in targets), "nunca la raíz del volumen"
 
 
+def test_preflight_no_sondea_el_padre_existente_del_juego_ausente(tmp_path: pathlib.Path) -> None:
+    """Regresión (review adversarial #441): el corte va ANTES que la existencia.
+
+    Evaluar ``exists()`` primero devolvía el primer ancestro existente aunque
+    estuviera FUERA del árbol del juego. El caso no es exótico —disco montado y
+    carpeta del juego ausente, o un typo en un path profundo—: acá el padre del
+    juego SÍ existe y el juego no, y el sondeo terminaba aprobando ese directorio
+    foráneo. Es el mismo verde sobre configuración inválida, por tercera vía.
+    """
+    montado = tmp_path / "disco-montado"
+    montado.mkdir()  # existe
+    game = montado / "Skyrim"  # NO existe
+    mo2 = tmp_path / "mo2"
+    (mo2 / "mods").mkdir(parents=True)
+    exe_dir = tmp_path / "dyndolod"
+    exe_dir.mkdir()
+    exe = exe_dir / "DynDOLODx64.exe"
+    exe.write_text("", encoding="utf-8")
+
+    resolver = _resolver(game=game, mo2=mo2)
+    resolver.get_mo2_mods_path.return_value = mo2 / "mods"
+    resolver.get_dyndolod_exe.return_value = exe
+
+    svc = DynDOLODPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=MagicMock(),
+        path_resolver=resolver,
+        event_bus=MagicMock(),
+    )
+
+    targets = svc._permission_targets()
+    assert montado not in targets, "el padre del juego está fuera del árbol del juego"
+    assert tmp_path not in targets
+
+
 def test_dyndolod_tiene_una_raiz_administrada_unica(tmp_path: pathlib.Path) -> None:
     """La salida de DynDOLOD/TexGen vive bajo UNA raíz administrada (patrón Pandora).
 

@@ -319,13 +319,22 @@ class DynDOLODPipelineService:
         parámetro vino a impedir (segunda review adversarial, PR #441).
         ``is_relative_to`` corta al SALIR del árbol del juego, sin depender de
         acertar el eslabón exacto.
+
+        **El límite se evalúa ANTES que la existencia**, y ese orden es el
+        invariante: al revés, un ancestro existente FUERA del árbol del juego se
+        devuelve antes de llegar al corte. El caso realista no es exótico —disco
+        montado y carpeta del juego ausente, o un typo en un path profundo— y
+        deja al preflight sondeando y aprobando un directorio foráneo: el mismo
+        verde sobre configuración inválida, por tercera vía (review adversarial
+        #441). Preguntar "¿sigo dentro del juego?" antes que "¿existe?" es lo que
+        hace que la respuesta no dependa de qué haya montado alrededor.
         """
         tope_resuelto = tope.resolve() if tope is not None else None
         for padre in ruta.parents:
-            if padre.exists():
-                return padre
             if tope_resuelto is not None and not padre.is_relative_to(tope_resuelto):
                 return None
+            if padre.exists():
+                return padre
         return None
 
     def _primera_ruta_de_config_faltante(self, runner: DynDOLODRunner) -> pathlib.Path | None:
