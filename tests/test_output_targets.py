@@ -282,6 +282,39 @@ def test_dyndolod_preflight_sondea_los_mismos_candidatos_que_el_runner(
     assert mo2 not in targets
 
 
+def test_preflight_no_sondea_fuera_del_juego_si_el_game_path_no_existe(tmp_path: pathlib.Path) -> None:
+    """Regresión (review adversarial #441): el ascenso corta en el dir del juego.
+
+    ``_primer_ancestro_existente`` sube hasta el primer directorio que existe. Con
+    un game path mal configurado o todavía no montado, eso llegaba hasta la raíz
+    del volumen: el preflight sondeaba —y aprobaba— un directorio ajeno al juego,
+    dando verde sobre una configuración inválida que recién fallaba después.
+    """
+    game = tmp_path / "no-montado" / "Skyrim"  # no existe
+    mo2 = tmp_path / "mo2"
+    (mo2 / "mods").mkdir(parents=True)
+    exe_dir = tmp_path / "dyndolod"
+    exe_dir.mkdir()
+    exe = exe_dir / "DynDOLODx64.exe"
+    exe.write_text("", encoding="utf-8")
+
+    resolver = _resolver(game=game, mo2=mo2)
+    resolver.get_mo2_mods_path.return_value = mo2 / "mods"
+    resolver.get_dyndolod_exe.return_value = exe
+
+    svc = DynDOLODPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=MagicMock(),
+        path_resolver=resolver,
+        event_bus=MagicMock(),
+    )
+
+    targets = svc._permission_targets()
+    assert tmp_path not in targets, "no se sondea por encima del directorio del juego"
+    assert not any(t == pathlib.Path(t.anchor) for t in targets), "nunca la raíz del volumen"
+
+
 def test_dyndolod_tiene_una_raiz_administrada_unica(tmp_path: pathlib.Path) -> None:
     """La salida de DynDOLOD/TexGen vive bajo UNA raíz administrada (patrón Pandora).
 

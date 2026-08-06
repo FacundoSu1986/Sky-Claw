@@ -276,7 +276,7 @@ class DynDOLODPipelineService:
         game = self._path_resolver.get_skyrim_path()
         root = dyndolod_output_target(game=game if isinstance(game, pathlib.Path) else None)
         if root is not None:
-            ancestro = self._primer_ancestro_existente(root)
+            ancestro = self._primer_ancestro_existente(root, tope=game if isinstance(game, pathlib.Path) else None)
             if ancestro is not None:
                 candidates.append(ancestro)
             candidates += [
@@ -294,17 +294,26 @@ class DynDOLODPipelineService:
         return [p for p in candidates if not (p in seen or seen.add(p))]
 
     @staticmethod
-    def _primer_ancestro_existente(ruta: pathlib.Path) -> pathlib.Path | None:
-        """Primer directorio existente subiendo desde ``ruta`` (excluyéndola).
+    def _primer_ancestro_existente(ruta: pathlib.Path, *, tope: pathlib.Path | None) -> pathlib.Path | None:
+        """Primer directorio existente subiendo desde ``ruta``, sin pasar de ``tope``.
 
         El sondeo de permisos se salta las rutas inexistentes, así que preguntar
         por un padre que tampoco existe no verifica nada: para responder "¿puedo
         CREAR la raíz administrada?" hay que preguntarle al primer eslabón que sí
         está en disco.
+
+        ``tope`` (el directorio del juego) corta el ascenso. Sin él, un game path
+        mal configurado o todavía no montado hacía subir hasta la raíz del volumen
+        y el preflight terminaba sondeando —y aprobando— un directorio ajeno al
+        juego: un verde sobre una configuración inválida, que recién fallaba
+        después en ``DynDOLODConfig.__post_init__`` (review adversarial #441). Si
+        ni el tope existe, no hay nada honesto que sondear: ``None``.
         """
         for padre in ruta.parents:
             if padre.exists():
                 return padre
+            if tope is not None and padre == tope:
+                return None
         return None
 
     def _primera_ruta_de_config_faltante(self, runner: DynDOLODRunner) -> pathlib.Path | None:

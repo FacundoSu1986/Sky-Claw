@@ -1999,6 +1999,38 @@ async def test_corrida_abortada_sin_regenerar_el_esp_no_es_exito(tmp_path: pathl
 
 
 @pytest.mark.asyncio
+async def test_reescritura_con_el_mismo_mtime_sigue_siendo_fresca(tmp_path: pathlib.Path) -> None:
+    """Regresión (CI Windows py3.12): el mtime solo no ve todos los cambios.
+
+    El reloj de archivos de Windows avanza de a ~15 ms, así que una reescritura
+    que cae en el mismo tick que la firma previa deja el mtime IDÉNTICO y una
+    firma de solo-mtime la declara "no regenerada" — falso rojo sobre una corrida
+    buena. Acá se fuerza el mtime a ser el mismo antes y después: lo que separa
+    las dos versiones es el tamaño, y la firma tiene que verlo.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    esp = staging / "DynDOLOD.esp"
+    _escribir_salida(staging, "DynDOLOD.esp", b"corta")
+    congelado = esp.stat().st_mtime
+    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+
+    def _regenerar_en_el_mismo_tick() -> None:
+        """Reescribe con contenido distinto pero el mismo mtime exacto."""
+        esp.write_bytes(b"contenido regenerado, mas largo")
+        os.utime(esp, (congelado, congelado))
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_regenerar_en_el_mismo_tick)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert esp.stat().st_mtime == congelado, "el test debe dejar el mtime intacto"
+    assert result.success is True, "una reescritura real no puede depender del tick del reloj"
+    assert result.errors == []
+
+
+@pytest.mark.asyncio
 async def test_firma_previa_ilegible_no_cuenta_como_artefacto_fresco(tmp_path: pathlib.Path) -> None:
     """Regresión (review adversarial PR #441): lo no verificable no es fresco.
 

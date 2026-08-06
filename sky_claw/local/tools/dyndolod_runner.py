@@ -24,7 +24,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from sky_claw.app.security.links import link_kind_or_raise_with_retry, rmtree_link_aware
+from sky_claw.app.security.links import (
+    iter_archivos_propios,
+    link_kind_or_raise_with_retry,
+    rmtree_link_aware,
+)
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 from sky_claw.local.tools.output_targets import dyndolod_output_target
 
@@ -39,7 +43,8 @@ _DRAIN_GRACE_SECONDS = 10.0
 # Firma de un candidato sin artefacto. Distinto de ``None`` (= no se pudo
 # sondear) a propósito: colapsar los dos casos hace fail-open el gate de
 # frescura, porque "no lo pude mirar antes" pasa a leerse como "no había nada".
-_SIN_ARTEFACTO = -1.0
+# Tupla vacía: ninguna firma real lo es.
+_SIN_ARTEFACTO: tuple[float | int, ...] = ()
 
 
 # =============================================================================
@@ -187,9 +192,18 @@ class DynDOLODConfig:
         # …\CVR\…). El modo equivocado no solo cambia el argv: _modo() pasa a
         # buscar el log en *_TES5VR_log.txt, así que el post-check se queda sin
         # su evidencia y degrada a artefacto-solo.
+        #
+        # Dentro del nombre se piden AMBAS marcas ("skyrim" y "vr"), no la igualdad
+        # con "SkyrimVR": exigir el nombre canónico cambiaba un falso positivo por
+        # un falso NEGATIVO — una instalación VR real en `Skyrim-VR`, `VR Skyrim` o
+        # `Skyrim VR - portable` caía a `sse` en silencio (review adversarial #441).
+        # El "vr" se busca tras descontar "skyrim" para que la propia palabra no lo
+        # aporte. Ante un nombre que no diga ninguna de las dos cosas, el operador
+        # tiene el override explícito `game_mode`.
         if self.game_mode is None:
-            carpeta = self.game_path.name.replace(" ", "").casefold()
-            object.__setattr__(self, "game_mode", "tes5vr" if carpeta == "skyrimvr" else "sse")
+            carpeta = self.game_path.name.casefold()
+            es_vr = "skyrim" in carpeta and "vr" in carpeta.replace("skyrim", "")
+            object.__setattr__(self, "game_mode", "tes5vr" if es_vr else "sse")
         if not self.game_path.exists():
             raise ValueError(f"Game path does not exist: {self.game_path}")
         if not self.dyndolod_exe.exists():
@@ -1030,7 +1044,7 @@ class DynDOLODRunner:
             return [root / self.TEXGEN_OUTPUT_NAME]
         return [root / self.DYNDOLLOD_OUTPUT_NAME, root]
 
-    def _firmas_de_salida(self, tool: str) -> dict[pathlib.Path, float | None]:
+    def _firmas_de_salida(self, tool: str) -> dict[pathlib.Path, tuple[float | int, ...] | None]:
         """Firma de cada candidato ANTES de lanzar, para comparar contra la de después.
 
         La frescura se decide comparando **mtime contra mtime**, no mtime contra
@@ -1044,8 +1058,8 @@ class DynDOLODRunner:
         return {candidato: self._firma_de_veredicto(tool, candidato) for candidato in self._candidatos_de_salida(tool)}
 
     @staticmethod
-    def _firma_de_veredicto(tool: str, directorio: pathlib.Path) -> float | None:
-        """mtime del artefacto que DECIDE el veredicto.
+    def _firma_de_veredicto(tool: str, directorio: pathlib.Path) -> tuple[float | int, ...] | None:
+        """Firma del artefacto que DECIDE el veredicto: mtime **y tamaño**.
 
         Tres resultados distintos, y la distinción es el gate: el mtime si se
         pudo leer, :data:`_SIN_ARTEFACTO` si no hay artefacto, y ``None`` si
@@ -1065,8 +1079,17 @@ class DynDOLODRunner:
         PR #441). El gate exige ``DynDOLOD.esp``, así que es ESE archivo el que
         tiene que ser de esta corrida.
 
+        **Va el tamaño además del mtime** porque el mtime solo no basta para ver
+        un cambio: el reloj de archivos de Windows avanza de a ~15 ms, así que una
+        reescritura dentro del mismo tick que la firma previa deja el mtime
+        idéntico y el gate rechaza una corrida real (se cayó así en CI, Windows
+        py3.12). En una corrida de verdad —30+ min— el mtime sí cambia, pero un
+        gate que depende de que dos escrituras caigan en ticks distintos es un
+        falso rojo esperando el rig equivocado.
+
         TexGen no tiene artefacto con nombre propio (su salida son texturas): se
-        firma el ARCHIVO más reciente del árbol. Que sean archivos y no
+        firma el árbol agregado (cantidad de archivos, mtime máximo, bytes
+        totales), recorrido SIN atravesar enlaces. Que sean archivos y no
         directorios importa — recrear una carpeta no es haber generado texturas.
         Limitación conocida y no cerrada: sin marcador de completitud, una corrida
         de TexGen abortada que alcanzó a escribir algunas texturas sigue contando
@@ -1075,28 +1098,35 @@ class DynDOLODRunner:
         """
         if tool != "TexGen":
             try:
-                return (directorio / "DynDOLOD.esp").stat().st_mtime
+                st = (directorio / "DynDOLOD.esp").stat()
             except FileNotFoundError:
                 return _SIN_ARTEFACTO
             except OSError as e:
                 logger.warning("No se pudo sondear el artefacto de %s: %s", directorio, e)
                 return None
+            return (st.st_mtime, st.st_size)
 
-        ultimo = _SIN_ARTEFACTO
+        archivos = 0
+        ultimo_mtime = -1.0
+        bytes_totales = 0
         try:
-            for hijo in directorio.rglob("*"):
-                try:
-                    if hijo.is_file():
-                        ultimo = max(ultimo, hijo.stat().st_mtime)
-                except OSError as e:  # noqa: PERF203 — el barrido decide, no el hijo
-                    # Fail-closed: un archivo que no se pudo mirar podría ser
-                    # justo el que cambió. No se puede afirmar nada del árbol.
-                    logger.warning("No se pudo sondear %s: %s", hijo, e)
-                    return None
+            # `iter_archivos_propios` y no `rglob`: `rglob` frena en un symlink pero
+            # NO en un junction de Windows, así que entraría a un árbol ajeno y
+            # contaría sus archivos como salida de TexGen. La contraparte que borra
+            # acá es `DirectoryRollback` (link-aware), y medir con una política y
+            # borrar con otra es cómo la cuenta y el efecto divergen — mismo motivo
+            # por el que `bodyslide_runner` mide link-aware. Fail-closed: un hijo
+            # ilegible levanta OSError y lo captura el `except` de abajo.
+            for _, identidad in iter_archivos_propios(directorio):
+                archivos += 1
+                ultimo_mtime = max(ultimo_mtime, identidad.st_mtime)
+                bytes_totales += identidad.st_size
         except OSError as e:
             logger.warning("No se pudo firmar el staging %s: %s", directorio, e)
             return None
-        return ultimo
+        if archivos == 0:
+            return _SIN_ARTEFACTO
+        return (archivos, ultimo_mtime, bytes_totales)
 
     def _post_check(self, tool: str, firmas_previas: dict[pathlib.Path, float]) -> _PostCheck:
         """Veredicto de la corrida: log + artefacto + frescura. TODO el I/O, acá.

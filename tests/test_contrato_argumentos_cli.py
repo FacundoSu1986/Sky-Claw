@@ -769,6 +769,15 @@ async def test_dyndolod_modo_vr_se_fija_por_config_no_por_ruta(tmp_path: pathlib
     # substring sobre la ruta entera la volcaba a -tes5vr en silencio, y de paso
     # mandaba a `_modo()` a buscar un log *_TES5VR_log.txt que nunca existe:
     # el post-check se quedaba sin evidencia y degradaba a artefacto-solo.
+    # Instalaciones VR reales con nombre NO canónico: exigir exactamente
+    # "SkyrimVR" cambiaba el falso positivo de abajo por un falso NEGATIVO —caían
+    # a -sse en silencio, generando LODs del mundo equivocado sobre datos VR
+    # (review adversarial #441). Se piden las dos marcas en el nombre.
+    for vr_no_canonico in ("Skyrim-VR", "VR Skyrim", "Skyrim VR - portable", "SkyrimVR Modded"):
+        inferido = _runner(tmp_path / f"nc-{vr_no_canonico.replace(' ', '_')}" / vr_no_canonico, None)
+        assert inferido._build_xedit_args(None)[0] == "-tes5vr", f"{vr_no_canonico} es una instalación VR"
+        assert inferido._modo() == "TES5VR"
+
     for ambiguo in ("CVR", "VRamDisk", "SteamVR"):
         inferido_sse = _runner(tmp_path / ambiguo / "Skyrim Special Edition", None)
         assert inferido_sse._build_xedit_args(None)[0] == "-sse", f"{ambiguo} no es un marcador de VR"
