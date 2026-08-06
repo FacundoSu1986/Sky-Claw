@@ -176,9 +176,67 @@ async def setup_tools(
                         "success": True,
                         "message": "",
                     }
+                elif tool_name_lower == "community_shaders":
+                    # Autoinstalador de Community Shaders (blueprint 1786043077717):
+                    # mods de MO2 (misma clase que NGIO, NO la de SKSE) cuyos gates
+                    # de host — versión del juego, SKSE, ENB, preloader de Engine
+                    # Fixes — consultan la raíz del juego, no la intención del
+                    # caller. Opt-in deliberado: NO está en la lista default.
+                    from sky_claw.local.discovery.scanner import detect_skyrim_edition, read_skyrim_version
+
+                    mo2_root = getattr(local_cfg, "mo2_root", None) if local_cfg else None
+                    skyrim_str = getattr(local_cfg, "skyrim_path", None) if local_cfg else None
+                    if not mo2_root:
+                        results["community_shaders"] = {
+                            "error": "mo2_root no configurado: corré el escaneo de entorno primero."
+                        }
+                        continue
+                    if not skyrim_str:
+                        results["community_shaders"] = {
+                            "error": "skyrim_path no configurado: no puedo detectar versión/edición para Community Shaders."
+                        }
+                        continue
+                    skyrim_exe = pathlib.Path(skyrim_str) / "SkyrimSE.exe"
+                    if not skyrim_exe.is_file():
+                        results["community_shaders"] = {
+                            "error": (
+                                f"No encontré SkyrimSE.exe en {skyrim_str}: Community Shaders "
+                                "requiere Skyrim SE/AE (revisá skyrim_path)."
+                            )
+                        }
+                        continue
+                    # pefile hace I/O síncrono de PE: fuera del event loop.
+                    edition = await asyncio.to_thread(detect_skyrim_edition, skyrim_exe)
+                    game_version = await asyncio.to_thread(read_skyrim_version, skyrim_exe)
+                    mods = await tools_installer.ensure_community_shaders(
+                        pathlib.Path(mo2_root) / "mods",
+                        session,
+                        downloader,
+                        edition=edition,
+                        game_version=game_version,
+                        game_dir=pathlib.Path(skyrim_str),
+                    )
+                    if local_cfg:
+                        if hasattr(local_cfg, "_data"):
+                            local_cfg._data["community_shaders_mods"] = [m.mod_name for m in mods]
+                        else:
+                            local_cfg.community_shaders_mods = [m.mod_name for m in mods]
+                    results["community_shaders"] = {
+                        "status": ("already_installed" if all(m.already_existed for m in mods) else "installed"),
+                        "edition": edition.value,
+                        "game_version": game_version,
+                        "mods": [m.mod_name for m in mods],
+                        "mod_dirs": [str(m.mod_dir) for m in mods],
+                        "versions": {m.mod_name: m.version for m in mods},
+                        "success": True,
+                        "message": "",
+                    }
                 else:
                     results[tool_name] = {
-                        "error": (f"Unknown tool: {tool_name!r}. Supported: loot, xedit, pandora, bodyslide, ngio")
+                        "error": (
+                            f"Unknown tool: {tool_name!r}. Supported: loot, xedit, pandora, "
+                            "bodyslide, ngio, community_shaders"
+                        )
                     }
             except ToolInstallError as exc:
                 results[tool_name_lower] = {"error": str(exc)}

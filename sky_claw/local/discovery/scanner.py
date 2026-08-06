@@ -414,6 +414,17 @@ class EnvironmentScanner:
                 "https://www.nexusmods.com/skyrimspecialedition/mods/32382",
                 False,
             ),
+            (
+                "community_shaders",
+                # Exe ficticio con sufijo .exe: NO hay tal binario — la detección
+                # real es por sentinel del mod bajo mo2_root/mods (caso especial
+                # en el loop); `exe_names[0]` solo alimenta el `technical_name`
+                # del MissingTool (el bloque lo deriva con .replace(".exe", "")).
+                ("community_shaders.exe",),
+                "Renderizado moderno (Community Shaders) - Instalable desde el dashboard",
+                "https://www.nexusmods.com/skyrimspecialedition/mods/86492",
+                False,
+            ),
         ]
 
         mo2_root = mo2_path if mo2_path else None
@@ -431,6 +442,23 @@ class EnvironmentScanner:
                     if skyrim_path is not None
                     else None
                 )
+            elif key == "community_shaders":
+                # Mod de MO2, no un exe: se detecta por el sentinel físico bajo
+                # mods/ — el VFS de MO2 no es visible para el scanner. Import
+                # lazy: tools_installer importa de scanner en producción (ciclo).
+                from sky_claw.local.tools_installer import COMMUNITY_SHADERS_MOD_NAME
+
+                sentinel = (
+                    pathlib.Path(mo2_root)
+                    / "mods"
+                    / COMMUNITY_SHADERS_MOD_NAME
+                    / "SKSE"
+                    / "Plugins"
+                    / "CommunityShaders.dll"
+                    if mo2_root
+                    else None
+                )
+                found = sentinel if sentinel is not None and sentinel.is_file() else None
             else:
                 found = self._resolve_tool_path(key, exe_names, search_roots)
             if found:

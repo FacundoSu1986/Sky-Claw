@@ -20,11 +20,13 @@ import pytest
 import sky_claw.local.tools_installer as tools_installer_module
 from sky_claw.local.tools_installer import ToolsInstaller
 
-#: La familia COMPLETA de mutadores. Ocho, NO siete: ``ensure_skse`` muta el
+#: La familia COMPLETA de mutadores. Nueve, NO ocho: ``ensure_skse`` muta el
 #: directorio del juego con el mismo TOCTOU (chequeo → descarga → copia →
 #: limpieza de DLL huérfanos) y la enumeración original de T-31 ya se había
 #: dejado uno afuera — que es precisamente el defecto que la tarea existe para
-#: cerrar. Congelar 7 habría repetido el error que estamos arreglando.
+#: cerrar. ``ensure_community_shaders`` entra con la misma lógica: muta
+#: ``mods/`` con el mismo ciclo (chequeo → descarga → extracción → limpieza).
+#: Congelar 7 habría repetido el error que estamos arreglando.
 MUTADORES_DE_INSTALACION = frozenset(
     {
         "ensure_loot",
@@ -33,6 +35,7 @@ MUTADORES_DE_INSTALACION = frozenset(
         "ensure_bodyslide",
         "ensure_skse",
         "ensure_ngio",
+        "ensure_community_shaders",
         "_ensure_github_mod",
         "_ensure_nexus_mod",
     }
@@ -49,6 +52,7 @@ RECETAS_DE_LOCK = {
     "ensure_bodyslide": "install_dir",
     "ensure_skse": "game_dir",
     "ensure_ngio": "delega (mod_dir de sus componentes)",
+    "ensure_community_shaders": "delega (mod_dir de sus componentes)",
     "_ensure_github_mod": "mod_dir",
     "_ensure_nexus_mod": "mod_dir",
 }
@@ -209,6 +213,22 @@ async def test_ensure_ngio_delega_sin_duplicar_locks_por_componente() -> None:
     # S2: enumeración, no muestreo — eliminar la delegación a Nexus (Address
     # Library/Grass Cache Helper) SIN tocar la de GitHub dejaría el test en
     # verde con `or`. La familia completa de delegaciones queda congelada.
+    assert "_ensure_github_mod(" in fuente
+    assert "_ensure_nexus_mod(" in fuente
+
+
+@pytest.mark.asyncio
+async def test_ensure_community_shaders_delega_sin_duplicar_locks_por_componente() -> None:
+    """ensure_community_shaders NO toma lock propio; delega en los helpers por mod_dir.
+
+    Espejo del ancla de ``ensure_ngio``: la delegación a Nexus (Address Library
+    y SSE Engine Fixes) y a GitHub (core de Community Shaders) queda congelada
+    por enumeración — quitar una de las dos sin tocar este test deja el ancla
+    roja, igual que un mutador nuevo sin receta.
+    """
+    # Verificación estructural: no adquiere locks directamente (receta "delega").
+    fuente = inspect.getsource(ToolsInstaller.ensure_community_shaders)
+    assert "acquire_lock" not in fuente
     assert "_ensure_github_mod(" in fuente
     assert "_ensure_nexus_mod(" in fuente
 

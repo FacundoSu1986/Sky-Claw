@@ -15,6 +15,7 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import tempfile
 import zipfile
 from collections.abc import Callable
@@ -26,6 +27,7 @@ import aiohttp
 
 from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.app.security.hitl import Decision, HITLGuard
+from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.app.security.network_gateway import (
     EgressViolationError,
     NetworkGatewayTimeoutError,
@@ -372,6 +374,25 @@ GRASS_CACHE_HELPER_MOD_NAME = "Grass Cache Helper NG"
 _ADDRESS_LIBRARY_NEXUS_ID = 32444
 _GRASS_CACHE_HELPER_NEXUS_ID = 101095
 
+# Autoinstalador de Community Shaders (blueprint 1786043077717): el core se
+# descarga del release oficial de GitHub — el archivo principal de Nexus ES el
+# mismo asset (nexus-upload.yaml: artifact_pattern "CommunityShaders-*.zip") —
+# y las dependencias obligatorias (Address Library, SSE Engine Fixes) viven en
+# Nexus. SSE Engine Fixes es requisito DURO de runtime de CS (XSEPlugin.cpp:
+# LoadLibrary("Data/SKSE/Plugins/EngineFixes.dll")). Los nombres son los
+# directorios que ensure_community_shaders crea bajo mods/.
+COMMUNITY_SHADERS_MOD_NAME = "Community Shaders"
+SSE_ENGINE_FIXES_MOD_NAME = "SSE Engine Fixes"
+_CS_RELEASES_URL = "https://api.github.com/repos/community-shaders/skyrim-community-shaders/releases/latest"
+_SSE_ENGINE_FIXES_NEXUS_ID = 17230
+#: Gates de versión del autoinstalador de CS (texto oficial de Nexus 86492 +
+#: descripción de SSE Engine Fixes 7.0.20): SE solo 1.5.97; AE el ecosistema
+#: exige 1.6.1170+ — 1.6.640 y otras AE no-latest NO están soportadas por CS.
+_CS_SE_VERSION = "1.5.97"
+_CS_AE_MIN_VERSION = "1.6.1170"
+_CS_SE_VERSION_TUPLE = (1, 5, 97)
+_CS_AE_MIN_VERSION_TUPLE = (1, 6, 1170)
+
 #: Pin opcional de SHA-256 por nombre exacto de asset/file. Presente y no
 #: coincide → abort + borrar archivo. Ausente → TOFU: se loguea el hash
 #: completo (copiable a este dict para pinear). Un release nuevo cambia el
@@ -410,12 +431,22 @@ _SEVENZIP_TIMEOUT_SECONDS = 300
 
 @dataclass(frozen=True, slots=True)
 class ReleaseAsset:
-    """Metadata for a single GitHub release asset."""
+    """Metadata for a single GitHub release asset.
+
+    Attributes:
+        name: Nombre del asset.
+        size: Tamaño declarado en bytes (0 cuando es desconocido).
+        download_url: URL de la API de GitHub para el asset.
+        browser_download_url: URL pública de descarga.
+        sha256: Digest sha256 publicado por la API (``assets[].digest``), en
+            hex minúsculo; vacío cuando la API no lo expone (TOFU).
+    """
 
     name: str
     size: int
     download_url: str
     browser_download_url: str
+    sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -714,31 +745,241 @@ def scan_common_paths(common_paths: tuple[pathlib.Path, ...], exe_name: str) -> 
     return None
 
 
+def _file_id_nexus(f: dict[str, Any]) -> int:
+    """Extrae el ``file_id`` tolerando el quirk de Nexus: lista ``[id, game]`` → segundo elemento."""
+    fid = f.get("file_id")
+    if isinstance(fid, list):
+        return int(fid[1])
+    return int(fid)  # type: ignore[arg-type]
+
+
+def _haystack_nexus(f: dict[str, Any]) -> str:
+    """Nombre + file_name lowercased: la superficie sobre la que matchean los selectores de Nexus."""
+    return f"{f.get('name', '')} {f.get('file_name', '')}".lower()
+
+
 def _select_address_library_file(files: list[dict[str, Any]], edition: SkyrimEdition) -> int:
     """Elige el ``file_id`` de Address Library (Nexus 32444) para la edición.
 
-    Filtra ``category_name == "MAIN"`` (fallback: todos los files) y matchea
-    ``"anniversary"`` (AE) / ``"special"`` (SE) en ``name``/``file_name``
-    lowercased. Nexus a veces sirve ``file_id`` como lista ``[id, game]`` —
-    se toma el segundo elemento, mismo quirk que ``get_file_info``.
+    Cascada de degradación, verificada contra ``files.json`` real (v11, feb-2026):
+    el MAIN pasó a un único file universal "Address Library - All in one (all
+    game versions)" y los específicos por edición ("All in one (1.5.X)/(1.6.X)",
+    "All in one (Anniversary Edition)") viven en OPTIONAL/ARCHIVED. El selector
+    viejo por keyword único abortaba contra Nexus vivo — ``ensure_ngio`` caído
+    sin saberlo. Pasos:
+
+    1. Candidatos: ``category_name == "MAIN"``; si queda vacío, todos los files.
+    2. Específico por edición (naming histórico): "anniversary" (AE) /
+       "special" (SE).
+    3. Familia de versión (naming intermedio): "1.6" (AE) / "1.5" (SE).
+    4. Universal (naming actual): "all game versions".
+    5. Nada matchea → ToolInstallError con los nombres disponibles.
+
+    Un match específico gana sobre el universal cuando ambos conviven en MAIN
+    (períodos de transición). Quirk: ``file_id`` puede ser lista ``[id, game]``
+    → se toma el segundo elemento, mismo criterio que ``get_file_info``.
 
     Raises:
-        ToolInstallError: Si ningún file matchea la edición (lista los nombres
-            disponibles para diagnóstico).
+        ToolInstallError: Si ningún file matchea (lista los disponibles).
     """
-    keyword = "anniversary" if edition is SkyrimEdition.AE else "special"
     main_files = [f for f in files if str(f.get("category_name", "")).upper() == "MAIN"] or list(files)
+    por_edicion = ("anniversary" if edition is SkyrimEdition.AE else "special",)
+    por_familia = ("1.6" if edition is SkyrimEdition.AE else "1.5",)
     for f in main_files:
-        haystack = f"{f.get('name', '')} {f.get('file_name', '')}".lower()
-        if keyword in haystack:
-            fid = f.get("file_id")
-            if isinstance(fid, list):
-                return int(fid[1])
-            return int(fid)  # type: ignore[arg-type]
+        if any(k in _haystack_nexus(f) for k in por_edicion):
+            return _file_id_nexus(f)
+    for f in main_files:
+        if any(k in _haystack_nexus(f) for k in por_familia):
+            return _file_id_nexus(f)
+    for f in main_files:
+        if "all game versions" in _haystack_nexus(f):
+            return _file_id_nexus(f)
     available = [str(f.get("name") or f.get("file_name") or "?") for f in files]
     raise ToolInstallError(
         f"Ningún archivo de Address Library coincide con la edición {edition.value}. Disponibles: {available}"
     )
+
+
+def _select_engine_fixes_file(files: list[dict[str, Any]]) -> int:
+    """Elige el file MAIN del plugin SKSE de SSE Engine Fixes (Nexus 17230).
+
+    Verificado contra ``files.json`` real (v7.0.20): MAIN tiene DOS archivos —
+    "Engine Fixes - Main File" (el plugin SKSE, ~7.6 MB) y "Engine Fixes -
+    SKSE64 Preloader" (24 KB, se extrae a la RAÍZ del juego, no a Data/) — y
+    NINGUNO es ``is_primary``: el camino "primary" de ``get_file_info`` cae al
+    fallback ``files_list[-1]`` sobre ~134 entradas, un orden inestable.
+    Instalar el preloader en ``mods/`` lo deja inerte bajo USVFS → Engine Fixes
+    no carga y Community Shaders aborta su check de runtime. Selección
+    explícita: MAIN, excluye "preloader", prefiere "main file"; ambigüedad →
+    abort (nunca elegir al azar).
+
+    Raises:
+        ToolInstallError: Sin candidato o candidatos ambiguos (lista disponible).
+    """
+    main_files = [f for f in files if str(f.get("category_name", "")).upper() == "MAIN"] or list(files)
+    candidatos = [f for f in main_files if "preloader" not in _haystack_nexus(f)]
+    if not candidatos:
+        available = [str(f.get("name") or f.get("file_name") or "?") for f in files]
+        raise ToolInstallError(
+            "SSE Engine Fixes: ningún file MAIN sin 'preloader' (el preloader va en la "
+            f"raíz del juego, no en mods/). Disponibles: {available}"
+        )
+    preferidos = [f for f in candidatos if "main file" in _haystack_nexus(f)]
+    elegibles = preferidos or candidatos
+    if len(elegibles) > 1:
+        available = [str(f.get("name") or f.get("file_name") or "?") for f in elegibles]
+        raise ToolInstallError(
+            f"SSE Engine Fixes: candidatos ambiguos para el plugin SKSE ({available}). "
+            "Se aborta en vez de elegir al azar."
+        )
+    return _file_id_nexus(elegibles[0])
+
+
+def _select_community_shaders_asset(assets: list[dict[str, Any]]) -> dict[str, Any]:
+    """Elige el ZIP core de Community Shaders entre los assets del release.
+
+    Verificado en CMakeLists del upstream: el core es ``CommunityShaders-<UTC>.zip``
+    y el AIO es ``CommunityShaders_AIO-<UTC>.zip|.7z`` — prefijos casi
+    idénticos. El discriminador es el GUION: ``communityshaders-`` no matchea
+    ``communityshaders_aio-``. ``_find_github_asset`` ya filtró a
+    ``.zip``/``.7z``; el ``endswith(".zip")`` extra defiende contra nombres
+    raros. Dos matches con el prefijo del core → abort por ambigüedad (nunca
+    elegir al azar).
+
+    Raises:
+        ToolInstallError: Sin match o más de un match (lista los disponibles).
+    """
+    candidatos = [
+        a
+        for a in assets
+        if str(a.get("name", "")).lower().startswith("communityshaders-")
+        and str(a.get("name", "")).lower().endswith(".zip")
+    ]
+    if not candidatos:
+        available = [str(a.get("name") or "?") for a in assets]
+        raise ToolInstallError(
+            "Ningún asset de Community Shaders matchea 'CommunityShaders-*.zip' "
+            f"(el AIO 'CommunityShaders_AIO-*' NO es el core). Disponibles: {available}"
+        )
+    if len(candidatos) > 1:
+        available = [str(a.get("name") or "?") for a in candidatos]
+        raise ToolInstallError(
+            f"Release ambigua de Community Shaders: {len(candidatos)} assets con el "
+            f"prefijo del core ({available}). Se aborta en vez de elegir al azar."
+        )
+    return candidatos[0]
+
+
+def _parse_game_version(version: str) -> tuple[int, ...] | None:
+    """Parsea "1.6.1170" → ``(1, 6, 1170)``; vacío o ilegible → ``None``.
+
+    ``None`` es fail-closed para el gate de versión del autoinstalador de
+    Community Shaders: una versión que no se puede leer no se aprueba.
+    """
+    try:
+        return tuple(int(p) for p in version.strip().split("."))
+    except ValueError:
+        return None
+
+
+def _parse_github_digest(digest: object) -> str:
+    """Extrae el sha256 hex de ``assets[].digest`` de la API de GitHub.
+
+    La API expone ``"sha256:<64 hex>"``; se acepta también el hex pelado.
+    Malformado o ausente → ``""`` (TOFU: la descarga sigue, con warning).
+    """
+    if not isinstance(digest, str):
+        return ""
+    digest = digest.strip()
+    if digest.startswith("sha256:"):
+        digest = digest[len("sha256:") :]
+    if len(digest) == 64 and all(c in "0123456789abcdefABCDEF" for c in digest):
+        return digest.lower()
+    return ""
+
+
+# Nombres de host que verifican los gates del autoinstalador de Community
+# Shaders (la raíz del juego = donde vive SkyrimSE.exe).
+_CS_SKSE_LOADER_NAMES = ("skse64_loader.exe", "skse_loader.exe")
+#: El preloader de SSE Engine Fixes se materializa en la raíz del juego como
+#: ``d3dx9_42.dll`` (Part 2 del mod; file "Engine Fixes - SKSE64 Preloader").
+#: Tupla de nombres conocidos: si el upstream cambiara el nombre, agregar uno
+#: es una línea. No verificable por API (el contenido del .7z no se lista).
+_CS_PRELOADER_NAMES = ("d3dx9_42.dll",)
+
+
+def _detectar_skse(game_dir: pathlib.Path) -> bool:
+    """True si hay un loader de SKSE en la raíz del juego (preflight de CS)."""
+    return any((game_dir / nombre).is_file() for nombre in _CS_SKSE_LOADER_NAMES)
+
+
+def _detectar_enb(game_dir: pathlib.Path) -> bool:
+    """True si la firma de ENB está en la raíz del juego.
+
+    Señal fuerte sin falsos positivos: ``enbseries.ini`` (o el dir
+    ``enbseries/``) es la firma de ENB; ``d3d11.dll``/``d3dx9_42.dll`` no
+    bastan (Skyrim/DXGI también los traen). CS se auto-deshabilita cuando ENB
+    está presente (XSEPlugin.cpp: ENB_API::RequestENBAPI()).
+    """
+    return (game_dir / "enbseries.ini").is_file() or (game_dir / "enbseries").is_dir()
+
+
+def _detectar_preloader(game_dir: pathlib.Path) -> bool:
+    """True si el preloader de SSE Engine Fixes está en la raíz del juego."""
+    return any((game_dir / nombre).is_file() for nombre in _CS_PRELOADER_NAMES)
+
+
+def _transform_fomod_engine_fixes(mod_dir: pathlib.Path, edition: SkyrimEdition) -> None:
+    """Resuelve el FOMOD de SSE Engine Fixes a un layout MO2 válido.
+
+    Verificado descargando el archive real de Nexus (file MAIN, 7.0.20): NO es
+    un mod plano — es un FOMOD con ``EngineFixes FOMOD Installer/{AE,SE}/SKSE/
+    Plugins/EngineFixes.dll`` (rama por edición), ``Required/SKSE/Plugins/``
+    (config común: EngineFixes.toml, preload.txt, SNCT.ini) y ``fomod/``.
+    Este transform copia la rama de la edición + Required a la raíz del mod y
+    elimina el resto — el equivalente programático de elegir "SE/AE" en MO2.
+
+    Raises:
+        ToolInstallError: Si la rama de la edición no está (upstream cambió el
+            layout) — fail-closed, nunca adivinar.
+    """
+    rama = "AE" if edition is SkyrimEdition.AE else "SE"
+    # El transform corre ANTES del flatten: el wrapper puede estar presente
+    # ("EngineFixes FOMOD Installer/…") o ya aplanado ({AE,SE,Required,fomod} en
+    # la raíz). Nunca depende de renames frágiles del flatten (WinError 5/32 con
+    # el antivirus escaneando contenido recién extraído).
+    fomod = mod_dir / "EngineFixes FOMOD Installer"
+    base = fomod if fomod.is_dir() else mod_dir
+    rama_skse = base / rama / "SKSE"
+    sentinel = rama_skse / "Plugins" / "EngineFixes.dll"
+    if not sentinel.is_file():
+        raise ToolInstallError(
+            f"Layout inesperado del FOMOD de SSE Engine Fixes: falta "
+            f"{rama}/SKSE/Plugins/EngineFixes.dll (el upstream cambió el FOMOD?)."
+        )
+    # Fail-closed también para la config: un FOMOD sin Required/SKSE dejaría un
+    # mod "instalado" sin EngineFixes.toml (el plugin arranca con defaults
+    # incorrectos). La política es nunca adivinar — ni en la rama ni en la config.
+    required_skse = base / "Required" / "SKSE"
+    if not required_skse.is_dir():
+        raise ToolInstallError(
+            "Layout inesperado del FOMOD de SSE Engine Fixes: falta "
+            "Required/SKSE (config del plugin: EngineFixes.toml)."
+        )
+    dest_skse = mod_dir / "SKSE"
+    dest_skse.mkdir(exist_ok=True)
+    for origen in (rama_skse, required_skse):
+        for item in origen.iterdir():
+            if item.is_dir():
+                shutil.copytree(item, dest_skse / item.name, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, dest_skse / item.name)
+    if fomod.is_dir():
+        rmtree_link_aware(fomod, limpiar_readonly=True)
+    else:
+        for resto in ("AE", "SE", "Required", "fomod"):
+            rmtree_link_aware(mod_dir / resto, limpiar_readonly=True)
+    logger.info("FOMOD de SSE Engine Fixes resuelto (rama %s) en %s", rama, mod_dir)
 
 
 def _select_ngio_asset(assets: list[dict[str, Any]], edition: SkyrimEdition) -> dict[str, Any]:
@@ -786,14 +1027,20 @@ def _flatten_single_root(mod_dir: pathlib.Path) -> None:
     logger.info("Aplanada la carpeta raíz %r del archive en %s", root.name, mod_dir)
 
 
-def _write_mod_meta_ini(mod_dir: pathlib.Path, mod_name: str, version: str) -> None:
-    """``meta.ini`` mínimo para que MO2 muestre el mod (patrón de GrassProfile)."""
+def _write_mod_meta_ini(mod_dir: pathlib.Path, mod_name: str, version: str, comment: str | None = None) -> None:
+    """``meta.ini`` mínimo para que MO2 muestre el mod (patrón de GrassProfile).
+
+    *comment* reemplaza el comentario por defecto; ``None`` → el genérico.
+    Antes el comentario estaba hardcodeado al texto del precache de grass, lo
+    que hacía mentir a los mods instalados por otros caminos (p.ej. SSE Engine
+    Fixes aparecía como "dependencia del precache de grass").
+    """
     config = configparser.ConfigParser()
     config["General"] = {
         "modid": "0",
         "version": version,
         "name": mod_name,
-        "comments": "Instalado por Sky-Claw (dependencias del precache de grass NGIO).",
+        "comments": comment or "Instalado por Sky-Claw.",
     }
     with (mod_dir / "meta.ini").open("w", encoding="utf-8") as fh:
         config.write(fh)
@@ -1659,6 +1906,9 @@ class ToolsInstaller:
                 sentinel_glob="*.dll",
                 request_slug="ngio",
                 source_hint="GitHub DwemerEngineer/No-Grass-In-Objects-NG",
+                # Comentario NGIO preservado explícitamente: el default de
+                # _write_mod_meta_ini pasó a ser genérico (blueprint Fase 2).
+                install_comment="Instalado por Sky-Claw (dependencias del precache de grass NGIO).",
             ),
             await self._ensure_nexus_mod(
                 mods_dir,
@@ -1669,6 +1919,7 @@ class ToolsInstaller:
                 sentinel_glob="version-1-5-*.bin" if edition is SkyrimEdition.SE else "version-1-6-*.bin",
                 request_slug="address-library",
                 select_file=lambda files: _select_address_library_file(files, edition),
+                install_comment="Instalado por Sky-Claw (dependencias del precache de grass NGIO).",
             ),
         ]
         if edition is SkyrimEdition.AE:
@@ -1681,17 +1932,168 @@ class ToolsInstaller:
                     nexus_id=_GRASS_CACHE_HELPER_NEXUS_ID,
                     sentinel_glob="*.dll",
                     request_slug="grass-cache-helper",
+                    install_comment="Instalado por Sky-Claw (dependencias del precache de grass NGIO).",
                 )
             )
+        return results
+
+    async def ensure_community_shaders(
+        self,
+        mods_dir: pathlib.Path,
+        session: aiohttp.ClientSession,
+        downloader: NexusDownloader | None = None,
+        *,
+        edition: SkyrimEdition,
+        game_version: str,
+        game_dir: pathlib.Path,
+    ) -> list[ModInstallResult]:
+        """Instala Community Shaders y sus dependencias obligatorias como mods de MO2.
+
+        Componentes (orden de dependencia = orden más barato para abortar):
+        Address Library (Nexus 32444), SSE Engine Fixes (Nexus 17230, el plugin
+        SKSE — nunca el preloader) y el core de Community Shaders (GitHub
+        community-shaders/skyrim-community-shaders). Cada mod se extrae a
+        ``mods_dir/<Nombre>/`` con su ``meta.ini``; NO se toca ``modlist.txt``
+        — el caller persiste los nombres para la activación (contrato NGIO).
+
+        Requisitos verificados en el código fuente de CS (XSEPlugin.cpp):
+        Address Library es obligatoria (``UsesAddressLibrary``), Engine Fixes
+        es requisito DURO de runtime (``LoadLibrary EngineFixes.dll`` →
+        ``Required DLL missing``), y con ENB presente CS se auto-deshabilita
+        (no-op silencioso).
+
+        Gates fail-closed — TODOS corren antes del primer HITL y del primer
+        byte de egress:
+        1. Edición SE/AE (LE/UNKNOWN/VR abortan).
+        2. ``downloader`` presente (Address Library y Engine Fixes solo existen
+           en Nexus).
+        3. Versión del juego: SE == 1.5.97 exacta; AE >= 1.6.1170 (intersección
+           CS "latest" ∩ Engine Fixes "1.6.1170+"); vacía/ilegible → abort.
+        4. SKSE instalado en la raíz del juego.
+        5. ENB ausente (firma ``enbseries.ini`` / dir ``enbseries/``).
+        6. Preloader de Engine Fixes presente en la raíz del juego.
+        7. Validación del ``mods_dir``.
+
+        Idempotente por sentinel por componente; denegación a mitad aborta el
+        resto y conserva lo ya instalado (patrón NGIO).
+
+        Args:
+            mods_dir: Directorio ``mods/`` de la instancia MO2.
+            session: Sesión HTTP activa.
+            downloader: NexusDownloader (obligatorio).
+            edition: Edición detectada del juego (SE/AE).
+            game_version: Versión del juego (p.ej. ``"1.6.1170"``).
+            game_dir: Raíz del juego (donde vive ``SkyrimSE.exe``).
+
+        Returns:
+            Lista ordenada de :class:`ModInstallResult` (Address Library,
+            SSE Engine Fixes, Community Shaders).
+        """
+        if edition not in (SkyrimEdition.SE, SkyrimEdition.AE):
+            raise ToolInstallError(
+                f"Community Shaders requiere Skyrim SE o AE (edición detectada: {edition.value}). "
+                "Corré el escaneo de entorno o configurá skyrim_path antes de reintentar."
+            )
+        if downloader is None:
+            raise ToolInstallError(
+                "Address Library y SSE Engine Fixes vienen de Nexus: hace falta un "
+                "NexusDownloader (configurá la API key de Nexus)."
+            )
+        parsed = _parse_game_version(game_version)
+        if edition is SkyrimEdition.SE:
+            if parsed != _CS_SE_VERSION_TUPLE:
+                raise ToolInstallError(
+                    f"En Special Edition, Community Shaders requiere exactamente la versión "
+                    f"{_CS_SE_VERSION} (detectada: {game_version!r}). Versión ilegible → abort fail-closed."
+                )
+        else:
+            if parsed is None or parsed < _CS_AE_MIN_VERSION_TUPLE:
+                raise ToolInstallError(
+                    f"Community Shaders y SSE Engine Fixes requieren Skyrim AE {_CS_AE_MIN_VERSION} "
+                    f"o superior (versión detectada: {game_version!r}). 1.6.640 y otras AE no-latest "
+                    "no están soportadas (texto oficial de Community Shaders)."
+                )
+        if not _detectar_skse(game_dir):
+            raise ToolInstallError(
+                f"No se detectó SKSE en {game_dir}: Community Shaders es un plugin SKSE. "
+                "Instalá SKSE primero (auto-instalador de SKSE del dashboard)."
+            )
+        if _detectar_enb(game_dir):
+            raise ToolInstallError(
+                f"ENB detectado en {game_dir} (enbseries.ini): Community Shaders se "
+                "auto-deshabilita cuando ENB está presente — instalar 44 MB sería un no-op "
+                "silencioso. Desinstalá ENB o no instales Community Shaders."
+            )
+        if not _detectar_preloader(game_dir):
+            raise ToolInstallError(
+                f"No se detectó el preloader de SSE Engine Fixes ({', '.join(_CS_PRELOADER_NAMES)}) "
+                f"en {game_dir}: sin él, Engine Fixes no carga y Community Shaders aborta su check "
+                "de runtime. Descargá el file 'Engine Fixes - SKSE64 Preloader' (Nexus 17230) y "
+                "extraelo a la raíz del juego (o instalalo con Root Builder de MO2)."
+            )
+        self._validator.validate(mods_dir)
+
+        results = [
+            await self._ensure_nexus_mod(
+                mods_dir,
+                session,
+                downloader,
+                mod_name=ADDRESS_LIBRARY_MOD_NAME,
+                nexus_id=_ADDRESS_LIBRARY_NEXUS_ID,
+                sentinel_glob="version-1-5-*.bin" if edition is SkyrimEdition.SE else "version-1-6-*.bin",
+                request_slug="address-library",
+                select_file=lambda files: _select_address_library_file(files, edition),
+            ),
+            await self._ensure_nexus_mod(
+                mods_dir,
+                session,
+                downloader,
+                mod_name=SSE_ENGINE_FIXES_MOD_NAME,
+                nexus_id=_SSE_ENGINE_FIXES_NEXUS_ID,
+                sentinel_glob="EngineFixes.dll",
+                request_slug="sse-engine-fixes",
+                select_file=_select_engine_fixes_file,
+                # El file MAIN de EF (verificado en el archive real de Nexus) es un
+                # FOMOD con ramas SE/AE: se resuelve a la rama de la edición.
+                post_extract=lambda mod_dir: _transform_fomod_engine_fixes(mod_dir, edition),
+            ),
+            await self._ensure_github_mod(
+                mods_dir,
+                session,
+                mod_name=COMMUNITY_SHADERS_MOD_NAME,
+                releases_url=_CS_RELEASES_URL,
+                asset_select=_select_community_shaders_asset,
+                sentinel_glob="CommunityShaders.dll",
+                request_slug="community-shaders",
+                source_hint="GitHub community-shaders/skyrim-community-shaders",
+                required_rel=("Shaders",),
+                install_comment="Instalado por Sky-Claw (Community Shaders).",
+            ),
+        ]
         return results
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _existing_mod_result(self, mod_dir: pathlib.Path, mod_name: str, sentinel_glob: str) -> ModInstallResult | None:
-        """Idempotencia: mod con sentinel presente → resultado sin HITL ni red."""
-        if any((mod_dir / "SKSE" / "Plugins").glob(sentinel_glob)):
+    def _existing_mod_result(
+        self,
+        mod_dir: pathlib.Path,
+        mod_name: str,
+        sentinel_glob: str,
+        required_rel: tuple[str, ...] = (),
+    ) -> ModInstallResult | None:
+        """Idempotencia: mod con sentinel presente → resultado sin HITL ni red.
+
+        *required_rel* se re-verifica en el camino ya-instalado: un mod con el
+        DLL pero sin los directorios requeridos (p.ej. CS 1.8.0 con el bug real
+        "AIO zip missing feature files" — Shaders/ ausente) NO es
+        ``already_existed``: se re-instala en vez de reportar un mod roto como
+        instalado.
+        """
+        if any((mod_dir / "SKSE" / "Plugins").glob(sentinel_glob)) and all(
+            (mod_dir / rel).is_dir() for rel in required_rel
+        ):
             logger.info("%s ya instalado en %s", mod_name, mod_dir)
             return ModInstallResult(
                 mod_name=mod_name,
@@ -1701,13 +2103,31 @@ class ToolsInstaller:
             )
         return None
 
-    def _verify_mod_payload(self, mod_dir: pathlib.Path, mod_name: str, sentinel_glob: str) -> None:
-        """Fail-closed si el archive no trajo el payload SKSE esperado."""
+    def _verify_mod_payload(
+        self,
+        mod_dir: pathlib.Path,
+        mod_name: str,
+        sentinel_glob: str,
+        required_rel: tuple[str, ...] = (),
+    ) -> None:
+        """Fail-closed si el archive no trajo el payload esperado.
+
+        *sentinel_glob* verifica ``SKSE/Plugins/``; *required_rel* exige además
+        directorios relativos a la raíz del mod (verificación compuesta contra
+        zips incompletos del upstream — p.ej. el bug real de Community Shaders
+        "AIO zip missing feature files", 1.8.0 #2588).
+        """
         if not any((mod_dir / "SKSE" / "Plugins").glob(sentinel_glob)):
             raise ToolInstallError(
                 f"La extracción de {mod_name} terminó pero no se encontró "
                 f"SKSE/Plugins/{sentinel_glob} — layout inesperado del archive."
             )
+        for rel in required_rel:
+            if not (mod_dir / rel).is_dir():
+                raise ToolInstallError(
+                    f"La extracción de {mod_name} terminó pero falta el directorio "
+                    f"requerido {rel!r} — archive incompleto del upstream."
+                )
 
     async def _ensure_github_mod(
         self,
@@ -1721,11 +2141,23 @@ class ToolsInstaller:
         sentinel_glob: str,
         request_slug: str,
         source_hint: str,
+        required_rel: tuple[str, ...] = (),
+        clean_on_fail: bool = True,
+        install_comment: str | None = None,
     ) -> ModInstallResult:
         """Instala un mod desde un release de GitHub en ``mods_dir/<mod_name>/``.
 
         Con *asset_select* elige el asset por criterio (p.ej. edición, cuando el
         release trae varios builds); si no, usa *keyword*.
+
+        *required_rel*: verificación compuesta del payload (ver
+        :meth:`_verify_mod_payload`). *clean_on_fail*: ante un fallo post-HITL
+        (descarga/extracción/verificación) se elimina el ``mod_dir`` parcial con
+        ``rmtree_link_aware(..., limpiar_readonly=True)`` — NUNCA si el
+        directorio ya tenía contenido antes de esta invocación, NUNCA en
+        denegación HITL, NUNCA en ``CancelledError`` (``except Exception`` no
+        captura ``BaseException``). *install_comment*: comentario del
+        ``meta.ini``; ``None`` → genérico.
         """
         mod_dir = mods_dir / mod_name
         # Lock por mod_dir, NO global: un componente no debe frenar a otro.
@@ -1736,7 +2168,7 @@ class ToolsInstaller:
             _install_lock_resource_id(mod_dir),
             ttl=self._install_ttl,
         ):
-            existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob)
+            existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob, required_rel)
             if existing is not None:
                 return existing
 
@@ -1754,17 +2186,50 @@ class ToolsInstaller:
                     f"Instalación de {mod_name} denegada por el operador (decision={decision.value})"
                 )
 
-            archive = await self._download_asset(
-                session,
-                asset,
-                mod_dir,
-                expected_sha256=_PINNED_SHA256.get(asset.name),
-            )
-            await _esperar_hilo_ininterrumpible(self._extract, archive, mod_dir)
-            archive.unlink(missing_ok=True)
-            _flatten_single_root(mod_dir)
-            self._verify_mod_payload(mod_dir, mod_name, sentinel_glob)
-            _write_mod_meta_ini(mod_dir, mod_name, version)
+            # Un dir que YA tenía contenido antes de esta invocación jamás se
+            # borra: podría ser un mod ajeno o un intento previo del usuario.
+            preexistia = mod_dir.exists() and any(mod_dir.iterdir())
+            # Staging SEPARADO de mod_dir (mo2_root/.skyclaw-dl, dentro de los
+            # roots del PathValidator): un zip stale/parcial jamás vive dentro
+            # del mod — ni bloquea el flatten, ni envenena `preexistia`, ni es
+            # visible en MO2. Hermano Nexus (staging propio) alineado.
+            staging = mods_dir.parent / ".skyclaw-dl"
+            staging.mkdir(parents=True, exist_ok=True)
+            try:
+                archive = await self._download_asset(
+                    session,
+                    asset,
+                    staging,
+                    # El pin explícito gana sobre el digest de la API; ambos
+                    # vacíos degeneran a None (TOFU) — un str vacío NO es None
+                    # y activaría la rama de validación con un hash vacío.
+                    expected_sha256=_PINNED_SHA256.get(asset.name) or asset.sha256 or None,
+                )
+                await _esperar_hilo_ininterrumpible(self._extract, archive, mod_dir)
+                try:
+                    archive.unlink(missing_ok=True)
+                except OSError:
+                    # WinError 32 transitorio (handle del subproceso 7z/antivirus
+                    # aún liberándose en Windows): el archive stale queda en el
+                    # staging (.skyclaw-dl), fuera del mod, y la próxima corrida
+                    # lo reescribe ("wb" lo trunca). El cleanup del archive es
+                    # basura tolerable — nunca puede tumbar un payload ya extraído
+                    # (cazado en el smoke E2E premium: el unlink falló y el except
+                    # de clean_on_fail borró un mod VÁLIDO).
+                    logger.warning("No se pudo borrar el archive temporal %s (lock transitorio)", archive)
+                _flatten_single_root(mod_dir)
+                self._verify_mod_payload(mod_dir, mod_name, sentinel_glob, required_rel)
+                _write_mod_meta_ini(mod_dir, mod_name, version, comment=install_comment)
+            except Exception:
+                if clean_on_fail and not preexistia:
+                    rmtree_link_aware(mod_dir, limpiar_readonly=True)
+                    logger.warning("mod_dir parcial de %s eliminado tras fallo de instalación (%s)", mod_name, mod_dir)
+                raise
+            finally:
+                # Limpieza del staging vacío (un zip stale hace fallar rmdir — se
+                # tolera: la próxima corrida lo reescribe).
+                with contextlib.suppress(OSError):
+                    staging.rmdir()
 
             logger.info("%s %s instalado como mod en %s", mod_name, version, mod_dir)
             return ModInstallResult(mod_name=mod_name, mod_dir=mod_dir, version=version, already_existed=False)
@@ -1780,12 +2245,22 @@ class ToolsInstaller:
         sentinel_glob: str,
         request_slug: str,
         select_file: Callable[[list[dict[str, Any]]], int] | None = None,
+        required_rel: tuple[str, ...] = (),
+        clean_on_fail: bool = True,
+        install_comment: str | None = None,
+        post_extract: Callable[[pathlib.Path], None] | None = None,
     ) -> ModInstallResult:
         """Instala un mod desde Nexus en ``mods_dir/<mod_name>/``.
 
         Con *select_file* el caller elige el file entre todos los de
         ``list_files`` (p.ej. Address Library SE vs AE); sin él se usa el
         file primary de :meth:`NexusDownloader.get_file_info`.
+
+        *required_rel*, *clean_on_fail* e *install_comment*: mismo contrato que
+        :meth:`_ensure_github_mod` (los dos hermanos comparten las tres
+        invariantes de limpieza). *post_extract*: transform del layout extraído
+        antes de la verificación (p.ej. resolver un FOMOD a la rama de la
+        edición — ver :func:`_transform_fomod_engine_fixes`).
         """
         mod_dir = mods_dir / mod_name
         # Lock por mod_dir, NO global; reentrante via ContextVar (idem _ensure_github_mod).
@@ -1794,7 +2269,7 @@ class ToolsInstaller:
             _install_lock_resource_id(mod_dir),
             ttl=self._install_ttl,
         ):
-            existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob)
+            existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob, required_rel)
             if existing is not None:
                 return existing
 
@@ -1831,13 +2306,31 @@ class ToolsInstaller:
             if pin:
                 file_info = replace(file_info, sha256=pin)
 
-            archive = await downloader.download(file_info, session)
-            mod_dir.mkdir(parents=True, exist_ok=True)
-            await _esperar_hilo_ininterrumpible(self._extract, archive, mod_dir)
-            archive.unlink(missing_ok=True)
-            _flatten_single_root(mod_dir)
-            self._verify_mod_payload(mod_dir, mod_name, sentinel_glob)
-            _write_mod_meta_ini(mod_dir, mod_name, file_info.file_name)
+            # Un dir que YA tenía contenido antes de esta invocación jamás se
+            # borra (idem _ensure_github_mod).
+            preexistia = mod_dir.exists() and any(mod_dir.iterdir())
+            try:
+                archive = await downloader.download(file_info, session)
+                mod_dir.mkdir(parents=True, exist_ok=True)
+                await _esperar_hilo_ininterrumpible(self._extract, archive, mod_dir)
+                try:
+                    archive.unlink(missing_ok=True)
+                except OSError:
+                    # WinError 32 transitorio (idem _ensure_github_mod): el cleanup
+                    # del archive de staging no puede tumbar la instalación.
+                    logger.warning("No se pudo borrar el archive temporal %s (lock transitorio)", archive)
+                if post_extract is not None:
+                    # Antes del flatten: el transform resuelve layouts no planos
+                    # (p.ej. el FOMOD de EF) sin depender de renames frágiles.
+                    post_extract(mod_dir)
+                _flatten_single_root(mod_dir)
+                self._verify_mod_payload(mod_dir, mod_name, sentinel_glob, required_rel)
+                _write_mod_meta_ini(mod_dir, mod_name, file_info.file_name, comment=install_comment)
+            except Exception:
+                if clean_on_fail and not preexistia:
+                    rmtree_link_aware(mod_dir, limpiar_readonly=True)
+                    logger.warning("mod_dir parcial de %s eliminado tras fallo de instalación (%s)", mod_name, mod_dir)
+                raise
 
             logger.info("%s (%s) instalado como mod en %s", mod_name, file_info.file_name, mod_dir)
             return ModInstallResult(
@@ -1915,12 +2408,20 @@ class ToolsInstaller:
             raise ToolInstallError(f"Release asset {name!r} is missing its GitHub API URL")
         if not isinstance(browser_download_url, str) or not browser_download_url:
             raise ToolInstallError(f"Release asset {name!r} is missing its browser download URL")
+        # Integridad: la API publica assets[].digest ("sha256:<hex>"). Presente →
+        # la descarga se verifica; ausente → TOFU con warning (ver _download_asset).
+        sha256 = _parse_github_digest(chosen.get("digest"))
+        if sha256:
+            logger.info("Digest sha256 de la API disponible para %s", name)
+        else:
+            logger.warning("Sin digest sha256 de la API para %s — descarga TOFU", name)
         return (
             ReleaseAsset(
                 name=name,
                 size=int(chosen.get("size", 0)),
                 download_url=api_url,
                 browser_download_url=browser_download_url,
+                sha256=sha256,
             ),
             version,
         )
@@ -1965,9 +2466,16 @@ class ToolsInstaller:
             resp.raise_for_status()
             with dest.open("wb") as fh:
                 async for chunk in resp.content.iter_chunked(_DOWNLOAD_CHUNK_SIZE):
+                    # Techo de bytes DURANTE el streaming: un cuerpo mayor al
+                    # size declarado (CDN mintiendo, o metadata stale) aborta
+                    # apenas se excede, sin escribir el chunk que excede.
+                    downloaded += len(chunk)
+                    if asset.size > 0 and downloaded > asset.size:
+                        raise ToolInstallError(
+                            f"La descarga de {asset.name} excede el tamaño declarado ({asset.size} bytes) — abortada."
+                        )
                     fh.write(chunk)
                     hasher.update(chunk)
-                    downloaded += len(chunk)
                     if downloaded % (10 * _DOWNLOAD_CHUNK_SIZE) == 0:
                         logger.info(
                             "  ... %d / %d bytes (%.0f%%)",
@@ -1975,7 +2483,14 @@ class ToolsInstaller:
                             asset.size,
                             (downloaded / asset.size * 100) if asset.size else 0,
                         )
-        except (aiohttp.ClientError, OSError, TimeoutError, EgressViolationError, NetworkGatewayTimeoutError) as exc:
+        except (
+            aiohttp.ClientError,
+            OSError,
+            TimeoutError,
+            EgressViolationError,
+            NetworkGatewayTimeoutError,
+            ToolInstallError,
+        ) as exc:
             logger.error("Download failed for %s: %s", asset.name, exc)
             if dest.exists():
                 dest.unlink()
@@ -1999,7 +2514,7 @@ class ToolsInstaller:
             logger.info("SHA-256 validado OK para %s (%d bytes)", asset.name, downloaded)
         else:
             logger.warning(
-                "Sin pin SHA-256 para %s (TOFU). %d bytes, sha256=%s",
+                "Sin pin ni digest sha256 para %s (TOFU). %d bytes, sha256=%s",
                 asset.name,
                 downloaded,
                 actual_sha256,

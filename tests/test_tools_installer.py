@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import pathlib
 import tempfile
@@ -1950,3 +1951,143 @@ class TestEnsureSkse:
 async def _async_iter(items: list[bytes]):
     for item in items:
         yield item
+
+
+# ---------------------------------------------------------------------------
+# Blueprint Fase 2 — helpers compartidos del autoinstalador de Community
+# Shaders (camino compartido con loot/xedit/pandora/NGIO): digest de la API de
+# GitHub, techo de bytes durante el streaming, verificación compuesta
+# (required_rel) y comment del meta.ini.
+# ---------------------------------------------------------------------------
+
+
+class TestHelpersCompartidosBlueprint:
+    def test_parse_github_digest_normaliza_y_rechaza(self) -> None:
+        """'sha256:<hex>' y el hex pelado se normalizan; malformado/ausente → '' (TOFU)."""
+        hex64 = "5c9bbb49f71402fa8fd5936df6eefa40a8f0bcb4c623ebceeb478a1e14447c11"
+        assert tools_installer._parse_github_digest(f"sha256:{hex64}") == hex64
+        assert tools_installer._parse_github_digest(hex64) == hex64
+        assert tools_installer._parse_github_digest("sha256:zz" + "0" * 62) == ""
+        assert tools_installer._parse_github_digest("sha256:abc") == ""
+        assert tools_installer._parse_github_digest("") == ""
+        assert tools_installer._parse_github_digest(None) == ""
+        assert tools_installer._parse_github_digest(123) == ""
+
+    async def test_download_asset_digest_mismatch_aborta_y_borra(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """El digest de la API (vía expected_sha256) es vinculante: mismatch → abort + borrado."""
+        payload = b"contenido-de-prueba"
+        asset = ReleaseAsset(
+            name="x.zip",
+            size=len(payload),
+            download_url="https://api.github.com/x",
+            browser_download_url="https://github.com/x",
+        )
+
+        async def _iter_chunks(size: int):
+            yield payload
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.release = MagicMock()
+        resp.content = MagicMock()
+        resp.content.iter_chunked = _iter_chunks
+        installer._gateway.request = AsyncMock(return_value=resp)  # type: ignore[method-assign]
+
+        dest_dir = tmp_path / "dest"
+        with pytest.raises(ToolInstallError, match="SHA-256"):
+            await installer._download_asset(
+                MagicMock(spec=aiohttp.ClientSession),
+                asset,
+                dest_dir,
+                expected_sha256="0" * 64,
+            )
+        assert not (dest_dir / asset.name).exists()
+
+    async def test_download_asset_digest_correcto_instala(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Digest correcto: la descarga procede y el archivo queda en disco."""
+        payload = b"contenido-de-prueba"
+        asset = ReleaseAsset(
+            name="x.zip",
+            size=len(payload),
+            download_url="https://api.github.com/x",
+            browser_download_url="https://github.com/x",
+        )
+
+        async def _iter_chunks(size: int):
+            yield payload
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.release = MagicMock()
+        resp.content = MagicMock()
+        resp.content.iter_chunked = _iter_chunks
+        installer._gateway.request = AsyncMock(return_value=resp)  # type: ignore[method-assign]
+
+        dest_dir = tmp_path / "dest"
+        dest = await installer._download_asset(
+            MagicMock(spec=aiohttp.ClientSession),
+            asset,
+            dest_dir,
+            expected_sha256=hashlib.sha256(payload).hexdigest(),
+        )
+        assert dest.read_bytes() == payload
+
+    async def test_techo_de_bytes_aborta_durante_streaming_y_borra(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Un cuerpo mayor al size declarado aborta a mitad de la descarga y borra el parcial."""
+        asset = ReleaseAsset(
+            name="gordo.zip",
+            size=10,
+            download_url="https://api.github.com/x",
+            browser_download_url="https://github.com/x",
+        )
+
+        async def _iter_chunks(size: int):
+            yield b"x" * 100
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.release = MagicMock()
+        resp.content = MagicMock()
+        resp.content.iter_chunked = _iter_chunks
+        installer._gateway.request = AsyncMock(return_value=resp)  # type: ignore[method-assign]
+
+        dest_dir = tmp_path / "dest"
+        with pytest.raises(ToolInstallError, match="excede"):
+            await installer._download_asset(MagicMock(spec=aiohttp.ClientSession), asset, dest_dir)
+        assert not (dest_dir / asset.name).exists()
+
+    def test_verify_mod_payload_requiere_dirs_relativos(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """required_rel es vinculante: sin el dir, abort con su nombre; con él, pasa."""
+        mod_dir = tmp_path / "mod"
+        (mod_dir / "SKSE" / "Plugins").mkdir(parents=True)
+        (mod_dir / "SKSE" / "Plugins" / "CommunityShaders.dll").write_text("x", encoding="utf-8")
+
+        with pytest.raises(ToolInstallError, match="Shaders"):
+            installer._verify_mod_payload(mod_dir, "Mod", "CommunityShaders.dll", required_rel=("Shaders",))
+
+        (mod_dir / "Shaders").mkdir()
+        installer._verify_mod_payload(mod_dir, "Mod", "CommunityShaders.dll", required_rel=("Shaders",))
+
+    def test_write_mod_meta_ini_comment_deja_de_mentir(self, tmp_path: pathlib.Path) -> None:
+        """Default genérico sin 'precache'; comment explícito lo reemplaza."""
+        mod_dir = tmp_path / "mod"
+        mod_dir.mkdir()
+
+        tools_installer._write_mod_meta_ini(mod_dir, "Mod", "1.0")
+        default = (mod_dir / "meta.ini").read_text(encoding="utf-8")
+        assert "Instalado por Sky-Claw." in default
+        assert "precache" not in default.lower()
+
+        tools_installer._write_mod_meta_ini(
+            mod_dir, "Mod", "1.0", comment="Instalado por Sky-Claw (Community Shaders)."
+        )
+        custom = (mod_dir / "meta.ini").read_text(encoding="utf-8")
+        assert "Community Shaders" in custom

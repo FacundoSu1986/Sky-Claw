@@ -462,6 +462,80 @@ class TestGetDownloadUrl:
 
 class TestDownload:
     @pytest.mark.asyncio
+    async def test_url_con_espacios_y_parentesis_se_encoda_antes_del_gateway(self, tmp_path: pathlib.Path) -> None:
+        """El CDN de Nexus sirve el file_name crudo (espacios, paréntesis) en la URL.
+
+        ``NetworkGateway`` rechaza URLs con whitespace a propósito (defensa contra
+        header injection): el cliente debe URL-encodear antes de mandarla. Cazado
+        en el smoke E2E premium (blueprint Fase 5): con key sin premium la ruta
+        nunca llegaba al CDN (FREE_FALLBACK) y los mocks usaban URLs limpias.
+        """
+        content = b"payload real"
+        resp = _make_aiohttp_response(content=content)
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway)
+        fi = _make_file_info(
+            file_name="All in one (all game versions)-32444-11-1770897704.zip",
+            size_bytes=len(content),
+            md5="",
+            download_url=(
+                "https://cf-files.nexusmods.com/cdn/1704/32444/"
+                "All in one (all game versions)-32444-11-1770897704.zip"
+                "?expires=1786070177&md5=m_CiEYt07OgtSFtHOQdvsw&user_id=207416661"
+            ),
+        )
+
+        dest = await d.download(fi, session)
+
+        assert dest.exists()
+        url_enviada = gateway.request.await_args.args[1]
+        assert " " not in url_enviada, url_enviada
+        assert "(" not in url_enviada, url_enviada
+        assert "%20" in url_enviada
+        assert "%28" in url_enviada
+        # Los parámetros de query sobreviven intactos (sin doble-encode).
+        assert "expires=1786070177" in url_enviada
+        assert "md5=m_CiEYt07OgtSFtHOQdvsw" in url_enviada
+        assert urlparse(url_enviada).hostname == "cf-files.nexusmods.com"
+
+    @pytest.mark.asyncio
+    async def test_url_con_porcentaje_en_filename_se_encoda_y_query_intacta(self, tmp_path: pathlib.Path) -> None:
+        """El % literal del filename (válido en Windows, caso real del smoke) se
+        percent-encodes en el path; la query de firma del CDN sobrevive intacta.
+
+        Límite documentado: '# ' y '?' son separadores de fragment/query para
+        urlsplit — una URL del CDN con esos caracteres crudos en el path sería
+        malformada DE ORIGEN (el CDN debe encodearlos al generarla); no se
+        intenta reparar URLs rotas del servidor.
+        """
+        content = b"payload real"
+        resp = _make_aiohttp_response(content=content)
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway)
+        fi = _make_file_info(
+            file_name="100% Armor (v2)-42-1-0.zip",
+            size_bytes=len(content),
+            md5="",
+            download_url=(
+                "https://cf-files.nexusmods.com/cdn/1704/42/100% Armor (v2)-42-1-0.zip?expires=1786070177&md5=abc123"
+            ),
+        )
+
+        dest = await d.download(fi, session)
+
+        assert dest.exists()
+        url_enviada = gateway.request.await_args.args[1]
+        assert "%25" in url_enviada, f"el % literal debe encodearse: {url_enviada}"
+        assert "%28" in url_enviada, f"el ( debe encodearse: {url_enviada}"
+        # La query sobrevive byte a byte.
+        assert "?expires=1786070177&md5=abc123" in url_enviada, url_enviada
+        assert url_enviada.count("?") == 1, f"un solo ? (el del query): {url_enviada}"
+
+    @pytest.mark.asyncio
     async def test_successful_download_no_md5(self, tmp_path: pathlib.Path) -> None:
         content = b"hello world data"
         resp = _make_aiohttp_response(content=content)

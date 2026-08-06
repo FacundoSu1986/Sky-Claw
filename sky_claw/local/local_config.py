@@ -54,6 +54,9 @@ class LocalConfig:
     # Nombres de los mods MO2 instalados por ensure_ngio (NGIO no tiene exe;
     # el orquestador los necesita para add_mod_to_modlist).
     ngio_mods: list[str] | None = None
+    # Nombres de los mods MO2 instalados por ensure_community_shaders
+    # (Address Library, SSE Engine Fixes, Community Shaders) — mismo contrato.
+    community_shaders_mods: list[str] | None = None
     api_key_b64: str | None = None  # Legacy base64
     nexus_api_key_b64: str | None = None  # Legacy base64
     telegram_bot_token_b64: str | None = None  # Legacy base64
@@ -154,6 +157,7 @@ def load(path: pathlib.Path = _DEFAULT_PATH) -> LocalConfig:
             pandora_exe=data.get("pandora_exe"),
             bodyslide_exe=data.get("bodyslide_exe"),
             ngio_mods=data.get("ngio_mods"),
+            community_shaders_mods=data.get("community_shaders_mods"),
             first_run=data.get("first_run", True),
         )
     except (json.JSONDecodeError, OSError) as exc:

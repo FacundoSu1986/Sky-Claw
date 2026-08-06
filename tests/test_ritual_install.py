@@ -48,10 +48,19 @@ class _FakeInstallResult:
 class _FakeInstaller:
     """Installer doble: registra qué ensure_* se llamó y devuelve/lanza lo configurado."""
 
-    def __init__(self, *, exe_path: str = "C:/Modding/LOOT/loot.exe", error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        exe_path: str = "C:/Modding/LOOT/loot.exe",
+        error: Exception | None = None,
+        cs_result: list | None = None,
+    ) -> None:
         self.calls: list[tuple[str, object, object]] = []
         self._exe_path = exe_path
         self._error = error
+        self._cs_result = cs_result or []
+        self.cs_kwargs: dict[str, object] | None = None
+        self.cs_downloader: object = None
 
     async def _ensure(self, name: str, install_dir: object, session: object) -> _FakeInstallResult:
         self.calls.append((name, install_dir, session))
@@ -71,23 +80,47 @@ class _FakeInstaller:
     async def ensure_skse(self, install_dir: object, session: object) -> _FakeInstallResult:
         return await self._ensure("ensure_skse", install_dir, session)
 
+    async def ensure_community_shaders(
+        self, mods_dir: object, session: object, downloader: object = None, **kwargs: object
+    ) -> list:
+        self.calls.append(("ensure_community_shaders", mods_dir, session))
+        self.cs_downloader = downloader
+        self.cs_kwargs = kwargs
+        if self._error is not None:
+            raise self._error
+        return self._cs_result
+
 
 class _FakeAppContext:
-    def __init__(self, installer: object, *, install_dir: object = "C:/Modding", session: object = "sess") -> None:
+    def __init__(
+        self,
+        installer: object,
+        *,
+        install_dir: object = "C:/Modding",
+        session: object = "sess",
+        network: object = None,
+        config_path: object = None,
+    ) -> None:
         self.tools_installer = installer
         self.install_dir = install_dir
         self.session = session
+        self.network = network
+        self.config_path = config_path
 
 
 # ── Ritual → installer mapping ──────────────────────────────────────────────────
 def test_ritual_installer_map_congela_las_tools_autoinstalables() -> None:
     # Wrye Bash y DynDOLOD siguen afuera (no están en GitHub releases). SKSE entra
     # por su propio origen oficial (skse.silverlock.org), habilitado en ALLOWED_HOSTS.
+    # Community Shaders entra con su rama propia (firma ≠ ensure(install_dir, session)):
+    # ver `run_ritual_install` — si la rama desaparece sin tocar este mapa, el botón
+    # "Instalar" de la tarjeta degrada a "no tiene instalación automática" (ancla).
     assert RITUAL_INSTALLER_MAP == {
         "loot": "ensure_loot",
         "xedit": "ensure_xedit",
         "pandora": "ensure_pandora",
         "skse": "ensure_skse",
+        "community_shaders": "ensure_community_shaders",
     }
 
 
@@ -98,11 +131,15 @@ def test_skse_es_gui_only_y_no_lo_alcanza_el_agente_llm() -> None:
     modelo. Se afirma por igualdad literal sobre el set de tools que ``setup_tools``
     despacha: agregar una rama nueva ahí rompe el ancla, que es exactamente el aviso
     que hace falta cuando la rama nueva es una mutación.
+
+    ``community_shaders`` SÍ entra en el set a propósito: es la clase NGIO (mods de
+    MO2 con gates de host), no la clase SKSE (ejecutables en el juego). No es un
+    olvido — el recorte de SKSE sigue siendo exclusivo de SKSE.
     """
     fuente = inspect.getsource(external_tools.setup_tools)
     despachadas = set(re.findall(r'tool_name_lower == "(\w+)"', fuente))
 
-    assert despachadas == {"loot", "xedit", "pandora", "bodyslide", "ngio"}
+    assert despachadas == {"loot", "xedit", "pandora", "bodyslide", "ngio", "community_shaders"}
     assert "skse" not in despachadas
     # …y sí está del lado de la GUI, para que el recorte sea una decisión visible y no
     # un olvido que deja la feature inalcanzable desde ambas superficies.
@@ -289,3 +326,103 @@ async def test_bridge_parks_download_modal_and_never_auto_approves() -> None:
             "owner_tab": None,
         }
     ]
+
+
+# ── run_ritual_install: rama community_shaders ──────────────────────────────────
+async def test_install_community_shaders_usa_mo2_y_juego_del_snapshot() -> None:
+    """La rama GUI de CS resuelve mo2_root/mods + juego del snapshot y despacha con kwargs.
+
+    `ensure_community_shaders` NO tiene la firma ensure(install_dir, session): recibe
+    mods/ (bajo mo2_root), el NexusDownloader de app_context y edition/game_version/
+    game_dir del snapshot — la misma fuente que decidió mostrar la tarjeta.
+    """
+    from sky_claw.app.gui.views.forge_dashboard import STORE_KEY_ENV
+    from sky_claw.local.discovery.environment import EnvironmentSnapshot, MO2Info, SkyrimEdition, SkyrimInfo
+    from sky_claw.local.tools_installer import ModInstallResult
+
+    mo2_root = pathlib.Path("D:/Modding/MO2")
+    game_path = pathlib.Path("D:/Steam/steamapps/common/Skyrim Special Edition")
+    store = ReactiveStore()
+    store.set(
+        STORE_KEY_ENV,
+        EnvironmentSnapshot(
+            skyrim=SkyrimInfo(path=game_path, exe_name="SkyrimSE.exe", edition=SkyrimEdition.AE, version="1.6.1170"),
+            mo2=MO2Info(path=mo2_root, profiles=["Default"]),
+        ),
+    )
+    mods = [
+        ModInstallResult(
+            mod_name="Community Shaders",
+            mod_dir=mo2_root / "mods" / "Community Shaders",
+            version="v1.8.2",
+            already_existed=False,
+        )
+    ]
+    installer = _FakeInstaller(cs_result=mods)
+    from types import SimpleNamespace
+
+    ctx = _FakeAppContext(installer, network=SimpleNamespace(downloader="dl"))
+
+    await run_ritual_install("community_shaders", app_context=ctx, store=store)
+
+    assert installer.calls == [("ensure_community_shaders", mo2_root / "mods", "sess")]
+    assert installer.cs_downloader == "dl"
+    assert installer.cs_kwargs is not None
+    assert installer.cs_kwargs["edition"] is SkyrimEdition.AE
+    assert installer.cs_kwargs["game_version"] == "1.6.1170"
+    assert installer.cs_kwargs["game_dir"] == game_path
+    fb = store.get("ritual_feedback")
+    assert fb is not None and fb["type"] == "positive"
+    assert "Community Shaders" in fb["text"]
+    assert not store.get("ritual_in_flight")
+
+
+async def test_install_community_shaders_persiste_mods_en_config(tmp_path: pathlib.Path) -> None:
+    """La GUI persiste community_shaders_mods (contrato NGIO: el orquestador activa)."""
+    from sky_claw.app.gui.views.forge_dashboard import STORE_KEY_ENV
+    from sky_claw.local.discovery.environment import EnvironmentSnapshot, MO2Info, SkyrimEdition, SkyrimInfo
+    from sky_claw.local.local_config import load
+    from sky_claw.local.tools_installer import ModInstallResult
+
+    mo2_root = tmp_path / "MO2"
+    game_path = tmp_path / "Skyrim"
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    store = ReactiveStore()
+    store.set(
+        STORE_KEY_ENV,
+        EnvironmentSnapshot(
+            skyrim=SkyrimInfo(path=game_path, exe_name="SkyrimSE.exe", edition=SkyrimEdition.SE, version="1.5.97"),
+            mo2=MO2Info(path=mo2_root, profiles=["Default"]),
+        ),
+    )
+    mods = [
+        ModInstallResult(
+            mod_name="Address Library for SKSE Plugins",
+            mod_dir=mo2_root / "mods" / "Address Library for SKSE Plugins",
+            version="v11",
+            already_existed=False,
+        )
+    ]
+    installer = _FakeInstaller(cs_result=mods)
+    ctx = _FakeAppContext(installer, config_path=config_path)
+
+    await run_ritual_install("community_shaders", app_context=ctx, store=store)
+
+    persistido = load(config_path)
+    assert persistido.community_shaders_mods == ["Address Library for SKSE Plugins"]
+
+
+async def test_install_community_shaders_sin_mo2_devuelve_feedback_negativo() -> None:
+    """Sin MO2 en el snapshot la rama corta antes de tocar el installer (misma
+    fuente que la tarjeta: un sentinel sin mo2_root no se puede resolver)."""
+    store = ReactiveStore()  # sin STORE_KEY_ENV → snapshot None
+    installer = _FakeInstaller()
+    ctx = _FakeAppContext(installer)
+
+    await run_ritual_install("community_shaders", app_context=ctx, store=store)
+
+    assert installer.calls == []
+    fb = store.get("ritual_feedback")
+    assert fb is not None and fb["type"] == "negative"
+    assert "Mod Organizer" in fb["text"]

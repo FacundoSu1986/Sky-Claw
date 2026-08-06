@@ -7,6 +7,7 @@ import pathlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import aiofiles
 import aiohttp
@@ -218,6 +219,10 @@ class NexusDownloader:
                     # F5b: gateway.request() re-autoriza cada redirect y elimina la
                     # apikey en saltos cross-host (session.get crudo no hacía ninguna
                     # de las dos).
+                    # REGLA DE SEGURIDAD (auditoría del blueprint CS): la apikey vive
+                    # en headers (`request_info.headers` de aiohttp). NUNCA loguear
+                    # ni incluir `request_info`/`exc.headers` en mensajes de error de
+                    # esta capa — los DownloadError de abajo son genéricos a propósito.
                     resp = await self._gateway.request("GET", files_url, session, headers=headers, timeout=meta_timeout)
                     try:
                         if resp.status in (401, 403):
@@ -373,9 +378,26 @@ class NexusDownloader:
                 # F5b: la descarga del CDN también va por el gateway. authorize()
                 # ocurre dentro de request() (hop 0); un redirect a un host no
                 # permitido se corta y la apikey no viaja a otro host.
-                resp = await self._gateway.request(
-                    "GET", file_info.download_url, session, headers=headers, timeout=timeout
+                #
+                # El CDN sirve el file_name crudo en la URL (espacios, paréntesis)
+                # — p.ej. "All in one (all game versions)-32444-....zip". El
+                # gateway rechaza whitespace a propósito (defensa contra header
+                # injection), así que el cliente percent-encodes ANTES de mandarla.
+                # Se encodea SOLO el path (urlsplit/urlunsplit): la query queda
+                # intacta (firma/expiración del CDN) y caracteres como "%", "?",
+                # "#" o "&" dentro del filename no pueden romper ni la URL ni el
+                # query — un safe-set parcial dejaría esos huecos abiertos.
+                partes = urlsplit(file_info.download_url)
+                cdn_url = urlunsplit(
+                    (
+                        partes.scheme,
+                        partes.netloc,
+                        quote(partes.path, safe="/"),
+                        partes.query,
+                        partes.fragment,
+                    )
                 )
+                resp = await self._gateway.request("GET", cdn_url, session, headers=headers, timeout=timeout)
                 try:
                     async with resp:
                         resp.raise_for_status()
