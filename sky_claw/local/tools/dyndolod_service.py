@@ -308,11 +308,23 @@ class DynDOLODPipelineService:
         juego: un verde sobre una configuración inválida, que recién fallaba
         después en ``DynDOLODConfig.__post_init__`` (review adversarial #441). Si
         ni el tope existe, no hay nada honesto que sondear: ``None``.
+
+        **El tope se RESUELVE antes de comparar, y la comparación es de
+        pertenencia, no de igualdad.** ``ruta`` viene de
+        ``dyndolod_output_target``, que construye sobre ``game.resolve()``,
+        mientras que el tope llega crudo del path resolver; ``Path.__eq__`` es
+        léxico, así que un ``..`` o un junction en la ruta configurada hacía que
+        el tope no fuera nunca ancestro literal de la raíz y el corte no
+        disparara — el ascenso seguía hasta el volumen, que es justo lo que este
+        parámetro vino a impedir (segunda review adversarial, PR #441).
+        ``is_relative_to`` corta al SALIR del árbol del juego, sin depender de
+        acertar el eslabón exacto.
         """
+        tope_resuelto = tope.resolve() if tope is not None else None
         for padre in ruta.parents:
             if padre.exists():
                 return padre
-            if tope is not None and padre == tope:
+            if tope_resuelto is not None and not padre.is_relative_to(tope_resuelto):
                 return None
         return None
 

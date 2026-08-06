@@ -290,7 +290,11 @@ def test_preflight_no_sondea_fuera_del_juego_si_el_game_path_no_existe(tmp_path:
     del volumen: el preflight sondeaba —y aprobaba— un directorio ajeno al juego,
     dando verde sobre una configuración inválida que recién fallaba después.
     """
-    game = tmp_path / "no-montado" / "Skyrim"  # no existe
+    # Con ``..`` en la ruta A PROPÓSITO: `root` se construye sobre
+    # `game.resolve()` y `Path.__eq__` es léxico, así que un tope crudo no era
+    # ancestro literal de la raíz y el corte no disparaba nunca (review
+    # adversarial #441). El repo configura rutas así en sus propios tests.
+    game = tmp_path / "segmento" / ".." / "no-montado" / "Skyrim"  # no existe
     mo2 = tmp_path / "mo2"
     (mo2 / "mods").mkdir(parents=True)
     exe_dir = tmp_path / "dyndolod"
