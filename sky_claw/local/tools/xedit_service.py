@@ -38,7 +38,7 @@ from sky_claw.local.xedit.patch_orchestrator import (
     PatchStrategyType,
 )
 from sky_claw.local.xedit.record_dump_parser import RecordDump, normalize_form_id, parse_dump_output
-from sky_claw.local.xedit.runner import ScriptExecutionResult, XEditError, XEditRunner
+from sky_claw.local.xedit.runner import ScriptExecutionResult, XEditError, XEditRunner, XEditWriteError
 
 if TYPE_CHECKING:
     from sky_claw.app.core.path_resolver import PathResolutionService
@@ -337,25 +337,37 @@ class XEditPipelineService:
                         requires_hitl=False,
                     )
 
+                    # ``execute_patch()`` levanta ``XEditWriteError`` SIEMPRE que
+                    # ``not script_result.success`` — nunca retorna un resultado
+                    # fallido (ver su docstring). Así que si esta línea vuelve sin
+                    # excepción, ``script_result.success`` ya es ``True`` por
+                    # construcción; el ``PatchResult`` de abajo no puede salir con
+                    # ``success=False`` por esta rama. El desenlace de fallo real
+                    # —incluido "exit 0 con errores parseados"— se maneja en el
+                    # ``except XEditWriteError`` de más abajo, que recibe el
+                    # ``ScriptExecutionResult`` adjunto a la excepción (review
+                    # CodeRabbit, PR #439: la versión anterior de este bloque
+                    # recomputaba ``success`` acá creyendo que era alcanzable con
+                    # ``False``, y nunca lo era en producción).
                     script_result: ScriptExecutionResult = await self._xedit_runner.execute_patch(plan)
                     result = PatchResult(
-                        success=script_result.exit_code == 0,
+                        success=True,
                         output_path=result.output_path,
                         records_patched=script_result.records_processed,
                         conflicts_resolved=len(report.plugin_pairs),
                         xedit_exit_code=script_result.exit_code,
                         warnings=tuple(script_result.warnings),
-                        error=(None if script_result.exit_code == 0 else script_result.stderr),
+                        error=None,
                         strategy_type=strategy_type,
                     )
 
                 # Lanzar DENTRO del context manager para activar rollback automático
                 if result is not None and not result.success:
-                    if ai_assisted:
-                        # El advisor no ejecuta xEdit: el exit code -1 sintético
-                        # solo ensuciaría el mensaje accionable.
-                        raise PatchingError(result.error or "El advisor de IA no pudo producir recomendaciones.")
-                    raise PatchingError(f"xEdit falló con código {result.xedit_exit_code}: {result.error}")
+                    # Sólo alcanzable por el advisor AI-assisted: la rama de xEdit
+                    # real ya no puede llegar acá con ``success=False`` (ver el
+                    # comentario del ``elif`` de arriba); su fallo se maneja en
+                    # ``except XEditWriteError``.
+                    raise PatchingError(result.error or "El advisor de IA no pudo producir recomendaciones.")
 
             # Normal exit — lock context exited without error. El commit del
             # journal es best-effort (el patch ya mutó): un fallo puntual de
@@ -385,13 +397,68 @@ class XEditPipelineService:
                 error=f"Manifiesto de vuelo requerido no emitido: {exc}",
             )
 
+        except XEditWriteError as exc:
+            # ``execute_patch()`` levanta acá SIEMPRE que el script falla —incluido
+            # exit 0 con errores parseados, el caso que ``PatchResult.success``
+            # nunca puede reflejar dentro del ``elif`` de arriba (ver su
+            # comentario). Este es el ÚNICO punto donde se distingue "xEdit salió
+            # con código real distinto de 0" de "xEdit salió 0 pero el script
+            # reportó fallas" — sin nombrar cuál de las dos, "xEdit falló con
+            # código 0" se lee como un bug del repo en vez de un desenlace real.
+            rolled_back = bool(tx_lock and tx_lock.rollback_completed)
+            if tx_id is not None and rolled_back:
+                # Best-effort: un fallo del journal ACÁ no puede reemplazar el
+                # fallo real de xEdit ni romper el contrato de dict serializable
+                # (T11) — mismo defecto que el hermano ``except PatchingError``
+                # de abajo, ambos corregidos juntos (review CodeRabbit, PR #439).
+                await self._mark_journal_rolled_back(tx_id)
+            elif tx_id is not None:
+                logger.critical(
+                    "Rollback xEdit incompleto para TX %d; se mantiene pendiente para recuperación manual.",
+                    tx_id,
+                )
+            script_result = exc.result
+            xedit_exit_code = script_result.exit_code if script_result is not None else -1
+            if script_result is not None and xedit_exit_code == 0:
+                # Los errores parseados van PRIMERO: con exit 0 el ``stderr`` puede
+                # venir vacío, y sin ellos el mensaje caería a "error desconocido"
+                # (``tool_result.py``).
+                detalle = "; ".join(script_result.errors) or script_result.stderr or script_result.stdout
+                mensaje = (
+                    f"xEdit salió con código 0 pero reportó errores en su salida; el parche no es confiable: {detalle}"
+                )
+            elif script_result is not None:
+                # Mismo orden de prioridad que la rama de arriba: con un exit
+                # code real pero SIN errores parseados, ``str(exc)`` es sólo
+                # "Patch execution failed: []" — sin stderr/stdout el caller se
+                # queda sin el diagnóstico real (review CodeRabbit, PR #439).
+                detalle = "; ".join(script_result.errors) or script_result.stderr or script_result.stdout or str(exc)
+                mensaje = f"xEdit falló con código {xedit_exit_code}: {detalle}"
+            else:
+                mensaje = str(exc)
+            logger.error("Parcheo xEdit falló: %s", mensaje)
+            result = PatchResult(
+                success=False,
+                output_path=None,
+                records_patched=0,
+                conflicts_resolved=0,
+                xedit_exit_code=xedit_exit_code,
+                warnings=tuple(script_result.warnings) if script_result is not None else (),
+                error=mensaje,
+            )
+
         except PatchingError as exc:
             # __aexit__ ya intentó restaurar el snapshot. M-7: reportar el
             # resultado REAL — rollback_completed es False si el restore falló
             # silenciosamente, dejando los masters en estado parcial.
             rolled_back = bool(tx_lock and tx_lock.rollback_completed)
             if tx_id is not None and rolled_back:
-                await self._journal.mark_transaction_rolled_back(tx_id)
+                # Best-effort (review CodeRabbit, PR #439): sin el helper, un
+                # fallo del journal ACÁ escapa el ``except`` entero — ninguno de
+                # los handlers hermanos lo captura, así que ``execute_patch()``
+                # termina con una excepción sin manejar en vez del dict que
+                # T11 exige, y el caller nunca ve el fallo REAL de xEdit.
+                await self._mark_journal_rolled_back(tx_id)
             elif tx_id is not None:
                 logger.critical(
                     "Rollback xEdit incompleto para TX %d; se mantiene pendiente para recuperación manual.",

@@ -395,15 +395,24 @@ class PandoraPipelineService:
 
         Contrato compartido (deuda #5): ``message`` canónico junto a los campos
         estructurados; en éxito queda vacío (el consumidor arma su copy).
+
+        El ``message`` lo arma el RUNNER y acá sólo se propaga. Derivarlo de
+        ``stderr or stdout`` era el defecto: Pandora es una app GUI y puede no
+        escribir a ninguno de los dos, así que un fallo salía con ``message=""``
+        y ``normalize_tool_result`` caía a "error desconocido" — el único texto
+        que ``AGENTS.md`` declara reservado a su fallback. El runner tiene la
+        causa real porque es quien lee ``Engine.log``. Se conserva el fallback a
+        stderr/stdout para el caso en que el runner no la haya podido armar.
         """
         return {
             "status": "success" if result.success else "error",
             "success": result.success,
-            "message": "" if result.success else (result.stderr or result.stdout or ""),
+            "message": "" if result.success else (result.message or result.stderr or result.stdout or ""),
             "return_code": result.return_code,
             "stdout": result.stdout,
             "stderr": result.stderr,
             "duration_seconds": result.duration_seconds,
+            "warnings": list(result.warnings),
         }
 
     def _ensure_runner(self) -> PandoraRunner:

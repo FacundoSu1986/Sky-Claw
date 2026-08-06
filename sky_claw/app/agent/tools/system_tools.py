@@ -524,6 +524,13 @@ async def run_pandora(
         detail = sanitize_for_prompt(str(exc))
         return json.dumps({"success": False, "message": detail, "error": detail})
     raw_message = str(res.get("message", ""))
+    # ``warnings`` es texto crudo de ``Engine.log`` (nombres de mods/nodos
+    # controlados por el autor del mod que generó el log) — mismo origen no
+    # confiable que ``message``/``stdout``/``stderr``, saneado con el mismo
+    # criterio. Sin esto un mod malicioso podría inyectar instrucciones para el
+    # LLM vía una línea ``WARN`` (hallazgo qodo, PR #439: el campo se agregó en
+    # el mismo PR que sí saneó ``message`` y quedó afuera).
+    warnings_crudos = res.get("warnings")
     out: dict[str, Any] = {
         "success": res.get("success", False),
         "message": sanitize_for_prompt(raw_message) if raw_message else "",
@@ -531,6 +538,9 @@ async def run_pandora(
         "stdout": sanitize_for_prompt(str(res.get("stdout", ""))) if res.get("stdout") else "",
         "stderr": sanitize_for_prompt(str(res.get("stderr", ""))) if res.get("stderr") else "",
         "duration_seconds": res.get("duration_seconds", 0.0),
+        "warnings": (
+            [sanitize_for_prompt(str(w)) for w in warnings_crudos] if isinstance(warnings_crudos, list) else []
+        ),
     }
     if not out["success"] and res.get("logs"):
         out["error"] = sanitize_for_prompt(str(res["logs"]))

@@ -41,7 +41,7 @@ confirmarlo contra código y tests.
 | U-03 | Cerrado | #356 | — | tests de reconciliación de precache |
 | U-04 | Parcial | #397, #399, salida administrada de Pandora y subárbol administrado por grupo de BodySlide | Smoke real de rollback de Pandora | `test_rollback_salida.py`, `test_pandora_service.py`, `test_bodyslide_lock.py` y humano |
 | U-05 | Cerrado | #354 | — | `test_vramr_service.py` |
-| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide; post-check por LOG de DynDOLOD/TexGen (binarios GUI sin stdout: el exit code ya no alcanza) | Post-check de Wrye Bash; criterio seguro para QuickAutoClean | tests de cada runner, `test_bodyslide_postcheck_artefacto.py`, `test_dyndolod_service.py` (post-check por log) |
+| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide; veredicto por `Engine.log` de Pandora; post-check por LOG de DynDOLOD/TexGen (binarios GUI sin stdout: el exit code ya no alcanza) | Post-check de Wrye Bash; criterio seguro para QuickAutoClean | tests de cada runner, `test_bodyslide_postcheck_artefacto.py`, `test_pandora_runner.py`, `test_dyndolod_service.py` (post-check por log) |
 | U-07 | Cerrado | #355 | — | tests de Job Object de DynDOLOD |
 | U-08 | Cerrado | #378 y reconciliador de arranque | — | `test_rollback_reconciler.py` |
 | U-09 | Cerrado | #376 | — | tests del journal de grass |
@@ -62,7 +62,8 @@ confirmarlo contra código y tests.
 | Borrado recursivo | Cerrado | #405 y #416 | — | `test_borrado_recursivo.py` |
 | Medición de árboles | Cerrado | #416 | — | `test_borrado_recursivo.py` |
 | Fugas de lifecycle en tests | Cerrado | #408, #409 y #415 | — | `test_atribucion_de_warnings.py`, `test_project_config.py` |
-| Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash, DynDOLOD, xEdit | Verificar contra fuente Synthesis, MO2 y VRAMr | `test_contrato_argumentos_cli.py` |
+| Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash, DynDOLOD, xEdit | Verificar contra fuente Synthesis, MO2 y VRAMr; re-verificar Pandora contra el binario 4.3.1-beta pinneado (el README de `main` puede no describirlo) | `test_contrato_argumentos_cli.py` |
+| Contrato de veredicto de éxito | Parcial | Veredicto por `Engine.log` de Pandora; cruce con errores parseados en el call site de xEdit; ancla que enumera | Verificar contra rig real qué severidad usa Pandora para la reversión de un nodo inválido — ver nota abajo | `test_contrato_veredicto_de_exito.py` (inventario congelado en vacío), `test_pandora_runner.py`, `test_xedit_service.py` |
 | Etapa 6 (Wrye Bash) sin build headless | Abierto | — | Decidir entre etapa asistida o retirarla del dispatcher | `test_contrato_argumentos_cli.py`; humano; auditoría 2026-08-04 |
 | Orden de masters sin validar | Cerrado | `master_order.py`, cableado en Wrye Bash / Synthesis / DynDOLOD | — | `test_master_order.py` (ancla de cableado); auditoría 2026-08-04 (V-7) |
 | Segundo parser TES4 sin gate | Cerrado | `test_tes4_parser_invariant.py` | — | auditoría 2026-08-04 |
@@ -142,6 +143,90 @@ con el defecto ya cerrado:
   successful run": en una instalación sin corrida previa exitosa no hay caché, y no
   está verificado en rig real qué hace el motor en ese caso. Es el escenario que
   cubriría el smoke pendiente de U-04.
+- **Sintaxis CLI de Pandora y soporte por versión: sin verificar.** El vector
+  actual está verificado contra el README de la rama `main` del repositorio
+  upstream, pero el repo pinnea el binario **4.3.1-beta**, que es otra cosa. La
+  wiki de STEP documenta una sintaxis **distinta** para el mismo motor
+  (`-autorun`, `-autoclose`, `-tesv:{path}`: guion simple y dos puntos en vez de
+  `--auto_run`/`--tesv <ruta>`) y afirma además que *"command line arguments are
+  not supported on newer Pandora versions"*. No fue posible verificarlo desde el
+  entorno de desarrollo (403 tanto en STEP como en la API de GitHub). Si la
+  afirmación fuera cierta, la automatización degrada **en silencio**: Pandora
+  abriría la GUI y esperaría, hasta el timeout de 300 s y el rollback
+  consiguiente, sin ninguna señal de que la causa fue el vector de argumentos.
+- **Severidad exacta de la reversión de un nodo inválido: sin verificar.** El
+  veredicto de `pandora_runner.py` (contrato de veredicto de éxito) hace fallar
+  la corrida ante `ERROR`/`FATAL` en `Engine.log`, dejando `WARN` afuera a
+  propósito. La lectura más literal de la definición del README para `ERROR`
+  (*"prevented [this] work from completing"*) es justamente la reversión de un
+  nodo —el motor no completó ESE nodo— así que bajo esa lectura el veredicto SÍ
+  cierra el escenario que lo motiva (mods de animación descartados en
+  silencio). Pero ninguna fuente cita explícitamente qué severidad usa la
+  reversión, y si resultara ser `WARN` en vez de `ERROR`, este fix **no
+  cerraría** el escenario original (hallazgo qodo, PR #439): una corrida que
+  sólo revierte nodos —sin ningún `ERROR`/`FATAL`— seguiría reportando
+  `success=True` con los mods descartados igual. El smoke de rig real (ídem
+  U-04) es lo único que puede confirmarlo; hasta entonces `WARN` se cuenta y se
+  surface en `PandoraResult.warnings`, no decide el veredicto.
+  El mismo smoke de rig de U-04 debería empezar por confirmar qué acepta el
+  binario pinneado.
+- **Ventana de lectura de 8 MiB, sólo el PRIMER tramo del apéndice: cerrado.**
+  `_MAX_BYTES_DE_LECTURA` truncaba el escaneo a un `read()` único desde la
+  marca; una corrida que registrara más de 8 MiB de mensajes `INFO` antes de un `ERROR`
+  final lo perdía en silencio (hallazgo qodo, PR #439, insistido en una
+  segunda ronda con un fix concreto). A diferencia de la severidad de `WARN` o
+  la sintaxis CLI, esto NO dependía de ningún supuesto sobre el binario — era
+  enteramente una limitación de la propia estrategia de lectura, así que se
+  corrigió: `_escanear_severidades` (`pandora_runner.py`) recorre el tramo
+  ENTERO en bloques de `_TAMANO_DE_BLOQUE` (1 MiB) sin cargarlo completo en
+  memoria, cortando siempre en un salto de línea para no partir un match a la
+  mitad. Sólo el RESULTADO retenido queda acotado (`_MAX_LINEAS_REPORTADAS`/
+  `_MAX_BYTES_DE_COLA`), no la entrada escaneada. Test de regresión con >8 MiB
+  de `INFO` antes de un `ERROR`, y de corrección de límite con el corte de
+  bloque cayendo exactamente dentro de la línea que matchea
+  (`test_pandora_runner.py`). La identidad del archivo (inode/device, cerrada
+  en la ronda anterior de este mismo PR) sigue siendo el ejemplo hermano: una
+  propiedad verificable sin depender de ningún supuesto sobre el binario.
+  También cerrados en la misma ronda: el veredicto se combinaba de la
+  PRIMERA candidata que crecía en vez de las DOS (`exe.parent` y `output`),
+  dejando un `ERROR` real en la segunda sin escanear si la primera sólo tenía
+  `INFO`/`WARN`; y una línea sin salto que empieza con `ERROR:` y supera
+  `_MAX_BYTES_DE_LINEA_PENDIENTE` se descartaba sin clasificar.
+- **Truncado IN PLACE (`open(ruta, "w")`), mismo inode: cerrado.** El chequeo
+  de identidad (inode/device) sólo detecta un archivo RECREADO (borrado +
+  creado, o rotado). Un truncado in-place —abrir en modo escritura sin
+  truncar-y-recrear— conserva el MISMO inode en POSIX (verificado
+  experimentalmente), así que ese chequeo no lo veía: si el contenido
+  reescrito crecía más allá de la marca vieja con un `ERROR` en los primeros
+  bytes, el escaneo arrancaba en un offset sin relación con el contenido real
+  (hallazgo qodo, PR #439, quinta ronda). Igual que el resto de esta familia
+  de fixes, no depende de ningún supuesto sobre CÓMO abre Pandora su log —
+  es una propiedad general de cualquier mecanismo de truncado. Cerrado con
+  una huella (`hashlib.sha256`) de una muestra acotada (64 KiB) del contenido
+  justo antes de la marca: si esa ventana cambió entre la medición y la
+  lectura, la candidata queda no atribuible, igual que un cambio de
+  identidad. Test con `open("w")` real (no fabricado) reescribiendo contenido
+  más grande con `ERROR` al principio.
+- **Ambas rutas candidatas de `Engine.log` sin verificar: si las dos están
+  mal, el mecanismo se apaga sin ninguna señal.** El breadcrumb de formato no
+  reconocido (`sky_claw/local/tools/pandora_runner.py`, tarea del contrato de
+  veredicto) sólo se emite cuando ALGUNA candidata existe y creció; si Pandora
+  escribe el log en un tercer lugar (`Data`, `%TEMP%`, AppData), ninguna marca
+  crece nunca y el veredicto cae al exit code en silencio absoluto —el mismo
+  desenlace que el mecanismo tenía antes de este PR, sin regresión, pero
+  tampoco con la mejora que promete (hallazgo qodo, PR #439). No se agregó un
+  warning para "ninguna candidata creció" porque no hay forma de distinguir
+  eso de una corrida sana que simplemente no logueó nada — sin un rig no se
+  sabe si Pandora escribe algo en un run limpio, y advertir en ese caso podría
+  ser ruido en el 100% de las corridas sanas. Confirmar la ruta real es parte
+  del mismo smoke de U-04.
+- **Ubicación de `Engine.log`: asumida, no verificada.** El veredicto por log de
+  Pandora (`pandora_runner._leer_engine_log`) sondea `<dir del exe>/Engine.log` y
+  `<Pandora_Output>/Engine.log`. Ninguna de las dos está confirmada contra una
+  instalación real. La consecuencia de errarle está acotada por diseño —un log
+  que no aparece deja el veredicto en el exit code, o sea el comportamiento
+  previo, nunca un falso rojo—, pero mientras no se confirme, el mecanismo puede
+  estar apagado en producción sin que nada lo indique. Va al smoke de U-04.
 
 ## Decide — recomendación de próximo frente
 
