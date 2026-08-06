@@ -778,6 +778,14 @@ async def test_dyndolod_modo_vr_se_fija_por_config_no_por_ruta(tmp_path: pathlib
         assert inferido._build_xedit_args(None)[0] == "-tes5vr", f"{vr_no_canonico} es una instalación VR"
         assert inferido._modo() == "TES5VR"
 
+    # Y los ambiguos DENTRO del nombre de la carpeta del juego: comparar por
+    # substring sobre el nombre casaba `Skyrim CVR` y `Skyrim VRamDisk Edition`
+    # — el mismo error del substring sobre la ruta, más chico (review #441).
+    for sse_ambiguo in ("Skyrim CVR", "Skyrim VRamDisk Edition", "Skyrim SE - CVR build"):
+        inferido = _runner(tmp_path / f"amb-{sse_ambiguo.replace(' ', '_')}" / sse_ambiguo, None)
+        assert inferido._build_xedit_args(None)[0] == "-sse", f"{sse_ambiguo} no tiene `vr` como token"
+        assert inferido._modo() == "SSE"
+
     for ambiguo in ("CVR", "VRamDisk", "SteamVR"):
         inferido_sse = _runner(tmp_path / ambiguo / "Skyrim Special Edition", None)
         assert inferido_sse._build_xedit_args(None)[0] == "-sse", f"{ambiguo} no es un marcador de VR"

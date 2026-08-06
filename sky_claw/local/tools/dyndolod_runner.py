@@ -193,16 +193,18 @@ class DynDOLODConfig:
         # buscar el log en *_TES5VR_log.txt, así que el post-check se queda sin
         # su evidencia y degrada a artefacto-solo.
         #
-        # Dentro del nombre se piden AMBAS marcas ("skyrim" y "vr"), no la igualdad
-        # con "SkyrimVR": exigir el nombre canónico cambiaba un falso positivo por
-        # un falso NEGATIVO — una instalación VR real en `Skyrim-VR`, `VR Skyrim` o
-        # `Skyrim VR - portable` caía a `sse` en silencio (review adversarial #441).
-        # El "vr" se busca tras descontar "skyrim" para que la propia palabra no lo
-        # aporte. Ante un nombre que no diga ninguna de las dos cosas, el operador
-        # tiene el override explícito `game_mode`.
+        # Se compara por TOKENS, no por substring, y esta distinción se ganó en
+        # tres iteraciones: el substring sobre la ruta entera volcaba a VR un SSE
+        # bajo `C:\VRamDisk\`; exigir el nombre canónico `SkyrimVR` hacía lo
+        # contrario (una instalación VR real en `Skyrim-VR` o `VR Skyrim` caía a
+        # `sse` en silencio); y el substring sobre el NOMBRE seguía casando
+        # `Skyrim CVR` o `Skyrim VRamDisk Edition` — el mismo error, más chico
+        # (reviews adversariales #441). Partiendo por no-alfanuméricos, `vr` tiene
+        # que ser un token ENTERO; `skyrimvr` cubre la forma sin separador. Ante un
+        # nombre que no diga ninguna, el operador tiene el override `game_mode`.
         if self.game_mode is None:
-            carpeta = self.game_path.name.casefold()
-            es_vr = "skyrim" in carpeta and "vr" in carpeta.replace("skyrim", "")
+            tokens = set(re.split(r"[^a-z0-9]+", self.game_path.name.casefold()))
+            es_vr = bool(tokens & {"vr", "skyrimvr"})
             object.__setattr__(self, "game_mode", "tes5vr" if es_vr else "sse")
         if not self.game_path.exists():
             raise ValueError(f"Game path does not exist: {self.game_path}")
