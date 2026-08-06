@@ -1138,7 +1138,11 @@ class DynDOLODRunner:
             return _SIN_ARTEFACTO
         return (archivos, ultimo_mtime, bytes_totales)
 
-    def _post_check(self, tool: str, firmas_previas: dict[pathlib.Path, float]) -> _PostCheck:
+    def _post_check(
+        self,
+        tool: str,
+        firmas_previas: dict[pathlib.Path, tuple[float | int, ...] | None],
+    ) -> _PostCheck:
         """Veredicto de la corrida: log + artefacto + frescura. TODO el I/O, acá.
 
         **Es una función síncrona a propósito, y sus llamadores la envuelven en
