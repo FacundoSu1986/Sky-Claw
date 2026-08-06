@@ -9,7 +9,9 @@ from __future__ import annotations
 import ast
 import asyncio
 import logging
+import os
 import pathlib
+import time
 from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1997,6 +1999,75 @@ async def test_corrida_abortada_sin_regenerar_el_esp_no_es_exito(tmp_path: pathl
 
 
 @pytest.mark.asyncio
+async def test_firma_previa_ilegible_no_cuenta_como_artefacto_fresco(tmp_path: pathlib.Path) -> None:
+    """Regresión (review adversarial PR #441): lo no verificable no es fresco.
+
+    El centinela de la firma colapsaba dos cosas distintas: "no hay artefacto" y
+    "no pude sondearlo". Si la firma PREVIA fallaba por un error transitorio
+    —permisos, antivirus, volumen de red— sobre un ``.esp`` que sí existía, el
+    post-check lo leía sin problema, lo veía distinto del centinela y lo daba por
+    fresco: exit 0 + esp rancio + log sin errores → LODs obsoletos empaquetados
+    como resultado nuevo. El falso verde reconstituido por un ``except``.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    _escribir_salida(staging, "DynDOLOD.esp", b"de la corrida anterior")
+    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+
+    stat_real = pathlib.Path.stat
+    ilegible = {"activo": True}
+
+    def _stat_falible(self: pathlib.Path, *args: object, **kwargs: object) -> os.stat_result:
+        """Falla al sondear el .esp SOLO durante la firma previa."""
+        if ilegible["activo"] and self.name == "DynDOLOD.esp":
+            raise PermissionError("el antivirus tiene el archivo tomado")
+        return stat_real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    def _corrida_que_no_escribe() -> None:
+        """El proceso sale con 0 sin regenerar nada; el .esp vuelve a ser legible."""
+        ilegible["activo"] = False
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_corrida_que_no_escribe)
+    with patch.object(pathlib.Path, "stat", _stat_falible), patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False, "un artefacto no verificable no puede reportarse como fresco"
+    assert any("verificar" in e for e in result.errors), result.errors
+
+
+@pytest.mark.asyncio
+async def test_artefacto_previo_con_mtime_adelantado_no_descarta_la_corrida(tmp_path: pathlib.Path) -> None:
+    """Regresión (review PR #441): la frescura es "cambió", no "creció".
+
+    Comparar por ``>`` asumía que el mtime solo puede aumentar. Un snapshot
+    restaurado, una copia con timestamps preservados (``copy2``, extracción de un
+    archivo) o un reloj corrido dejan un ``DynDOLOD.esp`` con fecha adelantada;
+    la corrida real lo reescribe con la fecha de hoy —MENOR— y el veredicto salía
+    rojo sobre una salida buena. La comparación es por desigualdad.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    esp = staging / "DynDOLOD.esp"
+    _escribir_salida(staging, "DynDOLOD.esp", b"restaurada de un snapshot")
+    futuro = time.time() + 86400
+    os.utime(esp, (futuro, futuro))
+    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+
+    def _regenerar_con_fecha_de_hoy() -> None:
+        """La corrida real reescribe el plugin: mtime de ahora, menor que el previo."""
+        esp.write_text("regenerada", encoding="utf-8")
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_regenerar_con_fecha_de_hoy)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is True, "un mtime previo adelantado no puede descartar una corrida real"
+    assert result.errors == []
+
+
+@pytest.mark.asyncio
 async def test_esp_regenerado_dentro_de_un_arbol_existente_es_exito(tmp_path: pathlib.Path) -> None:
     """Contracara: regenerar sobre una salida previa es el flujo NORMAL del operador.
 
@@ -2079,6 +2150,27 @@ def _referencias(nodo: ast.AST) -> set[str]:
     ``Call`` lo daría por ausente.
     """
     return {n.attr for n in ast.walk(nodo) if isinstance(n, ast.Attribute)}
+
+
+def _miembros_de_la_familia(cls: ast.ClassDef) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Miembros que sondean el disco para dar el veredicto. Predicado ÚNICO.
+
+    Vive en un solo lugar porque los dos anclas —el congelamiento del conjunto y
+    el chequeo de que ninguno sea ``async``— tienen que hablar del MISMO
+    universo. Con el predicado duplicado, agregar un prefijo en uno y no en el
+    otro deja al miembro nuevo fuera del ancla de event loop sin que falle nadie:
+    la clase de defecto que estos tests existen para atajar, dentro de los tests
+    mismos (review CodeRabbit, PR #441).
+    """
+    return {
+        m.name: m
+        for m in cls.body
+        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and (
+            m.name.startswith(("_find_", "_leer_", "_parse_log", "_valida", "validate_", "_firma"))
+            or m.name in {"_post_check", "_candidatos_de_salida", "_tiene_artefacto"}
+        )
+    }
 
 
 def test_la_familia_del_post_check_esta_congelada() -> None:

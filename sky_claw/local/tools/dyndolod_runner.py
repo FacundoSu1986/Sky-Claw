@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 # esta cota, el `gather` del path de éxito colgaría `_execute_process` para siempre.
 _DRAIN_GRACE_SECONDS = 10.0
 
+# Firma de un candidato sin artefacto. Distinto de ``None`` (= no se pudo
+# sondear) a propósito: colapsar los dos casos hace fail-open el gate de
+# frescura, porque "no lo pude mirar antes" pasa a leerse como "no había nada".
+_SIN_ARTEFACTO = -1.0
+
 
 # =============================================================================
 # EXCEPTIONS
@@ -1025,7 +1030,7 @@ class DynDOLODRunner:
             return [root / self.TEXGEN_OUTPUT_NAME]
         return [root / self.DYNDOLLOD_OUTPUT_NAME, root]
 
-    def _firmas_de_salida(self, tool: str) -> dict[pathlib.Path, float]:
+    def _firmas_de_salida(self, tool: str) -> dict[pathlib.Path, float | None]:
         """Firma de cada candidato ANTES de lanzar, para comparar contra la de después.
 
         La frescura se decide comparando **mtime contra mtime**, no mtime contra
@@ -1039,8 +1044,17 @@ class DynDOLODRunner:
         return {candidato: self._firma_de_veredicto(tool, candidato) for candidato in self._candidatos_de_salida(tool)}
 
     @staticmethod
-    def _firma_de_veredicto(tool: str, directorio: pathlib.Path) -> float:
-        """mtime del artefacto que DECIDE el veredicto, o ``-1.0`` si no hay.
+    def _firma_de_veredicto(tool: str, directorio: pathlib.Path) -> float | None:
+        """mtime del artefacto que DECIDE el veredicto.
+
+        Tres resultados distintos, y la distinción es el gate: el mtime si se
+        pudo leer, :data:`_SIN_ARTEFACTO` si no hay artefacto, y ``None`` si
+        **no se pudo sondear**. Colapsar los dos últimos en un mismo centinela
+        era fail-OPEN: si la firma previa fallaba por un error transitorio
+        (permisos, antivirus, volumen de red) sobre un artefacto que SÍ existía,
+        el post-check leía el ``.esp`` rancio, lo veía distinto del centinela y
+        lo daba por fresco — el falso verde entero, reconstituido por un
+        ``except`` (review adversarial, PR #441).
 
         **Del artefacto, no del árbol.** Firmar el árbol entero deja pasar una
         corrida abortada: DynDOLOD recrea directorios y sobrescribe LODs
@@ -1062,21 +1076,26 @@ class DynDOLODRunner:
         if tool != "TexGen":
             try:
                 return (directorio / "DynDOLOD.esp").stat().st_mtime
-            except OSError:
-                return -1.0
+            except FileNotFoundError:
+                return _SIN_ARTEFACTO
+            except OSError as e:
+                logger.warning("No se pudo sondear el artefacto de %s: %s", directorio, e)
+                return None
 
-        ultimo = -1.0
+        ultimo = _SIN_ARTEFACTO
         try:
             for hijo in directorio.rglob("*"):
                 try:
                     if hijo.is_file():
                         ultimo = max(ultimo, hijo.stat().st_mtime)
-                except OSError:  # noqa: PERF203 — un hijo ilegible no invalida el barrido
-                    continue
+                except OSError as e:  # noqa: PERF203 — el barrido decide, no el hijo
+                    # Fail-closed: un archivo que no se pudo mirar podría ser
+                    # justo el que cambió. No se puede afirmar nada del árbol.
+                    logger.warning("No se pudo sondear %s: %s", hijo, e)
+                    return None
         except OSError as e:
-            # Fail-closed: sin poder sondear no se puede afirmar que hubo escritura.
             logger.warning("No se pudo firmar el staging %s: %s", directorio, e)
-            return -1.0
+            return None
         return ultimo
 
     def _post_check(self, tool: str, firmas_previas: dict[pathlib.Path, float]) -> _PostCheck:
@@ -1115,6 +1134,7 @@ class DynDOLODRunner:
             return _PostCheck(output_path=None, artefacto=False, errors=errors, warnings=warnings)
 
         hubo_artefacto_rancio = False
+        no_verificable = False
         for candidato in candidatos:
             if not self._tiene_artefacto(tool, candidato):
                 continue
@@ -1122,11 +1142,29 @@ class DynDOLODRunner:
             # staging que dejó la corrida anterior satisface el gate igual, y una
             # app GUI que el operador cerró a mitad sale con código 0 sin escribir
             # nada ni dejar línea de error — el falso verde se reconstituye entero.
-            if self._firma_de_veredicto(tool, candidato) > firmas_previas.get(candidato, -1.0):
+            previa = firmas_previas.get(candidato)
+            actual = self._firma_de_veredicto(tool, candidato)
+            if previa is None or actual is None:
+                # No se pudo sondear alguna de las dos puntas: no se puede AFIRMAR
+                # que el artefacto sea de esta corrida. Fail-closed — dar por
+                # fresco lo no verificable es cómo vuelve el falso verde.
+                no_verificable = True
+                continue
+            # Desigualdad, no incremento: el criterio real es "el artefacto cambió",
+            # y el mtime no siempre crece. Un snapshot restaurado, una copia con
+            # timestamps preservados (`copy2`, extracción de un archivo) o un reloj
+            # corrido dejan un .esp con fecha adelantada que una corrida real nunca
+            # superaría — falso ROJO sobre una salida buena (review CodeRabbit #441).
+            if actual != previa:
                 return _PostCheck(output_path=candidato, artefacto=True, errors=errors, warnings=warnings)
             hubo_artefacto_rancio = True
 
-        if hubo_artefacto_rancio:
+        if no_verificable:
+            errors.append(
+                f"No se pudo verificar si el artefacto de {tool} es de esta corrida "
+                "(el staging no se pudo sondear). No se reporta éxito sobre un estado indeterminado."
+            )
+        elif hubo_artefacto_rancio:
             errors.append(
                 f"El artefacto de {tool} no se regeneró durante la corrida: "
                 "es la salida de una corrida anterior, no de ésta."
