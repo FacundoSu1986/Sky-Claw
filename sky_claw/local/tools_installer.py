@@ -9,18 +9,22 @@ from __future__ import annotations
 
 import asyncio
 import configparser
+import contextlib
 import hashlib
 import logging
+import os
 import pathlib
 import re
 import tempfile
 import zipfile
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.app.security.hitl import Decision, HITLGuard
 from sky_claw.app.security.network_gateway import (
     EgressViolationError,
@@ -45,6 +49,225 @@ if TYPE_CHECKING:
     from sky_claw.app.security.network_gateway import NetworkGateway
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Lock cross-process de instalación (T-31)
+# ---------------------------------------------------------------------------
+#
+# La familia de mutadores de ``ToolsInstaller`` (ensure_loot/ensure_xedit/
+# ensure_pandora/ensure_bodyslide/ensure_skse/ensure_ngio/_ensure_github_mod/
+# _ensure_nexus_mod) intercala chequeo-de-existencia, descarga, extracción,
+# verificación de payload y limpieza sobre el MISMO ``install_dir``/``mod_dir``.
+# Dos instalaciones concurrentes —agente LLM y GUI, o dos ventanas— corrompen
+# silenciosamente el directorio (review de CodeRabbit en #418, T-31).
+#
+# La propiedad del mecanismo: el lock cross-process solo protege si TODOS los
+# mutadores participan (ancla en tests/test_tools_installer_lock_scoping.py) y
+# cubre el ciclo COMPLETO, desde el chequeo de "ya instalado" hasta la limpieza
+# final — no solo alrededor de la extracción, o el TOCTOU sigue vivo.
+#
+# Constantes de instalación. El TTL default de ``DistributedLockManager``
+# (600 s) es para rituales xEdit/DynDOLOD; una instalación puede tardar hasta
+# ``_SEVENZIP_TIMEOUT_SECONDS`` (300 s) por archive + descarga (600 s) +
+# validación, y ``ensure_ngio`` instala hasta 3 componentes. Se usa un TTL de
+# instalación y una espera total larga para que el segundo llamador vea
+# ``already_existed=True`` en vez de ``LockAcquisitionError``.
+
+#: Agente del instalador — distinto de cada ritual, espejo de
+#: ``_RECONCILE_AGENT_ID`` en ``rollback_reconciler.py``.
+_INSTALL_AGENT_ID = "tools-installer"
+
+#: TTL del lock de instalación (1 h) — cubre el peor caso de 3 componentes.
+_INSTALL_TTL_SECONDS = 3600.0
+
+#: Retries/espera: backoff exponencial máx 10 s × 180 intentos ≈ 30 min de
+#: espera total (15 s de backoff escalonado 1+2+4+8 + 176 × 10 s) antes de
+#: fallar con ``LockAcquisitionError``. Un segundo llamador espera a que el
+#: primero termine (y ve ``already_existed=True``).
+_INSTALL_MAX_RETRIES = 180
+_INSTALL_BACKOFF_BASE = 1.0
+_INSTALL_BACKOFF_MAX = 10.0
+
+
+def _install_lock_resource_id(path: pathlib.Path) -> str:
+    """Clave canónica del lock de instalación para *path*.
+
+    ``PathValidator.validate()`` solo resuelve la ruta, no normaliza
+    mayúsculas. Derivamos la clave con ``os.path.normcase(...).casefold()`` —
+    igual que ``vfs_instance_id()`` — para que ``C:\\Tools\\LOOT`` y
+    ``c:\\tools\\loot`` tomen el MISMO lock sobre el mismo directorio.
+    """
+    normalized = os.path.normcase(str(path.resolve())).casefold()
+    return f"tools-install:{normalized}"
+
+
+#: Cadena de locks ya tomados por esta llamada (ContextVar). Permite la
+#: reentrada: ``ensure_ngio`` delega en ``_ensure_github_mod``/``_ensure_nexus_mod``
+#: y ninguno de ellos debe re-adquirir un lock que el caller ya tiene (eso
+#: sería un deadlock o doble adquisición sobre el mismo ``resource_id``).
+_cadena_de_locks: ContextVar[frozenset[str]] = ContextVar("_cadena_de_locks", default=frozenset())
+
+
+@contextlib.asynccontextmanager
+async def _bajo_lock_de_instalacion(
+    lock_manager: DistributedLockManager,
+    resource_id: str,
+    ttl: float = _INSTALL_TTL_SECONDS,
+) -> Any:
+    """Adquiere el lock de instalación y lo libera SIEMPRE en ``finally``.
+
+    Si el caller ya tiene este ``resource_id`` en su cadena (reentrada), no se
+    re-adquiere: el lock ya está tomado por esta misma llamada.
+
+    ``asyncio.CancelledError`` NO lo captura ``except Exception``, así que el
+    ``finally`` es el único lugar seguro para liberar — espejo de
+    ``SnapshotTransactionLock.__aexit__``.
+
+    Mientras la zona crítica corre, un heartbeat renueva el lease en
+    ``TTL/3``: ``DistributedLockManager.acquire_lock`` usa TTL FIJO sin
+    reanudar, así que una instalación que exceda el TTL expiraría su propio
+    lease y otro proceso podría reclamar el recurso con la primera todavía
+    escribiendo (audit T-31, V7).
+
+    El release es a prueba de cancelación: una segunda ``CancelledError``
+    durante el ``await release_lock`` (que hace ``conn.commit``) abortaría el
+    release y el lock quedaría retenido hasta el TTL. ``asyncio.shield``
+    posterga esa cancelación hasta que el release terminó.
+
+    Args:
+        lock_manager: Instancia con la que se adquiere (el caller es dueño del
+            ciclo de vida; acá solo se usa para acquire/release). NO puede ser
+            ``None``: fail-closed es que sin lock no hay instalación.
+        resource_id: Clave canónica del recurso a serializar.
+        ttl: Duración del lease. Default a la constante de instalación.
+    """
+    # Fail-closed: sin lock NO se instala. Aceptar None acá (y hacer yield sin
+    # adquirir) contradice el constructor, que exige lock_manager obligatorio —
+    # dejaría un mutador silenciosamente sin serializar.
+    if lock_manager is None:
+        raise ToolInstallError("ToolsInstaller sin lock_manager: se rechaza la instalación (fail-closed).")
+    if resource_id in _cadena_de_locks.get():
+        yield
+        return
+
+    await lock_manager.acquire_lock(resource_id, _INSTALL_AGENT_ID, ttl=ttl)
+    token = _cadena_de_locks.set(_cadena_de_locks.get() | {resource_id})
+    heartbeat: asyncio.Task[None] | None = None
+    if getattr(lock_manager, "renew_lock", None) is not None:
+        heartbeat = asyncio.create_task(
+            _mantener_lock_vivo(lock_manager, resource_id, ttl),
+            name=f"tools-installer-heartbeat-{resource_id}",
+        )
+    try:
+        yield
+    finally:
+        if heartbeat is not None:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001 — el heartbeat NO puede abortar el finally
+                # `_mantener_lock_vivo` deja almacenada cualquier excepcion que
+                # `renew_lock` no atrape (sqlite3.Error si esta cubierto, pero no
+                # una conexion cerrada a mitad del shutdown), y `await heartbeat`
+                # la re-lanza. Si escapara de aca se saltearian las DOS lineas
+                # que siguen: el `reset` dejaria el resource_id colgado en la
+                # cadena —y una reentrada posterior se saltearia el lock, que es
+                # justo lo que este modulo existe para impedir— y el release no
+                # correria, reteniendo el recurso hasta que venza el TTL de 1 h.
+                logger.error("Heartbeat del lock de instalacion '%s' fallo: %s", resource_id, exc)
+        _cadena_de_locks.reset(token)
+        try:
+            # El release también es cancelable (await + commit): una segunda
+            # cancelación durante este await dejaría el lock retenido hasta TTL.
+            # Shield posterga la cancelación hasta que el release terminó.
+            await asyncio.shield(lock_manager.release_lock(resource_id, _INSTALL_AGENT_ID))
+        except Exception as exc:  # noqa: BLE001 — nunca enmascarar el error original
+            logger.error("Fallo al liberar el lock de instalación '%s': %s", resource_id, exc)
+
+
+async def _mantener_lock_vivo(
+    lock_manager: DistributedLockManager,
+    resource_id: str,
+    ttl: float,
+) -> None:
+    """Renueva el lease del lock de instalación mientras la zona crítica corre.
+
+    ``DistributedLockManager.acquire_lock`` usa TTL fijo (sin heartbeat): una
+    instalación que exceda el TTL expira su propio lease y un segundo proceso
+    lo reclama con la primera todavía escribiendo (fail-open temporal). Este
+    heartbeat renueva a ``TTL/3``; si un renewal falla (lease vencida o
+    reclamada por otro), el loop termina y se loguea CRÍTICO — no se aborta la
+    instalación (un hilo de extracción en vuelo no se puede matar), pero el
+    evento queda en el registro para que el operador sepa que pudo haber
+    concurrencia.
+
+    Managers que no exponen ``renew_lock`` (mocks viejos de tests) degradan a
+    "sin heartbeat" en vez de romper: el primer ``await renew_fn`` lanza
+    ``TypeError`` y el loop retorna.
+    """
+    divisor = 3.0
+    intervalo = max(ttl / divisor, 0.05)
+    try:
+        while True:
+            await asyncio.sleep(intervalo)
+            renew_fn = getattr(lock_manager, "renew_lock", None)
+            if renew_fn is None:
+                return
+            try:
+                renovado = await renew_fn(resource_id, _INSTALL_AGENT_ID, ttl=ttl)
+            except TypeError:
+                # renew_lock presente pero no awaitable (MagicMock de tests).
+                return
+            if not renovado:
+                logger.critical(
+                    "Lock de instalación '%s' PERDIDO durante la operación: otro "
+                    "proceso pudo reclamar el recurso (lease vencida).",
+                    resource_id,
+                )
+                return
+    except asyncio.CancelledError:
+        raise
+
+
+async def _esperar_hilo_ininterrumpible(fn: Callable[..., Any], *args: Any) -> Any:
+    """Corre *fn* en un hilo del pool SIN que una cancelación interrumpa la espera.
+
+    ``asyncio.to_thread`` no puede matar un hilo ya lanzado: cancelar el
+    ``await`` deja el hilo vivo mutando el directorio mientras el ``finally``
+    del lock libera la exclusividad — exactamente la corrupción cross-process
+    que T-31 existe para cerrar (un segundo proceso adquiere y pisa una
+    instalación en vuelo). Este helper hace la espera a prueba de cancelación:
+    la ``CancelledError`` pendiente se propaga recién cuando el hilo terminó
+    (o falló), de modo que el release del lock nunca ocurre con una mutación
+    en vuelo.
+
+    El costo es que una cancelación puede postergarse hasta la terminación del
+    hilo — acotada por los timeouts de 7z/extracción
+    (``_SEVENZIP_TIMEOUT_SECONDS``). Liberar el lock antes sería el peor
+    desenlace; esperar es la única opción segura.
+    """
+    loop = asyncio.get_running_loop()
+    fut = loop.run_in_executor(None, fn, *args)
+    cancel_pendiente = False
+    while True:
+        try:
+            resultado = await asyncio.shield(fut)
+            if cancel_pendiente:
+                # El hilo terminó: recién ahora la cancelación se propaga, con la
+                # mutación completa. La CancelledError se relanza para que el
+                # caller vea el aborto y el finally del lock corra con el hilo
+                # fuera de juego.
+                raise asyncio.CancelledError
+            return resultado
+        except asyncio.CancelledError:
+            cancel_pendiente = True
+            if fut.done():
+                raise
+            # El hilo sigue mutando: la cancelación espera a que termine.
+            continue
+
 
 # GitHub API endpoints for official releases.
 _LOOT_RELEASES_URL = "https://api.github.com/repos/loot/loot/releases/latest"
@@ -606,10 +829,14 @@ class ToolsInstaller:
         hitl: HITLGuard,
         gateway: NetworkGateway,
         path_validator: PathValidator,
+        lock_manager: DistributedLockManager,
+        install_ttl: float = _INSTALL_TTL_SECONDS,
     ) -> None:
         self._hitl = hitl
         self._gateway = gateway
         self._validator = path_validator
+        self._lock_manager = lock_manager
+        self._install_ttl = install_ttl
 
     # ------------------------------------------------------------------
     # Public API
@@ -630,49 +857,57 @@ class ToolsInstaller:
             :class:`InstallResult` with the path to ``loot.exe``.
         """
         self._validator.validate(install_dir)
-        exe = find_exe_in_dir(install_dir, "loot.exe")
-        if exe is not None:
-            logger.info("LOOT already installed at %s", exe)
+        # Lock cross-process del ciclo COMPLETO: el early-return del chequeo de
+        # "ya instalado" va DENTRO del lock, o dos procesos verían el directorio
+        # vacío a la vez y ambos descargarían (TOCTOU de T-31).
+        async with _bajo_lock_de_instalacion(
+            self._lock_manager,
+            _install_lock_resource_id(install_dir),
+            ttl=self._install_ttl,
+        ):
+            exe = find_exe_in_dir(install_dir, "loot.exe")
+            if exe is not None:
+                logger.info("LOOT already installed at %s", exe)
+                return InstallResult(
+                    tool_name="LOOT",
+                    exe_path=exe,
+                    version="existing",
+                    already_existed=True,
+                )
+
+            asset, version = await self._find_github_asset(
+                session,
+                _LOOT_RELEASES_URL,
+                keyword="win64",
+            )
+
+            decision = await self._hitl.request_approval(
+                request_id=f"install-loot-{version}",
+                reason=f"Install LOOT {version}?",
+                url=asset.browser_download_url,
+                detail=(
+                    f"Asset: {asset.name}\nSize: {asset.size / (1024 * 1024):.1f} MB\nSource: GitHub loot/loot releases"
+                ),
+                category="download",
+            )
+            if decision is not Decision.APPROVED:
+                raise ToolInstallError(f"LOOT installation denied by operator (decision={decision.value})")
+
+            archive = await self._download_asset(session, asset, install_dir)
+            await _esperar_hilo_ininterrumpible(self._extract, archive, install_dir)
+            archive.unlink(missing_ok=True)
+
+            exe = find_exe_in_dir(install_dir, "loot.exe")
+            if exe is None:
+                raise ToolInstallError("LOOT extraction succeeded but loot.exe not found in output")
+
+            logger.info("LOOT %s installed at %s", version, exe)
             return InstallResult(
                 tool_name="LOOT",
                 exe_path=exe,
-                version="existing",
-                already_existed=True,
+                version=version,
+                already_existed=False,
             )
-
-        asset, version = await self._find_github_asset(
-            session,
-            _LOOT_RELEASES_URL,
-            keyword="win64",
-        )
-
-        decision = await self._hitl.request_approval(
-            request_id=f"install-loot-{version}",
-            reason=f"Install LOOT {version}?",
-            url=asset.browser_download_url,
-            detail=(
-                f"Asset: {asset.name}\nSize: {asset.size / (1024 * 1024):.1f} MB\nSource: GitHub loot/loot releases"
-            ),
-            category="download",
-        )
-        if decision is not Decision.APPROVED:
-            raise ToolInstallError(f"LOOT installation denied by operator (decision={decision.value})")
-
-        archive = await self._download_asset(session, asset, install_dir)
-        await asyncio.to_thread(self._extract, archive, install_dir)
-        archive.unlink(missing_ok=True)
-
-        exe = find_exe_in_dir(install_dir, "loot.exe")
-        if exe is None:
-            raise ToolInstallError("LOOT extraction succeeded but loot.exe not found in output")
-
-        logger.info("LOOT %s installed at %s", version, exe)
-        return InstallResult(
-            tool_name="LOOT",
-            exe_path=exe,
-            version=version,
-            already_existed=False,
-        )
 
     async def ensure_xedit(
         self,
@@ -689,74 +924,81 @@ class ToolsInstaller:
             :class:`InstallResult` with the path to ``SSEEdit.exe``.
         """
         self._validator.validate(install_dir)
-        exe = find_exe_in_dir(install_dir, "SSEEdit.exe")
-        if exe is not None:
-            logger.info("SSEEdit already installed at %s", exe)
+        async with _bajo_lock_de_instalacion(
+            self._lock_manager,
+            _install_lock_resource_id(install_dir),
+            ttl=self._install_ttl,
+        ):
+            exe = find_exe_in_dir(install_dir, "SSEEdit.exe")
+            if exe is not None:
+                logger.info("SSEEdit already installed at %s", exe)
+                return InstallResult(
+                    tool_name="SSEEdit",
+                    exe_path=exe,
+                    version="existing",
+                    already_existed=True,
+                )
+
+            asset, version = await self._find_github_asset(
+                session,
+                _XEDIT_RELEASES_URL,
+                keyword="xEdit",
+            )
+
+            decision = await self._hitl.request_approval(
+                request_id=f"install-xedit-{version}",
+                reason=f"Install SSEEdit {version}?",
+                url=asset.browser_download_url,
+                detail=(
+                    f"Asset: {asset.name}\n"
+                    f"Size: {asset.size / (1024 * 1024):.1f} MB\n"
+                    f"Source: GitHub TES5Edit/TES5Edit releases"
+                ),
+                category="download",
+            )
+            if decision is not Decision.APPROVED:
+                raise ToolInstallError(f"SSEEdit installation denied by operator (decision={decision.value})")
+
+            archive = await self._download_asset(session, asset, install_dir)
+            await _esperar_hilo_ininterrumpible(self._extract, archive, install_dir)
+            archive.unlink(missing_ok=True)
+
+            # xEdit se publica con nombre genérico; renombrarlo a SSEEdit.exe evita el
+            # popup de selección de juego que bloquea la GUI. Solo si NO hay ya un
+            # SSEEdit.exe al lado: el archive puede traer ambos y pisarlo destruiría el
+            # binario bueno.
+            #
+            # `.rename()` y NO `.replace()`: os.replace PISA el destino, que es
+            # justo lo que hay que evitar. En Windows os.rename falla con
+            # FileExistsError si el destino apareció entre el chequeo y el renombrado
+            # → fail-closed, se conserva el SSEEdit.exe bueno. En POSIX os.rename
+            # pisa igual, así que el guard de abajo es lo único que protege ahí; la
+            # protección real contra instalaciones concurrentes es el lock de T-31,
+            # no este bloque.
+            xedit_exe = find_exe_in_dir(install_dir, "xEdit.exe")
+            if xedit_exe is not None:
+                target = xedit_exe.with_name("SSEEdit.exe")
+                if target.exists():
+                    logger.info("SSEEdit.exe ya presente en %s; se conserva y no se renombra xEdit.exe", install_dir)
+                else:
+                    try:
+                        xedit_exe.rename(target)
+                    except FileExistsError:
+                        logger.info("SSEEdit.exe apareció durante la instalación; se conserva el existente.")
+
+            exe = find_exe_in_dir(install_dir, "SSEEdit.exe")
+            if exe is None:
+                raise ToolInstallError(
+                    "SSEEdit extraction succeeded but neither SSEEdit.exe nor xEdit.exe found in output"
+                )
+
+            logger.info("SSEEdit %s installed at %s", version, exe)
             return InstallResult(
                 tool_name="SSEEdit",
                 exe_path=exe,
-                version="existing",
-                already_existed=True,
+                version=version,
+                already_existed=False,
             )
-
-        asset, version = await self._find_github_asset(
-            session,
-            _XEDIT_RELEASES_URL,
-            keyword="xEdit",
-        )
-
-        decision = await self._hitl.request_approval(
-            request_id=f"install-xedit-{version}",
-            reason=f"Install SSEEdit {version}?",
-            url=asset.browser_download_url,
-            detail=(
-                f"Asset: {asset.name}\n"
-                f"Size: {asset.size / (1024 * 1024):.1f} MB\n"
-                f"Source: GitHub TES5Edit/TES5Edit releases"
-            ),
-            category="download",
-        )
-        if decision is not Decision.APPROVED:
-            raise ToolInstallError(f"SSEEdit installation denied by operator (decision={decision.value})")
-
-        archive = await self._download_asset(session, asset, install_dir)
-        await asyncio.to_thread(self._extract, archive, install_dir)
-        archive.unlink(missing_ok=True)
-
-        # xEdit se publica con nombre genérico; renombrarlo a SSEEdit.exe evita el
-        # popup de selección de juego que bloquea la GUI. Solo si NO hay ya un
-        # SSEEdit.exe al lado: el archive puede traer ambos y pisarlo destruiría el
-        # binario bueno.
-        #
-        # `.rename()` y NO `.replace()`: os.replace PISA el destino, que es
-        # justo lo que hay que evitar. En Windows os.rename falla con
-        # FileExistsError si el destino apareció entre el chequeo y el renombrado
-        # → fail-closed, se conserva el SSEEdit.exe bueno. En POSIX os.rename
-        # pisa igual, así que el guard de abajo es lo único que protege ahí; la
-        # protección real contra instalaciones concurrentes es el lock de T-31,
-        # no este bloque.
-        xedit_exe = find_exe_in_dir(install_dir, "xEdit.exe")
-        if xedit_exe is not None:
-            target = xedit_exe.with_name("SSEEdit.exe")
-            if target.exists():
-                logger.info("SSEEdit.exe ya presente en %s; se conserva y no se renombra xEdit.exe", install_dir)
-            else:
-                try:
-                    xedit_exe.rename(target)
-                except FileExistsError:
-                    logger.info("SSEEdit.exe apareció durante la instalación; se conserva el existente.")
-
-        exe = find_exe_in_dir(install_dir, "SSEEdit.exe")
-        if exe is None:
-            raise ToolInstallError("SSEEdit extraction succeeded but neither SSEEdit.exe nor xEdit.exe found in output")
-
-        logger.info("SSEEdit %s installed at %s", version, exe)
-        return InstallResult(
-            tool_name="SSEEdit",
-            exe_path=exe,
-            version=version,
-            already_existed=False,
-        )
 
     async def ensure_pandora(
         self,
@@ -776,54 +1018,59 @@ class ToolsInstaller:
             viejas usaban ``Pandora.exe``).
         """
         self._validator.validate(install_dir)
-        # Check if already installed
-        exe = find_any_exe_in_dir(install_dir, PANDORA_EXE_NAMES)
-        if exe is not None:
-            logger.info("Pandora already installed at %s", exe)
+        async with _bajo_lock_de_instalacion(
+            self._lock_manager,
+            _install_lock_resource_id(install_dir),
+            ttl=self._install_ttl,
+        ):
+            # Check if already installed
+            exe = find_any_exe_in_dir(install_dir, PANDORA_EXE_NAMES)
+            if exe is not None:
+                logger.info("Pandora already installed at %s", exe)
+                return InstallResult(
+                    tool_name="Pandora",
+                    exe_path=exe,
+                    version="existing",
+                    already_existed=True,
+                )
+
+            asset, version = await self._find_github_asset(
+                session,
+                _PANDORA_RELEASES_URL,
+                keyword="Pandora_Behaviour_Engine",
+            )
+
+            decision = await self._hitl.request_approval(
+                request_id=f"install-pandora-{version}",
+                reason=f"Install Pandora Behavior Engine {version}?",
+                url=asset.browser_download_url,
+                detail=(
+                    f"Asset: {asset.name}\n"
+                    f"Size: {asset.size / (1024 * 1024):.1f} MB\n"
+                    f"Source: GitHub Monitor221hz/Pandora-Behaviour-Engine-Plus"
+                ),
+                category="download",
+            )
+            if decision is not Decision.APPROVED:
+                raise ToolInstallError(f"Pandora installation denied by operator (decision={decision.value})")
+
+            archive = await self._download_asset(session, asset, install_dir)
+            await _esperar_hilo_ininterrumpible(self._extract, archive, install_dir)
+            archive.unlink(missing_ok=True)
+
+            exe = find_any_exe_in_dir(install_dir, PANDORA_EXE_NAMES)
+            if exe is None:
+                raise ToolInstallError(
+                    f"La extracción de Pandora terminó pero no apareció ninguno de {list(PANDORA_EXE_NAMES)} en la salida"
+                )
+
+            logger.info("Pandora %s installed at %s", version, exe)
             return InstallResult(
                 tool_name="Pandora",
                 exe_path=exe,
-                version="existing",
-                already_existed=True,
+                version=version,
+                already_existed=False,
             )
-
-        asset, version = await self._find_github_asset(
-            session,
-            _PANDORA_RELEASES_URL,
-            keyword="Pandora_Behaviour_Engine",
-        )
-
-        decision = await self._hitl.request_approval(
-            request_id=f"install-pandora-{version}",
-            reason=f"Install Pandora Behavior Engine {version}?",
-            url=asset.browser_download_url,
-            detail=(
-                f"Asset: {asset.name}\n"
-                f"Size: {asset.size / (1024 * 1024):.1f} MB\n"
-                f"Source: GitHub Monitor221hz/Pandora-Behaviour-Engine-Plus"
-            ),
-            category="download",
-        )
-        if decision is not Decision.APPROVED:
-            raise ToolInstallError(f"Pandora installation denied by operator (decision={decision.value})")
-
-        archive = await self._download_asset(session, asset, install_dir)
-        await asyncio.to_thread(self._extract, archive, install_dir)
-        archive.unlink(missing_ok=True)
-
-        exe = find_any_exe_in_dir(install_dir, PANDORA_EXE_NAMES)
-        if exe is None:
-            raise ToolInstallError(
-                f"La extracción de Pandora terminó pero no apareció ninguno de {list(PANDORA_EXE_NAMES)} en la salida"
-            )
-
-        logger.info("Pandora %s installed at %s", version, exe)
-        return InstallResult(
-            tool_name="Pandora",
-            exe_path=exe,
-            version=version,
-            already_existed=False,
-        )
 
     async def ensure_skse(
         self,
@@ -846,115 +1093,123 @@ class ToolsInstaller:
             ToolInstallError: Si la instalación falla o la edición no está soportada (ej. MS Store).
         """
         self._validator.validate(install_dir)
+        # Lock cross-process keyed por game_dir (8º mutador de T-31). Cubre el
+        # ciclo completo: chequeo → descarga → copia → limpieza de DLL huérfanos.
+        async with _bajo_lock_de_instalacion(
+            self._lock_manager,
+            _install_lock_resource_id(install_dir),
+            ttl=self._install_ttl,
+        ):
+            # Determinar edición. La autoridad es la versión del PE del juego, NO qué DLL
+            # de SKSE ya está en disco: si SKSE ya estuviera instalado saldríamos por el
+            # early-return de idempotencia de más abajo, así que en el único caso donde
+            # esto corre —máquina limpia— no hay DLL que mirar. Defaultear a AE ahí le
+            # instala `skse64_1_6_1170.dll` a un runtime 1.5.97 y SKSE no carga.
+            #
+            # `detected_version` solo se llena en el camino de autodetección: si el
+            # caller pasa `edition` explícito confiamos en su elección sin exigir un
+            # .exe real en disco (staging, tests, instalación en curso).
+            detected_version = ""
+            if edition is None:
+                edition, detected_version = await self._detect_skyrim_edition_from_exe(install_dir)
 
-        # Determinar edición. La autoridad es la versión del PE del juego, NO qué DLL
-        # de SKSE ya está en disco: si SKSE ya estuviera instalado saldríamos por el
-        # early-return de idempotencia de más abajo, así que en el único caso donde
-        # esto corre —máquina limpia— no hay DLL que mirar. Defaultear a AE ahí le
-        # instala `skse64_1_6_1170.dll` a un runtime 1.5.97 y SKSE no carga.
-        #
-        # `detected_version` solo se llena en el camino de autodetección: si el
-        # caller pasa `edition` explícito confiamos en su elección sin exigir un
-        # .exe real en disco (staging, tests, instalación en curso).
-        detected_version = ""
-        if edition is None:
-            edition, detected_version = await self._detect_skyrim_edition_from_exe(install_dir)
+            ed_key = self._edition_to_config_key(edition)
+            cfg = SKSE_CONFIG.get(ed_key)
 
-        ed_key = self._edition_to_config_key(edition)
-        cfg = SKSE_CONFIG.get(ed_key)
+            if cfg is None:
+                raise ToolInstallError(f"Edición {ed_key} no compatible (probablemente MS Store, que no soporta SKSE).")
 
-        if cfg is None:
-            raise ToolInstallError(f"Edición {ed_key} no compatible (probablemente MS Store, que no soporta SKSE).")
+            # Idempotencia: verificar si ya está instalado correctamente
+            loader_name = _skse_cfg_field(cfg, "loader")
+            dll_name = _skse_cfg_field(cfg, "dll")
 
-        # Idempotencia: verificar si ya está instalado correctamente
-        loader_name = _skse_cfg_field(cfg, "loader")
-        dll_name = _skse_cfg_field(cfg, "dll")
+            # Gate de versión exacta: SKSE está pinneado al BUILD exacto del juego, no
+            # solo a su edición — dos AE distintos (1.6.640 vs 1.6.1170) comparten
+            # edición pero el DLL de uno no carga sobre el otro. Solo se evalúa cuando
+            # hay versión detectada (autodetección + pefile presente); si no, se
+            # degrada al comportamiento previo (edición sola) en vez de bloquear.
+            expected_version = _skse_dll_game_version(dll_name)
+            if detected_version and not _game_version_matches(detected_version, expected_version):
+                raise ToolInstallError(
+                    f"Tu Skyrim {ed_key} está en la versión {detected_version}, pero el único "
+                    f"SKSE {ed_key} soportado acá es para {expected_version} (SKSE está pinneado "
+                    "a la versión EXACTA del ejecutable, no solo a la edición). Instalá "
+                    "manualmente el build correspondiente desde https://skse.silverlock.org/."
+                )
+            loader_path = install_dir / loader_name
+            dll_path = install_dir / dll_name
 
-        # Gate de versión exacta: SKSE está pinneado al BUILD exacto del juego, no
-        # solo a su edición — dos AE distintos (1.6.640 vs 1.6.1170) comparten
-        # edición pero el DLL de uno no carga sobre el otro. Solo se evalúa cuando
-        # hay versión detectada (autodetección + pefile presente); si no, se
-        # degrada al comportamiento previo (edición sola) en vez de bloquear.
-        expected_version = _skse_dll_game_version(dll_name)
-        if detected_version and not _game_version_matches(detected_version, expected_version):
-            raise ToolInstallError(
-                f"Tu Skyrim {ed_key} está en la versión {detected_version}, pero el único "
-                f"SKSE {ed_key} soportado acá es para {expected_version} (SKSE está pinneado "
-                "a la versión EXACTA del ejecutable, no solo a la edición). Instalá "
-                "manualmente el build correspondiente desde https://skse.silverlock.org/."
+            if loader_path.exists() and dll_path.exists():
+                logger.info("SKSE ya instalado en %s", loader_path)
+                return InstallResult(
+                    tool_name="SKSE",
+                    exe_path=loader_path,
+                    version="existing",
+                    already_existed=True,
+                )
+
+            url = _skse_cfg_field(cfg, "url")
+
+            # Solicitar aprobación HITL
+            decision = await self._hitl.request_approval(
+                request_id=f"install-skse-{ed_key}",
+                reason=f"Install SKSE for Skyrim {ed_key}?",
+                url=url,
+                detail=(
+                    f"URL: {url}\nLoader: {loader_name}\nDLL: {dll_name}\nSource: skse.silverlock.org (sitio oficial)"
+                ),
+                category="download",
             )
-        loader_path = install_dir / loader_name
-        dll_path = install_dir / dll_name
 
-        if loader_path.exists() and dll_path.exists():
-            logger.info("SKSE ya instalado en %s", loader_path)
+            if decision is not Decision.APPROVED:
+                raise ToolInstallError(f"SKSE installation denied by operator (decision={decision.value})")
+
+            # Staging: la MISMA raíz que `AppContext` registra en el PathValidator
+            # (`tempfile.gettempdir() / "sky_claw"`). Inventar otra —p. ej. C:/tmp— hace
+            # que el `validate(tmp_path)` de acá abajo falle siempre, porque esa ruta no
+            # es ninguna de las raíces del sandbox.
+            skse_sandbox = pathlib.Path(tempfile.gettempdir()) / "sky_claw"
+            skse_sandbox.mkdir(parents=True, exist_ok=True)
+
+            with tempfile.TemporaryDirectory(dir=skse_sandbox) as tmpdir:
+                tmp_path = pathlib.Path(tmpdir)
+                self._validator.validate(tmp_path)
+
+                archive_name = url.split("/")[-1]
+                archive_path = tmp_path / archive_name
+                self._validator.validate(archive_path)
+
+                # Descarga segura vía NetworkGateway con timeout
+                await self._download_skse_archive(session, cfg, archive_path)
+
+                # Extraer con protección zip-slip
+                extract_path = tmp_path / "extracted"
+                await _esperar_hilo_ininterrumpible(self._extract, archive_path, extract_path)
+
+                # Buscar loader excluyendo __MACOSX
+                skse_root = self._find_skse_root(extract_path, cfg)
+
+                # Copiar archivos al directorio del juego. `_copy_skse_files` solo toca
+                # nombres presentes en el payload nuevo (loader/dll de esta edición +
+                # Data) — no depende de que los DLL huérfanos ya estén borrados.
+                await self._copy_skse_files(skse_root, install_dir, cfg)
+
+                # LIMPIEZA DE DIRTY UPGRADES: recién acá, después de que la copia haya
+                # terminado sin excepción. Es el verdadero punto de no retorno: si se
+                # borrara antes y `_copy_skse_files` fallara a mitad de camino (disco
+                # lleno, permisos), el juego se queda sin la versión vieja Y sin la
+                # nueva completa, sin rollback que lo recupere. Corriendo al final, un
+                # fallo de copia deja los DLL de otra edición intactos y el juego sigue
+                # arrancando con el SKSE que tenía antes.
+                await self._cleanup_orphaned_skse_dlls(install_dir, cfg)
+
+            logger.info("SKSE %s instalado en %s", ed_key, loader_path)
             return InstallResult(
                 tool_name="SKSE",
                 exe_path=loader_path,
-                version="existing",
-                already_existed=True,
+                version=pathlib.Path(url).stem,
+                already_existed=False,
             )
-
-        url = _skse_cfg_field(cfg, "url")
-
-        # Solicitar aprobación HITL
-        decision = await self._hitl.request_approval(
-            request_id=f"install-skse-{ed_key}",
-            reason=f"Install SKSE for Skyrim {ed_key}?",
-            url=url,
-            detail=(f"URL: {url}\nLoader: {loader_name}\nDLL: {dll_name}\nSource: skse.silverlock.org (sitio oficial)"),
-            category="download",
-        )
-
-        if decision is not Decision.APPROVED:
-            raise ToolInstallError(f"SKSE installation denied by operator (decision={decision.value})")
-
-        # Staging: la MISMA raíz que `AppContext` registra en el PathValidator
-        # (`tempfile.gettempdir() / "sky_claw"`). Inventar otra —p. ej. C:/tmp— hace
-        # que el `validate(tmp_path)` de acá abajo falle siempre, porque esa ruta no
-        # es ninguna de las raíces del sandbox.
-        skse_sandbox = pathlib.Path(tempfile.gettempdir()) / "sky_claw"
-        skse_sandbox.mkdir(parents=True, exist_ok=True)
-
-        with tempfile.TemporaryDirectory(dir=skse_sandbox) as tmpdir:
-            tmp_path = pathlib.Path(tmpdir)
-            self._validator.validate(tmp_path)
-
-            archive_name = url.split("/")[-1]
-            archive_path = tmp_path / archive_name
-            self._validator.validate(archive_path)
-
-            # Descarga segura vía NetworkGateway con timeout
-            await self._download_skse_archive(session, cfg, archive_path)
-
-            # Extraer con protección zip-slip
-            extract_path = tmp_path / "extracted"
-            await asyncio.to_thread(self._extract, archive_path, extract_path)
-
-            # Buscar loader excluyendo __MACOSX
-            skse_root = self._find_skse_root(extract_path, cfg)
-
-            # Copiar archivos al directorio del juego. `_copy_skse_files` solo toca
-            # nombres presentes en el payload nuevo (loader/dll de esta edición +
-            # Data) — no depende de que los DLL huérfanos ya estén borrados.
-            await self._copy_skse_files(skse_root, install_dir, cfg)
-
-            # LIMPIEZA DE DIRTY UPGRADES: recién acá, después de que la copia haya
-            # terminado sin excepción. Es el verdadero punto de no retorno: si se
-            # borrara antes y `_copy_skse_files` fallara a mitad de camino (disco
-            # lleno, permisos), el juego se queda sin la versión vieja Y sin la
-            # nueva completa, sin rollback que lo recupere. Corriendo al final, un
-            # fallo de copia deja los DLL de otra edición intactos y el juego sigue
-            # arrancando con el SKSE que tenía antes.
-            await self._cleanup_orphaned_skse_dlls(install_dir, cfg)
-
-        logger.info("SKSE %s instalado en %s", ed_key, loader_path)
-        return InstallResult(
-            tool_name="SKSE",
-            exe_path=loader_path,
-            version=pathlib.Path(url).stem,
-            already_existed=False,
-        )
 
     async def _detect_skyrim_edition_from_exe(self, game_dir: pathlib.Path) -> tuple[SkyrimEdition, str]:
         """Deriva edición y versión exacta leyendo el PE del ejecutable en *game_dir*.
@@ -1217,8 +1472,10 @@ class ToolsInstaller:
                     # `copy2` es I/O de disco sincrónico: en árboles como el `Data/` de
                     # SKSE bloquea el event loop de NiceGUI (y con él las aprobaciones
                     # HITL) todo lo que dure la copia. Va al threadpool, igual que la
-                    # extracción.
-                    await asyncio.to_thread(shutil.copy2, item, target)
+                    # extracción, pero la espera no es cancelable: el hilo copia bajo
+                    # el lock y una cancelación no puede liberar el lock con la copia
+                    # a medias.
+                    await _esperar_hilo_ininterrumpible(shutil.copy2, item, target)
                     copied_count += 1
                     logger.debug("Copiado: %s → %s", item.name, target)
             elif item.is_dir() and item.name == "Data":
@@ -1230,7 +1487,7 @@ class ToolsInstaller:
 
                         self._assert_safe_copy_target(data_target, game_dir)
                         data_target.parent.mkdir(parents=True, exist_ok=True)
-                        await asyncio.to_thread(shutil.copy2, data_item, data_target)
+                        await _esperar_hilo_ininterrumpible(shutil.copy2, data_item, data_target)
                         copied_count += 1
                 logger.info("Copiada carpeta Data de SKSE")
 
@@ -1288,60 +1545,65 @@ class ToolsInstaller:
             :class:`InstallResult` with the path to ``BodySlide.exe``.
         """
         self._validator.validate(install_dir)
-        # Check if already installed
-        exe = find_exe_in_dir(install_dir, "BodySlide.exe")
-        if exe is not None:
-            logger.info("BodySlide already installed at %s", exe)
+        async with _bajo_lock_de_instalacion(
+            self._lock_manager,
+            _install_lock_resource_id(install_dir),
+            ttl=self._install_ttl,
+        ):
+            # Check if already installed
+            exe = find_exe_in_dir(install_dir, "BodySlide.exe")
+            if exe is not None:
+                logger.info("BodySlide already installed at %s", exe)
+                return InstallResult(
+                    tool_name="BodySlide",
+                    exe_path=exe,
+                    version="existing",
+                    already_existed=True,
+                )
+
+            if downloader is None:
+                raise ToolInstallError("BodySlide requires a NexusDownloader for installation (not on GitHub).")
+
+            # BodySlide is Mod ID 201 on SSE.
+            nexus_id = 201
+            logger.info("Fetching BodySlide metadata from Nexus (ID %d)...", nexus_id)
+            try:
+                file_info = await downloader.get_file_info(nexus_id, None, session)
+            except Exception as exc:
+                raise ToolInstallError(f"Failed to fetch BodySlide info from Nexus: {exc}") from exc
+
+            decision = await self._hitl.request_approval(
+                request_id=f"install-bodyslide-{file_info.file_id}",
+                reason=f"Install BodySlide and Outfit Studio (Nexus ID {nexus_id})?",
+                url=f"https://www.nexusmods.com/skyrimspecialedition/mods/{nexus_id}",
+                detail=(
+                    f"File: {file_info.file_name}\nSize: {file_info.size_bytes / (1024 * 1024):.1f} MB\nSource: Nexus Mods"
+                ),
+                category="download",
+            )
+            if decision is not Decision.APPROVED:
+                raise ToolInstallError(f"BodySlide installation denied by operator (decision={decision.value})")
+
+            # Download to staging dir first (as per NexusDownloader logic)
+            archive_path = await downloader.download(file_info, session)
+
+            # Extract into the specialized tools directory
+            await _esperar_hilo_ininterrumpible(self._extract, archive_path, install_dir)
+
+            # Cleanup archive in staging
+            archive_path.unlink(missing_ok=True)
+
+            exe = find_exe_in_dir(install_dir, "BodySlide.exe")
+            if exe is None:
+                raise ToolInstallError("BodySlide extraction succeeded but BodySlide.exe not found in output")
+
+            logger.info("BodySlide installed at %s", exe)
             return InstallResult(
                 tool_name="BodySlide",
                 exe_path=exe,
-                version="existing",
-                already_existed=True,
+                version="Nexus",
+                already_existed=False,
             )
-
-        if downloader is None:
-            raise ToolInstallError("BodySlide requires a NexusDownloader for installation (not on GitHub).")
-
-        # BodySlide is Mod ID 201 on SSE.
-        nexus_id = 201
-        logger.info("Fetching BodySlide metadata from Nexus (ID %d)...", nexus_id)
-        try:
-            file_info = await downloader.get_file_info(nexus_id, None, session)
-        except Exception as exc:
-            raise ToolInstallError(f"Failed to fetch BodySlide info from Nexus: {exc}") from exc
-
-        decision = await self._hitl.request_approval(
-            request_id=f"install-bodyslide-{file_info.file_id}",
-            reason=f"Install BodySlide and Outfit Studio (Nexus ID {nexus_id})?",
-            url=f"https://www.nexusmods.com/skyrimspecialedition/mods/{nexus_id}",
-            detail=(
-                f"File: {file_info.file_name}\nSize: {file_info.size_bytes / (1024 * 1024):.1f} MB\nSource: Nexus Mods"
-            ),
-            category="download",
-        )
-        if decision is not Decision.APPROVED:
-            raise ToolInstallError(f"BodySlide installation denied by operator (decision={decision.value})")
-
-        # Download to staging dir first (as per NexusDownloader logic)
-        archive_path = await downloader.download(file_info, session)
-
-        # Extract into the specialized tools directory
-        await asyncio.to_thread(self._extract, archive_path, install_dir)
-
-        # Cleanup archive in staging
-        archive_path.unlink(missing_ok=True)
-
-        exe = find_exe_in_dir(install_dir, "BodySlide.exe")
-        if exe is None:
-            raise ToolInstallError("BodySlide extraction succeeded but BodySlide.exe not found in output")
-
-        logger.info("BodySlide installed at %s", exe)
-        return InstallResult(
-            tool_name="BodySlide",
-            exe_path=exe,
-            version="Nexus",
-            already_existed=False,
-        )
 
     async def ensure_ngio(
         self,
@@ -1466,36 +1728,46 @@ class ToolsInstaller:
         release trae varios builds); si no, usa *keyword*.
         """
         mod_dir = mods_dir / mod_name
-        existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob)
-        if existing is not None:
-            return existing
+        # Lock por mod_dir, NO global: un componente no debe frenar a otro.
+        # Reentrante: ``ensure_ngio`` pre-toma este lock via ContextVar si la
+        # misma cadena de llamadas ya lo tiene.
+        async with _bajo_lock_de_instalacion(
+            self._lock_manager,
+            _install_lock_resource_id(mod_dir),
+            ttl=self._install_ttl,
+        ):
+            existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob)
+            if existing is not None:
+                return existing
 
-        asset, version = await self._find_github_asset(session, releases_url, keyword=keyword, select=asset_select)
+            asset, version = await self._find_github_asset(session, releases_url, keyword=keyword, select=asset_select)
 
-        decision = await self._hitl.request_approval(
-            request_id=f"install-{request_slug}-{version}",
-            reason=f"¿Instalar el mod {mod_name} {version}?",
-            url=asset.browser_download_url,
-            detail=(f"Asset: {asset.name}\nSize: {asset.size / (1024 * 1024):.1f} MB\nSource: {source_hint}"),
-            category="download",
-        )
-        if decision is not Decision.APPROVED:
-            raise ToolInstallError(f"Instalación de {mod_name} denegada por el operador (decision={decision.value})")
+            decision = await self._hitl.request_approval(
+                request_id=f"install-{request_slug}-{version}",
+                reason=f"¿Instalar el mod {mod_name} {version}?",
+                url=asset.browser_download_url,
+                detail=(f"Asset: {asset.name}\nSize: {asset.size / (1024 * 1024):.1f} MB\nSource: {source_hint}"),
+                category="download",
+            )
+            if decision is not Decision.APPROVED:
+                raise ToolInstallError(
+                    f"Instalación de {mod_name} denegada por el operador (decision={decision.value})"
+                )
 
-        archive = await self._download_asset(
-            session,
-            asset,
-            mod_dir,
-            expected_sha256=_PINNED_SHA256.get(asset.name),
-        )
-        await asyncio.to_thread(self._extract, archive, mod_dir)
-        archive.unlink(missing_ok=True)
-        _flatten_single_root(mod_dir)
-        self._verify_mod_payload(mod_dir, mod_name, sentinel_glob)
-        _write_mod_meta_ini(mod_dir, mod_name, version)
+            archive = await self._download_asset(
+                session,
+                asset,
+                mod_dir,
+                expected_sha256=_PINNED_SHA256.get(asset.name),
+            )
+            await _esperar_hilo_ininterrumpible(self._extract, archive, mod_dir)
+            archive.unlink(missing_ok=True)
+            _flatten_single_root(mod_dir)
+            self._verify_mod_payload(mod_dir, mod_name, sentinel_glob)
+            _write_mod_meta_ini(mod_dir, mod_name, version)
 
-        logger.info("%s %s instalado como mod en %s", mod_name, version, mod_dir)
-        return ModInstallResult(mod_name=mod_name, mod_dir=mod_dir, version=version, already_existed=False)
+            logger.info("%s %s instalado como mod en %s", mod_name, version, mod_dir)
+            return ModInstallResult(mod_name=mod_name, mod_dir=mod_dir, version=version, already_existed=False)
 
     async def _ensure_nexus_mod(
         self,
@@ -1516,56 +1788,64 @@ class ToolsInstaller:
         file primary de :meth:`NexusDownloader.get_file_info`.
         """
         mod_dir = mods_dir / mod_name
-        existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob)
-        if existing is not None:
-            return existing
+        # Lock por mod_dir, NO global; reentrante via ContextVar (idem _ensure_github_mod).
+        async with _bajo_lock_de_instalacion(
+            self._lock_manager,
+            _install_lock_resource_id(mod_dir),
+            ttl=self._install_ttl,
+        ):
+            existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob)
+            if existing is not None:
+                return existing
 
-        try:
-            file_id: int | None = None
-            if select_file is not None:
-                files = await downloader.list_files(nexus_id, session)
-                file_id = select_file(files)
-            file_info = await downloader.get_file_info(nexus_id, file_id, session)
-        except ToolInstallError:
-            raise
-        except Exception as exc:
-            raise ToolInstallError(
-                f"No pude obtener metadata de Nexus para {mod_name} (mod {nexus_id}): {exc}"
-            ) from exc
+            try:
+                file_id: int | None = None
+                if select_file is not None:
+                    files = await downloader.list_files(nexus_id, session)
+                    file_id = select_file(files)
+                file_info = await downloader.get_file_info(nexus_id, file_id, session)
+            except ToolInstallError:
+                raise
+            except Exception as exc:
+                raise ToolInstallError(
+                    f"No pude obtener metadata de Nexus para {mod_name} (mod {nexus_id}): {exc}"
+                ) from exc
 
-        decision = await self._hitl.request_approval(
-            request_id=f"install-{request_slug}-{file_info.file_id}",
-            reason=f"¿Instalar el mod {mod_name} (Nexus ID {nexus_id})?",
-            url=f"https://www.nexusmods.com/skyrimspecialedition/mods/{nexus_id}",
-            detail=(
-                f"File: {file_info.file_name}\nSize: {file_info.size_bytes / (1024 * 1024):.1f} MB\nSource: Nexus Mods"
-            ),
-            category="download",
-        )
-        if decision is not Decision.APPROVED:
-            raise ToolInstallError(f"Instalación de {mod_name} denegada por el operador (decision={decision.value})")
+            decision = await self._hitl.request_approval(
+                request_id=f"install-{request_slug}-{file_info.file_id}",
+                reason=f"¿Instalar el mod {mod_name} (Nexus ID {nexus_id})?",
+                url=f"https://www.nexusmods.com/skyrimspecialedition/mods/{nexus_id}",
+                detail=(
+                    f"File: {file_info.file_name}\nSize: {file_info.size_bytes / (1024 * 1024):.1f} MB\nSource: Nexus Mods"
+                ),
+                category="download",
+            )
+            if decision is not Decision.APPROVED:
+                raise ToolInstallError(
+                    f"Instalación de {mod_name} denegada por el operador (decision={decision.value})"
+                )
 
-        # Pin de SHA-256 keyed por file_name: NexusDownloader.download ya
-        # enforcea FileInfo.sha256 (HashValidationError + cleanup del parcial).
-        pin = _PINNED_SHA256.get(file_info.file_name)
-        if pin:
-            file_info = replace(file_info, sha256=pin)
+            # Pin de SHA-256 keyed por file_name: NexusDownloader.download ya
+            # enforcea FileInfo.sha256 (HashValidationError + cleanup del parcial).
+            pin = _PINNED_SHA256.get(file_info.file_name)
+            if pin:
+                file_info = replace(file_info, sha256=pin)
 
-        archive = await downloader.download(file_info, session)
-        mod_dir.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(self._extract, archive, mod_dir)
-        archive.unlink(missing_ok=True)
-        _flatten_single_root(mod_dir)
-        self._verify_mod_payload(mod_dir, mod_name, sentinel_glob)
-        _write_mod_meta_ini(mod_dir, mod_name, file_info.file_name)
+            archive = await downloader.download(file_info, session)
+            mod_dir.mkdir(parents=True, exist_ok=True)
+            await _esperar_hilo_ininterrumpible(self._extract, archive, mod_dir)
+            archive.unlink(missing_ok=True)
+            _flatten_single_root(mod_dir)
+            self._verify_mod_payload(mod_dir, mod_name, sentinel_glob)
+            _write_mod_meta_ini(mod_dir, mod_name, file_info.file_name)
 
-        logger.info("%s (%s) instalado como mod en %s", mod_name, file_info.file_name, mod_dir)
-        return ModInstallResult(
-            mod_name=mod_name,
-            mod_dir=mod_dir,
-            version=file_info.file_name,
-            already_existed=False,
-        )
+            logger.info("%s (%s) instalado como mod en %s", mod_name, file_info.file_name, mod_dir)
+            return ModInstallResult(
+                mod_name=mod_name,
+                mod_dir=mod_dir,
+                version=file_info.file_name,
+                already_existed=False,
+            )
 
     async def _find_github_asset(
         self,

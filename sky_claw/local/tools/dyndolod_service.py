@@ -38,7 +38,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODRunner,
     DynDOLODTimeoutError,
 )
-from sky_claw.local.tools.output_targets import dyndolod_staging_roots
+from sky_claw.local.tools.output_targets import dyndolod_output_target
 
 if TYPE_CHECKING:
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
@@ -52,7 +52,13 @@ def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) ->
     Mismo criterio que ``loot_service``/``xedit_service``/``synthesis_service``
     (T-16b/T-16c): un semáforo verde no ensucia el dict; amarillo/rojo viajan
     como ``result["preflight"]`` para que el panel vivo lo renderice.
+
+    También fija ``assisted`` UNA sola vez: la etapa 9 es asistida en TODOS los
+    retornos (éxito, error de dominio, fallos tempranos), así que el consumidor
+    del resultado no tiene que interpretar la ausencia de la clave. El retorno
+    de preflight en rojo también pasa por acá para el mismo contrato.
     """
+    result.setdefault("assisted", True)
     if report is not None and report.status.value != "green":
         result["preflight"] = report.to_dict()
     return result
@@ -237,22 +243,16 @@ class DynDOLODPipelineService:
     def _permission_targets(self) -> list[pathlib.Path]:
         """Rutas que DynDOLOD reescribe, resueltas EN CADA corrida (review #311).
 
-        - ``mods/`` (padre donde crea los mods) + los mod dirs empaquetados
+        - ``mods/`` (padre donde empaqueta los mods) + los mod dirs empaquetados
           (``DynDOLOD Output``/``TexGen Output``).
-        - El **staging crudo** (``DynDOLOD_Output``/``TexGen_Output``) que la
-          herramienta crea/reusa bajo las raíces de
-          ``output_targets.dyndolod_staging_roots`` (raíz MO2, dir del exe y
-          ``cwd``): su padre debe ser escribible para crearlo, y un staging
-          existente read-only mata el run tras la generación.
-
-        El ``cwd`` **entró** en U-01 parte 2 (review CodeRabbit #388): este método
-        lo excluía afirmando que no era el cwd del subproceso, y eso es falso —
-        ``DynDOLODRunner._execute_process`` no le pasa ``cwd=`` al
-        ``create_subprocess_exec``, así que el hijo hereda el de este proceso. Se
-        sondeaba de menos: un staging read-only ahí mataba el run sin que el
-        preflight lo viera. Compartir el resolver con
-        ``_find_texgen_output``/``_find_dyndolod_output`` es lo que garantiza que
-        ambos miren el mismo conjunto de raíces.
+        - El **staging crudo** bajo la raíz administrada única
+          (``output_targets.dyndolod_output_target`` → ``game/DynDOLOD``):
+          ``root.parent`` (para poder CREAR la raíz en el primer run, cuando
+          ``root`` todavía no existe y el checker se salta las inexistentes),
+          ``root``, ``root/DynDOLOD_Output`` y ``root/TexGen_Output``. Con
+          ``-o:`` el subproceso escribe SOLO ahí — el cwd, el dir del exe y la
+          raíz MO2 dejaron de ser raíces de staging, así que tampoco se sondean
+          (la adivinanza de 3 raíces murió con ``-o:``).
 
         ``WritePermissionsChecker`` sondea solo los dirs existentes, así que
         incluir rutas aún inexistentes es seguro (se saltan) y las que aparezcan
@@ -263,18 +263,32 @@ class DynDOLODPipelineService:
         if isinstance(mods, pathlib.Path):
             candidates += [mods, mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME, mods / DynDOLODRunner.TEXGEN_MOD_NAME]
 
-        mo2 = self._path_resolver.get_mo2_path()
-        exe = self._path_resolver.get_dyndolod_exe()
-        roots = dyndolod_staging_roots(
-            mo2=mo2 if isinstance(mo2, pathlib.Path) else None,
-            exe=exe if isinstance(exe, pathlib.Path) else None,
-            cwd=pathlib.Path.cwd(),
-        )
-        for root in roots:
-            candidates += [root, root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME, root / DynDOLODRunner.TEXGEN_OUTPUT_NAME]
+        game = self._path_resolver.get_skyrim_path()
+        root = dyndolod_output_target(game=game if isinstance(game, pathlib.Path) else None)
+        if root is not None:
+            candidates += [
+                root.parent,  # para poder CREAR la raíz (primer run: root no existe)
+                root,
+                root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME,
+                root / DynDOLODRunner.TEXGEN_OUTPUT_NAME,
+            ]
 
         seen: set[pathlib.Path] = set()
         return [p for p in candidates if not (p in seen or seen.add(p))]
+
+    def _primera_ruta_de_config_faltante(self, runner: DynDOLODRunner) -> pathlib.Path | None:
+        """Primera ruta declarada por la config del runner que no existe (o ``None``).
+
+        ``data_dir`` tiene default derivado (siempre se chequea); ``ini_dir``/
+        ``plugins_file`` solo cuando el operador los configuró. Las no declaradas
+        las resuelve la herramienta por registro — el chequeo no puede opinar
+        sobre lo que no se le dijo.
+        """
+        config = runner._config
+        for ruta in (config.data_dir, config.ini_dir, config.plugins_file):
+            if ruta is not None and not ruta.exists():
+                return ruta
+        return None
 
     # ------------------------------------------------------------------
     # Caja negra de vuelo (T-26/T-28, ADR 0002) — espejo de xedit_service
@@ -450,14 +464,16 @@ class DynDOLODPipelineService:
             if preflight_report.blocks_mutations:
                 red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
                 logger.warning("DynDOLOD (stage 9) bloqueado por preflight en rojo: %s", red)
-                return {
-                    "status": "error",
-                    "success": False,
-                    "reason": "PreflightBlocked",
-                    "message": f"Preflight en rojo, DynDOLOD cancelado: {red}",
-                    "errors": [red],
-                    "preflight": preflight_report.to_dict(),
-                }
+                return _attach_preflight(
+                    {
+                        "status": "error",
+                        "success": False,
+                        "reason": "PreflightBlocked",
+                        "message": f"Preflight en rojo, DynDOLOD cancelado: {red}",
+                        "errors": [red],
+                    },
+                    preflight_report,
+                )
 
         start_time = time.monotonic()
         rolled_back = False
@@ -507,6 +523,36 @@ class DynDOLODPipelineService:
                 preflight_report,
             )
 
+        # Rutas de config: fallar rápido ANTES del lock. Un fallo acá cuesta
+        # segundos; el mismo fallo adentro cuesta un diálogo modal de la
+        # herramienta y horas de timeout. Se chequea SOLO lo declarado: una ruta
+        # no declarada la resuelve la herramienta por registro (frágil en el rig
+        # con Documentos redirigida a OneDrive — por eso se declara).
+        ruta_faltante = self._primera_ruta_de_config_faltante(runner)
+        if ruta_faltante is not None:
+            msg = f"Ruta declarada por la configuración de DynDOLOD no existe: {ruta_faltante}"
+            duration = time.monotonic() - start_time
+            logger.error("DynDOLOD (stage 9): %s", msg)
+            await self._publish_completed(
+                preset=preset,
+                run_texgen=run_texgen,
+                success=False,
+                texgen_success=False,
+                dyndolod_success=False,
+                errors=(msg,),
+                duration_seconds=duration,
+                rolled_back=False,
+            )
+            return _attach_preflight(
+                {
+                    "success": False,
+                    "message": msg,
+                    "errors": [msg],
+                    "duration_seconds": duration,
+                },
+                preflight_report,
+            )
+
         # DD-1: Directorios regenerados a proteger con rollback move-aside.
         # El backend de snapshots es copy-based/solo-archivos y ``Output/`` puede
         # pesar varios GB; renombrar el dir aparte es O(1) y da rollback real
@@ -531,14 +577,13 @@ class DynDOLODPipelineService:
         if run_texgen:
             manifest_targets.append(mods_path / DynDOLODRunner.TEXGEN_MOD_NAME)
             _staging_names.append(DynDOLODRunner.TEXGEN_OUTPUT_NAME)
-        _exe = runner._config.dyndolod_exe
-        _staging_roots = [
-            root
-            for root in (runner._config.mo2_path, _exe.parent if isinstance(_exe, pathlib.Path) else None)
-            if isinstance(root, pathlib.Path)
-        ]
-        for _root in _staging_roots:
-            manifest_targets += [_root / _name for _name in _staging_names]
+        # Staging crudo bajo la raíz administrada única (-o:): los candidatos que
+        # el runner resuelve (subcarpeta por staging + la raíz como fallback
+        # acotado). Ya no se enumeran raíces ajenas (mo2/exe/cwd).
+        _staging_root = runner._config.output_root
+        if _staging_root is not None:
+            manifest_targets += [_staging_root / _name for _name in _staging_names]
+            manifest_targets.append(_staging_root)
 
         # Cobertura honesta: DynDOLOD/TexGen también escriben staging crudo. Esas
         # ubicaciones pueden ser compartidas y todavía no están bajo move-aside;
@@ -903,10 +948,11 @@ class DynDOLODPipelineService:
     # ------------------------------------------------------------------
 
     async def _publish_started(self, *, preset: str, run_texgen: bool) -> None:
-        """Publica evento de inicio del pipeline."""
+        """Publica evento de inicio del pipeline (etapa 9 ASISTIDA)."""
         payload = DynDOLODPipelineStartedPayload(
             preset=preset,
             run_texgen=run_texgen,
+            assisted=True,
         )
         await self._event_bus.publish(
             Event(

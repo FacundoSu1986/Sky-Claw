@@ -61,7 +61,23 @@ def hitl_guard() -> HITLGuard:
 
 @pytest.fixture
 def installer(hitl_guard: HITLGuard, gateway: NetworkGateway, validator: PathValidator) -> ToolsInstaller:
-    return ToolsInstaller(hitl=hitl_guard, gateway=gateway, path_validator=validator)
+    # Lock mockeado: el mecanismo real cross-process lo valida el test de
+    # contención (test_tools_installer_lock_contencion.py). Acá basta con que
+    # los ensure_* adquieran y liberen; un DistributedLockManager real exigiría
+    # initialize() que no corre en fixtures síncronas.
+    lock_manager = MagicMock()
+    lock_manager.acquire_lock = AsyncMock(
+        return_value=MagicMock(resource_id="tools-install:test", agent_id="tools-installer")
+    )
+    lock_manager.release_lock = AsyncMock(return_value=True)
+    lock_manager.renew_lock = AsyncMock(return_value=True)
+    return ToolsInstaller(
+        hitl=hitl_guard,
+        gateway=gateway,
+        path_validator=validator,
+        lock_manager=lock_manager,
+        install_ttl=60.0,
+    )
 
 
 def _github_release_json(
@@ -969,40 +985,54 @@ class TestSetupToolsTool:
         masterlist = MasterlistClient(gateway=gw, api_key="fake")
         sync_engine = SyncEngine(mo2=mo2, masterlist=masterlist, registry=db)
 
-        guard = HITLGuard(notify_fn=None, timeout=5)
-        ti = ToolsInstaller(hitl=guard, gateway=gw, path_validator=validator)
+        from sky_claw.app.db.locks import DistributedLockManager
 
-        install_dir = tmp_path / "tools"
-        install_dir.mkdir()
-
-        # Pre-create the executables so ensure_loot/ensure_xedit find them.
-        loot_dir = install_dir / "LOOT"
-        loot_dir.mkdir()
-        (loot_dir / "loot.exe").write_text("fake", encoding="utf-8")
-
-        xedit_dir = install_dir / "SSEEdit"
-        xedit_dir.mkdir()
-        (xedit_dir / "SSEEdit.exe").write_text("fake", encoding="utf-8")
-
-        registry = AsyncToolRegistry(
-            registry=db,
-            mo2=mo2,
-            sync_engine=sync_engine,
-            hitl=guard,
-            tools_installer=ti,
-            install_dir=install_dir,
-            gateway=gw,  # TASK-013 P1: Zero-Trust requires gateway
+        lock_mgr = DistributedLockManager(
+            tmp_path / "test_locks.db",
+            default_ttl=60.0,
+            max_retries=1,
+            backoff_base=0.01,
+            backoff_max=0.01,
         )
+        # El try abre ANTES del initialize: si abre la conexion y despues falla,
+        # el finally tiene que cerrar igual el manager y la DB.
+        try:
+            await lock_mgr.initialize()
+            guard = HITLGuard(notify_fn=None, timeout=5)
+            ti = ToolsInstaller(hitl=guard, gateway=gw, path_validator=validator, lock_manager=lock_mgr)
 
-        result_str = await registry.execute("setup_tools", {"tools": ["loot", "xedit"]})
-        result = json.loads(result_str)
+            install_dir = tmp_path / "tools"
+            install_dir.mkdir()
 
-        assert result["loot"]["status"] == "already_installed"
-        assert result["xedit"]["status"] == "already_installed"
-        assert "loot.exe" in result["loot"]["exe_path"]
-        assert "SSEEdit.exe" in result["xedit"]["exe_path"]
+            # Se crean los ejecutables de antemano para que ensure_loot/ensure_xedit los encuentren.
+            loot_dir = install_dir / "LOOT"
+            loot_dir.mkdir()
+            (loot_dir / "loot.exe").write_text("fake", encoding="utf-8")
 
-        await db.close()
+            xedit_dir = install_dir / "SSEEdit"
+            xedit_dir.mkdir()
+            (xedit_dir / "SSEEdit.exe").write_text("fake", encoding="utf-8")
+
+            registry = AsyncToolRegistry(
+                registry=db,
+                mo2=mo2,
+                sync_engine=sync_engine,
+                hitl=guard,
+                tools_installer=ti,
+                install_dir=install_dir,
+                gateway=gw,  # TASK-013 P1: Zero-Trust requires gateway
+            )
+
+            result_str = await registry.execute("setup_tools", {"tools": ["loot", "xedit"]})
+            result = json.loads(result_str)
+
+            assert result["loot"]["status"] == "already_installed"
+            assert result["xedit"]["status"] == "already_installed"
+            assert "loot.exe" in result["loot"]["exe_path"]
+            assert "SSEEdit.exe" in result["xedit"]["exe_path"]
+        finally:
+            await lock_mgr.close()
+            await db.close()
 
     @pytest.mark.asyncio
     async def test_setup_tools_no_installer_returns_error(self, tmp_path: pathlib.Path) -> None:
@@ -1058,25 +1088,41 @@ class TestSetupToolsTool:
         masterlist = MasterlistClient(gateway=gw, api_key="fake")
         sync_engine = SyncEngine(mo2=mo2, masterlist=masterlist, registry=db)
 
-        guard = HITLGuard(notify_fn=None, timeout=5)
-        ti = ToolsInstaller(hitl=guard, gateway=gw, path_validator=validator)
+        from sky_claw.app.db.locks import DistributedLockManager
 
-        registry = AsyncToolRegistry(
-            registry=db,
-            mo2=mo2,
-            sync_engine=sync_engine,
-            hitl=guard,
-            tools_installer=ti,
-            install_dir=tmp_path,
-            gateway=gw,  # TASK-013 P1: Zero-Trust requires gateway
+        lock_mgr = DistributedLockManager(
+            tmp_path / "test_locks2.db",
+            default_ttl=60.0,
+            max_retries=1,
+            backoff_base=0.01,
+            backoff_max=0.01,
         )
+        # El try abre ANTES del initialize y cubre tambien el cierre de la DB:
+        # un fallo de initialize() —o de registry.execute()— dejaba abiertos el
+        # manager y la base.
+        try:
+            await lock_mgr.initialize()
+            guard = HITLGuard(notify_fn=None, timeout=5)
+            ti = ToolsInstaller(hitl=guard, gateway=gw, path_validator=validator, lock_manager=lock_mgr)
 
-        result_str = await registry.execute("setup_tools", {"tools": ["unknown_tool"]})
-        result = json.loads(result_str)
-        assert "unknown_tool" in result
-        assert "error" in result["unknown_tool"]
+            registry = AsyncToolRegistry(
+                registry=db,
+                mo2=mo2,
+                sync_engine=sync_engine,
+                hitl=guard,
+                tools_installer=ti,
+                install_dir=tmp_path,
+                gateway=gw,  # TASK-013 P1: Zero-Trust requires gateway
+            )
 
-        await db.close()
+            result_str = await registry.execute("setup_tools", {"tools": ["unknown_tool"]})
+
+            result = json.loads(result_str)
+            assert "unknown_tool" in result
+            assert "error" in result["unknown_tool"]
+        finally:
+            await lock_mgr.close()
+            await db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1755,7 +1801,10 @@ class TestEnsureSkse:
         game_dir.mkdir()
         afuera = tmp_path / "afuera.dll"
         afuera.write_bytes(b"victima")
-        (game_dir / "skse64_1_6_1170.dll").symlink_to(afuera)
+        try:
+            (game_dir / "skse64_1_6_1170.dll").symlink_to(afuera)
+        except (OSError, NotImplementedError):
+            pytest.skip("crear symlinks requiere privilegios no disponibles en este entorno")
 
         with pytest.raises(ToolInstallError, match="enlace"):
             await installer._copy_skse_files(self._payload(tmp_path), game_dir, tools_installer.SKSE_CONFIG["AE"])
@@ -1771,7 +1820,10 @@ class TestEnsureSkse:
         game_dir.mkdir()
         vecino = game_dir / "otro.dll"
         vecino.write_bytes(b"vecino")
-        (game_dir / "skse64_1_6_1170.dll").symlink_to(vecino)
+        try:
+            (game_dir / "skse64_1_6_1170.dll").symlink_to(vecino)
+        except (OSError, NotImplementedError):
+            pytest.skip("crear symlinks requiere privilegios no disponibles en este entorno")
 
         with pytest.raises(ToolInstallError, match="enlace"):
             await installer._copy_skse_files(self._payload(tmp_path), game_dir, tools_installer.SKSE_CONFIG["AE"])
@@ -1787,7 +1839,10 @@ class TestEnsureSkse:
         game_dir.mkdir()
         afuera = tmp_path / "data_afuera"
         afuera.mkdir()
-        (game_dir / "Data").symlink_to(afuera, target_is_directory=True)
+        try:
+            (game_dir / "Data").symlink_to(afuera, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("crear symlinks requiere privilegios no disponibles en este entorno")
 
         skse_root = self._payload(tmp_path)
         scripts = skse_root / "Data" / "Scripts"

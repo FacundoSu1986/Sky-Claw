@@ -29,7 +29,7 @@ from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.output_targets import (
     bashed_patch_target,
     bodyslide_output_target,
-    dyndolod_staging_roots,
+    dyndolod_output_target,
     pandora_output_target,
     synthesis_output_target,
 )
@@ -90,17 +90,8 @@ def test_la_enumeracion_cubre_toda_la_familia() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wrye Bash — el destino es el Data del juego, no el overwrite
+# DynDOLOD — salida determinista bajo la raíz administrada (-o:)
 # ---------------------------------------------------------------------------
-
-
-def _resolver_dyndolod(*, mo2: pathlib.Path, exe: pathlib.Path) -> MagicMock:
-    """Resolver mínimo para ``DynDOLODPipelineService._permission_targets``."""
-    resolver = MagicMock()
-    resolver.get_mo2_mods_path.return_value = mo2 / "mods"
-    resolver.get_mo2_path.return_value = mo2
-    resolver.get_dyndolod_exe.return_value = exe
-    return resolver
 
 
 def _resolver(*, game: pathlib.Path | None = None, mo2: pathlib.Path | None = None) -> MagicMock:
@@ -182,35 +173,23 @@ def test_pandora_service_sondea_solo_el_destino_administrado(tmp_path: pathlib.P
 # ---------------------------------------------------------------------------
 
 
-def test_dyndolod_incluye_el_cwd_y_los_dos_hermanos_coinciden(tmp_path: pathlib.Path) -> None:
-    """El ``cwd`` es raíz legítima de staging, y AMBOS hermanos la miran.
+def test_dyndolod_salida_determinista_bajo_la_raiz(tmp_path: pathlib.Path) -> None:
+    """Con ``-o:`` la salida es determinista: 2 candidatos bajo la raíz administrada.
 
-    ``DynDOLODRunner._execute_process`` llama a ``create_subprocess_exec`` **sin**
-    ``cwd=``, así que el subproceso hereda el de este proceso: un staging ahí SÍ
-    puede ser salida del run. ``dyndolod_service._permission_targets`` afirmaba lo
-    contrario y por eso sondeaba de menos (un staging read-only ahí mata el run
-    tras la generación, sin que el preflight lo vea).
-
-    La parte que ancla la CLASE de defecto es la tercera aserción: las raíces que
-    usa el sondeo de permisos y las que usa la búsqueda de salida salen del mismo
-    resolver. Sacar el ``cwd`` de un solo lado —o agregarle una raíz nueva a uno
-    solo— rompe acá antes de llegar a producción.
+    Interpretación A (primaria): la herramienta crea su carpeta
+    (``DynDOLOD_Output``/``TexGen_Output``) DENTRO del ``-o:`` — el layout por
+    default lo confirma. Interpretación B (fallback acotado a la raíz): escribe
+    directo. El cwd / dir del exe / raíz MO2 ya NO son raíces de staging: el
+    subproceso recibe ``-o:`` y escribe solo en la raíz administrada.
     """
     mo2 = tmp_path / "mo2"
     exe_dir = tmp_path / "dyndolod"
-    cwd = tmp_path / "cwd"
-    staging = cwd / "DynDOLOD_Output"
-    staging.mkdir(parents=True)
-    (staging / "DynDOLOD.esp").write_text("salida real del run", encoding="utf-8")
     mo2.mkdir()
     exe_dir.mkdir()
     game = tmp_path / "game"
     game.mkdir()
     exe = exe_dir / "DynDOLODx64.exe"
     exe.write_text("", encoding="utf-8")
-
-    raices = dyndolod_staging_roots(mo2=mo2, exe=exe, cwd=cwd)
-    assert raices == [mo2, exe_dir, cwd]
 
     runner = DynDOLODRunner(
         DynDOLODConfig(
@@ -220,24 +199,103 @@ def test_dyndolod_incluye_el_cwd_y_los_dos_hermanos_coinciden(tmp_path: pathlib.
             dyndolod_exe=exe,
         )
     )
-    with patch("pathlib.Path.cwd", return_value=cwd):
-        assert runner._find_dyndolod_output() == staging
-        assert runner._find_texgen_output() is None  # TexGen_Output no existe
+    root = runner._config.output_root
+    assert root == game.resolve() / "DynDOLOD"
 
-        # Los dos hermanos, sobre el mismo entorno: las raíces del sondeo de
-        # permisos contienen exactamente las de la búsqueda de salida.
-        svc = DynDOLODPipelineService(
-            lock_manager=MagicMock(),
-            snapshot_manager=MagicMock(),
-            journal=MagicMock(),
-            path_resolver=_resolver_dyndolod(mo2=mo2, exe=exe),
-            event_bus=MagicMock(),
+    # Sin nada en disco: los stagings se resuelven como candidatos bajo la raíz.
+    assert runner._find_dyndolod_output() == root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert runner._find_texgen_output() == root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+
+    # Interpretación A: la herramienta crea la subcarpeta dentro del -o:.
+    staging = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    staging.mkdir(parents=True)
+    (staging / "DynDOLOD.esp").write_text("salida real", encoding="utf-8")
+    assert runner._find_dyndolod_output() == staging
+
+    # Interpretación B: escribe directo en la raíz (fallback acotado).
+    (staging / "DynDOLOD.esp").unlink()
+    staging.rmdir()
+    (root / "DynDOLOD.esp").write_text("directo", encoding="utf-8")
+    assert runner._find_dyndolod_output() == root
+
+
+def test_dyndolod_preflight_sondea_los_mismos_candidatos_que_el_runner(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Los dos hermanos: el sondeo de permisos y la búsqueda de salida miran la
+    MISMA raíz administrada (la propiedad que el ancla viejo fijaba con el cwd).
+
+    La parte que ancla la CLASE de defecto: sacar la raíz de un solo lado —o
+    agregarle una raíz nueva a uno solo— rompe acá antes de llegar a producción.
+    """
+    game = tmp_path / "game"
+    game.mkdir()
+    mo2 = tmp_path / "mo2"
+    (mo2 / "mods").mkdir(parents=True)
+    exe_dir = tmp_path / "dyndolod"
+    exe_dir.mkdir()
+    exe = exe_dir / "DynDOLODx64.exe"
+    exe.write_text("", encoding="utf-8")
+
+    resolver = _resolver(game=game, mo2=mo2)
+    resolver.get_mo2_mods_path.return_value = mo2 / "mods"
+    resolver.get_dyndolod_exe.return_value = exe
+
+    svc = DynDOLODPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=MagicMock(),
+        path_resolver=resolver,
+        event_bus=MagicMock(),
+    )
+    runner = DynDOLODRunner(
+        DynDOLODConfig(
+            game_path=game,
+            mo2_path=mo2,
+            mo2_mods_path=mo2 / "mods",
+            dyndolod_exe=exe,
         )
-        targets = svc._permission_targets()
-        buscadas = set(runner._staging_search_paths(DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME))
-        buscadas.update(runner._staging_search_paths(DynDOLODRunner.TEXGEN_OUTPUT_NAME))
+    )
 
-    assert buscadas <= set(targets), "el preflight no sondea donde el runner busca la salida"
+    targets = svc._permission_targets()
+    root = runner._config.output_root
+    assert root is not None
+    assert root.parent in targets  # para poder CREAR la raíz en el primer run
+    assert root in targets
+    assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME in targets
+    assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME in targets
+    # Las raíces ajenas (dir del exe / raíz MO2 / cwd) ya no se sondean.
+    assert exe_dir not in targets
+    assert mo2 not in targets
+
+
+def test_dyndolod_tiene_una_raiz_administrada_unica(tmp_path: pathlib.Path) -> None:
+    """La salida de DynDOLOD/TexGen vive bajo UNA raíz administrada (patrón Pandora).
+
+    Los binarios la reciben vía ``-o:`` (patrón (b): ruta explícita en el comando),
+    así que el destino deja de depender del cwd/dir del exe/raíz MO2 del proceso.
+    ``None`` sin juego, mismo contrato que ``pandora_output_target``.
+    """
+    game = tmp_path / "segmento" / ".." / "game"
+
+    assert dyndolod_output_target(game=game) == game.resolve() / "DynDOLOD"
+    assert dyndolod_output_target(game=None) is None
+
+
+def test_dyndolod_staging_cuelga_de_la_raiz(tmp_path: pathlib.Path) -> None:
+    """Los dos stagings de la herramienta viven bajo la raíz administrada.
+
+    Ancla los nombres: la herramienta crea ``DynDOLOD_Output``/``TexGen_Output``
+    DENTRO del valor de ``-o:`` (el layout por default —junto al exe— lo confirma).
+    Si alguien renombra las constantes del runner o cambia la raíz, esto se rompe
+    antes de llegar a producción.
+    """
+    game = tmp_path / "game"
+    root = dyndolod_output_target(game=game)
+    assert root is not None
+
+    assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME == game.resolve() / "DynDOLOD" / "DynDOLOD_Output"
+    assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME == game.resolve() / "DynDOLOD" / "TexGen_Output"
 
 
 # ---------------------------------------------------------------------------

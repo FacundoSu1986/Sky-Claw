@@ -155,8 +155,21 @@ class TestSnapshot:
 
         assert "skse" not in snap.tools  # type: ignore[attr-defined]
 
-    async def test_sin_skyrim_detectado_skse_es_faltante_no_crash(self, tmp_path: pathlib.Path) -> None:
+    async def test_sin_skyrim_detectado_skse_es_faltante_no_crash(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Con `tool_paths` pinneados el scan sigue aunque no haya juego: SKSE no puede resolverse ahí."""
+
+        # Sin esto, el auto-detect real (registro de Windows, Steam library
+        # folders, rutas comunes) puede encontrar una instalación real en la
+        # máquina que corre el test — como esta — y romper la premisa "sin
+        # Skyrim detectado" (mismo guard que ya usa
+        # test_environment_scanner_config.py::test_bare_scanner_without_skyrim_stays_critical).
+        async def mock_find_skyrim(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        monkeypatch.setattr(EnvironmentScanner, "_find_skyrim", mock_find_skyrim)
+
         loot = tmp_path / "loot.exe"
         loot.write_bytes(b"MZ")
         scanner = EnvironmentScanner(tool_paths={"loot": str(loot)})

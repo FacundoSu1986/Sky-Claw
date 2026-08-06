@@ -61,7 +61,21 @@ def hitl_guard() -> HITLGuard:
 
 @pytest.fixture
 def installer(hitl_guard: HITLGuard, gateway: NetworkGateway, validator: PathValidator) -> ToolsInstaller:
-    return ToolsInstaller(hitl=hitl_guard, gateway=gateway, path_validator=validator)
+    # Lock mockeado (ver test_tools_installer.py): el mecanismo real cross-process
+    # lo valida el test de contención. Acá basta con adquisición/liberación.
+    lock_manager = MagicMock()
+    lock_manager.acquire_lock = AsyncMock(
+        return_value=MagicMock(resource_id="tools-install:test", agent_id="tools-installer")
+    )
+    lock_manager.release_lock = AsyncMock(return_value=True)
+    lock_manager.renew_lock = AsyncMock(return_value=True)
+    return ToolsInstaller(
+        hitl=hitl_guard,
+        gateway=gateway,
+        path_validator=validator,
+        lock_manager=lock_manager,
+        install_ttl=60.0,
+    )
 
 
 @pytest.fixture

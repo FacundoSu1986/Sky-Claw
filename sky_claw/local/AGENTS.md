@@ -262,10 +262,11 @@ rig confirmation.
 
 **Inputs:** DynDOLOD Resources SE, Address Library for SKSE Plugins, and DynDOLOD DLL NG (required for executable version 1.6.1170).
 
-**Procedure:**
-1. Run `TexGen.exe` from the mod manager. Package and mount its output as an active mod.
-2. Run `DynDOLODx64.exe`. Select desired worldspaces and quality level (Low / Med / High).
-3. Deploy the packaged results and insert them as the ABSOLUTE FINAL entry of the load order to guarantee overwrite priority.
+**Procedure (STAGE 9 IS ASSISTED — the tools have NO headless mode):**
+1. TexGen and DynDOLOD are GUI applications (PE Subsystem 2): they never write to stdout/stderr, so an exit-code-only success check is a false green. Sky-Claw launches them with the verified vector (`dyndolod.info/Help/Command-Line-Argument` + `xeInit.pas`): the loose game-mode switch `-sse` (or `-tes5vr` for VR) plus `-o:"<root>"` (administered output root), `-d:"<Data>"`, `-t:"<temp>"`, and — when configured — explicit `-m:"<ini dir>"` and `-p:"<plugins.txt>"`. The old vector (`-game SSE`, `-p <preset>`, bare `-t`, `--expert`) does not exist and is silently ignored; `--expert` is `Expert=1` in the INI, not an argument.
+2. The preset (Low/Med/High) and worldspace selection are GUI buttons chosen by the human in the wizard. Sky-Claw publishes `assisted=True` with operator instructions and waits; the 4h timeout covers the interaction window by design. `-m:`/`-p:` explicit are REQUIRED on rigs whose Documents folder is OneDrive-redirected: without them the tool dies with `Fatal: Could not find ini` (verified on rig 2026-08-05).
+3. Success is decided by exit code AND artifact at the `-o:` root (`DynDOLOD.esp` as a file for DynDOLOD) AND no error lines in `Logs/{Tool}_{modo}_log.txt` — never by exit code alone. A missing or unreadable log is a warning, not a failure: the hard gate is the artifact at the `-o:` root.
+4. Deploy the packaged results and insert them as the ABSOLUTE FINAL entry of the load order to guarantee overwrite priority.
 
 **Outputs:** Packaged visual geographic memory data, spatial `.esp`/`.esm` plugins, and temporal visual injection.
 

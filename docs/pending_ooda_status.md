@@ -7,8 +7,8 @@
 > **Fuentes canónicas:** código y tests del árbol actual; ADRs aceptados para
 > decisiones; este documento únicamente consolida su estado.
 >
-> **Última verificación:** 2026-08-02 en la rama actual, basada en
-> `origin/main` `bf635e0`; los cambios posteriores de esta rama no se afirman
+> **Última verificación:** 2026-08-05 en la rama actual, basada en
+> `origin/main` `1a92cdf`; los cambios posteriores de esta rama no se afirman
 > integrados en `origin/main`.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
@@ -35,13 +35,13 @@ confirmarlo contra código y tests.
 | T-28 | Cerrado | #309, #318 y cierres posteriores | — | productores de `persist_flight_report` |
 | T-29 | Cerrado | Oleada 7 | — | historial Git y tests |
 | T-30 | Cerrado | Oleada 7 | — | historial Git y tests |
-| T-31 | Abierto | — | Lock cross-process por `install_dir`/`mod_dir` en `ToolsInstaller` (6 rutas de instalación + wiring en `app_context.py`) | `TECHNICAL_REVIEW_TASKS.md` |
+| T-31 | Cerrado | #436 — lock cross-process por `install_dir`/`mod_dir` en `ToolsInstaller` (8 rutas de instalación incl. `ensure_skse` + wiring en `app_context.py`; ancla de familia e introspección) | — | `test_tools_installer_lock_scoping.py`, `test_tools_installer_lock_contencion.py` |
 | U-01 | Cerrado | #381, #388 y documentación operativa | — | `test_output_targets.py` |
 | U-02 | Cerrado | #360 | — | tests de Job Object |
 | U-03 | Cerrado | #356 | — | tests de reconciliación de precache |
 | U-04 | Parcial | #397, #399, salida administrada de Pandora y subárbol administrado por grupo de BodySlide | Smoke real de rollback de Pandora | `test_rollback_salida.py`, `test_pandora_service.py`, `test_bodyslide_lock.py` y humano |
 | U-05 | Cerrado | #354 | — | `test_vramr_service.py` |
-| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide; veredicto por `Engine.log` de Pandora | Post-check de Wrye Bash; criterio seguro para QuickAutoClean | tests de cada runner, `test_bodyslide_postcheck_artefacto.py`, `test_pandora_runner.py` |
+| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide; veredicto por `Engine.log` de Pandora; post-check por LOG de DynDOLOD/TexGen (binarios GUI sin stdout: el exit code ya no alcanza) | Post-check de Wrye Bash; criterio seguro para QuickAutoClean | tests de cada runner, `test_bodyslide_postcheck_artefacto.py`, `test_pandora_runner.py`, `test_dyndolod_service.py` (post-check por log) |
 | U-07 | Cerrado | #355 | — | tests de Job Object de DynDOLOD |
 | U-08 | Cerrado | #378 y reconciliador de arranque | — | `test_rollback_reconciler.py` |
 | U-09 | Cerrado | #376 | — | tests del journal de grass |
@@ -62,7 +62,7 @@ confirmarlo contra código y tests.
 | Borrado recursivo | Cerrado | #405 y #416 | — | `test_borrado_recursivo.py` |
 | Medición de árboles | Cerrado | #416 | — | `test_borrado_recursivo.py` |
 | Fugas de lifecycle en tests | Cerrado | #408, #409 y #415 | — | `test_atribucion_de_warnings.py`, `test_project_config.py` |
-| Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash | Verificar contra fuente xEdit, Synthesis, MO2, DynDOLOD y VRAMr; re-verificar Pandora contra el binario 4.3.1-beta pinneado (el README de `main` puede no describirlo) | `test_contrato_argumentos_cli.py` |
+| Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash, DynDOLOD, xEdit | Verificar contra fuente Synthesis, MO2 y VRAMr; re-verificar Pandora contra el binario 4.3.1-beta pinneado (el README de `main` puede no describirlo) | `test_contrato_argumentos_cli.py` |
 | Contrato de veredicto de éxito | Parcial | Veredicto por `Engine.log` de Pandora; cruce con errores parseados en el call site de xEdit; ancla que enumera | Verificar contra rig real qué severidad usa Pandora para la reversión de un nodo inválido — ver nota abajo | `test_contrato_veredicto_de_exito.py` (inventario congelado en vacío), `test_pandora_runner.py`, `test_xedit_service.py` |
 | Etapa 6 (Wrye Bash) sin build headless | Abierto | — | Decidir entre etapa asistida o retirarla del dispatcher | `test_contrato_argumentos_cli.py`; humano; auditoría 2026-08-04 |
 | Orden de masters sin validar | Cerrado | `master_order.py`, cableado en Wrye Bash / Synthesis / DynDOLOD | — | `test_master_order.py` (ancla de cableado); auditoría 2026-08-04 (V-7) |
@@ -116,8 +116,12 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
 Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un
 flag en vez de enumerar el vector. El ancla `test_contrato_argumentos_cli.py`
 congela el inventario de módulos que spawnean y exige procedencia declarada por
-lanzador. Quedan marcados `SIN VERIFICAR` en esa tabla: xEdit, Synthesis, MO2,
-DynDOLOD (binario cerrado, sin fuente pública) y VRAMr (scripts en Nexus).
+lanzador. Verificados contra fuente: xEdit (`xeInit.pas` — `-T:`/`-P:`, game
+mode) y DynDOLOD (doc oficial `Command-Line-Argument` + doc del paquete
+`DynDOLOD-Shortcut.txt` + strings del binario, y por efecto en rig 2026-08-05:
+`Game Mode: SSE`, `Using Temp Path:`; la etapa 9 es asistida — sin modo
+desatendido). Quedan marcados `SIN VERIFICAR` en esa tabla: Synthesis, MO2 y
+VRAMr (scripts en Nexus).
 
 `vramr_service.py` además no usa Job Object, a diferencia de DynDOLOD (U-07) y
 grass: si VRAMr spawnea compresores externos, un timeout deja huérfanos.

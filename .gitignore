@@ -148,3 +148,8 @@ AUDIT_PANEL_REPORT.md
 # Agentes y Temporales
 /.github/agents/
 /.pytest-test-eng-tmp/
+
+# Scratch de pruebas local (no versionar: cachés y salidas de pytest ad-hoc)
+/.pytest-*/
+/pytest_tmp*/
+/test_tools_dir/
