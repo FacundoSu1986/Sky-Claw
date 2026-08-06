@@ -161,10 +161,13 @@ above, reached while reporting success. `Engine.log` is the only signal of what
 was actually applied: `ERROR`/`FATAL` invalidate the run, `WARN` is reported but
 does not decide.
 
-If `Engine.log` is missing or unreadable, the result is **not validated by the
-log** — the runner falls back to the exit-code behavior described above (never
-silently treated as a clean pass; the outage is logged). Which exact severity
-Pandora uses for a node reversion is **not verified against a real rig**:
+If `Engine.log` is missing or unreadable, the runner MUST log that inability —
+never silently treat it as a clean pass — and fall back to the exit-code
+behavior described above. Because the log's location is itself an assumption
+(not yet verified on a real rig), an unreadable log is also a signal to confirm
+the path: run the pending smoke test (U-04) to verify where Pandora actually
+writes `Engine.log`. Which exact severity Pandora uses for a node reversion is
+**not verified against a real rig**:
 `ERROR`'s own definition ("prevented [this] work from completing") reads as the
 more literal match, so today's `ERROR`/`FATAL` gate is believed to cover it —
 but if a real run shows reversions logged as `WARN` instead, this verdict does
