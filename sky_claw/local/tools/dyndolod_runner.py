@@ -1091,6 +1091,16 @@ class DynDOLODRunner:
         firma el árbol agregado (cantidad de archivos, mtime máximo, bytes
         totales), recorrido SIN atravesar enlaces. Que sean archivos y no
         directorios importa — recrear una carpeta no es haber generado texturas.
+
+        **Premisa NO VERIFICADA contra el binario** (review adversarial #441): que
+        el ``.esp`` haya cambiado equivale a "corrida completa" solo si DynDOLOD
+        persiste el plugin AL FINAL. Si lo escribiera en una fase temprana, una
+        corrida que el operador cierra después de ese punto —exit 0, sin log
+        flusheado— pasaría el gate con el árbol a medio generar. Nadie confirmó el
+        orden de escritura real; queda declarado acá en vez de asumido en silencio.
+        Cerrarlo pide una marca de completitud, y la única disponible es el log —
+        que puede faltar por diseño (ver ``_leer_log``), así que exigirlo
+        convertiría en rojas corridas legítimas. Se decide con el rig, no acá.
         Limitación conocida y no cerrada: sin marcador de completitud, una corrida
         de TexGen abortada que alcanzó a escribir algunas texturas sigue contando
         como fresca. El log es la única evidencia de completitud disponible y
