@@ -36,6 +36,14 @@ logger = logging.getLogger(__name__)
 # esta cota, el `gather` del path de éxito colgaría `_execute_process` para siempre.
 _DRAIN_GRACE_SECONDS = 10.0
 
+# U-06 parte 2: holgura del gate de frescura. El mtime del artefacto se compara
+# contra el reloj de pared del inicio de la corrida, y los dos relojes pueden no
+# coincidir: FAT32 guarda mtime con granularidad de 2 s, y un `-o:` en una unidad
+# de red puede traer skew. La holgura evita el falso ROJO sobre una corrida buena;
+# es inofensiva para el falso VERDE que el gate persigue, porque el artefacto que
+# se quiere rechazar es de una corrida anterior (minutos u horas atrás, no 2 s).
+_TOLERANCIA_MTIME_SEGUNDOS = 2.0
+
 
 # =============================================================================
 # EXCEPTIONS
@@ -170,21 +178,40 @@ class DynDOLODConfig:
             "temp_dir",
             self.temp_dir if self.temp_dir is not None else pathlib.Path(tempfile.gettempdir()),
         )
-        # Modo del juego: decisión ÚNICA y tipada. La heurística ("VR" en el
-        # string del path) vivía duplicada en _build_xedit_args y _modo — un fix
-        # en uno y no en el otro era el defecto hermano en persona, y un path con
-        # "VR" (CVR, VRam) volcaba un SSE a -tes5vr en silencio. Acá se resuelve
-        # UNA vez; el caller puede pasarlo explícito (Literal, no substring).
+        # Modo del juego: decisión ÚNICA y tipada. La heurística vivía duplicada
+        # en _build_xedit_args y _modo — un fix en uno y no en el otro era el
+        # defecto hermano en persona. Acá se resuelve UNA vez; el caller puede
+        # pasarlo explícito (Literal, no substring).
+        #
+        # El default mira el NOMBRE de la carpeta del juego, no el string entero:
+        # buscar "VR" como substring en toda la ruta volcaba a -tes5vr cualquier
+        # instalación SSE colgada de un directorio con esas letras (C:\VRamDisk\…,
+        # …\CVR\…). El modo equivocado no solo cambia el argv: _modo() pasa a
+        # buscar el log en *_TES5VR_log.txt, así que el post-check se queda sin
+        # su evidencia y degrada a artefacto-solo.
         if self.game_mode is None:
-            object.__setattr__(
-                self,
-                "game_mode",
-                "tes5vr" if "VR" in str(self.game_path) else "sse",
-            )
+            carpeta = self.game_path.name.replace(" ", "").casefold()
+            object.__setattr__(self, "game_mode", "tes5vr" if carpeta == "skyrimvr" else "sse")
         if not self.game_path.exists():
             raise ValueError(f"Game path does not exist: {self.game_path}")
         if not self.dyndolod_exe.exists():
             raise DynDOLODNotFoundError(self.dyndolod_exe)
+
+
+@dataclass(frozen=True, slots=True)
+class _PostCheck:
+    """Veredicto del post-check de una corrida asistida.
+
+    Existe para que TODO el I/O del post-check —leer el log, parsearlo, resolver
+    el staging y sondear el artefacto— cruce UNA sola frontera ``to_thread``, y
+    para que el llamador async no tenga que tocar el disco para componer su
+    resultado.
+    """
+
+    output_path: pathlib.Path | None
+    artefacto: bool
+    errors: list[str]
+    warnings: list[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +360,11 @@ class DynDOLODRunner:
 
         args = self._build_xedit_args(extra_args)
 
+        # Reloj de PARED (no monotonic): se compara contra el st_mtime del
+        # artefacto. Se toma antes de lanzar para que toda escritura del run
+        # quede del lado nuevo del umbral.
+        inicio_wall = time.time()
+
         try:
             execution_cwd = pathlib.Path.cwd()
             stdout, stderr, return_code, duration = await self._execute_process(
@@ -354,15 +386,9 @@ class DynDOLODRunner:
                 errors=[str(e)],
             )
 
-        # Post-check por LOG: los binarios son apps GUI (PE Subsystem 2), los
-        # pipes vuelven vacíos siempre; la evidencia vive en Logs/TexGen_SSE_log.txt.
-        log_texto = self._leer_log("TexGen")
-        errors, warnings = self._parse_log(log_texto) if log_texto is not None else ([], [])
-
-        # Path de salida: determinista bajo la raíz administrada (-o:).
-        output_path = self._find_texgen_output()
-        artefacto = output_path is not None and output_path.exists() and any(output_path.iterdir())
-        success = return_code == 0 and artefacto and not errors
+        post = await asyncio.to_thread(self._post_check, "TexGen", inicio_wall)
+        errors, warnings, output_path = post.errors, post.warnings, post.output_path
+        success = return_code == 0 and post.artefacto and not errors
 
         result = ToolExecutionResult(
             success=success,
@@ -420,6 +446,9 @@ class DynDOLODRunner:
 
         args = self._build_xedit_args(extra_args)
 
+        # Ver run_texgen: reloj de pared para el gate de frescura del artefacto.
+        inicio_wall = time.time()
+
         try:
             execution_cwd = pathlib.Path.cwd()
             stdout, stderr, return_code, duration = await self._execute_process(
@@ -441,15 +470,9 @@ class DynDOLODRunner:
                 errors=[str(e)],
             )
 
-        # Post-check por LOG (ídem TexGen): Logs/DynDOLOD_SSE_log.txt.
-        log_texto = self._leer_log("DynDOLOD")
-        errors, warnings = self._parse_log(log_texto) if log_texto is not None else ([], [])
-
-        # Path de salida: determinista bajo la raíz administrada (-o:). El
-        # artefacto reusa validate_dyndolod_output (exige DynDOLOD.esp, U-06).
-        output_path = self._find_dyndolod_output()
-        artefacto = output_path is not None and await self.validate_dyndolod_output(output_path)
-        success = return_code == 0 and artefacto and not errors
+        post = await asyncio.to_thread(self._post_check, "DynDOLOD", inicio_wall)
+        errors, warnings, output_path = post.errors, post.warnings, post.output_path
+        success = return_code == 0 and post.artefacto and not errors
 
         result = ToolExecutionResult(
             success=success,
@@ -989,8 +1012,90 @@ class DynDOLODRunner:
         """
         return "TES5VR" if self._config.game_mode == "tes5vr" else "SSE"
 
+    def _post_check(self, tool: str, inicio_wall: float) -> _PostCheck:
+        """Veredicto de la corrida: log + artefacto + frescura. TODO el I/O, acá.
+
+        **Es una función síncrona a propósito, y sus llamadores la envuelven en
+        un único ``asyncio.to_thread``.** El post-check toca disco tres veces
+        (leer el log, resolver el staging, recorrerlo) y el log de DynDOLOD llega
+        a decenas de MB en sesiones largas: hacerlo en el hilo del event loop
+        congela la UI de NiceGUI y retrasa el bus de eventos (P2 de
+        ``coding_conventions.md``). Una sola frontera para toda la fase, no un
+        ``to_thread`` por llamada — el mismo idioma que ``_empaquetar_sincrono``
+        usa en ``_package_output_as_mod``.
+
+        Args:
+            tool: ``"TexGen"`` o ``"DynDOLOD"``.
+            inicio_wall: ``time.time()`` tomado ANTES de lanzar el proceso.
+
+        Returns:
+            :class:`_PostCheck` con el staging resuelto, el veredicto de artefacto
+            y los errores/warnings del log.
+        """
+        texto = self._leer_log(tool)
+        errors, warnings = self._parse_log(texto) if texto is not None else ([], [])
+
+        es_texgen = tool == "TexGen"
+        output_path = self._find_texgen_output() if es_texgen else self._find_dyndolod_output()
+
+        if output_path is None:
+            return _PostCheck(output_path=None, artefacto=False, errors=errors, warnings=warnings)
+
+        if es_texgen:
+            # TexGen no tiene un artefacto con nombre propio que gatear (su salida
+            # son texturas): el criterio es "el staging existe y no está vacío".
+            try:
+                artefacto = output_path.exists() and any(output_path.iterdir())
+            except OSError as e:
+                logger.warning("No se pudo sondear el staging de TexGen (%s): %s", output_path, e)
+                artefacto = False
+        else:
+            artefacto = self._validar_salida_dyndolod(output_path)
+
+        # Frescura: el artefacto tiene que ser de ESTA corrida. Sin esto, un
+        # staging que dejó la corrida anterior satisface el gate igual, y una app
+        # GUI que el operador cerró a mitad sale con código 0 sin escribir nada
+        # ni dejar línea de error — el falso verde se reconstituye entero.
+        if artefacto and not self._hay_escritura_desde(output_path, inicio_wall):
+            artefacto = False
+            errors.append(
+                f"El staging de {tool} ({output_path}) no cambió durante la corrida: "
+                "es la salida de una corrida anterior, no de ésta."
+            )
+
+        return _PostCheck(output_path=output_path, artefacto=artefacto, errors=errors, warnings=warnings)
+
+    @staticmethod
+    def _hay_escritura_desde(directorio: pathlib.Path, inicio_wall: float) -> bool:
+        """¿Algo bajo ``directorio`` se escribió a partir de ``inicio_wall``?
+
+        Recorre el ÁRBOL, no solo la raíz: DynDOLOD reescribe archivos dentro de
+        subárboles que ya existían (``meshes/``, ``textures/``) y sobrescribir en
+        el lugar no toca el mtime del directorio padre — mirar solo la raíz daría
+        un falso ROJO sobre una corrida buena. Corta en la primera evidencia, así
+        que la corrida exitosa (el caso normal) no paga el recorrido completo.
+        """
+        umbral = inicio_wall - _TOLERANCIA_MTIME_SEGUNDOS
+        try:
+            if directorio.stat().st_mtime >= umbral:
+                return True
+            for hijo in directorio.rglob("*"):
+                try:
+                    if hijo.stat().st_mtime >= umbral:
+                        return True
+                except OSError:  # noqa: PERF203 — un hijo ilegible no invalida el barrido
+                    continue
+        except OSError as e:
+            # Fail-closed: si no se puede sondear, no se puede afirmar frescura.
+            logger.warning("No se pudo verificar la frescura de %s: %s", directorio, e)
+            return False
+        return False
+
     def _leer_log(self, tool: str) -> str | None:
         """Lee el log real de la herramienta: ``Logs/{tool}_{modo}_log.txt``.
+
+        Síncrona a propósito: corre dentro del ``to_thread`` de
+        :meth:`_post_check`, que es su único llamador.
 
         Los binarios son apps GUI (PE Subsystem 2): no escriben a stdout ni
         stderr, así que la evidencia de una corrida vive en su log. Ausencia del
@@ -1108,6 +1213,22 @@ class DynDOLODRunner:
         return root / self.DYNDOLLOD_OUTPUT_NAME
 
     async def validate_dyndolod_output(self, output_path: pathlib.Path) -> bool:
+        """Valida la salida de DynDOLOD sin bloquear el event loop.
+
+        API pública (la consume ``DynDOLODPipelineService.execute``); el trabajo
+        real —``iterdir``/``glob`` sobre un árbol de GBs— vive en la variante
+        síncrona y cruza a un hilo. Dentro del runner, el post-check llama
+        directo a :meth:`_validar_salida_dyndolod` porque ya corre en un hilo.
+
+        Args:
+            output_path: Path al directorio de salida.
+
+        Returns:
+            True si la salida parece válida, False en caso contrario.
+        """
+        return await asyncio.to_thread(self._validar_salida_dyndolod, output_path)
+
+    def _validar_salida_dyndolod(self, output_path: pathlib.Path) -> bool:
         """
         Valida que la salida de DynDOLOD sea válida.
 

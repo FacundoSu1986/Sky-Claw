@@ -246,17 +246,27 @@ class DynDOLODPipelineService:
         - ``mods/`` (padre donde empaqueta los mods) + los mod dirs empaquetados
           (``DynDOLOD Output``/``TexGen Output``).
         - El **staging crudo** bajo la raíz administrada única
-          (``output_targets.dyndolod_output_target`` → ``game/DynDOLOD``):
-          ``root.parent`` (para poder CREAR la raíz en el primer run, cuando
-          ``root`` todavía no existe y el checker se salta las inexistentes),
-          ``root``, ``root/DynDOLOD_Output`` y ``root/TexGen_Output``. Con
-          ``-o:`` el subproceso escribe SOLO ahí — el cwd, el dir del exe y la
-          raíz MO2 dejaron de ser raíces de staging, así que tampoco se sondean
-          (la adivinanza de 3 raíces murió con ``-o:``).
+          (``output_targets.dyndolod_output_target`` → ``game/Sky-Claw/DynDOLOD``):
+          el primer ancestro EXISTENTE de la raíz (para poder CREARLA en el primer
+          run), ``root``, ``root/DynDOLOD_Output`` y ``root/TexGen_Output``. El
+          cwd y la raíz MO2 dejaron de ser raíces de staging con ``-o:``, así que
+          no se sondean.
+        - El **directorio del ejecutable**: no es staging de salida, pero SÍ es
+          superficie de escritura de la herramienta, y una que este servicio
+          depende de leer. ``DynDOLODRunner._leer_log`` busca el veredicto de la
+          corrida en ``exe.parent/Logs/{Tool}_{modo}_log.txt``, y los binarios
+          persisten su INI junto al exe. Con el tool en un árbol de solo lectura
+          (Program Files), omitirlo dejaba el preflight en verde y el post-check
+          sin log: degradaba a artefacto-solo, que es exactamente el camino del
+          falso verde que el gate de frescura persigue. Se sondea el dir del exe
+          y su ``Logs/`` — el segundo puede no existir todavía en el primer run.
 
         ``WritePermissionsChecker`` sondea solo los dirs existentes, así que
         incluir rutas aún inexistentes es seguro (se saltan) y las que aparezcan
-        en runs futuros se sondean sin reconstruir el preflight cacheado.
+        en runs futuros se sondean sin reconstruir el preflight cacheado. Por eso
+        el ancestro de la raíz se resuelve al primero que EXISTE: con la raíz
+        anidada bajo ``Sky-Claw/``, ``root.parent`` tampoco existe en el primer
+        run y el sondeo quedaba mudo justo en el caso que vino a cubrir.
         """
         candidates: list[pathlib.Path] = []
         mods = self._path_resolver.get_mo2_mods_path()
@@ -266,15 +276,36 @@ class DynDOLODPipelineService:
         game = self._path_resolver.get_skyrim_path()
         root = dyndolod_output_target(game=game if isinstance(game, pathlib.Path) else None)
         if root is not None:
+            ancestro = self._primer_ancestro_existente(root)
+            if ancestro is not None:
+                candidates.append(ancestro)
             candidates += [
-                root.parent,  # para poder CREAR la raíz (primer run: root no existe)
                 root,
                 root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME,
                 root / DynDOLODRunner.TEXGEN_OUTPUT_NAME,
             ]
 
+        # Dir del exe: donde la herramienta escribe su log y su INI.
+        for exe in (self._path_resolver.get_dyndolod_exe(), self._path_resolver.get_texgen_exe()):
+            if isinstance(exe, pathlib.Path):
+                candidates += [exe.parent, exe.parent / "Logs"]
+
         seen: set[pathlib.Path] = set()
         return [p for p in candidates if not (p in seen or seen.add(p))]
+
+    @staticmethod
+    def _primer_ancestro_existente(ruta: pathlib.Path) -> pathlib.Path | None:
+        """Primer directorio existente subiendo desde ``ruta`` (excluyéndola).
+
+        El sondeo de permisos se salta las rutas inexistentes, así que preguntar
+        por un padre que tampoco existe no verifica nada: para responder "¿puedo
+        CREAR la raíz administrada?" hay que preguntarle al primer eslabón que sí
+        está en disco.
+        """
+        for padre in ruta.parents:
+            if padre.exists():
+                return padre
+        return None
 
     def _primera_ruta_de_config_faltante(self, runner: DynDOLODRunner) -> pathlib.Path | None:
         """Primera ruta declarada por la config del runner que no existe (o ``None``).

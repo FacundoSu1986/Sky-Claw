@@ -200,7 +200,7 @@ def test_dyndolod_salida_determinista_bajo_la_raiz(tmp_path: pathlib.Path) -> No
         )
     )
     root = runner._config.output_root
-    assert root == game.resolve() / "DynDOLOD"
+    assert root == game.resolve() / "Sky-Claw" / "DynDOLOD"
 
     # Sin nada en disco: los stagings se resuelven como candidatos bajo la raíz.
     assert runner._find_dyndolod_output() == root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
@@ -260,12 +260,25 @@ def test_dyndolod_preflight_sondea_los_mismos_candidatos_que_el_runner(
     targets = svc._permission_targets()
     root = runner._config.output_root
     assert root is not None
-    assert root.parent in targets  # para poder CREAR la raíz en el primer run
     assert root in targets
     assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME in targets
     assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME in targets
-    # Las raíces ajenas (dir del exe / raíz MO2 / cwd) ya no se sondean.
-    assert exe_dir not in targets
+
+    # Para poder CREAR la raíz en el primer run hay que sondear un eslabón que
+    # EXISTA: con la raíz anidada bajo Sky-Claw/, `root.parent` tampoco está en
+    # disco todavía y el checker se lo saltearía, dejando mudo justo el sondeo
+    # que este assert cubre.
+    assert game in targets
+    assert not root.parent.exists()
+
+    # El dir del exe SÍ se sondea: no es staging de salida, pero es donde la
+    # herramienta escribe su log —el que `_leer_log` lee para dar el veredicto—
+    # y su INI. Con el tool en un árbol de solo lectura, omitirlo dejaba el
+    # preflight verde y el post-check sin evidencia.
+    assert exe_dir in targets
+    assert exe_dir / "Logs" in targets
+
+    # La raíz MO2 sigue fuera: con `-o:` dejó de ser raíz de staging.
     assert mo2 not in targets
 
 
@@ -278,7 +291,7 @@ def test_dyndolod_tiene_una_raiz_administrada_unica(tmp_path: pathlib.Path) -> N
     """
     game = tmp_path / "segmento" / ".." / "game"
 
-    assert dyndolod_output_target(game=game) == game.resolve() / "DynDOLOD"
+    assert dyndolod_output_target(game=game) == game.resolve() / "Sky-Claw" / "DynDOLOD"
     assert dyndolod_output_target(game=None) is None
 
 
@@ -294,8 +307,8 @@ def test_dyndolod_staging_cuelga_de_la_raiz(tmp_path: pathlib.Path) -> None:
     root = dyndolod_output_target(game=game)
     assert root is not None
 
-    assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME == game.resolve() / "DynDOLOD" / "DynDOLOD_Output"
-    assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME == game.resolve() / "DynDOLOD" / "TexGen_Output"
+    assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME == game.resolve() / "Sky-Claw" / "DynDOLOD" / "DynDOLOD_Output"
+    assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME == game.resolve() / "Sky-Claw" / "DynDOLOD" / "TexGen_Output"
 
 
 # ---------------------------------------------------------------------------
