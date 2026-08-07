@@ -11,12 +11,14 @@ Cubre la instalación como mods de MO2 de (orden de dependencia):
 Contrato congelado acá (Fase 0 del Blueprint):
 - Gates fail-closed ANTES del primer HITL y del primer byte de egress:
   edición, downloader, versión (SE 1.5.97 exacta / AE >= 1.6.1170), SKSE
-  presente, ENB ausente, preloader de Engine Fixes presente.
+  presente, ENB ausente, preloader de Engine Fixes presente, y validación
+  del ``mods_dir`` contra el sandbox (gate 7).
 - Tres invariantes de ``clean_on_fail``: nunca en denegación HITL, nunca si el
   dir preexistía, nunca en ``CancelledError``.
 - R2: verificación de integridad (digest sha256 de la API y pin de
-  ``_PINNED_SHA256`` — el pin gana sobre el digest) y techo de bytes durante
-  el streaming en ``_download_asset``.
+  ``_PINNED_SHA256`` — el pin gana sobre el digest). El techo de bytes durante
+  el streaming de ``_download_asset`` (helper compartido) vive en
+  ``tests/test_tools_installer.py``.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ import sky_claw.local.tools_installer as ti_mod
 from sky_claw.app.scraper.nexus_downloader import FileInfo
 from sky_claw.app.security.hitl import Decision, HITLGuard
 from sky_claw.app.security.network_gateway import EgressPolicy, NetworkGateway
-from sky_claw.app.security.path_validator import PathValidator
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.discovery.environment import SkyrimEdition
 from sky_claw.local.tools_installer import ToolInstallError, ToolsInstaller
 
@@ -828,6 +830,36 @@ class TestEnsureCommunityShadersGates:
         assert "Preloader" in str(exc_info.value)
         assert hitl.await_count == 0
 
+    async def test_mods_dir_fuera_del_sandbox_aborta(
+        self,
+        installer: ToolsInstaller,
+        tmp_path: pathlib.Path,
+        tmp_path_factory: pytest.TempPathFactory,
+    ) -> None:
+        """Gate 7: un mods_dir fuera de los roots del PathValidator aborta antes
+        de HITL, egress y downloads (completa la enumeración de los 7 gates)."""
+        hitl = _hitl_espiado(installer)
+        installer._gateway.request = AsyncMock()  # type: ignore[method-assign]
+        downloader = _downloader_completo(tmp_path)
+        session = MagicMock(spec=aiohttp.ClientSession)
+        _juego_valido(tmp_path / "game")
+        mods_afuera = tmp_path_factory.mktemp("otro_sandbox") / "mods"
+        mods_afuera.mkdir()
+
+        with pytest.raises(PathViolationError):
+            await installer.ensure_community_shaders(
+                mods_afuera,
+                session,
+                downloader,
+                edition=SkyrimEdition.SE,
+                game_version="1.5.97",
+                game_dir=tmp_path / "game",
+            )
+
+        assert hitl.await_count == 0
+        assert installer._gateway.request.await_count == 0
+        assert downloader.download.await_count == 0
+
 
 # ---------------------------------------------------------------------------
 # ensure_community_shaders — instalación (happy path, idempotencia, abortos)
@@ -1260,41 +1292,6 @@ class TestCleanOnFailInvariantes:
         assert list((mods_dir / ti_mod.SSE_ENGINE_FIXES_MOD_NAME).rglob("*.zip")) == []
         stale = tmp_path / ".skyclaw-dl" / _CS_ASSET_CORE
         assert stale.exists(), "el zip stale debe quedar en el staging, fuera del mod"
-
-
-# ---------------------------------------------------------------------------
-# _download_asset — techo de bytes durante el streaming (R2)
-# ---------------------------------------------------------------------------
-
-
-class TestDownloadAssetTechoDeBytes:
-    async def test_techo_de_bytes_aborta_durante_streaming_y_borra(
-        self, installer: ToolsInstaller, tmp_path: pathlib.Path
-    ) -> None:
-        """Un origen que sirve más bytes que el size declarado aborta a mitad y borra el parcial."""
-        asset = ti_mod.ReleaseAsset(
-            name="comunidad.zip",
-            size=10,
-            download_url="https://api.github.com/x",
-            browser_download_url="https://github.com/x",
-        )
-
-        async def _iter_chunks(size: int):
-            yield b"x" * 100
-
-        resp = MagicMock()
-        resp.raise_for_status = MagicMock()
-        resp.release = MagicMock()
-        resp.content = MagicMock()
-        resp.content.iter_chunked = _iter_chunks
-        installer._gateway.request = AsyncMock(return_value=resp)
-
-        dest_dir = tmp_path / "dest"
-        with pytest.raises(ToolInstallError) as exc_info:
-            await installer._download_asset(MagicMock(spec=aiohttp.ClientSession), asset, dest_dir)
-
-        assert "excede" in str(exc_info.value)
-        assert not (dest_dir / asset.name).exists()
 
 
 # ---------------------------------------------------------------------------

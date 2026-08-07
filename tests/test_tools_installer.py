@@ -2062,6 +2062,87 @@ class TestHelpersCompartidosBlueprint:
             await installer._download_asset(MagicMock(spec=aiohttp.ClientSession), asset, dest_dir)
         assert not (dest_dir / asset.name).exists()
 
+    async def test_techo_absoluto_de_respaldo_cuando_size_es_cero(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Sin size publicado por la API (size=0) rige el techo absoluto de respaldo:
+        sin él, el streaming escribe sin límite hasta el timeout total de 600 s
+        (el camino SKSE ya tenía techo absoluto; este helper compartido, no)."""
+        monkeypatch.setattr(tools_installer, "_GITHUB_ASSET_MAX_BYTES", 100)
+        asset = ReleaseAsset(
+            name="sin-size.zip",
+            size=0,
+            download_url="https://api.github.com/x",
+            browser_download_url="https://github.com/x",
+        )
+
+        async def _iter_chunks(size: int):
+            yield b"x" * 200
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.release = MagicMock()
+        resp.content = MagicMock()
+        resp.content.iter_chunked = _iter_chunks
+        installer._gateway.request = AsyncMock(return_value=resp)  # type: ignore[method-assign]
+
+        dest_dir = tmp_path / "dest"
+        with pytest.raises(ToolInstallError, match="techo absoluto"):
+            await installer._download_asset(MagicMock(spec=aiohttp.ClientSession), asset, dest_dir)
+        assert not (dest_dir / asset.name).exists()
+
+    async def test_staging_se_valida_contra_el_sandbox_antes_de_crearse(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """El staging (``.skyclaw-dl``) se valida contra el PathValidator ANTES del
+        mkdir: con ``mods_dir`` == raíz del sandbox, el staging cae en el padre
+        (fuera de los roots) y la descarga no arranca. El assert de "dentro de los
+        roots" del comentario dejaba la garantía en la palabra, no en el código.
+
+        Se ancla la SECUENCIA de validación porque el camino viejo también lanzaba
+        ``PathViolationError`` — pero tarde: dentro de ``_download_asset``, sobre el
+        destino y DESPUÉS de crear el directorio no autorizado (el rmdir del finally
+        borraba la evidencia)."""
+        hitl = AsyncMock(return_value=Decision.APPROVED)
+        installer._hitl.request_approval = hitl  # type: ignore[method-assign]
+        installer._gateway.request = AsyncMock()  # type: ignore[method-assign]
+        installer._find_github_asset = AsyncMock(  # type: ignore[method-assign]
+            return_value=(
+                ReleaseAsset(
+                    name="mod.zip",
+                    size=10,
+                    download_url="https://api.github.com/x",
+                    browser_download_url="https://github.com/x",
+                ),
+                "1.0.0",
+            )
+        )
+        validados: list[pathlib.Path] = []
+        validar_real = installer._validator.validate
+
+        def _registrar(path: str | pathlib.Path, *, strict_symlink: bool = True) -> pathlib.Path:
+            validados.append(pathlib.Path(path))
+            return validar_real(path, strict_symlink=strict_symlink)
+
+        installer._validator.validate = _registrar  # type: ignore[method-assign]
+
+        with pytest.raises(PathViolationError):
+            await installer._ensure_github_mod(
+                tmp_path,
+                MagicMock(spec=aiohttp.ClientSession),
+                mod_name="ModFicticio",
+                releases_url="https://api.github.com/repos/x/x/releases",
+                sentinel_glob="*.dll",
+                request_slug="mod-ficticio",
+                source_hint="GitHub x/x releases",
+            )
+
+        # El staging COMO TAL es lo único validado: si la validación viniera de
+        # adentro de la descarga, la lista tendría el destino (<staging>/mod.zip).
+        assert validados == [tmp_path.parent / ".skyclaw-dl"]
+        assert not (tmp_path.parent / ".skyclaw-dl").exists()
+        assert installer._gateway.request.await_count == 0
+
     def test_verify_mod_payload_requiere_dirs_relativos(
         self, installer: ToolsInstaller, tmp_path: pathlib.Path
     ) -> None:

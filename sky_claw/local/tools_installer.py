@@ -323,6 +323,14 @@ SKSE_CONFIG: dict[str, dict[str, str | None]] = {
 #: disco de staging: el timeout de la descarga acota el TIEMPO, no los BYTES.
 _SKSE_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 
+#: Techo absoluto de respaldo para ``_download_asset`` (helper GitHub compartido
+#: por todos los ``ensure_*``). Vale cuando la API no publica ``size`` (0): sin
+#: él, el streaming escribe sin límite hasta el timeout total de 600 s. Con size
+#: publicado rige el size declarado, más estricto. El mayor asset conocido del
+#: helper es el core de Community Shaders (~44 MB): 512 MiB dejan margen de sobra
+#: sin habilitar un sumidero de disco. Mismo criterio que ``_SKSE_MAX_ARCHIVE_BYTES``.
+_GITHUB_ASSET_MAX_BYTES = 512 * 1024 * 1024
+
 # El decodificador de versión de los DLL de SKSE vive en `discovery.scanner` porque el
 # scanner necesita la MISMA regla para decidir si la instalación en disco sirve. Se
 # importa en vez de duplicarse: dos copias divergen en cuanto alguien agregue un payload.
@@ -2194,11 +2202,15 @@ class ToolsInstaller:
             # Un dir que YA tenía contenido antes de esta invocación jamás se
             # borra: podría ser un mod ajeno o un intento previo del usuario.
             preexistia = mod_dir.exists() and any(mod_dir.iterdir())
-            # Staging SEPARADO de mod_dir (mo2_root/.skyclaw-dl, dentro de los
-            # roots del PathValidator): un zip stale/parcial jamás vive dentro
-            # del mod — ni bloquea el flatten, ni envenena `preexistia`, ni es
-            # visible en MO2. Hermano Nexus (staging propio) alineado.
+            # Staging SEPARADO de mod_dir (mo2_root/.skyclaw-dl): un zip
+            # stale/parcial jamás vive dentro del mod — ni bloquea el flatten,
+            # ni envenena `preexistia`, ni es visible en MO2. Hermano Nexus
+            # (staging propio) alineado. Se VALIDA contra el PathValidator
+            # antes del mkdir: `mods_dir.parent` deriva de configuración del
+            # usuario y "dentro de los roots" no puede quedar en el comentario
+            # (mismo patrón que el staging de ensure_skse).
             staging = mods_dir.parent / ".skyclaw-dl"
+            self._validator.validate(staging)
             staging.mkdir(parents=True, exist_ok=True)
             try:
                 archive = await self._download_asset(
@@ -2473,11 +2485,20 @@ class ToolsInstaller:
                 async for chunk in resp.content.iter_chunked(_DOWNLOAD_CHUNK_SIZE):
                     # Techo de bytes DURANTE el streaming: un cuerpo mayor al
                     # size declarado (CDN mintiendo, o metadata stale) aborta
-                    # apenas se excede, sin escribir el chunk que excede.
+                    # apenas se excede, sin escribir el chunk que excede. Si la
+                    # API no publicó size (0), rige el techo absoluto de respaldo
+                    # (_GITHUB_ASSET_MAX_BYTES) — sin él no hay límite hasta el
+                    # timeout total de 600 s.
                     downloaded += len(chunk)
-                    if asset.size > 0 and downloaded > asset.size:
+                    techo = asset.size if asset.size > 0 else _GITHUB_ASSET_MAX_BYTES
+                    if downloaded > techo:
+                        if asset.size > 0:
+                            raise ToolInstallError(
+                                f"La descarga de {asset.name} excede el tamaño declarado ({asset.size} bytes) — abortada."
+                            )
                         raise ToolInstallError(
-                            f"La descarga de {asset.name} excede el tamaño declarado ({asset.size} bytes) — abortada."
+                            f"La descarga de {asset.name} excede el techo absoluto de respaldo "
+                            f"({_GITHUB_ASSET_MAX_BYTES} bytes): la API no publicó size — abortada."
                         )
                     fh.write(chunk)
                     hasher.update(chunk)
