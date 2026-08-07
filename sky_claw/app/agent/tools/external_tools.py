@@ -48,7 +48,11 @@ async def setup_tools(
     Args:
         tools_installer: ToolsInstaller instance.
         install_dir: Installation directory for tools.
-        local_cfg: LocalConfig instance (may be None).
+        local_cfg: Config (TOML, lo que inyecta AppContext) o LocalConfig
+            (JSON legacy); puede ser None. Los campos se escriben con
+            ``escribir_campo`` y se persisten con ``guardar_config`` porque las
+            dos clases guardan su estado en lugares distintos: un ``setattr``
+            crudo sobre ``Config`` crea un atributo que ningún ``save`` mira.
         config_path: Path to local config file.
         downloader: NexusDownloader instance (may be None).
         tools: List of tools to install. Defaults to all.
@@ -56,7 +60,7 @@ async def setup_tools(
     Returns:
         JSON string with installation results.
     """
-    from sky_claw.local.local_config import save as save_local_config
+    from sky_claw.local.local_config import escribir_campo, guardar_config_bloqueante
     from sky_claw.local.tools_installer import ToolInstallError
 
     if tools_installer is None:
@@ -90,7 +94,7 @@ async def setup_tools(
                 if tool_name_lower == "loot":
                     result = await tools_installer.ensure_loot(install_dir, session)
                     if local_cfg:
-                        local_cfg.loot_exe = str(result.exe_path)
+                        escribir_campo(local_cfg, "loot_exe", str(result.exe_path))
                     results["loot"] = {
                         "status": "already_installed" if result.already_existed else "installed",
                         "exe_path": str(result.exe_path),
@@ -101,7 +105,7 @@ async def setup_tools(
                 elif tool_name_lower == "xedit":
                     result = await tools_installer.ensure_xedit(install_dir, session)
                     if not result.already_existed and local_cfg:
-                        local_cfg.xedit_exe = str(result.exe_path)
+                        escribir_campo(local_cfg, "xedit_exe", str(result.exe_path))
                     results["xedit"] = {
                         "status": "already_installed" if result.already_existed else "installed",
                         "exe_path": str(result.exe_path),
@@ -112,7 +116,7 @@ async def setup_tools(
                 elif tool_name_lower == "pandora":
                     result = await tools_installer.ensure_pandora(install_dir, session)
                     if local_cfg:
-                        local_cfg.pandora_exe = str(result.exe_path)
+                        escribir_campo(local_cfg, "pandora_exe", str(result.exe_path))
                     results["pandora"] = {
                         "status": "already_installed" if result.already_existed else "installed",
                         "exe_path": str(result.exe_path),
@@ -123,7 +127,7 @@ async def setup_tools(
                 elif tool_name_lower == "bodyslide":
                     result = await tools_installer.ensure_bodyslide(install_dir, session, downloader)
                     if local_cfg:
-                        local_cfg.bodyslide_exe = str(result.exe_path)
+                        escribir_campo(local_cfg, "bodyslide_exe", str(result.exe_path))
                     results["bodyslide"] = {
                         "status": "already_installed" if result.already_existed else "installed",
                         "exe_path": str(result.exe_path),
@@ -163,10 +167,7 @@ async def setup_tools(
                         edition=edition,
                     )
                     if local_cfg:
-                        if hasattr(local_cfg, "_data"):
-                            local_cfg._data["ngio_mods"] = [m.mod_name for m in mods]
-                        else:
-                            local_cfg.ngio_mods = [m.mod_name for m in mods]
+                        escribir_campo(local_cfg, "ngio_mods", [m.mod_name for m in mods])
                     results["ngio"] = {
                         "status": ("already_installed" if all(m.already_existed for m in mods) else "installed"),
                         "edition": edition.value,
@@ -176,9 +177,64 @@ async def setup_tools(
                         "success": True,
                         "message": "",
                     }
+                elif tool_name_lower == "community_shaders":
+                    # Autoinstalador de Community Shaders (blueprint 1786043077717):
+                    # mods de MO2 (misma clase que NGIO, NO la de SKSE) cuyos gates
+                    # de host — versión del juego, SKSE, ENB, preloader de Engine
+                    # Fixes — consultan la raíz del juego, no la intención del
+                    # caller. Opt-in deliberado: NO está en la lista default.
+                    from sky_claw.local.discovery.scanner import detect_skyrim_edition, read_skyrim_version
+
+                    mo2_root = getattr(local_cfg, "mo2_root", None) if local_cfg else None
+                    skyrim_str = getattr(local_cfg, "skyrim_path", None) if local_cfg else None
+                    if not mo2_root:
+                        results["community_shaders"] = {
+                            "error": "mo2_root no configurado: corré el escaneo de entorno primero."
+                        }
+                        continue
+                    if not skyrim_str:
+                        results["community_shaders"] = {
+                            "error": "skyrim_path no configurado: no puedo detectar versión/edición para Community Shaders."
+                        }
+                        continue
+                    skyrim_exe = pathlib.Path(skyrim_str) / "SkyrimSE.exe"
+                    if not skyrim_exe.is_file():
+                        results["community_shaders"] = {
+                            "error": (
+                                f"No encontré SkyrimSE.exe en {skyrim_str}: Community Shaders "
+                                "requiere Skyrim SE/AE (revisá skyrim_path)."
+                            )
+                        }
+                        continue
+                    # pefile hace I/O síncrono de PE: fuera del event loop.
+                    edition = await asyncio.to_thread(detect_skyrim_edition, skyrim_exe)
+                    game_version = await asyncio.to_thread(read_skyrim_version, skyrim_exe)
+                    mods = await tools_installer.ensure_community_shaders(
+                        pathlib.Path(mo2_root) / "mods",
+                        session,
+                        downloader,
+                        edition=edition,
+                        game_version=game_version,
+                        game_dir=pathlib.Path(skyrim_str),
+                    )
+                    if local_cfg:
+                        escribir_campo(local_cfg, "community_shaders_mods", [m.mod_name for m in mods])
+                    results["community_shaders"] = {
+                        "status": ("already_installed" if all(m.already_existed for m in mods) else "installed"),
+                        "edition": edition.value,
+                        "game_version": game_version,
+                        "mods": [m.mod_name for m in mods],
+                        "mod_dirs": [str(m.mod_dir) for m in mods],
+                        "versions": {m.mod_name: m.version for m in mods},
+                        "success": True,
+                        "message": "",
+                    }
                 else:
                     results[tool_name] = {
-                        "error": (f"Unknown tool: {tool_name!r}. Supported: loot, xedit, pandora, bodyslide, ngio")
+                        "error": (
+                            f"Unknown tool: {tool_name!r}. Supported: loot, xedit, pandora, "
+                            "bodyslide, ngio, community_shaders"
+                        )
                     }
             except ToolInstallError as exc:
                 results[tool_name_lower] = {"error": str(exc)}
@@ -191,8 +247,11 @@ async def setup_tools(
             await session.close()
 
     # Persist configuration if tools were installed
-    # RND-02: Delegar I/O síncrono a thread pool para no bloquear el event loop
+    # RND-02: Delegar I/O síncrono a thread pool para no bloquear el event loop.
+    # `_bloqueante` serializa además con `run_ritual_install` de la GUI (mismo
+    # config.toml, mismo proceso) — ver el comentario de módulo en
+    # local_config.py sobre por qué hace falta (review PR #444).
     if local_cfg and config_path:
-        await asyncio.to_thread(save_local_config, local_cfg, config_path)
+        await guardar_config_bloqueante(local_cfg, config_path)
 
     return json.dumps(results)

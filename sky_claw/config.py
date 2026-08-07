@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import os
 import pathlib
 import sys
+import tempfile
 import tomllib
 from typing import Any
 
@@ -63,6 +65,12 @@ class Config:
     def __init__(self, config_path: pathlib.Path | None = None) -> None:
         self._config_path = config_path or self.DEFAULT_CONFIG_FILE
         self._data: dict[str, Any] = self._load_defaults()
+        #: Secretos cuyo ÚNICO ejemplar es el archivo: estaban en plaintext en el
+        #: TOML y no se pudieron mover al keyring. `save()` los conserva en vez de
+        #: borrarlos (ver el bloque de secretos ahí). Se vacía en cuanto el
+        #: keyring acepta el secreto: a partir de ahí el archivo ya no es el único
+        #: ejemplar y preservar el plaintext sería deshacer la migración.
+        self._secretos_solo_en_archivo: dict[str, str] = {}
         self._load_from_file()
         self._migrate_llm_model()
         self._load_from_keyring()
@@ -112,7 +120,10 @@ class Config:
                     keyring.set_password("sky_claw", key, plaintext)
                     migrated = True
                 except (keyring.errors.KeyringError, OSError):
-                    pass
+                    # El keyring no lo aceptó: el archivo sigue siendo el único
+                    # ejemplar de este secreto. Registrarlo para que `save()` no
+                    # lo borre al reintentar la migración y volver a fallar.
+                    self._secretos_solo_en_archivo[key] = str(plaintext)
 
         # S3-FIX: If we migrated secrets to keyring, scrub them from the TOML on disk.
         # Verify the save succeeds; if it fails, log a critical warning so the
@@ -228,10 +239,42 @@ class Config:
                         key,
                         type(exc).__name__,
                     )
-                    # Fail-closed: do NOT fall back to plaintext in config file
+                    # Fail-closed en las DOS direcciones. No se escribe plaintext
+                    # NUEVO en el archivo (la política de secretos no se degrada
+                    # porque el keyring falle), pero tampoco se BORRA el que el
+                    # usuario ya tenía ahí: el `pop` de arriba es incondicional, así
+                    # que sin esto un keyring caído destruía el único ejemplar del
+                    # secreto en el mismo save() que decía estar protegiéndolo — y
+                    # no hay backup ni escritura atómica para recuperarlo. Se
+                    # restaura el valor QUE ESTABA EN EL ARCHIVO, nunca el de
+                    # memoria: un secreto recién tipeado no baja a disco en claro.
+                    anterior = self._secretos_solo_en_archivo.get(key)
+                    if anterior:
+                        save_data[key] = anterior
+                else:
+                    # El keyring lo tiene: el archivo deja de ser el único ejemplar
+                    # y el scrub del plaintext procede de forma definitiva.
+                    self._secretos_solo_en_archivo.pop(key, None)
 
-        with open(self._config_path, "wb") as f:
-            tomli_w.dump(save_data, f)
+        # Escritura atómica: `open(path, "wb")` trunca el archivo ANTES de
+        # escribir el contenido nuevo. Un fallo a mitad de la serialización
+        # (disco lleno, OSError transitorio en Windows, el proceso matado)
+        # dejaba el TOML en 0 bytes — la config anterior, completa y válida,
+        # desaparecía por un fallo que no tenía nada que ver con ella. El
+        # temporal vive en el mismo directorio que el destino (mismo
+        # filesystem, condición de `os.replace` para ser atómico en
+        # POSIX/NTFS) y se limpia si algo falla antes del replace.
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            dir=self._config_path.parent, prefix=".sky_claw_config_", suffix=".toml.tmp"
+        )
+        try:
+            with os.fdopen(tmp_fd, "wb") as f:
+                tomli_w.dump(save_data, f)
+            os.replace(tmp_name, self._config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
 
         # La actualización es solo en memoria: evita releer TOML/keyring desde
         # el filtro que corre en productores asyncio.

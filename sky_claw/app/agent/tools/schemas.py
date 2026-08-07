@@ -223,7 +223,11 @@ class SetupToolsParams(pydantic.BaseModel):
         description=(
             "List of tools to install. Supported: 'loot', 'xedit', 'pandora', 'bodyslide', "
             "'ngio' (dependencias del precache de grass: NGIO-NG + Address Library + "
-            "Grass Cache Helper NG en AE)."
+            "Grass Cache Helper NG en AE), 'community_shaders' (Community Shaders core + "
+            "Address Library + SSE Engine Fixes; requiere Skyrim SE 1.5.97 o AE 1.6.1170+, "
+            "SKSE instalado, sin ENB, y el preloader de Engine Fixes en la raíz del juego). "
+            "'community_shaders' NO está en el default: sus prerrequisitos no los puede "
+            "satisfacer Sky-Claw solo — se despacha por nombre explícito."
         ),
     )
 

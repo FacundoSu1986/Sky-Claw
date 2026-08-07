@@ -462,6 +462,196 @@ class TestGetDownloadUrl:
 
 class TestDownload:
     @pytest.mark.asyncio
+    async def test_cuerpo_mas_largo_que_el_size_declarado_aborta_sin_escribirlo(self, tmp_path: pathlib.Path) -> None:
+        """Techo de bytes durante el streaming: hermano de ``ToolsInstaller._download_asset``.
+
+        Sin techo, un cuerpo más largo que el ``size_bytes`` de la API de Nexus
+        (metadata stale, CDN mal configurado, respuesta re-servida) se escribía
+        entero: la validación de hash recién corre al final, así que el disco se
+        llenaba primero. Y el ``OSError`` de disco lleno *sí* es reintentable
+        (``_should_retry_nexus``), así que la pasada se repetía hasta 5 veces.
+        """
+        declarado = 16
+        resp = _make_aiohttp_response(content=b"x" * (declarado * 4))
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway, chunk_size=8)
+        fi = _make_file_info(file_name="Gordo.zip", size_bytes=declarado, md5="")
+
+        with pytest.raises(DownloadError, match="excede el tamaño declarado"):
+            await d.download(fi, session)
+
+        # El parcial se limpia y NO queda nada del cuerpo excedente en disco.
+        assert not (tmp_path / "staging" / "Gordo.zip").exists()
+        # Un solo intento: el abort por techo no es reintentable (a diferencia
+        # del OSError de disco lleno que provocaba antes).
+        assert gateway.request.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_cuerpo_exacto_al_size_declarado_no_dispara_el_techo(self, tmp_path: pathlib.Path) -> None:
+        """El límite es estricto (``>``), no ``>=``: el último chunk válido se escribe."""
+        content = b"y" * 24
+        resp = _make_aiohttp_response(content=content)
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway, chunk_size=8)
+        fi = _make_file_info(file_name="Justo.zip", size_bytes=len(content), md5="")
+
+        dest = await d.download(fi, session)
+
+        assert dest.read_bytes() == content
+
+    @pytest.mark.asyncio
+    async def test_size_desconocido_no_impone_techo(self, tmp_path: pathlib.Path) -> None:
+        """``size_bytes == 0`` es "no declarado": sin techo, igual que el hermano GitHub."""
+        content = b"z" * 40
+        resp = _make_aiohttp_response(content=content)
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway, chunk_size=8)
+        fi = _make_file_info(file_name="Sin size.zip", size_bytes=0, md5="")
+
+        dest = await d.download(fi, session)
+
+        assert dest.read_bytes() == content
+
+    @pytest.mark.asyncio
+    async def test_url_con_espacios_y_parentesis_se_encoda_antes_del_gateway(self, tmp_path: pathlib.Path) -> None:
+        """El CDN de Nexus sirve el file_name crudo (espacios, paréntesis) en la URL.
+
+        ``NetworkGateway`` rechaza URLs con whitespace a propósito (defensa contra
+        header injection): el cliente debe URL-encodear antes de mandarla. Cazado
+        en el smoke E2E premium (blueprint Fase 5): con key sin premium la ruta
+        nunca llegaba al CDN (FREE_FALLBACK) y los mocks usaban URLs limpias.
+        """
+        content = b"payload real"
+        resp = _make_aiohttp_response(content=content)
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway)
+        fi = _make_file_info(
+            file_name="All in one (all game versions)-32444-11-1770897704.zip",
+            size_bytes=len(content),
+            md5="",
+            download_url=(
+                "https://cf-files.nexusmods.com/cdn/1704/32444/"
+                "All in one (all game versions)-32444-11-1770897704.zip"
+                "?expires=1786070177&md5=m_CiEYt07OgtSFtHOQdvsw&user_id=207416661"
+            ),
+        )
+
+        dest = await d.download(fi, session)
+
+        assert dest.exists()
+        url_enviada = gateway.request.await_args.args[1]
+        assert " " not in url_enviada, url_enviada
+        assert "(" not in url_enviada, url_enviada
+        assert "%20" in url_enviada
+        assert "%28" in url_enviada
+        # Los parámetros de query sobreviven intactos (sin doble-encode).
+        assert "expires=1786070177" in url_enviada
+        assert "md5=m_CiEYt07OgtSFtHOQdvsw" in url_enviada
+        assert urlparse(url_enviada).hostname == "cf-files.nexusmods.com"
+
+    @pytest.mark.asyncio
+    async def test_url_con_porcentaje_en_filename_se_encoda_y_query_intacta(self, tmp_path: pathlib.Path) -> None:
+        """El % literal del filename (válido en Windows, caso real del smoke) se
+        percent-encodes en el path; la query de firma del CDN sobrevive intacta.
+
+        Límite documentado: '# ' y '?' son separadores de fragment/query para
+        urlsplit — una URL del CDN con esos caracteres crudos en el path sería
+        malformada DE ORIGEN (el CDN debe encodearlos al generarla); no se
+        intenta reparar URLs rotas del servidor.
+        """
+        content = b"payload real"
+        resp = _make_aiohttp_response(content=content)
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway)
+        fi = _make_file_info(
+            file_name="100% Armor (v2)-42-1-0.zip",
+            size_bytes=len(content),
+            md5="",
+            download_url=(
+                "https://cf-files.nexusmods.com/cdn/1704/42/100% Armor (v2)-42-1-0.zip?expires=1786070177&md5=abc123"
+            ),
+        )
+
+        dest = await d.download(fi, session)
+
+        assert dest.exists()
+        url_enviada = gateway.request.await_args.args[1]
+        assert "%25" in url_enviada, f"el % literal debe encodearse: {url_enviada}"
+        assert "%28" in url_enviada, f"el ( debe encodearse: {url_enviada}"
+        # La query sobrevive byte a byte (igualdad exacta, no fragmentos).
+        assert urlparse(url_enviada).query == "expires=1786070177&md5=abc123", url_enviada
+
+    @pytest.mark.asyncio
+    async def test_url_con_escapes_preexistentes_no_se_doblan(self, tmp_path: pathlib.Path) -> None:
+        """Escapes %HH ya válidos en el path del CDN (p.ej. %20) se preservan SIN
+        doblarse (%20 → %2520 rompería la firma) — hallazgo de review del PR #442."""
+        content = b"payload real"
+        resp = _make_aiohttp_response(content=content)
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway)
+        fi = _make_file_info(
+            file_name="Mod Con Espacios-42-1-0.zip",
+            size_bytes=len(content),
+            md5="",
+            download_url=(
+                "https://cf-files.nexusmods.com/cdn/1704/42/Mod%20Con%20Espacios-42-1-0.zip"
+                "?expires=1786070177&md5=abc123"
+            ),
+        )
+
+        dest = await d.download(fi, session)
+
+        assert dest.exists()
+        url_enviada = gateway.request.await_args.args[1]
+        partes = urlparse(url_enviada)
+        assert partes.path == "/cdn/1704/42/Mod%20Con%20Espacios-42-1-0.zip", url_enviada
+        assert "%2520" not in url_enviada, f"escape doblado: {url_enviada}"
+        assert partes.query == "expires=1786070177&md5=abc123", url_enviada
+
+    def test_quote_path_preservando_escapes_puro(self) -> None:
+        """Función pura: segmentos crudos se encodan, %HH válidos se preservan,
+        % literal se encodea a %25."""
+        from sky_claw.app.scraper.nexus_downloader import _quote_path_preservando_escapes
+
+        assert _quote_path_preservando_escapes("/a b/(c).zip") == "/a%20b/%28c%29.zip"
+        assert _quote_path_preservando_escapes("/Mod%20Con%20Espacios.zip") == "/Mod%20Con%20Espacios.zip"
+        assert _quote_path_preservando_escapes("/100% Armor.zip") == "/100%25%20Armor.zip"
+        assert _quote_path_preservando_escapes("/x%2Fy") == "/x%2Fy"  # %2F válido preservado
+        assert _quote_path_preservando_escapes("/a%zz") == "/a%25zz"  # %zz NO es escape válido
+
+    @pytest.mark.asyncio
+    async def test_url_con_autoridad_malformada_lanza_download_error(self, tmp_path: pathlib.Path) -> None:
+        """urlsplit con autoridad malformada (p.ej. corchetes sin cerrar) → DownloadError
+        claro con el file_name, sin la URL cruda en el mensaje."""
+        resp = _make_aiohttp_response(content=b"x")
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway)
+        fi = _make_file_info(
+            file_name="raro.zip",
+            size_bytes=1,
+            md5="",
+            download_url="https://[malformada",
+        )
+
+        with pytest.raises(DownloadError, match="raro.zip"):
+            await d.download(fi, session)
+        assert gateway.request.await_count == 0
+
+    @pytest.mark.asyncio
     async def test_successful_download_no_md5(self, tmp_path: pathlib.Path) -> None:
         content = b"hello world data"
         resp = _make_aiohttp_response(content=content)

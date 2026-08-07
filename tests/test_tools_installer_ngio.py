@@ -547,6 +547,12 @@ class TestExtraccionMods:
 
         assert not (tmp_path / "evil.dll").exists()
         assert not (mods_dir / "evil.dll").exists()
+        # clean_on_fail (blueprint Fase 2, default compartido con CS): el mod_dir
+        # NUEVO del componente que falló (Address Library) queda eliminado tras
+        # el fallo post-descarga — nunca basura en el VFS. NGIO (componente 1)
+        # quedó instalado: la limpieza es por mod_dir, no global.
+        assert not (mods_dir / ADDRESS_LIBRARY_MOD_NAME).exists()
+        assert (mods_dir / NGIO_MOD_NAME).exists()
 
     async def test_aplana_zip_con_carpeta_raiz(
         self, installer: ToolsInstaller, mods_dir: pathlib.Path, tmp_path: pathlib.Path

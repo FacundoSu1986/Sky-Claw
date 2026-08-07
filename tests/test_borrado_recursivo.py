@@ -111,6 +111,7 @@ MECANISMO_DE_BORRADO: dict[str, str] = {
     "sky_claw/local/tools/dyndolod_runner.py": "link-aware",
     "sky_claw/local/tools/rollback_reconciler.py": "link-aware",
     "sky_claw/local/tools/vramr_service.py": "link-aware",
+    "sky_claw/local/tools_installer.py": "link-aware",
 }
 
 #: Motivo, para los que NO delegan. Escribir el racional no cuenta como
@@ -399,6 +400,7 @@ POLITICA_DE_LIMPIAR_READONLY: dict[str, str] = {
     "sky_claw/local/tools/dyndolod_runner.py": "requiere",
     "sky_claw/local/tools/rollback_reconciler.py": "requiere",
     "sky_claw/local/tools/vramr_service.py": "requiere",
+    "sky_claw/local/tools_installer.py": "requiere",
 }
 
 #: Motivo, para los que NO lo requieren.
