@@ -109,6 +109,21 @@ veces (#214, #216) antes del fix de raíz.*
 general** (decisión documentada en #217). Los handlers que reciben un
 `HITLGuard` explícito, como `download_mod`, conservan su aprobación específica.
 
+**Persistencia de config.** Hay **dos** clases de config y no son
+intercambiables: `Config` (`sky_claw/config.py`, TOML, estado en `_data`, la que
+inyecta `AppContext` y a la que apunta `AppContext.config_path`) y `LocalConfig`
+(dataclass, JSON, formato legacy). Los dos `save` **reescriben el archivo entero
+sin backup ni escritura atómica**, así que elegir mal el lector o el escritor no
+degrada: borra la config del usuario en silencio. Escribí campos con
+`escribir_campo` y persistí con `guardar_config`/`persistir_campo`
+(`sky_claw/local/local_config.py`) — nunca con `load`/`save` crudos, que son
+JSON-only. Ancla: `tests/test_local_config_persistencia.py` congela por AST
+quién puede importarlos (hoy solo `app_context.py`, y solo `load`, para la
+migración legacy). *Historia: el mismo defecto en las dos superficies del PR
+#442 — la GUI reescribía `config.toml` con JSON de defaults y el agente escribía
+un atributo muerto sobre `Config`; los tests pasaban porque los fixtures usaban
+`LocalConfig` y un `.json` de conveniencia.*
+
 ## Pendientes conocidos
 
 Ver [`docs/pending_ooda_status.md`](docs/pending_ooda_status.md) para el inventario

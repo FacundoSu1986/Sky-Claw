@@ -441,16 +441,39 @@ class NexusDownloader:
 
                         async with aiofiles.open(dest, "wb") as fh:
                             async for chunk in resp.content.iter_chunked(self._chunk_size):
+                                # Techo de bytes DURANTE el streaming — hermano de
+                                # `ToolsInstaller._download_asset`. Un cuerpo más largo
+                                # que el size declarado por la API (metadata stale, CDN
+                                # mal configurado) se escribía entero: la validación de
+                                # hash recién corre al final, así que primero se llenaba
+                                # el disco. Peor, el OSError de disco lleno SÍ es
+                                # reintentable y la pasada se repetía 5 veces. Se aborta
+                                # apenas se excede, sin escribir el chunk que excede, y
+                                # con un DownloadError que `_should_retry_nexus` no
+                                # reintenta. `size_bytes == 0` es "no declarado": sin
+                                # techo, igual que el hermano (no se usa Content-Length,
+                                # que lo elige el mismo servidor cuyo cuerpo se acota).
+                                progress.downloaded_bytes += len(chunk)
+                                if 0 < file_info.size_bytes < progress.downloaded_bytes:
+                                    raise DownloadError(
+                                        f"El cuerpo de {file_info.file_name!r} excede el tamaño declarado "
+                                        f"({file_info.size_bytes} bytes) — descarga abortada."
+                                    )
                                 await fh.write(chunk)
                                 # Actualizar ambos hashes por chunk
                                 md5_hash.update(chunk)
                                 sha256_hash.update(chunk)
-                                progress.downloaded_bytes += len(chunk)
                                 if progress_cb is not None:
                                     await progress_cb(progress)
                                 # Yield the event loop para evitar bloquear el thread principal
                                 await asyncio.sleep(0)
 
+                except DownloadError:
+                    # Techo de bytes excedido: el parcial no sirve para nada y el
+                    # error ya es descriptivo — limpiar y propagar sin re-envolver
+                    # (re-envolver lo haría indistinguible de un fallo de red).
+                    await _cleanup(dest)
+                    raise
                 except aiohttp.ClientError as exc:
                     await _cleanup(dest)
                     raise DownloadError(f"Download failed for {file_info.file_name!r}: {exc}") from exc

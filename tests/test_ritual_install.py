@@ -378,16 +378,27 @@ async def test_install_community_shaders_usa_mo2_y_juego_del_snapshot() -> None:
 
 
 async def test_install_community_shaders_persiste_mods_en_config(tmp_path: pathlib.Path) -> None:
-    """La GUI persiste community_shaders_mods (contrato NGIO: el orquestador activa)."""
+    """La GUI persiste community_shaders_mods (contrato NGIO: el orquestador activa).
+
+    El `config_path` es un TOML **real**, no un JSON de conveniencia:
+    `AppContext.config_path` es `Config.DEFAULT_CONFIG_FILE`
+    (`~/.sky_claw/config.toml`) y con un fixture JSON este test pasaba en verde
+    mientras producción reescribía el TOML del usuario con defaults. La segunda
+    mitad de las aserciones —que lo que ya estaba sigue ahí— es el punto.
+    """
+    import tomllib
+
     from sky_claw.app.gui.views.forge_dashboard import STORE_KEY_ENV
     from sky_claw.local.discovery.environment import EnvironmentSnapshot, MO2Info, SkyrimEdition, SkyrimInfo
-    from sky_claw.local.local_config import load
     from sky_claw.local.tools_installer import ModInstallResult
 
     mo2_root = tmp_path / "MO2"
     game_path = tmp_path / "Skyrim"
-    config_path = tmp_path / "config.json"
-    config_path.write_text("{}", encoding="utf-8")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'llm_provider = "anthropic"\nmo2_root = "D:/Modding/MO2"\nskyrim_path = "D:/Skyrim"\n',
+        encoding="utf-8",
+    )
     store = ReactiveStore()
     store.set(
         STORE_KEY_ENV,
@@ -409,8 +420,12 @@ async def test_install_community_shaders_persiste_mods_en_config(tmp_path: pathl
 
     await run_ritual_install("community_shaders", app_context=ctx, store=store)
 
-    persistido = load(config_path)
-    assert persistido.community_shaders_mods == ["Address Library for SKSE Plugins"]
+    persistido = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert persistido["community_shaders_mods"] == ["Address Library for SKSE Plugins"]
+    # La config que ya existía sobrevive: persistir un campo no es reescribir todo.
+    assert persistido["mo2_root"] == "D:/Modding/MO2"
+    assert persistido["skyrim_path"] == "D:/Skyrim"
+    assert persistido["llm_provider"] == "anthropic"
 
 
 async def test_install_community_shaders_sin_mo2_devuelve_feedback_negativo() -> None:

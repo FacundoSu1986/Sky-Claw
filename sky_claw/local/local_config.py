@@ -13,10 +13,12 @@ The file is created on first use at the path given to :func:`load`
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import logging
 import pathlib
 import sys
+import tomllib
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol, cast
 
@@ -166,10 +168,121 @@ def load(path: pathlib.Path = _DEFAULT_PATH) -> LocalConfig:
 
 
 def save(config: LocalConfig, path: pathlib.Path = _DEFAULT_PATH) -> None:
-    """Persist *config* to *path* as pretty-printed JSON."""
+    """Persist *config* to *path* as pretty-printed JSON.
+
+    Escribe JSON **pase lo que pase**: sólo es correcto sobre el formato legacy
+    (``sky_claw_config.json``). El código de aplicación no debe llamarlo
+    directo — usa :func:`guardar_config`, que despacha por el formato real del
+    archivo. `tests/test_local_config_persistencia.py` congela los importadores.
+    """
     data = asdict(cast("DataclassInstance", config))
     path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     logger.info("Local config saved to %s", path)
+
+
+# ----------------------------------------------------------------------------
+# Persistencia agnóstica del formato (GUI y agente LLM comparten estas piezas)
+# ----------------------------------------------------------------------------
+# Hay DOS clases de config circulando y no son intercambiables: `Config`
+# (`sky_claw/config.py`, TOML, estado en `_data`, es la que `AppContext` inyecta
+# en el registry del agente y a la que apunta `AppContext.config_path`) y
+# `LocalConfig` (dataclass, JSON, formato legacy que todavía migra
+# `AppContext._migrate_legacy_json`). Ambos `save` reescriben el archivo entero
+# sin backup ni escritura atómica, así que elegir mal el lector o el escritor no
+# degrada: destruye la config del usuario en silencio.
+
+#: Extensión del formato legacy. Todo lo demás se trata como el TOML canónico:
+#: ante una extensión desconocida conviene equivocarse hacia el formato vigente,
+#: no hacia el deprecado.
+_SUFIJO_JSON_LEGACY = ".json"
+
+
+def abrir_config_para_persistir(path: pathlib.Path) -> Any:
+    """Devuelve el objeto de config que sabe leer *y* reescribir *path*.
+
+    Fail-closed: si el archivo existe pero no parsea, se propaga el error del
+    parser en vez de devolver un objeto con defaults. Los dos formatos tienen
+    lectores tolerantes (``load`` atrapa ``JSONDecodeError``, ``Config`` atrapa
+    ``TOMLDecodeError``) que se quedan con los defaults y siguen: combinado con
+    un ``save`` que reescribe todo, eso convierte un archivo ilegible —o un
+    ``OSError`` transitorio, que en Windows es un lock de otro proceso— en la
+    pérdida completa de la configuración.
+
+    Bloqueante (I/O + keyring): llamar desde un thread en contexto async.
+
+    Raises:
+        tomllib.TOMLDecodeError | json.JSONDecodeError: El archivo existe y no
+            parsea en su formato.
+        OSError: El archivo existe y no se pudo leer.
+    """
+    es_legacy = path.suffix.lower() == _SUFIJO_JSON_LEGACY
+    if path.exists():
+        # Parsear ANTES de construir: los constructores no distinguen "vacío"
+        # de "ilegible", y esa diferencia acá vale toda la config del usuario.
+        texto = path.read_text(encoding="utf-8")
+        if es_legacy:
+            json.loads(texto)
+        else:
+            tomllib.loads(texto)
+    if es_legacy:
+        return load(path)
+    # Diferido: construir un `Config` lee keyring y no hace falta en el camino
+    # legacy (y mantiene `sky_claw.local` sin dependencia dura del top-level).
+    from sky_claw.config import Config
+
+    return Config(path)
+
+
+def escribir_campo(config: Any, campo: str, valor: Any) -> None:
+    """Setea *campo* en *config* sin que el caller tenga que saber de qué clase es.
+
+    `Config` guarda su estado en ``_data`` y su ``__getattr__`` sólo lee de ahí:
+    un ``setattr`` crudo crearía un atributo de instancia que ningún ``save``
+    mira nunca (el bug era exactamente ése, escrito dos veces en dos ramas).
+    """
+    data = getattr(config, "_data", None)
+    if isinstance(data, dict):
+        data[campo] = valor
+    else:
+        setattr(config, campo, valor)
+
+
+def guardar_config(config: Any, path: pathlib.Path) -> None:
+    """Persiste *config* por el mecanismo de su propia clase.
+
+    Una dataclass (`LocalConfig`) va por el :func:`save` JSON de este módulo;
+    cualquier otra config persiste con su propio ``save()`` (`Config` escribe
+    TOML y mueve los secretos al keyring). Un objeto sin ninguno de los dos
+    caminos aborta: escribir JSON "por las dudas" es lo que borraba el TOML.
+
+    Bloqueante: llamar desde un thread en contexto async.
+
+    Raises:
+        TypeError: *config* no expone ninguna forma conocida de persistirse.
+    """
+    if dataclasses.is_dataclass(config) and not isinstance(config, type):
+        save(cast("LocalConfig", config), path)
+        return
+    guardar = getattr(config, "save", None)
+    if callable(guardar):
+        guardar()
+        return
+    raise TypeError(f"La config {type(config).__name__!r} no sabe persistirse (ni dataclass ni .save()): abortado")
+
+
+def persistir_campo(path: pathlib.Path, campo: str, valor: Any) -> None:
+    """Ciclo leer-modificar-escribir de un solo campo sobre *path*.
+
+    Para callers que tienen el path pero no el objeto vivo de config (la GUI).
+    Quien ya tiene el objeto —el agente LLM, que lo recibe inyectado— debe usar
+    :func:`escribir_campo` + :func:`guardar_config` sobre ESA instancia, para no
+    pisar cambios en memoria que todavía no se guardaron.
+
+    Bloqueante: llamar desde un thread en contexto async.
+    """
+    config = abrir_config_para_persistir(path)
+    escribir_campo(config, campo, valor)
+    guardar_config(config, path)

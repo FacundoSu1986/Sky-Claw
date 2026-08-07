@@ -575,11 +575,15 @@ async def run_ritual_install(
         config_path = getattr(app_context, "config_path", None)
         if config_path is not None:
             try:
-                from sky_claw.local.local_config import load, save
+                # `persistir_campo` despacha por el formato REAL del archivo:
+                # `AppContext.config_path` es el TOML canónico
+                # (`Config.DEFAULT_CONFIG_FILE`), no el JSON legacy. Leerlo con
+                # el parser equivocado devolvía defaults y el guardado
+                # posterior reescribía el archivo entero — la config del
+                # usuario se perdía sin un solo error visible.
+                from sky_claw.local.local_config import persistir_campo
 
-                local_cfg = load(config_path)
-                local_cfg.community_shaders_mods = nombres
-                await asyncio.to_thread(save, local_cfg, config_path)
+                await asyncio.to_thread(persistir_campo, config_path, "community_shaders_mods", nombres)
             except Exception:  # noqa: BLE001 — la instalación ya tuvo éxito; no romper el feedback
                 logger.exception("No se pudo persistir community_shaders_mods en %s", config_path)
         store.set(
