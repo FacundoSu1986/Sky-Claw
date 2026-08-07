@@ -117,12 +117,24 @@ sin backup ni escritura atómica**, así que elegir mal el lector o el escritor 
 degrada: borra la config del usuario en silencio. Escribí campos con
 `escribir_campo` y persistí con `guardar_config`/`persistir_campo`
 (`sky_claw/local/local_config.py`) — nunca con `load`/`save` crudos, que son
-JSON-only. Ancla: `tests/test_local_config_persistencia.py` congela por AST
-quién puede importarlos (hoy solo `app_context.py`, y solo `load`, para la
-migración legacy). *Historia: el mismo defecto en las dos superficies del PR
-#442 — la GUI reescribía `config.toml` con JSON de defaults y el agente escribía
-un atributo muerto sobre `Config`; los tests pasaban porque los fixtures usaban
-`LocalConfig` y un `.json` de conveniencia.*
+JSON-only. `Config.__getattr__` solo lee de `_data`, así que un
+`local_cfg.campo = valor` crudo crea un atributo que funciona en la sesión y que
+ningún `save` mira: se pierde al reiniciar, sin error. Anclas (ambas en
+`tests/test_local_config_persistencia.py`, por AST y por igualdad literal):
+quién puede importar `load`/`save` crudos —hoy solo `app_context.py`, y solo
+`load`, para la migración legacy— y cuántas asignaciones crudas sobre
+`local_cfg` hay por módulo —hoy cero—. *Historia: el mismo defecto en las dos
+superficies del PR #442 (la GUI reescribía `config.toml` con JSON de defaults y
+el agente escribía un atributo muerto sobre `Config`) más cuatro hermanos en
+`app_context.py` que hacían que la autodetección zero-config nunca persistiera;
+los tests pasaban porque los fixtures usaban `LocalConfig` y un `.json` de
+conveniencia.*
+
+**Secretos en `Config.save()`.** Fail-closed en las **dos** direcciones: no baja
+plaintext nuevo al TOML si el keyring falla, y tampoco borra el secreto que ya
+estaba en el archivo cuando no lo pudo mover (perder la key es tan malo como
+filtrarla, y no hay backup ni escritura atómica). Ancla:
+`tests/test_config_secretos_sin_keyring.py`.
 
 ## Pendientes conocidos
 

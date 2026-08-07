@@ -159,6 +159,32 @@ def test_escribir_y_guardar_soportan_las_dos_clases_reales(tmp_path: pathlib.Pat
     assert json.loads(json_path.read_text(encoding="utf-8"))["community_shaders_mods"] == ["A", "B"]
 
 
+def test_la_autodeteccion_zero_config_llega_al_disco(tmp_path: pathlib.Path) -> None:
+    """Reproduce la secuencia de `AppContext._start_full_inner` sobre un `Config`.
+
+    Ahí se escriben `mo2_root`/`skyrim_path`/`loot_exe`/`xedit_exe` detectados y
+    se llama `local_cfg.save()` bajo `if config_changed`. Con `setattr` crudo el
+    `save` volcaba `_data` —que nunca los recibió— y el arranque siguiente
+    re-escaneaba discos como si no hubiera detectado nada: el síntoma es lento y
+    silencioso, nunca un error.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    config = Config(config_path)
+
+    escribir_campo(config, "mo2_root", "D:/Modding/MO2")
+    escribir_campo(config, "skyrim_path", "D:/Skyrim")
+    escribir_campo(config, "loot_exe", "D:/Tools/LOOT/LOOT.exe")
+    escribir_campo(config, "xedit_exe", "D:/Tools/xEdit/SSEEdit.exe")
+    guardar_config(config, config_path)
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["mo2_root"] == "D:/Modding/MO2"
+    assert en_disco["skyrim_path"] == "D:/Skyrim"
+    assert en_disco["loot_exe"] == "D:/Tools/LOOT/LOOT.exe"
+    assert en_disco["xedit_exe"] == "D:/Tools/xEdit/SSEEdit.exe"
+
+
 def test_guardar_config_rechaza_un_objeto_que_no_sabe_persistirse() -> None:
     """Nunca degradar a un `save` que no corresponde al formato: abortar."""
 
@@ -205,3 +231,49 @@ def test_ancla_de_importadores_del_save_json_crudo() -> None:
     decida si va por `persistir_campo`/`guardar_config` o es otra exención.
     """
     assert _importadores_crudos() == IMPORTADORES_PERMITIDOS
+
+
+# ── Ancla por AST: nadie escribe campos con `setattr` crudo sobre la config ─────
+#: `Config.__getattr__` sólo lee de `_data`, así que `local_cfg.campo = valor`
+#: crea un atributo de instancia que se lee bien EN LA MISMA SESIÓN y que ningún
+#: `save()` mira jamás: el valor se pierde al reiniciar y nadie ve un error. Es
+#: silencioso justamente donde más duele (autodetección zero-config, paths de
+#: tools recién instalados), así que se congela en cero.
+#:
+#: El ancla se ancla al nombre convencional `local_cfg`, que es el que usan las
+#: dos superficies y `app_context`: apunta a la copia-pega del patrón existente,
+#: que es como se propagó. No pretende cubrir un alias arbitrario.
+ASIGNACIONES_CRUDAS_PERMITIDAS: dict[str, int] = {}
+
+_NOMBRE_CONFIG = "local_cfg"
+
+
+def _asignaciones_crudas() -> dict[str, int]:
+    encontradas: dict[str, int] = {}
+    for archivo in PAQUETE.rglob("*.py"):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
+        objetivos = [
+            destino
+            for nodo in ast.walk(arbol)
+            for destino in (
+                nodo.targets
+                if isinstance(nodo, ast.Assign)
+                else [nodo.target]
+                if isinstance(nodo, (ast.AugAssign, ast.AnnAssign))
+                else []
+            )
+            if isinstance(destino, ast.Attribute)
+            and isinstance(destino.value, ast.Name)
+            and destino.value.id == _NOMBRE_CONFIG
+        ]
+        if objetivos:
+            encontradas[archivo.relative_to(RAIZ).as_posix()] = len(objetivos)
+    return encontradas
+
+
+def test_ancla_de_asignaciones_crudas_sobre_la_config() -> None:
+    """Congela la CANTIDAD por módulo, no sólo el nombre: sumar una asignación
+    más en un módulo ya listado es el punto de extensión más probable, y con un
+    set de nombres pasaría sin romper nada.
+    """
+    assert _asignaciones_crudas() == ASIGNACIONES_CRUDAS_PERMITIDAS
