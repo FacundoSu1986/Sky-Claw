@@ -109,6 +109,48 @@ veces (#214, #216) antes del fix de raíz.*
 general** (decisión documentada en #217). Los handlers que reciben un
 `HITLGuard` explícito, como `download_mod`, conservan su aprobación específica.
 
+**Persistencia de config.** Hay **dos** clases de config y no son
+intercambiables: `Config` (`sky_claw/config.py`, TOML, estado en `_data`, la que
+inyecta `AppContext` y a la que apunta `AppContext.config_path`) y `LocalConfig`
+(dataclass, JSON, formato legacy). Escribí campos con `escribir_campo` y
+persistí con `guardar_config`/`persistir_campo`
+(`sky_claw/local/local_config.py`) — nunca con `load`/`save` crudos, que son
+JSON-only. `Config.__getattr__` solo lee de `_data`, así que un
+`local_cfg.campo = valor` crudo crea un atributo que funciona en la sesión y que
+ningún `save` mira: se pierde al reiniciar, sin error. Anclas (todas en
+`tests/test_local_config_persistencia.py`, por AST y por igualdad literal):
+quién puede importar `load`/`save` crudos —hoy solo `app_context.py`, y solo
+`load`, para la migración legacy—, cuántas asignaciones crudas sobre
+`local_cfg` hay por módulo —hoy cero—, y la frontera exacta de lo que
+serializa la sección de carrera GUI↔agente (ver debajo). *Historia: el mismo
+defecto en las dos superficies del PR #442 (la GUI reescribía `config.toml`
+con JSON de defaults y el agente escribía un atributo muerto sobre `Config`)
+más cuatro hermanos en `app_context.py` que hacían que la autodetección
+zero-config nunca persistiera; los tests pasaban porque los fixtures usaban
+`LocalConfig` y un `.json` de conveniencia.*
+
+Ambos `save` (TOML y JSON) escriben **atómicamente** (temporal + `os.replace`
+en el mismo directorio que el destino): un fallo a mitad de la serialización
+ya no puede truncar la config existente a 0 bytes. `persistir_campo_bloqueante`
+(GUI) y `guardar_config_bloqueante` (agente) además serializan con un lock
+compartido de proceso (`sky_claw/local/local_config.py`,
+`_obtener_lock_de_escritura`) — usalos en vez de las variantes sync + `to_thread`
+crudo desde cualquier código nuevo que persista sobre el mismo `config.toml`.
+El lock evita que dos escrituras concurrentes intercalen sus `os.replace`
+(archivo corrupto), **no** que un objeto `Config` de vida larga (como
+`AppContext.local_cfg`, construido una vez por sesión) pise con su próximo
+`save()` un campo que otro camino escribió con lectura fresca después de que
+ese objeto se construyó — eso requeriría merge por campo en vez de reemplazo
+del objeto entero, un cambio de arquitectura aparte, documentado como límite
+conocido y anclado a propósito (no accidentalmente) en los tests de la sección
+"Carrera GUI ↔ agente LLM".
+
+**Secretos en `Config.save()`.** Fail-closed en las **dos** direcciones: no baja
+plaintext nuevo al TOML si el keyring falla, y tampoco borra el secreto que ya
+estaba en el archivo cuando no lo pudo mover (perder la key es tan malo como
+filtrarla, y no hay backup ni escritura atómica). Ancla:
+`tests/test_config_secretos_sin_keyring.py`.
+
 ## Pendientes conocidos
 
 Ver [`docs/pending_ooda_status.md`](docs/pending_ooda_status.md) para el inventario

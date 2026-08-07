@@ -2,7 +2,7 @@ name: Sky-Claw CI/CD
 
 on:
   push:
-    branches: [main, master, "feature/**", "claude/**", "copilot/**", "fix/**", "hotfix/**"]
+    branches: [main, master, "feature/**", "feat/**", "claude/**", "copilot/**", "fix/**", "hotfix/**"]
   pull_request:
     branches: [main, master]
 

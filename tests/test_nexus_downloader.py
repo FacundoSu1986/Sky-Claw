@@ -462,6 +462,63 @@ class TestGetDownloadUrl:
 
 class TestDownload:
     @pytest.mark.asyncio
+    async def test_cuerpo_mas_largo_que_el_size_declarado_aborta_sin_escribirlo(self, tmp_path: pathlib.Path) -> None:
+        """Techo de bytes durante el streaming: hermano de ``ToolsInstaller._download_asset``.
+
+        Sin techo, un cuerpo más largo que el ``size_bytes`` de la API de Nexus
+        (metadata stale, CDN mal configurado, respuesta re-servida) se escribía
+        entero: la validación de hash recién corre al final, así que el disco se
+        llenaba primero. Y el ``OSError`` de disco lleno *sí* es reintentable
+        (``_should_retry_nexus``), así que la pasada se repetía hasta 5 veces.
+        """
+        declarado = 16
+        resp = _make_aiohttp_response(content=b"x" * (declarado * 4))
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway, chunk_size=8)
+        fi = _make_file_info(file_name="Gordo.zip", size_bytes=declarado, md5="")
+
+        with pytest.raises(DownloadError, match="excede el tamaño declarado"):
+            await d.download(fi, session)
+
+        # El parcial se limpia y NO queda nada del cuerpo excedente en disco.
+        assert not (tmp_path / "staging" / "Gordo.zip").exists()
+        # Un solo intento: el abort por techo no es reintentable (a diferencia
+        # del OSError de disco lleno que provocaba antes).
+        assert gateway.request.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_cuerpo_exacto_al_size_declarado_no_dispara_el_techo(self, tmp_path: pathlib.Path) -> None:
+        """El límite es estricto (``>``), no ``>=``: el último chunk válido se escribe."""
+        content = b"y" * 24
+        resp = _make_aiohttp_response(content=content)
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway, chunk_size=8)
+        fi = _make_file_info(file_name="Justo.zip", size_bytes=len(content), md5="")
+
+        dest = await d.download(fi, session)
+
+        assert dest.read_bytes() == content
+
+    @pytest.mark.asyncio
+    async def test_size_desconocido_no_impone_techo(self, tmp_path: pathlib.Path) -> None:
+        """``size_bytes == 0`` es "no declarado": sin techo, igual que el hermano GitHub."""
+        content = b"z" * 40
+        resp = _make_aiohttp_response(content=content)
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway, chunk_size=8)
+        fi = _make_file_info(file_name="Sin size.zip", size_bytes=0, md5="")
+
+        dest = await d.download(fi, session)
+
+        assert dest.read_bytes() == content
+
+    @pytest.mark.asyncio
     async def test_url_con_espacios_y_parentesis_se_encoda_antes_del_gateway(self, tmp_path: pathlib.Path) -> None:
         """El CDN de Nexus sirve el file_name crudo (espacios, paréntesis) en la URL.
 

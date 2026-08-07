@@ -1386,6 +1386,70 @@ class TestSetupToolsCommunityShaders:
             ti_mod.COMMUNITY_SHADERS_MOD_NAME,
         ]
 
+    async def test_setup_tools_persiste_con_el_config_real_que_inyecta_app_context(
+        self, gateway: NetworkGateway, tmp_path: pathlib.Path
+    ) -> None:
+        """El objeto que llega en producción es `sky_claw.config.Config`, no `LocalConfig`.
+
+        `AppContext` construye `Config(config_path)` (TOML, estado en `_data`) y
+        lo inyecta en el registry del agente. El test hermano de arriba usa
+        `LocalConfig` —el formato legacy— y por eso pasaba en verde mientras el
+        camino real ni escribía el campo donde se guarda ni sabía persistirlo.
+        """
+        import tomllib
+
+        from sky_claw.app.agent.tools.external_tools import setup_tools
+        from sky_claw.config import Config
+        from sky_claw.local.tools_installer import ModInstallResult
+
+        mo2_root = tmp_path / "MO2"
+        (mo2_root / "mods").mkdir(parents=True)
+        skyrim_dir = tmp_path / "Skyrim"
+        skyrim_dir.mkdir()
+        (skyrim_dir / "SkyrimSE.exe").write_text("no-es-un-pe-real", encoding="utf-8")
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            f'llm_provider = "anthropic"\nmo2_root = "{mo2_root.as_posix()}"\nskyrim_path = "{skyrim_dir.as_posix()}"\n',
+            encoding="utf-8",
+        )
+        cfg = Config(config_path)
+
+        mods_resultado = [
+            ModInstallResult(
+                mod_name=ti_mod.COMMUNITY_SHADERS_MOD_NAME,
+                mod_dir=mo2_root / "mods" / ti_mod.COMMUNITY_SHADERS_MOD_NAME,
+                version="v1.8.2",
+                already_existed=False,
+            ),
+        ]
+        mock_installer = MagicMock()
+        mock_installer.ensure_community_shaders = AsyncMock(return_value=mods_resultado)
+
+        with (
+            patch("sky_claw.local.discovery.scanner.detect_skyrim_edition", return_value=SkyrimEdition.SE),
+            patch("sky_claw.local.discovery.scanner.read_skyrim_version", return_value="1.5.97"),
+        ):
+            salida = await setup_tools(
+                mock_installer,
+                tmp_path / "tools",
+                cfg,
+                config_path,
+                MagicMock(),
+                tools=["community_shaders"],
+                gateway=gateway,
+                session=MagicMock(spec=aiohttp.ClientSession),
+            )
+
+        # No hubo excepción y el resultado llegó entero (antes el guardado
+        # levantaba TypeError y se perdía todo el JSON de salida).
+        assert json.loads(salida)["community_shaders"]["mods"] == [ti_mod.COMMUNITY_SHADERS_MOD_NAME]
+        persistido = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        assert persistido["community_shaders_mods"] == [ti_mod.COMMUNITY_SHADERS_MOD_NAME]
+        # Y el TOML sigue siendo TOML, con lo que ya tenía.
+        assert persistido["mo2_root"] == mo2_root.as_posix()
+        assert persistido["llm_provider"] == "anthropic"
+
     async def test_setup_tools_community_shaders_sin_mo2_root_devuelve_error(
         self, gateway: NetworkGateway, tmp_path: pathlib.Path
     ) -> None:
