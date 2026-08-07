@@ -60,7 +60,7 @@ async def setup_tools(
     Returns:
         JSON string with installation results.
     """
-    from sky_claw.local.local_config import escribir_campo, guardar_config
+    from sky_claw.local.local_config import escribir_campo, guardar_config_bloqueante
     from sky_claw.local.tools_installer import ToolInstallError
 
     if tools_installer is None:
@@ -247,8 +247,11 @@ async def setup_tools(
             await session.close()
 
     # Persist configuration if tools were installed
-    # RND-02: Delegar I/O síncrono a thread pool para no bloquear el event loop
+    # RND-02: Delegar I/O síncrono a thread pool para no bloquear el event loop.
+    # `_bloqueante` serializa además con `run_ritual_install` de la GUI (mismo
+    # config.toml, mismo proceso) — ver el comentario de módulo en
+    # local_config.py sobre por qué hace falta (review PR #444).
     if local_cfg and config_path:
-        await asyncio.to_thread(guardar_config, local_cfg, config_path)
+        await guardar_config_bloqueante(local_cfg, config_path)
 
     return json.dumps(results)

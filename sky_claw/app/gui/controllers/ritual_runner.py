@@ -13,7 +13,6 @@ view/bootloader own the actual element wiring and the store keys.
 
 from __future__ import annotations
 
-import asyncio
 import contextvars
 import logging
 import os
@@ -575,15 +574,19 @@ async def run_ritual_install(
         config_path = getattr(app_context, "config_path", None)
         if config_path is not None:
             try:
-                # `persistir_campo` despacha por el formato REAL del archivo:
-                # `AppContext.config_path` es el TOML canónico
+                # `persistir_campo_bloqueante` despacha por el formato REAL del
+                # archivo: `AppContext.config_path` es el TOML canónico
                 # (`Config.DEFAULT_CONFIG_FILE`), no el JSON legacy. Leerlo con
                 # el parser equivocado devolvía defaults y el guardado
                 # posterior reescribía el archivo entero — la config del
-                # usuario se perdía sin un solo error visible.
-                from sky_claw.local.local_config import persistir_campo
+                # usuario se perdía sin un solo error visible. La variante
+                # `_bloqueante` además serializa con `setup_tools` del agente
+                # (mismo config.toml, mismo proceso): sin eso, un ritual de GUI
+                # y un `setup_tools` concurrentes podían pisarse el campo que
+                # cada uno acababa de escribir (review PR #444).
+                from sky_claw.local.local_config import persistir_campo_bloqueante
 
-                await asyncio.to_thread(persistir_campo, config_path, "community_shaders_mods", nombres)
+                await persistir_campo_bloqueante(config_path, "community_shaders_mods", nombres)
             except Exception:  # noqa: BLE001 — la instalación ya tuvo éxito; no romper el feedback
                 logger.exception("No se pudo persistir community_shaders_mods en %s", config_path)
         store.set(

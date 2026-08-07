@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import os
 import pathlib
 import sys
+import tempfile
 import tomllib
 from typing import Any
 
@@ -254,8 +256,25 @@ class Config:
                     # y el scrub del plaintext procede de forma definitiva.
                     self._secretos_solo_en_archivo.pop(key, None)
 
-        with open(self._config_path, "wb") as f:
-            tomli_w.dump(save_data, f)
+        # Escritura atómica: `open(path, "wb")` trunca el archivo ANTES de
+        # escribir el contenido nuevo. Un fallo a mitad de la serialización
+        # (disco lleno, OSError transitorio en Windows, el proceso matado)
+        # dejaba el TOML en 0 bytes — la config anterior, completa y válida,
+        # desaparecía por un fallo que no tenía nada que ver con ella. El
+        # temporal vive en el mismo directorio que el destino (mismo
+        # filesystem, condición de `os.replace` para ser atómico en
+        # POSIX/NTFS) y se limpia si algo falla antes del replace.
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            dir=self._config_path.parent, prefix=".sky_claw_config_", suffix=".toml.tmp"
+        )
+        try:
+            with os.fdopen(tmp_fd, "wb") as f:
+                tomli_w.dump(save_data, f)
+            os.replace(tmp_name, self._config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
 
         # La actualización es solo en memoria: evita releer TOML/keyring desde
         # el filtro que corre en productores asyncio.

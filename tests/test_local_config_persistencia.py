@@ -25,6 +25,7 @@ que existen en el árbol, y un ancla por AST congela quién puede importar los
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import pathlib
 import tomllib
@@ -37,7 +38,9 @@ from sky_claw.local.local_config import (
     abrir_config_para_persistir,
     escribir_campo,
     guardar_config,
+    guardar_config_bloqueante,
     persistir_campo,
+    persistir_campo_bloqueante,
 )
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
@@ -132,6 +135,200 @@ def test_persistir_campo_no_toca_el_archivo_ilegible(tmp_path: pathlib.Path) -> 
         persistir_campo(config_path, "community_shaders_mods", ["X"])
 
     assert config_path.read_text(encoding="utf-8") == "[[[roto"
+
+
+# ── Archivo vacío: "sin datos todavía" no es lo mismo que "ilegible" ────────────
+def test_persistir_campo_sobre_toml_de_cero_bytes_no_es_error(tmp_path: pathlib.Path) -> None:
+    """Un documento TOML vacío es válido (`tomllib.loads("") == {}`) — no hay
+    fail-closed que disparar. Un `config.toml` de 0 bytes (arranque interrumpido
+    ANTES de esta escritura atómica, o un `touch` manual) es "sin datos todavía",
+    no "corrupto", y `Config()` ya lo trata como defaults.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.touch()
+
+    persistir_campo(config_path, "mo2_root", "D:/MO2")
+
+    assert tomllib.loads(config_path.read_text(encoding="utf-8"))["mo2_root"] == "D:/MO2"
+
+
+def test_persistir_campo_sobre_json_de_cero_bytes_no_es_error(tmp_path: pathlib.Path) -> None:
+    """La asimetría real: a diferencia de TOML, ``json.loads("")`` SÍ lanza.
+
+    El `load()` legacy tolera esto (atrapa `JSONDecodeError` y cae a defaults);
+    `abrir_config_para_persistir` debe preservar esa tolerancia para el archivo
+    vacío específicamente — es distinto de "el archivo tiene basura adentro",
+    que sigue siendo fail-closed (ver `test_abrir_config_para_persistir_falla_cerrado_si_no_parsea`).
+    """
+    config_path = tmp_path / "sky_claw_config.json"
+    config_path.touch()
+
+    persistir_campo(config_path, "ngio_mods", ["NGIO-NG"])
+
+    assert json.loads(config_path.read_text(encoding="utf-8"))["ngio_mods"] == ["NGIO-NG"]
+
+
+# ── Escritura atómica: un fallo a mitad de camino no puede truncar el archivo ───
+def test_guardar_config_no_trunca_el_archivo_si_la_escritura_falla(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """`Config.save()`/`local_config.save()` escribían con ``open(path, "wb")``,
+    que trunca ANTES de escribir el contenido nuevo: un fallo a mitad de la
+    serialización (disco lleno, `OSError` transitorio en Windows, el proceso
+    matado) dejaba el archivo en 0 bytes — la config anterior, completa y
+    válida, desaparecía por un fallo que no tenía nada que ver con ella. La
+    escritura debe pasar por un temporal + `os.replace`, que en POSIX y en NTFS
+    es atómico: o el archivo viejo entero, o el nuevo entero, nunca una mezcla.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\nmo2_root = "D:/MO2"\n', encoding="utf-8")
+    cfg = Config(config_path)
+    cfg._data["mo2_root"] = "D:/Otro"
+
+    import tomli_w
+
+    def _dump_que_explota(*_a: object, **_k: object) -> None:
+        raise OSError("disco lleno (simulado)")
+
+    monkeypatch.setattr(tomli_w, "dump", _dump_que_explota)
+
+    with pytest.raises(OSError):
+        cfg.save()
+
+    # El archivo original sigue COMPLETO — no truncado, no a medio escribir.
+    assert tomllib.loads(config_path.read_text(encoding="utf-8"))["mo2_root"] == "D:/MO2"
+
+
+def test_guardar_config_no_deja_temporales_huerfanos_tras_un_save_exitoso(tmp_path: pathlib.Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+    cfg._data["mo2_root"] = "D:/MO2"
+
+    cfg.save()
+
+    residuos = [p for p in tmp_path.iterdir() if p != config_path]
+    assert residuos == []
+
+
+# ── Carrera GUI ↔ agente LLM: los dos escritores del mismo config.toml ──────────
+#
+# El lock (`_CONFIG_WRITE_LOCK`) da UNA garantía: el ciclo leer-modificar-escribir
+# de cada escritor corre de punta a punta sin que el otro empiece en el medio.
+# Eso alcanza para que el archivo NUNCA quede corrupto ni con una escritura a
+# medio hacer. Lo que el lock NO puede dar es "el escritor que iba último no
+# pise lo que el otro acaba de guardar": eso depende de si ESE escritor tenía
+# una vista actualizada del archivo al momento de empezar a escribir.
+#
+# `persistir_campo` (GUI) siempre relee el archivo antes de escribir — dentro
+# del lock, así que ve el estado más reciente posible. `guardar_config` sobre
+# un `Config` (agente LLM) escribe el `_data` en MEMORIA de un objeto que
+# `AppContext` construye UNA vez y mantiene vivo toda la sesión: si ese objeto
+# nunca releyó el campo que el otro camino acaba de escribir, su próximo
+# `save()` lo pisa igual, lock o no lock — es el modelo de "el objeto entero
+# es la fuente de verdad" de `Config`, no algo que un lock de escritura
+# resuelva. Esto es preexistente a este PR (todo `.save()` de `Config` en el
+# árbol comparte el mismo modelo) y una solución completa (merge por campo en
+# vez de reemplazo del objeto entero) es un cambio de arquitectura aparte —
+# los dos tests de abajo documentan la frontera exacta en vez de afirmar más
+# de lo que el lock realmente garantiza.
+async def test_lock_evita_la_escritura_entrelazada_y_corrupta(tmp_path: pathlib.Path) -> None:
+    """Garantía real del lock: el archivo nunca queda a medio escribir.
+
+    Sin el lock, dos ``to_thread`` concurrentes sobre el mismo ``config.toml``
+    pueden intercalar sus escrituras (dos ``os.replace`` compitiendo) — acá se
+    fuerza el solapamiento con un ``sleep`` dentro de la ventana del lock (en
+    vez de confiar en el scheduler) para que el test sea determinístico, y se
+    verifica que el resultado final SIEMPRE es TOML válido con exactamente una
+    de las dos escrituras completas.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\nmo2_root = "D:/MO2"\n', encoding="utf-8")
+    cfg_del_agente = Config(config_path)
+    escribir_campo(cfg_del_agente, "community_shaders_mods", ["Community Shaders"])
+
+    orden: list[str] = []
+
+    async def _gui() -> None:
+        orden.append("gui-start")
+        await persistir_campo_bloqueante(config_path, "ngio_mods", ["NGIO-NG"])
+        orden.append("gui-end")
+
+    async def _agente() -> None:
+        await asyncio.sleep(0)  # cede el loop: deja que la GUI tome el lock primero
+        orden.append("agente-start")
+        await guardar_config_bloqueante(cfg_del_agente, config_path)
+        orden.append("agente-end")
+
+    await asyncio.gather(_gui(), _agente())
+
+    # Serializado de punta a punta: nunca "gui-start, agente-start, agente-end, gui-end"
+    # intercalado a nivel de ESCRITURA — cada `-end` sigue inmediatamente a su `-start`
+    # del mismo lado, o al `-end` del otro.
+    assert orden == ["gui-start", "agente-start", "gui-end", "agente-end"]
+    # Nunca corrupto: siempre parsea, pase lo que pase con los campos.
+    tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+
+async def test_el_escritor_con_lectura_fresca_no_pierde_lo_que_el_otro_ya_guardo(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El caso que el lock SÍ resuelve del todo: cuando el segundo escritor relee
+    antes de escribir (``persistir_campo``, la GUI), no importa el orden — ve lo
+    que el primero ya guardó y lo conserva.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\nmo2_root = "D:/MO2"\n', encoding="utf-8")
+    cfg_del_agente = Config(config_path)
+    escribir_campo(cfg_del_agente, "community_shaders_mods", ["Community Shaders"])
+
+    async def _agente_primero() -> None:
+        await guardar_config_bloqueante(cfg_del_agente, config_path)
+
+    async def _gui_segunda_con_lectura_fresca() -> None:
+        await asyncio.sleep(0)
+        await persistir_campo_bloqueante(config_path, "ngio_mods", ["NGIO-NG"])
+
+    await asyncio.gather(_agente_primero(), _gui_segunda_con_lectura_fresca())
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["community_shaders_mods"] == ["Community Shaders"]
+    assert en_disco["ngio_mods"] == ["NGIO-NG"]
+    assert en_disco["mo2_root"] == "D:/MO2"
+
+
+async def test_limite_conocido_un_config_vivo_pisa_lo_que_el_otro_camino_guardo(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El caso que el lock NO resuelve, documentado a propósito: si el objeto
+    `Config` de larga vida del agente ya existía ANTES de que la GUI guardara
+    `ngio_mods`, el `save()` del agente —posterior, y sin corrupción, el lock
+    funcionó— reemplaza el archivo entero con su propio `_data`, que nunca vio
+    ese campo. Se pierde igual que antes de este PR: el lock serializa el
+    ACCESO, no fusiona el CONTENIDO. Este test existe para que ese límite no se
+    reintroduzca como "ya arreglado" sin que alguien lo note — si algún día se
+    agrega merge-on-save, este test debe empezar a fallar y hay que
+    actualizarlo, no borrarlo en silencio.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\nmo2_root = "D:/MO2"\n', encoding="utf-8")
+    # El objeto del agente se construye ANTES de que exista `ngio_mods` en disco.
+    cfg_del_agente = Config(config_path)
+    escribir_campo(cfg_del_agente, "community_shaders_mods", ["Community Shaders"])
+
+    async def _gui_primera() -> None:
+        await persistir_campo_bloqueante(config_path, "ngio_mods", ["NGIO-NG"])
+
+    async def _agente_segundo_con_objeto_desactualizado() -> None:
+        await asyncio.sleep(0)
+        await guardar_config_bloqueante(cfg_del_agente, config_path)
+
+    await asyncio.gather(_gui_primera(), _agente_segundo_con_objeto_desactualizado())
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    # El archivo sigue siendo TOML válido y completo (no corrupto) — pero el
+    # campo que la GUI escribió desapareció: el `_data` del agente no lo tenía.
+    assert "ngio_mods" not in en_disco
+    assert en_disco["community_shaders_mods"] == ["Community Shaders"]
+    assert en_disco["mo2_root"] == "D:/MO2"
 
 
 # ── Ancla: las DOS clases reales de config, no una muestra ──────────────────────
