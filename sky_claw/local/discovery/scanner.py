@@ -444,21 +444,20 @@ class EnvironmentScanner:
                 )
             elif key == "community_shaders":
                 # Mod de MO2, no un exe: se detecta por el sentinel físico bajo
-                # mods/ — el VFS de MO2 no es visible para el scanner. Import
-                # lazy: tools_installer importa de scanner en producción (ciclo).
+                # mods/ — el VFS de MO2 no es visible para el scanner. Importación
+                # diferida: tools_installer importa de scanner en producción (ciclo).
                 from sky_claw.local.tools_installer import COMMUNITY_SHADERS_MOD_NAME
 
-                sentinel = (
-                    pathlib.Path(mo2_root)
-                    / "mods"
-                    / COMMUNITY_SHADERS_MOD_NAME
-                    / "SKSE"
-                    / "Plugins"
-                    / "CommunityShaders.dll"
-                    if mo2_root
-                    else None
-                )
-                found = sentinel if sentinel is not None and sentinel.is_file() else None
+                if mo2_root is None:
+                    found = None
+                else:
+                    # Mismo criterio de validez que el instalador (hallazgo de
+                    # review del PR #442): un mod con el DLL pero sin Shaders/
+                    # (bug real CS 1.8.0) NO se muestra como instalado — la GUI
+                    # conserva la acción de reparación.
+                    mod_dir = pathlib.Path(mo2_root) / "mods" / COMMUNITY_SHADERS_MOD_NAME
+                    sentinel = mod_dir / "SKSE" / "Plugins" / "CommunityShaders.dll"
+                    found = sentinel if sentinel.is_file() and (mod_dir / "Shaders").is_dir() else None
             else:
                 found = self._resolve_tool_path(key, exe_names, search_roots)
             if found:

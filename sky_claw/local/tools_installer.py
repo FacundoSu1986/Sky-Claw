@@ -2000,6 +2000,11 @@ class ToolsInstaller:
                 "NexusDownloader (configurá la API key de Nexus)."
             )
         parsed = _parse_game_version(game_version)
+        # ProductVersion de Windows trae 4 componentes (p.ej. "1.5.97.0") y
+        # read_skyrim_version lo devuelve sin recortar: se normaliza a
+        # major.minor.build antes de comparar (hallazgo de review del PR #442).
+        if parsed is not None:
+            parsed = parsed[:3]
         if edition is SkyrimEdition.SE:
             if parsed != _CS_SE_VERSION_TUPLE:
                 raise ToolInstallError(

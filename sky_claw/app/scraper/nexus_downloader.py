@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import pathlib
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -114,6 +115,29 @@ class DownloadProgress:
         if self.total_bytes == 0:
             return 0.0
         return min((self.downloaded_bytes / self.total_bytes) * 100, 100.0)
+
+
+_ESCAPE_PERCENT_VALIDO = re.compile(r"%[0-9A-Fa-f]{2}")
+
+
+def _quote_path_preservando_escapes(path: str) -> str:
+    """Percent-encode del path de descarga SIN doblar escapes ``%HH`` ya válidos.
+
+    El CDN de Nexus sirve el path crudo (espacios, paréntesis) pero también
+    puede incluir escapes pre-existentes (p.ej. ``%20``) en la misma URL.
+    ``quote`` solo doblaría esos escapes (``%20`` → ``%2520``), rompiendo la
+    firma. Esta función encodea los segmentos sin escapes y preserva los
+    ``%HH`` válidos tal cual; un ``%`` literal (no escape) se encodea a
+    ``%25`` (hallazgo de review del PR #442).
+    """
+    partes: list[str] = []
+    pos = 0
+    for match in _ESCAPE_PERCENT_VALIDO.finditer(path):
+        partes.append(quote(path[pos : match.start()], safe="/"))
+        partes.append(match.group(0))
+        pos = match.end()
+    partes.append(quote(path[pos:], safe="/"))
+    return "".join(partes)
 
 
 def _should_retry_nexus(exc: BaseException) -> bool:
@@ -387,12 +411,20 @@ class NexusDownloader:
                 # intacta (firma/expiración del CDN) y caracteres como "%", "?",
                 # "#" o "&" dentro del filename no pueden romper ni la URL ni el
                 # query — un safe-set parcial dejaría esos huecos abiertos.
-                partes = urlsplit(file_info.download_url)
+                try:
+                    partes = urlsplit(file_info.download_url)
+                except ValueError:
+                    # Autoridad malformada (p.ej. corchetes sin cerrar): DownloadError
+                    # sin la URL en el mensaje (la apikey no viaja aquí, pero la regla
+                    # de la capa es no incluir URLs crudas en errores).
+                    raise DownloadError(
+                        f"URL de descarga inválida para {file_info.file_name!r} (autoridad malformada)"
+                    ) from None
                 cdn_url = urlunsplit(
                     (
                         partes.scheme,
                         partes.netloc,
-                        quote(partes.path, safe="/"),
+                        _quote_path_preservando_escapes(partes.path),
                         partes.query,
                         partes.fragment,
                     )

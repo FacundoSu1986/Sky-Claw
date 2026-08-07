@@ -649,6 +649,41 @@ class TestEnsureCommunityShadersGates:
         assert "NexusDownloader" in str(exc_info.value)
         assert hitl.await_count == 0
 
+    @pytest.mark.parametrize(
+        ("edition", "version_ok"),
+        [(SkyrimEdition.SE, "1.5.97.0"), (SkyrimEdition.AE, "1.6.1170.0")],
+    )
+    async def test_version_con_cuarto_componente_normaliza(
+        self,
+        installer: ToolsInstaller,
+        mods_dir: pathlib.Path,
+        tmp_path: pathlib.Path,
+        edition: SkyrimEdition,
+        version_ok: str,
+    ) -> None:
+        """ProductVersion de Windows (4 componentes: 1.5.97.0) se normaliza a
+        major.minor.build: el gate NO aborta en SE reales (hallazgo review PR #442)."""
+        game_dir = tmp_path / "game"
+        _juego_valido(game_dir)
+        _mock_gateway_github_cs(installer, _ZIP_CS)
+        _aprobar_todo(installer)
+        downloader = _downloader_completo(
+            tmp_path, addrlib_zip=_ZIP_ADDRLIB_AE if edition is SkyrimEdition.AE else _ZIP_ADDRLIB_SE
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        resultados = await installer.ensure_community_shaders(
+            mods_dir,
+            session,
+            downloader,
+            edition=edition,
+            game_version=version_ok,
+            game_dir=game_dir,
+        )
+
+        assert len(resultados) == 3
+        assert resultados[0].already_existed is False
+
     async def test_ae_1640_aborta_fail_closed(
         self, installer: ToolsInstaller, mods_dir: pathlib.Path, tmp_path: pathlib.Path
     ) -> None:
@@ -1410,6 +1445,8 @@ class TestScannerCommunityShaders:
         sentinel_dir = mo2_root / "mods" / ti_mod.COMMUNITY_SHADERS_MOD_NAME / "SKSE" / "Plugins"
         sentinel_dir.mkdir(parents=True)
         (sentinel_dir / "CommunityShaders.dll").write_bytes(b"MZ")
+        # CS válido exige también Shaders/ (mismo criterio que el instalador).
+        (mo2_root / "mods" / ti_mod.COMMUNITY_SHADERS_MOD_NAME / "Shaders").mkdir()
 
         async def mock_find_skyrim(*_a: object, **_k: object) -> None:
             return None
@@ -1433,6 +1470,35 @@ class TestScannerCommunityShaders:
 
         mo2_root = tmp_path / "MO2"
         (mo2_root / "mods").mkdir(parents=True)
+
+        async def mock_find_skyrim(*_a: object, **_k: object) -> None:
+            return None
+
+        async def mock_find_mo2(*_a: object, **_k: object) -> pathlib.Path:
+            return mo2_root
+
+        monkeypatch.setattr(EnvironmentScanner, "_find_skyrim", mock_find_skyrim)
+        monkeypatch.setattr(EnvironmentScanner, "_find_mo2", mock_find_mo2)
+
+        scanner = EnvironmentScanner(tool_paths={"loot": str(tmp_path / "loot.exe")})
+        snap = await scanner.scan()
+
+        assert not snap.has_tool("community_shaders")
+        assert any(m.technical_name == "community_shaders" for m in snap.missing)
+
+    async def test_scanner_cs_roto_sin_shaders_no_es_instalado(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DLL presente pero sin Shaders/ (bug real CS 1.8.0): la GUI NO muestra
+        'Instalado' — conserva la acción de reparación (mismo criterio que el
+        instalador, hallazgo de review del PR #442)."""
+        from sky_claw.local.discovery.scanner import EnvironmentScanner
+
+        mo2_root = tmp_path / "MO2"
+        plugins = mo2_root / "mods" / ti_mod.COMMUNITY_SHADERS_MOD_NAME / "SKSE" / "Plugins"
+        plugins.mkdir(parents=True)
+        (plugins / "CommunityShaders.dll").write_bytes(b"MZ")
+        assert not (plugins.parent.parent / "Shaders").exists()
 
         async def mock_find_skyrim(*_a: object, **_k: object) -> None:
             return None

@@ -531,9 +531,68 @@ class TestDownload:
         url_enviada = gateway.request.await_args.args[1]
         assert "%25" in url_enviada, f"el % literal debe encodearse: {url_enviada}"
         assert "%28" in url_enviada, f"el ( debe encodearse: {url_enviada}"
-        # La query sobrevive byte a byte.
-        assert "?expires=1786070177&md5=abc123" in url_enviada, url_enviada
-        assert url_enviada.count("?") == 1, f"un solo ? (el del query): {url_enviada}"
+        # La query sobrevive byte a byte (igualdad exacta, no fragmentos).
+        assert urlparse(url_enviada).query == "expires=1786070177&md5=abc123", url_enviada
+
+    @pytest.mark.asyncio
+    async def test_url_con_escapes_preexistentes_no_se_doblan(self, tmp_path: pathlib.Path) -> None:
+        """Escapes %HH ya válidos en el path del CDN (p.ej. %20) se preservan SIN
+        doblarse (%20 → %2520 rompería la firma) — hallazgo de review del PR #442."""
+        content = b"payload real"
+        resp = _make_aiohttp_response(content=content)
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway)
+        fi = _make_file_info(
+            file_name="Mod Con Espacios-42-1-0.zip",
+            size_bytes=len(content),
+            md5="",
+            download_url=(
+                "https://cf-files.nexusmods.com/cdn/1704/42/Mod%20Con%20Espacios-42-1-0.zip"
+                "?expires=1786070177&md5=abc123"
+            ),
+        )
+
+        dest = await d.download(fi, session)
+
+        assert dest.exists()
+        url_enviada = gateway.request.await_args.args[1]
+        partes = urlparse(url_enviada)
+        assert partes.path == "/cdn/1704/42/Mod%20Con%20Espacios-42-1-0.zip", url_enviada
+        assert "%2520" not in url_enviada, f"escape doblado: {url_enviada}"
+        assert partes.query == "expires=1786070177&md5=abc123", url_enviada
+
+    def test_quote_path_preservando_escapes_puro(self) -> None:
+        """Función pura: segmentos crudos se encodan, %HH válidos se preservan,
+        % literal se encodea a %25."""
+        from sky_claw.app.scraper.nexus_downloader import _quote_path_preservando_escapes
+
+        assert _quote_path_preservando_escapes("/a b/(c).zip") == "/a%20b/%28c%29.zip"
+        assert _quote_path_preservando_escapes("/Mod%20Con%20Espacios.zip") == "/Mod%20Con%20Espacios.zip"
+        assert _quote_path_preservando_escapes("/100% Armor.zip") == "/100%25%20Armor.zip"
+        assert _quote_path_preservando_escapes("/x%2Fy") == "/x%2Fy"  # %2F válido preservado
+        assert _quote_path_preservando_escapes("/a%zz") == "/a%25zz"  # %zz NO es escape válido
+
+    @pytest.mark.asyncio
+    async def test_url_con_autoridad_malformada_lanza_download_error(self, tmp_path: pathlib.Path) -> None:
+        """urlsplit con autoridad malformada (p.ej. corchetes sin cerrar) → DownloadError
+        claro con el file_name, sin la URL cruda en el mensaje."""
+        resp = _make_aiohttp_response(content=b"x")
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway)
+        fi = _make_file_info(
+            file_name="raro.zip",
+            size_bytes=1,
+            md5="",
+            download_url="https://[malformada",
+        )
+
+        with pytest.raises(DownloadError, match="raro.zip"):
+            await d.download(fi, session)
+        assert gateway.request.await_count == 0
 
     @pytest.mark.asyncio
     async def test_successful_download_no_md5(self, tmp_path: pathlib.Path) -> None:
