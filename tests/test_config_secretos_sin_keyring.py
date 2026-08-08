@@ -106,8 +106,8 @@ def test_secreto_escrito_en_disco_por_otra_superficie_sobrevive_si_el_keyring_fa
     scrub lo sacaba de ``save_data`` y ``_secretos_solo_en_archivo`` no tenía
     entrada para restaurarlo (sólo se puebla al construir): el ÚNICO ejemplar
     del secreto se destruía en el mismo save que decía proteger secretos. La
-    fuente de restauración es lo que HAY en el archivo en el momento del save,
-    con fallback al registro de la construcción.
+    fuente de restauración es lo que HAY en el archivo en el momento del save
+    (la lectura fresca del merge), no el snapshot de construcción.
     """
     config_path = tmp_path / "config.toml"
     config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
@@ -165,6 +165,39 @@ def test_un_keyring_con_valor_mas_nuevo_no_se_pisa_con_el_plaintext_viejo_del_ar
     assert "credential-vieja-del-archivo" not in crudo
     assert "credential-nueva-del-keyring" not in crudo
     assert tomllib.loads(crudo)["community_shaders_mods"] == ["Community Shaders"]
+
+
+def test_migracion_de_secreto_en_constructor_no_reaplica_el_snapshot_completo(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El scrub de construcción preserva campos actualizados tras la lectura inicial."""
+    almacen: dict[str, str] = {}
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'llm_provider = "anthropic"\nmo2_root = "D:/MO2-antiguo"\nnexus_api_key = "clave-a-migrar"\n',
+        encoding="utf-8",
+    )
+    intercalado = False
+
+    def _leer(_servicio: str, clave: str) -> str | None:
+        nonlocal intercalado
+        if clave == "nexus_api_key" and not intercalado:
+            intercalado = True
+            config_path.write_text(
+                'llm_provider = "anthropic"\nmo2_root = "D:/MO2-actualizado"\nnexus_api_key = "clave-a-migrar"\n',
+                encoding="utf-8",
+            )
+        return almacen.get(clave)
+
+    monkeypatch.setattr(keyring, "get_password", _leer)
+    monkeypatch.setattr(keyring, "set_password", lambda _s, k, v: almacen.__setitem__(k, v))
+
+    Config(config_path)
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["mo2_root"] == "D:/MO2-actualizado"
+    assert "nexus_api_key" not in en_disco
+    assert almacen["nexus_api_key"] == "clave-a-migrar"
 
 
 def test_un_config_long_lived_no_pisa_un_keyring_actualizado_despues_de_construirse(

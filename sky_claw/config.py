@@ -238,22 +238,22 @@ class Config:
     def __init__(self, config_path: pathlib.Path | None = None) -> None:
         self._config_path = config_path or self.DEFAULT_CONFIG_FILE
         self._data: _DatosConfig = _DatosConfig(self._load_defaults())
-        #: Baseline para el merge-on-save de `save()`: snapshot de `_data` al
-        #: terminar la construcción y refrescado tras cada `save()` exitoso.
+        #: Baseline para el merge-on-save de `save()`: snapshot de `_data`
+        #: refrescado tras cada `save()` exitoso.
         #: El diff `_data` vs baseline en save() es lo que ESTE objeto cambió —
         #: solo eso se aplica sobre la lectura fresca del disco, así que un
         #: objeto long-lived no puede pisar campos que otro camino escribió
-        #: después de su construcción. Durante la construcción es `None`
-        #: (`_load_from_keyring` puede llamar `save()` antes de que exista):
-        #: save() lo interpreta como "volcar el estado entero", el
-        #: comportamiento histórico, correcto para ese único save de arranque
-        #: que migra/scrubea secretos recién leídos.
-        self._baseline: _DatosConfig | None = None
+        #: después de su construcción.
+        self._baseline: _DatosConfig
         #: Escrituras explícitas de secretos que el keyring rechazó. Persisten
         #: como intención hasta que un save posterior pueda completarlas.
         self._secretos_pendientes: set[str] = set()
         self._load_from_file()
         self._migrate_llm_model()
+        # El scrub de secretos puede guardar DURANTE la construcción. Su
+        # baseline debe existir antes para que ese save aplique sólo el cambio
+        # de migración sobre la lectura fresca, no todo el snapshot inicial.
+        self._baseline = self._data.snapshot()
         self._load_from_keyring()
         # El snapshot va AL FINAL: `_load_from_keyring` muta `_data` (secretos
         # desde el keyring) y puede llamar `save()`; todo eso es estado "visto al
@@ -419,28 +419,18 @@ class Config:
             snapshot = self._data.snapshot()
 
             baseline = self._baseline
-            if baseline is None:
-                # El save DENTRO de la construcción (`_load_from_keyring` migra
-                # secretos y llama `save()` antes de que exista el snapshot):
-                # vuelca el estado entero, el comportamiento histórico.
-                diff: dict[str, Any] = dict(snapshot)
-                borrados: set[str] = set()
-                claves_mutadas: set[str] = set()
-            else:
-                # Claves escritas explícitamente desde el último baseline: la
-                # comparación de valores sola no detecta la reasignación
-                # explícita de un valor igual al baseline (`setup_tools` que
-                # re-descubre el mismo path), y el merge conservaría lo que
-                # otra superficie escribió encima (review de qodo, P2).
-                claves_mutadas = {
-                    key
-                    for key, generacion in snapshot.generaciones.items()
-                    if generacion != baseline.generaciones.get(key)
-                }
-                diff = {
-                    k: v for k, v in snapshot.items() if k in claves_mutadas or k not in baseline or baseline[k] != v
-                }
-                borrados = set(baseline) - set(snapshot)
+            # Claves escritas explícitamente desde el último baseline: la
+            # comparación de valores sola no detecta la reasignación
+            # explícita de un valor igual al baseline (`setup_tools` que
+            # re-descubre el mismo path), y el merge conservaría lo que
+            # otra superficie escribió encima (review de qodo, P2).
+            claves_mutadas = {
+                key for key, generacion in snapshot.generaciones.items() if generacion != baseline.generaciones.get(key)
+            }
+            diff: dict[str, Any] = {
+                k: v for k, v in snapshot.items() if k in claves_mutadas or k not in baseline or baseline[k] != v
+            }
+            borrados = set(baseline) - set(snapshot)
 
             save_data = {**fresco, **diff}
             for key in borrados:

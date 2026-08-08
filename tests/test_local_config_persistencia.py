@@ -392,7 +392,7 @@ def test_save_con_archivo_corrupto_aborta_sin_escribir(tmp_path: pathlib.Path) -
     assert config_path.read_text(encoding="utf-8") == "esto no es TOML = = ["
 
 
-async def test_intercalacion_gui_lee_agente_escribe_gui_reemplaza_no_pierde_nada(
+def test_intercalacion_gui_lee_agente_escribe_gui_reemplaza_no_pierde_nada(
     tmp_path: pathlib.Path,
 ) -> None:
     """El interleaving que pidió verificar la review de CodeRabbit: la GUI LEE
@@ -506,10 +506,13 @@ def test_datos_config_enumera_mutadores_y_preserva_generaciones_en_copias() -> N
     assert snapshot.generaciones == copia.generaciones == copia_profunda.generaciones
     assert "posterior" not in snapshot
 
-    claves_antes_de_clear = set(datos)
+    generaciones_antes_de_clear = {clave: datos.generaciones[clave] for clave in datos}
     datos.clear()
     assert not datos
-    assert claves_antes_de_clear <= datos.generaciones.keys()
+    assert all(
+        datos.generaciones[clave] > generacion_anterior
+        for clave, generacion_anterior in generaciones_antes_de_clear.items()
+    )
 
 
 def test_snapshot_tolera_una_mutacion_concurrente_de_data(tmp_path: pathlib.Path) -> None:
