@@ -22,6 +22,7 @@ from sky_claw.app.agent.tools import external_tools
 from sky_claw.app.gui.controllers.ritual_runner import (
     RITUAL_INSTALL_ENV,
     RITUAL_INSTALLER_MAP,
+    STORE_KEY_RITUAL_PREFLIGHT,
     make_gui_hitl_notify,
     ritual_installer_name,
     run_ritual_install,
@@ -441,3 +442,83 @@ async def test_install_community_shaders_sin_mo2_devuelve_feedback_negativo() ->
     fb = store.get("ritual_feedback")
     assert fb is not None and fb["type"] == "negative"
     assert "Mod Organizer" in fb["text"]
+
+
+def _snapshot_cs(tmp_path: pathlib.Path):
+    """Snapshot mínimo con MO2 + Skyrim AE válido para el install de CS."""
+    from sky_claw.app.gui.views.forge_dashboard import STORE_KEY_ENV
+    from sky_claw.local.discovery.environment import EnvironmentSnapshot, MO2Info, SkyrimEdition, SkyrimInfo
+
+    mo2_root = tmp_path / "MO2"
+    game_path = tmp_path / "Skyrim"
+    snap = EnvironmentSnapshot(
+        skyrim=SkyrimInfo(path=game_path, exe_name="SkyrimSE.exe", edition=SkyrimEdition.AE, version="1.6.1170"),
+        mo2=MO2Info(path=mo2_root, profiles=["Default"]),
+    )
+    return mo2_root, game_path, snap, STORE_KEY_ENV
+
+
+async def test_install_community_shaders_limpia_el_preflight_stale_de_un_ritual_previo(tmp_path: pathlib.Path) -> None:
+    """run_ritual limpia ``STORE_KEY_RITUAL_PREFLIGHT`` al arrancar (solo LOOT lo
+    produce). Su hermano run_ritual_install NO lo hacía: si un sort de LOOT dejaba
+    un panel rojo y el operador instalaba Community Shaders, el panel rojo de LOOT
+    seguía renderizándose, asociando visualmente la falla de LOOT al install de CS.
+    Espejo exacto del clear de run_ritual (defecto #1 del repo: dos superficies).
+    """
+    mo2_root, _game, snap, key_env = _snapshot_cs(tmp_path)
+    from sky_claw.local.tools_installer import ModInstallResult
+
+    store = ReactiveStore()
+    store.set(key_env, snap)
+    # Preflight rojo remanente de un LOOT previo.
+    store.set(STORE_KEY_RITUAL_PREFLIGHT, {"semaphore": "red", "checks": []})
+    mods = [
+        ModInstallResult(
+            mod_name="Community Shaders",
+            mod_dir=mo2_root / "mods" / "Community Shaders",
+            version="v1.8.3",
+            already_existed=False,
+        )
+    ]
+    installer = _FakeInstaller(cs_result=mods)
+    ctx = _FakeAppContext(installer, config_path=None)
+
+    await run_ritual_install("community_shaders", app_context=ctx, store=store)
+
+    assert store.get(STORE_KEY_RITUAL_PREFLIGHT) is None
+
+
+async def test_install_community_shaders_avisa_si_falla_la_persistencia(tmp_path: pathlib.Path) -> None:
+    """Si ``persistir_campo_bloqueante`` falla (config corrupta), el install en disco
+    SÍ ocurrió pero el orquestador no verá los mods: reportarlo como ``positive``
+    convierte una operación parcial en éxito visual (invariante GUI). Debe degradar
+    a ``warning`` nombrando que la persistencia falló, sin perder el detalle de lo
+    instalado. Y el fail-closed del lector deja el archivo corrupto intacto.
+    """
+    mo2_root, _game, snap, key_env = _snapshot_cs(tmp_path)
+    from sky_claw.local.tools_installer import ModInstallResult
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[[[esto no es TOML válido", encoding="utf-8")
+
+    store = ReactiveStore()
+    store.set(key_env, snap)
+    mods = [
+        ModInstallResult(
+            mod_name="Community Shaders",
+            mod_dir=mo2_root / "mods" / "Community Shaders",
+            version="v1.8.3",
+            already_existed=False,
+        )
+    ]
+    installer = _FakeInstaller(cs_result=mods)
+    ctx = _FakeAppContext(installer, config_path=config_path)
+
+    await run_ritual_install("community_shaders", app_context=ctx, store=store)
+
+    fb = store.get("ritual_feedback")
+    assert fb is not None
+    assert fb["type"] == "warning"  # NO "positive": la persistencia falló
+    assert "persist" in fb["text"].lower()
+    # El fail-closed no reescribió la config corrupta.
+    assert config_path.read_text(encoding="utf-8") == "[[[esto no es TOML válido"

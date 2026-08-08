@@ -446,6 +446,11 @@ async def run_ritual_install(
     into a ``ritual_feedback`` entry so the click handler (a fire-and-forget task)
     cannot crash the loop.
     """
+    # Espejo del clear de ``run_ritual``: el install NO produce reporte de
+    # preflight (solo el sort de LOOT lo hace), así que un panel rojo remanente
+    # de un ritual previo no puede quedar asociado a esta tarjeta de instalación
+    # (defecto #1 del repo: dos superficies hermanas, un reset que solo hacía una).
+    store.set(STORE_KEY_RITUAL_PREFLIGHT, None)
     method_name = ritual_installer_name(tool_key)
     if method_name is None:
         store.set(
@@ -572,6 +577,7 @@ async def run_ritual_install(
         mods = list(result) if result is not None else []
         nombres = [m.mod_name for m in mods]
         config_path = getattr(app_context, "config_path", None)
+        persistencia_ok = True
         if config_path is not None:
             try:
                 # `persistir_campo_bloqueante` despacha por el formato REAL del
@@ -589,13 +595,31 @@ async def run_ritual_install(
                 await persistir_campo_bloqueante(config_path, "community_shaders_mods", nombres)
             except Exception:  # noqa: BLE001 — la instalación ya tuvo éxito; no romper el feedback
                 logger.exception("No se pudo persistir community_shaders_mods en %s", config_path)
-        store.set(
-            STORE_KEY_RITUAL_FEEDBACK,
-            {
-                "text": f"«{tool_key}» instalado correctamente: {', '.join(nombres) or 'sin componentes'}.",
-                "type": "positive",
-            },
-        )
+                persistencia_ok = False
+        if persistencia_ok:
+            store.set(
+                STORE_KEY_RITUAL_FEEDBACK,
+                {
+                    "text": f"«{tool_key}» instalado correctamente: {', '.join(nombres) or 'sin componentes'}.",
+                    "type": "positive",
+                },
+            )
+        else:
+            # El install en disco SÍ ocurrió, pero sin el campo persistido el
+            # orquestador no puede activar los mods en modlist.txt. Reportarlo
+            # como éxito total convierte una operación parcial en éxito visual
+            # (invariante GUI); el operador necesita saber que debe reintentar.
+            store.set(
+                STORE_KEY_RITUAL_FEEDBACK,
+                {
+                    "text": (
+                        f"«{tool_key}» instalado en disco ({', '.join(nombres) or 'sin componentes'}), "
+                        "pero no se pudo persistir la configuración: el orquestador no podrá "
+                        "activar los mods hasta que se reintente la instalación."
+                    ),
+                    "type": "warning",
+                },
+            )
         return
 
     store.set(

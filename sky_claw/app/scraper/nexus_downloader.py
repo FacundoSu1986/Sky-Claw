@@ -37,6 +37,15 @@ logger = logging.getLogger(__name__)
 
 _NEXUS_API_BASE = "https://api.nexusmods.com/v1"
 
+#: Techo absoluto de respaldo para :meth:`NexusDownloader.download` cuando la
+#: API no publicó ``size_bytes`` (0): sin él, metadata rota = streaming sin
+#: límite hasta el timeout total (600 s), llenando el disco de staging. Es el
+#: hermano de ``tools_installer._GITHUB_ASSET_MAX_BYTES``; cuando el size SÍ
+#: está publicado rige el declarado (más estricto) y este techo nunca aplica.
+#: Nexus sirve files de varios GB legítimos: 4 GiB solo muerde cuerpos sin
+#: tamaño declarado (metadata rota), no archivos grandes con metadata sana.
+_NEXUS_FALLBACK_MAX_BYTES = 4 * 1024 * 1024 * 1024
+
 ProgressCallback = Callable[["DownloadProgress"], Awaitable[None]] | None
 
 
@@ -450,14 +459,26 @@ class NexusDownloader:
                                 # reintentable y la pasada se repetía 5 veces. Se aborta
                                 # apenas se excede, sin escribir el chunk que excede, y
                                 # con un DownloadError que `_should_retry_nexus` no
-                                # reintenta. `size_bytes == 0` es "no declarado": sin
-                                # techo, igual que el hermano (no se usa Content-Length,
-                                # que lo elige el mismo servidor cuyo cuerpo se acota).
+                                # reintenta. Con size publicado rige el declarado; con
+                                # `size_bytes == 0` ("no declarado") rige el techo
+                                # absoluto de respaldo (`_NEXUS_FALLBACK_MAX_BYTES`), la
+                                # paridad real con el hermano GitHub y su
+                                # `_GITHUB_ASSET_MAX_BYTES` (antes no había ninguno:
+                                # metadata rota = streaming sin límite). No se usa
+                                # Content-Length, que lo elige el mismo servidor cuyo
+                                # cuerpo se acota.
                                 progress.downloaded_bytes += len(chunk)
-                                if 0 < file_info.size_bytes < progress.downloaded_bytes:
+                                techo = file_info.size_bytes if file_info.size_bytes > 0 else _NEXUS_FALLBACK_MAX_BYTES
+                                if progress.downloaded_bytes > techo:
+                                    if file_info.size_bytes > 0:
+                                        raise DownloadError(
+                                            f"El cuerpo de {file_info.file_name!r} excede el tamaño declarado "
+                                            f"({file_info.size_bytes} bytes) — descarga abortada."
+                                        )
                                     raise DownloadError(
-                                        f"El cuerpo de {file_info.file_name!r} excede el tamaño declarado "
-                                        f"({file_info.size_bytes} bytes) — descarga abortada."
+                                        f"El cuerpo de {file_info.file_name!r} excede el techo absoluto de respaldo "
+                                        f"({_NEXUS_FALLBACK_MAX_BYTES // (1024 * 1024 * 1024)} GiB): la API de Nexus "
+                                        "no publicó size — descarga abortada."
                                     )
                                 await fh.write(chunk)
                                 # Actualizar ambos hashes por chunk
