@@ -429,6 +429,72 @@ async def test_intercalacion_gui_lee_agente_escribe_gui_reemplaza_no_pierde_nada
     assert en_disco["llm_provider"] == "anthropic"
 
 
+async def test_una_asignacion_explicita_del_valor_del_baseline_se_persiste_igual(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Reasignar EXPLÍCITAMENTE el valor que ya estaba en el baseline no es
+    "no tocado": es una declaración de intención (``setup_tools`` que
+    re-descubre el mismo exe path que el objeto long-lived ya tenía). La
+    comparación de valores sola no distingue ambas cosas, omitía la escritura
+    y el merge conservaba lo que otra superficie escribió encima — el valor
+    re-descubierto se perdía en silencio (review de qodo, P2). El tracking de
+    claves dirty cierra la detección.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\nloot_exe = "D:/LOOT"\n', encoding="utf-8")
+    cfg = Config(config_path)  # baseline: loot_exe = "D:/LOOT"
+
+    # Otra superficie cambia el campo en el archivo.
+    await persistir_campo_bloqueante(config_path, "loot_exe", "D:/Otro")
+
+    # El agente reasigna explícitamente el valor original (re-descubrimiento).
+    escribir_campo(cfg, "loot_exe", "D:/LOOT")
+    cfg.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["loot_exe"] == "D:/LOOT"
+    assert en_disco["llm_provider"] == "anthropic"
+
+
+def test_mutacion_concurrente_durante_el_save_no_se_da_por_persistida(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La ventana exacta del P1 de qodo: mientras ``save()`` corre (en un
+    thread del pool vía ``guardar_config_bloqueante``), otra invocación
+    concurrente puede mutar el ``local_cfg`` compartido. Si el baseline se
+    deep-copiara del ``_data`` VIVO después de calcular el diff, esa mutación
+    entraría al baseline pero no al diff guardado → los saves siguientes la
+    tratan como ya persistida y el valor se pierde en silencio. El snapshot de
+    ``_data`` va ANTES del diff y ese mismo snapshot es el nuevo baseline.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+
+    import tomli_w
+
+    dump_real = tomli_w.dump
+
+    def _dump_que_simula_un_escritor_concurrente(save_data: object, f: object) -> None:
+        # Otra superficie muta el objeto compartido mientras el save está
+        # entre el diff y el refresh del baseline.
+        cfg._data["loot_exe"] = "D:/Tools/LOOT-concurrente.exe"
+        return dump_real(save_data, f)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(tomli_w, "dump", _dump_que_simula_un_escritor_concurrente)
+
+    escribir_campo(cfg, "community_shaders_mods", ["Community Shaders"])
+    cfg.save()
+
+    # La mutación concurrente no pudo formar parte del diff de ESE save — pero
+    # no puede quedar tratada como ya persistida: el próximo save la persiste.
+    cfg.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["loot_exe"] == "D:/Tools/LOOT-concurrente.exe"
+    assert en_disco["community_shaders_mods"] == ["Community Shaders"]
+
+
 # ── Ancla: las DOS clases reales de config, no una muestra ──────────────────────
 def test_escribir_y_guardar_soportan_las_dos_clases_reales(tmp_path: pathlib.Path) -> None:
     """`Config` (TOML, `_data`) y `LocalConfig` (JSON, dataclass) son las dos
@@ -625,12 +691,15 @@ ESCRITORES_TOML_PERMITIDOS = {
 
 
 def _usa_tomli_w_dump(arbol: ast.AST) -> bool:
-    """True si el módulo llama ``tomli_w.dump`` en CUALQUIERA de sus formas:
-    atributo sobre el módulo (``import tomli_w`` o ``import tomli_w as alias``)
-    y nombre importado directo (``from tomli_w import dump``, con o sin alias).
-    El detector original solo matcheaba ``Name("tomli_w").dump`` y se evadía con
-    un alias (review de CodeRabbit).
+    """True si el módulo llama ``tomli_w.dump``/``tomli_w.dumps`` en CUALQUIERA
+    de sus formas: atributo sobre el módulo (``import tomli_w`` o ``import
+    tomli_w as alias``) y nombre importado directo (``from tomli_w import
+    dump``, con o sin alias). ``dumps`` cuenta aunque devuelva str en vez de
+    escribir el fd: quien serializa el TOML de config por fuera de
+    ``Config.save()`` esquiva el merge-on-save igual (review de qodo sobre el
+    detector original, que solo matcheaba ``Name("tomli_w").dump``).
     """
+    _primitivas = {"dump", "dumps"}
     nombres_modulo: set[str] = set()
     nombres_dump: set[str] = set()
     for nodo in ast.walk(arbol):
@@ -640,7 +709,7 @@ def _usa_tomli_w_dump(arbol: ast.AST) -> bool:
                     nombres_modulo.add(alias.asname or alias.name)
         elif isinstance(nodo, ast.ImportFrom) and nodo.level == 0 and nodo.module == "tomli_w":
             for alias in nodo.names:
-                if alias.name == "dump":
+                if alias.name in _primitivas:
                     nombres_dump.add(alias.asname or alias.name)
     for nodo in ast.walk(arbol):
         if not isinstance(nodo, ast.Call):
@@ -648,7 +717,7 @@ def _usa_tomli_w_dump(arbol: ast.AST) -> bool:
         func = nodo.func
         if (
             isinstance(func, ast.Attribute)
-            and func.attr == "dump"
+            and func.attr in _primitivas
             and isinstance(func.value, ast.Name)
             and func.value.id in nombres_modulo
         ):
@@ -686,6 +755,8 @@ def test_ancla_detecta_todas_las_formas_de_llamar_tomli_w_dump() -> None:
     forma_alias = "import tomli_w as escritor\n\nescritor.dump({}, f)\n"
     forma_from = "from tomli_w import dump\n\ndump({}, f)\n"
     forma_from_alias = "from tomli_w import dump as volcar\n\nvolcar({}, f)\n"
+    forma_dumps = "import tomli_w\n\ncontenido = tomli_w.dumps({})\n"
+    forma_dumps_from = "from tomli_w import dumps\n\ncontenido = dumps({})\n"
     forma_inocua = "import tomli_w\n\ntomli_w.loads(x)\n"
     forma_modulo_distinto = "import otro_modulo as tw\n\ntw.dump({}, f)\n"
 
@@ -693,5 +764,7 @@ def test_ancla_detecta_todas_las_formas_de_llamar_tomli_w_dump() -> None:
     assert _usa_tomli_w_dump(ast.parse(forma_alias)) is True
     assert _usa_tomli_w_dump(ast.parse(forma_from)) is True
     assert _usa_tomli_w_dump(ast.parse(forma_from_alias)) is True
+    assert _usa_tomli_w_dump(ast.parse(forma_dumps)) is True
+    assert _usa_tomli_w_dump(ast.parse(forma_dumps_from)) is True
     assert _usa_tomli_w_dump(ast.parse(forma_inocua)) is False
     assert _usa_tomli_w_dump(ast.parse(forma_modulo_distinto)) is False

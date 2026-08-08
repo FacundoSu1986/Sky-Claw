@@ -124,6 +124,45 @@ class SystemPaths:
         return cls.get_base_drive() / "Modding"
 
 
+class _DatosConfig(dict[str, Any]):
+    """El estado de ``Config``, con registro de escrituras explícitas.
+
+    El diff de ``Config.save()`` no puede depender SOLO de comparar valores:
+    una asignación explícita del valor que ya estaba en el baseline
+    (``setup_tools`` que re-descubre el mismo exe path que el objeto
+    long-lived ya tenía) sigue siendo una declaración de intención y debe
+    persistirse — la comparación no distingue "sin tocar" de "reasigné lo que
+    ya estaba" (review de qodo, P2). ``escribir_campo`` y las asignaciones
+    directas ``_data[k] = v`` (``app_context``, ``frontend_bridge``) pasan en
+    masa por ``__setitem__``: ningún caller cambia nada.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        #: Claves escritas explícitamente desde la construcción. El diff de
+        #: save() las suma a la comparación de valores; el deepcopy del
+        #: snapshot arrastra su propia copia (comparada contra la del baseline
+        #: para saber qué se escribió DESDE el último save).
+        self.dirty: set[str] = set()
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+        self.dirty.add(key)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _DatosConfig:
+        # Sin esto, `copy.deepcopy` reconstruye la subclase vía protocolo de
+        # pickle usando `__setitem__` por clave: la copia arrancaría con TODO
+        # marcado dirty, el diff `snapshot.dirty - baseline.dirty` se anulaba
+        # entre copias y la señal de escrituras explícitas se perdía (el test
+        # de reasignación explícita fallaba exactamente así).
+        nuevo = _DatosConfig()
+        memo[id(self)] = nuevo
+        for clave, valor in self.items():
+            nuevo[clave] = copy.deepcopy(valor, memo)
+        nuevo.dirty = copy.deepcopy(self.dirty, memo)
+        return nuevo
+
+
 class Config:
     """Central configuration management for Sky-Claw.
 
@@ -136,7 +175,7 @@ class Config:
 
     def __init__(self, config_path: pathlib.Path | None = None) -> None:
         self._config_path = config_path or self.DEFAULT_CONFIG_FILE
-        self._data: dict[str, Any] = self._load_defaults()
+        self._data: _DatosConfig = _DatosConfig(self._load_defaults())
         #: Baseline para el merge-on-save de `save()`: snapshot de `_data` al
         #: terminar la construcción y refrescado tras cada `save()` exitoso.
         #: El diff `_data` vs baseline en save() es lo que ESTE objeto cambió —
@@ -147,7 +186,7 @@ class Config:
         #: save() lo interpreta como "volcar el estado entero", el
         #: comportamiento histórico, correcto para ese único save de arranque
         #: que migra/scrubea secretos recién leídos.
-        self._baseline: dict[str, Any] | None = None
+        self._baseline: _DatosConfig | None = None
         #: Secretos cuyo ÚNICO ejemplar es el archivo: estaban en plaintext en el
         #: TOML y no se pudieron mover al keyring. `save()` los conserva en vez de
         #: borrarlos (ver el bloque de secretos ahí). Se vacía en cuanto el
@@ -289,8 +328,10 @@ class Config:
            llamadores directos de ``save()`` (que no pasan por el lock asyncio
            de ``local_config.py``) tendrían TOCTOU;
         2. aplica al estado fresco SOLO los campos que ESTE objeto cambió
-           (diff contra el baseline tomado al construir / tras el último save)
-           — un objeto desactualizado ya no puede borrar lo que nunca vio;
+           (snapshot de `_data` ANTES del diff, reutilizado como nuevo
+           baseline; dirty-keys + comparación de valores contra el baseline
+           anterior) — un objeto desactualizado ya no puede borrar lo que
+           nunca vio;
         3. hace los borrados DESPUÉS del merge: el scrub de secretos y el drop
            de secciones legacy no pueden resucitar vía la lectura fresca (ver
            ``tests/test_config_secretos_sin_keyring.py``, la segunda pasada);
@@ -318,16 +359,37 @@ class Config:
                 # por tanto no se escribe— sobre lo que no se pudo leer.
                 fresco = _parse_toml_de_config_a_plano(self._config_path.read_text(encoding="utf-8"))
 
+            # Snapshot ANTES del diff: mientras save() corre en un thread del
+            # pool (vía `guardar_config_bloqueante`), otra invocación
+            # concurrente puede mutar el objeto compartido (dos `setup_tools`
+            # sobre el mismo `local_cfg`). Si el baseline se copiara del
+            # `_data` VIVO al final, esa mutación entraría al baseline pero no
+            # al diff guardado, y los saves siguientes la tratarían como ya
+            # persistida — pérdida silenciosa (review de qodo, P1). El mismo
+            # snapshot se reutiliza como nuevo baseline: lo persistido y la
+            # base del próximo diff son exactamente el mismo estado.
+            snapshot = copy.deepcopy(self._data)
+
             baseline = self._baseline
             if baseline is None:
                 # El save DENTRO de la construcción (`_load_from_keyring` migra
                 # secretos y llama `save()` antes de que exista el snapshot):
                 # vuelca el estado entero, el comportamiento histórico.
-                diff: dict[str, Any] = dict(self._data)
+                diff: dict[str, Any] = dict(snapshot)
                 borrados: set[str] = set()
             else:
-                diff = {k: v for k, v in self._data.items() if k not in baseline or baseline[k] != v}
-                borrados = set(baseline) - set(self._data)
+                # Claves escritas explícitamente desde el último baseline: la
+                # comparación de valores sola no detecta la reasignación
+                # explícita de un valor igual al baseline (`setup_tools` que
+                # re-descubre el mismo path), y el merge conservaría lo que
+                # otra superficie escribió encima (review de qodo, P2).
+                dirty_desde_baseline = snapshot.dirty - baseline.dirty
+                diff = {
+                    k: v
+                    for k, v in snapshot.items()
+                    if k in dirty_desde_baseline or k not in baseline or baseline[k] != v
+                }
+                borrados = set(baseline) - set(snapshot)
 
             save_data = {**fresco, **diff}
             for key in borrados:
@@ -344,10 +406,22 @@ class Config:
             ]
 
             for key in sensitive_keys:
-                val = save_data.pop(key, None)
-                if val:
+                # Autoridad del keyring (review de qodo, P1): el candidato a
+                # persistir en el keyring es el valor del OBJETO —resuelto
+                # contra el keyring en la construcción, o recién tipeado—
+                # cuando existe; el plaintext del archivo rige SOLO si el
+                # objeto no conoce el secreto. Pasar sin más el valor de la
+                # lectura fresca sobrescribía una credencial del keyring MÁS
+                # NUEVA con el plaintext obsoleto del TOML cuando el secreto
+                # no formaba parte del diff: se rompía la autenticación y se
+                # destruía la única credencial vigente.
+                val_objeto = snapshot.get(key) or ""
+                val_archivo = fresco.get(key) or ""
+                save_data.pop(key, None)
+                candidato = val_objeto or val_archivo
+                if candidato:
                     try:
-                        keyring.set_password("sky_claw", key, str(val))
+                        keyring.set_password("sky_claw", key, str(candidato))
                     except (keyring.errors.KeyringError, OSError) as exc:
                         logger.warning(
                             "Could not store '%s' in keyring: %s. "
@@ -355,24 +429,18 @@ class Config:
                             key,
                             type(exc).__name__,
                         )
-                        # Fail-closed en las DOS direcciones. No se escribe plaintext
-                        # NUEVO en el archivo (la política de secretos no se degrada
-                        # porque el keyring falle), pero tampoco se BORRA el que ya
-                        # estaba en el archivo: el `pop` de arriba es incondicional,
-                        # así que sin esto un keyring caído destruía el único
-                        # ejemplar del secreto en el mismo save() que decía estar
-                        # protegiéndolo. La fuente de restauración es lo que HAY en
-                        # el archivo en este momento (`fresco`): desde F1 otra
-                        # superficie puede haber escrito el secreto DESPUÉS de la
-                        # construcción de este objeto, y `_secretos_solo_en_archivo`
-                        # solo conoce lo que ESTE objeto leyó al construirse — sin el
-                        # fresco, ese caso nuevo (secreto escrito por otro) se caía
-                        # del mapa y el único ejemplar se destruía (review de
-                        # CodeRabbit). Nunca se restaura el valor de memoria: un
-                        # secreto recién tipeado no baja a disco en claro.
-                        anterior = fresco.get(key) or self._secretos_solo_en_archivo.get(key)
-                        if anterior:
-                            save_data[key] = anterior
+                        # Fail-closed en las DOS direcciones. No se escribe
+                        # plaintext NUEVO en el archivo (la política de
+                        # secretos no se degrada porque el keyring falle): si
+                        # el candidato era un secreto recién tipeado que no
+                        # estaba en disco, `val_archivo` es vacío y no se
+                        # restaura nada. Pero tampoco se DESTRUYE el único
+                        # ejemplar: si el secreto SÍ estaba en el archivo, se
+                        # conserva exactamente lo que hay en disco (review de
+                        # CodeRabbit: el snapshot de construcción no alcanza,
+                        # otra superficie puede haberlo escrito después).
+                        if val_archivo:
+                            save_data[key] = val_archivo
                     else:
                         # El keyring lo tiene: el archivo deja de ser el único ejemplar
                         # y el scrub del plaintext procede de forma definitiva.
@@ -399,8 +467,11 @@ class Config:
                 raise
 
             # Recién tras el replace exitoso: si la escritura falló, el próximo
-            # save reintenta el MISMO diff en vez de dárselo por aplicado.
-            self._baseline = copy.deepcopy(self._data)
+            # save reintenta el MISMO diff en vez de dárselo por aplicado. EL
+            # MISMO snapshot del diff (no un deepcopy fresco del `_data` vivo):
+            # una mutación concurrente durante la escritura no puede quedar
+            # tratada como ya persistida (review de qodo, P1).
+            self._baseline = snapshot
 
         # La actualización es solo en memoria: evita releer TOML/keyring desde
         # el filtro que corre en productores asyncio.

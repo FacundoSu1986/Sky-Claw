@@ -126,3 +126,42 @@ def test_secreto_escrito_en_disco_por_otra_superficie_sobrevive_si_el_keyring_fa
     assert en_disco["nexus_api_key"] == "clave-escrita-por-otro"
     assert en_disco["community_shaders_mods"] == ["Community Shaders"]
     assert en_disco["llm_provider"] == "anthropic"
+
+
+def test_un_keyring_con_valor_mas_nuevo_no_se_pisa_con_el_plaintext_viejo_del_archivo(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1 de qodo: el keyring ya tiene un valor MÁS NUEVO que el plaintext
+    obsoleto del TOML (en la construcción, ``_load_from_keyring`` resuelve la
+    memoria al valor del keyring). Un save no relacionado NO puede tomar el
+    plaintext viejo de la lectura fresca y pasarlo a ``set_password`` —eso
+    sobrescribía la credencial nueva con el valor obsoleto del archivo antes
+    de scrubbear el TOML, rompiendo autenticación y destruyendo la única
+    credencial vigente. La fuente del keyring es el valor del OBJETO
+    (resuelto contra el keyring al construir); el plaintext del archivo rige
+    solo cuando el objeto no conoce el secreto.
+    """
+    almacen: dict[str, str] = {"nexus_api_key": "credential-nueva-del-keyring"}
+    monkeypatch.setattr(keyring, "get_password", lambda _s, k: almacen.get(k))
+    monkeypatch.setattr(keyring, "set_password", lambda _s, k, v: almacen.__setitem__(k, v))
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'llm_provider = "anthropic"\nnexus_api_key = "credential-vieja-del-archivo"\n',
+        encoding="utf-8",
+    )
+
+    cfg = Config(config_path)
+    # En memoria gana el valor del keyring; el plaintext queda en disco porque
+    # los valores difieren (no hay migración que scrubbear en el init).
+    assert cfg._data["nexus_api_key"] == "credential-nueva-del-keyring"
+
+    cfg._data["community_shaders_mods"] = ["Community Shaders"]
+    cfg.save()
+
+    # El keyring conserva la credencial vigente — NO la vieja del archivo.
+    assert almacen["nexus_api_key"] == "credential-nueva-del-keyring"
+    crudo = config_path.read_text(encoding="utf-8")
+    assert "credential-vieja-del-archivo" not in crudo
+    assert "credential-nueva-del-keyring" not in crudo
+    assert tomllib.loads(crudo)["community_shaders_mods"] == ["Community Shaders"]
